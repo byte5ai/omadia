@@ -41,7 +41,7 @@ import {
  * -----
  * `PromoteRequest.actor` is "die Operator-Identität aus der Session" (§6) and
  * is written into all three audit surfaces, so it is read from the session
- * here rather than hardcoded the way `memoryPurge` writes `'admin-ui'` — an
+ * here, never hardcoded (the purge once wrote `'admin-ui'`, #1336) — an
  * audit trail that always names the UI instead of the human is worthless.
  * The `omadia_user_id ?? sub` fallback is the `uiPrefs.ts` idiom:
  * `omadia_user_id` is optional on a live session (first-login / KG-degraded
@@ -280,8 +280,9 @@ export function createMemoryPromoteRouter(deps: MemoryPromoteDeps): Router {
       const code = errorCode(err);
       const receipt = code === 'audit_write_failed' ? attachedReceipt(err) : undefined;
       if (receipt) {
-        // The promotion completed — an audit gap must not mask it (same rule
-        // `memoryPurge` applies to its `memory_purge_audit` row).
+        // The promotion completed — an audit gap must not mask it. (The purge
+        // instead audits first and refuses when it cannot, #1336: a deletion
+        // cannot be undone, a copy can.)
         log(
           `[memory-promote] audit line failed for ${receipt.sourcePath} → ${receipt.targetPath}: ${messageOf(err)}`,
         );

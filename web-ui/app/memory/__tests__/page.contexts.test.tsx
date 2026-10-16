@@ -426,10 +426,12 @@ describe('danger zone — context-key selector semantics', () => {
       'channel',
     );
 
-    expect(screen.getByText(/always `channelType~id`/i)).toBeInTheDocument();
-    expect(
-      screen.getByPlaceholderText('telegram~-1001234567890 (never a bare id)'),
-    ).toBeInTheDocument();
+    // #1333 — the format renders as <code>, not with literal backticks.
+    const hint = screen.getByText(/raw conversation id or the key from the memory browser/);
+    expect(hint.textContent).toMatch(/^Always channelType~id/);
+    expect(hint.querySelector('code')?.textContent).toBe('channelType~id');
+    expect(hint.textContent).not.toContain('`');
+    expect(screen.getByPlaceholderText('telegram~-1001234567890')).toBeInTheDocument();
   });
 });
 

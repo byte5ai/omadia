@@ -483,6 +483,12 @@ count: number;
 purgeMemorableKnowledge(filter: MemorableKnowledgePurgeFilter): Promise<{
 deletedNodes: number;
 }>;
+countConversationHistory?(filter: ConversationHistoryPurgeFilter): Promise<{
+count: number;
+}>;
+purgeConversationHistory?(filter: ConversationHistoryPurgeFilter): Promise<{
+deletedNodes: number;
+}>;
 listMemoryAclAudit(memorableKnowledgeNodeId: string, opts?: {
 limit?: number;
 }): Promise<AclAuditEntry[]>;
@@ -846,6 +852,12 @@ tenantId: string;
 originAgent?: string;
 aclOwner?: string;
 }
+export interface ConversationHistoryPurgeFilter {
+tenantId: string;
+agentSlug?: string;
+userId?: string;
+}
+export declare const CONVERSATION_HISTORY_NODE_TYPES: readonly ["Turn", "Run", "AgentInvocation", "ToolCall", "Plan", "PlanStep"];
 export interface FactIngest {
 factId: string;
 sourceTurnId: string;

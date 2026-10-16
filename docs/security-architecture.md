@@ -5300,6 +5300,50 @@ route and asserts it reads the SAME app-setting key the kernel writes — the tw
 literal spellings are what a rename would silently break, and the symptom would
 be a `ws://` URL on exactly the deployments that declared HTTPS.
 
+## 10p. Danger-Zone memory purge: complete, previewed, attributed (#1333–#1336)
+
+The memory purge (`/api/v1/admin/memory/purge`, page `/admin/danger-zone`) is
+the operator's tool for erasure requests, so it has to delete what it says and
+leave a record of who did it.
+
+- **Complete.** Besides scratch memory and the knowledge graph's
+  `MemorableKnowledge`, a purge deletes the conversation history of its
+  selection: `Turn` nodes (the full user message and answer), their `Session`,
+  `Run`, `AgentInvocation`, `ToolCall`, `Plan`, `PlanStep` and the `Fact`s
+  derived only from deleted turns (by edge or, when the edge is missing, by
+  their `sourceTurnId` / `turnId` prop). Agent axis = scopes `<slug>::…`; user
+  axis with an omadia user id = nodes whose `user_id` is that id or the AAD id
+  of one of their channel identities, plus Turns that `BELONGS_TO` the user
+  cluster (a group `Session` stays while another speaker's turns remain);
+  everything = the
+  tenant. Team and channel have no KG scoping yet and say so. Kept on purpose:
+  the per-scope Q&A transcripts under `/memories/sessions` and the chat tabs
+  under `/memories/chat-sessions` (open point, see handoff §13).
+- **One selection.** Preview and delete run the same plan (scratch targets +
+  KG filters, one shared SQL CTE in the Neon backend), so both select by the
+  same rules. The delete re-resolves the plan when it runs: data that arrived
+  after the preview (a new turn) goes too, and the audit row keeps the counts
+  planned at that moment next to the counts deleted.
+- **Preview enforced server-side.** `POST /preview` returns a single-use token (spent before the delete's first await)
+  bound to axis + selector + re-seed, valid 10 minutes, process-local. A
+  `DELETE` without a matching token gets `409 preview_required`.
+- **Re-seed cannot wipe user data.** It resets only the top-level entries the
+  bundled seed directory (`MEMORY_SEED_DIR`) contains — today `_rules` — and
+  writes them back immediately. Chat sessions, transcripts, brand assets,
+  `core` and UI preferences are never deleted by any purge.
+- **Attributed, audit first.** The actor comes from the session
+  (`actor_id` = `omadia_user_id`, `actor_email` = email or sub), never the
+  body. The `memory_purge_audit` row is written as `started` before anything
+  is deleted; if that write fails the purge is refused with
+  `500 audit_write_failed`. Afterwards the row gets the real counts and
+  `completed` (or `failed` with the error and the counts of the layers that
+  finished before it; a failed re-seed is noted in `error`); if that update fails the response
+  carries `audit_update_failed`. Without a Postgres pool there is no audit
+  store, and every response says `audit_unavailable`.
+
+Residual: the purge rows are not mirrored into `admin_audit` (#1315), and the
+preview token does not survive a restart or span several middleware processes.
+
 ## 11. Reviewer checklist
 
 Before merging a PR that touches credentials, prompts, or proxy routes:

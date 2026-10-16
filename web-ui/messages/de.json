@@ -5094,8 +5094,8 @@
   },
   "adminDangerZone": {
     "title": "Danger Zone · Memory-Purge",
-    "intro": "Löscht Memory unwiderruflich entlang einer Achse. <strong>Alles</strong> wischt Agent-Scratch <em>und</em> Knowledge-Graph; die Achsen User / Team / Channel treffen den Knowledge-Graph und den passenden Kontext-Baum unter /memories/contexts. Es gibt kein Undo — immer zuerst die Vorschau prüfen.",
-    "note": "<strong>Hinweis:</strong> Der Selector für User / Team / Channel ist ein Kontext-Key (<code>channelType~id</code>) oder die rohe native Id — er adressiert einen Kontext-Baum über alle Agenten hinweg.",
+    "intro": "Löscht Memory unwiderruflich entlang einer Achse: Agent-Scratch, die <strong>gemerkten Fakten</strong> und den <strong>Gesprächsverlauf</strong> des Knowledge-Graphs (Turns, Sessions, Runs, Tool-Aufrufe, Pläne). Die Achsen <em>Team</em> und <em>Channel</em> löschen nur die Kontext-Bäume unter /memories/contexts — der Knowledge-Graph kennt noch keine Team- oder Channel-Zuordnung. Chat-Tabs, Gesprächsprotokolle unter /memories/sessions, Brand-Assets, core und UI-Einstellungen werden nie gelöscht. Es gibt kein Undo — der Server nimmt eine Löschung nur nach einer Vorschau derselben Auswahl an.",
+    "note": "<strong>Selector:</strong> für User / Team / Channel immer <code>channelType~id</code>, wobei die Id entweder die rohe native Id oder der Key aus dem Memory-Browser ist — z. B. <code>teams~AAD-OBJECT-ID</code> (User), <code>teams~19:abc@thread.tacv2</code> (Team), <code>telegram~-1001234567890</code> (Channel). Auf der User-Achse wählt eine omadia-User-Id (UUID) stattdessen die Member-Notizen, gemerkten Fakten und Gesprächs-Turns dieser Person.",
     "targetTitle": "Ziel",
     "axisLabel": "Achse",
     "axes": {
@@ -5108,20 +5108,20 @@
     "selectorLabel": "Selector",
     "selectorPlaceholder": {
       "agent": "de.byte5.agent.calendar",
-      "user": "teams~29-1a2b… (nie eine nackte Id)",
-      "team": "teams~19-abc… (nie eine nackte Id)",
-      "channel": "telegram~-1001234567890 (nie eine nackte Id)"
+      "user": "teams~AAD-OBJECT-ID oder omadia-User-Id",
+      "team": "teams~19:abc@thread.tacv2",
+      "channel": "telegram~-1001234567890"
     },
     "selectorRequired": "Selector erforderlich für diese Achse.",
-    "reseedLabel": "Default-Memories nach dem Löschen neu seeden (re-seed defaults)",
+    "reseedLabel": "Regeln auf die mitgelieferten Defaults zurücksetzen",
     "loading": "lädt…",
     "previewButton": "Vorschau",
     "previewError": "Vorschau-Fehler: {message}",
     "previewTitle": "Vorschau — wird gelöscht",
     "agentScratch": "Agent-Scratch",
-    "knowledgeGraph": "Knowledge-Graph",
+    "knowledgeGraph": "Gemerkte Fakten (Knowledge-Graph)",
     "confirmTitle": "Löschen bestätigen",
-    "previewFirst": "Zuerst eine Vorschau ausführen — Löschen ist erst danach möglich.",
+    "previewFirst": "Zuerst eine Vorschau ausführen — der Server nimmt eine Löschung nur nach einer Vorschau derselben Auswahl an.",
     "noSelector": "Kein Selector gesetzt.",
     "confirmInstruction": "Zum Bestätigen exakt eingeben: <code>{phrase}</code>",
     "deleting": "löscht…",
@@ -5130,10 +5130,31 @@
     "deletedTitle": "Gelöscht",
     "forbiddenError": "Nicht berechtigt (403) — Memory-Purge erfordert Admin-Rechte.",
     "selectorHint": {
-      "agent": "Agent-Slug. Löscht zusätzlich dessen Kontext-Bäume unter /memories/contexts.",
-      "user": "Immer `channelType~id` — entweder der Kontext-Key aus dem Memory-Browser oder der Channel-Typ plus die rohe User-Id. Löscht das User-Tier über alle Agenten.",
-      "team": "Immer `channelType~id` — entweder der Kontext-Key aus dem Memory-Browser oder der Channel-Typ plus die rohe Team-Id. Löscht das Team-Tier über alle Agenten.",
-      "channel": "Immer `channelType~id` — entweder der Kontext-Key aus dem Memory-Browser oder der Channel-Typ plus die rohe Conversation-Id. Löscht das Kanal-Tier über alle Agenten."
+      "agent": "Agent-Slug. Löscht den Scratch-Baum des Agenten, seine Kontext-Bäume unter /memories/contexts, seine gemerkten Fakten und seinen Gesprächsverlauf.",
+      "user": "Immer <code>channelType~id</code> (rohe User-Id oder Key aus dem Memory-Browser), z. B. <code>teams~AAD-OBJECT-ID</code> — löscht das User-Tier über alle Agenten. Oder eine omadia-User-Id: löscht Member-Notizen, gemerkte Fakten und Gesprächs-Turns dieser Person.",
+      "team": "Immer <code>channelType~id</code> (rohe Team-Id oder Key aus dem Memory-Browser), z. B. <code>teams~19:abc@thread.tacv2</code>. Löscht das Team-Tier über alle Agenten.",
+      "channel": "Immer <code>channelType~id</code> (rohe Conversation-Id oder Key aus dem Memory-Browser), z. B. <code>telegram~-1001234567890</code>. Löscht das Kanal-Tier über alle Agenten."
+    },
+    "reseedHint": "Löscht /memories/_rules, auch zur Laufzeit hinzugefügte Regeln, und schreibt die mitgelieferten Defaults sofort zurück. Chat-Tabs, Gesprächsprotokolle, Brand-Assets, core und UI-Einstellungen bleiben immer erhalten.",
+    "reseedPreview": "Auf die mitgelieferten Defaults zurückgesetzt: {entries}",
+    "reseeded": "{count, plural, one {# Default-Datei zurückgeschrieben.} other {# Default-Dateien zurückgeschrieben.}}",
+    "conversationHistory": "Gesprächsverlauf (Knowledge-Graph)",
+    "nothingToDelete": "Die Vorschau hat für diese Auswahl nichts zu löschen gefunden — bitte den Selector prüfen.",
+    "warnings": {
+      "kg_not_modelled": "Der Knowledge-Graph kennt noch keine {axis, select, team {Team} channel {Channel} other {solche}}-Zuordnung: gemerkte Fakten und Gesprächsverlauf bleiben unberührt. Gelöscht werden nur die Kontext-Bäume unter /memories/contexts.",
+      "kg_history_unsupported": "Dieser Knowledge-Graph-Provider kann den Gesprächsverlauf nicht löschen: Turns, Sessions und Runs bleiben erhalten. Gelöscht werden nur gemerkte Fakten und Scratch-Memory.",
+      "user_axis_kg_only": "Der Selector hat Knowledge-Graph-Daten getroffen, aber keinen Kontext-Baum unter /memories/contexts — das Scratch-Memory des Users wird nicht gelöscht.",
+      "user_axis_scratch_only": "Der Selector hat Kontext-Bäume getroffen, aber keine Knowledge-Graph-Daten — gemerkte Fakten und Gesprächs-Turns werden über die omadia-User-Id gefunden, nicht über einen channelType~id-Key.",
+      "audit_unavailable": "Kein Audit-Speicher konfiguriert (kein Postgres) — dieser Purge wird nicht protokolliert.",
+      "audit_update_failed": "Der Purge ist gelaufen, aber sein Audit-Eintrag {auditId} konnte nicht abgeschlossen werden und steht noch auf „gestartet“.",
+      "reseed_failed": "Die Defaults konnten nicht zurückgeschrieben werden; sie kommen beim nächsten Neustart zurück, außer MEMORY_SEED_MODE steht auf skip."
+    },
+    "errors": {
+      "invalid_selector": "Der Selector muss channelType~id lauten, z. B. teams~19:abc@thread.tacv2 (rohe native Id) oder der Key aus dem Memory-Browser.",
+      "selector_required": "Selector erforderlich für diese Achse.",
+      "preview_required": "Die Vorschau ist abgelaufen oder gehört zu einer anderen Auswahl — bitte die Vorschau erneut ausführen.",
+      "confirmation_mismatch": "Die Bestätigung stimmt nicht mit der geforderten Phrase überein.",
+      "audit_write_failed": "Der Purge konnte nicht im Audit-Log protokolliert werden, deshalb wurde nichts gelöscht."
     }
   },
   "adminDuplicates": {

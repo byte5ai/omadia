@@ -4373,6 +4373,15 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 
 ## 13. Offene Roadmap
 
+### Memory-Purge: offene Punkte nach #1333–#1336
+
+- **Q&A-Transkripte unter `/memories/sessions`** (und `/memories/chat-sessions`) bleiben bei
+  jedem Purge stehen; für eine vollständige Löschung pro Agent/User fehlt eine Zuordnung dieser
+  Bäume zu Agent bzw. Person.
+- **Team/Channel im KG**: keine Scope-Spalte, also kein KG-Purge für diese Achsen.
+- **`memory_purge_audit` → `admin_audit`**: Purges stehen nicht neben den anderen Admin-Aktionen
+  (#1315 / Cluster C07).
+
 ### Sitzungs-Widerruf: offene Verbindungen, gerätegenaues Abmelden, Cache
 
 Der serverseitige Widerruf (`users.session_version`, §3) prüft bei jedem
@@ -6491,6 +6500,19 @@ schlimmer als ein Fehler. Beide Lesarten (verbatim Key / roher Native-Id) werden
 und die Vereinigung der real existierenden Bäume gelöscht — `memoryContextKey` ist auf seiner
 eigenen Digest-Form bewusst nicht idempotent. Das server-seitige Type-to-confirm prüft
 weiterhin gegen den **getippten** Selector, nie gegen den abgeleiteten `ctxKey`.
+
+Seit #1333–#1336 (2026-10-16): Preview und Delete teilen **einen** Plan (`planPurge` in
+`routes/memoryPurge.ts`), die Preview zählt also exakt, was gelöscht wird. Der KG-Teil umfasst
+neben `MemorableKnowledge` den **Gesprächsverlauf** (`KnowledgeGraph.count/purgeConversationHistory?`,
+plugin-api 1.28.0: Turn, Session, Run, AgentInvocation, ToolCall, Plan, PlanStep, abgeleitete
+Facts; Agent-Achse über den Scope-Präfix `<slug>::`, User-Achse über `user_id` = omadia-User-Id).
+Response-Felder: `scratchCount|kgCount|conversationCount`, `reseedEntries`, `warnings[{code,params}]`
+(keine fertigen englischen Sätze mehr), `previewToken`. `DELETE` verlangt den `previewToken`
+derselben Auswahl (sonst `409 preview_required`), nimmt den Actor aus der Session und schreibt die
+`memory_purge_audit`-Zeile **vor** dem Löschen (Fehler → `500 audit_write_failed`, nichts gelöscht).
+`reseed:true` (nur `axis:'all'`) setzt nur die Einträge des gebündelten Seed-Verzeichnisses
+(`MEMORY_SEED_DIR`, heute `_rules`) zurück und schreibt sie sofort neu — Chat-Sessions,
+Transkripte, `_brand`, `core`, `ui-prefs` bleiben immer. Details: `docs/security-architecture.md` §10p.
 
 **Promote** (`POST|GET /api/v1/admin/memory/promotions/:slug`, gleiches `requireAuth`-Gate
 und gleicher Prefix wie Purge): kopiert/verschiebt Files und Subtrees zwischen den Tiers

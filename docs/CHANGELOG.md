@@ -36,6 +36,34 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — the Danger-Zone memory purge deletes what it shows, and records who
+
+2026-10-16 (#1333, #1334, #1335, #1336). The purge on `/admin/danger-zone`
+deleted only remembered facts (`MemorableKnowledge`); every captured turn —
+the full user message and answer — stayed in the knowledge graph while the
+preview reported 0. It now also deletes the conversation history of the
+selection (Turn, Session, Run, AgentInvocation, ToolCall, Plan, PlanStep and
+the Facts derived from deleted turns; on the user axis also the Teams turns,
+which store the AAD id) and counts it separately; preview and delete run one
+shared selection
+(`KnowledgeGraph.count/purgeConversationHistory?`, plugin-api 1.28.0). The
+"Re-seed" checkbox used to delete chat sessions, transcripts, brand assets,
+`core` and UI preferences and seed nothing; it now resets only the entries the
+bundled seed contains (today `_rules`), writes them back at once, and the
+preview counts it. The audit row names the signed-in user (`actor_id`,
+`actor_email`) instead of `admin-ui`, is written before anything is deleted
+(a failed write refuses the purge with `audit_write_failed`), and the response
+says when a purge was not recorded. The server now requires a preview of the
+same selection (`previewToken`, else `409 preview_required`). The page shows
+the server's explanation for a rejected selector instead of `… failed: 400`
+(`ApiError.code` falls back to the body's `error`, new
+`ApiError.serverMessage`), translates the server's warnings (now
+`warnings: [{code, params}]` instead of an English `warning` string), renders
+the selector hints with `<code>`, and offers no delete for an empty preview.
+`memory_purge_audit` gains columns on first use (`ADD COLUMN IF NOT EXISTS`).
+Breaking for direct API callers: `DELETE` needs the `previewToken`, and
+`warning` became `warnings`.
+
 ### Fixed — `enforce` no longer withholds every Privacy Shield rendered answer
 
 2026-10-15. With the answer verifier in `enforce`, every answer Privacy

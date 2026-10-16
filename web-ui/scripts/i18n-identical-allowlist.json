@@ -74,6 +74,8 @@
     "adminUsage.kpi.tokens": "loanword",
     "adminUsers.edit.providerAndId": "diagnostic",
     "adminDangerZone.selectorPlaceholder.agent": "placeholder",
+    "adminDangerZone.selectorPlaceholder.channel": "placeholder",
+    "adminDangerZone.selectorPlaceholder.team": "placeholder",
     "adminMemoryBackend.backends.postgres": "brand",
     "adminEmbeddingProvider.title": "loanword",
     "graph.filters.traceHint": "glossary",

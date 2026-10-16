@@ -4,7 +4,10 @@ import { randomUUID } from 'node:crypto';
 
 import {
   agentInvocationNodeId,
+  agentScopePrefix,
   authSubjectProps,
+  CONVERSATION_HISTORY_NODE_TYPES,
+  type ConversationHistoryPurgeFilter,
   channelIdentityNodeId,
   entityNodeId,
   excerptMergeCandidateNodeId,
@@ -2951,6 +2954,206 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       // graph_nodes delete, but we delete both halves in-transaction to be
       // robust against schemas without the cascade and to make the intent
       // obvious).
+      await client.query(
+        `DELETE FROM graph_edges
+         WHERE tenant_id = $1
+           AND (from_node = ANY($2::uuid[]) OR to_node = ANY($2::uuid[]))`,
+        [this.tenantId, uuids],
+      );
+      const deleted = await client.query(
+        `DELETE FROM graph_nodes WHERE id = ANY($1::uuid[])`,
+        [uuids],
+      );
+      await client.query('COMMIT');
+      return { deletedNodes: deleted.rowCount ?? 0 };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * #1334 — the ONE selection both {@link countConversationHistory} and
+   * {@link purgeConversationHistory} run, as a CTE ending in `selection(id)`.
+   * Sharing the text is what makes the preview count the number the purge
+   * deletes. Params: `$1` tenant, `$2` agent scope prefix (nullable), `$3`
+   * user id (nullable), `$4` the directly-selected node types.
+   *
+   *   - `user_ids` — the omadia user id plus the AAD object ids of its channel
+   *                  identities: a Teams Turn / Session stores the AAD id in
+   *                  user_id, its Run the omadia id
+   *   - `roots`    — conversation nodes of the matching scope / user; a Turn
+   *                  also matches by its BELONGS_TO edge to the user cluster
+   *   - `steps`    — PlanSteps of a selected Plan (a step may carry no user)
+   *   - `facts`    — Facts derived ONLY from selected Turns; a Fact that a
+   *                  surviving Turn also produced stays
+   *   - `sessions` — a Session goes once none of its Turns survive; on the
+   *                  user axis only a Session that user had a part in
+   */
+  private conversationHistorySelection(filter: ConversationHistoryPurgeFilter): {
+    cte: string;
+    params: unknown[];
+  } {
+    if (filter.tenantId !== this.tenantId) {
+      throw Object.assign(new Error('tenant_mismatch'), { code: 'tenant_mismatch' });
+    }
+    const scopeMatches = (alias: string): string =>
+      `($2::text IS NULL
+         OR left(${alias}.scope, length($2)) = $2
+         OR ($2 = 'default::' AND ${alias}.scope NOT LIKE '%::%'))`;
+    const cte = `
+      WITH user_ids AS (
+        SELECT $3::text AS id WHERE $3::text IS NOT NULL
+        UNION
+        SELECT ci.properties->>'aadObjectId'
+          FROM graph_nodes ci
+          JOIN graph_edges e ON e.from_node = ci.id AND e.type = 'IS_IDENTITY_OF'
+          JOIN graph_nodes u ON u.id = e.to_node
+         WHERE $3::text IS NOT NULL
+           AND ci.tenant_id = $1 AND ci.type = 'ChannelIdentity'
+           AND u.type = 'User' AND u.external_id = 'user:' || $3
+           AND ci.properties->>'aadObjectId' IS NOT NULL
+      ),
+      roots AS (
+        SELECT n.id, n.type, n.external_id FROM graph_nodes n
+         WHERE n.tenant_id = $1
+           AND n.type = ANY($4::text[])
+           AND ${scopeMatches('n')}
+           AND ($3::text IS NULL
+             OR n.user_id IN (SELECT id FROM user_ids)
+             OR (n.type = 'Turn' AND EXISTS (
+               SELECT 1 FROM graph_edges b
+                 JOIN graph_nodes u ON u.id = b.to_node
+                WHERE b.from_node = n.id AND b.type = 'BELONGS_TO'
+                  AND u.type = 'User' AND u.external_id = 'user:' || $3)))
+      ),
+      root_turns AS (
+        SELECT id, external_id FROM roots WHERE type = 'Turn'
+      ),
+      -- A Run, its invocations and tool calls carry user_id only when the
+      -- run trace had one, and a Plan only when the planner passed it: reach
+      -- them through their edges from the selected Turns as well, so a user
+      -- purge never strands the trace of a turn it deleted.
+      base AS (
+        SELECT id FROM roots
+        UNION
+        SELECT e.to_node FROM graph_edges e
+         WHERE e.tenant_id = $1 AND e.type = 'EXECUTED'
+           AND e.from_node IN (SELECT id FROM roots WHERE type = 'Turn')
+        UNION
+        SELECT e.from_node FROM graph_edges e
+         WHERE e.tenant_id = $1 AND e.type = 'PLAN_OF'
+           AND e.to_node IN (SELECT id FROM roots WHERE type = 'Turn')
+        UNION
+        -- A Plan ingested before its Turn has no PLAN_OF edge, only the prop.
+        SELECT p.id FROM graph_nodes p
+         WHERE p.tenant_id = $1 AND p.type = 'Plan'
+           AND p.properties->>'turnId' IN (SELECT external_id FROM root_turns)
+      ),
+      invocations AS (
+        SELECT e.to_node AS id FROM graph_edges e
+         WHERE e.tenant_id = $1 AND e.type = 'INVOKED_AGENT'
+           AND e.from_node IN (SELECT id FROM base)
+      ),
+      calls AS (
+        SELECT e.to_node AS id FROM graph_edges e
+         WHERE e.tenant_id = $1 AND e.type = 'INVOKED_TOOL'
+           AND (e.from_node IN (SELECT id FROM base)
+             OR e.from_node IN (SELECT id FROM invocations))
+      ),
+      steps AS (
+        SELECT e.from_node AS id
+          FROM graph_edges e
+          JOIN graph_nodes st ON st.id = e.from_node AND st.type = 'PlanStep'
+         WHERE e.tenant_id = $1
+           AND e.type = 'STEP_OF'
+           AND e.to_node IN (SELECT id FROM base)
+      ),
+      -- A Fact's provenance is its DERIVED_FROM edge, or only its
+      -- sourceTurnId prop when it was ingested before the Turn existed. It
+      -- goes when every Turn it came from goes.
+      facts AS (
+        SELECT f.id FROM graph_nodes f
+         WHERE f.tenant_id = $1 AND f.type = 'Fact'
+           AND (EXISTS (
+                  SELECT 1 FROM graph_edges e
+                   WHERE e.from_node = f.id AND e.type = 'DERIVED_FROM'
+                     AND e.to_node IN (SELECT id FROM root_turns))
+                OR f.properties->>'sourceTurnId' IN (SELECT external_id FROM root_turns))
+           AND NOT EXISTS (
+             SELECT 1 FROM graph_edges o
+              WHERE o.from_node = f.id
+                AND o.type = 'DERIVED_FROM'
+                AND o.to_node NOT IN (SELECT id FROM root_turns))
+      ),
+      sessions AS (
+        SELECT s.id FROM graph_nodes s
+         WHERE s.tenant_id = $1
+           AND s.type = 'Session'
+           AND ${scopeMatches('s')}
+           AND ($3::text IS NULL
+             OR s.user_id IN (SELECT id FROM user_ids)
+             OR EXISTS (
+               SELECT 1 FROM graph_edges e
+                WHERE e.to_node = s.id
+                  AND e.type = 'IN_SESSION'
+                  AND e.from_node IN (SELECT id FROM roots)))
+           AND NOT EXISTS (
+             SELECT 1 FROM graph_edges e
+              WHERE e.to_node = s.id
+                AND e.type = 'IN_SESSION'
+                AND e.from_node NOT IN (SELECT id FROM roots))
+      ),
+      selection AS (
+        SELECT id FROM base
+        UNION SELECT id FROM invocations
+        UNION SELECT id FROM calls
+        UNION SELECT id FROM steps
+        UNION SELECT id FROM facts
+        UNION SELECT id FROM sessions
+      )`;
+    return {
+      cte,
+      params: [
+        this.tenantId,
+        filter.agentSlug !== undefined ? agentScopePrefix(filter.agentSlug) : null,
+        filter.userId ?? null,
+        [...CONVERSATION_HISTORY_NODE_TYPES],
+      ],
+    };
+  }
+
+  async countConversationHistory(
+    filter: ConversationHistoryPurgeFilter,
+  ): Promise<{ count: number }> {
+    const { cte, params } = this.conversationHistorySelection(filter);
+    const res = await this.pool.query<{ count: string }>(
+      `${cte} SELECT COUNT(*)::text AS count FROM selection`,
+      params,
+    );
+    return { count: Number(res.rows[0]?.count ?? '0') };
+  }
+
+  async purgeConversationHistory(
+    filter: ConversationHistoryPurgeFilter,
+  ): Promise<{ deletedNodes: number }> {
+    const { cte, params } = this.conversationHistorySelection(filter);
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const rows = await client.query<{ id: string }>(
+        `${cte} SELECT id FROM selection`,
+        params,
+      );
+      const uuids = rows.rows.map((r) => r.id);
+      if (uuids.length === 0) {
+        await client.query('COMMIT');
+        return { deletedNodes: 0 };
+      }
+      // Same belt-and-braces as purgeMemorableKnowledge: drop the incident
+      // edges explicitly instead of relying on the FK cascade alone.
       await client.query(
         `DELETE FROM graph_edges
          WHERE tenant_id = $1

@@ -303,6 +303,31 @@ export interface KnowledgeGraph {
     filter: MemorableKnowledgePurgeFilter,
   ): Promise<{ deletedNodes: number }>;
   /**
+   * Danger-Zone purge (#1334) — count the conversation-history nodes that
+   * {@link purgeConversationHistory} WOULD delete for the same filter.
+   * Read-only. Both methods resolve the selection through ONE shared query,
+   * so the preview count is by construction the number the purge removes.
+   * Optional (plugin-api 1.28.0): a provider without it makes the Danger-Zone
+   * purge report the conversation history as unsupported, never as purged.
+   */
+  countConversationHistory?(
+    filter: ConversationHistoryPurgeFilter,
+  ): Promise<{ count: number }>;
+  /**
+   * Danger-Zone purge (#1334) — hard-delete the conversation history the
+   * filter selects, in ONE transaction: `Turn`, `Run`, `AgentInvocation`,
+   * `ToolCall`, `Plan` and `PlanStep` nodes of the matching scopes / user,
+   * every `Fact` `DERIVED_FROM` a deleted Turn, every `PlanStep` of a deleted
+   * Plan, and each `Session` that is left without a Turn. Incident edges go
+   * with their nodes. `MemorableKnowledge` is NOT touched here — that is
+   * {@link purgeMemorableKnowledge}. Shared nodes (User clusters, channel
+   * identities, Odoo/Confluence/plugin entities) are never deleted.
+   * Optional together with {@link countConversationHistory}.
+   */
+  purgeConversationHistory?(
+    filter: ConversationHistoryPurgeFilter,
+  ): Promise<{ deletedNodes: number }>;
+  /**
    * Slice 3 — read the ACL audit-log for a single MemorableKnowledge.
    * Returns newest-first. Survives delete of the MK.
    */
@@ -1567,6 +1592,39 @@ export interface MemorableKnowledgePurgeFilter {
   /** Restrict to MK whose `properties->'acl_owners'` contains this user id. */
   aclOwner?: string;
 }
+
+/**
+ * Danger-Zone bulk-purge selector for the conversation history (#1334):
+ * `Turn` and the nodes derived from it. `tenantId` is always required.
+ * `agentSlug` and `userId` are AND-narrowing; omitting both selects the
+ * tenant's whole conversation history.
+ */
+export interface ConversationHistoryPurgeFilter {
+  /** Tenant whose conversation history is in scope. Required. */
+  tenantId: string;
+  /** Restrict to nodes whose scope is qualified with this Agent
+   *  (`<agentSlug>::…`, see {@link agentScopePrefix}). For `default` the
+   *  legacy unqualified scopes are included too — the same rule the recall
+   *  queries use to keep them visible to the default Agent. */
+  agentSlug?: string;
+  /** Restrict to one person by their cluster-root `omadiaUserId`. Matches
+   *  nodes whose `user_id` is that id or the AAD object id of one of their
+   *  channel identities (a Teams Turn stores the AAD id, its Run the omadia
+   *  id), and Turns with a `BELONGS_TO` edge to the user cluster. A `Session`
+   *  goes only once none of its Turns remain. */
+  userId?: string;
+}
+
+/** Node types the conversation-history purge selects directly by scope /
+ *  user. `Fact` and `Session` are added by their relation to these. */
+export const CONVERSATION_HISTORY_NODE_TYPES = [
+  'Turn',
+  'Run',
+  'AgentInvocation',
+  'ToolCall',
+  'Plan',
+  'PlanStep',
+] as const satisfies readonly GraphNodeType[];
 
 /**
  * A single atomic fact extracted from a Turn. Subject-predicate-object triples

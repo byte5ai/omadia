@@ -8,6 +8,21 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.28.0 — 2026-10-16
+
+Additive. The Danger-Zone memory purge deletes the conversation history, not
+only the remembered facts (#1334).
+
+### Added
+
+- **`KnowledgeGraph.countConversationHistory?` / `purgeConversationHistory?`**
+  — count and hard-delete the Turns of a scope or user and everything derived
+  from them (Session, Run, AgentInvocation, ToolCall, Plan, PlanStep, Fact),
+  through one shared selection so the preview counts what the purge deletes.
+  Optional: a provider without them is reported as unsupported by the purge.
+- **`ConversationHistoryPurgeFilter`** and
+  **`CONVERSATION_HISTORY_NODE_TYPES`**.
+
 ## 1.27.0 — 2026-10-15
 
 Additive. A Privacy Shield v4 rendered answer reports the prose its model
