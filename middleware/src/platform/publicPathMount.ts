@@ -12,8 +12,11 @@ import type { PublicPathGrantRegistry } from './publicPathGrants.js';
  *   request
  *     → [this mount]  granted prefix? → dispatch to the owning plugin, TERMINATE
  *                     otherwise       → next()
- *     → requireAuth   401 unless the URL is a static core public path
+ *     → requireAuth   (under `/api` only) 401 unless the URL is a static
+ *                     core public path
  *     → the authenticated router stack
+ *     → nothing matched: the terminal JSON 404 (`http/terminalHandler.ts`),
+ *       `public_path.not_granted` for a declared-but-ungranted prefix (#1349)
  *
  * WHY IT TERMINATES
  * -----------------
@@ -30,9 +33,13 @@ import type { PublicPathGrantRegistry } from './publicPathGrants.js';
  *
  * WHY IT IS FAIL-CLOSED
  * ---------------------
- * Every "I don't know" answer is `next()` — i.e. straight into `requireAuth`.
+ * Every "I don't know" answer is `next()` — i.e. into the ordinary stack.
  * No grants loaded, registry unwired, plugin not activated, store unreachable:
- * all of them mean nothing matches, and the request is authenticated normally.
+ * all of them mean nothing matches, and the request is treated as if the
+ * prefix were never declared. Under `/api` that is `requireAuth`'s 401. Outside
+ * `/api` (`/documents/dl`, `/diagrams/dl`) no session gate runs, but nothing
+ * ambient serves a non-session plugin route either, so the request ends in the
+ * terminal 404 — closed, not "behind the login" (#1349).
  * The only way to reach a plugin handler without a session is for all three
  * gates (declared, exclusively owned, operator-granted) to be satisfied at once
  * AND for the plugin to be live and actually serving that prefix.
