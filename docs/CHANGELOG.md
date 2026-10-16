@@ -106,6 +106,33 @@ it is. No DB migration: key records and the usage log stay vault entries;
 old records read as "no expiry, owner unknown". Rotation is not implemented
 (open question on the PR).
 
+### Fixed — plugin UI host page no longer 404s for scoped plugin ids
+
+2026-10-16 (#1399). Core links a plugin's own UI as
+`/plugin-ui/%40omadia%2F<name>`, and Next 16 passes that route param to the
+page still percent-encoded (`getParamValue` re-encodes it). The host page
+validated the raw value, so every scoped id — every omadia plugin — got the
+Next 404 page. `decodePluginIdSegment` (`web-ui/app/_lib/pluginId.ts`) now
+decodes first and runs the id gate on the decoded value (broken encoding and
+encoded traversal still 404); the page and the tab title use it. The new
+route test builds params with Next's own `getDynamicParam`, so a Next upgrade
+that changes the encoding is caught there.
+
+### Changed — one boundary-preset library for agents and Quality Guard
+
+2026-10-16 (#1104). The per-agent "Boundaries" tab and the Quality Guard
+plugin's install-wide defaults read the same preset library,
+`BOUNDARY_PRESETS` in `@omadia/plugin-api` 1.30.0. Every id the agent tab
+offers now works in the plugin's `default_boundary_presets` field, with the
+same rule wording. Quality Guard 0.2.0 keeps its 8 own v0.1 ids
+(`no-financial-advice`, `privacy-first`, …) with their old wording, so saved
+configs keep working; `no-legal-advice` and `no-speculation` switch to the
+shared wording (for `no-speculation` that is a different rule: "do not guess
+when uncertain" instead of "do not speculate about the future"). Unknown ids
+are logged at activation instead of being dropped without a trace.
+**Check `default_boundary_presets` before upgrading:** an agent-UI id that
+0.1 silently dropped (e.g. `no-pii`) now applies to every agent. The plugin's setup fields now carry English and German text.
+
 ### Fixed — the subscription CLI fails a turn honestly, and its turns reach Memory
 
 2026-10-16. Three gaps between the Claude subscription CLI (`claude-cli`) and
@@ -169,32 +196,53 @@ response body's `message` instead of `failed: 502`, and the add-server form
 warns that a stdio server runs with the middleware's permissions. Known gap: a
 DNS answer that changes between check and connect (rebinding) is not covered.
 
-### Fixed — plugin UI host page no longer 404s for scoped plugin ids
+### Fixed — the admin audit trail can be read, and records who did what
 
-2026-10-16 (#1399). Core links a plugin's own UI as
-`/plugin-ui/%40omadia%2F<name>`, and Next 16 passes that route param to the
-page still percent-encoded (`getParamValue` re-encodes it). The host page
-validated the raw value, so every scoped id — every omadia plugin — got the
-Next 404 page. `decodePluginIdSegment` (`web-ui/app/_lib/pluginId.ts`) now
-decodes first and runs the id gate on the decoded value (broken encoding and
-encoded traversal still 404); the page and the tab title use it. The new
-route test builds params with Next's own `getDynamicParam`, so a Next upgrade
-that changes the encoding is caught there.
+2026-10-16. `admin_audit` had no read route and no UI, stored only the email
+for every `user.*`, `auth.provider_*` and `profile_snapshot.*` row
+(`actor_id` NULL), and recorded neither failed sign-ins nor plugin grant
+changes (#1315, #1347). Now one helper (`auditActorFromRequest`,
+`auth/adminAuditLog.ts`) sets the actor of every row a signed-in user causes:
+`actor_id` is the `users.id` from the session's `uid` claim, `actor_email` the
+session email. The conductor's baton and terminate rows used the
+knowledge-graph id (`omadia_user_id`) and now follow the same rule.
+`GET /api/v1/admin/audit` (paged, `action` and `actor_id` filters) and the
+admin page `/admin/audit` read the trail. New actions: `auth.login_failed`
+(first failure per account and client per minute; the account only as the
+`users` row it resolves to, never the typed text or the password), `plugin.grants_change` (public paths
+and SQL ledger, before/after — a revoke no longer erases the record of who
+opened a path), `plugin.install` and `plugin.uninstall`. The setup wizard logs
+the first admin's creation (#1092; the audit row already existed since #1262),
+and the registry route logs `ingested` instead of `installed` for a package
+that still needs the install wizard. See `docs/security-architecture.md` §10q.
 
-### Changed — one boundary-preset library for agents and Quality Guard
+### Fixed — user admin refuses what it cannot apply; one email rule
 
-2026-10-16 (#1104). The per-agent "Boundaries" tab and the Quality Guard
-plugin's install-wide defaults read the same preset library,
-`BOUNDARY_PRESETS` in `@omadia/plugin-api` 1.30.0. Every id the agent tab
-offers now works in the plugin's `default_boundary_presets` field, with the
-same rule wording. Quality Guard 0.2.0 keeps its 8 own v0.1 ids
-(`no-financial-advice`, `privacy-first`, …) with their old wording, so saved
-configs keep working; `no-legal-advice` and `no-speculation` switch to the
-shared wording (for `no-speculation` that is a different rule: "do not guess
-when uncertain" instead of "do not speculate about the future"). Unknown ids
-are logged at activation instead of being dropped without a trace.
-**Check `default_boundary_presets` before upgrading:** an agent-UI id that
-0.1 silently dropped (e.g. `no-pii`) now applies to every agent. The plugin's setup fields now carry English and German text.
+2026-10-16. `PATCH /api/v1/admin/users/:id` answered 200 to `{"role":"viewer"}`
+and to unknown `status` values and left the user unchanged (#1314). It now
+answers 400 (`admin_users.invalid_role`, `invalid_status`,
+`invalid_display_name`, `unknown_field`, `invalid_body`) and writes nothing.
+omadia has one role: every user is an administrator, which the users page now
+says. The admin create route, the setup wizard and `ADMIN_BOOTSTRAP_EMAIL`
+checked addresses only for `includes('@')`, so `a@` and `@b` became admin
+accounts via the API (#1321). All three now use `isValidLoginEmail`
+(`auth/loginEmail.ts`): exactly one `@`, non-empty local part and domain, no
+whitespace, control or invisible format characters, at most 254 characters.
+
+### Fixed — a revoked session no longer says "expired"; sign-out says "everywhere"
+
+2026-10-16. The web UI's session watcher showed "Session expired" for a
+session an admin ended (disable, password reset) or a sign-out on another
+device ended, and the "Sign out" button did not say it ends the sessions on
+every device (#1322). `/me`'s `401 auth.revoked` now shows "Session ended",
+the button reads "Sign out everywhere", and the API-keys and registries pages
+map `auth.revoked` the same way.
+
+### Fixed — the boot log no longer claims `/api/v1/auth/*` returns 503 without Entra
+
+2026-10-16. Without `MICROSOFT_APP_*` the middleware warned that the whole
+auth API returns 503, while local sign-in worked (#1323). The line now reads
+`Entra sign-in disabled (MICROSOFT_APP_* missing). Local login is unaffected.`
 
 ### Added — plugin tools can refuse a call with a message the model reads
 

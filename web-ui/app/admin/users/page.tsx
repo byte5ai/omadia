@@ -106,6 +106,13 @@ export default function AdminUsersPage(): React.ReactElement {
           <p className="mt-3 max-w-2xl text-[15px] leading-[1.55] text-[color:var(--fg-muted)]">
             {t('list.intro')}
           </p>
+          {/* #1314 — there is no RBAC yet; every account is a full admin. */}
+          <p
+            role="note"
+            className="mt-3 max-w-2xl rounded-md border border-[color:var(--warning)]/40 bg-[color:var(--warning)]/10 px-3 py-2 text-[13px] leading-[1.5] text-[color:var(--fg-strong)]"
+          >
+            {t('list.rolesNote')}
+          </p>
         </div>
         <Button
           variant="primary"

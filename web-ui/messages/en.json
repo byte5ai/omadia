@@ -299,6 +299,10 @@
           "title": "Public API Keys",
           "description": "Create, list, and revoke bearer credentials for the public chat API."
         },
+        "audit": {
+          "title": "Audit log",
+          "description": "See who changed users, sign-in settings, plugin grants, API keys and more. Read-only, newest first."
+        },
         "update": {
           "title": "Update",
           "description": "See the version this instance is running, check for a newer release, and — with the updater overlay deployed — bump the stack from here."
@@ -1008,7 +1012,8 @@
     "loginLink": "Login",
     "authError": "auth err",
     "signedInAs": "Signed in as",
-    "signOut": "Sign out",
+    "signOut": "Sign out everywhere",
+    "signOutHint": "Signs you out on all your devices, not just this one.",
     "signOutFailed": "Sign-out did not go through. You are still signed in.",
     "signOutRetry": "Try signing out again"
   },
@@ -1444,7 +1449,9 @@
     "expiredKicker": "Session",
     "expiredTitle": "Session expired",
     "expiredBody": "Your session has expired. Please sign in again to continue working.",
-    "expiredCta": "Sign in again"
+    "expiredCta": "Sign in again",
+    "revokedTitle": "Session ended",
+    "revokedBody": "Your session was ended, for example by an administrator or by signing out on another device. Please sign in again."
   },
   "runtimeReadiness": {
     "title": "LLM access missing",
@@ -4725,6 +4732,7 @@
       "notFound": "Registry not found — list reloaded.",
       "missingFields": "Name and URL are required.",
       "sessionExpired": "Your session is no longer valid. Redirecting to sign in…",
+      "sessionEnded": "Your session was ended, for example by signing out on another device. Redirecting to sign in…",
       "authUnavailable": "Your session can't be checked right now. Try again shortly.",
       "generic": "Error {status}."
     }
@@ -4823,6 +4831,7 @@
       "notFound": "That key no longer exists — the list has been refreshed.",
       "authUnavailable": "Operator authentication is unavailable right now. Try again shortly.",
       "sessionExpired": "Your session has expired. Redirecting to sign in…",
+      "sessionEnded": "Your session was ended, for example by signing out on another device. Redirecting to sign in…",
       "invalidRequest": "That request was invalid — check the values above and try again.",
       "generic": "Something went wrong (error {status}).",
       "invalidScope": "That scope is unknown — pick one from the list.",
@@ -4959,6 +4968,7 @@
     "list": {
       "title": "Users",
       "intro": "Local accounts and federated identities. Only local users can be created here — federated accounts appear once the user has signed in through the IdP.",
+      "rolesNote": "All users are administrators with full access. Role-based permissions are not available yet.",
       "create": "Create new user",
       "cancel": "Cancel",
       "form": {
@@ -4998,6 +5008,50 @@
       "confirmDelete": "Really delete this user? This action cannot be undone.",
       "delete": "Delete user",
       "deleting": "Deleting …"
+    }
+  },
+  "adminAudit": {
+    "title": "Audit log",
+    "intro": "A read-only record of administrative changes: who did what, to which target, and when. Newest entries first.",
+    "loading": "Loading audit log…",
+    "empty": "No audit entries yet.",
+    "emptyFiltered": "No audit entries match this filter.",
+    "filter": {
+      "label": "Action",
+      "options": {
+        "all": "All actions",
+        "user": "User accounts",
+        "auth": "Sign-in & sessions",
+        "plugin": "Plugin changes",
+        "apikey": "API keys",
+        "conductor": "Conductor changes",
+        "profileSnapshot": "Profile snapshots",
+        "channel": "Channels"
+      }
+    },
+    "table": {
+      "time": "Time",
+      "actor": "Actor",
+      "action": "Action",
+      "target": "Target",
+      "changes": "Changes"
+    },
+    "actorSystem": "System (automatic)",
+    "details": {
+      "show": "Show before / after",
+      "before": "Before",
+      "after": "After",
+      "empty": "(none)"
+    },
+    "paging": {
+      "newer": "← Newer",
+      "older": "Older →",
+      "range": "Entries {from}–{to}"
+    },
+    "errors": {
+      "invalidQuery": "The filter or page is not valid. Reset the filter and try again.",
+      "generic": "The audit log could not be loaded (error {status}).",
+      "network": "The audit log could not be loaded. Check the connection and try again."
     }
   },
   "adminTopics": {
