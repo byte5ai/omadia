@@ -4084,7 +4084,8 @@
       "errorKicker": "Error",
       "errorTitle": "The catalog could not be loaded.",
       "errorHint": "Check that the middleware is reachable and that the endpoint <endpoint>/api/v1/store/plugins</endpoint> responds.",
-      "footerSource": "Source:"
+      "footerSource": "Source:",
+      "footerSourceValue": "connected registries and uploaded packages"
     },
     "detail": {
       "notFoundTitle": "Plugin not found · Store",
@@ -4137,7 +4138,9 @@
         "noRequirements": "No prerequisites.",
         "installHint": "During install the middleware checks these prerequisites transitively. If a provider is missing, a wizard opens with the matching plugins from the catalog."
       },
-      "sectionGrants": "Permissions"
+      "sectionGrants": "Permissions",
+      "footerManifestLegacy": "Manifest: Legacy",
+      "footerManifestSchema": "Manifest: Schema v{version}"
     },
     "card": {
       "updateTitle": "Update available",
@@ -4971,13 +4974,15 @@
     "floating": "(moving tag — no comparison possible)",
     "updateAvailable": "{version} is available.",
     "upToDate": "This instance is running the latest release.",
-    "checkStale": "The release check could not reach GitHub; the value shown may be out of date.",
+    "latestUnknownHint": "Whether a newer release exists is not known right now.",
+    "checkStale": "The release check could not reach GitHub, or GitHub refused it (rate limit); the value shown may be out of date.",
     "checkNow": "Check now",
     "checking": "Checking…",
     "notifyOnlyTitle": "Manual update",
     "notifyOnlyBody": "No updater is configured, so this instance can report versions but not apply an update. On Docker Compose, deploy the optional overlay (docker-compose.update.yaml) to enable it. Otherwise update from the host:",
     "notifyOnlyComposeLabel": "Docker Compose",
-    "notifyOnlyComposeCmd": "OMADIA_VERSION={version} docker compose up -d",
+    "notifyOnlyComposeCmd": "OMADIA_VERSION={version} docker compose -f docker-compose.yaml [-f docker-compose.OVERLAY.yaml …] up -d",
+    "notifyOnlyComposeOverlayHint": "Pass the same -f files you start the stack with. A plain docker compose up -d recreates the middleware from docker-compose.yaml alone, and it loses the settings of every overlay (embeddings, storage, diagrams, …). Setting COMPOSE_FILE in the project .env makes the plain command safe.",
     "notifyOnlyFlyLabel": "Fly.io",
     "notifyOnlyFlyOrderHint": "Run these in order — the middleware applies the schema migrations at boot, so let it report the new version before you move the admin UI.",
     "notifyOnlyFlyPinHint": "Also update the image line in your fly.toml: --image applies to this deploy only, so a later plain fly deploy would put the app back on the old tag.",
