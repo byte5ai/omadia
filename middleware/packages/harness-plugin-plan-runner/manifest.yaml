@@ -28,52 +28,88 @@ setup:
   fields:
     - key: "enabled"
       type: "enum"
-      label: "Plan-as-data (experimental)"
-      help: "Wenn aktiviert, materialisiert das Plugin auf mehrstufigen Turns einen expliziten Plan-DAG (Plan + PlanStep-Knoten im Knowledge-Graph). Einfache Q&A bleiben unberührt (ein billiger Haiku-Gate entscheidet pro Turn). Standard: on."
+      label:
+        en: "Plan-as-data (experimental)"
+        de: "Plan-as-data (experimentell)"
+      help:
+        en: "When enabled, the plugin materializes an explicit plan DAG (Plan + PlanStep nodes in the knowledge graph) on multi-step turns. Simple Q&A stays untouched (a cheap Haiku gate decides per turn). Default: on."
+        de: "Wenn aktiviert, materialisiert das Plugin auf mehrstufigen Turns einen expliziten Plan-DAG (Plan + PlanStep-Knoten im Knowledge-Graph). Einfache Q&A bleiben unberührt (ein billiger Haiku-Gate entscheidet pro Turn). Standard: on."
       required: false
       default: "on"
       enum:
         - value: "off"
-          label: "Off — keine Plan-Materialisierung"
+          label:
+            en: "Off — no plan materialization"
+            de: "Off — keine Plan-Materialisierung"
         - value: "on"
-          label: "On — Plan-DAG auf mehrstufigen Turns materialisieren"
+          label:
+            en: "On — materialize a plan DAG on multi-step turns"
+            de: "On — Plan-DAG auf mehrstufigen Turns materialisieren"
     - key: "verifyExitConditions"
       type: "enum"
-      label: "Exit-Conditions prüfen (E4b, experimentell)"
-      help: "Wenn aktiviert, prüft ein Haiku-Aufruf nach jedem Tool, ob das Ergebnis die Exit-Condition des aktuellen Schritts erfüllt; falls nicht, wird der Rest des Plans neu geplant. Kostet einen zusätzlichen Haiku-Call pro abgeschlossenem Schritt mit Exit-Condition (Turn-Hot-Path) — daher bewusst opt-in. Greift nur bei aktivem Plan-Runner (enabled=on). Standard: off."
+      label:
+        en: "Check exit conditions (E4b, experimental)"
+        de: "Exit-Conditions prüfen (E4b, experimentell)"
+      help:
+        en: "When enabled, a Haiku call checks after each tool whether the result meets the current step's exit condition; if not, the rest of the plan is replanned. Costs one extra Haiku call per completed step with an exit condition (turn hot path) — hence deliberately opt-in. Only applies when the plan runner is active (enabled=on). Default: off."
+        de: "Wenn aktiviert, prüft ein Haiku-Aufruf nach jedem Tool, ob das Ergebnis die Exit-Condition des aktuellen Schritts erfüllt; falls nicht, wird der Rest des Plans neu geplant. Kostet einen zusätzlichen Haiku-Call pro abgeschlossenem Schritt mit Exit-Condition (Turn-Hot-Path) — daher bewusst opt-in. Greift nur bei aktivem Plan-Runner (enabled=on). Standard: off."
       required: false
       default: "off"
       enum:
         - value: "off"
-          label: "Off — keine Exit-Condition-Prüfung"
+          label:
+            en: "Off — no exit condition check"
+            de: "Off — keine Exit-Condition-Prüfung"
         - value: "on"
-          label: "On — Exit-Conditions nach jedem Tool prüfen"
+          label:
+            en: "On — check exit conditions after each tool"
+            de: "On — Exit-Conditions nach jedem Tool prüfen"
     - key: "gcDuplicatePlans"
       type: "enum"
-      label: "Doppelte Pläne aufräumen (#237)"
-      help: "Wenn aktiviert, räumt das Plugin direkt nach dem Materialisieren eines neuen Plans ältere, semantisch gleiche Pläne im selben Scope auf (der Nutzer verfeinert dasselbe Ziel über mehrere Turns → nur die letzte Iteration bleibt). Zwei Schichten, billigste zuerst: identische normalisierte Request-Summary (kein LLM), dann ein einzelner Haiku-Call über die jüngsten Kandidaten. Fire-and-forget; löscht NIE den Überlebenden oder einen Plan mit noch laufendem Turn. Greift nur bei aktivem Plan-Runner (enabled=on). Standard: on."
+      label:
+        en: "Clean up duplicate plans (#237)"
+        de: "Doppelte Pläne aufräumen (#237)"
+      help:
+        en: "When enabled, right after materializing a new plan the plugin cleans up older, semantically identical plans in the same scope (the user refines the same goal over several turns → only the latest iteration remains). Two layers, cheapest first: identical normalized request summary (no LLM), then a single Haiku call over the most recent candidates. Fire-and-forget; NEVER deletes the survivor or a plan whose turn is still running. Only applies when the plan runner is active (enabled=on). Default: on."
+        de: "Wenn aktiviert, räumt das Plugin direkt nach dem Materialisieren eines neuen Plans ältere, semantisch gleiche Pläne im selben Scope auf (der Nutzer verfeinert dasselbe Ziel über mehrere Turns → nur die letzte Iteration bleibt). Zwei Schichten, billigste zuerst: identische normalisierte Request-Summary (kein LLM), dann ein einzelner Haiku-Call über die jüngsten Kandidaten. Fire-and-forget; löscht NIE den Überlebenden oder einen Plan mit noch laufendem Turn. Greift nur bei aktivem Plan-Runner (enabled=on). Standard: on."
       required: false
       default: "on"
       enum:
         - value: "off"
-          label: "Off — keine Plan-Deduplizierung"
+          label:
+            en: "Off — no plan deduplication"
+            de: "Off — keine Plan-Deduplizierung"
         - value: "on"
-          label: "On — ältere Duplikat-Pläne aufräumen"
+          label:
+            en: "On — clean up older duplicate plans"
+            de: "On — ältere Duplikat-Pläne aufräumen"
     - key: "reuseProcesses"
       type: "enum"
-      label: "Gelernte Prozesse wiederverwenden (experimentell)"
-      help: "Wenn aktiviert, materialisiert das Plugin bei einem passenden gelernten Prozess (ProcessMemory) den Plan direkt aus dessen gespeicherten Schritten — ohne Haiku-Gate und ohne Neuplanung. Nur scharf, wenn ein persistenter processMemory@1-Provider veröffentlicht ist (mit dem In-Memory-KG bleibt der Pfad inert); Daten werden weiter frisch geholt, nur die Schrittfolge ist fixiert. Off erzwingt pro Turn eine frische Planung. Greift nur bei aktivem Plan-Runner (enabled=on). Standard: on."
+      label:
+        en: "Reuse learned processes (experimental)"
+        de: "Gelernte Prozesse wiederverwenden (experimentell)"
+      help:
+        en: "When enabled and a matching learned process (ProcessMemory) exists, the plugin materializes the plan directly from its stored steps — without the Haiku gate and without replanning. Only live when a persistent processMemory@1 provider is published (with the in-memory KG the path stays inert); data is still fetched fresh, only the order of steps is fixed. Off forces fresh planning on every turn. Only applies when the plan runner is active (enabled=on). Default: on."
+        de: "Wenn aktiviert, materialisiert das Plugin bei einem passenden gelernten Prozess (ProcessMemory) den Plan direkt aus dessen gespeicherten Schritten — ohne Haiku-Gate und ohne Neuplanung. Nur scharf, wenn ein persistenter processMemory@1-Provider veröffentlicht ist (mit dem In-Memory-KG bleibt der Pfad inert); Daten werden weiter frisch geholt, nur die Schrittfolge ist fixiert. Off erzwingt pro Turn eine frische Planung. Greift nur bei aktivem Plan-Runner (enabled=on). Standard: on."
       required: false
       default: "on"
       enum:
         - value: "off"
-          label: "Off — immer frisch planen"
+          label:
+            en: "Off — always plan fresh"
+            de: "Off — immer frisch planen"
         - value: "on"
-          label: "On — passenden gelernten Prozess wiederverwenden"
+          label:
+            en: "On — reuse a matching learned process"
+            de: "On — passenden gelernten Prozess wiederverwenden"
     - key: "processReuseThreshold"
       type: "string"
-      label: "Ähnlichkeitsschwelle für Prozess-Wiederverwendung"
-      help: "Hybrid-Retrieval-Score (Wertebereich 0–1), ab dem ein gelernter Prozess statt einer Neuplanung wiederverwendet wird; höher = strenger, weniger Treffer. Nicht-numerische, leere oder außerhalb von 0–1 liegende Werte fallen auf den Standard 0.6 zurück. Greift nur bei reuseProcesses=on. Standard: 0.6."
+      label:
+        en: "Similarity threshold for process reuse"
+        de: "Ähnlichkeitsschwelle für Prozess-Wiederverwendung"
+      help:
+        en: "Hybrid retrieval score (range 0–1) at or above which a learned process is reused instead of replanning; higher = stricter, fewer matches. Non-numeric, empty or out-of-range values fall back to the default 0.6. Only applies when reuseProcesses=on. Default: 0.6."
+        de: "Hybrid-Retrieval-Score (Wertebereich 0–1), ab dem ein gelernter Prozess statt einer Neuplanung wiederverwendet wird; höher = strenger, weniger Treffer. Nicht-numerische, leere oder außerhalb von 0–1 liegende Werte fallen auf den Standard 0.6 zurück. Greift nur bei reuseProcesses=on. Standard: 0.6."
       required: false
       default: "0.6"
       # No decimal field type exists (loader: string|url|secret|oauth|enum|

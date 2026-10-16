@@ -41,7 +41,7 @@ export interface PluginSetupField {
   default?: string;
   /** Allowed values for `type === 'enum'`. When present, the
    *  post-install editor renders a `<select>` instead of a text input. */
-  enum?: Array<{ value: string; label: string }>;
+  enum?: Array<{ value: string; label: string; label_localized?: LocalizedMarkdown }>;
   /** Spec 005 — `type === 'oauth'`: the `oauth_providers` descriptor id this
    *  field connects through, and the scopes requested. */
   provider?: string;
@@ -423,7 +423,7 @@ export interface InstallSetupField {
   help?: LocalizedMarkdown;
   required: boolean;
   default?: unknown;
-  enum?: Array<{ value: string; label: string }>;
+  enum?: Array<{ value: string; label: string; label_localized?: LocalizedMarkdown }>;
   provider?: string;
   scopes?: string[];
   pattern?: string;

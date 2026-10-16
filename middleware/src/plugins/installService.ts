@@ -18,6 +18,7 @@ import type {
   InstallJobStep,
   InstallSetupField,
   InstallSetupSchema,
+  SetupEnumOption,
 } from '../api/admin-v1.js';
 import type { PluginSqlGrantStore } from '../platform/pluginSqlGrantStore.js';
 import type { PublicPathGrantStore } from '../platform/publicPathGrantStore.js';
@@ -40,7 +41,7 @@ import {
   checkSetupFieldPattern,
   compileSetupPattern,
 } from './setupFieldPattern.js';
-import { normalizeLocalized, resolveLocalized } from './manifestLocalized.js';
+import { enumOption, normalizeLocalized, resolveLocalized } from './manifestLocalized.js';
 
 export interface AgentPluginBindingStore {
   deleteAgentPluginsForPlugin(pluginId: string): Promise<number>;
@@ -1031,16 +1032,13 @@ export function extractSetupSchema(
     if (type === 'enum') {
       const enumRaw = f['enum'];
       if (Array.isArray(enumRaw)) {
-        const options: Array<{ value: string; label: string }> = [];
+        const options: SetupEnumOption[] = [];
         for (const e of enumRaw) {
           if (!e || typeof e !== 'object') continue;
           const obj = e as Record<string, unknown>;
           const value = asString(obj['value']);
           if (!value) continue;
-          options.push({
-            value,
-            label: asString(obj['label']) ?? value,
-          });
+          options.push(enumOption(value, obj['label']));
         }
         field.enum = options;
       }

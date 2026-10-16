@@ -105,6 +105,12 @@ jobs:
       - name: Typecheck (test + scripts trees, ratchet)
         run: npm run typecheck:test
 
+      # #1401 — every visible text of an in-tree manifest (description, setup
+      # field label/help/pattern_hint/enum labels, setup guide) is an {en, de}
+      # map. Hub packages are not checked here; the loader only warns on them.
+      - name: Manifest i18n (in-tree manifests are {en, de})
+        run: npm run manifest:i18n:check
+
       # #760 — prompt-PII detection-quality gate. Deterministic (pure regex
       # over committed fixtures, C0 set only — no sidecar): every locale must
       # stay at or above its committed floor in validation/ci-baseline.json.
@@ -332,6 +338,15 @@ jobs:
 
       - name: Test (vitest)
         run: npm run test
+
+      # #1401 — the catalog validator (missing/extra keys, empty values,
+      # forbidden HTML) and the hard-coded-literal ratchet: `translate` stays
+      # at 0 and `review` may only go down (scripts/i18n-literal-ceiling.json).
+      - name: i18n catalog check
+        run: npm run i18n:check
+
+      - name: i18n literal ratchet
+        run: npm run i18n:literals:check
 
       - name: Plugin UI stylesheet drift check
         # Epic #470 C8 — middleware/assets/plugin-ui/plugin-ui.css is generated

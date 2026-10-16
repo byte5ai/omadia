@@ -27,7 +27,8 @@
     "i18n:check": "node scripts/i18n-validate.mjs",
     "plugin-ui:css": "node scripts/build-plugin-ui-css.mjs",
     "plugin-ui:css:check": "node scripts/build-plugin-ui-css.mjs --check",
-    "i18n:literals": "node scripts/i18n-literal-scan.mjs"
+    "i18n:literals": "node scripts/i18n-literal-scan.mjs",
+    "i18n:literals:check": "node scripts/i18n-literal-scan.mjs --ceiling scripts/i18n-literal-ceiling.json"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

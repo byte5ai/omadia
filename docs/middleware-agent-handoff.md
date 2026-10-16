@@ -7607,3 +7607,33 @@ Der Terminal-Handler antwortet immer JSON `{ code, message }`, nie mit Stack:
   `router.param('id', requireUuidParam('<area>.not_found'))`
   (`src/http/uuidParam.ts`) — sonst wird ein Tippfehler zum `22P02`-500, der
   die DB-Meldung zurückgibt. Aktuell: admin-users, routines (`:id`, `:runId`).
+
+## Manifest-Text ist `{ en, de }` — Konvention mit Warnung (#1401, 2026-10-16)
+
+Entschieden (Marcel, 2026-10-16): sichtbarer Manifest-Text wird als
+`{ en, de }`-Map geschrieben; ein Verstoß wird **gewarnt, nie abgelehnt**;
+`identity.name` bleibt sprachneutral.
+
+- Geprüft (`src/plugins/manifestI18nAudit.ts`): `identity.description`,
+  `setup.guide`, `setup.fields[].label|help|pattern_hint`,
+  `setup.fields[].enum[].label`.
+- Loader (`adaptManifestV1`): eine `console.warn`-Zeile pro `id@version` mit den
+  ersten fünf Pfaden; ein Katalog-Reload wiederholt sie nicht.
+- Enum-Optionen: `SetupEnumOption` (`src/api/admin-v1.ts`) — `label` bleibt der
+  englisch aufgelöste String, `label_localized` ist die Map
+  (`enumOption` in `manifestLocalized.ts`); die Web-UI nimmt
+  `enumOptionLabel` (`web-ui/app/_lib/localized.ts`).
+- CI: `middleware` → `npm run manifest:i18n:check` (alle In-Tree-Manifeste
+  müssen sauber sein); `web-ui` → `i18n:check` und `i18n:literals:check`
+  (Ratchet in `web-ui/scripts/i18n-literal-ceiling.json`, Zahl senken im PR, der
+  sie senkt).
+- Text-only-Änderungen an In-Tree-Manifesten ohne Versions-Bump: gebündelte
+  Pakete gehen nicht über den Hub.
+- Out-of-Tree-Pakete (Teams, Odoo, LLM-Provider, …) konvertieren in ihren
+  eigenen Repos; die Checkliste steht in #1401.
+- Offen: der Agent-Builder (`src/plugins/builder/codegen.ts`
+  `mapSetupFieldSpecToManifest`) schreibt `label`/`help`/Enum-Labels weiter als
+  nackte Strings — er kennt pro Feld nur einen Text in unbekannter Sprache.
+  Builder-Agents lösen deshalb die Loader-Warnung aus, bis die Builder-Spec
+  zweisprachige Felder bekommt (Folge-Issue).
+

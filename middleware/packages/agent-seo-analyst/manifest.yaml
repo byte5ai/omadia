@@ -48,35 +48,51 @@ setup:
   fields:
     - key: "target_base_url"
       type: "url"
-      label: "Ziel-Domain"
-      help: "Root-URL der zu analysierenden Webseite, z.B. https://omadia.ai"
+      label:
+        en: "Target domain"
+        de: "Ziel-Domain"
+      help:
+        en: "Root URL of the website to analyze, e.g. https://omadia.ai"
+        de: "Root-URL der zu analysierenden Webseite, z.B. https://omadia.ai"
       required: true
       default: "https://omadia.ai"
       pattern: "^https?://.+"
 
     - key: "user_agent"
       type: "string"
-      label: "User-Agent"
-      help: "Bezeichner für Fetches. Wird in robots.txt geprüft."
+      label:
+        en: "User agent"
+        de: "User-Agent"
+      help:
+        en: "Identifier used for fetches. Checked against robots.txt."
+        de: "Bezeichner für Fetches. Wird in robots.txt geprüft."
       required: false
       default: "byte5-seo-bot/0.1 (+https://omadia.ai)"
 
     - key: "crawl_max_pages"
       type: "integer"
-      label: "Max. Seiten pro Crawl"
-      help: "Obere Schranke fürs audit_site-Tool. Defensive Default."
+      label:
+        en: "Max. pages per crawl"
+        de: "Max. Seiten pro Crawl"
+      help:
+        en: "Upper bound for the audit_site tool. Defensive default."
+        de: "Obere Schranke fürs audit_site-Tool. Defensive Default."
       required: false
       default: 25
 
     - key: "crawl_max_depth"
       type: "integer"
-      label: "Max. Crawl-Tiefe"
+      label:
+        en: "Max. crawl depth"
+        de: "Max. Crawl-Tiefe"
       required: false
       default: 3
 
     - key: "request_timeout_ms"
       type: "integer"
-      label: "Request-Timeout (ms)"
+      label:
+        en: "Request timeout (ms)"
+        de: "Request-Timeout (ms)"
       required: false
       default: 15000
 

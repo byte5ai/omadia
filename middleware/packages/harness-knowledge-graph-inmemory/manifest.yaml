@@ -46,10 +46,14 @@ requires: []
 setup:
   fields:
     - key: "graph_tenant_id"
-      label: "Graph Tenant ID"
+      label:
+        en: "Graph Tenant ID"
+        de: "Graph-Tenant-ID"
       type: "string"
       required: false
-      help: "Tenant-Schlüssel für die in-memory-Graph-Instanz (kosmetisch — bei in-memory gibt es nur einen Tenant pro Prozess). Default: 'default'."
+      help:
+        en: "Tenant key for the in-memory graph instance (cosmetic — in-memory there is only one tenant per process). Default: 'default'."
+        de: "Tenant-Schlüssel für die in-memory-Graph-Instanz (kosmetisch — bei in-memory gibt es nur einen Tenant pro Prozess). Default: 'default'."
 
 playbook:
   when_to_use: |
