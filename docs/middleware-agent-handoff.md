@@ -5934,12 +5934,13 @@ Test-Prompts, Golden-Antworten pro Domain, Diff-Report. Könnte als
 `scripts/eval.ts` starten. Ohne das kann man kein Skill-Tuning
 verteidigen.
 
-### Phase 9 — Proper Auth für Dev-Endpoints
+### Phase 9 — Proper Auth für Dev-Endpoints — ✅ erledigt (#669, #1350)
 
-Aktuell sind `/api/dev/*` unauth'd hinter einer Flag. Sobald die
-Middleware außerhalb localhost gehostet wird, muss mindestens ein
-`DEV_TOKEN` ran. Der Memory-Admin-Router hat schon Constant-Time-Compare,
-Pattern vorhanden.
+Erledigt durch #669: Statt eines `DEV_TOKEN` laufen alle `/api/dev/*`-Routen
+hinter dem `/api`-Session-Gate (Operator-Login). `DEV_ENDPOINTS_LOOPBACK_ONLY=true`
+bindet seit #1350 das ganze `/api/dev`-Präfix an Loopback, auch die
+Plugin-Route `/api/dev/memory`. Die Flag bleibt Dev-Scaffolding und auf
+deployten Umgebungen aus. Siehe `docs/security-architecture.md`.
 
 ### Phase 10 — Ollama-basierte Entity-Extraction aus Prose
 
