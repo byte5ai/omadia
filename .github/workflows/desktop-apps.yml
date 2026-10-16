@@ -122,7 +122,14 @@ jobs:
     # previous 30-minute cap mid-signing, which then took the update-feed merge
     # down with it. 60 keeps the runaway protection with real headroom, and
     # notarization wait times are set by Apple, not by us.
-    timeout-minutes: 60
+    #
+    # macOS gets more: "Package installers" now retries on Apple network faults
+    # (see that step), and on the slow Intel runner each packaging attempt costs
+    # 10-15 min. 60 would kill the job mid-retry, i.e. turn a recoverable flake
+    # back into the stranded draft the retry exists to prevent.
+    # It covers the usual one-retry case, not a run that needs every retry of
+    # every Apple step (packaging, DMG notarization, ticket checks).
+    timeout-minutes: ${{ startsWith(matrix.os, 'macos') && 100 || 60 }}
     env:
       TAG: ${{ github.event.release.tag_name || inputs.tag }}
       # Undefined for the `release` and `workflow_dispatch` triggers, so those
@@ -606,7 +613,35 @@ jobs:
           if [ -n "${WIN_PUBLISHER_NAME:-}" ]; then
             set -- "--config.win.azureSignOptions.publisherName=$WIN_PUBLISHER_NAME"
           fi
-          npx electron-builder ${{ matrix.args }} ${EB_NOTARIZE:-} ${EB_WIN_SIGN:-} "$@" --publish never
+
+          # macOS packaging talks to Apple twice: `codesign --timestamp` (Apple's
+          # timestamp server, for every nested binary) and notarytool (upload +
+          # wait). The macos-26-intel runner drops that connection often enough
+          # that it stranded eight releases as drafts in Oct 2026 alone, each
+          # with a different symptom: "A timestamp was expected but was not
+          # found", NSURLErrorDomain -1009 "offline", S3 abortedUpload /
+          # connectTimeout. None was a build fault — the same commit built fine
+          # on arm64. So retry the whole packaging run, but ONLY when the log
+          # carries one of those network signatures: a real signing or build
+          # error still fails on the first attempt instead of costing 3x the time.
+          APPLE_NET_RE='A timestamp was expected but was not found|timestamp service is not available|NSURLErrorDomain Code=-100[13459]\b|HTTPClientError|abortedUpload|connectTimeout|The request timed out|Internet connection appears to be offline'
+          attempts=1
+          case "${{ matrix.os }}" in macos-*) attempts=3 ;; esac
+          log="$RUNNER_TEMP/electron-builder.log"
+          for attempt in $(seq 1 "$attempts"); do
+            if npx electron-builder ${{ matrix.args }} ${EB_NOTARIZE:-} ${EB_WIN_SIGN:-} "$@" --publish never 2>&1 | tee "$log"; then
+              exit 0
+            fi
+            if [ "$attempt" = "$attempts" ] || ! grep -qE "$APPLE_NET_RE" "$log"; then
+              echo "::error::packaging failed (attempt $attempt/$attempts)" >&2
+              exit 1
+            fi
+            echo "::warning::packaging hit an Apple network fault (attempt $attempt/$attempts) — retrying"
+            # Start clean: a half-signed .app from the failed attempt must not be
+            # picked up by the next one or by the verification steps below.
+            rm -rf release
+            sleep 60
+          done
 
       # OM-86 (beta round 5): the update archive is what Squirrel installs, and
       # Squirrel strips the quarantine xattr from EVERY entry before swapping
@@ -814,6 +849,18 @@ jobs:
         run: |
           set -e
           shopt -s nullglob
+          # `stapler validate` and `spctl --assess` look the ticket up in Apple's
+          # CloudKit; a timeout there exits 68 ("The validate action failed!")
+          # on a perfectly notarized app — v0.178.3 was stranded exactly so.
+          # Retry those network-bound checks only; the codesign checks are local.
+          apple_net() {
+            for attempt in 1 2 3; do
+              "$@" && return 0
+              [ "$attempt" = 3 ] && return 1
+              echo "::warning::'$*' failed (attempt $attempt/3) — retrying" >&2
+              sleep 30
+            done
+          }
           apps=(release/mac*/*.app)
           if [ ${#apps[@]} -eq 0 ]; then
             echo "FAIL: no .app produced under release/mac*/ — nothing to verify" >&2
@@ -839,11 +886,11 @@ jobs:
                 echo "FAIL: nested binary is ad-hoc signed, not Developer ID: $bin" >&2; exit 1
               fi
             done < <(find "$app/Contents/Resources/omadia" "$app/Contents/Resources/omadia-pg" -type f)
-            xcrun stapler validate "$app"
-            spctl --assess --type execute -vvv "$app"
+            apple_net xcrun stapler validate "$app"
+            apple_net spctl --assess --type execute -vvv "$app"
           done
           for dmg in release/*.dmg; do
-            xcrun stapler validate "$dmg"
+            apple_net xcrun stapler validate "$dmg"
           done
 
       - name: Tear down signing material
