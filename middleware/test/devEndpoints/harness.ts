@@ -35,6 +35,7 @@ import express, { type Express } from 'express';
 import { NoopAgentPrioritiesStore } from '@omadia/plugin-api';
 import type { AgentPrioritiesStore } from '@omadia/plugin-api';
 import { InMemoryKnowledgeGraph } from '@omadia/knowledge-graph-inmemory';
+import { createDevMemoryRouter, InMemoryMemoryStore } from '@omadia/memory';
 import type {
   LastSweep,
   LifecycleService,
@@ -57,10 +58,16 @@ import { SESSION_COOKIE } from '../../src/auth/requireAuth.js';
 import { signSession } from '../../src/auth/sessionJwt.js';
 import { EmailWhitelist } from '../../src/auth/whitelist.js';
 import { PluginCatalog } from '../../src/plugins/manifestLoader.js';
+import { PluginRouteRegistry } from '../../src/platform/pluginRouteRegistry.js';
 import {
+  DEV_PATH_PREFIX,
   mountDevGraph,
+  mountDevLoopbackGuard,
   mountKnowledgeGraphAdmin,
 } from '../../src/routes/graphRouterMounts.js';
+
+/** Where `@omadia/memory` and `@omadia/memory-postgres` register their browser. */
+export const DEV_MEMORY_PATH = `${DEV_PATH_PREFIX}/memory`;
 
 /** The allowlist entry #669 deleted, restored verbatim for the negative case. */
 export const LEGACY_DEV_PUBLIC_PATH = /^\/api\/dev(?:\/|$|\?)/;
@@ -153,6 +160,18 @@ export interface DevEndpointsHarnessOptions {
   readonly priorities?: AgentPrioritiesStore | null;
   /** Restore the pre-#669 `/api/dev` allowlist entry — the negative case. */
   readonly withLegacyDevPublicPath?: boolean;
+  /**
+   * #1350 — register the real `createDevMemoryRouter` at `/api/dev/memory`
+   * through a real `PluginRouteRegistry`, flushed AFTER the dev mounts, the
+   * way `@omadia/memory` reaches production via `pluginRouteRegistry.mountAll`.
+   */
+  readonly withDevMemoryPluginRoute?: boolean;
+  /**
+   * #1350 — report this socket peer instead of the real one (the harness
+   * listens on 127.0.0.1, so every request is loopback otherwise). Stands in
+   * for a request arriving from a Docker bridge address.
+   */
+  readonly remoteAddress?: string;
 }
 
 export interface DevEndpointsHarness {
@@ -177,6 +196,16 @@ export async function startDevEndpointsHarness(
   // index.ts since #1310, and `true` is the worst case this guard must survive:
   // every forwarded header believed. A guard that passes here passes anywhere.
   app.set('trust proxy', true);
+  const { remoteAddress } = opts;
+  if (remoteAddress !== undefined) {
+    app.use((req, _res, next) => {
+      Object.defineProperty(req.socket, 'remoteAddress', {
+        value: remoteAddress,
+        configurable: true,
+      });
+      next();
+    });
+  }
   app.use(express.json({ limit: '10mb' }));
   // index.ts:2435 — without it `req.cookies` is undefined and requireAuth 401s
   // every request, including a valid one. Omitting it here would make the
@@ -211,12 +240,21 @@ export async function startDevEndpointsHarness(
     catalog: new PluginCatalog({ manifestDir: '/nonexistent-for-tests' }),
   });
 
+  mountDevLoopbackGuard(app, { loopbackOnly: opts.loopbackOnly ?? false, log: () => {} });
   mountDevGraph(app, requireAuth, {
     graph: new InMemoryKnowledgeGraph(),
     enabled: opts.devEndpointsEnabled ?? true,
-    loopbackOnly: opts.loopbackOnly ?? false,
-    log: () => {},
   });
+
+  // (5) Plugin routes — flushed last, as `pluginRouteRegistry.mountAll(app)`
+  // is in index.ts.
+  if (opts.withDevMemoryPluginRoute) {
+    const store = new InMemoryMemoryStore();
+    await store.writeFile('/memories/chat-sessions/s1.json', '{"turns":[]}');
+    const registry = new PluginRouteRegistry({ sessionAuth: () => requireAuth });
+    registry.register(DEV_MEMORY_PATH, createDevMemoryRouter({ store }), '@omadia/memory');
+    registry.mountAll(app);
+  }
 
   const server: Server = createServer(app);
   await new Promise<void>((resolve, reject) => {

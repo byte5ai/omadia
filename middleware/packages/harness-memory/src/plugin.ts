@@ -19,8 +19,9 @@ import { MemorySeeder, type MemorySeedMode } from './seeder.js';
  *      `{type: 'memory_20250818', name: 'memory'}` wire-spec push itself
  *      (buildToolsList). Dispatch routes through this handler.
  *   3. The `/api/dev/memory` read-only browser router — mounted only when
- *      `dev_memory_endpoints_enabled` config resolves truthy. MUST stay
- *      disabled in production (the router has no auth).
+ *      `dev_memory_endpoints_enabled` config resolves truthy. Session-gated
+ *      by the kernel; keep it disabled on deployed environments (any
+ *      logged-in session can read the whole `/memories` tree).
  *
  * Config (via ctx.config) — all optional:
  *   - seed_dir                   default `memory-seed` relative to cwd
