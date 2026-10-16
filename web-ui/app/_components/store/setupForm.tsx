@@ -4,7 +4,7 @@ import { ShieldAlert } from 'lucide-react';
 import { useLocale, useTranslations } from 'next-intl';
 
 import { cn } from '../../_lib/cn';
-import { pickLocalized } from '../../_lib/localized';
+import { enumOptionLabel, pickLocalized } from '../../_lib/localized';
 import { nativePatternAttribute } from '../../_lib/setupFieldPattern';
 import type { InstallSetupField } from '../../_lib/storeTypes';
 
@@ -145,7 +145,7 @@ export function FieldRow({
             ) : null}
             {(field.enum ?? []).map((opt) => (
               <option key={opt.value} value={opt.value}>
-                {opt.label}
+                {enumOptionLabel(opt, locale)}
               </option>
             ))}
           </select>

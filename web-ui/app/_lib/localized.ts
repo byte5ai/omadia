@@ -29,3 +29,15 @@ export function pickLocalized(
   }
   return undefined;
 }
+
+/**
+ * #1401 — the display text of a setup-field enum option. `label_localized` is
+ * the manifest's map (newer servers, manifests that wrote one); `label` is the
+ * English fallback every server sends.
+ */
+export function enumOptionLabel(
+  option: { label: string; label_localized?: LocalizedMarkdown },
+  locale: string,
+): string {
+  return pickLocalized(option.label_localized, locale) ?? option.label;
+}

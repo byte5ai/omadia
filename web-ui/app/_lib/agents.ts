@@ -1156,7 +1156,7 @@ export interface PluginSetupFieldDto {
   /** #602 (OM-17) — localized help map; same contract as `label`. */
   help?: LocalizedMarkdown | string;
   default?: string | string[];
-  enum?: Array<{ value: string; label: string }>;
+  enum?: Array<{ value: string; label: string; label_localized?: LocalizedMarkdown }>;
 }
 
 export interface PluginCatalogEntryDto {

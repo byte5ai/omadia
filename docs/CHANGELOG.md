@@ -142,6 +142,21 @@ Phase 4" (#1337). New shared helper `web-ui/app/_lib/apiErrorMessage.ts`
 (`serverErrorMessage`, `serverFieldErrors`) reads the server's message out of
 a failed API call.
 
+### Changed — plugin setup forms speak the UI language; manifests are checked
+
+2026-10-16 (#1401). Every in-tree plugin manifest now writes its visible text
+— descriptions, setup field labels, help, pattern hints, setup guides and enum
+option labels — as an `{en, de}` map (290 texts in 20 manifests), so the setup
+forms no longer show German in the English UI and vice versa. Enum option
+labels can now be localized: the setup schema keeps `label` (English, for
+older clients) and adds `label_localized`. The convention is a warning, not a
+gate: a Hub package with plain-string text still loads, and the catalog logs
+one line per plugin version naming the texts. CI checks it for the in-tree
+manifests (`npm run manifest:i18n:check`) and now also runs the web UI's
+`i18n:check` and a literal ratchet (`i18n:literals:check`: `translate` stays
+0, `review` may only go down from 128). `identity.name` stays
+language-neutral.
+
 ### Fixed — usage dashboard: bars, local days, missing calls, what a row costs
 
 2026-10-16 (#1388, #1390, #1392, #1393, #1396). Admin → Usage & Cost was

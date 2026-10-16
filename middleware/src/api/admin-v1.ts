@@ -19,6 +19,18 @@ export type ISO8601 = string;
 export type EntityURI = string;
 export type AgentId = string;
 
+/**
+ * One option of a `type: 'enum'` setup field. `label` is the option's text
+ * resolved to English (unchanged for older clients); `label_localized`
+ * (#1401) is the manifest's `{ <locale>: text }` map, present when the
+ * manifest wrote one, for clients that pick the operator's locale.
+ */
+export interface SetupEnumOption {
+  value: string;
+  label: string;
+  label_localized?: LocalizedMarkdown;
+}
+
 export interface ApiError {
   code: string;
   message: string;
@@ -110,7 +122,7 @@ export interface PluginSetupField {
   /** Allowed values for `type === 'enum'`. Mirrors the install-wizard
    *  schema so the post-install editor can render a `<select>` instead of
    *  a free-text input. */
-  enum?: Array<{ value: string; label: string }>;
+  enum?: SetupEnumOption[];
   /** Spec 005 — for `type === 'oauth'` fields: the `oauth_providers`
    *  descriptor id this field connects through. The kernel broker resolves
    *  the descriptor (+ this field's `scopes`) at flow time. */
@@ -895,7 +907,7 @@ export interface InstallSetupField {
   help?: LocalizedMarkdown;
   required: boolean;
   default?: unknown;
-  enum?: Array<{ value: string; label: string }>;
+  enum?: SetupEnumOption[];
   provider?: string;
   scopes?: string[];
   pattern?: string;

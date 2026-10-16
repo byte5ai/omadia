@@ -102,14 +102,21 @@ describe('#1210 orchestrator + sub-agent output budgets', () => {
         join(MIDDLEWARE_ROOT, 'packages', 'harness-orchestrator', 'manifest.yaml'),
         'utf8',
       ),
-    ) as { setup?: { fields?: Array<{ key?: string; help?: string }> } };
+    ) as {
+      setup?: { fields?: Array<{ key?: string; help?: string | Record<string, string> }> };
+    };
     const field = (manifest.setup?.fields ?? []).find(
       (f) => f.key === 'orchestrator_max_tokens',
     );
     assert.ok(field, 'the manifest must declare the orchestrator_max_tokens setup field');
-    assert.ok(
-      field.help?.includes(String(ORCHESTRATOR_BUDGET)),
-      `the help text must name ${ORCHESTRATOR_BUDGET}, it said: ${String(field.help)}`,
-    );
+    // #1401 — help is an {en, de} map; every language must name the number.
+    const helps = typeof field.help === 'string' ? { text: field.help } : (field.help ?? {});
+    assert.ok(Object.keys(helps).length > 0, 'the field must have help text');
+    for (const [locale, text] of Object.entries(helps)) {
+      assert.ok(
+        text.includes(String(ORCHESTRATOR_BUDGET)),
+        `the ${locale} help text must name ${ORCHESTRATOR_BUDGET}, it said: ${text}`,
+      );
+    }
   });
 });

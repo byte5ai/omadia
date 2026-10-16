@@ -34,7 +34,7 @@ import {
   patchInstalledSecrets,
   type SetupOption,
 } from '../../_lib/api';
-import { pickLocalized } from '../../_lib/localized';
+import { enumOptionLabel, pickLocalized } from '../../_lib/localized';
 import {
   resolveSetupFieldHint,
   violatesSetupPattern,
@@ -441,7 +441,7 @@ export function CredentialsEditor({
                         <option value="">{placeholder}</option>
                         {enumOptions.map((opt) => (
                           <option key={opt.value} value={opt.value}>
-                            {opt.label}
+                            {enumOptionLabel(opt, locale)}
                           </option>
                         ))}
                       </select>
