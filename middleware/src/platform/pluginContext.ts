@@ -88,6 +88,7 @@ import {
   writeStoredTokens,
 } from '../plugins/oauth/tokenStore.js';
 import { createLlmProviderFromNeutral } from './anthropicLlmProvider.js';
+import { pluginLlmUsageSource, recordPluginLlmUsage } from './pluginLlmUsage.js';
 import { builtinClassDefault } from './builtinLlmProviders.js';
 import type { NativeToolRegistry } from '@omadia/orchestrator';
 import type { PluginRouteRegistry } from './pluginRouteRegistry.js';
@@ -1786,11 +1787,13 @@ function createLlmAccessor(
       });
 
       callsUsed += 1;
-      return provider.complete({
+      const result = await provider.complete({
         ...req,
         model,
         maxTokens: effectiveMaxTokens,
       });
+      recordPluginLlmUsage(pluginLlmUsageSource(callerAgentId), activeProvider, result);
+      return result;
     },
   };
 }
