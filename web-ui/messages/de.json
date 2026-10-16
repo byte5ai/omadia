@@ -3944,7 +3944,7 @@
       "heading": "Abo vs. API-Schlüssel",
       "body": "Ein API-Schlüssel rechnet pro Token ab. Eine Abo-CLI läuft über deinen bestehenden Tarif: Du meldest dich einmal mit dem offiziellen Tool an, und omadia nutzt diese Sitzung weiter. Das ist derselbe erlaubte Weg, den die offizielle CLI selbst nutzt, kein Token-Auslesen.",
       "singleOperator": "Abo-Guthaben gehört zu einem Konto und lässt sich nicht teilen, daher passt das zu einem Self-Host für eine einzelne Person. Für ein geteiltes oder produktives Gateway nutze einen API-Schlüssel auf der Seite LLM-Zugang.",
-      "featureNote": "Ein Unterschied zum API-Schlüssel: Auf dem Abo-Weg kann sich der Assistent noch keine Notizen auf Zuruf merken („merk dir …“), und der Antwort-Prüfer prüft seine Antworten nicht. Gesprächsgedächtnis, Wissensgraph-Abruf und -Abfragen, Auswahl-Karten, Follow-up-Buttons und Kalender funktionieren wie gewohnt."
+      "featureNote": "Ein Unterschied zum API-Schlüssel: Auf dem Abo-Weg prüft der Antwort-Prüfer die Antworten des Assistenten nicht. Gesprächsgedächtnis, Langzeitgedächtnis, Wissensgraph-Abruf und -Abfragen, Auswahl-Karten, Follow-up-Buttons und Kalender funktionieren wie gewohnt."
     },
     "loading": "Lädt …",
     "loadError": "Laden fehlgeschlagen: {message}",

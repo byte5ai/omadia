@@ -30,14 +30,22 @@ export type SubAgentMemoryResolver = () => SubAgentMemoryHandler | undefined;
  * result strings, so a sub-agent's writes are indistinguishable from the
  * parent's once they reach storage.
  */
+/**
+ * The six `MemoryToolHandler` commands as a JSON schema. Shared by the
+ * sub-agent tool below and the subscription-CLI memory bridge
+ * (`cliMemoryTool.ts`, #1102), which both need the typed tool spelled out.
+ */
+export const MEMORY_TOOL_COMMANDS_HELP =
+  'Paths live under /memories. Commands: view (path, optional view_range), ' +
+  'create (path, file_text), str_replace (path, old_str, new_str), ' +
+  'insert (path, insert_line, insert_text), delete (path), ' +
+  'rename (old_path, new_path).';
+
 const SUB_AGENT_MEMORY_TOOL_SPEC: LocalSubAgentTool['spec'] = {
   name: MEMORY_TOOL_NAME,
   description:
     'Read and write the long-term memory of the agent that delegated to you. ' +
-    'Paths live under /memories. Commands: view (path, optional view_range), ' +
-    'create (path, file_text), str_replace (path, old_str, new_str), ' +
-    'insert (path, insert_line, insert_text), delete (path), ' +
-    'rename (old_path, new_path).',
+    MEMORY_TOOL_COMMANDS_HELP,
   input_schema: {
     type: 'object',
     properties: {
@@ -63,6 +71,9 @@ const SUB_AGENT_MEMORY_TOOL_SPEC: LocalSubAgentTool['spec'] = {
     required: ['command'],
   },
 };
+
+/** The memory tool's input schema (see {@link MEMORY_TOOL_COMMANDS_HELP}). */
+export const MEMORY_TOOL_INPUT_SCHEMA = SUB_AGENT_MEMORY_TOOL_SPEC.input_schema;
 
 /** Returned verbatim to the sub-agent's model when no turn store is bound. */
 export const SUB_AGENT_MEMORY_UNBOUND_ERROR =

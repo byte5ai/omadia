@@ -21,6 +21,12 @@ import type {
 import type { PendingSlotCard } from './tools/findFreeSlotsTool.js';
 import { LoopbackMcpServer } from './loopbackMcpServer.js';
 import {
+  turnMemoryDispatch,
+  withCliMemoryTool,
+  type LoopbackDispatch,
+} from './cliMemoryTool.js';
+import type { SubAgentMemoryHandler } from './turnContext.js';
+import {
   CliToolTrace,
   type CliCompletedTurn,
   type CliRecalledContext,
@@ -722,7 +728,7 @@ export class StreamJsonParser {
 export interface CliChatAgentDeps {
   readonly dispatch: ToolDispatchService;
   readonly createLoopbackServer?: (deps: {
-    readonly dispatch: ToolDispatchService;
+    readonly dispatch: LoopbackDispatch;
     readonly bearer: string;
     readonly tools: readonly DispatchableToolSpec[];
     readonly runInTurnContext?: <T>(fn: () => T) => T;
@@ -872,6 +878,19 @@ export interface CliChatAgentDeps {
    * deadline the turn runs without recall.
    */
   readonly recallTimeoutMs?: number;
+  /**
+   * #1102 — the memory handler bound to this turn: the stack the in-process
+   * loop would dispatch `memory` to for the same turn (`MemoryBinder`, or the
+   * agent-scoped handler with context memory off). When it resolves to a
+   * handler, the turn advertises `memory` over the loopback server and serves
+   * it from that handler, never from the shared registry (see
+   * `cliMemoryTool.ts`). `undefined`, a rejection or no binder → the turn has
+   * no memory tool, and the honesty sentence says so. Wired by
+   * `buildOrchestratorForAgent` to `orchestrator.bindCliTurnMemory()`.
+   */
+  readonly bindTurnMemory?: (
+    input: ChatTurnInput,
+  ) => Promise<SubAgentMemoryHandler | undefined>;
 }
 
 /**
@@ -1331,6 +1350,27 @@ export class CliChatAgent implements ChatAgent {
     }
   }
 
+  /**
+   * #1102 — {@link CliChatAgentDeps.bindTurnMemory}, in the context captured at
+   * the public entry (the binder reads the turn's origin and graph boundary
+   * from it). A failure denies the tool for this turn; it never widens it.
+   */
+  private async bindMemory(
+    input: ChatTurnInput,
+    turnContext: CapturedTurnContext,
+  ): Promise<SubAgentMemoryHandler | undefined> {
+    const bindTurnMemory = this.deps.bindTurnMemory;
+    if (bindTurnMemory === undefined) return undefined;
+    try {
+      return await turnContext.runInTurnContext(() => bindTurnMemory(input));
+    } catch (error) {
+      (this.deps.logger ?? consoleSpawnLogger).warn('memory binding failed (no memory tool this turn)', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return undefined;
+    }
+  }
+
   /** #1391 — {@link CliChatAgentDeps.recordTurn}, never failing the turn. */
   private async recordCompletedTurn(
     input: ChatTurnInput,
@@ -1369,7 +1409,8 @@ export class CliChatAgent implements ChatAgent {
     turnContext: CapturedTurnContext,
   ): AsyncGenerator<ChatStreamEvent, StreamJsonParser | undefined> {
     const parser = new StreamJsonParser();
-    const tools = this.deps.dispatch.listDispatchableToolSpecs();
+    let tools = this.deps.dispatch.listDispatchableToolSpecs();
+    let dispatch: LoopbackDispatch = this.deps.dispatch;
     const bearer = randomUUID();
     // #1098 — the cost-ledger turn key. Minted per lifecycle so two turns of
     // one session stay separable; the session mirrors the orchestrator's
@@ -1378,7 +1419,7 @@ export class CliChatAgent implements ChatAgent {
     const createLoopbackServer =
       this.deps.createLoopbackServer ??
       ((serverDeps: {
-        readonly dispatch: ToolDispatchService;
+        readonly dispatch: LoopbackDispatch;
         readonly bearer: string;
         readonly tools: readonly DispatchableToolSpec[];
         readonly runInTurnContext?: <T>(fn: () => T) => T;
@@ -1462,8 +1503,15 @@ export class CliChatAgent implements ChatAgent {
       await this.turnSemaphore.acquire();
       permitAcquired = true;
 
+      // #1102 — `memory` only with a handler bound to THIS turn.
+      const memory = await this.bindMemory(input, turnContext);
+      if (memory !== undefined) {
+        tools = withCliMemoryTool(tools);
+        dispatch = turnMemoryDispatch(this.deps.dispatch, memory);
+      }
+
       server = createLoopbackServer({
-        dispatch: this.deps.dispatch,
+        dispatch,
         bearer,
         tools,
         // #1016 — the context captured at the public entry, not whatever is

@@ -6817,10 +6817,22 @@ Shield auf diesem Weg: Recall-Text und persistierte Zeile sind unmaskiert
 weil der Capture-Filter kurze Turns aus dem Graph-Tail fallen lässt; Graph-Tail und Replay
 können sich im Prompt daher teilweise überschneiden.
 
+**`memory`-Tool (#1102).** Der Registry-Eintrag `memory` gehört dem Memory-Plugin
+(Handler auf dem rohen Root-Store, prozessweit), darf also nie über den Loopback laufen.
+Stattdessen bindet `CliChatAgent` pro Turn (`bindTurnMemory` →
+`Orchestrator.bindCliTurnMemory` → `bindTurnMemoryForTurn`, also `MemoryBinder` wie
+In-Process, plus Readiness-Gate des Memory-Plugins) einen Handler. Ist einer da,
+annonciert der Turn `CLI_MEMORY_TOOL_SPEC` (die sechs Kommandos als JSON-Schema, geteilt
+mit dem Sub-Agent-Memory-Tool aus #904) und reicht dem Loopback-Server
+`turnMemoryDispatch` statt der geteilten `ToolDispatchService`: `memory` geht an den
+gebundenen Handler, alles andere an die geteilte Dispatch. Ohne Handler (oder bei
+Fehler) kein Tool, und der Ehrlichkeitssatz nennt das Gedächtnis weiter als fehlend.
+`LoopbackMcpServerDeps.dispatch` ist dafür auf `Pick<ToolDispatchService, 'dispatch'>`
+verengt.
+
 Weiter offen: der Antwort-Prüfer (`VerifierService` hängt am In-Process-`Orchestrator`
 mit Re-Entry und Privacy-Hand-over; der CLI-Zweig kehrt vorher zurück) — die
 Abo-Seite sagt das dem Operator jetzt (`adminSubscriptionClis.explainer.featureNote`).
-Das `memory`-Tool auf dem Abo-Weg ist #1102.
 
 ### Kosten-Ledger nimmt Abo-Turns (OM-103)
 

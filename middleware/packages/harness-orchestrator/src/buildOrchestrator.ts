@@ -907,6 +907,9 @@ export function buildOrchestratorForAgent(
           // #1391 — and recall from the graph before the spawn, as the
           // in-process turn does before it calls the model.
           recallContext: (input) => orchestrator.recallCliContext(input),
+          // #1102 — `memory` from the stack this turn is bound to, served by a
+          // per-turn dispatch rather than the shared registry.
+          bindTurnMemory: (input) => orchestrator.bindCliTurnMemory(input),
           // #1087 — the CLI child is stateless by design, so the composed
           // prompt is the only memory a turn has. Feed it from the RAW chat
           // session, not the ContextRetriever tail: that one reads Session

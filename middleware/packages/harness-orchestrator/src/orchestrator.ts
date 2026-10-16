@@ -292,6 +292,7 @@ import {
   turnContext,
   type TurnContextValue,
   type GraphReadScope,
+  type SubAgentMemoryHandler,
 } from './turnContext.js';
 import {
   crossScopeRecallRefused,
@@ -403,12 +404,11 @@ export interface KernelNativeInstances {
  * The kernel natives that get a real spec + handler on the loopback/CLI path.
  *
  * `memory` and `get_chat_participants` are deliberately absent:
- *  - `memory` resolves a per-turn `MemoryBinder` handler in the in-process loop
- *    (the axis that keeps team A's notes out of team B, see `dispatchToolInner`);
- *    that binding is not resolved on the loopback path, so advertising the
- *    build-time handler would risk crossing the tenant boundary. Wiring it
- *    safely is a follow-up; until then Stage 1's honesty sentence tells the CLI
- *    model it has no memory here (#1102).
+ *  - `memory` resolves a per-turn `MemoryBinder` handler (the axis that keeps
+ *    team A's notes out of team B, see `dispatchToolInner`), and the registry
+ *    is process-wide, so a registered handler would serve every agent and
+ *    turn alike. The subscription CLI gets `memory` through a per-turn
+ *    dispatch instead (`cliMemoryTool.ts`, `bindCliTurnMemory`, #1102).
  *  - `get_chat_participants` stays channel-bound, as the issue specifies.
  */
 const KERNEL_NATIVE_FULL_FORM: ReadonlyArray<{
@@ -3619,6 +3619,24 @@ export class Orchestrator {
       ...(pendingSlotCard ? { pendingSlotCard } : {}),
       ...(pendingOAuthConsent ? { pendingOAuthConsent: true } : {}),
     };
+  }
+
+  /**
+   * Issue #1102 — the `memory` handler a subscription-CLI turn may use: the
+   * one this loop's own dispatch would use for the same turn
+   * (`turnMemory.handler`, from `MemoryBinder` — the axis that keeps team A's
+   * notes out of team B), behind the same plugin readiness gate. `undefined`
+   * when there is none (no memory provider, binder refused the turn, plugin
+   * not ready): the CLI then gets no memory tool. Never the registry's own
+   * `memory` entry, which is bound to the raw root store.
+   */
+  public async bindCliTurnMemory(
+    input: ChatTurnInput,
+  ): Promise<SubAgentMemoryHandler | undefined> {
+    const memoryAgentId = this.nativeTools.get(MEMORY_TOOL_NAME)?.agentId;
+    if (!this.isToolAvailable(memoryAgentId)) return undefined;
+    const turnMemory = await this.bindTurnMemoryForTurn(input);
+    return turnMemory.handler;
   }
 
   /**

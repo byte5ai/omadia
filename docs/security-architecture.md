@@ -152,6 +152,16 @@ graph's capture scorer (it scores with a model of its own and gets no
 excerpt extractor. They may be a different vendor than the CLI's. On the
 API-key path with Privacy Shield the same calls get the masked wire text.
 
+Since #1102 the CLI also gets the `memory` tool. It is NOT the registry's
+`memory` entry (the memory plugin's handler on the raw root store, which would
+serve every agent and chat context alike) but a per-turn dispatch
+(`cliMemoryTool.ts`) bound to the handler the in-process loop would use for the
+same turn: `Orchestrator.bindCliTurnMemory` → `bindTurnMemoryForTurn` →
+`MemoryBinder`, behind the memory plugin's readiness gate. So the agent-private
+tree and the context-memory tiers hold exactly as in-process; a failed binding
+denies the tool for the turn instead of widening it. What `view` returns reaches
+the vendor unmasked, like every other tool result on this path.
+
 This is a deliberate trade-off in line with the UI's notice not to route
 personal data through this provider; the decision is recorded on #1087.
 `maskHistory` already routes the replay through the turn's privacy handle and

@@ -36,6 +36,17 @@ changelog.
 
 ## [Unreleased]
 
+### Added — the subscription CLI can remember things (`memory` tool)
+
+2026-10-16. On the Claude subscription CLI (`claude-cli`) the agent had no
+`memory` tool: asked to remember something it said so honestly since #1143,
+but nothing was stored (#1102). The CLI now gets `memory` over its loopback MCP
+server, served from the same per-turn stack the API-key path uses
+(`MemoryBinder`: agent-private tree, context-memory tiers), never from the
+memory plugin's root-store registration. Notes written under `/memories/_rules/`
+promote into durable knowledge as on the API path. A turn whose binding fails
+has no memory tool and says so. No migration, no new env var.
+
 ### Fixed — the subscription CLI fails a turn honestly, and its turns reach Memory
 
 2026-10-16. Three gaps between the Claude subscription CLI (`claude-cli`) and
