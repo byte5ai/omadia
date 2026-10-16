@@ -5,7 +5,7 @@ import type { ToolReplayLedger } from './toolReplayLedger.js';
 import {
   enforcedVerifiedStream,
   privacyShieldVerdict,
-  verdictNeedsDisclaimer,
+  verdictLeavesUnconfirmed,
   verdictReleasesAnswer,
   type EnforcedRetry,
   type EnforcedVerdict,
@@ -28,7 +28,7 @@ import {
 } from './verifierReentry.js';
 import {
   mergeBadges,
-  releasedWithDisclaimerLogLine,
+  releasedUnconfirmedLogLine,
   retryLogLine,
   summarise,
   withheldLogLine,
@@ -95,7 +95,7 @@ export async function* enforcedVerifierStream(
           : undefined;
         if (retry) retryPass = retry.pass;
         return retry
-          ? { summary: summarise(verdict, 0, 'enforce'), releases: false, disclaimer: false, retry }
+          ? { summary: summarise(verdict, 0, 'enforce'), releases: false, retry }
           : deliver(host, runId, input, verdict, 0);
       },
       host.locale,
@@ -130,14 +130,13 @@ function deliver(
 ): EnforcedVerdict {
   void host.judge.persist(runId, input, verdict, retryCount);
   const releases = verdictReleasesAnswer(verdict);
-  const disclaimer = releases && verdictNeedsDisclaimer(verdict);
   if (!releases) {
     host.log(withheldLogLine(runId, verdict));
-  } else if (disclaimer) {
-    host.log(releasedWithDisclaimerLogLine(runId, verdict));
+  } else if (verdictLeavesUnconfirmed(verdict)) {
+    host.log(releasedUnconfirmedLogLine(runId, verdict));
   }
   const summary = summarise(verdict, retryCount, 'enforce');
-  return { summary: badge ? { ...summary, badge } : summary, releases, disclaimer };
+  return { summary: badge ? { ...summary, badge } : summary, releases };
 }
 
 /**

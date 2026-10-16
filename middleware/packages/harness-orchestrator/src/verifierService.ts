@@ -9,7 +9,6 @@ import type {
 import { toSemanticAnswer } from './orchestrator.js';
 import { randomUUID } from 'node:crypto';
 import type { ChatStreamObserver, SemanticAnswer } from '@omadia/channel-sdk';
-import { composeVerifierDisclaimerText } from '@omadia/channel-sdk';
 import type {
   VerifierPipeline,
   VerifierStore,
@@ -22,9 +21,8 @@ import { fireVerifierBlockedHook } from './verifierBlockedHook.js';
 import {
   releasesWithoutVerification,
   shadowVerifiedStream,
-  verdictNeedsDisclaimer,
+  verdictLeavesUnconfirmed,
   verdictReleasesAnswer,
-  withVerifierDisclaimer,
   withheldTurnResult,
 } from './verifierDelivery.js';
 import { enforcedVerifierStream } from './verifierEnforceStream.js';
@@ -49,7 +47,7 @@ import {
 import {
   mergeBadges,
   mergeBorderlineVerdicts,
-  releasedWithDisclaimerLogLine,
+  releasedUnconfirmedLogLine,
   retryLogLine,
   summarise,
   withVerifier,
@@ -73,9 +71,9 @@ export {
  * `enforce` is a delivery gate. An answer is delivered only when its verdict
  * releases it (`verdictReleasesAnswer`): `approved`; `skipped`; and
  * `approved_with_disclaimer` — claims the check could not confirm, which is
- * not the same as wrong — which goes out WITH a localized disclaimer
- * (`verdictNeedsDisclaimer`, like `skipped` with claims no check accepts or
- * parts the extraction did not cover). A contradiction (`blocked`) or a
+ * not the same as wrong — which goes out unchanged, its state on the badge
+ * (`verdictLeavesUnconfirmed`, like `skipped` with claims no check accepts
+ * or parts the extraction did not cover). A contradiction (`blocked`) or a
  * verifier that could not run (`unavailable`) withholds the answer: the user
  * gets a localized notice instead (`answerSource: 'verifier-blocked'`). That
  * part fails closed, and so does an answer the verifier may not see behind a
@@ -156,8 +154,7 @@ export interface VerifierServiceOptions {
   turnHookRegistry?: TurnHookRunner;
   /**
    * Operator locale (the AI-disclosure setup's `locale`) for the notice that
-   * replaces a withheld answer in `enforce` mode, and for the disclaimer on a
-   * released unconfirmed one. A turn's own `aiDisclosure.locale` wins; this
+   * replaces a withheld answer in `enforce` mode. A turn's own `aiDisclosure.locale` wins; this
    * covers turns without one (disclosure set to `off`). Neither → German,
    * like the turn-incomplete notice.
    */
@@ -537,23 +534,10 @@ export class VerifierService implements ChatAgent {
   ): Promise<SemanticAnswer> {
     const delivered = await this.delivered(turn, ledger, egress);
     if (verdictReleasesAnswer(verdict)) {
-      if (!verdictNeedsDisclaimer(verdict)) {
-        return toSemanticAnswer(withVerifier(delivered, summary));
+      if (verdictLeavesUnconfirmed(verdict)) {
+        this.log(releasedUnconfirmedLogLine(runId, verdict));
       }
-      this.log(releasedWithDisclaimerLogLine(runId, verdict));
-      const disclaimer = composeVerifierDisclaimerText(
-        delivered.aiDisclosure?.locale ?? this.locale,
-        summary,
-      );
-      return toSemanticAnswer(
-        withVerifier(
-          {
-            ...delivered,
-            answer: withVerifierDisclaimer(delivered.answer, disclaimer, delivered.aiDisclosure),
-          },
-          summary,
-        ),
-      );
+      return toSemanticAnswer(withVerifier(delivered, summary));
     }
     this.log(withheldLogLine(runId, verdict));
     return toSemanticAnswer(withheldTurnResult(delivered, summary, this.locale));

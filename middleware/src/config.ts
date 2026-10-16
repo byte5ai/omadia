@@ -663,7 +663,7 @@ export const ConfigSchema = z.object({
   //               tool) or one the verifier could not check (it could not
   //               run, every check failed) is replaced by a withheld-answer
   //               notice; one whose claims it could not all confirm goes out
-  //               with a "could not be confirmed automatically" disclaimer;
+  //               unchanged, its state on the verifier badge;
   //               the stream sends no answer text before the verdict. Turns that end in an
   //               input card (and the answer it rides on) or a
   //               turn-incomplete notice go out unchecked; an answer Privacy

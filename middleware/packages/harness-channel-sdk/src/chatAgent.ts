@@ -396,8 +396,7 @@ export interface VerifierResultSummary {
    * Why the answer is not confirmed, for every status but `approved` and a
    * `skipped` with nothing to check. When `enforce` withholds the answer
    * (`blocked`, `unavailable`) it is what the notice states; an answer
-   * released with the "could not be confirmed automatically" disclaimer
-   * (`approved_with_disclaimer`, `skipped` with claims no check accepts or
+   * released unconfirmed (`approved_with_disclaimer`, `skipped` with claims no check accepts or
    * parts not covered) carries it too, as does every answer in `shadow`.
    * `contradictionCount` counts only claims a source refuted; any other cause
    * counts its claims as unconfirmed (`unverifiedCount`). Optional for
