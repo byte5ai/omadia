@@ -158,9 +158,15 @@ serve every agent and chat context alike) but a per-turn dispatch
 (`cliMemoryTool.ts`) bound to the handler the in-process loop would use for the
 same turn: `Orchestrator.bindCliTurnMemory` → `bindTurnMemoryForTurn` →
 `MemoryBinder`, behind the memory plugin's readiness gate. So the agent-private
-tree and the context-memory tiers hold exactly as in-process; a failed binding
-denies the tool for the turn instead of widening it. What `view` returns reaches
-the vendor unmasked, like every other tool result on this path.
+tree and the context-memory tiers hold exactly as in-process — including the
+in-process fallback: when `MemoryBinder.forOrigin` throws, the turn gets the
+agent-private stack (wider than a context tier, never wider than the agent).
+No tool at all when there is no handler (`members` binding failed, plugin not
+ready), when the binding passes its 15 s deadline, or when it rejects; such a
+turn also refuses a `memory` call outright rather than passing it to the shared
+dispatch. The CLI system prompt carries the in-process memory rules (curated
+`_rules/` tree, tier block). What `view` returns reaches the vendor unmasked,
+like every other tool result on this path.
 
 This is a deliberate trade-off in line with the UI's notice not to route
 personal data through this provider; the decision is recorded on #1087.

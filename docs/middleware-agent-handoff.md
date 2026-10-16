@@ -6825,8 +6825,14 @@ In-Process, plus Readiness-Gate des Memory-Plugins) einen Handler. Ist einer da,
 annonciert der Turn `CLI_MEMORY_TOOL_SPEC` (die sechs Kommandos als JSON-Schema, geteilt
 mit dem Sub-Agent-Memory-Tool aus #904) und reicht dem Loopback-Server
 `turnMemoryDispatch` statt der geteilten `ToolDispatchService`: `memory` geht an den
-gebundenen Handler, alles andere an die geteilte Dispatch. Ohne Handler (oder bei
-Fehler) kein Tool, und der Ehrlichkeitssatz nennt das Gedächtnis weiter als fehlend.
+gebundenen Handler, alles andere an die geteilte Dispatch; die Memory-Regeln
+(`CLI_MEMORY_RULES` plus Tier-Block) kommen in den System-Prompt. Wirft
+`MemoryBinder.forOrigin`, gibt es wie In-Process den agent-privaten Stack. Ohne Handler,
+nach der 15-s-Deadline oder bei Fehler kein Tool (ein `memory`-Call wird dann
+abgewiesen), und der Ehrlichkeitssatz nennt das Gedächtnis weiter als fehlend. Bekannte
+Lücken gegenüber In-Process: kein `memoryFileRead`-Flag (Fresh-Check), ein geworfener
+Handler-Fehler wird nicht serverseitig geloggt, und die Memory-Bindung läuft pro
+CLI-Turn dreimal (Tool, Recall, Record).
 `LoopbackMcpServerDeps.dispatch` ist dafür auf `Pick<ToolDispatchService, 'dispatch'>`
 verengt.
 

@@ -43,9 +43,10 @@ changelog.
 but nothing was stored (#1102). The CLI now gets `memory` over its loopback MCP
 server, served from the same per-turn stack the API-key path uses
 (`MemoryBinder`: agent-private tree, context-memory tiers), never from the
-memory plugin's root-store registration. Notes written under `/memories/_rules/`
-promote into durable knowledge as on the API path. A turn whose binding fails
-has no memory tool and says so. No migration, no new env var.
+memory plugin's root-store registration, and with the same memory rules in
+its prompt. As in-process, a binder that fails for the turn's origin falls back
+to the agent-private stack; a turn with no handler at all (or a binding past its
+15 s deadline) has no memory tool and says so. No migration, no new env var.
 
 ### Fixed — the subscription CLI fails a turn honestly, and its turns reach Memory
 

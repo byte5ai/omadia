@@ -582,14 +582,19 @@ test('a claude-cli agent gets the agent-scoped memory handler for its turns (#11
   );
   const bind = (
     built.bundle.agent as unknown as {
-      deps?: { bindTurnMemory?: (input: unknown) => Promise<{ handle(i: unknown): Promise<string> } | undefined> };
+      deps?: {
+        bindTurnMemory?: (
+          input: unknown,
+        ) => Promise<{ handler: { handle(i: unknown): Promise<string> }; instructions: string } | undefined>;
+      };
     }
   ).deps?.bindTurnMemory;
   assert.ok(bind, 'the claude-cli branch must install a memory binder');
 
-  const handler = await bind({ userMessage: 'Merk dir: pg_dump', sessionScope: 'sess-1102' });
-  assert.ok(handler, 'context memory off still binds the agent-scoped stack');
-  const result = await handler.handle({
+  const bound = await bind({ userMessage: 'Merk dir: pg_dump', sessionScope: 'sess-1102' });
+  assert.ok(bound, 'context memory off still binds the agent-scoped stack');
+  assert.match(bound.instructions, /_rules/);
+  const result = await bound.handler.handle({
     command: 'create',
     path: '/memories/backup.md',
     file_text: 'Lieblingsbackup: pg_dump',

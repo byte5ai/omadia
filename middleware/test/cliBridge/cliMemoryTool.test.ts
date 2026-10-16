@@ -3,7 +3,9 @@ import { strict as assert } from 'node:assert';
 import { PassThrough } from 'node:stream';
 
 import {
+  CLI_MEMORY_RULES,
   CLI_MEMORY_TOOL_SPEC,
+  CLI_MEMORY_UNBOUND_ERROR,
   turnMemoryDispatch,
   withCliMemoryTool,
   type LoopbackDispatch,
@@ -68,6 +70,23 @@ describe('cliMemoryTool (#1102)', () => {
       { handle: async () => 'Error: path outside /memories' },
     );
     assert.equal((await refused.dispatch('memory', {})).isError, true);
+  });
+
+  it('refuses memory on an unbound turn instead of reaching the shared dispatch', async () => {
+    const baseCalls: string[] = [];
+    const dispatch = turnMemoryDispatch(
+      {
+        dispatch: async (name) => {
+          baseCalls.push(name);
+          return { content: 'raw root store' };
+        },
+      },
+      undefined,
+    );
+    const result = await dispatch.dispatch('memory', { command: 'view', path: '/memories' });
+    assert.equal(result.content, CLI_MEMORY_UNBOUND_ERROR);
+    assert.equal(result.isError, true);
+    assert.deepEqual(baseCalls, []);
   });
 
   it('advertises exactly one memory spec, name-sorted', () => {
@@ -136,16 +155,32 @@ function systemPrompt(args: readonly string[]): string {
 }
 
 describe('CliChatAgent memory tool (#1102)', () => {
+  it('offers no memory tool when the binding hangs past its deadline', async () => {
+    const seen: LoopbackSeen[] = [];
+    const argv: string[][] = [];
+    const agent = new CliChatAgent({
+      ...(makeAgent(() => new Promise(() => undefined), seen, argv) as unknown as {
+        deps: CliChatAgentDeps;
+      }).deps,
+      recallTimeoutMs: 20,
+    });
+    await agent.chat({ userMessage: 'Merk dir das.', sessionScope: 's' });
+    assert.deepEqual(seen[0]!.tools.map((t) => t.name), ['ask_user_choice']);
+  });
+
   it('advertises memory and serves it from the turn-bound handler', async () => {
     const seen: LoopbackSeen[] = [];
     const argv: string[][] = [];
     const writes: unknown[] = [];
     const agent = makeAgent(
       async () => ({
-        handle: async (input: unknown) => {
-          writes.push(input);
-          return 'ok';
+        handler: {
+          handle: async (input: unknown) => {
+            writes.push(input);
+            return 'ok';
+          },
         },
+        instructions: CLI_MEMORY_RULES,
       }),
       seen,
       argv,
@@ -155,8 +190,10 @@ describe('CliChatAgent memory tool (#1102)', () => {
     assert.deepEqual(seen[0]!.tools.map((t) => t.name), ['ask_user_choice', 'memory']);
     await seen[0]!.dispatch.dispatch('memory', { command: 'create' });
     assert.deepEqual(writes, [{ command: 'create' }]);
-    // The honesty sentence no longer denies a memory the turn has.
+    // The honesty sentence no longer denies a memory the turn has, and the
+    // model gets the namespace rules the in-process prompt states.
     assert.doesNotMatch(systemPrompt(argv[0]!), /remember facts across turns/);
+    assert.match(systemPrompt(argv[0]!), /\/memories\/_rules\/… holds curated rules/);
   });
 
   for (const [label, bind] of [
@@ -169,8 +206,9 @@ describe('CliChatAgent memory tool (#1102)', () => {
       const argv: string[][] = [];
       await makeAgent(bind, seen, argv).chat({ userMessage: 'Merk dir das.', sessionScope: 's' });
       assert.deepEqual(seen[0]!.tools.map((t) => t.name), ['ask_user_choice']);
-      assert.equal((await seen[0]!.dispatch.dispatch('memory', {})).content, 'base:memory');
+      assert.equal((await seen[0]!.dispatch.dispatch('memory', {})).content, CLI_MEMORY_UNBOUND_ERROR);
       assert.match(systemPrompt(argv[0]!), /remember facts across turns/);
+      assert.doesNotMatch(systemPrompt(argv[0]!), /_rules/);
     });
   }
 });

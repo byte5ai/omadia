@@ -20,6 +20,17 @@ export const MEMORY_TOOL_NAME = 'memory';
 export type SubAgentMemoryResolver = () => SubAgentMemoryHandler | undefined;
 
 /**
+ * How to call the six `MemoryToolHandler` commands, in prose. Shared by the
+ * sub-agent tool below and the subscription-CLI memory bridge
+ * (`cliMemoryTool.ts`, #1102), which both need the typed tool spelled out.
+ */
+export const MEMORY_TOOL_COMMANDS_HELP =
+  'Paths live under /memories. Commands: view (path, optional view_range), ' +
+  'create (path, file_text), str_replace (path, old_str, new_str), ' +
+  'insert (path, insert_line, insert_text), delete (path), ' +
+  'rename (old_path, new_path).';
+
+/**
  * Model-facing spec for a sub-agent's `memory` tool.
  *
  * The top-level orchestrator advertises memory as Anthropic's typed tool
@@ -30,17 +41,6 @@ export type SubAgentMemoryResolver = () => SubAgentMemoryHandler | undefined;
  * result strings, so a sub-agent's writes are indistinguishable from the
  * parent's once they reach storage.
  */
-/**
- * The six `MemoryToolHandler` commands as a JSON schema. Shared by the
- * sub-agent tool below and the subscription-CLI memory bridge
- * (`cliMemoryTool.ts`, #1102), which both need the typed tool spelled out.
- */
-export const MEMORY_TOOL_COMMANDS_HELP =
-  'Paths live under /memories. Commands: view (path, optional view_range), ' +
-  'create (path, file_text), str_replace (path, old_str, new_str), ' +
-  'insert (path, insert_line, insert_text), delete (path), ' +
-  'rename (old_path, new_path).';
-
 const SUB_AGENT_MEMORY_TOOL_SPEC: LocalSubAgentTool['spec'] = {
   name: MEMORY_TOOL_NAME,
   description:

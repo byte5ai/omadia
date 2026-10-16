@@ -14,6 +14,31 @@ import type { SubAgentMemoryHandler } from './turnContext.js';
 export type LoopbackDispatch = Pick<ToolDispatchService, 'dispatch'>;
 
 /**
+ * #1102 — what a CLI turn's memory binding yields: the handler the in-process
+ * loop would dispatch `memory` to for the same turn, and the rules the
+ * in-process system prompt states for it (namespaces, the curated `_rules/`
+ * tree, the context-memory tier block), which the CLI prompt must carry too.
+ */
+export interface CliTurnMemory {
+  readonly handler: SubAgentMemoryHandler;
+  readonly instructions: string;
+}
+
+/**
+ * The memory conventions the in-process system prompt gives the model
+ * (`buildSystemPrompt`, "Memory-Namensräume"), for the CLI. The `_rules/` line
+ * matters most: that tree is shared and curated, and a write there
+ * auto-promotes into durable knowledge.
+ */
+export const CLI_MEMORY_RULES = [
+  'Memory conventions for the `memory` tool:',
+  '- /memories/_rules/… holds curated rules. Read the relevant ones before answering a new domain question and follow them. Never overwrite or delete them on your own; add to them only when the user explicitly confirms.',
+  '- /memories/customers/… holds stable facts about individual customers; /memories/observations/… holds dated observations.',
+  '- /memories/sessions/… holds chat transcripts written by omadia, not by you. Look there only when the user refers to an earlier conversation.',
+  '- Store new learnings and user preferences in topic files. Only say you saved something after the tool call succeeded.',
+].join('\n');
+
+/**
  * #1102 — the `memory` tool as the subscription CLI sees it over the loopback
  * MCP server. In-process the orchestrator advertises Anthropic's typed tool
  * (`memory_20250818`), which an MCP listing cannot express, so the commands are
@@ -43,6 +68,10 @@ export function withCliMemoryTool(
   );
 }
 
+/** Returned to the CLI when a turn without a memory binding calls `memory`. */
+export const CLI_MEMORY_UNBOUND_ERROR =
+  'Error: tool `memory` is unavailable in this turn — no memory store is bound to it.';
+
 /**
  * #1102 — a per-turn dispatch that serves `memory` from the handler bound to
  * THIS turn and passes every other call to the agent's shared dispatch.
@@ -58,11 +87,16 @@ export function withCliMemoryTool(
  */
 export function turnMemoryDispatch(
   base: LoopbackDispatch,
-  memory: SubAgentMemoryHandler,
+  memory: SubAgentMemoryHandler | undefined,
 ): LoopbackDispatch {
   return {
     dispatch: async (name, input, options): Promise<ToolDispatchResult> => {
       if (name !== MEMORY_TOOL_NAME) return base.dispatch(name, input, options);
+      // Unbound turn: refuse here as well, so the shared dispatch — whose
+      // `memory` is the raw root store — is never one guard away.
+      if (memory === undefined) {
+        return { content: CLI_MEMORY_UNBOUND_ERROR, isError: true };
+      }
       try {
         const content = await memory.handle(input);
         return { content, ...(content.startsWith('Error:') ? { isError: true } : {}) };

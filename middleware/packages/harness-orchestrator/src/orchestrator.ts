@@ -220,6 +220,7 @@ import type { NativeToolRegistry } from './nativeToolRegistry.js';
 // #1102 — type-only, so no runtime cycle: the CLI agent owns the card-drain
 // shape; `drainCliTurnCards` returns it verbatim onto the `done` event.
 import type { CliTurnCards } from './cliChatAgent.js';
+import { CLI_MEMORY_RULES, type CliTurnMemory } from './cliMemoryTool.js';
 import type {
   CliCompletedTurn,
   CliRecalledContext,
@@ -292,7 +293,6 @@ import {
   turnContext,
   type TurnContextValue,
   type GraphReadScope,
-  type SubAgentMemoryHandler,
 } from './turnContext.js';
 import {
   crossScopeRecallRefused,
@@ -3628,15 +3628,23 @@ export class Orchestrator {
    * notes out of team B), behind the same plugin readiness gate. `undefined`
    * when there is none (no memory provider, binder refused the turn, plugin
    * not ready): the CLI then gets no memory tool. Never the registry's own
-   * `memory` entry, which is bound to the raw root store.
+   * `memory` entry, which is bound to the raw root store. Like in-process, a
+   * binder that throws for the turn's origin yields the agent-private stack
+   * (`bindTurnMemory`'s fallback), not a refusal.
    */
-  public async bindCliTurnMemory(
-    input: ChatTurnInput,
-  ): Promise<SubAgentMemoryHandler | undefined> {
+  public async bindCliTurnMemory(input: ChatTurnInput): Promise<CliTurnMemory | undefined> {
     const memoryAgentId = this.nativeTools.get(MEMORY_TOOL_NAME)?.agentId;
     if (!this.isToolAvailable(memoryAgentId)) return undefined;
     const turnMemory = await this.bindTurnMemoryForTurn(input);
-    return turnMemory.handler;
+    if (turnMemory.handler === undefined) return undefined;
+    // The tier block the in-process prompt adds for a context-bound turn.
+    const tierBlock = turnMemory.memoryPrompt
+      ? MEMORY_PROMPT_BLOCKS[turnMemory.memoryPrompt].trim()
+      : '';
+    return {
+      handler: turnMemory.handler,
+      instructions: tierBlock.length > 0 ? `${CLI_MEMORY_RULES}\n\n${tierBlock}` : CLI_MEMORY_RULES,
+    };
   }
 
   /**
