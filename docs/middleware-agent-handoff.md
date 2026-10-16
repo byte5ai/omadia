@@ -3371,6 +3371,15 @@ Users sofort (`users.session_version`, §3 „Serverseitiger Sitzungs-Widerruf�
 |---|---|
 | `WS_SESSION_FRAME_RECHECK_MS` | Offene Channel-WebSockets (Canvas): ein Frame erreicht das Plugin nur, wenn die Prüfung der Sitzung höchstens so viele ms vor seiner Ankunft begann; sonst liest die Registry die `users`-Zeile erneut (ein Point-Read), während der Frame wartet. Bestimmt, wie schnell ein Widerruf auf einer anderen Replica einen aktiven Socket stoppt (ein schweigender Socket wird alle 60 s geprüft). Default `5000`, erlaubt `0`–`60000` (zod-validiert beim Boot, ein leerer Wert heißt Default); `0` prüft jeden Frame. Ist die Zeile nicht lesbar, werden Frames abgewiesen (Canvas: `turn_error`), der Socket bleibt offen. Siehe „Canvas WebSocket-Transport (Omadia UI, PR-11)“. |
 
+### Self-Update und Release-Check (#432, #1381)
+
+| Variable | Wirkung |
+|---|---|
+| `OMADIA_VERSION` | Build-Stempel, von `publish-images.yml` ins Image geschrieben. Middleware und web-ui melden ihn über `/health` (`version`, web-ui seit #1382), der Updater-Gate wartet darauf. Ungesetzt ⇒ `unknown`. In `docker-compose.yaml` bewusst nicht gesetzt (ein leerer Wert würde den Stempel überschreiben); im Projekt-`.env` pinnt er nur das Image-Tag. |
+| `OMADIA_UPDATER_URL` / `OMADIA_UPDATER_TOKEN` | Updater-Sidecar aus `docker-compose.update.yaml`. Ungesetzt ⇒ Admin → Update ist notify-only. Token ≥ 16 Zeichen, Pflicht sobald die URL gesetzt ist. |
+| `OMADIA_RELEASE_REPO` | `owner/repo` für den „neueres Release?“-Check, Default `byte5ai/omadia`. |
+| `OMADIA_RELEASE_TOKEN` | Optionaler PAT für denselben Check. Unauthentifiziert erlaubt GitHub 60 Requests/h pro IP, geteilt hinter einem NAT. Ein fehlgeschlagener Check wird negativ gecacht (`update/releaseLookup.ts`): 1 min, verdoppelt bis 5 min, oder bis `retry-after` / `x-ratelimit-reset` bei 403/429; „Jetzt prüfen“ (`?refresh=true`) umgeht die Wartezeit. |
+
 ### Ersteinrichtung
 
 Siehe §3 „Ersteinrichtung `POST /api/v1/auth/setup`“ und `docs/security-architecture.md` §10l.
@@ -5969,12 +5978,13 @@ Test-Prompts, Golden-Antworten pro Domain, Diff-Report. Könnte als
 `scripts/eval.ts` starten. Ohne das kann man kein Skill-Tuning
 verteidigen.
 
-### Phase 9 — Proper Auth für Dev-Endpoints
+### Phase 9 — Proper Auth für Dev-Endpoints — ✅ erledigt (#669, #1350)
 
-Aktuell sind `/api/dev/*` unauth'd hinter einer Flag. Sobald die
-Middleware außerhalb localhost gehostet wird, muss mindestens ein
-`DEV_TOKEN` ran. Der Memory-Admin-Router hat schon Constant-Time-Compare,
-Pattern vorhanden.
+Erledigt durch #669: Statt eines `DEV_TOKEN` laufen alle `/api/dev/*`-Routen
+hinter dem `/api`-Session-Gate (Operator-Login). `DEV_ENDPOINTS_LOOPBACK_ONLY=true`
+bindet seit #1350 das ganze `/api/dev`-Präfix an Loopback, auch die
+Plugin-Route `/api/dev/memory`. Die Flag bleibt Dev-Scaffolding und auf
+deployten Umgebungen aus. Siehe `docs/security-architecture.md`.
 
 ### Phase 10 — Ollama-basierte Entity-Extraction aus Prose
 

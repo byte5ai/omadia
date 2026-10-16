@@ -3303,7 +3303,14 @@ Confirmed empirically against a deployment under our control: uncredentialed
    convention.
 3. `DEV_ENDPOINTS_LOOPBACK_ONLY=true` (optional, default off) additionally
    refuses any `/api/dev` request that did not arrive over a loopback socket.
-   It reads `req.socket.remoteAddress`, never `X-Forwarded-For` — wherever
+   `mountDevLoopbackGuard` mounts it on the `/api/dev` prefix ahead of both the
+   graph browser and the session plugin routes (`pluginRouteRegistry.mountAll`,
+   and hot-installed ones after it), so it covers the `@omadia/memory` browser
+   at `/api/dev/memory` too. Before #1350 it sat on `/api/dev/graph` only, and
+   the memory browser answered any address while the boot log said
+   "loopback-only". `auth: 'public'`/`'custom'` plugin routes are dispatched
+   earlier and are not covered; none lives under `/api/dev`. The guard reads
+   `req.socket.remoteAddress`, never `X-Forwarded-For` — wherever
    `TRUSTED_PROXY_ADDRESSES` names a hop (§10o), a guard on `req.ip` would be
    defeated by a header. Leave it off in
    containerised setups, where the Next.js server proxies from a container
@@ -3320,7 +3327,9 @@ short of turning it off or blocking `/api/dev` upstream.
 
 Tests: `middleware/test/devEndpoints/` (one no-credentials case per route,
 including all three destructive `POST`s, plus the negative control that
-restores the old allowlist entry and requires the surface to go open again).
+restores the old allowlist entry and requires the surface to go open again;
+#1350 adds non-loopback `403` cases for the graph and the memory browser,
+mounted through a real `PluginRouteRegistry`).
 `bash middleware/test/devEndpoints/mutation-check.sh` breaks each guard in
 source and requires the suite to go red.
 
@@ -3925,7 +3934,7 @@ has its own reason:
 | `/login`, `/setup` | The sign-in page and the first-user wizard. |
 | `/bot-api/v1/auth/*` | Sign-in, sign-out, OIDC callback, provider list. The middleware lists `/api/v1/auth` as public too (`auth/publicPaths.ts`). |
 | `/_next/*` | Framework assets and dev tooling. |
-| `/health`, `/favicon.ico` | Fly health checks must answer before anyone has signed in. |
+| `/health`, `/favicon.ico` | Fly and Compose health checks must answer before anyone has signed in. Since #1382 `/health` also returns the build `version` (`OMADIA_VERSION`), as the middleware's `/health` already did. That exposes the running release to unauthenticated callers. We accept it: the release tags are public, the version is what an operator's script or the updater needs to tell which image serves, and hiding it would not hide a vulnerable build from anyone probing behaviour. |
 | `/p/*` | Plugin UI iframed by Teams Tabs, where only a Teams SSO token exists. The plugin handler runs its own auth. |
 | `/.well-known/omadia-ui`, `/pairing-discovery` | The pairing descriptor (#293), see below. |
 

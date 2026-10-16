@@ -4309,9 +4309,9 @@ export async function listMemoryContextLabels(
 //   GET /file?path=/memories/contexts/...    → text/plain
 //
 // This REPLACES `/bot-api/dev/memory/{list,file}` for the memory browser. That
-// dev router is unauthenticated and only mounted when the memory plugin's
-// `dev_memory_endpoints_enabled` flag is truthy, which the kernel forbids in
-// production — so the browser it backed was dead exactly where an operator
+// dev router is dev scaffolding, only mounted when the memory plugin's
+// `dev_memory_endpoints_enabled` flag is truthy, which stays off on deployed
+// environments — so the browser it backed was dead exactly where an operator
 // needs it. The operator router is requireAuth-gated (cookie session JWT, the
 // same gate as the Danger-Zone purge) and is structurally unable to leave
 // `/memories/contexts`.

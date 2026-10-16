@@ -15,10 +15,11 @@ interface DevGraphDeps {
 }
 
 /**
- * Unauthenticated, read-only endpoints the Next.js dev UI uses to render the
- * knowledge-graph tab. Mounted only behind DEV_ENDPOINTS_ENABLED. Never
- * reachable in production — callers of createDevGraphRouter must enforce the
- * flag themselves.
+ * Read-only, session-gated endpoints the admin UI's Graph viewer uses to render
+ * the knowledge graph. `mountDevGraph` (`graphRouterMounts.ts`) mounts this
+ * router behind `requireAuth`, only when DEV_ENDPOINTS_ENABLED is set. Still dev
+ * scaffolding: it hands raw KG state to any logged-in session, so keep the flag
+ * off on deployed environments.
  */
 export function createDevGraphRouter(deps: DevGraphDeps): Router {
   const router = Router();

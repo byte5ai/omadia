@@ -80,6 +80,59 @@ on this public endpoint (see `docs/security-architecture.md` §8).
   unreachable middleware, or (from vault-status) a master key read from the
   dev file, naming the env var to set; `/admin` has a "Platform health" card linking to `/system`.
 - The boot log names the keychain dev key file path, like the vault line.
+### Fixed — `DEV_ENDPOINTS_LOOPBACK_ONLY` covers every `/api/dev` route; compose stack sets its public URLs
+
+2026-10-16. Three fixes to the dev endpoints and the deploy configuration.
+
+- **Loopback guard (#1350).** `DEV_ENDPOINTS_LOOPBACK_ONLY=true` guarded only
+  `/api/dev/graph`. The `@omadia/memory` browser at `/api/dev/memory`, a
+  plugin route, still served the whole `/memories` tree, every user's chat
+  sessions included, to a logged-in session from any address. The boot log
+  said "loopback-only" all the same. The new `mountDevLoopbackGuard` mounts
+  the guard on the `/api/dev` prefix ahead of the graph browser and the plugin
+  routes. The session gate is unchanged.
+- **Docs and comments (#1352).** The Compose file, `middleware/.env.example`,
+  `fly/middleware.fly.toml`, `render.yaml`, code comments and the handoff doc
+  no longer call `/api/dev/*` and `/api/v1/admin/vault-status` unauthenticated.
+  Both have needed a session since #669. Only the Graph viewer still needs
+  `DEV_ENDPOINTS_ENABLED`, and the flag stays off on deployed environments.
+- **Compose public URLs (#1317).** The Compose stack never set
+  `PUBLIC_BASE_URL`, so the middleware sent browsers to its built-in default
+  `http://localhost:3979`, where nothing listens in that stack, for example
+  after sign-in. The stack now loads `middleware/compose.defaults.env` before
+  `middleware/.env`. It sets `PUBLIC_BASE_URL` to the admin UI
+  (`http://localhost:3333`), routes the Entra and MCP OAuth callbacks through
+  `/bot-api` on that origin, and sets the Conductor webhook base to the
+  middleware (`http://localhost:8080`). Values in `middleware/.env` still
+  override these. The four are fixed values, so an operator who moves the
+  stack to another origin sets all four there, not `PUBLIC_BASE_URL` alone. The middleware's own defaults are unchanged, so Fly and
+  Render deployments are not affected. `middleware/.env.example` now documents
+  `PUBLIC_BASE_URL` and `AUTH_REDIRECT_URI`.
+
+### Fixed — Admin → Update tells the truth, and the release check backs off
+
+2026-10-16. Six fixes around `/admin/update` and version reporting (#1378–#1383).
+The Versions card no longer says "running the latest release" when the release
+lookup failed or only a stale cached answer exists; with no release known it
+says that is not known right now (#1378). A refused update trigger shows its
+own message ("An update is already running.") instead of
+`POST /v1/admin/update failed: 409`: the route sends the machine code as `code`
+too (kept as `error`), and the page test now uses the real `ApiError` instead
+of a mock that parsed the wrong field (#1379). The manual Compose command
+carries `-f` files plus a hint, and `docs/upgrading.md` recommends
+`COMPOSE_FILE` in the project `.env`, because a bare
+`OMADIA_VERSION=… docker compose up -d` recreated the middleware without any
+overlay's env (#1380). A failed GitHub release lookup is cached: 1 min backoff
+doubling to 5 min, or GitHub's `retry-after` / `x-ratelimit-reset`, with
+"Check now" bypassing it; before, every 30 s poll per tab went back to GitHub
+(#1381). `OMADIA_RELEASE_REPO` / `OMADIA_RELEASE_TOKEN` are now in
+`.env.example`. The web-ui `/health` returns `version` (the `OMADIA_VERSION`
+stamp) and the Compose `web-ui` service has a node-based healthcheck (#1382);
+unauthenticated callers can now read the web-ui build version, as they already
+could from the middleware (`security-architecture.md`, public-path table).
+The Plugin Hub footers show the running build instead of a literal
+`omadia · v1`, the source line names registries and uploads instead of a
+directory that does not exist, and `Manifest: …` is translated (#1383).
 
 ### Fixed — `enforce` no longer withholds every Privacy Shield rendered answer
 
