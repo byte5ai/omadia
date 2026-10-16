@@ -166,6 +166,8 @@ export class LocalSubAgent {
     let calledExpectedTool = false;
     let escalationsUsed = 0;
     let forceExpectedToolNext = false;
+    // Wrap-up notes already appended to the transcript (#1212).
+    const wrapUpNotesSent = new Set<string>();
 
     // Where this run's model calls go, and where they may hop to: the
     // orchestrator's model of this turn (`subAgentModelFallback.ts`). While
@@ -211,11 +213,25 @@ export class LocalSubAgent {
         // if the model *still* refuses to call the obligation tool.
         forceExpectedToolNext = false;
 
-        let trailer = buildDateHeader(turnContext.currentTurnDate());
-        if (repeatFailureDetected && !isLastIteration) {
-          trailer = `${trailer}\n\nIMPORTANT: Du hast denselben Tool-Call mit identischem Input mehrfach hintereinander aufgerufen und immer denselben Fehler bekommen. Rufe diesen Tool-Call NICHT erneut auf. Fasse stattdessen zusammen, was du versucht hast, welcher Fehler aufgetreten ist und was als Nächstes nötig wäre — entweder eine andere Strategie ODER ein operatorseitiger Fix. Gib jetzt eine abschließende Antwort.`;
-        } else if (isLastIteration) {
-          trailer = `${trailer}\n\nIMPORTANT: Dies ist deine letzte Iteration. Du darfst KEINE weiteren Tools aufrufen. Fasse alle Zwischenergebnisse zusammen und gib eine abschließende Antwort — auch wenn die Datenlage unvollständig ist. Benenne fehlende Informationen explizit.`;
+        // #1212 — the system prompt stays the same for the whole run. A
+        // wrap-up note rides as a text block on the newest user turn (after
+        // its tool_result blocks). That message has not been sent yet, so
+        // the conversation prefix, its cache and the thinking blocks bound
+        // to it stay valid. Each note is added once: a provider that ignores
+        // `tool_choice: none` can keep the loop running after it.
+        const trailer = buildDateHeader(turnContext.currentTurnDate());
+        if (forceTextOnly) {
+          const note =
+            repeatFailureDetected && !isLastIteration
+              ? REPEAT_FAILURE_NOTE
+              : LAST_ITERATION_NOTE;
+          if (!wrapUpNotesSent.has(note)) {
+            wrapUpNotesSent.add(note);
+            messages[messages.length - 1] = withWrapUpNote(
+              messages[messages.length - 1]!,
+              note,
+            );
+          }
         }
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -375,12 +391,15 @@ export class LocalSubAgent {
           // failure has withdrawn the tools (sticky `tool_choice: none`),
           // the model cannot call the obligation tool any more, so an
           // escalation would only buy a round-trip whose reminder
-          // contradicts the request it rides on. Let the turn end.
+          // contradicts the request it rides on. Let the turn end. The same
+          // holds when the next iteration is the last one: it runs text-only,
+          // so its reminder would sit next to the last-iteration note.
           if (
             expectedTurnToolUse !== undefined &&
             !calledExpectedTool &&
             escalationsUsed < maxEscalations &&
-            !forceTextOnly
+            !forceTextOnly &&
+            iteration + 1 < this.maxIterations - 1
           ) {
             escalationsUsed += 1;
             forceExpectedToolNext = true;
@@ -492,7 +511,7 @@ export class LocalSubAgent {
 
         // Detect "stuck": last N tool calls all matched on (name, input)
         // AND all errored. Trigger one early-termination round (forced
-        // tool_choice:none + addendum in the system trailer) instead of
+        // tool_choice:none + a wrap-up note on the newest user turn) instead of
         // looping until maxIterations.
         if (recentToolCalls.length >= REPEAT_FAILURE_THRESHOLD) {
           const tail = recentToolCalls.slice(-REPEAT_FAILURE_THRESHOLD);
@@ -758,6 +777,25 @@ export class LocalSubAgent {
     }
     return { output: result, ...carried };
   }
+}
+
+// Wrap-up notes for the text-only iteration (#1212). The withdrawn tools
+// (`tool_choice: none`) enforce the constraint; the note only explains it.
+const REPEAT_FAILURE_NOTE =
+  'Du hast denselben Tool-Call mit identischem Input mehrfach hintereinander aufgerufen und jedes Mal denselben Fehler bekommen; ein weiterer identischer Aufruf scheitert genauso, deshalb stehen dir keine Tools mehr zur Verfügung. Gib jetzt eine abschließende Antwort: was du versucht hast, welcher Fehler aufgetreten ist und was als Nächstes nötig wäre — eine andere Strategie oder ein operatorseitiger Fix.';
+const LAST_ITERATION_NOTE =
+  'Das ist die letzte Iteration dieses Auftrags; Tools stehen nicht mehr zur Verfügung. Fasse die Zwischenergebnisse zu einer abschließenden Antwort zusammen, auch wenn die Datenlage unvollständig ist, und benenne fehlende Informationen explizit.';
+
+/** Returns `message` with `note` appended as a trailing text block. */
+function withWrapUpNote(
+  message: { role: 'user' | 'assistant'; content: ContentBlock[] | string },
+  note: string,
+): { role: 'user' | 'assistant'; content: ContentBlock[] } {
+  const blocks: ContentBlock[] =
+    typeof message.content === 'string'
+      ? [{ type: 'text', text: message.content }]
+      : message.content;
+  return { ...message, content: [...blocks, { type: 'text', text: note }] };
 }
 
 function collectTextBlocks(content: ContentBlock[]): string[] {
