@@ -8,7 +8,7 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
-## 1.29.0 — 2026-10-16
+## 1.30.0 — 2026-10-16
 
 Additive. The Danger-Zone memory purge deletes the conversation history, not
 only the remembered facts (#1334).
@@ -22,6 +22,24 @@ only the remembered facts (#1334).
   Optional: a provider without them is reported as unsupported by the purge.
 - **`ConversationHistoryPurgeFilter`** and
   **`CONVERSATION_HISTORY_NODE_TYPES`**.
+
+## 1.29.0 — 2026-10-16
+
+Additive. A plugin's admin surface can learn who the operator is and write
+its privileged actions into the kernel's `admin_audit` ledger (#1329, first
+user: `@omadia/channel-api`'s API-key lifecycle).
+
+### Added
+
+- **`OperatorAuthAccessor.sessionPrincipal?(cookieHeader)`** — the
+  `OperatorPrincipal` (`userId` = `users.id`, `email`) behind a valid
+  operator session, or `null`.
+- **`OperatorAuthAccessor.recordAdminAction?(cookieHeader, entry)`** — appends
+  one `admin_audit` row. The kernel resolves the actor from the cookie and
+  stamps the calling plugin's id into the row; only actions the kernel admits
+  for the calling plugin and target are written (today `api_key.*` for
+  `@omadia/channel-api`). Resolves `false` instead of throwing.
+- **`OperatorPrincipal`**, **`OperatorAdminAuditEntry`**.
 
 ## 1.28.0 — 2026-10-16
 

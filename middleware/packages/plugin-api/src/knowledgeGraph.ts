@@ -307,7 +307,7 @@ export interface KnowledgeGraph {
    * {@link purgeConversationHistory} WOULD delete for the same filter.
    * Read-only. Both methods resolve the selection through ONE shared query,
    * so the preview count is by construction the number the purge removes.
-   * Optional (plugin-api 1.29.0): a provider without it makes the Danger-Zone
+   * Optional (plugin-api 1.30.0): a provider without it makes the Danger-Zone
    * purge report the conversation history as unsupported, never as purged.
    */
   countConversationHistory?(
