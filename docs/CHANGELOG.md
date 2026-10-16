@@ -229,6 +229,22 @@ unknown-outcome clause: the tool may have written something before the block. Bo
 dispatch seams) handle it, and the text still goes through the Privacy
 Shield's returned-error redactor. Every other exception stays withheld.
 
+### Fixed — Haiku 5.5 prompts over 100k tokens priced at the long-context rate
+
+2026-10-16. #1307 priced `claude-haiku-5-5` at $0.10/$0.50, but Anthropic
+bills a Haiku 5.5 prompt above 100k tokens at $0.50/$2.50, and `ModelPrice`
+had no way to say so. Those calls were under-counted fivefold. `ModelPrice`
+now has an optional `longContext` tier (`abovePromptTokens` plus the tier's
+price). When a call's prompt is over the threshold, `computeCostUsd` bills the
+whole call at the tier: input, output and cache tokens. The prompt counts
+input plus cache reads and writes, the way Anthropic measures it for its
+long-context tiers, so a short question over a large cached prefix counts.
+Only Haiku 5.5 carries a tier. `test/usageTelemetryPricing.test.ts` also
+checks that every seeded model of an API-key provider in
+`builtinLlmProviders.ts` and every current Anthropic id that live discovery
+admits has its own price. The dashboard still does not mark a model without a
+known price: it records at $0 behind a log warning (#1389, open).
+
 ### Fixed — the SEO analyst no longer reports on a site it never reached
 
 2026-10-16 — #1344. `check_technical_seo` and `audit_site` ignored a blocked or
@@ -593,7 +609,8 @@ platform.claude.com/docs/en/about-claude/pricing on 2026-10-05.
   is $0.10/$0.50 with standard 0.1x reads. It runs the background calls after
   every turn, so it is the most frequent call of an instance and was
   over-billed tenfold. Prompts above 100k tokens bill at $0.50/$2.50, which
-  `ModelPrice` cannot express yet; those calls stay under-counted.
+  `ModelPrice` cannot express yet; those calls stay under-counted (fixed
+  2026-10-16, see the long-context entry under [Unreleased]).
 - Dated snapshots of all three were still mispriced after the exact entries,
   because a snapshot misses the exact table and the only keywords were the
   broad family ones — `claude-opus-5-5-20260922` resolved to `opus` at $5/$25,
