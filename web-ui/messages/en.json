@@ -1012,6 +1012,12 @@
     "digestLabel": "Error reference",
     "digestHint": "Quote this reference when reporting the problem — the full message is in the server log."
   },
+  "notFound": {
+    "metaTitle": "Page not found · omadia",
+    "title": "Page not found",
+    "description": "This page doesn't exist or is no longer available. Check the address, or head back to the dashboard.",
+    "backToDashboard": "Back to the dashboard"
+  },
   "errorHelp": {
     "admin_users": {
       "password_too_long": {
@@ -1967,6 +1973,7 @@
     "agentsEmpty": "No orchestrators yet. Create one above.",
     "agentMeta": "id: {id} · privacy: {privacy} (not enforced) · status: {status} · runtime: {runtime}",
     "detailMetaTitle": "Orchestrator: {slug} · omadia",
+    "detailNotFoundMetaTitle": "Orchestrator not found · omadia",
     "detailOpenLink": "Details",
     "detailBackToList": "All orchestrators",
     "detailAssignedHeading": "Assigned plugins",
@@ -4150,7 +4157,7 @@
         "flagCredentialFlows": "Runs credential flows on its own routes",
         "publicPathsTitle": "Public (unauthenticated) paths",
         "publicPathsBody": "This plugin asks to answer the URL prefixes below without an operator session. Anyone who can reach this deployment can reach them, and the plugin alone is responsible for authenticating those requests.",
-        "publicPathsNotGranted": "Declaring is not granting: each prefix stays behind the session gate until you consent to it, and consent is withdrawn automatically when the plugin is deactivated.",
+        "publicPathsNotGranted": "Declaring is not granting: a prefix is not reachable at all until you consent to it, and consent is withdrawn automatically when the plugin is deactivated.",
         "none": "No permissions declared.",
         "runtimeCredentials": "Runtime credentials"
       },
@@ -4364,7 +4371,7 @@
       "sqlLedger": "Migration ledger: {ledger}",
       "sqlLedgerDrift": "A grant is on record for a different table ({ledger}). The plugin has since changed the table it asks for, so the old grant no longer counts — tick the box to grant the new one.",
       "publicPathsIntro": "These paths answer without an omadia login, because the caller has none to present. Each one is still authenticated by the plugin itself.",
-      "publicPathBody": "Served without a session. If you do not grant it, the path stays behind the login and returns 401.",
+      "publicPathBody": "Served without a session once you grant it. Until you do, the path is not reachable at all, not even when signed in.",
       "orphaned": "Also granted, but no longer requested by the plugin: {paths}. These serve nothing; applying the form below clears them.",
       "optionalRequiresIntro": "Optional prerequisites. The plugin works without them, with reduced functionality — these are not permissions and there is nothing to grant here.",
       "currentGranted": "Currently granted",
