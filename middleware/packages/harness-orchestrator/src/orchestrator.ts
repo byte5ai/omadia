@@ -216,7 +216,7 @@ import {
   type DirectLineStickyStore,
   type StickyScopeClassification,
 } from './directLineSticky.js';
-import type { NativeToolRegistry } from './nativeToolRegistry.js';
+import { isOfferedThisTurn, type NativeToolRegistry } from './nativeToolRegistry.js';
 // #1102 — type-only, so no runtime cycle: the CLI agent owns the card-drain
 // shape; `drainCliTurnCards` returns it verbatim onto the `done` event.
 import type { CliTurnCards } from './cliChatAgent.js';
@@ -9508,7 +9508,9 @@ export class Orchestrator {
     // has already hidden from its `tools[]` for this same turn.
     const extraDocs = this.nativeTools
       .listWithHandler()
-      .filter((e) => this.isToolAvailable(e.agentId))
+      // #1346 — and the same per-turn gate: a tool hidden from this turn's
+      // tools[] must not be described to the model either.
+      .filter((e) => this.isToolAvailable(e.agentId) && isOfferedThisTurn(e))
       .map((e) => e.promptDoc)
       .filter((doc): doc is string => typeof doc === 'string' && doc.length > 0);
     // Issue #474 (round 3) — same isToolAvailable gate as buildToolsList()'s
@@ -10196,7 +10198,9 @@ export class Orchestrator {
       // pushes those above — advertising them again duplicated five names and
       // 400'd every turn (`tools: Tool names must be unique.`).
       if (entry.spec && KERNEL_NATIVE_SPECS.has(entry.spec)) continue;
-      if (entry.spec && this.isToolAvailable(entry.agentId)) {
+      // #1346 — a plugin may declare per turn that it cannot serve this
+      // channel (e.g. a discussion needs a conversation the turn can name).
+      if (entry.spec && this.isToolAvailable(entry.agentId) && isOfferedThisTurn(entry)) {
         nativeSpecs.push(entry.spec);
       }
     }
