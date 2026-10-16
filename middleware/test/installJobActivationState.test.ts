@@ -410,6 +410,14 @@ void describe('#825 — install with the grants skipped', () => {
     );
     assert.equal(job.error, null, 'the INSTALL did not fail, the activation did');
   });
+
+  void it('names the step with a stable code the UI can localize (#1401)', async () => {
+    const h = makeHarness();
+    const created = h.service.create(PLUGIN);
+    assert.equal(created.step_code, 'awaiting_config');
+    const job = await install(h);
+    assert.equal(job.step_code, 'installed_missing_permissions');
+  });
 });
 
 // ── 2. counter-proof: the happy path still says active ─────────────────────
@@ -484,6 +492,12 @@ void describe('#825 — activation_state.ok matches activation_state.state', () 
     assert.equal(job.state, 'errored');
     assert.equal(job.activation_state?.state, 'errored');
     assert.equal(job.activation_state?.ok, false);
+    assert.equal(
+      job.step_code,
+      (job.activation_state?.missing.length ?? 0) > 0
+        ? 'installed_missing_permissions'
+        : 'installed_activation_failed',
+    );
     assert.match(
       String(job.activation_state?.error),
       /registry still says active/,

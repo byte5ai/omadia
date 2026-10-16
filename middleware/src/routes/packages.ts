@@ -71,6 +71,11 @@ export function createPackagesRouter(deps: PackagesRouterDeps): Router {
         res.status(status).json({
           code: `upload.${code.toLowerCase()}`,
           message,
+          // #1401 — multer's text is English; the limit lets the UI say it
+          // in the operator's locale.
+          ...(code === 'LIMIT_FILE_SIZE'
+            ? { params: { maxBytes: String(deps.maxBytes) } }
+            : {}),
         });
       });
     },
@@ -99,6 +104,7 @@ export function createPackagesRouter(deps: PackagesRouterDeps): Router {
           code: result.code,
           message: result.message,
           ...(result.details !== undefined ? { details: result.details } : {}),
+          ...(result.params !== undefined ? { params: result.params } : {}),
         });
         return;
       }

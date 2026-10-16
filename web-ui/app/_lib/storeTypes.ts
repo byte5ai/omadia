@@ -466,6 +466,9 @@ export interface InstallJob {
   plugin_version: string;
   state: InstallJobState;
   current_step: string;
+  /** #1401 — stable code for `current_step` (which is display text in the
+   *  server's language). Rendered from the catalog; absent on older servers. */
+  step_code?: string;
   error: InstallJobError | null;
   setup_schema: InstallSetupSchema | null;
   /** #825 — present once the job reaches a terminal INSTALLED state (`active`
@@ -490,6 +493,8 @@ export interface InstallValidationError {
   key: string;
   code: string;
   message: string;
+  /** #1401 — values the localized text needs that the setup schema lacks. */
+  params?: Record<string, string>;
 }
 
 // ---------------------------------------------------------------------------
