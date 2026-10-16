@@ -60,7 +60,7 @@ vi.mock('../_components/RoutineRow', () => ({
   ),
 }));
 
-import RoutinesPage from '../page';
+import RoutinesPage from '../(index)/page';
 
 /** Renders an async Server Component tree to HTML, surfacing any render error. */
 async function renderPage(): Promise<string> {

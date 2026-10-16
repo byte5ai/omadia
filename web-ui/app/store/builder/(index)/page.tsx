@@ -2,17 +2,17 @@ import type { Metadata } from 'next';
 import { getTranslations } from 'next-intl/server';
 import Link from 'next/link';
 
-import { listBuilderDrafts } from '../../_lib/api';
-import { redirectIfUnauthorized } from '../../_lib/authRedirect';
+import { listBuilderDrafts } from '../../../_lib/api';
+import { redirectIfUnauthorized } from '../../../_lib/authRedirect';
 import type {
   DraftSummary,
   ListDraftsResponse,
-} from '../../_lib/builderTypes';
-import { cn } from '../../_lib/cn';
-import { CreateDraftButton } from './_components/CreateDraftButton';
-import { DraftRow } from './_components/DraftRow';
-import { ImportBundleButton } from './_components/ImportBundleButton';
-import { QuotaBadge } from './_components/QuotaBadge';
+} from '../../../_lib/builderTypes';
+import { cn } from '../../../_lib/cn';
+import { CreateDraftButton } from '../_components/CreateDraftButton';
+import { DraftRow } from '../_components/DraftRow';
+import { ImportBundleButton } from '../_components/ImportBundleButton';
+import { QuotaBadge } from '../_components/QuotaBadge';
 
 export async function generateMetadata(): Promise<Metadata> {
   const t = await getTranslations('builder.drafts.list');

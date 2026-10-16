@@ -119,7 +119,7 @@ function maybeNavigateToLogin(status: number): void {
  * Ceiling for a SERVER-rendered `getJson` (OM-96).
  *
  * A beta tester reported that the DASHBOARD nav item "does not navigate": the
- * page stayed, the active marker stayed. The nav was innocent. `app/page.tsx`
+ * page stayed, the active marker stayed. The nav was innocent. `app/(dashboard)/page.tsx`
  * is `force-dynamic` and awaits six of these calls, and there was no root
  * `loading.tsx` — so with one middleware endpoint accepting the connection and
  * never answering, the RSC payload for `/` never arrived, the soft navigation
