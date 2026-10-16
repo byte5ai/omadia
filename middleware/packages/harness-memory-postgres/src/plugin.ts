@@ -84,11 +84,12 @@ export async function activate(
 
   // Read-only dev memory browser (`/api/dev/memory`), gated by
   // `dev_memory_endpoints_enabled`. Mounted HERE too (not only in
-  // @omadia/memory) so the operator memory view works when Postgres is the
-  // active backend — otherwise the router lives in the inactive in-memory
-  // provider and the browser 404s even with DEV_ENDPOINTS_ENABLED set. The
-  // router is backend-agnostic (reads via the MemoryStore). MUST stay
-  // disabled in production (no auth).
+  // @omadia/memory) so the dev browser works when Postgres is the active
+  // backend — otherwise the router lives in the inactive in-memory provider
+  // and the browser 404s even with DEV_ENDPOINTS_ENABLED set. The router is
+  // backend-agnostic (reads via the MemoryStore). Session-gated by the kernel;
+  // keep it disabled on deployed environments (any logged-in session can read
+  // the whole `/memories` tree).
   const devEndpointsEnabled =
     String(ctx.config.get<string>('dev_memory_endpoints_enabled') ?? 'false')
       .trim()
