@@ -92,6 +92,22 @@ its prompt. As in-process, a binder that fails for the turn's origin falls back
 to the agent-private stack; a turn with no handler at all (or a binding past its
 15 s deadline) has no memory tool and says so. No migration, no new env var.
 
+### Fixed — Intel macOS network flakes no longer leave releases stuck as drafts
+
+2026-10-16. Eight of nine failed auto-release runs since 2026-10-05 failed
+only in the `macos-26-intel` desktop build, and every time it was a network
+call to Apple. `codesign` reported "A timestamp was expected but was not
+found", notarytool lost its connection (NSURLErrorDomain -1009, or an aborted
+S3 upload), and `stapler validate` timed out on CloudKit with exit 68. The
+same commits built fine on arm64. The merged `latest-mac.yml` needs both
+architectures, so each flake kept its release a draft, and macOS clients
+stayed on the previous version. `desktop-apps.yml` now retries macOS
+packaging up to three times, but only when the log shows one of those
+Apple network errors. A real build or signing error still fails on the first
+attempt. The ticket checks in the acceptance gate (`stapler validate`,
+`spctl`) retry as well, and the macOS job timeout goes from 60 to 100
+minutes to make room for the retries.
+
 ### Fixed — missing web UI pages answer HTTP 404, not 200
 
 2026-10-16. Pages that call `notFound()` showed the 404 page with status
