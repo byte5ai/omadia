@@ -6723,8 +6723,8 @@ erfüllt jetzt den vollen `Askable`-Vertrag `ask(question, observer?, options?)`
 liegt dafür neben `Askable` in `tools/domainQueryTool.ts`, `localSubAgent.ts` re-exportiert
 den Typ). `CliChatAgent.chat(input, hooks?)` reicht jedes Lifecycle-Event an
 `hooks.onEvent` und nach einem erfolgreichen Turn die CLI-Usage an `hooks.onUsage`; ein
-terminales `is_error` wirft weiterhin. Bewusst nicht `chatStream()`: `streamTurn` prüft
-`parser.isError()` nicht und meldet einen toten Turn als normales `done`.
+terminales `is_error` wirft weiterhin. (Bis #1325 meldete `chatStream()` einen solchen Turn
+noch als normales `done`; das ist behoben, siehe unten.)
 
 `CliObserverBridge` (`cliSubAgentObserverBridge.ts`) übersetzt die Events pro `ask()` auf den
 `AskObserver`, wie `LocalSubAgent` + `streaming.ts` ihn treiben:
@@ -6762,6 +6762,65 @@ liefert keine Tool-Input-Deltas); Usage ist pro Spawn, nicht pro Modell-Iteratio
 `ToolDispatchService.dispatch` ruft `domainTool.handle(input)` ohne Observer auf, und fremde
 Tool-Calls landen dort nur in `console.error`, nicht in `recordForeignToolCall`. Eigene Unit
 nach #1079.
+
+### Abo-CLI-Turns: Fehler, Gedächtnis, Knowledge Graph (#1325, #1087, #1391)
+
+**Fehler (#1325).** Ein terminales `{"type":"result","is_error":true}` der CLI ist ein
+gescheiterter Turn. `StreamJsonParser` erzeugt dafür kein `done` mehr, und `runLifecycle`
+hält auch das `done` eines erfolgreichen Results zurück, bis die Exit-Prüfungen durch sind.
+Danach wirft der Lifecycle mit dem Text aus `describeCliTerminalError`: bei
+"Not logged in", `/login`, abgelaufenem OAuth-Token → *"Claude subscription CLI is not
+logged in, or its login expired. Sign in again on the LLM access page, Subscriptions
+tab."*, bei
+Kontingent/Rate-Limit ein eigener Text, sonst *"Claude subscription CLI failed: …"* — vor
+der Exit-Code-Prüfung, also bei Code 0 wie bei Code 1. `chatStream()` endet dann mit genau
+einem `error`, ohne `done`; der Middleware-Log hat die Zeile *"claude CLI ended the turn
+with an error result"* mit dem Originaltext.
+
+**Gedächtnis (#1087).** Der Replay-Tail aus dem `ChatSessionStore` (#1180) hat jetzt die
+Tiefe des Operator-Werts `context_tail_size`: `buildOrchestratorForAgent` reicht
+`deps.contextRetriever.tailSize` als `sessionTailSize` durch (neuer Getter auf
+`ContextRetriever`). Ohne Retriever bleibt es bei 10.
+
+**Knowledge Graph (#1391).** Zwei neue Hooks am `CliChatAgent`, verdrahtet in
+`buildOrchestratorForAgent`:
+
+- `recallContext` → `Orchestrator.recallCliContext(input)`: derselbe
+  `retrievePriorContext` wie im In-Process-Turn (Graph-Tail, Entitäten, Volltext,
+  Pläne/Prozesse/Insights, Session-Briefing, mit Audience-Floor und Context-Memory-
+  Isolation). Der Text kommt über stdin vor den Verlauf (`System Hint:`-Kopf,
+  Rollenmarker neutralisiert), nie über argv; die `kg_recall`/`kg_graph`-
+  Annotationen gehen vor dem Spawn raus. Deadline 15 s (`recallTimeoutMs`). Nur für
+  Chat-Turns (`sessionScope` gesetzt), nie für CLI-Sub-Agenten.
+- `recordTurn` → `Orchestrator.recordCliTurn(input, turn)`: nach einem erfolgreichen Turn
+  und vor dem `done` dieselbe Persistenz wie im In-Process-`done`-Zweig —
+  `SessionLogger.log` (Markdown-Transkript, Chat-Session-Spiegel, Graph-`Session`/`Turn`
+  mit Capture-Filter, `Run`/`ToolCall` aus dem Run-Trace), Faktenextraktion,
+  Palaia-Excerpt, Auto-Promotion, KG-Insert-Puls und `onAfterTurn` (mit der
+  Turn-ID der CLI, derselben wie in der Kosten-Ledger-Zeile; `onBeforeTurn` läuft auf
+  diesem Weg nicht). Der Trace-Owner wird wie im In-Process-Pfad aufgelöst
+  (`runTraceUserSpread`). `turnId`,
+  `palaiaExcerpt` und `autoPromotedMkId` reiten auf dem `done`. Den Run-Trace baut
+  `CliToolTrace` (`cliTurnRecord.ts`) aus den `tool_use`/`tool_result`-Events der CLI;
+  alle Calls sind `agentContext: 'orchestrator'`, der Präfix `mcp__omadia__` wird
+  abgeschnitten.
+
+Beide Hooks laufen im beim Turn-Einstieg gefangenen Async-Kontext (#1016) und können den
+Turn nicht scheitern lassen: ein Fehler wird geloggt, der Turn läuft ohne Recall bzw. die
+Antwort geht ohne Record raus. Ein gescheiterter Turn wird nie aufgezeichnet.
+Turn-Budget- und Idle-Timer werden gelöscht, sobald die CLI beendet ist, damit ein
+langsamer Record keinen falschen Timeout meldet. Bekannte Unschärfe: die
+Memory-Bindung (`bindTurnMemoryForTurn`) läuft für Recall und Record je einmal, im
+`members`-Modus also zwei Roster-Lookups pro Turn. Kein Privacy
+Shield auf diesem Weg: Recall-Text und persistierte Zeile sind unmaskiert
+(`docs/security-architecture.md` §3a). Der Replay-Tail bleibt beim rohen Session-Store,
+weil der Capture-Filter kurze Turns aus dem Graph-Tail fallen lässt; Graph-Tail und Replay
+können sich im Prompt daher teilweise überschneiden.
+
+Weiter offen: der Antwort-Prüfer (`VerifierService` hängt am In-Process-`Orchestrator`
+mit Re-Entry und Privacy-Hand-over; der CLI-Zweig kehrt vorher zurück) — die
+Abo-Seite sagt das dem Operator jetzt (`adminSubscriptionClis.explainer.featureNote`).
+Das `memory`-Tool auf dem Abo-Weg ist #1102.
 
 ### Kosten-Ledger nimmt Abo-Turns (OM-103)
 

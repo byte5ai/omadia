@@ -134,8 +134,9 @@ export function SubscriptionClisPanel({
         <p className="mt-2 text-sm leading-[1.55] text-[color:var(--fg-muted)]">
           {t('explainer.singleOperator')}
         </p>
-        {/* #1102 — one honest caveat: the subscription path has no long-term
-            memory yet, so operators are not surprised by a missing feature. */}
+        {/* #1102 / #1391 — the honest caveats: the subscription path has no
+            memory tool yet and no answer verifier, so operators are not
+            surprised by a missing feature. */}
         <p className="mt-2 text-sm leading-[1.55] text-[color:var(--fg-muted)]">
           {t('explainer.featureNote')}
         </p>
