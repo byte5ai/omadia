@@ -120,6 +120,27 @@ export interface DiscussionsCapability {
   }): Promise<{ runId: string; workflowSlug: string; expiresAt: string }>;
   /** Who could take part in THIS chat — agents with their own bot present here. */
   partnersHere(): Promise<readonly DiscussionPartner[]>;
+  /** #1346 — can the current turn host a discussion? Optional: a kernel
+   *  before it lacks the method, and then the tools stay offered. */
+  availableHere?(): boolean;
+}
+
+/**
+ * #1346 — offer the discussion tools only on a turn that can host one.
+ *
+ * A discussion needs a conversation with the agents' own bots in it — today a
+ * Teams chat. Everywhere else (web chat, public API, Telegram, …) the kernel
+ * refuses every call, and offering the tools there cost a model round and put
+ * a tool error into answers that had nothing to do with discussions.
+ *
+ * Stays OFFERED when the capability is missing or predates `availableHere`:
+ * the handler then answers with a plain "not available on this deployment",
+ * which is deliberately louder than silence (see plugin.ts).
+ */
+export function discussionToolsAvailable(resolveDiscussions: ResolveDiscussions): boolean {
+  const discussions = resolveDiscussions();
+  if (!discussions || typeof discussions.availableHere !== 'function') return true;
+  return discussions.availableHere();
 }
 
 /** Resolved per call, never cached: `optional_requires` creates no activation
