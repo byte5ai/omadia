@@ -36,21 +36,37 @@ changelog.
 
 ## [Unreleased]
 
-### Fixed — Haiku 5.5 prompts over 100k tokens priced at the long-context rate
+### Fixed — the subscription CLI fails a turn honestly, and its turns reach Memory
 
-2026-10-16. #1307 priced `claude-haiku-5-5` at $0.10/$0.50, but Anthropic
-bills a Haiku 5.5 prompt above 100k tokens at $0.50/$2.50, and `ModelPrice`
-had no way to say so. Those calls were under-counted fivefold. `ModelPrice`
-now has an optional `longContext` tier (`abovePromptTokens` plus the tier's
-price). When a call's prompt is over the threshold, `computeCostUsd` bills the
-whole call at the tier: input, output and cache tokens. The prompt counts
-input plus cache reads and writes, the way Anthropic measures it for its
-long-context tiers, so a short question over a large cached prefix counts.
-Only Haiku 5.5 carries a tier. `test/usageTelemetryPricing.test.ts` also
-checks that every seeded model of an API-key provider in
-`builtinLlmProviders.ts` and every current Anthropic id that live discovery
-admits has its own price. The dashboard still does not mark a model without a
-known price: it records at $0 behind a log warning (#1389, open).
+2026-10-16. Three gaps between the Claude subscription CLI (`claude-cli`) and
+the API-key path:
+
+- **A failed CLI turn was delivered as an answer (#1325).** When the CLI ended a
+  turn with an error result ("Not logged in · Please run /login", a used-up
+  quota, an expired token), the stream sent a `done` whose answer was that
+  error text, marked AI-generated, followed by a generic `error` ("CLI exited
+  with code 1"). With exit code 0 there was no `error` at all. Now a failed
+  turn sends no `done` and ends with exactly one `error` that names the cause
+  and what to do ("…not logged in, or its login expired. Sign in again on the
+  LLM access page, Subscriptions tab."), and the middleware log records the
+  CLI's text.
+  The `done` of a successful result is also held back until the CLI's exit is
+  checked.
+- **CLI turns were never written to the knowledge graph (#1391).** A CLI turn
+  wrote a usage row and nothing else: no transcript, no `Session`/`Turn`/`Run`/
+  `ToolCall` nodes, no capture filter, fact extraction, auto-promotion or
+  `onAfterTurn`, and no recall on later turns. Every successful CLI chat turn is
+  now persisted like an in-process one (`Orchestrator.recordCliTurn`), and before
+  the spawn it recalls graph context the same way (`recallCliContext`) into the
+  CLI's prompt, with the `kg_recall` cards. The answer verifier still
+  does not run on this provider; the Subscriptions page now says so.
+- **The CLI's chat memory ignored `context_tail_size` (#1087).** The replayed
+  chat history now has the operator's tail size instead of a fixed 10.
+
+No Privacy Shield runs on this path, so the recalled context reaches the CLI
+unmasked, like the replayed history, and the recorded turn reaches the capture
+scorer, embeddings, fact and excerpt extraction unmasked
+(`docs/security-architecture.md` §3a). No migration, no new env var.
 
 ### Fixed — MCP: link-local guard for manual servers, `MCP_STDIO_ENABLED`, readable refusals in the admin UI
 
@@ -102,6 +118,22 @@ unknown-outcome clause: the tool may have written something before the block. Bo
 (the tool bridges and in-tree wrappers) and `withholdThrownToolError` (the
 dispatch seams) handle it, and the text still goes through the Privacy
 Shield's returned-error redactor. Every other exception stays withheld.
+
+### Fixed — Haiku 5.5 prompts over 100k tokens priced at the long-context rate
+
+2026-10-16. #1307 priced `claude-haiku-5-5` at $0.10/$0.50, but Anthropic
+bills a Haiku 5.5 prompt above 100k tokens at $0.50/$2.50, and `ModelPrice`
+had no way to say so. Those calls were under-counted fivefold. `ModelPrice`
+now has an optional `longContext` tier (`abovePromptTokens` plus the tier's
+price). When a call's prompt is over the threshold, `computeCostUsd` bills the
+whole call at the tier: input, output and cache tokens. The prompt counts
+input plus cache reads and writes, the way Anthropic measures it for its
+long-context tiers, so a short question over a large cached prefix counts.
+Only Haiku 5.5 carries a tier. `test/usageTelemetryPricing.test.ts` also
+checks that every seeded model of an API-key provider in
+`builtinLlmProviders.ts` and every current Anthropic id that live discovery
+admits has its own price. The dashboard still does not mark a model without a
+known price: it records at $0 behind a log warning (#1389, open).
 
 ### Fixed — the SEO analyst no longer reports on a site it never reached
 
