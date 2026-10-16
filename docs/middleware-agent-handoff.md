@@ -3371,6 +3371,15 @@ Die Schwellen der drei Schichten und die Reserve für Geräte-Cookies sind Konst
 | `AUTH_LOGIN_IPV6_PREFIX` | Wie viele führende Bit einer IPv6-Adresse einen Client ausmachen. Default `64`, erlaubt `32`–`64`. Ein /56 enthält 256 /64, ein /48 65.536, bei 64 jedes ein eigener Client-Key mit eigenem Burst. 56 oder 48 fasst so eine Zuteilung zu einem Key zusammen, aber auch fremde Clients, die sich eine teilen (Mobilfunk, Hoster). |
 | `AUTH_LOGIN_MAX_INFLIGHT` | Gleichzeitige argon2-Läufe (Anmeldung und Setup-Hash), danach 503 `auth.busy`; einer davon bleibt Browsern mit Geräte-Cookie vorbehalten (bei `1` keiner). Default `4`, erlaubt `1`–`16`. Jeder Lauf braucht 19 MiB und einen Thread des libuv-Pools (`UV_THREADPOOL_SIZE`, Default 4); mehr Slots als Pool-Threads stehen nur Schlange. 16 × 19 MiB ≈ 300 MiB. |
 
+### MCP-Server (#1341, #1342, security-architecture §10p)
+
+| Variable | Wirkung |
+|---|---|
+| `MCP_STDIO_ENABLED` | `true`/`false`, Default `true` (Verhalten wie vor #1342). Ein stdio-MCP-Server startet seine Kommandozeile als Kindprozess der Middleware, mit deren OS-User, Dateisystem und Netz. `false` schaltet das ab: Anlegen wird mit 400 `mcp_stdio_disabled` / `code: stdio_disabled` abgelehnt, manuell (`POST /api/v1/operator/mcp-servers` mit `transport: stdio`) wie per Katalog-Import (`POST …/mcp-servers/from-registry`, der auf einen stdio-/`npx`-Eintrag auflöst). Bestehende stdio-Zeilen bleiben gespeichert, werden aber beim Verbinden abgewiesen (Discover → 502 `mcp_discover_failed` / `code: stdio_disabled`, Re-Scan aller Server, periodischer Re-Scan, Tool-Aufrufe zur Laufzeit); es wird kein Prozess gestartet. Ob Compose-Deployments mit `false` ausgeliefert werden, ist nicht entschieden. |
+| `MCP_RESCAN_INTERVAL_MS` | Intervall des periodischen Re-Scans aller aktiven MCP-Server in ms (`src/index.ts`), Default 6 h, `0` schaltet ihn ab. Prüft bei jedem Lauf dieselbe Outbound-Regel und denselben stdio-Schalter wie ein manueller Discover. |
+
+Die Outbound-Regel für operator-konfigurierte MCP-Ziele (Registry-URL, `http`-/`sse`-Endpoint) hat keine Env-Variable: Link-Local- und Cloud-Metadata-Ziele werden immer abgewiesen (400 bzw. 502 mit `code: blocked_host`), private und Loopback-Adressen bleiben erlaubt.
+
 ### Test-Schalter (nicht von der Middleware gelesen)
 
 Vier Variablen steuern nur Testverhalten, stehen aber in `.env.example`, weil
@@ -4148,6 +4157,27 @@ die gefangene Transport-Exception auf `cause` und den Upstream-Body auf
 `body`, und `web_search` / `render_diagram` bauen ihr Ergebnis nur aus
 Provider-Id bzw. Diagramm-Art und HTTP-Status, nie aus der Message; der Rest
 steht unter der Ref im Log.
+**Absagen (`ToolRefusalError`, plugin-api 1.28.0, #1343)** sind die eine
+Exception, deren Text das Modell liest: Ein Plugin-Tool wirft sie, wenn es den
+Call NICHT ausgeführt hat und die Meldung selbst für das Modell formuliert hat
+(gesperrter Host, Ziel nicht erreichbar, eine Vorbedingung, die der Operator
+ändern muss). Erkannt wird sie am `name` (`'ToolRefusalError'`), nicht per
+`instanceof`, damit ein Plugin sie ohne Import werfen kann; dazu zählen die
+`ctx.http`-Sperren des Kernels (`HttpForbiddenError`,
+`HttpBlockedAddressError`, `HttpRateLimitError`, nur mit der Kernel-Message
+`plugin '<id>' is not permitted to reach …` / `… exceeded its …`).
+`toolErrorFromException` und `withholdThrownToolError` machen daraus
+`Error: tool \`<name>\` refused the call: <Meldung>` (Steuerzeichen raus,
+höchstens 600 Zeichen; eine Meldung mit Zeilenumbruch bleibt zurückgehalten),
+ohne den Satz „The outcome is unknown“ und ohne `outcomeUnknown`, denn es ist
+nichts passiert. Eine `ctx.http`-Sperre, die das Tool nicht selbst fängt,
+lautet `… was stopped by omadia: <Meldung>` und behält Hinweis und Marker
+(`isUnknownOutcomeToolErrorNotice`), weil das Tool vorher schon geschrieben
+haben kann. Der Text läuft danach wie jeder
+zurückgegebene `Error:`-Text durch `guardControlFlowResult` (redigiert, bei
+Exception-Form zurückgehalten). Jede andere Exception bleibt zurückgehalten.
+Erster Nutzer: der SEO-Analyst (0.2.0, #1344) für gesperrte und nicht
+erreichbare Ziel-URLs.
 Auf dem **öffentlichen MCP-Endpunkt** läuft jeder Tool-Handler mit dem
 Privacy-Handle des Dispatches als ambientem `turnContext.privacyHandle`
 (`runHandlerInPrivacyScope`): der Sub-Agent eines Domain-Tools bekommt
@@ -7135,7 +7165,7 @@ Diese beiden Blöcke wissen nichts voneinander → sie **stapeln**. Ein in beide
 Ebenen gesetztes Verbot erscheint doppelt (ggf. in zwei Sprachen); Plugin-Default-
 Sycophancy + Agent-Slider ergeben zwei konkurrierende Anti-Schmeichel-Blöcke.
 
-**Eine gemeinsame Preset-Library (seit 2026-10-16, plugin-api 1.28.0, Quality Guard
+**Eine gemeinsame Preset-Library (seit 2026-10-16, plugin-api 1.29.0, Quality Guard
 0.2.0).** Vorher waren die zwei Libraries fast disjunkt (Agent-UI 12 IDs englisch,
 Plugin 10 IDs deutsch, Schnittmenge nur `no-legal-advice`, `no-speculation`); eine aus
 der Agent-UI kopierte ID wurde vom Plugin still verworfen. Jetzt:

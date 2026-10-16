@@ -17,7 +17,7 @@
  *
  * A call ended in an exception when its handler threw, or when its wrapper
  * caught the exception and returned the withheld notice instead (the platform
- * tool bridges, `toolErrorFromException`), which `isWithheldToolErrorNotice`
+ * tool bridges, `toolErrorFromException`), which `isUnknownOutcomeToolErrorNotice`
  * (`@omadia/plugin-api`) recognises by shape. A tool that imitates the shape
  * only blocks its own repeat.
  */

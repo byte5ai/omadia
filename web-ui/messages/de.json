@@ -4475,6 +4475,7 @@
       "transport": "Transport",
       "transportDeprecated": "Veraltet",
       "transportDeprecatedHint": "Der alte HTTP+SSE-Transport ist seit MCP 2026-07-28 als veraltet markiert und wird nach einer Übergangsfrist von mindestens 12 Monaten entfernt. Bestehende SSE-Server funktionieren weiterhin — neue Server sollten aber Streamable HTTP (http) verwenden, bestehende dorthin migriert werden.",
+      "stdioHint": "Ein stdio-Server läuft als Prozess im Middleware-Container – mit den Rechten der Middleware (gleicher Benutzer, Dateisystem- und Netzwerkzugriff). Mit MCP_STDIO_ENABLED=false lässt sich stdio abschalten.",
       "showDeprecatedTransports": "Veraltete Transports anzeigen",
       "deprecatedOption": "{transport} (veraltet)",
       "endpoint": "Endpoint",
@@ -4605,13 +4606,16 @@
       "errorTimeout": "Die Registry „{name}“ hat nicht rechtzeitig geantwortet.",
       "errorUnreachable": "Die Registry „{name}“ ist nicht erreichbar.",
       "errorGeneric": "Der Katalog von „{name}“ konnte nicht gelesen werden.",
-      "errorUnreachableHint": "Der Registry-Host ist offline oder aus dieser Installation heraus blockiert. Wähle oben eine andere Registry oder versuche es gleich noch einmal.",
+      "errorUnreachableHint": "Der Registry-Host ist offline oder aus dieser Installation heraus nicht erreichbar. Wähle oben eine andere Registry oder versuche es gleich noch einmal.",
       "removeRegistryBody": "Registry „{name}“ entfernen? Bereits importierte Server bleiben bestehen.",
       "unlicensedShort": "ohne Lizenz",
       "refresh": "Aktualisieren",
       "scopeCachedPage": "nur geladene Seite",
       "scopeCachedPageWhy": "Die Suche dieser Registry hat nicht geantwortet. Diese Treffer sind deshalb ein Textabgleich über die bereits geladene Katalogseite — Server weiter hinten im Katalog sind nicht erfasst. Mit „Aktualisieren“ die Registry-Suche erneut versuchen.",
-      "errorTimeoutHint": "Die Registry hat die Verbindung angenommen, aber nicht rechtzeitig zu Ende geantwortet. Ihre Katalogliste funktioniert womöglich trotzdem — Suchfeld leeren, um den Katalog zu listen, oder erneut versuchen."
+      "errorTimeoutHint": "Die Registry hat die Verbindung angenommen, aber nicht rechtzeitig zu Ende geantwortet. Ihre Katalogliste funktioniert womöglich trotzdem — Suchfeld leeren, um den Katalog zu listen, oder erneut versuchen.",
+      "errorBlocked": "Die Registry „{name}“ ist aus Sicherheitsgründen gesperrt.",
+      "errorBlockedHint": "Eine Registry darf nicht auf eine Link-local- oder Cloud-Metadaten-Adresse wie 169.254.169.254 oder metadata.google.internal zeigen. Private und Intranet-Adressen sind erlaubt. Ändere die Registry-URL oder wähle oben eine andere Registry.",
+      "errorDetail": "Grund: {detail}"
     },
     "grants": {
       "grantHeading": "Tools einem Orchestrator zuweisen",
@@ -4667,6 +4671,10 @@
         "unattributed": "Nicht zugeordnet",
         "api_key": "API-Key (Public MCP)"
       }
+    },
+    "guard": {
+      "blockedHost": "Diese Adresse ist aus Sicherheitsgründen gesperrt. Ein MCP-Server oder eine Registry darf nicht auf eine Link-local- oder Cloud-Metadaten-Adresse wie 169.254.169.254 oder metadata.google.internal zeigen; private und Intranet-Adressen sind erlaubt. Ändere die URL. Grund: {detail}",
+      "stdioDisabled": "stdio-MCP-Server sind auf dieser Installation deaktiviert (MCP_STDIO_ENABLED=false). Nutze stattdessen einen Remote-Server (http) oder setze MCP_STDIO_ENABLED=true für die Middleware und starte sie neu. Grund: {detail}"
     }
   },
   "adminRegistries": {
