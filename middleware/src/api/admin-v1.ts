@@ -19,6 +19,18 @@ export type ISO8601 = string;
 export type EntityURI = string;
 export type AgentId = string;
 
+/**
+ * One option of a `type: 'enum'` setup field. `label` is the option's text
+ * resolved to English (unchanged for older clients); `label_localized`
+ * (#1401) is the manifest's `{ <locale>: text }` map, present when the
+ * manifest wrote one, for clients that pick the operator's locale.
+ */
+export interface SetupEnumOption {
+  value: string;
+  label: string;
+  label_localized?: LocalizedMarkdown;
+}
+
 export interface ApiError {
   code: string;
   message: string;
@@ -110,7 +122,7 @@ export interface PluginSetupField {
   /** Allowed values for `type === 'enum'`. Mirrors the install-wizard
    *  schema so the post-install editor can render a `<select>` instead of
    *  a free-text input. */
-  enum?: Array<{ value: string; label: string }>;
+  enum?: SetupEnumOption[];
   /** Spec 005 — for `type === 'oauth'` fields: the `oauth_providers`
    *  descriptor id this field connects through. The kernel broker resolves
    *  the descriptor (+ this field's `scopes`) at flow time. */
@@ -895,7 +907,7 @@ export interface InstallSetupField {
   help?: LocalizedMarkdown;
   required: boolean;
   default?: unknown;
-  enum?: Array<{ value: string; label: string }>;
+  enum?: SetupEnumOption[];
   provider?: string;
   scopes?: string[];
   pattern?: string;
@@ -948,12 +960,30 @@ export interface InstallSetupSchema {
   fields: InstallSetupField[];
 }
 
+/**
+ * #1401 — a stable code for {@link InstallJob.current_step}. `current_step`
+ * is display text in ONE language (the server has no request locale); a
+ * client renders `step_code` from its own catalog in the operator's locale
+ * and falls back to `current_step` for a code it does not know.
+ */
+export type InstallJobStep =
+  | 'awaiting_config'
+  | 'validating'
+  | 'activating'
+  | 'completed'
+  | 'installed_missing_permissions'
+  | 'installed_activation_failed'
+  | 'cancelled'
+  | 'failed';
+
 export interface InstallJob {
   id: string;
   plugin_id: AgentId;
   plugin_version: string;
   state: InstallJobState;
   current_step: string;
+  /** #1401 — see {@link InstallJobStep}. Optional for older servers. */
+  step_code?: InstallJobStep;
   error: ApiError | null;
   setup_schema: InstallSetupSchema | null;
   /** #825 — the activation outcome, set once the install reaches a terminal

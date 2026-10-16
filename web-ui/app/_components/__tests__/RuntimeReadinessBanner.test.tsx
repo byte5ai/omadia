@@ -262,7 +262,7 @@ describe('<RuntimeReadinessBanner />', () => {
 
     /**
      * The card's copy must survive the health tile next to it: `middlewareOk`
-     * (app/page.tsx) is true as soon as ANY call came back, and a live
+     * (app/(dashboard)/page.tsx) is true as soon as ANY call came back, and a live
      * middleware can still answer 500 from this one handler. So the text may
      * not assert that the container is stopped.
      */

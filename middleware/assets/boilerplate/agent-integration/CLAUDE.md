@@ -149,6 +149,22 @@ Im Template mitgeliefert. Pipeline:
 User-seitig: `node scripts/build-zip.mjs` → `out/<id>-<version>.zip` ist das
 uploadbare Artefakt.
 
+### Sichtbarer Manifest-Text ist `{ en, de }` (#1401)
+
+`identity.description`, `setup.guide`, `setup.fields[].label` / `help` /
+`pattern_hint` und `setup.fields[].enum[].label` werden als Map geschrieben:
+
+```yaml
+label:
+  en: "Public base URL"
+  de: "Öffentliche Basis-URL"
+```
+
+Ein nackter String lädt weiter (wird als Englisch gelesen), erscheint aber in
+jeder UI-Sprache so, wie er geschrieben wurde — der Loader warnt dann einmal pro
+Plugin-Version. `identity.name` bleibt sprachneutral (Produktname). In-Tree-Pakete
+prüft CI (`npm run manifest:i18n:check`).
+
 ---
 
 ## Optional: Operator-Admin-UI (Web-Frontend im Plugin)

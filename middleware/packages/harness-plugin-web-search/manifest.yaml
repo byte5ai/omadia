@@ -79,46 +79,74 @@ setup:
   fields:
     - key: "provider"
       type: "enum"
-      label: "Search-Provider"
-      help: "Welcher Backend-Provider die Suchanfragen ausliefert. Tavily ist standardmäßig vorgesehen — direkt für KI-Use gebaut, liefert strukturierte Snippets und optional extrahierten Volltext. Brave ist ein unabhängiger Crawler ohne Volltext-Inlining."
+      label:
+        en: "Search provider"
+        de: "Search-Provider"
+      help:
+        en: "Which backend provider serves the search requests. Tavily is the default — built directly for AI use, it returns structured snippets and optionally extracted full text. Brave is an independent crawler without full-text inlining."
+        de: "Welcher Backend-Provider die Suchanfragen ausliefert. Tavily ist standardmäßig vorgesehen — direkt für KI-Use gebaut, liefert strukturierte Snippets und optional extrahierten Volltext. Brave ist ein unabhängiger Crawler ohne Volltext-Inlining."
       required: true
       default: "tavily"
       enum:
         - value: "tavily"
-          label: "Tavily (default, AI-friendly + Volltext)"
+          label:
+            en: "Tavily (default, AI-friendly + full text)"
+            de: "Tavily (default, AI-friendly + Volltext)"
         - value: "brave"
-          label: "Brave Search"
+          label:
+            en: "Brave Search"
+            de: "Brave Search"
 
     - key: "tavily_api_key"
       type: "secret"
-      label: "Tavily API-Key"
-      help: "Nur ausfüllen, wenn `provider: tavily`. Erstellen unter https://tavily.com → Dashboard → API Keys. Wird im FileVault gespeichert."
+      label:
+        en: "Tavily API key"
+        de: "Tavily API-Key"
+      help:
+        en: "Only fill in if `provider: tavily`. Create one at https://tavily.com → Dashboard → API Keys. Stored in the FileVault."
+        de: "Nur ausfüllen, wenn `provider: tavily`. Erstellen unter https://tavily.com → Dashboard → API Keys. Wird im FileVault gespeichert."
       required: false
 
     - key: "brave_api_key"
       type: "secret"
-      label: "Brave Search API-Key"
-      help: "Nur ausfüllen, wenn `provider: brave`. Subscription-Token aus dem Brave-Dashboard (https://api-dashboard.search.brave.com)."
+      label:
+        en: "Brave Search API key"
+        de: "Brave Search API-Key"
+      help:
+        en: "Only fill in if `provider: brave`. Subscription token from the Brave dashboard (https://api-dashboard.search.brave.com)."
+        de: "Nur ausfüllen, wenn `provider: brave`. Subscription-Token aus dem Brave-Dashboard (https://api-dashboard.search.brave.com)."
       required: false
 
     - key: "default_top_k"
       type: "integer"
-      label: "Default Anzahl Treffer"
-      help: "Anzahl der Treffer pro Anfrage, wenn der Caller `top_k` weglässt. 1–20."
+      label:
+        en: "Default number of results"
+        de: "Default Anzahl Treffer"
+      help:
+        en: "Number of results per request when the caller omits `top_k`. 1–20."
+        de: "Anzahl der Treffer pro Anfrage, wenn der Caller `top_k` weglässt. 1–20."
       required: false
       default: 5
 
     - key: "cache_ttl_search_sec"
       type: "integer"
-      label: "Cache-TTL (Sekunden)"
-      help: "Wie lange identische Anfragen gecached werden. Schützt das Quota — niedrigere Werte für Echtzeit-Use, höhere Werte für stabile Lookups."
+      label:
+        en: "Cache TTL (seconds)"
+        de: "Cache-TTL (Sekunden)"
+      help:
+        en: "How long identical requests are cached. Protects the quota — lower values for real-time use, higher values for stable lookups."
+        de: "Wie lange identische Anfragen gecached werden. Schützt das Quota — niedrigere Werte für Echtzeit-Use, höhere Werte für stabile Lookups."
       required: false
       default: 600
 
     - key: "cache_max_entries"
       type: "integer"
-      label: "Cache max. Einträge"
-      help: "LRU-Bound auf die In-Memory-Map. ~1 KB pro Eintrag im typischen Fall."
+      label:
+        en: "Cache max. entries"
+        de: "Cache max. Einträge"
+      help:
+        en: "LRU bound on the in-memory map. ~1 KB per entry in the typical case."
+        de: "LRU-Bound auf die In-Memory-Map. ~1 KB pro Eintrag im typischen Fall."
       required: false
       default: 200
 

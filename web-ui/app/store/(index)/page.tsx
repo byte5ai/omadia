@@ -3,21 +3,21 @@ import Link from 'next/link';
 import { HardDrive, PackageCheck, Store } from 'lucide-react';
 import { getTranslations } from 'next-intl/server';
 
-import { listProfiles, listStorePlugins } from '../_lib/api';
-import { APP_VERSION } from '../_lib/appVersion';
+import { listProfiles, listStorePlugins } from '../../_lib/api';
+import { APP_VERSION } from '../../_lib/appVersion';
 import {
   countReadiness,
   isInstalled,
   isOperatorInstalled,
-} from '../_lib/pluginCounts';
-import { deriveInitialsForSet } from '../_lib/pluginInitials';
-import { redirectIfUnauthorized } from '../_lib/authRedirect';
-import type { Plugin, PluginKind } from '../_lib/storeTypes';
-import type { ProfileSummary } from '../_lib/profileTypes';
-import { OnboardingModal } from '../_components/onboarding/OnboardingModal';
-import { PluginCard } from '../_components/store/PluginCard';
-import { UploadDropzone } from '../_components/store/UploadDropzone';
-import { cn } from '../_lib/cn';
+} from '../../_lib/pluginCounts';
+import { deriveInitialsForSet } from '../../_lib/pluginInitials';
+import { redirectIfUnauthorized } from '../../_lib/authRedirect';
+import type { Plugin, PluginKind } from '../../_lib/storeTypes';
+import type { ProfileSummary } from '../../_lib/profileTypes';
+import { OnboardingModal } from '../../_components/onboarding/OnboardingModal';
+import { PluginCard } from '../../_components/store/PluginCard';
+import { UploadDropzone } from '../../_components/store/UploadDropzone';
+import { cn } from '../../_lib/cn';
 
 export async function generateMetadata(): Promise<Metadata> {
   const t = await getTranslations('store.page');

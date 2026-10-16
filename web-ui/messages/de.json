@@ -4255,7 +4255,17 @@
       "privacyGuardedHelp": "Tool-Ergebnisse werden serverseitig hinter dem Privacy Shield v4 maskiert; der LLM sieht nur identitätsfreie Digests.",
       "privacyBypassHelp": "Rohe Tool-Ergebnisse erreichen den LLM unmaskiert. Geeignet für vertrauenswürdige interne Quellen, deren Inhalte der Privacy Shield strukturell nicht digestieren kann (z. B. Confluence-Seiten-Bodies).",
       "privacyPerToolHelp": "Per-Tool-Whitelist: nur explizit gelistete Tools werden bypassed. Liste über das Feld `_privacy_bypass_scopes` setzen (Komma-getrennt).",
-      "saving": "Speichere …"
+      "saving": "Speichere …",
+      "steps": {
+        "awaiting_config": "Warte auf Konfiguration",
+        "validating": "Validiere Eingaben",
+        "activating": "Aktiviere Plugin",
+        "completed": "Installation abgeschlossen",
+        "installed_missing_permissions": "Installiert — Berechtigungen fehlen",
+        "installed_activation_failed": "Installiert — Aktivierung fehlgeschlagen",
+        "cancelled": "Vom Nutzer abgebrochen",
+        "failed": "Fehlgeschlagen"
+      }
     },
     "auditMode": {
       "singleHostHelp": "Nur die im Manifest deklarierten Hosts.",
@@ -4335,7 +4345,8 @@
       "installing": "Wird installiert …",
       "allInstalled": "Alles installiert",
       "allActive": "{name} und alle Voraussetzungen sind aktiv.",
-      "errorKicker": "Fehler"
+      "errorKicker": "Fehler",
+      "stepValidationFailed": "{label}: Eingaben enthalten Fehler."
     },
     "upload": {
       "onlyZip": "Nur .zip erlaubt, bekommen: {name}",
@@ -4350,13 +4361,45 @@
       "peersMissing": "⚠ Fehlende Peer-Deps: {peers} — Agent kann zur Laufzeit fehlschlagen.",
       "close": "Schließen",
       "failedKicker": "Upload fehlgeschlagen",
-      "reset": "Zurücksetzen"
+      "reset": "Zurücksetzen",
+      "errors": {
+        "tooLarge": "Der Upload überschreitet das Limit von {maxBytes} Bytes.",
+        "manifestMissing": "Kein manifest.yaml im Zip-Root gefunden.",
+        "manifestInvalid": "manifest.yaml entspricht nicht dem schema_version \"1\".",
+        "idMismatch": "package.json name ({packageName}) stimmt nicht mit manifest identity.id ({pluginId}) überein.",
+        "versionMismatch": "package.json version ({packageVersion}) stimmt nicht mit manifest identity.version ({pluginVersion}) überein.",
+        "entryMissing": "Der lifecycle-Entry {entry} ist im Zip nicht vorhanden.",
+        "idConflictBundled": "Plugin-ID {pluginId} gehört zu einem mitgelieferten Plugin dieser Installation. Ein Upload darf ein mitgeliefertes Plugin nicht überschreiben — vergib dem Paket eine eigene ID. Für einen bewussten Override setze {overrideEnv}=1 in der Middleware-Umgebung.",
+        "idConflictBuiltin": "Plugin-ID {pluginId} kollidiert mit einem Built-in-Eintrag im Katalog.",
+        "duplicateVersion": "Version {version} von {pluginId} ist bereits hochgeladen. Version anheben oder den Upload erst entfernen.",
+        "noFile": "Die Anfrage enthält keine Datei."
+      }
     },
     "setupForm": {
       "enable": "Aktivieren",
       "dontSet": "(nicht setzen)",
       "noPasswordWarning": "Hier gehört kein Konto-Passwort hinein. Erwartet wird ein technischer Schlüssel aus der Anbieter-Konsole.",
-      "patternUnavailable": "Dieses Feld deklariert eine Formatprüfung, die nicht angewendet werden konnte — der Wert wird nicht validiert."
+      "patternUnavailable": "Dieses Feld deklariert eine Formatprüfung, die nicht angewendet werden konnte — der Wert wird nicht validiert.",
+      "errors": {
+        "required": "„{label}“ ist erforderlich.",
+        "patternMismatch": "„{label}“ entspricht nicht dem erwarteten Muster.",
+        "invalidUrl": "„{label}“ ist keine gültige http(s)-URL.",
+        "notSubmittable": "„{label}“ wird hochgeladen, nicht eingegeben — es kann nicht direkt gesetzt werden.",
+        "wrongTypeText": "„{label}“ muss Text sein.",
+        "wrongTypeUrl": "„{label}“ muss eine URL sein.",
+        "wrongTypeBoolean": "„{label}“ muss true oder false sein.",
+        "wrongTypeInteger": "„{label}“ muss eine ganze Zahl sein.",
+        "wrongTypeHostList": "„{label}“ muss eine Liste von Hostnamen sein.",
+        "enumMismatch": "„{label}“ muss einer der erlaubten Werte sein: {allowed}.",
+        "invalidHost": "„{host}“ ist kein gültiger Hostname (kein Protokoll, kein Pfad).",
+        "uploadTooLarge": "Die hochgeladene Datei ist zu groß.",
+        "uploadNotJson": "Die hochgeladene Datei ist kein gültiges JSON.",
+        "uploadNotAnObject": "Die hochgeladene Datei muss ein JSON-Objekt enthalten.",
+        "uploadUnexpectedValue": "Das sieht nicht nach der erwarteten Datei aus: {key} ist {actual}, erwartet wurde {expected}.",
+        "uploadUnexpectedMissing": "Das sieht nicht nach der erwarteten Datei aus: {key} fehlt, erwartet wurde {expected}.",
+        "uploadMissingValue": "Die hochgeladene Datei enthält bei {path} keinen verwendbaren Wert (benötigt für {target}). Prüfe, ob du die richtige Datei gewählt hast.",
+        "uploadBadExtractPath": "Das Plugin deklariert einen nicht unterstützten Extraktionspfad {path} für {target}. Das ist ein Fehler im Plugin, nicht in deiner Datei."
+      }
     },
     "adminUi": {
       "iframeTitle": "{plugin} Admin-UI"

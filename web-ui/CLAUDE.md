@@ -58,3 +58,22 @@ Keep it clean:
    - `app/_lib/personaTemplates.ts`, `app/_lib/toolTemplates.ts`,
      `app/_lib/composeFixPrompt.ts` — persona/tool/prompt *content* compiled
      into agents, not UI chrome.
+
+## Routing rule — loading boundaries vs. `notFound()` (#1398)
+
+A `loading.tsx` (or a `<Suspense>` in a layout/template) flushes the HTTP status
+line before the page below it runs. A page that then calls `notFound()` serves
+the 404 UI with status **200**. So:
+
+- There is **no root `app/loading.tsx`**. Each segment has its own
+  `loading.tsx` that re-exports `_components/PageLoading`
+  (`export { PageLoading as default } from '…/_components/PageLoading';`).
+- Never put a boundary in or above a page that calls `notFound()`. Call
+  `notFound()` in the page itself, not in a helper.
+- An index page that shares a segment with such a detail route lives in a
+  route group (`store/(index)/page.tsx`, `(dashboard)/page.tsx`) so it can
+  have its own boundary.
+- A new page needs a boundary in or above its directory.
+
+`app/__tests__/loadingBoundaries.test.ts` reads the route tree and enforces all
+of this.

@@ -5,7 +5,7 @@ import type { TeamsTargetKind } from './teamsInstallTarget';
 /**
  * Typed client for the operator multi-orchestrator REST surface
  * (`/api/v1/operator/agents/*` — see `routes/operatorAgents.ts` in the
- * middleware). Used by `app/operator/agents/page.tsx` (RSC fetches) and
+ * middleware). Used by `app/operator/agents/(index)/page.tsx` (RSC fetches) and
  * the client-side dashboard component (writes).
  *
  * `botApi` + `forwardCookieHeader` are inlined here because `_lib/api.ts`
@@ -1156,7 +1156,7 @@ export interface PluginSetupFieldDto {
   /** #602 (OM-17) — localized help map; same contract as `label`. */
   help?: LocalizedMarkdown | string;
   default?: string | string[];
-  enum?: Array<{ value: string; label: string }>;
+  enum?: Array<{ value: string; label: string; label_localized?: LocalizedMarkdown }>;
 }
 
 export interface PluginCatalogEntryDto {

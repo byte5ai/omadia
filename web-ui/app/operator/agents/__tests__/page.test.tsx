@@ -46,7 +46,7 @@ vi.mock('../../channels/_components/ChannelsDashboard', () => ({
   ChannelsDashboard: () => <div data-testid="channels-dashboard" />,
 }));
 
-const { default: OperatorAgentsPage } = await import('../page');
+const { default: OperatorAgentsPage } = await import('../(index)/page');
 
 function unavailable(path: string, cause?: string): ApiError {
   const body = { error: 'multi_orchestrator_unavailable', message: 'not published', cause };

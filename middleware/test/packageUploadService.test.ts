@@ -219,4 +219,42 @@ describe('PackageUploadService ingest × scan scheduler (issue #453)', () => {
     });
     assert.equal(result.ok, true);
   });
+
+  // #1401 — the rejection text is German (no request locale); `params` lets
+  // the web UI render the code in the operator's locale instead.
+  it('sends params with a duplicate-version rejection', async () => {
+    const svc = service();
+    const upload = async (): Promise<unknown> =>
+      svc.ingest({
+        fileBuffer: await fixtureZip(),
+        originalFilename: 'scan-target.zip',
+        uploadedBy: 'test@example.com',
+      });
+    assert.equal((await upload() as { ok: boolean }).ok, true);
+    const second = (await upload()) as { ok: boolean; code: string; params?: unknown };
+    assert.equal(second.ok, false);
+    assert.equal(second.code, 'package.duplicate_version');
+    assert.deepEqual(second.params, { pluginId: '@test/scan-target', version: '1.0.0' });
+  });
+
+  it('sends the missing entry path as a param', async () => {
+    const buffer = await buildZip({ 'manifest.yaml': manifestWithEntry('dist/missing.js') });
+    const result = (await service().ingest({
+      fileBuffer: buffer,
+      originalFilename: 'scan-target.zip',
+      uploadedBy: 'test@example.com',
+    })) as { code: string; params?: unknown };
+    assert.equal(result.code, 'package.entry_missing');
+    assert.deepEqual(result.params, { entry: 'dist/missing.js' });
+  });
+
+  it('sends the size limit as a param', async () => {
+    const result = (await service().ingest({
+      fileBuffer: Buffer.alloc(1024 * 1024 + 1),
+      originalFilename: 'big.zip',
+      uploadedBy: 'test@example.com',
+    })) as { code: string; params?: unknown };
+    assert.equal(result.code, 'package.too_large');
+    assert.deepEqual(result.params, { maxBytes: String(1024 * 1024) });
+  });
 });

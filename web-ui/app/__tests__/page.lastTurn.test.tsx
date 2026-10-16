@@ -86,7 +86,7 @@ vi.mock('../_components/dashboard/DashboardOnboarding', () => ({
   DashboardOnboarding: (): React.ReactElement => <div data-testid="onboarding" />,
 }));
 
-import DashboardPage from '../page';
+import DashboardPage from '../(dashboard)/page';
 
 /** A healthy baseline: one verified provider, one agent. Every card above the
  *  last-turn card reads OK until a failed turn says otherwise. */

@@ -57,40 +57,68 @@ requires:
 setup:
   fields:
     - key: "database_url"
-      label: "Database URL"
+      label:
+        en: "Database URL"
+        de: "Datenbank-URL"
       type: "secret"
       required: false
-      help: "Postgres-Connection-String (Neon serverless URL). Ohne Wert publiziert das Plugin KEINE Capabilities — der Capability-Resolver droppt downstream-Konsumenten aus der eligible-Menge oder Boot fail't. Bootstrap migriert DATABASE_URL aus dem legacy .env in den Vault. (S+12.5-3: type: secret — DSN wird im Vault gespeichert, nicht in installed.json config.)"
+      help:
+        en: "Postgres connection string (Neon serverless URL). Without a value the plugin publishes NO capabilities — the capability resolver drops downstream consumers from the eligible set, or boot fails. Bootstrap migrates DATABASE_URL from the legacy .env into the vault. (S+12.5-3: type: secret — the DSN is stored in the vault, not in the installed.json config.)"
+        de: "Postgres-Connection-String (Neon serverless URL). Ohne Wert publiziert das Plugin KEINE Capabilities — der Capability-Resolver droppt downstream-Konsumenten aus der eligible-Menge oder Boot fail't. Bootstrap migriert DATABASE_URL aus dem legacy .env in den Vault. (S+12.5-3: type: secret — DSN wird im Vault gespeichert, nicht in installed.json config.)"
     - key: "graph_tenant_id"
-      label: "Graph Tenant ID"
+      label:
+        en: "Graph Tenant ID"
+        de: "Graph-Tenant-ID"
       type: "string"
       required: false
-      help: "Tenant-Schlüssel für die Neon-Tabellen (graph_nodes.tenant_id-Spalte). Migriert aus GRAPH_TENANT_ID. Default: 'default'."
+      help:
+        en: "Tenant key for the Neon tables (graph_nodes.tenant_id column). Migrated from GRAPH_TENANT_ID. Default: 'default'."
+        de: "Tenant-Schlüssel für die Neon-Tabellen (graph_nodes.tenant_id-Spalte). Migriert aus GRAPH_TENANT_ID. Default: 'default'."
     - key: "auto_migrate_vector_columns"
-      label: "Auto-migrate vector columns on a dimension change"
+      label:
+        en: "Auto-migrate vector columns on a dimension change"
+        de: "Vektorspalten bei Dimensionswechsel automatisch migrieren"
       type: "string"
       required: false
-      help: "Hauptschalter für den destruktiven Spalten-Umbau. 'true' (Default) erlaubt dem #440-Model/Dimension-Gate, die vector-Spalten (graph_nodes.embedding, processes.embedding) auf die Breite des aktiven Modells umzubauen: Index-Definitionen sichern → Index droppen → Spalte droppen → in neuer Breite neu anlegen → Indizes verbatim wiederherstellen → embedding_attempts zurücksetzen → Registry auf das neue Modell setzen. DESTRUKTIV — jedes gespeicherte Embedding wird verworfen und muss vom Backfill-Sweep neu berechnet werden (kostet je einen Provider-Call pro Zeile). MANDANTENWEIT (Cato-Audit Runde 5 / OM-98): graph_nodes und processes sind je EINE physische Tabelle mit tenant_id-Spalte, ein DROP COLUMN trifft also die Embeddings ALLER Mandanten — nicht nur die des Mandanten, der den Umbau auslöst. Deshalb prüft der nicht-destruktive Weg die Leere tabellenweit und unter einem Tabellen-Lock, und der destruktive Weg zeigt diese Reichweite in der Bestätigung an. WICHTIG: Auch bei 'true' passiert das NIEMALS beim Start. Ausgelöst wird der Umbau nur durch eine vom Operator bestätigte Aktion unter Admin → Embedding-Provider: entweder ein Provider-Wechsel mit Checkbox 'Vektoren verwerfen' (destruktiv), oder — seit OM-98 — 'Anbieter neu aktivieren', wenn alle betroffenen Vektorspalten LEER sind. Der zweite Weg verwirft nichts (das Gate prüft die Leere selbst gegen die Datenbank) und braucht deshalb keinen zweiten Provider zum Wechseln — genau der Fall auf einer Bestandsinstallation mit 768er Leerspalten und dem schlüssellosen 384er-Adapter. Ein Neustart auf einer Breiten-Kollision bleibt bei `blocked/column-width-mismatch` — reversibel, nichts wird gelöscht. 'false' verbietet BEIDE Wege komplett, also auch aus der Admin-UI heraus und auch für leere Spalten, und verlangt eine handgeschriebene Migration im Stil von 0005_turn_embeddings_768.sql — die nimmt WEDER den Advisory-Lock NOCH den Tabellen-Lock des automatischen Umbaus, also nur bei gestoppter Middleware fahren. Migriert aus GRAPH_AUTO_MIGRATE_VECTOR_COLUMNS."
+      help:
+        en: "Master switch for the destructive column rebuild. 'true' (default) lets the #440 model/dimension gate rebuild the vector columns (graph_nodes.embedding, processes.embedding) to the width of the active model: back up index definitions → drop index → drop column → recreate it at the new width → restore indexes verbatim → reset embedding_attempts → point the registry at the new model. DESTRUCTIVE — every stored embedding is discarded and must be recomputed by the backfill sweep (one provider call per row). TENANT-WIDE (Cato audit round 5 / OM-98): graph_nodes and processes are each ONE physical table with a tenant_id column, so a DROP COLUMN hits the embeddings of ALL tenants — not just those of the tenant that triggers the rebuild. That is why the non-destructive path checks for emptiness table-wide and under a table lock, and the destructive path shows this reach in the confirmation. IMPORTANT: even with 'true' this NEVER happens at startup. The rebuild is only triggered by an operator-confirmed action under Admin → Embedding provider: either a provider switch with the 'Discard vectors' checkbox (destructive), or — since OM-98 — 'Reactivate provider' when all affected vector columns are EMPTY. The second path discards nothing (the gate itself checks emptiness against the database) and therefore needs no second provider to switch to — exactly the case on an existing installation with empty 768 columns and the keyless 384 adapter. A restart on a width collision stays at `blocked/column-width-mismatch` — reversible, nothing is deleted. 'false' forbids BOTH paths entirely, including from the admin UI and for empty columns, and requires a hand-written migration in the style of 0005_turn_embeddings_768.sql — it takes NEITHER the advisory lock NOR the table lock of the automatic rebuild, so only run it with the middleware stopped. Migrated from GRAPH_AUTO_MIGRATE_VECTOR_COLUMNS."
+        de: "Hauptschalter für den destruktiven Spalten-Umbau. 'true' (Default) erlaubt dem #440-Model/Dimension-Gate, die vector-Spalten (graph_nodes.embedding, processes.embedding) auf die Breite des aktiven Modells umzubauen: Index-Definitionen sichern → Index droppen → Spalte droppen → in neuer Breite neu anlegen → Indizes verbatim wiederherstellen → embedding_attempts zurücksetzen → Registry auf das neue Modell setzen. DESTRUKTIV — jedes gespeicherte Embedding wird verworfen und muss vom Backfill-Sweep neu berechnet werden (kostet je einen Provider-Call pro Zeile). MANDANTENWEIT (Cato-Audit Runde 5 / OM-98): graph_nodes und processes sind je EINE physische Tabelle mit tenant_id-Spalte, ein DROP COLUMN trifft also die Embeddings ALLER Mandanten — nicht nur die des Mandanten, der den Umbau auslöst. Deshalb prüft der nicht-destruktive Weg die Leere tabellenweit und unter einem Tabellen-Lock, und der destruktive Weg zeigt diese Reichweite in der Bestätigung an. WICHTIG: Auch bei 'true' passiert das NIEMALS beim Start. Ausgelöst wird der Umbau nur durch eine vom Operator bestätigte Aktion unter Admin → Embedding-Provider: entweder ein Provider-Wechsel mit Checkbox 'Vektoren verwerfen' (destruktiv), oder — seit OM-98 — 'Anbieter neu aktivieren', wenn alle betroffenen Vektorspalten LEER sind. Der zweite Weg verwirft nichts (das Gate prüft die Leere selbst gegen die Datenbank) und braucht deshalb keinen zweiten Provider zum Wechseln — genau der Fall auf einer Bestandsinstallation mit 768er Leerspalten und dem schlüssellosen 384er-Adapter. Ein Neustart auf einer Breiten-Kollision bleibt bei `blocked/column-width-mismatch` — reversibel, nichts wird gelöscht. 'false' verbietet BEIDE Wege komplett, also auch aus der Admin-UI heraus und auch für leere Spalten, und verlangt eine handgeschriebene Migration im Stil von 0005_turn_embeddings_768.sql — die nimmt WEDER den Advisory-Lock NOCH den Tabellen-Lock des automatischen Umbaus, also nur bei gestoppter Middleware fahren. Migriert aus GRAPH_AUTO_MIGRATE_VECTOR_COLUMNS."
     - key: "graph_embedding_backfill_enabled"
-      label: "Embedding Backfill Enabled"
+      label:
+        en: "Embedding Backfill Enabled"
+        de: "Embedding-Backfill aktiviert"
       type: "string"
       required: false
-      help: "'true' aktiviert den in-process Embedding-Backfill-Scheduler (re-embedded Turns deren post-commit `embedAndStoreTurn` failed). Default: 'true'. Migriert aus GRAPH_EMBEDDING_BACKFILL_ENABLED. No-op ohne `embeddingClient`."
+      help:
+        en: "'true' enables the in-process embedding backfill scheduler (re-embeds turns whose post-commit `embedAndStoreTurn` failed). Default: 'true'. Migrated from GRAPH_EMBEDDING_BACKFILL_ENABLED. No-op without `embeddingClient`."
+        de: "'true' aktiviert den in-process Embedding-Backfill-Scheduler (re-embedded Turns deren post-commit `embedAndStoreTurn` failed). Default: 'true'. Migriert aus GRAPH_EMBEDDING_BACKFILL_ENABLED. No-op ohne `embeddingClient`."
     - key: "graph_embedding_backfill_interval_minutes"
-      label: "Backfill Interval (minutes)"
+      label:
+        en: "Backfill Interval (minutes)"
+        de: "Backfill-Intervall (Minuten)"
       type: "string"
       required: false
-      help: "Sweep-Intervall des Backfill-Schedulers. Default: 5. Migriert aus GRAPH_EMBEDDING_BACKFILL_INTERVAL_MINUTES."
+      help:
+        en: "Sweep interval of the backfill scheduler. Default: 5. Migrated from GRAPH_EMBEDDING_BACKFILL_INTERVAL_MINUTES."
+        de: "Sweep-Intervall des Backfill-Schedulers. Default: 5. Migriert aus GRAPH_EMBEDDING_BACKFILL_INTERVAL_MINUTES."
     - key: "graph_embedding_backfill_batch_size"
-      label: "Backfill Batch Size"
+      label:
+        en: "Backfill Batch Size"
+        de: "Backfill-Batchgröße"
       type: "string"
       required: false
-      help: "Maximale Anzahl Turns pro Sweep. Default: 20. Migriert aus GRAPH_EMBEDDING_BACKFILL_BATCH_SIZE."
+      help:
+        en: "Maximum number of turns per sweep. Default: 20. Migrated from GRAPH_EMBEDDING_BACKFILL_BATCH_SIZE."
+        de: "Maximale Anzahl Turns pro Sweep. Default: 20. Migriert aus GRAPH_EMBEDDING_BACKFILL_BATCH_SIZE."
     - key: "graph_embedding_backfill_max_attempts"
-      label: "Backfill Max Attempts"
+      label:
+        en: "Backfill Max Attempts"
+        de: "Backfill: maximale Versuche"
       type: "string"
       required: false
-      help: "Hard cap auf Retries pro Turn. Default: 5. Migriert aus GRAPH_EMBEDDING_BACKFILL_MAX_ATTEMPTS."
+      help:
+        en: "Hard cap on retries per turn. Default: 5. Migrated from GRAPH_EMBEDDING_BACKFILL_MAX_ATTEMPTS."
+        de: "Hard cap auf Retries pro Turn. Default: 5. Migriert aus GRAPH_EMBEDDING_BACKFILL_MAX_ATTEMPTS."
     # OB-73 (Phase 4): Tiering-Lifecycle. Decay-Score-Update + HOT/WARM/COLD
     # rotation + Done-Task-TTL run as an hourly cron (decay-rotation), GC + hard
     # limits as a daily cron (gc-quotas — Slice C). This job USES the columns
@@ -98,96 +126,164 @@ setup:
     # palaia-ADR-004: λ=0.05/d (~14d half-life), HOT→WARM at score<0.5+7d
     # idle, WARM→COLD at score<0.1+30d, Done-Tasks hard-deleted after 24h.
     - key: "graph_decay_enabled"
-      label: "Decay & Tier-Rotation Enabled"
+      label:
+        en: "Decay & Tier-Rotation Enabled"
+        de: "Decay & Tier-Rotation aktiviert"
       type: "string"
       required: false
-      help: "'true' aktiviert den hourly Decay+Rotation-Job. Default: 'true'. 'false' lässt das Plugin laufen, ohne den Cron zu registrieren — sinnvoll für CI/Smoke."
+      help:
+        en: "'true' enables the hourly decay+rotation job. Default: 'true'. 'false' keeps the plugin running without registering the cron — useful for CI/smoke tests."
+        de: "'true' aktiviert den hourly Decay+Rotation-Job. Default: 'true'. 'false' lässt das Plugin laufen, ohne den Cron zu registrieren — sinnvoll für CI/Smoke."
     - key: "graph_decay_interval_minutes"
-      label: "Decay Interval (minutes)"
+      label:
+        en: "Decay Interval (minutes)"
+        de: "Decay-Intervall (Minuten)"
       type: "string"
       required: false
-      help: "Sweep-Intervall des Decay+Rotation-Jobs. Default: 60 (1×/h)."
+      help:
+        en: "Sweep interval of the decay+rotation job. Default: 60 (1×/h)."
+        de: "Sweep-Intervall des Decay+Rotation-Jobs. Default: 60 (1×/h)."
     - key: "graph_decay_lambda"
-      label: "Decay Lambda (per day)"
+      label:
+        en: "Decay Lambda (per day)"
+        de: "Decay-Lambda (pro Tag)"
       type: "string"
       required: false
-      help: "Daily decay-rate constant in `score = exp(-λ · age_days) · (1 + ln(1 + access_count))`. Default: 0.05 (~14d Halbwertszeit). Höher = schnellerer Decay."
+      help:
+        en: "Daily decay-rate constant in `score = exp(-λ · age_days) · (1 + ln(1 + access_count))`. Default: 0.05 (~14d half-life). Higher = faster decay."
+        de: "Tägliche Decay-Ratenkonstante in `score = exp(-λ · age_days) · (1 + ln(1 + access_count))`. Default: 0.05 (~14d Halbwertszeit). Höher = schnellerer Decay."
     - key: "graph_decay_hot_to_warm_score"
-      label: "HOT→WARM Score Threshold"
+      label:
+        en: "HOT→WARM Score Threshold"
+        de: "Score-Schwelle HOT→WARM"
       type: "string"
       required: false
-      help: "decay_score-Schwelle für die HOT→WARM-Rotation (additionally idle ≥ hot_to_warm_idle_days). Default: 0.5."
+      help:
+        en: "decay_score threshold for the HOT→WARM rotation (additionally idle ≥ hot_to_warm_idle_days). Default: 0.5."
+        de: "decay_score-Schwelle für die HOT→WARM-Rotation (zusätzlich inaktiv ≥ hot_to_warm_idle_days). Default: 0.5."
     - key: "graph_decay_hot_to_warm_idle_days"
-      label: "HOT→WARM Idle Days"
+      label:
+        en: "HOT→WARM Idle Days"
+        de: "Inaktive Tage HOT→WARM"
       type: "string"
       required: false
-      help: "Idle-Days-Gate für HOT→WARM (gegen `COALESCE(accessed_at, created_at)`). Default: 7."
+      help:
+        en: "Idle-days gate for HOT→WARM (measured against `COALESCE(accessed_at, created_at)`). Default: 7."
+        de: "Idle-Days-Gate für HOT→WARM (gegen `COALESCE(accessed_at, created_at)`). Default: 7."
     - key: "graph_decay_warm_to_cold_score"
-      label: "WARM→COLD Score Threshold"
+      label:
+        en: "WARM→COLD Score Threshold"
+        de: "Score-Schwelle WARM→COLD"
       type: "string"
       required: false
-      help: "decay_score-Schwelle für die WARM→COLD-Rotation. Default: 0.1."
+      help:
+        en: "decay_score threshold for the WARM→COLD rotation. Default: 0.1."
+        de: "decay_score-Schwelle für die WARM→COLD-Rotation. Default: 0.1."
     - key: "graph_decay_warm_to_cold_idle_days"
-      label: "WARM→COLD Idle Days"
+      label:
+        en: "WARM→COLD Idle Days"
+        de: "Inaktive Tage WARM→COLD"
       type: "string"
       required: false
-      help: "Idle-Days-Gate für WARM→COLD. Default: 30."
+      help:
+        en: "Idle-days gate for WARM→COLD. Default: 30."
+        de: "Idle-Days-Gate für WARM→COLD. Default: 30."
     - key: "graph_decay_done_task_ttl_hours"
-      label: "Done-Task TTL (hours)"
+      label:
+        en: "Done-Task TTL (hours)"
+        de: "TTL für erledigte Tasks (Stunden)"
       type: "string"
       required: false
-      help: "TTL für `entry_type='task' AND task_status='done'`-Rows. Nach Ablauf hard-DELETE. Default: 24. Markdown-Audit-Transkript bleibt unberührt."
+      help:
+        en: "TTL for `entry_type='task' AND task_status='done'` rows. Hard DELETE once expired. Default: 24. The Markdown audit transcript is left untouched."
+        de: "TTL für `entry_type='task' AND task_status='done'`-Rows. Nach Ablauf hard-DELETE. Default: 24. Markdown-Audit-Transkript bleibt unberührt."
     # OB-73 (Phase 4 / Slice C): GC + hard-limits per scope. Daily cron
     # (default 04:00 UTC). Eviction-Order: type-weight × decay_score ASC,
     # ties broken by created_at ASC. Type-weights from palaia-ADR-004:
     # process > task > memory. `done-task-TTL` runs separately in the hourly
     # decay-job, not here.
     - key: "graph_gc_enabled"
-      label: "GC & Hard-Limits Enabled"
+      label:
+        en: "GC & Hard-Limits Enabled"
+        de: "GC & harte Limits aktiviert"
       type: "string"
       required: false
-      help: "'true' aktiviert den daily GC-Job (count + char Quota per scope). Default: 'true'."
+      help:
+        en: "'true' enables the daily GC job (count + char quota per scope). Default: 'true'."
+        de: "'true' aktiviert den daily GC-Job (count + char Quota per scope). Default: 'true'."
     - key: "graph_gc_cron"
-      label: "GC Cron"
+      label:
+        en: "GC Cron"
+        de: "GC-Cron"
       type: "string"
       required: false
-      help: "5-stelliger Cron für den GC-Sweep. Default: '0 4 * * *' (täglich 04:00 UTC). Bei intervalMs-Override: graph_gc_interval_minutes (überschreibt cron)."
+      help:
+        en: "5-field cron for the GC sweep. Default: '0 4 * * *' (daily at 04:00 UTC). For an intervalMs override: graph_gc_interval_minutes (overrides cron)."
+        de: "5-stelliger Cron für den GC-Sweep. Default: '0 4 * * *' (täglich 04:00 UTC). Bei intervalMs-Override: graph_gc_interval_minutes (überschreibt cron)."
     - key: "graph_gc_interval_minutes"
-      label: "GC Interval Override (minutes)"
+      label:
+        en: "GC Interval Override (minutes)"
+        de: "Abweichendes GC-Intervall (Minuten)"
       type: "string"
       required: false
-      help: "Optional: Statt Cron einen festen Intervall fahren (für Tests / hot-Loops). Default: leer (Cron wird verwendet)."
+      help:
+        en: "Optional: run a fixed interval instead of the cron (for tests / hot loops). Default: empty (the cron is used)."
+        de: "Optional: Statt Cron einen festen Intervall fahren (für Tests / hot-Loops). Default: leer (Cron wird verwendet)."
     - key: "graph_gc_hot_max_entries"
-      label: "Hot-Tier Max Entries (per scope)"
+      label:
+        en: "Hot-Tier Max Entries (per scope)"
+        de: "Max. Einträge im Hot-Tier (pro Scope)"
       type: "string"
       required: false
-      help: "Per-scope Obergrenze für Turn-Count. Über dem Limit werden die niedrig-priorisierten Excess-Rows pro Sweep evicted. Default: 50."
+      help:
+        en: "Per-scope upper limit for the turn count. Above the limit, the lowest-priority excess rows are evicted per sweep. Default: 50."
+        de: "Per-scope Obergrenze für Turn-Count. Über dem Limit werden die niedrig-priorisierten Excess-Rows pro Sweep evicted. Default: 50."
     - key: "graph_gc_max_total_chars"
-      label: "Max Total Chars (per scope)"
+      label:
+        en: "Max Total Chars (per scope)"
+        de: "Max. Gesamtzeichen (pro Scope)"
       type: "string"
       required: false
-      help: "Per-scope Obergrenze für SUM(LENGTH(userMessage)+LENGTH(assistantAnswer)). Default: 500000 (~125k Tokens)."
+      help:
+        en: "Per-scope upper limit for SUM(LENGTH(userMessage)+LENGTH(assistantAnswer)). Default: 500000 (~125k tokens)."
+        de: "Per-scope Obergrenze für SUM(LENGTH(userMessage)+LENGTH(assistantAnswer)). Default: 500000 (~125k Tokens)."
     - key: "graph_gc_type_weight_memory"
-      label: "GC Type-Weight (memory)"
+      label:
+        en: "GC Type-Weight (memory)"
+        de: "GC-Typgewicht (memory)"
       type: "string"
       required: false
-      help: "Eviction-Priorität-Gewicht für entry_type='memory'. Default: 1.0 (baseline). Höher = wird länger behalten."
+      help:
+        en: "Eviction priority weight for entry_type='memory'. Default: 1.0 (baseline). Higher = kept longer."
+        de: "Eviction-Priorität-Gewicht für entry_type='memory'. Default: 1.0 (baseline). Höher = wird länger behalten."
     - key: "graph_gc_type_weight_process"
-      label: "GC Type-Weight (process)"
+      label:
+        en: "GC Type-Weight (process)"
+        de: "GC-Typgewicht (process)"
       type: "string"
       required: false
-      help: "Default: 2.0. Process-Knowledge wird länger behalten als generic memory."
+      help:
+        en: "Default: 2.0. Process knowledge is kept longer than generic memory."
+        de: "Default: 2.0. Process-Knowledge wird länger behalten als generic memory."
     - key: "graph_gc_type_weight_task"
-      label: "GC Type-Weight (task)"
+      label:
+        en: "GC Type-Weight (task)"
+        de: "GC-Typgewicht (task)"
       type: "string"
       required: false
-      help: "Default: 1.5."
+      help:
+        en: "Default: 1.5."
+        de: "Default: 1.5."
     # OB-76 (Phase 7) Process-Memory: Dedup-First-Write threshold.
     - key: "process_dedup_threshold"
-      label: "Process Dedup Threshold"
+      label:
+        en: "Process Dedup Threshold"
+        de: "Dedup-Schwelle für Prozesse"
       type: "string"
       required: false
-      help: "Cosine-similarity-Schwelle für `write_process`-Dedup. Default: 0.9. Tiefer = aggressiveres Blocken; höher = mehr near-duplicates erlaubt."
+      help:
+        en: "Cosine similarity threshold for `write_process` dedup. Default: 0.9. Lower = more aggressive blocking; higher = more near-duplicates allowed."
+        de: "Cosine-similarity-Schwelle für `write_process`-Dedup. Default: 0.9. Tiefer = aggressiveres Blocken; höher = mehr near-duplicates erlaubt."
 
 playbook:
   when_to_use: |

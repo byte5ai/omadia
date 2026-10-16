@@ -165,8 +165,11 @@ No tool at all when there is no handler (`members` binding failed, plugin not
 ready), when the binding passes its 15 s deadline, or when it rejects; such a
 turn also refuses a `memory` call outright rather than passing it to the shared
 dispatch. The CLI system prompt carries the in-process memory rules (curated
-`_rules/` tree, tier block). What `view` returns reaches the vendor unmasked,
-like every other tool result on this path.
+`_rules/` tree, tier block). What `view` returns reaches the vendor unmasked —
+the same as on the API-key path, where `memory` is on the Privacy Shield's
+intern-exempt list (`privacyInternPolicy.ts`) and goes to the model in clear.
+Decided with Marcel on #1102 (2026-10-16): parity with the API path, including
+the agent-private fallback when the binder throws.
 
 This is a deliberate trade-off in line with the UI's notice not to route
 personal data through this provider; the decision is recorded on #1087.

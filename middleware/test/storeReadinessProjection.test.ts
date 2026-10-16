@@ -3,7 +3,7 @@
  * `install_state`.
  *
  * The second half is the load-bearing part: 20+ call sites (store.ts,
- * store/[id]/page.tsx, store/page.tsx, operatorAgents.ts, profiles.ts,
+ * store/[id]/page.tsx, store/(index)/page.tsx, operatorAgents.ts, profiles.ts,
  * dependencyChainResolver.ts) branch on `install_state === 'installed'`.
  * Readiness is an orthogonal, additive field — never a widening of
  * `PluginInstallState`.

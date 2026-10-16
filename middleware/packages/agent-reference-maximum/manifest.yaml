@@ -43,8 +43,12 @@ setup:
   fields:
     - key: "digest_cron"
       type: "string"
-      label: "Wöchentlicher Digest-Cron"
-      help: "Cron-Expression (croner-Syntax) für den Wochen-Digest."
+      label:
+        en: "Weekly digest cron"
+        de: "Wöchentlicher Digest-Cron"
+      help:
+        en: "Cron expression (croner syntax) for the weekly digest."
+        de: "Cron-Expression (croner-Syntax) für den Wochen-Digest."
       required: false
       default: "0 8 * * MON"
 

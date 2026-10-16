@@ -36,6 +36,7 @@ changelog.
 
 ## [Unreleased]
 
+<<<<<<< HEAD
 ### Added — the subscription CLI can remember things (`memory` tool)
 
 2026-10-16. On the Claude subscription CLI (`claude-cli`) the agent had no
@@ -47,6 +48,28 @@ memory plugin's root-store registration, and with the same memory rules in
 its prompt. As in-process, a binder that fails for the turn's origin falls back
 to the agent-private stack; a turn with no handler at all (or a binding past its
 15 s deadline) has no memory tool and says so. No migration, no new env var.
+=======
+### Fixed — missing web UI pages answer HTTP 404, not 200
+
+2026-10-16. Pages that call `notFound()` showed the 404 page with status
+`200`: an unknown agent, plugin UI, routine run, store plugin or builder
+draft. Monitoring, link checkers and crawlers saw each of them as healthy
+(#1398). The cause was the root `app/loading.tsx` (OM-96). A loading boundary
+is a Suspense boundary, so Next flushed the shell and the status line before
+the page could run its existence check. There is no root boundary now. Each
+segment has its own `loading.tsx` rendering the shared
+`_components/PageLoading`, and none sits above a `notFound()` page. The index
+pages that share a segment with such a detail route moved into route groups
+so they keep their skeleton, with the same URLs: `(dashboard)` for `/`,
+`(index)` under `/operator/agents`, `/routines`, `/store` and
+`/store/builder`. The trade-off is that a navigation into one of those five
+detail pages commits once its data arrives instead of showing the skeleton.
+`app/__tests__/loadingBoundaries.test.ts` reads the route tree. It fails if a
+boundary is ever added above a `notFound()` page, including a new root
+`loading.tsx`, and if any other page is left without one. Measured on a
+production build: all five detail pages answer 404, and `/` and the index
+pages still stream the skeleton.
+>>>>>>> origin/main
 
 ### Security — Privacy Shield table renders no longer hand real rows to the model (#1402)
 
@@ -153,6 +176,21 @@ link opens the Subscriptions tab and says "Hub" (#1395). The KG lifecycle
 Phase 4" (#1337). New shared helper `web-ui/app/_lib/apiErrorMessage.ts`
 (`serverErrorMessage`, `serverFieldErrors`) reads the server's message out of
 a failed API call.
+
+### Changed — plugin setup forms speak the UI language; manifests are checked
+
+2026-10-16 (#1401). Every in-tree plugin manifest now writes its visible text
+— descriptions, setup field labels, help, pattern hints, setup guides and enum
+option labels — as an `{en, de}` map (290 texts in 20 manifests), so the setup
+forms no longer show German in the English UI and vice versa. Enum option
+labels can now be localized: the setup schema keeps `label` (English, for
+older clients) and adds `label_localized`. The convention is a warning, not a
+gate: a Hub package with plain-string text still loads, and the catalog logs
+one line per plugin version naming the texts. CI checks it for the in-tree
+manifests (`npm run manifest:i18n:check`) and now also runs the web UI's
+`i18n:check` and a literal ratchet (`i18n:literals:check`: `translate` stays
+0, `review` may only go down from 128). `identity.name` stays
+language-neutral.
 
 ### Fixed — usage dashboard: bars, local days, missing calls, what a row costs
 
@@ -273,6 +311,22 @@ one-time token banner now renders above the create form, where the hint says
 it is. No DB migration: key records and the usage log stay vault entries;
 old records read as "no expiry, owner unknown". Rotation is not implemented
 (open question on the PR).
+
+### Fixed — install and upload errors follow the UI language
+
+2026-10-16 (#1401, partly). The install drawer's step line, the setup form's
+field errors and the Hub upload's rejections came from the middleware in
+German, so the English UI showed "Feld … ist erforderlich.", "Eingaben
+enthalten Fehler" and "Version … ist bereits hochgeladen." The server now also
+sends a stable code — `InstallJob.step_code`, and `params` on field errors and
+upload rejections — and the web UI renders it from its catalog in the active
+locale, falling back to the server text for unknown codes. Covered: the
+install drawer and the requires-wizard, every `validateValues` code, the
+operator-facing `json_file` upload codes (`JsonFileFailure.params`), and the
+common upload rejections (incl. multer's size limit). The model-refusal notice
+was one bilingual string; delivery (`chat()`, `chatStream`) now shows it in
+the turn's locale (the AI-Act marking locale, default German) while the
+persisted turn keeps both. Additive; older servers keep working.
 
 ### Fixed — plugin UI host page no longer 404s for scoped plugin ids
 

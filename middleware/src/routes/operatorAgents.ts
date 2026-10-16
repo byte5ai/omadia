@@ -126,7 +126,7 @@ interface AgentPluginCatalogEntry {
  * Operator-UI backend for the multi-orchestrator runtime (US9 / T037).
  *
  * Read + write surface for the operator-facing Agents dashboard at
- * `web-ui/app/operator/agents/page.tsx`. Mounted under `/api/v1` so the
+ * `web-ui/app/operator/agents/(index)/page.tsx`. Mounted under `/api/v1` so the
  * routes are:
  *
  *   GET    /api/v1/operator/agents                       list agents + bindings + plugins

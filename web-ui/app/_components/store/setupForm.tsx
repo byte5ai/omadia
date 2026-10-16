@@ -4,7 +4,7 @@ import { ShieldAlert } from 'lucide-react';
 import { useLocale, useTranslations } from 'next-intl';
 
 import { cn } from '../../_lib/cn';
-import { pickLocalized } from '../../_lib/localized';
+import { enumOptionLabel, pickLocalized } from '../../_lib/localized';
 import { nativePatternAttribute } from '../../_lib/setupFieldPattern';
 import type { InstallSetupField } from '../../_lib/storeTypes';
 
@@ -28,7 +28,104 @@ import type { InstallSetupField } from '../../_lib/storeTypes';
  */
 export interface SetupFieldError {
   code?: string;
+  /** #1401 — interpolation values for the localized text (e.g. `host`). */
+  params?: Record<string, string>;
   message: string;
+}
+
+type ErrorTranslator = (key: string, values?: Record<string, string>) => string;
+
+/** Field types whose `wrong_type` message has its own catalog entry. */
+const WRONG_TYPE_KEYS: Readonly<Record<string, string>> = {
+  string: 'wrongTypeText',
+  secret: 'wrongTypeText',
+  enum: 'wrongTypeText',
+  url: 'wrongTypeUrl',
+  boolean: 'wrongTypeBoolean',
+  integer: 'wrongTypeInteger',
+  host_list: 'wrongTypeHostList',
+};
+
+/** Codes whose text needs only the field label. */
+const LABEL_ONLY_KEYS: Readonly<Record<string, string>> = {
+  required: 'required',
+  invalid_url: 'invalidUrl',
+  not_submittable: 'notSubmittable',
+};
+
+/** `json_file` upload failures that need no field-specific detail. */
+const UPLOAD_KEYS: Readonly<Record<string, string>> = {
+  too_large: 'uploadTooLarge',
+  not_json: 'uploadNotJson',
+  not_an_object: 'uploadNotAnObject',
+};
+
+/**
+ * Codes whose text interpolates server `params` (`setupJsonFile.ts`). Listed
+ * as [catalog key, params required]; the first entry whose params are all
+ * present wins, so `unexpected_document` picks the "has value X" sentence
+ * when the server sent `actual`, and the "is missing" one otherwise.
+ */
+export const PARAM_KEYS: Readonly<
+  Record<string, ReadonlyArray<readonly [string, readonly string[]]>>
+> = {
+  invalid_host: [['invalidHost', ['host']]],
+  unexpected_document: [
+    ['uploadUnexpectedValue', ['key', 'actual', 'expected']],
+    ['uploadUnexpectedMissing', ['key', 'expected']],
+  ],
+  missing_value: [['uploadMissingValue', ['path', 'target']]],
+  bad_extract_path: [['uploadBadExtractPath', ['path', 'target']]],
+};
+
+function paramText(
+  error: SetupFieldError,
+  t: ErrorTranslator,
+): string | undefined {
+  for (const [key, needed] of PARAM_KEYS[error.code ?? ''] ?? []) {
+    const values: Record<string, string> = {};
+    let complete = true;
+    for (const name of needed) {
+      const v = error.params?.[name];
+      if (typeof v !== 'string') {
+        complete = false;
+        break;
+      }
+      values[name] = v;
+    }
+    if (complete) return t(key, values);
+  }
+  return undefined;
+}
+
+/**
+ * #1401 — the text for one server validation error, in the active locale.
+ * Unknown codes, and codes whose parameters the response lacks, keep the
+ * server's own `message`.
+ */
+export function localizedFieldError(
+  error: SetupFieldError,
+  field: InstallSetupField,
+  label: string,
+  patternHint: string | undefined,
+  t: ErrorTranslator,
+): string {
+  const code = error.code;
+  if (code === undefined) return error.message;
+  if (code === 'pattern_mismatch') return patternHint ?? t('patternMismatch', { label });
+  const labelOnly = LABEL_ONLY_KEYS[code];
+  if (labelOnly) return t(labelOnly, { label });
+  if (code === 'wrong_type') {
+    const key = WRONG_TYPE_KEYS[field.type];
+    return key ? t(key, { label }) : error.message;
+  }
+  if (code === 'enum_mismatch') {
+    const allowed = (field.enum ?? []).map((o) => o.value).join(', ');
+    return allowed ? t('enumMismatch', { label, allowed }) : error.message;
+  }
+  if (PARAM_KEYS[code]) return paramText(error, t) ?? error.message;
+  const upload = UPLOAD_KEYS[code];
+  return upload ? t(upload) : error.message;
 }
 
 export function FieldRow({
@@ -59,15 +156,15 @@ export function FieldRow({
   // locale. A missing label falls back to the field key (never blank).
   const fieldLabel = pickLocalized(field.label, locale) ?? field.key;
   const fieldHelp = pickLocalized(field.help, locale);
-  // OM-17 — a German operator must not read an English rejection. Only the
-  // pattern code is overridden: every other install error is either already a
-  // catalog string or a value-shape message the manifest cannot explain.
+  // OM-17 / #1401 — the server writes its validation messages in ONE
+  // language (it has no request locale), so the text is rendered here from
+  // the catalog by `code`, in the operator's locale. The server's `message`
+  // is the fallback for a code this build does not know.
+  const tErr = useTranslations('store.setupForm.errors');
   const errorText =
     error === undefined
       ? undefined
-      : error.code === 'pattern_mismatch' && patternHint
-        ? patternHint
-        : error.message;
+      : localizedFieldError(error, field, fieldLabel, patternHint, tErr);
   // OM-17 — honour the manifest placeholder. The hardcoded `••••••••` told the
   // operator only "this is masked", which is exactly the signal that reads as
   // "type your password here". A manifest that says what shape it wants gets to
@@ -145,7 +242,7 @@ export function FieldRow({
             ) : null}
             {(field.enum ?? []).map((opt) => (
               <option key={opt.value} value={opt.value}>
-                {opt.label}
+                {enumOptionLabel(opt, locale)}
               </option>
             ))}
           </select>

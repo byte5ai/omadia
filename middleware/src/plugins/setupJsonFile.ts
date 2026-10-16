@@ -71,14 +71,17 @@ export type JsonFileFailureCode =
   | 'missing_value'
   | 'invalid_spec';
 
-export type JsonFileFailure =
-  | { readonly code: 'too_large'; readonly message: string }
-  | { readonly code: 'not_json'; readonly message: string }
-  | { readonly code: 'not_an_object'; readonly message: string }
-  | { readonly code: 'unexpected_document'; readonly message: string }
-  | { readonly code: 'bad_extract_path'; readonly message: string }
-  | { readonly code: 'missing_value'; readonly message: string }
-  | { readonly code: 'invalid_spec'; readonly message: string };
+/**
+ * `message` is English operator text. `params` (#1401) carries the values it
+ * interpolates, so a client can render `code` in the operator's locale. It
+ * never carries an extracted value — only names, paths and the declared
+ * expectation.
+ */
+export interface JsonFileFailure {
+  readonly code: JsonFileFailureCode;
+  readonly message: string;
+  readonly params?: Readonly<Record<string, string>>;
+}
 
 export type JsonFileOutcome =
   | { readonly ok: true; readonly values: Record<string, string> }
@@ -161,6 +164,7 @@ export function extractFromJsonFile(
       failure: {
         code: 'too_large',
         message: `The uploaded file is ${String(bytes)} bytes; the limit is ${String(JSON_FILE_MAX_BYTES)}.`,
+        params: { bytes: String(bytes), limit: String(JSON_FILE_MAX_BYTES) },
       },
     };
   }
@@ -200,6 +204,12 @@ export function extractFromJsonFile(
           message:
             `This does not look like the expected file: '${key}' is ` +
             `${got === undefined ? 'missing' : describe(got)}, expected ${describe(want)}.`,
+          // `got` is a scalar from the document the manifest chose to assert
+          // on (see `describe`), never an extracted secret.
+          params:
+            got === undefined
+              ? { key, expected: describe(want) }
+              : { key, actual: describe(got), expected: describe(want) },
         },
       };
     }
@@ -213,6 +223,7 @@ export function extractFromJsonFile(
         failure: {
           code: 'bad_extract_path',
           message: `Setup field '${spec.key}' declares an unsupported extract path '${path}' for '${target}'. Use '$.key' or '$.nested.key'.`,
+          params: { path, target },
         },
       };
     }
@@ -228,6 +239,7 @@ export function extractFromJsonFile(
           message:
             `The uploaded file has no usable value at '${path}' (needed for '${target}'). ` +
             'Check that you selected the right file.',
+          params: { path, target },
         },
       };
     }

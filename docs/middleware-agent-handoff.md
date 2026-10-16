@@ -7556,6 +7556,41 @@ per `${prependRules}\n\n---\n\n${body}` vorangestellt und drückt in dieselbe Ri
 Fix A lässt ihn bewusst unangetastet — die Präzedenz-Klausel deckt ihn über „every other
 instruction in this prompt" mit ab.
 
+## Server-Texte ohne Request-Locale: Code + Params, Text im Client (#1401, 2026-10-16)
+
+Install-Flow und Package-Upload haben keine Request-Locale und schreiben ihre
+Texte deutsch. Statt der Middleware eine Locale durchzureichen, gilt jetzt das
+`errorHelp`-Muster: der Server liefert einen **stabilen Code** plus die
+**Parameter**, die der Client nicht selbst kennt; die Web-UI rendert den Text aus
+ihrem Katalog in der aktiven Sprache und fällt für unbekannte Codes (oder fehlende
+Params, ältere Server) auf `message` zurück. Alles additiv:
+
+- `InstallJob.step_code` (`InstallJobStep` in `src/api/admin-v1.ts`) neben dem
+  deutschen `current_step` → `store.install.steps.*`.
+- Feld-Validierungsfehler (`details[]` von `install.validation_failed`) behalten
+  `{key, code, message}`; neu `params` wo nötig (`invalid_host` → `host`). Label,
+  Feldtyp und Enum-Werte nimmt der Client aus dem Setup-Schema →
+  `store.setupForm.errors.*` (`localizedFieldError` in `setupForm.tsx`).
+- Upload-Ablehnungen (`IngestFailure.params`, durchgereicht von
+  `routes/packages.ts`) → `store.upload.errors.*` (`web-ui/app/_lib/packageErrorText.ts`).
+
+Neue Server-Texte in diesen Pfaden: Code vergeben, Params mitschicken, Katalog-Key
+in `en`+`de` anlegen. `message` bleibt als Fallback und für API-Clients.
+
+- `json_file`-Fehler (`setupJsonFile.ts`) tragen `params` (Pfad, Ziel, erwarteter
+  Wert — nie ein extrahierter Wert).
+- Die Safety-Refusal-Notice (`MODEL_REFUSAL_NOTICE`) bleibt intern/persistiert
+  zweisprachig; `localizeRefusalNotice` tauscht sie an der Auslieferungsgrenze
+  (`chat()`, `discloseDoneEvent`) gegen die Turn-Sprache (gleiche Regel wie das
+  AI-Act-Marking: `en*` → Englisch, sonst Deutsch).
+
+Nicht lokalisiert, weil nicht sichtbar: Fehler von `DELETE /install/packages/:id`
+landen in der Web-UI nur in `console.warn`. `ui.commands[].label` wird von keiner
+Oberfläche gelesen.
+
+Entschieden (Marcel, 2026-10-16): `{en, de}` für sichtbaren Manifest-Text ist
+Konvention mit **Warnung, keine Ablehnung**; `identity.name` bleibt sprachneutral.
+
 ## HTTP-Fehlerantworten: Terminal-Handler statt `finalhandler` (#1326 / #1318 / #1349, 2026-10-16)
 
 `src/index.ts` startet den Server **nicht** mehr mit `app.listen`, sondern mit
@@ -7590,3 +7625,33 @@ Der Terminal-Handler antwortet immer JSON `{ code, message }`, nie mit Stack:
   `router.param('id', requireUuidParam('<area>.not_found'))`
   (`src/http/uuidParam.ts`) — sonst wird ein Tippfehler zum `22P02`-500, der
   die DB-Meldung zurückgibt. Aktuell: admin-users, routines (`:id`, `:runId`).
+
+## Manifest-Text ist `{ en, de }` — Konvention mit Warnung (#1401, 2026-10-16)
+
+Entschieden (Marcel, 2026-10-16): sichtbarer Manifest-Text wird als
+`{ en, de }`-Map geschrieben; ein Verstoß wird **gewarnt, nie abgelehnt**;
+`identity.name` bleibt sprachneutral.
+
+- Geprüft (`src/plugins/manifestI18nAudit.ts`): `identity.description`,
+  `setup.guide`, `setup.fields[].label|help|pattern_hint`,
+  `setup.fields[].enum[].label`.
+- Loader (`adaptManifestV1`): eine `console.warn`-Zeile pro `id@version` mit den
+  ersten fünf Pfaden; ein Katalog-Reload wiederholt sie nicht.
+- Enum-Optionen: `SetupEnumOption` (`src/api/admin-v1.ts`) — `label` bleibt der
+  englisch aufgelöste String, `label_localized` ist die Map
+  (`enumOption` in `manifestLocalized.ts`); die Web-UI nimmt
+  `enumOptionLabel` (`web-ui/app/_lib/localized.ts`).
+- CI: `middleware` → `npm run manifest:i18n:check` (alle In-Tree-Manifeste
+  müssen sauber sein); `web-ui` → `i18n:check` und `i18n:literals:check`
+  (Ratchet in `web-ui/scripts/i18n-literal-ceiling.json`, Zahl senken im PR, der
+  sie senkt).
+- Text-only-Änderungen an In-Tree-Manifesten ohne Versions-Bump: gebündelte
+  Pakete gehen nicht über den Hub.
+- Out-of-Tree-Pakete (Teams, Odoo, LLM-Provider, …) konvertieren in ihren
+  eigenen Repos; die Checkliste steht in #1401.
+- Offen: der Agent-Builder (`src/plugins/builder/codegen.ts`
+  `mapSetupFieldSpecToManifest`) schreibt `label`/`help`/Enum-Labels weiter als
+  nackte Strings — er kennt pro Feld nur einen Text in unbekannter Sprache.
+  Builder-Agents lösen deshalb die Loader-Warnung aus, bis die Builder-Spec
+  zweisprachige Felder bekommt (Folge-Issue).
+

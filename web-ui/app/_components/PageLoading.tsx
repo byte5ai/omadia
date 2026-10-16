@@ -1,22 +1,28 @@
 import { getTranslations } from 'next-intl/server';
 
 /**
- * Root loading boundary (OM-96).
+ * The navigation skeleton every `loading.tsx` renders (OM-96).
  *
  * A beta tester reported the DASHBOARD nav item "does not navigate": the page
  * stayed, the active marker stayed, only the window title sometimes changed.
- * The nav was innocent. Without a `loading.tsx` anywhere in the tree, Next has
- * no boundary to show while a dynamic route's RSC payload is in flight, so it
- * keeps the CURRENT page mounted and commits the navigation only once the new
- * payload arrives. `app/page.tsx` is `force-dynamic` and awaits six upstream
- * calls, so one slow middleware endpoint made a working navigation look like a
- * dead link — there was no visual difference between "loading" and "ignored".
+ * The nav was innocent. Without a `loading.tsx` boundary, Next keeps the
+ * CURRENT page mounted while a dynamic route's RSC payload is in flight and
+ * commits the navigation only once it arrives, so one slow middleware endpoint
+ * made a working navigation look like a dead link. A boundary makes the
+ * navigation *observable*: the click commits immediately and the nav marker
+ * moves. The other half of that fix, bounding the fetches, lives in
+ * `_lib/api.ts` (`RSC_FETCH_TIMEOUT_MS`).
  *
- * This boundary is the half of the fix that makes the navigation *observable*:
- * the click now commits immediately and the nav marker moves. The other half —
- * bounding those fetches — lives in `_lib/api.ts` (`RSC_FETCH_TIMEOUT_MS`), so
- * a hung endpoint degrades one dashboard card instead of parking the page here
- * forever.
+ * WHY THERE IS NO ROOT `app/loading.tsx` (#1398)
+ * ----------------------------------------------
+ * A loading boundary is a Suspense boundary: Next flushes the shell, and with
+ * it the `200` status line, before the page below it runs. A page that then
+ * calls `notFound()` can no longer answer 404; it serves the not-found UI with
+ * status 200, and monitoring, link checkers and crawlers see a healthy page.
+ * So the boundary sits per segment instead, never above a page that calls
+ * `notFound()`. Index pages that share a segment with such a detail route live
+ * in a route group (`(index)`, `(dashboard)`) to get their own boundary.
+ * `app/__tests__/loadingBoundaries.test.ts` enforces both halves.
  *
  * Deliberately a plain skeleton and not a spinner: it stands in for content
  * that is arriving, and a shape that matches the page underneath is less
@@ -24,7 +30,7 @@ import { getTranslations } from 'next-intl/server';
  * frame. `role="status"` carries the announcement for screen readers, which
  * would otherwise be told nothing at all.
  */
-export default async function Loading(): Promise<React.ReactElement> {
+export async function PageLoading(): Promise<React.ReactElement> {
   const t = await getTranslations('layout');
   return (
     <main

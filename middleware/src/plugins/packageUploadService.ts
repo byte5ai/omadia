@@ -52,8 +52,14 @@ export interface IngestSuccess {
 export interface IngestFailure {
   ok: false;
   code: string;
+  /** Display text in one fixed language — the upload has no request locale. */
   message: string;
   details?: unknown;
+  /**
+   * #1401 — the values a client needs to render `code` in the operator's
+   * locale (e.g. `{ pluginId, version }` for `package.duplicate_version`).
+   */
+  params?: Record<string, string>;
 }
 
 export type IngestResult = IngestSuccess | IngestFailure;
@@ -146,6 +152,8 @@ export class PackageUploadService {
       return fail(
         'package.too_large',
         `Upload überschreitet ${this.deps.limits.maxBytes} Bytes.`,
+        undefined,
+        { maxBytes: String(this.deps.limits.maxBytes) },
       );
     }
 
@@ -239,6 +247,8 @@ export class PackageUploadService {
           return fail(
             'package.id_mismatch',
             `package.json.name (${String(pkgJson['name'])}) stimmt nicht mit manifest.identity.id (${plugin.id}) überein.`,
+            undefined,
+            { packageName: String(pkgJson['name']), pluginId: plugin.id },
           );
         }
         if (
@@ -248,6 +258,8 @@ export class PackageUploadService {
           return fail(
             'package.version_mismatch',
             `package.json.version (${String(pkgJson['version'])}) stimmt nicht mit manifest.identity.version (${plugin.version}) überein.`,
+            undefined,
+            { packageVersion: String(pkgJson['version']), pluginVersion: plugin.version },
           );
         }
       }
@@ -265,6 +277,8 @@ export class PackageUploadService {
         return fail(
           'package.entry_missing',
           `lifecycle.entry '${entryRel}' ist im Zip nicht vorhanden.`,
+          undefined,
+          { entry: entryRel },
         );
       }
       // #453 (codex review fix) — the code scan skips node_modules/.git, so
@@ -335,6 +349,7 @@ export class PackageUploadService {
             'Ein Upload darf ein mitgeliefertes Plugin nicht überschreiben — vergib dem Paket eine eigene ID. ' +
             `Wenn der Override bewusst gewollt ist, setze ${BUNDLED_ID_OVERRIDE_ENV}=1 in der Middleware-Umgebung.`,
           { pluginId: plugin.id, overrideEnv: BUNDLED_ID_OVERRIDE_ENV },
+          { pluginId: plugin.id, overrideEnv: BUNDLED_ID_OVERRIDE_ENV },
         );
       }
 
@@ -342,12 +357,16 @@ export class PackageUploadService {
         return fail(
           'package.id_conflict_builtin',
           `Plugin-ID "${plugin.id}" kollidiert mit einem Built-in-Eintrag im Katalog.`,
+          undefined,
+          { pluginId: plugin.id },
         );
       }
       if (existingUploaded && existingUploaded.version === plugin.version) {
         return fail(
           'package.duplicate_version',
           `Version ${plugin.version} von ${plugin.id} ist bereits hochgeladen. Version anheben oder DELETE aufrufen.`,
+          undefined,
+          { pluginId: plugin.id, version: plugin.version },
         );
       }
 
@@ -683,8 +702,14 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
   return undefined;
 }
 
-function fail(code: string, message: string, details?: unknown): IngestFailure {
+function fail(
+  code: string,
+  message: string,
+  details?: unknown,
+  params?: Record<string, string>,
+): IngestFailure {
   const out: IngestFailure = { ok: false, code, message };
   if (details !== undefined) out.details = details;
+  if (params !== undefined) out.params = params;
   return out;
 }

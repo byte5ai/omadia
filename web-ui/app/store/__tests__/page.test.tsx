@@ -38,7 +38,7 @@ vi.mock('../../_lib/authRedirect', () => ({
 }));
 
 import { OnboardingModal } from '../../_components/onboarding/OnboardingModal';
-import StorePage from '../page';
+import StorePage from '../(index)/page';
 
 interface ModalProps {
   operatorInstalledCount: number;

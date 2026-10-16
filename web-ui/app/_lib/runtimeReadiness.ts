@@ -2,7 +2,7 @@ import { ApiError } from './api';
 
 /**
  * The ONE classifier behind both runtime-readiness surfaces: onboarding step 1
- * on the dashboard (server-rendered, `app/page.tsx`) and the
+ * on the dashboard (server-rendered, `app/(dashboard)/page.tsx`) and the
  * `RuntimeReadinessBanner` (client probe). Exported from here precisely so the
  * two cannot drift apart again — the drift WAS the bug.
  *
@@ -37,7 +37,7 @@ import { ApiError } from './api';
  * "the container is down" — a live middleware can also answer 500 from that
  * one handler. The copy on both surfaces is worded for the weaker claim, so
  * it cannot contradict the health tile beside it (`middlewareOk` in
- * `app/page.tsx`, which is true as soon as ANY call came back).
+ * `app/(dashboard)/page.tsx`, which is true as soon as ANY call came back).
  *
  * OM-78 (#1001) biased the old boolean toward `true` on purpose, so a network
  * blip would not un-tick step 1. #1088 narrows that trade deliberately: a blip
