@@ -5356,6 +5356,9 @@ leave a record of who did it.
 
 Residual: the purge rows are not mirrored into `admin_audit` (#1315), and the
 preview token does not survive a restart or span several middleware processes.
+A user purge misses a Turn whose `user_id` is a raw channel id (Telegram id,
+Teams `29:` id without an AAD id) when its run trace was never ingested, since
+the `BELONGS_TO` edge to the user cluster is the only other link.
 
 ## 11. Reviewer checklist
 

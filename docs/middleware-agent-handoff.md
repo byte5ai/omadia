@@ -4388,6 +4388,9 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
   jedem Purge stehen; für eine vollständige Löschung pro Agent/User fehlt eine Zuordnung dieser
   Bäume zu Agent bzw. Person.
 - **Team/Channel im KG**: keine Scope-Spalte, also kein KG-Purge für diese Achsen.
+- **User-Achse, rohe Channel-Ids**: ein Turn mit roher Channel-Id in `user_id` (Telegram,
+  Teams `29:` ohne AAD-Id) wird nur über die `BELONGS_TO`-Kante gefunden; fehlt der Run-Trace,
+  bleibt er stehen.
 - **`memory_purge_audit` → `admin_audit`**: Purges stehen nicht neben den anderen Admin-Aktionen
   (#1315 / Cluster C07).
 
