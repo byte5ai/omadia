@@ -94,8 +94,11 @@ export function createRegistryInstallRouter(deps: RegistryInstallDeps): Router {
         return;
       }
 
+      // #1092 — "ingested", not "installed": the package is fetched, verified
+      // and registered, but it still has to go through the install wizard
+      // (configure + activate) before it serves anything.
       log(
-        `[registry] installed ${result.plugin_id}@${result.version} from '${resolved.registry}'`,
+        `[registry] ingested ${result.plugin_id}@${result.version} from '${resolved.registry}' — package registered, not yet installed`,
       );
 
       // C5 — resolve + ingest the target's transitive depends_on parents.

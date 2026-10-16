@@ -9,6 +9,7 @@ import { LedgerAlreadyOwnedError } from '../platform/pluginSqlGrantStore.js';
 import type { PublicPathGrantRegistry } from '../platform/publicPathGrants.js';
 import { validateDeclaredPublicPath } from '../platform/publicPathGrants.js';
 import type { PublicPathGrantStore } from '../platform/publicPathGrantStore.js';
+import { auditActorFromRequest, type AdminAuditLog } from '../auth/adminAuditLog.js';
 import { publicPaths } from '../auth/publicPaths.js';
 import type { InstalledAgent, InstalledRegistry } from '../plugins/installedRegistry.js';
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
@@ -75,6 +76,11 @@ export interface GrantRouteDeps {
    *  reads the resulting state from — this route never infers success from the
    *  absence of a throw. */
   reactivate?: (agentId: string) => Promise<unknown>;
+  /** #1347 — every consent change writes one `plugin.grants_change` row with
+   *  the granted set before and after, so the record of who opened an
+   *  unauthenticated path survives the revoke that DELETEs its grant row. */
+  audit?: Pick<AdminAuditLog, 'record'>;
+  log?: (msg: string) => void;
 }
 
 /** One thing the manifest asked for that the operator has not granted.
@@ -346,6 +352,87 @@ export async function resyncPublicPathGrants(
   }
 }
 
+/** What one plugin has been granted, as `plugin.grants_change` records it. */
+export interface GrantSnapshot {
+  readonly public_paths: readonly string[];
+  readonly sql: { readonly ledger: string } | null;
+}
+
+export async function readGrantSnapshot(
+  deps: Pick<GrantRouteDeps, 'publicPathGrantStore' | 'sqlGrantStore'>,
+  pluginId: string,
+): Promise<GrantSnapshot> {
+  const paths = (await deps.publicPathGrantStore?.listForPlugin(pluginId)) ?? new Set<string>();
+  const sql = await deps.sqlGrantStore?.get(pluginId);
+  return {
+    public_paths: [...paths].sort(),
+    sql: sql ? { ledger: sql.ledger } : null,
+  };
+}
+
+/**
+ * #1347 — one audit row and one log line per consent change that changed
+ * something. Re-reads the stores rather than trusting the request, so the
+ * row says what is on record, not what was asked for. Best-effort and loud:
+ * the consent stands even when the audit write fails, as with the conductor's
+ * role batons (#759).
+ */
+async function auditGrantChange(
+  deps: GrantRouteDeps,
+  req: Request,
+  pluginId: string,
+  before: GrantSnapshot | undefined,
+): Promise<void> {
+  const log = deps.log ?? ((m: string) => console.log(m));
+  let after: GrantSnapshot;
+  try {
+    after = await readGrantSnapshot(deps, pluginId);
+  } catch (err) {
+    console.error(
+      `[grants] could not re-read consent for ${JSON.stringify(pluginId)} to audit it:`,
+      err instanceof Error ? err.message : err,
+    );
+    return;
+  }
+  const prior = before ?? { public_paths: [], sql: null };
+  const opened = after.public_paths.filter((p) => !prior.public_paths.includes(p));
+  const closed = prior.public_paths.filter((p) => !after.public_paths.includes(p));
+  const sqlChanged = prior.sql?.ledger !== after.sql?.ledger;
+  // Unknown prior state: record every request, since "no change" cannot be shown.
+  if (before !== undefined && opened.length === 0 && closed.length === 0 && !sqlChanged) return;
+
+  const actor = auditActorFromRequest(req);
+  const changes = [
+    ...(opened.length > 0 ? [`opened public paths ${JSON.stringify(opened)}`] : []),
+    ...(closed.length > 0 ? [`closed public paths ${JSON.stringify(closed)}`] : []),
+    ...(sqlChanged
+      ? [
+          after.sql
+            ? `granted SQL ledger ${JSON.stringify(after.sql.ledger)}`
+            : `revoked SQL ledger ${JSON.stringify(prior.sql?.ledger)}`,
+        ]
+      : []),
+  ];
+  log(
+    `[grants] ${actor.email ?? 'unknown actor'} changed consent for ${JSON.stringify(pluginId)}: ${changes.join('; ')}`,
+  );
+  if (!deps.audit) return;
+  try {
+    await deps.audit.record({
+      actor,
+      action: 'plugin.grants_change',
+      target: `plugin:${pluginId}`,
+      before: before ?? 'unknown',
+      after,
+    });
+  } catch (err) {
+    console.error(
+      `[grants] audit write failed for ${JSON.stringify(pluginId)}:`,
+      err instanceof Error ? err.message : err,
+    );
+  }
+}
+
 /** Session identity of whoever is consenting. Never read from the body — see
  *  the module header. */
 export function actorOf(req: Request): string {
@@ -487,10 +574,26 @@ async function commitGrantsExclusively(
     return null;
   }
 
+  // The audit's "before" must never stand between an operator and a consent
+  // change — closing a public path during an incident included. A failed read
+  // is logged and the row says the prior state is unknown.
+  let before: GrantSnapshot | undefined;
+  try {
+    before = await readGrantSnapshot(deps, id);
+  } catch (err) {
+    console.error(
+      `[grants] could not read the current consent for ${JSON.stringify(id)} before a change — its audit row will not have a before state:`,
+      err instanceof Error ? err.message : err,
+    );
+  }
+
   try {
     await applyGrants(deps, id, request, actorOf(req));
   } catch (err) {
     await resyncPublicPathGrants(deps, id);
+    // A failed write can still have changed something (the two tables are not
+    // one transaction) — whatever did change is recorded like any other change.
+    await auditGrantChange(deps, req, id, before);
     if (err instanceof LedgerAlreadyOwnedError) {
       res.status(409).json({
         code: 'runtime.ledger_already_owned',
@@ -504,6 +607,8 @@ async function commitGrantsExclusively(
     });
     return null;
   }
+
+  await auditGrantChange(deps, req, id, before);
 
   // TAKE EFFECT NOW, NOT AT NEXT BOOT.
   //

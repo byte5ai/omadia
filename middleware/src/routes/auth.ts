@@ -428,7 +428,7 @@ export function createAuthRouter(deps: AuthDeps): Router {
       return;
     }
     // Server-side revocation. This is what the UI's 60s heartbeat sees: a
-    // revoked session answers 401 `auth.revoked` (→ the expired overlay), and
+    // revoked session answers 401 `auth.revoked` (→ the "session ended" overlay), and
     // a failed lookup 503 `auth.unavailable`, which the watcher treats as a
     // transient error instead of signing the operator out.
     if (deps.sessions) {

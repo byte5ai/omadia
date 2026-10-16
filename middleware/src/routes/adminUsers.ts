@@ -1,15 +1,16 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 
-import type { AdminAuditLog } from '../auth/adminAuditLog.js';
+import { auditActorFromRequest, type AdminAuditLog } from '../auth/adminAuditLog.js';
 import { loginAccountKey, loginDeviceAccountKey } from '../auth/loginAccount.js';
+import { isValidLoginEmail } from '../auth/loginEmail.js';
 import type { LoginDevices } from '../auth/loginDevices.js';
 import type { LoginRateLimiter } from '../auth/loginRateLimiter.js';
 import { hashPassword } from '../auth/passwordHasher.js';
 import { checkNewPassword, MAX_PASSWORD_LENGTH } from '../auth/passwordPolicy.js';
 import { LOCAL_PROVIDER_ID } from '../auth/providers/LocalPasswordProvider.js';
 import type { SessionRevocation } from '../auth/sessionRevocation.js';
-import type { UserRecord, UserStore } from '../auth/userStore.js';
+import type { UserRecord, UserRole, UserStatus, UserStore } from '../auth/userStore.js';
 
 interface AdminUsersDeps {
   userStore: UserStore;
@@ -105,7 +106,7 @@ export function createAdminUsersRouter(deps: AdminUsersDeps): Router {
     const displayName =
       typeof body.display_name === 'string' ? body.display_name.trim() : '';
 
-    if (email.length === 0 || !email.includes('@')) {
+    if (!isValidLoginEmail(email)) {
       res.status(400).json({ code: 'admin_users.invalid_email' });
       return;
     }
@@ -129,7 +130,7 @@ export function createAdminUsersRouter(deps: AdminUsersDeps): Router {
     forgetDevices(deps, created);
 
     await deps.audit.record({
-      actor: { id: undefined, email: req.session?.email },
+      actor: auditActorFromRequest(req),
       action: 'user.create',
       target: `user:${created.id}`,
       after: toPublicUser(created),
@@ -151,22 +152,12 @@ export function createAdminUsersRouter(deps: AdminUsersDeps): Router {
       return;
     }
 
-    const body = (req.body ?? {}) as {
-      display_name?: unknown;
-      status?: unknown;
-      role?: unknown;
-    };
-
-    const patch: Parameters<UserStore['update']>[1] = {};
-    if (typeof body.display_name === 'string') {
-      patch.displayName = body.display_name.trim();
+    const parsed = parseUserPatch(req.body);
+    if ('code' in parsed) {
+      res.status(400).json(parsed);
+      return;
     }
-    if (body.status === 'active' || body.status === 'disabled') {
-      patch.status = body.status;
-    }
-    if (body.role === 'admin') {
-      patch.role = body.role;
-    }
+    const patch = parsed.patch;
 
     if (patch.status === 'disabled') {
       const isSelf = await isActingOnSelf(req, before, deps.userStore);
@@ -203,7 +194,7 @@ export function createAdminUsersRouter(deps: AdminUsersDeps): Router {
     }
 
     await deps.audit.record({
-      actor: { email: req.session?.email },
+      actor: auditActorFromRequest(req),
       action: 'user.update',
       target: `user:${updated.id}`,
       before: toPublicUser(before),
@@ -252,7 +243,7 @@ export function createAdminUsersRouter(deps: AdminUsersDeps): Router {
     deps.loginLimiter?.clearAccount(loginAccountKey(user.provider, user.email));
 
     await deps.audit.record({
-      actor: { email: req.session?.email },
+      actor: auditActorFromRequest(req),
       action: 'user.reset_password',
       target: `user:${user.id}`,
       // No before/after content — we never log password material, even
@@ -292,7 +283,7 @@ export function createAdminUsersRouter(deps: AdminUsersDeps): Router {
     });
     forgetDevices(deps, target);
     await deps.audit.record({
-      actor: { email: req.session?.email },
+      actor: auditActorFromRequest(req),
       action: 'user.delete',
       target: `user:${target.id}`,
       before: toPublicUser(target),
@@ -331,6 +322,65 @@ function toPublicUser(u: UserRecord): PublicUser {
     updated_at: u.updatedAt.toISOString(),
     last_login_at: u.lastLoginAt ? u.lastLoginAt.toISOString() : null,
   };
+}
+
+/** The fields PATCH accepts; anything else is refused, never dropped (#1314). */
+const PATCHABLE_FIELDS: ReadonlySet<string> = new Set(['display_name', 'status', 'role']);
+const USER_STATUSES: readonly UserStatus[] = ['active', 'disabled'];
+/** omadia has exactly one role today: every user is an administrator. */
+const USER_ROLES: readonly UserRole[] = ['admin'];
+
+type UserPatch = Parameters<UserStore['update']>[1];
+
+/**
+ * #1314 — validate a PATCH body instead of applying the subset it recognises.
+ * The old handler copied `role` only when it was `'admin'` and `status` only
+ * when it was a known value and answered 200 for everything else, so
+ * `{"role":"viewer"}` "succeeded" while the user stayed an admin. A client
+ * that checks the status code must be able to trust it.
+ */
+export function parseUserPatch(
+  raw: unknown,
+): { patch: UserPatch } | { code: string; message: string } {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    return { code: 'admin_users.invalid_body', message: 'body must be a JSON object' };
+  }
+  const body = raw as Record<string, unknown>;
+  const unknown = Object.keys(body).filter((k) => !PATCHABLE_FIELDS.has(k));
+  if (unknown.length > 0) {
+    return {
+      code: 'admin_users.unknown_field',
+      message: `unsupported field(s): ${unknown.join(', ')} — PATCH accepts ${[...PATCHABLE_FIELDS].join(', ')}`,
+    };
+  }
+  const patch: UserPatch = {};
+  if (body['display_name'] !== undefined) {
+    if (typeof body['display_name'] !== 'string') {
+      return { code: 'admin_users.invalid_display_name', message: 'display_name must be a string' };
+    }
+    patch.displayName = body['display_name'].trim();
+  }
+  if (body['status'] !== undefined) {
+    const status = body['status'];
+    if (!USER_STATUSES.includes(status as UserStatus)) {
+      return {
+        code: 'admin_users.invalid_status',
+        message: `status must be one of: ${USER_STATUSES.join(', ')}`,
+      };
+    }
+    patch.status = status as UserStatus;
+  }
+  if (body['role'] !== undefined) {
+    const role = body['role'];
+    if (!USER_ROLES.includes(role as UserRole)) {
+      return {
+        code: 'admin_users.invalid_role',
+        message: `role must be one of: ${USER_ROLES.join(', ')} — every user is an administrator; role-based permissions are not available yet`,
+      };
+    }
+    patch.role = role as UserRole;
+  }
+  return { patch };
 }
 
 function readParam(req: Request, key: string): string | undefined {

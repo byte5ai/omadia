@@ -1345,6 +1345,19 @@ export interface SessionStatus {
    *  unauthenticated or when the server cannot renew; the watcher then
    *  offers only a re-login. */
   renewableUntil: number | null;
+  /** #1322 — why an unauthenticated probe failed: `revoked` when the server
+   *  ended the session (`auth.revoked`: sign-out elsewhere, admin action),
+   *  `expired` for everything else (missing/invalid/expired cookie). Absent
+   *  when authenticated. */
+  reason?: SessionEndReason;
+}
+
+export type SessionEndReason = 'revoked' | 'expired';
+
+/** #1322 — map a 401 body from /auth/me to the reason the session ended.
+ *  Tolerates a non-JSON body (falls back to `expired`). */
+function sessionEndReason(body: string): SessionEndReason {
+  return parseErrorCode(body) === 'auth.revoked' ? 'revoked' : 'expired';
 }
 
 /**
@@ -1429,12 +1442,14 @@ export async function getSessionStatus(): Promise<SessionStatus> {
     credentials: 'include',
   });
   if (res.status === 401) {
+    const body = await res.text().catch(() => '');
     return {
       authenticated: false,
       user: null,
       expiresAt: null,
       serverNow: null,
       renewableUntil: null,
+      reason: sessionEndReason(body),
     };
   }
   if (!res.ok) {
@@ -1687,6 +1702,52 @@ export async function deleteAdminUser(id: string): Promise<void> {
   if (res.status === 204) return;
   const text = await res.text().catch(() => '');
   throw new ApiError(res.status, `DELETE admin/users/${id} failed: ${res.status}`, text);
+}
+
+// -----------------------------------------------------------------------------
+// Admin — audit log (#1315, read-only)
+// -----------------------------------------------------------------------------
+
+export interface AuditEntryDto {
+  id: string;
+  actor_id: string | null;
+  actor_email: string | null;
+  action: string;
+  target: string;
+  before: unknown;
+  after: unknown;
+  /** ISO timestamp. */
+  created_at: string;
+}
+
+export interface AdminAuditListResponse {
+  entries: AuditEntryDto[];
+  limit: number;
+  offset: number;
+  has_more: boolean;
+}
+
+export interface AdminAuditQuery {
+  /** 1..200, server default 50. */
+  limit?: number;
+  offset?: number;
+  /** Exact action (`user.create`) or a prefix ending in `.` (`user.`). */
+  action?: string;
+}
+
+export async function listAdminAudit(
+  query: AdminAuditQuery = {},
+): Promise<AdminAuditListResponse> {
+  const params = new URLSearchParams();
+  if (query.limit !== undefined) params.set('limit', String(query.limit));
+  if (query.offset !== undefined) params.set('offset', String(query.offset));
+  if (query.action !== undefined && query.action.length > 0) {
+    params.set('action', query.action);
+  }
+  const suffix = params.toString() ? `?${params.toString()}` : '';
+  const path = `/v1/admin/audit${suffix}`;
+  const res = await getJson<AdminAuditListResponse>(path);
+  return { ...res, entries: expectArray<AuditEntryDto>(res.entries, path, 'entries') };
 }
 
 // -----------------------------------------------------------------------------

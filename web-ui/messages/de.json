@@ -294,6 +294,10 @@
           "title": "Öffentliche API-Schlüssel",
           "description": "Bearer-Zugangsdaten für die öffentliche Chat-API erstellen, auflisten und widerrufen."
         },
+        "audit": {
+          "title": "Audit-Protokoll",
+          "description": "Nachvollziehen, wer Benutzer, Anmeldeeinstellungen, Plugin-Freigaben und mehr geändert hat. Nur lesend, neueste zuerst."
+        },
         "update": {
           "title": "Update",
           "description": "Zeigt die laufende Version, prüft auf ein neueres Release und hebt den Stack – mit installiertem Updater-Overlay – direkt von hier an."
@@ -999,7 +1003,8 @@
     "loginLink": "Login",
     "authError": "Auth-Fehler",
     "signedInAs": "Angemeldet als",
-    "signOut": "Abmelden",
+    "signOut": "Überall abmelden",
+    "signOutHint": "Meldet dich auf all deinen Geräten ab, nicht nur auf diesem.",
     "signOutFailed": "Die Abmeldung hat nicht geklappt. Du bist noch angemeldet.",
     "signOutRetry": "Erneut abmelden"
   },
@@ -1429,7 +1434,9 @@
     "expiredKicker": "Sitzung",
     "expiredTitle": "Sitzung abgelaufen",
     "expiredBody": "Deine Sitzung ist abgelaufen. Bitte melde dich erneut an, um weiterzuarbeiten.",
-    "expiredCta": "Neu anmelden"
+    "expiredCta": "Neu anmelden",
+    "revokedTitle": "Sitzung beendet",
+    "revokedBody": "Deine Sitzung wurde beendet, zum Beispiel durch einen Administrator oder durch eine Abmeldung auf einem anderen Gerät. Bitte melde dich erneut an."
   },
   "runtimeReadiness": {
     "title": "LLM-Zugang fehlt",
@@ -4695,6 +4702,7 @@
       "notFound": "Registry nicht gefunden — Liste neu geladen.",
       "missingFields": "Name und URL sind erforderlich.",
       "sessionExpired": "Die Sitzung ist nicht mehr gültig. Weiterleitung zur Anmeldung …",
+      "sessionEnded": "Die Sitzung wurde beendet, zum Beispiel durch eine Abmeldung auf einem anderen Gerät. Weiterleitung zur Anmeldung …",
       "authUnavailable": "Die Sitzung kann gerade nicht geprüft werden. Bitte in Kürze erneut versuchen.",
       "generic": "Fehler {status}."
     }
@@ -4749,6 +4757,7 @@
       "notFound": "Dieser Schlüssel existiert nicht mehr — die Liste wurde aktualisiert.",
       "authUnavailable": "Operator-Authentifizierung ist gerade nicht verfügbar. Bitte in Kürze erneut versuchen.",
       "sessionExpired": "Die Sitzung ist abgelaufen. Weiterleitung zur Anmeldung …",
+      "sessionEnded": "Die Sitzung wurde beendet, zum Beispiel durch eine Abmeldung auf einem anderen Gerät. Weiterleitung zur Anmeldung …",
       "invalidRequest": "Die Anfrage war ungültig — bitte die Werte oben prüfen und erneut versuchen.",
       "generic": "Etwas ist schiefgelaufen (Fehler {status})."
     }
@@ -4882,6 +4891,7 @@
     "list": {
       "title": "Benutzer",
       "intro": "Lokale Konten und föderierte Identitäten. Nur lokale Nutzer können hier neu angelegt werden — föderierte Konten erscheinen, sobald der Nutzer sich einmal über den IdP angemeldet hat.",
+      "rolesNote": "Alle Benutzer sind Administratoren mit vollem Zugriff. Rollenbasierte Berechtigungen gibt es noch nicht.",
       "create": "Neuen Nutzer anlegen",
       "cancel": "Abbrechen",
       "form": {
@@ -4921,6 +4931,50 @@
       "confirmDelete": "Diesen Nutzer wirklich löschen? Die Aktion ist nicht umkehrbar.",
       "delete": "Nutzer löschen",
       "deleting": "Lösche …"
+    }
+  },
+  "adminAudit": {
+    "title": "Audit-Protokoll",
+    "intro": "Ein nur lesbares Protokoll administrativer Änderungen: wer hat was an welchem Ziel wann geändert. Neueste Einträge zuerst.",
+    "loading": "Audit-Protokoll wird geladen…",
+    "empty": "Noch keine Audit-Einträge.",
+    "emptyFiltered": "Keine Audit-Einträge passen zu diesem Filter.",
+    "filter": {
+      "label": "Aktion",
+      "options": {
+        "all": "Alle Aktionen",
+        "user": "Benutzerkonten",
+        "auth": "Anmeldung & Sitzungen",
+        "plugin": "Plugin-Änderungen",
+        "apikey": "API-Schlüssel",
+        "conductor": "Conductor-Änderungen",
+        "profileSnapshot": "Profil-Snapshots",
+        "channel": "Kanäle"
+      }
+    },
+    "table": {
+      "time": "Zeitpunkt",
+      "actor": "Akteur",
+      "action": "Aktion",
+      "target": "Ziel",
+      "changes": "Änderungen"
+    },
+    "actorSystem": "System (automatisch)",
+    "details": {
+      "show": "Vorher / Nachher anzeigen",
+      "before": "Vorher",
+      "after": "Nachher",
+      "empty": "(leer)"
+    },
+    "paging": {
+      "newer": "← Neuere",
+      "older": "Ältere →",
+      "range": "Einträge {from}–{to}"
+    },
+    "errors": {
+      "invalidQuery": "Filter oder Seite sind ungültig. Setze den Filter zurück und versuche es erneut.",
+      "generic": "Das Audit-Protokoll konnte nicht geladen werden (Fehler {status}).",
+      "network": "Das Audit-Protokoll konnte nicht geladen werden. Prüfe die Verbindung und versuche es erneut."
     }
   },
   "adminTopics": {

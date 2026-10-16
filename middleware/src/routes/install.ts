@@ -13,6 +13,8 @@ import {
 } from '../plugins/installService.js';
 import type { OAuthBrokerService } from '../plugins/oauth/brokerService.js';
 import { OAuthBrokerError } from '../plugins/oauth/brokerService.js';
+import { auditActorFromRequest, type AdminAuditLog, type AuditEntryInput } from '../auth/adminAuditLog.js';
+import type { GrantSnapshot } from './runtimeGrants.js';
 
 interface InstallDeps {
   service: InstallService;
@@ -20,6 +22,11 @@ interface InstallDeps {
    *  `GET /oauth/start` (operator-authed) + `GET /oauth/callback` (public,
    *  state-verified). Absent on cores running without the broker. */
   oauthBroker?: OAuthBrokerService;
+  /** #1347 — `plugin.install` / `plugin.uninstall` rows in admin_audit. */
+  audit?: Pick<AdminAuditLog, 'record'>;
+  /** Reads the grants a plugin holds, so the uninstall row can list what
+   *  left with it (the uninstall DELETEs them). */
+  grantsOf?: (pluginId: string) => Promise<GrantSnapshot>;
 }
 
 /**
@@ -115,6 +122,14 @@ export function createInstallRouter(deps: InstallDeps): Router {
         incoming.values as Record<string, unknown>,
         jsonFiles,
       );
+      if (job.state === 'active' || job.state === 'errored') {
+        await recordAudit(deps, {
+          actor: auditActorFromRequest(req),
+          action: 'plugin.install',
+          target: `plugin:${job.plugin_id}`,
+          after: { version: job.plugin_version, state: job.state },
+        });
+      }
       const body: InstallConfigureResponse = {
         job,
         agent_id: job.plugin_id,
@@ -154,13 +169,49 @@ export function createInstallRouter(deps: InstallDeps): Router {
           });
           return;
         }
+        const grants = await readGrantsForAudit(deps, agentId);
         await deps.service.uninstall(agentId);
+        await recordAudit(deps, {
+          actor: auditActorFromRequest(req),
+          action: 'plugin.uninstall',
+          target: `plugin:${agentId}`,
+          ...(grants ? { before: { grants } } : {}),
+        });
         res.status(204).end();
       });
     },
   );
 
   return router;
+}
+
+/** Best-effort, loud: the install or uninstall stands even if the row fails. */
+async function recordAudit(deps: InstallDeps, entry: AuditEntryInput): Promise<void> {
+  if (!deps.audit) return;
+  try {
+    await deps.audit.record(entry);
+  } catch (err) {
+    console.error(
+      `[install] audit write failed for ${entry.action} ${JSON.stringify(entry.target)}:`,
+      err instanceof Error ? err.message : err,
+    );
+  }
+}
+
+async function readGrantsForAudit(
+  deps: InstallDeps,
+  pluginId: string,
+): Promise<GrantSnapshot | undefined> {
+  if (!deps.grantsOf) return undefined;
+  try {
+    return await deps.grantsOf(pluginId);
+  } catch (err) {
+    console.error(
+      `[install] could not read the grants of ${JSON.stringify(pluginId)} before uninstall:`,
+      err instanceof Error ? err.message : err,
+    );
+    return undefined;
+  }
 }
 
 // ---------------------------------------------------------------------------

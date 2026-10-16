@@ -81,6 +81,8 @@ const GROUPS: readonly GroupDef[] = [
       { href: '/admin/auth', key: 'auth' },
       { href: '/admin/users', key: 'users' },
       { href: '/admin/api-keys', key: 'apiKeys' },
+      // #1315 — read-only admin audit log.
+      { href: '/admin/audit', key: 'audit' },
     ],
   },
   {

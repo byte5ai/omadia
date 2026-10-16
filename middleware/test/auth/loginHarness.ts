@@ -261,6 +261,10 @@ export async function harness(opts: HarnessOptions = {}): Promise<Harness> {
               clientAddress: opts.clientAddress ?? { kind: 'socket' },
               ...(opts.ipv6PrefixBits !== undefined ? { ipv6PrefixBits: opts.ipv6PrefixBits } : {}),
               devices,
+              resolveAccount: async (providerId: string, accountId: string) => {
+                const user = await store.findByEmailWithHash(providerId, accountId);
+                return user ? { id: user.id, email: user.email } : undefined;
+              },
               audit: {
                 record: async (entry: AuditEntryInput) => {
                   audit.push(entry);

@@ -57,11 +57,10 @@ export function toFriendlyError(err: unknown, t: TFn): string {
     ) {
       return t('errors.authUnavailable');
     }
-    if (
-      err.body.includes('auth.missing') ||
-      err.body.includes('auth.invalid') ||
-      err.body.includes('auth.revoked')
-    ) {
+    // #1322 — a server-side revocation (sign-out elsewhere, admin action)
+    // is not an expiry; say the session was ended.
+    if (err.body.includes('auth.revoked')) return t('errors.sessionEnded');
+    if (err.body.includes('auth.missing') || err.body.includes('auth.invalid')) {
       return t('errors.sessionExpired');
     }
     if (err.body.includes('invalid_request')) return t('errors.invalidRequest');
