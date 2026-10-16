@@ -65,6 +65,31 @@ changelog.
   Render deployments are not affected. `middleware/.env.example` now documents
   `PUBLIC_BASE_URL` and `AUTH_REDIRECT_URI`.
 
+### Fixed — Admin → Update tells the truth, and the release check backs off
+
+2026-10-16. Six fixes around `/admin/update` and version reporting (#1378–#1383).
+The Versions card no longer says "running the latest release" when the release
+lookup failed or only a stale cached answer exists; with no release known it
+says that is not known right now (#1378). A refused update trigger shows its
+own message ("An update is already running.") instead of
+`POST /v1/admin/update failed: 409`: the route sends the machine code as `code`
+too (kept as `error`), and the page test now uses the real `ApiError` instead
+of a mock that parsed the wrong field (#1379). The manual Compose command
+carries `-f` files plus a hint, and `docs/upgrading.md` recommends
+`COMPOSE_FILE` in the project `.env`, because a bare
+`OMADIA_VERSION=… docker compose up -d` recreated the middleware without any
+overlay's env (#1380). A failed GitHub release lookup is cached: 1 min backoff
+doubling to 5 min, or GitHub's `retry-after` / `x-ratelimit-reset`, with
+"Check now" bypassing it; before, every 30 s poll per tab went back to GitHub
+(#1381). `OMADIA_RELEASE_REPO` / `OMADIA_RELEASE_TOKEN` are now in
+`.env.example`. The web-ui `/health` returns `version` (the `OMADIA_VERSION`
+stamp) and the Compose `web-ui` service has a node-based healthcheck (#1382);
+unauthenticated callers can now read the web-ui build version, as they already
+could from the middleware (`security-architecture.md`, public-path table).
+The Plugin Hub footers show the running build instead of a literal
+`omadia · v1`, the source line names registries and uploads instead of a
+directory that does not exist, and `Manifest: …` is translated (#1383).
+
 ### Fixed — `enforce` no longer withholds every Privacy Shield rendered answer
 
 2026-10-15. With the answer verifier in `enforce`, every answer Privacy

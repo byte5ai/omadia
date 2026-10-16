@@ -39,6 +39,20 @@ const UpdateBodySchema = z.object({
   confirm: z.string(),
 });
 
+/**
+ * Every error answer carries its machine code twice: as `code`, the field the
+ * web-ui `ApiError` reads (#1379 — without it the page could only print
+ * "POST … failed: 409"), and as `error`, which existing clients match on.
+ */
+function sendError(
+  res: Response,
+  status: number,
+  code: string,
+  extra: Record<string, unknown> = {},
+): void {
+  res.status(status).json({ error: code, code, ...extra });
+}
+
 export interface AdminUpdateDeps {
   /** The build this process is running — see `update/version.ts`. */
   currentVersion: AppVersion;
@@ -152,8 +166,7 @@ export function createAdminUpdateRouter(deps: AdminUpdateDeps): Router {
     try {
       res.json({ entries: await deps.audit.list(), available: true });
     } catch (err) {
-      res.status(500).json({
-        error: 'update_history_failed',
+      sendError(res, 500, 'update_history_failed', {
         message: err instanceof Error ? err.message : String(err),
       });
     }
@@ -162,9 +175,7 @@ export function createAdminUpdateRouter(deps: AdminUpdateDeps): Router {
   router.post('/', async (req: Request, res: Response) => {
     const parsed = UpdateBodySchema.safeParse(req.body);
     if (!parsed.success) {
-      res
-        .status(400)
-        .json({ error: 'invalid_request', issues: parsed.error.issues });
+      sendError(res, 400, 'invalid_request', { issues: parsed.error.issues });
       return;
     }
     const { targetVersion, confirm } = parsed.data;
@@ -174,7 +185,7 @@ export function createAdminUpdateRouter(deps: AdminUpdateDeps): Router {
     // and used as a Docker image tag, and a floating tag makes both the
     // rollback target and the health gate undecidable.
     if (parseVersion(targetVersion) === null) {
-      res.status(400).json({ error: 'invalid_target_version' });
+      sendError(res, 400, 'invalid_target_version');
       return;
     }
     const target = toTag(targetVersion);
@@ -183,30 +194,30 @@ export function createAdminUpdateRouter(deps: AdminUpdateDeps): Router {
     // Compared against the CANONICAL form so `0.75.0` typed against a `v0.75.0`
     // target still has to match the tag the operator was shown.
     if (toTag(confirm.trim()) !== target) {
-      res.status(400).json({ error: 'confirmation_mismatch' });
+      sendError(res, 400, 'confirmation_mismatch');
       return;
     }
 
     if (!deps.updater) {
-      res.status(409).json({ error: 'updater_not_configured' });
+      sendError(res, 409, 'updater_not_configured');
       return;
     }
     if (!deps.audit) {
-      res.status(409).json({ error: 'audit_unavailable' });
+      sendError(res, 409, 'audit_unavailable');
       return;
     }
     if (current.source === 'release' && toTag(current.version) === target) {
-      res.status(400).json({ error: 'already_on_target' });
+      sendError(res, 400, 'already_on_target');
       return;
     }
 
     const status = await deps.updater.getStatus();
     if (!status.ok) {
-      res.status(502).json({ error: 'updater_unreachable', message: status.error });
+      sendError(res, 502, 'updater_unreachable', { message: status.error });
       return;
     }
     if (status.status.state === 'updating') {
-      res.status(409).json({ error: 'update_in_progress' });
+      sendError(res, 409, 'update_in_progress');
       return;
     }
 
@@ -222,8 +233,7 @@ export function createAdminUpdateRouter(deps: AdminUpdateDeps): Router {
       });
       entryId = entry.id;
     } catch (err) {
-      res.status(500).json({
-        error: 'audit_write_failed',
+      sendError(res, 500, 'audit_write_failed', {
         message: err instanceof Error ? err.message : String(err),
       });
       return;
@@ -231,8 +241,7 @@ export function createAdminUpdateRouter(deps: AdminUpdateDeps): Router {
 
     const accepted = await deps.updater.requestUpdate(target);
     if (!accepted.ok) {
-      res.status(502).json({
-        error: 'updater_rejected',
+      sendError(res, 502, 'updater_rejected', {
         message: accepted.error,
         auditId: entryId,
       });
