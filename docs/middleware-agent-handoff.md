@@ -6961,6 +6961,40 @@ liegt die Turn-ID inzwischen vor: die `PrivacyEgressContinuation` trägt sie als
 anknüpfen (Privacy-Hand-over, siehe Turn-Receipts). ⚠️ Wie bei 0032:
 Migration vor Deploy, sonst verwirft jeder Flush den ganzen Batch.
 
+### Kosten-Ledger: Lücken und Dashboard-Korrektheit (#1388, #1390, #1392, #1393, #1396)
+
+Capture-Seams, die vorher fehlten: `completeWithFallback` (gepufferter
+Orchestrator-Pfad hinter `runTurn()` — Routinen, Schedule-Worker,
+`ChatAgent.chat()`) schreibt pro Modell-Call eine Zeile (`source` = Stream-Label,
+`provider` = der tatsächlich antwortende Provider, auch nach Fallback).
+Plugin-`ctx.llm` schreibt `plugin <id>` (Builder-Preview: `plugin <id> (preview)`)
+über `platform/pluginLlmUsage.ts`. Alle Orchestrator-Seams — auch der
+gestreamte Pfad — überspringen Provider, die selbst buchen
+(`providerRecordsOwnUsage` in `@omadia/usage-telemetry`, heute die Provider-ID
+`claude-cli`) — sonst zählt jeder Abo-Call doppelt. Folge: ein auf `claude-cli`
+laufender Sub-Agent erscheint nur als `claude-cli-completion`, nicht unter
+`sub-agent <name>`. ⚠️ Die Prüfung hängt an der Provider-ID, nicht am
+Wire-Format; ein zweiter Provider auf dem `claude-cli`-Wire bräuchte einen
+eigenen Eintrag. `BuilderAgent.runTurn`
+öffnet einen Turn-Scope (`sessionScope: builder:<draftId>`), damit
+Builder-Zeilen `turn_id`/`session_id` tragen.
+
+Lesepfad: `GET /api/usage/dashboard?…&tz=<IANA>` schneidet Buckets in dieser
+Zone (Default `UTC`) und rundet `since` immer auf den Bucket-Anfang in dieser
+Zone ab — Totals und Chart decken denselben Zeitraum. Stündliche Buckets sind
+nach Instant gruppiert (DST-sicher); eine Zone, die Postgres nicht kennt, fällt
+auf UTC zurück; `bucket=hour` verlangt `since`. Die Zeitreihe ist lückenlos (Leer-Buckets =
+0). `byModel`/`bySource` tragen `cacheCreationTokens`; `bySource` faltet alle
+`sub-agent builder-*` zu einer Zeile (`group: 'builder'`, `members`) und kappt
+nach `BY_SOURCE_LIMIT` (10) auf eine `other`-Zeile.
+
+Noch offen: der Verifier läuft nach dem Turn-Scope (Zeilen ohne Turn-ID,
+siehe #1098); `ctx.llm` liefert keine Cache-Zahlen (Plugin-Vertrag hat keine);
+ein `ctx.llm`-Call innerhalb verschachtelter Scopes ohne `sessionScope`
+(`pluginContext.callTool`, skill-gebundene Tools) bleibt ohne Turn-Zuordnung;
+Extras/Verifier über `withProviderUsageTracking` auf `claude-cli` zählen
+weiterhin doppelt (älter als dieser Fix).
+
 ### Systemstatus: "Letzter Turn" (OM-100b, §3)
 
 Neue Route **`GET /api/v1/admin/last-turn`** (auth required, `routes/adminLastTurn.ts`) →

@@ -94,6 +94,21 @@ export function setUsageContextProvider(
   contextProvider = provider;
 }
 
+/**
+ * #1390 — provider ids whose adapter writes its own `token_usage` row for every
+ * call. The `claude-cli` adapter records each completion as
+ * `claude-cli-completion` with `cost_usd = 0` and the CLI's reference cost
+ * (OM-103). A seam that records at a layer above such a provider (the
+ * orchestrator's buffered path, `ctx.llm`) must skip it, or every subscription
+ * call lands in the ledger twice — once at a price nobody paid.
+ */
+const SELF_RECORDING_PROVIDER_IDS: ReadonlySet<string> = new Set(['claude-cli']);
+
+/** True when `providerId`'s adapter records its own usage rows; see above. */
+export function providerRecordsOwnUsage(providerId: string): boolean {
+  return SELF_RECORDING_PROVIDER_IDS.has(providerId);
+}
+
 const FLUSH_INTERVAL_MS = 5_000;
 const FLUSH_MAX_BATCH = 100;
 /** Hard cap so a wedged DB can't grow the buffer without bound. */

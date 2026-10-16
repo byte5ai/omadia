@@ -76,6 +76,56 @@ remaining gaps of cluster C02:
 - DB-defined sub-agents use the current shared Anthropic client instead of the
   boot-time env client, which stays unauthenticated on vault-keyed installs.
 
+### Fixed — usage dashboard: bars, local days, missing calls, what a row costs
+
+2026-10-16 (#1388, #1390, #1392, #1393, #1396). Admin → Usage & Cost was
+wrong in five ways; all are fixed together because they share the ledger and
+the page.
+
+- **Chart (#1388).** Every "Cost over time" bar was 0 px tall: the buckets in
+  the `items-end` container had no height, so the bars' percentage heights
+  resolved to `auto`. Buckets now span the chart (`h-full`). Idle buckets come
+  back from the middleware as zero rows instead of being skipped, render no
+  bar, and the chart has a first/last axis label. Bars scale to the busiest
+  bucket instead of a fixed $1.
+- **Local days (#1396).** `GET /api/usage/dashboard` takes `tz` (IANA name
+  only; a bare offset is refused because Postgres reads it with POSIX sign
+  semantics) and cuts buckets in that zone instead of the Postgres session
+  zone (UTC). `since` is now always floored to the start of its bucket in that
+  zone (UTC when `tz` is absent), so the first bar is a whole day and the KPI
+  totals cover the same span as the chart. Hourly buckets stay unique across a
+  DST change (a fall-back hour is one bucket of two real hours), a zone Postgres
+  does not know falls back to UTC, and `bucket=hour` needs `since`.
+  The web UI sends the zone it formats in (`omadia-tz`), "7 days" / "30 days"
+  are today plus 6 / 29 whole local days, and a daily bar is labelled with its
+  date only.
+- **Missing calls (#1390).** The buffered orchestrator path
+  (`completeWithFallback`, behind `runTurn()`: routines, scheduled runs,
+  `ChatAgent.chat()`) wrote no `token_usage` row; it now writes one per model
+  call, including the fallback hop (with the fallback's provider and model).
+  Plugin `ctx.llm` calls write a row sourced `plugin <id>` (builder preview
+  runs: `plugin <id> (preview)`). No orchestrator seam records a `claude-cli`
+  call any more, since that adapter writes its own `claude-cli-completion` row
+  (`providerRecordsOwnUsage`). That includes the **streamed** path: a sub-agent
+  streaming on `claude-cli` (possible since the #1405 fallback) used to be
+  counted twice, and now appears only as `claude-cli-completion`, no longer
+  under its `sub-agent <name>` source. The page intro and the migration 0028 comment no
+  longer claim "every LLM call".
+- **Builder attribution (#1392).** `BuilderAgent.runTurn` opens a turn scope
+  (`turnId` of the request, `sessionScope: builder:<draftId>`), so the builder
+  sub-agent's rows carry `turn_id` / `session_id`. AutoFix turns go through the
+  same method.
+- **Breakdown rows (#1393).** "By model" / "By source" rows carry
+  `cacheCreationTokens` and show `cache read` and `cache write` separately; a
+  subscription row shows `≈ $x API equivalent`. All `sub-agent builder-<draftId>`
+  sources fold into one "Builder (n drafts)" row, and "By source" ends in an
+  "Other (n sources)" row after the top ten (`capByKey`). The reference cost is
+  labelled as the subscription share, because one model row can mix metered
+  and subscription calls.
+
+No migration and no new env var. The dashboard response gains fields
+(`cacheCreationTokens`, `group`, `members`); older clients ignore them.
+
 ### Fixed — the middleware waits for Postgres at boot instead of crash-looping
 
 2026-10-16 (#1386). Core migrations are the first thing in boot that talks to
