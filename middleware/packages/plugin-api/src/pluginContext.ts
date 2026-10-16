@@ -1119,6 +1119,52 @@ export interface OperatorAuthAccessor {
    * an email that fell off the admin whitelist all resolve `false`.
    */
   hasValidSession(cookieHeader: string | undefined): Promise<boolean>;
+
+  /**
+   * Issue #1329 — who the session belongs to. Resolves the principal behind a
+   * currently valid operator session (same verification as
+   * `hasValidSession`), or `null` for anything `hasValidSession` would refuse.
+   * Never throws. Optional so a plugin running on an older kernel degrades to
+   * "owner unknown" instead of failing to load.
+   */
+  sessionPrincipal?(cookieHeader: string | undefined): Promise<OperatorPrincipal | null>;
+
+  /**
+   * Issue #1329 — append one row to the kernel's `admin_audit` ledger for a
+   * privileged action the plugin just performed. The KERNEL resolves the actor
+   * from the cookie (a plugin cannot name somebody else as the actor) and
+   * stamps the calling plugin's id into the row. `action` must be one the
+   * kernel admits for the calling plugin and target (today the `api_key.*`
+   * lifecycle events of `@omadia/channel-api`); anything else is refused, as
+   * are payloads over 4 KB.
+   *
+   * Resolves `true` when the row was written, `false` when it was not (no
+   * valid session, action not admitted, no audit store in this deployment,
+   * or the write failed — the kernel logs why). Never throws: the caller has
+   * already performed the action and decides itself how loudly to complain.
+   */
+  recordAdminAction?(
+    cookieHeader: string | undefined,
+    entry: OperatorAdminAuditEntry,
+  ): Promise<boolean>;
+}
+
+/** Issue #1329 — the operator behind a session. `userId` is `users.id` (the
+ *  session's `uid` claim; absent on a session minted before that claim
+ *  existed), `email` the session email. */
+export interface OperatorPrincipal {
+  readonly userId?: string;
+  readonly email: string;
+}
+
+/** Issue #1329 — one plugin-originated `admin_audit` row. `before`/`after`
+ *  are stored verbatim as JSON; never put secrets (tokens, hashes) in them. */
+export interface OperatorAdminAuditEntry {
+  readonly action: string;
+  /** Entity ref, e.g. `api-key:<uuid>`. */
+  readonly target: string;
+  readonly before?: Readonly<Record<string, unknown>>;
+  readonly after?: Readonly<Record<string, unknown>>;
 }
 
 export class OAuthTokenError extends Error {

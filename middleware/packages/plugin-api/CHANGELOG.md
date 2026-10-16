@@ -8,7 +8,7 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
-## 1.29.0 — 2026-10-16
+## 1.30.0 — 2026-10-16
 
 Additive. A plugin tool that only some channels can serve can say so per turn,
 so the model is not offered a call that can only fail (#1346).
@@ -21,7 +21,25 @@ so the model is not offered a call that can only fail (#1346).
   `promptDoc` for that turn (on `registerHandler`, the `promptDoc` only).
   Must answer the same for the whole turn. Advertisement only: dispatch is not gated, so the
   handler must still answer a call on such a turn truthfully. Absent ⇒ always
-  offered; a kernel before 1.29.0 ignores it.
+  offered; a kernel before 1.30.0 ignores it.
+
+## 1.29.0 — 2026-10-16
+
+Additive. A plugin's admin surface can learn who the operator is and write
+its privileged actions into the kernel's `admin_audit` ledger (#1329, first
+user: `@omadia/channel-api`'s API-key lifecycle).
+
+### Added
+
+- **`OperatorAuthAccessor.sessionPrincipal?(cookieHeader)`** — the
+  `OperatorPrincipal` (`userId` = `users.id`, `email`) behind a valid
+  operator session, or `null`.
+- **`OperatorAuthAccessor.recordAdminAction?(cookieHeader, entry)`** — appends
+  one `admin_audit` row. The kernel resolves the actor from the cookie and
+  stamps the calling plugin's id into the row; only actions the kernel admits
+  for the calling plugin and target are written (today `api_key.*` for
+  `@omadia/channel-api`). Resolves `false` instead of throwing.
+- **`OperatorPrincipal`**, **`OperatorAdminAuditEntry`**.
 
 ## 1.28.0 — 2026-10-16
 

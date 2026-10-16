@@ -167,7 +167,7 @@ src/
 ### Plugin-Tools per Turn ausblenden — `isAvailable` (#1346, #1086)
 
 - **Vertrag:** `ToolRegistrationOptions.isAvailable?: () => boolean`
-  (`@omadia/plugin-api` 1.29.0). Der Kernel ruft es **im Turn-Scope** auf,
+  (`@omadia/plugin-api` 1.30.0). Der Kernel ruft es **im Turn-Scope** auf,
   sobald er die Tool-Liste baut; `false` (oder ein Throw) blendet Spec **und**
   `promptDoc` für diesen Turn aus. Fehlt es, bleibt das Tool angeboten.
 - **Eine Prüfung, drei Advertise-Stellen:** `isOfferedThisTurn(entry)` in
@@ -1365,6 +1365,21 @@ Memory und Knowledge-Graph unverändert — **kein zweiter Masking-Pfad**.
   Accessor wiederverwenden können, statt sich auf dieselbe Koinzidenz zu
   verlassen. Siehe `docs/security-architecture.md` § 9 für die volle
   Mechanik.
+- **Key-Lifecycle-Erweiterung (#1327/#1328/#1329/#1324):** weitere Routen
+  unter demselben operator-gegateten Router: `GET .../admin/keys/scopes`
+  (Scope-Katalog aus `@omadia/api-key-auth`; `registerApiKeyScope` existiert,
+  hat aber noch keinen Aufrufer), `DELETE .../admin/keys/:id` (nur widerrufene/abgelaufene
+  Keys, sonst `409 key_active`), `GET .../admin/keys/:id/usage` (Usage-Log
+  pro Key; seit #1329 schreibt auch der öffentliche MCP-Endpunkt hinein).
+  Create akzeptiert nur bekannte Scopes (`400 invalid_scope`) und
+  optional `expiresAt`; der Record bekommt `createdBy` aus der Session, die
+  Liste `lastUsedAt`. Create/Revoke/Delete schreiben
+  `api_key.create|revoke|delete` nach `admin_audit` über
+  `ctx.operatorAuth.recordAdminAction` (plugin-api 1.29.0; Kernel löst den
+  Actor aus dem Cookie auf, `LateBoundAdminAudit` wird beim Bau von
+  `AdminAuditLog` attached). Keine Migration — alles bleibt im Vault.
+  **Offen:** Rotation (`POST .../:id/rotate`, Grace-Period?) — Entscheidung
+  Marcel.
 - **Scope:** nur `chat` in v1 (Issue #438 explizit: "Start with chat …, then
   extend to other flows" — weitere Flows sind Folge-Issues).
 - **Request-Contract (issue #1109):** der Body wird strikt validiert. Das
@@ -4447,6 +4462,15 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 ---
 
 ## 13. Offene Roadmap
+
+### Public API keys: Rotation (#1328)
+
+Expiry, Owner und Delete sind gebaut (#1328). Offen ist die Rotation: ein
+`POST /api/public/v1/admin/keys/:id/rotate`, der einen Nachfolger mit
+gleichem Label/Scopes/Rate-Limit mintet. Zu entscheiden: alter Key sofort
+widerrufen oder Grace-Period (wie lang, und läuft der alte Key dann über
+`expiresAt` aus?), und ob eine MCP-Key-Binding des alten Keys auf den
+Nachfolger übergeht.
 
 ### Sitzungs-Widerruf: offene Verbindungen, gerätegenaues Abmelden, Cache
 
