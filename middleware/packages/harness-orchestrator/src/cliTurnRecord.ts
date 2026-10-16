@@ -12,6 +12,8 @@ import { OMADIA_MCP_TOOL_PREFIX } from './cliSpawnGate.js';
  * orchestrator's turn persistence needs (session log row, run trace).
  */
 export interface CliCompletedTurn {
+  /** The CLI turn's id — the same one its cost-ledger row carries (#1098). */
+  readonly turnId: string;
   readonly answer: string;
   readonly toolCalls: number;
   readonly iterations: number;

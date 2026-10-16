@@ -134,13 +134,23 @@ Since #1391 the CLI turn also recalls context the way the in-process turn does
 (`Orchestrator.recallCliContext` → `retrievePriorContext`: verbatim graph tail,
 entity and full-text hits from the user's other chats, cross-session plans,
 processes and insights, the session briefing) and puts the rendered text into
-the child's `--system-prompt`. The same gates apply as in-process — audience
-floor, context-memory isolation (`enforce-strict`, `members`), fresh check — but
-the text is not masked, so recalled real values from other chats reach the
-vendor too. And every successful CLI turn is now persisted like an in-process
-one (`Orchestrator.recordCliTurn`: transcript, chat-session mirror, graph
+the child's stdin prompt — never argv, where `ps` / `/proc/<pid>/cmdline` would
+show other chats' content to every process in the container (and one argument
+is capped at 128 KiB). The same gates apply as in-process — audience floor,
+context-memory isolation (`enforce-strict`, `members`), fresh check — but the
+text is not masked, so recalled real values from other chats reach the vendor
+too. The recall has a 15 s deadline (`recallTimeoutMs`); past it the turn runs
+without.
+
+Every successful CLI turn is now also persisted like an in-process one
+(`Orchestrator.recordCliTurn`: transcript, chat-session mirror, graph
 `Turn`/`Run`/`ToolCall`, fact extraction, excerpt, auto-promotion,
 `onAfterTurn`), with the real texts and no masked view, because there is none.
+That opens outbound flows this path did not have before, all unmasked: the
+graph's capture scorer (it scores with a model of its own and gets no
+`maskedView` here), the embedding provider, the fact-extraction plugin and the
+excerpt extractor. They may be a different vendor than the CLI's. On the
+API-key path with Privacy Shield the same calls get the masked wire text.
 
 This is a deliberate trade-off in line with the UI's notice not to route
 personal data through this provider; the decision is recorded on #1087.

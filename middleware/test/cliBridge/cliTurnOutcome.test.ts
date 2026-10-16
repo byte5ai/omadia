@@ -75,6 +75,7 @@ function makeAgent(
   cli: FakeCli,
   extra: Partial<CliChatAgentDeps> = {},
   seenArgv: string[][] = [],
+  seenStdin: string[] = [],
 ): CliChatAgent {
   return new CliChatAgent({
     dispatch: {
@@ -100,14 +101,17 @@ function makeAgent(
         signalCode: null as NodeJS.Signals | null,
         kill: () => true,
       });
+      let prompt = '';
+      stdin.on('data', (chunk: Buffer) => {
+        prompt += chunk.toString();
+      });
       stdin.on('finish', () => {
+        seenStdin.push(prompt);
         stdout.end(cli.lines.join(''));
         stderr.end(cli.stderr ?? '');
         child.exitCode = cli.exitCode ?? 0;
         child.emit('close', cli.exitCode ?? 0, null);
       });
-      // Drain stdin so 'finish' fires.
-      stdin.resume();
       return child;
     }) as unknown as CliChatAgentDeps['spawnFn'],
     ...extra,
@@ -125,11 +129,6 @@ async function collect(
   return events;
 }
 
-function systemPromptOf(argv: readonly string[]): string {
-  const at = argv.indexOf('--system-prompt');
-  assert.ok(at >= 0, 'argv must carry --system-prompt');
-  return argv[at + 1] ?? '';
-}
 
 describe('CliChatAgent terminal error results (#1325)', () => {
   for (const exitCode of [1, 0]) {
@@ -142,7 +141,7 @@ describe('CliChatAgent terminal error results (#1325)', () => {
       );
       assert.equal(errors.length, 1, 'exactly one error event');
       assert.match(errors[0]!.message, /not logged in/i);
-      assert.match(errors[0]!.message, /Settings → Subscriptions/);
+      assert.match(errors[0]!.message, /LLM access page, Subscriptions tab/);
       assert.doesNotMatch(errors[0]!.message, /exited with code/);
       assert.equal(events.at(-1)?.type, 'error', 'the error is the terminal event');
     });
@@ -220,6 +219,7 @@ describe('CliChatAgent turn record and recall (#1391)', () => {
     const { input, turn } = recorded[0]!;
     assert.equal(input.sessionScope, 'sess-1391');
     assert.equal(turn.answer, 'Freitag.');
+    assert.equal(typeof turn.turnId, 'string');
     assert.equal(turn.toolCalls, 1);
     assert.equal(turn.runTrace.scope, 'sess-1391');
     assert.equal(turn.runTrace.userId, 'user-1');
@@ -251,8 +251,9 @@ describe('CliChatAgent turn record and recall (#1391)', () => {
     assert.equal(events.filter((e) => e.type === 'error').length, 0);
   });
 
-  it('puts the graph recall into the system prompt and streams its cards first', async () => {
+  it('puts the graph recall into the stdin prompt, not argv, and streams its cards first', async () => {
     const argv: string[][] = [];
+    const stdin: string[] = [];
     const events = await collect(
       makeAgent(
         { lines: SUCCESS },
@@ -263,19 +264,26 @@ describe('CliChatAgent turn record and recall (#1391)', () => {
           }),
         },
         argv,
+        stdin,
       ),
       { userMessage: 'Wann ist der Freeze?', sessionScope: 'sess-1391' },
     );
 
-    const prompt = systemPromptOf(argv[0]!);
-    assert.match(prompt, /Context recalled from earlier conversations/);
-    assert.match(prompt, /Release-Freeze: Freitag/);
+    // argv is visible to every process in the container (`ps`), and capped
+    // at 128 KiB per argument; recalled content must never ride it.
+    assert.doesNotMatch(argv[0]!.join('\n'), /Release-Freeze/);
+    assert.match(stdin[0]!, /Context recalled from earlier conversations/);
+    assert.match(stdin[0]!, /Release-Freeze: Freitag/);
+    assert.ok(
+      stdin[0]!.indexOf('Release-Freeze') < stdin[0]!.indexOf('User: Wann ist der Freeze?'),
+      'recall precedes the live message',
+    );
     assert.equal(events[0]?.type, 'turn_annotation');
   });
 
   it('asks for no recall on a turn without a chat (a CLI sub-agent)', async () => {
     let asked = 0;
-    const argv: string[][] = [];
+    const stdin: string[] = [];
     await collect(
       makeAgent(
         { lines: SUCCESS },
@@ -285,11 +293,49 @@ describe('CliChatAgent turn record and recall (#1391)', () => {
             return { text: 'should not appear' };
           },
         },
-        argv,
+        [],
+        stdin,
       ),
     );
     assert.equal(asked, 0);
-    assert.doesNotMatch(systemPromptOf(argv[0]!), /should not appear/);
+    assert.doesNotMatch(stdin[0]!, /should not appear/);
+  });
+
+  it('runs the turn without recall when recall hangs past its deadline', async () => {
+    const stdin: string[] = [];
+    const events = await collect(
+      makeAgent(
+        { lines: SUCCESS },
+        {
+          recallContext: () => new Promise(() => undefined),
+          recallTimeoutMs: 20,
+        },
+        [],
+        stdin,
+      ),
+      { userMessage: 'hi', sessionScope: 'sess-1391' },
+    );
+    assert.ok(events.some((e) => e.type === 'done'));
+    assert.doesNotMatch(stdin[0]!, /Context recalled/);
+  });
+
+  it('carries the drained cards and the record on one done', async () => {
+    const events = await collect(
+      makeAgent(
+        { lines: SUCCESS },
+        {
+          recordTurn: async () => ({ turnId: 'turn-x' }),
+          drainTurnCards: () => ({ followUpOptions: [{ label: 'Weiter', prompt: 'weiter' }] }),
+        },
+      ),
+      { userMessage: 'hi', sessionScope: 'sess-1391' },
+    );
+    const dones = events.filter(
+      (e): e is Extract<ChatStreamEvent, { type: 'done' }> => e.type === 'done',
+    );
+    assert.equal(dones.length, 1);
+    assert.equal(dones[0]?.turnId, 'turn-x');
+    assert.equal(dones[0]?.followUpOptions?.length, 1);
   });
 
   it('runs the turn without recall when recall rejects', async () => {

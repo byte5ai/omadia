@@ -212,7 +212,7 @@ function joinPhrases(phrases: readonly string[]): string {
  * successfully and came back empty: that IS a genuine first turn.
  */
 /**
- * #1391 — heads the graph recall in the system prompt. Same trust rules the
+ * #1391 — heads the graph recall in the composed prompt. Same trust rules the
  * in-process prompt gives its prior-context block (`buildSystemBlocks`): the
  * chat's own latest turns are the agent's replies, everything from other
  * chats is a hypothesis.
@@ -239,11 +239,7 @@ const NO_HISTORY_NOTE =
 export function composeCliSystemPrompt(
   persona: string | undefined,
   absentCapabilities?: readonly string[],
-  options?: {
-    readonly conversationHistoryAvailable?: boolean;
-    /** #1391 — the graph recall for this turn, appended last. */
-    readonly recalledContext?: string;
-  },
+  options?: { readonly conversationHistoryAvailable?: boolean },
 ): string {
   const base = typeof persona === 'string' && persona.trim().length > 0
     ? persona.trimEnd()
@@ -258,10 +254,6 @@ export function composeCliSystemPrompt(
   }
   if (options?.conversationHistoryAvailable === false) {
     sections.push(NO_HISTORY_NOTE);
-  }
-  const recalled = options?.recalledContext?.trim();
-  if (recalled !== undefined && recalled.length > 0) {
-    sections.push(`${RECALLED_CONTEXT_HEADING}\n\n${recalled}`);
   }
   return sections.join('\n\n');
 }
@@ -411,7 +403,7 @@ export function describeCliTerminalError(rawMessage: string): string {
   if (CLI_AUTH_FAILURE_RE.test(rawMessage)) {
     return (
       'Claude subscription CLI is not logged in, or its login expired. ' +
-      `Sign in again under Settings → Subscriptions. (CLI: ${rawMessage})`
+      `Sign in again on the LLM access page, Subscriptions tab. (CLI: ${rawMessage})`
     );
   }
   if (CLI_LIMIT_FAILURE_RE.test(rawMessage)) {
@@ -872,6 +864,14 @@ export interface CliChatAgentDeps {
    * and the turn runs without recall. Left unset, nothing is recalled.
    */
   readonly recallContext?: (input: ChatTurnInput) => Promise<CliRecalledContext>;
+  /**
+   * Deadline for {@link recallContext}, in ms (default 15000 — the recall may
+   * run an embedding call and an LLM relevance pass). Like the tail read it
+   * runs while the turn holds a concurrency permit and before the spawn
+   * timers are armed, so a stalled graph must not wedge the permit; on the
+   * deadline the turn runs without recall.
+   */
+  readonly recallTimeoutMs?: number;
 }
 
 /**
@@ -899,6 +899,34 @@ const DEFAULT_SESSION_TAIL_TIMEOUT_MS = 5_000;
 
 /** Race outcome meaning "the deadline won", distinct from any tail value. */
 const TAIL_READ_TIMED_OUT = Symbol('cli-session-tail-timeout');
+
+/** Default deadline for {@link CliChatAgentDeps.recallTimeoutMs}. */
+const DEFAULT_RECALL_TIMEOUT_MS = 15_000;
+
+/** Race outcome meaning "the recall deadline won". */
+const RECALL_TIMED_OUT = Symbol('cli-recall-timeout');
+
+/**
+ * `work`, or {@link RECALL_TIMED_OUT} once `ms` passed. The deadline resolves
+ * rather than rejects and is cleared as soon as the race settles, for the
+ * reasons spelled out at the tail read in `resolveHistory`.
+ */
+async function raceRecallDeadline<T>(
+  work: Promise<T>,
+  ms: number,
+): Promise<T | typeof RECALL_TIMED_OUT> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<typeof RECALL_TIMED_OUT>((resolve) => {
+        timer = setTimeout(() => { resolve(RECALL_TIMED_OUT); }, ms);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
 
 /** The history this turn will be composed with, and whether the runtime was
  *  able to establish it — `available: false` means "not handed to me", which is
@@ -1066,8 +1094,20 @@ export class CliChatAgent implements ChatAgent {
   private composePrompt(
     input: ChatTurnInput,
     priorTurns: readonly CliPriorTurn[],
+    recalledContext?: string,
   ): string {
     const lines: string[] = [];
+
+    // #1391 — the graph recall rides stdin like the replayed history, never
+    // argv: it can hold other chats' content (in `members` mode other
+    // people's knowledge), which `ps` / `/proc/<pid>/cmdline` would expose to
+    // anything else in the container, and one argv string is capped at
+    // 128 KiB on Linux (E2BIG fails the spawn).
+    const recalled = recalledContext?.trim();
+    if (recalled !== undefined && recalled.length > 0) {
+      lines.push(`System Hint: ${RECALLED_CONTEXT_HEADING}`);
+      lines.push(neutralizeRoleMarkers(recalled));
+    }
 
     if (typeof input.extraSystemHint === 'string' && input.extraSystemHint.trim().length > 0) {
       lines.push(`System Hint: ${neutralizeRoleMarkers(input.extraSystemHint)}`);
@@ -1268,8 +1308,20 @@ export class CliChatAgent implements ChatAgent {
   ): Promise<CliRecalledContext> {
     const recallContext = this.deps.recallContext;
     if (recallContext === undefined || input.sessionScope === undefined) return {};
+    const deadlineMs = this.deps.recallTimeoutMs ?? DEFAULT_RECALL_TIMEOUT_MS;
     try {
-      return await turnContext.runInTurnContext(() => recallContext(input));
+      const outcome = await raceRecallDeadline(
+        turnContext.runInTurnContext(() => recallContext(input)),
+        deadlineMs,
+      );
+      if (outcome === RECALL_TIMED_OUT) {
+        (this.deps.logger ?? consoleSpawnLogger).warn('context recall timed out (turn runs without it)', {
+          sessionScope: input.sessionScope,
+          deadlineMs,
+        });
+        return {};
+      }
+      return outcome;
     } catch (error) {
       (this.deps.logger ?? consoleSpawnLogger).warn('context recall failed (turn runs without it)', {
         sessionScope: input.sessionScope,
@@ -1477,7 +1529,6 @@ export class CliChatAgent implements ChatAgent {
             // returns to the parent.
             conversationHistoryAvailable:
               input.sessionScope === undefined ? undefined : history.available,
-            ...(recalled.text !== undefined ? { recalledContext: recalled.text } : {}),
           },
         ),
       ];
@@ -1566,7 +1617,7 @@ export class CliChatAgent implements ChatAgent {
 
       // We send one fully composed plain-text prompt so the child process stays stateless and
       // deterministic for tests; replaying prior turns here mirrors the CLI's single-shot mode.
-      child.stdin.end(this.composePrompt(input, history.turns));
+      child.stdin.end(this.composePrompt(input, history.turns, recalled.text));
 
       while (true) {
         while (lineQueue.length > 0) {
@@ -1603,6 +1654,17 @@ export class CliChatAgent implements ChatAgent {
 
       if (closePromise !== undefined && closeInfo === undefined) {
         closeInfo = await closePromise;
+      }
+
+      // The child is gone: nothing left for the turn budget or the idle
+      // watchdog to guard, and the record below must not trip either of them.
+      if (overallTimer !== undefined) {
+        clearTimeout(overallTimer);
+        overallTimer = undefined;
+      }
+      if (idleTimer !== undefined) {
+        clearTimeout(idleTimer);
+        idleTimer = undefined;
       }
 
       if (pendingFailure !== undefined) {
@@ -1667,6 +1729,7 @@ export class CliChatAgent implements ChatAgent {
         // #1391 — persist the turn the way the in-process path does, then
         // release the answer with what the record produced.
         const record = await this.recordCompletedTurn(input, turnContext, {
+          turnId: cliTurnId,
           answer: parser.finalAnswer(),
           toolCalls: parser.toolCalls(),
           iterations: parser.iterations(),

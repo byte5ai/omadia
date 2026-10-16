@@ -401,6 +401,7 @@ test('a claude-cli agent records its turns like an in-process turn (#1391)', asy
   const ingestedTurns: Array<Record<string, unknown>> = [];
   const ingestedRuns: Array<Record<string, unknown>> = [];
   const hookPoints: string[] = [];
+  const hookTurnIds: string[] = [];
   const memoryStore = inMemoryMemoryStore();
   const built = buildOrchestratorForAgent(
     { agentId: 'cli', model: 'opus-cli', maxTokens: 100, maxToolIterations: 4 },
@@ -417,8 +418,9 @@ test('a claude-cli agent records its turns like an in-process turn (#1391)', asy
         },
       } as unknown as KnowledgeGraph,
       turnHookRegistry: {
-        run: async (point: string) => {
+        run: async (point: string, ctx: { turnId: string }) => {
           hookPoints.push(point);
+          hookTurnIds.push(ctx.turnId);
           return [];
         },
       },
@@ -430,6 +432,7 @@ test('a claude-cli agent records its turns like an in-process turn (#1391)', asy
   const record = await recordTurn(
     { userMessage: 'Merk dir: Release-Freeze ab Freitag.', sessionScope: 'sess-1391', userId: 'u-1' },
     {
+      turnId: 'cli-turn-1',
       answer: 'Notiert: Release-Freeze ab Freitag.',
       toolCalls: 1,
       iterations: 2,
@@ -461,7 +464,11 @@ test('a claude-cli agent records its turns like an in-process turn (#1391)', asy
   );
   assert.ok(record.turnId, 'the written Turn id rides the done event');
   assert.equal(ingestedRuns[0]?.['turnId'], record.turnId);
+  // The owner is resolved like an in-process trace's (`runTraceUserSpread`),
+  // not copied from whatever the CLI agent put on the trace.
+  assert.equal(ingestedRuns[0]?.['userId'], 'u-1');
   assert.deepEqual(hookPoints, ['onAfterTurn'], 'onAfterTurn fires exactly once');
+  assert.deepEqual(hookTurnIds, ['cli-turn-1'], 'hooks see the CLI turn id');
   // The markdown transcript — the session log the operator reads.
   const transcripts = await memoryStore.list('/memories/sessions');
   assert.equal(transcripts.length, 1, 'one transcript file for the chat');
@@ -498,6 +505,7 @@ test('a claude-cli turn without a chat records nothing (#1391)', async () => {
   const record = await installedRecordHooks(built.bundle.agent).recordTurn!(
     { userMessage: 'single shot' },
     {
+      turnId: 'cli-turn-2',
       answer: 'ok',
       toolCalls: 0,
       iterations: 1,

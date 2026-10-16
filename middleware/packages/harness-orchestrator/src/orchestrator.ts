@@ -3673,6 +3673,11 @@ export class Orchestrator {
   ): Promise<CliTurnRecord> {
     if (!input.sessionScope) return {};
     const turnMemory = await this.bindTurnMemoryForTurn(input);
+    // The trace's owner as the in-process path resolves it: a channel turn
+    // whose sender arrives only through `origin` carries a raw channel id in
+    // `userId`, and `ingestRun` drops a trace owned by that.
+    const { userId: _rawTraceOwner, ...traceWithoutOwner } = turn.runTrace;
+    const runTrace = { ...traceWithoutOwner, ...runTraceUserSpread(input) };
     let persistedTurnId: string | undefined;
     if (this.sessionLogger) {
       persistedTurnId = await this.turnRecords.writeRow(
@@ -3684,7 +3689,7 @@ export class Orchestrator {
           iterations: turn.iterations,
           ...(input.userId ? { userId: input.userId } : {}),
           ...turnOwnersField(turnMemory),
-          runTrace: turn.runTrace,
+          runTrace,
           entityRefs: [],
         },
         'cli answer',
@@ -3710,7 +3715,10 @@ export class Orchestrator {
       ...this.toAnnotationEvents(
         await this.runTurnHook(
           'onAfterTurn',
-          randomUUID(),
+          // The CLI turn's own id, the one its cost-ledger row carries. No
+          // `onBeforeTurn` runs on this path, so a hook that keys state on
+          // the turn id finds none — as for any turn it did not plan.
+          turn.turnId,
           input,
           {
             assistantAnswer: turn.answer,

@@ -924,10 +924,11 @@ export function buildOrchestratorForAgent(
             // Teams conversation as a brand-new chat.
             if (!isChatSessionScope(sessionScope)) return undefined;
             const session = await chatSessionStore.get(sessionScope);
-            // Absent session ⇒ unreadable, NOT an empty chat. On this path the
-            // store is written only by the browser's fire-and-forget PUT
-            // (`chatSessions.ts`, `putRemoteSession`), which the web UI already
-            // issues when the tab is created — so a missing document means the
+            // Absent session ⇒ unreadable, NOT an empty chat. The store is
+            // written by the browser's fire-and-forget PUT (`chatSessions.ts`,
+            // `putRemoteSession`) and, since #1391, by the session logger's
+            // mirror after each recorded CLI turn; the web UI already PUTs
+            // when the tab is created — so a missing document means the
             // write was lost, not that the chat is new. Reading it as "new"
             // would reproduce #1087 silently; the cost of the other reading is
             // a disclosure note on the rare first turn that races the PUT.

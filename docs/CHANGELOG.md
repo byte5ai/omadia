@@ -47,8 +47,9 @@ the API-key path:
   error text, marked AI-generated, followed by a generic `error` ("CLI exited
   with code 1"). With exit code 0 there was no `error` at all. Now a failed
   turn sends no `done` and ends with exactly one `error` that names the cause
-  and what to do ("…not logged in, or its login expired. Sign in again under
-  Settings → Subscriptions."), and the middleware log records the CLI's text.
+  and what to do ("…not logged in, or its login expired. Sign in again on the
+  LLM access page, Subscriptions tab."), and the middleware log records the
+  CLI's text.
   The `done` of a successful result is also held back until the CLI's exit is
   checked.
 - **CLI turns were never written to the knowledge graph (#1391).** A CLI turn
@@ -57,14 +58,15 @@ the API-key path:
   `onAfterTurn`, and no recall on later turns. Every successful CLI chat turn is
   now persisted like an in-process one (`Orchestrator.recordCliTurn`), and before
   the spawn it recalls graph context the same way (`recallCliContext`) into the
-  CLI's system prompt, with the `kg_recall` cards. The answer verifier still
+  CLI's prompt, with the `kg_recall` cards. The answer verifier still
   does not run on this provider; the Subscriptions page now says so.
 - **The CLI's chat memory ignored `context_tail_size` (#1087).** The replayed
   chat history now has the operator's tail size instead of a fixed 10.
 
 No Privacy Shield runs on this path, so the recalled context reaches the CLI
-unmasked, like the replayed history (`docs/security-architecture.md` §3a). No
-migration, no new env var.
+unmasked, like the replayed history, and the recorded turn reaches the capture
+scorer, embeddings, fact and excerpt extraction unmasked
+(`docs/security-architecture.md` §3a). No migration, no new env var.
 
 ### Fixed — `enforce` no longer withholds every Privacy Shield rendered answer
 
