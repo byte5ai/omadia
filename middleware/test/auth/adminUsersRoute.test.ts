@@ -140,6 +140,8 @@ interface ForgedSession {
   display_name: string;
   role: 'admin';
   provider: string;
+  /** users.id the session was minted for — the audit actor id (#1315). */
+  uid?: string;
 }
 
 describe('/api/v1/admin/users router', () => {
@@ -555,6 +557,105 @@ describe('/api/v1/admin/users router', () => {
     ]);
     assert.equal(forgottenAccounts.at(-1), 'local:new@example.com', 'its device cookies with it');
   });
+  // ── #1314 — PATCH refuses what it cannot apply ────────────────────────────
+  it('PATCH /:id refuses an unsupported role with 400 and leaves the user unchanged (#1314)', async () => {
+    setSession(adminSession());
+    const target = store.rows.find((r) => r.email === 'admin@example.com')!;
+    const auditBefore = audit.entries.length;
+    const patchesBefore = store.patches.length;
+    const res = await fetch(`${baseUrl}/api/v1/admin/users/${target.id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ role: 'viewer' }),
+    });
+    assert.equal(res.status, 400);
+    assert.equal(((await res.json()) as { code: string }).code, 'admin_users.invalid_role');
+    assert.equal(store.rows.find((r) => r.id === target.id)?.role, 'admin');
+    assert.equal(store.patches.length, patchesBefore, 'nothing was written');
+    assert.equal(audit.entries.length, auditBefore, 'a refused change is not audited as one');
+  });
+
+  it('PATCH /:id refuses an unknown status, a non-string name and unknown fields (#1314)', async () => {
+    setSession(adminSession());
+    const target = store.rows.find((r) => r.email === 'admin@example.com')!;
+    const cases: Array<[unknown, string]> = [
+      [{ status: 'suspended' }, 'admin_users.invalid_status'],
+      [{ display_name: 42 }, 'admin_users.invalid_display_name'],
+      [{ email: 'other@example.com' }, 'admin_users.unknown_field'],
+      [['status', 'active'], 'admin_users.invalid_body'],
+    ];
+    for (const [body, code] of cases) {
+      const res = await fetch(`${baseUrl}/api/v1/admin/users/${target.id}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      assert.equal(res.status, 400, JSON.stringify(body));
+      assert.equal(((await res.json()) as { code: string }).code, code);
+    }
+  });
+
+  it('PATCH /:id still accepts role "admin" and a valid status', async () => {
+    setSession(adminSession());
+    const target = store.rows.find((r) => r.email === 'admin@example.com')!;
+    const res = await fetch(`${baseUrl}/api/v1/admin/users/${target.id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ role: 'admin', display_name: 'Admin One' }),
+    });
+    assert.equal(res.status, 200);
+  });
+
+  // ── #1321 — one server-side email rule ───────────────────────────────────
+  it('POST / refuses addresses with an empty local part or domain (#1321)', async () => {
+    setSession(adminSession());
+    for (const email of ['a@', '@b', 'a@@b', 'a b@c.de', '@']) {
+      const res = await fetch(`${baseUrl}/api/v1/admin/users`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email, password: 'pw-invalid-mail-1' }),
+      });
+      assert.equal(res.status, 400, email);
+      assert.equal(((await res.json()) as { code: string }).code, 'admin_users.invalid_email');
+    }
+    assert.equal(store.rows.some((r) => r.email === 'a@' || r.email === '@b'), false);
+  });
+
+  // ── #1315 — every user.* row carries the actor's users.id ────────────────
+  it('audits user changes with actor id (users.id from the session) and email (#1315)', async () => {
+    const actorUid = '0f1e2d3c-4b5a-4968-8776-a5b4c3d2e1f0';
+    setSession({ ...adminSession(), uid: actorUid });
+    const auditStart = audit.entries.length;
+    const created = await fetch(`${baseUrl}/api/v1/admin/users`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: 'actor-check@example.com', password: 'pw-actor-check-1' }),
+    });
+    assert.equal(created.status, 201);
+    const { user } = (await created.json()) as { user: { id: string } };
+    await fetch(`${baseUrl}/api/v1/admin/users/${user.id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ display_name: 'Renamed' }),
+    });
+    await fetch(`${baseUrl}/api/v1/admin/users/${user.id}/reset-password`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ password: 'pw-actor-check-2' }),
+    });
+    await fetch(`${baseUrl}/api/v1/admin/users/${user.id}`, { method: 'DELETE' });
+    const rows = audit.entries.slice(auditStart).filter((e) => e.target === `user:${user.id}`);
+    assert.deepEqual(
+      rows.map((e) => [e.action, e.actorId, e.actorEmail]),
+      [
+        ['user.create', actorUid, 'admin@example.com'],
+        ['user.update', actorUid, 'admin@example.com'],
+        ['user.reset_password', actorUid, 'admin@example.com'],
+        ['user.delete', actorUid, 'admin@example.com'],
+      ],
+    );
+  });
+
 
   // #1318 — a non-UUID id is an unknown user (404), not a Postgres 22P02 (500).
   for (const [method, suffix, body] of [

@@ -122,7 +122,10 @@ import { resolveSkillManifestSigningKey } from './services/skillManifestSigningK
 import { createCredentialAskRouter } from './routes/credentialAsks.js';
 import { InMemoryCredentialAskStore } from './credentials/asks.js';
 import { PostgresCredentialAskStore } from './credentials/postgresCredentialAskStore.js';
-import { resolveCredentialMasterKey } from './credentials/crypto.js';
+import {
+  credentialKeychainDevKeyPath,
+  resolveCredentialMasterKey,
+} from './credentials/crypto.js';
 import { createCredentialStore } from './credentials/credentialStoreFactory.js';
 import { createInconsistenciesRouter } from './routes/inconsistencies.js';
 import { createDuplicatesRouter } from './routes/duplicates.js';
@@ -164,6 +167,7 @@ import { createHarnessAdminUiRouter } from './routes/harnessAdminUi.js';
 import { createPluginUiStaticRouter } from './routes/pluginUiStatic.js';
 import { createStoreRouter } from './routes/store.js';
 import { createInstallRouter } from './routes/install.js';
+import { readGrantSnapshot } from './routes/runtimeGrants.js';
 import { createAdminRegistriesRouter } from './routes/adminRegistries.js';
 import { RegistryClient } from './plugins/registryClient.js';
 import {
@@ -206,6 +210,7 @@ import {
 } from './platform/pluginLlmReadiness.js';
 import { createServiceRegistryBackedSqlGrantStore } from './platform/pluginSqlGrantStore.js';
 import { createVaultStatusRouter } from './routes/vaultStatus.js';
+import { buildPlatformChecks } from './health/platformHealth.js';
 import { createBuilderRouter } from './routes/builder.js';
 import {
   OperatorGate,
@@ -273,6 +278,7 @@ import { publicPaths } from './auth/publicPaths.js';
 import { recordRawBodyBytes } from './http/rawBodySize.js';
 import { createAppServer, createTerminalHandler } from './http/terminalHandler.js';
 import { redactAuditError } from './services/secretRedaction.js';
+import { isApiKeyActive } from '@omadia/api-key-auth';
 import { createVerifyOnlyApiKeyStore, mountPublicMcp } from './mcp/wirePublicMcp.js';
 // W5-1 — the WRITE half of `public_mcp_key_bindings`. Imported for the
 // OPERATOR router only. `mountPublicMcp` above must never be handed this: the
@@ -284,7 +290,7 @@ import {
   type PrivacyGuardService,
 } from '@omadia/plugin-api';
 import { createRequireAuth, evaluateSessionToken } from './auth/requireAuth.js';
-import { createOperatorAuthAccessor } from './auth/operatorAuthAccessor.js';
+import { createOperatorAuthAccessor, LateBoundAdminAudit } from './auth/operatorAuthAccessor.js';
 import {
   createConductorWebhooksInboundRouter,
   type ConductorWebhookInboundDeps,
@@ -323,7 +329,7 @@ import {
   EntraProvider,
 } from './auth/providers/EntraProvider.js';
 import { runAuthBootstrap } from './auth/bootstrap.js';
-import { AdminAuditLog, roleChangeAuditEntry } from './auth/adminAuditLog.js';
+import { AdminAuditLog, auditActorFromLabel, roleChangeAuditEntry } from './auth/adminAuditLog.js';
 import {
   PlatformSettingsStore,
   SETTING_AUTH_ACTIVE_PROVIDERS,
@@ -336,6 +342,7 @@ import {
   requestIsSecure,
 } from './http/requestTrust.js';
 import { createAdminUsersRouter } from './routes/adminUsers.js';
+import { createAdminAuditRouter } from './routes/adminAudit.js';
 import { createAdminAuthRouter } from './routes/adminAuth.js';
 import { PluginCatalog } from './plugins/manifestLoader.js';
 import {
@@ -991,7 +998,7 @@ async function main(): Promise<void> {
   if (credentialMasterKey.source === 'env') {
     console.log('[middleware] credential-keychain master key loaded from CREDENTIAL_KEYCHAIN_KEY env');
   } else if (credentialMasterKey.source === 'dev-file-existed') {
-    console.log('[middleware] ⚠ credential-keychain master key loaded from dev file — set CREDENTIAL_KEYCHAIN_KEY for production');
+    console.log(`[middleware] ⚠ credential-keychain master key loaded from dev file (${credentialKeychainDevKeyPath(DATA_DIR)}) — set CREDENTIAL_KEYCHAIN_KEY for production`);
   } else {
     console.warn('[middleware] ⚠ credential-keychain master key GENERATED (dev file) — DEV ONLY. Set CREDENTIAL_KEYCHAIN_KEY for production.');
   }
@@ -1012,10 +1019,15 @@ async function main(): Promise<void> {
   // `@omadia/channel-api`'s `/admin/keys`) can check the real operator
   // session without re-implementing it. Threaded into every plugin runtime
   // below so any plugin — not just channel plugins — can use it.
+  // #1329 — `admin_audit` for plugin-originated admin actions (API-key
+  // lifecycle). Late-bound: the AdminAuditLog needs the Postgres pool, which
+  // exists only further down; attached right where it is constructed.
+  const pluginAdminAudit = new LateBoundAdminAudit();
   const operatorAuth = createOperatorAuthAccessor({
     signingKey: sessionSigningKey,
     whitelist: emailWhitelist,
     sessions: sessionRevocation,
+    audit: pluginAdminAudit,
   });
 
   const installedRegistry = new FileInstalledRegistry(
@@ -1934,8 +1946,11 @@ async function main(): Promise<void> {
         })
       : null;
   if (!oauthClient) {
+    // #1323 — only Entra is off here. The auth router is mounted regardless,
+    // and local sign-in works; the real 503 fallback (no graph pool) logs its
+    // own warning further down.
     console.warn(
-      '[middleware] ⚠ admin OAuth disabled — MICROSOFT_APP_* missing. /api/v1/auth/* returns 503.',
+      '[middleware] ⚠ Entra sign-in disabled (MICROSOFT_APP_* missing). Local login is unaffected.',
     );
   } else {
     console.log(
@@ -3205,6 +3220,15 @@ async function main(): Promise<void> {
       // it is a legitimate operator decision, and #648 is explicit that the
       // hint informs rather than blocks.
       const status = kg.pool === 'dead' ? 'error' : 'ok';
+      // #1385 / #1384 — the database verdict as its own field, so the web UI
+      // can name a Postgres outage while every authenticated route answers
+      // 503. Additive: `status` and the HTTP code keep their meaning, because
+      // the updater's health gate and the desktop supervisor key on them.
+      // Master-key posture is NOT here on purpose (see platformHealth.ts).
+      const checks = buildPlatformChecks({
+        kg,
+        databaseConfigured: Boolean(process.env['DATABASE_URL']?.trim()),
+      });
       // #432 — the build stamp (`unknown` when the image was built without
       // one). Load-bearing beyond display: the updater sidecar's health gate
       // polls THIS field to decide whether the new image is actually serving,
@@ -3218,6 +3242,7 @@ async function main(): Promise<void> {
         .json({
           status,
           version: appVersion.version,
+          checks,
           kg,
           disclosure,
           attachments: attachmentStoreHealth(attachmentStore),
@@ -4136,12 +4161,12 @@ async function main(): Promise<void> {
             // rather than hidden in a closure.
             const keyStore = createVerifyOnlyApiKeyStore(secretVault);
             const keys = await keyStore.list();
-            // NOT revoked. Authentication skips a revoked record, so counting
+            // NOT revoked or expired (#1328). Authentication skips both, so counting
             // one as "known" reports a binding as healthy that can only ever
             // 401. Same reasoning as the enabled-agent filter above: this set
             // answers "would a real request resolve this id", not "is there a
             // row somewhere".
-            return new Set(keys.filter((k) => k.revokedAt === undefined).map((k) => k.id));
+            return new Set(keys.filter((k) => isApiKeyActive(k)).map((k) => k.id));
           } catch (err) {
             console.warn(
               `[middleware] public-mcp binding key lister unavailable: ${String(err)}`,
@@ -4283,7 +4308,9 @@ async function main(): Promise<void> {
       roleStore: facilitationRoleStore,
       auditRoleChange: async (entry) => {
         await adminAudit?.record({
-          actor: { id: entry.actor },
+          // #775 class — a system label (the ephemeral reaper) in the uuid
+          // column made this INSERT fail; only a uuid goes to actor_id.
+          actor: auditActorFromLabel(entry.actor),
           action: 'conductor.role_holders_change',
           target: `conductor-role:${entry.roleKey}`,
           before: { action: entry.action, holderId: entry.holderId },
@@ -4300,7 +4327,7 @@ async function main(): Promise<void> {
       agentSlug: string;
     }): Promise<void> => {
       await adminAudit?.record({
-        actor: { id: entry.actor },
+        actor: auditActorFromLabel(entry.actor),
         action: 'channel.binding_change',
         target: `channel-binding:${entry.channelType}/${entry.channelKey}`,
         before: { action: entry.action },
@@ -4739,6 +4766,7 @@ async function main(): Promise<void> {
 
     const platformSettings = new PlatformSettingsStore(graphPool);
     adminAudit = new AdminAuditLog(graphPool);
+    pluginAdminAudit.attach(adminAudit);
     const storedActive = await platformSettings.get<string[]>(
       SETTING_AUTH_ACTIVE_PROVIDERS,
     );
@@ -4878,6 +4906,8 @@ async function main(): Promise<void> {
         loginDevices: loginGuard.devices,
       }),
     );
+    // #1315 — the read side of the audit trail (admin UI: /admin/audit).
+    app.use('/api/v1/admin/audit', requireAuth, createAdminAuditRouter({ audit: adminAudit }));
     app.use(
       '/api/v1/admin/auth',
       requireAuth,
@@ -4889,7 +4919,7 @@ async function main(): Promise<void> {
       }),
     );
     console.log(
-      '[middleware] admin user-management + auth-toggle endpoints ready at /api/v1/admin/users and /api/v1/admin/auth (auth: required)',
+      '[middleware] admin user-management, audit-trail + auth-toggle endpoints ready at /api/v1/admin/users, /api/v1/admin/audit and /api/v1/admin/auth (auth: required)',
     );
   } else {
     console.warn(
@@ -5004,7 +5034,15 @@ async function main(): Promise<void> {
   app.use(
     '/api/v1/install',
     requireAuth,
-    createInstallRouter({ service: installService, oauthBroker }),
+    createInstallRouter({
+      service: installService,
+      oauthBroker,
+      // #1347 — install/uninstall rows; the uninstall row lists the grants
+      // that leave with the plugin.
+      ...(adminAudit ? { audit: adminAudit } : {}),
+      grantsOf: (pluginId) =>
+        readGrantSnapshot({ publicPathGrantStore, sqlGrantStore }, pluginId),
+    }),
   );
   console.log('[middleware] plugin install endpoints ready at /api/v1/install (auth: required)');
   console.log('[middleware] OAuth broker ready at /api/v1/install/oauth/{start,callback}');
@@ -5225,6 +5263,7 @@ async function main(): Promise<void> {
       vaultPath: VAULT_PATH,
       dataDir: DATA_DIR,
       masterKeySource: masterKey.source,
+      keychainKeySource: credentialMasterKey.source,
       backup: vaultBackupService,
       ...(vaultBackupDisabledReason
         ? { backupDisabledReason: vaultBackupDisabledReason }
@@ -5253,6 +5292,8 @@ async function main(): Promise<void> {
       publicPathGrants,
       // Epic #470 C16 (#817) — the half C7 shipped a gate for but no answer to.
       sqlGrantStore,
+      // #1347 — who opened or closed which path lands in admin_audit.
+      ...(adminAudit ? { audit: adminAudit } : {}),
     }),
   );
   console.log('[middleware] runtime introspection endpoint ready at /api/v1/admin/runtime (auth: required)');

@@ -144,6 +144,17 @@ upsert(_record: AgentPriorityUpsert): Promise<void>;
 remove(_agentId: string, _entryExternalId: string): Promise<void>;
 }
 
+// ===== boundaryPresets.d.ts =====
+export type BoundaryPresetCategory = 'data' | 'scope' | 'authority' | 'communication';
+export interface BoundaryPreset {
+readonly id: string;
+readonly category: BoundaryPresetCategory;
+readonly labelKey: string;
+readonly prompt: string;
+}
+export declare const BOUNDARY_PRESETS: readonly BoundaryPreset[];
+export declare function getBoundaryPreset(id: string): BoundaryPreset | undefined;
+
 // ===== bulkInconsistency.d.ts =====
 export interface BulkInconsistencyPreview {
 unchecked: number;
@@ -411,6 +422,7 @@ export * from './knowledgeGraph.js';
 export * from './datasetId.js';
 export * from './embeddingClient.js';
 export * from './responseGuard.js';
+export * from './boundaryPresets.js';
 export * from './agentPriorities.js';
 export * from './privacyReceipt.js';
 export * from './privacyReceiptFixtures.js';
@@ -1622,6 +1634,18 @@ get(fieldKey: string): Promise<string>;
 export type OAuthTokenErrorCode = 'not_connected' | 'refresh_failed';
 export interface OperatorAuthAccessor {
 hasValidSession(cookieHeader: string | undefined): Promise<boolean>;
+sessionPrincipal?(cookieHeader: string | undefined): Promise<OperatorPrincipal | null>;
+recordAdminAction?(cookieHeader: string | undefined, entry: OperatorAdminAuditEntry): Promise<boolean>;
+}
+export interface OperatorPrincipal {
+readonly userId?: string;
+readonly email: string;
+}
+export interface OperatorAdminAuditEntry {
+readonly action: string;
+readonly target: string;
+readonly before?: Readonly<Record<string, unknown>>;
+readonly after?: Readonly<Record<string, unknown>>;
 }
 export declare class OAuthTokenError extends Error {
 readonly code: OAuthTokenErrorCode;

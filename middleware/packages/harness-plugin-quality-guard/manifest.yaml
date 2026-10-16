@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/plugin-quality-guard"
   name: "Quality Guard"
-  version: "0.1.0"
+  version: "0.2.0"
   kind: "tool"
   domain: "quality.response-guard"
   description:
@@ -44,8 +44,12 @@ setup:
   fields:
     - key: "default_sycophancy"
       type: "enum"
-      label: "Default Sycophancy-Level"
-      help: "Wirkt für alle Profile, die selbst keinen `quality.sycophancy`-Wert deklarieren. `off` deaktiviert die Anti-Schmeichel-Regeln; `medium` ist eine balancierte Standardvorgabe für Beratungs-Use-Cases; `high` ist devil's-advocate. Reihenfolge innerhalb des Plugins (überschreibend, ergibt EINEN Block): AGENT.md-`quality`-Frontmatter → `agent_overrides` → dieser Default. Dieser Block wird dann zusätzlich zur agenteneigenen Schmeichel-Bremse (Agent-Editor → Grenzen) in den Prompt gehängt; beide Blöcke können gleichzeitig aktiv sein, keiner ersetzt den anderen."
+      label:
+        en: "Default sycophancy level"
+        de: "Default Sycophancy-Level"
+      help:
+        en: "Applies to every profile that does not declare its own `quality.sycophancy`. `off` disables the anti-flattery rules; `medium` is a balanced default for advisory use cases; `high` plays devil's advocate. Within the plugin the sources override each other and resolve to ONE block: AGENT.md `quality` frontmatter → `agent_overrides` → this default. That block is added to the prompt on top of the agent's own anti-flattery setting (agent editor → Boundaries); both blocks can be active at once, neither replaces the other."
+        de: "Wirkt für alle Profile, die selbst keinen `quality.sycophancy`-Wert deklarieren. `off` deaktiviert die Anti-Schmeichel-Regeln; `medium` ist eine balancierte Standardvorgabe für Beratungs-Use-Cases; `high` ist devil's-advocate. Reihenfolge innerhalb des Plugins (überschreibend, ergibt EINEN Block): AGENT.md-`quality`-Frontmatter → `agent_overrides` → dieser Default. Dieser Block wird dann zusätzlich zur agenteneigenen Schmeichel-Bremse (Agent-Editor → Grenzen) in den Prompt gehängt; beide Blöcke können gleichzeitig aktiv sein, keiner ersetzt den anderen."
       required: false
       default: "medium"
       enum:
@@ -60,22 +64,34 @@ setup:
 
     - key: "default_boundary_presets"
       type: "string"
-      label: "Default Boundary-Presets (komma-separiert)"
-      help: "IDs aus der Preset-Library, die für ALLE Profile gelten. Verfügbare IDs: no-financial-advice, no-legal-advice, no-medical-advice, internal-only, no-pii-collection, no-external-quotes, privacy-first, factual-only, no-speculation, no-reasoning-disclosure. Unbekannte IDs werden ignoriert. Diese Presets gelten zusätzlich zu den agenteneigenen Grenzen (Agent-Editor → Grenzen) — beide Blöcke landen im Prompt, keiner ersetzt den anderen. Achtung: die Agent-UI nutzt eine eigene, teils andere Preset-Library (z. B. no-financial-data statt no-financial-advice); IDs von dort passen hier nicht 1:1."
+      label:
+        en: "Default boundary presets (comma-separated)"
+        de: "Default Boundary-Presets (komma-separiert)"
+      help:
+        en: "IDs from the shared preset library that apply to ALL profiles — the same IDs as in the agent editor → Boundaries: no-financial-data, no-pii, no-medical-data, no-legal-advice, own-domain-only, no-code-execution, no-external-links, no-discount-authority, no-commitments, no-personnel-decisions, no-speculation, no-competitor-discussion. Still accepted (v0.1 plugin IDs, unchanged wording): no-financial-advice, no-medical-advice, internal-only, no-pii-collection, no-external-quotes, privacy-first, factual-only, no-reasoning-disclosure. Unknown IDs are logged at startup and ignored. These presets apply on top of each agent's own boundaries — both blocks land in the prompt, neither replaces the other. Set a prohibition in one place only."
+        de: "IDs aus der gemeinsamen Preset-Library, die für ALLE Profile gelten — dieselben IDs wie im Agent-Editor → Grenzen: no-financial-data, no-pii, no-medical-data, no-legal-advice, own-domain-only, no-code-execution, no-external-links, no-discount-authority, no-commitments, no-personnel-decisions, no-speculation, no-competitor-discussion. Weiterhin akzeptiert (Plugin-IDs aus v0.1, unveränderter Wortlaut): no-financial-advice, no-medical-advice, internal-only, no-pii-collection, no-external-quotes, privacy-first, factual-only, no-reasoning-disclosure. Unbekannte IDs werden beim Start protokolliert und ignoriert. Diese Presets gelten zusätzlich zu den agenteneigenen Grenzen — beide Blöcke landen im Prompt, keiner ersetzt den anderen. Ein Verbot also nur an einer Stelle setzen."
       required: false
       default: ""
 
     - key: "default_boundary_custom"
       type: "string"
-      label: "Default Custom-Boundaries (newline-separiert)"
-      help: "Freitext-Boundaries, eine pro Zeile. Werden 1:1 als Bullet-Points in den System-Prompt gehängt."
+      label:
+        en: "Default custom boundaries (one per line)"
+        de: "Default Custom-Boundaries (newline-separiert)"
+      help:
+        en: "Free-text boundaries, one per line. Added verbatim as bullet points to the system prompt, on top of each agent's own boundaries."
+        de: "Freitext-Boundaries, eine pro Zeile. Werden 1:1 als Bullet-Points in den System-Prompt gehängt, zusätzlich zu den agenteneigenen Grenzen."
       required: false
       default: ""
 
     - key: "agent_overrides"
       type: "string"
-      label: "Per-Agent-Overrides (JSON)"
-      help: "Optionale Map agentId → SycophancyLevel als JSON. Beispiel: {\"agent-seo-analyst\":\"medium\",\"agent-reference-maximum\":\"low\"}. Wird genutzt, solange AGENT.md-Frontmatter (Phase 2.1) noch nicht geparst wird. Frontmatter überschreibt diese Map sobald verfügbar."
+      label:
+        en: "Per-agent overrides (JSON)"
+        de: "Per-Agent-Overrides (JSON)"
+      help:
+        en: "Optional JSON map agentId → sycophancy level. Example: {\"agent-seo-analyst\":\"medium\",\"agent-reference-maximum\":\"low\"}. AGENT.md `quality` frontmatter overrides this map when present."
+        de: "Optionale Map agentId → SycophancyLevel als JSON. Beispiel: {\"agent-seo-analyst\":\"medium\",\"agent-reference-maximum\":\"low\"}. AGENT.md-`quality`-Frontmatter überschreibt diese Map, wenn vorhanden."
       required: false
       default: ""
 

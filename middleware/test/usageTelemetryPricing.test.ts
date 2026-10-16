@@ -9,6 +9,8 @@ import {
   type UsageTokens,
 } from '@omadia/usage-telemetry';
 
+import { BUILTIN_LLM_PROVIDERS } from '../src/platform/builtinLlmProviders.js';
+
 /**
  * Guards multi-provider pricing (S5). The two regressions this prevents:
  *  - OpenAI usage priced at $0 because the model wasn't in the table.
@@ -180,16 +182,42 @@ describe('computeCostUsd — Anthropic regression (unchanged)', () => {
   it('prices claude-haiku-5-5 exactly — a tenth of the haiku family (#1389)', () => {
     // The 'haiku' fallback is $1/$5; Haiku 5.5 is $0.10/$0.50 and runs the
     // background calls after every turn, so the fallback over-billed 10x.
-    assert.deepEqual(priceForModel('claude-haiku-5-5'), {
-      inputPerMTok: 0.1,
-      outputPerMTok: 0.5,
-    });
-    assert.deepEqual(priceForModel('claude-haiku-5-5-20261001'), {
-      inputPerMTok: 0.1,
-      outputPerMTok: 0.5,
-    });
+    assert.equal(priceForModel('claude-haiku-5-5').inputPerMTok, 0.1);
+    assert.equal(priceForModel('claude-haiku-5-5').outputPerMTok, 0.5);
+    assert.equal(priceForModel('claude-haiku-5-5-20261001').inputPerMTok, 0.1);
     // Reads at the standard 0.1x: $0.01/MTok.
     expectCost('claude-haiku-5-5', noUsage({ cacheReadTokens: 1000 }), (1000 * 0.01) / 1e6);
+  });
+
+  it('bills a Haiku 5.5 prompt over 100k tokens at the long-context rate (#1389)', () => {
+    // Exactly 100k is still the base tier: $0.10 in, $0.50 out.
+    expectCost(
+      'claude-haiku-5-5',
+      noUsage({ inputTokens: 100_000, outputTokens: 1000 }),
+      (100_000 * 0.1) / 1e6 + (1000 * 0.5) / 1e6,
+    );
+    // Over 100k the whole call moves to $0.50/$2.50, output and cache included.
+    expectCost(
+      'claude-haiku-5-5',
+      noUsage({ inputTokens: 100_001, outputTokens: 1000 }),
+      (100_001 * 0.5) / 1e6 + (1000 * 2.5) / 1e6,
+    );
+    // Cache reads and writes count towards the threshold: 20k fresh input
+    // over a 90k cached prefix is a 110k prompt.
+    const inRate = 0.5 / 1e6;
+    expectCost(
+      'claude-haiku-5-5',
+      noUsage({ inputTokens: 20_000, cacheReadTokens: 90_000, cacheCreationTokens: 5000 }),
+      20_000 * inRate +
+        90_000 * inRate * CACHE_READ_MULTIPLIER +
+        5000 * inRate * CACHE_WRITE_MULTIPLIER,
+    );
+    // Dated snapshots get the tier too.
+    expectCost(
+      'claude-haiku-5-5-20261001',
+      noUsage({ inputTokens: 150_000 }),
+      (150_000 * 0.5) / 1e6,
+    );
   });
 
   it('prices the Fable family instead of recording it at $0', () => {
@@ -232,5 +260,50 @@ describe('computeCostUsd — Anthropic regression (unchanged)', () => {
     assert.equal(priceForModel('claude-opus-4-8-20260101').inputPerMTok, 5);
     assert.equal(priceForModel('claude-sonnet-4-6-20260101').inputPerMTok, 3);
     assert.equal(priceForModel('claude-fable-5-20260101').cachedInputPerMTok, undefined);
+  });
+});
+
+describe('pricing — every model the built-in providers offer has a price (#1389)', () => {
+  // Subscription providers (`requiresApiKey: false`, e.g. claude-cli) are not
+  // billed per token, so only the API-key providers are held to this.
+  const billed = BUILTIN_LLM_PROVIDERS.filter((p) => p.policy?.requiresApiKey !== false);
+
+  it('prices every seeded model of a billed provider', () => {
+    for (const provider of billed) {
+      for (const model of provider.models) {
+        assert.ok(
+          priceForModel(model.modelId).inputPerMTok > 0,
+          `${provider.id}:${model.modelId} has no price`,
+        );
+      }
+    }
+  });
+
+  it('prices every current Anthropic id that live discovery admits', () => {
+    // The ids `GET /v1/models` lists today. Discovery admits them by family
+    // rule, so none of them is in the seed list above; each must still price
+    // at its own rate, not at $0 (Fable before #1307) or an older family rate.
+    const anthropic = BUILTIN_LLM_PROVIDERS.find((p) => p.id === 'anthropic');
+    const discovery = anthropic?.discovery;
+    assert.ok(discovery, 'anthropic provider has discovery rules');
+    const admitted = (id: string): boolean =>
+      (discovery.include ?? []).some((re) => new RegExp(re).test(id)) &&
+      !(discovery.exclude ?? []).some((re) => new RegExp(re).test(id));
+    const expected: Record<string, number> = {
+      'claude-fable-5-1': 10,
+      'claude-fable-5': 10,
+      'claude-opus-5-5': 4,
+      'claude-opus-5': 5,
+      'claude-opus-4-8': 5,
+      'claude-sonnet-5-5': 2,
+      'claude-sonnet-5': 2,
+      'claude-sonnet-4-6': 3,
+      'claude-haiku-5-5': 0.1,
+      'claude-haiku-4-5': 1,
+    };
+    for (const [id, inputPerMTok] of Object.entries(expected)) {
+      assert.ok(admitted(id), `${id} is not admitted by discovery`);
+      assert.equal(priceForModel(id).inputPerMTok, inputPerMTok, id);
+    }
   });
 });

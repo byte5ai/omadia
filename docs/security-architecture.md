@@ -116,29 +116,54 @@ The gate, asserted by `test/cliBridge/cliSpawnGate.test.ts` and
 | Binary resolution (#1085) | Every spawn site — chat turn, completion provider, and the CLI sub-agents (`ask_<slug>`, agent builder, preview chat) — resolves the binary through the kernel's `resolveCliBin()` — `<CLI_TOOLS_DIR>/bin/claude` (default `<PLATFORM_DATA_DIR>/cli-tools`) when a runtime install put one there, else the bare name from PATH. Previously they spawned the bare name while the version badge, the login flow and the "Install now" button all used the resolved path, so an operator could install a CLI ≥ 2.1.248 through the UI and every turn kept running the older image binary — including the `--restricted` version probe above, which then dropped the flag against a deployment the UI reported as up to date. The rule is published as the `cliBinaryResolver` kernel service (`optional_requires` in the orchestrator manifest) because `@omadia/orchestrator` cannot import the app layer; kernel-side callers share `src/platform/cliBinary.ts` (`resolveClaudeCliBin()`). Absent, every site falls back to PATH. Resolution runs **per turn / per completion**, so an install takes effect on the next turn rather than the next restart, and the spawn log names the resolved path. Credentials are unaffected either way: both binaries read the same `CLAUDE_CONFIG_DIR`. The candidate must be executable (`X_OK`, which follows symlinks) and is made absolute, because every spawn runs in a temp `cwd` where a relative path would not resolve; otherwise PATH. **Trust consequence:** the install dir is now the binary every turn executes, so its writers — the authenticated `POST /api/v1/admin/cli-backends/:id/install` and anything with write access to the data volume — choose the binary the gate wraps. That route accepts any strict-semver version, so a runtime install below 2.1.248 drops `--restricted` for turns exactly as an old image pin does; the spawn log's `restrictedFlag` shows it. Like any kernel service, `cliBinaryResolver` can be swapped with `ctx.services.replace` by a plugin that declares it under `requires`/`optional_requires` (the #788 gate treats `replace` like `get`); that is no escalation over in-process plugin code, but if such a plugin activates before the orchestrator (which resolves the service once, in `activate()`), it chooses the binary for every chat turn, so a manifest declaring this service deserves review. |
 | Env allowlist (#1014) | `buildGatedCliEnv()` passes only `PATH`, `HOME`, `CLAUDE_CONFIG_DIR`, `TMPDIR`, locale/`TZ`, proxy and CA vars, and `USER`/`LOGNAME`. It replaced a deny list that removed credentials and billing switches but passed `NODE_OPTIONS` (which can `--require` arbitrary code into the child) and the whole `CLAUDE_CODE_*` family. The deny list is kept as a second layer, and a test asserts the two never overlap. |
 
-### No Privacy Shield on this path — and chat history is replayed (#1087)
+### No Privacy Shield on this path — chat history and graph recall are replayed (#1087, #1391)
 
 "Privacy guard" in the list above does not mean the CLI child receives masked
 data. Only the in-process orchestrator installs a per-turn privacy handle, so on
-the subscription-CLI path the live user message,
-tool results and — since #1087 — the replayed chat history reach the vendor
-unmasked. `CliChatAgent` replays the newest `DEFAULT_CLI_SESSION_TAIL_SIZE` (10)
-completed turns of the session into the child's stdin prompt, truncated to 600
-characters per question and 1,200 per answer, with role markers neutralised so
-replayed text cannot forge a `User:`/`Assistant:` line. For a session whose
-earlier turns ran on an API-key provider with Privacy Shield active, those
-persisted turns hold RESTORED real values, so up to ten of them now reach the
-CLI child raw. This is a deliberate trade-off in line with the UI's notice not
-to route personal data through this provider. `maskHistory` already routes the
-replay through the turn's privacy handle and becomes effective the moment one is
-installed on this path; masking parity is tracked on #1087.
+the subscription-CLI path the live user message, tool results, the replayed chat
+history (#1087) and the knowledge-graph recall (#1391) reach the vendor
+unmasked. `CliChatAgent` replays the newest completed turns of the session into
+the child's stdin prompt — as many as the operator's `context_tail_size`
+(default 10, the `ContextRetriever`'s `tailSize`) — truncated to 600 characters
+per question and 1,200 per answer, with role markers neutralised so replayed
+text cannot forge a `User:`/`Assistant:` line. For a session whose earlier turns
+ran on an API-key provider with Privacy Shield active, those persisted turns
+hold RESTORED real values, so they reach the CLI child raw.
+
+Since #1391 the CLI turn also recalls context the way the in-process turn does
+(`Orchestrator.recallCliContext` → `retrievePriorContext`: verbatim graph tail,
+entity and full-text hits from the user's other chats, cross-session plans,
+processes and insights, the session briefing) and puts the rendered text into
+the child's stdin prompt — never argv, where `ps` / `/proc/<pid>/cmdline` would
+show other chats' content to every process in the container (and one argument
+is capped at 128 KiB). The same gates apply as in-process — audience floor,
+context-memory isolation (`enforce-strict`, `members`), fresh check — but the
+text is not masked, so recalled real values from other chats reach the vendor
+too. The recall has a 15 s deadline (`recallTimeoutMs`); past it the turn runs
+without.
+
+Every successful CLI turn is now also persisted like an in-process one
+(`Orchestrator.recordCliTurn`: transcript, chat-session mirror, graph
+`Turn`/`Run`/`ToolCall`, fact extraction, excerpt, auto-promotion,
+`onAfterTurn`), with the real texts and no masked view, because there is none.
+That opens outbound flows this path did not have before, all unmasked: the
+graph's capture scorer (it scores with a model of its own and gets no
+`maskedView` here), the embedding provider, the fact-extraction plugin and the
+excerpt extractor. They may be a different vendor than the CLI's. On the
+API-key path with Privacy Shield the same calls get the masked wire text.
+
+This is a deliberate trade-off in line with the UI's notice not to route
+personal data through this provider; the decision is recorded on #1087.
+`maskHistory` already routes the replay through the turn's privacy handle and
+becomes effective the moment one is installed on this path.
 
 The answer verifier is never installed on this path: `buildOrchestratorForAgent`
 returns the `CliChatAgent` bundle before the `VerifierService` wrap, so a
-subscription-CLI chat turn has no verifier egress at all. The reverse case is
-covered by §6e — the verifier plugin's OWN model may be the `claude-cli`
-completion provider (Shape 2), and its requests are masked before
-`llm.complete` like on any other provider.
+subscription-CLI chat turn has no verifier egress at all, and the subscription
+page tells the operator so (#1391). The reverse case is covered by §6e — the
+verifier plugin's OWN model may be the `claude-cli` completion provider
+(Shape 2), and its requests are masked before `llm.complete` like on any other
+provider.
 
 ### Why the deny list is generated, not written (#1014)
 
@@ -2829,6 +2854,18 @@ At a minimum, your deployment vault holds:
 Nothing from this list should appear in `git grep` output of this repository.
 If it does, that is a bug — file an issue and rotate.
 
+### Master-key posture is not on the public `/health` (#1385, #1387, #1332)
+
+The unauthenticated `GET /health` reports the database verdict
+(`checks.database`) so the web UI can name a Postgres outage while every
+authenticated route answers 503. It deliberately does **not** report whether
+`VAULT_KEY` / `CREDENTIAL_KEYCHAIN_KEY` came from env or from the dev file:
+that would tell any scanner "this instance runs on dev-grade keys". The UI's
+dev-key warning is only shown while the database is up, and then reads the
+authenticated `/api/v1/admin/vault-status`, which reports both sources
+(`master_key_source`, `keychain_key_source`); its `production_ready` requires
+both keys from env.
+
 ## 8a. Desktop secret custody (`desktop/src/secrets.ts`)
 
 The desktop app has no deployment vault. It generates the kernel's master keys
@@ -3252,6 +3289,41 @@ already-revoked key is a no-op that returns its unchanged view). `verify()`
 skips any record with `revokedAt` set, so a revoked key starts failing
 immediately on its very next call — no propagation delay, no cache to
 invalidate.
+
+**Lifecycle, scope catalog and admin audit (#1327 / #1328 / #1329).**
+Creation requires every scope to be *known* (`isKnownScope`,
+`apiKeyScopeCatalog.ts`): a built-in, a registered scope
+(`registerApiKeyScope`; no caller yet, and not exposed through `ctx`), or a
+well-formed `mcp:write:<tool>` (tool sets are decided later by the key's MCP
+binding, so tools are admitted by shape). The read path keeps the shape-only
+`normalizeScopes`, so a key minted with a scope whose plugin is later removed
+keeps it rather than flipping to deny-all. `expiresAt` (≤ 5 years ahead) makes
+`verify()` refuse the key once passed; an unreadable persisted `expiresAt`
+hydrates to `0` — expired, fail closed. `isApiKeyActive` (not revoked, not
+expired) is the one predicate for "can authenticate", used by `verify()`, the
+channel directory and the public-MCP binding lister. `DELETE` removes only a
+revoked or expired record, so deletion can never be an un-audited revoke.
+`createdBy` and every `admin_audit` row take the actor from the kernel's
+session evaluation (`ctx.operatorAuth.sessionPrincipal` /
+`recordAdminAction`), never from plugin-supplied data: `actor_id` is the
+session's `uid` (`users.id`), `actor_email` its email. `PLUGIN_AUDIT_POLICY` admits an
+action only for named plugins and a target shape (`api_key.*` → only
+`@omadia/channel-api`, target `api-key:<uuid>`), so no plugin can forge
+kernel events such as `user.delete` or another plugin's events. The plugin id
+in that decision comes from the kernel: the unscoped accessor refuses every
+write, and only the per-plugin wrapper (`scopeOperatorAuthToPlugin`, applied
+in `createPluginContext`) can call `recordForPlugin` with its id. That id is
+stamped last into `before.plugin` and `after.plugin`, and each payload is
+capped at 4 KB. Audit payloads carry id, label,
+scopes, rate limit and expiry — never the token or its hash. A failed audit
+write is logged, not turned into an error response (the action already
+happened). The usage log is readable per key (`GET .../keys/:id/usage`,
+operator session required like every route on that router). The public MCP
+endpoint writes to it as well (`createPublicMcpUsageLog`), with a writer that
+may set only the `usage-audit-log` entry of the key namespace; both writers
+share one process-wide queue. Deleting a key drops its `lastUsed` stamp but
+keeps its request entries until the cap ages them out — after a leak that
+history is evidence.
 
 **Usage audit.** Every call that gets *past key verification* — i.e. every
 authenticated call, regardless of what happens next — is recorded as one
@@ -4845,6 +4917,19 @@ the global scope per minute overall, writes one log line
 was tried. It is per episode rather than per request, so a refusal flood cannot
 become a log or database write flood.
 
+A sign-in that fails verification (#1315) is recorded the same way: the first
+failure of an (account, client) pair per minute writes one log line
+(`[auth] login failed (<code>) provider=<id> client=<key> user=<uuid>`) and one
+`admin_audit` row (`auth.login_failed`, system actor, target
+`login-client:<key>`). The account is recorded only as the `users` row a
+well-formed address resolves to (`account_user_id` plus that row's email);
+anything else, an address-shaped password such as `Summer@2024` included, is
+recorded as `null`, and the log line names the user id, never the typed text.
+The password never reaches the reporter. The reporter
+tracks at most 10 000 pairs; past that, a minute's further failures share one
+`login:failures-overflow` row, so a spray across accounts and clients cannot
+become a write flood either.
+
 **Other argon2 on the public prefix.** The first-user wizard's hash takes a
 global slot through `acquireSlot()`, from the share of browsers without a
 device cookie (503 `auth.busy` when none is free, §10l).
@@ -5423,6 +5508,55 @@ Whether the Compose stack should ship with stdio off is an open decision.
 - With stdio on, an admin can run any command in the middleware container.
   Restricting manual stdio entries to the catalog grammar unless the operator
   opts in to free command lines is deferred.
+## 10q. The admin audit trail: one actor rule, one read route (#1315, #1347)
+
+`admin_audit` is append-only; nothing in the code updates or deletes a row.
+What it is worth for incident response depends on three rules.
+
+**One actor rule.** Every row written on behalf of a signed-in user takes its
+actor from `auditActorFromRequest(req)` (`auth/adminAuditLog.ts`): `actor_id`
+is the `users.id` the session was minted for (claim `uid`), `actor_email` the
+session's email. It is never the request body, never `sub` (an email for local
+accounts, which made the uuid column's INSERT fail, #775), and never
+`omadia_user_id` (the knowledge-graph cluster id, a different namespace). A
+`uid` that is not a uuid is dropped, not stored. Writers that only hold a
+free-form label (the conductor's ephemeral reaper, a channel binding) go
+through `auditActorFromLabel`: a uuid lands in `actor_id`, anything else in
+`actor_email`, so a system name can no longer make the INSERT fail (#775).
+Rows without a person behind them (sign-in refusals and failures, the
+env-seeded first admin) carry the system actor: both columns NULL. Failed
+sign-ins name the account only as the `users` row it resolves to
+(`account_user_id` and that row's email); text that names no user is never
+recorded, so a password typed into the email field stays out of the trail. "Everything user X did" is one filter:
+`actor_id = X`.
+
+**Read access.** `GET /api/v1/admin/audit` sits behind `requireAuth` like the
+user-admin routes. omadia has one role today and every user is an
+administrator, so every signed-in user can read the trail. That is the same
+population that can already create users, mint API keys and use the danger
+zone; it widens nothing. The filters (`action`, `actor_id`) are validated
+against a closed pattern and bound as query parameters; the `action` prefix's
+LIKE metacharacters are escaped. `before`/`after` are returned verbatim; no
+writer puts password material, hashes or secrets into them (a password reset
+row has neither).
+
+**Consent history.** Granting or revoking a plugin's unauthenticated public
+path or its SQL ledger writes one `plugin.grants_change` row with the granted
+set before and after, re-read from the stores rather than taken from the
+request (#1347). The revoke still DELETEs the grant row; the history lives in
+the trail. Install (`plugin.install`) and uninstall (`plugin.uninstall`, with
+the grants that left with the plugin) are recorded too; re-running the install
+wizard for an installed plugin writes another `plugin.install` row. A grant
+change whose prior state could not be read still goes through, and its row
+carries `before: "unknown"`. These writes are
+best-effort and loud: a failed audit write is logged as an error, and the
+consent change it describes stands.
+
+**Residual.** The trail lives in the same database the administrators can
+reach; it is evidence against mistakes and for after-the-fact review, not
+tamper-proof against an operator with database access. Install rows cover
+the install wizard; a package ingested from a registry or uploaded is not an
+install until the wizard completes.
 
 ## 11. Reviewer checklist
 
@@ -5827,4 +5961,4 @@ Before merging a PR that touches credentials, prompts, or proxy routes:
 
 ---
 
-*Last reviewed: 2026-10 (§10p added: operator MCP registry URLs and manual `http`/`sse` endpoints refuse link-local and cloud-metadata targets on save and on every connect, private and loopback stay allowed, the DNS check is not pinned to the connection, and `MCP_STDIO_ENABLED` switches stdio servers off; §6c: a `ToolRefusalError` or a kernel `ctx.http` permission error reaches the model as a refusal notice through the returned-error redactor; §10o added: the request trust boundary — `trust proxy` is an operator-named list of proxy ADDRESSES, empty by default, and a hop count is refused at boot because Express counts the immediate peer as a trusted hop; `requestIsSecure` reads `req.secure` instead of a raw `X-Forwarded-Proto`, `PUBLIC_SCHEME` is the operator's one answer for a TLS proxy that sets no header — governing the cookie flags and the pairing descriptor's scheme alike, since a `ws://` URL on an HTTPS page is blocked as mixed content — and the web-ui proxy DECLARES its `X-Forwarded-Proto` rather than relaying or deriving it, a Route Handler having no way to observe its own TLS; §10m: the login-device cookie's `Secure` claim names its control and that control's default; §6f: the org clamp covers MCP-to-knowledge-graph ingestion, and intern-exempt tools' errors are redacted or withheld like any tool's; §6c: positional record dumps and personal `key=value` pairs are withheld whole; §6f: the memory jobs mask the stored text they send to their model whatever `mask_user_prompt` says, in a turn through its handle and outside one through `openStoredTextScope`, and masking embeddings stays open; §4a added: npm dependency audit scope and the desktop runtime; §7c: answer-verifier verdicts and badges are evidence-bound — a run that checked nothing is `skipped` or `unavailable`, never `approved`, and an answer checked only in part is never `approved`; `enforce` holds every content event until the verdict, withholds an answer with a refuted claim or one it could not check (the verifier could not run, every check failed, or Privacy Shield kept the answer from it), and releases one it could not fully confirm with a disclaimer; extraction, its verbatim guard and the trigger read the answer without its `[ref:…]` markers, and a marker's record handle pins the claims it cites; the evidence judge counts a verdict only with a citation its request printed, and an entity handle with an id resolves exactly its record; a verifier re-entry replays the first run's tool results through a per-request ledger and executes no write, no transport re-sends a call below the bound ledger and a result the shield cannot intern is withheld at every seam, reuses the first run's upload ingestion instead of importing the uploads again, and gets a correction hint that is masked like the user's message and carries no verifier evidence, the `enforce` stream retries a contradiction, a request has one receipt row and one session-log row — the delivered pass's, written once the verifier decided — a detached task runner keeps out of the request's ledger, and no loop repeats a call whose outcome is unknown; §10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user; §8a added: desktop secret custody; §8b added: embedded Postgres authentication, hardened so a kernel-owned database cannot redirect the shell's superuser sessions; §10i added: desktop renderer trust boundary; §10j added: desktop wizard switches; §10k added: server-side session revocation; §10l added: first-user setup; §10m added: password sign-in rate limiting, its device cookies and its account key; §6e added: the answer verifier's model requests run under the turn's privacy view, and the receipt is finalised after them — per pass, for every resample and retry, with one receipt row per request — owned by its earliest pass with a receipt — that also keeps the receipt of a pass that threw or was cut off (in a stream's prelude too), and a claim that does not map back onto the shown answer is a coverage gap; §6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix; the public MCP endpoint's privacy gate covers a domain tool's sub-agent, with the guarantee stated per entry point; typed web-search and Kroki errors keep upstream text off their messages, and the provider pairing names privacy guard 0.6.0; keyword-field, Go-style and Postgres detail-line record dumps are withheld whole, and a sub-agent refuses an identical repeat of a call that ended in an exception; §5a added: office formula cells; §4 rewritten: plugin integrity is SHA-256 pinning with no publisher signature, where omadia itself runs npm, and write confirmation is a connector feature; §11: a public security claim names its control and that control's default; §6f added: what reaches the model unmasked under `guarded` (intern-exempt tools, operator bypass, control flow, prompt text); §7b: appending a receipt is best-effort, and the chain cannot show one that was never written; §11: a claim names the limits the code puts on it; §4: registry downloads are pinned to host and port, not scheme, manifest permissions gate the `PluginContext` accessors and sandbox no Node API, unbundled dependencies resolve from the image, Builder previews run the npm-installed template in-process, and an idempotency key on the public MCP endpoint is process-local deduplication with a cache window; §6f: the per-MCP-server bypass, a failed interning withheld at every seam, and a channel's replayed history carrying rendered real values; §7b: a turn that throws or ends before `done` keeps its receipt; §7c: the verifier is named opt-in, with `shadow` as its default mode; §11: a run-once claim names its scope; §6f: images, the model calls plugins make through `ctx.llm` and the memory jobs' requests reach the provider unmasked, with prompt masking on or off; §7c: the trigger patterns decide whether an answer is checked, `enforce` delivers an answer none of them matched unchecked, and a contradiction gets at most one correction retry; §11: a shield or verifier claim names what passes outside it; §6f restructured: the requests the shield masks and the setting each needs, then every model call outside it, the inbound security screener, turn scoring and embeddings included, and the org clamp does not reach MCP-to-knowledge-graph ingestion; §7c: an input-card turn releases a rendered answer unchecked, the trigger patterns are regular-expression matches over the whole answer, and a re-entry runs a shielded sub-agent again with its calls replayed; §4: 1,000 records is the idempotency store's eviction target; §6f: tool errors are redacted or withheld only for tools that are neither intern-exempt nor bypassed, prompt masking blocks a request only when the C0 baseline fails, a failed C1 detector leaves the rest of the turn on C0, and restoring real values is best-effort; §6c: the bypass residual covers bypassed tools and MCP servers; §11: a tool-error or fail-closed claim names what it skips).*
+*Last reviewed: 2026-10 (§10q added: the admin audit trail — one actor rule (`users.id` from the session's `uid` claim), a read route behind `requireAuth`, plugin grant changes recorded with before/after, and failed password sign-ins recorded per account and client per minute (§10m); §10p added: operator MCP registry URLs and manual `http`/`sse` endpoints refuse link-local and cloud-metadata targets on save and on every connect, private and loopback stay allowed, the DNS check is not pinned to the connection, and `MCP_STDIO_ENABLED` switches stdio servers off; §6c: a `ToolRefusalError` or a kernel `ctx.http` permission error reaches the model as a refusal notice through the returned-error redactor; §10o added: the request trust boundary — `trust proxy` is an operator-named list of proxy ADDRESSES, empty by default, and a hop count is refused at boot because Express counts the immediate peer as a trusted hop; `requestIsSecure` reads `req.secure` instead of a raw `X-Forwarded-Proto`, `PUBLIC_SCHEME` is the operator's one answer for a TLS proxy that sets no header — governing the cookie flags and the pairing descriptor's scheme alike, since a `ws://` URL on an HTTPS page is blocked as mixed content — and the web-ui proxy DECLARES its `X-Forwarded-Proto` rather than relaying or deriving it, a Route Handler having no way to observe its own TLS; §10m: the login-device cookie's `Secure` claim names its control and that control's default; §6f: the org clamp covers MCP-to-knowledge-graph ingestion, and intern-exempt tools' errors are redacted or withheld like any tool's; §6c: positional record dumps and personal `key=value` pairs are withheld whole; §6f: the memory jobs mask the stored text they send to their model whatever `mask_user_prompt` says, in a turn through its handle and outside one through `openStoredTextScope`, and masking embeddings stays open; §4a added: npm dependency audit scope and the desktop runtime; §7c: answer-verifier verdicts and badges are evidence-bound — a run that checked nothing is `skipped` or `unavailable`, never `approved`, and an answer checked only in part is never `approved`; `enforce` holds every content event until the verdict, withholds an answer with a refuted claim or one it could not check (the verifier could not run, every check failed, or Privacy Shield kept the answer from it), and releases one it could not fully confirm with a disclaimer; extraction, its verbatim guard and the trigger read the answer without its `[ref:…]` markers, and a marker's record handle pins the claims it cites; the evidence judge counts a verdict only with a citation its request printed, and an entity handle with an id resolves exactly its record; a verifier re-entry replays the first run's tool results through a per-request ledger and executes no write, no transport re-sends a call below the bound ledger and a result the shield cannot intern is withheld at every seam, reuses the first run's upload ingestion instead of importing the uploads again, and gets a correction hint that is masked like the user's message and carries no verifier evidence, the `enforce` stream retries a contradiction, a request has one receipt row and one session-log row — the delivered pass's, written once the verifier decided — a detached task runner keeps out of the request's ledger, and no loop repeats a call whose outcome is unknown; §10e added: same-origin return paths; §10f added: self-update control plane, #432; §10g added: the operator front's login gate and its public allowlist; §3b and §10h added: sandbox container limits, operator UI headers and the web-ui image user; §8a added: desktop secret custody; §8b added: embedded Postgres authentication, hardened so a kernel-owned database cannot redirect the shell's superuser sessions; §10i added: desktop renderer trust boundary; §10j added: desktop wizard switches; §10k added: server-side session revocation; §10l added: first-user setup; §10m added: password sign-in rate limiting, its device cookies and its account key; §6e added: the answer verifier's model requests run under the turn's privacy view, and the receipt is finalised after them — per pass, for every resample and retry, with one receipt row per request — owned by its earliest pass with a receipt — that also keeps the receipt of a pass that threw or was cut off (in a stream's prelude too), and a claim that does not map back onto the shown answer is a coverage gap; §6c rewritten: tool errors withheld or redacted at every dispatch seam; the MCP connect prompt passes on per-dispatch provenance, not on its prefix; the public MCP endpoint's privacy gate covers a domain tool's sub-agent, with the guarantee stated per entry point; typed web-search and Kroki errors keep upstream text off their messages, and the provider pairing names privacy guard 0.6.0; keyword-field, Go-style and Postgres detail-line record dumps are withheld whole, and a sub-agent refuses an identical repeat of a call that ended in an exception; §5a added: office formula cells; §4 rewritten: plugin integrity is SHA-256 pinning with no publisher signature, where omadia itself runs npm, and write confirmation is a connector feature; §11: a public security claim names its control and that control's default; §6f added: what reaches the model unmasked under `guarded` (intern-exempt tools, operator bypass, control flow, prompt text); §7b: appending a receipt is best-effort, and the chain cannot show one that was never written; §11: a claim names the limits the code puts on it; §4: registry downloads are pinned to host and port, not scheme, manifest permissions gate the `PluginContext` accessors and sandbox no Node API, unbundled dependencies resolve from the image, Builder previews run the npm-installed template in-process, and an idempotency key on the public MCP endpoint is process-local deduplication with a cache window; §6f: the per-MCP-server bypass, a failed interning withheld at every seam, and a channel's replayed history carrying rendered real values; §7b: a turn that throws or ends before `done` keeps its receipt; §7c: the verifier is named opt-in, with `shadow` as its default mode; §11: a run-once claim names its scope; §6f: images, the model calls plugins make through `ctx.llm` and the memory jobs' requests reach the provider unmasked, with prompt masking on or off; §7c: the trigger patterns decide whether an answer is checked, `enforce` delivers an answer none of them matched unchecked, and a contradiction gets at most one correction retry; §11: a shield or verifier claim names what passes outside it; §6f restructured: the requests the shield masks and the setting each needs, then every model call outside it, the inbound security screener, turn scoring and embeddings included, and the org clamp does not reach MCP-to-knowledge-graph ingestion; §7c: an input-card turn releases a rendered answer unchecked, the trigger patterns are regular-expression matches over the whole answer, and a re-entry runs a shielded sub-agent again with its calls replayed; §4: 1,000 records is the idempotency store's eviction target; §6f: tool errors are redacted or withheld only for tools that are neither intern-exempt nor bypassed, prompt masking blocks a request only when the C0 baseline fails, a failed C1 detector leaves the rest of the turn on C0, and restoring real values is best-effort; §6c: the bypass residual covers bypassed tools and MCP servers; §11: a tool-error or fail-closed claim names what it skips).*

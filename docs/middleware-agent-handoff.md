@@ -1332,6 +1332,21 @@ Memory und Knowledge-Graph unverändert — **kein zweiter Masking-Pfad**.
   Accessor wiederverwenden können, statt sich auf dieselbe Koinzidenz zu
   verlassen. Siehe `docs/security-architecture.md` § 9 für die volle
   Mechanik.
+- **Key-Lifecycle-Erweiterung (#1327/#1328/#1329/#1324):** weitere Routen
+  unter demselben operator-gegateten Router: `GET .../admin/keys/scopes`
+  (Scope-Katalog aus `@omadia/api-key-auth`; `registerApiKeyScope` existiert,
+  hat aber noch keinen Aufrufer), `DELETE .../admin/keys/:id` (nur widerrufene/abgelaufene
+  Keys, sonst `409 key_active`), `GET .../admin/keys/:id/usage` (Usage-Log
+  pro Key; seit #1329 schreibt auch der öffentliche MCP-Endpunkt hinein).
+  Create akzeptiert nur bekannte Scopes (`400 invalid_scope`) und
+  optional `expiresAt`; der Record bekommt `createdBy` aus der Session, die
+  Liste `lastUsedAt`. Create/Revoke/Delete schreiben
+  `api_key.create|revoke|delete` nach `admin_audit` über
+  `ctx.operatorAuth.recordAdminAction` (plugin-api 1.29.0; Kernel löst den
+  Actor aus dem Cookie auf, `LateBoundAdminAudit` wird beim Bau von
+  `AdminAuditLog` attached). Keine Migration — alles bleibt im Vault.
+  **Offen:** Rotation (`POST .../:id/rotate`, Grace-Period?) — Entscheidung
+  Marcel.
 - **Scope:** nur `chat` in v1 (Issue #438 explizit: "Start with chat …, then
   extend to other flows" — weitere Flows sind Folge-Issues).
 - **Request-Contract (issue #1109):** der Body wird strikt validiert. Das
@@ -2799,6 +2814,35 @@ vergleicht), `test/auth/adminUsersRoute.test.ts`, `test/auth/localPasswordProvid
 Postgres `test/auth/loginAccountFold.pg.test.ts`; UI
 `web-ui/app/login/__tests__/page.test.tsx`.
 
+### Admin-Audit-Trail: ein Schreib-Helper, eine Lese-Route (#1315, #1347, #1092)
+
+`admin_audit` hat seit #1315 eine Lese-Seite und eine Akteur-Regel.
+
+- **Akteur:** Jede Route, die im Namen einer angemeldeten Person schreibt, nimmt
+  `auditActorFromRequest(req)` aus `auth/adminAuditLog.ts`. `actor_id` ist die
+  `users.id` aus dem Session-Claim `uid` (dieselbe uuid wie bei `auth.session_renew`
+  und `auth.first_admin_create`), `actor_email` die Session-E-Mail. Nie
+  `omadia_user_id` (KG-Cluster-Id, anderer Namensraum) und nie `sub` (bei lokalen
+  Konten eine E-Mail, #775). Ein Token ohne `uid` liefert keine id, keine geratene.
+  Ohne Session `{}` = Systemakteur. Neue Aktionen kommen als Member in den
+  `AuditAction`-Union-Typ; die Konvention gilt auch für den API-Key-Cluster (#1329).
+- **Lesen:** `GET /api/v1/admin/audit` (`routes/adminAudit.ts`, hinter `requireAuth`
+  wie `/admin/users`) mit `limit` 1..200 (Default 50), `offset`, `action` (exakt oder
+  Präfix mit Punkt, z. B. `user.`) und `actor_id` (uuid). Antwort
+  `{ entries, limit, offset, has_more }`, neueste zuerst; `has_more` liest eine Zeile
+  voraus statt `COUNT(*)`. Ungültige Parameter → 400 `admin_audit.invalid_query`.
+  UI: `/admin/audit`.
+- **Neue Aktionen:** `auth.login_failed` (erster Fehlversuch je Konto + Client und
+  Minute, `auth/loginFailureAudit.ts`, Systemakteur; Konto nur als aufgelöste
+  `users`-Zeile, nie der eingetippte Text), `plugin.grants_change` (jede Änderung an Public-Path- oder SQL-Consent,
+  `before`/`after` = gewährte Menge, `routes/runtimeGrants.ts`), `plugin.install`
+  (Install-Wizard endet in `active`/`errored`) und `plugin.uninstall` (mit den Grants,
+  die mit dem Plugin gehen, `routes/install.ts`).
+- **Logzeilen:** `[auth] login failed (…)` pro Audit-Zeile,
+  `[grants] <actor> changed consent for "<id>": …` pro Consent-Änderung,
+  `[auth] setup: first admin created via the setup wizard (…)` beim Wizard (#1092),
+  `[registry] ingested … — package registered, not yet installed` statt „installed“.
+
 ### Replay-Ledger: ein Verifier-Wiedereintritt führt keinen Write aus
 
 `VerifierService` betritt in `enforce` einen Turn erneut — Borderline-Resample
@@ -2948,6 +2992,41 @@ Tests: `test/toolReplayLedger.test.ts`, `test/toolReplaySeams.test.ts`,
 `test/correctionPromptEvidence.test.ts`, `test/mcpWriteIdempotency.test.ts`,
 `test/orchestrator/internFailureFailsClosed.test.ts`,
 `test/orchestratorPrivacyEgress.test.ts`.
+
+### Plattform-Checks auf `/health` + Postgres-Wartezeit beim Boot (#1384–#1387, #1332)
+
+**Boot (#1386).** `runCoreMigrations` (`platform/coreMigrations.ts`) ist der
+erste Postgres-Kontakt im Boot. Transiente Verbindungsfehler
+(`isTransientDbError` aus `@omadia/knowledge-graph-neon`, dieselbe Liste wie
+`waitForPostgres`: `ENOTFOUND`, `EAI_AGAIN`, `ECONNREFUSED`, `57P03`, …) werden
+mit Backoff (0,5 s → max. 5 s) bis zu 60 s wiederholt, mit einer Logzeile
+`waiting for Postgres (…)` pro Versuch. Danach endet der Prozess wie bisher.
+Das Budget ist unabhängig vom 60-s-Budget für Lock-Contention, das erst mit
+der ersten Contention startet. Jeder Verbindungsversuch ist auf 5 s begrenzt. Der
+HTTP-Listener bindet erst am Ende von `main()`, während der Wartezeit gibt es
+also kein `/health`. Compose (`start_period: 90s`) und Fly (Check startet
+keine Maschine neu) vertragen das.
+
+**`GET /health` → `checks.database`** (`health/platformHealth.ts`), additiv
+zu `kg`, `disclosure`, `attachments`: `ok` / `unreachable` / `unknown` /
+`none`, abgeleitet aus `kg.pool` und ob `DATABASE_URL` gesetzt ist. `status`
+und HTTP-Code bleiben unverändert (503 nur bei totem Pool), weil
+Updater-Health-Gate und Desktop-Supervisor darauf schauen. Die Herkunft der
+Master-Keys steht bewusst **nicht** auf dem öffentlichen Endpoint
+(siehe `docs/security-architecture.md` §8): der Dev-Key-Hinweis wird nur bei
+laufender DB gezeigt und liest dann die authentifizierte Vault-Status-Route.
+
+**`/api/v1/admin/vault-status`** liefert zusätzlich `keychain_key_source`.
+`production_ready` ist nur noch `true`, wenn beide Keys aus env kommen.
+
+**Web-UI.** `_lib/platformHealth.ts` liest `/health` serverseitig
+(`MIDDLEWARE_URL`, 10-s-Timeout, Body auch bei 503) und leitet
+`platformNotice()` ab: `databaseUnreachable` > `middlewareUnreachable` >
+`devMasterKey` (letzteres aus `/api/v1/admin/vault-status`). `PlatformHealthBanner` zeigt das auf `/` und `/admin`.
+`/system` rendert `PlatformHealthCard` neben der Vault-Karte. Ein 503
+`auth.unavailable` (Session-Check braucht die DB) ist im geteilten Klassifizierer
+`_lib/runtimeReadiness.ts` der Zustand `database_unavailable`. Dashboard-Karten
+ohne Daten zeigen „Status nicht abrufbar“ statt ihres Leerzustands.
 
 ## 4. Migration Managed Agents → Lokal
 
@@ -4414,6 +4493,15 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 ---
 
 ## 13. Offene Roadmap
+
+### Public API keys: Rotation (#1328)
+
+Expiry, Owner und Delete sind gebaut (#1328). Offen ist die Rotation: ein
+`POST /api/public/v1/admin/keys/:id/rotate`, der einen Nachfolger mit
+gleichem Label/Scopes/Rate-Limit mintet. Zu entscheiden: alter Key sofort
+widerrufen oder Grace-Period (wie lang, und läuft der alte Key dann über
+`expiresAt` aus?), und ob eine MCP-Key-Binding des alten Keys auf den
+Nachfolger übergeht.
 
 ### Sitzungs-Widerruf: offene Verbindungen, gerätegenaues Abmelden, Cache
 
@@ -6723,8 +6811,8 @@ erfüllt jetzt den vollen `Askable`-Vertrag `ask(question, observer?, options?)`
 liegt dafür neben `Askable` in `tools/domainQueryTool.ts`, `localSubAgent.ts` re-exportiert
 den Typ). `CliChatAgent.chat(input, hooks?)` reicht jedes Lifecycle-Event an
 `hooks.onEvent` und nach einem erfolgreichen Turn die CLI-Usage an `hooks.onUsage`; ein
-terminales `is_error` wirft weiterhin. Bewusst nicht `chatStream()`: `streamTurn` prüft
-`parser.isError()` nicht und meldet einen toten Turn als normales `done`.
+terminales `is_error` wirft weiterhin. (Bis #1325 meldete `chatStream()` einen solchen Turn
+noch als normales `done`; das ist behoben, siehe unten.)
 
 `CliObserverBridge` (`cliSubAgentObserverBridge.ts`) übersetzt die Events pro `ask()` auf den
 `AskObserver`, wie `LocalSubAgent` + `streaming.ts` ihn treiben:
@@ -6762,6 +6850,65 @@ liefert keine Tool-Input-Deltas); Usage ist pro Spawn, nicht pro Modell-Iteratio
 `ToolDispatchService.dispatch` ruft `domainTool.handle(input)` ohne Observer auf, und fremde
 Tool-Calls landen dort nur in `console.error`, nicht in `recordForeignToolCall`. Eigene Unit
 nach #1079.
+
+### Abo-CLI-Turns: Fehler, Gedächtnis, Knowledge Graph (#1325, #1087, #1391)
+
+**Fehler (#1325).** Ein terminales `{"type":"result","is_error":true}` der CLI ist ein
+gescheiterter Turn. `StreamJsonParser` erzeugt dafür kein `done` mehr, und `runLifecycle`
+hält auch das `done` eines erfolgreichen Results zurück, bis die Exit-Prüfungen durch sind.
+Danach wirft der Lifecycle mit dem Text aus `describeCliTerminalError`: bei
+"Not logged in", `/login`, abgelaufenem OAuth-Token → *"Claude subscription CLI is not
+logged in, or its login expired. Sign in again on the LLM access page, Subscriptions
+tab."*, bei
+Kontingent/Rate-Limit ein eigener Text, sonst *"Claude subscription CLI failed: …"* — vor
+der Exit-Code-Prüfung, also bei Code 0 wie bei Code 1. `chatStream()` endet dann mit genau
+einem `error`, ohne `done`; der Middleware-Log hat die Zeile *"claude CLI ended the turn
+with an error result"* mit dem Originaltext.
+
+**Gedächtnis (#1087).** Der Replay-Tail aus dem `ChatSessionStore` (#1180) hat jetzt die
+Tiefe des Operator-Werts `context_tail_size`: `buildOrchestratorForAgent` reicht
+`deps.contextRetriever.tailSize` als `sessionTailSize` durch (neuer Getter auf
+`ContextRetriever`). Ohne Retriever bleibt es bei 10.
+
+**Knowledge Graph (#1391).** Zwei neue Hooks am `CliChatAgent`, verdrahtet in
+`buildOrchestratorForAgent`:
+
+- `recallContext` → `Orchestrator.recallCliContext(input)`: derselbe
+  `retrievePriorContext` wie im In-Process-Turn (Graph-Tail, Entitäten, Volltext,
+  Pläne/Prozesse/Insights, Session-Briefing, mit Audience-Floor und Context-Memory-
+  Isolation). Der Text kommt über stdin vor den Verlauf (`System Hint:`-Kopf,
+  Rollenmarker neutralisiert), nie über argv; die `kg_recall`/`kg_graph`-
+  Annotationen gehen vor dem Spawn raus. Deadline 15 s (`recallTimeoutMs`). Nur für
+  Chat-Turns (`sessionScope` gesetzt), nie für CLI-Sub-Agenten.
+- `recordTurn` → `Orchestrator.recordCliTurn(input, turn)`: nach einem erfolgreichen Turn
+  und vor dem `done` dieselbe Persistenz wie im In-Process-`done`-Zweig —
+  `SessionLogger.log` (Markdown-Transkript, Chat-Session-Spiegel, Graph-`Session`/`Turn`
+  mit Capture-Filter, `Run`/`ToolCall` aus dem Run-Trace), Faktenextraktion,
+  Palaia-Excerpt, Auto-Promotion, KG-Insert-Puls und `onAfterTurn` (mit der
+  Turn-ID der CLI, derselben wie in der Kosten-Ledger-Zeile; `onBeforeTurn` läuft auf
+  diesem Weg nicht). Der Trace-Owner wird wie im In-Process-Pfad aufgelöst
+  (`runTraceUserSpread`). `turnId`,
+  `palaiaExcerpt` und `autoPromotedMkId` reiten auf dem `done`. Den Run-Trace baut
+  `CliToolTrace` (`cliTurnRecord.ts`) aus den `tool_use`/`tool_result`-Events der CLI;
+  alle Calls sind `agentContext: 'orchestrator'`, der Präfix `mcp__omadia__` wird
+  abgeschnitten.
+
+Beide Hooks laufen im beim Turn-Einstieg gefangenen Async-Kontext (#1016) und können den
+Turn nicht scheitern lassen: ein Fehler wird geloggt, der Turn läuft ohne Recall bzw. die
+Antwort geht ohne Record raus. Ein gescheiterter Turn wird nie aufgezeichnet.
+Turn-Budget- und Idle-Timer werden gelöscht, sobald die CLI beendet ist, damit ein
+langsamer Record keinen falschen Timeout meldet. Bekannte Unschärfe: die
+Memory-Bindung (`bindTurnMemoryForTurn`) läuft für Recall und Record je einmal, im
+`members`-Modus also zwei Roster-Lookups pro Turn. Kein Privacy
+Shield auf diesem Weg: Recall-Text und persistierte Zeile sind unmaskiert
+(`docs/security-architecture.md` §3a). Der Replay-Tail bleibt beim rohen Session-Store,
+weil der Capture-Filter kurze Turns aus dem Graph-Tail fallen lässt; Graph-Tail und Replay
+können sich im Prompt daher teilweise überschneiden.
+
+Weiter offen: der Antwort-Prüfer (`VerifierService` hängt am In-Process-`Orchestrator`
+mit Re-Entry und Privacy-Hand-over; der CLI-Zweig kehrt vorher zurück) — die
+Abo-Seite sagt das dem Operator jetzt (`adminSubscriptionClis.explainer.featureNote`).
+Das `memory`-Tool auf dem Abo-Weg ist #1102.
 
 ### Kosten-Ledger nimmt Abo-Turns (OM-103)
 
@@ -6801,6 +6948,40 @@ liegt die Turn-ID inzwischen vor: die `PrivacyEgressContinuation` trägt sie als
 `receiptId`, solange der Verifier läuft — die Ledger-Attribution kann daran
 anknüpfen (Privacy-Hand-over, siehe Turn-Receipts). ⚠️ Wie bei 0032:
 Migration vor Deploy, sonst verwirft jeder Flush den ganzen Batch.
+
+### Kosten-Ledger: Lücken und Dashboard-Korrektheit (#1388, #1390, #1392, #1393, #1396)
+
+Capture-Seams, die vorher fehlten: `completeWithFallback` (gepufferter
+Orchestrator-Pfad hinter `runTurn()` — Routinen, Schedule-Worker,
+`ChatAgent.chat()`) schreibt pro Modell-Call eine Zeile (`source` = Stream-Label,
+`provider` = der tatsächlich antwortende Provider, auch nach Fallback).
+Plugin-`ctx.llm` schreibt `plugin <id>` (Builder-Preview: `plugin <id> (preview)`)
+über `platform/pluginLlmUsage.ts`. Alle Orchestrator-Seams — auch der
+gestreamte Pfad — überspringen Provider, die selbst buchen
+(`providerRecordsOwnUsage` in `@omadia/usage-telemetry`, heute die Provider-ID
+`claude-cli`) — sonst zählt jeder Abo-Call doppelt. Folge: ein auf `claude-cli`
+laufender Sub-Agent erscheint nur als `claude-cli-completion`, nicht unter
+`sub-agent <name>`. ⚠️ Die Prüfung hängt an der Provider-ID, nicht am
+Wire-Format; ein zweiter Provider auf dem `claude-cli`-Wire bräuchte einen
+eigenen Eintrag. `BuilderAgent.runTurn`
+öffnet einen Turn-Scope (`sessionScope: builder:<draftId>`), damit
+Builder-Zeilen `turn_id`/`session_id` tragen.
+
+Lesepfad: `GET /api/usage/dashboard?…&tz=<IANA>` schneidet Buckets in dieser
+Zone (Default `UTC`) und rundet `since` immer auf den Bucket-Anfang in dieser
+Zone ab — Totals und Chart decken denselben Zeitraum. Stündliche Buckets sind
+nach Instant gruppiert (DST-sicher); eine Zone, die Postgres nicht kennt, fällt
+auf UTC zurück; `bucket=hour` verlangt `since`. Die Zeitreihe ist lückenlos (Leer-Buckets =
+0). `byModel`/`bySource` tragen `cacheCreationTokens`; `bySource` faltet alle
+`sub-agent builder-*` zu einer Zeile (`group: 'builder'`, `members`) und kappt
+nach `BY_SOURCE_LIMIT` (10) auf eine `other`-Zeile.
+
+Noch offen: der Verifier läuft nach dem Turn-Scope (Zeilen ohne Turn-ID,
+siehe #1098); `ctx.llm` liefert keine Cache-Zahlen (Plugin-Vertrag hat keine);
+ein `ctx.llm`-Call innerhalb verschachtelter Scopes ohne `sessionScope`
+(`pluginContext.callTool`, skill-gebundene Tools) bleibt ohne Turn-Zuordnung;
+Extras/Verifier über `withProviderUsageTracking` auf `claude-cli` zählen
+weiterhin doppelt (älter als dieser Fix).
 
 ### Systemstatus: "Letzter Turn" (OM-100b, §3)
 
@@ -7165,13 +7346,33 @@ Diese beiden Blöcke wissen nichts voneinander → sie **stapeln**. Ein in beide
 Ebenen gesetztes Verbot erscheint doppelt (ggf. in zwei Sprachen); Plugin-Default-
 Sycophancy + Agent-Slider ergeben zwei konkurrierende Anti-Schmeichel-Blöcke.
 
-Die zwei Preset-Libraries sind zudem fast disjunkt (Agent-UI 12 IDs englisch in
-`web-ui/app/_lib/boundaryPresets.ts`; Plugin 10 IDs deutsch in
-`harness-plugin-quality-guard/src/boundaryPresets.ts`; Schnittmenge nur
-`no-legal-advice`, `no-speculation`). Eine aus der Agent-UI kopierte ID (z. B.
-`no-financial-data`) wird vom Plugin still verworfen. Die Vereinheitlichung auf eine
-gemeinsame Library ist bewusst **nicht** Teil dieses Changes (braucht Migrations-/
-Alias-Entscheidung, siehe #1104).
+**Eine gemeinsame Preset-Library (seit 2026-10-16, plugin-api 1.30.0, Quality Guard
+0.2.0).** Vorher waren die zwei Libraries fast disjunkt (Agent-UI 12 IDs englisch,
+Plugin 10 IDs deutsch, Schnittmenge nur `no-legal-advice`, `no-speculation`); eine aus
+der Agent-UI kopierte ID wurde vom Plugin still verworfen. Jetzt:
+
+- `BOUNDARY_PRESETS` in `packages/plugin-api/src/boundaryPresets.ts` ist die Library of
+  Record (12 IDs, Kategorie, Label-Key, Regeltext). `src/plugins/builder/boundaryPresets.ts`
+  re-exportiert sie; `web-ui/app/_lib/boundaryPresets.ts` ist eine per Test
+  (`app/_lib/__tests__/boundaryPresets.test.ts`) gepinnte Kopie ohne Regeltext.
+- Das Plugin löst jede dieser 12 IDs mit **demselben** Regeltext auf wie der
+  Agent-Tab. Die 8 Plugin-eigenen v0.1-IDs (`no-financial-advice`, `no-medical-advice`,
+  `internal-only`, `no-pii-collection`, `no-external-quotes`, `privacy-first`,
+  `factual-only`, `no-reasoning-disclosure`) bleiben als Legacy-IDs mit altem
+  (deutschem) Wortlaut gültig — gespeicherte Configs mit diesen IDs behalten ihre Regeln. **Kein Alias** auf die Near-Synonyme
+  (`no-financial-advice` ≠ `no-financial-data`: „keine Anlageberatung" vs. „keine
+  Finanzdaten anfassen" — ein Alias würde die Regel still verschärfen).
+- Verhaltensänderungen beim Upgrade:
+  - `no-legal-advice` und `no-speculation` gab es in beiden Libraries; im Plugin gilt
+    jetzt der gemeinsame (englische) Wortlaut. Bei `no-speculation` ändert sich damit
+    die Bedeutung: alt „nicht über Zukunft/Geschäft/Personal spekulieren", neu „nicht
+    raten, wenn unsicher". Betrifft u. a. die Frontmatter von `agent-reference-maximum`
+    (dessen Block ist jetzt gemischtsprachig).
+  - Agent-UI-IDs (z. B. `no-pii`), die in 0.1 in `default_boundary_presets` standen,
+    wurden still verworfen und **greifen jetzt** — install-weit für alle Agents.
+    Operatoren sollten das Feld vor dem Upgrade prüfen.
+- Unbekannte IDs in `default_boundary_presets` loggt das Plugin bei `activate`
+  (`unknown preset id(s) … — ignored`), statt sie spurlos zu verwerfen.
 
 Hinweistexte, die das jetzt sagen: `messages/{en,de}.json`
 `operatorAgents.identity.boundaries.pluginStackNote` und

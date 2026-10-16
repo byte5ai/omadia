@@ -13,7 +13,9 @@
       "middleware": {
         "title": "Middleware",
         "okDetail": "API reachable",
-        "downDetail": "No response from the middleware API."
+        "downDetail": "No response from the middleware API.",
+        "databaseStatus": "Database unreachable",
+        "databaseDetail": "API responds, database unreachable."
       },
       "llm": {
         "title": "LLM access",
@@ -32,7 +34,6 @@
         "title": "Memory / embeddings",
         "active": "Active: {model}",
         "none": "No embedding provider configured. Process memory, semantic search and duplicate detection are off.",
-        "unknown": "Status unavailable",
         "memory": {
           "allActive": "Memory features active",
           "allActiveWithProvider": "Memory features active (LLM: {provider})",
@@ -75,7 +76,9 @@
         "cliTimeout": "The last turn exceeded its time limit. Raise the per-turn time limit in the subscription section.",
         "failure": "The last turn failed: {message}",
         "unknownVersion": "unknown version"
-      }
+      },
+      "unknownStatus": "Unknown",
+      "unavailable": "Status unavailable"
     },
     "quick": {
       "heading": "Quick access",
@@ -156,7 +159,9 @@
         "accessWithoutRuntime": "An LLM access is stored, but the agent runtime is not up yet. Usually the orchestrator just has not been assigned to that access.",
         "assignOrchestrator": "Assign the orchestrator",
         "unreachable": "The agent runtime did not answer, so this step cannot be checked. The middleware may be unavailable, still starting, or returning an error.",
-        "openSystemStatus": "Open update & status"
+        "openSystemStatus": "Open update & status",
+        "databaseUnavailable": "The middleware answers, but its database is not reachable, so this step cannot be checked.",
+        "openPlatformHealth": "Open platform health"
       },
       "embeddingsNote": "Memory is limited: no embedding provider is active. Process memory, semantic search and duplicate detection stay off until one runs. There is a keyless option too — no API key and no separate server.",
       "embeddingsCta": "Set up an embedding provider",
@@ -294,6 +299,10 @@
           "title": "Public API Keys",
           "description": "Create, list, and revoke bearer credentials for the public chat API."
         },
+        "audit": {
+          "title": "Audit log",
+          "description": "See who changed users, sign-in settings, plugin grants, API keys and more. Read-only, newest first."
+        },
         "update": {
           "title": "Update",
           "description": "See the version this instance is running, check for a newer release, and — with the updater overlay deployed — bump the stack from here."
@@ -301,6 +310,10 @@
         "dangerZone": {
           "title": "Memory Purge",
           "description": "Irreversibly delete memory along one axis (all, agent, user, team, channel); preview-gated with a confirm phrase, no undo."
+        },
+        "platformHealth": {
+          "title": "Platform health",
+          "description": "Database, vault and keychain master keys, off-site backup. Shows whether this instance runs on development keys."
         }
       }
     },
@@ -999,7 +1012,8 @@
     "loginLink": "Login",
     "authError": "auth err",
     "signedInAs": "Signed in as",
-    "signOut": "Sign out",
+    "signOut": "Sign out everywhere",
+    "signOutHint": "Signs you out on all your devices, not just this one.",
     "signOutFailed": "Sign-out did not go through. You are still signed in.",
     "signOutRetry": "Try signing out again"
   },
@@ -1435,7 +1449,9 @@
     "expiredKicker": "Session",
     "expiredTitle": "Session expired",
     "expiredBody": "Your session has expired. Please sign in again to continue working.",
-    "expiredCta": "Sign in again"
+    "expiredCta": "Sign in again",
+    "revokedTitle": "Session ended",
+    "revokedBody": "Your session was ended, for example by an administrator or by signing out on another device. Please sign in again."
   },
   "runtimeReadiness": {
     "title": "LLM access missing",
@@ -1449,7 +1465,10 @@
     "cta": "Open LLM access",
     "ctaNoAssignment": "Open assignment",
     "ctaUnreachable": "Open update & status",
-    "dismiss": "Later"
+    "dismiss": "Later",
+    "titleDatabaseUnavailable": "Database unreachable",
+    "bodyDatabaseUnavailable": "The middleware answers, but it cannot reach its database (Postgres), so every request that needs stored data fails. Check the Postgres container or DATABASE_URL. This card disappears once the database is back.",
+    "ctaDatabaseUnavailable": "Open platform health"
   },
   "agentDetailsModal": {
     "ariaLabelTitle": "{label} tool calls",
@@ -3944,7 +3963,7 @@
       "heading": "Subscription vs API key",
       "body": "An API key bills you per token. A subscription CLI runs on your existing plan: you log in once with the official tool and omadia reuses that session. This is the same sanctioned path the official CLI uses, not token extraction.",
       "singleOperator": "Subscription credits belong to one account and cannot be shared, so this fits a single-operator self-host. For a shared or production gateway, use an API key on the LLM access page.",
-      "featureNote": "One gap versus an API key: on the subscription path the assistant has no long-term memory yet, so it will not remember facts across chats. Knowledge-graph lookups, choice cards, follow-up buttons and calendar all work as usual."
+      "featureNote": "One gap versus an API key: on the subscription path the assistant cannot save notes on request yet (\"remember that …\"), and the answer verifier does not check its answers. Conversation memory, knowledge-graph recall and lookups, choice cards, follow-up buttons and calendar all work as usual."
     },
     "loading": "Loading …",
     "loadError": "Failed to load: {message}",
@@ -4752,24 +4771,39 @@
       "notFound": "Registry not found — list reloaded.",
       "missingFields": "Name and URL are required.",
       "sessionExpired": "Your session is no longer valid. Redirecting to sign in…",
+      "sessionEnded": "Your session was ended, for example by signing out on another device. Redirecting to sign in…",
       "authUnavailable": "Your session can't be checked right now. Try again shortly.",
       "generic": "Error {status}."
     }
   },
   "adminApiKeys": {
     "title": "Public API Keys",
-    "intro": "Server-to-server bearer credentials for the public chat API. A key’s plaintext token is shown exactly once, right after creation — copy it immediately, it cannot be retrieved again, even by an operator.",
+    "intro": "Server-to-server bearer credentials for the public chat API and the public MCP endpoint. A key’s plaintext token is shown exactly once, right after creation — copy it immediately, it cannot be retrieved again, even by an operator.",
     "create": {
       "heading": "Create a new key",
       "fields": {
         "label": "Label (optional)",
-        "rateLimit": "Rate limit (requests/minute, optional)"
+        "rateLimit": "Rate limit (requests/minute, optional)",
+        "scopes": "Scopes",
+        "expiry": "Expires on (optional)",
+        "mcpWriteTools": "Write tools (optional)"
       },
       "rateLimitInvalid": "Rate limit must be between {min} and {max} requests/minute.",
       "scopesRequired": "Select at least one scope — a key with none cannot do anything.",
       "blockedByReveal": "Dismiss the token above before creating another key.",
       "submit": "Create key",
-      "creating": "Creating"
+      "creating": "Creating",
+      "scopeHelp": {
+        "chatWrite": "Public chat API",
+        "mcpList": "List public MCP tools",
+        "mcpInvoke": "Call read-only MCP tools",
+        "wildcard": "Everything except MCP write tools",
+        "plugin": "Plugin scope"
+      },
+      "mcpWriteToolsHint": "Comma-separated tool names. Each name grants the scope {prefix}name for exactly that tool.",
+      "mcpWriteToolsInvalid": "Tool names may contain only lowercase letters, digits, “_” and “-”, starting with a letter.",
+      "expiryInvalid": "The expiry date must lie in the future.",
+      "scopesUnavailable": "The scope list could not be loaded, so only chat:write is offered."
     },
     "reveal": {
       "heading": "New API key created",
@@ -4792,7 +4826,8 @@
       "rateLimitValue": "{value}/min",
       "status": {
         "active": "Active",
-        "revoked": "Revoked"
+        "revoked": "Revoked",
+        "expired": "Expired"
       },
       "revoke": "Revoke",
       "revoking": "Revoking",
@@ -4800,14 +4835,47 @@
         "message": "Revoke this key? Anything using it stops working immediately — this can't be undone.",
         "confirm": "Confirm revoke",
         "cancel": "Cancel"
+      },
+      "expiresAt": "Expires {date}",
+      "expiredAt": "Expired {date}",
+      "createdBy": "Created by {email}",
+      "createdByUnknown": "Creator unknown",
+      "lastUsed": "Last used {date}",
+      "neverUsed": "Not used yet",
+      "showInactive": "Show revoked and expired keys ({count})",
+      "hideInactive": "Hide revoked and expired keys",
+      "delete": "Delete",
+      "deleting": "Deleting",
+      "confirmDelete": {
+        "message": "Delete this key for good? It disappears from this list, and its request history is no longer shown here. Its create, revoke and delete records stay in the admin audit log.",
+        "confirm": "Confirm delete",
+        "cancel": "Cancel"
+      },
+      "usage": {
+        "show": "Recent activity",
+        "hide": "Hide activity",
+        "loading": "Loading activity …",
+        "empty": "No requests from this key in the recent log.",
+        "failed": "The activity could not be loaded.",
+        "status": {
+          "ok": "OK",
+          "rate_limited": "Rate limited",
+          "forbidden": "Missing scope",
+          "invalid_request": "Invalid request",
+          "error": "Error"
+        }
       }
     },
     "errors": {
       "notFound": "That key no longer exists — the list has been refreshed.",
       "authUnavailable": "Operator authentication is unavailable right now. Try again shortly.",
       "sessionExpired": "Your session has expired. Redirecting to sign in…",
+      "sessionEnded": "Your session was ended, for example by signing out on another device. Redirecting to sign in…",
       "invalidRequest": "That request was invalid — check the values above and try again.",
-      "generic": "Something went wrong (error {status})."
+      "generic": "Something went wrong (error {status}).",
+      "invalidScope": "That scope is unknown — pick one from the list.",
+      "invalidExpiry": "The expiry date must lie in the future and at most five years ahead.",
+      "keyActive": "Revoke the key before deleting it."
     }
   },
   "adminWebhooks": {
@@ -4894,7 +4962,7 @@
   },
   "adminUsage": {
     "title": "Usage & Cost",
-    "intro": "Records every LLM call — orchestrator, sub-agents and background tasks. Subscription turns via the Claude CLI count as calls but are not billed per token.",
+    "intro": "Records the LLM calls of the orchestrator, its sub-agents, the builder, plugins and background tasks, streamed or not. Subscription turns via the Claude CLI count as calls but are not billed per token.",
     "loading": "Loading …",
     "loadError": "Failed to load: {message}",
     "ranges": {
@@ -4917,7 +4985,12 @@
     },
     "empty": "No data in this period.",
     "barTitle": "{date} · {cost} · {calls, plural, one {# call} other {# calls}}",
-    "rowStats": "{calls} calls · {input} in · {output} out · {cache} cache",
+    "rowStats": "{calls} calls · {input} in · {output} out · {cacheRead} cache read · {cacheWrite} cache write",
+    "rowReference": " · subscription calls ≈ {reference} API equivalent",
+    "groups": {
+      "builder": "Builder ({count, plural, one {# draft} other {# drafts}})",
+      "other": "Other ({count, plural, one {# source} other {# sources}})"
+    },
     "subscription": {
       "headline": "{count, plural, one {# subscription turn} other {# subscription turns}} in this window",
       "explainer": "Subscription turns run on the Claude plan, not on per-token billing. They count as calls but cost nothing here. On the metered API they would have cost {reference}."
@@ -4939,6 +5012,7 @@
     "list": {
       "title": "Users",
       "intro": "Local accounts and federated identities. Only local users can be created here — federated accounts appear once the user has signed in through the IdP.",
+      "rolesNote": "All users are administrators with full access. Role-based permissions are not available yet.",
       "create": "Create new user",
       "cancel": "Cancel",
       "form": {
@@ -4978,6 +5052,50 @@
       "confirmDelete": "Really delete this user? This action cannot be undone.",
       "delete": "Delete user",
       "deleting": "Deleting …"
+    }
+  },
+  "adminAudit": {
+    "title": "Audit log",
+    "intro": "A read-only record of administrative changes: who did what, to which target, and when. Newest entries first.",
+    "loading": "Loading audit log…",
+    "empty": "No audit entries yet.",
+    "emptyFiltered": "No audit entries match this filter.",
+    "filter": {
+      "label": "Action",
+      "options": {
+        "all": "All actions",
+        "user": "User accounts",
+        "auth": "Sign-in & sessions",
+        "plugin": "Plugin changes",
+        "apikey": "API keys",
+        "conductor": "Conductor changes",
+        "profileSnapshot": "Profile snapshots",
+        "channel": "Channels"
+      }
+    },
+    "table": {
+      "time": "Time",
+      "actor": "Actor",
+      "action": "Action",
+      "target": "Target",
+      "changes": "Changes"
+    },
+    "actorSystem": "System (automatic)",
+    "details": {
+      "show": "Show before / after",
+      "before": "Before",
+      "after": "After",
+      "empty": "(none)"
+    },
+    "paging": {
+      "newer": "← Newer",
+      "older": "Older →",
+      "range": "Entries {from}–{to}"
+    },
+    "errors": {
+      "invalidQuery": "The filter or page is not valid. Reset the filter and try again.",
+      "generic": "The audit log could not be loaded (error {status}).",
+      "network": "The audit log could not be loaded. Check the connection and try again."
     }
   },
   "adminTopics": {
@@ -5975,7 +6093,8 @@
       "title": "Platform health.",
       "intro": "Runtime, persistence, backup. Metadata only — no secrets.",
       "errorUnknownLoad": "Unknown error while loading the vault status.",
-      "loadErrorTitle": "Vault status unreachable"
+      "loadErrorTitle": "Vault status unreachable",
+      "loadErrorDatabase": "The middleware could not check your session because its database is unreachable. See the platform health card."
     },
     "vaultStatus": {
       "masterKey": "Master key",
@@ -6000,12 +6119,35 @@
       "dotWarn": "Warning",
       "dotDanger": "Error",
       "dotInactive": "Inactive",
-      "keySourceDevFile": "dev file (not for production)",
-      "keySourceDevFileCreated": "dev file (newly generated — DEV ONLY)",
+      "keySourceDevFile": "dev file, set {envVar} for production",
+      "keySourceDevFileCreated": "dev file (newly generated, DEV ONLY), set {envVar} for production",
       "eyebrow": "Encrypted secret vault",
       "heading": "Vault",
       "bucket": "Bucket",
-      "prefix": "Prefix"
+      "prefix": "Prefix",
+      "keychainKey": "Keychain master key",
+      "keySourceEnv": "{envVar} (env)",
+      "keySourceUnknown": "not reported by this middleware version"
+    },
+    "platformHealth": {
+      "eyebrow": "Middleware /health",
+      "heading": "Platform",
+      "middleware": "Middleware",
+      "middlewareReachable": "reachable · version {version}",
+      "middlewareUnreachable": "The middleware did not answer its health check, so the status of the database and the master keys cannot be read. It may be stopped, still starting, or restarting after a crash.",
+      "database": "Database (Postgres)",
+      "databaseState": {
+        "ok": "reachable",
+        "unreachable": "not answering. Check that Postgres is running and DATABASE_URL is right; if both are fine, restart the middleware",
+        "unknown": "configured, but no connection to check",
+        "none": "none (in-memory knowledge graph)",
+        "unreported": "not reported"
+      },
+      "embeddings": "Embeddings",
+      "semanticRecall": "Semantic recall",
+      "active": "active",
+      "off": "off",
+      "warningsHeading": "Reported by the middleware"
     }
   },
   "help": {
@@ -6113,6 +6255,24 @@
       "device_code_flow_failed": "Microsoft refused the sign-in flow. Check that the connector's publisher app allows device-code sign-ins as a public client, and that no Conditional Access policy blocks them.",
       "teams_sign_in_failed": "The Teams sign-in failed.",
       "unknown": "The Teams sign-in request failed: {detail}"
+    }
+  },
+  "platformHealth": {
+    "banner": {
+      "databaseUnreachable": {
+        "title": "Database unreachable",
+        "body": "The middleware is running, but its database (Postgres) is not answering. Everything that needs stored data fails until it is back, so the status cards below may read as unknown. Check that Postgres is running and DATABASE_URL is right; if both are fine, restart the middleware."
+      },
+      "middlewareUnreachable": {
+        "title": "Middleware not reachable",
+        "body": "The web UI could not reach the middleware, so no status on this page can be checked. It may be stopped, still starting, or restarting after a crash."
+      },
+      "devMasterKey": {
+        "title": "Development master key in use",
+        "body": "{which, select, vault {VAULT_KEY is} keychain {CREDENTIAL_KEYCHAIN_KEY is} other {VAULT_KEY and CREDENTIAL_KEYCHAIN_KEY are}} not set, so the master key is read from a dev file on the data volume, right next to the data it encrypts. Fine for local development, not for production."
+      },
+      "cta": "Open platform health",
+      "dismiss": "Later"
     }
   }
 }

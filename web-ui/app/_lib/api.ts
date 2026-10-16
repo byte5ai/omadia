@@ -1293,6 +1293,9 @@ export interface VaultStatusResponse {
     last_modified: string | null;
     agent_count: number;
     master_key_source: 'env' | 'dev-file-existed' | 'dev-file-created';
+    /** #1387 — the credential keychain's master key. Absent on older middleware. */
+    keychain_key_source?: 'env' | 'dev-file-existed' | 'dev-file-created';
+    /** Both master keys come from env. */
     production_ready: boolean;
   };
   backup: VaultBackupStatus;
@@ -1345,6 +1348,19 @@ export interface SessionStatus {
    *  unauthenticated or when the server cannot renew; the watcher then
    *  offers only a re-login. */
   renewableUntil: number | null;
+  /** #1322 — why an unauthenticated probe failed: `revoked` when the server
+   *  ended the session (`auth.revoked`: sign-out elsewhere, admin action),
+   *  `expired` for everything else (missing/invalid/expired cookie). Absent
+   *  when authenticated. */
+  reason?: SessionEndReason;
+}
+
+export type SessionEndReason = 'revoked' | 'expired';
+
+/** #1322 — map a 401 body from /auth/me to the reason the session ended.
+ *  Tolerates a non-JSON body (falls back to `expired`). */
+function sessionEndReason(body: string): SessionEndReason {
+  return parseErrorCode(body) === 'auth.revoked' ? 'revoked' : 'expired';
 }
 
 /**
@@ -1429,12 +1445,14 @@ export async function getSessionStatus(): Promise<SessionStatus> {
     credentials: 'include',
   });
   if (res.status === 401) {
+    const body = await res.text().catch(() => '');
     return {
       authenticated: false,
       user: null,
       expiresAt: null,
       serverNow: null,
       renewableUntil: null,
+      reason: sessionEndReason(body),
     };
   }
   if (!res.ok) {
@@ -1687,6 +1705,52 @@ export async function deleteAdminUser(id: string): Promise<void> {
   if (res.status === 204) return;
   const text = await res.text().catch(() => '');
   throw new ApiError(res.status, `DELETE admin/users/${id} failed: ${res.status}`, text);
+}
+
+// -----------------------------------------------------------------------------
+// Admin — audit log (#1315, read-only)
+// -----------------------------------------------------------------------------
+
+export interface AuditEntryDto {
+  id: string;
+  actor_id: string | null;
+  actor_email: string | null;
+  action: string;
+  target: string;
+  before: unknown;
+  after: unknown;
+  /** ISO timestamp. */
+  created_at: string;
+}
+
+export interface AdminAuditListResponse {
+  entries: AuditEntryDto[];
+  limit: number;
+  offset: number;
+  has_more: boolean;
+}
+
+export interface AdminAuditQuery {
+  /** 1..200, server default 50. */
+  limit?: number;
+  offset?: number;
+  /** Exact action (`user.create`) or a prefix ending in `.` (`user.`). */
+  action?: string;
+}
+
+export async function listAdminAudit(
+  query: AdminAuditQuery = {},
+): Promise<AdminAuditListResponse> {
+  const params = new URLSearchParams();
+  if (query.limit !== undefined) params.set('limit', String(query.limit));
+  if (query.offset !== undefined) params.set('offset', String(query.offset));
+  if (query.action !== undefined && query.action.length > 0) {
+    params.set('action', query.action);
+  }
+  const suffix = params.toString() ? `?${params.toString()}` : '';
+  const path = `/v1/admin/audit${suffix}`;
+  const res = await getJson<AdminAuditListResponse>(path);
+  return { ...res, entries: expectArray<AuditEntryDto>(res.entries, path, 'entries') };
 }
 
 // -----------------------------------------------------------------------------
@@ -5794,6 +5858,29 @@ export interface ApiKeyPublicView {
   createdAt: number;
   /** Epoch ms. Present iff the key has been revoked. */
   revokedAt?: number;
+  /** #1328 — epoch ms after which the key stops authenticating. Absent = no expiry. */
+  expiresAt?: number;
+  /** #1328 — the operator who minted the key. Absent on keys minted before #1328. */
+  createdBy?: { userId?: string; email: string };
+  /** #1329 — epoch ms of the key's latest authenticated request. Absent = not used yet. */
+  lastUsedAt?: number;
+}
+
+/** #1327 — `GET .../admin/keys/scopes`: every scope a key may be minted with. */
+export interface ApiKeyScopeCatalog {
+  scopes: string[];
+  /** Prefix of the per-tool write scope, `mcp:write:<tool>`. */
+  mcpWritePrefix: string;
+}
+
+/** #1329 — one entry of a key's usage log. */
+export interface ApiKeyUsageEntry {
+  keyId: string;
+  route: string;
+  method: string;
+  /** Epoch ms. */
+  at: number;
+  status: 'ok' | 'rate_limited' | 'forbidden' | 'error' | 'invalid_request';
 }
 
 export interface CreateApiKeyInput {
@@ -5806,6 +5893,8 @@ export interface CreateApiKeyInput {
    * request, never as "use the default". Callers must never pass `[]`.
    */
   scopes?: string[];
+  /** #1328 — epoch ms, in the future. Omit for a key that never expires. */
+  expiresAt?: number;
 }
 
 export interface CreateApiKeyResult {
@@ -5825,6 +5914,19 @@ export async function createApiKey(input: CreateApiKeyInput): Promise<CreateApiK
 
 export async function revokeApiKey(id: string): Promise<{ key: ApiKeyPublicView }> {
   return postJson(`${API_KEYS_BASE}/${encodeURIComponent(id)}/revoke`, {});
+}
+
+/** #1328 — only a revoked or expired key can be deleted (409 otherwise). */
+export async function deleteApiKey(id: string): Promise<void> {
+  return deleteRequest(`${API_KEYS_BASE}/${encodeURIComponent(id)}`);
+}
+
+export async function listApiKeyScopes(): Promise<ApiKeyScopeCatalog> {
+  return getJson(`${API_KEYS_BASE}/scopes`);
+}
+
+export async function listApiKeyUsage(id: string): Promise<{ entries: ApiKeyUsageEntry[] }> {
+  return getJson(`${API_KEYS_BASE}/${encodeURIComponent(id)}/usage`);
 }
 
 // -----------------------------------------------------------------------------
