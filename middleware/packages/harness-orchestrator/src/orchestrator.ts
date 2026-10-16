@@ -220,6 +220,11 @@ import type { NativeToolRegistry } from './nativeToolRegistry.js';
 // #1102 — type-only, so no runtime cycle: the CLI agent owns the card-drain
 // shape; `drainCliTurnCards` returns it verbatim onto the `done` event.
 import type { CliTurnCards } from './cliChatAgent.js';
+import type {
+  CliCompletedTurn,
+  CliRecalledContext,
+  CliTurnRecord,
+} from './cliTurnRecord.js';
 import { internFailedNotice, isInternExemptTool } from './privacyInternPolicy.js';
 import {
   errorClassForLog,
@@ -3613,6 +3618,121 @@ export class Orchestrator {
       ...(followUpOptions ? { followUpOptions } : {}),
       ...(pendingSlotCard ? { pendingSlotCard } : {}),
       ...(pendingOAuthConsent ? { pendingOAuthConsent: true } : {}),
+    };
+  }
+
+  /**
+   * Issue #1391 — the context recall the in-process turn runs before it calls
+   * the model (`retrievePriorContext`: verbatim tail, entity and full-text
+   * hits from the graph, cross-session plans / processes / insights, the
+   * session briefing), for a turn the subscription CLI answers. Same guards
+   * (audience floor, context-memory isolation, fresh check) and the same
+   * `kg_recall` / `kg_graph` annotation events.
+   *
+   * The text goes into the CLI's system prompt unmasked: the CLI path has no
+   * privacy handle (see `CliChatAgent.maskHistory`). Never throws; a turn
+   * without a retriever, scope or user recalls nothing.
+   */
+  public async recallCliContext(input: ChatTurnInput): Promise<CliRecalledContext> {
+    const turnMemory = await this.bindTurnMemoryForTurn(input);
+    const { text, recalled } = await this.retrievePriorContext(
+      input,
+      input.userMessage,
+      turnMemory?.isolation,
+    );
+    const events: ChatStreamEvent[] = [
+      ...this.toRecallAnnotationEvents(recalled),
+      ...(await this.toKgGraphAnnotationEvents(recalled)),
+    ];
+    return {
+      ...(text !== undefined && text.trim().length > 0 ? { text } : {}),
+      ...(events.length > 0 ? { events } : {}),
+    };
+  }
+
+  /**
+   * Issue #1391 — persist a turn the subscription CLI answered, the way the
+   * in-process `done` branch persists its own: the session-log row (markdown
+   * transcript, chat-session mirror and the graph's `Session` / `Turn` / `Run`
+   * / `ToolCall` nodes, with the capture filter on the way in), fact
+   * extraction, the save-as-memory excerpt, auto-promotion, the KG-insert
+   * pulse and the `onAfterTurn` hooks. Before this the CLI path wrote a usage
+   * row and nothing else, so Memory and the session log stayed empty for every
+   * turn on that provider.
+   *
+   * No privacy handle exists on this path (the CLI child gets the turn
+   * unmasked, see `CliChatAgent.maskHistory`), so the row carries the real
+   * texts and no masked view, and the facts are extracted from the same texts.
+   *
+   * Never throws: every step is best-effort, as on the in-process path, and a
+   * turn without a session scope (a CLI sub-agent's single shot) writes nothing.
+   */
+  public async recordCliTurn(
+    input: ChatTurnInput,
+    turn: CliCompletedTurn,
+  ): Promise<CliTurnRecord> {
+    if (!input.sessionScope) return {};
+    const turnMemory = await this.bindTurnMemoryForTurn(input);
+    // The trace's owner as the in-process path resolves it: a channel turn
+    // whose sender arrives only through `origin` carries a raw channel id in
+    // `userId`, and `ingestRun` drops a trace owned by that.
+    const { userId: _rawTraceOwner, ...traceWithoutOwner } = turn.runTrace;
+    const runTrace = { ...traceWithoutOwner, ...runTraceUserSpread(input) };
+    let persistedTurnId: string | undefined;
+    if (this.sessionLogger) {
+      persistedTurnId = await this.turnRecords.writeRow(
+        {
+          scope: input.sessionScope,
+          userMessage: input.userMessage,
+          assistantAnswer: turn.answer,
+          toolCalls: turn.toolCalls,
+          iterations: turn.iterations,
+          ...(input.userId ? { userId: input.userId } : {}),
+          ...turnOwnersField(turnMemory),
+          runTrace,
+          entityRefs: [],
+        },
+        'cli answer',
+      );
+    }
+    this.turnRecords.startFactExtraction(
+      persistedTurnId,
+      this.factExtractor
+        ? { userMessage: input.userMessage, assistantAnswer: turn.answer }
+        : undefined,
+      [],
+    );
+    const palaiaExcerpt = await this.maybeExtractExcerpt(input.userMessage, turn.answer);
+    const autoPromotedMkId = await this.maybePromoteTurn({
+      turnId: persistedTurnId,
+      userId: input.userId,
+      ...turnOwnersField(turnMemory),
+      palaiaExcerpt,
+      fallbackAssistantAnswer: turn.answer,
+    });
+    const events: ChatStreamEvent[] = [
+      ...(await this.toKgInsertAnnotationEvents(autoPromotedMkId)),
+      ...this.toAnnotationEvents(
+        await this.runTurnHook(
+          'onAfterTurn',
+          // The CLI turn's own id, the one its cost-ledger row carries. No
+          // `onBeforeTurn` runs on this path, so a hook that keys state on
+          // the turn id finds none — as for any turn it did not plan.
+          turn.turnId,
+          input,
+          {
+            assistantAnswer: turn.answer,
+            ...(persistedTurnId ? { turnExternalId: persistedTurnId } : {}),
+          },
+          2000,
+        ),
+      ),
+    ];
+    return {
+      ...(persistedTurnId ? { turnId: persistedTurnId } : {}),
+      ...(palaiaExcerpt ? { palaiaExcerpt } : {}),
+      ...(autoPromotedMkId ? { autoPromotedMkId } : {}),
+      ...(events.length > 0 ? { events } : {}),
     };
   }
 
