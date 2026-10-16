@@ -8,6 +8,20 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.28.0 — 2026-10-16
+
+Additive. A Privacy Shield v4 table render keeps its canvas snapshot off the
+model's `tool_result` (#1402).
+
+### Added
+
+- **`PrivacyV4ToolResult`** — the return type of
+  `PrivacyGuardService.runV4Tool`: `resultText` (LLM-bound, never a real
+  value) plus the optional **`canvasSentinel`**, a table render's
+  `_pendingCanvasTree` snapshot with the real cells. The kernel hands it to
+  the turn's canvas-sentinel sink, never to the model. A provider that
+  returns `{ resultText }` alone still conforms.
+
 ## 1.27.0 — 2026-10-15
 
 Additive. A Privacy Shield v4 rendered answer reports the prose its model

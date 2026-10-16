@@ -4008,6 +4008,17 @@ sie nicht kennt, ignoriert sie, und NDJSON-Framing wie JSON-RPC-Envelope bleiben
 rückwärtskompatibel. Vollständige Darstellung samt Grenzen:
 [`ai-act-transparency.md`](ai-act-transparency.md).
 
+**Tabellen-Render und `tool_result` (#1402).** Der `tool_result` von
+`v4_render_answer` ist LLM-gebunden und enthält nur eine Form-Quittung
+(Zeilenzahl, vom Modell gewählte Spaltennamen). Den `_pendingCanvasTree`-
+Snapshot mit den echten Zellen liefert die Privacy-Guard als
+`PrivacyV4ToolResult.canvasSentinel`; `dispatchToolDeadlined` reicht ihn an den
+`canvasSentinelSink` des Turns (die Canvas-Synthese holt ihn per
+`takeRawSentinel`), nie ans Modell. `splitV4ToolResult`
+(`v4RenderSideChannel.ts`) fängt auch eine ältere Guard ab, die den Snapshot
+noch in `resultText` packt. Wer neue `v4_*`-Ergebnisse baut: echte Werte nie
+in `resultText`.
+
 **Contract-Erweiterung — `answerSource` (#1105).** Wenn Privacy Shield v4 die
 Antwort serverseitig rendert (`v4_render_answer`), tauscht der Orchestrator den
 gerenderten Text kurz vor dem `done`-Event in `answer` — die zuvor als

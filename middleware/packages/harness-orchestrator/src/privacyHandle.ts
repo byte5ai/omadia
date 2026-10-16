@@ -17,6 +17,7 @@ import type {
   PrivacyReceipt,
   PrivacyRenderedAnswer,
   PrivacyToolErrorRedactResult,
+  PrivacyV4ToolResult,
   PrivacyV4ToolSpec,
   PromptMaskedSpanInfo,
   ToolErrorCarrier,
@@ -88,12 +89,13 @@ export interface PrivacyTurnHandle {
   }): Promise<PrivacyToolErrorRedactResult | undefined>;
   /**
    * Run a v4 verb tool or the terminal render tool the LLM called; returns
-   * the `tool_result` text.
+   * the `tool_result` text and, for a table render, the user-destined canvas
+   * snapshot (`canvasSentinel`, never LLM-bound — #1402).
    */
   runV4Tool(input: {
     readonly toolName: string;
     readonly input: unknown;
-  }): Promise<{ readonly resultText: string }>;
+  }): Promise<PrivacyV4ToolResult>;
   /**
    * Bridge a sub-agent's result across the data-plane boundary. Given the
    * `datasetId`s the sub-agent interned this dispatch, returns the

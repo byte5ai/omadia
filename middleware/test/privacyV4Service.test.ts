@@ -78,7 +78,7 @@ describe('PrivacyGuardService.v4ToolSpecs', () => {
 });
 
 describe('PrivacyGuardService.runV4Tool — end-to-end data path', () => {
-  it('returns a canvas-table sentinel envelope for table renders', async () => {
+  it('hands the canvas-table snapshot to the side channel, not the tool_result (#1402)', async () => {
     const svc = createPrivacyGuardService();
     const turnId = 't-table-envelope';
     const interned = await svc.internToolResultV4({
@@ -94,12 +94,25 @@ describe('PrivacyGuardService.runV4Tool — end-to-end data path', () => {
       toolName: 'v4_render_answer',
       input: {
         datasetId: datasetIdOf(interned.digestText),
-        columns: ['employee', 'days'],
+        columns: [{ field: 'employee', label: 'Mitarbeiter' }, 'days'],
         format: 'table',
       },
     });
 
-    const payload = JSON.parse(rendered.resultText) as {
+    // The LLM-bound tool_result: shape only — never a real cell value.
+    for (const value of [...REAL_NAMES, '4471', '5582', '6693']) {
+      assert.ok(
+        !rendered.resultText.includes(value),
+        `tool_result leaked real value "${value}"`,
+      );
+    }
+    assert.ok(!rendered.resultText.includes('_pending'), 'tool_result carries a canvas sentinel');
+    assert.ok(rendered.resultText.includes('3 rows'), rendered.resultText);
+    assert.ok(rendered.resultText.includes('"Mitarbeiter"'), rendered.resultText);
+
+    // The canvas side channel still carries the full snapshot.
+    assert.ok(rendered.canvasSentinel, 'a table render returns its canvas snapshot');
+    const payload = JSON.parse(rendered.canvasSentinel) as {
       _pendingCanvasTree: {
         tree: {
           children: Array<{
@@ -117,6 +130,29 @@ describe('PrivacyGuardService.runV4Tool — end-to-end data path', () => {
       'guard-protected',
     );
     assert.equal(table?.rows[0]?.cells.employee, 'Marvin Vomberg');
+
+    // The user-facing render is unchanged.
+    const answer = await svc.takeRenderedAnswerV4(turnId);
+    assert.ok(answer?.text.includes('Marvin Vomberg'));
+  });
+
+  it('a non-table render returns the note and no canvas snapshot', async () => {
+    const svc = createPrivacyGuardService();
+    const turnId = 't-list-note';
+    const interned = await svc.internToolResultV4({
+      sessionId: 's',
+      turnId,
+      toolName: 'hr.leave',
+      rawResult: JSON.stringify(HR_LEAVE),
+    });
+    const rendered = await svc.runV4Tool({
+      sessionId: 's',
+      turnId,
+      toolName: 'v4_render_answer',
+      input: { datasetId: datasetIdOf(interned.digestText), columns: ['employee'], format: 'list' },
+    });
+    assert.equal(rendered.canvasSentinel, undefined);
+    for (const name of REAL_NAMES) assert.ok(!rendered.resultText.includes(name));
   });
 
   it('intern → verb → render → takeRenderedAnswer yields a real answer', async () => {

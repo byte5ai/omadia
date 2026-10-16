@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/plugin-privacy-guard"
   name: "Privacy Guard"
-  version: "0.9.0"
+  version: "0.10.0"
   kind: "tool"
   domain: "privacy.redact"
   description:
@@ -88,6 +88,9 @@ playbook:
         Server-Code aus. Die gerenderte Antwort meldet die Prosa des Modells
         getrennt von den Zeilen (`prose`, `''` ohne Prosa): Der
         Antwort-Verifier prüft nur sie, die Zellwerte sind Systemdaten.
+        Ein Tabellen-Render gibt dem LLM nur Zeilenzahl und Spaltennamen
+        zurück; der Canvas-Snapshot mit den echten Zellen geht als
+        `canvasSentinel` am LLM vorbei (#1402).
       - `finalizeTurn` verwirft die Turn-Datasets und liefert eine PII-freie
         `PrivacyReceipt` für die UI-Disclosure.
       - `redactToolErrorText` redigiert zurückgegebene `Error:`-Texte
@@ -137,6 +140,12 @@ playbook:
     Ab @omadia/plugin-api 1.25.0 maskieren die Memory-Jobs außerhalb eines
     Turns über `openStoredTextScope` (dieses Plugin ab 0.8.0). Fehlt es,
     überspringen sie ihren Modellaufruf.
+    Ab @omadia/plugin-api 1.28.0 liefert `runV4Tool` den Canvas-Snapshot eines
+    Tabellen-Renders als `canvasSentinel` (dieses Plugin ab 0.10.0), nie im
+    `resultText` (#1402). Ein neuerer Orchestrator mit einer älteren Kopie
+    zieht einen eingebetteten Snapshot selbst aus dem `tool_result`. Ein
+    älterer Orchestrator mit diesem Plugin leakt nichts, ignoriert aber
+    `canvasSentinel`: die Canvas zeigt die Tabelle dann nicht (der Chat schon).
 
 # ---------------------------------------------------------------------------
 # Permissions. Server-side compute plus ONE deliberate network target

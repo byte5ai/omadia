@@ -275,6 +275,20 @@ export interface PrivacyV4ToolRequest {
   readonly input: unknown;
 }
 
+/** What `runV4Tool` hands back to the kernel. */
+export interface PrivacyV4ToolResult {
+  /** The text the kernel places in the `tool_result` block — LLM-bound, so
+   *  it never carries a real value. */
+  readonly resultText: string;
+  /**
+   * #1402 — a table render's `_pendingCanvasTree` snapshot for the canvas.
+   * Carries the REAL cell values, so it is user-destined only: the kernel
+   * hands it to the turn's canvas-sentinel sink (the same side channel the
+   * other canvas tools use before interning) and never to the model.
+   */
+  readonly canvasSentinel?: string;
+}
+
 /** An Anthropic-tool-shaped spec for a v4 verb / render tool. */
 export interface PrivacyV4ToolSpec {
   readonly name: string;
@@ -657,9 +671,10 @@ export interface PrivacyGuardService {
    * Privacy Shield v4 — run a v4 verb tool or the terminal render tool the
    * LLM called. Returns the text to place in the `tool_result` block. A
    * `v4_render_answer` call materializes the answer server-side and stashes
-   * it (drained via `takeRenderedAnswerV4`).
+   * it (drained via `takeRenderedAnswerV4`); a table render also returns its
+   * canvas snapshot as `canvasSentinel`, never inside `resultText` (#1402).
    */
-  runV4Tool(request: PrivacyV4ToolRequest): Promise<{ readonly resultText: string }>;
+  runV4Tool(request: PrivacyV4ToolRequest): Promise<PrivacyV4ToolResult>;
   /**
    * Privacy Shield v4 — bridge a sub-agent's result across the data-plane
    * boundary. Given the `datasetId`s the sub-agent interned, returns the
