@@ -20,6 +20,12 @@ import type {
 } from './toolDispatchService.js';
 import type { PendingSlotCard } from './tools/findFreeSlotsTool.js';
 import { LoopbackMcpServer } from './loopbackMcpServer.js';
+import {
+  CliToolTrace,
+  type CliCompletedTurn,
+  type CliRecalledContext,
+  type CliTurnRecord,
+} from './cliTurnRecord.js';
 // Aliased: `turnContext` is already a parameter name inside this module
 // (the caller's captured async context), and the store is a different thing.
 import { turnContext as turnContextStore } from './turnContext.js';
@@ -205,6 +211,18 @@ function joinPhrases(phrases: readonly string[]): string {
  * the two this turn is. Deliberately NOT emitted when the tail was read
  * successfully and came back empty: that IS a genuine first turn.
  */
+/**
+ * #1391 — heads the graph recall in the system prompt. Same trust rules the
+ * in-process prompt gives its prior-context block (`buildSystemBlocks`): the
+ * chat's own latest turns are the agent's replies, everything from other
+ * chats is a hypothesis.
+ */
+const RECALLED_CONTEXT_HEADING =
+  'Context recalled from earlier conversations (omadia knowledge graph). ' +
+  'Turns listed as the latest turns of this chat are your own earlier replies; ' +
+  'build on them. Entities and similar turns from other chats are a working ' +
+  'hypothesis: check concrete figures with a tool before relying on them.';
+
 const NO_HISTORY_NOTE =
   'You were given no transcript of earlier turns in this chat, even if earlier ' +
   'turns exist. If the user refers to something said before, say plainly that ' +
@@ -221,7 +239,11 @@ const NO_HISTORY_NOTE =
 export function composeCliSystemPrompt(
   persona: string | undefined,
   absentCapabilities?: readonly string[],
-  options?: { readonly conversationHistoryAvailable?: boolean },
+  options?: {
+    readonly conversationHistoryAvailable?: boolean;
+    /** #1391 — the graph recall for this turn, appended last. */
+    readonly recalledContext?: string;
+  },
 ): string {
   const base = typeof persona === 'string' && persona.trim().length > 0
     ? persona.trimEnd()
@@ -236,6 +258,10 @@ export function composeCliSystemPrompt(
   }
   if (options?.conversationHistoryAvailable === false) {
     sections.push(NO_HISTORY_NOTE);
+  }
+  const recalled = options?.recalledContext?.trim();
+  if (recalled !== undefined && recalled.length > 0) {
+    sections.push(`${RECALLED_CONTEXT_HEADING}\n\n${recalled}`);
   }
   return sections.join('\n\n');
 }
@@ -362,6 +388,39 @@ function formatUnknown(value: unknown): string {
 
 function formatTerminalErrorMessage(subtype: string | undefined, result: string): string {
   return `${subtype ?? 'error'}: ${result}`;
+}
+
+/**
+ * #1325 — the CLI's own wording for a turn that failed because the
+ * subscription login is missing, revoked or expired. Same vocabulary the
+ * completion adapter's `classifyError` (`claudeCliAdapter.ts`) matches.
+ */
+const CLI_AUTH_FAILURE_RE =
+  /not logged in|logged out|\/login|invalid api key|oauth token (?:has )?expired|authentication[_ ]error|unauthori[sz]ed/i;
+
+/** #1325 — a used-up subscription quota or a rate limit. */
+const CLI_LIMIT_FAILURE_RE = /usage limit|limit reached|rate.?limit|too many requests|\b429\b/i;
+
+/**
+ * #1325 — the error a CLI turn fails with when the CLI ended it with a terminal
+ * `is_error` result. Says what to do for the causes an operator can fix (login,
+ * quota), and keeps the CLI's own text for everything else, so the client's
+ * single `error` event names the cause rather than "CLI exited with code 1".
+ */
+export function describeCliTerminalError(rawMessage: string): string {
+  if (CLI_AUTH_FAILURE_RE.test(rawMessage)) {
+    return (
+      'Claude subscription CLI is not logged in, or its login expired. ' +
+      `Sign in again under Settings → Subscriptions. (CLI: ${rawMessage})`
+    );
+  }
+  if (CLI_LIMIT_FAILURE_RE.test(rawMessage)) {
+    return (
+      'Claude subscription usage limit reached. Wait for the limit to reset, ' +
+      `or switch this agent to an API-key provider. (CLI: ${rawMessage})`
+    );
+  }
+  return `Claude subscription CLI failed: ${rawMessage}`;
 }
 
 function delay(ms: number): Promise<void> {
@@ -634,6 +693,14 @@ export class StreamJsonParser {
       numTurns: numTurns ?? this.messageStartCount,
     };
 
+    // #1325 — a failed turn has no answer. The `result` of an error line is the
+    // CLI's error text ("Not logged in · Please run /login"), and a `done`
+    // carrying it reached the client as an AI-generated bot reply. The
+    // lifecycle turns `isError()` into the turn's one `error` event instead.
+    if (this.terminalIsError) {
+      return [];
+    }
+
     return [
       {
         type: 'done',
@@ -746,9 +813,10 @@ export interface CliChatAgentDeps {
    * channel that assembles history itself stays authoritative. Wired by
    * `buildOrchestratorForAgent` to the `ChatSessionStore` — the RAW session
    * source, deliberately not the `ContextRetriever` verbatim tail: that one
-   * reads knowledge-graph Session nodes, and CLI turns never reach the graph
-   * (`SessionLogger.log` is called from the in-process orchestrator only), so a
-   * KG-backed tail would be empty on this path rather than merely lossy.
+   * reads knowledge-graph Session nodes, and although CLI turns reach the
+   * graph since #1391 ({@link recordTurn}), the capture filter there drops
+   * turns below its significance threshold — exactly the short turns a chat is
+   * full of — so a KG-backed tail would be lossy.
    *
    * Left unset (unit tests, hosts with no chat store) the agent behaves as
    * before — and says so in its system prompt instead of denying the chat.
@@ -776,6 +844,34 @@ export interface CliChatAgentDeps {
    * proceeds without history, exactly as a failed read does.
    */
   readonly sessionTailTimeoutMs?: number;
+  /**
+   * #1391 — persist a turn that finished successfully: session-log row (and
+   * with it the graph's `Session` / `Turn` / `Run` / `ToolCall` nodes and the
+   * capture filter), fact extraction, the save-as-memory excerpt,
+   * auto-promotion and the `onAfterTurn` hooks — what the in-process
+   * orchestrator does for its own turns. Wired by `buildOrchestratorForAgent`
+   * to `orchestrator.recordCliTurn()`.
+   *
+   * Called once per successful turn, after the exit checks and before `done`
+   * goes out, so a turn that failed is never recorded. Must not reject; a
+   * rejection is logged here and the answer is released without a record.
+   * Left unset (unit tests, CLI sub-agents) nothing is persisted, as before.
+   */
+  readonly recordTurn?: (
+    input: ChatTurnInput,
+    turn: CliCompletedTurn,
+  ) => Promise<CliTurnRecord>;
+  /**
+   * #1391 — the knowledge-graph recall the in-process turn runs before it calls
+   * the model (earlier turns, entities, similar turns from other chats, the
+   * session briefing). The text goes into the system prompt, the events
+   * (`kg_recall` / `kg_graph` cards) out before the answer. Wired by
+   * `buildOrchestratorForAgent` to `orchestrator.recallCliContext()`.
+   *
+   * Asked only on chat turns (a `sessionScope` is set). A rejection is logged
+   * and the turn runs without recall. Left unset, nothing is recalled.
+   */
+  readonly recallContext?: (input: ChatTurnInput) => Promise<CliRecalledContext>;
 }
 
 /**
@@ -793,8 +889,8 @@ export interface CliPriorTurn {
  * give a chat the same depth of short-term memory. A shorter window brings the
  * #1096 symptom back on this provider — the model presents the last few turns
  * as the whole conversation, with no disclosure note, because the tail DID
- * read. The operator's `context_tail_size` does not reach this path yet
- * (`buildOrchestratorForAgent` passes no `sessionTailSize`).
+ * read. The operator's `context_tail_size` overrides it: `buildOrchestratorForAgent`
+ * passes the ContextRetriever's `tailSize` as `sessionTailSize` (#1087).
  */
 export const DEFAULT_CLI_SESSION_TAIL_SIZE = 10;
 
@@ -864,11 +960,10 @@ export class CliChatAgent implements ChatAgent {
    *
    * #1072 — `hooks` lets a caller watch the turn without switching to
    * `chatStream()`: every lifecycle event goes to `onEvent`, and the terminal
-   * usage goes to `onUsage` once the turn has succeeded. `chat()` keeps its
-   * error semantics — a terminal `is_error` result still throws, which
-   * `chatStream()` does not do — so `createCliSubAgent` builds its observer
-   * bridge on this method. A throwing hook is logged and ignored; it can never
-   * fail the turn.
+   * usage goes to `onUsage` once the turn has succeeded. A terminal `is_error`
+   * result throws (the lifecycle raises it, #1325), so `createCliSubAgent`
+   * builds its observer bridge on this method. A throwing hook is logged and
+   * ignored; it can never fail the turn.
    */
   public async chat(input: ChatTurnInput, hooks?: CliChatHooks): Promise<SemanticAnswer> {
     const lifecycle = this.runLifecycle(input, this.captureTurnContext(input));
@@ -882,9 +977,6 @@ export class CliChatAgent implements ChatAgent {
         const parser = step.value;
         if (!parser) {
           throw new Error('claude-cli turn ended without a result');
-        }
-        if (parser.isError()) {
-          throw new Error(parser.errorMessage());
         }
         if (hooks?.onUsage) {
           const onUsage = hooks.onUsage;
@@ -1164,6 +1256,48 @@ export class CliChatAgent implements ChatAgent {
     return { turns: masked, available };
   }
 
+  /**
+   * #1391 — {@link CliChatAgentDeps.recallContext}, never failing the turn.
+   * Run in the context captured at the public entry: the recall reads the
+   * turn's audience and graph boundary from it, and this generator body is
+   * resumed in whoever calls `.next()` (#1016).
+   */
+  private async recallTurnContext(
+    input: ChatTurnInput,
+    turnContext: CapturedTurnContext,
+  ): Promise<CliRecalledContext> {
+    const recallContext = this.deps.recallContext;
+    if (recallContext === undefined || input.sessionScope === undefined) return {};
+    try {
+      return await turnContext.runInTurnContext(() => recallContext(input));
+    } catch (error) {
+      (this.deps.logger ?? consoleSpawnLogger).warn('context recall failed (turn runs without it)', {
+        sessionScope: input.sessionScope,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return {};
+    }
+  }
+
+  /** #1391 — {@link CliChatAgentDeps.recordTurn}, never failing the turn. */
+  private async recordCompletedTurn(
+    input: ChatTurnInput,
+    turnContext: CapturedTurnContext,
+    turn: CliCompletedTurn,
+  ): Promise<CliTurnRecord> {
+    const recordTurn = this.deps.recordTurn;
+    if (recordTurn === undefined) return {};
+    try {
+      return await turnContext.runInTurnContext(() => recordTurn(input, turn));
+    } catch (error) {
+      (this.deps.logger ?? consoleSpawnLogger).warn('turn record failed (answer released)', {
+        sessionScope: input.sessionScope,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return {};
+    }
+  }
+
   private buildMcpConfig(url: string, bearer: string): string {
     return JSON.stringify({
       mcpServers: {
@@ -1214,6 +1348,8 @@ export class CliChatAgent implements ChatAgent {
     let closeInfo: { readonly code: number | null; readonly signal: NodeJS.Signals | null } | undefined;
     const lineQueue: string[] = [];
     let lineWaiter: (() => void) | undefined;
+    let terminalDone: Extract<ChatStreamEvent, { type: 'done' }> | undefined;
+    const toolTrace = new CliToolTrace();
 
     const wakeReader = (): void => {
       if (lineWaiter === undefined) {
@@ -1295,6 +1431,10 @@ export class CliChatAgent implements ChatAgent {
       // this turn carries the chat's earlier turns, and the composed prompt
       // below is the only place they can be replayed.
       const history = await this.resolveHistory(input, turnContext);
+      const recalled = await this.recallTurnContext(input, turnContext);
+      for (const event of recalled.events ?? []) {
+        yield event;
+      }
 
       const cliBinary = this.deps.resolveCliBinary?.() ?? DEFAULT_CLI_BINARY;
       // OM-85 — probe (cached) before building argv; unknown → no `--restricted`.
@@ -1337,6 +1477,7 @@ export class CliChatAgent implements ChatAgent {
             // returns to the parent.
             conversationHistoryAvailable:
               input.sessionScope === undefined ? undefined : history.available,
+            ...(recalled.text !== undefined ? { recalledContext: recalled.text } : {}),
           },
         ),
       ];
@@ -1435,6 +1576,14 @@ export class CliChatAgent implements ChatAgent {
           }
 
           for (const event of parser.push(line)) {
+            if (event.type === 'done') {
+              // #1325 — held back until the exit checks below have passed: a
+              // `done` is the terminal SUCCESS event, and once it is out a
+              // later failure can only add an `error` after it.
+              terminalDone = event;
+              continue;
+            }
+            toolTrace.observe(event);
             yield event;
           }
         }
@@ -1468,6 +1617,20 @@ export class CliChatAgent implements ChatAgent {
         throw new Error(`CLI exited with signal ${closeInfo.signal}`);
       }
 
+      // #1325 — a terminal `is_error` result decides the turn whatever the
+      // exit code: with code 1 the client used to get the generic "CLI exited
+      // with code 1", with code 0 no error at all. Checked before the exit
+      // code so the error names the cause the CLI reported.
+      if (parser.isError()) {
+        const message = describeCliTerminalError(parser.errorMessage());
+        logger.warn('claude CLI ended the turn with an error result', {
+          code: closeInfo?.code,
+          cliVersion: cliVersion ?? 'unknown',
+          error: parser.errorMessage(),
+        });
+        throw new Error(message);
+      }
+
       if ((closeInfo?.code ?? 0) !== 0) {
         // OM-94 — this is the line the log file never had.
         logger.warn('claude CLI exited with non-zero code', {
@@ -1499,6 +1662,33 @@ export class CliChatAgent implements ChatAgent {
         turnId: cliTurnId,
         sessionId: input.sessionScope ?? cliTurnId,
       });
+
+      if (terminalDone !== undefined) {
+        // #1391 — persist the turn the way the in-process path does, then
+        // release the answer with what the record produced.
+        const record = await this.recordCompletedTurn(input, turnContext, {
+          answer: parser.finalAnswer(),
+          toolCalls: parser.toolCalls(),
+          iterations: parser.iterations(),
+          runTrace: toolTrace.finish({
+            scope: input.sessionScope ?? cliTurnId,
+            ...(input.userId !== undefined ? { userId: input.userId } : {}),
+            iterations: parser.iterations(),
+            model: this.deps.model ?? DEFAULT_MODEL,
+          }),
+        });
+        for (const event of record.events ?? []) {
+          yield event;
+        }
+        yield {
+          ...terminalDone,
+          ...(record.turnId !== undefined ? { turnId: record.turnId } : {}),
+          ...(record.palaiaExcerpt !== undefined ? { palaiaExcerpt: record.palaiaExcerpt } : {}),
+          ...(record.autoPromotedMkId !== undefined
+            ? { autoPromotedMkId: record.autoPromotedMkId }
+            : {}),
+        };
+      }
 
       return parser;
     } finally {

@@ -116,29 +116,44 @@ The gate, asserted by `test/cliBridge/cliSpawnGate.test.ts` and
 | Binary resolution (#1085) | Every spawn site — chat turn, completion provider, and the CLI sub-agents (`ask_<slug>`, agent builder, preview chat) — resolves the binary through the kernel's `resolveCliBin()` — `<CLI_TOOLS_DIR>/bin/claude` (default `<PLATFORM_DATA_DIR>/cli-tools`) when a runtime install put one there, else the bare name from PATH. Previously they spawned the bare name while the version badge, the login flow and the "Install now" button all used the resolved path, so an operator could install a CLI ≥ 2.1.248 through the UI and every turn kept running the older image binary — including the `--restricted` version probe above, which then dropped the flag against a deployment the UI reported as up to date. The rule is published as the `cliBinaryResolver` kernel service (`optional_requires` in the orchestrator manifest) because `@omadia/orchestrator` cannot import the app layer; kernel-side callers share `src/platform/cliBinary.ts` (`resolveClaudeCliBin()`). Absent, every site falls back to PATH. Resolution runs **per turn / per completion**, so an install takes effect on the next turn rather than the next restart, and the spawn log names the resolved path. Credentials are unaffected either way: both binaries read the same `CLAUDE_CONFIG_DIR`. The candidate must be executable (`X_OK`, which follows symlinks) and is made absolute, because every spawn runs in a temp `cwd` where a relative path would not resolve; otherwise PATH. **Trust consequence:** the install dir is now the binary every turn executes, so its writers — the authenticated `POST /api/v1/admin/cli-backends/:id/install` and anything with write access to the data volume — choose the binary the gate wraps. That route accepts any strict-semver version, so a runtime install below 2.1.248 drops `--restricted` for turns exactly as an old image pin does; the spawn log's `restrictedFlag` shows it. Like any kernel service, `cliBinaryResolver` can be swapped with `ctx.services.replace` by a plugin that declares it under `requires`/`optional_requires` (the #788 gate treats `replace` like `get`); that is no escalation over in-process plugin code, but if such a plugin activates before the orchestrator (which resolves the service once, in `activate()`), it chooses the binary for every chat turn, so a manifest declaring this service deserves review. |
 | Env allowlist (#1014) | `buildGatedCliEnv()` passes only `PATH`, `HOME`, `CLAUDE_CONFIG_DIR`, `TMPDIR`, locale/`TZ`, proxy and CA vars, and `USER`/`LOGNAME`. It replaced a deny list that removed credentials and billing switches but passed `NODE_OPTIONS` (which can `--require` arbitrary code into the child) and the whole `CLAUDE_CODE_*` family. The deny list is kept as a second layer, and a test asserts the two never overlap. |
 
-### No Privacy Shield on this path — and chat history is replayed (#1087)
+### No Privacy Shield on this path — chat history and graph recall are replayed (#1087, #1391)
 
 "Privacy guard" in the list above does not mean the CLI child receives masked
 data. Only the in-process orchestrator installs a per-turn privacy handle, so on
-the subscription-CLI path the live user message,
-tool results and — since #1087 — the replayed chat history reach the vendor
-unmasked. `CliChatAgent` replays the newest `DEFAULT_CLI_SESSION_TAIL_SIZE` (10)
-completed turns of the session into the child's stdin prompt, truncated to 600
-characters per question and 1,200 per answer, with role markers neutralised so
-replayed text cannot forge a `User:`/`Assistant:` line. For a session whose
-earlier turns ran on an API-key provider with Privacy Shield active, those
-persisted turns hold RESTORED real values, so up to ten of them now reach the
-CLI child raw. This is a deliberate trade-off in line with the UI's notice not
-to route personal data through this provider. `maskHistory` already routes the
-replay through the turn's privacy handle and becomes effective the moment one is
-installed on this path; masking parity is tracked on #1087.
+the subscription-CLI path the live user message, tool results, the replayed chat
+history (#1087) and the knowledge-graph recall (#1391) reach the vendor
+unmasked. `CliChatAgent` replays the newest completed turns of the session into
+the child's stdin prompt — as many as the operator's `context_tail_size`
+(default 10, the `ContextRetriever`'s `tailSize`) — truncated to 600 characters
+per question and 1,200 per answer, with role markers neutralised so replayed
+text cannot forge a `User:`/`Assistant:` line. For a session whose earlier turns
+ran on an API-key provider with Privacy Shield active, those persisted turns
+hold RESTORED real values, so they reach the CLI child raw.
+
+Since #1391 the CLI turn also recalls context the way the in-process turn does
+(`Orchestrator.recallCliContext` → `retrievePriorContext`: verbatim graph tail,
+entity and full-text hits from the user's other chats, cross-session plans,
+processes and insights, the session briefing) and puts the rendered text into
+the child's `--system-prompt`. The same gates apply as in-process — audience
+floor, context-memory isolation (`enforce-strict`, `members`), fresh check — but
+the text is not masked, so recalled real values from other chats reach the
+vendor too. And every successful CLI turn is now persisted like an in-process
+one (`Orchestrator.recordCliTurn`: transcript, chat-session mirror, graph
+`Turn`/`Run`/`ToolCall`, fact extraction, excerpt, auto-promotion,
+`onAfterTurn`), with the real texts and no masked view, because there is none.
+
+This is a deliberate trade-off in line with the UI's notice not to route
+personal data through this provider; the decision is recorded on #1087.
+`maskHistory` already routes the replay through the turn's privacy handle and
+becomes effective the moment one is installed on this path.
 
 The answer verifier is never installed on this path: `buildOrchestratorForAgent`
 returns the `CliChatAgent` bundle before the `VerifierService` wrap, so a
-subscription-CLI chat turn has no verifier egress at all. The reverse case is
-covered by §6e — the verifier plugin's OWN model may be the `claude-cli`
-completion provider (Shape 2), and its requests are masked before
-`llm.complete` like on any other provider.
+subscription-CLI chat turn has no verifier egress at all, and the subscription
+page tells the operator so (#1391). The reverse case is covered by §6e — the
+verifier plugin's OWN model may be the `claude-cli` completion provider
+(Shape 2), and its requests are masked before `llm.complete` like on any other
+provider.
 
 ### Why the deny list is generated, not written (#1014)
 

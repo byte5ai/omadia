@@ -900,12 +900,23 @@ export function buildOrchestratorForAgent(
           // subscription-CLI path renders them like the API-key path.
           drainTurnCards: () => orchestrator.drainCliTurnCards(),
           model: config.model.replace(/-cli$/, '') || 'sonnet',
+          // #1391 — persist every successful CLI turn like an in-process one
+          // (session log + graph nodes, facts, excerpt, auto-promotion,
+          // `onAfterTurn`), so Memory and recall stop being blank here.
+          recordTurn: (input, turn) => orchestrator.recordCliTurn(input, turn),
+          // #1391 — and recall from the graph before the spawn, as the
+          // in-process turn does before it calls the model.
+          recallContext: (input) => orchestrator.recallCliContext(input),
           // #1087 — the CLI child is stateless by design, so the composed
           // prompt is the only memory a turn has. Feed it from the RAW chat
           // session, not the ContextRetriever tail: that one reads Session
-          // nodes from the knowledge graph, and CLI turns never reach the
-          // graph (`SessionLogger.log` runs on the in-process path only), so a
-          // KG-backed tail would be empty here rather than merely lossy.
+          // nodes from the knowledge graph, whose capture filter drops turns
+          // below its significance threshold — the short turns a chat is full
+          // of — so a KG-backed tail would be lossy. Same depth as that tail:
+          // the operator's `context_tail_size` when the retriever is wired.
+          ...(deps.contextRetriever
+            ? { sessionTailSize: deps.contextRetriever.tailSize }
+            : {}),
           sessionTail: async (sessionScope: string, limit: number) => {
             // Channel and ad-hoc HTTP scopes are not chat-session ids; the
             // store would reject them, and nothing ever wrote them. `undefined`
