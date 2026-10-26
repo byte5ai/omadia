@@ -28,7 +28,7 @@
     "pack:all": "npm run build && npm run stage && electron-builder --mac --win --publish never"
   },
   "dependencies": {
-    "electron-updater": "^6.3.9",
+    "electron-updater": "^6.8.11",
     "embedded-postgres": "^17.10.0-beta.17",
     "pg": "^8.23.1"
   },
