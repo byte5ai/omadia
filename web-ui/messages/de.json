@@ -3890,6 +3890,7 @@
       "intro": "Ordne jedem LLM-fähigen Plugin einen Provider und ein Modell zu. Beim Speichern wird das Plugin neu aktiviert, sodass die Änderung sofort greift.",
       "notInstalled": "nicht installiert",
       "toolLessBlocked": "braucht Tools — nicht für diese Rolle",
+      "providerMissing": "{provider} (nicht registriert)",
       "providerLabel": "Provider",
       "modelLabel": "Modell",
       "pickModel": "Modell wählen …",

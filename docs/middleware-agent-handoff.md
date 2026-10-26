@@ -5630,6 +5630,36 @@ Teardown wie beim Speichern eines Modells auf der LLM-Zugangsseite. Nicht
 serialisiert gegen gleichzeitige Admin-Reaktivierungen (`InstallService.reactivate`
 hat keinen Lock); ein globaler Reaktivierungs-Lock wäre ein eigener Schritt.
 
+**Provider-Plugin auf einer gebündelten ID — Base-Layer im Katalog (#1451).**
+Ein Hub-Plugin darf seinen Provider unter einer **built-in** ID registrieren
+(`@omadia/plugin-llm-anthropic` liefert `id: anthropic`) und ersetzt damit den
+gebündelten Deskriptor komplett: baseURL, Wire-Format und Modelle bedienen diese
+ID, solange das Plugin installiert ist — der Operator-Key bleibt im Vault unter
+der Provider-ID. Die Registrierung loggt das jetzt als WARNING (vorher
+lautlos). `LlmProviderCatalog` hält die gebündelten Deskriptoren als
+**Base-Layer**: `registerBase` (von `registerBuiltinLlmProviders` benutzt) merkt
+sie, `unregister` registriert den gebündelten wieder, statt die ID leer zu
+lassen, `isBundled(id)` sagt, ob eine ID gebündelt ist, `clear()` leert beide
+Ebenen. Vorher war die ID nach dem Uninstall bis zum nächsten Neustart **gar
+nicht** belegt: `/api/v1/admin/providers` ohne `anthropic`, `verify` mit
+`providers.unknown_provider`, kein Anthropic-Modell in der Registry — und der
+nächste Orchestrator-Rebuild veröffentlichte den rohen Klassen-Ref
+`class:balanced`, was jeden Turn mit einem Anthropic-404 beendete.
+`unregisterProviderFromPlugin` (`src/index.ts`) heilt die Konsumenten
+symmetrisch zum Install-Pfad: Discovery-Refresh für den restaurierten Built-in
+plus `classDefaultRebuilder.onDefaultsChanged(id)`. Zusätzlich kann seitdem kein
+Klassen-Ref mehr auf die Leitung: das Orchestrator-Plugin behält seine zwei
+Auflösungsstufen, lässt aber den rohen `?? configuredModelRef`-Schwanz weg und
+**scheitert** bei einem Provider ohne jedes Modell mit Nennung des Settings
+(Plugin-Status `errored`); `buildForAgent` wirft `UnresolvedModelRefError` mit
+Agent-Slug statt `DEFAULT_ORCHESTRATOR_MODEL` (selbst ein Klassen-Ref) als
+letzte Stufe durchzulassen. Registry-**unbekannte** konkrete IDs (eigene Vendor-IDs, nackte
+CLI-Aliase) gehen unverändert roh durch — genau deshalb bleibt der Zustand
+„Provider ohne Modelle" erreichbar, und `buildSubAgentDomainTools`
+**überspringt** einen Sub-Agenten, dessen Modell-Ref zu nichts auflöst (geloggt
+wie ein nicht auflösbarer Tool-Grant), statt `class:balanced` an `LocalSubAgent`
+zu geben.
+
 ### Dynamische Sub-Agenten übernehmen Key-Änderungen erst nach Rebuild (#1080 follow-up)
 
 - `src/plugins/dynamicAgentRuntime.ts` (`activate()`, ~Z. 498-534) löst den
