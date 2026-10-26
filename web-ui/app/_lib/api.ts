@@ -1250,6 +1250,12 @@ export interface RegistryInstallResponse {
    *  operator must install before the target. Empty/absent → install the
    *  target directly. Same shape the RequiresWizard consumes. */
   chain?: InstallChainResolution;
+  /** #1452 — the package was ingested and the running plugin did NOT come
+   *  back up; this is the activation error, and the middleware has flipped the
+   *  registry entry to `errored`. Absent on success, on an ingest that
+   *  attempted no activation (fresh install — the install job reports that
+   *  one), and on an older middleware. */
+  activation_error?: string;
   next: { install: string };
 }
 

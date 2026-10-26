@@ -36,6 +36,81 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — a failed activation after a plugin update is no longer reported as active (#1452)
+
+2026-10-26. Updating a plugin (store "Update" button, Hub install onto an
+installed plugin, ZIP re-upload, builder install, dependency chain, profile
+import) activates the new version through `PackageUploadService.ingest` →
+`onPackageReady`. That hook's throw was caught, logged, and dropped: the
+registry entry kept `status: "active"` with `last_activation_error: null`,
+`GET /api/v1/admin/runtime/installed` and readiness kept answering
+`active` / `ready`, and the store badge kept showing the time of the last
+*successful* activation — over a plugin whose `undo()` had rolled back every
+route and tool it registered. Only the third failed BOOT activation flipped
+the entry, via `CIRCUIT_BREAKER_THRESHOLD`. Same bug the install path had in
+#799 / #825, on the path operators use far more often.
+
+`PackageUploadService` now records the hook's verdict: on a throw
+`markActivationFailed` plus an explicit flip to `errored` (not waiting for the
+circuit breaker — an update the operator just clicked is one definitive event),
+on success `clearActivationError` + `markActivationSucceeded`, so installing a
+fixed version lifts the `errored` state again. That pair is no longer copied
+per call site: **`recordActivationFailure` / `recordActivationSuccess` in
+`plugins/installedRegistry.ts`** now own it, used by
+`installService.completeInstall`, `installService.reactivate`, the upload seam
+and `channelRegistry`. `recordActivationFailure` forwards the entry's existing
+`unresolved_requires` — an omitted argument clears the list, which strands the
+plugin, because `bootstrap.retryErroredPlugins` reads exactly that list to
+auto-reset it once the missing provider arrives (this also fixes the same wipe
+on `installService.reactivate`). A hook that throws without a message still
+records a reason.
+
+The decision whether to reactivate at all moved from `index.ts` into the
+service: `shouldReactivate` admits `active`, and `errored` only below
+`CIRCUIT_BREAKER_THRESHOLD` — the failure count is the only thing separating a
+plain failed update from a breaker-latched entry or an OM-87
+`markActivationBlocked` (non-retryable by definition, floors the count at the
+threshold), and an upload must walk around neither. `inactive` and
+not-installed are left alone. A second gate in the host hook would have made
+the success write a lie, so `onPackageReady` must now throw rather than return
+early whenever it did not activate: the channel branch asserts `isActive`
+after `activate()` (which only warns when the package exports no usable
+`ChannelPlugin`) and deactivates unconditionally (the resolver's module cache
+can hold the pre-update `dist/plugin.js` for a channel that is currently
+down); the agent branch checks `activate()`'s `DomainTool` return, which is
+`null` when the agent is in no package store.
+
+**`channelRegistry` now records its own activation outcomes**, which it never
+did — that is why `kind: channel` had no circuit breaker at all. `activate()`
+stamps success (lifting a stale `errored`), and the boot loop
+`activateAllInstalled` records a failure with `markActivationFailed` (no
+explicit flip: at boot the threshold is the right policy, as in the tool and
+dynamic-agent boot loops) and treats "activated but not in the handle map" as
+a failure. Without this the new `errored` would never clear for channels: the
+boot loop activates them regardless of status, and
+`retryErroredPlugins`' mtime path cannot help (`last_activation_error_at` is
+stamped after the package rename, so the manifest is never newer).
+
+Both ingest routes (`POST /api/v1/install/registry/:id`,
+`POST /api/v1/install/packages`) answer 201 as before and now carry
+`activation_error` when the plugin did not come up. The store's update banner
+renders it (`store.install.updateActivationFailed`, en + de) — outside the
+banner's own conditional, because the failed update still bumps
+`installed_version` and the refresh that follows unmounts the banner — and the
+ZIP-upload panel renders it on its success row
+(`store.upload.activationFailed`). Absence of the field is deliberately not a
+positive "it is running" claim. The installed pill also states a readiness
+error as text now instead of only in `title=`, which no keyboard, screen-reader
+or touch user reaches. Still not surfaced in a response: the builder /
+profile-import ingest callers (the registry entry and the badge carry it), and
+a dependency-chain parent that fails to restart — the chain result shape has no
+per-parent verdict, so that one is logged.
+
+Not covered, a separate defect: `onPackageReady` does not call
+`registerProviderFromPlugin` (which `InstallService.onInstalled` does first),
+so updating a provider plugin keeps the pre-update provider/model registration
+live until the next boot.
+
 ### Changed — an unconfirmed answer no longer carries a "Hinweis" paragraph
 
 2026-10-16. In `enforce` mode an answer whose claims the verifier could not

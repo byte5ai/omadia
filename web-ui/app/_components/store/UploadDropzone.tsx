@@ -13,7 +13,7 @@ import { Button } from '@/app/_components/ui/Button';
 type UploadState =
   | { kind: 'idle' }
   | { kind: 'uploading'; filename: string; loaded: number; total: number }
-  | { kind: 'success'; pkg: UploadedPackage }
+  | { kind: 'success'; pkg: UploadedPackage; activationError?: string }
   | { kind: 'error'; code: string; message: string };
 
 const ACCEPTED_MIME = 'application/zip,application/x-zip-compressed,.zip';
@@ -55,7 +55,15 @@ export function UploadDropzone(): React.ReactElement {
             setState({ kind: 'uploading', filename: file.name, loaded, total });
           },
         });
-        setState({ kind: 'success', pkg: resp.package });
+        setState({
+          kind: 'success',
+          pkg: resp.package,
+          // #1452 — the ingest succeeded and the plugin that was running did
+          // not come back up. Still the success panel (the package IS in the
+          // catalog), with the reason named — reporting this as a clean upload
+          // is what left operators with a green panel over a dead plugin.
+          ...(resp.activation_error ? { activationError: resp.activation_error } : {}),
+        });
         router.refresh();
       } catch (err) {
         if (err instanceof ApiError) {
@@ -195,7 +203,11 @@ export function UploadDropzone(): React.ReactElement {
           )}
 
           {state.kind === 'success' && (
-            <SuccessRow pkg={state.pkg} onDismiss={reset} />
+            <SuccessRow
+              pkg={state.pkg}
+              onDismiss={reset}
+              {...(state.activationError ? { activationError: state.activationError } : {})}
+            />
           )}
 
           {state.kind === 'error' && (
@@ -265,9 +277,12 @@ function UploadingRow({
 function SuccessRow({
   pkg,
   onDismiss,
+  activationError,
 }: {
   pkg: UploadedPackage;
   onDismiss: () => void;
+  /** #1452 — set when the re-activation of the already-running plugin threw. */
+  activationError?: string;
 }): React.ReactElement {
   const t = useTranslations('store.upload');
   return (
@@ -299,6 +314,11 @@ function SuccessRow({
           {t('peersMissing', { peers: pkg.peers_missing.join(', ') })}
         </p>
       )}
+      {activationError ? (
+        <p className="mt-3 text-[12px] text-[color:var(--danger,#b03030)]">
+          {t('activationFailed', { message: activationError })}
+        </p>
+      ) : null}
       <div className="mt-3 flex gap-3">
         {/* eslint-disable-next-line no-restricted-syntax -- inline text link (bare text, no border/bg) */}
         <button
