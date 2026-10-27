@@ -8,6 +8,7 @@ import {
   isValidPluginId,
   PLUGIN_ID_MAX_LENGTH,
   PLUGIN_ID_PATTERN,
+  pluginUiEntryPath,
 } from '../pluginId';
 
 /**
@@ -145,5 +146,29 @@ describe('decodePluginIdSegment — the host route param (#1399)', () => {
   it('rejects a doubly-encoded id rather than decoding twice', () => {
     // `%2540omadia…` decodes once to `%40omadia…`, which is not an id.
     expect(decodePluginIdSegment('%2540omadia%252Fexample-ui')).toBeNull();
+  });
+});
+
+describe('pluginUiEntryPath (#1454)', () => {
+  /**
+   * The one path the iframe `src` and the host page's bundle probe both build
+   * from. Literal expectations on purpose: recomputing them with
+   * `encodeURIComponent` here would agree with any encoding the helper chose,
+   * including the broken one that 404'd every scoped plugin (#1399).
+   */
+  it('keeps a scoped id in one path segment', () => {
+    expect(pluginUiEntryPath('@omadia/example-ui')).toBe(
+      '/p/%40omadia%2Fexample-ui/ui/index.html',
+    );
+  });
+
+  it('leaves an unscoped id alone', () => {
+    expect(pluginUiEntryPath('some-plugin')).toBe('/p/some-plugin/ui/index.html');
+  });
+
+  it('is same-origin relative, never scheme-relative', () => {
+    // `//evil.example/...` as an iframe src would leave the origin; the leading
+    // single slash is load-bearing (see PluginUiFrame.test.tsx).
+    expect(pluginUiEntryPath('some-plugin').startsWith('/p/')).toBe(true);
   });
 });
