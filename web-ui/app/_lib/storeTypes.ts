@@ -211,6 +211,9 @@ export interface PluginActionStatus {
 export type PluginReadinessState =
   | 'not_installed'
   | 'config_required'
+  /** #1453 — fields all filled, plugin up, target system refused the
+   *  credentials (the plugin's own probe verdict). */
+  | 'connection_failed'
   | 'awaiting_llm'
   | 'ready'
   | 'errored';
@@ -219,7 +222,10 @@ export interface PluginReadiness {
   state: PluginReadinessState;
   /** Keys of required setup fields with no stored value. */
   missing_fields: string[];
-  /** ISO8601 of the last successful activation; `null` unless `ready`. */
+  /** ISO8601 of the last successful ACTIVATION; `null` unless `ready`.
+   *  #1453 — not a credential check (nothing contacted the target system), so
+   *  the badge renders it as "active since", never "configured". A checked
+   *  connection arrives as `action_status.checked_at` instead. */
   verified_at: string | null;
   /** Tail of the last activation error; only for `errored`. */
   error_detail?: string;

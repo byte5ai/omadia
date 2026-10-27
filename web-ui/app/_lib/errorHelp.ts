@@ -148,6 +148,7 @@ export const ERROR_HELP_CODES = [
   'runtime.json_file_unexpected_document',
   'runtime.unknown_json_file_field',
   'runtime.no_options_provider',
+  'runtime.not_active',
   'runtime.not_installed',
   'runtime.not_web_scanner',
   'runtime.options_provider_bad_shape',
@@ -164,6 +165,8 @@ export const ERROR_HELP_CODES = [
   'runtime.vault_read_failed',
   'runtime.vault_unavailable',
   'runtime.vault_write_failed',
+  // #1453 — the operator-triggered connection check.
+  'runtime.verify_failed',
   // adminSettings.ts — the three `*_key_format` codes are per-field
   // rejections inside a `settings.invalid_values` envelope (#1330/#1331).
   'settings.anthropic_key_format',

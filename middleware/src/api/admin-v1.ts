@@ -457,6 +457,14 @@ export interface PluginActionStatus {
  * readiness is computed by the kernel and therefore also covers the majority
  * of plugins that never report status at all.
  *
+ * `connection_failed` (#1453) is its own state for the same reason: the plugin
+ * activated, its fields are all filled, and the target system still refuses the
+ * credentials. "Configuration required" would send the operator to a form with
+ * nothing missing in it, and `errored` would claim the plugin never came up.
+ * It is derived from the plugin's own probe verdict (`ctx.status` →
+ * `plugins/connectionProbe.ts`), which is why it is the one readiness state
+ * that is not computed from registry + vault alone.
+ *
  * `awaiting_llm` (#884) is deliberately NOT folded into `config_required`. The
  * plugin's own manifest-required fields are all satisfied; what is missing is a
  * VERIFIED credential on the LLM provider it was assigned, and that lives on a
@@ -467,6 +475,7 @@ export interface PluginActionStatus {
 export type PluginReadinessState =
   | 'not_installed'
   | 'config_required'
+  | 'connection_failed'
   | 'awaiting_llm'
   | 'ready'
   | 'errored';
@@ -476,9 +485,19 @@ export interface PluginReadiness {
   /** Keys of required setup fields with no stored value. Empty unless
    *  `state === 'config_required'`. */
   missing_fields: string[];
-  /** ISO8601 of the moment readiness was last observed as `ready`, i.e. the
-   *  plugin's last successful activation (falls back to `installed_at`).
-   *  `null` for every non-ready state. */
+  /**
+   * ISO8601 of the plugin's last successful ACTIVATION (falls back to
+   * `installed_at`). `null` for every non-ready state.
+   *
+   * #1453 — the name is older than what the field can honestly carry, and it
+   * is kept because 20+ consumers read it: nothing here ever contacted the
+   * plugin's target system, so this is not evidence that any credential works.
+   * The admin UI renders it as "Active · since <time>" for exactly that
+   * reason. A connection that was actually CHECKED reports itself through
+   * `action_status` (`PluginActionStatus.checked_at`), written by the kernel's
+   * connection probe (`plugins/connectionProbe.ts`) from the plugin's own
+   * `verifyConnection` export.
+   */
   verified_at: string | null;
   /** Tail of the last activation error. Only for `state === 'errored'`. */
   error_detail?: string;

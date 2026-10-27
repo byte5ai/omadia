@@ -1368,6 +1368,14 @@
       "ledger_already_owned": {
         "what": "Another plugin already owns the table this plugin wants to migrate.",
         "next": "One table belongs to exactly one plugin. Uninstall the plugin that holds it, or ask this plugin's author to choose a different table name."
+      },
+      "not_active": {
+        "what": "This plugin is not running, so there is nothing to check against its target system.",
+        "next": "Get the plugin running first — the activation error on its page says why it did not start."
+      },
+      "verify_failed": {
+        "what": "The connection check could not be carried out.",
+        "next": "Try again. If it repeats, the detail below names what went wrong inside the server."
       }
     },
     "settings": {
@@ -4193,8 +4201,9 @@
       "configRequired": "Configuration required",
       "awaitingLlm": "Configured – waiting for LLM access",
       "errored": "Activation failed",
-      "readyVerified": "Active · configured {time}",
-      "missingFields": "Missing: {fields}"
+      "activeSince": "Active · since {time}",
+      "missingFields": "Missing: {fields}",
+      "connectionFailed": "Connection failed"
     },
     "workaroundBadge": {
       "active": "Workaround active",
@@ -4434,6 +4443,14 @@
         "errored": "Not running. The plugin failed to start after the last change.",
         "inactive": "Not active."
       }
+    },
+    "connectionCheck": {
+      "check": "Test connection",
+      "checking": "Checking…",
+      "connected": "Connection works",
+      "rejected": "The credentials were refused by the target system",
+      "inconclusive": "The connection could not be checked",
+      "noProbe": "This plugin does not support a connection check"
     }
   },
   "adminAuth": {

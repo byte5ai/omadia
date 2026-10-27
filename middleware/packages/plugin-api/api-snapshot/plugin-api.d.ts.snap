@@ -1641,6 +1641,15 @@ export interface StatusAccessor {
 report(status: PluginActionStatus): void;
 clear(): void;
 }
+export type ConnectionRejectionCause = 'http_401' | 'http_403_auth' | 'protocol_auth_failure';
+export declare function classifyHttpAuthFailure(status: number, bodyText?: string): ConnectionRejectionCause | undefined;
+export interface PluginConnectionVerdict {
+readonly status: 'connected' | 'rejected' | 'inconclusive';
+readonly cause?: ConnectionRejectionCause;
+readonly title?: string;
+readonly detail?: string;
+}
+export type VerifyConnection = (ctx: PluginContext) => Promise<PluginConnectionVerdict> | PluginConnectionVerdict;
 export interface OAuthTokensAccessor {
 get(fieldKey: string): Promise<string>;
 }

@@ -6,6 +6,7 @@ import type { AdminAuditLog } from '../auth/adminAuditLog.js';
 import type { BackgroundJobRegistry } from '../platform/backgroundJobRegistry.js';
 import type { ChatAgentWrapIntrospection } from '../platform/chatAgentWrapRegistry.js';
 import type { PromptContributionRegistry } from '../platform/promptContributionRegistry.js';
+import type { PluginStatusRegistry } from '../platform/pluginStatusRegistry.js';
 import type { ServiceRegistry } from '../platform/serviceRegistry.js';
 import type { TurnHookRegistry } from '../platform/turnHookRegistry.js';
 import { isAuditMode } from '../platform/httpAccessor.js';
@@ -19,6 +20,7 @@ import {
   SetupOptionsResolveError,
   withTimeout,
 } from '../plugins/dynamicAgentRuntime.js';
+import type { ConnectionProbeOutcome } from '../plugins/connectionProbe.js';
 import { extractSetupSchema } from '../plugins/installService.js';
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
@@ -104,6 +106,21 @@ interface RuntimeDeps {
   sqlGrantStore?: PluginSqlGrantStore;
   /** #1347 — consent changes land in the admin audit trail. */
   audit?: Pick<AdminAuditLog, 'record'>;
+  /** #1453 — the plugins' pushed `ctx.status`, so `GET /installed` can report
+   *  a refused credential next to the registry's own view. Without it the
+   *  endpoint answers `action_status: null` for everything, which is what it
+   *  did before this issue. */
+  pluginStatusRegistry?: Pick<PluginStatusRegistry, 'get'>;
+  /** #1453 — re-run one plugin's `verifyConnection` export in place. Resolves
+   *  to `undefined` when that plugin declares no probe.
+   *
+   *  REQUIRED, unlike most of this interface: an optional verifier would ship
+   *  a 503 branch, and operator-facing copy for it, describing a state no
+   *  deployment can reach — `index.ts` always wires one. Test wiring passes a
+   *  stub. */
+  verifyConnection: (
+    agentId: string,
+  ) => Promise<ConnectionProbeOutcome | undefined>;
 }
 
 export function createRuntimeRouter(deps: RuntimeDeps): Router {
@@ -118,6 +135,11 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
       activation_failure_count: entry.activation_failure_count ?? 0,
       last_activation_error: entry.last_activation_error ?? null,
       last_activation_error_at: entry.last_activation_error_at ?? null,
+      // #1453 — a plugin can activate perfectly and still be unusable because
+      // the target system refuses its credentials. That verdict lives in the
+      // status channel, so an operator reading this endpoint alone used to see
+      // `active` / `last_activation_error: null` and nothing else.
+      action_status: deps.pluginStatusRegistry?.get(entry.id) ?? null,
     }));
     res.json({ items: rows, total: rows.length });
   });
@@ -153,6 +175,65 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
       last_activation_error: entry.last_activation_error ?? null,
       last_activation_error_at: entry.last_activation_error_at ?? null,
     });
+  });
+
+  // POST /installed/:id/verify — #1453. Re-run the plugin's OWN credential
+  // check against the target system, now, without a reactivation.
+  //
+  // The same probe runs automatically on every activation (fresh install, boot,
+  // and the reactivation that follows a setup-field edit). This endpoint exists
+  // for the case none of those cover: a key revoked or repaired UPSTREAM, with
+  // nothing on the omadia side having changed. Without it the only way to
+  // re-check was to save a field you did not want to change.
+  //
+  // Deliberately a POST: it talks to a third-party system and writes the
+  // plugin's operator-facing status. Mirrors POST /admin/providers/:id/verify,
+  // which does the same job for LLM credentials.
+  router.post('/installed/:id/verify', async (req: Request, res: Response) => {
+    const id = readId(req);
+    if (!id) {
+      res.status(400).json({ code: 'runtime.invalid_id', message: 'missing id' });
+      return;
+    }
+    const entry = deps.installedRegistry.get(id);
+    if (!entry) {
+      res.status(404).json({
+        code: 'runtime.not_installed',
+        message: `agent '${id}' is not installed`,
+      });
+      return;
+    }
+    if (entry.status !== 'active') {
+      // A plugin that never came up has no context to probe with, and the
+      // answer the operator needs is already in `last_activation_error`.
+      // Answering 'inconclusive' here would blur the two failures #1452 and
+      // #1453 exist to keep apart.
+      res.status(409).json({
+        code: 'runtime.not_active',
+        message: `agent '${id}' is not active (status '${entry.status}') — there is nothing running to probe`,
+      });
+      return;
+    }
+    let outcome: ConnectionProbeOutcome | undefined;
+    try {
+      outcome = await deps.verifyConnection(id);
+    } catch (err) {
+      // `runConnectionProbe` never rejects, so reaching this means the kernel
+      // wiring itself failed, not the plugin's check. Still not a 500 story
+      // about the credentials: say what is unknown.
+      res.status(502).json({
+        code: 'runtime.verify_failed',
+        message: err instanceof Error ? err.message : String(err),
+      });
+      return;
+    }
+
+    // `undefined` means the plugin exports no `verifyConnection`. That is not
+    // a healthy answer and must never read as one — same vocabulary the LLM
+    // provider verifier uses for a credential it could not probe.
+    res.json(
+      outcome ?? { status: 'inconclusive' as const, reason: 'no_probe' as const },
+    );
   });
 
   // PATCH /installed/:id/config — merges into non-secret config values.

@@ -1084,6 +1084,136 @@ export interface StatusAccessor {
 }
 
 /**
+ * Issue #1453 — WHY a plugin says the target system refused its credentials.
+ *
+ * `rejected` is the only verdict that turns a plugin red and withholds its
+ * tools from the orchestrator, so the kernel does not accept it on the
+ * plugin's word alone: a verdict that names no recognised cause here is
+ * demoted to `inconclusive`. The kernel cannot inspect the exchange itself —
+ * only the plugin knows its wire protocol — but it can insist the plugin
+ * state WHICH explicit refusal it saw, which is what stops a bare
+ * `catch { return { status: 'rejected' } }` from painting an outage as a dead
+ * key.
+ *
+ * - `http_401` — the target answered 401. The unambiguous case.
+ * - `http_403_auth` — a 403 whose body self-identifies as an authentication
+ *   failure. A plain 403 is NOT this: OpenAI answers 403 for "country, region,
+ *   or territory not supported" and Atlassian for permission scopes, neither
+ *   of which means the credential is wrong.
+ * - `protocol_auth_failure` — an auth refusal carried outside the HTTP status,
+ *   which is why this enum cannot be HTTP-only: Odoo answers a wrong API key
+ *   with `authenticate → false` over a 200.
+ *
+ * Timeouts, 5xx, DNS failures and anything the plugin is unsure about have no
+ * cause and must be reported as `inconclusive`.
+ */
+export type ConnectionRejectionCause =
+  | 'http_401'
+  | 'http_403_auth'
+  | 'protocol_auth_failure';
+
+/**
+ * Issue #1453 — core's own rules for the HTTP half of the classification
+ * above, so a plugin does not have to re-derive them (and cannot get them
+ * subtly wrong). Returns the cause for an exchange that is an explicit
+ * authentication refusal, and `undefined` for everything else — including
+ * every 5xx, every network failure and a plain 403.
+ *
+ * The 403 rule mirrors `providerCredentialVerifier.ts` in the middleware,
+ * which pays for it on the LLM side: only a 403 whose body says so is an auth
+ * verdict.
+ *
+ * ```ts
+ * const res = await fetch(url, { headers });
+ * const cause = classifyHttpAuthFailure(res.status, await res.text());
+ * return cause
+ *   ? { status: 'rejected', cause, title: 'Nicht verbunden' }
+ *   : res.ok
+ *     ? { status: 'connected', title: 'Verbunden' }
+ *     : { status: 'inconclusive' };
+ * ```
+ */
+export function classifyHttpAuthFailure(
+  status: number,
+  bodyText?: string,
+): ConnectionRejectionCause | undefined {
+  if (status === 401) return 'http_401';
+  if (status !== 403) return undefined;
+  // Deliberately narrow: the body has to name authentication itself. Anything
+  // vaguer (a permission, a region, a plan limit) is not a credential verdict.
+  const body = (bodyText ?? '').toLowerCase();
+  const saysAuth =
+    body.includes('unauthenticated') ||
+    body.includes('authentication') ||
+    body.includes('invalid_token') ||
+    body.includes('invalid api key') ||
+    body.includes('invalid x-api-key');
+  return saysAuth ? 'http_403_auth' : undefined;
+}
+
+/**
+ * Issue #1453 — the verdict of a plugin's own connection check.
+ *
+ * Only the plugin knows its wire protocol, so only the plugin can classify the
+ * answer: Odoo answers a bad API key with `authenticate → false` over a 200,
+ * Confluence with a 401, another target with a 403 that does not mean "wrong
+ * key" at all. The kernel therefore does not inspect responses — it asks for a
+ * verdict and maps it, which is also why the three cases are named rather than
+ * expressed as a boolean.
+ *
+ * - `connected` — the target system accepted the credentials. Carry a `title`
+ *   (e.g. "Verbunden") to have it rendered as a positive badge with the
+ *   kernel-stamped time; without one the probe only clears a previous verdict.
+ * - `rejected` — the target system EXPLICITLY refused the credentials. This is
+ *   the only verdict that turns the plugin red and withholds its tools, so it
+ *   must mean "this key is wrong", never "the call did not succeed" — and it
+ *   MUST carry a `cause`, or the kernel demotes it to `inconclusive`.
+ * - `inconclusive` — anything else: timeout, 5xx, DNS failure, air-gapped
+ *   install, an endpoint that answered something unparseable. The operator
+ *   keeps whatever status they had; an outage must not accuse them of holding
+ *   a broken credential. Returning nothing, throwing, or running past the
+ *   kernel's time budget are all treated as this case.
+ *
+ * `title` and `detail` are rendered verbatim in the admin UI, so a plugin that
+ * supplies them owns their localisation (the kernel ships no copy of its own).
+ */
+export interface PluginConnectionVerdict {
+  readonly status: 'connected' | 'rejected' | 'inconclusive';
+  /**
+   * REQUIRED when `status` is `rejected`, and meaningless otherwise: which
+   * explicit refusal the plugin saw. A `rejected` verdict without a recognised
+   * cause is demoted to `inconclusive` by the kernel — see
+   * {@link ConnectionRejectionCause}. Derive the HTTP cases with
+   * {@link classifyHttpAuthFailure} rather than by hand.
+   */
+  readonly cause?: ConnectionRejectionCause;
+  /** Short label for the badge, in the operator's language. */
+  readonly title?: string;
+  /** One-line detail / next step, in the operator's language. */
+  readonly detail?: string;
+}
+
+/**
+ * Issue #1453 — optional module export, next to `activate`, that answers "do
+ * these credentials actually work?".
+ *
+ * The kernel calls it after a successful `activate()` (so the plugin's own
+ * client is already built), on every activation — fresh install, boot-time
+ * reactivation, and the reactivation that follows a setup-field edit — and
+ * from the operator-triggered `POST /api/v1/admin/runtime/installed/:id/verify`.
+ * It is bounded and its result can never fail the activation: a plugin whose
+ * probe throws or hangs stays up, it just does not get a verdict.
+ *
+ * The verdict is written through the SAME `ctx.status` channel the plugin may
+ * write itself, and it runs after `activate()`, so a probe verdict is the
+ * fresher of the two and wins. A plugin that reports an unrelated
+ * `needs_action` from `activate()` should therefore re-report it from here.
+ */
+export type VerifyConnection = (
+  ctx: PluginContext,
+) => Promise<PluginConnectionVerdict> | PluginConnectionVerdict;
+
+/**
  * Spec 005 — read-side of the kernel OAuth broker. `get(fieldKey)` returns a
  * currently-valid access token for the named `type:oauth` connection,
  * transparently refreshing it within a 5-minute expiry margin. The kernel runs
