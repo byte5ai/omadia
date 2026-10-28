@@ -4892,6 +4892,17 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 
 ## 13. Offene Roadmap
 
+### Plugin-UI-Host-Seite: Live-Appearance-Kanal (#1480)
+
+Seit #1480 lädt `PluginUiFrame` ein Plugin-Bundle bei Theme-, Paletten- oder
+Sprachwechsel nur noch neu, wenn das Bundle sich nicht mit
+`{ type: 'omadia:plugin-ui:ready' }` per `postMessage` gemeldet hat. Gemeldete
+Bundles bekommen `{ type: 'omadia:plugin-ui:appearance', theme, palette,
+locale }` (Vertrag: `specs/470-dev-platform-plugin/plugin-ui-vocabulary.md`).
+Offen: `@omadia/dev-platform` (`packages/ui/src/lib/appearance.ts`) meldet sich
+noch nicht und wird daher weiter neu geladen, bis es den Kanal übernimmt.
+Heading, Tab- und Frame-Titel nehmen seit #1479 das Nav-Label des Plugins.
+
 ### Plugin-UI-Host-Seite: Restrisiko nach dem Bundle-Gate (#1454)
 
 `/plugin-ui/<pluginId>` prüft seit #1454 vor dem Rendern, ob überhaupt ein

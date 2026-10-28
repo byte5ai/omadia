@@ -1,7 +1,9 @@
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
-import { getTranslations } from 'next-intl/server';
+import { getLocale, getTranslations } from 'next-intl/server';
+import { cache } from 'react';
 
+import { fetchNavEntries, pluginUiNavLabel } from '@/app/_lib/navigation';
 import { decodePluginIdSegment } from '@/app/_lib/pluginId';
 import { pluginUiBundleMayExist } from '@/app/_lib/pluginUiBundle';
 
@@ -29,6 +31,18 @@ import { PluginUiFrame } from './_components/PluginUiFrame';
  * reachable from a nav contribution while `//evil.example` is not.
  */
 
+/**
+ * The name heading, tab and frame title show (#1479): the label of the nav
+ * entry that points here, resolved by the middleware for the active locale —
+ * the same string the nav shows. The id is the fallback for a plugin that
+ * registered no entry (or a nav lookup that degraded to `[]`). `cache()` so
+ * `generateMetadata` and the render share one lookup per request.
+ */
+const pluginUiName = cache(async (pluginId: string): Promise<string> => {
+  const entries = await fetchNavEntries(await getLocale());
+  return pluginUiNavLabel(entries, pluginId) ?? pluginId;
+});
+
 export async function generateMetadata({
   params,
 }: {
@@ -43,7 +57,7 @@ export async function generateMetadata({
   if (pluginId === null) return {};
   if (!(await pluginUiBundleMayExist(pluginId))) return {};
   const t = await getTranslations('pluginUi');
-  return { title: t('metaTitle', { pluginId }) };
+  return { title: t('metaTitle', { name: await pluginUiName(pluginId) }) };
 }
 
 export default async function PluginUiPage({
@@ -73,18 +87,23 @@ export default async function PluginUiPage({
   // status and the guard in `app/__tests__/loadingBoundaries.test.ts` (#1398).
   if (!(await pluginUiBundleMayExist(pluginId))) notFound();
 
-  const t = await getTranslations('pluginUi');
+  const [t, name] = await Promise.all([
+    getTranslations('pluginUi'),
+    pluginUiName(pluginId),
+  ]);
 
   return (
     <main className="flex h-full flex-col gap-4 p-6">
       <header>
         <h1 className="text-xl font-semibold text-fg-strong">
-          {t('title', { pluginId })}
+          {t('title', { name })}
         </h1>
         <p className="text-sm text-fg-muted">{t('subtitle')}</p>
       </header>
       <div className="min-h-0 flex-1">
-        <PluginUiFrame pluginId={pluginId} />
+        {/* Keyed so a frame frozen on one plugin's src (#1480) can never be
+            reused for another's. */}
+        <PluginUiFrame key={pluginId} pluginId={pluginId} name={name} />
       </div>
     </main>
   );

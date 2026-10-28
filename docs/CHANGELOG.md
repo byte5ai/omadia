@@ -79,6 +79,31 @@ next boot removes; `blank` no longer points at `/store/upload`. Apply skips a
 plugin whose capability is already provided (`skipped[].reason:
 'capability_provided'`), the shipped profile descriptions are translated, and
 the outcome says that the plugins become active after a restart.
+### Fixed — the plugin UI host page keeps the plugin's state, names it, and stops claiming isolation (#1480, #1479, #1501)
+
+2026-10-28. Three defects on `/plugin-ui/<pluginId>`:
+
+- **#1480** — every theme, palette or language switch reloaded the embedded
+  plugin, because `PluginUiFrame` keyed the `<iframe>` on
+  `${theme}-${palette}-${locale}` and carried the same values in its `src`.
+  The plugin lost its hash route, form input and scroll position. The key is
+  gone. A bundle that posts `{ type: 'omadia:plugin-ui:ready' }` to its parent
+  now keeps its `src`, and every change reaches it as
+  `{ type: 'omadia:plugin-ui:appearance', theme, palette, locale }`. Both
+  directions are pinned to the shell origin, and the host only accepts
+  messages from its own frame. A bundle that never sends `ready` keeps the
+  old reload, so existing plugins still follow the shell. The contract is in
+  `specs/470-dev-platform-plugin/plugin-ui-vocabulary.md`.
+- **#1479** — heading, tab title and frame title showed the raw id
+  (`@omadia/dev-platform`). They now use the label of the plugin's nav entry
+  for this page (`pluginUiNavLabel` in `web-ui/app/_lib/navigation.ts`, already
+  resolved for the locale by `GET /api/v1/ui/navigation`), so they read what
+  the nav reads. A plugin without such an entry still shows its id.
+- **#1501** — the subtitle said the view "runs in a sandboxed frame"
+  ("abgeschotteten Frame"), while the frame is `allow-same-origin
+  allow-scripts` on purpose. It now says the view runs with the operator's
+  session and the same access as the rest of the interface, and that it is not
+  isolated from it.
 ### Fixed — a boolean setup field with `default: "true"` installs as `true` (#1464)
 
 2026-10-28. dev-platform 0.3.5 declares `webhooks_enabled` with
