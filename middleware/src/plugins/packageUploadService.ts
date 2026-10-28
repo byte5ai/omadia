@@ -77,6 +77,10 @@ export interface IngestSuccess {
    *  plugin, so a caller can report the swap in the direction it happened.
    *  Absent on a first upload. */
   direction?: VersionChangeDirection;
+  /** #1490 — the version this ingest replaced in the store, present exactly
+   *  when `direction` is. Without it an operator who uploaded 1.0.1 over
+   *  1.0.0 saw the same success line as for a first upload. */
+  replaced_version?: string;
   /**
    * #1452 — the `onPackageReady` hook threw: the package is ingested, the
    * plugin is NOT running, and this is why. The registry entry has been
@@ -125,8 +129,9 @@ export type IngestResult = IngestSuccess | IngestFailure;
  * lives with the codes rather than in each route (#1455 added the fourth one
  * and had to touch three places to do it).
  *
- * `package.incompatible_core` is deliberately absent: the builder maps it to a
- * reason of its own, and merging the two would change that route's status.
+ * `package.incompatible_core` answers 409 as well, but is not a host-STATE
+ * refusal: the same package would be refused on every host of this version.
+ * `ingestErrorContract.ts` adds it on top of this set (#1477).
  */
 export const INGEST_CONFLICT_CODES: ReadonlySet<string> = new Set([
   'package.id_conflict_builtin',
@@ -274,7 +279,7 @@ export class PackageUploadService {
         });
       } catch (err) {
         if (err instanceof ZipExtractionError) {
-          return fail(err.code, err.message);
+          return fail(err.code, err.message, undefined, err.params);
         }
         throw err;
       }
@@ -455,7 +460,7 @@ export class PackageUploadService {
       if (existingUploaded && existingUploaded.version === plugin.version) {
         return fail(
           'package.duplicate_version',
-          `Version ${plugin.version} von ${plugin.id} ist bereits hochgeladen. Version anheben oder DELETE aufrufen.`,
+          `Version ${plugin.version} von ${plugin.id} ist bereits hochgeladen. Version anheben oder das hochgeladene Paket zuerst im Store entfernen.`,
           undefined,
           { pluginId: plugin.id, version: plugin.version },
         );
@@ -617,7 +622,7 @@ export class PackageUploadService {
       // onto a package that is uploaded but not installed runs no migration
       // and would otherwise leave no trace in the log at all.
       log(
-        `[upload] ingest OK id=${plugin.id} version=${plugin.version} sha256=${sha256.slice(0, 12)} peers_missing=${peersMissing.length}${direction === 'downgrade' ? ' [downgrade]' : ''}${migratedConfig !== null ? ' [migrated]' : ''}`,
+        `[upload] ingest OK id=${plugin.id} version=${plugin.version} sha256=${sha256.slice(0, 12)} peers_missing=${peersMissing.length}${existingUploaded && existingUploaded.version !== plugin.version ? ` replaced=${existingUploaded.version}` : ''}${direction === 'downgrade' ? ' [downgrade]' : ''}${migratedConfig !== null ? ' [migrated]' : ''}`,
       );
 
       // Advisory code scan (issue #453) — fire-and-forget AFTER the package
@@ -720,7 +725,9 @@ export class PackageUploadService {
         package: pkgRecord,
         plugin_id: plugin.id,
         version: plugin.version,
-        ...(direction !== null ? { direction } : {}),
+        ...(direction !== null && existingUploaded
+          ? { direction, replaced_version: existingUploaded.version }
+          : {}),
         ...(activationError !== undefined
           ? { activation_error: activationError }
           : {}),

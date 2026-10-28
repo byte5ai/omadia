@@ -62,6 +62,8 @@ export type AuditAction =
   // row lists the grants that left with it.
   | 'plugin.install'
   | 'plugin.uninstall'
+  // #1490 — an uploaded (or Hub-fetched), not installed package was removed.
+  | 'plugin.package_remove'
   // #1342 — a stdio MCP server was saved (manual or catalog import). It runs
   // as a child process of the middleware, so who added it belongs in the
   // trail. `after` holds name + source, never the command line.

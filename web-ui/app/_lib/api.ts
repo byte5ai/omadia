@@ -1264,6 +1264,13 @@ export interface RegistryInstallResponse {
   plugin_id: string;
   version: string;
   registry: string;
+  /** #1495 — the same version with the same sha256 was already fetched; the
+   *  route skipped the download and the ingest. */
+  already_present?: boolean;
+  /** #1490 — the version this fetch replaced in the upload store. */
+  replaced_version?: string;
+  /** #1455 — set when this fetch replaced another version. */
+  direction?: 'upgrade' | 'downgrade';
   /** C5 — missing `depends_on` parents (already fetched + ingested) the
    *  operator must install before the target. Empty/absent → install the
    *  target directly. Same shape the RequiresWizard consumes. */
