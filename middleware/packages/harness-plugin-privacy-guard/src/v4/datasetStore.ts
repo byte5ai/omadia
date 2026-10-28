@@ -121,6 +121,20 @@ function expandSummaryDetail(
   return detail.map((rec) => ({ ...summary, ...rec }));
 }
 
+/** An object that wraps an empty list and carries nothing else: at least one
+ *  empty array, every other field an empty array, `0` (a paging total) or
+ *  `null`. `{"datasets":[]}`, `{"items":[],"total":0}`. A record with any
+ *  real value (`{name:"Marvin", tag_ids:[]}`) is not one. */
+function isEmptyWrapper(obj: Record<string, unknown>): boolean {
+  const values = Object.values(obj);
+  const isEmptyList = (val: unknown): boolean =>
+    Array.isArray(val) && val.length === 0;
+  return (
+    values.some(isEmptyList) &&
+    values.every((val) => isEmptyList(val) || val === 0 || val === null)
+  );
+}
+
 /** Normalize an arbitrary JS value into a uniform row array + a shape tag.
  *  Non-tabular values are wrapped so the store and the Verb API always
  *  operate on `Record<string, unknown>[]`. */
@@ -138,6 +152,12 @@ function normalizeValue(v: unknown): {
     return { rows: v.map((e) => ({ value: e })), shape: 'rows' };
   }
   if (isPlainObject(v)) {
+    // An empty wrapper (`{"datasets":[]}`, `{"items":[],"total":0}`) is
+    // "no records", not one record whose only field is an empty array. As
+    // one row it got classified `unknown`, masked, and the model rendered a
+    // blind, contentless list entry instead of saying there is no data
+    // (#1467).
+    if (isEmptyWrapper(v)) return { rows: [], shape: 'rows' };
     // "Summary + detail" wrapper → promote the detail rows (timesheet etc.).
     const expanded = expandSummaryDetail(v);
     if (expanded !== undefined) {

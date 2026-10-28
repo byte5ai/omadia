@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/plugin-privacy-guard"
   name: "Privacy Guard"
-  version: "0.10.0"
+  version: "0.10.1"
   kind: "tool"
   domain: "privacy.redact"
   description:

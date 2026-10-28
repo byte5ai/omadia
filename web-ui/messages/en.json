@@ -4320,7 +4320,7 @@
       "privacyLoadFailedWithError": "Privacy mode could not be loaded: {error}",
       "privacyGuardedHelp": "Tool results are masked server-side behind Privacy Shield v4; the LLM only sees identity-free digests.",
       "privacyBypassHelp": "Raw tool results reach the LLM unmasked. Suitable for trusted internal sources whose content the Privacy Shield cannot structurally digest (e.g. Confluence page bodies).",
-      "privacyPerToolHelp": "Per-tool whitelist: only explicitly listed tools are bypassed. Set the list via the `_privacy_bypass_scopes` field (comma-separated).",
+      "privacyPerToolHelp": "Per-tool whitelist: only the tools listed below are bypassed; every other tool of this plugin stays guarded.",
       "saving": "Saving …",
       "steps": {
         "awaiting_config": "Waiting for configuration",
@@ -4332,6 +4332,15 @@
         "cancelled": "Cancelled by user",
         "failed": "Failed"
       },
+      "privacyScopesLabel": "Tools to bypass",
+      "privacyScopesPlaceholder": "tool_name, other_tool",
+      "privacyScopesSave": "Save list",
+      "privacyScopesEmpty": "No tools listed yet — until you add one, every tool of this plugin stays guarded.",
+      "privacyLockedBadge": "Locked by org policy",
+      "privacyLockedHelp": "OMADIA_PRIVACY_FORCE_GUARDED is set for this instance: every plugin runs guarded and the LLM only sees identity-free digests, whatever is selected here.",
+      "privacyLockedStored": "The stored setting “{mode}” has no effect while the org policy is active.",
+      "confirmRemovePrivacyShield": "This plugin is the Privacy Shield. Without it, tool results, chat history and recalled context reach the LLM unmasked in every chat, and no receipt is shown.",
+      "privacySaveFailed": "Could not save the privacy setting: {error}",
       "removePackage": "Remove uploaded package",
       "removePackageConfirm": "Remove the uploaded package of <strong>{name}</strong>? It is not installed, so nothing is running from it. It disappears from the catalog; a Hub plugin can be fetched again.",
       "removePackageYes": "Yes, remove",
@@ -6399,6 +6408,13 @@
     "copy": "Copy",
     "copied": "Copied",
     "copyFailed": "Couldn't copy automatically — select the secret above and copy it manually."
+  },
+  "privacyShieldBanner": {
+    "title": "Privacy Shield is off",
+    "body": "No Privacy Guard is running. Every chat sends tool results, chat history and recalled context to the LLM unmasked, and no receipt is shown. Reinstall the Privacy Guard to turn masking back on.",
+    "bodyForceGuarded": "No Privacy Guard is running, although OMADIA_PRIVACY_FORCE_GUARDED is set: the org policy cannot mask anything without it. Every chat sends tool results, chat history and recalled context to the LLM unmasked. Reinstall the Privacy Guard.",
+    "cta": "Privacy Guard",
+    "bodyNotRunning": "The Privacy Guard is installed but not running, so nothing is masked: every chat sends tool results, chat history and recalled context to the LLM unmasked. Open the Privacy Guard to see why it did not start."
   },
   "registryStatus": {
     "errors": {

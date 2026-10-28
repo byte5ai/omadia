@@ -101,6 +101,22 @@ interface ResolvedRenderColumn {
   readonly field: FieldClassification;
 }
 
+/** Format the value of `field` for display. Odoo sends `false` for an empty
+ *  non-boolean field (an unset many2one, char or date); outside a real
+ *  boolean column that is "no value" and renders like `null`, not as the
+ *  word "false" highlighted as a protected value (#1503).
+ *
+ *  Display only. The classifier still counts that `false` as a value, so a
+ *  string or date column holding one stays mixed-type and masked: dropping
+ *  it there let a sparse column (three e-mails among many `false`s) pass the
+ *  low-cardinality enum rule into cleartext. A column that is `false` in
+ *  every row types `boolean` and keeps rendering "false" — without field
+ *  metadata it cannot be told from a real boolean. */
+function fieldCell(value: unknown, field: FieldClassification): string {
+  if (value === false && field.type !== 'boolean') return cell(null);
+  return cell(value);
+}
+
 /** Format a single cell value for display. `depth` bounds recursion into nested
  *  objects so a genuinely deep structure degrades to a marker, not a blob. */
 function cell(value: unknown, depth = 0): string {
@@ -186,16 +202,18 @@ function resolveRenderColumns(
 
 function renderTable(
   rows: ReadonlyArray<Dataset['rows'][number]>,
-  columns: ReadonlyArray<RenderColumn>,
+  columns: ReadonlyArray<ResolvedRenderColumn>,
   rankColumn: string | undefined,
 ): string {
-  const headers = columns.map((c) => c.label);
+  const headers = columns.map((c) => c.render.label);
   const cells = rankColumn !== undefined ? [rankColumn, ...headers] : headers;
   const header = `| ${cells.join(' | ')} |`;
   const separator = `| ${cells.map(() => '---').join(' | ')} |`;
   const body = rows
     .map((row, i) => {
-      const rowCells = columns.map((c) => escapeCell(cell(row[c.field])));
+      const rowCells = columns.map((c) =>
+        escapeCell(fieldCell(row[c.render.field], c.field)),
+      );
       const all =
         rankColumn !== undefined ? [String(i + 1), ...rowCells] : rowCells;
       return `| ${all.join(' | ')} |`;
@@ -206,12 +224,14 @@ function renderTable(
 
 function renderList(
   rows: ReadonlyArray<Dataset['rows'][number]>,
-  columns: ReadonlyArray<RenderColumn>,
+  columns: ReadonlyArray<ResolvedRenderColumn>,
 ): string {
   return rows
     .map(
       (row) =>
-        `- ${columns.map((c) => `${c.label}: ${cell(row[c.field])}`).join(', ')}`,
+        `- ${columns
+          .map((c) => `${c.render.label}: ${fieldCell(row[c.render.field], c.field)}`)
+          .join(', ')}`,
     )
     .join('\n');
 }
@@ -237,12 +257,12 @@ function resolveMaxRows(opts: MaterializeOptions | undefined): number {
 
 function renderScalar(
   dataset: Dataset,
-  columns: ReadonlyArray<RenderColumn>,
+  columns: ReadonlyArray<ResolvedRenderColumn>,
 ): string {
   const first = dataset.rows[0];
   const col = columns[0];
   if (first === undefined || col === undefined) return '(no result)';
-  return cell(first[col.field]);
+  return fieldCell(first[col.render.field], col.field);
 }
 
 /**
@@ -252,22 +272,17 @@ function renderScalar(
  * scalar). The `—` null placeholder is never reported.
  */
 function collectMaskedValues(
-  dataset: Dataset,
-  renderedColumns: ReadonlyArray<RenderColumn>,
+  rows: ReadonlyArray<Dataset['rows'][number]>,
+  renderedColumns: ReadonlyArray<ResolvedRenderColumn>,
 ): string[] {
-  const maskedPaths = new Set(
-    dataset.schema.fields
-      .filter((f) => f.classification === 'sensitive-masked')
-      .map((f) => f.path),
-  );
-  const maskedColumns = renderedColumns.filter((c) =>
-    maskedPaths.has(c.field),
+  const maskedColumns = renderedColumns.filter(
+    (c) => c.field.classification === 'sensitive-masked',
   );
   if (maskedColumns.length === 0) return [];
   const values = new Set<string>();
-  for (const row of dataset.rows) {
+  for (const row of rows) {
     for (const c of maskedColumns) {
-      const v = cell(row[c.field]);
+      const v = fieldCell(row[c.render.field], c.field);
       if (v.length > 0 && v !== '—') values.add(v);
     }
   }
@@ -304,7 +319,10 @@ function buildStructuredTable(
       cells.__rank = String(index + 1);
     }
     for (const column of columns) {
-      cells[column.render.field] = cell(row[column.render.field]);
+      cells[column.render.field] = fieldCell(
+        row[column.render.field],
+        column.field,
+      );
     }
     return {
       rowKey: `r${index}`,
@@ -353,7 +371,6 @@ export function materialize(
   }
 
   const resolvedColumns = resolveRenderColumns(dataset, directive.columns);
-  const renderColumns = resolvedColumns.map((column) => column.render);
   const total = dataset.rows.length;
   // A scalar is one value by definition; tables and lists are capped so the
   // channel gets a readable answer plus an honest count, never a torn table.
@@ -361,12 +378,12 @@ export function materialize(
   const rows = dataset.rows.slice(0, shown);
 
   let body: string;
-  let renderedColumns: ReadonlyArray<RenderColumn>;
+  let renderedColumns: ReadonlyArray<ResolvedRenderColumn>;
   let structuredTable: StructuredTable | undefined;
   switch (directive.format) {
     case 'table':
-      body = renderTable(rows, renderColumns, directive.rankColumn);
-      renderedColumns = renderColumns;
+      body = renderTable(rows, resolvedColumns, directive.rankColumn);
+      renderedColumns = resolvedColumns;
       structuredTable = buildStructuredTable(
         rows,
         resolvedColumns,
@@ -374,14 +391,14 @@ export function materialize(
       );
       break;
     case 'list':
-      body = renderList(rows, renderColumns);
-      renderedColumns = renderColumns;
+      body = renderList(rows, resolvedColumns);
+      renderedColumns = resolvedColumns;
       // `list` is intentionally prose-only: it is not a tabular UI primitive.
       break;
     case 'scalar':
-      body = renderScalar(dataset, renderColumns);
+      body = renderScalar(dataset, resolvedColumns);
       // Only the first column ever reaches the rendered scalar.
-      renderedColumns = renderColumns.slice(0, 1);
+      renderedColumns = resolvedColumns.slice(0, 1);
       // `scalar` is intentionally prose-only: it is not a tabular UI primitive.
       break;
     default:
@@ -397,7 +414,7 @@ export function materialize(
     renderedRowCount: shown,
     // Only what was rendered: a value the footer left out never reached the
     // channel, so it must not be flagged as "resolved behind the boundary".
-    maskedValues: collectMaskedValues({ ...dataset, rows }, renderedColumns),
+    maskedValues: collectMaskedValues(rows, renderedColumns),
     ...(structuredTable !== undefined ? { structuredTable } : {}),
   };
 }
