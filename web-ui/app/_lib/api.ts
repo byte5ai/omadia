@@ -1253,6 +1253,9 @@ export interface RegistryInstallResponse {
   plugin_id: string;
   version: string;
   registry: string;
+  /** #1495 — the same version with the same sha256 was already fetched; the
+   *  route skipped the download and the ingest. */
+  already_present?: boolean;
   /** C5 — missing `depends_on` parents (already fetched + ingested) the
    *  operator must install before the target. Empty/absent → install the
    *  target directly. Same shape the RequiresWizard consumes. */

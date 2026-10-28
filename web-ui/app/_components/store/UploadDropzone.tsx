@@ -13,7 +13,13 @@ import { Button } from '@/app/_components/ui/Button';
 type UploadState =
   | { kind: 'idle' }
   | { kind: 'uploading'; filename: string; loaded: number; total: number }
-  | { kind: 'success'; pkg: UploadedPackage; activationError?: string }
+  | {
+      kind: 'success';
+      pkg: UploadedPackage;
+      activationError?: string;
+      /** #1490 — the version this upload replaced, when it replaced one. */
+      replacedVersion?: string;
+    }
   // #1455 — `downgrade` carries the refused file back, so the operator can
   // confirm without picking the same zip a second time.
   | { kind: 'error'; code: string; message: string; downgrade?: File };
@@ -66,6 +72,7 @@ export function UploadDropzone(): React.ReactElement {
           // catalog), with the reason named — reporting this as a clean upload
           // is what left operators with a green panel over a dead plugin.
           ...(resp.activation_error ? { activationError: resp.activation_error } : {}),
+          ...(resp.replaced_version ? { replacedVersion: resp.replaced_version } : {}),
         });
         router.refresh();
       } catch (err) {
@@ -217,6 +224,7 @@ export function UploadDropzone(): React.ReactElement {
               pkg={state.pkg}
               onDismiss={reset}
               {...(state.activationError ? { activationError: state.activationError } : {})}
+              {...(state.replacedVersion ? { replacedVersion: state.replacedVersion } : {})}
             />
           )}
 
@@ -295,11 +303,14 @@ function SuccessRow({
   pkg,
   onDismiss,
   activationError,
+  replacedVersion,
 }: {
   pkg: UploadedPackage;
   onDismiss: () => void;
   /** #1452 — set when the re-activation of the already-running plugin threw. */
   activationError?: string;
+  /** #1490 — set when this upload replaced another version of the package. */
+  replacedVersion?: string;
 }): React.ReactElement {
   const t = useTranslations('store.upload');
   return (
@@ -318,6 +329,11 @@ function SuccessRow({
           ),
         })}
       </p>
+      {replacedVersion ? (
+        <p className="mt-1 text-[12px] text-[color:var(--fg-muted)]">
+          {t('replacedVersion', { previous: replacedVersion })}
+        </p>
+      ) : null}
       <dl className="mt-2 grid grid-cols-3 gap-x-4 text-[11px] text-[color:var(--fg-muted)]">
         <Metric
           label={t('sizeLabel')}

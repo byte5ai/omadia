@@ -94,6 +94,24 @@ describe('retired package copies', () => {
     await assert.rejects(fs.access(pkg.path));
   });
 
+  // #1490 — removal used to leave `<id>/` behind, empty.
+  it('removes the emptied id folder, and the scope folder only once it is empty', async () => {
+    const a = await layDown('@test/one', '1.0.0');
+    const b = await layDown('@test/two', '1.0.0');
+    await store.register(a);
+    await store.register(b);
+
+    assert.equal(await store.remove('@test/one'), true);
+    await assert.rejects(fs.access(path.join(root, 'packages', '@test/one')));
+    // The scope still holds @test/two, so it stays.
+    await fs.access(path.join(root, 'packages', '@test/two', '1.0.0'));
+
+    assert.equal(await store.remove('@test/two'), true);
+    await assert.rejects(fs.access(path.join(root, 'packages', '@test')));
+    // The packages root itself is never removed.
+    await fs.access(path.join(root, 'packages'));
+  });
+
   it('prunes nothing and throws nothing for a directory that does not exist', async () => {
     await pruneRetiredPackageDirs(path.join(root, 'packages', '@test/absent'));
   });

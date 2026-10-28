@@ -1,7 +1,13 @@
 import type { DraftStore } from './draftStore.js';
 import { BuildPipelineError, type BuildPipeline } from './buildPipeline.js';
 import { CodegenError } from './codegen.js';
+import {
+  ingestFailureBody,
+  ingestFailureStatus,
+  type IngestFailureStatus,
+} from '../ingestErrorContract.js';
 import type {
+  IngestFailure,
   IngestResult,
   PackageUploadService,
 } from '../packageUploadService.js';
@@ -65,38 +71,12 @@ export interface InstallFailure {
   reason: InstallFailureReason;
   code: string;
   message: string;
+  /** #1477 — an ingest refusal's localization values, as on the upload. */
+  params?: Record<string, string>;
   details?: unknown;
 }
 
 export type InstallResult = InstallSuccess | InstallFailure;
-
-const CONFLICT_INGEST_CODES = new Set<string>([
-  'package.id_conflict_builtin',
-  // #789 — the builder can generate an agent whose id collides with a bundled
-  // package too, and it must surface as the same "pick another id" conflict
-  // rather than falling through to the generic reason.
-  'package.id_conflict_bundled',
-  'package.duplicate_version',
-  // #1455 — a builder install normally bumps the patch (`cloneFromInstalled`),
-  // but `spec.version` is operator-editable, so an older version can reach the
-  // ingest. Without this entry the refusal fell through to `ingest_failed`,
-  // which the route answers 500 — a client error reported as a server fault.
-  'package.downgrade_blocked',
-]);
-
-const TOO_LARGE_INGEST_CODES = new Set<string>(['package.too_large']);
-
-const MANIFEST_INVALID_INGEST_CODES = new Set<string>([
-  'package.manifest_missing',
-  'package.manifest_invalid',
-  'package.id_mismatch',
-  'package.version_mismatch',
-  'package.entry_missing',
-  'package.package_json_invalid',
-  'package.zip_too_many_entries',
-  'package.zip_too_large',
-  'package.zip_unsafe_path',
-]);
 
 export async function installDraft(
   input: InstallDraftInput,
@@ -239,31 +219,29 @@ function mapPipelineError(err: BuildPipelineError): InstallFailure {
   return failure;
 }
 
-function mapIngestFailure(failure: {
-  ok: false;
-  code: string;
-  message: string;
-  details?: unknown;
-}): InstallFailure {
-  let reason: InstallFailureReason;
-  if (CONFLICT_INGEST_CODES.has(failure.code)) {
-    reason = 'conflict';
-  } else if (TOO_LARGE_INGEST_CODES.has(failure.code)) {
-    reason = 'too_large';
-  } else if (MANIFEST_INVALID_INGEST_CODES.has(failure.code)) {
-    reason = 'manifest_invalid';
-  } else {
-    reason = 'ingest_failed';
-  }
+/**
+ * #1477 — the reason follows the status the ZIP upload and the Hub install
+ * answer for the same code (`ingestErrorContract.ts`), so the three doors
+ * agree. Before, this kept its own code lists: `package.incompatible_core` and
+ * every `zip.*` code fell through to `ingest_failed` (500), and the
+ * manifest list named codes the pipeline never emits.
+ */
+const REASON_FOR_STATUS: Readonly<Record<IngestFailureStatus, InstallFailureReason>> = {
+  409: 'conflict',
+  413: 'too_large',
+  422: 'manifest_invalid',
+};
 
-  const out: InstallFailure = {
+function mapIngestFailure(failure: IngestFailure): InstallFailure {
+  const body = ingestFailureBody(failure);
+  return {
     ok: false,
-    reason,
-    code: failure.code,
-    message: failure.message,
+    reason: REASON_FOR_STATUS[ingestFailureStatus(failure.code)],
+    code: body.code,
+    message: body.message,
+    ...(body.params !== undefined ? { params: body.params } : {}),
+    ...(body.details !== undefined ? { details: body.details } : {}),
   };
-  if (failure.details !== undefined) out.details = failure.details;
-  return out;
 }
 
 function buildOriginalFilename(draft: {

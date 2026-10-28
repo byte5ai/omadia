@@ -4276,7 +4276,12 @@
         "installed_activation_failed": "Installiert — Aktivierung fehlgeschlagen",
         "cancelled": "Vom Nutzer abgebrochen",
         "failed": "Fehlgeschlagen"
-      }
+      },
+      "removePackage": "Hochgeladenes Paket entfernen",
+      "removePackageConfirm": "Das hochgeladene Paket von <strong>{name}</strong> entfernen? Es ist nicht installiert, es läuft also nichts daraus. Es verschwindet aus dem Katalog; ein Hub-Plugin lässt sich erneut abrufen.",
+      "removePackageYes": "Ja, entfernen",
+      "removingPackage": "Wird entfernt …",
+      "removePackageFailed": "Das Paket konnte nicht entfernt werden: {message}"
     },
     "auditMode": {
       "singleHostHelp": "Nur die im Manifest deklarierten Hosts.",
@@ -4384,10 +4389,19 @@
         "entryMissing": "Der lifecycle-Entry {entry} ist im Zip nicht vorhanden.",
         "idConflictBundled": "Plugin-ID {pluginId} gehört zu einem mitgelieferten Plugin dieser Installation. Ein Upload darf ein mitgeliefertes Plugin nicht überschreiben — vergib dem Paket eine eigene ID. Für einen bewussten Override setze {overrideEnv}=1 in der Middleware-Umgebung.",
         "idConflictBuiltin": "Plugin-ID {pluginId} kollidiert mit einem Built-in-Eintrag im Katalog.",
-        "duplicateVersion": "Version {version} von {pluginId} ist bereits hochgeladen. Version anheben oder den Upload erst entfernen.",
+        "duplicateVersion": "Version {version} von {pluginId} ist bereits hochgeladen. Hebe die Version an oder entferne zuerst das hochgeladene Paket auf seiner Store-Seite.",
         "downgradeBlocked": "Version {toVersion} von {pluginId} ist älter als die installierte Version {fromVersion}. Ein Downgrade tauscht das laufende Plugin aus — es muss ausdrücklich bestätigt werden.",
-        "noFile": "Die Anfrage enthält keine Datei."
-      }
+        "noFile": "Die Anfrage enthält keine Datei.",
+        "multipart": "Der Upload konnte nicht gelesen werden. Versuche es erneut.",
+        "zipInvalid": "Die Datei ist kein gültiges ZIP-Archiv.",
+        "zipPathEscape": "Das Archiv enthält einen Eintrag, der aus dem Paket hinauszeigt: {entry}. Baue das Paket ohne ihn neu.",
+        "zipSymlink": "Das Archiv enthält einen symbolischen Link, das ist nicht erlaubt: {entry}.",
+        "zipForbiddenExtension": "Das Archiv enthält einen Dateityp, der in einem Plugin-Paket nicht erlaubt ist: {entry}.",
+        "zipTooManyEntries": "Das Archiv enthält zu viele Dateien.",
+        "zipFileTooLarge": "Eine Datei im Archiv ist entpackt zu groß.",
+        "zipTotalTooLarge": "Das entpackte Archiv überschreitet die Größengrenze."
+      },
+      "replacedVersion": "Die zuvor hochgeladene Version {previous} wurde ersetzt."
     },
     "setupForm": {
       "enable": "Aktivieren",

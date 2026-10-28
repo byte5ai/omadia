@@ -47,6 +47,9 @@ import {
 } from './setupForm';
 import { Markdown } from '../Markdown';
 import { Button } from '@/app/_components/ui/Button';
+import { RemovePackageAction } from './RemovePackageAction';
+import { useStoreErrorText } from './useStoreErrorText';
+import { errorHelpLine } from '../../_lib/errorHelp';
 
 interface InstallButtonProps {
   pluginId: string;
@@ -73,6 +76,9 @@ interface InstallButtonProps {
    *  the post-install next-step links. Absent on a pre-OM-16 middleware, in
    *  which case the pill renders as before. */
   readiness?: PluginReadiness;
+  /** #1490 — the package is uploaded (or Hub-fetched) and NOT installed: offer
+   *  to remove it next to the install button. */
+  removablePackage?: boolean;
 }
 
 type Phase =
@@ -100,8 +106,11 @@ export function InstallButton({
   availableVersion,
   setupGuide,
   readiness,
+  removablePackage = false,
 }: InstallButtonProps): React.ReactElement {
   const t = useTranslations('store.install');
+  const tRoot = useTranslations();
+  const errorText = useStoreErrorText();
   const router = useRouter();
   const locale = useLocale();
   const setupGuideText = pickLocalized(setupGuide, locale);
@@ -168,6 +177,9 @@ export function InstallButton({
             ))}
           </ul>
         ) : null}
+        {removablePackage ? (
+          <RemovePackageAction pluginId={pluginId} pluginName={pluginName} />
+        ) : null}
       </div>
     );
   }
@@ -209,6 +221,12 @@ export function InstallButton({
         />
       ) : null}
 
+      {removablePackage && phase.kind === 'idle' ? (
+        <div className="mt-3">
+          <RemovePackageAction pluginId={pluginId} pluginName={pluginName} />
+        </div>
+      ) : null}
+
       {phase.kind === 'wizard' ? (
         <RequiresWizard
           targetPluginId={pluginId}
@@ -230,8 +248,14 @@ export function InstallButton({
       // the chained wizard (parents → target) instead of installing the
       // target directly — the install gate is strict on depends_on because the
       // child inherits the parent's vault credentials.
+      //
+      // #1495 — the version is the one this page shows (`installedVersion` is
+      // the plugin's `version`, which for a Hub entry is the advertised
+      // latest). A second click, after a cancelled wizard, asks for the same
+      // package again; the route recognises it and answers with the chain
+      // instead of `package.duplicate_version`.
       if (remote) {
-        const reg = await installFromRegistry(pluginId);
+        const reg = await installFromRegistry(pluginId, installedVersion);
         if (reg.chain && reg.chain.available_providers.length > 0) {
           setPhase({ kind: 'wizard', resolution: reg.chain });
           return;
@@ -256,25 +280,22 @@ export function InstallButton({
           }
         }
       }
-      const message =
-        err instanceof ApiError
-          ? safeMessage(err.body) ?? err.message
-          : err instanceof Error
-            ? err.message
-            : t('unknownError');
-      setPhase({ kind: 'error', job: null, message });
+      // #1477 — in the operator's locale: the Hub route now sends the same
+      // `code` + `params` as the upload.
+      setPhase({ kind: 'error', job: null, message: errorText(err) });
     }
   }
 
   function handleClose(): void {
-    const wasPermissions = phase.kind === 'permissions';
     setPhase({ kind: 'idle' });
     setFieldErrors({});
-    // #470 C16 — closing the permissions step ends a flow that just changed the
-    // plugin's install state on the server. Without the refresh the page keeps
-    // showing the state from before the grant, which is the same class of lie
-    // this whole item exists to remove.
-    if (wasPermissions) router.refresh();
+    // #470 C16 / #1495 — every flow this drawer or the wizard runs can change
+    // the plugin's state on the server: a Hub fetch registers a package, a
+    // failed activation still installs the plugin, a granted permission
+    // changes it. Refreshing only after the permissions step left the page on
+    // its first-render props, so the next click ran into "already uploaded"
+    // or "already installed; uninstall first".
+    router.refresh();
   }
 
   /**
@@ -304,9 +325,12 @@ export function InstallButton({
       return;
     }
     if (job.state === 'errored') {
+      // #1494 — `job: null`: the job is done (the plugin IS installed), so the
+      // drawer shows the error alone instead of a form whose submit could
+      // only answer `install.wrong_state`.
       setPhase({
         kind: 'error',
-        job,
+        job: null,
         message: t('activationFailed', {
           message: job.activation_state?.error ?? t('unknownError'),
         }),
@@ -339,9 +363,23 @@ export function InstallButton({
       // also covers a middleware older than the fix.
       if (resp.job.state === 'active' || resp.job.state === 'errored') {
         await settleInstalled(resp.job);
-      } else if (resp.job.state === 'failed' && resp.job.error) {
+      } else if (resp.job.state === 'awaiting_config' && resp.job.error) {
+        // #1494 — the values were refused and the job waits for corrected
+        // ones: field errors onto the form, the next submit goes to the SAME
+        // job. Before, the server ended the job here (`failed`) and the
+        // corrected submit got 409 `install.wrong_state`.
         applyServerErrors(resp.job.error);
         setPhase({ kind: 'form', job: resp.job });
+      } else if (resp.job.state === 'failed') {
+        // A refusal the form cannot fix (e.g. invalid workflow templates):
+        // the job is over, so no form to resubmit.
+        setPhase({
+          kind: 'error',
+          job: null,
+          message: resp.job.error
+            ? errorHelpLine(resp.job.error.code, tRoot) ?? resp.job.error.message
+            : t('unexpectedJobState', { state: resp.job.state }),
+        });
       } else {
         setPhase({
           kind: 'error',
@@ -352,23 +390,21 @@ export function InstallButton({
     } catch (err) {
       if (err instanceof ApiError) {
         const parsed = tryParseErrorBody(err.body);
-        if (parsed?.details) {
+        if (Array.isArray(parsed?.details)) {
           applyDetails(parsed.details);
           setPhase({ kind: 'form', job });
           return;
         }
-        setPhase({
-          kind: 'error',
-          job,
-          message: parsed?.message ?? err.message,
-        });
+        // #1494 — the job has moved on (finished, cancelled, expired): a
+        // resubmit cannot succeed, so the form goes away and the localized
+        // help says what to do instead of the raw server sentence.
+        const jobGone =
+          parsed?.code === 'install.wrong_state' ||
+          parsed?.code === 'install.job_not_found';
+        setPhase({ kind: 'error', job: jobGone ? null : job, message: errorText(err) });
         return;
       }
-      setPhase({
-        kind: 'error',
-        job,
-        message: err instanceof Error ? err.message : String(err),
-      });
+      setPhase({ kind: 'error', job, message: errorText(err) });
     }
   }
 
@@ -426,6 +462,7 @@ function InstalledPanel({
 }): React.ReactElement {
   const t = useTranslations('store.install');
   const tState = useTranslations('store.stateBadge');
+  const errorText = useStoreErrorText();
   const router = useRouter();
   // OM-16 — readiness → pill tone + state word. No readiness (older
   // middleware) keeps the previous unqualified "active".
@@ -479,13 +516,9 @@ function InstalledPanel({
       }
       router.refresh();
     } catch (err) {
-      setUpdateError(
-        err instanceof ApiError
-          ? (safeMessage(err.body) ?? err.message)
-          : err instanceof Error
-            ? err.message
-            : String(err),
-      );
+      // #1477 — e.g. a refused downgrade or an incompatible core, now with
+      // the same code + params as the upload, in the operator's locale.
+      setUpdateError(errorText(err));
     } finally {
       setUpdating(false);
     }
@@ -520,13 +553,7 @@ function InstalledPanel({
         router.refresh();
       }
     } catch (err) {
-      const message =
-        err instanceof ApiError
-          ? safeMessage(err.body) ?? err.message
-          : err instanceof Error
-            ? err.message
-            : String(err);
-      setState({ kind: 'error', message });
+      setState({ kind: 'error', message: errorText(err) });
     }
   }
 

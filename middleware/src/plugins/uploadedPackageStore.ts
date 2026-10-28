@@ -113,6 +113,7 @@ export class UploadedPackageStore {
   constructor(
     private readonly indexPath: string,
     private readonly packagesDir: string,
+    private readonly log: (msg: string) => void = (msg) => console.warn(msg),
   ) {}
 
   async load(): Promise<void> {
@@ -165,11 +166,46 @@ export class UploadedPackageStore {
     this.packages.delete(id);
     await this.persist();
     // Best-effort: remove the package dir. Errors are logged, but not thrown —
-    // the registry entry is already gone.
-    await fs.rm(pkg.path, { recursive: true, force: true }).catch(() => {});
+    // the registry entry is already gone. (#1490 — they were said to be
+    // logged and were dropped.)
+    await fs.rm(pkg.path, { recursive: true, force: true }).catch((err: unknown) => {
+      this.log(
+        `[upload] package ${id}: could not remove ${pkg.path}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
     // #1455 — and the retired sibling, which the index never pointed at.
-    await pruneRetiredPackageDirs(path.dirname(pkg.path));
+    const pluginDir = path.dirname(pkg.path);
+    await pruneRetiredPackageDirs(pluginDir);
+    // #1490 — and the `<id>/` folder the version lived in, plus the
+    // `@scope/` folder above it, when nothing else is left in them.
+    await this.removeEmptyDirsUpTo(pluginDir);
     return true;
+  }
+
+  /**
+   * Remove `dir` and its parents while they are empty, stopping at the
+   * packages root. `rmdir` refuses a non-empty directory, which is the guard:
+   * a scope folder that still holds another plugin stays. Only directories
+   * strictly inside the root are touched — a stored path outside it (a
+   * hand-edited index) is left alone.
+   */
+  private async removeEmptyDirsUpTo(dir: string): Promise<void> {
+    const root = path.resolve(this.packagesDir);
+    let current = path.resolve(dir);
+    while (current.startsWith(root + path.sep)) {
+      try {
+        await fs.rmdir(current);
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code !== 'ENOENT' && code !== 'ENOTEMPTY' && code !== 'EEXIST') {
+          this.log(
+            `[upload] could not remove empty package folder ${current}: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+        if (code !== 'ENOENT') return;
+      }
+      current = path.dirname(current);
+    }
   }
 
   private async persist(): Promise<void> {

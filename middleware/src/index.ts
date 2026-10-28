@@ -5070,6 +5070,8 @@ async function main(): Promise<void> {
       catalog: pluginCatalog,
       registry: installedRegistry,
       client: registryClient,
+      // #1490 — flags uploaded-but-not-installed packages as removable.
+      uploadedPackages: uploadedPackageStore,
       pluginStatusRegistry,
       // OM-16 — key-name-only vault access so the store can report whether an
       // installed plugin is actually configured (never reads secret VALUES).
@@ -5347,6 +5349,7 @@ async function main(): Promise<void> {
         registry: installedRegistry,
         catalog: pluginCatalog,
         maxBytes: config.PACKAGE_UPLOAD_MAX_BYTES,
+        log: (msg) => console.log(msg),
       }),
     );
     console.log(
@@ -5364,6 +5367,7 @@ async function main(): Promise<void> {
         packageUpload: packageUploadService,
         catalog: pluginCatalog,
         registry: installedRegistry,
+        store: uploadedPackageStore,
         log: (msg) => console.log(msg),
       }),
     );
