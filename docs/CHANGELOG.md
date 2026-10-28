@@ -36,6 +36,33 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — a boolean setup field with `default: "true"` installs as `true` (#1464)
+
+2026-10-28. dev-platform 0.3.5 declares `webhooks_enabled` with
+`default: "true"`. The install form pre-checked a box only for a YAML `true`,
+so the box was empty and an unchanged install stored `false`, silently
+reversing the author's default. The catalog projection (`manifestLoader`) kept
+only string defaults, so a YAML `true` was dropped there instead — no spelling
+worked in both. Both projections now run a boolean field's default through one
+helper, `booleanSetupDefault` (`middleware/src/plugins/setupFieldDefault.ts`):
+`true`/`"true"` and `false`/`"false"` become real booleans, anything else is no
+default. The shared-fixture test in `manifestLoaderSetupFields.test.ts` now
+also asserts the two projections agree on `default`. The install form also
+pre-checks on `"true"`, in case an older server passes the raw string through.
+`PluginSetupField.default` is now `string | string[] | boolean`, and the
+bootstrap seeding of built-in plugin defaults (`bootstrap.ts`) now writes a
+real boolean for a boolean field — plugin code should read it as a boolean,
+not as a string.
+
+### Fixed — the setup-field editor says "Saving" while it saves (#1475)
+
+2026-10-28. Saving setup fields re-activates the plugin and can take seconds.
+The "Save (n)" button's busy label was its idle label, so only the dots
+changed; the German `store.credentials.saving` was "Speichern", the same as
+the idle text. The "Save (n)" button now uses `saving` as its busy label, and
+the German string reads "Wird gespeichert" — which also fixes the selection
+save button, which already used `saving`.
+
 ### Fixed — an integration with a refused API key no longer shows "Active · configured" (#1453)
 
 2026-10-27. Activation never checked credentials: `activate()` builds a client
