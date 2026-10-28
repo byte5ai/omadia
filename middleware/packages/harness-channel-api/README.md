@@ -200,6 +200,7 @@ relevant to a plain chat integration:
 | `type` | Meaning |
 |---|---|
 | `text_delta` | Incremental chunk of the assistant's answer text — a **live preview** of the model's own text as it is produced. Concatenate these to show progress, but treat them as non-authoritative: the concatenated deltas can differ from `done.answer` — the server MAY replace the answer before `done` (see `done.answerSource`), and it adds the AI-disclosure paragraph to `done.answer` only, never as a delta. When the instance runs the answer verifier in `enforce` mode, no delta is sent until the verifier has judged the answer: then at most one delta arrives — the text of `done.answer` without the AI-disclosure paragraph (the answer the verifier judged, never the model's earlier output, which can include a response the server discarded and re-ran), or, for an answer it withheld, the withheld-answer notice. An answer whose claims the verifier could not all confirm goes out unchanged; its state is in the `verifier` summary. A bare `NO_REPLY` answer sends none. |
+| `text_retract` | Take the last `chars` characters back out of the `text_delta` preview. The model wrote them as preamble to a data-gathering tool call ("I'll check my memory directory first."); they are not answer text. Carries no text. If no answer follows, `done.answer` brings the text back. Never sent under `enforce` mode. |
 | `done` | Terminal event on success, and the **authoritative** answer. Carries the full `answer` string plus `toolCalls` / `iterations` counters. If you only need the final text, read `done.answer` and ignore the deltas. When `done.answerSource` is present and not `"model"` (`"privacy-render"` or `"verifier-blocked"`), the answer was materialized server-side and the earlier `text_delta` chunks are superseded — render `done.answer`, not the accumulated deltas; `answerIsError: true` then marks the answer as a failure or a notice rather than a result. May also carry `receiptId` — see **Correlating a turn with its privacy receipt** below. |
 | `done` with `degraded: true` | Terminal event for a **degraded** turn: one or more tool calls committed real side effects and the turn then threw before an answer existed. Deliberately not an `error` — the committed work must not be reported as failed — but it is **not a successful answer either**: the user's question is unanswered. Carries `committedTools` (distinct tool names that ran, in commit order — not a call count) and `correlationId` (the token in the server's `[orchestrator] turn failed (correlationId=…)` log line). `answer` is a localized notice stating that the turn did not finish, which tools already ran and the support token — never a claim of success — unless `answerSource` is `"privacy-render"`, in which case it is the answer the server had already rendered, or `"verifier-blocked"`, in which case the answer verifier withheld that rendered answer and `answer` is its notice. `runTrace.status` is `"error"`. See **Degraded turns** below. |
 | `error` | Terminal event when the turn failed mid-stream (the orchestrator threw, or the orchestrator/verifier yielded an in-band error event without throwing). Carries a `message`. |
@@ -212,11 +213,13 @@ concatenated `text_delta` chunks are a live preview of the model's text and
 may be superseded server-side before the turn ends. The `done` event carries
 an optional `answerSource` field to tell the two apart:
 
-- absent or `"model"` — `answer` is the model's own streamed text. It equals
-  the concatenated deltas, except that on the first turn of a conversation
-  scope `done.answer` also carries the folded AI-disclosure paragraph (plus the
-  operator note, if one is configured), which is never streamed as a
-  `text_delta` — see "`done` event fields" below.
+- absent or `"model"` — `answer` is the model's own text. It equals the
+  concatenated deltas after applying every `text_retract`, with two
+  exceptions. On the first turn of a conversation scope `done.answer` also
+  carries the folded AI-disclosure paragraph (plus the operator note, if one
+  is configured), which is never streamed as a `text_delta` — see "`done`
+  event fields" below. And a preamble that was retracted comes back in
+  `done.answer` when no other answer text followed it.
 - `"privacy-render"` — Privacy Shield materialized the final `answer`
   server-side from ground truth (the model never saw those values). The
   earlier deltas are stale and will not match; render `done.answer`.

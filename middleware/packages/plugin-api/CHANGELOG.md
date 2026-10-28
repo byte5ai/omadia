@@ -8,6 +8,23 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.36.0 — 2026-10-28
+
+Additive. Plan recall can tell a really finished step from one the old
+plan-runner closed without work (#1502).
+
+### Added
+
+- **`isEvidencedPlanStepDone(props)`** — `true` only for a `done` PlanStep
+  whose `resultSummary` names a work tool or the turn's answer. A `done` step
+  with no evidence, or with a bookkeeping tool's (`memory:`,
+  `v4_render_answer:`, …), is a pre-#1502 artefact and does not count.
+- **`PLAN_STEP_ANSWER_EVIDENCE`** — the evidence recorded on the step a
+  turn's answer completes.
+- **`PLAN_BOOKKEEPING_TOOL_NAMES`** — the tools whose calls serve the turn
+  (`memory`, `v4_render_answer`, `suggest_follow_ups`, `ask_user_choice`);
+  their evidence never proves a step's work.
+
 ## 1.35.0 — 2026-10-27
 
 Additive. A plugin can declare its own credential check, so an integration

@@ -873,6 +873,15 @@ export type ChatStreamEvent =
    * notice.
    */
   | { type: 'text_delta'; text: string }
+  /**
+   * #1500 — take the last `chars` characters back out of the `text_delta`
+   * preview: the model wrote them as preamble to a data-gathering tool call
+   * ("I'll check my memory directory first."). Carries no text on purpose, so
+   * a hold that re-emits non-delta events (verifier `enforce`) leaks nothing.
+   * `done.answer` stays authoritative and restores the text if no answer
+   * follows it.
+   */
+  | { type: 'text_retract'; chars: number }
   | {
       type: 'tool_use';
       id: string;

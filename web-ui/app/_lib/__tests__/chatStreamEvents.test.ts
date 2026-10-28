@@ -82,6 +82,33 @@ describe('applyStreamEvent — writes are addressed by session id (#617)', () =>
     expect(next.updatedAt).toBeGreaterThanOrEqual(before.updatedAt);
   });
 
+  it('takes a retracted tool-call preamble back out of the preview (#1500)', () => {
+    const { sessions, mutateById } = stubSessions();
+
+    applyStreamEvent(sessions, 'bg', 'pending-1', { type: 'text_retract', chars: 3 });
+
+    const next = applied(mutateById, session('bg'));
+    expect(next.messages[1]?.content).toBe('so ');
+  });
+
+  it('ignores a malformed retract count', () => {
+    const { sessions, mutateById } = stubSessions();
+
+    applyStreamEvent(sessions, 'bg', 'pending-1', { type: 'text_retract', chars: Number.NaN });
+
+    const next = applied(mutateById, session('bg'));
+    expect(next.messages[1]?.content).toBe('so far');
+  });
+
+  it('never retracts past the start of the preview', () => {
+    const { sessions, mutateById } = stubSessions();
+
+    applyStreamEvent(sessions, 'bg', 'pending-1', { type: 'text_retract', chars: 999 });
+
+    const next = applied(mutateById, session('bg'));
+    expect(next.messages[1]?.content).toBe('');
+  });
+
   it('keeps the answer-size level from done so the row can offer the next step', () => {
     const { sessions, mutateById } = stubSessions();
 
