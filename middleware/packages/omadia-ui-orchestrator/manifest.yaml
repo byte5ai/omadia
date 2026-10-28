@@ -86,6 +86,16 @@ setup:
         de: "Kommagetrennte Lese-Tools, für die der Skeleton-Composer EINE deterministische Abfrage planen darf (optional mit Datums-/Gleichheits-Nachfilter). Ist jeder Datencontainer einer Canvas-Anfrage so geplant, führt der Orchestrator die Abfrage selbst aus, füllt die Tabelle und antwortet mit einem Vorlagensatz — kein Agenten-Zug, das Modell sieht die Zeilen nie; jeder Fehlschlag fällt auf den vollen Agenten zurück. Genutzt werden nur Tools mit eingebauter Composer-Spezifikation (aktuell: odoo_query). Leer → Schnellpfad aus."
       required: false
       default: "odoo_query"
+    - key: "fast_path_timezone"
+      type: "string"
+      label:
+        en: "Fast-path time zone"
+        de: "Zeitzone für den Schnellpfad"
+      help:
+        en: "IANA time zone (e.g. Europe/Berlin) in which relative dates of a fast-path or refresh query — {today}, {today-30d} — resolve to a calendar date, so \"overdue\" means overdue in your business day, not the server clock's. Invalid or empty → Europe/Berlin."
+        de: "IANA-Zeitzone (z. B. Europe/Berlin), in der relative Datumsangaben einer Schnellpfad- oder Aktualisierungsabfrage — {today}, {today-30d} — zu einem Kalenderdatum aufgelöst werden, damit „überfällig“ nach Ihrem Geschäftstag gilt und nicht nach der Serveruhr. Ungültig oder leer → Europe/Berlin."
+      required: false
+      default: "Europe/Berlin"
 
 permissions:
   filesystem:

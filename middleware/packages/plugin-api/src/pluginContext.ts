@@ -1994,6 +1994,13 @@ export interface LlmCompleteRequest {
    *  `permissions.llm.max_tokens_per_call` when manifest sets a smaller cap. */
   readonly maxTokens?: number;
   readonly temperature?: number;
+  /** Reasoning effort (normalized, mirrors `@omadia/llm-provider-api`
+   *  `EffortLevel`). Providers/models without the knob ignore it. */
+  readonly effort?: 'low' | 'medium' | 'high' | 'xhigh';
+  /** `'off'` = no extended reasoning where the model allows it (a hint,
+   *  ignored elsewhere — pair it with `effort: 'low'`). For latency-critical
+   *  single calls. */
+  readonly thinking?: 'off';
   /**
    * Ask for a schema-constrained JSON response (#1219) instead of instructing
    * the model to emit JSON in the prompt.

@@ -1,5 +1,10 @@
 import type { FastPathToolSpec } from './composition.js';
-import { applyRefreshSource, isTruncatedOutput, type RefreshSource } from './refreshRecipes.js';
+import {
+  isTruncatedOutput,
+  mapRefreshRecords,
+  resolveRecipeInput,
+  type RefreshSource,
+} from './refreshRecipes.js';
 
 /**
  * Deterministic canvas fast path — the building blocks.
@@ -24,18 +29,38 @@ export const DEFAULT_FAST_PATH_TOOLS: readonly string[] = ['odoo_query'];
  * `odooQueryToolSpec` in omadia-integration-odoo (odooReadTools.ts): the
  * output envelope `{ model, scope, count, truncated, records }`, limit capped
  * at 100, many2one values as `[id, "Display Name"]`, empty values as false.
+ *
+ * The field catalog is deliberately small (token budget — it rides on every
+ * canvas turn): Odoo 17/18 standard fields of the models the integration
+ * whitelists (odooCore.ts ALLOWED_MODELS), none of its HR red-line fields.
  */
 export const FAST_PATH_TOOL_SPECS: Readonly<Record<string, string>> = {
   odoo_query:
-    'odoo_query — Odoo search_read (read-only). input: { "model": string (e.g. "hr.employee", ' +
-    '"res.partner", "account.move", "hr.leave"), "domain"?: Odoo domain e.g. ' +
+    'odoo_query — Odoo search_read (read-only). input: { "model": string, "domain"?: Odoo domain e.g. ' +
     '[["department_id.name","ilike","Sales"]] (archived records are excluded by default), ' +
-    '"fields"?: string[], "limit"?: 1–100 (default 20 — set 100 when a filter post-filters), ' +
+    '"fields"?: string[], "limit"?: 1–100 (always 100 — a full result of 100 counts as truncated), ' +
     '"order"?: e.g. "name asc" }. output: { "records": [ { field: value } ], "truncated": boolean } ' +
     '→ itemsPath "records", rowKey "id". many2one fields are [id, "Name"] → map them as ' +
-    '"<field>.1". hr.employee fields: name, job_title, department_id, parent_id, work_email, ' +
-    'work_phone, birthday (date "YYYY-MM-DD" — the month needs a datePart filter, Odoo cannot ' +
-    'filter it). HR wage/bank/private fields are blocked.',
+    '"<field>.1". Empty values are false. FIELD CATALOG (plan only with these):\n' +
+    '  · hr.employee: name, job_title, department_id, parent_id, work_email, work_phone, active, ' +
+    'birthday (date "YYYY-MM-DD" — a month needs a datePart filter, Odoo cannot filter it). ' +
+    'HR wage/bank/private fields are blocked.\n' +
+    '  · res.partner: name, email, phone, city, is_company, customer_rank (>0 = customer), ' +
+    'supplier_rank (>0 = supplier).\n' +
+    '  · account.move (invoices): name (number), partner_id, invoice_date, invoice_date_due, ' +
+    'amount_total, amount_residual (open amount, number), currency_id, state (draft|posted|cancel), ' +
+    'payment_state (not_paid|partial|in_payment|paid), move_type (out_invoice = Kundenrechnung, ' +
+    'in_invoice = Lieferantenrechnung, out_refund / in_refund = Gutschrift). Amounts are in each ' +
+    'invoice\'s currency_id: whenever a {sum:…} totals an amount, ALWAYS add "currency_id" to "fields" — ' +
+    'the total is shown only when every row has one currency.\n' +
+    '  TERMS: "offene Posten"/"open items"/"offene Rechnungen"/"Debitoren"/"receivables" = account.move ' +
+    'domain [["move_type","=","out_invoice"],["state","=","posted"],["payment_state","in",["not_paid","partial"]]], ' +
+    'fields name, partner_id, invoice_date_due, amount_residual, currency_id, order "invoice_date_due asc"; ' +
+    '"Lieferanten"/"Kreditoren"/"Verbindlichkeiten"/"payables" → "in_invoice" instead; ' +
+    '"überfällig"/"overdue" → add ["invoice_date_due","<","{today}"]. ' +
+    '"Kunden"/"customers" = res.partner [["customer_rank",">",0]], "suppliers" = [["supplier_rank",">",0]]. ' +
+    'DATES: a domain value "{today}" / "{today-30d}" / "{today+7d}" (whole string) resolves to the ' +
+    'date at execution — never write the current date literally.',
 };
 
 /** Parse the `fast_path_tools` setup field: unset → the default allow-list;
@@ -56,15 +81,121 @@ export function plannableTools(allowed: readonly string[]): FastPathToolSpec[] {
   });
 }
 
-/** Fill the composer's prose template. */
-export function renderSummary(template: string, count: number): string {
-  return template.split('{count}').join(String(count));
+/** `{sum:<fieldKey>}` in the composer's prose template. */
+export const SUM_PLACEHOLDER = /\{sum:([A-Za-z0-9_.-]+)\}/g;
+
+export type RenderedSummary = { ok: true; text: string } | { ok: false; detail: string };
+
+/** A canonical, runtime-supported BCP-47 tag, else undefined. */
+export function supportedLocale(raw: unknown): string | undefined {
+  if (typeof raw !== 'string' || raw.length === 0 || raw.length > 35) return undefined;
+  try {
+    const [canonical] = Intl.getCanonicalLocales(raw);
+    return canonical !== undefined && Intl.NumberFormat.supportedLocalesOf(canonical).length > 0
+      ? canonical
+      : undefined;
+  } catch {
+    return undefined; // RangeError: not a well-formed tag
+  }
+}
+
+/** Summed attributes treated as MONEY (Odoo naming: amount_*, price_*,
+ *  balance, debit, credit) — a total of those needs one currency. Matched
+ *  on the record attribute the fieldKey maps to, so it holds whatever the
+ *  composer named the column. Deliberately broad: a false positive only
+ *  costs a fast-path miss, a false negative could print a mixed total. */
+const MONETARY_ATTR = /amount|price|balance|debit|credit|residual|subtotal/i;
+
+/** Record attribute carrying a monetary row's currency (Odoo many2one). */
+export const CURRENCY_ATTR = 'currency_id';
+
+/** Currency identity of a raw record: the many2one id (`[id, "EUR"]`), or
+ *  a plain scalar; undefined when absent/empty (Odoo `false`). */
+function currencyOf(rec: Record<string, unknown>): string | undefined {
+  const v = rec[CURRENCY_ATTR];
+  const id: unknown = Array.isArray(v) ? v[0] : v;
+  return typeof id === 'number' || (typeof id === 'string' && id.length > 0) ? String(id) : undefined;
+}
+
+/** null when the money behind `attr` is in ONE currency (or `attr` is not
+ *  money), else why not. `records[i]` is the raw record behind `rows[i]`. */
+function mixedCurrency(attr: string, rowCount: number, records: ReadonlyArray<Record<string, unknown>>): string | null {
+  if (!MONETARY_ATTR.test(attr)) return null;
+  if (records.length !== rowCount) return 'raw records not aligned with the rows';
+  const seen = new Set<string>();
+  for (const rec of records) {
+    const c = currencyOf(rec);
+    if (c === undefined) return `a row without ${CURRENCY_ATTR}`;
+    seen.add(c);
+  }
+  return seen.size > 1 ? `${seen.size} currencies` : null;
+}
+
+/** Exact column total, or why there is none. */
+function sumColumn(key: string, rows: ReadonlyArray<Record<string, unknown>>): number | string {
+  let total = 0;
+  for (const row of rows) {
+    const v = row[key];
+    if (typeof v !== 'number' || !Number.isFinite(v)) return 'a non-numeric value';
+    total += v;
+  }
+  return total;
+}
+
+/**
+ * Fill the composer's prose template from the published rows of the FIRST
+ * data requirement (after the filter): `{count}` = row count,
+ * `{sum:<fieldKey>}` = the column total with two decimals in `locale`
+ * (de: `51.230,00`; the currency stays in the template text). A sum is
+ * printed only when it is exact — the key one of the container's fieldKeys
+ * (`map`), every value a finite number, a valid locale and, for money, ONE
+ * `currency_id` across the raw `records` — otherwise the result is
+ * `ok: false` and the caller misses rather than state a wrong figure.
+ */
+export function renderSummary(
+  template: string,
+  opts: {
+    rows: ReadonlyArray<Record<string, unknown>>;
+    /** raw records behind the rows, index-aligned (mapRefreshRecords) */
+    records: ReadonlyArray<Record<string, unknown>>;
+    /** the recipe's fieldKey → record attribute map */
+    map: Readonly<Record<string, string>>;
+    locale?: string;
+  },
+): RenderedSummary {
+  const sums = new Map<string, string>();
+  for (const [, key] of template.matchAll(SUM_PLACEHOLDER)) {
+    if (key === undefined || sums.has(key)) continue;
+    const attr = opts.map[key];
+    if (attr === undefined) return { ok: false, detail: `{sum:${key}} is not a column` };
+    const locale = supportedLocale(opts.locale);
+    if (locale === undefined) return { ok: false, detail: `{sum:${key}} without a valid locale` };
+    const total = sumColumn(key, opts.rows);
+    if (typeof total === 'string') return { ok: false, detail: `{sum:${key}} over ${total}` };
+    const mixed = mixedCurrency(attr, opts.rows.length, opts.records);
+    if (mixed !== null) return { ok: false, detail: `{sum:${key}} (${attr}): ${mixed}` };
+    sums.set(
+      key,
+      new Intl.NumberFormat(locale, { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(total),
+    );
+  }
+  const text = template
+    .replace(SUM_PLACEHOLDER, (_m, key: string) => sums.get(key) ?? '')
+    .split('{count}')
+    .join(String(opts.rows.length));
+  return { ok: true, text };
 }
 
 export type ToolInvoke = (name: string, input: unknown) => Promise<string>;
 
 export type RecipeFetch =
-  | { ok: true; rows: Array<Record<string, unknown>>; ms: number }
+  | {
+      ok: true;
+      rows: Array<Record<string, unknown>>;
+      /** raw records behind `rows`, index-aligned (after the filter) */
+      records: Array<Record<string, unknown>>;
+      ms: number;
+    }
   | {
       ok: false;
       reason: 'tool-unavailable' | 'invoke-error' | 'tool-error' | 'truncated' | 'unmappable';
@@ -83,12 +214,13 @@ const UNAVAILABLE = /unknown or handler-less/;
 export async function fetchRecipeRows(
   invoke: ToolInvoke,
   recipe: RefreshSource,
-  opts: { rejectTruncated?: boolean } = {},
+  opts: { rejectTruncated?: boolean; timeZone?: string } = {},
 ): Promise<RecipeFetch> {
   const t0 = Date.now();
   let raw: string;
   try {
-    raw = await invoke(recipe.tool, recipe.input);
+    // `{today}` tokens resolve per execution; the recipe itself keeps them
+    raw = await invoke(recipe.tool, resolveRecipeInput(recipe.input, new Date(), opts.timeZone));
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     return { ok: false, reason: UNAVAILABLE.test(detail) ? 'tool-unavailable' : 'invoke-error', detail };
@@ -96,9 +228,9 @@ export async function fetchRecipeRows(
   // tools report failures as an `Error: …` string result, not a throw
   if (/^\s*Error\b/.test(raw)) return { ok: false, reason: 'tool-error', detail: raw.slice(0, 200) };
   if (opts.rejectTruncated === true && isTruncatedOutput(raw)) return { ok: false, reason: 'truncated' };
-  const rows = applyRefreshSource(raw, recipe);
-  if (rows === null) {
+  const mapped = mapRefreshRecords(raw, recipe);
+  if (mapped === null) {
     return { ok: false, reason: recipe.filter && isTruncatedOutput(raw) ? 'truncated' : 'unmappable' };
   }
-  return { ok: true, rows, ms: Date.now() - t0 };
+  return { ok: true, rows: mapped.rows, records: mapped.records, ms: Date.now() - t0 };
 }

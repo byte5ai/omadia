@@ -1037,6 +1037,64 @@ test('the plugin wrapper forwards outputFormat to output_config.format (#1219)',
 });
 
 // ---------------------------------------------------------------------------
+// thinking: 'off' — latency-critical single calls (canvas skeleton composer)
+// ---------------------------------------------------------------------------
+
+test("thinking 'off' sends thinking disabled only where the model accepts it", async () => {
+  const calls: Array<Record<string, unknown>> = [];
+  const client = {
+    messages: {
+      create: async (params: Record<string, unknown>) => {
+        calls.push(params);
+        return textResponse();
+      },
+    },
+  } as unknown as Anthropic;
+  const provider = createAnthropicProvider({ client });
+  const ask = (model: string, effort?: 'low' | 'xhigh') =>
+    provider.complete({
+      model,
+      maxTokens: 64,
+      thinking: 'off',
+      ...(effort !== undefined ? { effort } : {}),
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+    });
+
+  // Haiku 5.5 accepts `disabled` at effort high or below.
+  await ask('claude-haiku-5-5', 'low');
+  assert.deepEqual(calls[0]?.['thinking'], { type: 'disabled' });
+  assert.deepEqual(calls[0]?.['output_config'], { effort: 'low' });
+  // …but not at xhigh/max: the request keeps its default rather than 400.
+  await ask('claude-haiku-5-5', 'xhigh');
+  assert.equal('thinking' in (calls[1] ?? {}), false);
+  // Opus 5.5 rejects `disabled` at every effort: never sent, effort is the lever.
+  await ask('claude-opus-5-5', 'low');
+  assert.equal('thinking' in (calls[2] ?? {}), false);
+  // Not asked → no thinking field on the common path.
+  await provider.complete({
+    model: 'claude-haiku-5-5',
+    maxTokens: 64,
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+  });
+  assert.equal('thinking' in (calls[3] ?? {}), false);
+});
+
+test('the plugin wrapper forwards effort and thinking (ctx.llm.complete)', async () => {
+  const captured: Captured = {};
+  await createAnthropicLlmProvider({
+    client: mockClient(captured, textResponse()),
+    log: () => {},
+  }).complete({
+    model: 'claude-haiku-5-5',
+    effort: 'low',
+    thinking: 'off',
+    messages: [{ role: 'user', content: 'Hi' }],
+  });
+  assert.deepEqual(captured.params?.['output_config'], { effort: 'low' });
+  assert.deepEqual(captured.params?.['thinking'], { type: 'disabled' });
+});
+
+// ---------------------------------------------------------------------------
 // #1219 — refusals
 // ---------------------------------------------------------------------------
 
