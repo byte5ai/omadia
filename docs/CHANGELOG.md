@@ -75,6 +75,58 @@ changelog.
   empty line says what it covers: "No grant needed: this plugin requests neither
   its own database tables nor public paths."
 
+### Fixed — the plan card no longer marks steps done that never ran (#1502)
+
+2026-10-28. The plan-runner advanced one plan step per top-level tool call,
+including the orchestrator's own `memory`, `v4_render_answer` and card tools,
+counted a sub-agent whose inner calls all failed as a success (its result is
+prose, not `Error:`), and `finishPlan` closed the step still open at turn end
+as `done`. A turn that only read its memory directory showed "2/3 steps", the
+false `done` steps landed in the knowledge graph, and plan recall later told
+the model "already done (do NOT repeat)".
+
+`onAfterToolCall` payloads now carry `toolFailed` (an `Error:` result, or a
+sub-agent with only failed inner calls; `toolCallOutcome.ts`, both loops) and
+`toolIsBookkeeping` (`memory`, `v4_render_answer`, `suggest_follow_ups`,
+`ask_user_choice`). The plan-runner skips bookkeeping calls, routes failed
+calls to the replanner, and at turn end marks every step the turn did not
+reach `skipped` (evidence "not reached: …"). Only the last step may be closed
+`done` by the answer itself, and only when every step before it is done.
+`skipped` steps are neither done nor open for recall, so an unreached step is
+no longer resumed as interrupted work. Still a heuristic: a successful call
+that does not serve its step (e.g. `list_datasets` for "fetch the invoices")
+still completes it, and one call that covers two steps leaves the later steps
+`skipped` although the turn answered. Plans written before this fix keep their
+false `done` steps; there is no backfill, so recall may still cite them until
+plan GC removes them.
+
+### Fixed — text written before a tool call no longer opens the answer (#1500)
+
+2026-10-28. Both tool loops joined the text of every model iteration into the
+final answer, so a sentence written next to a tool call — typically the
+English "I'll check my memory directory first." that the `memory_20250818`
+prompting invites — opened German prose answers. `AnswerTextAccumulator`
+now holds text written next to a data-gathering call (`memory` or a work tool)
+before any work result arrived as provisional, and drops it once a later
+iteration writes text. Text written after data arrived — an answer next to
+`suggest_follow_ups`, an analysis next to `create_xlsx` — is joined as before,
+and provisional text is still delivered when nothing follows it. The system
+prompt also asks the model not to announce tool calls. The streamed
+`text_delta` preview still shows the preamble until `done.answer` replaces it,
+and a preamble followed only by a choice card stays as the card's lead-in.
+
+### Docs — a plugin assignment is a `plugin_grants` rebuild (#1476)
+
+2026-10-28. The `propagatePluginInstall` comment in `middleware/src/index.ts`,
+the `SessionConfigSnapshot` / `snapshotForAgent` / `lookupForSession` comments
+and spec 001 (US6, FR-013, FR-014, SC-006, edge case, research D4) still said a
+plugin change was a metadata-only `update` that left running sessions on their
+start-time plugin set. Since #989 it rebuilds the orchestrator
+(`reason: plugin_grants`); history and the session's Agent binding survive and
+the new plugin set applies from the next turn. The snapshot's `pluginIds` stay
+as a start-time record that nothing reads.
+
+
 
 ### Fixed — the store says truthfully whether a plugin is running, and why not (#1456, #1497, #1496, #1492, #1460)
 
