@@ -1,5 +1,5 @@
 import { extractFromJsonFile } from './setupJsonFile.js';
-import { booleanSetupDefault } from './setupFieldDefault.js';
+import { booleanSetupDefault, integerSetupDefault } from './setupFieldDefault.js';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
@@ -1153,6 +1153,10 @@ export function extractSetupSchema(
       // so a `default: "true"` pre-checks the box and the missing-value
       // fallback below stores `true`, not the string.
       const defaultValue = booleanSetupDefault(f['default']);
+      if (defaultValue !== undefined) field.default = defaultValue;
+    } else if (type === 'integer') {
+      // #1524 — normalized exactly like the catalog projection (manifestLoader).
+      const defaultValue = integerSetupDefault(f['default']);
       if (defaultValue !== undefined) field.default = defaultValue;
     } else if (f['default'] !== undefined) {
       field.default = f['default'];

@@ -32,6 +32,7 @@ import type {
 } from '@omadia/plugin-api';
 
 import type { OpenJobPrivacy } from './jobPrivacy.js';
+import { parseLlmJson } from './llmJson.js';
 
 export interface InconsistencyDetectorDeps {
   graph: KnowledgeGraph;
@@ -98,13 +99,9 @@ function buildUserMessage(a: GraphNode, b: GraphNode): string {
 }
 
 function parseJudgement(raw: string): JudgementResult | null {
-  const trimmed = raw.trim();
-  // Strip code fences if Haiku included them despite the prompt.
-  const stripped = trimmed
-    .replace(/^```(?:json)?\s*/i, '')
-    .replace(/\s*```$/i, '');
-  try {
-    const parsed = JSON.parse(stripped) as Partial<JudgementResult>;
+  // #1527 — tolerates a ```json fence with text around it (shared parser).
+  const parsed = parseLlmJson(raw) as Partial<JudgementResult> | undefined;
+  if (parsed && typeof parsed === 'object') {
     if (
       parsed.compatible === 'yes' ||
       parsed.compatible === 'no' ||
@@ -122,8 +119,6 @@ function parseJudgement(raw: string): JudgementResult | null {
         ...(parsed.severity ? { severity: parsed.severity } : {}),
       };
     }
-  } catch {
-    return null;
   }
   return null;
 }

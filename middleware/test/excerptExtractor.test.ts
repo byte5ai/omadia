@@ -17,6 +17,7 @@ function makeFakeAnthropic(opts: {
   reply?: string;
   throwOnCall?: boolean;
   rawText?: string;
+  finishReason?: 'stop' | 'max_tokens';
 }): {
   client: { complete: (req: unknown) => Promise<unknown> };
   calls: CapturedCall[];
@@ -42,19 +43,26 @@ function makeFakeAnthropic(opts: {
       });
       return {
         content: [{ type: 'text', text: opts.rawText ?? opts.reply ?? '' }],
+        finishReason: opts.finishReason ?? 'stop',
       };
     },
   };
   return { client, calls };
 }
 
-function makeExtractor(opts: { reply?: string; throwOnCall?: boolean; rawText?: string }) {
+function makeExtractor(opts: {
+  reply?: string;
+  throwOnCall?: boolean;
+  rawText?: string;
+  finishReason?: 'stop' | 'max_tokens';
+}) {
   const fake = makeFakeAnthropic(opts);
+  const logs: string[] = [];
   const extractor = createHaikuPalaiaExcerptExtractor({
     llm: fake.client as never,
-    log: () => {},
+    log: (msg) => logs.push(msg),
   });
-  return { extractor, calls: fake.calls };
+  return { extractor, calls: fake.calls, logs };
 }
 
 const ANSWER = 'Wir nutzen pgvector. Die Embedding-Dimension ist 768. Migration 0007 ist deployed.';
@@ -145,6 +153,44 @@ describe('Slice 4a · createHaikuPalaiaExcerptExtractor', () => {
     assert.equal(out?.suggestedKind, 'insight');
     assert.equal(out?.suggestedSummary, 'x');
     assert.equal(out?.suggestedRationale, undefined);
+  });
+
+  it('#1527: a fenced JSON reply with prose around the fence is parsed', async () => {
+    const reply = [
+      'Hier ist der Vorschlag:',
+      '```json',
+      '{"kind":"decision","summary":"Rechnungen nach 90 Tagen zahlen.","rationale":null,"excerpts":["Migration 0007 ist deployed."]}',
+      '```',
+      'Ich hoffe, das hilft.',
+    ].join('\n');
+    const { extractor } = makeExtractor({ reply });
+    const out = await extractor.extract({
+      cleanedUserMessage: 'q',
+      cleanedAssistantAnswer: ANSWER,
+    });
+    assert.equal(out?.suggestedKind, 'decision');
+    assert.equal(out?.suggestedSummary, 'Rechnungen nach 90 Tagen zahlen.');
+    assert.deepEqual(out?.excerpts, ['Migration 0007 ist deployed.']);
+  });
+
+  it('#1527: a reply cut off at max_tokens → undefined, and the log says so', async () => {
+    const reply = '```json\n{\n  "kind": "insight",\n  "summary": "Pauschal alle Rechnungen';
+    const { extractor, logs } = makeExtractor({ reply, finishReason: 'max_tokens' });
+    const out = await extractor.extract({
+      cleanedUserMessage: 'q',
+      cleanedAssistantAnswer: ANSWER,
+    });
+    assert.equal(out, undefined);
+    assert.equal(logs.length, 1);
+    assert.match(logs[0]!, /cut off at max_tokens=1536/);
+  });
+
+  it('#1527: the default token budget fits the prompt\'s own field limits', async () => {
+    const { extractor, calls } = makeExtractor({
+      reply: '{"kind":"insight","summary":"x","rationale":null,"excerpts":[]}',
+    });
+    await extractor.extract({ cleanedUserMessage: 'q', cleanedAssistantAnswer: ANSWER });
+    assert.equal(calls[0]?.maxTokens, 1536);
   });
 
   it('non-JSON reply → undefined', async () => {
