@@ -106,6 +106,45 @@ changelog.
   extractor keep the answer-prefix fallback.
 
 
+### Fixed — store catalog: one tab per plugin, honest Hub tags, Hub permissions, search (#1469, #1459, #1470, #1471, #1457, #1474)
+
+2026-10-28. Six faults in the store listing and detail pages.
+
+- **One tab per plugin (#1469).** An installed plugin that the Hub also lists
+  counted under "Registry" *and* "Installed", so the tab counts added up to more
+  than the catalog. Every plugin now lands in exactly one tab
+  (`storeTab` in `web-ui/app/_lib/pluginCounts.ts`): installed first, then
+  "Registry" when `source` is set, "Local" otherwise. Installing a Hub plugin
+  moves it from "Registry" to "Installed".
+- **Uploads stay local (#1459).** Every local package whose id the Hub also
+  lists used to get the Hub `source`, with the coordinates and checksum of the
+  Hub's *latest* artifact, even for an operator upload of a version the Hub never
+  published. The store router now reads the package store's provenance
+  (`uploaded_by`): only a package downloaded from that registry
+  (`registry:<name>`) carries `source`, with the downloaded version's
+  coordinates and the checksum recorded at ingest. Uploads and built-ins carry
+  none and show under "Local". An update offer (`update-available`) is
+  unaffected: it never needed `source`. The `Plugin.source` contract in
+  `admin-v1.ts` says so.
+- **Pills for every kind (#1470).** The store has "Tools" and "Extensions"
+  pills, so the pill counts add up to "All" and `?kind=extension` highlights a
+  pill.
+- **Search and order (#1471).** The store page has a search field (`?q=`, kept
+  across tabs and pills; every count refers to the result). `GET
+  /api/v1/store/plugins?search=` also matches localized descriptions, and the
+  list is sorted by display name across local and Hub entries (Hub-only entries
+  used to follow in index order).
+- **Hub permissions before install (#1457).** The detail page of a Hub plugin
+  that is not downloaded yet said "No permissions declared." for 28 of 31
+  plugins. The store now projects the `manifest_summary.permissions` the Hub
+  index ships through the same parser a local manifest uses
+  (`extractPermissions`), and the "Permissions" section also lists own database
+  tables (`permissions.sql`), which only the post-install grants panel showed.
+- **No contradicting sections (#1474).** The grants panel on an installed
+  plugin's page is titled "Grants" ("Freigaben"), not "Permissions", and its
+  empty line says what it covers: "No grant needed: this plugin requests neither
+  its own database tables nor public paths."
+
 ### Fixed — Privacy Shield follow-ups: guard uninstall, recall of unprotected turns, per-tool scope (#1507)
 
 2026-10-28. Follow-ups to #1516.

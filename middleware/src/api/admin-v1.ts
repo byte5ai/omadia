@@ -597,11 +597,24 @@ export interface Plugin {
    */
   built_in_uninstall?: 'persistent' | 'reinstalled_at_boot';
   incompatibility_reasons?: string[];
-  /** Present only for entries sourced from a remote registry that are not yet
-   *  downloaded/ingested locally. Its presence is what tells the install flow
-   *  to fetch-then-ingest (POST /api/v1/install/registry/:id) before the
-   *  normal install-job. Structurally mirrors `RegistrySource` in
-   *  `api/registry-v1.ts`. */
+  /** Present when the bytes are (or would be) a remote registry's artifact:
+   *
+   *  - a hub-only entry (not ingested yet): the latest version's coordinates.
+   *    On the detail response this is what tells the install flow to
+   *    fetch-then-ingest (POST /api/v1/install/registry/:id) before the normal
+   *    install-job.
+   *  - a local package downloaded from that registry (`uploaded_by:
+   *    'registry:<name>'`): the downloaded version's coordinates and the
+   *    checksum recorded at ingest. List only: the detail response tags
+   *    installed plugins this way, but leaves it off a downloaded package that
+   *    is not installed yet, so its install uses the bytes already on disk
+   *    instead of fetching them again.
+   *
+   *  Absent on operator uploads and built-ins, even when the hub lists the
+   *  same id (#1459) — and an update offer (`update-available`) does not
+   *  need it. The store page puts every installed plugin under "Installed",
+   *  the rest under "Hub" when this is set and "Local" otherwise (#1469).
+   *  Structurally mirrors `RegistrySource` in `api/registry-v1.ts`. */
   source?: {
     registry: string;
     download_url: string;

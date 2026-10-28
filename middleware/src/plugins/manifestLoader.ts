@@ -897,7 +897,10 @@ function extractChannelBlock(
   };
 }
 
-function extractPermissions(
+/** Exported for the store's hub-only entries (#1457): the registry index ships
+ *  each version's raw `permissions:` block, and it goes through the same parser
+ *  a local manifest does. */
+export function extractPermissions(
   permissions: Record<string, unknown> | undefined,
   pluginId: string,
 ): PluginPermissionsSummary {
