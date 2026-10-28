@@ -1,4 +1,4 @@
-import type { KnowledgeGraph } from '@omadia/plugin-api';
+import { isEvidencedPlanStepDone, type KnowledgeGraph } from '@omadia/plugin-api';
 
 /**
  * #133 (plan-as-data) slice E5 — resume semantics.
@@ -98,6 +98,11 @@ export async function buildResumePlan(
         : {}),
     };
     if (status === 'done') {
+      // #1502 — a `done` without work evidence is a pre-fix artefact: not
+      // completed, and not a resume point either. A side-effecting one stays
+      // done — before #1502 a non-string tool result left no evidence, and
+      // re-running a write is worse than skipping a read.
+      if (!isEvidencedPlanStepDone(s.props) && s.props['sideEffecting'] !== true) continue;
       completedSteps.push(step);
       if (s.props['sideEffecting'] === true) sideEffectingDone.push(step);
       continue;

@@ -2309,7 +2309,9 @@ trace does not support.
   (`sub_iteration` with its parent call), `nudge` (nudge text derived from
   tool results), `turn_annotation` (plan, recall and knowledge-graph
   payloads), `surface_*` and `done`. A released turn's held events go out
-  in order, `done` with `verifier` — except its text deltas: the answer goes
+  in order, `done` with `verifier` — except its text deltas and
+  `text_retract` events (which edit a preview the held turn never streamed;
+  they carry no text): the answer goes
   out as one `text_delta` carrying `done.answer` (without the disclosure
   block) right before `done` (`releasedTurn`) — the same text, and for a
   rendered answer a card released (below) the same real values, that `done`

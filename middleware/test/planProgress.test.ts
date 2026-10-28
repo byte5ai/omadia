@@ -2,7 +2,12 @@ import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 
 import { InMemoryKnowledgeGraph } from '@omadia/knowledge-graph-inmemory';
-import { planNodeId, planStepNodeId } from '@omadia/plugin-api';
+import {
+  isEvidencedPlanStepDone,
+  PLAN_STEP_ANSWER_EVIDENCE,
+  planNodeId,
+  planStepNodeId,
+} from '@omadia/plugin-api';
 import {
   abandonPlan,
   advanceStep,
@@ -144,5 +149,31 @@ describe('#133 E3 — progress cursor', () => {
     abandonPlan(state);
     await finishPlan(state, kg);
     assert.deepEqual(await statusOf(kg), ['failed', 'skipped']);
+  });
+});
+
+describe('#1502 — isEvidencedPlanStepDone', () => {
+  it('trusts a done step with a work or answer evidence only', () => {
+    assert.equal(isEvidencedPlanStepDone({ status: 'done', resultSummary: 'query_odoo: 3 rows' }), true);
+    assert.equal(
+      isEvidencedPlanStepDone({ status: 'done', resultSummary: PLAN_STEP_ANSWER_EVIDENCE }),
+      true,
+    );
+    assert.equal(isEvidencedPlanStepDone({ status: 'done' }), false);
+    assert.equal(isEvidencedPlanStepDone({ status: 'done', resultSummary: '  ' }), false);
+    assert.equal(isEvidencedPlanStepDone({ status: 'done', resultSummary: 'memory: x' }), false);
+    assert.equal(isEvidencedPlanStepDone({ status: 'done', resultSummary: 'v4_render_answer: x' }), false);
+    assert.equal(isEvidencedPlanStepDone({ status: 'skipped', resultSummary: 'query_odoo: x' }), false);
+  });
+
+  it('the answer-closed last step carries the answer evidence', async () => {
+    const kg = new InMemoryKnowledgeGraph();
+    const state = await seedPlan(kg, ['s0', 's1']);
+    await startFirstStep(state, kg);
+    await advanceStep(state, kg, { resultSummary: 'query_odoo: ok' });
+    await finishPlan(state, kg);
+    const steps = await kg.getPlanSteps(planNodeId('p1'));
+    assert.equal(steps[1]!.props['resultSummary'], PLAN_STEP_ANSWER_EVIDENCE);
+    assert.ok(steps.every((s) => isEvidencedPlanStepDone(s.props)));
   });
 });
