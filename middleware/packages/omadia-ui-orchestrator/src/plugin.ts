@@ -36,6 +36,16 @@ import {
   resolveTimeZone,
   type RefreshSource,
 } from './refreshRecipes.js';
+import {
+  attributePlan,
+  canvasTables,
+  COMPOSER_TOP_K,
+  composerTools,
+  matchInPlacePlans,
+  planInPlace,
+} from './learnedFastPath.js';
+import { createLearnedPlanStore, planToFetch } from './learnedPlanStore.js';
+import { createTurnLearner, type TurnLearner } from './learningCapture.js';
 import { synthesizeSurfaceEvents } from './surfaceSynthesis.js';
 import { openSkeletonPrivacy } from './skeletonPrivacy.js';
 import { replaceSkeletonOnWithheld } from './verdictHold.js';
@@ -846,6 +856,51 @@ export async function activate(
         : ''
     }`,
   );
+  // Learned fast path: tenant-wide plans learned from successful agent turns
+  // (persisted in this plugin's memory scope). `fast_path_tools=""` is the
+  // global kill switch — no learning, no use.
+  const learningEnabled = fastPathAllowed.size > 0;
+  const learnedPlans = createLearnedPlanStore({
+    ...(ctx.memory ? { memory: ctx.memory } : {}),
+    log: (m) => ctx.log(m),
+  });
+  ctx.log(`[omadia-ui-orchestrator] learned fast path ${learningEnabled ? 'on' : 'off (fast_path_tools empty)'}`);
+  /** fetch whitelist = the built-in allow-list ∪ tools of ACTIVE learned plans */
+  const allowedFetchTools = (): ReadonlySet<string> =>
+    new Set([...fastPathAllowed, ...learnedPlans.active().map((p) => p.tool)]);
+  /** fast-path failures that count against a learned plan (an invoke error
+   *  may be the asking user's missing permission — not the plan's fault) */
+  const PLAN_FAILURES: ReadonlySet<string> = new Set(['tool-error', 'unmappable', 'truncated']);
+  const makeLearner = (
+    input: ChatTurnInput,
+    requirements: readonly DataRequirement[],
+    privacyForced: boolean,
+  ): TurnLearner | undefined => {
+    if (
+      !learningEnabled ||
+      privacyForced ||
+      input.action !== undefined ||
+      input.target !== undefined ||
+      input.userMessage.trim().length === 0
+    ) {
+      return undefined;
+    }
+    // the stored example is masked through the Privacy Shield's stored-text
+    // scope (resolved lazily — activation order is not guaranteed); without
+    // it no example is stored (failure-closed, learningCapture.ts)
+    const privacy = (ctx.services as PluginContext['services'] | undefined)?.get<PrivacyGuardService>(
+      PRIVACY_REDACT_SERVICE_NAME,
+    );
+    const openScope = privacy?.openStoredTextScope?.bind(privacy);
+    return createTurnLearner({
+      question: input.userMessage,
+      requirements,
+      isProducerTool: (name) => name === CANVAS_PUBLISH_TOOL,
+      store: learnedPlans,
+      ...(openScope ? { openStoredTextScope: openScope } : {}),
+      log: (m) => ctx.log(m),
+    });
+  };
   ctx.log(
     `[omadia-ui-orchestrator] composer reasoning: effort=${COMPOSER_REASONING.effort} ` +
       `thinking=${COMPOSER_REASONING.thinking} (hints; the provider applies them where the model supports them)`,
@@ -929,7 +984,7 @@ export async function activate(
         rows: number;
         toolCalls: number;
       }
-    | { hit: false; reason: string };
+    | { hit: false; reason: string; failedFetch?: RefreshSource };
 
   /** The deterministic fast path (see fastPath.ts). Runs only when EVERY
    *  data requirement carries a valid `fetch` for an allow-listed tool; any
@@ -943,9 +998,12 @@ export async function activate(
     skeleton: Awaited<ReturnType<typeof composeSkeleton>>,
     privacyForced: boolean,
     startSurfaceSeq: number,
+    /** this turn's plannable tools (built-in + offered learned) and the
+     *  fetch whitelist (built-in ∪ active learned) */
+    turnTools: { plannable: number; allowed: ReadonlySet<string> },
   ): Promise<FastPathOutcome> {
     const miss = (reason: string): FastPathOutcome => ({ hit: false, reason });
-    if (fastPathTools.length === 0) return miss('disabled');
+    if (turnTools.plannable === 0) return miss('disabled');
     if (privacyForced) return miss('privacy-forced');
     // a structured action / row-bound turn acts on something — the agent decides
     if (input.action !== undefined || input.target !== undefined) return miss('action-turn');
@@ -955,7 +1013,7 @@ export async function activate(
       plans.push({ containerId: req.containerId, fetch: req.fetch });
     }
     if (skeleton.source !== 'model' || plans.length === 0) return miss('no-plan');
-    if (plans.some((p) => !fastPathAllowed.has(p.fetch.tool))) return miss('tool-not-allowed');
+    if (plans.some((p) => !turnTools.allowed.has(p.fetch.tool))) return miss('tool-not-allowed');
     if (skeleton.summary === undefined) return miss('no-summary');
     // ToolsAccessor exposes neither specs nor an availability probe: a tool
     // that is not registered (e.g. odoo_query with generic reads disabled)
@@ -974,7 +1032,7 @@ export async function activate(
         if (fetched.detail !== undefined) {
           ctx.log(`[ui-orchestrator] fast-path ${plan.fetch.tool} ${fetched.reason}: ${fetched.detail}`);
         }
-        return miss(fetched.reason);
+        return { hit: false, reason: fetched.reason, failedFetch: plan.fetch };
       }
       if (jobs.length === 0) firstRecords = fetched.records;
       jobs.push({ containerId: plan.containerId, rows: fetched.rows, source: plan.fetch });
@@ -1031,6 +1089,112 @@ export async function activate(
       rows: first?.rows.length ?? 0,
       toolCalls: jobs.length,
     };
+  }
+
+  /** Book a fast-path outcome against the ACTIVE learned plans its fetches
+   *  were adapted from; returns their ids (for the hit/miss log). */
+  function bookLearned(fetches: readonly RefreshSource[], ok: boolean, reason?: string): string[] {
+    const ids: string[] = [];
+    for (const f of fetches) {
+      const plan = attributePlan(learnedPlans, f);
+      if (!plan) continue;
+      ids.push(plan.id);
+      if (ok || (reason !== undefined && PLAN_FAILURES.has(reason))) {
+        void learnedPlans.recordExecution(plan.id, ok, reason);
+      }
+    }
+    return ids;
+  }
+
+  type InPlaceOutcome =
+    | { hit: true; events: ChatStreamEvent[]; prose: string; plan: string; rows: number }
+    | { hit: false; reason: string };
+
+  /** Learned fast path for a follow-up in an EXISTING canvas: when an active
+   *  plan fits a visible table, ONE fast-model call re-plans that table's
+   *  query; the plugin runs it and REPLACES the table's rows. Emits nothing
+   *  on a miss — the in-place agent path then runs unchanged. */
+  async function runInPlaceLearned(
+    input: ChatTurnInput,
+    canvasSessionId: string,
+    state: NonNullable<ChatTurnInput['canvasState']>,
+    privacyForced: boolean,
+  ): Promise<InPlaceOutcome> {
+    const miss = (reason: string): InPlaceOutcome => ({ hit: false, reason });
+    if (!learningEnabled) return miss('disabled');
+    if (privacyForced) return miss('privacy-forced');
+    if (input.action !== undefined || input.target !== undefined) return miss('action-turn');
+    const question = input.userMessage.trim();
+    if (question.length === 0) return miss('no-question');
+    const tables = canvasTables(state.currentTree);
+    if (tables.length === 0) return miss('no-table');
+    const matched = matchInPlacePlans(learnedPlans, question, tables);
+    if (matched.length === 0) return miss('no-match');
+    const invoke = toolsAccessor?.invoke?.bind(toolsAccessor);
+    if (!invoke) return miss('no-invoker');
+    const currentQueries = new Map<string, RefreshSource>();
+    for (const t of tables) {
+      const recipe = refreshRecipes.get(canvasSessionId, t.containerId);
+      if (recipe) currentQueries.set(t.containerId, recipe);
+    }
+    const plannerGuard = (ctx.services as PluginContext['services'] | undefined)?.get<PrivacyGuardService>(
+      PRIVACY_REDACT_SERVICE_NAME,
+    );
+    const planned = await planInPlace({
+      llm,
+      model,
+      question,
+      tables,
+      currentQueries,
+      plans: matched,
+      allowedTools: allowedFetchTools(),
+      log: (m) => ctx.log(m),
+      ...(plannerGuard !== undefined ? { privacy: openSkeletonPrivacy(plannerGuard) } : {}),
+    });
+    if (!planned.ok) return miss(planned.reason);
+    const fetched = await fetchRecipeRows(invoke, planned.fetch, {
+      rejectTruncated: true,
+      timeZone: fastPathTimeZone,
+    });
+    if (!fetched.ok) {
+      bookLearned([planned.fetch], false, fetched.reason);
+      return miss(fetched.reason);
+    }
+    const rendered = renderSummary(planned.summary, {
+      rows: fetched.rows,
+      records: fetched.records,
+      map: planned.fetch.map,
+      ...(planned.locale !== undefined ? { locale: planned.locale } : {}),
+    });
+    if (!rendered.ok) return miss('summary-unresolvable');
+    const recipes: RefreshSource[] = [];
+    const events: ChatStreamEvent[] = [];
+    const jobs = [{ containerId: planned.containerId, rows: fetched.rows, source: planned.fetch }];
+    for await (const ev of synthesizeSurfaceEvents(publishRowsEvents(jobs), {
+      canvasSessionId,
+      authorizedToolNames: canvasOutputTools,
+      protocolVersion: CANVAS_PROTOCOL_VERSION,
+      opsCatalogVersion: OPS_CATALOG_VERSION,
+      startSurfaceSeq: 0,
+      baseRevision: state.basedOnRevision as RevisionId,
+      baseTree: state.currentTree,
+      dataRequirements: deriveDataRequirements(state.currentTree),
+      // refresh semantics: the first publish REPLACES the stale rows
+      refreshContainers: new Set([planned.containerId]),
+      onPublishedSource: (containerId, raw) => {
+        const source = parseRefreshSource(raw);
+        if (!source) return undefined;
+        recipes.push(source);
+        return mintDataRef(canvasSessionId, containerId);
+      },
+      log: (message) => ctx.log(message),
+    })) {
+      if (ev.type.startsWith('surface_')) events.push(ev);
+    }
+    if (!events.some((e) => e.type === 'surface_patch')) return miss('unpublishable');
+    for (const r of recipes) refreshRecipes.set(canvasSessionId, planned.containerId, r);
+    const ids = bookLearned([planned.fetch], true);
+    return { hit: true, events, prose: rendered.text, plan: ids[0] ?? 'adapted', rows: fetched.rows.length };
   }
 
   async function* canvasTurnStream(
@@ -1219,8 +1383,34 @@ export async function activate(
     // full snapshot. The data-field contract is derived from the live tree
     // itself, exactly as `canvas_refresh` does, so a republishing action keeps
     // its fieldKeys. surfaceSeq restarts at 0 on the client's revision.
+    // #1535 — composition models run outside the turn's privacy handle: with
+    // the org policy on and no Privacy Shield running, no raw text may reach
+    // them (skeleton composer, in-place planner) and nothing is learned.
+    const turnStartedAt = Date.now();
+    const privacyGuard = (ctx.services as PluginContext['services'] | undefined)?.get<PrivacyGuardService>(
+      PRIVACY_REDACT_SERVICE_NAME,
+    );
+    const privacyForced =
+      process.env[PRIVACY_FORCE_GUARDED_ENV_VAR] === 'true' && privacyGuard === undefined;
+    if (learningEnabled && !privacyForced) await learnedPlans.load();
+
     if (input.canvasState) {
+      const learnedHit = await runInPlaceLearned(input, canvasSessionId, input.canvasState, privacyForced);
+      if (learnedHit.hit) {
+        yield* learnedHit.events;
+        yield { type: 'text_delta', text: learnedHit.prose };
+        yield { type: 'done', answer: learnedHit.prose, toolCalls: 1, iterations: 0 };
+        ctx.log(
+          `[ui-orchestrator] learned-plan hit plan=${learnedHit.plan} path=in-place ` +
+            `rows=${learnedHit.rows} ms=${Date.now() - turnStartedAt}`,
+        );
+        return;
+      }
+      if (learnedHit.reason !== 'disabled') {
+        ctx.log(`[ui-orchestrator] learned-plan miss reason=${learnedHit.reason} path=in-place`);
+      }
       const requirements = deriveDataRequirements(input.canvasState.currentTree);
+      const inPlaceLearner = makeLearner(input, requirements, privacyForced);
       const augmentedInPlace: ChatTurnInput = {
         ...input,
         userMessage:
@@ -1248,7 +1438,7 @@ export async function activate(
               'ONE short sentence.',
           }),
       };
-      yield* synthesizeSurfaceEvents(base.chatStream(augmentedInPlace, observer), {
+      const inPlace = synthesizeSurfaceEvents(base.chatStream(augmentedInPlace, observer), {
         canvasSessionId,
         authorizedToolNames: canvasOutputTools,
         protocolVersion: CANVAS_PROTOCOL_VERSION,
@@ -1258,9 +1448,11 @@ export async function activate(
         baseTree: input.canvasState.currentTree,
         dataRequirements: requirements,
         onPublishedSource: captureSource(canvasSessionId),
+        ...(inPlaceLearner ? { onPublishedPayload: (d: unknown) => inPlaceLearner.onPublishedPayload(d) } : {}),
         takeRawSentinel: tapCanvasSentinels((m) => ctx.log(m)),
         log: (message) => ctx.log(message),
       });
+      yield* inPlaceLearner ? inPlaceLearner.tap(inPlace) : inPlace;
       return;
     }
 
@@ -1275,12 +1467,17 @@ export async function activate(
     //    guard's stored-text scope (skeletonPrivacy.ts). With the org policy
     //    on and no guard running, the base turn refuses, so the raw text must
     //    not reach this model either.
-    const turnStartedAt = Date.now();
-    const privacyGuard = (ctx.services as PluginContext['services'] | undefined)?.get<PrivacyGuardService>(
-      PRIVACY_REDACT_SERVICE_NAME,
-    );
-    const privacyForced =
-      process.env[PRIVACY_FORCE_GUARDED_ENV_VAR] === 'true' && privacyGuard === undefined;
+    //    Learned fast path: the top-K active plans most similar to the ask
+    //    ride along as validated examples (their tools join the whitelist).
+    const offered =
+      learningEnabled &&
+      !privacyForced &&
+      input.action === undefined &&
+      input.target === undefined &&
+      input.userMessage.trim().length > 0
+        ? learnedPlans.rank(input.userMessage, COMPOSER_TOP_K).map((s) => s.plan)
+        : [];
+    const turnTools = composerTools(fastPathTools, offered);
     const skeleton = await composeSkeleton({
       llm,
       model,
@@ -1290,7 +1487,8 @@ export async function activate(
           : `UI action: ${JSON.stringify(input.action ?? {})}`,
       log: (message) => ctx.log(message),
       skipModel: privacyForced,
-      fastPathTools,
+      fastPathTools: turnTools,
+      learnedExamples: offered.map((p) => ({ question: p.examples[0] ?? '', fetch: planToFetch(p) })),
       ...(privacyGuard !== undefined ? { privacy: openSkeletonPrivacy(privacyGuard) } : {}),
     });
     let surfaceSeq = 0;
@@ -1309,7 +1507,22 @@ export async function activate(
     // 2. Deterministic fast path — the composer planned the ONE query per
     //    container: run it here, LLM-free, and finish the turn. Any miss →
     //    the agent path below, exactly as before.
-    const fast = await runFastPath(input, canvasSessionId, skeleton, privacyForced, surfaceSeq);
+    const fast = await runFastPath(input, canvasSessionId, skeleton, privacyForced, surfaceSeq, {
+      plannable: turnTools.length,
+      allowed: allowedFetchTools(),
+    });
+    const fetches = skeleton.dataRequirements.flatMap((r) => (r.fetch ? [r.fetch] : []));
+    const learnedIds = fast.hit
+      ? bookLearned(fetches, true)
+      : bookLearned(fast.failedFetch ? [fast.failedFetch] : [], false, fast.reason);
+    if (fast.hit && learnedIds.length > 0) {
+      ctx.log(`[ui-orchestrator] learned-plan hit plan=${learnedIds.join(',')} path=new-canvas`);
+    } else if (!fast.hit && offered.length > 0) {
+      ctx.log(
+        `[ui-orchestrator] learned-plan miss reason=${fast.reason} path=new-canvas offered=${offered.length}` +
+          (learnedIds.length > 0 ? ` plan=${learnedIds.join(',')}` : ''),
+      );
+    }
     if (fast.hit) {
       yield* fast.events;
       const prose = fast.prose;
@@ -1348,8 +1561,10 @@ export async function activate(
     };
 
     // 4. Delegate + canvas-aware synthesis continuing seq/revision after the
-    //    skeleton.
-    const turn = synthesizeSurfaceEvents(base.chatStream(augmented, observer), {
+    //    skeleton. The learner watches the turn and, on a clean `done`,
+    //    records the ONE read query behind the published rows as a candidate.
+    const learner = makeLearner(input, skeleton.dataRequirements, privacyForced);
+    const synthesized = synthesizeSurfaceEvents(base.chatStream(augmented, observer), {
       canvasSessionId,
       authorizedToolNames: canvasOutputTools,
       protocolVersion: CANVAS_PROTOCOL_VERSION,
@@ -1359,9 +1574,11 @@ export async function activate(
       baseTree: skeleton.tree,
       dataRequirements: skeleton.dataRequirements,
       onPublishedSource: captureSource(canvasSessionId),
+      ...(learner ? { onPublishedPayload: (d: unknown) => learner.onPublishedPayload(d) } : {}),
       takeRawSentinel: tapCanvasSentinels((m) => ctx.log(m)),
       log: (message) => ctx.log(message),
     });
+    const turn = learner ? learner.tap(synthesized) : synthesized;
     // A held (verifier-enforce) turn that ends withheld or failed replaces
     // the already-visible skeleton, so no loading placeholder is orphaned.
     yield* base.holdsContentUntilVerdict === true

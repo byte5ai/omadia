@@ -1,4 +1,5 @@
 import { SUM_PLACEHOLDER, supportedLocale } from './fastPath.js';
+import { containsPlaceholder } from './literalStripping.js';
 import { parseRefreshSource, type RefreshSource } from './refreshRecipes.js';
 import type { SkeletonPrivacyRun } from './skeletonPrivacy.js';
 import { validateTree } from './treeValidator.js';
@@ -69,9 +70,28 @@ export interface FastPathToolSpec {
 const MAX_SUMMARY_CHARS = 280;
 const COUNT_PLACEHOLDER = '{count}';
 
+/** A learned plan handed to the composer as a validated example: a past
+ *  question (literal-stripped) and the fetch that answered it. */
+export interface LearnedExample {
+  question: string;
+  fetch: RefreshSource;
+}
+
+/** The validated-examples block: plans learned from answers the full agent
+ *  gave in this workspace — the composer adapts them instead of inventing. */
+function learnedExamplesSection(examples: readonly LearnedExample[]): string {
+  if (examples.length === 0) return '';
+  return `
+VALIDATED EXAMPLES (learned from verified answers in this workspace — prefer adapting one when the request has the same intent): adapt values to the request (e.g. another month or year) and replace every {{text_N}}/{{email_N}}/{{id_N}} placeholder with the user's own value from the request — a fetch that still contains a placeholder is discarded. Keep the tool, the input structure and the map unchanged.
+${examples.map((e) => `- user asked "${e.question}" → "fetch": ${JSON.stringify(e.fetch)}`).join('\n')}`;
+}
+
 /** The FAST PATH section appended to the composer prompt when at least one
  *  tool is allow-listed — absent otherwise, so the prompt is unchanged. */
-function fastPathPromptSection(tools: readonly FastPathToolSpec[]): string {
+function fastPathPromptSection(
+  tools: readonly FastPathToolSpec[],
+  examples: readonly LearnedExample[] = [],
+): string {
   return `
 
 FAST PATH (optional — same JSON object, two extra keys): when the request is answered by exactly ONE read query per data container with one of the tools below (plus at most a simple equality/date-part post-filter), add to that dataRequirements entry:
@@ -81,7 +101,7 @@ and a top-level "summary": ONE plain sentence in the user's language with placeh
 - "filter" is for what the tool cannot filter itself (e.g. a birthday MONTH); put everything else into the tool's own query.
 - Express relative periods time-safely (a tool's relative-date syntax, e.g. "{today}" below) or omit fetch. OMIT fetch (and summary) whenever the request needs reasoning, joins, aggregation beyond {count}/{sum:…}, several steps, a tool not listed, or you are unsure of the field names — the full agent then handles it. A wrong fetch is worse than none.
 TOOLS:
-${tools.map((t) => `- ${t.spec}`).join('\n')}`;
+${tools.map((t) => `- ${t.spec}`).join('\n')}${learnedExamplesSection(examples)}`;
 }
 
 /** Whitelist the composer's `fetch` plans: kept only when it parses as a
@@ -95,13 +115,16 @@ function withFetchPlans(
     const { fetch: raw, ...rest } = r as DataRequirement & { fetch?: unknown };
     if (raw === undefined || allowed.size === 0) return rest;
     const fetch = parseRefreshSource(raw);
-    return fetch && allowed.has(fetch.tool) ? { ...rest, fetch } : rest;
+    // an unfilled learned-plan placeholder would query for "{{text_1}}"
+    return fetch && allowed.has(fetch.tool) && !containsPlaceholder(fetch)
+      ? { ...rest, fetch }
+      : rest;
   });
 }
 
 /** Kept only with at least one placeholder — a fixed sentence could not be
  *  correct for every result. */
-function parseSummary(value: unknown): string | undefined {
+export function parseSummary(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   const s = value.trim();
   if (s.length === 0 || s.length > MAX_SUMMARY_CHARS) return undefined;
@@ -260,11 +283,17 @@ export async function composeSkeleton(opts: {
    *  `fast_path_tools` with a known spec). Empty/absent: no FAST PATH prompt
    *  section, and every `fetch`/`summary` the model emits anyway is dropped. */
   fastPathTools?: readonly FastPathToolSpec[];
+  /** Learned fast path: the top-K active plans most similar to the request,
+   *  shown as validated examples (only with fastPathTools; their tools must
+   *  be among them to pass the fetch whitelist). */
+  learnedExamples?: readonly LearnedExample[];
 }): Promise<SkeletonResult> {
   const fastPathTools = opts.fastPathTools ?? [];
   const allowedFetchTools: ReadonlySet<string> = new Set(fastPathTools.map((t) => t.name));
   const system =
-    fastPathTools.length > 0 ? SYSTEM_PROMPT + fastPathPromptSection(fastPathTools) : SYSTEM_PROMPT;
+    fastPathTools.length > 0
+      ? SYSTEM_PROMPT + fastPathPromptSection(fastPathTools, opts.learnedExamples)
+      : SYSTEM_PROMPT;
   const fallback: SkeletonResult = {
     tree: structuredClone(FALLBACK_SKELETON),
     dataRequirements: [{ containerId: 'root', description: opts.userText, fields: [] }],

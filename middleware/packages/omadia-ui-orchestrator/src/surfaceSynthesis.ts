@@ -77,6 +77,9 @@ export interface SurfaceSynthesisConfig {
    *  then announces it via `surface_data_ref_created` (refreshable flag)
    *  right after the corresponding patch. */
   onPublishedSource?: (containerId: string, source: unknown) => DataRef | undefined;
+  /** learned fast path: every parsed structured payload's `data` (container,
+   *  source, dataset column schema), before composition — observation only. */
+  onPublishedPayload?: (data: unknown) => void;
 }
 
 /**
@@ -224,6 +227,7 @@ export async function* synthesizeSurfaceEvents(
 
     const payload = parseToolEmittedStructuredPayload(output);
     if (!payload) return;
+    config.onPublishedPayload?.(payload.data);
       // recipe capture happens regardless of compose success — a recipe for
       // a payload whose patch was skipped is still a valid refresh source
       let mintedRef: DataRef | undefined;
