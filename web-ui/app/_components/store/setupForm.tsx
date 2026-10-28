@@ -222,7 +222,10 @@ export function FieldRow({
               id={id}
               name={field.key}
               type="checkbox"
-              defaultChecked={field.default === true}
+              // #1464 — `"true"` is a valid boolean default too (the install
+              // API accepts it as a value). Current servers normalize it; this
+              // also covers an older server that passes the raw string through.
+              defaultChecked={field.default === true || field.default === 'true'}
               className="size-4 accent-[color:var(--oxblood)]"
             />
             <span className="text-[color:var(--muted-ink)]">
