@@ -72,8 +72,21 @@ export function createRegistryInstallRouter(deps: RegistryInstallDeps): Router {
     }
 
     try {
-      const { plugins } = await deps.client.listAll();
+      const { plugins, errors } = await deps.client.listAll();
       const resolved = plugins.find((p) => p.entry.id === id);
+      if (!resolved && errors.length > 0) {
+        // #1482 — not finding the plugin proves nothing when a registry
+        // could not be read: it may well be in there. Name the registry that
+        // failed instead of answering "not found".
+        res.status(502).json({
+          code: 'registry_install.registry_unavailable',
+          message: `no plugin '${id}' in the readable registries; could not read ${errors
+            .map((e) => `'${e.registry}' (${e.message})`)
+            .join(', ')}`,
+          params: { registries: errors.map((e) => e.registry).join(', ') },
+        });
+        return;
+      }
       if (!resolved) {
         res.status(404).json({
           code: 'registry_install.plugin_not_found',

@@ -338,10 +338,23 @@ export interface SetupProfile {
   requirement?: LocalizedMarkdown;
 }
 
+/** #1482 — the last index fetch of one configured registry. Mirrors
+ *  `RegistrySourceStatus` in middleware admin-v1. */
+export interface RegistrySourceStatus {
+  name: string;
+  ok: boolean;
+  checked_at: string;
+  plugin_count?: number;
+  error?: { code: string; message: string };
+}
+
 export interface StoreListResponse {
   items: Plugin[];
   next_cursor: string | null;
   total?: number;
+  /** #1458/#1482 — one entry per configured registry; absent when none is
+   *  configured (or on an older middleware). */
+  registries?: RegistrySourceStatus[];
 }
 
 /** Advisory code-scan verdict for an ingested plugin package (issue #453).
