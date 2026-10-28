@@ -1722,6 +1722,37 @@ requests, and only there, the shield acts on four kinds of text:
   that throws is logged and leaves the surrogates in place
   (`restorePromptForPersistence`).
 
+**Surrogate edge cases (#1528, #1529).** Restore (`resolvePromptPseudonyms`,
+`promptSurrogates.ts`) also maps back a surrogate the model rewrote: in any
+letter case, and for an e-mail surrogate its local part and the name read out
+of it, each only on word boundaries. A rewrite restore cannot map (a name read
+out of a surrogate whose real address holds no name, a date surrogate
+restated in another spelling) leaves the final answer with a bilingual notice
+appended (`PSEUDONYM_UNRESOLVED_NOTICE`, localized at delivery); it is counted
+by `countUnresolvedSurrogates(…, { unreadableLiterals: false })`, so an
+unreadable date literal is a fail-closed hit for the verifier only. A case
+variant of a value already masked in the turn gets the same surrogate in its
+case. Surrogates are unique case-insensitively across unrelated values, so a
+case-insensitive restore can never swap two people. Two exceptions keep the
+shield from fighting its own output, and both cover only text the shield
+itself mints: (1) a detected span that is a **reserved surrogate shape** — a
+pool `first.last@example.net` (RFC 2606, no digits) or
+`PLATZHALTER-(CUSTOM|NAME|IDNUM)-<n≤3 digits>` — is not masked again, because
+no real value can have that shape and it has no room for user data (realistic
+surrogates — names, phone numbers — and shapes with free digits — the
+numbered e-mail overflow, the Musterstadt address, the `DE00…` IBAN — are
+still masked); (2) the post-mask residual check, the known-value sweep and
+the tool-error residual check skip an occurrence only when it lies **wholly
+inside** a surrogate (exact case) or a `[masked:<type>]` marker, so a
+deny-list term that is part of the placeholder (`CUSTOM`, `TOM` in
+`PLATZHALTER-CUSTOM-1`) no longer blocks the message, while a real value that
+merely overlaps one (`Lukas Beckermann` around the surrogate `Lukas Becker`)
+is still masked or blocks. Residual: a deny-list term inside a reserved shape
+the user typed themselves (`becker` in `lukas.becker@example.net`) reaches the
+model as part of that shape. The prompt-mask refusal
+(`PROMPT_MASK_BLOCKED_ANSWER`) is now persisted in both languages and
+delivered in the turn's language, like the model refusal (#1401).
+
 The verifier's evidence-judge requests are projected through the turn's map
 whatever `mask_user_prompt` says (§6e). The subscription-CLI path has no
 shield at all (§3a), and without an active privacy-guard provider nothing is

@@ -1986,6 +1986,28 @@ seit #760 gated (DE/ES/IT/UK/FR-Patterns in C0; NL BSN bewusst ungepattern —
 `validation/ci-baseline.json` (per-Locale-Floors, leerer Lauf = rot). Tests:
 `test/privacyCustomTermsAndIdnum.test.ts`, `test/privacyMissReports.test.ts`.
 
+**Masking-Randfälle (#1525, #1528, #1529, privacy-guard 0.11.0, plugin-api
+1.37.0).** `custom_patterns` ist `multiline: true`; Katalog-Projektion
+(`manifestLoader`) und Edit-Formular (`CredentialsEditor`, `<textarea>`)
+tragen das Flag jetzt wie schon das Install-Schema. Neues Modul
+`harness-plugin-privacy-guard/src/promptSurrogates.ts`: tolerantes Restore
+(`resolvePromptPseudonyms`: Groß-/Kleinschreibung, Local-Part und Name aus
+einem E-Mail-Surrogat), reservierte Surrogat-Formen
+(`isReservedSurrogateShape`: `first.last@example.net` aus dem Namenspool
+ohne Ziffern, `PLATZHALTER-(CUSTOM|NAME|IDNUM)-n` — werden nie als neuer
+Realwert maskiert; Formen mit freien Ziffern bewusst nicht) und der
+Residual-Check `findResidualRealValues`, der nur Vorkommen GANZ innerhalb
+eines Surrogats ignoriert; Surrogate sind case-insensitiv eindeutig (Deny-List-Begriff `CUSTOM` in
+`PLATZHALTER-CUSTOM-1` blockiert nicht mehr). Gleiches für `[masked:…]` im
+Tool-Error-Pfad (`withoutMaskMarkers`). Orchestrator: `restoreAnswerForUser`
+hängt `PSEUDONYM_UNRESOLVED_NOTICE` an, wenn nach dem Restore Surrogate
+übrig sind (`countUnresolvedSurrogates` mit neuer Option
+`unreadableLiterals: false`); `PROMPT_MASK_BLOCKED_ANSWER` ist zweisprachig
+und wird über `localizeRefusalNotice` lokalisiert, `isPromptMaskBlockedNotice`
+erkennt alle drei Formen. Tests: `test/privacyMaskingEdges.test.ts`,
+`test/orchestrator/promptMaskRewrittenSurrogate.test.ts`,
+`web-ui/…/CredentialsEditorMultiline.test.tsx`.
+
 ### Conductor-Cancel + Approval-Härtung (#759)
 
 Neu: **`POST /api/v1/operator/conductors/:slug/runs/:runId/cancel`** — `waiting`

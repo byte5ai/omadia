@@ -612,6 +612,14 @@ export type PrivacyToolErrorRedactResult =
 /**
  * Service surface published by the `privacy.redact@1` provider plugin.
  */
+/** #1528 — options of `PrivacyGuardService.countUnresolvedSurrogates`. */
+export interface UnresolvedSurrogateCountOptions {
+  /** Count a date or amount literal whose value cannot be read (or a
+   *  placeholder with none) as a hit. Default `true`, fail closed for the
+   *  answer verifier; `false` for a notice to the user. */
+  readonly unreadableLiterals?: boolean;
+}
+
 export interface PrivacyGuardService {
   /**
    * Privacy Shield v4 — intern a raw tool result server-side behind a
@@ -801,8 +809,17 @@ export interface PrivacyGuardService {
    * restored answer should carry none; a hit means the model reworded a
    * placeholder and restore could not map it back. `0` when the turn masked
    * nothing. Optional; absent ⇒ callers treat the answer as unchecked.
+   *
+   * #1528 — also counts the name read out of an e-mail surrogate when restore
+   * had no real name to put back. `options.unreadableLiterals: false` drops
+   * the fail-closed hits on date/amount literals whose value cannot be read:
+   * what a notice to the user needs, where such a hit is noise.
    */
-  countUnresolvedSurrogates?(turnId: string, text: string): Promise<number>;
+  countUnresolvedSurrogates?(
+    turnId: string,
+    text: string,
+    options?: UnresolvedSurrogateCountOptions,
+  ): Promise<number>;
   /**
    * Privacy Shield v4 — the verb + render tool specs to offer the LLM.
    */

@@ -12,7 +12,7 @@ import type {
   ChatTurnResult,
   VerifierResultSummary,
 } from './orchestrator.js';
-import { PROMPT_MASK_BLOCKED_ANSWER, SECURITY_QUARANTINE_NOTICE } from './orchestrator.js';
+import { isPromptMaskBlockedNotice, SECURITY_QUARANTINE_NOTICE } from './orchestrator.js';
 import { withheldCauseOf } from './verifierVerdicts.js';
 
 /**
@@ -122,7 +122,7 @@ export function isDeliberateSilence(answer: string): boolean {
  * Turns `enforce` releases without a verdict. A choice card, an MCP input
  * form, a slot picker and an OAuth consent prompt ask the user for input; a
  * degraded turn's answer is the server-composed turn-incomplete notice; the
- * privacy refusal (`PROMPT_MASK_BLOCKED_ANSWER`) and the inbound screening
+ * privacy refusal (`PROMPT_MASK_BLOCKED_ANSWER`, in either language) and the inbound screening
  * quarantine (`SECURITY_QUARANTINE_NOTICE`) are server-composed notices of a
  * turn whose model never ran; a bare NO_REPLY is the agent's deliberate
  * silence, which a withheld-answer notice would break.
@@ -154,7 +154,7 @@ export function releasesWithoutVerification(turn: ControlFlowTurn): boolean {
  *  disclosure block a stream folds into a first turn's `done` set aside. */
 function isServerNotice(turn: ControlFlowTurn): boolean {
   const text = withoutFoldedDisclosure(turn.answer, turn.aiDisclosure);
-  return text === PROMPT_MASK_BLOCKED_ANSWER || text === SECURITY_QUARANTINE_NOTICE;
+  return isPromptMaskBlockedNotice(text) || text === SECURITY_QUARANTINE_NOTICE;
 }
 
 /**

@@ -25,8 +25,7 @@ import type {
 } from '@omadia/plugin-api';
 
 import { maskPrompt } from './promptMask.js';
-import { findIdentityLeaks } from './v4/onTheWire.js';
-import { resolvePseudonyms } from './v4/pseudonym.js';
+import { findResidualRealValues, resolvePromptPseudonyms } from './promptSurrogates.js';
 import type { PseudonymMap } from './v4/types.js';
 
 export interface StoredTextScopeDeps {
@@ -74,7 +73,7 @@ export function createStoredTextScope(deps: StoredTextScopeDeps): PrivacyStoredT
     const detectors = c1.detector ? [...deps.detectors, c1.detector] : deps.detectors;
     try {
       const result = await maskPrompt(text, detectors, map);
-      const residual = findIdentityLeaks(result.maskedText, [...result.map.forward.keys()]);
+      const residual = findResidualRealValues(result.maskedText, result.map);
       if (residual.length > 0) {
         console.error(
           `[privacy-guard v4] storedTextMaskBlocked job=${deps.job} ` +
@@ -106,7 +105,7 @@ export function createStoredTextScope(deps: StoredTextScopeDeps): PrivacyStoredT
     },
     restoreStoredText(text: string): string {
       if (map === undefined || map.reverse.size === 0) return text;
-      return resolvePseudonyms(text, map);
+      return resolvePromptPseudonyms(text, map);
     },
   };
 }
