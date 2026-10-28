@@ -87,3 +87,28 @@ void describe('#1452 — the upload panel reports a failed re-activation', () =>
     expect(screen.queryByText(new RegExp('did not restart', 'i'))).toBeNull();
   });
 });
+
+void describe('#1490 — a replacing upload says what it replaced', () => {
+  void it('names the replaced version', async () => {
+    mockUploadPackage.mockResolvedValue({ package: pkg(), replaced_version: '0.9.0' });
+
+    renderWithIntl(<UploadDropzone />);
+    upload();
+
+    await waitFor(() => {
+      expect(screen.getByText(/previously uploaded version 0\.9\.0/)).toBeTruthy();
+    });
+  });
+
+  void it('says nothing about a replacement on a first upload', async () => {
+    mockUploadPackage.mockResolvedValue({ package: pkg() });
+
+    renderWithIntl(<UploadDropzone />);
+    upload();
+
+    await waitFor(() => {
+      expect(screen.getByText(new RegExp('@test/zip'))).toBeTruthy();
+    });
+    expect(screen.queryByText(/previously uploaded version/)).toBeNull();
+  });
+});

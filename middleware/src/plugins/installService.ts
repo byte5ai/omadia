@@ -185,6 +185,12 @@ function isInstalledTerminal(state: InstallJobState): boolean {
  * #825 — that terminal state is `active` or `errored` depending on whether the
  * plugin ACTIVATED, not merely on whether the writes landed. See
  * `finishInstall`.
+ *
+ * #1494 — a validation failure (`install.validation_failed`) is NOT terminal.
+ * It is the one refusal the operator fixes in the same form, so the job goes
+ * back to `awaiting_config` with the field errors on `error`, and the
+ * corrected submit configures the same job. It used to `fail()` the job,
+ * which made every corrected submit a 409 `install.wrong_state`.
  */
 export class InstallService {
   private readonly jobs = new Map<string, InstallJob>();
@@ -353,6 +359,8 @@ export class InstallService {
       );
     }
 
+    // #1494 — the field errors of a previous, rejected submit are stale now.
+    job.error = null;
     this.transition(job, 'configuring', 'Validiere Eingaben', 'validating');
 
     // #603 (OM-17) — a `json_file` upload submitted WITH the install form. The
@@ -375,7 +383,7 @@ export class InstallService {
           ...(field.expect ? { expect: field.expect } : {}),
         });
         if (!out.ok) {
-          this.fail(job, {
+          this.rejectInput(job, {
             code: 'install.validation_failed',
             message: 'Eingaben enthalten Fehler',
             details: [
@@ -398,7 +406,7 @@ export class InstallService {
 
     const validated = await validateValues(schema, values);
     if (validated.errors.length > 0) {
-      this.fail(job, {
+      this.rejectInput(job, {
         code: 'install.validation_failed',
         message: 'Eingaben enthalten Fehler',
         details: validated.errors,
@@ -1033,6 +1041,13 @@ export class InstallService {
     job.current_step = step;
     job.step_code = stepCode;
     job.updated_at = new Date().toISOString();
+  }
+
+  /** #1494 — the submitted values were refused; the job waits for the
+   *  corrected ones. `error` carries the per-field details for the form. */
+  private rejectInput(job: InstallJob, error: ApiError): void {
+    this.transition(job, 'awaiting_config', 'Warte auf Konfiguration', 'awaiting_config');
+    job.error = error;
   }
 
   private fail(job: InstallJob, error: ApiError): void {

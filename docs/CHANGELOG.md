@@ -79,6 +79,50 @@ next boot removes; `blank` no longer points at `/store/upload`. Apply skips a
 plugin whose capability is already provided (`skipped[].reason:
 'capability_provided'`), the shipped profile descriptions are translated, and
 the outcome says that the plugins become active after a restart.
+### Fixed — plugin install and upload pipeline: one error contract, no dead ends (#1477, #1488, #1489, #1490, #1494, #1495)
+
+2026-10-28. ZIP upload, Hub install and builder install all feed the same
+ingest pipeline, but each mapped its refusals on its own: the Hub route
+answered 422 for conflicts the upload answered 409 and dropped `params` and
+`details`; the builder answered `package.incompatible_core` and every `zip.*`
+code with 500. Status and body now come from one place,
+`middleware/src/plugins/ingestErrorContract.ts` (409 host-state conflicts and
+`incompatible_core`, 413 size caps, 422 everything else; always `code`,
+`message`, `params`, `details`), and the install drawer, the update button and
+the dropzone show these errors in the UI locale (#1477).
+
+- **Path traversal → 422, not 500 (#1488).** yauzl rejects `../x` and absolute
+  entry names itself, as a plain `Error` that escaped ingest as 500 `internal`.
+  `extractZipToDir` now wraps reader errors into `zip.path_escape` (with
+  `params.entry`) or `zip.invalid`. Nothing was ever written outside staging;
+  the answer is what changed. The web UI has copy for every `zip.*` code.
+- **No client-trusted mimetype gate (#1489).** The upload's `fileFilter` only
+  read the declared content-type and file name; the same bytes got 400 or 422
+  depending on headers. It is gone — the content decides (`zip.invalid`, 422).
+  The multipart fallback code is `upload.multipart`, no longer
+  `upload.upload.multipart`.
+- **Install drawer no longer dead-ends after a validation error (#1494).** A
+  server-side `install.validation_failed` keeps the job in `awaiting_config`
+  with the field errors, so the corrected form installs on the same job instead
+  of answering 409 `install.wrong_state`. Terminal states show their localized
+  help without a resubmittable form.
+- **Store detail page stays current (#1495).** Closing the drawer or the
+  prerequisites wizard refreshes the page. The Hub route answers 200
+  `already_present: true` (with the dependency chain) for a package it already
+  fetched — same version and sha256 — instead of 422 `duplicate_version`, and
+  the detail route keeps a fetched-but-not-installed plugin's Hub `source`, so
+  the prerequisites wizard is still reachable after a reload.
+- **Uploaded packages can be removed (#1490).** A package that is uploaded or
+  fetched but not installed is flagged `removable_package` and gets a "Remove
+  uploaded package" action on its detail page. DELETE now logs, logs a failed
+  folder removal, and removes the emptied `<id>/` and `@scope/` folders. An
+  upload that replaces another version says so (`replaced_version`, log
+  `replaced=<v>`), and the duplicate-version text points at the remove action
+  instead of "call DELETE".
+
+API changes for clients are listed in `docs/upgrading.md` § "Upgrading past
+v0.181.1". No new env var, migration or sidecar.
+
 ### Fixed — the plan card no longer marks steps done that never ran (#1502)
 
 2026-10-28. The plan-runner advanced one plan step per top-level tool call,

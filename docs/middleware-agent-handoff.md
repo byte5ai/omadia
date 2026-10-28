@@ -3491,6 +3491,68 @@ behandelt das wie bisher (Katalog löst auf → „schon vorhanden“, sonst
 `DependencyChainError` mit dem Ingest-Code). Ein Parent wird damit nicht unter
 einem installierten Child zurückgerollt.
 
+### Ein Fehlervertrag für Upload, Hub-Install und Builder (#1477, #1488, #1489)
+
+Drei Routen füttern `PackageUploadService.ingest`: ZIP-Upload
+(`routes/packages.ts`), Hub-Install (`routes/registryInstall.ts`) und
+Builder-Install (`plugins/builder/installCommit.ts` → `routes/builderInstall.ts`).
+Jede hatte ihre eigene Code→Status-Tabelle, und sie liefen auseinander (Hub 422
+statt 409 ohne `params`/`details`, Builder 500 für `incompatible_core` und alle
+`zip.*`). Status und Body kommen jetzt aus **`plugins/ingestErrorContract.ts`**:
+`ingestFailureStatus(code)` → 409 (`INGEST_CONFLICT_CODES` +
+`package.incompatible_core`), 413 (Größen-Caps), sonst **422** — auch für einen
+Code, den noch niemand gemappt hat; `ingestFailureBody(failure)` → `{ code,
+message, params?, details? }`. Der Builder leitet seine `reason` aus dem Status
+ab (409 → `conflict`, 413 → `too_large`, 422 → `manifest_invalid`) und reicht
+`params` durch. `DependencyChainError` trägt `params`/`details` des
+abgelehnten Parents. Ein neuer Ingest-Code braucht damit nur noch einen Eintrag
+in `store.upload.errors` + `UPLOAD_ERRORS` (`web-ui/app/_lib/packageErrorText.ts`).
+
+**Archiv-Fehler (#1488).** yauzl prüft Entry-Namen selbst (`..`, absolute
+Pfade) und meldet das als nacktes `Error` auf dem `error`-Event, *bevor* die
+eigenen `zip.path_escape`-Checks laufen. `toZipExtractionError` in
+`zipExtractor.ts` übersetzt jeden Fehler des Archiv-Lesers in einen
+`ZipExtractionError` (`zip.path_escape` mit `params.entry`, sonst
+`zip.invalid`); Dateisystemfehler (mit `syscall`) bleiben unverändert — die sind
+ein Host-Problem. Backslashes normalisiert yauzl (ohne `strictFileNames`) zu
+`/`, ein `..\x` landet also ebenfalls als `zip.path_escape`.
+
+**Kein Mimetype-Gate (#1489).** Der `fileFilter` der Upload-Route las nur, was
+der Client deklariert (Content-Type, Dateiname), und hielt nichts auf. Er ist
+weg; ob es ein ZIP ist, entscheidet yauzl am Inhalt (`zip.invalid`, 422). Der
+Multipart-Fallback-Code ist `multipart` (→ `upload.multipart`), nicht mehr
+doppelt präfixiert.
+
+### Install-Drawer und Store-Detailseite (#1494, #1495, #1490)
+
+- **Validierungsfehler beenden den Job nicht mehr (#1494).**
+  `InstallService.configure` setzt bei `install.validation_failed` den Job über
+  `rejectInput` zurück auf `awaiting_config` (Feldfehler in `job.error`) statt
+  `fail()`. Der nächste `configure` auf denselben Job räumt `error` und läuft
+  normal. Andere Absagen (`install.template_invalid`, Aktivierung) bleiben
+  terminal; der Drawer zeigt sie ohne erneut absendbares Formular.
+- **Kein veralteter Store-Zustand (#1495).** `InstallButton.handleClose` ruft
+  immer `router.refresh()` (vorher nur nach dem Permissions-Schritt). Die
+  Hub-Route erkennt ein schon geholtes Paket (gleiche Version **und** gleicher
+  sha256 im Upload-Store, neue Dep `store`) und antwortet 200
+  `already_present: true` samt Chain, ohne Download/Ingest. Die Detail-Route
+  gibt einem lokalen, nicht installierten Plugin `source`, wenn der Hub genau
+  diese Version führt — sonst übersprang „Jetzt installieren“ nach einem Reload
+  die Hub-Route und den Prerequisites-Wizard. Der Button fragt den Hub nach der
+  angezeigten Version (`installFromRegistry(id, version)`).
+- **Hochgeladenes, nicht installiertes Paket entfernen (#1490).** Die
+  Store-Routen setzen `removable_package: true`, wenn das Paket im Upload-Store
+  liegt und das Plugin nicht installiert ist (Dep `uploadedPackages`); die
+  Detailseite zeigt dann `RemovePackageAction` (`DELETE /install/packages/:id`).
+  Die Route loggt `[upload] package removed id=… version=… by=…`,
+  `UploadedPackageStore.remove` loggt einen gescheiterten `rm` und entfernt den
+  leeren `<id>/`- und `@scope/`-Ordner. Ein Upload, der eine andere Version
+  ersetzt, liefert `replaced_version` (Dropzone: „Die zuvor hochgeladene Version
+  … wurde ersetzt.“), das Ingest-Log trägt `replaced=<version>`.
+- Der Drawer übersetzt Fehler über `useStoreErrorText` →
+  `storeErrorText` (`packageErrorText.ts`): erst Ingest-Code + `params`, dann
+  der Error-Help-Katalog (`install.*`), dann die Server-Message.
+
 ## 4. Migration Managed Agents → Lokal
 
 ### Warum migriert
@@ -8076,8 +8138,9 @@ in `en`+`de` anlegen. `message` bleibt als Fallback und für API-Clients.
   (`chat()`, `discloseDoneEvent`) gegen die Turn-Sprache (gleiche Regel wie das
   AI-Act-Marking: `en*` → Englisch, sonst Deutsch).
 
-Nicht lokalisiert, weil nicht sichtbar: Fehler von `DELETE /install/packages/:id`
-landen in der Web-UI nur in `console.warn`. `ui.commands[].label` wird von keiner
+Fehler von `DELETE /install/packages/:id` aus dem Uninstall-Dialog landen in der
+Web-UI weiterhin nur in `console.warn`; der eigene „Paket entfernen“-Knopf
+(#1490) zeigt sie lokalisiert an. `ui.commands[].label` wird von keiner
 Oberfläche gelesen.
 
 Entschieden (Marcel, 2026-10-16): `{en, de}` für sichtbaren Manifest-Text ist

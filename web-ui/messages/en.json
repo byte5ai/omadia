@@ -4340,7 +4340,12 @@
         "installed_activation_failed": "Installed — activation failed",
         "cancelled": "Cancelled by user",
         "failed": "Failed"
-      }
+      },
+      "removePackage": "Remove uploaded package",
+      "removePackageConfirm": "Remove the uploaded package of <strong>{name}</strong>? It is not installed, so nothing is running from it. It disappears from the catalog; a Hub plugin can be fetched again.",
+      "removePackageYes": "Yes, remove",
+      "removingPackage": "Removing …",
+      "removePackageFailed": "The package could not be removed: {message}"
     },
     "auditMode": {
       "singleHostHelp": "Only the hosts declared in the manifest.",
@@ -4456,10 +4461,19 @@
         "entryMissing": "The lifecycle entry {entry} is not in the zip.",
         "idConflictBundled": "Plugin id {pluginId} belongs to a plugin bundled with this installation. An upload cannot replace a bundled plugin — give the package its own id. To override deliberately, set {overrideEnv}=1 in the middleware environment.",
         "idConflictBuiltin": "Plugin id {pluginId} collides with a built-in catalog entry.",
-        "duplicateVersion": "Version {version} of {pluginId} is already uploaded. Bump the version or remove the upload first.",
+        "duplicateVersion": "Version {version} of {pluginId} is already uploaded. Bump the version, or remove the uploaded package on its Store page first.",
         "downgradeBlocked": "Version {toVersion} of {pluginId} is older than the installed version {fromVersion}. A downgrade swaps out the running plugin — confirm it explicitly.",
-        "noFile": "The request contains no file."
-      }
+        "noFile": "The request contains no file.",
+        "multipart": "The upload could not be read. Try again.",
+        "zipInvalid": "The file is not a valid ZIP archive.",
+        "zipPathEscape": "The archive contains an entry that points outside the package: {entry}. Rebuild the package without it.",
+        "zipSymlink": "The archive contains a symbolic link, which is not allowed: {entry}.",
+        "zipForbiddenExtension": "The archive contains a file type that is not allowed in a plugin package: {entry}.",
+        "zipTooManyEntries": "The archive contains too many files.",
+        "zipFileTooLarge": "A file in the archive is too large once unpacked.",
+        "zipTotalTooLarge": "The unpacked archive exceeds the size limit."
+      },
+      "replacedVersion": "Replaced the previously uploaded version {previous}."
     },
     "setupForm": {
       "enable": "Enable",
