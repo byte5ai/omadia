@@ -440,6 +440,7 @@ export default async function PluginDetailPage({
               ? { availableVersion: plugin.available_version }
               : {})}
             {...(blocking_reasons ? { blockingReasons: blocking_reasons } : {})}
+            {...(plugin.provides ? { provides: plugin.provides } : {})}
             kind={plugin.kind}
             attachedTo={attachedTo}
           />

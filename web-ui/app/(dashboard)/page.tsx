@@ -16,6 +16,7 @@ import {
   getCliBackends,
   getEmbeddingProviderStatus,
   getLastTurn,
+  getPrivacyPosture,
   getProviders,
   getVaultStatus,
   listStorePlugins,
@@ -28,6 +29,7 @@ import { cn } from '../_lib/cn';
 import { isInstalled, isOperatorInstalled, isReady } from '../_lib/pluginCounts';
 import { DashboardOnboarding } from '../_components/dashboard/DashboardOnboarding';
 import { PlatformHealthBanner } from '../_components/PlatformHealthBanner';
+import { PrivacyShieldBanner } from '../_components/PrivacyShieldBanner';
 
 /**
  * Operator landing surface. Replaces the chat as the first screen (chat now
@@ -67,6 +69,9 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
   // vault status (it is deliberately not on the public /health). A failure
   // only means no posture line; the outage lines come from /health.
   const vaultP = getVaultStatus().catch(() => null);
+  // #1507 — is a Privacy Shield provider running? A failed read shows no
+  // banner: an unknown posture is not evidence that the shield is off.
+  const privacyP = getPrivacyPosture().catch(() => null);
   const [provP, plugP, agentP, mcpP, cliP, embP, turnP] = await Promise.allSettled([
     getProviders(),
     listStorePlugins(),
@@ -89,7 +94,7 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
   for (const r of settled) {
     if (r.status === 'rejected') await redirectIfUnauthorized(r.reason);
   }
-  const [health, vault] = await Promise.all([healthP, vaultP]);
+  const [health, vault, privacy] = await Promise.all([healthP, vaultP, privacyP]);
   // #1384 — the API answered, but its database did not. Every authenticated
   // route reports a Postgres outage as 503 `auth.unavailable`.
   const databaseUnavailable = settled.some(
@@ -475,6 +480,7 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
   return (
     <main className="mx-auto w-full max-w-[1280px] px-6 py-12 lg:px-8 lg:py-16">
       <PlatformHealthBanner notice={notice} />
+      <PrivacyShieldBanner posture={privacy} />
       <header className="mb-10">
         <h1 className="font-display text-[clamp(2rem,4vw,3rem)] leading-[1.1] text-[color:var(--fg-strong)]">
           {t('h1')}

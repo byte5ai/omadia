@@ -3940,6 +3940,23 @@ weil das README die Variable nennt.
 |---|---|
 | `OMADIA_PRIVACY_FORCE_GUARDED` | Genau `true` klemmt jedes Tool-Plugin auf `guarded`, egal was in seinem `_privacy_mode` steht (`bypass`/`per_tool` und der Privacy-Bypass eines MCP-Servers, `mcpPrivacyBypass.ts`, wirken dann für das Ergebnis, das das Modell bekommt, nicht). Jeder andere Wert ist wirkungslos. Erfasst ist auch die MCP→Knowledge-Graph-Ingestion (Epic #459, `Orchestrator.dispatchTool`): Jede Stelle, die das Bypass-Flag eines MCP-Servers liest, entscheidet über `isMcpServerBypassInForce` (Flag → `resolveEffectivePrivacyMode`), also speichert ein Server mit `kgIngest` und `privacyBypass` mit Klammer nur die wertfreie Form-Notiz (`mcpObservationDigest`) statt bis zu 8.000 Zeichen des Rohergebnisses. Ändert nur die Moduswahl: die Ausnahmen aus `docs/security-architecture.md` §6f (intern-exempte Tools, Control-Flow, Prompt-Text samt vom Channel wiederholtem Verlauf, Modellaufrufe außerhalb des Privacy-Handles) bleiben. Schaltet kein Prompt-Masking ein (`mask_user_prompt` bleibt eine Einstellung des Privacy-Guard-Plugins, Default aus) und erreicht keine Agenten auf dem Abo-CLI-Provider (`claude-cli`), die ohne Shield laufen (`docs/security-architecture.md` §3a). |
 
+**Sichtbarkeit (#1508, #1507).** `GET /api/v1/admin/runtime/privacy-posture`
+(hinter `requireAuth`, nicht in `/health`) liefert
+`{ shield_active, force_guarded, provider_ids }` aus
+`middleware/src/plugins/privacyPosture.ts`. `force_guarded` vergleicht exakt
+wie `resolveEffectivePrivacyMode`. Der Privacy-Picker im Store
+(`web-ui/app/_components/store/PrivacyModePicker.tsx`) zeigt damit "Locked by
+org policy" statt eines wirkungslosen Bypass; `shield_active: false` (kein
+`privacy.redact@1`-Provider publiziert, jeder Turn läuft unmaskiert) zeigt
+`PrivacyShieldBanner` auf Dashboard und `/admin`. Der Uninstall-Dialog eines
+`privacy.redact@1`-Providers warnt, dass die Maskierung für alle Chats endet.
+Die `per_tool`-Liste (`_privacy_bypass_scopes`) wird im selben Picker
+gepflegt (#1510); `PATCH /installed/:id/config` validiert beide
+Privacy-Keys (`checkPrivacyConfigValue`), speichert die Liste als
+`string[]` (der Install-Pfad schreibt weiterhin den rohen String, den
+`parseScopes` ebenso liest) und schreibt jede Änderung als
+`plugin.privacy_change` ins Admin-Audit.
+
 ### Abo-CLI-Turn-Budget (OM-104, Beta-Runde 5)
 
 Wird vom `@omadia/orchestrator`-Package gelesen (`resolveCliSpawnTimeoutMs()` in
