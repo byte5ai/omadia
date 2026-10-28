@@ -1,8 +1,17 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 
+import type { RegistrySourceStatus } from '../api/admin-v1.js';
+import {
+  auditActorFromRequest,
+  type AdminAuditLog,
+  type AuditEntryInput,
+} from '../auth/adminAuditLog.js';
 import type { RegistryClient } from '../plugins/registryClient.js';
-import type { RegistryConfigStore } from '../plugins/registryConfigStore.js';
+import type {
+  RegistryConfigStore,
+  StoredRegistry,
+} from '../plugins/registryConfigStore.js';
 import { RegistryConfigError } from '../plugins/registryConfigStore.js';
 
 export interface AdminRegistriesDeps {
@@ -10,21 +19,31 @@ export interface AdminRegistriesDeps {
   /** Live client refreshed after every mutation so changes apply without a
    *  process restart. */
   client: RegistryClient;
+  /** #1487 — admin_audit writer. Absent on a DB-less boot. */
+  audit?: Pick<AdminAuditLog, 'record'>;
   log?: (msg: string) => void;
+}
+
+/** One row of `GET /`: the stored registry plus its last fetch outcome. */
+export interface RegistryListItem extends StoredRegistry {
+  /** #1482 — absent when the registry was not fetched yet. */
+  status?: RegistrySourceStatus;
 }
 
 /**
  * Admin CRUD for the plugin registries Core pulls from (the "store sources").
  * Mounted at /api/v1/admin/registries behind requireAuth.
  *
- *   GET    /            list configured registries (tokens NEVER returned)
+ *   GET    /            list configured registries with their last fetch
+ *                        status (tokens NEVER returned)
  *   POST   /            add { name, url, token? }
  *   PATCH  /:name       update { url?, token? }   (token:null clears it)
  *   DELETE /:name       remove
  *
  * The bearer `token` is write-only: it is stored in the encrypted vault and is
  * never echoed back — the listing only reports `has_token`. After each
- * mutation the live `RegistryClient` is reloaded from the store.
+ * mutation the live `RegistryClient` is reloaded from the store, and an
+ * admin_audit row records who changed which registry (#1487).
  */
 export function createAdminRegistriesRouter(deps: AdminRegistriesDeps): Router {
   const router = Router();
@@ -34,9 +53,30 @@ export function createAdminRegistriesRouter(deps: AdminRegistriesDeps): Router {
     deps.client.setRegistries(await deps.store.list());
   };
 
+  const audit = async (entry: AuditEntryInput): Promise<void> => {
+    if (!deps.audit) return;
+    try {
+      await deps.audit.record(entry);
+    } catch (err) {
+      // Best-effort, loud: the change stands even if the row fails.
+      console.error(
+        `[registry] audit write failed for ${entry.action} ${JSON.stringify(entry.target)}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  };
+
   router.get('/', async (_req: Request, res: Response) => {
     await withStore(res, async () => {
-      const registries = await deps.store.listPublic();
+      const stored = await deps.store.listPublic();
+      // #1482 — the client caches outcomes and bounds every fetch, so this
+      // costs at most one index deadline and usually nothing.
+      const { sources } = await deps.client.listAll();
+      const byName = new Map(sources.map((s) => [s.name, s]));
+      const registries: RegistryListItem[] = stored.map((r) => {
+        const status = byName.get(r.name);
+        return status ? { ...r, status } : { ...r };
+      });
       res.json({ registries });
     });
   });
@@ -57,6 +97,12 @@ export function createAdminRegistriesRouter(deps: AdminRegistriesDeps): Router {
       await deps.store.add(token ? { name, url, token } : { name, url });
       await refresh();
       log(`[registry] admin added registry '${name}' (${url})`);
+      await audit({
+        actor: auditActorFromRequest(req),
+        action: 'registry.create',
+        target: `registry:${name}`,
+        after: { url, has_token: Boolean(token) },
+      });
       res.status(201).json({ ok: true });
     });
   });
@@ -82,9 +128,18 @@ export function createAdminRegistriesRouter(deps: AdminRegistriesDeps): Router {
         });
         return;
       }
+      const before = await findStored(deps.store, name);
       await deps.store.update(name, patch);
       await refresh();
       log(`[registry] admin updated registry '${name}'`);
+      const after = await findStored(deps.store, name);
+      await audit({
+        actor: auditActorFromRequest(req),
+        action: 'registry.update',
+        target: `registry:${name}`,
+        ...(before ? { before: auditView(before) } : {}),
+        ...(after ? { after: auditView(after) } : {}),
+      });
       res.json({ ok: true });
     });
   });
@@ -96,14 +151,33 @@ export function createAdminRegistriesRouter(deps: AdminRegistriesDeps): Router {
         res.status(400).json({ code: 'registry_config.missing_name' });
         return;
       }
+      const before = await findStored(deps.store, name);
       await deps.store.remove(name);
       await refresh();
       log(`[registry] admin removed registry '${name}'`);
+      await audit({
+        actor: auditActorFromRequest(req),
+        action: 'registry.delete',
+        target: `registry:${name}`,
+        ...(before ? { before: auditView(before) } : {}),
+      });
       res.json({ ok: true });
     });
   });
 
   return router;
+}
+
+async function findStored(
+  store: RegistryConfigStore,
+  name: string,
+): Promise<StoredRegistry | undefined> {
+  return (await store.listPublic()).find((r) => r.name === name);
+}
+
+/** What an audit row may say about a registry: never the token itself. */
+function auditView(r: StoredRegistry): { url: string; has_token: boolean } {
+  return { url: r.url, has_token: r.has_token };
 }
 
 async function withStore(res: Response, fn: () => Promise<void>): Promise<void> {

@@ -3844,6 +3844,8 @@ Die Schwellen der drei Schichten und die Reserve für Geräte-Cookies sind Konst
 | Variable | Wirkung |
 |---|---|
 | `MCP_STDIO_ENABLED` | `true`/`false`, Default `true` (Verhalten wie vor #1342). Ein stdio-MCP-Server startet seine Kommandozeile als Kindprozess der Middleware, mit deren OS-User, Dateisystem und Netz. `false` schaltet das ab: Anlegen wird mit 400 `mcp_stdio_disabled` / `code: stdio_disabled` abgelehnt, manuell (`POST /api/v1/operator/mcp-servers` mit `transport: stdio`) wie per Katalog-Import (`POST …/mcp-servers/from-registry`, der auf einen stdio-/`npx`-Eintrag auflöst). Bestehende stdio-Zeilen bleiben gespeichert, werden aber beim Verbinden abgewiesen (Discover → 502 `mcp_discover_failed` / `code: stdio_disabled`, Re-Scan aller Server, periodischer Re-Scan, Tool-Aufrufe zur Laufzeit); es wird kein Prozess gestartet. Ob Compose-Deployments mit `false` ausgeliefert werden, ist nicht entschieden. |
+| `REGISTRY_URLS` | JSON-Liste `[{name,url,token?}]` der Plugin-Registries (Hub-Quellen). Wird **nur beim ersten Boot** gelesen (#1483): `seedRegistriesOnFirstBoot` schreibt die Liste nach `platform_settings` → `registry.list`; danach verwaltet Admin · Registries sie, und eine geleerte Liste bleibt über Neustarts leer. Ungesetzt → `hub.omadia.ai`; `'[]'` → Instanz ohne Registry (ZIP-Upload geht weiter). DB-loser Boot seedet weiterhin bei jedem Start. |
+| `REGISTRY_FETCH_TIMEOUT_MS` | Deadline für den Index-Abruf einer Registry, Body inklusive (#1458). Default `5000`, Werte über `8000` werden geklemmt, damit `GET /api/v1/store/plugins` unter dem 10-s-Budget der Web-UI (`RSC_FETCH_TIMEOUT_MS`) antwortet. Ergebnisse cacht `RegistryClient` pro Registry (5 min ok, 60 s Fehler), parallele Anfragen teilen einen Abruf, jede Admin-Änderung leert den Cache. Artefakt-Downloads haben eine eigene 120-s-Deadline. |
 | `MCP_RESCAN_INTERVAL_MS` | Intervall des periodischen Re-Scans aller aktiven MCP-Server in ms (`src/index.ts`), Default 6 h, `0` schaltet ihn ab. Prüft bei jedem Lauf dieselbe Outbound-Regel und denselben stdio-Schalter wie ein manueller Discover. |
 
 Die Outbound-Regel für operator-konfigurierte MCP-Ziele (Registry-URL, `http`-/`sse`-Endpoint) hat keine Env-Variable: Link-Local- und Cloud-Metadata-Ziele werden immer abgewiesen (400 bzw. 502 mit `code: blocked_host`), private und Loopback-Adressen bleiben erlaubt.
@@ -4893,6 +4895,17 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 ---
 
 ## 13. Offene Roadmap
+
+### Plugin-UI-Host-Seite: Live-Appearance-Kanal (#1480)
+
+Seit #1480 lädt `PluginUiFrame` ein Plugin-Bundle bei Theme-, Paletten- oder
+Sprachwechsel nur noch neu, wenn das Bundle sich nicht mit
+`{ type: 'omadia:plugin-ui:ready' }` per `postMessage` gemeldet hat. Gemeldete
+Bundles bekommen `{ type: 'omadia:plugin-ui:appearance', theme, palette,
+locale }` (Vertrag: `specs/470-dev-platform-plugin/plugin-ui-vocabulary.md`).
+Offen: `@omadia/dev-platform` (`packages/ui/src/lib/appearance.ts`) meldet sich
+noch nicht und wird daher weiter neu geladen, bis es den Kanal übernimmt.
+Heading, Tab- und Frame-Titel nehmen seit #1479 das Nav-Label des Plugins.
 
 ### Plugin-UI-Host-Seite: Restrisiko nach dem Bundle-Gate (#1454)
 
@@ -8060,3 +8073,20 @@ Entschieden (Marcel, 2026-10-16): sichtbarer Manifest-Text wird als
   Builder-Agents lösen deshalb die Loader-Warnung aus, bis die Builder-Spec
   zweisprachige Felder bekommt (Folge-Issue).
 
+## Plugin-Registries: Status sichtbar, Seed nur beim ersten Boot, Änderungen im Audit (#1458 / #1482 / #1483 / #1487, 2026-10-28)
+
+- `RegistryClient.listAll()` liefert neben `plugins`/`errors` jetzt `sources`:
+  ein `RegistrySourceStatus` pro konfigurierter Registry (`ok`, `checked_at`,
+  `plugin_count` bzw. `error.code`/`error.message`). Er wird nie rejected.
+- `GET /api/v1/store/plugins` reicht das als `registries` durch (fehlt, wenn keine
+  Registry konfiguriert ist); die Liste ist bei einem Ausfall partiell, lokale und
+  installierte Plugins sind immer da. `GET /api/v1/admin/registries` hängt den
+  Status als `status` an jede Zeile.
+- `POST /api/v1/install/registry/:id`: Plugin nicht gefunden **und** eine Registry
+  nicht lesbar → 502 `registry_install.registry_unavailable` mit
+  `params.registries`; die Web-UI baut den Satz aus `store.install.registryUnavailable`.
+  Die Gründe in Hub-Tab und Admin · Registries kommen aus `registryStatus.errors.*`
+  (per `error.code`), die englische Server-Message nur als technisches Detail.
+- Admin-Mutationen schreiben `registry.create` / `registry.update` /
+  `registry.delete` nach `admin_audit` (Actor via `auditActorFromRequest`, `url` und
+  `has_token` vorher/nachher, nie das Token). Best-effort wie bei `install.ts`.

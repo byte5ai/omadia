@@ -1,4 +1,5 @@
 import { extractFromJsonFile } from './setupJsonFile.js';
+import { booleanSetupDefault } from './setupFieldDefault.js';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
@@ -1006,7 +1007,15 @@ export function extractSetupSchema(
       const accept = asString(f['accept']);
       if (accept) field.accept = accept;
     }
-    if (f['default'] !== undefined) field.default = f['default'];
+    if (type === 'boolean') {
+      // #1464 — normalized exactly like the catalog projection (manifestLoader),
+      // so a `default: "true"` pre-checks the box and the missing-value
+      // fallback below stores `true`, not the string.
+      const defaultValue = booleanSetupDefault(f['default']);
+      if (defaultValue !== undefined) field.default = defaultValue;
+    } else if (f['default'] !== undefined) {
+      field.default = f['default'];
+    }
     // OM-17 — same load-time compile gate as manifestLoader: an uncompilable or
     // catastrophically-backtracking pattern is dropped (warned once, cached) so
     // it can never reach the request path. Keeps the install-schema projection

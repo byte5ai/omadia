@@ -280,7 +280,9 @@ export function InstallButton({
       }
       const message =
         err instanceof ApiError
-          ? safeMessage(err.body) ?? err.message
+          ? registryUnavailableMessage(err.body, t) ??
+            safeMessage(err.body) ??
+            err.message
           : err instanceof Error
             ? err.message
             : t('unknownError');
@@ -530,7 +532,9 @@ function InstalledPanel({
         kind: 'text',
         message:
           err instanceof ApiError
-            ? (safeMessage(err.body) ?? err.message)
+            ? (registryUnavailableMessage(err.body, t) ??
+              safeMessage(err.body) ??
+              err.message)
             : err instanceof Error
               ? err.message
               : String(err),
@@ -1078,6 +1082,25 @@ function tryParseErrorBody(body: string): {
   } catch {
     return null;
   }
+}
+
+/**
+ * #1482 — a registry that could not be read is not "plugin not found"; the
+ * middleware names it in `params.registries`, the sentence comes from the
+ * catalog (the server `message` is English).
+ */
+function registryUnavailableMessage(
+  body: string,
+  t: (key: string, values?: Record<string, string>) => string,
+): string | null {
+  const parsed = tryParseErrorBody(body) as {
+    code?: string;
+    params?: { registries?: unknown };
+  } | null;
+  if (parsed?.code !== 'registry_install.registry_unavailable') return null;
+  const registries =
+    typeof parsed.params?.registries === 'string' ? parsed.params.registries : '';
+  return t('registryUnavailable', { registries });
 }
 
 function safeMessage(body: string): string | null {

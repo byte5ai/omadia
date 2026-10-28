@@ -5,6 +5,7 @@ import type {
   InstallCreateResponse,
   InstallJob,
   ListUploadedPackagesResponse,
+  RegistrySourceStatus,
   StoreGetResponse,
   StoreListResponse,
   UploadPackageResponse,
@@ -1195,6 +1196,9 @@ export interface StoredRegistry {
   name: string;
   url: string;
   has_token: boolean;
+  /** #1482 — outcome of the last index fetch; absent when not fetched yet
+   *  (or on an older middleware). */
+  status?: RegistrySourceStatus;
 }
 
 export interface RegistryListResponse {

@@ -550,11 +550,9 @@ export function CredentialsEditor({
           onClick={() => void onSave()}
           disabled={saving || dirtyCount === 0 || invalidKeys.size > 0}
           busy={saving}
-          busyLabel={
-            dirtyCount > 0
-              ? t('saveWithCount', { count: dirtyCount })
-              : t('save')
-          }
+          // #1475 — a progress verb, not the idle label: saving re-activates
+          // the plugin and can take seconds.
+          busyLabel={t('saving')}
         >
           <CheckCircle2 className="size-3.5" aria-hidden />
           {dirtyCount > 0
