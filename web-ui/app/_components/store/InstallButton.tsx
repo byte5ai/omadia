@@ -30,8 +30,14 @@ import type {
   InstallSetupField,
   InstallValidationError,
   LocalizedMarkdown,
+  PluginKind,
   PluginReadiness,
 } from '../../_lib/storeTypes';
+import { parseActivationResult } from '../../_lib/activationError';
+import {
+  ActivationFailureNotice,
+  useActivationErrorLabel,
+} from './ActivationFailureNotice';
 import { PostInstallNextSteps } from './PostInstallNextSteps';
 import { PrivacyModePicker } from './PrivacyModePicker';
 import { PermissionsStep, hasGrantsToAsk } from './PermissionsStep';
@@ -74,6 +80,11 @@ interface InstallButtonProps {
   /** Capabilities the plugin provides. #1507 — a `privacy.redact@1` provider
    *  gets a data-protection warning in its uninstall dialog. */
   provides?: string[];
+  /** #1492 — the plugin's kind, so the next-step hint fits how it is used. */
+  kind?: PluginKind;
+  /** #1492 — names of the orchestrators this plugin is enabled on; `null`
+   *  when unknown (not an attachable kind, or the lookup failed). */
+  attachedTo?: string[] | null;
 }
 
 /** The Privacy Shield capability (`PRIVACY_REDACT_CAPABILITY` in plugin-api). */
@@ -84,7 +95,14 @@ type Phase =
   | { kind: 'creating' }
   | { kind: 'form'; job: InstallJob }
   | { kind: 'submitting'; job: InstallJob; values: Record<string, unknown> }
-  | { kind: 'error'; job: InstallJob | null; message: string }
+  | {
+      kind: 'error';
+      job: InstallJob | null;
+      message: string;
+      /** #1456 — set when the plugin installed but did not start: rendered
+       *  as localized copy per code, the raw message as technical detail. */
+      activation?: { code: unknown; detail: string | null };
+    }
   | { kind: 'wizard'; resolution: InstallChainResolution }
   /** Epic #470 C16 (#817) — the install succeeded and the manifest asks for at
    *  least one operator grant. Entered INSTEAD of `success`, so a plugin is
@@ -105,6 +123,8 @@ export function InstallButton({
   setupGuide,
   readiness,
   provides,
+  kind,
+  attachedTo,
 }: InstallButtonProps): React.ReactElement {
   const t = useTranslations('store.install');
   const router = useRouter();
@@ -136,6 +156,8 @@ export function InstallButton({
           provides?.includes(PRIVACY_REDACT_CAPABILITY) ?? false
         }
         {...(readiness ? { readiness } : {})}
+        {...(kind ? { kind } : {})}
+        attachedTo={attachedTo ?? null}
         {...(installState === 'update-available' && availableVersion
           ? { update: { from: installedVersion ?? '', to: availableVersion } }
           : {})}
@@ -317,9 +339,11 @@ export function InstallButton({
       setPhase({
         kind: 'error',
         job,
-        message: t('activationFailed', {
-          message: job.activation_state?.error ?? t('unknownError'),
-        }),
+        message: t('activationFailedLead'),
+        activation: {
+          code: job.activation_state?.error_code,
+          detail: job.activation_state?.error ?? null,
+        },
       });
       return;
     }
@@ -427,6 +451,8 @@ function InstalledPanel({
   update,
   readiness,
   providesPrivacyShield = false,
+  kind,
+  attachedTo,
 }: {
   pluginId: string;
   pluginName: string;
@@ -437,14 +463,18 @@ function InstalledPanel({
   update?: { from: string; to: string };
   /** OM-16 — kernel-derived readiness; drives the state word on the pill. */
   readiness?: PluginReadiness;
+  kind?: PluginKind;
+  attachedTo: string[] | null;
 }): React.ReactElement {
   const t = useTranslations('store.install');
   const tState = useTranslations('store.stateBadge');
+  const activationErrorLabel = useActivationErrorLabel();
   const router = useRouter();
   // OM-16 — readiness → pill tone + state word. No readiness (older
-  // middleware) keeps the previous unqualified "active".
+  // middleware) keeps the previous unqualified "active". #1453's
+  // `connection_failed` is red too: the plugin cannot serve a request.
   const readinessTone: 'ok' | 'warning' | 'danger' =
-    readiness?.state === 'errored'
+    readiness?.state === 'errored' || readiness?.state === 'connection_failed'
       ? 'danger'
       : readiness?.state === 'config_required' ||
           readiness?.state === 'awaiting_llm'
@@ -453,11 +483,13 @@ function InstalledPanel({
   const readinessLabel =
     readiness?.state === 'errored'
       ? tState('errored')
-      : readiness?.state === 'config_required'
-        ? tState('configRequired')
-        : readiness?.state === 'awaiting_llm'
-          ? tState('awaitingLlm')
-          : t('active');
+      : readiness?.state === 'connection_failed'
+        ? tState('connectionFailed')
+        : readiness?.state === 'config_required'
+          ? tState('configRequired')
+          : readiness?.state === 'awaiting_llm'
+            ? tState('awaitingLlm')
+            : t('active');
   const missingFieldsTitle =
     readiness?.state === 'config_required' &&
     readiness.missing_fields.length > 0
@@ -475,7 +507,11 @@ function InstalledPanel({
   // upload pipeline's migrate/re-activate hooks swap the active version; a
   // refresh re-reads the (now updated) install state.
   const [updating, setUpdating] = useState(false);
-  const [updateError, setUpdateError] = useState<string | null>(null);
+  const [updateError, setUpdateError] = useState<
+    | { kind: 'activation'; code: unknown; detail: string | null }
+    | { kind: 'text'; message: string }
+    | null
+  >(null);
 
   async function doUpdate(): Promise<void> {
     if (!update) return;
@@ -488,20 +524,33 @@ function InstalledPanel({
       // below now repaints an honest badge; naming the reason here is what
       // tells the operator who clicked "Update" that the plugin is down and
       // why. `router.refresh()` still runs: the installed version DID change.
-      if (res.activation_error) {
-        setUpdateError(t('updateActivationFailed', { message: res.activation_error }));
+      // #1497 — `activation` is the shared result shape; `activation_error`
+      // is what an older middleware sends.
+      const activation = parseActivationResult(res.activation);
+      if (activation?.state === 'errored') {
+        setUpdateError({
+          kind: 'activation',
+          code: activation.error_code,
+          detail: activation.error,
+        });
+      } else if (res.activation_error) {
+        // The hook's first-hand verdict wins even over an `active` read-back
+        // (a registry write that failed after the throw).
+        setUpdateError({ kind: 'activation', code: undefined, detail: res.activation_error });
       }
       router.refresh();
     } catch (err) {
-      setUpdateError(
-        err instanceof ApiError
-          ? (registryUnavailableMessage(err.body, t) ??
-            safeMessage(err.body) ??
-            err.message)
-          : err instanceof Error
-            ? err.message
-            : String(err),
-      );
+      setUpdateError({
+        kind: 'text',
+        message:
+          err instanceof ApiError
+            ? (registryUnavailableMessage(err.body, t) ??
+              safeMessage(err.body) ??
+              err.message)
+            : err instanceof Error
+              ? err.message
+              : String(err),
+      });
     } finally {
       setUpdating(false);
     }
@@ -553,9 +602,15 @@ function InstalledPanel({
           the plugin as plain `installed`, the update banner unmounts, and an
           error rendered inside it would disappear together with the only
           statement of WHY the plugin is down. */}
-      {updateError ? (
+      {updateError?.kind === 'activation' ? (
+        <ActivationFailureNotice
+          lead={t('updateActivationFailedLead')}
+          code={updateError.code}
+          detail={updateError.detail}
+        />
+      ) : updateError?.kind === 'text' ? (
         <p className="font-mono-num text-[11px] text-[color:var(--danger,#b03030)]">
-          {updateError}
+          {updateError.message}
         </p>
       ) : null}
       {update ? (
@@ -596,7 +651,11 @@ function InstalledPanel({
               ? 'bg-[color:var(--warning)]/12 ring-[color:var(--warning)]/40 text-[color:var(--warning)]'
               : 'bg-[color:var(--success)]/10 ring-[color:var(--success)]/40 text-[color:var(--success)]',
         )}
-        title={readiness?.error_detail ?? missingFieldsTitle}
+        title={
+          readiness?.state === 'errored'
+            ? activationErrorLabel(readiness.error_code)
+            : missingFieldsTitle
+        }
       >
         {readinessTone === 'ok' ? (
           <Check className="size-5" aria-hidden />
@@ -613,16 +672,26 @@ function InstalledPanel({
           screen-reader user never reaches and a touch user cannot hover. The
           reason the plugin is down is the one actionable thing on this page, so
           it is rendered as text. */}
-      {readiness?.state === 'errored' && readiness.error_detail ? (
-        <p className="font-mono-num text-[11px] text-[color:var(--danger,#b03030)]">
-          {t('activationFailed', { message: readiness.error_detail })}
-        </p>
+      {/* #1456 — and in the operator's language: what went wrong and what to
+          do about it, per code. The raw plugin-API sentence (written for plugin
+          authors, English in every locale) is only the collapsed detail. Hidden
+          while the update error above already says the same thing. */}
+      {readiness?.state === 'errored' && updateError?.kind !== 'activation' ? (
+        <ActivationFailureNotice
+          code={readiness.error_code}
+          detail={readiness.error_detail ?? null}
+        />
       ) : null}
 
       {/* OM-06/07 — installing is not the finish line: a plugin does nothing
           until it is attached to an orchestrator. Mirrors the skill-import
           success flow in DashboardOnboarding → BringYourSkills. */}
-      <PostInstallNextSteps pluginName={pluginName} readiness={readiness} />
+      <PostInstallNextSteps
+        pluginName={pluginName}
+        {...(readiness ? { readiness } : {})}
+        {...(kind ? { kind } : {})}
+        attachedTo={attachedTo}
+      />
 
       {/* Slice 2.5 — Privacy-Mode quick-picker. Operator-owned per-plugin
           setting that decides whether the orchestrator dispatch hook
@@ -887,7 +956,7 @@ function InstallDrawer({
           </div>
         ) : phase.kind === 'error' && !jobFromPhase ? (
           <div className="min-h-0 flex-1 overflow-y-auto p-8">
-            <InstallErrorBlock message={phase.message} />
+            <DrawerError phase={phase} />
           </div>
         ) : (
           <form
@@ -946,7 +1015,7 @@ function InstallDrawer({
 
               {phase.kind === 'error' && jobFromPhase ? (
                 <div className="mt-6">
-                  <InstallErrorBlock message={phase.message} />
+                  <DrawerError phase={phase} />
                 </div>
               ) : null}
             </div>
@@ -977,6 +1046,25 @@ function InstallDrawer({
     </div>,
     document.body,
   );
+}
+
+/** #1456 — an activation failure gets the localized notice; every other
+ *  drawer error keeps the generic block. */
+function DrawerError({
+  phase,
+}: {
+  phase: Extract<Phase, { kind: 'error' }>;
+}): React.ReactElement {
+  if (phase.activation) {
+    return (
+      <ActivationFailureNotice
+        lead={phase.message}
+        code={phase.activation.code}
+        detail={phase.activation.detail}
+      />
+    );
+  }
+  return <InstallErrorBlock message={phase.message} />;
 }
 
 function InstallErrorBlock({

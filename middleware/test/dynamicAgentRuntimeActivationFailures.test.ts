@@ -137,7 +137,10 @@ describe('DynamicAgentRuntime.activateAllInstalled — transient failure regress
         assert.equal(Object.hasOwn(entry, 'unresolved_requires'), false);
         assert.equal(runtime.attempts.length, attempt);
         assert.equal(registry.failureCalls.length, attempt);
-        assert.deepEqual(registry.failureCalls.at(-1), [AGENT_ID, ACTIVATION_ERROR]);
+        assert.deepEqual(registry.failureCalls.at(-1), [
+          AGENT_ID,
+          { message: ACTIVATION_ERROR, code: 'unknown' },
+        ]);
         assert.deepEqual(registry.blockCalls, []);
       }
 
@@ -153,7 +156,9 @@ describe('DynamicAgentRuntime.activateAllInstalled — transient failure regress
       const { runtime, registry, logs } = await makeRuntime(new Error(ACTIVATION_ERROR), failure);
 
       assert.deepEqual(await runtime.activateAllInstalled(), []);
-      assert.deepEqual(registry.failureCalls, [[AGENT_ID, ACTIVATION_ERROR]]);
+      assert.deepEqual(registry.failureCalls, [
+        [AGENT_ID, { message: ACTIVATION_ERROR, code: 'unknown' }],
+      ]);
       assert.deepEqual(registry.blockCalls, []);
       assert.deepEqual(logs, [
         [`[dynamic-runtime] activate FAILED for ${AGENT_ID}: ${ACTIVATION_ERROR}`],

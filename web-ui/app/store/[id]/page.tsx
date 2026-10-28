@@ -22,6 +22,7 @@ import { PluginVerdictBadge } from '../../_components/admin/PluginVerdictBadge';
 import { pickLocalized } from '../../_lib/localized';
 
 import { ApiError, getStorePlugin } from '../../_lib/api';
+import { listOperatorAgents } from '../../_lib/agents';
 import { APP_VERSION } from '../../_lib/appVersion';
 import { redirectIfUnauthorized } from '../../_lib/authRedirect';
 import type { Plugin, PluginSetupField } from '../../_lib/storeTypes';
@@ -56,6 +57,26 @@ export async function generateMetadata({
   } catch {
     const t = await getTranslations('store.detail');
     return { title: t('notFoundTitle') };
+  }
+}
+
+/**
+ * #1492 — the orchestrators an installed agent/tool plugin is enabled on, so
+ * the next-step hint stops asking to attach a plugin that is attached already.
+ * `null` when the question does not apply or cannot be answered — the hint then
+ * falls back to its generic wording rather than claiming either way.
+ */
+async function orchestratorsUsing(plugin: Plugin): Promise<string[] | null> {
+  const installed =
+    plugin.install_state === 'installed' || plugin.install_state === 'update-available';
+  if (!installed || (plugin.kind !== 'agent' && plugin.kind !== 'tool')) return null;
+  try {
+    const { agents } = await listOperatorAgents();
+    return agents
+      .filter((a) => a.plugins.some((p) => p.id === plugin.id && p.enabled))
+      .map((a) => a.name);
+  } catch {
+    return null;
   }
 }
 
@@ -101,6 +122,7 @@ export default async function PluginDetailPage({
   const localizedDescription =
     pickLocalized(plugin.description_localized, locale) ?? plugin.description;
   const t = await getTranslations('store.detail');
+  const attachedTo = await orchestratorsUsing(plugin);
 
   // S+7.7 / 2026-05-04 — admin-ui mount path. Conditional on the manifest
   // declaring `admin_ui_path` AND the plugin being installed (or having an
@@ -412,6 +434,8 @@ export default async function PluginDetailPage({
               : {})}
             {...(blocking_reasons ? { blockingReasons: blocking_reasons } : {})}
             {...(plugin.provides ? { provides: plugin.provides } : {})}
+            kind={plugin.kind}
+            attachedTo={attachedTo}
           />
 
           {/* OM-06 / #671 — the capability this plugin provides is already

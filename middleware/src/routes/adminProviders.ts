@@ -256,6 +256,11 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
           // Retained for backwards compatibility: "a key is on file". Callers
           // that need "the key actually works" must read `status` instead.
           connected: verification.status !== 'no_key',
+          // #1460 — a keyless provider (Ollama) is `connected` without any
+          // key, so `connected` cannot tell the UI whether "Change key" /
+          // "Remove key" have anything to act on. These two can.
+          requiresApiKey: descriptor?.policy?.requiresApiKey !== false,
+          hasKey: (await findProviderKey(deps.vault, id)) !== undefined,
           // OM-11: the customer clicked "Anmelden →" on a provider whose CLI is
           // not on this server and landed on a page with no possible action.
           // The DTO carried no way to know that. Key-based providers need no
@@ -387,21 +392,31 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
 
     try {
       const descriptor = deps.llmProviderCatalog?.get(providerId);
+      // A CLI-login or OAuth provider has no endpoint to reach and no key to
+      // probe: its check IS the login (#309) / the stored grant (#294), which
+      // the read-side resolver already answers.
+      if (providerId === 'claude-cli' || descriptor?.oauth !== undefined) {
+        res.json(
+          await resolveProviderVerification(providerId as ProviderId, {
+            vault: deps.vault,
+            llmProviderCatalog: deps.llmProviderCatalog,
+            cliSnapshot: await detectCliBackends().catch(() => undefined),
+          }),
+        );
+        return;
+      }
+      const keyless = descriptor?.policy?.requiresApiKey === false;
       const found = await findProviderKey(deps.vault, providerId as ProviderId);
-      if (found === undefined) {
-        // Keyless providers verify without a credential; everything else needs
-        // one before there is anything to probe.
-        if (descriptor?.policy?.requiresApiKey === false) {
-          res.json({ status: 'verified' } satisfies ProviderVerification);
-          return;
-        }
+      // #1460 — a keyless provider is checked by reaching it, key or not; it
+      // used to answer `verified` here without a single request.
+      if (found === undefined && !keyless) {
         res.json({ status: 'no_key' } satisfies ProviderVerification);
         return;
       }
 
       const verification = await verifyProviderCredential({
         providerId,
-        apiKey: found.apiKey,
+        apiKey: found?.apiKey ?? '',
         ...(descriptor?.wireFormat !== undefined
           ? { wireFormat: descriptor.wireFormat }
           : {}),
@@ -416,7 +431,10 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
 
       // Durability. Written ONLY here and on a key save — never on a read: the
       // vault is a single encrypted blob rewritten in full on every write.
-      if (deps.vault) {
+      // #1460 — never for a keyless provider: its verdict is reachability, a
+      // fact about a daemon that can stop at any time, and a record surviving
+      // a restart would claim a check that no longer holds.
+      if (deps.vault && found !== undefined && !keyless) {
         const vaultKey = providerVerifiedAtVaultKey(providerId);
         try {
           if (verification.status === 'verified') {

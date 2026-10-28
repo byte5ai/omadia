@@ -137,6 +137,7 @@ export function createPackagesRouter(deps: PackagesRouterDeps): Router {
         ...(result.activation_error !== undefined
           ? { activation_error: result.activation_error }
           : {}),
+        ...(result.activation !== undefined ? { activation: result.activation } : {}),
       });
     },
   );
