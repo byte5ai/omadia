@@ -3,6 +3,7 @@ import { notFound } from 'next/navigation';
 import { getTranslations } from 'next-intl/server';
 
 import { decodePluginIdSegment } from '@/app/_lib/pluginId';
+import { pluginUiBundleMayExist } from '@/app/_lib/pluginUiBundle';
 
 import { PluginUiFrame } from './_components/PluginUiFrame';
 
@@ -36,8 +37,11 @@ export async function generateMetadata({
   const { pluginId: segment } = await params;
   const pluginId = decodePluginIdSegment(segment);
   // An invalid id renders the 404 page; it gets the default title rather
-  // than echoing the raw segment into the tab.
+  // than echoing the raw segment into the tab. Same for a well-formed id with
+  // no bundle behind it (#1454) — the page below refuses it, and a tab titled
+  // after a plugin whose UI does not exist is the 404 page wearing its name.
   if (pluginId === null) return {};
+  if (!(await pluginUiBundleMayExist(pluginId))) return {};
   const t = await getTranslations('pluginUi');
   return { title: t('metaTitle', { pluginId }) };
 }
@@ -59,6 +63,15 @@ export default async function PluginUiPage({
   // iframe `src`. Validating the raw param 404'd every scoped id (#1399).
   const pluginId = decodePluginIdSegment(segment);
   if (pluginId === null) notFound();
+
+  // #1454 — a well-formed id is not a plugin UI; without this check an id with
+  // no bundle got heading, subtitle and a frame painting the middleware's JSON
+  // error, under HTTP 200. See `pluginUiBundle.ts` for what the probe does and
+  // does not promise. Two placement rules: AFTER the charset gate, so a
+  // malformed id never reaches a fetch URL, and `notFound()` called HERE
+  // rather than inside the helper — a page that delegates it loses the 404
+  // status and the guard in `app/__tests__/loadingBoundaries.test.ts` (#1398).
+  if (!(await pluginUiBundleMayExist(pluginId))) notFound();
 
   const t = await getTranslations('pluginUi');
 

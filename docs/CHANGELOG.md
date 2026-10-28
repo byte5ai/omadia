@@ -55,6 +55,30 @@ production dependency pins. The first covers zod 3.25.x inside `botbuilder`
 on load under zod 4, and inbound Bot Framework requests never reach the array
 schemas the advisory is about. The stale `braces` exception is removed.
 
+### Fixed — a plugin id without a UI bundle gets the 404 page, not raw JSON (#1454)
+
+2026-10-27. `/plugin-ui/<pluginId>` rendered heading, subtitle and iframe for
+every *well-formed* id and answered HTTP 200, so the frame displayed the
+middleware's own API error — `{"error":"plugin_ui_not_found"}` as document text
+— for an unknown id (`/plugin-ui/does-not-exist`) and, more commonly, for an
+installed, active plugin that simply ships no `ui/` directory. The charset gate
+(#1398/#1399/#1414) was the page's only check; nothing asked whether a bundle
+existed. The page now probes the serving handler before it renders —
+`web-ui/app/_lib/pluginUiBundle.ts`, `HEAD /p/<id>/ui/index.html` against
+`MIDDLEWARE_URL`, the id encoded as one segment so scoped ids keep working —
+and calls `notFound()` in the page file itself for a 404, which yields the
+omadia 404 page with a real 404 status. `generateMetadata` gates the same way,
+so the tab stops being titled after a plugin UI that does not exist. Anything
+other than a definite 404 (5xx, timeout, unreachable middleware) counts as
+present: an outage must not masquerade as a missing plugin. The residue of
+that choice is stated rather than hidden — while the middleware is down or
+timing out, the frame can still paint that JSON, now intermittently where it
+used to be deterministic, and a 404 on a sub-resource (`.../ui/app.js`) is
+unchanged. No middleware behaviour changed — `/p/<id>/ui/*` keeps its JSON 404 for API callers; the
+`HEAD` contract the probe depends on is now pinned in
+`middleware/test/pluginUiStaticServing.test.ts`, including the
+installed-without-`ui/` case.
+
 ### Changed — an unconfirmed answer no longer carries a "Hinweis" paragraph
 
 2026-10-16. In `enforce` mode an answer whose claims the verifier could not
