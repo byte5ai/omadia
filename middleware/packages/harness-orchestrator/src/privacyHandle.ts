@@ -22,6 +22,7 @@ import type {
   PromptMaskedSpanInfo,
   ToolErrorCarrier,
   ToolErrorOutcome,
+  UnresolvedSurrogateCountOptions,
 } from '@omadia/plugin-api';
 
 /** Options for {@link PrivacyTurnHandle.maskUserPrompt}. */
@@ -164,7 +165,10 @@ export interface PrivacyTurnHandle {
    * `PrivacyGuardService.countUnresolvedSurrogates`). `0` when the provider
    * predates the contract. Optional like `projectVerifierText`.
    */
-  countUnresolvedSurrogates?(text: string): Promise<number>;
+  countUnresolvedSurrogates?(
+    text: string,
+    options?: UnresolvedSurrogateCountOptions,
+  ): Promise<number>;
   /**
    * #361 — invert this turn's prompt-surrogate map over the final answer.
    * Identity when nothing was masked. Must run BEFORE `finalize` (which
@@ -337,8 +341,8 @@ export function createPrivacyTurnHandle(deps: {
       return deps.service.maskReplayedAnswer(request);
     },
 
-    async countUnresolvedSurrogates(text) {
-      return (await deps.service.countUnresolvedSurrogates?.(deps.turnId, text)) ?? 0;
+    async countUnresolvedSurrogates(text, options) {
+      return (await deps.service.countUnresolvedSurrogates?.(deps.turnId, text, options)) ?? 0;
     },
 
     async restorePromptPseudonyms(text) {

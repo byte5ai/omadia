@@ -8,7 +8,7 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
-## 1.37.0 — 2026-10-28
+## 1.38.0 — 2026-10-28
 
 Additive. A turn answered without Privacy Shield protection can be kept out of
 recall that runs under a shield (#1507).
@@ -17,12 +17,25 @@ recall that runs under a shield (#1507).
 
 - **`TurnIngest.unprotected`** — the turn ran without a `privacy.redact@1`
   provider, or a tool bypassed the shield, so its answer holds values no
-  shield masked. Stored as a Turn property; written unconditionally like
-  `tailOnly`.
+  shield masked. Stored as a Turn property, only written when present (like
+  `owners`), so a re-ingest from transcripts keeps it.
 - **`excludeUnprotected`** on `SearchTurnsOptions`,
   `SearchTurnsByEmbeddingOptions` and `EntityCapturedTurnsOptions` — leave
   such turns out. A backend that ignores it stays correct for instances
   without a shield, and recalls them under one.
+
+## 1.37.0 — 2026-10-28
+
+Additive. Prompt-surrogate restore tells the user what it could not map back
+(#1528).
+
+### Added
+
+- **`UnresolvedSurrogateCountOptions`** — `{ unreadableLiterals?: boolean }`.
+- **`PrivacyGuardService.countUnresolvedSurrogates(turnId, text, options?)`**
+  — the new optional third parameter. `unreadableLiterals: false` drops the
+  fail-closed hit on a date or amount literal whose value cannot be read, for
+  a notice to the user. Default unchanged.
 
 ## 1.36.0 — 2026-10-28
 

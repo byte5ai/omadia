@@ -2168,6 +2168,9 @@ readonly degraded: boolean;
 readonly outcome: 'withheld';
 readonly reason: string;
 };
+export interface UnresolvedSurrogateCountOptions {
+readonly unreadableLiterals?: boolean;
+}
 export interface PrivacyGuardService {
 internToolResultV4(request: PrivacyToolResultV4Request): Promise<PrivacyToolResultV4Result>;
 recordBypassedTool(request: PrivacyBypassedToolRequest): Promise<void>;
@@ -2186,7 +2189,7 @@ snapshotPromptRestorer?(turnId: string): ((text: string) => string) | undefined;
 projectVerifierText?(request: PrivacyVerifierProjectionRequest): Promise<PrivacyPromptMaskResult>;
 maskReplayedAnswer?(request: PrivacyReplayedAnswerRequest): Promise<PrivacyPromptMaskResult>;
 openStoredTextScope?(request: PrivacyStoredTextScopeRequest): PrivacyStoredTextScope;
-countUnresolvedSurrogates?(turnId: string, text: string): Promise<number>;
+countUnresolvedSurrogates?(turnId: string, text: string, options?: UnresolvedSurrogateCountOptions): Promise<number>;
 v4ToolSpecs(): ReadonlyArray<PrivacyV4ToolSpec>;
 finalizeTurn(turnId: string, turnInput?: string): Promise<PrivacyReceipt | undefined>;
 }
