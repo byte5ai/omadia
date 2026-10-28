@@ -2,12 +2,17 @@ import { describe, it, beforeEach, afterEach } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
+import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 
+import express from 'express';
 import yazl from 'yazl';
 
 import { PackageUploadService } from '../src/plugins/packageUploadService.js';
+import { createPackagesRouter } from '../src/routes/packages.js';
+import { InMemoryInstalledRegistry } from '../src/plugins/installedRegistry.js';
+import { listenLoopback } from './_helpers/listenLoopback.js';
 import type { PluginCatalog } from '../src/plugins/manifestLoader.js';
 import type {
   UploadedPackage,
@@ -256,5 +261,330 @@ describe('PackageUploadService ingest × scan scheduler (issue #453)', () => {
     })) as { code: string; params?: unknown };
     assert.equal(result.code, 'package.too_large');
     assert.deepEqual(result.params, { maxBytes: String(1024 * 1024) });
+  });
+});
+
+/**
+ * #1455 — version direction. `ingest` used to have exactly one version check
+ * (equality → `package.duplicate_version`), so an OLDER version of a plugin
+ * that was already installed took the upgrade path: migration ran, the running
+ * instance was swapped, and the replaced package folder was deleted. These
+ * tests pin the guard, the explicit opt-in, and the retired copy that makes a
+ * failed swap recoverable.
+ */
+describe('PackageUploadService ingest × version direction (issue #1455)', () => {
+  let packagesDir: string;
+
+  beforeEach(async () => {
+    packagesDir = await fs.mkdtemp(path.join(os.tmpdir(), 'downgrade-test-'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(packagesDir, { recursive: true, force: true });
+  });
+
+  /** Lay down `<packagesDir>/<id>/<version>/` the way a prior ingest would
+   *  have, and return the store record that points at it. */
+  async function seedInstalled(
+    id: string,
+    version: string,
+  ): Promise<UploadedPackage> {
+    const dir = path.join(packagesDir, id, version);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(
+      path.join(dir, 'manifest.yaml'),
+      MANIFEST_YAML.replace('version: "1.0.0"', `version: "${version}"`),
+      'utf-8',
+    );
+    return {
+      id,
+      version,
+      path: dir,
+      uploaded_at: '2026-10-01T00:00:00.000Z',
+      uploaded_by: 'seed@example.com',
+      sha256: 'a'.repeat(64),
+      peers_missing: [],
+      zip_bytes: 1,
+      extracted_bytes: 1,
+      file_count: 1,
+    };
+  }
+
+  function seededStore(seed: UploadedPackage): {
+    store: UploadedPackageStore;
+    packages: Map<string, UploadedPackage>;
+  } {
+    const packages = new Map<string, UploadedPackage>([[seed.id, seed]]);
+    const store = {
+      get: (id: string) => packages.get(id),
+      has: (id: string) => packages.has(id),
+      list: () => [...packages.values()],
+      register: async (pkg: UploadedPackage) => {
+        packages.set(pkg.id, pkg);
+      },
+    } as unknown as UploadedPackageStore;
+    return { store, packages };
+  }
+
+  it('refuses an older version by default and leaves the installed one alone', async () => {
+    const seed = await seedInstalled('@test/scan-target', '2.0.0');
+    const { store, packages } = seededStore(seed);
+    // A plugin that is installed AND running is the case from the report.
+    const registry = new InMemoryInstalledRegistry();
+    await registry.register({
+      id: '@test/scan-target',
+      installed_version: '2.0.0',
+      installed_at: '2026-10-01T00:00:00.000Z',
+      status: 'active',
+      config: { tenant: 'acme' },
+    });
+    let activations = 0;
+    const svc = new PackageUploadService({
+      store,
+      catalog: fakeCatalog(),
+      packagesDir,
+      limits: { maxBytes: 1024 * 1024, maxExtractedBytes: 4 * 1024 * 1024, maxEntries: 50 },
+      hostDependencies: {},
+      registry,
+      onPackageReady: async () => {
+        activations += 1;
+      },
+      log: () => undefined,
+    });
+
+    const result = (await svc.ingest({
+      fileBuffer: await fixtureZip(),
+      originalFilename: 'scan-target-1.0.0.zip',
+      uploadedBy: 'operator@example.com',
+    })) as { ok: boolean; code: string; params?: unknown };
+
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'package.downgrade_blocked');
+    assert.deepEqual(result.params, {
+      pluginId: '@test/scan-target',
+      fromVersion: '2.0.0',
+      toVersion: '1.0.0',
+    });
+
+    // Refusal is total: the installed version stays in the store index and on
+    // disk, and the older version never lands.
+    assert.equal(packages.get('@test/scan-target')?.version, '2.0.0');
+    await fs.access(path.join(seed.path, 'manifest.yaml'));
+    await assert.rejects(
+      fs.access(path.join(packagesDir, '@test/scan-target', '1.0.0')),
+    );
+    // The installed registry keeps its version and config, and the running
+    // instance was never touched: no migration, no deactivate/activate cycle.
+    const entry = registry.get('@test/scan-target');
+    assert.equal(entry?.installed_version, '2.0.0');
+    assert.deepEqual(entry?.config, { tenant: 'acme' });
+    assert.equal(activations, 0);
+  });
+
+  it('installs the older version with allowDowngrade, and names the direction', async () => {
+    const seed = await seedInstalled('@test/scan-target', '2.0.0');
+    const { store, packages } = seededStore(seed);
+    const logs: string[] = [];
+    const svc = new PackageUploadService({
+      store,
+      catalog: fakeCatalog(),
+      packagesDir,
+      limits: { maxBytes: 1024 * 1024, maxExtractedBytes: 4 * 1024 * 1024, maxEntries: 50 },
+      hostDependencies: {},
+      log: (m) => logs.push(m),
+    });
+
+    const result = (await svc.ingest({
+      fileBuffer: await fixtureZip(),
+      originalFilename: 'scan-target-1.0.0.zip',
+      uploadedBy: 'operator@example.com',
+      allowDowngrade: true,
+    })) as { ok: boolean; version: string; direction?: string };
+
+    assert.equal(result.ok, true);
+    assert.equal(result.version, '1.0.0');
+    assert.equal(result.direction, 'downgrade');
+    assert.equal(packages.get('@test/scan-target')?.version, '1.0.0');
+    // The log line is the only trace an operator reading journald gets, and
+    // before #1455 it read exactly like an upgrade.
+    const ingestLine = logs.find((l) => l.startsWith('[upload] ingest OK'));
+    assert.ok(ingestLine, `no ingest log line in ${JSON.stringify(logs)}`);
+    assert.match(ingestLine, /\[downgrade\]/);
+  });
+
+  it('treats a prerelease predecessor as an upgrade, and its reverse as a downgrade', async () => {
+    const svc = (store: UploadedPackageStore): PackageUploadService =>
+      new PackageUploadService({
+        store,
+        catalog: fakeCatalog(),
+        packagesDir,
+        limits: { maxBytes: 1024 * 1024, maxExtractedBytes: 4 * 1024 * 1024, maxEntries: 50 },
+        hostDependencies: {},
+        log: () => undefined,
+      });
+
+    // 1.0.0-rc.1 → 1.0.0 is an upgrade (semver §11: a final release outranks
+    // its own prereleases), so it must not be refused.
+    const pre = await seedInstalled('@test/scan-target', '1.0.0-rc.1');
+    const forward = (await svc(seededStore(pre).store).ingest({
+      fileBuffer: await fixtureZip(),
+      originalFilename: 'scan-target-1.0.0.zip',
+      uploadedBy: 'operator@example.com',
+    })) as { ok: boolean; direction?: string };
+    assert.equal(forward.ok, true);
+    assert.equal(forward.direction, 'upgrade');
+
+    // The reverse is a downgrade: 1.0.0 installed, 1.0.0-rc.1 offered.
+    const final = await seedInstalled('@test/scan-target', '1.0.0');
+    const rcZip = await buildZip({
+      'manifest.yaml': MANIFEST_YAML.replace('version: "1.0.0"', 'version: "1.0.0-rc.1"'),
+      'dist/plugin.js': 'module.exports = { activate() {} };\n',
+    });
+    const backward = (await svc(seededStore(final).store).ingest({
+      fileBuffer: rcZip,
+      originalFilename: 'scan-target-1.0.0-rc.1.zip',
+      uploadedBy: 'operator@example.com',
+    })) as { ok: boolean; code?: string };
+    assert.equal(backward.ok, false);
+    assert.equal(backward.code, 'package.downgrade_blocked');
+  });
+
+  it('keeps the replaced package readable while the new version activates', async () => {
+    const seed = await seedInstalled('@test/scan-target', '0.9.0');
+    const { store } = seededStore(seed);
+    const seenDuringActivation: string[] = [];
+    const svc = new PackageUploadService({
+      store,
+      catalog: fakeCatalog(),
+      packagesDir,
+      limits: { maxBytes: 1024 * 1024, maxExtractedBytes: 4 * 1024 * 1024, maxEntries: 50 },
+      hostDependencies: {},
+      log: () => undefined,
+      // The hook is where the running instance is swapped. Whatever the
+      // replaced version left on disk has to still be there at this point —
+      // before #1455 it was deleted several steps earlier.
+      onPackageReady: async () => {
+        const dir = path.join(packagesDir, '@test/scan-target');
+        seenDuringActivation.push(
+          ...(await fs.readdir(dir)).filter((e) => e.startsWith('.retired-')),
+        );
+      },
+    });
+
+    const result = await svc.ingest({
+      fileBuffer: await fixtureZip(),
+      originalFilename: 'scan-target-1.0.0.zip',
+      uploadedBy: 'operator@example.com',
+    });
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(seenDuringActivation, ['.retired-0.9.0']);
+    // Activation succeeded, so the retired copy is no longer needed.
+    const left = await fs.readdir(path.join(packagesDir, '@test/scan-target'));
+    assert.deepEqual(left.sort(), ['1.0.0']);
+  });
+
+  it('leaves the retired copy on disk when activation fails, and keeps only one', async () => {
+    const seed = await seedInstalled('@test/scan-target', '0.9.0');
+    const { store } = seededStore(seed);
+    const logs: string[] = [];
+    const svc = new PackageUploadService({
+      store,
+      catalog: fakeCatalog(),
+      packagesDir,
+      limits: { maxBytes: 1024 * 1024, maxExtractedBytes: 4 * 1024 * 1024, maxEntries: 50 },
+      hostDependencies: {},
+      log: (m) => logs.push(m),
+      // #1452 — this throw is swallowed by design today; #1455 only has to
+      // make sure it does not also cost the operator the way back.
+      onPackageReady: async () => {
+        throw new Error('activate() blew up');
+      },
+    });
+
+    const first = await svc.ingest({
+      fileBuffer: await fixtureZip(),
+      originalFilename: 'scan-target-1.0.0.zip',
+      uploadedBy: 'operator@example.com',
+    });
+    assert.equal(first.ok, true);
+
+    const pluginDir = path.join(packagesDir, '@test/scan-target');
+    assert.deepEqual((await fs.readdir(pluginDir)).sort(), ['.retired-0.9.0', '1.0.0']);
+    // The retired package is intact, not an empty husk.
+    await fs.access(path.join(pluginDir, '.retired-0.9.0', 'manifest.yaml'));
+    assert.ok(
+      logs.some((l) => l.includes('.retired-0.9.0')),
+      `no log line pointing at the retired copy in ${JSON.stringify(logs)}`,
+    );
+
+    // A second swap (1.0.0 → 1.1.0) retires 1.0.0 and must not accumulate:
+    // one retired copy per plugin, the newest.
+    const next = await buildZip({
+      'manifest.yaml': MANIFEST_YAML.replace('version: "1.0.0"', 'version: "1.1.0"'),
+      'dist/plugin.js': 'module.exports = { activate() {} };\n',
+    });
+    const second = await svc.ingest({
+      fileBuffer: next,
+      originalFilename: 'scan-target-1.1.0.zip',
+      uploadedBy: 'operator@example.com',
+    });
+    assert.equal(second.ok, true);
+    assert.deepEqual((await fs.readdir(pluginDir)).sort(), ['.retired-1.0.0', '1.1.0']);
+  });
+
+  // The ZIP upload is the only way to reach the downgrade path from the UI,
+  // so the refusal has to arrive as a client error with its params, not as a
+  // 400 the operator cannot act on.
+  it('answers the upload route with 409 + params, and honours the allow_downgrade field', async () => {
+    const seed = await seedInstalled('@test/scan-target', '2.0.0');
+    const { store, packages } = seededStore(seed);
+    const app = express();
+    app.use(
+      '/packages',
+      createPackagesRouter({
+        service: new PackageUploadService({
+          store,
+          catalog: fakeCatalog(),
+          packagesDir,
+          limits: { maxBytes: 1024 * 1024, maxExtractedBytes: 4 * 1024 * 1024, maxEntries: 50 },
+          hostDependencies: {},
+          log: () => undefined,
+        }),
+        store,
+        registry: new InMemoryInstalledRegistry(),
+        catalog: fakeCatalog(),
+        maxBytes: 1024 * 1024,
+      }),
+    );
+    const server = await listenLoopback(app);
+    const base = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}/packages/upload`;
+
+    const post = async (consent?: string): Promise<Response> => {
+      const form = new FormData();
+      const zip = new Uint8Array(await fixtureZip());
+      form.append('file', new Blob([zip], { type: 'application/zip' }), 'scan-target.zip');
+      if (consent !== undefined) form.append('allow_downgrade', consent);
+      return fetch(base, { method: 'POST', body: form });
+    };
+
+    try {
+      const refused = await post();
+      assert.equal(refused.status, 409);
+      const body = (await refused.json()) as { code?: string; params?: unknown };
+      assert.equal(body.code, 'package.downgrade_blocked');
+      assert.deepEqual(body.params, {
+        pluginId: '@test/scan-target',
+        fromVersion: '2.0.0',
+        toVersion: '1.0.0',
+      });
+      assert.equal(packages.get('@test/scan-target')?.version, '2.0.0');
+
+      const confirmed = await post('true');
+      assert.equal(confirmed.status, 201);
+      assert.equal(packages.get('@test/scan-target')?.version, '1.0.0');
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+    }
   });
 });

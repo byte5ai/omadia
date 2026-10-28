@@ -10,6 +10,7 @@ import {
 } from '@omadia/plugin-api';
 
 import type { PluginCatalog, PluginCatalogEntry } from './manifestLoader.js';
+import { versionDirection } from './versionDirection.js';
 import { createMigrationContext } from '../platform/pluginContext.js';
 import type { PluginRouteRegistry } from '../platform/pluginRouteRegistry.js';
 import type { NotificationRouter } from '../platform/notificationRouter.js';
@@ -80,6 +81,16 @@ export class MigrationRunner {
 
   async run(params: RunMigrationParams): Promise<MigrationResult> {
     const log = this.deps.log ?? ((m) => console.log(m));
+    // #1455 — the runner is the only place that reports a version change as
+    // `from → to`, and a downgrade used to read exactly like an upgrade here.
+    // The direction can also be unknown: the upload pipeline refuses two
+    // IDENTICAL version strings, but `1.0.0+build.1 → 1.0.0+build.2` passes
+    // that check (build metadata is part of `identity.version` and excluded
+    // from precedence by semver §10), and so does a version the comparator
+    // cannot parse. Then the line carries no parenthetical at all — naming it
+    // `unchanged` would be the same invented claim as naming it `upgrade`.
+    const direction = versionDirection(params.fromVersion, params.toVersion);
+    const change = direction === null ? '' : ` (${direction})`;
 
     const entryAbs = path.resolve(params.stagingPackageRoot, params.entryPath);
     if (!entryAbs.startsWith(params.stagingPackageRoot + path.sep)) {
@@ -101,7 +112,7 @@ export class MigrationRunner {
     if (typeof hook !== 'function') {
       // Opt-in carry-over. Log so operators see the implicit path taken.
       log(
-        `[migration] ${params.agentId} v${params.fromVersion} → v${params.toVersion}: no onMigrate hook, carrying config over 1:1`,
+        `[migration] ${params.agentId} v${params.fromVersion} → v${params.toVersion}${change}: no onMigrate hook, carrying config over 1:1`,
       );
       return { newConfig: params.previousConfig };
     }
@@ -157,7 +168,7 @@ export class MigrationRunner {
     }
 
     log(
-      `[migration] ${params.agentId} v${params.fromVersion} → v${params.toVersion}: hook OK`,
+      `[migration] ${params.agentId} v${params.fromVersion} → v${params.toVersion}${change}: hook OK`,
     );
     return result;
   }

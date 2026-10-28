@@ -3,10 +3,17 @@ import type { Request, Response } from 'express';
 
 import type { RegistryClient } from '../plugins/registryClient.js';
 import { RegistryError } from '../plugins/registryClient.js';
-import type { PackageUploadService } from '../plugins/packageUploadService.js';
+import {
+  INGEST_CONFLICT_CODES,
+  type PackageUploadService,
+} from '../plugins/packageUploadService.js';
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
-import { resolveDependencyParents } from '../plugins/dependencyChainResolver.js';
+import {
+  DependencyChainError,
+  resolveDependencyParents,
+} from '../plugins/dependencyChainResolver.js';
+import { isTruthyFlag } from '../http/requestFlags.js';
 
 export interface RegistryInstallDeps {
   client: RegistryClient;
@@ -28,12 +35,23 @@ export interface RegistryInstallDeps {
  *
  *   POST /:id            install the latest version of `<id>` from the registry
  *   POST /:id?version=X  install a specific version
+ *   POST /:id?version=X&allow_downgrade=1
+ *                        …even when X is OLDER than the installed version
  *
  * `:id` is URL-encoded (scoped names like `@omadia%2Fplugin-office`). On
  * success the package is ingested + catalogued locally; the caller then drives
  * the normal install-job flow (POST /api/v1/install/plugins/:id) for the setup
- * form + activation. This route deliberately does NOT activate — it only makes
- * the remote package locally available, identical to a manual ZIP upload.
+ * form + activation.
+ *
+ * For a plugin that is NOT yet installed this route does not activate anything
+ * — it only makes the remote package locally available, identical to a manual
+ * ZIP upload. For one that IS installed and active, the ingest pipeline's
+ * `onPackageReady` hook swaps the running instance (#1455 — the doc comment
+ * here used to claim the route never activates, which is why an older
+ * `?version=` could replace a running plugin unnoticed). An ingest whose
+ * version sorts BELOW the installed one is therefore refused with 409
+ * `package.downgrade_blocked` unless the caller passes `allow_downgrade=1`,
+ * and a successful swap reports its `direction` in the response.
  */
 export function createRegistryInstallRouter(deps: RegistryInstallDeps): Router {
   const router = Router();
@@ -65,6 +83,13 @@ export function createRegistryInstallRouter(deps: RegistryInstallDeps): Router {
       }
 
       const wanted = asString(req.query['version']) || resolved.entry.latest_version;
+      // #1455 — explicit operator consent to replace the installed version
+      // with an older one. Absent, the ingest pipeline refuses the swap.
+      // `bareFlag`: `?allow_downgrade` with no value is a hand-typed URL, and
+      // that is the operator writing the flag.
+      const allowDowngrade = isTruthyFlag(req.query['allow_downgrade'], {
+        bareFlag: true,
+      });
       const verEntry = resolved.entry.versions.find((v) => v.version === wanted);
       if (!verEntry) {
         res.status(404).json({
@@ -85,12 +110,22 @@ export function createRegistryInstallRouter(deps: RegistryInstallDeps): Router {
         originalFilename: `${sanitize(id)}-${verEntry.version}.zip`,
         uploadedBy: `registry:${resolved.registry}`,
         sha256,
+        ...(allowDowngrade ? { allowDowngrade: true } : {}),
       });
 
       if (!result.ok) {
         // ingest failures are caller-fixable (bad manifest, id conflict, dup
         // version) → 422, with the pipeline's own code/message.
-        res.status(422).json({ code: result.code, message: result.message });
+        //
+        // #1455 — except a host-state refusal (id taken, version already
+        // there, older version): the package is well-formed and the request
+        // answerable, it is this host that says no → 409. The `params` carry
+        // the two versions so the UI can name them in the operator's locale.
+        res.status(refusalStatus(result.code)).json({
+          code: result.code,
+          message: result.message,
+          ...(result.params !== undefined ? { params: result.params } : {}),
+        });
         return;
       }
 
@@ -118,6 +153,9 @@ export function createRegistryInstallRouter(deps: RegistryInstallDeps): Router {
         plugin_id: result.plugin_id,
         version: result.version,
         registry: resolved.registry,
+        // #1455 — present only when this ingest replaced another version.
+        // Without it a caller cannot tell an update from a downgrade.
+        ...(result.direction !== undefined ? { direction: result.direction } : {}),
         // Missing depends_on parents to install first (empty → install target
         // directly). Same shape as the capability-chain wizard consumes.
         chain,
@@ -132,12 +170,30 @@ export function createRegistryInstallRouter(deps: RegistryInstallDeps): Router {
         res.status(502).json({ code: err.code, message: err.message });
         return;
       }
+      if (err instanceof DependencyChainError) {
+        // #1455 — a parent the chain tried to pull was refused by the ingest
+        // pipeline. That is the caller's problem, not this host's: it carries
+        // the pipeline's own code, and a refused parent downgrade answers 409
+        // like the target's would rather than a blanket 500.
+        res.status(refusalStatus(err.code)).json({
+          code: err.code,
+          message: err.message,
+        });
+        return;
+      }
       const message = err instanceof Error ? err.message : String(err);
       res.status(500).json({ code: 'registry_install.internal', message });
     }
   });
 
   return router;
+}
+
+/** Status for an ingest refusal, whether it came from the target's own ingest
+ *  or from a parent in its dependency chain: a host-state conflict is 409,
+ *  everything else is a caller-fixable 422. */
+function refusalStatus(code: string): number {
+  return INGEST_CONFLICT_CODES.has(code) ? 409 : 422;
 }
 
 function asString(v: unknown): string {

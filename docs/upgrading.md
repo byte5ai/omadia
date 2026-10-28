@@ -356,6 +356,42 @@ forward-only-migration caveat applies, so snapshot the Postgres volume first
 Do **not** redeploy the `omadia-postgres-<suffix>` app as part of a version
 bump: it holds the data volume, exactly as with the compose stack.
 
+## Upgrading past v0.180.1 — installing an older plugin version is refused unless you confirm it
+
+Installing a version **older** than the one a plugin already has used to go
+through as if it were an update: the running instance was swapped, the config
+migration ran, and the replaced package folder was deleted. Both routes that
+can do it are now guarded.
+
+- **Hub install with an explicit version**
+  (`POST /api/v1/install/registry/:id?version=X`) and **ZIP upload**
+  (`POST /api/v1/install/packages/upload`) answer **HTTP 409
+  `package.downgrade_blocked`** when `X` sorts below the installed version.
+  Nothing changes on the host: the installed version keeps its entry, its
+  folder and its running instance.
+- **To downgrade on purpose**, repeat the call with the consent flag:
+  `?allow_downgrade=1` on the Hub route, or an `allow_downgrade=1` form field
+  (or the same query parameter) on the upload route. The response then carries
+  `"direction": "downgrade"`, and the log line reads
+  `[upload] ingest OK … [downgrade]` with the migration as
+  `v0.2.1 → v0.2.0 (downgrade)`.
+- **The replaced package is kept until the new version activates.** It moves to
+  `<uploaded-packages>/<plugin-id>/.retired-<version>/` and is deleted once
+  activation succeeds — or right away when the plugin was not running, since
+  there was no live instance for the swap to break. If activation fails, the
+  folder stays and the log names its path: it holds the complete previous
+  package, so the way back is to zip that folder and upload it with
+  `allow_downgrade=1` (going back is itself a downgrade). At most one retired
+  copy per plugin is kept, so a plugin's disk footprint can double during a
+  swap.
+- **Profile-bundle imports are unaffected**: a bundle pins exact versions, and
+  the importer carries that consent itself (the swap is logged as
+  `[bundle] vendored <id>: <old> → <new> (bundle pin)`).
+
+No configuration change is needed. If you script plugin installs with an
+explicit `?version=`, add `allow_downgrade=1` wherever you deliberately roll a
+plugin back.
+
 ## Upgrading past v0.178.2 — tool refusals, SEO analyst, MCP outbound guard
 
 - **Plugin tools can refuse a call readably (plugin-api 1.28.0).** A tool that

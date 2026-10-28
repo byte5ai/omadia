@@ -67,6 +67,10 @@ function harness(opts: {
   local: Record<string, string[]>;
   remote?: Record<string, string[]>;
   installed?: string[];
+  /** #1455 — make `ingest` refuse with this code instead of succeeding, and
+   *  say whether the refused plugin nonetheless turns up in the catalog (the
+   *  "already on disk" case the resolver falls back on). */
+  ingestRefusal?: { code: string; appearsInCatalog: boolean };
 }): {
   deps: DependencyChainDeps;
   fetched: string[];
@@ -137,6 +141,14 @@ function harness(opts: {
   const packageUpload = {
     ingest: async (input: IngestInput) => {
       const id = input.fileBuffer.toString('utf8');
+      if (opts.ingestRefusal) {
+        if (opts.ingestRefusal.appearsInCatalog) present.set(id, remoteMap.get(id) ?? []);
+        return {
+          ok: false,
+          code: opts.ingestRefusal.code,
+          message: `refused: ${opts.ingestRefusal.code}`,
+        };
+      }
       present.set(id, remoteMap.get(id) ?? []);
       return { ok: true, plugin_id: id, version: '1.0.0', package: {} as never };
     },
@@ -198,6 +210,36 @@ describe('resolveDependencyParents (C5)', () => {
     const { chain } = await resolveDependencyParents('@x/A', h.deps);
     assert.deepEqual(chain.unresolved_requires, ['@x/C', '@x/B']);
     assert.deepEqual(h.fetched.sort(), ['@x/B', '@x/C']);
+  });
+
+  // #1455 — the chain pulls a parent's LATEST version, which can be older
+  // than one already on this host; ingest then answers
+  // `package.downgrade_blocked`. The resolver must not roll a parent back
+  // under an installed child, and must not paper the refusal over either.
+  it('treats a refused parent as present when the catalog resolves it (already on disk)', async () => {
+    const h = harness({
+      local: { [TEAMS]: [M365] },
+      remote: { [M365]: [] },
+      ingestRefusal: { code: 'package.downgrade_blocked', appearsInCatalog: true },
+    });
+    const { chain, unresolvable } = await resolveDependencyParents(TEAMS, h.deps);
+    assert.deepEqual(unresolvable, []);
+    assert.deepEqual(chain.unresolved_requires, [M365]);
+    assert.equal(chain.available_providers[0]!.providers[0]!.id, M365);
+  });
+
+  it('surfaces a refused parent as a chain error carrying the ingest code', async () => {
+    const h = harness({
+      local: { [TEAMS]: [M365] },
+      remote: { [M365]: [] },
+      ingestRefusal: { code: 'package.downgrade_blocked', appearsInCatalog: false },
+    });
+    await assert.rejects(
+      () => resolveDependencyParents(TEAMS, h.deps),
+      (err: unknown) =>
+        err instanceof Error &&
+        (err as { code?: string }).code === 'package.downgrade_blocked',
+    );
   });
 
   it('surfaces an unresolvable parent with empty providers', async () => {

@@ -77,6 +77,11 @@ const CONFLICT_INGEST_CODES = new Set<string>([
   // rather than falling through to the generic reason.
   'package.id_conflict_bundled',
   'package.duplicate_version',
+  // #1455 — a builder install normally bumps the patch (`cloneFromInstalled`),
+  // but `spec.version` is operator-editable, so an older version can reach the
+  // ingest. Without this entry the refusal fell through to `ingest_failed`,
+  // which the route answers 500 — a client error reported as a server fault.
+  'package.downgrade_blocked',
 ]);
 
 const TOO_LARGE_INGEST_CODES = new Set<string>(['package.too_large']);

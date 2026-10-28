@@ -26,7 +26,8 @@ import {
  *
  * Status mapping for /install (`InstallFailureReason`):
  *   draft_not_found    → 404
- *   conflict           → 409  (id collision with built-in or duplicate version)
+ *   conflict           → 409  (id collision with built-in, duplicate version,
+ *                              or a version older than the installed one)
  *   too_large          → 413
  *   spec_invalid       → 422  (Zod validation failed)
  *   codegen_failed     → 422  (CodegenError, contains issue list)
