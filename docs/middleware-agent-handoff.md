@@ -3279,6 +3279,75 @@ laufender DB gezeigt und liest dann die authentifizierte Vault-Status-Route.
 `_lib/runtimeReadiness.ts` der Zustand `database_unavailable`. Dashboard-Karten
 ohne Daten zeigen „Status nicht abrufbar“ statt ihres Leerzustands.
 
+### Built-in-Plugins: Version, Deinstallation, Anhängen an den Standard-Orchestrator (#1505, #1481, #1498, #1491)
+
+Built-ins liegen im Image (`middleware/packages/*`) und werden beim Boot von
+`runLegacyBootstrap` (`plugins/bootstrap.ts`) in die Installed-Registry
+gesät — die `bootstrap*FromEnv`-Funktionen für die vom Environment gewählten
+Provider, danach `bootstrapBuiltInPackages` für alles ohne Pflicht-Secret.
+
+**Version (#1505).** Die Seeder schreiben `installed_version` nur beim Anlegen.
+`reconcileBuiltInVersions` läuft am Ende jedes `runLegacyBootstrap` und setzt
+für jeden Registry-Eintrag, dessen Katalog-Eintrag aus dem Image stammt
+(`origin: 'bundled'`), die ausgelieferte Version (`registry.updateVersion`,
+Config bleibt). Auch ein Downgrade (älteres Image) wird übernommen — das Feld
+sagt, was läuft. Ein hochgeladenes Paket, das eine Built-in-ID überschattet,
+bleibt unberührt. Log: `[bootstrap] ⚐ built-in <id> installed_version a → b`
+pro Änderung und immer eine Zeile `[bootstrap] built-in version reconcile: N
+updated, M already current`. Damit pinnen Profil-Bundles wieder die laufende
+Version, und der Store-Update-Check vergleicht gegen sie.
+
+**Deinstallation (#1481).** `InstallService.uninstall` merkt sich ein
+deinstalliertes Built-in in `plugins/builtInOptOuts.ts`
+(`FileBuiltInOptOutStore`, Datei `builtin-uninstalls.json` neben
+`installed.json`, im Vault-Backup enthalten). Eine unlesbare Datei stoppt den Boot nicht:
+sie wird nach `.corrupt` verschoben, der Store startet leer. `bootstrapBuiltInPackages` und
+die optionalen Env-Seeder (orchestrator-extras, verifier, diagrams, office)
+überspringen gemerkte IDs (`… skipped — the operator uninstalled it`).
+Installieren über Store oder Profil-Apply löscht die Markierung. Ausnahme sind
+die Provider in `BOOT_MANAGED_BUILT_IN_IDS` (orchestrator, memory,
+memory-postgres, embeddings, beide KG-Provider): der Host braucht sie, ihre
+`bootstrap*FromEnv` installieren den gewählten wieder, und eine dann
+überflüssige Markierung räumt `runLegacyBootstrap` ab. Der Store liefert dafür
+`Plugin.built_in_uninstall` (`persistent` | `reinstalled_at_boot`, nur für
+Image-Pakete); der Deinstallations-Dialog nennt das Ergebnis und bietet die
+Checkbox „hochgeladene Paketdatei löschen“ nur für Nicht-Built-ins an.
+
+**Anhängen an den Standard-Orchestrator (#1498, #1491).** Eine Regel für alle
+Install-Wege: das Plugin samt seinen installierten `depends_on`-Eltern bekommt
+eine `agent_plugins`-Zeile am Fallback-Agent. Der gemeinsame Baustein ist
+`attachAllPlugins` (harness-orchestrator `registry/onboarding.ts`):
+- Erst-Boot: `ensureFallbackAgent` hängt alle installierten Plugins an.
+- Boot auf bestehender Instanz: `runLegacyBootstrap` meldet jede neu
+  registrierte ID über `onPluginInstalled`; der Host reiht sie in
+  `createPendingDefaultAttach` (`plugins/defaultOrchestratorAttach.ts`) ein und
+  hängt sie an denselben Flush-Punkten an wie `pendingBindingPurge` (nach
+  `toolPluginRuntime.activateAllInstalled()` und bei jeder (Re-)Aktivierung von
+  `@omadia/orchestrator`).
+- Laufzeit-Install (Hub, Upload, Store-Reinstall) **jeder** Plugin-Art, nicht
+  nur Agents: `onInstalled(id, 'install')` → `propagatePluginInstall`.
+  `onInstalled(id, 'reactivate')` hängt nicht an — eine Reaktivierung darf ein
+  bewusst abgehängtes Plugin nicht zurückholen; ebenso wenig `onPackageReady`
+  (Update eines installierten Pakets).
+- Profil-Apply: der Router meldet die neu registrierten IDs über
+  `onPluginsRegistered`, der Host hängt sie sofort an (oder reiht sie ein).
+
+Beide Laufzeit-Wege nutzen `attachNewPluginsToFallbackAgent`: es legt nur
+Zeilen an, die noch fehlen (ein `upsertAgentPlugin` würde `config` und
+`enabled` einer bestehenden Zeile überschreiben). Ohne Fallback-Agent
+(Operator-Policy) passiert nichts; ohne Config-Store (key-loser Boot) wartet
+die ID in der Queue bis zur Aktivierung des Orchestrators. Die Queue lebt nur
+im Speicher; für einen Neustart davor bleibt „Standard auf alle Plugins
+zurücksetzen“.
+
+**Onboarding-Profile (#1484).** `middleware/profiles/*.yaml` listen keine
+Memory-/KG-Provider mehr (die wählt der Boot aus `DATABASE_URL`) und keine
+Channel-IDs (Hub-Plugins). `POST /profiles/:id/apply` überspringt ein Plugin,
+dessen Capability ein aktives Plugin schon liefert
+(`skipped[].reason: 'capability_provided'`). `test/builtInLifecycle.test.ts`
+prüft die ausgelieferten Profile gegen den Built-in-Katalog und alle
+Built-in-Manifeste gegen die `multi_instance`-Regel (#1499).
+
 ### Versions-Wechsel eines Plugin-Pakets: Richtung, Downgrade-Gate, Rollback-Kopie (#1455)
 
 `PackageUploadService.ingest` ist der einzige Weg, auf dem ein Plugin-Paket auf

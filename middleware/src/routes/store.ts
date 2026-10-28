@@ -9,7 +9,11 @@ import type {
   StoreListResponse,
 } from '../api/admin-v1.js';
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
-import type { PluginCatalog } from '../plugins/manifestLoader.js';
+import { BOOT_MANAGED_BUILT_IN_IDS } from '../plugins/builtInOptOuts.js';
+import type {
+  PluginCatalog,
+  PluginCatalogEntry,
+} from '../plugins/manifestLoader.js';
 import { parseSetupProfile } from '../plugins/manifestLoader.js';
 import type { PluginStatusRegistry } from '../platform/pluginStatusRegistry.js';
 import type { PluginVerdictLookup } from '../services/pluginVerdict.js';
@@ -85,7 +89,7 @@ export function createStoreRouter(deps: StoreDeps): Router {
 
       const items: Plugin[] = deps.catalog
         .list()
-        .map((entry) => applyInstallState(entry.plugin, deps.registry))
+        .map((entry) => applyInstallState(entry, deps.registry))
         // OB-29-0: builder-reference plugins (`is_reference_only: true`)
         // are not intended for operator install — they are a pattern source
         // for the BuilderAgent via BUILDER_REFERENCE_ESSENTIALS.
@@ -235,7 +239,7 @@ export function createStoreRouter(deps: StoreDeps): Router {
         return;
       }
 
-      let plugin = applyInstallState(entry.plugin, deps.registry);
+      let plugin = applyInstallState(entry, deps.registry);
       // C6 — update detection on the detail page: if this installed plugin is
       // also advertised by a registry with a newer version, flag it (+ source).
       if (plugin.install_state === 'installed' && deps.client?.hasRegistries()) {
@@ -367,14 +371,25 @@ function asOptionalString(value: unknown): string | undefined {
 
 /** Overlay the installedRegistry onto the catalog-derived Plugin record. */
 function applyInstallState(
-  plugin: Plugin,
+  entry: PluginCatalogEntry,
   registry: InstalledRegistry,
 ): Plugin {
+  // #1481 — what an uninstall of a package that ships in the image means:
+  // it stays uninstalled, unless the boot selects it as a required provider.
+  const plugin: Plugin =
+    entry.origin === 'bundled'
+      ? {
+          ...entry.plugin,
+          built_in_uninstall: BOOT_MANAGED_BUILT_IN_IDS.has(entry.plugin.id)
+            ? 'reinstalled_at_boot'
+            : 'persistent',
+        }
+      : entry.plugin;
   // Incompatible stays incompatible — registry state only overrides
   // "available" → "installed". Legacy plugins remain blocked.
   if (plugin.install_state === 'incompatible') return plugin;
-  const entry = registry.get(plugin.id);
-  if (entry) {
+  const installed = registry.get(plugin.id);
+  if (installed) {
     // #1089 — `install_origin` rides along with the state it qualifies: both
     // come from the same registry entry, and every store response goes through
     // here. Absent when the entry predates the field (see the
@@ -383,7 +398,7 @@ function applyInstallState(
     return {
       ...plugin,
       install_state: 'installed',
-      ...(entry.origin ? { install_origin: entry.origin } : {}),
+      ...(installed.origin ? { install_origin: installed.origin } : {}),
     };
   }
   return plugin;

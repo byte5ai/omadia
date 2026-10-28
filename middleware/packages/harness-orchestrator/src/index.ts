@@ -64,13 +64,17 @@ export type {
 export {
   ensureFallbackAgent,
   attachAllPlugins,
+  attachNewPluginsToFallbackAgent,
   FALLBACK_AGENT_SLUG,
   // #679 / I5 — exported so a locale-aware surface can recognise the
   // server-written seed prose and render its own copy instead.
   FALLBACK_AGENT_SEED_NAME,
   FALLBACK_AGENT_SEED_DESCRIPTION,
 } from './registry/onboarding.js';
-export type { OnboardingOptions } from './registry/onboarding.js';
+export type {
+  FallbackAttachResult,
+  OnboardingOptions,
+} from './registry/onboarding.js';
 // US8 — per-Agent memory scope.
 export { computeMemoryScope } from './registry/index.js';
 export {

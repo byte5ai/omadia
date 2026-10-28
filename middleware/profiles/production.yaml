@@ -1,13 +1,9 @@
 schema_version: 1
 id: production
 name: Recommended Production
-description: Postgres-backed knowledge graph + verifier + full orchestrator stack. Operator sets DATABASE_URL + ANTHROPIC_API_KEY before profile apply, then installs channel plugins via the admin UI.
+description: Full orchestrator stack with the verifier. Set DATABASE_URL so the boot selects the Postgres memory and knowledge-graph backend, and an LLM key before applying. Install channel plugins (Teams, Telegram, …) from the store afterwards.
 plugins:
-  - "@omadia/memory"
-  - "@omadia/knowledge-graph-neon"
   - "@omadia/embeddings"
   - "@omadia/orchestrator-extras"
   - "@omadia/verifier"
   - "@omadia/orchestrator"
-  - de.byte5.channel.teams
-  - de.byte5.channel.telegram

@@ -977,7 +977,7 @@
     "ariaCloseBackdrop": "Close modal",
     "ariaClose": "Close",
     "kicker": "First-time setup",
-    "title": "Pick a profile — operational in <60 seconds",
+    "title": "Pick a starting profile",
     "intro": "You have not installed any plugins yet — the packages already running came with the image. Pick a curated profile and its plugins are registered in the correct capability order. Secrets like API keys are set afterwards per plugin, on its detail page.",
     "exportPrefix": "Already set up?",
     "exportLink": "Export profile as YAML",
@@ -989,11 +989,18 @@
     "outcomeAppliedTitle": "Profile <id>{profileId}</id> applied",
     "outcomeStats": "{installed} installed, {skipped} skipped, {errored} failed",
     "sectionInstalled": "Newly installed",
-    "sectionSkipped": "Already installed (skipped)",
+    "sectionSkipped": "Skipped",
+    "skippedCapabilityProvided": " — {capability} is already provided by {owner}, the backend this instance selected at startup",
     "sectionErrored": "Errors — please check manually",
     "secretsHint": "Plugins that need operator secrets (e.g. anthropic_api_key, telegram_bot_token) start in status <erroredTag>errored</erroredTag> until you set the secrets via the wizard on the respective detail page. Then activate via \"Reactivate\".",
     "errorTitle": "Profile <id>{profileId}</id> could not be applied",
-    "tryAnother": "Pick another profile"
+    "tryAnother": "Pick another profile",
+    "restartHint": "The plugins are registered. They become active after the next restart of the middleware.",
+    "profiles": {
+      "blank": "Empty profile. Build the stack yourself in the plugin store; upload custom plugins as a ZIP in the store's \"Local\" tab.",
+      "minimal-dev": "Orchestrator stack without the verifier. Embeddings are included because orchestrator-extras needs them. The memory and knowledge-graph backend follows DATABASE_URL and is set up at startup. Add channel plugins from the store afterwards.",
+      "production": "Full orchestrator stack with the verifier. Set DATABASE_URL so the startup selects the Postgres memory and knowledge-graph backend, and an LLM key, before applying. Install channel plugins (Teams, Telegram, …) from the store afterwards."
+    }
   },
   "chatTabs": {
     "newChat": "New chat",
@@ -4238,6 +4245,8 @@
       "uninstallAria": "Uninstall {name}",
       "uninstall": "Uninstall",
       "confirmRemove": "Remove <strong>{name}</strong>? The tool is immediately removed from the orchestrator, the vault namespace is cleared, and the registry entry is deleted.",
+      "builtInUninstallPersistent": "<strong>{name}</strong> ships with omadia. It stays uninstalled after a restart; you can install it again from the store at any time, starting from default settings.",
+      "builtInUninstallReinstalled": "<strong>{name}</strong> ships with omadia and is a provider this instance selects at startup. If the instance needs it, the next restart installs it again, with default settings.",
       "deletePackageLabel": "Also remove the uploaded package file under <mono>.uploaded-packages/</mono>. <subtle>Left unchecked, the package stays in the catalog and can be reinstalled — only built-ins are unaffected.</subtle>",
       "confirmUninstallDelete": "Yes, uninstall + delete",
       "confirmUninstall": "Yes, uninstall",
