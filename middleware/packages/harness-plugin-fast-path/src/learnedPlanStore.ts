@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
-import { jaccard, questionTokens, templateShape } from './literalStripping.js';
+import { FAST_PATH_TOOL_SPECS, type FastPathToolSpec } from './fastPath.js';
+import { jaccard, questionTokens, stripLiterals, templateShape } from './literalStripping.js';
 import { parseRefreshSource, type RefreshFilter, type RefreshSource } from './refreshRecipes.js';
 
 /**
@@ -146,6 +147,10 @@ export interface LearnedPlanStore {
   active(): LearnedPlan[];
   /** Active plans ranked by question overlap (score > 0), best first. */
   rank(question: string, k: number): ScoredPlan[];
+  /** Merge a legacy plans file (same schema) — plans whose id is already
+   *  known are kept as they are. Resolves to the number of plans added;
+   *  an unreadable document adds none. */
+  importPlans(raw: string): Promise<number>;
 }
 
 export function createLearnedPlanStore(opts: {
@@ -163,7 +168,7 @@ export function createLearnedPlanStore(opts: {
   async function readFromMemory(): Promise<void> {
     const memory = opts.memory;
     if (!memory) {
-      opts.log('[ui-orchestrator] learned plans: no ctx.memory — kept in-process only');
+      opts.log('[fast-path] learned plans: no ctx.memory — kept in-process only');
       return;
     }
     try {
@@ -171,16 +176,16 @@ export function createLearnedPlanStore(opts: {
       const parsed: unknown = JSON.parse(await memory.readFile(PLANS_PATH));
       const doc = parsed as { schemaVersion?: unknown; plans?: unknown };
       if (doc?.schemaVersion !== PLANS_SCHEMA_VERSION || !Array.isArray(doc.plans)) {
-        opts.log(`[ui-orchestrator] learned plans: unsupported file (schemaVersion=${String(doc?.schemaVersion)}) — starting empty`);
+        opts.log(`[fast-path] learned plans: unsupported file (schemaVersion=${String(doc?.schemaVersion)}) — starting empty`);
         return;
       }
       for (const raw of doc.plans) {
         const p = parsePlan(raw);
         if (p) plans.set(p.id, p);
       }
-      opts.log(`[ui-orchestrator] learned plans loaded: ${plans.size} (${[...plans.values()].filter((p) => p.active).length} active)`);
+      opts.log(`[fast-path] learned plans loaded: ${plans.size} (${[...plans.values()].filter((p) => p.active).length} active)`);
     } catch (err) {
-      opts.log(`[ui-orchestrator] learned plans: unreadable file — starting empty: ${err instanceof Error ? err.message : String(err)}`);
+      opts.log(`[fast-path] learned plans: unreadable file — starting empty: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -192,7 +197,7 @@ export function createLearnedPlanStore(opts: {
     writes = writes
       .then(() => memory.writeFile(PLANS_PATH, content))
       .catch((err: unknown) => {
-        opts.log(`[ui-orchestrator] learned plans: write failed: ${err instanceof Error ? err.message : String(err)}`);
+        opts.log(`[fast-path] learned plans: write failed: ${err instanceof Error ? err.message : String(err)}`);
       });
     return writes;
   }
@@ -236,8 +241,8 @@ export function createLearnedPlanStore(opts: {
       plans.delete(id); // re-insert: Map order doubles as recency
       plans.set(id, plan);
       evict();
-      opts.log(`[ui-orchestrator] learned candidate plan=${id} tool=${c.tool} successes=${successes}`);
-      if (activated) opts.log(`[ui-orchestrator] learned plan activated plan=${id} tool=${c.tool}`);
+      opts.log(`[fast-path] learned candidate plan=${id} tool=${c.tool} successes=${successes}`);
+      if (activated) opts.log(`[fast-path] learned plan activated plan=${id} tool=${c.tool}`);
       await persist();
       return { plan, activated };
     },
@@ -254,7 +259,7 @@ export function createLearnedPlanStore(opts: {
         ...(deactivated ? { active: false, successes: 0 } : {}),
       });
       if (deactivated) {
-        opts.log(`[ui-orchestrator] learned plan deactivated plan=${id} tool=${prev.tool} failures=${failures} reason=${reason ?? 'n/a'}`);
+        opts.log(`[fast-path] learned plan deactivated plan=${id} tool=${prev.tool} failures=${failures} reason=${reason ?? 'n/a'}`);
       }
       await persist();
       return { deactivated };
@@ -263,6 +268,31 @@ export function createLearnedPlanStore(opts: {
     get: (id) => plans.get(id),
 
     active: () => [...plans.values()].filter((p) => p.active),
+
+    async importPlans(raw) {
+      loading ??= readFromMemory();
+      await loading;
+      let doc: { schemaVersion?: unknown; plans?: unknown };
+      try {
+        doc = JSON.parse(raw) as { schemaVersion?: unknown; plans?: unknown };
+      } catch {
+        return 0;
+      }
+      if (doc?.schemaVersion !== PLANS_SCHEMA_VERSION || !Array.isArray(doc.plans)) return 0;
+      let added = 0;
+      for (const rawPlan of doc.plans) {
+        const p = parsePlan(rawPlan);
+        if (!p || plans.has(p.id)) continue;
+        plans.set(p.id, p);
+        added += 1;
+      }
+      if (added > 0) {
+        evict();
+        opts.log(`[fast-path] learned plans imported: ${added}`);
+        await persist();
+      }
+      return added;
+    },
 
     rank(question, k) {
       const q = questionTokens(question);
@@ -277,4 +307,46 @@ export function createLearnedPlanStore(opts: {
         .slice(0, k);
     },
   };
+}
+
+/** Planner spec of a learned tool without a built-in one: its learned input
+ *  template IS the spec — the planner may only adapt an example. */
+export function learnedToolSpec(plan: LearnedPlan): string {
+  return (
+    `${plan.tool} — learned read tool, NO free-form spec: plan it ONLY by adapting one of its ` +
+    `VALIDATED EXAMPLES below (input shape e.g. ${JSON.stringify(plan.inputTemplate)}; records at ` +
+    `itemsPath ${plan.itemsPath !== undefined ? `"${plan.itemsPath}"` : '(first array)'}` +
+    `${plan.rowKey !== undefined ? `, rowKey "${plan.rowKey}"` : ''}).`
+  );
+}
+
+/** The built-in plannable tools plus a spec for every learned tool of the
+ *  offered plans that has none. */
+export function offeredTools(
+  builtIn: readonly FastPathToolSpec[],
+  offered: readonly LearnedPlan[],
+): FastPathToolSpec[] {
+  const out = [...builtIn];
+  for (const p of offered) {
+    if (out.some((t) => t.name === p.tool)) continue;
+    out.push({ name: p.tool, spec: FAST_PATH_TOOL_SPECS[p.tool] ?? learnedToolSpec(p) });
+  }
+  return out;
+}
+
+/** The ACTIVE learned plan a concrete fetch was adapted from — the fetch,
+ *  literal-stripped again, has the plan's structure — else undefined. */
+export function attributePlan(store: LearnedPlanStore, fetch: RefreshSource): LearnedPlan | undefined {
+  const { template } = stripLiterals({ input: fetch.input, filter: fetch.filter ?? null });
+  const t = template as { input: unknown; filter: RefreshFilter[] | null };
+  const id = planId({
+    tool: fetch.tool,
+    inputTemplate: t.input,
+    map: fetch.map,
+    ...(t.filter ? { filter: t.filter } : {}),
+    ...(fetch.rowKey ? { rowKey: fetch.rowKey } : {}),
+    ...(fetch.itemsPath ? { itemsPath: fetch.itemsPath } : {}),
+  });
+  const plan = store.get(id);
+  return plan?.active === true ? plan : undefined;
 }

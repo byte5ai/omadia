@@ -47,6 +47,7 @@ import type { Pool } from 'pg';
 import { MemoryToolHandler } from '@omadia/memory';
 
 import { ChatSessionStore, chatSessionTailTurns } from './chatSessionStore.js';
+import { wrapChatAgentWithFastPath, type FastPathTriagePort } from './fastPathAgent.js';
 import type { Microsoft365Accessor } from './microsoft365-shim.js';
 import type { NativeToolRegistry } from './nativeToolRegistry.js';
 import type { ModelRoutingConfig } from './modelRouter.js';
@@ -296,6 +297,13 @@ export interface OrchestratorDeps {
    * plugin's tools are always available (pre-#474 behaviour).
    */
   readonly isPluginToolsReady?: (agentId: string) => boolean;
+  /**
+   * The deterministic fast path (`fastPath@1`, `@omadia/fast-path`), resolved
+   * LAZILY per turn. When present, every bundle agent is wrapped in
+   * {@link wrapChatAgentWithFastPath} — outside the verifier — so every
+   * non-canvas channel gets the one-call triage. Absent → no wrapper.
+   */
+  readonly fastPath?: () => FastPathTriagePort | undefined;
   /**
    * #1018 — resolves the peer AGENTS the calling agent may see in the current
    * chat, merged into `get_chat_participants` as `kind: 'agent'` entries.
@@ -597,6 +605,22 @@ export function buildOrchestratorForAgent(
     config.agentId,
     deps.runTraceStats,
   );
+  // Fast path for every non-canvas channel — outermost, outside the verifier
+  // (fastPathAgent.ts says why a hit may bypass it). A hit is recorded
+  // through THIS bundle's session logger like any other turn.
+  const fastPathDeps = deps.fastPath;
+  const withFastPath = (agent: ChatAgent): ChatAgent =>
+    fastPathDeps === undefined
+      ? agent
+      : wrapChatAgentWithFastPath(agent, {
+          fastPath: fastPathDeps,
+          // the tools THIS Agent's orchestrator offers — the fast path runs
+          // nothing else (a per-Agent tool set is respected)
+          permittedTools: () => orchestrator.offeredToolNames(),
+          logSession: (entry) => sessionLogger.log(entry),
+          privacyGuarded: () => deps.privacyGuard() !== undefined,
+          log: (m) => console.log(m),
+        });
   // Trigger T1 — durable-rules live hook. Wrap the (shared-passthrough)
   // namespacer so writes to `/memories/_rules/` auto-promote into curated
   // durable MemorableKnowledge. Needs the graph pool; gated off when absent or
@@ -908,7 +932,7 @@ export function buildOrchestratorForAgent(
     return {
       orchestrator,
       bundle: {
-        agent: new CliChatAgent({
+        agent: withFastPath(new CliChatAgent({
           dispatch,
           // #1102 — surface the choice card / follow-up chips / slot picker a
           // kernel-native tool scheduled this turn on the `done` event, so the
@@ -992,7 +1016,7 @@ export function buildOrchestratorForAgent(
           ...(config.cliTurnSeconds !== undefined && config.cliTurnSeconds > 0
             ? { spawnTimeoutMs: Math.trunc(config.cliTurnSeconds * 1000) }
             : {}),
-        }),
+        })),
         raw: orchestrator,
         sessionLogger,
         chatSessionStore,
@@ -1032,7 +1056,7 @@ export function buildOrchestratorForAgent(
 
   return {
     orchestrator,
-    bundle: { agent, raw: orchestrator, sessionLogger, chatSessionStore },
+    bundle: { agent: withFastPath(agent), raw: orchestrator, sessionLogger, chatSessionStore },
     effectiveModel: config.model,
     ...(config.modelRouting ? { effectiveModelRouting: config.modelRouting } : {}),
   };

@@ -96,6 +96,10 @@ optional_requires:
   - "llmProviderCatalog@1"
   - "installedPluginConfigReader@1"
   - "cliBinaryResolver@1"
+  # The deterministic fast path (@omadia/fast-path): every bundle agent asks
+  # it for a one-call triage per non-canvas human turn. Optional — resolved
+  # per turn; without it every turn runs the agent unchanged.
+  - "fastPath@1"
 
 # chatAgent@1 — published bundle consumed by channel-plugins (Teams,
 # Telegram), the kernel-side HTTP chat route, and the dynamic-agent runtime

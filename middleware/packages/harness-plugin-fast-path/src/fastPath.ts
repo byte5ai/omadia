@@ -1,4 +1,3 @@
-import type { FastPathToolSpec } from './composition.js';
 import {
   isTruncatedOutput,
   mapRefreshRecords,
@@ -18,6 +17,37 @@ import {
  * them through the same synthesis path the LLM-free refresh uses. No model
  * ever sees the rows. Any miss falls back to the agent path unchanged.
  */
+
+/** A tool a fast-model planner may plan a deterministic `fetch` for: its
+ *  name and a compact input/output spec the planner builds the query from. */
+export interface FastPathToolSpec {
+  name: string;
+  spec: string;
+}
+
+/** Narrow LLM port — structurally satisfied by `ctx.llm` (LlmAccessor);
+ *  injected so planning is testable without network or SDK coupling. */
+export interface FastLlm {
+  complete(req: {
+    model: string;
+    system?: string;
+    messages: ReadonlyArray<{ role: 'user' | 'assistant'; content: string }>;
+    maxTokens?: number;
+    effort?: 'low' | 'medium' | 'high' | 'xhigh';
+    thinking?: 'off';
+  }): Promise<{ text: string }>;
+}
+
+/**
+ * Every fast-path planning call (canvas composer, in-place planner, chat
+ * triage) gates the first answer of a turn, so it asks for the lowest-latency
+ * reasoning: thinking off where the model accepts it (Haiku 5.5 — on by
+ * default there) and low effort as the lever every effort-capable model
+ * honours. Both are hints the provider ignores where they do not apply.
+ * Planning is pattern-following, not reasoning — a measured 3.4–10 s on
+ * adaptive thinking.
+ */
+export const FAST_MODEL_REASONING = { effort: 'low', thinking: 'off' } as const;
 
 /** Allow-list when `fast_path_tools` is not configured at all. */
 export const DEFAULT_FAST_PATH_TOOLS: readonly string[] = ['odoo_query'];
@@ -83,6 +113,18 @@ export function plannableTools(allowed: readonly string[]): FastPathToolSpec[] {
 
 /** `{sum:<fieldKey>}` in the composer's prose template. */
 export const SUM_PLACEHOLDER = /\{sum:([A-Za-z0-9_.-]+)\}/g;
+
+const MAX_SUMMARY_CHARS = 280;
+const COUNT_PLACEHOLDER = '{count}';
+
+/** A planner's prose template, kept only with at least one placeholder — a
+ *  fixed sentence could not be correct for every result. */
+export function parseSummary(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const s = value.trim();
+  if (s.length === 0 || s.length > MAX_SUMMARY_CHARS) return undefined;
+  return s.includes(COUNT_PLACEHOLDER) || new RegExp(SUM_PLACEHOLDER.source).test(s) ? s : undefined;
+}
 
 export type RenderedSummary = { ok: true; text: string } | { ok: false; detail: string };
 

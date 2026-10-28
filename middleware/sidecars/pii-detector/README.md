@@ -39,6 +39,70 @@ counts, and durations.
   - Any error (bad body, oversized body, model failure, overload) → non-200
     with `{"ok": false, "error": str}`. Never a 200 with a half-result.
 
+### Priority lane (`X-PII-Priority`)
+
+Inference is single-flight (CPU-bound, the model is not thread-safe), so
+requests queue for one slot. The optional request header
+`X-PII-Priority: interactive|background` picks the queue:
+
+- `interactive`: turn masking on the critical path of a chat turn (user
+  prompt, recalled tail, verifier projection, tool-error redaction). The
+  middleware's shared C1 detector sends this by default.
+- `background`: stored-text masking for memory jobs and skeleton masking
+  (`openStoredTextScope` → `storedTextScope.ts` rebinds the detector via
+  `withC1Priority(…, 'background')`).
+- Absent or unrecognised → `background`, so older clients keep their old
+  behaviour and cannot claim the fast lane by accident.
+
+When the slot frees, queued `interactive` requests go first, FIFO within a
+class. Anti-starvation: a `background` request that has waited longer than
+`BACKGROUND_AGING_S` (default 5 s) is served next, even ahead of queued
+interactive work. The slot is handed directly to the chosen waiter, so a
+fresh arrival never jumps the queue. `DETECT_TIMEOUT_S` still bounds the
+wait per request (→ `503`). The header only changes order. Results are identical.
+
+The per-request log line carries the scheduling data (never text):
+
+```
+[pii-detector] /detect text_len=4210 labels=2 spans=3 ms=3870 wait_ms=12 prio=interactive queued_interactive=0 queued_background=2
+```
+
+`wait_ms` is the time spent queued for the slot. `queued_*` is the number of
+waiters per class this request found on arrival. A queue-wait timeout logs
+`/detect busy … status=503 wait_ms=… prio=…` with the current depths.
+
+### Addressing on Fly.io: use `.flycast`, not `.internal`
+
+Point `PRIVACY_C1_DETECTOR_URL` at the app's **Flycast** address
+(`http://<app>.flycast:<port>`), not `<app>.internal`. `.internal` resolves
+straight to machine 6PN addresses and bypasses the Fly proxy. The client
+then pins to whichever machine it resolved, and extra machines add no
+throughput. `.flycast` goes through the Fly proxy, which balances per
+request across machines using the service's concurrency limits.
+
+Requirements on the sidecar app:
+
+- A private Flycast IP: `fly ips allocate-v6 --private -a <app>`.
+- A service for the internal port (`8812`) with request-based concurrency,
+  for example in `fly.toml`:
+
+  ```toml
+  [http_service]
+    internal_port = 8812
+    auto_stop_machines = "off"   # model load + selftest takes minutes; never cold-start a turn
+    min_machines_running = 2
+
+    [http_service.concurrency]
+      type = "requests"          # keep-alive connections would pin to one machine under "connections"
+      soft_limit = 1             # one inference per machine: steer the next request elsewhere
+      hard_limit = 8             # keep above peak burst so requests reach the sidecar's priority queue
+  ```
+
+The proxy does not know about `X-PII-Priority`. Requests it holds back at
+`hard_limit` wait in the proxy's FIFO, not the sidecar's priority queue.
+That's why `hard_limit` stays generous and `soft_limit` low: the proxy
+spreads load, and each machine orders its own queue.
+
 ### Span offset semantics
 
 `start`/`end` are **Unicode code-point offsets into the request text**
@@ -54,7 +118,8 @@ mismatch is treated as a detector failure (a mis-anchored span is a leak).
 |---|---|---|
 | `PORT` | `8812` | Listen port |
 | `MAX_BODY_BYTES` | `1048576` (1 MiB) | Request-body cap — prompts, not file trees |
-| `DETECT_TIMEOUT_S` | `30` | Max seconds a request waits for the serialized model (inference is single-flight behind a lock) before answering `503` |
+| `DETECT_TIMEOUT_S` | `30` | Max seconds a request waits for the serialized model (inference is single-flight behind the priority gate) before answering `503` |
+| `BACKGROUND_AGING_S` | `5` | A `background` request queued longer than this is served next, ahead of queued `interactive` work (anti-starvation) |
 | `DETECTOR_LABELS` | `person,address` | Default label set — fixed and calibrated; open-label mode is deliberately not exposed (false-positive cascade class, see #242) |
 | `DETECTOR_THRESHOLD` | `0.5` | Default score threshold |
 | `DETECTOR_BACKEND` | `onnx` | `onnx` (quantized, CPU-friendly, avoids the documented AVX2 "Illegal instruction" hazard of default torch inference) or `torch` (fallback) |
@@ -93,8 +158,9 @@ To bump the pin (model revision or the `gliner`/`onnxruntime` pins in
 
 ## Tests & smoke probe
 
-Pure-helper unit tests (chunking, span merge, request validation — no model
-needed):
+Model-free unit tests (chunking, span merge, request validation, priority
+gate ordering/aging/timeout, and the `/detect` header + log line against a
+real HTTP server with inference stubbed out):
 
 ```bash
 cd middleware && python3 -m unittest sidecars/pii-detector/test_server.py

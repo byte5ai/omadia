@@ -14,6 +14,7 @@
   "peerDependencies": {
     "@omadia/channel-sdk": "*",
     "@omadia/embeddings": "*",
+    "@omadia/fast-path": "*",
     "@omadia/llm-provider": "*",
     "@omadia/memory": "*",
     "@omadia/orchestrator-extras": "*",

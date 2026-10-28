@@ -17,7 +17,7 @@ import {
   applyRefreshSource,
   createRecipeStore,
   parseRefreshSource,
-} from '../packages/omadia-ui-orchestrator/src/refreshRecipes.js';
+} from '../packages/harness-plugin-fast-path/src/refreshRecipes.js';
 
 const LIVE_TREE = {
   type: 'container',

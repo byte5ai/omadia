@@ -6,7 +6,7 @@ import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 
 import { planInPlace } from '../packages/omadia-ui-orchestrator/src/learnedFastPath.js';
-import type { SkeletonPrivacyRun } from '../packages/omadia-ui-orchestrator/src/skeletonPrivacy.js';
+import type { StoredTextPrivacyRun } from '../packages/harness-plugin-fast-path/src/storedTextPrivacy.js';
 
 const TABLES = [{ containerId: 'invoices', title: 'Rechnungen', fieldKeys: ['name', 'amount'] }];
 const PLAN = {
@@ -44,7 +44,7 @@ const base = {
 describe('in-place planner privacy (#1540 parity)', () => {
   it('a refused mask skips the model call', async () => {
     const rec = llmRecording(JSON.stringify(PLAN));
-    const privacy: SkeletonPrivacyRun = {
+    const privacy: StoredTextPrivacyRun = {
       mask: async () => ({ send: false, reason: 'blocked' }),
       restore: (t) => t,
     };
@@ -55,7 +55,7 @@ describe('in-place planner privacy (#1540 parity)', () => {
 
   it('the model sees only the masked prompt and the plan is restored', async () => {
     const rec = llmRecording(JSON.stringify(PLAN));
-    const privacy: SkeletonPrivacyRun = {
+    const privacy: StoredTextPrivacyRun = {
       mask: async (t) => ({ send: true, text: t.replaceAll('Brückner GmbH', 'Surrogat AG') }),
       restore: (t) => t.replaceAll('Surrogat AG', 'Brückner GmbH'),
     };

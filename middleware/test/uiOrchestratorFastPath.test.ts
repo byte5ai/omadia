@@ -26,12 +26,13 @@ import {
   composeSkeleton,
   type CompositionLlm,
 } from '../packages/omadia-ui-orchestrator/src/composition.js';
+import { createFastPathService, FAST_PATH_SERVICE } from '../packages/harness-plugin-fast-path/src/service.js';
 import { activate } from '../packages/omadia-ui-orchestrator/src/plugin.js';
 import {
   applyRefreshSource,
   parseRefreshSource,
   type RefreshSource,
-} from '../packages/omadia-ui-orchestrator/src/refreshRecipes.js';
+} from '../packages/harness-plugin-fast-path/src/refreshRecipes.js';
 
 // ── fixtures ──────────────────────────────────────────────────────────────
 
@@ -128,6 +129,8 @@ async function harness(opts: {
   composer?: string;
   config?: Record<string, string>;
   invoke?: ((name: string, input: unknown) => Promise<string>) | null;
+  /** the base agent's own tool list (default: odoo_query); null = unknown */
+  offeredTools?: string[] | null;
 }): Promise<Harness> {
   const reg = new Map<string, unknown>();
   const logs: string[] = [];
@@ -157,6 +160,10 @@ async function harness(opts: {
   } as unknown as PluginContext;
   reg.set(CHAT_AGENT_SERVICE, {
     agent: {
+      // the base agent's own tool list — the fast path stays within it
+      ...(opts.offeredTools === null
+        ? {}
+        : { offeredToolNames: () => new Set(opts.offeredTools ?? ['odoo_query']) }),
       chat: () => Promise.reject(new Error('unused')),
       async *chatStream(input: ChatTurnInput) {
         baseInputs.push(input);
@@ -165,6 +172,16 @@ async function harness(opts: {
       },
     },
   } satisfies ChatAgentBundle);
+  reg.set(
+    FAST_PATH_SERVICE,
+    createFastPathService({
+      config: ctx.config,
+      model: 'class:fast',
+      privacyGuard: () => undefined,
+      privacyForced: () => false,
+      log: (m) => logs.push(m),
+    }),
+  );
   await activate(ctx);
   const agent = (reg.get('canvasChatAgent') as ChatAgentBundle).agent;
   return { agent, logs, invokeCalls, baseInputs };
@@ -465,6 +482,22 @@ describe('canvasChatAgent — deterministic fast path', () => {
         ],
       }),
     }));
+
+  it('an agent WITHOUT odoo_query: the composer is never offered it, nothing runs', async () => {
+    const h = await harness({ offeredTools: ['memory'] });
+    await collect(h.agent.chatStream(turn()));
+    assert.equal(h.invokeCalls.length, 0);
+    assert.equal(h.baseInputs.length, 1, 'the agent answers');
+    assert.ok(h.logs.includes('[ui-orchestrator] fast-path miss reason=disabled'));
+  });
+
+  it('an agent that cannot name its tools gets no fast path (fail closed)', async () => {
+    const h = await harness({ offeredTools: null });
+    await collect(h.agent.chatStream(turn()));
+    assert.equal(h.invokeCalls.length, 0);
+    assert.equal(h.baseInputs.length, 1);
+    assert.ok(h.logs.includes('[fast-path] miss channel=canvas reason=tool-set-unknown'));
+  });
 
   it('miss: structured action / row-bound turn', async () => {
     await assertMiss('action-turn', {}, turn({ action: { type: 'pick', payload: {} } } as Partial<ChatTurnInput>));

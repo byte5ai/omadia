@@ -1,0 +1,92 @@
+schema_version: "1"
+
+identity:
+  id: "@omadia/fast-path"
+  name: "Fast Path"
+  version: "0.1.0"
+  kind: "extension"
+  domain: "omadia.fast-path"
+  description:
+    en: "Answers simple data lookups in seconds instead of a full agent turn — in the chat, Teams, Telegram, Slack, the API and the canvas. One quick check decides whether a single read query answers the message; then the query runs directly and the result is shown as a table. Everything else goes to the agent as before."
+    de: "Beantwortet einfache Datenabfragen in Sekunden statt mit einem vollen Agenten-Zug: im Chat, in Teams, Telegram, Slack, über die API und im Canvas. Eine schnelle Prüfung entscheidet, ob eine einzige Leseabfrage die Nachricht beantwortet; dann läuft die Abfrage direkt und das Ergebnis erscheint als Tabelle. Alles andere geht wie bisher an den Agenten."
+  authors:
+    - name: "byte5 GmbH"
+      email: "info@omadia.ai"
+      url: "https://omadia.ai"
+  license: "MIT"
+  categories:
+    - "infrastructure"
+    - "orchestration"
+
+compat:
+  core: ">=1.0 <2.0"
+  node: ">=20"
+
+lifecycle:
+  entry: "dist/plugin.js"
+
+# The triage prompt reaches a model BEFORE the turn has a privacy handle, so
+# with a Privacy Shield running it is masked through the guard's stored-text
+# scope (#1540, failure-closed). Optional: without a guard the triage sends
+# the text as written (no shield ⇒ nothing to mask), and activation must not
+# wait on it.
+optional_requires:
+  - "privacyRedact@1"
+
+# fastPath@1 — consumed by @omadia/orchestrator (the chat-agent wrapper for
+# every non-canvas channel) and @omadia/ui-orchestrator (the canvas). Both
+# resolve it lazily per turn; without it every turn runs the agent unchanged.
+provides:
+  - "fastPath@1"
+
+setup:
+  fields:
+    - key: "fast_path_tools"
+      type: "string"
+      label:
+        en: "Fast-path tools"
+        de: "Tools für den Schnellpfad"
+      help:
+        en: "Comma-separated read tools a fast model may plan ONE deterministic query for (with an optional date/equality post-filter). When a message is answered that way, the query runs directly and the rows go only to the user — no agent turn, no model ever sees them; any miss falls back to the full agent. Only tools with a built-in planner spec are used (today: odoo_query), plus read tools learned from verified agent answers. Empty → fast path off on every channel: nothing is learned, nothing is used."
+        de: "Kommagetrennte Lese-Tools, für die ein schnelles Modell EINE deterministische Abfrage planen darf (optional mit Datums-/Gleichheits-Nachfilter). Wird eine Nachricht so beantwortet, läuft die Abfrage direkt und die Zeilen gehen nur an den Nutzer — kein Agenten-Zug, kein Modell sieht sie; jeder Fehlschlag fällt auf den vollen Agenten zurück. Genutzt werden nur Tools mit eingebauter Planer-Spezifikation (aktuell: odoo_query) sowie Lese-Tools, die aus geprüften Agenten-Antworten gelernt wurden. Leer → Schnellpfad auf allen Kanälen aus: nichts wird gelernt, nichts genutzt."
+      required: false
+      default: "odoo_query"
+    - key: "fast_path_channels"
+      type: "string"
+      label:
+        en: "Fast-path channels"
+        de: "Kanäle für den Schnellpfad"
+      help:
+        en: "Comma-separated channels the fast path runs on: canvas, web (browser chat), http, teams, telegram, slack, … Empty or \"all\" → every channel; \"none\" → none. On every channel but the canvas each message costs one quick model check before the agent, which then reuses its simple/complex verdict for model routing."
+        de: "Kommagetrennte Kanäle, auf denen der Schnellpfad läuft: canvas, web (Browser-Chat), http, teams, telegram, slack, … Leer oder „all“ → alle Kanäle; „none“ → keiner. Auf allen Kanälen außer dem Canvas kostet jede Nachricht eine schnelle Modellprüfung vor dem Agenten, der deren Einstufung einfach/komplex dann fürs Modell-Routing übernimmt."
+      required: false
+      default: "all"
+    - key: "fast_path_timezone"
+      type: "string"
+      label:
+        en: "Fast-path time zone"
+        de: "Zeitzone für den Schnellpfad"
+      help:
+        en: "IANA time zone (e.g. Europe/Berlin) in which relative dates of a fast-path or refresh query — {today}, {today-30d} — resolve to a calendar date, so \"overdue\" means overdue in your business day, not the server clock's. Invalid or empty → Europe/Berlin."
+        de: "IANA-Zeitzone (z. B. Europe/Berlin), in der relative Datumsangaben einer Schnellpfad- oder Aktualisierungsabfrage — {today}, {today-30d} — zu einem Kalenderdatum aufgelöst werden, damit „überfällig“ nach Ihrem Geschäftstag gilt und nicht nach der Serveruhr. Ungültig oder leer → Europe/Berlin."
+      required: false
+      default: "Europe/Berlin"
+
+permissions:
+  filesystem:
+    scratch: false
+  # The tenant-wide learned plan store (`fastpath/plans.json`: literal-stripped
+  # tool inputs + stripped example questions — never row data) in this
+  # plugin's own memory scope, persisted on the volume.
+  memory:
+    reads: ["agent:@omadia/fast-path:*"]
+    writes: ["agent:@omadia/fast-path:*"]
+  # One triage call per non-canvas turn on the cheapest tier of the active
+  # provider (class:fast). The calls counter is scoped to the plugin context,
+  # which for an extension lives as long as the activation — hence the high
+  # cap (same reasoning as @omadia/ui-orchestrator).
+  llm:
+    models_allowed:
+      - "class:fast"
+    calls_per_invocation: 1000000
+    max_tokens_per_call: 1024

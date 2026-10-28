@@ -31,6 +31,7 @@ const ORCHESTRATOR_TOOL_ID = '@omadia/orchestrator';
 const ORCHESTRATOR_EXTRAS_TOOL_ID = '@omadia/orchestrator-extras';
 const VERIFIER_TOOL_ID = '@omadia/verifier';
 const UI_ORCHESTRATOR_TOOL_ID = '@omadia/ui-orchestrator';
+const FAST_PATH_TOOL_ID = '@omadia/fast-path';
 /** Providers whose API keys are mirrored into the canvas plugin's scope. */
 const MIRRORED_PROVIDERS = ['anthropic', 'openai', 'mistral'] as const;
 
@@ -1168,21 +1169,26 @@ async function mirrorProviderKeysToUiOrchestrator(
     const legacy = legacyProviderApiKeyVaultKey(provider);
     if (legacy !== undefined) vaultKeys.push(legacy);
   }
-  const updates: Record<string, string> = {};
-  for (const key of vaultKeys) {
-    const existing = await deps.vault.get(UI_ORCHESTRATOR_TOOL_ID, key);
-    if (typeof existing === 'string' && existing.trim().length > 0) continue;
-    const source = await deps.vault.get(ORCHESTRATOR_TOOL_ID, key);
-    if (typeof source === 'string' && source.trim().length > 0) {
-      updates[key] = source;
+  // The fast-path triage (@omadia/fast-path) makes its own `ctx.llm` call
+  // too — same reason, same mirror.
+  for (const [target, why] of [
+    [UI_ORCHESTRATOR_TOOL_ID, 'canvas LLM enablement'],
+    [FAST_PATH_TOOL_ID, 'fast-path triage LLM enablement'],
+  ] as const) {
+    const updates: Record<string, string> = {};
+    for (const key of vaultKeys) {
+      const existing = await deps.vault.get(target, key);
+      if (typeof existing === 'string' && existing.trim().length > 0) continue;
+      const source = await deps.vault.get(ORCHESTRATOR_TOOL_ID, key);
+      if (typeof source === 'string' && source.trim().length > 0) {
+        updates[key] = source;
+      }
     }
-  }
-  const count = Object.keys(updates).length;
-  if (count > 0) {
-    await deps.vault.setMany(UI_ORCHESTRATOR_TOOL_ID, updates);
-    log(
-      `[bootstrap] mirrored ${String(count)} provider key(s) → ${UI_ORCHESTRATOR_TOOL_ID} (canvas LLM enablement)`,
-    );
+    const count = Object.keys(updates).length;
+    if (count > 0) {
+      await deps.vault.setMany(target, updates);
+      log(`[bootstrap] mirrored ${String(count)} provider key(s) → ${target} (${why})`);
+    }
   }
 }
 

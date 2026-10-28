@@ -6,10 +6,14 @@ Stdlib-only; `server` is importable without gliner/onnxruntime installed
     python3 -m unittest sidecars/pii-detector/test_server.py
 """
 
+import contextlib
+import io
+import json
 import os
 import socket
 import sys
 import threading
+import time
 import unittest
 
 # Make `import server` work regardless of the caller's cwd (e.g. running
@@ -311,6 +315,211 @@ class SelfTestTests(unittest.TestCase):
         ok, detail = server.run_selftest(self.FakeModel([]))
         self.assertFalse(ok)
         self.assertNotIn("@", detail)
+
+
+class ParsePriorityTests(unittest.TestCase):
+    def test_absent_header_is_background_for_backward_compat(self):
+        self.assertEqual(server.parse_priority(None), "background")
+        self.assertEqual(server.parse_priority(""), "background")
+
+    def test_known_values_case_and_whitespace_insensitive(self):
+        self.assertEqual(server.parse_priority("interactive"), "interactive")
+        self.assertEqual(server.parse_priority("  Interactive "), "interactive")
+        self.assertEqual(server.parse_priority("BACKGROUND"), "background")
+
+    def test_unknown_value_falls_back_to_background(self):
+        # Scheduling hint only — an unknown value must not fail the request,
+        # and must not be able to claim the fast lane either.
+        self.assertEqual(server.parse_priority("urgent"), "background")
+
+
+class PriorityGateTests(unittest.TestCase):
+    """Single inference slot; interactive first, FIFO per class, bg aging."""
+
+    def _wait_for_depth(self, gate, interactive, background):
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if gate.depths() == {"interactive": interactive, "background": background}:
+                return
+            time.sleep(0.005)
+        self.fail(f"queue depth never reached {interactive}/{background}: {gate.depths()}")
+
+    def _enqueue(self, gate, prio, name, order, expect_depth):
+        """Start a waiter and block until it is visibly queued (deterministic order)."""
+
+        def run():
+            grant = gate.acquire(prio, timeout=5)
+            self.assertIsNotNone(grant)
+            order.append(name)
+            gate.release()
+
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        self._wait_for_depth(gate, *expect_depth)
+        return t
+
+    def test_idle_gate_grants_immediately_with_zero_wait(self):
+        gate = server.PriorityGate(aging_s=5)
+        grant = gate.acquire("background", timeout=1)
+        self.assertIsNotNone(grant)
+        self.assertLess(grant.wait_ms, 50)
+        self.assertEqual(grant.queued, {"interactive": 0, "background": 0})
+        gate.release()
+
+    def test_interactive_waiters_go_before_background_fifo_within_class(self):
+        gate = server.PriorityGate(aging_s=60)
+        self.assertIsNotNone(gate.acquire("background", timeout=1))  # hold the slot
+        order = []
+        threads = [
+            self._enqueue(gate, "background", "bg1", order, (0, 1)),
+            self._enqueue(gate, "interactive", "int1", order, (1, 1)),
+            self._enqueue(gate, "background", "bg2", order, (1, 2)),
+            self._enqueue(gate, "interactive", "int2", order, (2, 2)),
+        ]
+        gate.release()
+        for t in threads:
+            t.join(5)
+        self.assertEqual(order, ["int1", "int2", "bg1", "bg2"])
+        self.assertEqual(gate.depths(), {"interactive": 0, "background": 0})
+
+    def test_background_waiting_past_aging_is_served_next(self):
+        gate = server.PriorityGate(aging_s=0.2)
+        self.assertIsNotNone(gate.acquire("interactive", timeout=1))
+        order = []
+        threads = [self._enqueue(gate, "background", "bg-old", order, (0, 1))]
+        time.sleep(0.3)  # bg-old is now older than the aging threshold
+        threads.append(self._enqueue(gate, "interactive", "int-new", order, (1, 1)))
+        gate.release()
+        for t in threads:
+            t.join(5)
+        self.assertEqual(order, ["bg-old", "int-new"])
+
+    def test_young_background_does_not_jump_interactive(self):
+        gate = server.PriorityGate(aging_s=60)
+        self.assertIsNotNone(gate.acquire("interactive", timeout=1))
+        order = []
+        threads = [self._enqueue(gate, "background", "bg", order, (0, 1))]
+        time.sleep(0.3)
+        threads.append(self._enqueue(gate, "interactive", "int", order, (1, 1)))
+        gate.release()
+        for t in threads:
+            t.join(5)
+        self.assertEqual(order, ["int", "bg"])
+
+    def test_waiter_reports_queue_depth_seen_on_arrival_and_wait_ms(self):
+        gate = server.PriorityGate(aging_s=60)
+        self.assertIsNotNone(gate.acquire("background", timeout=1))
+        grants = {}
+
+        def run(prio, name):
+            grants[name] = gate.acquire(prio, timeout=5)
+            gate.release()
+
+        a = threading.Thread(target=run, args=("background", "a"), daemon=True)
+        a.start()
+        self._wait_for_depth(gate, 0, 1)
+        b = threading.Thread(target=run, args=("interactive", "b"), daemon=True)
+        b.start()
+        self._wait_for_depth(gate, 1, 1)
+        time.sleep(0.05)
+        gate.release()
+        a.join(5)
+        b.join(5)
+        self.assertEqual(grants["b"].queued, {"interactive": 0, "background": 1})
+        self.assertGreaterEqual(grants["b"].wait_ms, 40)
+        self.assertEqual(grants["a"].priority, "background")
+
+    def test_timeout_returns_none_and_leaves_no_ghost_waiter(self):
+        gate = server.PriorityGate(aging_s=60)
+        self.assertIsNotNone(gate.acquire("background", timeout=1))
+        self.assertIsNone(gate.acquire("interactive", timeout=0.1))
+        self.assertEqual(gate.depths(), {"interactive": 0, "background": 0})
+        gate.release()
+        # The slot is free again: a timed-out waiter must not have been granted.
+        grant = gate.acquire("background", timeout=0.1)
+        self.assertIsNotNone(grant)
+        gate.release()
+
+    def test_release_hands_off_to_waiter_not_to_a_fresh_arrival(self):
+        gate = server.PriorityGate(aging_s=60)
+        self.assertIsNotNone(gate.acquire("background", timeout=1))
+        order = []
+        t = self._enqueue(gate, "background", "waiter", order, (0, 1))
+        gate.release()
+        # The slot went straight to the waiter; a newcomer queues behind it.
+        late = gate.acquire("interactive", timeout=5)
+        self.assertIsNotNone(late)
+        order.append("late")
+        gate.release()
+        t.join(5)
+        self.assertEqual(order[0], "waiter")
+
+
+class DetectEndpointPriorityTests(unittest.TestCase):
+    """The HTTP handler reads X-PII-Priority and logs prio/wait/queue depth."""
+
+    def setUp(self):
+        self._saved = (server.PORT, server.detect, server._GATE)
+        server.PORT = 0
+        server.detect = lambda text, labels, threshold: []
+        server._GATE = server.PriorityGate(aging_s=5)
+        os.environ.pop("PII_DETECTOR_BIND_V4_ONLY", None)
+        self.srv, _ = server.build_server()
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.port = self.srv.socket.getsockname()[1]
+
+    def tearDown(self):
+        self.srv.shutdown()
+        self.srv.server_close()
+        server.PORT, server.detect, server._GATE = self._saved
+
+    def _post(self, headers):
+        import http.client
+
+        conn = http.client.HTTPConnection("::1", self.port, timeout=5)
+        body = json.dumps({"text": "Anna Schmidt"})
+        conn.request(
+            "POST", "/detect", body, {"content-type": "application/json", **headers}
+        )
+        res = conn.getresponse()
+        payload = json.loads(res.read())
+        conn.close()
+        return res.status, payload
+
+    def _post_capturing_log(self, headers):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            status, payload = self._post(headers)
+        return status, payload, buf.getvalue()
+
+    def test_interactive_header_is_logged(self):
+        status, payload, log = self._post_capturing_log({"X-PII-Priority": "interactive"})
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+        self.assertIn("prio=interactive", log)
+        self.assertIn("wait_ms=", log)
+        self.assertIn("queued_interactive=0 queued_background=0", log)
+        self.assertNotIn("Anna", log)  # never the text
+
+    def test_missing_header_defaults_to_background(self):
+        status, _, log = self._post_capturing_log({})
+        self.assertEqual(status, 200)
+        self.assertIn("prio=background", log)
+
+    def test_queue_wait_exceeded_answers_503(self):
+        saved_timeout = server.DETECT_TIMEOUT_S
+        server.DETECT_TIMEOUT_S = 0.1
+        self.assertIsNotNone(server._GATE.acquire("background", timeout=1))
+        try:
+            status, payload, log = self._post_capturing_log(
+                {"X-PII-Priority": "interactive"}
+            )
+        finally:
+            server._GATE.release()
+            server.DETECT_TIMEOUT_S = saved_timeout
+        self.assertEqual(status, 503)
+        self.assertFalse(payload["ok"])
+        self.assertIn("prio=interactive", log)
 
 
 if __name__ == "__main__":

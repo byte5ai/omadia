@@ -26,9 +26,10 @@ import {
   composeSkeleton,
   type CompositionLlm,
 } from '../packages/omadia-ui-orchestrator/src/composition.js';
-import { plannableTools, renderSummary } from '../packages/omadia-ui-orchestrator/src/fastPath.js';
+import { plannableTools, renderSummary } from '../packages/harness-plugin-fast-path/src/fastPath.js';
+import { createFastPathService, FAST_PATH_SERVICE } from '../packages/harness-plugin-fast-path/src/service.js';
 import { activate } from '../packages/omadia-ui-orchestrator/src/plugin.js';
-import { resolveRecipeInput, resolveTimeZone } from '../packages/omadia-ui-orchestrator/src/refreshRecipes.js';
+import { resolveRecipeInput, resolveTimeZone } from '../packages/harness-plugin-fast-path/src/refreshRecipes.js';
 
 // ── fixtures ──────────────────────────────────────────────────────────────
 
@@ -149,6 +150,8 @@ async function harness(opts: {
   } as unknown as PluginContext;
   reg.set(CHAT_AGENT_SERVICE, {
     agent: {
+      // the base agent's own tool list — the fast path stays within it
+      offeredToolNames: () => new Set(['odoo_query']),
       chat: () => Promise.reject(new Error('unused')),
       async *chatStream(input: ChatTurnInput) {
         baseInputs.push(input);
@@ -158,6 +161,16 @@ async function harness(opts: {
       },
     },
   } satisfies ChatAgentBundle);
+  reg.set(
+    FAST_PATH_SERVICE,
+    createFastPathService({
+      config: ctx.config,
+      model: 'class:fast',
+      privacyGuard: () => undefined,
+      privacyForced: () => false,
+      log: (m) => logs.push(m),
+    }),
+  );
   await activate(ctx);
   const agent = (reg.get('canvasChatAgent') as ChatAgentBundle).agent;
   return { agent, logs, invokeCalls, baseInputs };

@@ -50,6 +50,10 @@ optional_requires:
   - "agentToolInvoker@1"
   - "canvasOutputRegistry@1"
   - "deterministicActionRegistry@1"
+  # The deterministic fast path (@omadia/fast-path): allow-list, channel
+  # filter, timezone and the tenant-wide learned plan store. Optional — a
+  # host without it runs every canvas turn through the agent.
+  - "fastPath@1"
 
 provides:
   - "canvasChatAgent@1"
@@ -76,33 +80,12 @@ setup:
         de: "Kommagetrennte Tool-Namen, die Canvas-Sentinels ausgeben dürfen (_pendingCanvasTree / _pendingStructuredPayload). Übergangsweise vom Operator gepflegte Allow-Liste, bis die beim Boot berechnete Verdrahtung der Canvas-Output-Capability (PR-7b) da ist. Leer → standardmäßig alles verweigert, keine Synthese."
       required: false
       default: ""
-    - key: "fast_path_tools"
-      type: "string"
-      label:
-        en: "Fast-path tools"
-        de: "Tools für den Schnellpfad"
-      help:
-        en: "Comma-separated read tools the skeleton composer may plan ONE deterministic query for (with an optional date/equality post-filter). When every data container of a canvas ask is planned this way, the orchestrator runs the query itself, fills the table and answers with a templated sentence — no agent turn, the model never sees the rows; any miss falls back to the full agent. Only tools with a built-in composer spec are used (today: odoo_query). Empty → fast path off."
-        de: "Kommagetrennte Lese-Tools, für die der Skeleton-Composer EINE deterministische Abfrage planen darf (optional mit Datums-/Gleichheits-Nachfilter). Ist jeder Datencontainer einer Canvas-Anfrage so geplant, führt der Orchestrator die Abfrage selbst aus, füllt die Tabelle und antwortet mit einem Vorlagensatz — kein Agenten-Zug, das Modell sieht die Zeilen nie; jeder Fehlschlag fällt auf den vollen Agenten zurück. Genutzt werden nur Tools mit eingebauter Composer-Spezifikation (aktuell: odoo_query). Leer → Schnellpfad aus."
-      required: false
-      default: "odoo_query"
-    - key: "fast_path_timezone"
-      type: "string"
-      label:
-        en: "Fast-path time zone"
-        de: "Zeitzone für den Schnellpfad"
-      help:
-        en: "IANA time zone (e.g. Europe/Berlin) in which relative dates of a fast-path or refresh query — {today}, {today-30d} — resolve to a calendar date, so \"overdue\" means overdue in your business day, not the server clock's. Invalid or empty → Europe/Berlin."
-        de: "IANA-Zeitzone (z. B. Europe/Berlin), in der relative Datumsangaben einer Schnellpfad- oder Aktualisierungsabfrage — {today}, {today-30d} — zu einem Kalenderdatum aufgelöst werden, damit „überfällig“ nach Ihrem Geschäftstag gilt und nicht nach der Serveruhr. Ungültig oder leer → Europe/Berlin."
-      required: false
-      default: "Europe/Berlin"
 
 permissions:
   filesystem:
     scratch: false
-  # Learned fast path: the tenant-wide plan store (`fastpath/plans.json`,
-  # literal-stripped tool inputs + stripped example questions — never row
-  # data) in this plugin's own memory scope, persisted on the volume.
+  # Legacy learned fast path store (`fastpath/plans.json`): read once to
+  # migrate its plans into @omadia/fast-path's shared store, then emptied.
   memory:
     reads: ["agent:@omadia/ui-orchestrator:*"]
     writes: ["agent:@omadia/ui-orchestrator:*"]

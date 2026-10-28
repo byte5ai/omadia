@@ -1,0 +1,21 @@
+{
+  "name": "@omadia/fast-path",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "description": "Deterministic fast path for every channel. kind: extension; publishes fastPath@1 — the tenant-wide learned plan store, the read-tool allow-list, the shared execution building blocks (refresh recipes, filters, {today} tokens, currency-safe sums, literal stripping) and a one-call chat triage that answers simple data lookups LLM-free on web, Teams, Telegram, Slack and the HTTP API.",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@omadia/channel-sdk": "*",
+    "@omadia/plugin-api": "*"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

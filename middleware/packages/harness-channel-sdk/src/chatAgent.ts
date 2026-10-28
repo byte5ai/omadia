@@ -97,6 +97,15 @@ export interface ChatAgent {
    * Absent or `false`: the stream delivers content as it is produced.
    */
   readonly holdsContentUntilVerdict?: boolean;
+  /**
+   * The tool names this agent offers its model on a turn right now (its own
+   * tool list: kernel tools, the plugin tools that are ready and offered,
+   * its domain tools). A trusted wrapper that runs a tool ON the agent's
+   * behalf without a model turn (the deterministic fast path) must stay
+   * within this set — a per-Agent orchestrator without a tool must not reach
+   * it that way. Absent: the set is unknown, and such a wrapper fails closed.
+   */
+  offeredToolNames?(): ReadonlySet<string>;
 }
 
 /** Inbound channel-supplied attachment (image/file/audio/video). Vision-capable
@@ -532,6 +541,14 @@ export interface ChatTurnInput {
    * see what the user actually asked. Never set it from channel input.
    */
   fixedSystemHint?: string;
+  /**
+   * Precomputed per-turn model route from a TRUSTED in-process wrapper — the
+   * fast-path triage (`@omadia/fast-path`), whose single fast-model call
+   * already classified the message. With model routing configured the
+   * orchestrator takes it instead of running its own classifier call; with
+   * routing off it is ignored. Never set it from channel input.
+   */
+  routeHint?: 'simple' | 'complex';
   /**
    * Structured UI action from an Omadia UI canvas client (button click,
    * choice pick, row action) — the typed field promised in protocol 1.0 §5.1
