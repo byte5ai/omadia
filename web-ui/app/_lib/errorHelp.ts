@@ -51,7 +51,7 @@ export const ERROR_HELP_CODES = [
   'auth.logout_revocation_failed',
   // authSetup.ts — the first-run wizard's side of the same password maximum.
   'auth.setup_password_too_long',
-  // install.ts — the four it emits as literals, plus the ten its handleError
+  // install.ts — the four it emits as literals, plus the eleven its handleError
   // re-emits from an InstallError thrown in plugins/installService.ts.
   'install.already_installed',
   'install.blocked',
@@ -66,6 +66,8 @@ export const ERROR_HELP_CODES = [
   'install.missing_dependencies',
   'install.no_schema',
   'install.not_installed',
+  // #1507 — the last Privacy Shield provider under OMADIA_PRIVACY_FORCE_GUARDED.
+  'install.privacy_guard_required',
   'install.unexpected',
   'install.wrong_state',
   // cli_install.* — set by startCliInstall in

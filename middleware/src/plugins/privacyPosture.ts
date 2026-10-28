@@ -49,19 +49,55 @@ export function buildPrivacyPosture(input: {
   readonly catalog?: Pick<PluginCatalog, 'get'>;
   readonly env: NodeJS.ProcessEnv;
 }): PrivacyPosture {
-  const providerIds = input.installedRegistry
-    .list()
-    .map((entry) => entry.id)
-    .filter((id) =>
-      (input.catalog?.get(id)?.plugin.provides ?? []).includes(
-        PRIVACY_REDACT_CAPABILITY,
-      ),
-    );
+  const providerIds = privacyProviderIds(input.installedRegistry, input.catalog);
   return {
     shield_active: input.serviceRegistry.has(PRIVACY_REDACT_SERVICE_NAME),
     force_guarded: isForceGuarded(input.env),
     provider_ids: providerIds,
   };
+}
+
+/** Installed plugins whose manifest provides the Privacy Shield capability. */
+export function privacyProviderIds(
+  installedRegistry: Pick<InstalledRegistry, 'list'>,
+  catalog: Pick<PluginCatalog, 'get'> | undefined,
+): string[] {
+  return installedRegistry
+    .list()
+    .map((entry) => entry.id)
+    .filter((id) =>
+      (catalog?.get(id)?.plugin.provides ?? []).includes(
+        PRIVACY_REDACT_CAPABILITY,
+      ),
+    );
+}
+
+/**
+ * #1507 — would uninstalling `pluginId` remove the last Privacy Shield
+ * provider while the org policy `OMADIA_PRIVACY_FORCE_GUARDED` is on? The
+ * orchestrator runs every turn unmasked without a provider, so the uninstall
+ * would void the policy without any setting saying so. Removing one of two
+ * providers stays allowed.
+ */
+export function uninstallVoidsForceGuarded(input: {
+  readonly pluginId: string;
+  readonly installedRegistry: Pick<InstalledRegistry, 'list'>;
+  readonly catalog?: Pick<PluginCatalog, 'get'>;
+  readonly env: NodeJS.ProcessEnv;
+}): boolean {
+  if (!isForceGuarded(input.env)) return false;
+  // Only RUNNING providers keep the shield up: an errored or inactive second
+  // provider must not make the active one look removable.
+  const active = new Set(
+    input.installedRegistry
+      .list()
+      .filter((entry) => entry.status === 'active')
+      .map((entry) => entry.id),
+  );
+  const running = privacyProviderIds(input.installedRegistry, input.catalog).filter(
+    (id) => active.has(id),
+  );
+  return running.includes(input.pluginId) && running.length === 1;
 }
 
 /** Is `key` one of the kernel-synthetic privacy config keys? */

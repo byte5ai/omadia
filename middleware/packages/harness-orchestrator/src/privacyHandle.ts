@@ -67,6 +67,13 @@ export interface PrivacyTurnHandle {
    */
   checkBypass(toolName: string): { readonly pluginId: string } | undefined;
   /**
+   * #1507 — did any tool of this turn bypass the shield (a `checkBypass` hit
+   * or a recorded bypass)? Its answer then carries real values the model saw
+   * raw, so the turn is logged `unprotected` and kept out of later recall.
+   * Optional: a handle without it is read as "no bypass".
+   */
+  hasBypassed?(): boolean;
+  /**
    * Record a tool error a dispatch seam withheld, redacted or passed this
    * turn; drained into the receipt's `toolErrors`. A no-op when the provider
    * predates the contract. PII-free input only.
@@ -210,6 +217,7 @@ export function createPrivacyTurnHandle(deps: {
    */
   readonly resolveBypass?: (toolName: string) => { pluginId: string } | undefined;
 }): PrivacyTurnHandle {
+  let bypassed = false;
   return {
     async internToolResultV4(input) {
       return deps.service.internToolResultV4({
@@ -221,6 +229,7 @@ export function createPrivacyTurnHandle(deps: {
     },
 
     async recordBypassedTool(input) {
+      bypassed = true;
       return deps.service.recordBypassedTool({
         turnId: deps.turnId,
         toolName: input.toolName,
@@ -231,7 +240,13 @@ export function createPrivacyTurnHandle(deps: {
     },
 
     checkBypass(toolName) {
-      return deps.resolveBypass?.(toolName);
+      const hit = deps.resolveBypass?.(toolName);
+      if (hit !== undefined) bypassed = true;
+      return hit;
+    },
+
+    hasBypassed() {
+      return bypassed;
     },
 
     async recordToolError(input) {

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { EmbeddingClient } from '@omadia/embeddings';
 import type { KnowledgeGraph, SessionSummary, SessionView } from '@omadia/plugin-api';
+import { turnContext } from './turnContext.js';
 
 const KnowledgeGraphInputSchema = z.object({
   query: z.enum([
@@ -211,6 +212,7 @@ export class KnowledgeGraphTool {
             query: args.text,
             limit: Math.min(args.limit, 20),
             ...access.searchOptions,
+            ...shieldedSearch(),
           })
         ).filter((h) => access.scopeAllowed(h.scope));
         return JSON.stringify({
@@ -249,6 +251,7 @@ export class KnowledgeGraphTool {
             limit: Math.min(args.limit, 20),
             minSimilarity: 0.25,
             ...access.searchOptions,
+            ...shieldedSearch(),
           })
         ).filter((h) => access.scopeAllowed(h.scope));
         return JSON.stringify({
@@ -349,4 +352,15 @@ export class KnowledgeGraphTool {
 function truncateForOutput(s: string, max: number): string {
   if (s.length <= max) return s;
   return `${s.slice(0, max - 1)}…`;
+}
+
+/**
+ * #1507 — under a Privacy Shield the model's turn search skips turns stored
+ * `unprotected`: their answers hold values no shield masked, and the tool
+ * result's masking only catches detector-visible spans.
+ */
+function shieldedSearch(): { excludeUnprotected?: true } {
+  return turnContext.current()?.privacyHandle !== undefined
+    ? { excludeUnprotected: true }
+    : {};
 }

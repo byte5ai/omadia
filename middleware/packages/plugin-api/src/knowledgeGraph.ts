@@ -1705,6 +1705,17 @@ export interface TurnIngest {
    */
   tailOnly?: boolean;
   /**
+   * #1507 — the turn's answer came from raw values the model saw: it ran
+   * without a Privacy Shield provider, or a tool bypassed the shield. Set by
+   * the kernel on every live turn. A turn search that runs under a shield
+   * (context recall, the `query_knowledge_graph` turn search, a plugin's
+   * `ctx.knowledgeGraph` turn search) passes `excludeUnprotected` and gets no
+   * such turn back. Only written when present, like `owners`: a re-ingest
+   * without it (backfill from transcripts) keeps the recorded value. Stored
+   * as a Turn property.
+   */
+  unprotected?: boolean;
+  /**
    * Member-scoped memory — the canonical omadia user ids of everyone present
    * in the room when the turn happened, sorted and de-duplicated. The turn's
    * knowledge belongs to exactly these people: a later turn may recall it only
@@ -2091,6 +2102,11 @@ export interface SearchTurnsOptions {
   audienceOwners?: readonly string[];
   /** Hard cap on returned hits. Defaults to 5. */
   limit?: number;
+  /**
+   * #1507 — leave out turns stored `unprotected` (see `TurnIngest`). Set by a
+   * recall that runs under a Privacy Shield.
+   */
+  excludeUnprotected?: boolean;
 }
 
 export interface TurnSearchHit {
@@ -2185,6 +2201,11 @@ export interface SearchTurnsByEmbeddingOptions {
    * a no-op but the convention is in place.
    */
   includeCold?: boolean;
+  /**
+   * #1507 — leave out turns stored `unprotected` (see `TurnIngest`). Set by a
+   * recall that runs under a Privacy Shield.
+   */
+  excludeUnprotected?: boolean;
 }
 
 /** Read options for {@link KnowledgeGraph.getSession}. */
@@ -2220,6 +2241,11 @@ export interface EntityCapturedTurnsOptions {
   perEntityLimit?: number;
   /** Hard cap on distinct entities to return. Default 5. */
   entityLimit?: number;
+  /**
+   * #1507 — leave out turns stored `unprotected` (see `TurnIngest`). Set by a
+   * recall that runs under a Privacy Shield.
+   */
+  excludeUnprotected?: boolean;
 }
 
 export interface FindEntitiesOptions {

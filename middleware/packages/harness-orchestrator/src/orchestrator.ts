@@ -166,8 +166,6 @@ import type {
 import {
   agentScopePrefix,
   isUnknownOutcomeToolErrorNotice,
-  PRIVACY_BYPASS_SCOPES_CONFIG_KEY,
-  PRIVACY_MODE_CONFIG_KEY,
   resolveEffectivePrivacyMode,
 } from '@omadia/plugin-api';
 import { repeatRefusedNotice } from './subAgentUnknownOutcome.js';
@@ -188,6 +186,7 @@ import {
   type NudgeTurnCounter,
 } from './nudgePipeline.js';
 import { LoopGuard } from './loopGuard.js';
+import { createPrivacyBypassResolver } from './privacyBypassResolver.js';
 import {
   createPrivacyTurnHandle,
   ensureWellFormedParams,
@@ -1581,15 +1580,23 @@ function renderedVerifierHandOver(rendered: PrivacyRenderedAnswer): VerifierHand
  * model wrote it — the same texts the fact extraction gets. The capture
  * filter's significance scorer sends these to its provider instead of the
  * row, whose answer holds restored real values. Nothing without a handle.
+ * Also carries the turn's `unprotected` flag (#1507).
  */
 function maskedRowView(
   privacy: PrivacyTurnHandle | undefined,
   wireUserMessage: string,
   wireAnswer: string,
-): { readonly maskedView?: TurnMaskedView } {
+): { readonly maskedView?: TurnMaskedView; readonly unprotected: boolean } {
+  // #1507 — a turn that ran without a shield, or in which a tool bypassed
+  // it, answered from raw values the model saw. Its Turn node is flagged so
+  // a later turn that HAS a shield does not get it back through recall.
+  const unprotected = privacy === undefined || privacy.hasBypassed?.() === true;
   return privacy === undefined
-    ? {}
-    : { maskedView: { userMessage: wireUserMessage, assistantAnswer: wireAnswer } };
+    ? { unprotected }
+    : {
+        maskedView: { userMessage: wireUserMessage, assistantAnswer: wireAnswer },
+        unprotected,
+      };
 }
 
 /** What the session log records for a turn that ended on a choice card. */
@@ -3822,6 +3829,8 @@ export class Orchestrator {
           ...turnOwnersField(turnMemory),
           runTrace,
           entityRefs: [],
+          // #1507 — a CLI turn runs without the Privacy Shield.
+          unprotected: true,
         },
         'cli answer',
       );
@@ -4018,6 +4027,14 @@ export class Orchestrator {
           ? { restrictToScope: restrictRecallScope }
           : {}),
         ...(audienceOwners !== undefined ? { audienceOwners } : {}),
+        // #1507 — under a Privacy Shield, cross-session recall skips turns
+        // stored `unprotected`: their answers hold values no shield masked,
+        // and only detector-visible spans (e-mails, not names) would be
+        // masked on the way back in. Without a shield nothing is protected
+        // either way, so recall stays as it was.
+        ...(turnContext.current()?.privacyHandle !== undefined
+          ? { excludeUnprotected: true }
+          : {}),
       });
       console.error(
         `[context] assembled scope=${input.sessionScope ?? '-'} user=${input.userId ?? '-'} pool=${String(result.stats.candidatePool)} included=${String(result.included.length)} excluded=${String(result.excluded.length)} compact=${String(result.stats.compactMode)} tokens=${String(result.stats.tokensUsed)} rendered=${String(result.text.length)}B`,
@@ -9395,85 +9412,24 @@ export class Orchestrator {
   ): ReturnType<typeof createPrivacyTurnHandle> {
     const nativeTools = this.nativeTools;
     const domainTools = this.domainToolsByName;
-    const pluginConfigGet = this.pluginConfigGet;
-
-    // Slice 2.5 — three-tier bypass lookup:
-    //   1. kernel tools (via `ctx.tools.register`) carry their own
-    //      `(agentId, readConfig)` closure on the NativeToolRegistry entry
-    //   2. domain tools (delegation wrappers for sub-agents) carry an
-    //      `agentId` set by `dynamicAgentRuntime` — resolved via
-    //      `pluginConfigGet(agentId, key)` against the kernel registry
-    //   3. sub-agent INNER tool calls (LocalSubAgentTools fetched from a
-    //      `*.toolkit` service) — the orchestrator stashes the owning
-    //      agent plugin id in turnContext before running the sub-agent;
-    //      the resolver reads it back via turnContext and looks up the
-    //      same `_privacy_mode` setting as path #2
-    //
-    // The org-policy override (`OMADIA_PRIVACY_FORCE_GUARDED=true`) is
-    // honoured inside `resolveEffectivePrivacyMode` for all three paths.
-    const lookupByAgentId = (
-      agentId: string,
-      toolName: string,
-    ): { pluginId: string } | undefined => {
-      if (pluginConfigGet === undefined) return undefined;
-      const storedMode = pluginConfigGet(agentId, PRIVACY_MODE_CONFIG_KEY);
-      const storedScopes = pluginConfigGet(
-        agentId,
-        PRIVACY_BYPASS_SCOPES_CONFIG_KEY,
-      );
-      const effective = resolveEffectivePrivacyMode({
-        storedMode,
-        storedScopes,
-        toolName,
-        env: process.env,
-      });
-      return effective === 'bypass' ? { pluginId: agentId } : undefined;
-    };
-
-    const resolveBypass = (
-      toolName: string,
-    ): { pluginId: string } | undefined => {
-      // Path 0 — per-MCP-server operator bypass (epic #459). A server flagged
-      // `privacy_bypass` opts its tool results out of masking regardless of any
-      // owning-agent `_privacy_mode`, unless `OMADIA_PRIVACY_FORCE_GUARDED`
-      // clamps it back to guarded org-wide (`isMcpServerBypassInForce`).
-      const bypassTool = domainTools.get(toolName);
-      if (isMcpServerBypassInForce(bypassTool?.mcpServerId, toolName)) {
-        return { pluginId: bypassTool?.domain ?? toolName };
-      }
-      // Path 1 — kernel tool with attached config closure.
-      const reg = nativeTools.get(toolName);
-      if (reg?.agentId !== undefined && reg.readConfig !== undefined) {
-        const storedMode = reg.readConfig(PRIVACY_MODE_CONFIG_KEY);
-        const storedScopes = reg.readConfig(PRIVACY_BYPASS_SCOPES_CONFIG_KEY);
-        const effective = resolveEffectivePrivacyMode({
-          storedMode,
-          storedScopes,
-          toolName,
-          env: process.env,
-        });
-        if (effective === 'bypass') return { pluginId: reg.agentId };
-        // Kernel tool with explicit guarded — don't fall through to other
-        // paths (kernel registration is authoritative for kernel tools).
-        return undefined;
-      }
-      // Path 2 — domain tool with attached agent plugin id.
-      const domainTool = domainTools.get(toolName);
-      if (domainTool?.agentId !== undefined) {
-        const hit = lookupByAgentId(domainTool.agentId, toolName);
-        if (hit) return hit;
-      }
-      // Path 3 — sub-agent inner tool. The orchestrator's domain-tool
-      // dispatch installs `subAgentOwnerPluginId` in the nested turn
-      // scope before running the sub-agent loop; every inner tool call
-      // reads back here.
-      const subAgentOwner = turnContext.current()?.subAgentOwnerPluginId;
-      if (subAgentOwner !== undefined) {
-        const hit = lookupByAgentId(subAgentOwner, toolName);
-        if (hit) return hit;
-      }
-      return undefined;
-    };
+    // Lookup order and the "an owned tool never falls through" rule live in
+    // `privacyBypassResolver.ts`.
+    const resolveBypass = createPrivacyBypassResolver({
+      mcpBypassInForce: (toolName) => {
+        // Path 0 — per-MCP-server operator bypass (epic #459), clamped by
+        // `OMADIA_PRIVACY_FORCE_GUARDED` inside `isMcpServerBypassInForce`.
+        const tool = domainTools.get(toolName);
+        return isMcpServerBypassInForce(tool?.mcpServerId, toolName)
+          ? { pluginId: tool?.domain ?? toolName }
+          : undefined;
+      },
+      nativeTool: (toolName) => nativeTools.get(toolName),
+      domainToolAgentId: (toolName) => domainTools.get(toolName)?.agentId,
+      isDomainTool: (toolName) => domainTools.has(toolName),
+      pluginConfigGet: this.pluginConfigGet,
+      subAgentOwner: () => turnContext.current()?.subAgentOwnerPluginId,
+      env: process.env,
+    });
     return createPrivacyTurnHandle({
       service,
       sessionId,
