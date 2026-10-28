@@ -22,6 +22,7 @@
 
 import type { LlmProvider, LlmResponse } from '@omadia/llm-provider';
 import { collectText, textMessage } from '@omadia/llm-provider';
+import { parseLlmJson } from './llmJson.js';
 import type {
   EntryType,
   MemorableKind,
@@ -35,14 +36,16 @@ export interface HaikuPalaiaExcerptExtractorOptions {
   llm: LlmProvider;
   /** Anthropic model id. Default: `claude-haiku-4-5-20251001`. */
   model?: string;
-  /** Token budget for the response. 512 fits 3-5 excerpts + summary + rationale. */
+  /** Token budget for the response. Default 1536: the prompt allows a
+   *  500-char summary, a 2000-char rationale and five 300-char excerpts, which
+   *  in German overran the old 512 and cut the JSON off (#1527). */
   maxTokens?: number;
   /** Optional log sink. Defaults to `console.error`. */
   log?: (msg: string) => void;
 }
 
 const DEFAULT_MODEL = 'claude-haiku-4-5-20251001';
-const DEFAULT_MAX_TOKENS = 512;
+const DEFAULT_MAX_TOKENS = 1536;
 
 const MEMORABLE_KINDS: readonly MemorableKind[] = [
   'decision',
@@ -148,10 +151,16 @@ export function createHaikuPalaiaExcerptExtractor(
         return undefined;
       }
 
-      const parsed = parseJsonStrict(replyText);
+      const parsed = parseLlmJson(replyText);
       if (!parsed) {
+        // #1527 — say why: a reply cut off at the token budget is a different
+        // fix from a reply that was never JSON.
+        const why =
+          response.finishReason === 'max_tokens'
+            ? `cut off at max_tokens=${String(maxTokens)}`
+            : 'no parseable JSON';
         log(
-          `[excerpt-extractor] non-JSON response: ${replyText.slice(0, 120)}…`,
+          `[excerpt-extractor] ${why} (${String(replyText.length)} chars): ${replyText.slice(0, 120)}…`,
         );
         return undefined;
       }
@@ -234,17 +243,4 @@ function isMemorableKind(v: unknown): v is MemorableKind {
 function clipText(s: string, max: number): string {
   if (s.length <= max) return s;
   return `${s.slice(0, max - 1).trimEnd()}…`;
-}
-
-function parseJsonStrict(raw: string): unknown {
-  const trimmed = raw
-    .trim()
-    .replace(/^```(?:json)?\s*/i, '')
-    .replace(/```$/i, '')
-    .trim();
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    return null;
-  }
 }

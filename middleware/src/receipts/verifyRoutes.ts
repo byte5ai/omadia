@@ -67,19 +67,21 @@ export function createProvenanceRoutes(
 
   router.get('/export', async (_req: Request, res: Response) => {
     try {
+      // #1526 — table-qualified ORDER BY, so the bigint column sorts and not
+      // the `seq::text` alias (see verifyReceiptStream).
       const rows = await pool.query<ExportChainRow>(
         `SELECT turn_id, session_scope, channel, model, receipt,
                 seq::text AS seq, prev_hash, entry_hash, hash_version, created_at
            FROM turn_receipts
           WHERE stream_id = $1
-          ORDER BY seq ASC`,
+          ORDER BY turn_receipts.seq ASC`,
         [RECEIPT_STREAM_ID],
       );
       const cps = await pool.query<ExportCheckpointRow>(
         `SELECT seq::text AS seq, head_hash, signed_at, signature, public_key_fingerprint
            FROM audit_checkpoints
           WHERE stream_id = $1
-          ORDER BY seq ASC`,
+          ORDER BY audit_checkpoints.seq ASC`,
         [RECEIPT_STREAM_ID],
       );
       res.setHeader('content-type', 'application/x-ndjson; charset=utf-8');
