@@ -4372,7 +4372,12 @@
       "allInstalled": "Alles installiert",
       "allActive": "{name} und alle Voraussetzungen sind aktiv.",
       "errorKicker": "Fehler",
-      "stepValidationFailed": "{label}: Eingaben enthalten Fehler."
+      "stepValidationFailed": "{label}: Eingaben enthalten Fehler.",
+      "updateFrom": "Aktualisieren {from} → {to}",
+      "fromHub": "aus dem Hub",
+      "stepActivationFailed": "{label}: installiert, aber nicht gestartet: {error}",
+      "stepUpdatedNotStarted": "{label}: aktualisiert, aber nicht gestartet. Auf der Store-Seite aktivieren und die Installation wiederholen.",
+      "stepNeedsParents": "{label}: braucht zuerst weitere Plugins. Über die Store-Seite installieren und die Installation wiederholen."
     },
     "upload": {
       "onlyZip": "Nur .zip erlaubt, bekommen: {name}",

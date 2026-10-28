@@ -1056,12 +1056,27 @@ async function applySetupValues(
     if (isSecret(k)) vaultSet[k] = v;
     else configSet[k] = v;
   }
-  for (const k of deleteKeys) {
-    if (isSecret(k)) vaultDelete.push(k);
-    else configDelete.push(k);
-  }
 
   try {
+    // #1468 — a delete goes wherever the key actually is. Classifying it by
+    // the manifest alone sent a vault key the manifest does not declare (an
+    // orphaned `provider:<id>/api_key` in the orchestrator scope, written by
+    // the settings page for a provider that is gone) to the config branch,
+    // which answered 200 and left the secret in the vault.
+    const storedVaultKeys = new Set(
+      deleteKeys.length > 0 ? await vault.listKeys(id) : [],
+    );
+    for (const k of deleteKeys) {
+      // Only the `provider:<id>/<leaf>` namespace is reachable this way: that
+      // is what the settings page leaves behind. Other undeclared leaves
+      // (e.g. a scope's database URL) keep their manifest routing.
+      const inVault = storedVaultKeys.has(k) && /^provider:[^/]+\/[^/]+$/.test(k);
+      if (isSecret(k) || inVault) vaultDelete.push(k);
+      if (!isSecret(k) && (!inVault || Object.hasOwn(installed.config ?? {}, k))) {
+        configDelete.push(k);
+      }
+    }
+
     if (Object.keys(vaultSet).length > 0) {
       await vault.setMany(id, vaultSet);
     }

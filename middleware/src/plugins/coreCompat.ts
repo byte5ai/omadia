@@ -15,6 +15,8 @@
  *    `package.incompatible_core` before it is stored;
  *  - `InstallService.create` — installing a catalog entry, which also covers a
  *    package uploaded before the ingest check existed (`install.incompatible_core`).
+ * Also refused there: the versions in {@link MINIMUM_STARTABLE_VERSIONS}
+ * (#1463), which their range admits but this core cannot start.
  * Not gated: profile apply and the boot of already-installed plugins. Bundled
  * packages ship with this plugin-api and their manifests admit it (pinned by
  * test/coreCompat.test.ts).
@@ -40,8 +42,10 @@ export interface CoreCompatSubject {
 }
 
 export interface CoreCompatRefusal {
-  /** `unsatisfied`: the range excludes this host. `invalid_range`: not a semver range. */
-  readonly reason: 'unsatisfied' | 'invalid_range';
+  /** `unsatisfied`: the range excludes this host. `invalid_range`: not a semver
+   *  range. `below_minimum`: the range admits this host, but the version is
+   *  older than {@link MINIMUM_STARTABLE_VERSIONS} allows (#1463). */
+  readonly reason: 'unsatisfied' | 'invalid_range' | 'below_minimum';
   /** Operator- and model-readable: names the plugin, the range, this host's
    *  plugin-api version and the way out. */
   readonly message: string;
@@ -84,6 +88,25 @@ export function hostPluginApiVersion(): string {
 }
 
 /**
+ * #1463 — published versions this core can no longer start although their
+ * `compat.core` (">=1.0 <2.0") still admits it.
+ *
+ * They resolved services through the legacy grant rows that #839 retired
+ * (`STANDALONE_LEGACY_SERVICE_GRANTS_2026_08_20` in pluginServiceGrants.ts
+ * lists the same minimum declaring versions), so every activation dies on an
+ * undeclared `ctx.services.get`. The Hub still lists them, and its index has no
+ * yank field, so the core refuses them where it refuses any other version it
+ * cannot run. Keyed by plugin id; the value is the first version that starts.
+ */
+export const MINIMUM_STARTABLE_VERSIONS: Readonly<Record<string, string>> =
+  Object.freeze({
+    '@omadia/integration-odoo': '0.2.1',
+    '@omadia/agent-odoo-hr': '0.2.8',
+    '@omadia/agent-odoo-accounting': '0.1.4',
+    '@omadia/agent-confluence': '0.3.3',
+  });
+
+/**
  * `null` when the plugin's `compat.core` admits `host`, otherwise why not.
  * Prereleases count (`includePrerelease`), so a host on `1.22.0-rc.1` still
  * satisfies ">=1.0 <2.0".
@@ -105,7 +128,22 @@ export function checkCoreCompat(
       host_plugin_api: host,
     };
   }
-  if (semver.satisfies(host, range, { includePrerelease: true })) return null;
+  if (semver.satisfies(host, range, { includePrerelease: true })) {
+    const minimum = MINIMUM_STARTABLE_VERSIONS[plugin.id];
+    const version = semver.valid(plugin.version);
+    if (minimum === undefined || version === null || semver.gte(version, minimum)) {
+      return null;
+    }
+    return {
+      reason: 'below_minimum',
+      message:
+        `${subject} cannot start on this host: it resolves services this core no longer ` +
+        `grants to packages that do not declare them, and ${plugin.id} declares them from ` +
+        `${minimum} on. Install ${plugin.id} ${minimum} or newer.`,
+      compat_core: range,
+      host_plugin_api: host,
+    };
+  }
   return {
     reason: 'unsatisfied',
     message:

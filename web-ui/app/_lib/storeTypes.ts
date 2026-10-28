@@ -537,6 +537,12 @@ export interface CapabilityProviderRef {
   already_installed: boolean;
   /** True iff status === 'active' (registered + activated). */
   active: boolean;
+  /** #1463 — `registry`: the latest Hub version, offered because the local
+   *  catalog has no provider. Absent/`catalog`: a local catalog entry. */
+  source?: 'catalog' | 'registry';
+  /** #1463 — with `source: 'registry'`: the installed, older version the Hub
+   *  one replaces. */
+  update_from?: string;
 }
 
 export interface UnresolvedCapabilityEntry {
