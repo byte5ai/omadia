@@ -1,5 +1,5 @@
 {
   "_comment": "Whole-app ratchet for scripts/i18n-literal-scan.mjs (#1401). Counts may only go down; lower a number in the PR that reduces it.",
   "translate": 0,
-  "review": 128
+  "review": 127
 }
