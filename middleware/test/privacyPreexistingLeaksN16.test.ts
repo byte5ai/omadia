@@ -89,11 +89,14 @@ function fakeGuard(opts: { outcome?: 'masked' | 'blocked' } = {}): PrivacyGuardS
 }
 
 /** Runs `fn` inside a turn; `handle` is the turn's privacy handle, if any. */
-function inTurn<T>(handle: { hasBypassed?: () => boolean } | undefined, fn: () => T): T {
+function inTurn<T>(
+  handle: { hasBypassed?: () => boolean } | undefined,
+  fn: () => Promise<T>,
+): Promise<T> {
   return turnContext.run(
     { turnId: 't-1', turnDate: '2026-10-28', ...(handle ? { privacyHandle: handle } : {}) } as never,
     fn,
-  );
+  ) as Promise<T>;
 }
 const PROTECTED = { hasBypassed: () => false };
 const BYPASSED = { hasBypassed: () => true };
@@ -509,7 +512,7 @@ describe('#1540 · process provenance in the process tools', () => {
       await inTurn(PROTECTED, () => edit({ id: OPEN_PROCESS.id, visibility: 'team' })),
     ].map(String);
     assert.equal(calls.query[0]?.excludeUnprotected, true);
-    assert.ok(!shielded[2]?.includes('similarity'), shielded[2]);
+    assert.ok(!String(shielded[2]).includes('similarity'), String(shielded[2]));
     for (const out of shielded) {
       assert.ok(!out.includes('Anita'), out);
       assert.ok(!out.includes(REAL), out);
