@@ -427,12 +427,14 @@ export default async function PluginDetailPage({
             enabled={install_available}
             remote={Boolean(plugin.source)}
             installedVersion={plugin.version}
+            removablePackage={plugin.removable_package === true}
             {...(plugin.readiness ? { readiness: plugin.readiness } : {})}
             {...(plugin.setup_guide ? { setupGuide: plugin.setup_guide } : {})}
             {...(plugin.available_version
               ? { availableVersion: plugin.available_version }
               : {})}
             {...(blocking_reasons ? { blockingReasons: blocking_reasons } : {})}
+            {...(plugin.provides ? { provides: plugin.provides } : {})}
             kind={plugin.kind}
             attachedTo={attachedTo}
           />

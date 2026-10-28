@@ -906,6 +906,24 @@ export async function getInstalledPlugin(
 }
 
 /**
+ * #1507/#1508 — the instance's Privacy Shield posture. `shield_active` is
+ * false while no `privacy.redact@1` provider runs (every turn goes to the LLM
+ * unmasked); `force_guarded` is the org-wide `OMADIA_PRIVACY_FORCE_GUARDED`
+ * clamp that makes every per-plugin bypass ineffective; `provider_ids` are the
+ * installed plugins providing the shield (non-empty while the shield is off
+ * means installed but not running).
+ */
+export interface PrivacyPosture {
+  shield_active: boolean;
+  force_guarded: boolean;
+  provider_ids: string[];
+}
+
+export async function getPrivacyPosture(): Promise<PrivacyPosture> {
+  return getJson<PrivacyPosture>('/v1/admin/runtime/privacy-posture');
+}
+
+/**
  * Slice 2.5 — PATCH the non-secret config of an installed plugin.
  * Shallow-merges the patch into the existing config: only keys in `patch`
  * are touched, `null` clears a key. Secrets stay in the vault. Used by
@@ -1264,6 +1282,13 @@ export interface RegistryInstallResponse {
   plugin_id: string;
   version: string;
   registry: string;
+  /** #1495 — the same version with the same sha256 was already fetched; the
+   *  route skipped the download and the ingest. */
+  already_present?: boolean;
+  /** #1490 — the version this fetch replaced in the upload store. */
+  replaced_version?: string;
+  /** #1455 — set when this fetch replaced another version. */
+  direction?: 'upgrade' | 'downgrade';
   /** C5 — missing `depends_on` parents (already fetched + ingested) the
    *  operator must install before the target. Empty/absent → install the
    *  target directly. Same shape the RequiresWizard consumes. */

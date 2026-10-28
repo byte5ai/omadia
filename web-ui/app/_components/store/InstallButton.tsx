@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import { useLocale, useTranslations } from 'next-intl';
@@ -10,7 +10,6 @@ import {
   Check,
     Lock,
   RefreshCw,
-  Shield,
   Trash2,
 } from 'lucide-react';
 
@@ -19,10 +18,8 @@ import {
   configureInstallJob,
   createInstallJob,
   deleteUploadedPackage,
-  getInstalledPlugin,
   installFromRegistry,
   uninstallPlugin,
-  updateInstalledPluginConfig,
   ApiError,
   getPluginGrants,
 } from '../../_lib/api';
@@ -42,6 +39,7 @@ import {
   useActivationErrorLabel,
 } from './ActivationFailureNotice';
 import { PostInstallNextSteps } from './PostInstallNextSteps';
+import { PrivacyModePicker } from './PrivacyModePicker';
 import { PermissionsStep, hasGrantsToAsk } from './PermissionsStep';
 import { pickLocalized } from '../../_lib/localized';
 import { RequiresWizard } from './RequiresWizard';
@@ -53,6 +51,9 @@ import {
 } from './setupForm';
 import { Markdown } from '../Markdown';
 import { Button } from '@/app/_components/ui/Button';
+import { RemovePackageAction } from './RemovePackageAction';
+import { useStoreErrorText } from './useStoreErrorText';
+import { errorHelpLine } from '../../_lib/errorHelp';
 
 interface InstallButtonProps {
   pluginId: string;
@@ -79,12 +80,21 @@ interface InstallButtonProps {
    *  the post-install next-step links. Absent on a pre-OM-16 middleware, in
    *  which case the pill renders as before. */
   readiness?: PluginReadiness;
+  /** Capabilities the plugin provides. #1507 — a `privacy.redact@1` provider
+   *  gets a data-protection warning in its uninstall dialog. */
+  provides?: string[];
+  /** #1490 — the package is uploaded (or Hub-fetched) and NOT installed: offer
+   *  to remove it next to the install button. */
+  removablePackage?: boolean;
   /** #1492 — the plugin's kind, so the next-step hint fits how it is used. */
   kind?: PluginKind;
   /** #1492 — names of the orchestrators this plugin is enabled on; `null`
    *  when unknown (not an attachable kind, or the lookup failed). */
   attachedTo?: string[] | null;
 }
+
+/** The Privacy Shield capability (`PRIVACY_REDACT_CAPABILITY` in plugin-api). */
+const PRIVACY_REDACT_CAPABILITY = 'privacy.redact@1';
 
 type Phase =
   | { kind: 'idle' }
@@ -118,10 +128,14 @@ export function InstallButton({
   availableVersion,
   setupGuide,
   readiness,
+  provides,
+  removablePackage = false,
   kind,
   attachedTo,
 }: InstallButtonProps): React.ReactElement {
   const t = useTranslations('store.install');
+  const tRoot = useTranslations();
+  const errorText = useStoreErrorText();
   const router = useRouter();
   const locale = useLocale();
   const setupGuideText = pickLocalized(setupGuide, locale);
@@ -147,6 +161,9 @@ export function InstallButton({
       <InstalledPanel
         pluginId={pluginId}
         pluginName={pluginName}
+        providesPrivacyShield={
+          provides?.includes(PRIVACY_REDACT_CAPABILITY) ?? false
+        }
         {...(readiness ? { readiness } : {})}
         {...(kind ? { kind } : {})}
         attachedTo={attachedTo ?? null}
@@ -190,6 +207,9 @@ export function InstallButton({
             ))}
           </ul>
         ) : null}
+        {removablePackage ? (
+          <RemovePackageAction pluginId={pluginId} pluginName={pluginName} />
+        ) : null}
       </div>
     );
   }
@@ -231,6 +251,12 @@ export function InstallButton({
         />
       ) : null}
 
+      {removablePackage && phase.kind === 'idle' ? (
+        <div className="mt-3">
+          <RemovePackageAction pluginId={pluginId} pluginName={pluginName} />
+        </div>
+      ) : null}
+
       {phase.kind === 'wizard' ? (
         <RequiresWizard
           targetPluginId={pluginId}
@@ -252,8 +278,14 @@ export function InstallButton({
       // the chained wizard (parents → target) instead of installing the
       // target directly — the install gate is strict on depends_on because the
       // child inherits the parent's vault credentials.
+      //
+      // #1495 — the version is the one this page shows (`installedVersion` is
+      // the plugin's `version`, which for a Hub entry is the advertised
+      // latest). A second click, after a cancelled wizard, asks for the same
+      // package again; the route recognises it and answers with the chain
+      // instead of `package.duplicate_version`.
       if (remote) {
-        const reg = await installFromRegistry(pluginId);
+        const reg = await installFromRegistry(pluginId, installedVersion);
         if (reg.chain && reg.chain.available_providers.length > 0) {
           setPhase({ kind: 'wizard', resolution: reg.chain });
           return;
@@ -278,27 +310,26 @@ export function InstallButton({
           }
         }
       }
+      // #1477 — in the operator's locale: the Hub route now sends the same
+      // `code` + `params` as the upload. #1518 — an unreachable registry has
+      // its own copy, checked first.
       const message =
-        err instanceof ApiError
-          ? registryUnavailableMessage(err.body, t) ??
-            safeMessage(err.body) ??
-            err.message
-          : err instanceof Error
-            ? err.message
-            : t('unknownError');
+        (err instanceof ApiError ? registryUnavailableMessage(err.body, t) : null) ??
+        errorText(err);
       setPhase({ kind: 'error', job: null, message });
     }
   }
 
   function handleClose(): void {
-    const wasPermissions = phase.kind === 'permissions';
     setPhase({ kind: 'idle' });
     setFieldErrors({});
-    // #470 C16 — closing the permissions step ends a flow that just changed the
-    // plugin's install state on the server. Without the refresh the page keeps
-    // showing the state from before the grant, which is the same class of lie
-    // this whole item exists to remove.
-    if (wasPermissions) router.refresh();
+    // #470 C16 / #1495 — every flow this drawer or the wizard runs can change
+    // the plugin's state on the server: a Hub fetch registers a package, a
+    // failed activation still installs the plugin, a granted permission
+    // changes it. Refreshing only after the permissions step left the page on
+    // its first-render props, so the next click ran into "already uploaded"
+    // or "already installed; uninstall first".
+    router.refresh();
   }
 
   /**
@@ -328,9 +359,13 @@ export function InstallButton({
       return;
     }
     if (job.state === 'errored') {
+      // #1494 — `job: null`: the job is done (the plugin IS installed), so the
+      // drawer shows the error alone instead of a form whose submit could
+      // only answer `install.wrong_state`.
       setPhase({
         kind: 'error',
-        job,
+        // #1494 — the plugin IS installed; no resubmittable form.
+        job: null,
         message: t('activationFailedLead'),
         activation: {
           code: job.activation_state?.error_code,
@@ -365,9 +400,23 @@ export function InstallButton({
       // also covers a middleware older than the fix.
       if (resp.job.state === 'active' || resp.job.state === 'errored') {
         await settleInstalled(resp.job);
-      } else if (resp.job.state === 'failed' && resp.job.error) {
+      } else if (resp.job.state === 'awaiting_config' && resp.job.error) {
+        // #1494 — the values were refused and the job waits for corrected
+        // ones: field errors onto the form, the next submit goes to the SAME
+        // job. Before, the server ended the job here (`failed`) and the
+        // corrected submit got 409 `install.wrong_state`.
         applyServerErrors(resp.job.error);
         setPhase({ kind: 'form', job: resp.job });
+      } else if (resp.job.state === 'failed') {
+        // A refusal the form cannot fix (e.g. invalid workflow templates):
+        // the job is over, so no form to resubmit.
+        setPhase({
+          kind: 'error',
+          job: null,
+          message: resp.job.error
+            ? errorHelpLine(resp.job.error.code, tRoot) ?? resp.job.error.message
+            : t('unexpectedJobState', { state: resp.job.state }),
+        });
       } else {
         setPhase({
           kind: 'error',
@@ -378,23 +427,21 @@ export function InstallButton({
     } catch (err) {
       if (err instanceof ApiError) {
         const parsed = tryParseErrorBody(err.body);
-        if (parsed?.details) {
+        if (Array.isArray(parsed?.details)) {
           applyDetails(parsed.details);
           setPhase({ kind: 'form', job });
           return;
         }
-        setPhase({
-          kind: 'error',
-          job,
-          message: parsed?.message ?? err.message,
-        });
+        // #1494 — the job has moved on (finished, cancelled, expired): a
+        // resubmit cannot succeed, so the form goes away and the localized
+        // help says what to do instead of the raw server sentence.
+        const jobGone =
+          parsed?.code === 'install.wrong_state' ||
+          parsed?.code === 'install.job_not_found';
+        setPhase({ kind: 'error', job: jobGone ? null : job, message: errorText(err) });
         return;
       }
-      setPhase({
-        kind: 'error',
-        job,
-        message: err instanceof Error ? err.message : String(err),
-      });
+      setPhase({ kind: 'error', job, message: errorText(err) });
     }
   }
 
@@ -442,11 +489,15 @@ function InstalledPanel({
   pluginName,
   update,
   readiness,
+  providesPrivacyShield = false,
   kind,
   attachedTo,
 }: {
   pluginId: string;
   pluginName: string;
+  /** #1507 — this plugin IS the Privacy Shield; uninstalling it turns masking
+   *  off for every chat, so the confirm dialog says so. */
+  providesPrivacyShield?: boolean;
   /** C6 — present when a registry advertises a newer version. */
   update?: { from: string; to: string };
   /** OM-16 — kernel-derived readiness; drives the state word on the pill. */
@@ -456,6 +507,7 @@ function InstalledPanel({
 }): React.ReactElement {
   const t = useTranslations('store.install');
   const tState = useTranslations('store.stateBadge');
+  const errorText = useStoreErrorText();
   const activationErrorLabel = useActivationErrorLabel();
   const router = useRouter();
   // OM-16 — readiness → pill tone + state word. No readiness (older
@@ -528,16 +580,14 @@ function InstalledPanel({
       }
       router.refresh();
     } catch (err) {
+      // #1477 — e.g. a refused downgrade or an incompatible core, now with
+      // the same code + params as the upload, in the operator's locale.
+      // #1518 — an unreachable registry has its own copy, checked first.
       setUpdateError({
         kind: 'text',
         message:
-          err instanceof ApiError
-            ? (registryUnavailableMessage(err.body, t) ??
-              safeMessage(err.body) ??
-              err.message)
-            : err instanceof Error
-              ? err.message
-              : String(err),
+          (err instanceof ApiError ? registryUnavailableMessage(err.body, t) : null) ??
+          errorText(err),
       });
     } finally {
       setUpdating(false);
@@ -573,13 +623,7 @@ function InstalledPanel({
         router.refresh();
       }
     } catch (err) {
-      const message =
-        err instanceof ApiError
-          ? safeMessage(err.body) ?? err.message
-          : err instanceof Error
-            ? err.message
-            : String(err);
-      setState({ kind: 'error', message });
+      setState({ kind: 'error', message: errorText(err) });
     }
   }
 
@@ -685,9 +729,9 @@ function InstalledPanel({
           setting that decides whether the orchestrator dispatch hook
           interns raw tool results behind the Privacy Shield v4 boundary
           (`guarded`, default) or passes them through unmasked (`bypass`).
-          Reconfiguration via the full install form is not yet wired for
-          installed plugins; this dedicated picker covers the single
-          most-actionable setting without a full reconfigure flow. */}
+          It also edits the `per_tool` list (#1510) and shows the org-wide
+          `OMADIA_PRIVACY_FORCE_GUARDED` lock (#1508): both are synthetic
+          keys no manifest setup field covers. */}
       <PrivacyModePicker pluginId={pluginId} />
 
       {state.kind === 'idle' && (
@@ -714,6 +758,16 @@ function InstalledPanel({
               strong: (chunks) => <strong>{chunks}</strong>,
             })}
           </p>
+          {providesPrivacyShield ? (
+            <p
+              role="alert"
+              data-testid="uninstall-privacy-warning"
+              className="mt-3 flex items-start gap-2 rounded border border-[color:var(--danger,#b03030)]/40 bg-[color:var(--danger,#b03030)]/5 px-2 py-2 text-[12px] leading-relaxed text-[color:var(--danger,#b03030)]"
+            >
+              <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+              <span>{t('confirmRemovePrivacyShield')}</span>
+            </p>
+          ) : null}
           <label className="mt-3 flex items-start gap-2 text-[12px] leading-relaxed text-[color:var(--fg)]">
             <input
               type="checkbox"
@@ -1106,166 +1160,4 @@ function registryUnavailableMessage(
 function safeMessage(body: string): string | null {
   const parsed = tryParseErrorBody(body);
   return parsed?.message ?? null;
-}
-
-// ---------------------------------------------------------------------------
-// PrivacyModePicker — Slice 2.5 quick-picker for the operator-owned
-// `_privacy_mode` setting on an installed plugin. Reads the current value
-// via GET /installed/:id and PATCHes back on change. Optimistic UI: the
-// dropdown reflects the new value immediately, error state rolls back.
-// ---------------------------------------------------------------------------
-
-type PrivacyMode = 'guarded' | 'bypass' | 'per_tool';
-
-/** Message-key leaves under `store.install` — translated at render. */
-const PRIVACY_MODE_LABEL_KEYS: Record<PrivacyMode, string> = {
-  guarded: 'privacyGuarded',
-  bypass: 'privacyBypass',
-  per_tool: 'privacyPerTool',
-};
-
-function isPrivacyMode(v: unknown): v is PrivacyMode {
-  return v === 'guarded' || v === 'bypass' || v === 'per_tool';
-}
-
-function PrivacyModePicker({
-  pluginId,
-}: {
-  pluginId: string;
-}): React.ReactElement | null {
-  const t = useTranslations('store.install');
-  // `null` initial state → "loading". Once loaded we know what mode the
-  // backend currently has stored (default 'guarded' when unset).
-  const [mode, setMode] = useState<PrivacyMode | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  // Tracks whether the GET succeeded at all — without it we render
-  // nothing rather than a confusing dropdown over nothing.
-  const [loaded, setLoaded] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        const entry = await getInstalledPlugin(pluginId);
-        if (cancelled) return;
-        const current = entry.config['_privacy_mode'];
-        setMode(isPrivacyMode(current) ? current : 'guarded');
-        setLoaded(true);
-      } catch (err) {
-        if (cancelled) return;
-        const msg =
-          err instanceof ApiError
-            ? safeMessage(err.body) ?? err.message
-            : err instanceof Error
-              ? err.message
-              : String(err);
-        setError(msg);
-        setLoaded(true);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [pluginId]);
-
-  async function handleChange(next: PrivacyMode): Promise<void> {
-    const previous = mode;
-    setMode(next);
-    setSaving(true);
-    setError(null);
-    try {
-      await updateInstalledPluginConfig(pluginId, { _privacy_mode: next });
-    } catch (err) {
-      // Roll back to the previous value so the dropdown reflects what
-      // the backend actually has stored.
-      setMode(previous);
-      const msg =
-        err instanceof ApiError
-          ? safeMessage(err.body) ?? err.message
-          : err instanceof Error
-            ? err.message
-            : String(err);
-      setError(msg);
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  if (!loaded) {
-    return (
-      <div className="rounded-md border border-[color:var(--border)] bg-[color:var(--bg-soft)] px-3 py-3">
-        <div className="flex items-center gap-2 text-[11px] text-[color:var(--fg-subtle)]">
-          <span className="lume-busy-dots" aria-hidden />
-          {t('privacyLoading')}
-        </div>
-      </div>
-    );
-  }
-  if (mode === null) {
-    return (
-      <div className="rounded-md border border-[color:var(--danger,#b03030)]/40 bg-[color:var(--danger,#b03030)]/5 px-3 py-2">
-        <p className="text-[12px] text-[color:var(--danger,#b03030)]">
-          {error
-            ? t('privacyLoadFailedWithError', { error })
-            : t('privacyLoadFailed')}
-        </p>
-      </div>
-    );
-  }
-
-  const tone =
-    mode === 'bypass'
-      ? 'border-[color:var(--warning)] bg-[color:var(--warning)]/10'
-      : 'border-[color:var(--border)] bg-[color:var(--bg-soft)]';
-
-  return (
-    <div className={cn('rounded-md border px-3 py-3', tone)}>
-      <label
-        htmlFor={`privacy-mode-${pluginId}`}
-        className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-muted)]"
-      >
-        <Shield className="size-3.5" aria-hidden />
-        {t('privacyModeLabel')}
-      </label>
-      <select
-        id={`privacy-mode-${pluginId}`}
-        value={mode}
-        disabled={saving}
-        onChange={(e) => void handleChange(e.target.value as PrivacyMode)}
-        className={cn(
-          'mt-2 w-full rounded border px-2 py-2 text-[13px]',
-          'border-[color:var(--border)] bg-[color:var(--bg)]',
-          'focus:outline-none focus:ring-1 focus:ring-[color:var(--accent)]',
-          saving ? 'opacity-60' : '',
-        )}
-      >
-        {(
-          Object.entries(PRIVACY_MODE_LABEL_KEYS) as Array<[PrivacyMode, string]>
-        ).map(([value, labelKey]) => (
-          <option key={value} value={value}>
-            {t(labelKey)}
-          </option>
-        ))}
-      </select>
-      <p className="mt-2 text-[11px] leading-relaxed text-[color:var(--fg-subtle)]">
-        {mode === 'guarded'
-          ? t('privacyGuardedHelp')
-          : mode === 'bypass'
-            ? t('privacyBypassHelp')
-            : t('privacyPerToolHelp')}
-      </p>
-      {saving && (
-        <div className="mt-2 flex items-center gap-2 text-[11px] text-[color:var(--fg-subtle)]">
-          <span className="lume-busy-dots" aria-hidden />
-          {t('saving')}
-        </div>
-      )}
-      {error && (
-        <p className="font-mono-num mt-2 text-[11px] text-[color:var(--danger,#b03030)]">
-          {error}
-        </p>
-      )}
-    </div>
-  );
 }

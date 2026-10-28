@@ -669,6 +669,17 @@ from a public package manager. Integrity rests on SHA-256 pinning, and there is
   (`src/plugins/packageUploadService.ts`) hashes the ZIP at ingest. The hash names the package and keys the scan
   verdict below; nothing compares it with a published value, and the service
   lists a remote signature check as out of scope.
+- **Archive extraction.** Every ingest unpacks the ZIP through
+  `extractZipToDir` (`src/plugins/zipExtractor.ts`) into a staging directory:
+  no entry may resolve outside it (`..` segments, absolute paths — checked by
+  yauzl while reading the central directory and again by the extractor), no
+  symlinks, an extension allowlist, an entry-count cap and per-file and total
+  size caps. Every refusal is a `zip.*` code the routes answer with 4xx
+  (`zip.path_escape` names the offending entry); since #1488 that includes
+  yauzl's own entry-name refusals, which used to escape as a 500. Whether the
+  upload is a ZIP at all is decided by its bytes, not by the multipart
+  content-type or file name the client declares (#1489): there is no
+  mimetype gate, and anything that is not a ZIP is `zip.invalid` (422).
 - **No signature anywhere.** The catalog reports `signed: false` and
   `signed_by: null` for every plugin (`manifestLoader.ts`, `routes/store.ts`),
   whatever the manifest says, and the store page shows "unsigned". What the
@@ -1789,6 +1800,12 @@ These tool results skip the digest:
   bypass applies even when recording it throws, and the receipt itself is
   persisted best-effort (§7b). A sub-agent that read a bypassed result and
   interned no dataset hands its answer up raw as well.
+  The store's privacy picker shows the clamp as "Locked by org policy" and
+  edits the `per_tool` list; both read the authenticated
+  `GET /api/v1/admin/runtime/privacy-posture` (#1508, #1510), which also
+  reports `shield_active: false` while no `privacy.redact@1` provider runs —
+  every turn then reaches the model unmasked, and the dashboard says so
+  (#1507). The posture is not on the public `/health`.
   `OMADIA_PRIVACY_FORCE_GUARDED=true` switches all three off for the result
   the model gets, and for the MCP-to-knowledge-graph ingestion
   (`Orchestrator.dispatchTool`, epic #459) as well: every seam that reads a

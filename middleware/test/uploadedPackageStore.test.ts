@@ -94,6 +94,24 @@ describe('retired package copies', () => {
     await assert.rejects(fs.access(pkg.path));
   });
 
+  // #1490 — removal used to leave `<id>/` behind, empty.
+  it('removes the emptied id folder, and the scope folder only once it is empty', async () => {
+    const a = await layDown('@test/one', '1.0.0');
+    const b = await layDown('@test/two', '1.0.0');
+    await store.register(a);
+    await store.register(b);
+
+    assert.equal(await store.remove('@test/one'), true);
+    await assert.rejects(fs.access(path.join(root, 'packages', '@test/one')));
+    // The scope still holds @test/two, so it stays.
+    await fs.access(path.join(root, 'packages', '@test/two', '1.0.0'));
+
+    assert.equal(await store.remove('@test/two'), true);
+    await assert.rejects(fs.access(path.join(root, 'packages', '@test')));
+    // The packages root itself is never removed.
+    await fs.access(path.join(root, 'packages'));
+  });
+
   it('prunes nothing and throws nothing for a directory that does not exist', async () => {
     await pruneRetiredPackageDirs(path.join(root, 'packages', '@test/absent'));
   });
@@ -104,5 +122,33 @@ describe('retired package copies', () => {
     await pruneRetiredPackageDirs(path.join(root, 'packages', '@test/retire'));
     const left = await fs.readdir(path.join(root, 'packages', '@test/retire'));
     assert.deepEqual(left.sort(), ['1.0.0', '2.0.0']);
+  });
+});
+
+describe('UploadedPackageStore.remove — containment (N02 security review)', () => {
+  it('never deletes a stored path outside the packages root', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'contain-test-'));
+    try {
+      const outside = path.join(root, 'outside');
+      await fs.mkdir(outside, { recursive: true });
+      await fs.writeFile(path.join(outside, 'keep.txt'), 'x');
+      const logs: string[] = [];
+      const store = new UploadedPackageStore(
+        path.join(root, 'index.json'),
+        path.join(root, 'packages'),
+        (m) => logs.push(m),
+      );
+      await store.load();
+      await store.register({
+        id: '@test/evil', version: '1.0.0', path: outside,
+        uploaded_at: '', uploaded_by: '', sha256: 'a'.repeat(64),
+        peers_missing: [], zip_bytes: 1, extracted_bytes: 1, file_count: 1,
+      });
+      assert.equal(await store.remove('@test/evil'), true);
+      await fs.access(path.join(outside, 'keep.txt'));
+      assert.ok(logs.some((l) => l.includes('outside')));
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
   });
 });

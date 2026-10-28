@@ -4320,7 +4320,7 @@
       "privacyLoadFailedWithError": "Privacy-Mode konnte nicht geladen werden: {error}",
       "privacyGuardedHelp": "Tool-Ergebnisse werden serverseitig hinter dem Privacy Shield v4 maskiert; der LLM sieht nur identitätsfreie Digests.",
       "privacyBypassHelp": "Rohe Tool-Ergebnisse erreichen den LLM unmaskiert. Geeignet für vertrauenswürdige interne Quellen, deren Inhalte der Privacy Shield strukturell nicht digestieren kann (z. B. Confluence-Seiten-Bodies).",
-      "privacyPerToolHelp": "Per-Tool-Whitelist: nur explizit gelistete Tools werden bypassed. Liste über das Feld `_privacy_bypass_scopes` setzen (Komma-getrennt).",
+      "privacyPerToolHelp": "Per-Tool-Whitelist: nur die unten gelisteten Tools werden bypassed; alle anderen Tools dieses Plugins bleiben geschützt.",
       "saving": "Speichere …",
       "steps": {
         "awaiting_config": "Warte auf Konfiguration",
@@ -4331,7 +4331,21 @@
         "installed_activation_failed": "Installiert — Aktivierung fehlgeschlagen",
         "cancelled": "Vom Nutzer abgebrochen",
         "failed": "Fehlgeschlagen"
-      }
+      },
+      "privacyScopesLabel": "Tools ohne Maskierung",
+      "privacyScopesPlaceholder": "tool_name, anderes_tool",
+      "privacyScopesSave": "Liste speichern",
+      "privacyScopesEmpty": "Noch keine Tools gelistet — bis du eines einträgst, bleiben alle Tools dieses Plugins geschützt.",
+      "privacyLockedBadge": "Durch Org-Richtlinie gesperrt",
+      "privacyLockedHelp": "OMADIA_PRIVACY_FORCE_GUARDED ist für diese Instanz gesetzt: Jedes Plugin läuft geschützt und das LLM sieht nur identitätsfreie Digests, egal was hier ausgewählt ist.",
+      "privacyLockedStored": "Die gespeicherte Einstellung „{mode}“ wirkt nicht, solange die Org-Richtlinie aktiv ist.",
+      "confirmRemovePrivacyShield": "Dieses Plugin ist der Privacy Shield. Ohne ihn erreichen Tool-Ergebnisse, Chatverlauf und abgerufener Kontext das LLM in jedem Chat unmaskiert, und es erscheint kein Beleg.",
+      "privacySaveFailed": "Die Datenschutz-Einstellung konnte nicht gespeichert werden: {error}",
+      "removePackage": "Hochgeladenes Paket entfernen",
+      "removePackageConfirm": "Das hochgeladene Paket von <strong>{name}</strong> entfernen? Es ist nicht installiert, es läuft also nichts daraus. Es verschwindet aus dem Katalog; ein Hub-Plugin lässt sich erneut abrufen.",
+      "removePackageYes": "Ja, entfernen",
+      "removingPackage": "Wird entfernt …",
+      "removePackageFailed": "Das Paket konnte nicht entfernt werden: {message}"
     },
     "auditMode": {
       "singleHostHelp": "Nur die im Manifest deklarierten Hosts.",
@@ -4447,10 +4461,19 @@
         "entryMissing": "Der lifecycle-Entry {entry} ist im Zip nicht vorhanden.",
         "idConflictBundled": "Plugin-ID {pluginId} gehört zu einem mitgelieferten Plugin dieser Installation. Ein Upload darf ein mitgeliefertes Plugin nicht überschreiben — vergib dem Paket eine eigene ID. Für einen bewussten Override setze {overrideEnv}=1 in der Middleware-Umgebung.",
         "idConflictBuiltin": "Plugin-ID {pluginId} kollidiert mit einem Built-in-Eintrag im Katalog.",
-        "duplicateVersion": "Version {version} von {pluginId} ist bereits hochgeladen. Version anheben oder den Upload erst entfernen.",
+        "duplicateVersion": "Version {version} von {pluginId} ist bereits hochgeladen. Hebe die Version an oder entferne zuerst das hochgeladene Paket auf seiner Store-Seite.",
         "downgradeBlocked": "Version {toVersion} von {pluginId} ist älter als die installierte Version {fromVersion}. Ein Downgrade tauscht das laufende Plugin aus — es muss ausdrücklich bestätigt werden.",
-        "noFile": "Die Anfrage enthält keine Datei."
-      }
+        "noFile": "Die Anfrage enthält keine Datei.",
+        "multipart": "Der Upload konnte nicht gelesen werden. Versuche es erneut.",
+        "zipInvalid": "Die Datei ist kein gültiges ZIP-Archiv.",
+        "zipPathEscape": "Das Archiv enthält einen Eintrag, der aus dem Paket hinauszeigt: {entry}. Baue das Paket ohne ihn neu.",
+        "zipSymlink": "Das Archiv enthält einen symbolischen Link, das ist nicht erlaubt: {entry}.",
+        "zipForbiddenExtension": "Das Archiv enthält einen Dateityp, der in einem Plugin-Paket nicht erlaubt ist: {entry}.",
+        "zipTooManyEntries": "Das Archiv enthält zu viele Dateien.",
+        "zipFileTooLarge": "Eine Datei im Archiv ist entpackt zu groß.",
+        "zipTotalTooLarge": "Das entpackte Archiv überschreitet die Größengrenze."
+      },
+      "replacedVersion": "Die zuvor hochgeladene Version {previous} wurde ersetzt."
     },
     "setupForm": {
       "enable": "Aktivieren",
@@ -6385,6 +6408,13 @@
     "copy": "Kopieren",
     "copied": "Kopiert",
     "copyFailed": "Automatisches Kopieren fehlgeschlagen — markiere das Secret oben und kopiere es von Hand."
+  },
+  "privacyShieldBanner": {
+    "title": "Privacy Shield ist aus",
+    "body": "Es läuft kein Privacy Guard. Jeder Chat schickt Tool-Ergebnisse, Chatverlauf und abgerufenen Kontext unmaskiert an das LLM, und es erscheint kein Beleg. Installiere den Privacy Guard neu, um die Maskierung wieder einzuschalten.",
+    "bodyForceGuarded": "Es läuft kein Privacy Guard, obwohl OMADIA_PRIVACY_FORCE_GUARDED gesetzt ist: Ohne ihn kann die Org-Richtlinie nichts maskieren. Jeder Chat schickt Tool-Ergebnisse, Chatverlauf und abgerufenen Kontext unmaskiert an das LLM. Installiere den Privacy Guard neu.",
+    "cta": "Privacy Guard",
+    "bodyNotRunning": "Der Privacy Guard ist installiert, läuft aber nicht, daher wird nichts maskiert: Jeder Chat schickt Tool-Ergebnisse, Chatverlauf und abgerufenen Kontext unmaskiert an das LLM. Öffne den Privacy Guard, um zu sehen, warum er nicht gestartet ist."
   },
   "registryStatus": {
     "errors": {

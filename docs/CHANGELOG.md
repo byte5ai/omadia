@@ -62,6 +62,105 @@ changelog.
 - **Choice and MCP-input cards.** Their lead-in is the kept answer text only,
   so "I'll check my memory directory first." no longer introduces a card.
 
+### Fixed — Privacy Shield settings the UI hid or misreported, two masking bugs (#1510, #1508, #1507, #1503, #1467)
+
+2026-10-28. Five gaps between what the Privacy Shield does and what the
+product shows or renders.
+
+- **#1510 — per-tool list editable.** "Per-tool (whitelist)" pointed the
+  operator to `_privacy_bypass_scopes`, a kernel-synthetic key no page
+  showed. The store's privacy picker (now `PrivacyModePicker.tsx`) edits the
+  list next to the mode. `PATCH /api/v1/admin/runtime/installed/:id/config`
+  now validates both privacy keys (`checkPrivacyConfigValue`,
+  `middleware/src/plugins/privacyPosture.ts`): a PATCH stores
+  `_privacy_bypass_scopes` as the `string[]` that `parseScopes` (the dispatch
+  hook's own parser) produces, and an unknown `_privacy_mode` is refused with
+  `400 runtime.invalid_config` instead of being stored and silently read as
+  `guarded`. A change to either key is written to the admin audit trail as
+  `plugin.privacy_change` (before/after hold only those two keys).
+- **#1508 — org lock visible.** New authenticated
+  `GET /api/v1/admin/runtime/privacy-posture` →
+  `{ shield_active, force_guarded, provider_ids }`. With
+  `OMADIA_PRIVACY_FORCE_GUARDED=true` the picker shows "Locked by org
+  policy", is disabled, drops the "raw results reach the LLM" help text, and
+  names a stored bypass as ineffective. `force_guarded` uses the same
+  comparison as `resolveEffectivePrivacyMode`.
+- **#1507 — shield-off state visible (partly).** `shield_active` is false
+  while no `privacy.redact@1` provider is published. The dashboard and
+  `/admin` then show a non-dismissible `PrivacyShieldBanner` (worded
+  differently when the guard is installed but failed to start). The uninstall
+  dialog of a plugin that provides `privacy.redact@1` says that masking stops
+  for every chat. Not in `/health`, on purpose, for the same reason as the
+  master-key posture (#1332). Still open: recall of turns answered while the
+  shield was off (names need the optional `pii-detector`), the boot reseed
+  dropping the operator's guard config, and whether uninstalling the guard
+  should be blocked.
+- **#1503 — Odoo `false` renders as empty.** Odoo sends `false` for an empty
+  non-boolean field. The materializer printed it as "false" and reported it
+  as a protected value, so the web chat highlighted it. Outside a column the
+  classifier typed `boolean` it now renders as "—" (`fieldCell`) and is never
+  reported in `maskedValues`. Display only: the classifier still counts that
+  `false`, so a string or date column holding one stays masked from the
+  model. Ignoring it there was tried and dropped in review — a sparse column
+  (three e-mails among many `false`s) then passed the low-cardinality enum
+  rule into cleartext. Known limit: a column that is `false` in EVERY row
+  types `boolean` and still shows "false".
+- **#1467 — empty result is empty.** `{"datasets":[]}` (any object holding an
+  empty list and otherwise only empty lists, `0` or `null`, such as
+  `{"items":[],"total":0}`) used to become one row with one masked field,
+  and the model rendered a blind, contentless list. It now interns as zero
+  rows, and a zero-row digest tells the model to say there is no data instead
+  of calling `v4_render_answer`.
+
+`@omadia/plugin-privacy-guard` 0.10.0 → 0.10.1. Tests:
+`middleware/test/privacyV4OdooFalseAndEmpty.test.ts`,
+`middleware/test/runtimePrivacyPostureRoute.test.ts`,
+`web-ui/app/_components/store/__tests__/PrivacyShieldConfig.test.tsx`.
+
+### Fixed — plugin install and upload pipeline: one error contract, no dead ends (#1477, #1488, #1489, #1490, #1494, #1495)
+
+2026-10-28. ZIP upload, Hub install and builder install all feed the same
+ingest pipeline, but each mapped its refusals on its own: the Hub route
+answered 422 for conflicts the upload answered 409 and dropped `params` and
+`details`; the builder answered `package.incompatible_core` and every `zip.*`
+code with 500. Status and body now come from one place,
+`middleware/src/plugins/ingestErrorContract.ts` (409 host-state conflicts and
+`incompatible_core`, 413 size caps, 422 everything else; always `code`,
+`message`, `params`, `details`), and the install drawer, the update button and
+the dropzone show these errors in the UI locale (#1477).
+
+- **Path traversal → 422, not 500 (#1488).** yauzl rejects `../x` and absolute
+  entry names itself, as a plain `Error` that escaped ingest as 500 `internal`.
+  `extractZipToDir` now wraps reader errors into `zip.path_escape` (with
+  `params.entry`) or `zip.invalid`. Nothing was ever written outside staging;
+  the answer is what changed. The web UI has copy for every `zip.*` code.
+- **No client-trusted mimetype gate (#1489).** The upload's `fileFilter` only
+  read the declared content-type and file name; the same bytes got 400 or 422
+  depending on headers. It is gone — the content decides (`zip.invalid`, 422).
+  The multipart fallback code is `upload.multipart`, no longer
+  `upload.upload.multipart`.
+- **Install drawer no longer dead-ends after a validation error (#1494).** A
+  server-side `install.validation_failed` keeps the job in `awaiting_config`
+  with the field errors, so the corrected form installs on the same job instead
+  of answering 409 `install.wrong_state`. Terminal states show their localized
+  help without a resubmittable form.
+- **Store detail page stays current (#1495).** Closing the drawer or the
+  prerequisites wizard refreshes the page. The Hub route answers 200
+  `already_present: true` (with the dependency chain) for a package it already
+  fetched — same version and sha256 — instead of 422 `duplicate_version`, and
+  the detail route keeps a fetched-but-not-installed plugin's Hub `source`, so
+  the prerequisites wizard is still reachable after a reload.
+- **Uploaded packages can be removed (#1490).** A package that is uploaded or
+  fetched but not installed is flagged `removable_package` and gets a "Remove
+  uploaded package" action on its detail page. DELETE now logs, logs a failed
+  folder removal, and removes the emptied `<id>/` and `@scope/` folders. An
+  upload that replaces another version says so (`replaced_version`, log
+  `replaced=<v>`), and the duplicate-version text points at the remove action
+  instead of "call DELETE".
+
+API changes for clients are listed in `docs/upgrading.md` § "Upgrading past
+v0.181.1". No new env var, migration or sidecar.
+
 ### Fixed — the plan card no longer marks steps done that never ran (#1502)
 
 2026-10-28. The plan-runner advanced one plan step per top-level tool call,

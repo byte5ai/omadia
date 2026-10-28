@@ -9,14 +9,16 @@ import enMessages from '../../../messages/en.json';
  * no card for /system and no warning; the "System" group held "Update" alone.
  */
 
-const { mockFetchHealth, mockGetVaultStatus } = vi.hoisted(() => ({
+const { mockFetchHealth, mockGetVaultStatus, mockGetPrivacyPosture } = vi.hoisted(() => ({
   mockFetchHealth: vi.fn(),
   mockGetVaultStatus: vi.fn(),
+  mockGetPrivacyPosture: vi.fn(),
 }));
 
 vi.mock('../../_lib/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../_lib/api')>()),
   getVaultStatus: mockGetVaultStatus,
+  getPrivacyPosture: mockGetPrivacyPosture,
 }));
 
 vi.mock('../../_lib/navigation', () => ({
@@ -36,6 +38,17 @@ vi.mock('../../_components/PlatformHealthBanner', () => ({
   }): React.ReactElement | null =>
     notice === null ? null : (
       <div data-testid="platform-health-banner" data-kind={notice.kind} />
+    ),
+}));
+
+vi.mock('../../_components/PrivacyShieldBanner', () => ({
+  PrivacyShieldBanner: ({
+    posture,
+  }: {
+    posture: { shield_active: boolean } | null;
+  }): React.ReactElement | null =>
+    posture === null || posture.shield_active ? null : (
+      <div data-testid="privacy-shield-banner" />
     ),
 }));
 
@@ -85,6 +98,11 @@ function vaultWith(
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockGetPrivacyPosture.mockResolvedValue({
+    shield_active: true,
+    force_guarded: false,
+    provider_ids: ['@omadia/plugin-privacy-guard'],
+  });
 });
 
 describe('/admin — platform health (#1332)', () => {
@@ -110,5 +128,22 @@ describe('/admin — platform health (#1332)', () => {
     render(await AdminIndexPage());
 
     expect(screen.getByTestId('platform-health-banner').dataset['kind']).toBe('devMasterKey');
+  });
+});
+
+describe('/admin — Privacy Shield off (#1507)', () => {
+  it('warns when no Privacy Guard is running', async () => {
+    mockFetchHealth.mockResolvedValue({
+      reachable: true,
+      body: { checks: { database: 'ok' } },
+    });
+    mockGetVaultStatus.mockResolvedValue(vaultWith('env', 'env'));
+    mockGetPrivacyPosture.mockResolvedValue({
+      shield_active: false,
+      force_guarded: false,
+      provider_ids: [],
+    });
+    render(await AdminIndexPage());
+    expect(screen.getByTestId('privacy-shield-banner')).toBeTruthy();
   });
 });

@@ -27,12 +27,14 @@ import {
  * Status mapping for /install (`InstallFailureReason`):
  *   draft_not_found    → 404
  *   conflict           → 409  (id collision with built-in, duplicate version,
- *                              or a version older than the installed one)
+ *                              a version older than the installed one, or a
+ *                              compat.core range that excludes this host)
  *   too_large          → 413
  *   spec_invalid       → 422  (Zod validation failed)
  *   codegen_failed     → 422  (CodegenError, contains issue list)
  *   build_failed       → 422  (tsc / sandbox failure)
- *   manifest_invalid   → 422  (manifest.yaml or package.json mismatch)
+ *   manifest_invalid   → 422  (any other ingest refusal: manifest.yaml or
+ *                              package.json mismatch, bad zip, …)
  *   pipeline_failed    → 500  (staging / unexpected pipeline error)
  *   ingest_failed      → 500  (unmapped ingest failure)
  *
@@ -101,6 +103,8 @@ export function registerBuilderInstallRoutes(
         code: result.code,
         message: result.message,
       };
+      // #1477 — same body as the ZIP upload and the Hub install.
+      if (result.params !== undefined) body.params = result.params;
       if (result.details !== undefined) body.details = result.details;
       return sendJson(res, status, body);
     },

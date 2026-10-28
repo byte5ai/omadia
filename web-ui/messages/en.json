@@ -4320,7 +4320,7 @@
       "privacyLoadFailedWithError": "Privacy mode could not be loaded: {error}",
       "privacyGuardedHelp": "Tool results are masked server-side behind Privacy Shield v4; the LLM only sees identity-free digests.",
       "privacyBypassHelp": "Raw tool results reach the LLM unmasked. Suitable for trusted internal sources whose content the Privacy Shield cannot structurally digest (e.g. Confluence page bodies).",
-      "privacyPerToolHelp": "Per-tool whitelist: only explicitly listed tools are bypassed. Set the list via the `_privacy_bypass_scopes` field (comma-separated).",
+      "privacyPerToolHelp": "Per-tool whitelist: only the tools listed below are bypassed; every other tool of this plugin stays guarded.",
       "saving": "Saving …",
       "steps": {
         "awaiting_config": "Waiting for configuration",
@@ -4331,7 +4331,21 @@
         "installed_activation_failed": "Installed — activation failed",
         "cancelled": "Cancelled by user",
         "failed": "Failed"
-      }
+      },
+      "privacyScopesLabel": "Tools to bypass",
+      "privacyScopesPlaceholder": "tool_name, other_tool",
+      "privacyScopesSave": "Save list",
+      "privacyScopesEmpty": "No tools listed yet — until you add one, every tool of this plugin stays guarded.",
+      "privacyLockedBadge": "Locked by org policy",
+      "privacyLockedHelp": "OMADIA_PRIVACY_FORCE_GUARDED is set for this instance: every plugin runs guarded and the LLM only sees identity-free digests, whatever is selected here.",
+      "privacyLockedStored": "The stored setting “{mode}” has no effect while the org policy is active.",
+      "confirmRemovePrivacyShield": "This plugin is the Privacy Shield. Without it, tool results, chat history and recalled context reach the LLM unmasked in every chat, and no receipt is shown.",
+      "privacySaveFailed": "Could not save the privacy setting: {error}",
+      "removePackage": "Remove uploaded package",
+      "removePackageConfirm": "Remove the uploaded package of <strong>{name}</strong>? It is not installed, so nothing is running from it. It disappears from the catalog; a Hub plugin can be fetched again.",
+      "removePackageYes": "Yes, remove",
+      "removingPackage": "Removing …",
+      "removePackageFailed": "The package could not be removed: {message}"
     },
     "auditMode": {
       "singleHostHelp": "Only the hosts declared in the manifest.",
@@ -4447,10 +4461,19 @@
         "entryMissing": "The lifecycle entry {entry} is not in the zip.",
         "idConflictBundled": "Plugin id {pluginId} belongs to a plugin bundled with this installation. An upload cannot replace a bundled plugin — give the package its own id. To override deliberately, set {overrideEnv}=1 in the middleware environment.",
         "idConflictBuiltin": "Plugin id {pluginId} collides with a built-in catalog entry.",
-        "duplicateVersion": "Version {version} of {pluginId} is already uploaded. Bump the version or remove the upload first.",
+        "duplicateVersion": "Version {version} of {pluginId} is already uploaded. Bump the version, or remove the uploaded package on its Store page first.",
         "downgradeBlocked": "Version {toVersion} of {pluginId} is older than the installed version {fromVersion}. A downgrade swaps out the running plugin — confirm it explicitly.",
-        "noFile": "The request contains no file."
-      }
+        "noFile": "The request contains no file.",
+        "multipart": "The upload could not be read. Try again.",
+        "zipInvalid": "The file is not a valid ZIP archive.",
+        "zipPathEscape": "The archive contains an entry that points outside the package: {entry}. Rebuild the package without it.",
+        "zipSymlink": "The archive contains a symbolic link, which is not allowed: {entry}.",
+        "zipForbiddenExtension": "The archive contains a file type that is not allowed in a plugin package: {entry}.",
+        "zipTooManyEntries": "The archive contains too many files.",
+        "zipFileTooLarge": "A file in the archive is too large once unpacked.",
+        "zipTotalTooLarge": "The unpacked archive exceeds the size limit."
+      },
+      "replacedVersion": "Replaced the previously uploaded version {previous}."
     },
     "setupForm": {
       "enable": "Enable",
@@ -6385,6 +6408,13 @@
     "copy": "Copy",
     "copied": "Copied",
     "copyFailed": "Couldn't copy automatically — select the secret above and copy it manually."
+  },
+  "privacyShieldBanner": {
+    "title": "Privacy Shield is off",
+    "body": "No Privacy Guard is running. Every chat sends tool results, chat history and recalled context to the LLM unmasked, and no receipt is shown. Reinstall the Privacy Guard to turn masking back on.",
+    "bodyForceGuarded": "No Privacy Guard is running, although OMADIA_PRIVACY_FORCE_GUARDED is set: the org policy cannot mask anything without it. Every chat sends tool results, chat history and recalled context to the LLM unmasked. Reinstall the Privacy Guard.",
+    "cta": "Privacy Guard",
+    "bodyNotRunning": "The Privacy Guard is installed but not running, so nothing is masked: every chat sends tool results, chat history and recalled context to the LLM unmasked. Open the Privacy Guard to see why it did not start."
   },
   "registryStatus": {
     "errors": {
