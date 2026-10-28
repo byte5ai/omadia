@@ -33,6 +33,7 @@ import {
   publicPathsDeclarationSchema,
 } from '../platform/publicPathGrants.js';
 import { compileSetupPattern } from './setupFieldPattern.js';
+import { booleanSetupDefault } from './setupFieldDefault.js';
 import { auditManifestI18n, describeManifestI18nGaps } from './manifestI18nAudit.js';
 import { enumOption, normalizeLocalized, resolveLocalized } from './manifestLocalized.js';
 
@@ -422,6 +423,11 @@ export function adaptManifestV1(
           (h): h is string => typeof h === 'string',
         );
       }
+    } else if (type === 'boolean') {
+      // #1464 — `true` and `"true"` both mean true; shared with the install
+      // schema projection so the two never disagree.
+      const defaultValue = booleanSetupDefault(f['default']);
+      if (defaultValue !== undefined) entry.default = defaultValue;
     } else {
       const defaultValue = asString(f['default']);
       if (defaultValue !== undefined) entry.default = defaultValue;

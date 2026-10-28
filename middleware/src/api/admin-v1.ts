@@ -117,8 +117,9 @@ export interface PluginSetupField {
   expect?: Record<string, unknown>;
   /** Manifest default. Forwarded so the post-install editor can pre-select
    *  the default option in an `enum` dropdown when no value is stored yet.
-   *  A `string[]` for `type === 'host_list'`, a `string` otherwise. */
-  default?: string | string[];
+   *  A `string[]` for `type === 'host_list'`, a `boolean` for
+   *  `type === 'boolean'` (#1464 — `"true"` normalized), a `string` otherwise. */
+  default?: string | string[] | boolean;
   /** Allowed values for `type === 'enum'`. Mirrors the install-wizard
    *  schema so the post-install editor can render a `<select>` instead of
    *  a free-text input. */
