@@ -177,6 +177,28 @@ describe('uninstall dialog — Privacy Guard (#1507)', () => {
     );
   });
 
+  it('hides the uninstall button for the last shield under the org policy', async () => {
+    mockGetInstalled.mockResolvedValue(installed({}));
+    mockGetPosture.mockResolvedValue({
+      shield_active: true,
+      force_guarded: true,
+      provider_ids: ['@omadia/plugin-privacy-guard'],
+    });
+    renderWithIntl(
+      <InstallButton
+        pluginId="@omadia/plugin-privacy-guard"
+        pluginName="Privacy Guard"
+        installState="installed"
+        enabled
+        provides={['privacy.redact@1']}
+      />,
+    );
+    expect((await screen.findByTestId('uninstall-locked')).textContent).toContain(
+      t.uninstallBlockedByPolicy,
+    );
+    expect(screen.queryByRole('button', { name: 'Uninstall Privacy Guard' })).toBeNull();
+  });
+
   it('adds nothing for an ordinary plugin', async () => {
     await openDialog([]);
     expect(screen.queryByTestId('uninstall-privacy-warning')).toBeNull();

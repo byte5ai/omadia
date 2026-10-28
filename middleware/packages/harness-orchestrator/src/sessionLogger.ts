@@ -69,6 +69,8 @@ export interface SessionLogEntry {
    * and the stored turn keep `userMessage` / `assistantAnswer`.
    */
   maskedView?: TurnMaskedView;
+  /** #1507 — see `TurnIngest.unprotected`. Handed to the graph only. */
+  unprotected?: boolean;
 }
 
 const USER_MSG_MAX = 1_500;
@@ -221,6 +223,7 @@ export class SessionLogger {
           ...(entry.owners !== undefined ? { owners: entry.owners } : {}),
           ...(entry.speaker !== undefined ? { speaker: entry.speaker } : {}),
           ...(entry.maskedView !== undefined ? { maskedView: entry.maskedView } : {}),
+          ...(entry.unprotected !== undefined ? { unprotected: entry.unprotected } : {}),
         });
         // #1082 — the capture filter wrote this turn for session continuity
         // only. Counted per TURN, with or without a trace: the number of

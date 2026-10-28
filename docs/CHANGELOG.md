@@ -36,6 +36,42 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Privacy Shield follow-ups: guard uninstall, recall of unprotected turns, per-tool scope (#1507)
+
+2026-10-28. Follow-ups to #1516.
+
+- **Uninstall blocked under the org policy.** With
+  `OMADIA_PRIVACY_FORCE_GUARDED=true`, uninstalling the last
+  `privacy.redact@1` provider answers `409 install.privacy_guard_required`
+  (`InstallService.uninstall`, `uninstallVoidsForceGuarded`). Without a
+  provider no turn is masked, so the uninstall would void the policy. The
+  store hides the button and says why. Without the policy the warning from
+  #1516 stays the only guard (decision: Marcel, 2026-10-28).
+- **Unprotected turns stay out of recall.** A turn that ran without a shield,
+  or in which a tool bypassed it, is stored `unprotected`
+  (`TurnIngest.unprotected`, `@omadia/plugin-api` 1.37.0, from
+  `PrivacyTurnHandle.hasBypassed()`). A turn under a shield recalls with
+  `excludeUnprotected`, so the full-text, embedding and entity legs of
+  "Inhaltlich verwandte Turns" return none of them. That block was how names
+  from an unprotected window reached the model again, because recall masking
+  only catches detector-visible spans. Both KG backends; Neon keeps the flag
+  in `properties` without a migration. The same chat's tail and briefing keep
+  such turns, turns from before this change carry no flag, and promoted facts
+  and memories are not covered.
+- **Per-tool scope stays with its owner.** The bypass resolver moved to
+  `harness-orchestrator/src/privacyBypassResolver.ts`. A tool that has an
+  owner is decided by that owner alone: an ownerless kernel tool is never
+  bypassed, and another agent's domain tool follows that agent. Before, a
+  sub-agent owner set to `bypass`, or naming such a tool in its `per_tool`
+  list, unmasked it. A sub-agent's toolkit tools still follow the owning
+  agent, the case the setting exists for.
+- The boot reseed that drops the guard's operator config is left to #1481
+  (cluster S2-N05, built-in lifecycle).
+
+Tests: `middleware/test/privacyFollowups1507.test.ts`,
+`middleware/test/recallUnprotectedTurns1507.test.ts`, and the store case in
+`web-ui/app/_components/store/__tests__/PrivacyShieldConfig.test.tsx`.
+
 ### Fixed — follow-ups to #1522: old false "done" plan steps, the preamble preview, card lead-ins (#1502, #1500)
 
 2026-10-28. Three gaps #1522 left open.

@@ -1705,6 +1705,16 @@ export interface TurnIngest {
    */
   tailOnly?: boolean;
   /**
+   * #1507 — the turn's answer came from raw values the model saw: it ran
+   * without a Privacy Shield provider, or a tool bypassed the shield. Set by
+   * the kernel. A recall that runs under a shield passes
+   * `excludeUnprotected` and gets no such turn back, so a protected turn
+   * never replays names an unprotected one put on the record. Written
+   * unconditionally like `tailOnly`, so a re-ingest can clear it. Stored as a
+   * Turn property.
+   */
+  unprotected?: boolean;
+  /**
    * Member-scoped memory — the canonical omadia user ids of everyone present
    * in the room when the turn happened, sorted and de-duplicated. The turn's
    * knowledge belongs to exactly these people: a later turn may recall it only
@@ -2091,6 +2101,11 @@ export interface SearchTurnsOptions {
   audienceOwners?: readonly string[];
   /** Hard cap on returned hits. Defaults to 5. */
   limit?: number;
+  /**
+   * #1507 — leave out turns stored `unprotected` (see `TurnIngest`). Set by a
+   * recall that runs under a Privacy Shield.
+   */
+  excludeUnprotected?: boolean;
 }
 
 export interface TurnSearchHit {
@@ -2185,6 +2200,11 @@ export interface SearchTurnsByEmbeddingOptions {
    * a no-op but the convention is in place.
    */
   includeCold?: boolean;
+  /**
+   * #1507 — leave out turns stored `unprotected` (see `TurnIngest`). Set by a
+   * recall that runs under a Privacy Shield.
+   */
+  excludeUnprotected?: boolean;
 }
 
 /** Read options for {@link KnowledgeGraph.getSession}. */
@@ -2220,6 +2240,11 @@ export interface EntityCapturedTurnsOptions {
   perEntityLimit?: number;
   /** Hard cap on distinct entities to return. Default 5. */
   entityLimit?: number;
+  /**
+   * #1507 — leave out turns stored `unprotected` (see `TurnIngest`). Set by a
+   * recall that runs under a Privacy Shield.
+   */
+  excludeUnprotected?: boolean;
 }
 
 export interface FindEntitiesOptions {

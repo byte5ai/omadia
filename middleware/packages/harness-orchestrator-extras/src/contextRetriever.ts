@@ -168,6 +168,13 @@ export interface ContextBuildInput {
    * {@link AssembleForBudgetInput}. Forwarded to every turn and memory leg.
    */
   audienceOwners?: readonly string[];
+  /**
+   * #1507 — the recalling turn runs under a Privacy Shield: leave out turns
+   * stored `unprotected` (answered without a shield, or with a bypassed
+   * tool) from the cross-session turn legs (full-text, embedding, entity).
+   * The same-chat tail keeps them for conversational continuity.
+   */
+  excludeUnprotected?: boolean;
   /** External id of the turn currently being answered — excluded from hits. */
   currentTurnId?: string;
   /**
@@ -299,6 +306,8 @@ export interface AssembleForBudgetInput {
    * filtering: the caller leaves `userId` out.
    */
   audienceOwners?: readonly string[];
+  /** #1507 — see the field of the same name on {@link ContextBuildInput}. */
+  excludeUnprotected?: boolean;
   /** Optional override; otherwise `defaultBudgetTokens` from ContextRetriever-Opts. */
   budget?: { tokens: number };
 }
@@ -607,6 +616,7 @@ export class ContextRetriever {
       ...(input.userId ? { userId: input.userId } : {}),
       ...(input.currentTurnId ? { currentTurnId: input.currentTurnId } : {}),
       ...(input.audienceOwners ? { audienceOwners: input.audienceOwners } : {}),
+      ...(input.excludeUnprotected ? { excludeUnprotected: true } : {}),
       // Per-orchestrator KG isolation is OPT-IN: only when the caller (the
       // orchestrator) passes an agent prefix do we constrain recall to that
       // Agent. Its `sessionScope` then already arrives qualified, so
@@ -1097,6 +1107,7 @@ export class ContextRetriever {
         ? { agentScopePrefix: input.agentScopePrefix }
         : {}),
       ...(input.audienceOwners ? { audienceOwners: input.audienceOwners } : {}),
+      ...(input.excludeUnprotected ? { excludeUnprotected: true } : {}),
       perEntityLimit: 2,
       entityLimit: this.opts.entityLimit,
     });
@@ -1494,6 +1505,7 @@ export class ContextRetriever {
               ? { agentScopePrefix: input.agentScopePrefix }
               : {}),
             ...(input.audienceOwners ? { audienceOwners: input.audienceOwners } : {}),
+            ...(input.excludeUnprotected ? { excludeUnprotected: true } : {}),
             limit: this.opts.ftsLimit,
             recallMinScore: this.opts.recallMinScore,
             recallRecencyBoost: this.opts.recallRecencyBoost,
@@ -1517,6 +1529,7 @@ export class ContextRetriever {
         ? { agentScopePrefix: input.agentScopePrefix }
         : {}),
       ...(input.audienceOwners ? { audienceOwners: input.audienceOwners } : {}),
+      ...(input.excludeUnprotected ? { excludeUnprotected: true } : {}),
       limit: this.opts.ftsLimit,
     });
   }

@@ -8,6 +8,22 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.37.0 — 2026-10-28
+
+Additive. A turn answered without Privacy Shield protection can be kept out of
+recall that runs under a shield (#1507).
+
+### Added
+
+- **`TurnIngest.unprotected`** — the turn ran without a `privacy.redact@1`
+  provider, or a tool bypassed the shield, so its answer holds values no
+  shield masked. Stored as a Turn property; written unconditionally like
+  `tailOnly`.
+- **`excludeUnprotected`** on `SearchTurnsOptions`,
+  `SearchTurnsByEmbeddingOptions` and `EntityCapturedTurnsOptions` — leave
+  such turns out. A backend that ignores it stays correct for instances
+  without a shield, and recalls them under one.
+
 ## 1.36.0 — 2026-10-28
 
 Additive. Plan recall can tell a really finished step from one the old

@@ -3947,6 +3947,14 @@ export class Orchestrator {
           ? { restrictToScope: restrictRecallScope }
           : {}),
         ...(audienceOwners !== undefined ? { audienceOwners } : {}),
+        // #1507 — under a Privacy Shield, cross-session recall skips turns
+        // stored `unprotected`: their answers hold values no shield masked,
+        // and only detector-visible spans (e-mails, not names) would be
+        // masked on the way back in. Without a shield nothing is protected
+        // either way, so recall stays as it was.
+        ...(turnContext.current()?.privacyHandle !== undefined
+          ? { excludeUnprotected: true }
+          : {}),
       });
       console.error(
         `[context] assembled scope=${input.sessionScope ?? '-'} user=${input.userId ?? '-'} pool=${String(result.stats.candidatePool)} included=${String(result.included.length)} excluded=${String(result.excluded.length)} compact=${String(result.stats.compactMode)} tokens=${String(result.stats.tokensUsed)} rendered=${String(result.text.length)}B`,

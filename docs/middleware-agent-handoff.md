@@ -3957,6 +3957,19 @@ Privacy-Keys (`checkPrivacyConfigValue`), speichert die Liste als
 `parseScopes` ebenso liest) und schreibt jede Änderung als
 `plugin.privacy_change` ins Admin-Audit.
 
+**Folgearbeiten #1507.** Mit `OMADIA_PRIVACY_FORCE_GUARDED=true` lehnt
+`InstallService.uninstall` das Entfernen des letzten
+`privacy.redact@1`-Providers mit `409 install.privacy_guard_required` ab
+(`uninstallVoidsForceGuarded`); der Store blendet den Button dann aus. Turns
+ohne Handle oder mit gebypasstem Tool (`PrivacyTurnHandle.hasBypassed()`)
+landen als `unprotected` im KG (`maskedRowView` → `SessionLogEntry` →
+`TurnIngest.unprotected`, plugin-api 1.37.0); unter einem Shield übergibt
+`retrievePriorContext` `excludeUnprotected`, und Volltext-, Embedding- und
+Entity-Recall lassen sie weg (beide Backends, Neon ohne Migration im
+`properties`-JSONB). Tail und Session-Briefing derselben Session behalten
+sie. Der Bypass-Resolver steckt jetzt in `privacyBypassResolver.ts`: ein Tool
+mit Eigentümer fällt nie auf den Sub-Agent-Owner durch.
+
 ### Abo-CLI-Turn-Budget (OM-104, Beta-Runde 5)
 
 Wird vom `@omadia/orchestrator`-Package gelesen (`resolveCliSpawnTimeoutMs()` in
