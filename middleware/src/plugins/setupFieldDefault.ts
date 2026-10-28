@@ -20,3 +20,24 @@ export function booleanSetupDefault(raw: unknown): boolean | undefined {
   if (raw === 'false') return false;
   return undefined;
 }
+
+/**
+ * #1524 — the manifest `default` of an `integer` setup field.
+ *
+ * Integrations declare it as a YAML number (`default: 200000`); a quoted
+ * `"200000"` means the same, matching how `coerce()` in installService accepts
+ * a submitted integer. Shared by both manifest projections like
+ * `booleanSetupDefault`, so the catalog (and with it the bundled-plugin
+ * seeding in bootstrap) and the install schema hand on the same real number.
+ *
+ * Anything that is not a whole number (`1.5`, `"lots"`, `true`, …) is dropped
+ * (`undefined`): the field then behaves as if it declared no default.
+ */
+export function integerSetupDefault(raw: unknown): number | undefined {
+  if (typeof raw === 'number') return Number.isSafeInteger(raw) ? raw : undefined;
+  if (typeof raw === 'string' && /^-?\d+$/.test(raw.trim())) {
+    const n = Number(raw.trim());
+    return Number.isSafeInteger(n) ? n : undefined;
+  }
+  return undefined;
+}
