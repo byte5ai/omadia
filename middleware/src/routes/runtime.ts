@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 
+import { auditActorFromRequest } from '../auth/adminAuditLog.js';
 import type { AdminAuditLog } from '../auth/adminAuditLog.js';
 
 import type { BackgroundJobRegistry } from '../platform/backgroundJobRegistry.js';
@@ -24,6 +25,12 @@ import type { ConnectionProbeOutcome } from '../plugins/connectionProbe.js';
 import { extractSetupSchema } from '../plugins/installService.js';
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
+import {
+  buildPrivacyPosture,
+  checkPrivacyConfigValue,
+  isPrivacyConfigKey,
+  privacySettingsOf,
+} from '../plugins/privacyPosture.js';
 import { checkSetupFieldPattern } from '../plugins/setupFieldPattern.js';
 import type { PatternViolation } from '../plugins/setupFieldPattern.js';
 import { extractFromJsonFile } from '../plugins/setupJsonFile.js';
@@ -142,6 +149,21 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
       action_status: deps.pluginStatusRegistry?.get(entry.id) ?? null,
     }));
     res.json({ items: rows, total: rows.length });
+  });
+
+  // GET /privacy-posture — #1507/#1508. Is a Privacy Shield provider live, and
+  // does the org-wide `OMADIA_PRIVACY_FORCE_GUARDED` clamp apply? Read by the
+  // dashboard/admin banner and the per-plugin privacy picker. Behind
+  // requireAuth with the rest of this router, never on /health.
+  router.get('/privacy-posture', (_req: Request, res: Response) => {
+    res.json(
+      buildPrivacyPosture({
+        serviceRegistry: deps.serviceRegistry,
+        installedRegistry: deps.installedRegistry,
+        ...(deps.catalog ? { catalog: deps.catalog } : {}),
+        env: process.env,
+      }),
+    );
   });
 
   // GET /installed/:id — full entry for ONE installed plugin including
@@ -284,6 +306,20 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
           delete nextConfig[k];
           continue;
         }
+        // #1510 — the two kernel-synthetic privacy keys are validated and
+        // normalised; every other key keeps the behaviour below.
+        if (isPrivacyConfigKey(k)) {
+          const checked = checkPrivacyConfigValue(k, v);
+          if (!checked.ok) {
+            res.status(400).json({
+              code: 'runtime.invalid_config',
+              message: checked.message,
+            });
+            return;
+          }
+          nextConfig[k] = checked.value;
+          continue;
+        }
         // Fields declaring `options_provider` carry a multiselect array; they
         // are validated against the live provider and stored JSON-encoded.
         // Every other key keeps the legacy blind-merge behaviour.
@@ -306,6 +342,7 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
       }
       try {
         await deps.installedRegistry.updateConfig(id, nextConfig);
+        await auditPrivacyChange(deps, req, id, installed.config, nextConfig);
         // #1076 — an `llm_provider` change also rebuilds the plugins that
         // inherit it (extras from the orchestrator), dependents first.
         await reactivateAfterProviderWrite(deps, id, {
@@ -1281,4 +1318,35 @@ async function validateMultiselectValue(
     }
   }
   return { value: JSON.stringify(values) };
+}
+
+/**
+ * #1510/#1508 — record a change of a plugin's privacy keys in the admin audit
+ * trail. Best-effort like the grants audit: the config is already written, and
+ * a failed audit write must not turn a saved setting into a 500.
+ */
+async function auditPrivacyChange(
+  deps: RuntimeDeps,
+  req: Request,
+  pluginId: string,
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+): Promise<void> {
+  const prior = privacySettingsOf(before);
+  const next = privacySettingsOf(after);
+  if (!deps.audit || JSON.stringify(prior) === JSON.stringify(next)) return;
+  try {
+    await deps.audit.record({
+      actor: auditActorFromRequest(req),
+      action: 'plugin.privacy_change',
+      target: `plugin:${pluginId}`,
+      before: prior,
+      after: next,
+    });
+  } catch (err) {
+    console.error(
+      `[runtime] privacy audit write failed for ${JSON.stringify(pluginId)}:`,
+      err instanceof Error ? err.message : err,
+    );
+  }
 }

@@ -411,6 +411,7 @@ export default async function PluginDetailPage({
               ? { availableVersion: plugin.available_version }
               : {})}
             {...(blocking_reasons ? { blockingReasons: blocking_reasons } : {})}
+            {...(plugin.provides ? { provides: plugin.provides } : {})}
           />
 
           {/* OM-06 / #671 — the capability this plugin provides is already

@@ -4265,7 +4265,7 @@
       "privacyLoadFailedWithError": "Privacy-Mode konnte nicht geladen werden: {error}",
       "privacyGuardedHelp": "Tool-Ergebnisse werden serverseitig hinter dem Privacy Shield v4 maskiert; der LLM sieht nur identitätsfreie Digests.",
       "privacyBypassHelp": "Rohe Tool-Ergebnisse erreichen den LLM unmaskiert. Geeignet für vertrauenswürdige interne Quellen, deren Inhalte der Privacy Shield strukturell nicht digestieren kann (z. B. Confluence-Seiten-Bodies).",
-      "privacyPerToolHelp": "Per-Tool-Whitelist: nur explizit gelistete Tools werden bypassed. Liste über das Feld `_privacy_bypass_scopes` setzen (Komma-getrennt).",
+      "privacyPerToolHelp": "Per-Tool-Whitelist: nur die unten gelisteten Tools werden bypassed; alle anderen Tools dieses Plugins bleiben geschützt.",
       "saving": "Speichere …",
       "steps": {
         "awaiting_config": "Warte auf Konfiguration",
@@ -4276,7 +4276,16 @@
         "installed_activation_failed": "Installiert — Aktivierung fehlgeschlagen",
         "cancelled": "Vom Nutzer abgebrochen",
         "failed": "Fehlgeschlagen"
-      }
+      },
+      "privacyScopesLabel": "Tools ohne Maskierung",
+      "privacyScopesPlaceholder": "tool_name, anderes_tool",
+      "privacyScopesSave": "Liste speichern",
+      "privacyScopesEmpty": "Noch keine Tools gelistet — bis du eines einträgst, bleiben alle Tools dieses Plugins geschützt.",
+      "privacyLockedBadge": "Durch Org-Richtlinie gesperrt",
+      "privacyLockedHelp": "OMADIA_PRIVACY_FORCE_GUARDED ist für diese Instanz gesetzt: Jedes Plugin läuft geschützt und das LLM sieht nur identitätsfreie Digests, egal was hier ausgewählt ist.",
+      "privacyLockedStored": "Die gespeicherte Einstellung „{mode}“ wirkt nicht, solange die Org-Richtlinie aktiv ist.",
+      "confirmRemovePrivacyShield": "Dieses Plugin ist der Privacy Shield. Ohne ihn erreichen Tool-Ergebnisse, Chatverlauf und abgerufener Kontext das LLM in jedem Chat unmaskiert, und es erscheint kein Beleg.",
+      "privacySaveFailed": "Die Datenschutz-Einstellung konnte nicht gespeichert werden: {error}"
     },
     "auditMode": {
       "singleHostHelp": "Nur die im Manifest deklarierten Hosts.",
@@ -6315,5 +6324,12 @@
     "copy": "Kopieren",
     "copied": "Kopiert",
     "copyFailed": "Automatisches Kopieren fehlgeschlagen — markiere das Secret oben und kopiere es von Hand."
+  },
+  "privacyShieldBanner": {
+    "title": "Privacy Shield ist aus",
+    "body": "Es läuft kein Privacy Guard. Jeder Chat schickt Tool-Ergebnisse, Chatverlauf und abgerufenen Kontext unmaskiert an das LLM, und es erscheint kein Beleg. Installiere den Privacy Guard neu, um die Maskierung wieder einzuschalten.",
+    "bodyForceGuarded": "Es läuft kein Privacy Guard, obwohl OMADIA_PRIVACY_FORCE_GUARDED gesetzt ist: Ohne ihn kann die Org-Richtlinie nichts maskieren. Jeder Chat schickt Tool-Ergebnisse, Chatverlauf und abgerufenen Kontext unmaskiert an das LLM. Installiere den Privacy Guard neu.",
+    "cta": "Privacy Guard",
+    "bodyNotRunning": "Der Privacy Guard ist installiert, läuft aber nicht, daher wird nichts maskiert: Jeder Chat schickt Tool-Ergebnisse, Chatverlauf und abgerufenen Kontext unmaskiert an das LLM. Öffne den Privacy Guard, um zu sehen, warum er nicht gestartet ist."
   }
 }

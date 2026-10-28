@@ -35,6 +35,11 @@ vi.mock('../../../_lib/api', () => ({
   getPluginGrants: vi.fn().mockResolvedValue(null),
   deleteUploadedPackage: vi.fn(),
   getInstalledPlugin: vi.fn().mockResolvedValue(null),
+  getPrivacyPosture: vi.fn(async () => ({
+    shield_active: true,
+    force_guarded: false,
+    provider_ids: [],
+  })),
   installFromRegistry: mockInstallFromRegistry,
   uninstallPlugin: vi.fn(),
   updateInstalledPluginConfig: vi.fn(),

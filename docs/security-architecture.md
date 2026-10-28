@@ -1789,6 +1789,12 @@ These tool results skip the digest:
   bypass applies even when recording it throws, and the receipt itself is
   persisted best-effort (§7b). A sub-agent that read a bypassed result and
   interned no dataset hands its answer up raw as well.
+  The store's privacy picker shows the clamp as "Locked by org policy" and
+  edits the `per_tool` list; both read the authenticated
+  `GET /api/v1/admin/runtime/privacy-posture` (#1508, #1510), which also
+  reports `shield_active: false` while no `privacy.redact@1` provider runs —
+  every turn then reaches the model unmasked, and the dashboard says so
+  (#1507). The posture is not on the public `/health`.
   `OMADIA_PRIVACY_FORCE_GUARDED=true` switches all three off for the result
   the model gets, and for the MCP-to-knowledge-graph ingestion
   (`Orchestrator.dispatchTool`, epic #459) as well: every seam that reads a

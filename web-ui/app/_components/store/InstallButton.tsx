@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import { useLocale, useTranslations } from 'next-intl';
@@ -10,7 +10,6 @@ import {
   Check,
     Lock,
   RefreshCw,
-  Shield,
   Trash2,
 } from 'lucide-react';
 
@@ -19,10 +18,8 @@ import {
   configureInstallJob,
   createInstallJob,
   deleteUploadedPackage,
-  getInstalledPlugin,
   installFromRegistry,
   uninstallPlugin,
-  updateInstalledPluginConfig,
   ApiError,
   getPluginGrants,
 } from '../../_lib/api';
@@ -36,6 +33,7 @@ import type {
   PluginReadiness,
 } from '../../_lib/storeTypes';
 import { PostInstallNextSteps } from './PostInstallNextSteps';
+import { PrivacyModePicker } from './PrivacyModePicker';
 import { PermissionsStep, hasGrantsToAsk } from './PermissionsStep';
 import { pickLocalized } from '../../_lib/localized';
 import { RequiresWizard } from './RequiresWizard';
@@ -73,7 +71,13 @@ interface InstallButtonProps {
    *  the post-install next-step links. Absent on a pre-OM-16 middleware, in
    *  which case the pill renders as before. */
   readiness?: PluginReadiness;
+  /** Capabilities the plugin provides. #1507 — a `privacy.redact@1` provider
+   *  gets a data-protection warning in its uninstall dialog. */
+  provides?: string[];
 }
+
+/** The Privacy Shield capability (`PRIVACY_REDACT_CAPABILITY` in plugin-api). */
+const PRIVACY_REDACT_CAPABILITY = 'privacy.redact@1';
 
 type Phase =
   | { kind: 'idle' }
@@ -100,6 +104,7 @@ export function InstallButton({
   availableVersion,
   setupGuide,
   readiness,
+  provides,
 }: InstallButtonProps): React.ReactElement {
   const t = useTranslations('store.install');
   const router = useRouter();
@@ -127,6 +132,9 @@ export function InstallButton({
       <InstalledPanel
         pluginId={pluginId}
         pluginName={pluginName}
+        providesPrivacyShield={
+          provides?.includes(PRIVACY_REDACT_CAPABILITY) ?? false
+        }
         {...(readiness ? { readiness } : {})}
         {...(installState === 'update-available' && availableVersion
           ? { update: { from: installedVersion ?? '', to: availableVersion } }
@@ -416,9 +424,13 @@ function InstalledPanel({
   pluginName,
   update,
   readiness,
+  providesPrivacyShield = false,
 }: {
   pluginId: string;
   pluginName: string;
+  /** #1507 — this plugin IS the Privacy Shield; uninstalling it turns masking
+   *  off for every chat, so the confirm dialog says so. */
+  providesPrivacyShield?: boolean;
   /** C6 — present when a registry advertises a newer version. */
   update?: { from: string; to: string };
   /** OM-16 — kernel-derived readiness; drives the state word on the pill. */
@@ -612,9 +624,9 @@ function InstalledPanel({
           setting that decides whether the orchestrator dispatch hook
           interns raw tool results behind the Privacy Shield v4 boundary
           (`guarded`, default) or passes them through unmasked (`bypass`).
-          Reconfiguration via the full install form is not yet wired for
-          installed plugins; this dedicated picker covers the single
-          most-actionable setting without a full reconfigure flow. */}
+          It also edits the `per_tool` list (#1510) and shows the org-wide
+          `OMADIA_PRIVACY_FORCE_GUARDED` lock (#1508): both are synthetic
+          keys no manifest setup field covers. */}
       <PrivacyModePicker pluginId={pluginId} />
 
       {state.kind === 'idle' && (
@@ -641,6 +653,16 @@ function InstalledPanel({
               strong: (chunks) => <strong>{chunks}</strong>,
             })}
           </p>
+          {providesPrivacyShield ? (
+            <p
+              role="alert"
+              data-testid="uninstall-privacy-warning"
+              className="mt-3 flex items-start gap-2 rounded border border-[color:var(--danger,#b03030)]/40 bg-[color:var(--danger,#b03030)]/5 px-2 py-2 text-[12px] leading-relaxed text-[color:var(--danger,#b03030)]"
+            >
+              <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+              <span>{t('confirmRemovePrivacyShield')}</span>
+            </p>
+          ) : null}
           <label className="mt-3 flex items-start gap-2 text-[12px] leading-relaxed text-[color:var(--fg)]">
             <input
               type="checkbox"
@@ -995,166 +1017,4 @@ function tryParseErrorBody(body: string): {
 function safeMessage(body: string): string | null {
   const parsed = tryParseErrorBody(body);
   return parsed?.message ?? null;
-}
-
-// ---------------------------------------------------------------------------
-// PrivacyModePicker — Slice 2.5 quick-picker for the operator-owned
-// `_privacy_mode` setting on an installed plugin. Reads the current value
-// via GET /installed/:id and PATCHes back on change. Optimistic UI: the
-// dropdown reflects the new value immediately, error state rolls back.
-// ---------------------------------------------------------------------------
-
-type PrivacyMode = 'guarded' | 'bypass' | 'per_tool';
-
-/** Message-key leaves under `store.install` — translated at render. */
-const PRIVACY_MODE_LABEL_KEYS: Record<PrivacyMode, string> = {
-  guarded: 'privacyGuarded',
-  bypass: 'privacyBypass',
-  per_tool: 'privacyPerTool',
-};
-
-function isPrivacyMode(v: unknown): v is PrivacyMode {
-  return v === 'guarded' || v === 'bypass' || v === 'per_tool';
-}
-
-function PrivacyModePicker({
-  pluginId,
-}: {
-  pluginId: string;
-}): React.ReactElement | null {
-  const t = useTranslations('store.install');
-  // `null` initial state → "loading". Once loaded we know what mode the
-  // backend currently has stored (default 'guarded' when unset).
-  const [mode, setMode] = useState<PrivacyMode | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  // Tracks whether the GET succeeded at all — without it we render
-  // nothing rather than a confusing dropdown over nothing.
-  const [loaded, setLoaded] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        const entry = await getInstalledPlugin(pluginId);
-        if (cancelled) return;
-        const current = entry.config['_privacy_mode'];
-        setMode(isPrivacyMode(current) ? current : 'guarded');
-        setLoaded(true);
-      } catch (err) {
-        if (cancelled) return;
-        const msg =
-          err instanceof ApiError
-            ? safeMessage(err.body) ?? err.message
-            : err instanceof Error
-              ? err.message
-              : String(err);
-        setError(msg);
-        setLoaded(true);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [pluginId]);
-
-  async function handleChange(next: PrivacyMode): Promise<void> {
-    const previous = mode;
-    setMode(next);
-    setSaving(true);
-    setError(null);
-    try {
-      await updateInstalledPluginConfig(pluginId, { _privacy_mode: next });
-    } catch (err) {
-      // Roll back to the previous value so the dropdown reflects what
-      // the backend actually has stored.
-      setMode(previous);
-      const msg =
-        err instanceof ApiError
-          ? safeMessage(err.body) ?? err.message
-          : err instanceof Error
-            ? err.message
-            : String(err);
-      setError(msg);
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  if (!loaded) {
-    return (
-      <div className="rounded-md border border-[color:var(--border)] bg-[color:var(--bg-soft)] px-3 py-3">
-        <div className="flex items-center gap-2 text-[11px] text-[color:var(--fg-subtle)]">
-          <span className="lume-busy-dots" aria-hidden />
-          {t('privacyLoading')}
-        </div>
-      </div>
-    );
-  }
-  if (mode === null) {
-    return (
-      <div className="rounded-md border border-[color:var(--danger,#b03030)]/40 bg-[color:var(--danger,#b03030)]/5 px-3 py-2">
-        <p className="text-[12px] text-[color:var(--danger,#b03030)]">
-          {error
-            ? t('privacyLoadFailedWithError', { error })
-            : t('privacyLoadFailed')}
-        </p>
-      </div>
-    );
-  }
-
-  const tone =
-    mode === 'bypass'
-      ? 'border-[color:var(--warning)] bg-[color:var(--warning)]/10'
-      : 'border-[color:var(--border)] bg-[color:var(--bg-soft)]';
-
-  return (
-    <div className={cn('rounded-md border px-3 py-3', tone)}>
-      <label
-        htmlFor={`privacy-mode-${pluginId}`}
-        className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-muted)]"
-      >
-        <Shield className="size-3.5" aria-hidden />
-        {t('privacyModeLabel')}
-      </label>
-      <select
-        id={`privacy-mode-${pluginId}`}
-        value={mode}
-        disabled={saving}
-        onChange={(e) => void handleChange(e.target.value as PrivacyMode)}
-        className={cn(
-          'mt-2 w-full rounded border px-2 py-2 text-[13px]',
-          'border-[color:var(--border)] bg-[color:var(--bg)]',
-          'focus:outline-none focus:ring-1 focus:ring-[color:var(--accent)]',
-          saving ? 'opacity-60' : '',
-        )}
-      >
-        {(
-          Object.entries(PRIVACY_MODE_LABEL_KEYS) as Array<[PrivacyMode, string]>
-        ).map(([value, labelKey]) => (
-          <option key={value} value={value}>
-            {t(labelKey)}
-          </option>
-        ))}
-      </select>
-      <p className="mt-2 text-[11px] leading-relaxed text-[color:var(--fg-subtle)]">
-        {mode === 'guarded'
-          ? t('privacyGuardedHelp')
-          : mode === 'bypass'
-            ? t('privacyBypassHelp')
-            : t('privacyPerToolHelp')}
-      </p>
-      {saving && (
-        <div className="mt-2 flex items-center gap-2 text-[11px] text-[color:var(--fg-subtle)]">
-          <span className="lume-busy-dots" aria-hidden />
-          {t('saving')}
-        </div>
-      )}
-      {error && (
-        <p className="font-mono-num mt-2 text-[11px] text-[color:var(--danger,#b03030)]">
-          {error}
-        </p>
-      )}
-    </div>
-  );
 }
