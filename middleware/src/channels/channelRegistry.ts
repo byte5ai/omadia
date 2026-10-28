@@ -10,6 +10,7 @@ import {
   recordActivationSuccess,
   type InstalledRegistry,
 } from '../plugins/installedRegistry.js';
+import { classifyActivationError } from '../plugins/activationErrorReason.js';
 import type { JobScheduler } from '../plugins/jobScheduler.js';
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
 import type { SecretVault } from '../secrets/vault.js';
@@ -116,6 +117,7 @@ export class DefaultChannelRegistry implements ChannelRegistry {
             entry.id,
             message,
             entry.unresolved_requires,
+            classifyActivationError(err),
           );
         } catch (regErr) {
           console.error(

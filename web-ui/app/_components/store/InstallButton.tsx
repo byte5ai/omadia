@@ -28,6 +28,7 @@ import {
 } from '../../_lib/api';
 import type { PluginGrantsView } from '../../_lib/api';
 import type {
+  ActivationErrorReason,
   InstallChainResolution,
   InstallJob,
   InstallSetupField,
@@ -35,6 +36,15 @@ import type {
   LocalizedMarkdown,
   PluginReadiness,
 } from '../../_lib/storeTypes';
+import {
+  ACTIVATION_ERROR_CODES,
+  parseActivationErrorReason,
+} from '../../_lib/activationError';
+import { ActivationFailureNotice } from './ActivationFailureNotice';
+
+const KNOWN_ACTIVATION_CODES: ReadonlySet<string> = new Set(
+  ACTIVATION_ERROR_CODES,
+);
 import { PostInstallNextSteps } from './PostInstallNextSteps';
 import { PermissionsStep, hasGrantsToAsk } from './PermissionsStep';
 import { pickLocalized } from '../../_lib/localized';
@@ -80,7 +90,15 @@ type Phase =
   | { kind: 'creating' }
   | { kind: 'form'; job: InstallJob }
   | { kind: 'submitting'; job: InstallJob; values: Record<string, unknown> }
-  | { kind: 'error'; job: InstallJob | null; message: string }
+  | {
+      kind: 'error';
+      job: InstallJob | null;
+      message: string;
+      /** #1456 — present when the failure was an ACTIVATION failure the
+       *  middleware classified. The block then renders localized copy and
+       *  keeps `message` as the technical detail. */
+      activation?: { reason: ActivationErrorReason | null; detail?: string };
+    }
   | { kind: 'wizard'; resolution: InstallChainResolution }
   /** Epic #470 C16 (#817) — the install succeeded and the manifest asks for at
    *  least one operator grant. Entered INSTEAD of `success`, so a plugin is
@@ -304,12 +322,27 @@ export function InstallButton({
       return;
     }
     if (job.state === 'errored') {
+      const reason = parseActivationErrorReason(job.activation_state?.error_reason);
+      const detail = job.activation_state?.error ?? undefined;
+      const activation =
+        reason || detail
+          ? { reason, ...(detail ? { detail } : {}) }
+          : undefined;
       setPhase({
         kind: 'error',
         job,
-        message: t('activationFailed', {
-          message: job.activation_state?.error ?? t('unknownError'),
-        }),
+        // #1456 — the raw sentence, unprefixed. Rendered only when there is no
+        // classified reason AND no sentence to put behind localized copy;
+        // carrying a German-prefixed English sentence here as well would be a
+        // second copy of the bug this issue removed.
+        message: detail ?? t('unknownError'),
+        // Only when there is something to render FROM: the notice renders
+        // nothing without a reason and without a sentence, and an install that
+        // reports `state: 'errored'` with `error: null` (a registry entry
+        // recorded `inactive`) is exactly that case. Passing it anyway left the
+        // drawer with an uppercase kicker over an empty box — less than the
+        // "Unknown error" it replaced.
+        ...(activation ? { activation } : {}),
       });
       return;
     }
@@ -426,6 +459,7 @@ function InstalledPanel({
 }): React.ReactElement {
   const t = useTranslations('store.install');
   const tState = useTranslations('store.stateBadge');
+  const tActivationError = useTranslations('store.activationError');
   const router = useRouter();
   // OM-16 — readiness → pill tone + state word. No readiness (older
   // middleware) keeps the previous unqualified "active".
@@ -449,6 +483,18 @@ function InstalledPanel({
     readiness.missing_fields.length > 0
       ? tState('missingFields', { fields: readiness.missing_fields.join(', ') })
       : undefined;
+  // #1456 — the pill's hover text for a failed activation: the classified
+  // reason's one-liner, not the plugin API's English exception sentence.
+  const activationReason =
+    readiness?.state === 'errored'
+      ? parseActivationErrorReason(readiness.error_reason)
+      : null;
+  const erroredPillTitle =
+    readiness?.state === 'errored'
+      ? tActivationError(
+          `${activationReason && KNOWN_ACTIVATION_CODES.has(activationReason.code) ? activationReason.code : 'unknown'}.short`,
+        )
+      : undefined;
   const [state, setState] = useState<
     | { kind: 'idle' }
     | { kind: 'confirming' }
@@ -461,7 +507,13 @@ function InstalledPanel({
   // upload pipeline's migrate/re-activate hooks swap the active version; a
   // refresh re-reads the (now updated) install state.
   const [updating, setUpdating] = useState(false);
-  const [updateError, setUpdateError] = useState<string | null>(null);
+  /** A transport/validation failure is the API's own message; an ACTIVATION
+   *  failure is a classified reason (#1456) and renders as the notice. */
+  const [updateError, setUpdateError] = useState<
+    | { kind: 'message'; message: string }
+    | { kind: 'activation'; reason: ActivationErrorReason | null; detail?: string }
+    | null
+  >(null);
 
   async function doUpdate(): Promise<void> {
     if (!update) return;
@@ -474,18 +526,27 @@ function InstalledPanel({
       // below now repaints an honest badge; naming the reason here is what
       // tells the operator who clicked "Update" that the plugin is down and
       // why. `router.refresh()` still runs: the installed version DID change.
-      if (res.activation_error) {
-        setUpdateError(t('updateActivationFailed', { message: res.activation_error }));
+      if (res.activation_error || res.activation_error_reason) {
+        // #1456 — was `t('updateActivationFailed', { message })`: a German
+        // prefix onto the plugin API's English sentence. The update row now
+        // renders the same classified notice as every other seam.
+        setUpdateError({
+          kind: 'activation',
+          reason: parseActivationErrorReason(res.activation_error_reason),
+          ...(res.activation_error ? { detail: res.activation_error } : {}),
+        });
       }
       router.refresh();
     } catch (err) {
-      setUpdateError(
-        err instanceof ApiError
-          ? (safeMessage(err.body) ?? err.message)
-          : err instanceof Error
-            ? err.message
-            : String(err),
-      );
+      setUpdateError({
+        kind: 'message',
+        message:
+          err instanceof ApiError
+            ? (safeMessage(err.body) ?? err.message)
+            : err instanceof Error
+              ? err.message
+              : String(err),
+      });
     } finally {
       setUpdating(false);
     }
@@ -537,10 +598,16 @@ function InstalledPanel({
           the plugin as plain `installed`, the update banner unmounts, and an
           error rendered inside it would disappear together with the only
           statement of WHY the plugin is down. */}
-      {updateError ? (
+      {updateError?.kind === 'message' ? (
         <p className="font-mono-num text-[11px] text-[color:var(--danger,#b03030)]">
-          {updateError}
+          {updateError.message}
         </p>
+      ) : null}
+      {updateError?.kind === 'activation' ? (
+        <ActivationFailureNotice
+          reason={updateError.reason}
+          {...(updateError.detail ? { detail: updateError.detail } : {})}
+        />
       ) : null}
       {update ? (
         <div className="rounded-md border border-[color:var(--accent)]/40 bg-[color:var(--accent)]/5 px-4 py-3">
@@ -580,7 +647,11 @@ function InstalledPanel({
               ? 'bg-[color:var(--warning)]/12 ring-[color:var(--warning)]/40 text-[color:var(--warning)]'
               : 'bg-[color:var(--success)]/10 ring-[color:var(--success)]/40 text-[color:var(--success)]',
         )}
-        title={readiness?.error_detail ?? missingFieldsTitle}
+        // #1456 — a `title` is user-facing text, so it may not be the plugin
+        // API's English exception sentence (the same reason `StateBadge`
+        // changed). The explanation is rendered as text right below this pill;
+        // the hover text is the one-line localized summary.
+        title={erroredPillTitle ?? missingFieldsTitle}
       >
         {readinessTone === 'ok' ? (
           <Check className="size-5" aria-hidden />
@@ -596,11 +667,16 @@ function InstalledPanel({
           store". The pill carries it in `title=` only, which a keyboard or
           screen-reader user never reaches and a touch user cannot hover. The
           reason the plugin is down is the one actionable thing on this page, so
-          it is rendered as text. */}
-      {readiness?.state === 'errored' && readiness.error_detail ? (
-        <p className="font-mono-num text-[11px] text-[color:var(--danger,#b03030)]">
-          {t('activationFailed', { message: readiness.error_detail })}
-        </p>
+          it is rendered as text.
+          #1456 — and as LOCALIZED text: this used to interpolate the plugin
+          API's English exception sentence into a German prefix, with advice
+          only a plugin author could act on. */}
+      {readiness?.state === 'errored' &&
+      (readiness.error_reason || readiness.error_detail) ? (
+        <ActivationFailureNotice
+          reason={parseActivationErrorReason(readiness.error_reason)}
+          detail={readiness.error_detail}
+        />
       ) : null}
 
       {/* OM-06/07 — installing is not the finish line: a plugin does nothing
@@ -861,7 +937,10 @@ function InstallDrawer({
           </div>
         ) : phase.kind === 'error' && !jobFromPhase ? (
           <div className="min-h-0 flex-1 overflow-y-auto p-8">
-            <InstallErrorBlock message={phase.message} />
+            <InstallErrorBlock
+              message={phase.message}
+              {...(phase.activation ? { activation: phase.activation } : {})}
+            />
           </div>
         ) : (
           <form
@@ -920,7 +999,12 @@ function InstallDrawer({
 
               {phase.kind === 'error' && jobFromPhase ? (
                 <div className="mt-6">
-                  <InstallErrorBlock message={phase.message} />
+                  <InstallErrorBlock
+                    message={phase.message}
+                    {...(phase.activation
+                      ? { activation: phase.activation }
+                      : {})}
+                  />
                 </div>
               ) : null}
             </div>
@@ -955,8 +1039,13 @@ function InstallDrawer({
 
 function InstallErrorBlock({
   message,
+  activation,
 }: {
   message: string;
+  /** #1456 — an activation failure, classified. An install that failed for any
+   *  other reason (a validation refusal, a transport error) still renders its
+   *  own message: those are the API's own codes, not a plugin's exception. */
+  activation?: { reason: ActivationErrorReason | null; detail?: string };
 }): React.ReactElement {
   const t = useTranslations('store.install');
   return (
@@ -964,9 +1053,17 @@ function InstallErrorBlock({
       <div className="text-[11px] uppercase tracking-[0.18em] text-[color:var(--oxblood)]">
         {t('errorKicker')}
       </div>
-      <p className="font-mono-num mt-2 text-sm text-[color:var(--oxblood-ink)]">
-        {message}
-      </p>
+      {activation ? (
+        <ActivationFailureNotice
+          className="mt-2"
+          reason={activation.reason}
+          {...(activation.detail ? { detail: activation.detail } : {})}
+        />
+      ) : (
+        <p className="font-mono-num mt-2 text-sm text-[color:var(--oxblood-ink)]">
+          {message}
+        </p>
+      )}
     </div>
   );
 }

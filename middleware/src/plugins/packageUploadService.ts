@@ -16,6 +16,10 @@ import {
   recordActivationSuccess,
   type InstalledRegistry,
 } from './installedRegistry.js';
+import {
+  classifyActivationError,
+  type ActivationErrorReason,
+} from './activationErrorReason.js';
 import type { PluginCatalog } from './manifestLoader.js';
 import { loadManifestFromPath } from './manifestLoader.js';
 import type { MigrationRunner } from './migrationRunner.js';
@@ -64,6 +68,11 @@ export interface IngestSuccess {
    * every upload that never attempted an activation.
    */
   activation_error?: string;
+  /** #1456 — the classified reason behind `activation_error`, when the throw
+   *  could be classified. The upload UI localizes the code and keeps the
+   *  sentence as the technical detail; absent means "no classification", not
+   *  "no error". */
+  activation_error_reason?: ActivationErrorReason;
 }
 
 export interface IngestFailure {
@@ -545,6 +554,7 @@ export class PackageUploadService {
       // Same bug the install path had in #799 / #825, on the path an operator
       // uses far more often: the update button.
       let activationError: string | undefined;
+      let activationErrorReason: ActivationErrorReason | undefined;
       if (this.deps.onPackageReady && this.shouldReactivate(plugin.id)) {
         try {
           await this.deps.onPackageReady(plugin.id);
@@ -562,7 +572,8 @@ export class PackageUploadService {
           log(
             `[upload] onPackageReady hook failed for ${plugin.id}: ${activationError}`,
           );
-          await this.noteActivationFailure(plugin.id, activationError);
+          activationErrorReason = classifyActivationError(err);
+          await this.noteActivationFailure(plugin.id, activationError, err);
         }
       }
 
@@ -573,6 +584,9 @@ export class PackageUploadService {
         version: plugin.version,
         ...(activationError !== undefined
           ? { activation_error: activationError }
+          : {}),
+        ...(activationErrorReason
+          ? { activation_error_reason: activationErrorReason }
           : {}),
       };
     } finally {
@@ -664,11 +678,21 @@ export class PackageUploadService {
   private async noteActivationFailure(
     pluginId: string,
     message: string,
+    thrown?: unknown,
   ): Promise<void> {
     const registry = this.deps.registry;
     if (!registry) return;
     try {
-      await recordActivationFailure(registry, pluginId, message);
+      // #1456 — the caught value, not just its message: the recorder
+      // classifies it so the store can tell the operator what to do about a
+      // plugin that did not come back up after the update.
+      await recordActivationFailure(
+        registry,
+        pluginId,
+        message,
+        undefined,
+        thrown,
+      );
     } catch (err) {
       this.log(
         `[upload] registry markActivationFailed FAILED for ${pluginId}: ${err instanceof Error ? err.message : String(err)}`,

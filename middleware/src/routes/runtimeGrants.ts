@@ -2,7 +2,7 @@ import type { Request, Response, Router } from 'express';
 
 import type { SqlPermission } from '@omadia/plugin-api';
 
-import type { MissingGrant } from '../api/admin-v1.js';
+import type { ActivationErrorReason, MissingGrant } from '../api/admin-v1.js';
 import { declaredPublicPathsOf, declaredSqlOf, readGrantGap } from '../plugins/grantGap.js';
 import type { PluginSqlGrantStore } from '../platform/pluginSqlGrantStore.js';
 import { LedgerAlreadyOwnedError } from '../platform/pluginSqlGrantStore.js';
@@ -114,6 +114,9 @@ export interface GrantsView {
   readonly orphaned_public_paths: readonly string[];
   readonly last_activation_error: string | null;
   readonly last_activation_error_at: string | null;
+  /** #1456 — classified reason for `last_activation_error`; `null` when the
+   *  failure could not be classified or predates the field. */
+  readonly last_activation_error_reason: ActivationErrorReason | null;
 }
 
 /** `{ code, message }` — the shape every route in this tree answers errors with. */
@@ -180,6 +183,7 @@ export async function buildGrantsView(
     ),
     last_activation_error: entry?.last_activation_error ?? null,
     last_activation_error_at: entry?.last_activation_error_at ?? null,
+    last_activation_error_reason: entry?.last_activation_error_reason ?? null,
   };
 }
 

@@ -8,6 +8,25 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.36.0 — 2026-10-28
+
+Additive. A kernel that classifies an activation failure can name the setup
+field the operator has to fill, instead of forwarding the plugin's own
+exception sentence (#1456).
+
+### Added
+
+- **`MissingSecretError.pluginId` / `.key`** and
+  **`MissingConfigError.pluginId` / `.key`** — the plugin id and the KEY of the
+  missing value, never its value. The kernel classifies an activation throw
+  from the error OBJECT (`plugins/activationErrorReason.ts`), so with these
+  fields the operator-facing copy can say *which field is missing* rather than
+  repeating "plugin 'x' has no secret 'y' in vault" in English.
+
+Both messages are byte-identical to before and both constructors keep their
+`(agentId, key)` signature, so no plugin changes. Mirrors the typed fields
+`ServiceNotDeclaredError` already carried.
+
 ## 1.35.0 — 2026-10-27
 
 Additive. A plugin can declare its own credential check, so an integration

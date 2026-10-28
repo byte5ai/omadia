@@ -6,6 +6,11 @@ import type {
   PluginReadiness,
 } from '../../_lib/storeTypes';
 import { cn } from '../../_lib/cn';
+import {
+  ACTIVATION_ERROR_CODES,
+  parseActivationErrorReason,
+  type ActivationErrorCode,
+} from '../../_lib/activationError';
 
 interface StateBadgeProps {
   state: PluginInstallState;
@@ -57,6 +62,29 @@ const DANGER_STYLE =
 const PILL =
   'inline-flex items-center gap-2 rounded-full border px-3 py-0.5 text-[11px] font-medium uppercase tracking-[0.12em]';
 
+const KNOWN_CODES: ReadonlySet<string> = new Set(ACTIVATION_ERROR_CODES);
+
+/**
+ * #1456 — the badge's hover text for a failed activation.
+ *
+ * It used to be `readiness.error_detail`, the plugin API's exception sentence:
+ * English in a German UI, and unreachable for keyboard, screen-reader and
+ * touch users anyway. It is now the one-line localized summary of the
+ * classified reason. The full explanation is not hidden in a tooltip at all —
+ * it is rendered as text on the plugin page.
+ */
+function erroredTitle(
+  readiness: PluginReadiness,
+  t: (key: string) => string,
+): string {
+  const reason = parseActivationErrorReason(readiness.error_reason);
+  const code: ActivationErrorCode =
+    reason && KNOWN_CODES.has(reason.code)
+      ? (reason.code as ActivationErrorCode)
+      : 'unknown';
+  return t(`${code}.short`);
+}
+
 export function StateBadge({
   state,
   isLegacy,
@@ -65,6 +93,7 @@ export function StateBadge({
   className,
 }: StateBadgeProps): React.ReactElement {
   const t = useTranslations('store.stateBadge');
+  const tError = useTranslations('store.activationError');
   const format = useFormatter();
 
   if (isLegacy) {
@@ -87,7 +116,11 @@ export function StateBadge({
     return (
       <span
         className={cn(PILL, DANGER_STYLE, className)}
-        title={readiness.error_detail ?? undefined}
+        // #1456 — a `title` is user-facing text, so it may not be the plugin
+        // API's English exception sentence. The badge carries the one-line
+        // localized summary of the classified reason; the full explanation
+        // lives on the plugin page, as text.
+        title={erroredTitle(readiness, tError)}
       >
         {t('errored')}
       </span>

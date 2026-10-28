@@ -126,6 +126,11 @@ export function createRegistryInstallRouter(deps: RegistryInstallDeps): Router {
         ...(result.activation_error !== undefined
           ? { activation_error: result.activation_error }
           : {}),
+        // #1456 — same for the update path: without the code the store can
+        // only prefix a German half-sentence onto the plugin's English one.
+        ...(result.activation_error_reason !== undefined
+          ? { activation_error_reason: result.activation_error_reason }
+          : {}),
         // Missing depends_on parents to install first (empty → install target
         // directly). Same shape as the capability-chain wizard consumes.
         chain,

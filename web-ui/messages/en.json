@@ -4223,8 +4223,6 @@
       "installNow": "Install now",
       "unknownError": "Unknown error.",
       "unexpectedJobState": "Unexpected job state: {state}",
-      "activationFailed": "Installed, but the plugin did not start: {message}",
-      "updateActivationFailed": "Updated, but the plugin did not start: {message}",
       "updateAvailable": "Update available",
       "updating": "Updating …",
       "update": "Update",
@@ -4276,6 +4274,53 @@
         "installed_activation_failed": "Installed — activation failed",
         "cancelled": "Cancelled by user",
         "failed": "Failed"
+      }
+    },
+    "activationError": {
+      "technicalDetail": "Technical detail: {raw}",
+      "capability_not_declared": {
+        "short": "This plugin version does not run on this server",
+        "what": "This version of the plugin asks the server for something this server does not hand out, so it stopped before it started serving.",
+        "next": "Nothing here is misconfigured — the version simply does not fit this server. Roll back to the version that worked, or report the plugin to whoever supplies it."
+      },
+      "dependency_unresolved": {
+        "short": "A plugin it depends on is missing",
+        "what": "The plugin needs a capability that no installed plugin currently offers.",
+        "next": "Install the plugin that offers it, then try again — the plugin starts by itself once the capability is there.",
+        "requires": "Waiting for: {requires}"
+      },
+      "provider_conflict": {
+        "short": "Two plugins offer the same capability",
+        "what": "Another installed plugin already offers the same capability, so this one was left switched off to avoid two of them answering.",
+        "next": "Decide which of the two should serve it and uninstall the other.",
+        "conflictsWith": "Currently served by: {plugin}"
+      },
+      "secret_missing": {
+        "short": "A required credential is missing",
+        "what": "A credential the plugin needs is not stored, so it could not connect.",
+        "next": "Open the plugin's setup, fill the field in, and save — the plugin is started again on save.",
+        "field": "Missing field: {field}"
+      },
+      "config_missing": {
+        "short": "A required setting is missing",
+        "what": "A setting the plugin needs has no value, so it could not start.",
+        "next": "Open the plugin's setup, fill the field in, and save — the plugin is started again on save.",
+        "field": "Missing field: {field}"
+      },
+      "permission_not_granted": {
+        "short": "A permission is still unanswered",
+        "what": "The plugin asked for a permission that has not been granted, and it does not start without it.",
+        "next": "Grant it under Permissions on this page, or uninstall the plugin if you do not want to give it."
+      },
+      "target_unreachable": {
+        "short": "The connected system could not be reached",
+        "what": "The system the plugin connects to did not answer, so the plugin stopped on start-up.",
+        "next": "Check whether that system is running and reachable from this server, then try again. Nothing needs changing here if it was a brief outage."
+      },
+      "unknown": {
+        "short": "Start-up failed",
+        "what": "The plugin reported an error while starting and is not running.",
+        "next": "The technical detail below is for whoever supplies the plugin. Try again, and pass the detail on if it keeps happening."
       }
     },
     "auditMode": {
@@ -4370,7 +4415,7 @@
       "inCatalog": "<idTag>{id}</idTag> <versionTag>v{version}</versionTag> is in the catalog. Select and install it below.",
       "sizeLabel": "Size",
       "peersMissing": "⚠ Missing peer deps: {peers} — the agent may fail at runtime.",
-      "activationFailed": "⚠ Uploaded, but the running plugin did not restart: {message}",
+      "notRestarted": "⚠ Uploaded, but the running plugin did not restart:",
       "close": "Close",
       "failedKicker": "Upload failed",
       "reset": "Reset",

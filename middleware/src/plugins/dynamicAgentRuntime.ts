@@ -44,6 +44,7 @@ import {
 import { selectSubAgentHost } from './subAgentHostModel.js';
 import type { BuiltInPackageStore } from './builtInPackageStore.js';
 import type { InstalledRegistry } from './installedRegistry.js';
+import { classifyActivationError } from './activationErrorReason.js';
 import type { JobScheduler } from './jobScheduler.js';
 import type { PluginCatalog, PluginCatalogEntry } from './manifestLoader.js';
 import { composePersonaSection } from './personaCompose.js';
@@ -344,7 +345,15 @@ export class DynamicAgentRuntime {
         const msg = err instanceof Error ? err.message : String(err);
         log(`[dynamic-runtime] activate FAILED for ${id}: ${msg}`);
         try {
-          await this.deps.registry.markActivationFailed(id, msg);
+          await this.deps.registry.markActivationFailed(
+            id,
+            msg,
+            undefined,
+            // #1456 — same classification as every other activation seam, so
+            // a dynamic agent that failed to come up reads the same way in the
+            // store as a tool plugin that did.
+            classifyActivationError(err),
+          );
         } catch (registryErr) {
           // Registry write failure is secondary — log but don't rethrow.
           log(

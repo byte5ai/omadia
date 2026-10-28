@@ -4,12 +4,11 @@ import path from 'node:path';
 import type { AgentId } from '../api/admin-v1.js';
 import {
   blockActivation,
-  CIRCUIT_BREAKER_THRESHOLD,
+  bumpFailure,
   type InstalledAgent,
   type InstalledRegistry,
 } from './installedRegistry.js';
-
-const ERROR_TAIL_MAX = 500;
+import type { ActivationErrorReason } from './activationErrorReason.js';
 
 /**
  * File-backed installed-agents registry. No encryption — entries are
@@ -77,35 +76,40 @@ export class FileInstalledRegistry implements InstalledRegistry {
     id: AgentId,
     error: string,
     unresolvedRequires?: readonly string[],
+    reason?: ActivationErrorReason,
   ): Promise<void> {
     this.ensureLoaded();
     const current = this.agents.get(id);
     if (!current) return;
-    const prevCount = current.activation_failure_count ?? 0;
-    const nextCount = prevCount + 1;
-    const next: InstalledAgent = {
-      ...current,
-      activation_failure_count: nextCount,
-      last_activation_error: error.slice(0, ERROR_TAIL_MAX),
-      last_activation_error_at: new Date().toISOString(),
-    };
-    if (unresolvedRequires && unresolvedRequires.length > 0) {
-      next.unresolved_requires = [...unresolvedRequires];
-    } else {
-      delete next.unresolved_requires;
-    }
-    if (nextCount >= CIRCUIT_BREAKER_THRESHOLD) {
-      next.status = 'errored';
-    }
-    this.agents.set(id, next);
+    // #1456 — shared with the in-memory registry. This used to be a private
+    // copy of the same writes, which is how a new field reaches one backend
+    // and not the other: the operator then sees the reason until the next
+    // boot reads the entry back off disk without it.
+    this.agents.set(
+      id,
+      bumpFailure(
+        current,
+        error,
+        new Date().toISOString(),
+        unresolvedRequires,
+        reason,
+      ),
+    );
     await this.persist();
   }
 
-  async markActivationBlocked(id: AgentId, error: string): Promise<void> {
+  async markActivationBlocked(
+    id: AgentId,
+    error: string,
+    reason?: ActivationErrorReason,
+  ): Promise<void> {
     this.ensureLoaded();
     const current = this.agents.get(id);
     if (!current) return;
-    this.agents.set(id, blockActivation(current, error, new Date().toISOString()));
+    this.agents.set(
+      id,
+      blockActivation(current, error, new Date().toISOString(), reason),
+    );
     await this.persist();
   }
 
@@ -125,6 +129,7 @@ export class FileInstalledRegistry implements InstalledRegistry {
     delete next.last_activation_error;
     delete next.last_activation_error_at;
     delete next.unresolved_requires;
+    delete next.last_activation_error_reason;
     this.agents.set(id, next);
     await this.persist();
   }
@@ -138,13 +143,15 @@ export class FileInstalledRegistry implements InstalledRegistry {
       current.activation_failure_count !== undefined ||
       current.last_activation_error !== undefined ||
       current.last_activation_error_at !== undefined ||
-      current.unresolved_requires !== undefined;
+      current.unresolved_requires !== undefined ||
+      current.last_activation_error_reason !== undefined;
     if (!wasErrored && !hadAnyErrorField) return;
     const next: InstalledAgent = { ...current };
     delete next.activation_failure_count;
     delete next.last_activation_error;
     delete next.last_activation_error_at;
     delete next.unresolved_requires;
+    delete next.last_activation_error_reason;
     if (wasErrored) next.status = 'active';
     this.agents.set(id, next);
     await this.persist();

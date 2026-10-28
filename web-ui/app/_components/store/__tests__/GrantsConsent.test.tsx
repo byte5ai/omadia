@@ -151,9 +151,19 @@ describe('#470 C16 — install wizard permissions step', () => {
       expect(screen.getByTestId('permissions-result')).toBeTruthy();
     });
     expect(screen.getByText(en.store.grants.state.errored)).toBeTruthy();
-    // The server's own sentence rides along as the detail.
+    // #1456 — the view carries no classified reason here (an older middleware,
+    // or a throw that could not be classified), so the operator gets the
+    // localized fallback copy …
+    expect(screen.getByText(en.store.activationError.unknown.what)).toBeTruthy();
+    // … and the server's own sentence rides along as the TECHNICAL DETAIL,
+    // never as the message itself.
     expect(
-      screen.getByText('connect ECONNREFUSED 127.0.0.1:5432'),
+      screen.getByText(
+        en.store.activationError.technicalDetail.replace(
+          '{raw}',
+          'connect ECONNREFUSED 127.0.0.1:5432',
+        ),
+      ),
     ).toBeTruthy();
   });
 

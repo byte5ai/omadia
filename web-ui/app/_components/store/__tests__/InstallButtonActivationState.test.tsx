@@ -1,6 +1,7 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import de from '../../../../messages/de.json';
 import en from '../../../../messages/en.json';
 import { renderWithIntl } from '../../../_lib/test-utils';
 import { InstallButton } from '../InstallButton';
@@ -164,6 +165,97 @@ void describe('#825 — the wizard handles the new errored job state', () => {
     });
     // The lie #825 removed must not come back through the UI.
     expect(screen.queryByText(new RegExp(en.store.install.success, 'i'))).toBeNull();
+  });
+
+  void it('explains the activation failure in the UI language (#1456)', async () => {
+    // The drawer used to interpolate the plugin API's English sentence into a
+    // German prefix. The classified code now carries the copy; the sentence
+    // stays as the technical detail.
+    mockConfigure.mockResolvedValue({
+      job: job({
+        state: 'errored',
+        activation_state: {
+          state: 'errored',
+          ok: false,
+          error: "plugin '@test/x' has no secret 'odoo_api_key' in vault",
+          error_reason: { code: 'secret_missing', field: 'odoo_api_key' },
+          missing: [],
+        },
+      }),
+      agent_id: PLUGIN,
+    });
+    mockGrants.mockResolvedValue(
+      grantsView({
+        declared: { sql: null, public_paths: [], optional_requires: [] },
+        missing: [],
+      }),
+    );
+
+    renderWithIntl(
+      <InstallButton
+        pluginId={PLUGIN}
+        pluginName="Activation State Fixture"
+        installState="available"
+        enabled
+        blockingReasons={[]}
+      />,
+      { locale: 'de' },
+    );
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: new RegExp(de.store.install.installAria.replace('{name}', '.*'), 'i'),
+      }),
+    );
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: new RegExp(de.store.install.confirmInstall, 'i'),
+      }),
+    );
+
+    const copy = de.store.activationError.secret_missing;
+    await waitFor(() => {
+      expect(screen.getByText(copy.what)).toBeTruthy();
+    });
+    expect(screen.getByText(copy.next)).toBeTruthy();
+    expect(
+      screen.getByText(
+        de.store.activationError.technicalDetail.replace(
+          '{raw}',
+          "plugin '@test/x' has no secret 'odoo_api_key' in vault",
+        ),
+      ),
+    ).toBeTruthy();
+  });
+
+  void it('still names a failure the server could not describe at all (#1456)', async () => {
+    // `buildActivationState` answers `state:'inactive', ok:false, error:null`
+    // for a registry entry recorded `inactive`, and the job is then `errored`.
+    // There is no reason AND no sentence — the drawer must still say something.
+    mockConfigure.mockResolvedValue({
+      job: job({
+        state: 'errored',
+        activation_state: {
+          state: 'inactive',
+          ok: false,
+          error: null,
+          missing: [],
+        },
+      }),
+      agent_id: PLUGIN,
+    });
+    mockGrants.mockResolvedValue(
+      grantsView({
+        declared: { sql: null, public_paths: [], optional_requires: [] },
+        missing: [],
+      }),
+    );
+
+    renderButton();
+    await installAndSubmit();
+
+    await waitFor(() => {
+      expect(screen.getByText(en.store.install.unknownError)).toBeTruthy();
+    });
   });
 
   void it('does not show the success toast for an errored job with nothing to grant', async () => {

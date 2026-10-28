@@ -4223,8 +4223,6 @@
       "installNow": "Jetzt installieren",
       "unknownError": "Unbekannter Fehler.",
       "unexpectedJobState": "Unerwarteter Job-Zustand: {state}",
-      "activationFailed": "Installiert, aber das Plugin ist nicht gestartet: {message}",
-      "updateActivationFailed": "Aktualisiert, aber das Plugin ist nicht gestartet: {message}",
       "updateAvailable": "Update verfügbar",
       "updating": "Aktualisiere …",
       "update": "Aktualisieren",
@@ -4276,6 +4274,53 @@
         "installed_activation_failed": "Installiert — Aktivierung fehlgeschlagen",
         "cancelled": "Vom Nutzer abgebrochen",
         "failed": "Fehlgeschlagen"
+      }
+    },
+    "activationError": {
+      "technicalDetail": "Technisches Detail: {raw}",
+      "capability_not_declared": {
+        "short": "Diese Plugin-Version passt nicht zu diesem Server",
+        "what": "Diese Version des Plugins verlangt vom Server etwas, das dieser Server nicht herausgibt. Deshalb hat es gestoppt, bevor es seine Arbeit aufnehmen konnte.",
+        "next": "Hier ist nichts falsch eingestellt — die Version passt einfach nicht zu diesem Server. Wechsle zurück auf die Version, die funktioniert hat, oder melde das Plugin bei der Stelle, die es bereitstellt."
+      },
+      "dependency_unresolved": {
+        "short": "Ein Plugin, das benötigt wird, fehlt",
+        "what": "Das Plugin braucht eine Fähigkeit, die derzeit kein installiertes Plugin anbietet.",
+        "next": "Installiere das Plugin, das diese Fähigkeit anbietet, und versuche es dann erneut — das Plugin startet von selbst, sobald die Fähigkeit da ist.",
+        "requires": "Wartet auf: {requires}"
+      },
+      "provider_conflict": {
+        "short": "Zwei Plugins bieten dieselbe Fähigkeit",
+        "what": "Ein anderes installiertes Plugin bietet dieselbe Fähigkeit schon an. Dieses hier blieb deshalb ausgeschaltet, damit nicht zwei gleichzeitig antworten.",
+        "next": "Entscheide, welches der beiden zuständig sein soll, und deinstalliere das andere.",
+        "conflictsWith": "Zuständig ist derzeit: {plugin}"
+      },
+      "secret_missing": {
+        "short": "Eine benötigte Zugangsdaten-Angabe fehlt",
+        "what": "Eine Zugangsdaten-Angabe, die das Plugin braucht, ist nicht gespeichert. Deshalb konnte es keine Verbindung aufbauen.",
+        "next": "Öffne die Einrichtung des Plugins, trage das Feld nach und speichere — beim Speichern wird das Plugin erneut gestartet.",
+        "field": "Fehlendes Feld: {field}"
+      },
+      "config_missing": {
+        "short": "Eine benötigte Einstellung fehlt",
+        "what": "Eine Einstellung, die das Plugin braucht, hat keinen Wert. Deshalb konnte es nicht starten.",
+        "next": "Öffne die Einrichtung des Plugins, trage das Feld nach und speichere — beim Speichern wird das Plugin erneut gestartet.",
+        "field": "Fehlendes Feld: {field}"
+      },
+      "permission_not_granted": {
+        "short": "Eine Berechtigung ist noch offen",
+        "what": "Das Plugin hat eine Berechtigung angefragt, die nicht erteilt ist. Ohne sie startet es nicht.",
+        "next": "Erteile sie auf dieser Seite unter „Berechtigungen“ — oder deinstalliere das Plugin, wenn du sie nicht geben willst."
+      },
+      "target_unreachable": {
+        "short": "Das angebundene System war nicht erreichbar",
+        "what": "Das System, mit dem sich das Plugin verbindet, hat nicht geantwortet. Deshalb hat das Plugin beim Start aufgegeben.",
+        "next": "Prüfe, ob dieses System läuft und von diesem Server aus erreichbar ist, und versuche es dann erneut. War es nur eine kurze Störung, ist hier nichts zu ändern."
+      },
+      "unknown": {
+        "short": "Start fehlgeschlagen",
+        "what": "Das Plugin hat beim Start einen Fehler gemeldet und läuft nicht.",
+        "next": "Das technische Detail unten richtet sich an die Stelle, die das Plugin bereitstellt. Versuche es erneut und gib das Detail weiter, wenn es wieder passiert."
       }
     },
     "auditMode": {
@@ -4370,7 +4415,7 @@
       "inCatalog": "<idTag>{id}</idTag> <versionTag>v{version}</versionTag> ist im Katalog. Unten wählen und installieren.",
       "sizeLabel": "Größe",
       "peersMissing": "⚠ Fehlende Peer-Deps: {peers} — Agent kann zur Laufzeit fehlschlagen.",
-      "activationFailed": "⚠ Hochgeladen, aber das laufende Plugin ist nicht neu gestartet: {message}",
+      "notRestarted": "⚠ Hochgeladen, aber das laufende Plugin ist nicht neu gestartet:",
       "close": "Schließen",
       "failedKicker": "Upload fehlgeschlagen",
       "reset": "Zurücksetzen",

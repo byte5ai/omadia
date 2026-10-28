@@ -7,6 +7,8 @@ import path from 'node:path';
 
 import yazl from 'yazl';
 
+import { ServiceNotDeclaredError } from '@omadia/plugin-api';
+
 import { PackageUploadService } from '../src/plugins/packageUploadService.js';
 import { InMemoryInstalledRegistry } from '../src/plugins/installedRegistry.js';
 import type { PluginCatalog } from '../src/plugins/manifestLoader.js';
@@ -354,6 +356,28 @@ describe('PackageUploadService ingest × activation failure (issue #1452)', () =
       (result as { activation_error?: string }).activation_error,
       entry?.last_activation_error,
       'the caller is told the same thing the registry was told',
+    );
+  });
+
+  /** #1456 — the sentence is the plugin author's; the operator needs a code. */
+  it('classifies the throw and reports the reason to the caller', async () => {
+    const registry = await activeRegistry();
+    const result = await ingest(
+      service(registry, async () => {
+        throw new ServiceNotDeclaredError(PLUGIN_ID, 'entityRefBus');
+      }),
+    );
+
+    assert.equal(result.ok, true);
+    const expected = {
+      code: 'capability_not_declared',
+      capability: 'entityRefBus',
+    };
+    assert.deepEqual(registry.get(PLUGIN_ID)?.last_activation_error_reason, expected);
+    assert.deepEqual(
+      (result as { activation_error_reason?: unknown }).activation_error_reason,
+      expected,
+      'the caller is told the same reason the registry was told',
     );
   });
 

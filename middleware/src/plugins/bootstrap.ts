@@ -15,6 +15,7 @@ import {
   findCapabilityProvidersInCatalog,
 } from './capabilityResolver.js';
 import type { InstalledAgent, InstalledRegistry } from './installedRegistry.js';
+import { TRANSIENT_UNREACHABLE_RE } from './activationErrorReason.js';
 import type { PluginCatalog } from './manifestLoader.js';
 import type { SecretVault } from '../secrets/vault.js';
 import type { UploadedPackageStore } from './uploadedPackageStore.js';
@@ -226,8 +227,13 @@ async function maybeMtimeReason(
 // reset and re-attempted once per boot, re-tripping the circuit breaker —
 // no worse than the pre-existing crash-loop, and it recovers the instant the
 // dependency comes back.
-const TRANSIENT_ACTIVATION_ERROR_RE =
-  /ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|getaddrinfo|Connection terminated|connection refused|the database system is starting up|timed out/i;
+// #1456 — one list, imported, not a second copy: the classifier answers "tell
+// the operator the target system was unreachable" from the same fingerprints
+// this function answers "retry it next boot" from. While they were two lists
+// they disagreed — a plugin whose Postgres was still booting ("the database
+// system is starting up") was retried here and reported as an unclassified
+// failure to the operator, i.e. told to forward it to the plugin's author.
+const TRANSIENT_ACTIVATION_ERROR_RE = TRANSIENT_UNREACHABLE_RE;
 
 function maybeTransientErrorReason(entry: InstalledAgent): string | null {
   const err = entry.last_activation_error;

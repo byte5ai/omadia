@@ -218,6 +218,25 @@ export type PluginReadinessState =
   | 'ready'
   | 'errored';
 
+/** #1456 — what the OPERATOR can do about a failed activation, as classified
+ *  by the middleware (`plugins/activationErrorReason.ts`). Mirror of the
+ *  middleware type; narrowed at the boundary by
+ *  `parseActivationErrorReason` (`_lib/activationError.ts`), because a
+ *  middleware older than the field sends none and a newer one may send a code
+ *  this build has no copy for. */
+export interface ActivationErrorReason {
+  code: string;
+  /** Capability name (`capability_not_declared`, `permission_not_granted`,
+   *  `provider_conflict`). */
+  capability?: string;
+  /** The plugin that won a `provider_conflict`. */
+  conflicting_plugin_id?: string;
+  /** Setup-field key (`secret_missing`, `config_missing`). */
+  field?: string;
+  /** `<name>@<major>` entries (`dependency_unresolved`). */
+  requires?: string[];
+}
+
 export interface PluginReadiness {
   state: PluginReadinessState;
   /** Keys of required setup fields with no stored value. */
@@ -229,6 +248,11 @@ export interface PluginReadiness {
   verified_at: string | null;
   /** Tail of the last activation error; only for `errored`. */
   error_detail?: string;
+  /** #1456 — the localizable half of `error_detail`. Absent when the failure
+   *  was recorded by a build without the classification, which is why
+   *  `error_detail` is still rendered (as a technical detail, never as the
+   *  headline). */
+  error_reason?: ActivationErrorReason;
 }
 
 export interface Plugin {
@@ -417,6 +441,10 @@ export interface InstallActivationState {
   state: 'active' | 'inactive' | 'errored';
   ok: boolean;
   error: string | null;
+  /** #1456 — classified reason behind `error`, when the throw could be
+   *  classified. The drawer localizes the code and keeps `error` as the
+   *  technical detail. */
+  error_reason?: ActivationErrorReason;
   missing: InstallMissingGrant[];
 }
 
@@ -567,6 +595,10 @@ export interface UploadPackageResponse {
    *  activation (plugin not installed-and-running), and on an older
    *  middleware. */
   activation_error?: string;
+  /** #1456 — the classified reason behind `activation_error`. Narrow it with
+   *  `parseActivationErrorReason`; absent on an older middleware and on a
+   *  throw that could not be classified. */
+  activation_error_reason?: unknown;
 }
 
 export interface ListUploadedPackagesResponse {

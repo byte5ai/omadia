@@ -143,11 +143,17 @@ export async function computeReadiness(
 
   if (entry.status === 'errored') {
     const detail = entry.last_activation_error;
+    // #1456 — the reason travels WITH the sentence, never instead of it: the
+    // code carries the localizable copy, the sentence stays available as the
+    // technical detail behind it (and is all an entry written before the code
+    // existed has).
+    const reason = entry.last_activation_error_reason;
     return {
       state: 'errored',
       missing_fields: [],
       verified_at: null,
       ...(detail ? { error_detail: detail } : {}),
+      ...(reason ? { error_reason: reason } : {}),
     };
   }
 

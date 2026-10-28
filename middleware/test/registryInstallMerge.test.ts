@@ -591,11 +591,36 @@ describe('registry install router (C2)', () => {
     );
   });
 
+  /**
+   * #1456 — the sentence alone is the bug: it is the plugin API's English text,
+   * addressed to a plugin author. The classified reason has to travel with it
+   * or the store can only render its generic fallback copy.
+   */
+  it('passes the classified activation reason through as well', async () => {
+    reset();
+    ingestResult = {
+      ...(ingestResult as Extract<IngestResult, { ok: true }>),
+      activation_error: "called ctx.services.get('entityRefBus') without declaring it",
+      activation_error_reason: {
+        code: 'capability_not_declared',
+        capability: 'entityRefBus',
+      },
+    };
+    const res = await post(encodeURIComponent('@omadia/plugin-office'));
+    assert.equal(res.status, 201);
+    const body = (await res.json()) as Record<string, unknown>;
+    assert.deepEqual(body['activation_error_reason'], {
+      code: 'capability_not_declared',
+      capability: 'entityRefBus',
+    });
+  });
+
   it('omits activation_error when the plugin came up', async () => {
     reset();
     const res = await post(encodeURIComponent('@omadia/plugin-office'));
     const body = (await res.json()) as Record<string, unknown>;
     assert.equal('activation_error' in body, false);
+    assert.equal('activation_error_reason' in body, false);
   });
 
   it('422 when the ingest pipeline rejects the package', async () => {

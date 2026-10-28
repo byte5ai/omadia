@@ -13,6 +13,14 @@
 // actually compile against.
 import type { SqlPermission } from '@omadia/plugin-api';
 
+// #1456 — the activation-failure classification. A leaf module (it imports
+// nothing), so the API types can name it without the api → plugins direction
+// becoming a cycle.
+import type { ActivationErrorReason } from '../plugins/activationErrorReason.js';
+
+export type { ActivationErrorReason } from '../plugins/activationErrorReason.js';
+export type { ActivationErrorCode } from '../plugins/activationErrorReason.js';
+
 export type { SqlPermission };
 
 export type ISO8601 = string;
@@ -502,6 +510,13 @@ export interface PluginReadiness {
   verified_at: string | null;
   /** Tail of the last activation error. Only for `state === 'errored'`. */
   error_detail?: string;
+  /** #1456 — the classified, localizable half of `error_detail`: a code naming
+   *  what the OPERATOR can do, plus the arguments the sentence needs. Absent
+   *  when the failure predates the classification (a registry entry written by
+   *  an older build), which is why `error_detail` is still carried: a client
+   *  with no code falls back to showing the raw sentence as a technical detail,
+   *  never as the headline. */
+  error_reason?: ActivationErrorReason;
 }
 
 /**
@@ -905,6 +920,10 @@ export interface InstallActivationState {
   /** `last_activation_error` from the registry — the activation hook's message.
    *  `null` on success. */
   error: string | null;
+  /** #1456 — the classified reason behind `error`, when the failure could be
+   *  classified. The drawer renders localized copy from the code and keeps
+   *  `error` as the technical detail. */
+  error_reason?: ActivationErrorReason;
   /** Declared-but-not-granted permissions, derived exactly as
    *  `GET /api/v1/admin/runtime/installed/:id/grants` derives its `missing[]`
    *  (literally the same function — `plugins/grantGap.ts`). Non-empty here is

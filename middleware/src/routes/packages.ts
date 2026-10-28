@@ -117,6 +117,11 @@ export function createPackagesRouter(deps: PackagesRouterDeps): Router {
         ...(result.activation_error !== undefined
           ? { activation_error: result.activation_error }
           : {}),
+        // #1456 — the classified reason travels with the sentence, or the
+        // upload row can only render the generic fallback copy.
+        ...(result.activation_error_reason !== undefined
+          ? { activation_error_reason: result.activation_error_reason }
+          : {}),
       });
     },
   );

@@ -11,6 +11,10 @@
  */
 
 import type { AgentId, ISO8601, PluginInstallOrigin } from '../api/admin-v1.js';
+import {
+  classifyActivationError,
+  type ActivationErrorReason,
+} from './activationErrorReason.js';
 
 /**
  * #1089 — WHO put this entry in the registry. Re-exported from the API type so
@@ -56,6 +60,14 @@ export interface InstalledAgent {
   last_activation_error?: string;
   /** ISO8601 of the last activation failure. */
   last_activation_error_at?: ISO8601;
+  /** #1456 — the classified reason for `last_activation_error`: a code plus the
+   *  arguments a localized sentence needs (see `activationErrorReason.ts`).
+   *  Written by the seam that caught the throw, because only there does the
+   *  error OBJECT still exist — by the time the registry sees a string the
+   *  classification is gone. Optional and absent from entries written before
+   *  this field existed, so every reader must fall back to the raw sentence as
+   *  a technical detail rather than losing the error. */
+  last_activation_error_reason?: ActivationErrorReason;
   /** OM-16 — ISO8601 of the last SUCCESSFUL activation. Written by
    *  `markActivationSucceeded`; surfaced through `Plugin.readiness.verified_at`
    *  so the store can say "Aktiv · geprüft <time>" instead of an unqualified
@@ -91,11 +103,16 @@ export interface InstalledRegistry {
    *  status to 'errored' when the threshold is reached. No-op if the agent
    *  is not in the registry. The optional `unresolved_requires` list is
    *  persisted alongside the error so `bootstrap.retryErroredPlugins` can
-   *  re-check whether the chain is now resolvable on the next boot. */
+   *  re-check whether the chain is now resolvable on the next boot. The
+   *  optional `reason` (#1456) is the classified, localizable half of the same
+   *  failure; an omitted reason drops a previously stored one, exactly as an
+   *  omitted requires-list does — a stale reason over a fresh failure would be
+   *  a worse lie than no reason at all. */
   markActivationFailed(
     id: AgentId,
     error: string,
     unresolvedRequires?: readonly string[],
+    reason?: ActivationErrorReason,
   ): Promise<void>;
   /** Record a deterministic configuration block: immediately sets 'errored',
    *  stores the bounded error and timestamp, and clears unresolved_requires.
@@ -105,7 +122,11 @@ export interface InstalledRegistry {
    *  OM-87 uses a distinct operation because a non-retryable conflict is not
    *  a failed activation attempt. Keeping markActivationFailed unchanged also
    *  preserves every existing two- and three-argument caller's retry policy. */
-  markActivationBlocked(id: AgentId, error: string): Promise<void>;
+  markActivationBlocked(
+    id: AgentId,
+    error: string,
+    reason?: ActivationErrorReason,
+  ): Promise<void>;
   /** Record a successful activation. Clears failure count + last error +
    *  unresolved_requires. */
   markActivationSucceeded(id: AgentId): Promise<void>;
@@ -131,11 +152,15 @@ export interface InstalledRegistry {
   ): Promise<void>;
 }
 
-function bumpFailure(
+/** Exported so `FileInstalledRegistry` records a counted failure through the
+ *  same function rather than its own copy of these writes — the two drifting
+ *  is how a field lands in memory and never on disk. */
+export function bumpFailure(
   current: InstalledAgent,
   error: string,
   nowIso: string,
   unresolvedRequires?: readonly string[],
+  reason?: ActivationErrorReason,
 ): InstalledAgent {
   const prevCount = current.activation_failure_count ?? 0;
   const nextCount = prevCount + 1;
@@ -150,6 +175,11 @@ function bumpFailure(
   } else {
     delete next.unresolved_requires;
   }
+  if (reason) {
+    next.last_activation_error_reason = reason;
+  } else {
+    delete next.last_activation_error_reason;
+  }
   if (nextCount >= CIRCUIT_BREAKER_THRESHOLD) {
     next.status = 'errored';
   }
@@ -161,6 +191,7 @@ export function blockActivation(
   current: InstalledAgent,
   error: string,
   nowIso: string,
+  reason?: ActivationErrorReason,
 ): InstalledAgent {
   const next: InstalledAgent = {
     ...current,
@@ -175,6 +206,11 @@ export function blockActivation(
     last_activation_error: error.slice(0, ERROR_TAIL_MAX),
     last_activation_error_at: nowIso,
   };
+  if (reason) {
+    next.last_activation_error_reason = reason;
+  } else {
+    delete next.last_activation_error_reason;
+  }
   // A provided capability must never become a re-checkable dependency,
   // including a stale requires-list left by a previous activation attempt.
   delete next.unresolved_requires;
@@ -186,7 +222,8 @@ function clearFailure(current: InstalledAgent): InstalledAgent {
     !current.activation_failure_count &&
     !current.last_activation_error &&
     !current.last_activation_error_at &&
-    !current.unresolved_requires
+    !current.unresolved_requires &&
+    !current.last_activation_error_reason
   ) {
     return current;
   }
@@ -195,6 +232,7 @@ function clearFailure(current: InstalledAgent): InstalledAgent {
   delete next.last_activation_error;
   delete next.last_activation_error_at;
   delete next.unresolved_requires;
+  delete next.last_activation_error_reason;
   return next;
 }
 
@@ -234,9 +272,18 @@ export async function recordActivationFailure(
   registry: InstalledRegistry,
   id: AgentId,
   error: string,
+  reason?: ActivationErrorReason,
+  thrown?: unknown,
 ): Promise<void> {
   const pending = registry.get(id)?.unresolved_requires;
-  await registry.markActivationFailed(id, error, pending);
+  // #1456 — `thrown` is the caught value; classifying it HERE keeps every
+  // activation seam from repeating the call, and keeps the classification next
+  // to the only two writes that record a failure. A caller that has already
+  // classified (the capability resolver, which never had an exception) passes
+  // `reason` instead.
+  const classified =
+    reason ?? (thrown === undefined ? undefined : classifyActivationError(thrown));
+  await registry.markActivationFailed(id, error, pending, classified);
   const entry = registry.get(id);
   if (entry && entry.status === 'active') {
     await registry.register({ ...entry, status: 'errored' });
@@ -295,19 +342,33 @@ export class InMemoryInstalledRegistry implements InstalledRegistry {
     id: AgentId,
     error: string,
     unresolvedRequires?: readonly string[],
+    reason?: ActivationErrorReason,
   ): Promise<void> {
     const current = this.agents.get(id);
     if (!current) return;
     this.agents.set(
       id,
-      bumpFailure(current, error, new Date().toISOString(), unresolvedRequires),
+      bumpFailure(
+        current,
+        error,
+        new Date().toISOString(),
+        unresolvedRequires,
+        reason,
+      ),
     );
   }
 
-  async markActivationBlocked(id: AgentId, error: string): Promise<void> {
+  async markActivationBlocked(
+    id: AgentId,
+    error: string,
+    reason?: ActivationErrorReason,
+  ): Promise<void> {
     const current = this.agents.get(id);
     if (!current) return;
-    this.agents.set(id, blockActivation(current, error, new Date().toISOString()));
+    this.agents.set(
+      id,
+      blockActivation(current, error, new Date().toISOString(), reason),
+    );
   }
 
   async markActivationSucceeded(id: AgentId): Promise<void> {

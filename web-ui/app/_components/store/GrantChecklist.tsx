@@ -19,6 +19,8 @@ import { Database, Globe, Puzzle } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 
 import type { PluginGrantsView } from '../../_lib/api';
+import { parseActivationErrorReason } from '../../_lib/activationError';
+import { ActivationFailureNotice } from './ActivationFailureNotice';
 
 export interface GrantSelection {
   /** Undefined when the manifest declares no `permissions.sql` — there is
@@ -212,13 +214,19 @@ export function GrantState({
   return (
     <div className="flex flex-col gap-1 text-[12px]">
       <span className={tone}>{t(`state.${view.state}`)}</span>
-      {view.state !== 'active' && view.last_activation_error ? (
-        // The middleware's own sentence, which since C16 names the missing
-        // grant AND where to fix it. Secondary, never the headline — the
-        // headline is the localized state line above.
-        <span className="text-[color:var(--fg-muted)]">
-          {view.last_activation_error}
-        </span>
+      {view.state !== 'active' &&
+      (view.last_activation_error || view.last_activation_error_reason) ? (
+        // #1456 — was the middleware's own sentence, rendered as-is: English
+        // in a German UI and addressed to a plugin author. Now the localized
+        // explanation of the classified reason, with that sentence kept behind
+        // it as the technical detail. Still secondary — the headline is the
+        // state line above.
+        <ActivationFailureNotice
+          reason={parseActivationErrorReason(view.last_activation_error_reason)}
+          {...(view.last_activation_error
+            ? { detail: view.last_activation_error }
+            : {})}
+        />
       ) : null}
     </div>
   );

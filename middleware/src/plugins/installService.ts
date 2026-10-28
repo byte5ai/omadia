@@ -495,7 +495,17 @@ export class InstallService {
           // reason via `markActivationFailed`, then the status explicitly,
           // because `CIRCUIT_BREAKER_THRESHOLD` is 3 and an install-time
           // failure is one definitive event, not the first of three strikes.
-          await recordActivationFailure(this.deps.registry, job.plugin_id, message);
+          // #1456 — the exception OBJECT travels into the recorder, which
+          // classifies it. The message alone cannot be classified afterwards,
+          // and the message alone is what made this failure unreadable for an
+          // operator in the first place.
+          await recordActivationFailure(
+            this.deps.registry,
+            job.plugin_id,
+            message,
+            undefined,
+            err,
+          );
         }
       }
 
@@ -613,12 +623,17 @@ export class InstallService {
       );
     }
 
+    const reason = entry?.last_activation_error_reason;
     return {
       state,
       ok: state === 'active',
       // Prefer what the registry recorded (it is what the grants panel shows);
       // fall back to the throw we saw, for registries that record nothing.
       error: entry?.last_activation_error ?? hookError ?? null,
+      // #1456 — only ever from the registry: the reason is written by the same
+      // seam that recorded the failure, so a registry that recorded nothing has
+      // no reason to report either, and the client falls back to the sentence.
+      ...(reason ? { error_reason: reason } : {}),
       missing,
     };
   }
@@ -703,7 +718,13 @@ export class InstallService {
         `[install] reactivate.onInstalled hook failed for ${agentId}:`,
         message,
       );
-      await recordActivationFailure(this.deps.registry, agentId, message);
+      await recordActivationFailure(
+        this.deps.registry,
+        agentId,
+        message,
+        undefined,
+        err,
+      );
       await this.refreshInstalledJobs(agentId, message);
       return this.deps.registry.get(agentId)?.status;
     }

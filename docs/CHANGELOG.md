@@ -36,6 +36,65 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — a failed plugin activation is now explained to the operator, in their language (#1456)
+
+2026-10-28. An activation failure was recorded as free text only: the plugin
+API's own `err.message`. Those sentences are written for plugin authors ("add
+'entityRefBus@<major>' to the manifest's `requires:` list"), they are English
+in both UI languages, and the one thing an operator needs — what THEY can do —
+was not in them. Only the prefix came from the catalog, so the German UI read
+"Installiert, aber das Plugin ist nicht gestartet:" and then continued in
+English with advice about a manifest the reader does not have.
+
+The kernel now **classifies** the throw into a closed set of codes, one per
+operator action (`middleware/src/plugins/activationErrorReason.ts`):
+`capability_not_declared` (this plugin version does not run on this core — roll
+back or report it), `dependency_unresolved`, `provider_conflict`,
+`secret_missing`, `config_missing`, `permission_not_granted`,
+`target_unreachable`, `unknown`. Classification reads the error OBJECT (`name`
+plus its typed fields), never the message — the policy `toolErrorNotice.ts`
+already applies to exception text; the single exception is a word-boundary
+search for an errno TOKEN (`ECONNREFUSED`, …) in the message, because a
+rethrowing wrapper loses `err.code` and `bootstrap.retryErroredPlugins` matches
+the same fingerprints over the same text to decide whether to retry.
+
+`MissingSecretError` / `MissingConfigError` gained `pluginId` + `key` fields
+(the KEY, never a value) so the copy can name the field to fill.
+
+Recorded and projected end to end: `InstalledAgent.last_activation_error_reason`
+(persisted by both registry backends — `FileInstalledRegistry` now shares
+`bumpFailure` instead of keeping its own copy of the failure writes),
+`readiness.error_reason`, `InstallActivationState.error_reason`,
+`IngestSuccess.activation_error_reason`, and `last_activation_error_reason` on
+`GET /runtime/installed`, `GET /runtime/installed/:id` and the grants view. All
+five activation seams classify: install, reactivate, ZIP upload, the tool and
+dynamic-agent boot loops, and the channel registry. The raw sentence is still
+stored and still sent — it is all a failure recorded by an older build has, and
+it is what an operator forwards to whoever supplies the plugin.
+
+The two ZIP-upload responses carry it too (`POST /install/packages/upload`,
+`POST /install/registry/:id`), so the upload row and the in-place-update row
+read the code instead of prefixing German onto the plugin's English sentence —
+`store.install.updateActivationFailed`, `store.install.activationFailed` and
+`store.upload.activationFailed` are gone with it.
+
+`bootstrap.retryErroredPlugins` now imports its transient-failure fingerprints
+from the classifier (`TRANSIENT_UNREACHABLE_RE`) instead of keeping a second
+list. While they were two lists they disagreed: a plugin whose Postgres was
+still booting ("the database system is starting up") was retried as transient
+and reported to the operator as an unclassified failure, i.e. as something to
+forward to the plugin's author.
+
+In the web UI the new `ActivationFailureNotice` renders a localized `what` +
+`next` line keyed on the code (plus the field, the waited-for capabilities, or
+the conflicting plugin), with the sentence demoted to "Technisches Detail:
+{raw}" — the shape the Teams-identity error panel already uses. Wired into the
+install drawer, the plugin page, the grants checklist and the ZIP-upload row;
+the store badge's `title` is now the code's one-line summary instead of the
+English exception. An unknown or absent code degrades to the `unknown` copy
+(`parseActivationErrorReason`), so a middleware older or newer than the UI
+never leaves an operator with an empty red box.
+
 ### Fixed — an integration with a refused API key no longer shows "Active · configured" (#1453)
 
 2026-10-27. Activation never checked credentials: `activate()` builds a client

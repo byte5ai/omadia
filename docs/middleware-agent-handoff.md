@@ -496,6 +496,71 @@ eigenen Repos (`byte5ai/omadia-integration-odoo`,
 `byte5ai/omadia-integration-confluence`). Bis dahin ist der Kernel-Pfad da und
 inert.
 
+### Aktivierungsfehler: Code statt Entwickler-Satz (#1456)
+
+Ein fehlgeschlagener Activate wurde nur als Freitext festgehalten — `err.message`
+aus der Plugin-API. Diese Sätze sind **für Plugin-Autoren** geschrieben ("add
+'entityRefBus@<major>' to the manifest's `requires:` list"), englisch in beiden
+UI-Sprachen, und das, was eine Betreiberin braucht (*was kann ich tun?*), steht
+nicht darin. Nur das Präfix kam aus dem Katalog, also las die deutsche UI
+"Installiert, aber das Plugin ist nicht gestartet:" und danach englisch weiter.
+
+- **Klassifikation:** `plugins/activationErrorReason.ts` ordnet den Throw einem
+  geschlossenen Code-Set zu — ein Code pro **Betreiber-Aktion**, nicht pro
+  Exception-Klasse: `capability_not_declared` (diese Plugin-Version passt nicht
+  zu diesem Core — zurückrollen oder melden), `dependency_unresolved`,
+  `provider_conflict`, `secret_missing`, `config_missing`,
+  `permission_not_granted`, `target_unreachable`, `unknown`.
+  Gelesen wird das Error-**Objekt** (`name` + typisierte Felder), nie die
+  Message — dieselbe Politik, die `toolErrorNotice.ts` für Exception-Text
+  gegenüber dem Modell fährt. Einzige Ausnahme: eine Wortgrenzen-Suche nach
+  einem errno-**Token** (`ECONNREFUSED`, …) in der Message, weil ein
+  rethrowender Wrapper `err.code` verliert und `bootstrap.retryErroredPlugins`
+  dieselben Fingerprints im selben Text für die Retry-Entscheidung matcht.
+  `MissingSecretError` / `MissingConfigError` tragen dafür jetzt `pluginId` +
+  `key` (den **Key**, nie den Wert).
+- **Persistenz:** `InstalledAgent.last_activation_error_reason`, geschrieben von
+  `markActivationFailed` / `markActivationBlocked` (4. bzw. 3. Parameter) und
+  von `recordActivationFailure`, das den gefangenen Wert selbst klassifiziert.
+  Ein weggelassener Reason **löscht** einen alten — ein veralteter Grund über
+  einem frischen Fehler wäre schlimmer als keiner. `FileInstalledRegistry` teilt
+  dafür jetzt `bumpFailure` mit der In-Memory-Registry statt eine eigene Kopie
+  dieser Writes zu halten (so landet kein neues Feld in einem Backend und im
+  anderen nicht).
+- **Projektion:** `readiness.error_reason` (neben dem unveränderten
+  `error_detail`), `InstallActivationState.error_reason`,
+  `IngestSuccess.activation_error_reason` — weitergegeben von
+  `POST /api/v1/install/packages/upload` **und**
+  `POST /api/v1/install/registry/:id` (ohne das Feld auf der Route fällt die
+  Upload-/Update-Zeile im Store immer auf die generische Copy zurück) — sowie
+  `last_activation_error_reason` auf `GET /api/v1/admin/runtime/installed`,
+  `GET …/installed/:id` und in der Grants-View. Der Rohsatz bleibt gespeichert
+  **und** wird weiter ausgeliefert: er ist alles, was ein von einem älteren
+  Build aufgezeichneter Fehler hat, und er ist das, was eine Betreiberin an die
+  bereitstellende Stelle weitergibt.
+- **Alle Aktivierungs-Seams klassifizieren:** Install und Reactivate
+  (`installService.ts`), ZIP-Upload (`packageUploadService.ts`), die Boot-Loops
+  von Tool- und Dynamic-Agent-Runtime sowie die Channel-Registry. Die beiden
+  Resolver-Verweigerungen sind keine Exceptions und bekommen ihren Code direkt:
+  `dependencyUnresolvedReason(requires)` und
+  `providerConflictReason(capability, keptId)`.
+- **Eine Fingerprint-Liste, nicht zwei.** `bootstrap.retryErroredPlugins`
+  importiert `TRANSIENT_UNREACHABLE_RE` aus dem Classifier. Vorher divergierten
+  die Listen: "the database system is starting up" galt dem Retry-Loop als
+  transient, dem Classifier als `unknown` — die Betreiberin bekam also "gib das
+  technische Detail weiter" für genau die Fehlerklasse, die sich von selbst
+  erledigt.
+- **Web-UI:** `ActivationFailureNotice` (`_components/store/`) rendert
+  `what` + `next` aus `store.activationError.<code>` plus die Argumente des
+  Codes und schiebt den Rohsatz als "Technisches Detail: {raw}" nach unten —
+  dieselbe Form wie das Teams-Identity-Fehlerpanel. Verdrahtet im
+  Install-Drawer, auf der Plugin-Seite, in der Grants-Checklist und in der
+  ZIP-Upload-Zeile; der `title` des Store-Badges ist jetzt die Ein-Zeilen-
+  Zusammenfassung des Codes statt der englischen Exception.
+  `parseActivationErrorReason` (`_lib/activationError.ts`) narrowt tolerant:
+  unbekannter oder fehlender Code → `unknown`-Copy, nie ein leerer roter Kasten.
+
+
 ### Sub-Agents (lokal, in-process)
 
 - **Datei:** `services/localSubAgent.ts` (`LocalSubAgent`-Klasse).

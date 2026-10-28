@@ -8,12 +8,21 @@ import { ApiError, uploadPackage } from '../../_lib/api';
 import type { UploadedPackage } from '../../_lib/storeTypes';
 import { cn } from '../../_lib/cn';
 import { packageErrorText } from '../../_lib/packageErrorText';
+import { parseActivationErrorReason } from '../../_lib/activationError';
+import type { ActivationErrorReason } from '../../_lib/storeTypes';
+import { ActivationFailureNotice } from './ActivationFailureNotice';
 import { Button } from '@/app/_components/ui/Button';
 
 type UploadState =
   | { kind: 'idle' }
   | { kind: 'uploading'; filename: string; loaded: number; total: number }
-  | { kind: 'success'; pkg: UploadedPackage; activationError?: string }
+  | {
+      kind: 'success';
+      pkg: UploadedPackage;
+      activationError?: string;
+      /** #1456 — the classified reason, when the middleware sent one. */
+      activationErrorReason?: ActivationErrorReason | null;
+    }
   | { kind: 'error'; code: string; message: string };
 
 const ACCEPTED_MIME = 'application/zip,application/x-zip-compressed,.zip';
@@ -63,6 +72,11 @@ export function UploadDropzone(): React.ReactElement {
           // catalog), with the reason named — reporting this as a clean upload
           // is what left operators with a green panel over a dead plugin.
           ...(resp.activation_error ? { activationError: resp.activation_error } : {}),
+          // #1456 — and in the operator's language: the sentence alone was the
+          // plugin API's own English text.
+          activationErrorReason: parseActivationErrorReason(
+            resp.activation_error_reason,
+          ),
         });
         router.refresh();
       } catch (err) {
@@ -207,6 +221,9 @@ export function UploadDropzone(): React.ReactElement {
               pkg={state.pkg}
               onDismiss={reset}
               {...(state.activationError ? { activationError: state.activationError } : {})}
+              {...(state.activationErrorReason
+                ? { activationErrorReason: state.activationErrorReason }
+                : {})}
             />
           )}
 
@@ -278,11 +295,14 @@ function SuccessRow({
   pkg,
   onDismiss,
   activationError,
+  activationErrorReason,
 }: {
   pkg: UploadedPackage;
   onDismiss: () => void;
   /** #1452 — set when the re-activation of the already-running plugin threw. */
   activationError?: string;
+  /** #1456 — its classified reason, when there is one. */
+  activationErrorReason?: ActivationErrorReason | null;
 }): React.ReactElement {
   const t = useTranslations('store.upload');
   return (
@@ -315,9 +335,15 @@ function SuccessRow({
         </p>
       )}
       {activationError ? (
-        <p className="mt-3 text-[12px] text-[color:var(--danger,#b03030)]">
-          {t('activationFailed', { message: activationError })}
-        </p>
+        <div className="mt-3">
+          <p className="text-[12px] text-[color:var(--danger,#b03030)]">
+            {t('notRestarted')}
+          </p>
+          <ActivationFailureNotice
+            reason={activationErrorReason ?? null}
+            detail={activationError}
+          />
+        </div>
       ) : null}
       <div className="mt-3 flex gap-3">
         {/* eslint-disable-next-line no-restricted-syntax -- inline text link (bare text, no border/bg) */}

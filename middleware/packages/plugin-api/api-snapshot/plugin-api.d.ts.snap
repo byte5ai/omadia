@@ -1892,9 +1892,13 @@ export interface LlmProvider {
 complete(req: LlmCompleteRequest): Promise<LlmCompleteResult>;
 }
 export declare class MissingSecretError extends Error {
+readonly pluginId: string;
+readonly key: string;
 constructor(agentId: string, key: string);
 }
 export declare class MissingConfigError extends Error {
+readonly pluginId: string;
+readonly key: string;
 constructor(agentId: string, key: string);
 }
 export interface MigrationContext extends Omit<PluginContext, 'secrets'> {

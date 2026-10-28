@@ -19,6 +19,11 @@ import type { ServiceRegistry } from '../platform/serviceRegistry.js';
 import type { PluginSqlGrantStore } from '../platform/pluginSqlGrantStore.js';
 import type { SecretVault } from '../secrets/vault.js';
 import type { OAuthReadinessTracker } from './oauth/oauthReadinessTracker.js';
+import {
+  classifyActivationError,
+  dependencyUnresolvedReason,
+  providerConflictReason,
+} from './activationErrorReason.js';
 import type { NativeToolRegistry } from '@omadia/orchestrator';
 import type {
   ApprovedExtension,
@@ -287,6 +292,10 @@ export class ToolPluginRuntime {
         await this.deps.registry.markActivationBlocked(
           duplicate.droppedId,
           duplicate.message,
+          // #1456 — the resolver's own verdict, already structured. The
+          // operator's action is to uninstall one of the two plugins, so the
+          // survivor travels with the code.
+          providerConflictReason(duplicate.capability, duplicate.keptId),
         );
       } catch (regErr) {
         log(
@@ -306,6 +315,9 @@ export class ToolPluginRuntime {
           u.consumerId,
           msg,
           u.requires,
+          // #1456 — "install a provider for these names", in the operator's
+          // language rather than as the resolver's own sentence.
+          dependencyUnresolvedReason(u.requires),
         );
       } catch (regErr) {
         log(
@@ -327,7 +339,12 @@ export class ToolPluginRuntime {
         const msg = err instanceof Error ? err.message : String(err);
         log(`[tool-runtime] activate FAILED for ${id}: ${msg}`);
         try {
-          await this.deps.registry.markActivationFailed(id, msg);
+          await this.deps.registry.markActivationFailed(
+            id,
+            msg,
+            undefined,
+            classifyActivationError(err),
+          );
         } catch (regErr) {
           log(
             `[tool-runtime] registry markActivationFailed FAILED for ${id}: ${regErr instanceof Error ? regErr.message : String(regErr)}`,

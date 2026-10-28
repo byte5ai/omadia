@@ -119,9 +119,17 @@ async function makeRuntime(activationError: unknown, writeFailure?: unknown) {
 }
 
 describe('DynamicAgentRuntime.activateAllInstalled — transient failure regression', () => {
-  for (const { label, failure } of [
-    { label: 'Error', failure: new Error(ACTIVATION_ERROR) },
-    { label: 'non-Error', failure: ACTIVATION_ERROR },
+  // #1456 — the recorded failure now carries a classified reason as well as
+  // the sentence. A thrown STRING is a message, never classified (parsing it
+  // is the anti-pattern this change exists to remove), so the two cases
+  // deliberately expect different codes over the same text.
+  for (const { label, failure, reason } of [
+    {
+      label: 'Error',
+      failure: new Error(ACTIVATION_ERROR),
+      reason: { code: 'target_unreachable' },
+    },
+    { label: 'non-Error', failure: ACTIVATION_ERROR, reason: { code: 'unknown' } },
   ]) {
     it(`counts ordinary ${label} activation failures and skips the fourth attempt`, async () => {
       const { runtime, registry, logs } = await makeRuntime(failure);
@@ -137,7 +145,13 @@ describe('DynamicAgentRuntime.activateAllInstalled — transient failure regress
         assert.equal(Object.hasOwn(entry, 'unresolved_requires'), false);
         assert.equal(runtime.attempts.length, attempt);
         assert.equal(registry.failureCalls.length, attempt);
-        assert.deepEqual(registry.failureCalls.at(-1), [AGENT_ID, ACTIVATION_ERROR]);
+        assert.deepEqual(registry.failureCalls.at(-1), [
+          AGENT_ID,
+          ACTIVATION_ERROR,
+          undefined,
+          reason,
+        ]);
+        assert.deepEqual(entry.last_activation_error_reason, reason);
         assert.deepEqual(registry.blockCalls, []);
       }
 
@@ -153,7 +167,10 @@ describe('DynamicAgentRuntime.activateAllInstalled — transient failure regress
       const { runtime, registry, logs } = await makeRuntime(new Error(ACTIVATION_ERROR), failure);
 
       assert.deepEqual(await runtime.activateAllInstalled(), []);
-      assert.deepEqual(registry.failureCalls, [[AGENT_ID, ACTIVATION_ERROR]]);
+      // The write itself fails here, so only the CALL is observable.
+      assert.deepEqual(registry.failureCalls, [
+        [AGENT_ID, ACTIVATION_ERROR, undefined, { code: 'target_unreachable' }],
+      ]);
       assert.deepEqual(registry.blockCalls, []);
       assert.deepEqual(logs, [
         [`[dynamic-runtime] activate FAILED for ${AGENT_ID}: ${ACTIVATION_ERROR}`],

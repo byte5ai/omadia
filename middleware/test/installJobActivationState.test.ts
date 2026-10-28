@@ -50,6 +50,7 @@ import type { PluginSqlGrantRow, PluginSqlGrantStore } from '../src/platform/plu
 import type { PublicPathGrantRow, PublicPathGrantStore } from '../src/platform/publicPathGrantStore.js';
 import type { PluginCatalog, PluginCatalogEntry } from '../src/plugins/manifestLoader.js';
 import type { SecretVault } from '../src/secrets/vault.js';
+import { MissingSecretError } from '@omadia/plugin-api';
 
 const PLUGIN = '@test/activation-state';
 const LEDGER = 'plg_test_activation_state_migrations';
@@ -163,6 +164,9 @@ function makeHarness(
     grantSql?: boolean;
     grantPath?: boolean;
     activationThrows?: string;
+    /** #1456 — a TYPED plugin-API throw, so the activation failure can be
+     *  classified into an operator-facing code instead of only a sentence. */
+    activationThrowsError?: unknown;
     withHook?: boolean;
     afterActivate?: (agentId: string, harness: Harness) => Promise<void>;
   } = {},
@@ -224,6 +228,7 @@ function makeHarness(
           // `permissions.sql` consumer does.
           onInstalled: async (agentId: string) => {
             harness.activations += 1;
+            if (opts.activationThrowsError) throw opts.activationThrowsError;
             if (opts.activationThrows) throw new Error(opts.activationThrows);
             const row = await sqlStore.get(agentId);
             if (row?.ledger !== LEDGER) {
@@ -523,6 +528,29 @@ void describe('#825 — errored and failed stay different answers', () => {
       'nothing is ungranted, so the operator has no grant to give — missing must not invent one',
     );
     assert.match(String(job.activation_state?.error), /boom/);
+  });
+
+  void it('carries a classified reason for the operator, next to the sentence (#1456)', async () => {
+    const h = makeHarness({
+      grantSql: true,
+      grantPath: true,
+      activationThrowsError: new MissingSecretError(PLUGIN, 'odoo_api_key'),
+    });
+    const job = await install(h);
+
+    assert.equal(job.state, 'errored');
+    // The sentence is still there — it is the technical detail behind the copy.
+    assert.match(String(job.activation_state?.error), /has no secret/);
+    // …and the code is what the UI localizes, naming the field to fill.
+    assert.deepEqual(job.activation_state?.error_reason, {
+      code: 'secret_missing',
+      field: 'odoo_api_key',
+    });
+    // Recorded on the entry too, so the reason survives the drawer closing.
+    assert.deepEqual(h.registry.get(PLUGIN)?.last_activation_error_reason, {
+      code: 'secret_missing',
+      field: 'odoo_api_key',
+    });
   });
 
   void it('a validation failure is still failed, with no activation_state', async () => {

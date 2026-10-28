@@ -135,6 +135,10 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
       activation_failure_count: entry.activation_failure_count ?? 0,
       last_activation_error: entry.last_activation_error ?? null,
       last_activation_error_at: entry.last_activation_error_at ?? null,
+      // #1456 — the localizable half of the sentence above: a code naming what
+      // the operator can do. `null` for a failure recorded before the
+      // classification existed, which is why the sentence stays.
+      last_activation_error_reason: entry.last_activation_error_reason ?? null,
       // #1453 — a plugin can activate perfectly and still be unusable because
       // the target system refuses its credentials. That verdict lives in the
       // status channel, so an operator reading this endpoint alone used to see
@@ -174,6 +178,7 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
       activation_failure_count: entry.activation_failure_count ?? 0,
       last_activation_error: entry.last_activation_error ?? null,
       last_activation_error_at: entry.last_activation_error_at ?? null,
+      last_activation_error_reason: entry.last_activation_error_reason ?? null,
     });
   });
 

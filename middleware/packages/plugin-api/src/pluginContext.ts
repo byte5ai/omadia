@@ -2139,16 +2139,29 @@ export interface LlmProvider {
 }
 
 export class MissingSecretError extends Error {
+  public readonly pluginId: string;
+  /** #1456 — the vault KEY, never its value. The kernel classifies an
+   *  activation failure from the error object (`activationErrorReason.ts`), so
+   *  the operator-facing sentence can name the field to fill instead of
+   *  repeating this message. */
+  public readonly key: string;
   constructor(agentId: string, key: string) {
     super(`plugin '${agentId}' has no secret '${key}' in vault`);
     this.name = 'MissingSecretError';
+    this.pluginId = agentId;
+    this.key = key;
   }
 }
 
 export class MissingConfigError extends Error {
+  public readonly pluginId: string;
+  /** #1456 — the config key; see {@link MissingSecretError.key}. */
+  public readonly key: string;
   constructor(agentId: string, key: string) {
     super(`plugin '${agentId}' has no config value '${key}'`);
     this.name = 'MissingConfigError';
+    this.pluginId = agentId;
+    this.key = key;
   }
 }
 

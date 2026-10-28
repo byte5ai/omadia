@@ -1256,6 +1256,9 @@ export interface RegistryInstallResponse {
    *  attempted no activation (fresh install — the install job reports that
    *  one), and on an older middleware. */
   activation_error?: string;
+  /** #1456 — the classified reason behind `activation_error`. Absent on an
+   *  older middleware and on a throw that could not be classified. */
+  activation_error_reason?: unknown;
   next: { install: string };
 }
 
@@ -2781,6 +2784,10 @@ export interface PluginGrantsView {
   orphaned_public_paths: string[];
   last_activation_error: string | null;
   last_activation_error_at: string | null;
+  /** #1456 — classified reason behind the sentence above; `null` when the
+   *  failure could not be classified or predates the field. Narrow it with
+   *  `parseActivationErrorReason` before rendering. */
+  last_activation_error_reason?: unknown;
 }
 
 function grantsUrl(pluginId: string): string {
