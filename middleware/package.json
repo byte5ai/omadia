@@ -59,7 +59,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.126.0",
     "@aws-sdk/client-s3": "^3.1135.0",
-    "@azure/msal-node": "^5.6.0",
+    "@azure/msal-node": "^7.1.0",
     "@huggingface/transformers": "^3.7.6",
     "@microsoft/microsoft-graph-client": "^3.0.7",
     "@modelcontextprotocol/sdk": "^1.31.0",
@@ -74,10 +74,10 @@
     "cookie": "^2.0.1",
     "cookie-parser": "^1.4.7",
     "croner": "^9.1.0",
-    "dotenv": "^18.0.6",
+    "dotenv": "^18.0.9",
     "eslint": "^10.8.1",
-    "express": "^5.2.1",
-    "jose": "^6.2.12",
+    "express": "^5.3.0",
+    "jose": "^6.2.13",
     "multer": "^2.3.0",
     "openai": "^7.27.0",
     "pg": "^8.23.1",
@@ -86,12 +86,12 @@
     "semver": "^7.8.5",
     "sharp": "^0.35.5",
     "typescript-eslint": "^8.71.0",
-    "undici": "^8.10.2",
+    "undici": "^8.12.2",
     "ws": "^8.21.3",
     "yaml": "^2.9.1",
     "yauzl": "^3.3.2",
     "yazl": "^3.3.1",
-    "zod": "^4.6.5"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -101,7 +101,7 @@
     "@types/semver": "^7.8.0",
     "@types/ws": "^8.5.13",
     "@types/yazl": "^3.3.1",
-    "prettier": "^3.9.9",
+    "prettier": "^3.9.10",
     "ts-node": "^10.9.2",
     "tsx": "^4.23.15",
     "typescript": "^6.0.2"
@@ -113,6 +113,9 @@
     "esbuild": "^0.28.1",
     "fast-uri": "3.1.8",
     "postcss": "8.5.23",
-    "sharp": "^0.35.5"
+    "sharp": "^0.35.5",
+    "@azure/identity": {
+      "@azure/msal-node": "7.1.2"
+    }
   }
 }

@@ -1,6 +1,7 @@
-// The audit leg's decision (audit-gate.mjs): production findings always fail;
-// development-only findings pass only with a valid, unexpired exception whose
-// `via` names every route package-lock.json gives into the tree.
+// The audit leg's decision (audit-gate.mjs): production findings fail unless a
+// "production": true exception (30 days at most) covers them; development-only
+// findings pass only with a valid, unexpired exception. Either way `via` must
+// name every route package-lock.json gives into the tree.
 //
 // Run: node --test .github/scripts/audit-gate.test.mjs
 import test from 'node:test';
@@ -109,6 +110,59 @@ test('an advisory in the production tree fails even with an exception', () => {
   const result = decide({ prod: report() });
   assert.equal(result.failures.length, 1);
   assert.match(result.failures[0], /production tree/);
+});
+
+/** middleware-like: bot-sdk (prod, pins glob-lib 3) -> glob-lib; no release fixes 3.x. */
+function prodLock() {
+  return {
+    lockfileVersion: 3,
+    packages: {
+      '': { name: 'middleware', dependencies: { 'bot-sdk': '^4' } },
+      'node_modules/bot-sdk': { version: '4.0.0', dependencies: { 'glob-lib': '^3' } },
+      'node_modules/glob-lib': { version: '3.0.3' },
+    },
+  };
+}
+
+function prodException(overrides = {}) {
+  return exception({
+    workspaces: ['middleware'],
+    via: ['bot-sdk'],
+    production: true,
+    reviewed: '2026-10-04',
+    expires: '2026-11-03',
+    ...overrides,
+  });
+}
+
+function decideProd(overrides = {}) {
+  return decide({ full: report(), prod: report(), lockfile: prodLock(), entries: [prodException()], workspace: 'middleware', ...overrides });
+}
+
+test('a production advisory passes only with a "production": true exception naming every route', () => {
+  const result = decideProd();
+  assert.deepEqual(result.failures, []);
+  assert.equal(result.notices.length, 1);
+  assert.match(result.notices[0], /production tree .* accepted as a production exception until 2026-11-03/);
+});
+
+test('an ordinary exception still does not cover a production advisory', () => {
+  const result = decideProd({ entries: [prodException({ production: undefined })] });
+  assert.equal(result.failures.length, 1);
+  assert.match(result.failures[0], /no exception covers a production dependency/);
+});
+
+test('a production exception that does not name a route fails', () => {
+  const result = decideProd({ entries: [prodException({ via: ['other-sdk'] })] });
+  assert.equal(result.failures.length, 1);
+  assert.match(result.failures[0], /does not name bot-sdk in "via"/);
+});
+
+test('a production exception expires like any other and runs at most 30 days', () => {
+  assert.match(decideProd({ today: '2026-11-04' }).failures[0], /production exception expired on 2026-11-03/);
+  assert.deepEqual(decideProd({ today: '2026-11-03' }).failures, []);
+  assert.deepEqual(exceptionProblems(prodException({ expires: '2026-11-04' })), ['"expires" lies more than 30 days after "reviewed"']);
+  assert.deepEqual(exceptionProblems(prodException({ production: 'yes' })), ['"production" must be true or false']);
 });
 
 test('routes come from the lockfile, not from the report’s effects links', () => {
