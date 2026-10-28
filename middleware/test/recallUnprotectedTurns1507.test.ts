@@ -251,6 +251,7 @@ describe('#1507 context retriever forwards the flag', () => {
     const retr = new ContextRetriever(kg);
     const guarded = await retr.assembleForBudget({
       userMessage: 'Wer arbeitet in Research Development?',
+      agentId: 'agent-test',
       sessionScope: 's-open',
       excludeUnprotected: true,
     });
@@ -259,6 +260,7 @@ describe('#1507 context retriever forwards the flag', () => {
 
     const open = await retr.assembleForBudget({
       userMessage: 'Wer arbeitet in Research Development?',
+      agentId: 'agent-test',
       sessionScope: 's-open',
     });
     assert.ok(open.text.includes('leitet Research'), 'unchanged without a shield');
