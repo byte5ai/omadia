@@ -4316,7 +4316,7 @@
       "optionsUnavailable": "Optionen nicht verfügbar ({error}). Werte/IDs kommagetrennt eingeben.",
       "pluginInactive": "Plugin inaktiv",
       "noEntries": "Keine auswählbaren Einträge (nichts mit der Integration geteilt?).",
-      "saving": "Speichern",
+      "saving": "Wird gespeichert",
       "saveSelection": "Auswahl speichern",
       "saveSelectionWithCount": "Auswahl speichern ({count})",
       "refreshList": "Liste aktualisieren",
