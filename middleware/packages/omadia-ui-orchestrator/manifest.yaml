@@ -35,6 +35,15 @@ lifecycle:
 requires:
   - "chatAgent@^1"
 
+# Privacy Shield v4: `canvas_publish_rows` / `canvas_publish_lumen` resolve a
+# `datasetId` to its real rows through the privacy guard's service, which it
+# registers under the key `privacyRedact` (its capability is named
+# `privacy.redact@1`, see `pluginServiceGrants.ts`). Optional: without a
+# privacy guard the lookup degrades to 'unavailable' and activation must not
+# wait on it. Undeclared, the grant gate threw on every datasetId publish.
+optional_requires:
+  - "privacyRedact@1"
+
 provides:
   - "canvasChatAgent@1"
 
