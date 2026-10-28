@@ -82,6 +82,14 @@ now (e.g. a leaked plugin must stop serving immediately).
 **Rejected**: Live-migrating running sessions onto the new scope — semantically
 unsound mid-turn and far more complex than pinning.
 
+**Superseded for plugin changes (#989, #1476)**: a changed plugin set is a
+full orchestrator rebuild (`reason: plugin_grants`), not a metadata `update`.
+Pinning a session to its start-time plugin set would keep a revoked plugin
+callable through the dispatch gate. The turn in flight finishes on the old
+build; the session's next turn resolves the new one by slug
+(`lookupForSession`). History and the session's Agent binding survive. The
+snapshot's `pluginIds` remain a start-time record that nothing reads.
+
 ## D5 — Memory visibility model
 
 **Decision**: Plugin-capability scoping over the *existing* manifest. An Agent's

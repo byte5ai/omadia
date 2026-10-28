@@ -338,6 +338,8 @@ export {
   localizeRefusalNotice,
   finalAnswerText,
 } from './orchestrator.js';
+// #1500 — answer text across tool-loop iterations, preamble dropped.
+export { AnswerTextAccumulator } from './answerTextAccumulator.js';
 export type { OrchestratorOptions, AiDisclosureSetup } from './orchestrator.js';
 
 // #579 — org security postures + provenance-labelled inbound screening. The

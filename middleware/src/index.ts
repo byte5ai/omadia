@@ -1725,8 +1725,10 @@ async function main(): Promise<void> {
         `[middleware] attached to the default orchestrator: ${attached.join(', ')}`,
       );
       // Refresh `entry.plugins` from the DB so the scoping check sees the new
-      // rows. Idempotent no-op when unchanged; a plugin-only change is an
-      // `update` (no rebuild → sessions kept).
+      // rows. Idempotent no-op when unchanged. A changed plugin set is a full
+      // `rebuild` (reason `plugin_grants`, #989): conversation history and the
+      // session's Agent binding survive it, and the new plugin set applies
+      // from the next turn.
       await serviceRegistry
         .get<MultiOrchestratorRegistry>('orchestratorRegistry')
         ?.reload();

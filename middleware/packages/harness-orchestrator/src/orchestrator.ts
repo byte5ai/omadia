@@ -313,6 +313,8 @@ import { resolveTurnAudience, type TurnAudience } from './turnAudience.js';
 import { isMcpServerPrivacyBypassed } from './mcpPrivacyBypass.js';
 import { isMcpServerKgIngest } from './mcpKgIngest.js';
 import { splitV4ToolResult } from './v4RenderSideChannel.js';
+import { afterToolCallPayload, SubToolOutcomeTally } from './toolCallOutcome.js';
+import { AnswerTextAccumulator } from './answerTextAccumulator.js';
 
 /**
  * The `userId` a `RunTraceCollector` is built with — the canonical cluster id
@@ -2104,6 +2106,7 @@ d) **Dateien zusammenführen / Duplikate entfernen (Dedup):** Hochgeladene Tabel
   return `${assistantIdentity}
 
 Sprache: Antworte immer auf Deutsch, außer der Nutzer wechselt explizit die Sprache.
+Kündige Tool-Aufrufe nicht mit Zwischentext an (z.B. „Ich prüfe zuerst mein Memory.“) — solcher Text wird dem Nutzer nicht gezeigt. Schreib die Antwort, wenn die Daten da sind.
 ${answerVerbosityBlock ? '\n' + answerVerbosityBlock : ''}
 Werkzeuge:
 - \`memory\` (virtuelles /memories-Verzeichnis): Persistiere Domänen-Learnings, Nutzer-Präferenzen, Geschäfts-Konventionen und häufige Anfragen. Der Memory wird über Sessions hinweg geteilt und ist global für diesen Agent. Lies zu Beginn jeder neuen Aufgabe einmal den Verzeichnisinhalt, bevor du antwortest, damit du auf relevante Learnings zurückgreifen kannst. Lege neue Learnings in themenbezogenen Dateien ab (z.B. /memories/customers/kundenname.md, /memories/observations/2026-q2.md).
@@ -6350,9 +6353,9 @@ export class Orchestrator {
 
     let toolCalls = 0;
     // Claude may emit natural-language text alongside tool_use in the same assistant
-    // turn. We accumulate text across all turns so the final answer isn't truncated to
-    // whatever happens to be in the last response alone.
-    const textParts: string[] = [];
+    // turn. The accumulator joins answer text across iterations and drops the
+    // preamble written before any data arrived (#1500).
+    const answerText = new AnswerTextAccumulator();
     // One forced file-build retry per turn (see fileAnnouncedButNotBuilt).
     let fileForceRetried = false;
 
@@ -6507,10 +6510,10 @@ export class Orchestrator {
         const response: Message = fromLlmResponse(completed.response);
 
         messages.push({ role: 'assistant', content: response.content });
-        textParts.push(...collectTextBlocks(response.content));
+        answerText.addIteration(collectTextBlocks(response.content), toolNamesOf(response.content));
 
         if (response.stop_reason !== 'tool_use') {
-          const answer = finalAnswerText(textParts, response.stop_reason);
+          const answer = finalAnswerText(answerText.parts(), response.stop_reason);
           const drainedAttachments = this.drainAttachments();
           // Only force a retry on a PURE-TEXT end (no tool_use block). A
           // tool_use present with a non-'tool_use' stop_reason means the model
@@ -6555,7 +6558,7 @@ export class Orchestrator {
               role: 'user',
               content: this.obligationReminder(obligationTool),
             });
-            textParts.length = 0;
+            answerText.reset();
             console.error(
               `[orchestrator] obligation unmet — forcing one consult of \`${obligationTool}\``,
             );
@@ -6569,7 +6572,7 @@ export class Orchestrator {
           ) {
             fileForceRetried = true;
             messages.push({ role: 'user', content: FILE_RETRY_NUDGE });
-            textParts.length = 0;
+            answerText.reset();
             console.error(
               '[orchestrator] file announced but not built — forcing one retry to call create_xlsx/create_docx',
             );
@@ -6738,9 +6741,17 @@ export class Orchestrator {
             : undefined;
         });
         const metas: ToolDispatchMeta[] = toolUses.map(() => ({ replayed: false }));
+        // #1502 — counts each sub-agent's inner results for the hook payload.
+        const subToolTally = new SubToolOutcomeTally();
         const settled = await Promise.allSettled(
           toolUses.map((use: ContentBlock, i: number) =>
-            this.dispatchTool(use.name, use.input, invocations[i]?.observer, turnMemory, metas[i]),
+            this.dispatchTool(
+              use.name,
+              use.input,
+              subToolTally.observe(use.id, invocations[i]?.observer),
+              turnMemory,
+              metas[i],
+            ),
           ),
         );
         this.throwIfReentryAbandoned();
@@ -6798,17 +6809,18 @@ export class Orchestrator {
         for (let i = 0; i < toolUses.length; i++) {
           const use = toolUses[i]!;
           const name = (use as { name?: unknown }).name;
-          const resultBlock = toolResults[i] as { content?: unknown };
+          const resultBlock = toolResults[i] as { content?: unknown; is_error?: unknown };
           await this.fireTurnHook(
             'onAfterToolCall',
             turnId,
             input,
-            {
-              ...(typeof name === 'string' ? { toolName: name } : {}),
-              ...(typeof resultBlock.content === 'string'
-                ? { toolResult: resultBlock.content }
-                : {}),
-            },
+            afterToolCallPayload({
+              toolName: typeof name === 'string' ? name : undefined,
+              toolResult:
+                typeof resultBlock.content === 'string' ? resultBlock.content : undefined,
+              isError: resultBlock.is_error === true,
+              innerCallsAllFailed: subToolTally.allFailed(use.id),
+            }),
             2000,
           );
         }
@@ -6886,7 +6898,7 @@ export class Orchestrator {
           // into the next clarification answer. User can ask again after
           // resolving the choice.
           this.drainPendingRoutineList();
-          const answer = textParts.join('\n\n').trim();
+          const answer = answerText.parts().join('\n\n').trim();
           // #361 — persisted + user-facing: restore surrogates → real values.
           const restoredAnswer = await restoreTurnAnswer(
             privacyForPrompt,
@@ -6939,7 +6951,7 @@ export class Orchestrator {
           this.drainPendingSlotCard();
           this.drainPendingRoutineList();
           const card = toPendingMcpInputCard(pendingMcpInputCard);
-          const answer = textParts.join('\n\n').trim();
+          const answer = answerText.parts().join('\n\n').trim();
           const restoredAnswer = await restoreTurnAnswer(
             privacyForPrompt,
             answer,
@@ -7253,6 +7265,8 @@ export class Orchestrator {
     // tool-use id, so track id→name from tool_use events to label
     // onAfterToolCall.
     const toolNameById = new Map<string, string>();
+    // #1502 — inner sub-agent results per top-level call, for the hook payload.
+    const subToolTally = new SubToolOutcomeTally();
     // Set once this turn registered with the steering bus: `finally` ends
     // only a registration this turn made.
     let steeringLive = false;
@@ -7421,18 +7435,21 @@ export class Orchestrator {
         }
         if (event.type === 'tool_use') {
           toolNameById.set(event.id, event.name);
+        } else if (event.type === 'sub_tool_result') {
+          subToolTally.record(event.parentId, event.isError);
         } else if (event.type === 'tool_result') {
-          const toolName = toolNameById.get(event.id);
           // Live step updates: emit the refreshed plan snapshot after each tool.
           yield* this.toAnnotationEvents(
             await this.fireTurnHook(
               'onAfterToolCall',
               turnId,
               input,
-              {
-                ...(toolName ? { toolName } : {}),
+              afterToolCallPayload({
+                toolName: toolNameById.get(event.id),
                 toolResult: event.output,
-              },
+                isError: event.isError === true,
+                innerCallsAllFailed: subToolTally.allFailed(event.id),
+              }),
               2000,
             ),
           );
@@ -7647,7 +7664,8 @@ export class Orchestrator {
 
     const entityCollection = this.entityRefBus?.beginCollection(turnId);
     let toolCalls = 0;
-    const textParts: string[] = [];
+    // #1500 — see the buffered twin in runTurnCore.
+    const answerText = new AnswerTextAccumulator();
     // One forced file-build retry per turn (see fileAnnouncedButNotBuilt).
     let fileForceRetried = false;
     // Issue #506 — generic, tool-agnostic record of which tool(s) already
@@ -7895,10 +7913,10 @@ export class Orchestrator {
           );
         }
         messages.push({ role: 'assistant', content: finalMessage.content });
-        textParts.push(...collectTextBlocks(finalMessage.content));
+        answerText.addIteration(collectTextBlocks(finalMessage.content), toolNamesOf(finalMessage.content));
 
         if (finalMessage.stop_reason !== 'tool_use') {
-          const answer = finalAnswerText(textParts, finalMessage.stop_reason);
+          const answer = finalAnswerText(answerText.parts(), finalMessage.stop_reason);
           const drainedAttachments = this.drainAttachments();
           // See the non-streaming path: only force a retry on a pure-text end,
           // never when a (possibly truncated) tool_use block is present.
@@ -7937,7 +7955,7 @@ export class Orchestrator {
               role: 'user',
               content: this.obligationReminder(obligationTool),
             });
-            textParts.length = 0;
+            answerText.reset();
             console.error(
               `[orchestrator] obligation unmet — forcing one consult of \`${obligationTool}\``,
             );
@@ -7951,7 +7969,7 @@ export class Orchestrator {
           ) {
             fileForceRetried = true;
             messages.push({ role: 'user', content: FILE_RETRY_NUDGE });
-            textParts.length = 0;
+            answerText.reset();
             console.error(
               '[orchestrator] file announced but not built — forcing one retry to call create_xlsx/create_docx',
             );
@@ -8318,7 +8336,7 @@ export class Orchestrator {
           // refinements of a non-existent answer would be confusing.
           this.drainFollowUps();
           this.drainPendingSlotCard();
-          const answer = textParts.join('\n\n').trim();
+          const answer = answerText.parts().join('\n\n').trim();
           // #361 — persisted + user-facing: restore surrogates → real values.
           const restoredAnswer = await restoreTurnAnswer(
             privacyForPrompt,
@@ -8378,7 +8396,7 @@ export class Orchestrator {
           this.drainFollowUps();
           this.drainPendingSlotCard();
           const card = toPendingMcpInputCard(pendingMcpInputCard);
-          const answer = textParts.join('\n\n').trim();
+          const answer = answerText.parts().join('\n\n').trim();
           const restoredAnswer = await restoreTurnAnswer(
             privacyForPrompt,
             answer,
@@ -10540,6 +10558,14 @@ function appendToolDigest(
   if (lines.length === 0) return answer;
   const digest = ['', '<!-- orchestrator:rendered_attachments', ...lines, '-->'].join('\n');
   return `${answer}${digest}`;
+}
+
+function toolNamesOf(content: ContentBlock[]): string[] {
+  const names: string[] = [];
+  for (const block of content) {
+    if (block?.type === 'tool_use' && typeof block.name === 'string') names.push(block.name);
+  }
+  return names;
 }
 
 function collectTextBlocks(content: ContentBlock[]): string[] {
