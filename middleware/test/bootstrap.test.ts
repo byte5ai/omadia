@@ -19,7 +19,7 @@ import {
   InMemoryInstalledRegistry,
   type InstalledAgent,
 } from '../src/plugins/installedRegistry.js';
-import type { PluginCatalog } from '../src/plugins/manifestLoader.js';
+import { adaptManifestV1, type PluginCatalog } from '../src/plugins/manifestLoader.js';
 import type { Plugin } from '../src/api/admin-v1.js';
 
 /**
@@ -1331,5 +1331,50 @@ describe('onPluginRemoved — bootstrap auto-removals report the removed id (#10
       ),
       `expected a hook-failure log line, got ${JSON.stringify(logs)}`,
     );
+  });
+});
+
+describe('bootstrapBuiltInPackages — manifest default seeding (#1524)', () => {
+  it('seeds typed boolean and integer defaults from the manifest into the config', async () => {
+    const id = '@test/typed-defaults';
+    // Through the real manifest projection, so a default the catalog drops
+    // (the #1524 bug: `asString` on `default: 200000`) fails this test.
+    const plugin = adaptManifestV1({
+      schema_version: '1',
+      identity: { id, kind: 'integration', domain: 'test', name: 'Typed', version: '0.1.0' },
+      setup: {
+        fields: [
+          { key: 'base_url', type: 'url', required: false, default: 'http://svc:8080' },
+          { key: 'use_cache', type: 'boolean', required: false, default: false },
+          { key: 'max_chars', type: 'integer', required: false, default: 200000 },
+        ],
+      },
+    });
+    assert.ok(plugin, 'manifest must load');
+    const catalog = {
+      get: (key: string) =>
+        key === id
+          ? { plugin, manifest: {}, source_path: '<test>', source_kind: 'manifest-v1', origin: 'installed' }
+          : undefined,
+      list: () => [],
+    } as unknown as PluginCatalog;
+    const registry = new InMemoryInstalledRegistry();
+
+    await bootstrapBuiltInPackages({
+      config: {} as Config,
+      vault: { get: async () => undefined, setMany: async () => {} } as unknown as SecretVault,
+      registry,
+      catalog,
+      builtInStore: makeBuiltInStore([{ id, path: '/x/typed' }]) as unknown as Parameters<
+        typeof bootstrapBuiltInPackages
+      >[0]['builtInStore'],
+      log: () => {},
+    });
+
+    assert.deepEqual(registry.get(id)?.config, {
+      base_url: 'http://svc:8080',
+      use_cache: false,
+      max_chars: 200000,
+    });
   });
 });

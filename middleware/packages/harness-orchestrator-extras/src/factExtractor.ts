@@ -7,6 +7,8 @@ import {
   type KnowledgeGraph,
 } from '@omadia/plugin-api';
 
+import { parseLlmJson } from './llmJson.js';
+
 /**
  * Distills atomic subject-predicate-object facts out of a completed turn via
  * Haiku and persists them as `Fact` nodes in the knowledge graph with
@@ -192,19 +194,11 @@ ${truncate(input.assistantAnswer, 4000)}`;
     const raw = collectText(response.content).trim();
     if (raw.length === 0) return [];
 
-    // Strip accidental code fences (Haiku is usually clean but defensive
-    // parsing is cheap).
-    const cleaned = raw
-      .replace(/^```(?:json)?\s*/i, '')
-      .replace(/\s*```$/i, '')
-      .trim();
-
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(cleaned);
-    } catch {
+    // #1527 — tolerates a ```json fence with text around it (shared parser).
+    const parsed = parseLlmJson(raw);
+    if (parsed === undefined) {
       this.opts.log(
-        `[fact-extractor] non-JSON response from Haiku (first 100 chars): ${cleaned.slice(0, 100)}`,
+        `[fact-extractor] non-JSON response from Haiku (finish=${response.finishReason}, first 100 chars): ${raw.slice(0, 100)}`,
       );
       return [];
     }

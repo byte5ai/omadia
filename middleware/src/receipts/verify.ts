@@ -128,12 +128,15 @@ export async function verifyReceiptStream(
   );
   const recordedHeadSeq = Number(headRes.rows[0]?.head_seq ?? 0);
 
+  // #1526 — ORDER BY must name the table: a bare `seq` binds to the
+  // `seq::text` output alias, which sorts 1, 10, 11, …, 2 and turns every
+  // chain of ten or more rows into a false seq_gap at seq 10.
   const rowsRes = await pool.query<ChainDbRow>(
     `SELECT turn_id, session_scope, channel, model, receipt,
             seq::text AS seq, prev_hash, entry_hash, hash_version
        FROM turn_receipts
       WHERE stream_id = $1
-      ORDER BY seq ASC
+      ORDER BY turn_receipts.seq ASC
       LIMIT $2`,
     [RECEIPT_STREAM_ID, MAX_VERIFY_ENTRIES],
   );
@@ -141,7 +144,7 @@ export async function verifyReceiptStream(
     `SELECT seq::text AS seq, head_hash, signed_at, signature
        FROM audit_checkpoints
       WHERE stream_id = $1
-      ORDER BY seq ASC`,
+      ORDER BY audit_checkpoints.seq ASC`,
     [RECEIPT_STREAM_ID],
   );
 
