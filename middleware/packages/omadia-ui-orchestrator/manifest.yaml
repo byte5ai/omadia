@@ -100,6 +100,12 @@ setup:
 permissions:
   filesystem:
     scratch: false
+  # Learned fast path: the tenant-wide plan store (`fastpath/plans.json`,
+  # literal-stripped tool inputs + stripped example questions — never row
+  # data) in this plugin's own memory scope, persisted on the volume.
+  memory:
+    reads: ["agent:@omadia/ui-orchestrator:*"]
+    writes: ["agent:@omadia/ui-orchestrator:*"]
   # The skeleton composition call (composeSkeleton): cheapest tier by default.
   # Provider-agnostic class refs — resolved against the ACTIVE provider in
   # createLlmAccessor, so this gate is byte-identical to the old anthropic lock
