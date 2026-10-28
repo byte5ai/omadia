@@ -84,6 +84,50 @@ depended on it.
   removes an undeclared `provider:<id>/<leaf>` vault key instead of answering
   200 and keeping it, so keys orphaned before this fix can be removed.
 
+### Fixed — plugin registries: a hanging one no longer blanks the store, failures are visible, removal sticks, changes are audited (#1458, #1482, #1483, #1487)
+
+2026-10-28. **#1458** — one registry that accepted the connection and never
+answered made the whole store unusable: the middleware waited 15 s per
+registry, the web UI gave up after 10 s, and the error state replaced the
+Local and Installed tabs as well. Every page view fetched every index again.
+`RegistryClient` now runs each index fetch under one deadline that covers the
+body too (it used to stop at the headers), defaults
+`REGISTRY_FETCH_TIMEOUT_MS` to 5000 and clamps configured values to 8000, below
+the web UI's budget. Outcomes are cached per registry (5 min for a good index,
+60 s for a failure, like the MCP registry client), concurrent requests share
+one in-flight fetch, and every admin change to the registry list drops the
+cache. Artifact downloads get their own 120 s deadline, body included, and a
+failed download drops that registry's cached index so the next lookup is fresh.
+
+**#1482** — a failing registry was only visible in the log. `GET
+/api/v1/store/plugins` now returns `registries`: one status per configured
+registry (`ok`, `checked_at`, `plugin_count` or `error.code`/`error.message`).
+The Hub tab names the registries that could not be read, and its empty state
+no longer says "connect a registry" when one is connected and failing; the
+reason is a localized line keyed on `error.code`, the server message only the
+technical detail behind it. `GET
+/api/v1/admin/registries` adds the same `status` per row, shown as a badge in
+Admin · Registries. Installing from the registry while a registry cannot be
+read answers 502 `registry_install.registry_unavailable` naming it, instead of
+404 `plugin_not_found`. Network errors now carry `err.cause`, so the log says
+`fetch failed (unexpected redirect)` or `ECONNREFUSED` instead of `fetch
+failed`.
+
+**#1483** — the default registry `hub.omadia.ai` was re-seeded on every boot
+once the list was empty, and `REGISTRY_URLS='[]'` was treated like an unset
+variable. Seeding now runs on first boot only (`seedRegistriesOnFirstBoot`,
+keyed on whether `registry.list` was ever written): a list the admin emptied
+stays empty across restarts, and `REGISTRY_URLS='[]'` starts the instance
+without a registry. Unset `REGISTRY_URLS` still seeds `hub.omadia.ai` on a
+fresh instance. DB-less boots keep re-seeding, as before.
+
+**#1487** — adding, changing or removing a registry now writes an
+`admin_audit` row (`registry.create`, `registry.update`, `registry.delete`,
+target `registry:<name>`) with the actor from `auditActorFromRequest`, and the
+url and `has_token` before and after. The token itself never appears. Admin ·
+Audit gains a "Plugin registries" filter.
+
+
 ### Fixed — the plugin UI host page keeps the plugin's state, names it, and stops claiming isolation (#1480, #1479, #1501)
 
 2026-10-28. Three defects on `/plugin-ui/<pluginId>`:
