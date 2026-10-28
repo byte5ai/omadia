@@ -6230,10 +6230,10 @@
     }
   },
   "pluginUi": {
-    "metaTitle": "{pluginId} — Plugin-Oberfläche",
-    "title": "{pluginId}",
-    "subtitle": "Diese Ansicht stammt aus dem Plugin und läuft in einem abgeschotteten Frame.",
-    "frameTitle": "Oberfläche des Plugins {pluginId}",
+    "metaTitle": "{name} — Plugin-Oberfläche",
+    "title": "{name}",
+    "subtitle": "Diese Ansicht stammt aus dem Plugin. Sie läuft mit deiner Sitzung und denselben Rechten wie der Rest dieser Oberfläche und ist davon nicht abgeschottet.",
+    "frameTitle": "Oberfläche des Plugins {name}",
     "loading": "Plugin-Oberfläche wird geladen…"
   },
   "operatorTeamsSignIn": {

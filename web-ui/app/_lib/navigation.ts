@@ -18,6 +18,8 @@
  * conventions ever change.
  */
 
+import { cache } from 'react';
+
 import { isValidPluginId } from './pluginId';
 
 function botApi(path: string): string {
@@ -79,6 +81,29 @@ const HREF_SEGMENT = /^[A-Za-z0-9\-._~]+$/;
  */
 function pluginUiHref(pluginId: string): string {
   return `/plugin-ui/${encodeURIComponent(pluginId)}`;
+}
+
+/**
+ * The localized name of a plugin's UI, as its nav entry shows it (#1479).
+ *
+ * The host page at `/plugin-ui/<id>` only knows the id from its URL. The
+ * operator-facing name already exists — it is the label the plugin registered
+ * with `ctx.uiRoutes.registerNav` and the middleware resolved for this
+ * locale — so the heading, tab and frame title take it from there instead of
+ * printing `@omadia/dev-platform` next to a nav entry reading "Dev Platform".
+ *
+ * Only the entry pointing at THIS host page counts: a plugin may contribute
+ * other entries (a settings page, a core surface) whose labels name those
+ * pages, not its UI. `null` when there is none — the caller falls back to the
+ * id, which is the pre-#1479 behaviour and still identifies the plugin.
+ */
+export function pluginUiNavLabel(
+  entries: readonly NavEntryDto[],
+  pluginId: string,
+): string | null {
+  const href = pluginUiHref(pluginId);
+  const entry = entries.find((e) => e.pluginId === pluginId && e.href === href);
+  return entry?.label ?? null;
 }
 
 /** Control, bidi-formatting and zero-width codepoints. */
@@ -197,23 +222,26 @@ const NAV_FETCH_TIMEOUT_MS = 2_000;
  * redirects: an unauthenticated visitor (login, setup), an unreachable or
  * slow middleware, or a malformed response all yield an empty list, and
  * the shell renders its static nav alone. Losing a plugin's menu entry is
- * an acceptable degradation; losing the page is not.
+ * an acceptable degradation; losing the page is not. *
+ * `cache()` so the root layout and a page that needs a label from the same
+ * list (`/plugin-ui/<id>`, #1479) share one request; outside an RSC request
+ * it is a pass-through.
  */
-export async function fetchNavEntries(
-  locale: string,
-): Promise<readonly NavEntryDto[]> {
-  try {
-    const res = await fetch(
-      botApi(`/v1/ui/navigation?locale=${encodeURIComponent(locale)}`),
-      {
-        headers: await forwardCookieHeader(),
-        cache: 'no-store',
-        signal: AbortSignal.timeout(NAV_FETCH_TIMEOUT_MS),
-      },
-    );
-    if (!res.ok) return [];
-    return parseEntries((await res.json()) as unknown);
-  } catch {
-    return [];
-  }
-}
+export const fetchNavEntries: (locale: string) => Promise<readonly NavEntryDto[]> = cache(
+  async (locale: string): Promise<readonly NavEntryDto[]> => {
+    try {
+      const res = await fetch(
+        botApi(`/v1/ui/navigation?locale=${encodeURIComponent(locale)}`),
+        {
+          headers: await forwardCookieHeader(),
+          cache: 'no-store',
+          signal: AbortSignal.timeout(NAV_FETCH_TIMEOUT_MS),
+        },
+      );
+      if (!res.ok) return [];
+      return parseEntries((await res.json()) as unknown);
+    } catch {
+      return [];
+    }
+  },
+);
