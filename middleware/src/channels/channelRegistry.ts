@@ -28,6 +28,7 @@ import type { WebSocketRegistry } from './webSocketRegistry.js';
 import type { ConversationRosterRegistry } from './rosterRegistry.js';
 import type { TargetedSendRegistry } from './targetedSendRegistry.js';
 import type { ConversationSendRegistry } from './conversationSendRegistry.js';
+import { describeActivationFailure } from '../plugins/activationFailure.js';
 
 /**
  * Runtime registry for installed channel packages. At middleware startup it
@@ -114,7 +115,7 @@ export class DefaultChannelRegistry implements ChannelRegistry {
         try {
           await this.deps.installedRegistry.markActivationFailed(
             entry.id,
-            message,
+            describeActivationFailure(err),
             entry.unresolved_requires,
           );
         } catch (regErr) {

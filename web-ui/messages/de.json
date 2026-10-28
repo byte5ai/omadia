@@ -3853,10 +3853,12 @@
       "connected": "verbunden",
       "notConnected": "kein Schlüssel",
       "unverified": "Schlüssel hinterlegt, nicht geprüft",
+      "unverifiedKeyless": "nicht geprüft",
       "verified": "geprüft",
       "invalid": "Schlüssel abgelehnt",
       "verifiedAt": "geprüft {time}",
       "testKey": "Schlüssel testen",
+      "testConnection": "Verbindung testen",
       "testing": "Wird geprüft …",
       "refreshModels": "Modelle aktualisieren",
       "refreshingModels": "Wird aktualisiert …",
@@ -3870,6 +3872,7 @@
       "modelsSourceSeed": "Seed-Liste",
       "unclassifiedModels": "{count, plural, one {# Modell} other {# Modelle}} ausgeblendet (keine Discovery-Regel): {models}",
       "addKey": "Schlüssel hinterlegen",
+      "addOptionalKey": "Schlüssel hinterlegen (optional)",
       "changeKey": "Schlüssel ändern",
       "removeKey": "Schlüssel entfernen",
       "removeKeyConfirm": "Den gespeicherten API-Key für {provider} entfernen? Agenten, die diesem Provider zugeordnet sind, funktionieren dann nicht mehr, bis ein neuer Schlüssel hinterlegt wird.",
@@ -3887,7 +3890,8 @@
         "unexpectedBody": "Der Provider hat geantwortet, aber nicht mit einer Modell-Liste, die wir erkennen.",
         "httpError": "Der Provider hat einen Fehler zurückgegeben (serverseitig oder Rate-Limit). Nicht dein Schlüssel.",
         "networkError": "Der Provider war nicht erreichbar — Timeout, DNS oder keine Verbindung.",
-        "noProbe": "Dieser Provider-Typ lässt sich nicht günstig prüfen, der Schlüssel bleibt daher unbestätigt."
+        "noProbe": "Dieser Provider-Typ lässt sich nicht günstig prüfen, der Schlüssel bleibt daher unbestätigt.",
+        "notChecked": "Seit dem letzten Neustart nicht geprüft – nutze „Verbindung testen“."
       },
       "oauthConnect": "Mit ChatGPT anmelden",
       "oauthReconnect": "ChatGPT neu verbinden",
@@ -4221,6 +4225,45 @@
       "errorTitle": "Fehler",
       "actionRequired": "Aktion erforderlich"
     },
+    "activationError": {
+      "technicalDetail": "Technisches Detail",
+      "secret_missing": {
+        "what": "Ein erforderliches Geheimnis ist nicht gespeichert.",
+        "next": "Öffne auf der Store-Seite des Plugins „Setup-Felder editieren“, trage den fehlenden Wert ein und speichere – das Plugin wird damit neu gestartet."
+      },
+      "config_missing": {
+        "what": "Ein erforderlicher Setup-Wert fehlt.",
+        "next": "Öffne auf der Store-Seite des Plugins „Setup-Felder editieren“, trage den fehlenden Wert ein und speichere – das Plugin wird damit neu gestartet."
+      },
+      "capability_not_declared": {
+        "what": "Diese Version des Plugins läuft nicht auf diesem Server.",
+        "next": "An deiner Einrichtung ist nichts zu ändern. Installiere eine andere Version des Plugins (aktualisieren oder zur vorherigen zurückkehren) oder melde das Problem dem Herausgeber."
+      },
+      "network_not_permitted": {
+        "what": "Das Plugin darf die benötigte Adresse nicht erreichen.",
+        "next": "Prüfe die Adresse in den Setup-Feldern. Stimmt sie, decken die Netzwerk-Berechtigungen des Plugins sie nicht ab – melde das dem Herausgeber."
+      },
+      "permission_not_granted": {
+        "what": "Eine Berechtigung, die das Plugin braucht, wurde nicht erteilt.",
+        "next": "Erteile sie im Abschnitt „Berechtigungen“ auf der Store-Seite des Plugins; danach wird das Plugin neu gestartet."
+      },
+      "dependency_unresolved": {
+        "what": "Ein Plugin, von dem dieses abhängt, ist nicht installiert oder läuft nicht.",
+        "next": "Installiere oder repariere zuerst das benötigte Plugin und speichere dann das Setup dieses Plugins erneut, um es neu zu starten."
+      },
+      "provider_conflict": {
+        "what": "Ein anderes installiertes Plugin stellt bereits dieselbe Funktion bereit.",
+        "next": "Nur eines von beiden kann laufen. Deinstalliere das, das du nicht brauchst."
+      },
+      "target_unreachable": {
+        "what": "Ein Server, den das Plugin braucht, hat beim Start nicht geantwortet.",
+        "next": "Prüfe die Adresse in den Setup-Feldern und ob der Server erreichbar ist, und speichere das Setup dann erneut, um es noch einmal zu versuchen."
+      },
+      "unknown": {
+        "what": "Das Plugin ist nicht gestartet.",
+        "next": "Das technische Detail unten hilft vielleicht weiter. Wenn nicht, melde es dem Herausgeber des Plugins."
+      }
+    },
     "install": {
       "blocked": "Installation blockiert",
       "installAria": "{name} installieren",
@@ -4228,8 +4271,8 @@
       "installNow": "Jetzt installieren",
       "unknownError": "Unbekannter Fehler.",
       "unexpectedJobState": "Unerwarteter Job-Zustand: {state}",
-      "activationFailed": "Installiert, aber das Plugin ist nicht gestartet: {message}",
-      "updateActivationFailed": "Aktualisiert, aber das Plugin ist nicht gestartet: {message}",
+      "updateActivationFailedLead": "Aktualisiert, aber das Plugin ist nicht gestartet.",
+      "activationFailedLead": "Installiert, aber das Plugin ist nicht gestartet.",
       "registryUnavailable": "Das Plugin konnte nicht nachgeschlagen werden: Die Registry {registries} war nicht lesbar. Prüfe sie unter Admin · Registries und versuche es erneut.",
       "updateAvailable": "Update verfügbar",
       "updating": "Aktualisiere …",
@@ -4237,6 +4280,12 @@
       "installed": "Installiert",
       "active": "aktiv",
       "installedNext": "\"{name}\" installiert — jetzt an einen Orchestrator anhängen.",
+      "toManageOrchestrators": "Orchestratoren verwalten",
+      "nextLlm": "„{name}“ ist installiert, aber der zugewiesene LLM-Anbieter hat noch keinen geprüften Zugang.",
+      "nextSetup": "„{name}“ ist installiert, braucht aber noch Setup, bevor es laufen kann.",
+      "nextRunning": "„{name}“ ist installiert und läuft.",
+      "nextIntegration": "„{name}“ läuft. Agenten, die davon abhängen, nutzen es automatisch – anzubinden ist nichts.",
+      "nextAttached": "„{name}“ ist an {agents} angehängt.",
       "toOrchestrators": "An Orchestrator anhängen",
       "toSetup": "Einrichtung abschließen ({count} fehlen)",
       "toLlmProvider": "LLM-Zugang einrichten",
@@ -4314,6 +4363,7 @@
       "save": "Speichern",
       "saveWithCount": "Speichern ({count})",
       "savedCheck": "✓ Gespeichert",
+      "savedNotStarted": "Gespeichert – aber das Plugin ist mit den neuen Werten nicht gestartet.",
       "connected": "Verbunden",
       "notConnected": "Nicht verbunden",
       "reconnect": "Neu verbinden",
@@ -4362,6 +4412,8 @@
       "installing": "Wird installiert …",
       "allInstalled": "Alles installiert",
       "allActive": "{name} und alle Voraussetzungen sind aktiv.",
+      "notAllRunning": "Installiert – nicht alles läuft",
+      "notRunningList": "{name} und die Voraussetzungen sind installiert, aber diese sind nicht gestartet: {plugins}. Öffne die Seite des jeweiligen Plugins im Store, um den Grund zu sehen.",
       "errorKicker": "Fehler",
       "stepValidationFailed": "{label}: Eingaben enthalten Fehler.",
       "updateFrom": "Aktualisieren {from} → {to}",
@@ -4382,7 +4434,7 @@
       "inCatalog": "<idTag>{id}</idTag> <versionTag>v{version}</versionTag> ist im Katalog. Unten wählen und installieren.",
       "sizeLabel": "Größe",
       "peersMissing": "⚠ Fehlende Peer-Deps: {peers} — Agent kann zur Laufzeit fehlschlagen.",
-      "activationFailed": "⚠ Hochgeladen, aber das laufende Plugin ist nicht neu gestartet: {message}",
+      "activationFailedLead": "Hochgeladen, aber das laufende Plugin ist nicht neu gestartet.",
       "close": "Schließen",
       "failedKicker": "Upload fehlgeschlagen",
       "reset": "Zurücksetzen",
