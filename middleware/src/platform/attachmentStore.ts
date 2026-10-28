@@ -1,7 +1,7 @@
 /**
  * Which attachment store the kernel publishes as the `tigrisStore` service.
  *
- * 1. S3-compatible storage (Tigris on Fly, MinIO in compose) when all four of
+ * 1. S3-compatible storage (Tigris on Fly, SeaweedFS in compose) when all four of
  *    BUCKET_NAME / AWS_ENDPOINT_URL_S3 / AWS_ACCESS_KEY_ID /
  *    AWS_SECRET_ACCESS_KEY are set. Unchanged, and it keeps precedence.
  * 2. Otherwise a local directory when ATTACHMENT_STORE_DIR is set
