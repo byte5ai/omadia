@@ -476,9 +476,11 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         // that a replay (capture_level=off) or a backfill re-ingests as real
         // knowledge — invisible to recall for good, with nothing to clear it.
         tailOnly: turn.tailOnly === true,
-        // #1507 — the turn answered from values the model saw raw. Written
-        // unconditionally for the same merge reason as `tailOnly`.
-        unprotected: turn.unprotected === true,
+        // #1507 — the turn answered from values the model saw raw. Only
+        // written when set, like `owners`: a re-ingest from the session
+        // transcript (backfill, replay) carries no flag and must not clear one
+        // the live turn recorded; a live re-ingest sets it either way.
+        ...(turn.unprotected !== undefined ? { unprotected: turn.unprotected } : {}),
         // Member-scoped memory — who owns this turn's knowledge. Only written
         // when set: a re-ingest without it (backfill, replay) keeps the owners
         // the live turn recorded instead of erasing them.
@@ -2021,6 +2023,8 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     //   $12 weight task
     //   $13 LIMIT (overshoot)
     //   $14 agentScopePrefix (nullable) — per-orchestrator isolation
+    //   $15 audienceOwners (nullable jsonb) — member-scoped memory
+    //   $16 excludeUnprotected (boolean) — #1507, skip `unprotected` turns
     const sql = `
       WITH scored AS (
         SELECT

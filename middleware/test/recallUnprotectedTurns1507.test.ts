@@ -14,8 +14,12 @@ import type { Pool, PoolClient, QueryResult } from 'pg';
 
 import { InMemoryKnowledgeGraph } from '@omadia/knowledge-graph-inmemory';
 import { NeonKnowledgeGraph } from '@omadia/knowledge-graph-neon';
-import { createPrivacyTurnHandle } from '@omadia/orchestrator';
+import { createPrivacyTurnHandle, turnContext } from '@omadia/orchestrator';
+import type { SearchTurnsOptions } from '@omadia/plugin-api';
+import { boundTurnSearch } from '../src/platform/pluginContext.js';
 import { ContextRetriever } from '@omadia/orchestrator-extras';
+import { createSessionBriefingService } from '@omadia/orchestrator-extras/dist/index.js';
+import { SESSION_SUMMARY_MARKER } from '@omadia/orchestrator-extras/dist/sessionSummaryGenerator.js';
 import type { PrivacyGuardService, TurnIngest } from '@omadia/plugin-api';
 
 function turn(
@@ -87,16 +91,16 @@ describe('#1507 in-memory recall and unprotected turns', () => {
     assert.ok(!scopes.includes('s-open'), JSON.stringify(scopes));
   });
 
-  it('a re-ingest without the flag clears it (props merge on upsert)', async () => {
+  it('a re-ingest without the flag keeps it; an explicit false clears it', async () => {
     const kg = new InMemoryKnowledgeGraph();
+    const search = () =>
+      kg.searchTurns({ query: 'Research', excludeScope: 's-now', excludeUnprotected: true });
     await kg.ingestTurn(turn('s-open', 1, 'Marc Demo', { unprotected: true }));
+    // A backfill from the session transcript carries no flag.
     await kg.ingestTurn(turn('s-open', 1, 'Marc Demo'));
-    const hits = await kg.searchTurns({
-      query: 'Research',
-      excludeScope: 's-now',
-      excludeUnprotected: true,
-    });
-    assert.equal(hits.length, 1);
+    assert.equal((await search()).length, 0, 'flag survives a flagless re-ingest');
+    await kg.ingestTurn(turn('s-open', 1, 'Marc Demo', { unprotected: false }));
+    assert.equal((await search()).length, 1, 'a live re-ingest can clear it');
   });
 
   it('keeps unprotected turns in the session tail', async () => {
@@ -187,17 +191,18 @@ describe('#1507 Neon recall queries honour excludeUnprotected', () => {
     assertFilters(turnSelects(queries)[0], 'findEntityCapturedTurns', true);
   });
 
-  it('ingest writes the flag unconditionally', async () => {
-    const { pool, queries } = recordingPool((sql) =>
-      /INSERT INTO graph_nodes/.test(sql) ? [{ id: 'uuid-node' }] : undefined,
-    );
-    const kg = new NeonKnowledgeGraph({ pool, tenantId: 't1' });
-    await kg.ingestTurn(turn('s-x', 1, 'a'));
-    const insert = queries.find((q) =>
-      JSON.stringify(q.params).includes('unprotected'),
-    );
-    assert.ok(insert, 'the Turn insert carries the unprotected prop');
-    assert.match(JSON.stringify(insert.params), /unprotected\\?":false/);
+  it('ingest writes the flag only when set', async () => {
+    const run = async (extra: Partial<TurnIngest>): Promise<string> => {
+      const { pool, queries } = recordingPool((sql) =>
+        /INSERT INTO graph_nodes/.test(sql) ? [{ id: 'uuid-node' }] : undefined,
+      );
+      const kg = new NeonKnowledgeGraph({ pool, tenantId: 't1' });
+      await kg.ingestTurn(turn('s-x', 1, 'a', extra));
+      return JSON.stringify(queries.map((q) => q.params));
+    };
+    assert.match(await run({ unprotected: true }), /unprotected\\?":true/);
+    assert.match(await run({ unprotected: false }), /unprotected\\?":false/);
+    assert.doesNotMatch(await run({}), /unprotected/);
   });
 });
 
@@ -257,5 +262,71 @@ describe('#1507 context retriever forwards the flag', () => {
       sessionScope: 's-open',
     });
     assert.ok(open.text.includes('leitet Research'), 'unchanged without a shield');
+  });
+});
+
+describe('#1507 session-briefing summaries inherit the flag', () => {
+  async function summaryOf(unprotected: boolean): Promise<unknown> {
+    const kg = new InMemoryKnowledgeGraph();
+    // Old enough for briefing mode (resume window is minutes).
+    await kg.ingestTurn({
+      scope: 's-b',
+      time: '2024-01-01T08:00:00.000Z',
+      userMessage: 'Wer ist in R&D?',
+      assistantAnswer: 'Marc Demo',
+      entityRefs: [],
+      unprotected,
+    });
+    const svc = createSessionBriefingService({
+      kg,
+      summaryGenerator: { generate: async () => 'Marc Demo leitet R&D.' },
+      log: () => {},
+    });
+    await svc.loadSessionBriefing({ scope: 's-b', agentId: 'a' });
+    const session = await kg.getSession('s-b');
+    const summary = session?.turns.find(
+      (t) => t.turn.props['userMessage'] === SESSION_SUMMARY_MARKER,
+    );
+    assert.ok(summary, 'summary turn persisted');
+    return summary.turn.props['unprotected'];
+  }
+
+  it('flags a summary of an unprotected turn, so cross-session recall skips it', async () => {
+    assert.equal(await summaryOf(true), true);
+  });
+
+  it('leaves a summary of protected turns unflagged', async () => {
+    assert.equal(await summaryOf(false), false);
+  });
+});
+
+describe('#1507 a plugin turn search follows the turn shield', () => {
+  const inTurn = <T>(shielded: boolean, fn: () => T): Promise<T> =>
+    turnContext.run(
+      {
+        turnId: 't',
+        turnDate: '2026-10-28',
+        ...(shielded
+          ? {
+              privacyHandle: createPrivacyTurnHandle({
+                service: {} as unknown as PrivacyGuardService,
+                sessionId: 's',
+                turnId: 't',
+              }),
+            }
+          : {}),
+      },
+      async () => fn(),
+    );
+
+  it('adds excludeUnprotected only under a shield', async () => {
+    const shielded = await inTurn(true, () =>
+      boundTurnSearch<SearchTurnsOptions>({ query: 'x' }),
+    );
+    assert.equal(shielded?.options.excludeUnprotected, true);
+    const open = await inTurn(false, () =>
+      boundTurnSearch<SearchTurnsOptions>({ query: 'x' }),
+    );
+    assert.equal(open?.options.excludeUnprotected, undefined);
   });
 });

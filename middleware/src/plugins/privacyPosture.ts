@@ -86,8 +86,18 @@ export function uninstallVoidsForceGuarded(input: {
   readonly env: NodeJS.ProcessEnv;
 }): boolean {
   if (!isForceGuarded(input.env)) return false;
-  const providers = privacyProviderIds(input.installedRegistry, input.catalog);
-  return providers.includes(input.pluginId) && providers.length === 1;
+  // Only RUNNING providers keep the shield up: an errored or inactive second
+  // provider must not make the active one look removable.
+  const active = new Set(
+    input.installedRegistry
+      .list()
+      .filter((entry) => entry.status === 'active')
+      .map((entry) => entry.id),
+  );
+  const running = privacyProviderIds(input.installedRegistry, input.catalog).filter(
+    (id) => active.has(id),
+  );
+  return running.includes(input.pluginId) && running.length === 1;
 }
 
 /** Is `key` one of the kernel-synthetic privacy config keys? */

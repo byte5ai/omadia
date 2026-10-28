@@ -52,15 +52,25 @@ changelog.
   (`TurnIngest.unprotected`, `@omadia/plugin-api` 1.37.0, from
   `PrivacyTurnHandle.hasBypassed()`). A turn under a shield recalls with
   `excludeUnprotected`, so the full-text, embedding and entity legs of
-  "Inhaltlich verwandte Turns" return none of them. That block was how names
+  "Inhaltlich verwandte Turns", the `query_knowledge_graph` turn search and a
+  plugin's `ctx.knowledgeGraph` turn search return none of them. Subscription
+  CLI turns are always flagged. The flag is only written when present, so a
+  backfill from transcripts keeps it. On an instance that ran without a
+  shield, every turn so far is flagged: installing one later drops that
+  history from cross-session recall. That block was how names
   from an unprotected window reached the model again, because recall masking
   only catches detector-visible spans. Both KG backends; Neon keeps the flag
-  in `properties` without a migration. The same chat's tail and briefing keep
-  such turns, turns from before this change carry no flag, and promoted facts
-  and memories are not covered.
+  in `properties` without a migration. A session-briefing summary of such a
+  turn inherits the flag. Not covered: the same chat's tail and briefing keep
+  such turns, turns from before this change carry no flag, facts, memories
+  and plans derived from them keep their values, and the `memory` tool can
+  still read session transcripts under `/memories/sessions/`.
+- The uninstall block counts only running providers: an errored second
+  provider does not make the active one removable.
 - **Per-tool scope stays with its owner.** The bypass resolver moved to
   `harness-orchestrator/src/privacyBypassResolver.ts`. A tool that has an
-  owner is decided by that owner alone: an ownerless kernel tool is never
+  owner is decided by that owner alone: an ownerless native or domain tool
+  (kernel meta-tools, MCP handlers, `mcp.*`, skill sub-agents) is never
   bypassed, and another agent's domain tool follows that agent. Before, a
   sub-agent owner set to `bypass`, or naming such a tool in its `per_tool`
   list, unmasked it. A sub-agent's toolkit tools still follow the owning

@@ -1563,9 +1563,21 @@ function createKnowledgeGraphAccessor(
  * `null` = this turn may see no turns at all. Outside a restricted turn the
  * options pass through unchanged.
  */
-export function boundTurnSearch<T extends { agentScopePrefix?: string; audienceOwners?: readonly string[] }>(
-  options: T,
+export function boundTurnSearch<
+  T extends {
+    agentScopePrefix?: string;
+    audienceOwners?: readonly string[];
+    excludeUnprotected?: boolean;
+  },
+>(
+  rawOptions: T,
 ): { options: T; scopeAllowed: (scope: string) => boolean } | null {
+  // #1507 — inside a turn that runs under a Privacy Shield, a plugin's turn
+  // search skips turns stored `unprotected`, like the recall legs do.
+  const options: T =
+    turnContext.current()?.privacyHandle !== undefined
+      ? { ...rawOptions, excludeUnprotected: true }
+      : rawOptions;
   const bound = turnContext.current()?.graphReadScope?.value;
   if (!bound) return { options, scopeAllowed: () => true };
   if (bound.kind === 'nothing') return null;

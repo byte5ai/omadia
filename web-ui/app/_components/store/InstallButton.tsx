@@ -608,14 +608,21 @@ function InstalledPanel({
     getPrivacyPosture()
       .then((p) => {
         if (!cancelled) {
-          setUninstallLocked(p.force_guarded && p.provider_ids.length <= 1);
+          // Mirrors the server rule (`uninstallVoidsForceGuarded`) as far as
+          // the posture shows it; the server also ignores providers that are
+          // not running, and its 409 is translated if it differs.
+          setUninstallLocked(
+            p.force_guarded &&
+              p.provider_ids.includes(pluginId) &&
+              p.provider_ids.length === 1,
+          );
         }
       })
       .catch(() => undefined);
     return () => {
       cancelled = true;
     };
-  }, [providesPrivacyShield]);
+  }, [providesPrivacyShield, pluginId]);
 
   async function doUninstall(): Promise<void> {
     setState({ kind: 'working' });

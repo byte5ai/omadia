@@ -330,8 +330,10 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
         // unconditionally (see the Neon backend): props are merged on upsert,
         // so an omitted flag could never clear a stale `true`.
         tailOnly: turn.tailOnly === true,
-        // #1507 — unconditional for the same reason as `tailOnly`.
-        unprotected: turn.unprotected === true,
+        // #1507 — only written when set, like `owners`: a re-ingest from the
+        // session transcript (backfill, replay) carries no flag and must not
+        // clear one the live turn recorded.
+        ...(turn.unprotected !== undefined ? { unprotected: turn.unprotected } : {}),
         // Member-scoped memory — see the Neon backend. Only written when set,
         // so a re-ingest without it keeps the owners the live turn recorded.
         ...(turn.owners !== undefined ? { owners: canonicalOwners(turn.owners) } : {}),

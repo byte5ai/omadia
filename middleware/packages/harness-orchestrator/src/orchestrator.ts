@@ -3751,6 +3751,8 @@ export class Orchestrator {
           ...turnOwnersField(turnMemory),
           runTrace,
           entityRefs: [],
+          // #1507 — a CLI turn runs without the Privacy Shield.
+          unprotected: true,
         },
         'cli answer',
       );

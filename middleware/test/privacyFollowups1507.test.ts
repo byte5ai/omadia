@@ -89,6 +89,20 @@ describe('#1507 — uninstalling the last shield under the org policy', () => {
       uninstallVoidsForceGuarded({ ...base, pluginId: AGENT, catalog: one, env: FORCED }),
       false,
     );
+    // A second provider that is not running does not keep the shield up.
+    const withDead = await registryWith([GUARD, AGENT]);
+    await withDead.register({
+      id: OTHER_GUARD,
+      installed_version: '1.0.0',
+      installed_at: '2026-10-28T08:00:00.000Z',
+      status: 'errored',
+      config: {},
+    });
+    assert.equal(
+      uninstallVoidsForceGuarded({ pluginId: GUARD, installedRegistry: withDead, catalog: two, env: FORCED }),
+      true,
+      'an errored second provider does not count',
+    );
     // Sanity: the same inputs with the policy and one provider DO block.
     const single = await registryWith([GUARD, AGENT]);
     assert.equal(

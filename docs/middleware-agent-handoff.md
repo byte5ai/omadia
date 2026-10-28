@@ -3966,8 +3966,11 @@ landen als `unprotected` im KG (`maskedRowView` → `SessionLogEntry` →
 `TurnIngest.unprotected`, plugin-api 1.37.0); unter einem Shield übergibt
 `retrievePriorContext` `excludeUnprotected`, und Volltext-, Embedding- und
 Entity-Recall lassen sie weg (beide Backends, Neon ohne Migration im
-`properties`-JSONB). Tail und Session-Briefing derselben Session behalten
-sie. Der Bypass-Resolver steckt jetzt in `privacyBypassResolver.ts`: ein Tool
+`properties`-JSONB); ebenso die Turn-Suche von `query_knowledge_graph` und
+`ctx.knowledgeGraph` (`boundTurnSearch`). CLI-Turns sind immer `unprotected`,
+eine Briefing-Zusammenfassung erbt das Flag, und es wird nur geschrieben, wenn
+gesetzt (ein Backfill aus Transkripten löscht es nicht). Tail und
+Session-Briefing derselben Session behalten sie. Der Bypass-Resolver steckt jetzt in `privacyBypassResolver.ts`: ein Tool
 mit Eigentümer fällt nie auf den Sub-Agent-Owner durch.
 
 ### Abo-CLI-Turn-Budget (OM-104, Beta-Runde 5)

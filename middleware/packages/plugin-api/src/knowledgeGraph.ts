@@ -1707,11 +1707,12 @@ export interface TurnIngest {
   /**
    * #1507 — the turn's answer came from raw values the model saw: it ran
    * without a Privacy Shield provider, or a tool bypassed the shield. Set by
-   * the kernel. A recall that runs under a shield passes
-   * `excludeUnprotected` and gets no such turn back, so a protected turn
-   * never replays names an unprotected one put on the record. Written
-   * unconditionally like `tailOnly`, so a re-ingest can clear it. Stored as a
-   * Turn property.
+   * the kernel on every live turn. A turn search that runs under a shield
+   * (context recall, the `query_knowledge_graph` turn search, a plugin's
+   * `ctx.knowledgeGraph` turn search) passes `excludeUnprotected` and gets no
+   * such turn back. Only written when present, like `owners`: a re-ingest
+   * without it (backfill from transcripts) keeps the recorded value. Stored
+   * as a Turn property.
    */
   unprotected?: boolean;
   /**
