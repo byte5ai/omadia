@@ -75,6 +75,106 @@ changelog.
   empty line says what it covers: "No grant needed: this plugin requests neither
   its own database tables nor public paths."
 
+### Fixed — the storage overlay pulls again: SeaweedFS replaces MinIO (#1506)
+
+2026-10-28. `minio/minio` and `minio/mc` were removed from Docker Hub, and
+quay.io serves neither tag, so `docker compose -f docker-compose.yaml -f
+docker-compose.storage.yaml up -d` failed with `pull access denied` on every
+machine without a cached copy. That meant no chat attachments and no
+diagrams/office on a fresh install.
+
+`docker-compose.storage.yaml` now runs **SeaweedFS** (`chrislusf/seaweedfs:4.51`,
+`weed mini`, Apache-2.0, released weekly on Docker Hub) with its S3 API on the
+old port 9000. The bucket-init step uses **`amazon/aws-cli:2.39.0`** instead of
+`mc`: it creates the `diagrams` bucket if missing and sets the same one-rule
+90-day expiration. SeaweedFS stores the rule and applies it with its built-in
+`s3_lifecycle` job (enabled by default, runs daily). The expiry itself was not
+observed end to end. Both images are pinned to a version tag. Services are now
+called `s3` / `s3-init`, the volume `s3-data`, and the local credentials
+`omadia` / `omadia-local-secret` (`middleware/.env.example` updated for
+bare-metal dev). The kernel needs no change because it already uses path-style
+S3. Objects in an old `minio-data` volume are not migrated (see the
+getting-started troubleshooting, which also covers `--remove-orphans` for
+the old containers).
+
+CI now also renders the storage, diagrams, embeddings and update overlays and
+checks with `docker manifest inspect` that each third-party image they
+reference can still be pulled, so a vanished upstream image fails in CI and not
+on a user's machine. Base images of the locally built sidecars (pii-detector,
+skillspector) are not covered. Fly (Tigris)
+and `render.yaml` (no object storage) never used these images and are
+unaffected.
+
+### Fixed — plugin registries: a hanging one no longer blanks the store, failures are visible, removal sticks, changes are audited (#1458, #1482, #1483, #1487)
+
+2026-10-28. **#1458** — one registry that accepted the connection and never
+answered made the whole store unusable: the middleware waited 15 s per
+registry, the web UI gave up after 10 s, and the error state replaced the
+Local and Installed tabs as well. Every page view fetched every index again.
+`RegistryClient` now runs each index fetch under one deadline that covers the
+body too (it used to stop at the headers), defaults
+`REGISTRY_FETCH_TIMEOUT_MS` to 5000 and clamps configured values to 8000, below
+the web UI's budget. Outcomes are cached per registry (5 min for a good index,
+60 s for a failure, like the MCP registry client), concurrent requests share
+one in-flight fetch, and every admin change to the registry list drops the
+cache. Artifact downloads get their own 120 s deadline, body included, and a
+failed download drops that registry's cached index so the next lookup is fresh.
+
+**#1482** — a failing registry was only visible in the log. `GET
+/api/v1/store/plugins` now returns `registries`: one status per configured
+registry (`ok`, `checked_at`, `plugin_count` or `error.code`/`error.message`).
+The Hub tab names the registries that could not be read, and its empty state
+no longer says "connect a registry" when one is connected and failing; the
+reason is a localized line keyed on `error.code`, the server message only the
+technical detail behind it. `GET
+/api/v1/admin/registries` adds the same `status` per row, shown as a badge in
+Admin · Registries. Installing from the registry while a registry cannot be
+read answers 502 `registry_install.registry_unavailable` naming it, instead of
+404 `plugin_not_found`. Network errors now carry `err.cause`, so the log says
+`fetch failed (unexpected redirect)` or `ECONNREFUSED` instead of `fetch
+failed`.
+
+**#1483** — the default registry `hub.omadia.ai` was re-seeded on every boot
+once the list was empty, and `REGISTRY_URLS='[]'` was treated like an unset
+variable. Seeding now runs on first boot only (`seedRegistriesOnFirstBoot`,
+keyed on whether `registry.list` was ever written): a list the admin emptied
+stays empty across restarts, and `REGISTRY_URLS='[]'` starts the instance
+without a registry. Unset `REGISTRY_URLS` still seeds `hub.omadia.ai` on a
+fresh instance. DB-less boots keep re-seeding, as before.
+
+**#1487** — adding, changing or removing a registry now writes an
+`admin_audit` row (`registry.create`, `registry.update`, `registry.delete`,
+target `registry:<name>`) with the actor from `auditActorFromRequest`, and the
+url and `has_token` before and after. The token itself never appears. Admin ·
+Audit gains a "Plugin registries" filter.
+
+
+### Fixed — the plugin UI host page keeps the plugin's state, names it, and stops claiming isolation (#1480, #1479, #1501)
+
+2026-10-28. Three defects on `/plugin-ui/<pluginId>`:
+
+- **#1480** — every theme, palette or language switch reloaded the embedded
+  plugin, because `PluginUiFrame` keyed the `<iframe>` on
+  `${theme}-${palette}-${locale}` and carried the same values in its `src`.
+  The plugin lost its hash route, form input and scroll position. The key is
+  gone. A bundle that posts `{ type: 'omadia:plugin-ui:ready' }` to its parent
+  now keeps its `src`, and every change reaches it as
+  `{ type: 'omadia:plugin-ui:appearance', theme, palette, locale }`. Both
+  directions are pinned to the shell origin, and the host only accepts
+  messages from its own frame. A bundle that never sends `ready` keeps the
+  old reload, so existing plugins still follow the shell. The contract is in
+  `specs/470-dev-platform-plugin/plugin-ui-vocabulary.md`.
+- **#1479** — heading, tab title and frame title showed the raw id
+  (`@omadia/dev-platform`). They now use the label of the plugin's nav entry
+  for this page (`pluginUiNavLabel` in `web-ui/app/_lib/navigation.ts`, already
+  resolved for the locale by `GET /api/v1/ui/navigation`), so they read what
+  the nav reads. A plugin without such an entry still shows its id.
+- **#1501** — the subtitle said the view "runs in a sandboxed frame"
+  ("abgeschotteten Frame"), while the frame is `allow-same-origin
+  allow-scripts` on purpose. It now says the view runs with the operator's
+  session and the same access as the rest of the interface, and that it is not
+  isolated from it.
+
 ### Fixed — a boolean setup field with `default: "true"` installs as `true` (#1464)
 
 2026-10-28. dev-platform 0.3.5 declares `webhooks_enabled` with

@@ -242,3 +242,67 @@ describe('store page — tabs, pills and search (#1469, #1470, #1471)', () => {
     expect(mockListStorePlugins).toHaveBeenCalledWith({});
   });
 });
+
+/** Every element in the tree whose component is named `name`. */
+function elementsNamed(node: ReactNode, name: string): Array<Record<string, unknown>> {
+  if (Array.isArray(node)) return node.flatMap((n) => elementsNamed(n, name));
+  if (!isValidElement<{ children?: ReactNode }>(node)) return [];
+  const type = node.type as { name?: string };
+  const here =
+    typeof node.type === 'function' && type.name === name
+      ? [node.props as Record<string, unknown>]
+      : [];
+  return [...here, ...elementsNamed(node.props.children, name)];
+}
+
+describe('store page — registry status (#1482)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockListProfiles.mockResolvedValue({ items: PROFILES });
+  });
+
+  const failing = {
+    name: 'omadia-public',
+    ok: false,
+    checked_at: '2026-10-28T08:00:00.000Z',
+    error: { code: 'registry.index_http', message: 'GET /registry/index.json → 404' },
+  };
+
+  it('names a failing registry on the Hub tab and keeps local plugins', async () => {
+    mockListStorePlugins.mockResolvedValue({
+      items: [storePlugin('@acme/crm', 'operator')],
+      registries: [failing],
+    });
+    const tree = await StorePage({ searchParams: Promise.resolve({}) });
+    const banners = elementsNamed(tree, 'RegistryErrors');
+    expect(banners).toHaveLength(1);
+    expect(banners[0]?.failed).toEqual([failing]);
+    expect(elementsNamed(tree, 'EmptyState')[0]?.hubState).toBe('failed');
+    expect(elementsNamed(tree, 'LoadErrorState')).toEqual([]);
+  });
+
+  it('keeps "connect a registry" for an instance without registries', async () => {
+    mockListStorePlugins.mockResolvedValue({ items: [] });
+    const tree = await StorePage({ searchParams: Promise.resolve({}) });
+    expect(elementsNamed(tree, 'RegistryErrors')).toEqual([]);
+    expect(elementsNamed(tree, 'EmptyState')[0]?.hubState).toBe('none');
+  });
+
+  it('does not blame a registry that answered with nothing', async () => {
+    mockListStorePlugins.mockResolvedValue({
+      items: [],
+      registries: [{ name: 'private', ok: true, checked_at: failing.checked_at, plugin_count: 0 }],
+    });
+    const tree = await StorePage({ searchParams: Promise.resolve({}) });
+    expect(elementsNamed(tree, 'RegistryErrors')).toEqual([]);
+    expect(elementsNamed(tree, 'EmptyState')[0]?.hubState).toBe('empty');
+  });
+
+  it('shows the registry errors on the Hub tab only', async () => {
+    mockListStorePlugins.mockResolvedValue({ items: [], registries: [failing] });
+    const tree = await StorePage({
+      searchParams: Promise.resolve({ source: 'installed' }),
+    });
+    expect(elementsNamed(tree, 'RegistryErrors')).toEqual([]);
+  });
+});

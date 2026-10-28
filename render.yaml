@@ -5,7 +5,7 @@
 #   https://render.com/deploy?repo=https://github.com/byte5ai/omadia
 #
 # Mirrors docker-compose.yaml's minimal core; the optional overlays
-# (MinIO, Kroki, Ollama) are not part of the blueprint.
+# (SeaweedFS object storage, Kroki, Ollama) are not part of the blueprint.
 #
 # No secrets to paste: VAULT_KEY and CREDENTIAL_KEYCHAIN_KEY are generated
 # by Render on first sync (the GHCR image bakes NODE_ENV=production, which

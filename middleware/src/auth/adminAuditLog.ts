@@ -66,6 +66,12 @@ export type AuditAction =
   // as a child process of the middleware, so who added it belongs in the
   // trail. `after` holds name + source, never the command line.
   | 'mcp_server.stdio_create'
+  // #1487 — a plugin registry was added, changed or removed. Registries
+  // decide where installable code comes from. `before`/`after` carry the url
+  // and whether a token is set — never the token.
+  | 'registry.create'
+  | 'registry.update'
+  | 'registry.delete'
   // #1329 — public API-key lifecycle (`@omadia/channel-api` /admin/keys),
   // written through `ctx.operatorAuth.recordAdminAction`. Never carries the
   // token or its hash.
