@@ -29,12 +29,20 @@ vi.mock('next/navigation', () => ({
 }));
 
 vi.mock('next-intl/server', () => ({
+  getLocale: async () => 'en',
   getTranslations: async (namespace: string) =>
     createTranslator({
       locale: 'en',
       messages: enMessages as Record<string, unknown>,
       namespace,
     }),
+}));
+
+// The nav lookup is not what these tests are about; it would otherwise hit
+// the stubbed `fetch` and skew its call counts.
+vi.mock('@/app/_lib/navigation', () => ({
+  fetchNavEntries: async () => [],
+  pluginUiNavLabel: () => null,
 }));
 
 vi.mock('../_components/PluginUiFrame', () => ({
