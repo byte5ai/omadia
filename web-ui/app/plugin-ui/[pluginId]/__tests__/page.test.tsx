@@ -5,6 +5,9 @@ import { createTranslator } from 'next-intl';
 import { renderToPipeableStream } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { NavEntryDto } from '@/app/_lib/navigation';
+
+import deMessages from '../../../../messages/de.json';
 import enMessages from '../../../../messages/en.json';
 
 /**
@@ -36,6 +39,7 @@ vi.mock('next/navigation', () => ({
 }));
 
 vi.mock('next-intl/server', () => ({
+  getLocale: async () => 'en',
   getTranslations: async (namespace: string) =>
     createTranslator({
       locale: 'en',
@@ -50,9 +54,17 @@ vi.mock('@/app/_lib/pluginUiBundle', () => ({
   pluginUiBundleMayExist: (pluginId: string) => bundleExists(pluginId),
 }));
 
+const navEntries = vi.fn<(locale: string) => Promise<readonly NavEntryDto[]>>();
+
+// The real `pluginUiNavLabel`; only the network half is stubbed.
+vi.mock('@/app/_lib/navigation', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/app/_lib/navigation')>()),
+  fetchNavEntries: (locale: string) => navEntries(locale),
+}));
+
 vi.mock('../_components/PluginUiFrame', () => ({
-  PluginUiFrame: ({ pluginId }: { pluginId: string }) => (
-    <div data-testid="frame" data-plugin-id={pluginId} />
+  PluginUiFrame: ({ pluginId, name }: { pluginId: string; name: string }) => (
+    <div data-testid="frame" data-plugin-id={pluginId} data-name={name} />
   ),
 }));
 
@@ -61,6 +73,8 @@ const { default: PluginUiPage, generateMetadata } = await import('../page');
 beforeEach(() => {
   bundleExists.mockReset();
   bundleExists.mockResolvedValue(true);
+  navEntries.mockReset();
+  navEntries.mockResolvedValue([]);
 });
 
 const requireFromHere = createRequire(import.meta.url);
@@ -178,5 +192,59 @@ describe('/plugin-ui/[pluginId] — ids with no UI bundle (#1454)', () => {
     );
     expect(html).toContain('data-plugin-id="@omadia/example-ui"');
     expect(html).not.toContain('plugin_ui_not_found');
+  });
+});
+
+describe('/plugin-ui/[pluginId] — the plugin is named, not its id (#1479)', () => {
+  const entry = (over: Partial<NavEntryDto> = {}): NavEntryDto => ({
+    pluginId: '@omadia/dev-platform',
+    navId: 'main',
+    href: `/plugin-ui/${encodeURIComponent('@omadia/dev-platform')}`,
+    order: 100,
+    label: 'Dev Platform',
+    ...over,
+  });
+
+  it('uses the nav label in heading, tab title and frame title', async () => {
+    navEntries.mockResolvedValue([entry()]);
+    const params = paramsFor('%40omadia%2Fdev-platform');
+    const html = await renderToHtml(await PluginUiPage({ params }));
+    expect(html).toMatch(/<h1[^>]*>Dev Platform<\/h1>/);
+    expect(html).toContain('data-name="Dev Platform"');
+    // The frame still loads by id.
+    expect(html).toContain('data-plugin-id="@omadia/dev-platform"');
+    const meta = await generateMetadata({ params: paramsFor('%40omadia%2Fdev-platform') });
+    expect(meta.title).toBe('Dev Platform — Plugin UI');
+    expect(navEntries).toHaveBeenCalledWith('en');
+  });
+
+  it('ignores the same plugin’s entries for other pages and other plugins’ entries', async () => {
+    navEntries.mockResolvedValue([
+      entry({ href: '/admin/dev-platform-settings', label: 'Dev settings' }),
+      entry({ pluginId: '@omadia/other', href: '/plugin-ui/%40omadia%2Fother', label: 'Other' }),
+    ]);
+    const html = await renderToHtml(
+      await PluginUiPage({ params: paramsFor('%40omadia%2Fdev-platform') }),
+    );
+    expect(html).toMatch(/<h1[^>]*>@omadia\/dev-platform<\/h1>/);
+  });
+
+  it('falls back to the id when the plugin registered no nav entry', async () => {
+    const meta = await generateMetadata({ params: paramsFor('%40omadia%2Fdev-platform') });
+    expect(meta.title).toBe('@omadia/dev-platform — Plugin UI');
+  });
+});
+
+describe('/plugin-ui/[pluginId] — subtitle (#1501)', () => {
+  it('does not claim the frame isolates the plugin', async () => {
+    // The frame is `allow-same-origin allow-scripts` on purpose (see
+    // `PluginUiFrame.tsx`); the copy must say what that means, not "sandboxed".
+    const html = await renderToHtml(
+      await PluginUiPage({ params: paramsFor('some-plugin') }),
+    );
+    expect(html).toContain(enMessages.pluginUi.subtitle);
+    for (const subtitle of [enMessages.pluginUi.subtitle, deMessages.pluginUi.subtitle]) {
+      expect(subtitle).not.toMatch(/sandbox|abgeschotteten Frame|isolated frame/i);
+    }
   });
 });

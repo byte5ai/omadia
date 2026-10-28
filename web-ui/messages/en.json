@@ -6243,10 +6243,10 @@
     }
   },
   "pluginUi": {
-    "metaTitle": "{pluginId} — Plugin UI",
-    "title": "{pluginId}",
-    "subtitle": "This screen is supplied by the plugin and runs in a sandboxed frame.",
-    "frameTitle": "User interface of the plugin {pluginId}",
+    "metaTitle": "{name} — Plugin UI",
+    "title": "{name}",
+    "subtitle": "This screen is supplied by the plugin. It runs with your session and the same access as the rest of this interface, and it is not isolated from it.",
+    "frameTitle": "User interface of the plugin {name}",
     "loading": "Loading the plugin interface…"
   },
   "operatorTeamsSignIn": {
