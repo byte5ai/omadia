@@ -10,7 +10,7 @@
  * required" badge and the install wizard's validation drift apart silently.
  * The last test here asserts that agreement against ONE shared fixture — it is
  * the only thing standing between the two `f['required'] !== false` copies.
- * #1464 added `default` to that agreement.
+ * #1464 added `default` to that agreement; #1524 extended it to integers.
  */
 
 import { test } from 'node:test';
@@ -51,6 +51,13 @@ const SETUP_FIELDS: Array<Record<string, unknown>> = [
   { key: 'off_str', type: 'boolean', label: 'Off', required: false, default: 'false' },
   { key: 'junk', type: 'boolean', label: 'Junk', required: false, default: 'yes' },
   { key: 'mode', type: 'string', label: 'Mode', required: false, default: 'fast' },
+  // #1524 — integrations declare typed YAML defaults (`default: 200000`);
+  // `asString` used to drop them from the catalog. A quoted whole number
+  // means the same; anything else is no default.
+  { key: 'max_chars', type: 'integer', label: 'Max', required: false, default: 200000 },
+  { key: 'max_str', type: 'integer', label: 'Max', required: false, default: '50' },
+  { key: 'max_frac', type: 'integer', label: 'Max', required: false, default: 1.5 },
+  { key: 'max_junk', type: 'integer', label: 'Max', required: false, default: 'lots' },
 ];
 
 function manifest(): Record<string, unknown> {
@@ -128,6 +135,14 @@ test('#1464 — a boolean default is a real boolean, whichever way it was writte
   assert.equal(store.get('junk')?.default, undefined);
   // Non-boolean string defaults are untouched.
   assert.equal(store.get('mode')?.default, 'fast');
+});
+
+test('#1524 — an integer default is a real number on the catalog view', () => {
+  const store = loadedFields();
+  assert.equal(store.get('max_chars')?.default, 200000);
+  assert.equal(store.get('max_str')?.default, 50);
+  assert.equal(store.get('max_frac')?.default, undefined);
+  assert.equal(store.get('max_junk')?.default, undefined);
 });
 
 test('store and install-wizard paths agree on required for the SAME fixture', () => {

@@ -56,6 +56,14 @@ export interface PromoteTurnInput {
    * promotion still produces something readable in `/memories`.
    */
   palaiaExcerpt?: PalaiaExcerpt;
+  /**
+   * #1527 — set when an excerpt extractor is installed. A missing
+   * `palaiaExcerpt` then means the extraction failed (unparseable or cut-off
+   * reply, provider error), and the turn is skipped with reason='no-excerpt'
+   * instead of being stored as `insight` + a clipped prefix of the raw
+   * answer. The answer-prefix fallback stays for boots without an extractor.
+   */
+  excerptRequired?: boolean;
   /** Fallback summary source — typically the cleaned assistant answer.
    *  Only used when `palaiaExcerpt` is absent. */
   fallbackAssistantAnswer: string;
@@ -99,6 +107,7 @@ export interface PromoteTurnResult {
     | 'no-owners'
     | 'missing-turn'
     | 'tail-only'
+    | 'no-excerpt'
     | 'error';
   mkId?: string;
   significance: number | null;
@@ -199,6 +208,13 @@ export async function promoteTurnIfSignificant(
         mkId: existingMkId,
         significance,
       };
+    }
+
+    if (input.excerptRequired === true && input.palaiaExcerpt === undefined) {
+      log(
+        `[promotion] skip turn=${input.turnId} reason=no-excerpt (the excerpt extractor returned none) significance=${significance.toFixed(2)}`,
+      );
+      return { promoted: false, reason: 'no-excerpt', significance };
     }
 
     const { kind, summary, rationale } = buildPayload(

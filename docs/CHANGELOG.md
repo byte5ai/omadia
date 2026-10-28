@@ -67,6 +67,45 @@ changelog.
 `@omadia/plugin-privacy-guard` 0.11.0, `@omadia/plugin-api` 1.37.0
 (`countUnresolvedSurrogates` takes an optional `options`).
 
+### Fixed — middleware correctness: integer setup defaults, receipt chain order, fenced Haiku JSON (#1524, #1526, #1527)
+
+2026-10-28.
+
+- **Integer setup-field defaults survive the catalog (#1524).** `manifestLoader`
+  read every non-`host_list`, non-`boolean` default with `asString`, so a typed
+  `default: 200000` on a `type: integer` field (confluence 0.3.4, odoo 0.2.2)
+  vanished from the catalog, from `admin-v1` `setup_fields`, and from the
+  bundled-plugin seeding in `bootstrap.ts`. A new `integerSetupDefault` in
+  `middleware/src/plugins/setupFieldDefault.ts` (next to #1464's
+  `booleanSetupDefault`) is used by both projections, the catalog and
+  `installService.extractSetupSchema`. It keeps a whole number or a quoted
+  whole number and drops anything else. The web-ui types allow a `number`
+  default, and the operator plugin-config modal shows it.
+- **Receipt chain verification walks seq numerically (#1526).** The verifier
+  and export queries selected `seq::text AS seq` and sorted with a bare
+  `ORDER BY seq`, which Postgres binds to the text alias. The rows came back in
+  the order 1, 10, 11, …, 2, so every chain with ten or more receipts was reported
+  `BROKEN` (`seq_gap` at seq 10), and the export listed entries in text order.
+  All four queries (`receipts/verify.ts`, `receipts/verifyRoutes.ts`) now
+  order by the table-qualified bigint column. The new
+  `test/receiptChainOrder.pg.test.ts` writes twelve receipts through the real
+  store against Postgres (`PG_TEST_FLOOR` 421 → 423).
+- **Fenced Haiku JSON is parsed; a failed excerpt no longer promotes (#1527).**
+  The five Haiku helpers in `@omadia/orchestrator-extras` (excerpt extractor,
+  fact extractor, significance scorer, recall judge, inconsistency detector)
+  each had their own fence stripper. It only worked when the fence was the
+  very first and very last thing in the reply. They now share `parseLlmJson`
+  (`src/llmJson.ts`). It tries the whole reply first, then the fenced body (up
+  to the last fence, so a code block quoted in a JSON string survives), then
+  the outermost `{…}`/`[…]` span. The excerpt extractor's budget goes from 512 to 1536
+  tokens, because the prompt's own field limits overran 512 in German. A reply
+  that still fails is logged with its reason (`cut off at max_tokens=…` or
+  `no parseable JSON`). With an extractor installed, `promoteTurnIfSignificant`
+  now skips a turn that has no excerpt (`reason: 'no-excerpt'`) instead of
+  storing `insight` plus a clipped prefix of the raw answer. Boots without an
+  extractor keep the answer-prefix fallback.
+
+
 ### Fixed — built-in plugins: version after an image update, sticky uninstall, attach on install (#1505, #1481, #1498, #1491, #1499, #1484)
 
 2026-10-28. Built-ins (the packages under `middleware/packages/*`) are seeded

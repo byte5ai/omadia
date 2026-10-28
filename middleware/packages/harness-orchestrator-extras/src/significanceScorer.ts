@@ -15,6 +15,7 @@ import { collectText, textMessage } from '@omadia/llm-provider';
 import type { EntryType } from '@omadia/plugin-api';
 
 import type { SignificanceScorer } from './captureFilter.js';
+import { parseLlmJson } from './llmJson.js';
 
 export interface HaikuSignificanceScorerOptions {
   /** Provider-agnostic LLM (Anthropic adapter today). Was `anthropic` pre-phase-2. */
@@ -94,7 +95,7 @@ export function createHaikuSignificanceScorer(
         return { score: 0 };
       }
 
-      const parsed = parseJsonStrict(replyText);
+      const parsed = parseLlmJson(replyText);
       if (!parsed) {
         log(
           `[significance-scorer] non-JSON response: ${replyText.slice(0, 120)}…`,
@@ -116,17 +117,6 @@ export function createHaikuSignificanceScorer(
       return { score, suggestedEntryType };
     },
   };
-}
-
-/** Parse strict JSON; tolerate a leading/trailing fence the model might
- *  ship despite the system prompt. Returns `null` on any parse error. */
-function parseJsonStrict(raw: string): unknown {
-  const trimmed = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/```$/i, '').trim();
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    return null;
-  }
 }
 
 function clamp01(n: number): number {
