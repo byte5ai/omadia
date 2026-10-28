@@ -912,7 +912,8 @@ one rule about what counts as a runtime.
   critical advisory fails its leg unless `.github/scripts/audit-gate.mjs`
   accepts an entry for it in `.github/audit-exceptions.json`. The gate reads the
   full report together with a production-only one (`npm audit --omit=dev`), and
-  a finding in the production tree always fails. An entry names the advisory,
+  a finding in the production tree fails unless a production exception covers
+  it (next bullet). An entry names the advisory,
   the package, the workspaces and, in `via`, the devDependencies through which
   the package enters the tree. The gate takes every route from the project (the
   root or a workspace) to each vulnerable copy from `package-lock.json`,
@@ -930,11 +931,23 @@ one rule about what counts as a runtime.
   Once the full tree has findings, a registry outage during the production-only
   audit fails the leg, whatever `AUDIT_ALLOW_REGISTRY_OUTAGE` says. Exceptions
   are only for advisories that no release fixes yet: when a fixed version
-  exists, the dependency moves instead. The first entry (2026-10-04) covers
-  `braces` in the web-ui's lint chain (`eslint-config-next`,
-  `@next/eslint-plugin-next`, `fast-glob`, `micromatch`), which expands the
-  repository's own glob patterns at lint time.
-  `.github/scripts/audit-gate.test.mjs` runs in every leg before the audit.
+  exists, the dependency moves instead. The first entry (2026-10-04, removed
+  2026-10-28 once nothing matched it) covered `braces` in the web-ui's lint
+  chain. `.github/scripts/audit-gate.test.mjs` runs in every leg before the
+  audit.
+- **A finding no release fixes, in a production dependency's pinned major.**
+  An entry marked `"production": true` may cover an advisory in the production
+  tree when the fix exists only in a major the production dependency that pins
+  the package does not accept, and forcing it breaks that dependency. Its `via`
+  names the production dependencies every route starts at (same route check as
+  above, without the devDependency rule), its reason says why the vulnerable
+  code is not reachable from request data, and it expires at most 30 days after
+  its review, so it is re-checked against upstream every month. The first entry
+  (2026-10-28) covers GHSA-mrhx-c7xc-m3w5 in `zod` 3.25.x via `botbuilder`
+  4.23.3, the latest release, host-provided for the Teams channel plugin: the
+  fix is in zod 4.6.6, botbuilder throws on load under zod 4, and inbound Bot
+  Framework requests only reach `z.record(z.unknown())`, never the array
+  schemas the advisory is about.
 - **Dependabot** has an npm block for every audited directory (`/desktop`,
   `/middleware`, `/web-ui`); a new package directory gets one together with its
   audit leg. GitHub's repository-level alerting is not counted on as a
