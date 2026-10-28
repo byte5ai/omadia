@@ -355,7 +355,11 @@ describe('#1540 · raw-store readers carry the mark over', () => {
 
   it('the scratch reaper scores without the marker and stamps the memory', async () => {
     const body = `SIGNIFICANT: ${REAL} bekommt Rechnungen am 1. des Monats, netto 14 Tage, als PDF an die Buchhaltung.`;
-    const rows = [{ virtual_path: '/memories/orchestrators/a/note.md', content: markUnprotectedNote(body) }];
+    const rows = [
+      { virtual_path: '/memories/orchestrators/a/note.md', content: markUnprotectedNote(body) },
+      // A plugin's ctx.memory file: raw by construction, no marker needed.
+      { virtual_path: '/memories/orchestrators/a/plugins/crm/cache.md', content: body },
+    ];
     const pool = {
       query: async (sql: string) => (/SELECT/i.test(sql) ? { rows } : { rows: [] }),
     } as never;
@@ -383,8 +387,8 @@ describe('#1540 · raw-store readers carry the mark over', () => {
       log: () => {},
     });
     await reaper.runOnce();
-    assert.equal(created.length, 1);
-    assert.equal(created[0]?.unprotected, true);
+    assert.equal(created.length, 2);
+    assert.ok(created.every((c) => c.unprotected === true));
     assert.ok(!scored.join('').includes(UNPROTECTED_NOTE_MARKER));
     assert.ok(!created[0]?.summary.includes(UNPROTECTED_NOTE_MARKER));
   });
@@ -505,6 +509,7 @@ describe('#1540 · process provenance in the process tools', () => {
       await inTurn(PROTECTED, () => edit({ id: OPEN_PROCESS.id, visibility: 'team' })),
     ].map(String);
     assert.equal(calls.query[0]?.excludeUnprotected, true);
+    assert.ok(!shielded[2]?.includes('similarity'), shielded[2]);
     for (const out of shielded) {
       assert.ok(!out.includes('Anita'), out);
       assert.ok(!out.includes(REAL), out);

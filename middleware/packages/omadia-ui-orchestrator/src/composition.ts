@@ -137,6 +137,18 @@ function parseResult(raw: string): { tree: unknown; dataRequirements: DataRequir
   return { tree, dataRequirements: reqs };
 }
 
+/** `value` with `privacy.restore` applied to every string in it (keys stay). */
+function restoreStrings<T>(value: T, privacy: SkeletonPrivacyRun): T {
+  if (typeof value === 'string') return privacy.restore(value) as T;
+  if (Array.isArray(value)) return value.map((v: unknown) => restoreStrings(v, privacy)) as T;
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([k, v]) => [k, restoreStrings(v, privacy)]),
+    ) as T;
+  }
+  return value;
+}
+
 /**
  * Compose the skeleton-first tree. One bounded repair retry on schema failure
  * (the retry prompt carries the validator errors); deterministic fallback after
@@ -187,9 +199,7 @@ export async function composeSkeleton(opts: {
         messages: [{ role: 'user', content: user }],
         maxTokens: 2048,
       });
-      // #1540 — real values back into the skeleton's labels (identity
-      // without a privacy run, or when nothing was masked).
-      raw = opts.privacy === undefined ? result.text : opts.privacy.restore(result.text);
+      raw = result.text;
       // Latency observability: the skeleton gates the first paint, so every
       // model call logs its duration (a retry doubles the wait).
       opts.log?.(
@@ -207,9 +217,15 @@ export async function composeSkeleton(opts: {
       user = `User request: ${requestText}\nYour previous output was not valid raw JSON. Emit ONLY the JSON object.`;
       continue;
     }
+    // Validated on the model's (masked) tree, so a retry prompt built from
+    // the validator errors carries no restored value.
     const valid = validateTree(parsed.tree);
     if (valid.ok) {
-      return { ...parsed, source: 'model' };
+      // #1540 — real values back into the skeleton's string leaves, after
+      // parsing: a restored value cannot break the JSON.
+      return opts.privacy === undefined
+        ? { ...parsed, source: 'model' }
+        : { ...restoreStrings(parsed, opts.privacy), source: 'model' };
     }
     opts.log?.(`[composition] attempt ${attempt + 1}: tree schema-invalid: ${valid.errors}`);
     user = `User request: ${requestText}\nYour previous tree was schema-invalid: ${valid.errors}. Emit a corrected JSON object.`;

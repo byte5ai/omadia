@@ -44,6 +44,9 @@ import type { KnowledgeGraph, MemorableKind, Visibility } from '@omadia/plugin-a
 import type { SignificanceScorer } from './captureFilter.js';
 import { isUnprotectedNote, stripUnprotectedNoteMarker } from './noteProvenance.js';
 
+/** A plugin's `ctx.memory` tree inside an agent's scratch tree (#1540). */
+const PLUGIN_MEMORY_PATH = /^\/memories\/orchestrators\/[^/]+\/plugins\//;
+
 /** Physical prefix of the agent-scratch tree inside `memory_files`. */
 const SCRATCH_PREFIX = '/memories/orchestrators/';
 
@@ -205,8 +208,11 @@ export function createScratchPromotionReaper(
       try {
         const slug = deriveAgentSlug(row.virtual_path);
         // #1540 — a note written in an unprotected turn: score and summarise
-        // it without the marker line, and stamp the memory `unprotected`.
-        const unprotected = isUnprotectedNote(row.content);
+        // it without the marker line, and stamp the memory `unprotected`. A
+        // plugin's own `ctx.memory` file holds what the plugin fetched in
+        // clear, whatever the turn: always `unprotected`.
+        const unprotected =
+          isUnprotectedNote(row.content) || PLUGIN_MEMORY_PATH.test(row.virtual_path);
         const content = stripUnprotectedNoteMarker(row.content);
         const trimmed = content.trim();
 

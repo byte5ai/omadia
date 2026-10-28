@@ -263,9 +263,9 @@ export function createWriteProcessHandler(
     }
     if (result.reason === 'duplicate') {
       if (result.conflictingUnprotected === true && currentTurnIsShielded()) {
+        // No similarity either: probing guessed titles would read it out.
         return JSON.stringify({
           status: 'duplicate_blocked',
-          similarity: Number(result.similarity.toFixed(3)),
           note: `${WITHHELD_PROCESS_NOTICE} Er ist deinem Workflow nahezu identisch; formuliere title/steps unterscheidbarer.`,
         });
       }

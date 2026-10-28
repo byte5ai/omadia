@@ -1888,6 +1888,24 @@ promotions stored before #1536, and turns before #1507; under a shield they
 count as protected until a backfill marks them. A memory a user saves by hand
 counts as protected unless it names an unprotected turn.
 
+Accepted with notes and the canvas skeleton (#1540):
+
+- A protected turn is protected against tool results, not against the user's
+  own words: with `mask_user_prompt` off (the default) its model sees what the
+  user typed, and a note it writes from that is stored unmarked. Recalled
+  turns go back through `maskReplayedAnswer`; a note read through `memory` does
+  not.
+- The marker covers a note's content, not its path: a directory listing shows
+  file names written in an unprotected turn.
+- The marker covers the whole note. An edit from a turn without a handle (the
+  subscription CLI while a guard runs) or after a bypass marks a note that was
+  protected until then, so shielded turns lose it, a shared `core/` note
+  included.
+- The skeleton's stored-text scope masks identity shapes, the deny-list and
+  C1, not dates and amounts, which a turn masks with `mask_user_prompt` on.
+- Under a shield a plugin's `getNeighbors` drops Facts whose source turn has
+  no Turn node (a plugin's own `ingestFacts` with a synthetic id).
+
 The session transcripts under `/memories/sessions/` hold every turn with its
 real values restored, protected or not, and `memory` is intern-exempt. While a
 `privacy.redact@1` provider runs, or `OMADIA_PRIVACY_FORCE_GUARDED` is on, the

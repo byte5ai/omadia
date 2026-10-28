@@ -102,7 +102,7 @@ export class MemoryPathDenied extends Error {
             'Earlier conversations reach you through the recalled context instead.'
         : reason === 'unprotected-note'
           ? `The note ${path} was written in a conversation without the Privacy Shield and is not ` +
-              'available while the Privacy Shield is active. You may delete it or write a new note in its place.'
+              'available while the Privacy Shield is active. Do not retry it or change it; keep new notes in a file of their own.'
           : `The path ${path} is not available to the memory tool.`,
     );
     this.name = 'MemoryPathDenied';
