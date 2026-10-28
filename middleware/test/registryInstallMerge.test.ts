@@ -182,7 +182,7 @@ describe('store router · remote registry merge (C3)', () => {
     await new Promise<void>((r) => server.close(() => r()));
   });
 
-  it('merges remote plugins, local wins on collision but is tagged with hub source', async () => {
+  it('merges remote plugins, local wins on collision and keeps no hub source (#1459)', async () => {
     const body = (await (await fetch(base)).json()) as { items: Plugin[]; total: number };
     const byId = new Map(body.items.map((p) => [p.id, p]));
 
@@ -190,12 +190,13 @@ describe('store router · remote registry merge (C3)', () => {
     assert.equal(body.items.length, 3);
     assert.equal(byId.size, 3);
 
-    // collision: the LOCAL dup wins on content (name + install_state), but is
-    // now tagged with the hub `source` so it still surfaces in the Hub view.
+    // collision: the LOCAL dup wins on content (name + install_state). This
+    // router has no package provenance, so nothing says the local bytes are
+    // the hub's artifact — no `source` (#1459). Provenance-aware tagging is
+    // covered in storeCatalogProjection.test.ts.
     assert.equal(byId.get('@x/dup')!.name, 'Dup Local');
     assert.equal(byId.get('@x/dup')!.install_state, 'installed');
-    assert.equal(byId.get('@x/dup')!.source?.registry, 'omadia-public');
-    assert.equal(byId.get('@x/dup')!.source?.sha256, ZIP_SHA);
+    assert.equal(byId.get('@x/dup')!.source, undefined);
 
     // remote-only office carries a source marker + available state
     const office = byId.get('@omadia/plugin-office')!;
@@ -442,7 +443,9 @@ describe('store router · update detection (C6)', () => {
       const t = body.items.find((p) => p.id === TEAMS)!;
       assert.equal(t.install_state, 'update-available');
       assert.equal(t.available_version, '0.11.0');
-      assert.equal(t.source?.registry, 'omadia-public');
+      // #1459 — an update is offered whatever the installed bytes' origin;
+      // the hub `source` tag needs provenance this fixture does not have.
+      assert.equal(t.source, undefined);
     } finally {
       await new Promise<void>((r) => server.close(() => r()));
     }
@@ -459,7 +462,7 @@ describe('store router · update detection (C6)', () => {
       const t = body.items.find((p) => p.id === TEAMS)!;
       assert.equal(t.install_state, 'installed');
       assert.equal(t.available_version, undefined);
-      assert.equal(t.source?.registry, 'omadia-public', 'still tagged with hub source');
+      assert.equal(t.source, undefined, 'no hub source without provenance (#1459)');
     } finally {
       await new Promise<void>((r) => server.close(() => r()));
     }

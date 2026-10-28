@@ -144,3 +144,101 @@ describe('store page — footer (#1383)', () => {
     expect(text).toContain('footerSourceValue');
   });
 });
+
+/** Every element in the tree (async server components stay unrendered). */
+function allElements(
+  node: ReactNode,
+): Array<{ type: unknown; props: Record<string, unknown> }> {
+  if (Array.isArray(node)) return node.flatMap(allElements);
+  if (!isValidElement<{ children?: ReactNode }>(node)) return [];
+  return [
+    { type: node.type, props: node.props as Record<string, unknown> },
+    ...allElements(node.props.children),
+  ];
+}
+
+function sourceTabProps(node: ReactNode): Record<string, unknown> {
+  const tabs = allElements(node).find(
+    (el) => typeof el.type === 'function' && el.type.name === 'SourceTabs',
+  );
+  if (!tabs) throw new Error('SourceTabs not rendered');
+  return tabs.props;
+}
+
+const HUB_SOURCE = {
+  registry: 'omadia-public',
+  download_url: 'https://hub.test/x.zip',
+  sha256: 'a'.repeat(64),
+};
+
+function catalogPlugin(id: string, over: Partial<Plugin>): Plugin {
+  return { ...storePlugin(id, 'operator'), ...over } as Plugin;
+}
+
+describe('store page — tabs, pills and search (#1469, #1470, #1471)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockListProfiles.mockResolvedValue({ items: [] });
+  });
+
+  it('counts an installed hub plugin once, under Installed (#1469)', async () => {
+    const items = [
+      catalogPlugin('@a/installed-from-hub', { install_state: 'installed', source: HUB_SOURCE }),
+      catalogPlugin('@a/update', { install_state: 'update-available', source: HUB_SOURCE }),
+      catalogPlugin('@a/hub-only', { install_state: 'available', source: HUB_SOURCE }),
+      catalogPlugin('@a/upload', { install_state: 'available' }),
+    ];
+    mockListStorePlugins.mockResolvedValue({ items });
+    const props = sourceTabProps(await StorePage({ searchParams: Promise.resolve({}) }));
+    expect(props).toMatchObject({ hubCount: 1, localCount: 1, installedCount: 2 });
+    expect(
+      (props.hubCount as number) +
+        (props.localCount as number) +
+        (props.installedCount as number),
+    ).toBe(items.length);
+  });
+
+  it('renders a pill for every plugin kind and highlights ?kind=extension (#1470)', async () => {
+    mockListStorePlugins.mockResolvedValue({
+      items: [catalogPlugin('@a/llm', { kind: 'extension', install_state: 'available' })],
+    });
+    const tree = await StorePage({
+      searchParams: Promise.resolve({ source: 'local', kind: 'extension' }),
+    });
+    const pills = allElements(tree)
+      .map((el) => el.props.href)
+      .filter((href): href is string => typeof href === 'string' && href.includes('kind='));
+    expect(pills).toEqual(
+      expect.arrayContaining([
+        '/store?source=local&kind=tool',
+        '/store?source=local&kind=extension',
+      ]),
+    );
+    const active = allElements(tree).find(
+      (el) => el.props.href === '/store?source=local&kind=extension',
+    );
+    expect(active?.props['aria-current']).toBe('page');
+  });
+
+  it('passes ?q to the API and keeps it in every tab and pill link (#1471)', async () => {
+    mockListStorePlugins.mockResolvedValue({ items: [] });
+    const tree = await StorePage({
+      searchParams: Promise.resolve({ q: '  odoo  ', source: 'installed' }),
+    });
+    expect(mockListStorePlugins).toHaveBeenCalledWith({ search: 'odoo' });
+    expect(sourceTabProps(tree).query).toBe('odoo');
+    const pillHrefs = allElements(tree)
+      .map((el) => el.props.href)
+      .filter((href): href is string => typeof href === 'string' && href.includes('kind='));
+    expect(pillHrefs.length).toBeGreaterThan(0);
+    for (const href of pillHrefs) expect(href).toContain('q=odoo');
+    const input = allElements(tree).find((el) => el.props.name === 'q');
+    expect(input?.props.defaultValue).toBe('odoo');
+  });
+
+  it('lists without a search parameter when ?q is absent', async () => {
+    mockListStorePlugins.mockResolvedValue({ items: [] });
+    await StorePage({ searchParams: Promise.resolve({}) });
+    expect(mockListStorePlugins).toHaveBeenCalledWith({});
+  });
+});

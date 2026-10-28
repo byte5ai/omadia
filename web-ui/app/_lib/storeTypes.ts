@@ -104,6 +104,10 @@ export interface OAuthProviderDescriptor {
 }
 
 export interface PluginPermissionsSummary {
+  /** Epic #470 C7 — the plugin asks to own tables in the operator's database
+   *  (`permissions.sql`). Present only when declared. Rendered on the detail
+   *  page so a hub plugin's request is visible before install (#1457). */
+  sql?: { ledger: string; migrations?: string; handoff?: string };
   memory_reads: string[];
   memory_writes: string[];
   graph_reads: string[];
@@ -291,9 +295,12 @@ export interface Plugin {
    *  from a pre-OM-16 middleware, in which case the UI falls back to the old
    *  install-state-only rendering. */
   readiness?: PluginReadiness;
-  /** Present only for entries sourced from a remote registry that are not yet
-   *  ingested locally. Drives the remote-install flow (fetch-then-ingest
-   *  before the normal install job). Mirrors middleware admin-v1. */
+  /** Present when the bytes are (or would be) a remote registry's artifact:
+   *  hub-only entries, which the detail page installs fetch-then-ingest, and
+   *  packages downloaded from that registry. Absent on uploads and built-ins,
+   *  even when the hub lists the same id (#1459). Decides the store tab
+   *  together with `install_state` (`storeTab`, #1469). Mirrors middleware
+   *  admin-v1. */
   source?: {
     registry: string;
     download_url: string;

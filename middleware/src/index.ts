@@ -5070,6 +5070,9 @@ async function main(): Promise<void> {
       catalog: pluginCatalog,
       registry: installedRegistry,
       client: registryClient,
+      // #1459 — provenance of ingested packages: only a hub download carries
+      // the hub `source` tag, never an operator upload of the same id.
+      packages: uploadedPackageStore,
       pluginStatusRegistry,
       // OM-16 — key-name-only vault access so the store can report whether an
       // installed plugin is actually configured (never reads secret VALUES).

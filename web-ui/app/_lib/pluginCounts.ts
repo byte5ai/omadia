@@ -90,3 +90,21 @@ export function isOperatorInstalled(plugin: {
   if (!plugin.install_origin) return true;
   return plugin.install_origin === 'operator';
 }
+
+/** The store's three source tabs. */
+export type StoreTab = 'hub' | 'local' | 'installed';
+
+/**
+ * #1469 — the ONE tab a plugin belongs to, so the three tab counts add up to
+ * the catalog. Installed wins (an installed plugin the hub also offers used to
+ * count under "Registry" and "Installed" at once); otherwise the hub `source`
+ * decides, which the middleware sets only when the bytes are the hub's
+ * artifact (#1459), so an operator upload lands under "Local" next to the
+ * dropzone it came from.
+ */
+export function storeTab(
+  plugin: Pick<Plugin, 'install_state' | 'source'>,
+): StoreTab {
+  if (isInstalled(plugin)) return 'installed';
+  return plugin.source != null ? 'hub' : 'local';
+}

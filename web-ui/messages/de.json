@@ -4120,7 +4120,15 @@
       "errorTitle": "Katalog konnte nicht geladen werden.",
       "errorHint": "Prüfe, ob die Middleware erreichbar ist und der Endpoint <endpoint>/api/v1/store/plugins</endpoint> antwortet.",
       "footerSource": "Quelle:",
-      "footerSourceValue": "verbundene Registries und hochgeladene Pakete"
+      "footerSourceValue": "verbundene Registries und hochgeladene Pakete",
+      "search": {
+        "label": "Store durchsuchen",
+        "placeholder": "Nach Name, ID oder Beschreibung suchen",
+        "submit": "Suchen",
+        "clear": "Suche zurücksetzen",
+        "emptyTitle": "Nichts passt zu „{query}“.",
+        "emptyBody": "Versuchen Sie ein anderes Wort oder <clearLink>setzen Sie die Suche zurück</clearLink>."
+      }
     },
     "detail": {
       "notFoundTitle": "Plugin nicht gefunden · Store",
@@ -4164,7 +4172,8 @@
         "publicPathsBody": "Dieses Plugin möchte die folgenden URL-Präfixe ohne Operator-Sitzung beantworten. Jede und jeder mit Zugriff auf diese Installation erreicht sie, und das Plugin allein verantwortet die Authentifizierung dieser Anfragen.",
         "publicPathsNotGranted": "Deklarieren ist nicht Erteilen: Ein Präfix ist erst erreichbar, wenn Sie zustimmen. Die Zustimmung wird automatisch entzogen, sobald das Plugin deaktiviert wird.",
         "none": "Keine Berechtigungen deklariert.",
-        "runtimeCredentials": "Laufzeit-Credentials"
+        "runtimeCredentials": "Laufzeit-Credentials",
+        "sqlNotGranted": "Deklarieren ist nicht Erteilen: Das Plugin erhält erst eine Datenbankverbindung, wenn Sie nach der Installation unter „Freigaben“ zustimmen."
       },
       "capabilities": {
         "provides": "Liefert",
@@ -4173,7 +4182,7 @@
         "noRequirements": "Keine Voraussetzungen.",
         "installHint": "Beim Install prüft die Middleware diese Voraussetzungen transitiv. Fehlt ein Provider, öffnet sich ein Wizard mit den passenden Plugins aus dem Katalog."
       },
-      "sectionGrants": "Berechtigungen",
+      "sectionGrants": "Freigaben",
       "footerManifestLegacy": "Manifest: Altformat",
       "footerManifestSchema": "Manifest: Schema-Version {version}"
     },
@@ -4191,7 +4200,8 @@
           "end_user": "Einrichtung durch Endnutzer"
         },
         "minutes": "ca. {minutes} Min"
-      }
+      },
+      "hubChip": "Hub · {registry}"
     },
     "stateBadge": {
       "available": "Verfügbar",
@@ -4419,7 +4429,7 @@
       "iframeTitle": "{plugin} Admin-UI"
     },
     "grants": {
-      "stepTitle": "Berechtigungen",
+      "stepTitle": "Freigaben",
       "stepIntro": "Dieses Plugin bittet um Zugriffe, die nur Sie erteilen können. Nichts davon ist durch die Installation bereits erteilt, und jede Freigabe lässt sich später auf der Plugin-Seite wieder zurücknehmen.",
       "sqlTitle": "Eigene Datenbanktabellen",
       "sqlBody": "Das Plugin erhält eine Verbindung zu Ihrer Datenbank und besitzt eigene Tabellen — es legt sie selbst an und migriert sie selbst. Auf Tabellen von omadia oder anderen Plugins kann es weder lesend noch schreibend zugreifen.",
@@ -4433,16 +4443,16 @@
       "currentNotGranted": "Aktuell nicht freigegeben",
       "grantAndActivate": "Freigeben & aktivieren",
       "skip": "Überspringen",
-      "skippedBody": "Es wurde nichts freigegeben. Sie können die Freigabe jederzeit auf der Plugin-Seite unter „Berechtigungen“ nachholen — eine Neuinstallation ist dafür nicht nötig.",
+      "skippedBody": "Es wurde nichts freigegeben. Sie können die Freigabe jederzeit auf der Plugin-Seite unter „Freigaben“ nachholen — eine Neuinstallation ist dafür nicht nötig.",
       "apply": "Übernehmen",
       "close": "Schließen",
-      "openPanel": "Berechtigungen öffnen",
+      "openPanel": "Freigaben öffnen",
       "saving": "Wird gespeichert und neu aktiviert…",
       "saved": "Gespeichert",
-      "loading": "Berechtigungen werden geladen…",
-      "loadFailed": "Die Berechtigungen dieses Plugins konnten nicht geladen werden.",
-      "grantFailed": "Die Berechtigungen konnten nicht gespeichert werden.",
-      "nothingDeclared": "Dieses Plugin fragt keine besonderen Berechtigungen an.",
+      "loading": "Freigaben werden geladen…",
+      "loadFailed": "Die Freigaben für dieses Plugin konnten nicht geladen werden.",
+      "grantFailed": "Die Freigaben konnten nicht gespeichert werden.",
+      "nothingDeclared": "Keine Freigabe nötig: Dieses Plugin fordert weder eigene Datenbanktabellen noch öffentliche Pfade an. Seine übrigen Berechtigungen stehen unter „Berechtigungen“.",
       "state": {
         "active": "Aktiv — das Plugin läuft mit den erteilten Berechtigungen.",
         "errored": "Läuft nicht. Das Plugin konnte nach der letzten Änderung nicht starten.",
