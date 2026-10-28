@@ -1,3 +1,4 @@
+import { SUM_PLACEHOLDER, supportedLocale } from './fastPath.js';
 import { parseRefreshSource, type RefreshSource } from './refreshRecipes.js';
 import type { SkeletonPrivacyRun } from './skeletonPrivacy.js';
 import { validateTree } from './treeValidator.js';
@@ -18,8 +19,20 @@ export interface CompositionLlm {
     system?: string;
     messages: ReadonlyArray<{ role: 'user' | 'assistant'; content: string }>;
     maxTokens?: number;
+    effort?: 'low' | 'medium' | 'high' | 'xhigh';
+    thinking?: 'off';
   }): Promise<{ text: string }>;
 }
+
+/**
+ * The composer call gates the first paint of EVERY canvas turn, so it asks
+ * for the lowest-latency reasoning: thinking off where the model accepts it
+ * (Haiku 5.5 — on by default there) and low effort as the lever every
+ * effort-capable model honours. Both are hints the provider ignores where
+ * they do not apply. Composing a skeleton is pattern-following, not
+ * reasoning — a measured 3.4–10 s on adaptive thinking.
+ */
+export const COMPOSER_REASONING = { effort: 'low', thinking: 'off' } as const;
 
 /** What the skeleton promised the user — handed to the delegated main turn as
  *  the `[canvas-context]` block (the requirement-handoff contract). */
@@ -39,8 +52,11 @@ export interface SkeletonResult {
   tree: unknown;
   dataRequirements: DataRequirement[];
   source: 'model' | 'fallback';
-  /** fast-path prose template in the user's language; carries `{count}`. */
+  /** fast-path prose template in the user's language; carries `{count}`
+   *  and/or `{sum:<fieldKey>}`. */
   summary?: string;
+  /** BCP-47 tag the composer declared for number formatting (`{sum:…}`). */
+  locale?: string;
 }
 
 /** A tool the composer may plan a fast-path `fetch` for: its name and a
@@ -60,10 +76,10 @@ function fastPathPromptSection(tools: readonly FastPathToolSpec[]): string {
 
 FAST PATH (optional — same JSON object, two extra keys): when the request is answered by exactly ONE read query per data container with one of the tools below (plus at most a simple equality/date-part post-filter), add to that dataRequirements entry:
   "fetch": { "tool", "input": <the EXACT tool input>, "map": { fieldKey: <record attribute> }, "rowKey"?: <attribute with a stable id>, "itemsPath"?: <dot-path to the record array>, "filter"?: [ { "field": <attribute>, "datePart": "year"|"month"|"day", "eq": <integer> } | { "field": <attribute>, "eq": <string|number|boolean> } ] }
-and a top-level "summary": ONE plain sentence in the user's language containing the placeholder {count} (= number of rows of the FIRST dataRequirement after the filter), correct for any count including 0 — e.g. "{count} Mitarbeitende haben im Januar Geburtstag.". The summary states ONLY what the query guarantees; never invent figures.
+and a top-level "summary": ONE plain sentence in the user's language with placeholders computed from the rows of the FIRST dataRequirement after the filter — {count} (= number of rows) and/or {sum:<fieldKey>} (= total of that container's NUMERIC column, e.g. an open amount) — correct for any count including 0, e.g. "{count} Mitarbeitende haben im Januar Geburtstag." or "{count} offene Posten über insgesamt {sum:amount} €.". With {sum:…} also add a top-level "locale" (BCP-47 of the user's language, e.g. "de-DE", "en-US") — the number is formatted for it; put a currency only as plain text. A {sum:…} over money also needs the record's "currency_id" in the query's fields: the total renders only when every row has ONE currency (otherwise the full agent answers). The summary states ONLY what the query guarantees; never invent figures.
 - "map" covers EVERY fieldKey of the container's columns. A map value may be a dot-path into the record (e.g. "department_id.1").
 - "filter" is for what the tool cannot filter itself (e.g. a birthday MONTH); put everything else into the tool's own query.
-- Express relative periods time-safely or omit fetch. OMIT fetch (and summary) whenever the request needs reasoning, joins, aggregation, several steps, a tool not listed, or you are unsure of the field names — the full agent then handles it. A wrong fetch is worse than none.
+- Express relative periods time-safely (a tool's relative-date syntax, e.g. "{today}" below) or omit fetch. OMIT fetch (and summary) whenever the request needs reasoning, joins, aggregation beyond {count}/{sum:…}, several steps, a tool not listed, or you are unsure of the field names — the full agent then handles it. A wrong fetch is worse than none.
 TOOLS:
 ${tools.map((t) => `- ${t.spec}`).join('\n')}`;
 }
@@ -83,12 +99,13 @@ function withFetchPlans(
   });
 }
 
+/** Kept only with at least one placeholder — a fixed sentence could not be
+ *  correct for every result. */
 function parseSummary(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   const s = value.trim();
-  return s.length > 0 && s.length <= MAX_SUMMARY_CHARS && s.includes(COUNT_PLACEHOLDER)
-    ? s
-    : undefined;
+  if (s.length === 0 || s.length > MAX_SUMMARY_CHARS) return undefined;
+  return s.includes(COUNT_PLACEHOLDER) || new RegExp(SUM_PLACEHOLDER.source).test(s) ? s : undefined;
 }
 
 export const FALLBACK_SKELETON = {
@@ -175,7 +192,7 @@ function extractJsonPayload(raw: string): string {
 function parseResult(
   raw: string,
   allowedFetchTools: ReadonlySet<string>,
-): { tree: unknown; dataRequirements: DataRequirement[]; summary?: string } | null {
+): Omit<SkeletonResult, 'source'> | null {
   let obj: unknown;
   try {
     obj = JSON.parse(extractJsonPayload(raw));
@@ -183,10 +200,11 @@ function parseResult(
     return null;
   }
   if (typeof obj !== 'object' || obj === null) return null;
-  const { tree, dataRequirements, summary } = obj as {
+  const { tree, dataRequirements, summary, locale } = obj as {
     tree?: unknown;
     dataRequirements?: unknown;
     summary?: unknown;
+    locale?: unknown;
   };
   if (tree === undefined) return null;
   const reqs = Array.isArray(dataRequirements)
@@ -198,11 +216,13 @@ function parseResult(
           Array.isArray((r as DataRequirement).fields),
       )
     : [];
-  const parsedSummary = parseSummary(summary);
+  const parsedSummary = allowedFetchTools.size > 0 ? parseSummary(summary) : undefined;
+  const parsedLocale = parsedSummary !== undefined ? supportedLocale(locale) : undefined;
   return {
     tree,
     dataRequirements: withFetchPlans(reqs, allowedFetchTools),
-    ...(parsedSummary !== undefined && allowedFetchTools.size > 0 ? { summary: parsedSummary } : {}),
+    ...(parsedSummary !== undefined ? { summary: parsedSummary } : {}),
+    ...(parsedLocale !== undefined ? { locale: parsedLocale } : {}),
   };
 }
 
@@ -275,6 +295,7 @@ export async function composeSkeleton(opts: {
         system,
         messages: [{ role: 'user', content: user }],
         maxTokens: 2048,
+        ...COMPOSER_REASONING,
       });
       raw = result.text;
       // Latency observability: the skeleton gates the first paint, so every

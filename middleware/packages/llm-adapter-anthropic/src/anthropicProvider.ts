@@ -488,6 +488,27 @@ function carriesReasoning(req: LlmRequest): boolean {
   );
 }
 
+/**
+ * Model-id fragments that think adaptively by default AND accept
+ * `thinking: {type:'disabled'}` — only at effort `high` or below. An
+ * allowlist: Opus 5.5 / Fable reject `disabled` at every effort (400),
+ * Sonnet 5.5 needs `between_tools` instead, and models that do not think
+ * unless asked (Opus 4.x, Haiku 4.5) need nothing. Extend only after
+ * checking the model's thinking rules.
+ */
+const THINKING_OFF_SUPPORTED = ['haiku-5-5'];
+
+/** Whether a `thinking: 'off'` hint becomes `{type:'disabled'}` here. Never
+ *  while replaying thinking blocks (those need the adaptive field). */
+function disablesThinking(req: LlmRequest): boolean {
+  return (
+    req.thinking === 'off' &&
+    THINKING_OFF_SUPPORTED.some((m) => req.model.includes(m)) &&
+    req.effort !== 'xhigh' &&
+    !carriesReasoning(req)
+  );
+}
+
 function buildParams(req: LlmRequest): Record<string, unknown> {
   const system = buildSystem(req);
   const toolChoice = effectiveToolChoice(req);
@@ -515,6 +536,7 @@ function buildParams(req: LlmRequest): Record<string, unknown> {
           },
         }
       : {}),
+    ...(disablesThinking(req) ? { thinking: { type: 'disabled' } } : {}),
     // Sending a temperature a model no longer honours is a hard 400, not a
     // warning. Callers ask for determinism (`temperature: 0`) on paths where
     // an exception degrades to fail-open — the security screener is one — so
