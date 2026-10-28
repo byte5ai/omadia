@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/plugin-privacy-guard"
   name: "Privacy Guard"
-  version: "0.10.1"
+  version: "0.11.0"
   kind: "tool"
   domain: "privacy.redact"
   description:
@@ -70,6 +70,9 @@ setup:
       default: ""
     - key: "custom_patterns"
       type: "string"
+      # One regex per line — ';' is regex syntax, so newlines are the only
+      # separator and the field must accept them (#1525).
+      multiline: true
       label:
         en: "Custom deny-list patterns (advanced)"
         de: "Eigene Muster für die Deny-Liste (erweitert)"

@@ -53,6 +53,18 @@ function markerFor(type: string): string {
   return `[masked:${safe.length > 0 ? safe : 'pii'}]`;
 }
 
+const MARKER = /\[masked:[A-Za-z0-9_-]+\]/g;
+
+/**
+ * `text` with every `[masked:<type>]` marker blanked, for the residual check
+ * (#1529). The marker is fixed text: a deny-list term `custom` or `mask`
+ * found inside `[masked:custom]` is no surviving value, and must not withhold
+ * the error.
+ */
+export function withoutMaskMarkers(text: string): string {
+  return text.replace(MARKER, '\u0000');
+}
+
 /**
  * The C0 regex baseline as tool-error text needs it: identity types only, and
  * no hit that lies entirely inside a date or a UUID-shaped token.

@@ -56,6 +56,9 @@ export interface PluginSetupField {
   /** Holds multiple selected values (stored as a JSON-encoded `string[]`).
    *  Only meaningful with `options_provider`. */
   multi?: boolean;
+  /** #1525 — `string` / `secret` only: one entry per line, edited in a
+   *  textarea. Mirrors middleware admin-v1. */
+  multiline?: boolean;
   /** OM-16 — required-by-default: a manifest field that omits `required` IS
    *  required. Absent on payloads from a pre-OM-16 middleware. */
   required?: boolean;

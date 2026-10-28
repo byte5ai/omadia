@@ -1251,13 +1251,52 @@ export class PromptMaskBlockedError extends Error {
   }
 }
 
-/** User-facing answer for a prompt-mask-blocked turn. Deliberately generic —
- *  it must not echo any detected value. Exported for the verifier wrapper,
- *  which must not treat this refusal as a corrected answer. */
-export const PROMPT_MASK_BLOCKED_ANSWER =
+const PROMPT_MASK_BLOCKED_ANSWER_DE =
+  'Diese Nachricht konnte nicht verarbeitet werden: Der Datenschutz für ' +
+  'deinen Text war nicht sicherzustellen (die Maskierung ist fehlgeschlagen), ' +
+  'deshalb wurde sie nicht an das Sprachmodell gesendet. Versuche es bitte ' +
+  'erneut oder wende dich an deinen Betreiber.';
+const PROMPT_MASK_BLOCKED_ANSWER_EN =
   'This message could not be processed: privacy protection for your text ' +
   'could not be guaranteed (prompt masking failed), so it was not sent to ' +
   'the language model. Please try again or contact your operator.';
+
+/** User-facing answer for a prompt-mask-blocked turn. Deliberately generic —
+ *  it must not echo any detected value. Both languages, like
+ *  {@link MODEL_REFUSAL_NOTICE}: the turn persists this form, delivery swaps
+ *  in the turn's language ({@link localizeRefusalNotice}, #1529). Exported for
+ *  the verifier wrapper, which must not treat this refusal as a corrected
+ *  answer ({@link isPromptMaskBlockedNotice}). */
+export const PROMPT_MASK_BLOCKED_ANSWER = `${PROMPT_MASK_BLOCKED_ANSWER_DE} / ${PROMPT_MASK_BLOCKED_ANSWER_EN}`;
+
+/** True when `text` is the prompt-mask refusal, in either delivered language
+ *  or in the persisted bilingual form. */
+export function isPromptMaskBlockedNotice(text: string): boolean {
+  return (
+    text === PROMPT_MASK_BLOCKED_ANSWER ||
+    text === PROMPT_MASK_BLOCKED_ANSWER_DE ||
+    text === PROMPT_MASK_BLOCKED_ANSWER_EN
+  );
+}
+
+const PSEUDONYM_UNRESOLVED_NOTICE_DE =
+  'Hinweis: Das Sprachmodell hat Platzhalter, die für deine Angaben standen, ' +
+  'umgeschrieben; nicht alle ließen sich auf deine Originalwerte zurückführen. ' +
+  'Namen, E-Mail-Adressen oder Nummern in dieser Antwort können deshalb ' +
+  'Platzhalter statt echter Werte sein.';
+const PSEUDONYM_UNRESOLVED_NOTICE_EN =
+  'Note: the language model rewrote placeholders that stood for your ' +
+  'details, and not all of them could be mapped back to your original ' +
+  'values. Names, e-mail addresses or numbers in this answer may therefore ' +
+  'be placeholders rather than real values.';
+
+/**
+ * #1528 — appended to an answer that still carries a prompt surrogate after
+ * restore (the model rewrote one beyond what restore recognizes). Without it
+ * the user read the placeholder as their own value. Bilingual as persisted,
+ * localized at delivery like the refusals.
+ */
+export const PSEUDONYM_UNRESOLVED_NOTICE = `${PSEUDONYM_UNRESOLVED_NOTICE_DE} / ${PSEUDONYM_UNRESOLVED_NOTICE_EN}`;
 
 /**
  * #1094 — the neutral, language-free stand-in for a degraded turn's answer.
@@ -1419,6 +1458,29 @@ async function screeningBundleForWire(
     priorTurns,
     attachments,
   });
+}
+
+/**
+ * #361 / #1528 — restore the turn's prompt surrogates over its final answer,
+ * and say so when some could not be restored: the model rewrote a
+ * placeholder beyond what restore recognizes ("1. Januar 1970" for
+ * "01.01.1970", a name read out of an e-mail), and without the note the user
+ * reads it as their own value. Unreadable date/amount literals do not count
+ * (`unreadableLiterals: false`): they are hits only for the fail-closed
+ * verifier, and would put the note under answers that merely name a month.
+ */
+async function restoreAnswerForUser(
+  privacy: PrivacyTurnHandle,
+  answer: string,
+): Promise<string> {
+  const restored = await privacy.restorePromptPseudonyms(answer);
+  const unresolved =
+    (await privacy.countUnresolvedSurrogates?.(restored, { unreadableLiterals: false })) ?? 0;
+  if (unresolved === 0 || restored.includes(PSEUDONYM_UNRESOLVED_NOTICE)) return restored;
+  console.warn(
+    `[orchestrator] answer keeps ${String(unresolved)} unresolved prompt surrogate(s) — notice appended`,
+  );
+  return `${restored}\n\n${PSEUDONYM_UNRESOLVED_NOTICE}`;
 }
 
 /**
@@ -1839,17 +1901,28 @@ const MODEL_REFUSAL_NOTICE_EN =
  */
 export const MODEL_REFUSAL_NOTICE = `${MODEL_REFUSAL_NOTICE_DE} / ${MODEL_REFUSAL_NOTICE_EN}`;
 
+/** Every notice a turn persists in both languages, as
+ *  `[bilingual, de, en]`. The model refusal (#1401), the prompt-mask refusal
+ *  (#1529) and the unresolved-placeholder note (#1528). */
+const BILINGUAL_NOTICES: ReadonlyArray<readonly [string, string, string]> = [
+  [MODEL_REFUSAL_NOTICE, MODEL_REFUSAL_NOTICE_DE, MODEL_REFUSAL_NOTICE_EN],
+  [PROMPT_MASK_BLOCKED_ANSWER, PROMPT_MASK_BLOCKED_ANSWER_DE, PROMPT_MASK_BLOCKED_ANSWER_EN],
+  [PSEUDONYM_UNRESOLVED_NOTICE, PSEUDONYM_UNRESOLVED_NOTICE_DE, PSEUDONYM_UNRESOLVED_NOTICE_EN],
+];
+
 /**
- * #1401 — replace the bilingual refusal notice in a delivered answer with the
+ * #1401 — replace the bilingual refusal notices in a delivered answer with the
  * turn's language. Same locale rule as the AI-Act marking and the
  * turn-incomplete notice: `en*` → English, anything else (incl. unknown) →
  * German. An answer without the notice is returned unchanged.
  */
 export function localizeRefusalNotice(answer: string, locale: string | undefined): string {
-  if (!answer.includes(MODEL_REFUSAL_NOTICE)) return answer;
-  const notice =
-    locale !== undefined && /^en\b/i.test(locale) ? MODEL_REFUSAL_NOTICE_EN : MODEL_REFUSAL_NOTICE_DE;
-  return answer.split(MODEL_REFUSAL_NOTICE).join(notice);
+  const en = locale !== undefined && /^en\b/i.test(locale);
+  let out = answer;
+  for (const [bilingual, de, english] of BILINGUAL_NOTICES) {
+    if (out.includes(bilingual)) out = out.split(bilingual).join(en ? english : de);
+  }
+  return out;
 }
 
 /**
@@ -5073,7 +5146,7 @@ export class Orchestrator {
           try {
             result = {
               ...result,
-              answer: await privacyHandle.restorePromptPseudonyms(result.answer),
+              answer: await restoreAnswerForUser(privacyHandle, result.answer),
             };
           } catch (err) {
             console.warn(
@@ -7498,7 +7571,7 @@ export class Orchestrator {
           try {
             doneEvent = {
               ...doneEvent,
-              answer: await privacyHandle.restorePromptPseudonyms(doneEvent.answer),
+              answer: await restoreAnswerForUser(privacyHandle, doneEvent.answer),
             };
           } catch (err) {
             console.warn(
