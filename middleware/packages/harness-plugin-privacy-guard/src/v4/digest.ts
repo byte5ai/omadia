@@ -147,5 +147,14 @@ export function digestToToolResultText(digest: Digest): string {
     '  name on aggregated rows, join the result back to a dataset that',
     '  still carries the identity column.',
   ].join('\n');
-  return `${header}\n\n${JSON.stringify(digest)}`;
+  // An empty result is a fact the user must hear, not something to render:
+  // without this line the header's "never say it cannot be shown" pushed
+  // the model into a blind, contentless v4_render_answer list (#1467).
+  const empty =
+    digest.rowCount === 0
+      ? '\n\nrowCount is 0: this dataset holds NO records. Do not call ' +
+        'v4_render_answer for this dataset — tell the user plainly that ' +
+        'there is no matching data.'
+      : '';
+  return `${header}${empty}\n\n${JSON.stringify(digest)}`;
 }
