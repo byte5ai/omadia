@@ -1,6 +1,6 @@
 #!/usr/bin/env tsx
 /**
- * One-shot: install a 90-day expiration rule on the Tigris (or local MinIO)
+ * One-shot: install a 90-day expiration rule on the Tigris (or local SeaweedFS)
  * diagrams bucket.
  *
  * Runs against whatever S3 endpoint the standard Tigris env vars point at:
@@ -13,7 +13,8 @@
  *   fly ssh console -a <middleware-app> \
  *     -C 'sh -c "cd /app && node dist/scripts/setup-tigris-lifecycle.js"'
  *
- * Local (against compose.yml's MinIO — already provisioned by minio-init):
+ * Local (against docker-compose.storage.yaml's SeaweedFS — already provisioned
+ * by s3-init; set the four env vars from middleware/.env.example first):
  *   cd middleware && npx tsx scripts/setup-tigris-lifecycle.ts
  */
 import {
@@ -49,7 +50,7 @@ async function main(): Promise<void> {
       Bucket: bucket,
       LifecycleConfiguration: {
         // Tigris allows exactly one rule per bucket; this one mirrors the
-        // local minio-init so dev + prod share semantics.
+        // local s3-init so dev + prod share semantics.
         Rules: [
           {
             ID: 'expire-90d',

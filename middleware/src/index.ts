@@ -1906,7 +1906,7 @@ async function main(): Promise<void> {
   refreshSharedAnthropicClientRef = () => sharedAnthropicClientRefresher.refresh();
 
   // ── Vault off-site backup ─────────────────────────────────────────────────
-  // Only starts when VAULT_BACKUP_ENABLED=true AND Tigris/MinIO credentials
+  // Only starts when VAULT_BACKUP_ENABLED=true AND Tigris/SeaweedFS credentials
   // are present. Uploads ciphertext only; the master key never leaves the
   // machine. Disabled state is still observable via /api/v1/admin/vault-status.
   let vaultBackupService: VaultBackupService | null = null;
@@ -2061,7 +2061,7 @@ async function main(): Promise<void> {
   // (S+8 sub-commit 2b). Mirrors the post-activate consumption pattern used
   // by `memoryStore`, `microsoft365.graph`, `confluence.client`, etc.
 
-  // --- Attachment store (S3 / Tigris / MinIO, or a local directory) ---------
+  // --- Attachment store (S3 / Tigris / SeaweedFS, or a local directory) ---------
   // The render_diagram tool + /diagrams route are contributed by the
   // @omadia/diagrams plugin (middleware/packages/harness-diagrams), which
   // builds its own S3 client. The kernel's store is a separate consumer of the
