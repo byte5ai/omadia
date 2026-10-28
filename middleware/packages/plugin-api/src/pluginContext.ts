@@ -1124,7 +1124,8 @@ export type ConnectionRejectionCause =
  * verdict.
  *
  * ```ts
- * const res = await fetch(url, { headers });
+ * // ctx.http (allow-list, SSRF guard, rate limit), never global fetch.
+ * const res = await ctx.http!.fetch(url, { headers });
  * const cause = classifyHttpAuthFailure(res.status, await res.text());
  * return cause
  *   ? { status: 'rejected', cause, title: 'Nicht verbunden' }

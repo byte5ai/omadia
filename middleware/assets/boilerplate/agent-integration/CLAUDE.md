@@ -154,7 +154,10 @@ Tool-Bridge versteht:
     ctx: PluginContext,
   ): Promise<PluginConnectionVerdict> {
     try {
-      const res = await fetch(whoamiUrl, { headers });  // ein GET, kein Sync
+      // ctx.http, nicht globales fetch: Allowlist, SSRF-Guard, Rate-Limit.
+      // Der Probe-Host muss in permissions.network.outbound stehen.
+      if (!ctx.http) return { status: 'inconclusive' };
+      const res = await ctx.http.fetch(whoamiUrl, { headers });  // ein GET, kein Sync
       // HTTP-Fall: Core hält die Regeln, nicht jedes Plugin neu.
       const cause = classifyHttpAuthFailure(res.status, await res.text());
       if (cause) {

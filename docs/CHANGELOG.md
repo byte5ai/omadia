@@ -59,7 +59,9 @@ for LLM keys.
 Readiness gains **`connection_failed`** (`PluginReadinessState`): fields all
 filled, plugin up, target system refusing the credentials. Not
 `config_required` — the form is complete — and not `errored`, which would claim
-the plugin never came up (that is #1452). Only a reported `error` produces it;
+the plugin never came up (that is #1452). Any reported `error` produces it — the probe's
+`rejected` verdict or a plugin's own `ctx.status` error report (which already
+closed the tool gate before #1453);
 `needs_action` stays `ready` and keeps its own amber pill. The store badge
 renders it red.
 

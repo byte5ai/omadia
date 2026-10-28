@@ -469,7 +469,9 @@ Credential-Änderung automatisch mit.
   `last_activation_error: null` und sonst nichts, auch wenn jeder Call 401 bekam.
 - **Eigener Readiness-State.** `computeReadiness` (`plugins/readiness.ts`)
   liest zusätzlich die gepushte Status-Lage und liefert
-  **`connection_failed`**, wenn das Plugin `error` gemeldet hat: Felder alle
+  **`connection_failed`**, wenn `ctx.status` auf `error` steht — egal ob aus
+  dem `rejected`-Verdict der Probe oder aus einem eigenen `error`-Report des
+  Plugins (der schon vor #1453 das Tool-Gate geschlossen hat): Felder alle
   gefüllt, Plugin hochgekommen, Zielsystem lehnt die Credentials ab. Nicht
   `config_required` (das Formular ist vollständig) und nicht `errored` (die
   Aktivierung hat funktioniert — das ist #1452). Reihenfolge:

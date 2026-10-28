@@ -461,9 +461,10 @@ export interface PluginActionStatus {
  * activated, its fields are all filled, and the target system still refuses the
  * credentials. "Configuration required" would send the operator to a form with
  * nothing missing in it, and `errored` would claim the plugin never came up.
- * It is derived from the plugin's own probe verdict (`ctx.status` →
- * `plugins/connectionProbe.ts`), which is why it is the one readiness state
- * that is not computed from registry + vault alone.
+ * It is derived from the plugin's pushed `ctx.status` — the probe's `rejected`
+ * verdict (`plugins/connectionProbe.ts`) or any `error` the plugin reports
+ * itself, the same signal that closes the tool gate (#474) — which is why it is
+ * the one readiness state that is not computed from registry + vault alone.
  *
  * `awaiting_llm` (#884) is deliberately NOT folded into `config_required`. The
  * plugin's own manifest-required fields are all satisfied; what is missing is a

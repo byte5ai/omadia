@@ -120,8 +120,9 @@ function verifiedAt(entry: InstalledAgent): string | null {
  *   1. not in the installed registry              → 'not_installed'
  *   2. registry entry status === 'errored'        → 'errored' (+ error detail)
  *   3. a required, checkable setup field is empty → 'config_required'
- *   4. the plugin's own probe reported that the
- *      target system refused its credentials      → 'connection_failed' (#1453)
+ *   4. the plugin's pushed status is `error` —
+ *      a probe `rejected` verdict or the plugin's
+ *      own error report                           → 'connection_failed' (#1453)
  *   5. the plugin's assigned LLM provider has no
  *      VERIFIED credential                        → 'awaiting_llm'
  *   6. otherwise                                  → 'ready'
