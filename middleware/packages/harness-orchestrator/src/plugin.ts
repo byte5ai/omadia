@@ -105,6 +105,7 @@ import { runMultiOrchestratorMigrations } from './registry/migrator.js';
 import { ensureFallbackAgent } from './registry/onboarding.js';
 import { ReloadBus } from './registry/reloadBus.js';
 import { ChannelResolver } from './routing/channelResolver.js';
+import type { FastPathTriagePort } from './fastPathAgent.js';
 import { SessionLogger } from './sessionLogger.js';
 import {
   RunTraceOutcomeStats,
@@ -207,6 +208,8 @@ import { describeSandboxResourceLimits, readSandboxResourceLimits } from './sand
  */
 
 const CHAT_AGENT_SERVICE = 'chatAgent';
+/** `fastPath@1` (@omadia/fast-path) — bare registry key. */
+const FAST_PATH_SERVICE_NAME = 'fastPath';
 const NATIVE_TOOL_REGISTRY_SERVICE = 'nativeToolRegistry';
 const ORCHESTRATOR_REGISTRY_SERVICE = 'orchestratorRegistry';
 const CHANNEL_RESOLVER_SERVICE = 'channelResolver';
@@ -1183,6 +1186,9 @@ export async function activate(
     turnReceiptStore: turnReceiptStoreGetter,
     ...(pluginConfigGet ? { pluginConfigGet } : {}),
     ...(isPluginToolsReady ? { isPluginToolsReady } : {}),
+    // The deterministic fast path (@omadia/fast-path) — resolved PER TURN: an
+    // optional plugin service that may activate after this plugin, or never.
+    fastPath: () => ctx.services.getOptional<FastPathTriagePort>(FAST_PATH_SERVICE_NAME),
     ...(turnOwnerGuard ? { turnOwnerGuard } : {}),
     ...(cliBinaryResolver
       ? { resolveCliBinary: (): string => cliBinaryResolver(DEFAULT_CLI_BINARY) }

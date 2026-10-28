@@ -24,6 +24,7 @@ import type {
   PromptPiiDetector,
 } from '@omadia/plugin-api';
 
+import { withC1Priority } from './c1Detector.js';
 import { maskPrompt } from './promptMask.js';
 import { findResidualRealValues, resolvePromptPseudonyms } from './promptSurrogates.js';
 import type { PseudonymMap } from './v4/types.js';
@@ -44,6 +45,9 @@ function messageOf(err: unknown): string {
 export function createStoredTextScope(deps: StoredTextScopeDeps): PrivacyStoredTextScope {
   let map: PseudonymMap | undefined;
   let c1Failed = false;
+  // Job work, off any turn's critical path: the sidecar's background lane.
+  const c1Detector =
+    deps.c1Detector === undefined ? undefined : withC1Priority(deps.c1Detector, 'background');
   // A mask call reads the run's map, awaits its detectors and writes the
   // extended map back; calls of one run therefore go one at a time.
   let tail: Promise<unknown> = Promise.resolve();
@@ -52,7 +56,7 @@ export function createStoredTextScope(deps: StoredTextScopeDeps): PrivacyStoredT
   async function c1Step(
     text: string,
   ): Promise<{ readonly detector?: PromptPiiDetector; readonly degraded: boolean }> {
-    const c1 = deps.c1Detector;
+    const c1 = c1Detector;
     if (c1 === undefined || text.trim().length === 0) return { degraded: false };
     if (c1Failed) return { degraded: true };
     try {

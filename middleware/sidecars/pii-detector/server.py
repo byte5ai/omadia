@@ -9,6 +9,9 @@ Endpoints:
                      responds {"ok": true, "model_version": str,
                                "spans": [{"start", "end", "text", "label",
                                           "score"}]}
+                     optional header `X-PII-Priority: interactive|background`
+                     (absent/unknown -> background) picks the queue lane for
+                     the single inference slot; see PriorityGate.
 
 Span offsets: `start`/`end` are Unicode CODE-POINT offsets into the request
 text (Python `str` indexing — an astral-plane emoji counts as ONE position),
@@ -36,6 +39,7 @@ import re
 import socket
 import threading
 import time
+from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = int(os.environ.get("PORT", "8812"))
@@ -75,9 +79,116 @@ CHUNK_OVERLAP_WORDS = int(os.environ.get("CHUNK_OVERLAP_WORDS", "30"))
 
 _WORD_RE = re.compile(r"\S+")
 
+# A background request that has waited longer than this is served next, even
+# ahead of queued interactive requests (aging — bounds background starvation).
+BACKGROUND_AGING_S = float(os.environ.get("BACKGROUND_AGING_S", "5"))
+
+PRIORITY_HEADER = "X-PII-Priority"
+PRIORITY_INTERACTIVE = "interactive"
+PRIORITY_BACKGROUND = "background"
+_PRIORITIES = (PRIORITY_INTERACTIVE, PRIORITY_BACKGROUND)
+
+
+def parse_priority(raw):
+    """`X-PII-Priority` header value -> scheduling class.
+
+    Absent (older clients) or unrecognised -> background: the header is a
+    scheduling hint, never a reason to fail a request, and an unknown value
+    must not be able to claim the fast lane.
+    """
+    value = (raw or "").strip().lower()
+    return PRIORITY_INTERACTIVE if value == PRIORITY_INTERACTIVE else PRIORITY_BACKGROUND
+
+
+class Grant:
+    """One request's place in the gate; filled in when the slot is handed over."""
+
+    __slots__ = ("priority", "enqueued_at", "queued", "granted", "wait_ms")
+
+    def __init__(self, priority, enqueued_at, queued):
+        self.priority = priority
+        self.enqueued_at = enqueued_at
+        # Waiters per class seen on arrival (excluding this request).
+        self.queued = queued
+        self.granted = False
+        self.wait_ms = 0
+
+
+class PriorityGate:
+    """Single inference slot with an interactive lane.
+
+    The model is CPU-bound and not thread-safe, so exactly one inference runs
+    at a time — same as the plain lock this replaces. What changes is who gets
+    the slot when it frees: queued interactive requests (turn masking, on the
+    critical path of a chat turn) go before background ones (memory jobs,
+    stored-text masking), FIFO within a class. A background request that has
+    waited longer than `aging_s` is served next regardless (anti-starvation).
+
+    `release()` hands the slot directly to the chosen waiter instead of
+    freeing it and letting threads race, so a fresh arrival can never jump a
+    queued request of its own class.
+    """
+
+    def __init__(self, aging_s=None, clock=time.monotonic):
+        self._aging_s = BACKGROUND_AGING_S if aging_s is None else aging_s
+        self._clock = clock
+        self._cond = threading.Condition()
+        self._busy = False
+        self._queues = {p: deque() for p in _PRIORITIES}
+
+    def depths(self):
+        with self._cond:
+            return {p: len(q) for p, q in self._queues.items()}
+
+    def acquire(self, priority, timeout):
+        """Wait up to `timeout` s for the slot; returns a Grant, or None on timeout."""
+        if priority not in self._queues:
+            raise ValueError(f"unknown priority: {priority!r}")
+        with self._cond:
+            now = self._clock()
+            grant = Grant(priority, now, {p: len(q) for p, q in self._queues.items()})
+            if not self._busy:
+                # Idle slot implies empty queues: release() never leaves the
+                # slot free while anyone waits.
+                self._busy = True
+                grant.granted = True
+                return grant
+            self._queues[priority].append(grant)
+            deadline = now + timeout
+            while not grant.granted:
+                remaining = deadline - self._clock()
+                if remaining <= 0:
+                    self._queues[priority].remove(grant)
+                    return None
+                self._cond.wait(remaining)
+            grant.wait_ms = int((self._clock() - grant.enqueued_at) * 1000)
+            return grant
+
+    def release(self):
+        with self._cond:
+            nxt = self._pick_next()
+            if nxt is None:
+                self._busy = False
+                return
+            nxt.granted = True  # slot passes straight to the waiter; stays busy
+            self._cond.notify_all()
+
+    def _pick_next(self):
+        """Caller holds the condition. Pops and returns the next waiter, or None."""
+        interactive = self._queues[PRIORITY_INTERACTIVE]
+        background = self._queues[PRIORITY_BACKGROUND]
+        if background and self._clock() - background[0].enqueued_at > self._aging_s:
+            return background.popleft()
+        if interactive:
+            return interactive.popleft()
+        if background:
+            return background.popleft()
+        return None
+
+
 # Populated once by main() before the server starts serving.
 _STATE = {"model": None, "backend": None}
-_INFER_LOCK = threading.Lock()
+_GATE = PriorityGate()
 
 
 def chunk_text(text, max_words=None, overlap_words=None):
@@ -209,7 +320,7 @@ def load_model():
 
 
 def detect(text, labels, threshold):
-    """Chunked, offset-remapped inference over `text`. Caller holds the lock."""
+    """Chunked, offset-remapped inference over `text`. Caller holds the gate slot."""
     model = _STATE["model"]
     if model is None:
         raise RuntimeError("model not loaded")
@@ -261,7 +372,20 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError as err:  # validate_request messages are text-free
             self._respond(400, {"ok": False, "error": str(err)})
             return
-        if not _INFER_LOCK.acquire(timeout=DETECT_TIMEOUT_S):
+        priority = parse_priority(self.headers.get(PRIORITY_HEADER))
+        gate = _GATE
+        queue_wait_started = time.monotonic()
+        grant = gate.acquire(priority, timeout=DETECT_TIMEOUT_S)
+        if grant is None:
+            waited_ms = int((time.monotonic() - queue_wait_started) * 1000)
+            depths = gate.depths()
+            print(
+                f"[pii-detector] /detect busy text_len={len(text)} status=503 "
+                f"wait_ms={waited_ms} prio={priority} "
+                f"queued_interactive={depths[PRIORITY_INTERACTIVE]} "
+                f"queued_background={depths[PRIORITY_BACKGROUND]}",
+                flush=True,
+            )
             self._respond(
                 503, {"ok": False, "error": "detector busy (queue wait exceeded)"}
             )
@@ -276,12 +400,16 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
         finally:
-            _INFER_LOCK.release()
+            gate.release()
         duration_ms = int((time.monotonic() - started) * 1000)
         # Lengths/counts/durations only — never the text or span values.
+        # queued_* = waiters per class this request found on arrival.
         print(
             f"[pii-detector] /detect text_len={len(text)} labels={len(labels)} "
-            f"spans={len(spans)} ms={duration_ms}",
+            f"spans={len(spans)} ms={duration_ms} wait_ms={grant.wait_ms} "
+            f"prio={priority} "
+            f"queued_interactive={grant.queued[PRIORITY_INTERACTIVE]} "
+            f"queued_background={grant.queued[PRIORITY_BACKGROUND]}",
             flush=True,
         )
         self._respond(

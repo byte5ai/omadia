@@ -33,7 +33,7 @@ import type {
 } from '@omadia/plugin-api';
 
 import { composeSkeleton } from '../packages/omadia-ui-orchestrator/src/composition.js';
-import { openSkeletonPrivacy } from '../packages/omadia-ui-orchestrator/src/skeletonPrivacy.js';
+import { openSkeletonPrivacy } from '../packages/harness-plugin-fast-path/src/storedTextPrivacy.js';
 import { createJobPrivacy } from '../packages/harness-orchestrator-extras/src/jobPrivacy.js';
 import { createHaikuSignificanceScorer } from '../packages/harness-orchestrator-extras/src/significanceScorer.js';
 import { createScratchPromotionReaper } from '../packages/harness-orchestrator-extras/src/scratchPromotionReaper.js';

@@ -21,6 +21,7 @@
   },
   "dependencies": {
     "@omadia/canvas-core": "*",
+    "@omadia/fast-path": "*",
     "ajv": "^8.20.0"
   }
 }

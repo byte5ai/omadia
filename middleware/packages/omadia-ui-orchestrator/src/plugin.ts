@@ -25,29 +25,27 @@ import {
 } from './composition.js';
 import { mintDataRef } from './dataRef.js';
 import {
-  fetchRecipeRows,
-  parseFastPathTools,
-  plannableTools,
-  renderSummary,
-} from './fastPath.js';
-import {
   createRecipeStore,
+  createTurnLearner,
+  DEFAULT_TIME_ZONE,
+  FAST_PATH_SERVICE,
+  fetchRecipeRows,
+  offeredTools,
+  openSkeletonPrivacy,
   parseRefreshSource,
-  resolveTimeZone,
+  planToFetch,
+  renderSummary,
+  type FastPathService,
   type RefreshSource,
-} from './refreshRecipes.js';
+  type TurnLearner,
+} from '@omadia/fast-path';
 import {
-  attributePlan,
   canvasTables,
   COMPOSER_TOP_K,
-  composerTools,
   matchInPlacePlans,
   planInPlace,
 } from './learnedFastPath.js';
-import { createLearnedPlanStore, planToFetch } from './learnedPlanStore.js';
-import { createTurnLearner, type TurnLearner } from './learningCapture.js';
 import { synthesizeSurfaceEvents } from './surfaceSynthesis.js';
-import { openSkeletonPrivacy } from './skeletonPrivacy.js';
 import { replaceSkeletonOnWithheld } from './verdictHold.js';
 import { resolveReferenceLumen } from './referenceLumens.js';
 import { validateLumenNode } from './treeValidator.js';
@@ -96,6 +94,24 @@ import { buildDatasetLumen } from './datasetLumen.js';
  * `dispatch_service` must carry this exact bare string.
  */
 export const CANVAS_CHAT_AGENT_SERVICE = 'canvasChatAgent';
+
+/** The slice of the base orchestrator's SessionLogger (on the `chatAgent`
+ *  bundle) a canvas fast-path turn is recorded through. */
+interface CanvasSessionLogger {
+  log(entry: {
+    scope: string;
+    userMessage: string;
+    assistantAnswer: string;
+    toolCalls?: number;
+    iterations?: number;
+    userId?: string;
+    maskedView?: { userMessage: string; assistantAnswer: string };
+    unprotected?: boolean;
+  }): Promise<{ turnExternalId: string }>;
+}
+
+/** Where the learned plans lived before the store moved to @omadia/fast-path. */
+export const LEGACY_PLANS_PATH = 'fastpath/plans.json';
 
 const CANVAS_PROTOCOL_VERSION = '1.0';
 const OPS_CATALOG_VERSION = '1.0';
@@ -834,50 +850,50 @@ export async function activate(
     complete: () => Promise.reject(new Error('llm unavailable')),
   };
 
-  // Deterministic fast path allow-list (`fast_path_tools`; unset → odoo_query,
-  // empty → off). Only tools with a known composer spec can be planned.
-  const fastPathAllowed: ReadonlySet<string> = new Set(
-    parseFastPathTools(ctx.config?.get<string>('fast_path_tools')),
-  );
-  const fastPathTools = plannableTools([...fastPathAllowed]);
-  const unplannable = [...fastPathAllowed].filter((t) => !fastPathTools.some((p) => p.name === t));
-  ctx.log(
-    `[omadia-ui-orchestrator] fast path ${
-      fastPathTools.length > 0 ? `tools: ${fastPathTools.map((t) => t.name).join(',')}` : 'disabled'
-    }${unplannable.length > 0 ? ` (no composer spec, ignored: ${unplannable.join(',')})` : ''}`,
-  );
-  // `{today}` tokens in fast-path/refresh recipes resolve in this zone.
-  const rawTimeZone = ctx.config?.get<string>('fast_path_timezone');
-  const fastPathTimeZone = resolveTimeZone(rawTimeZone);
-  ctx.log(
-    `[omadia-ui-orchestrator] fast path timezone: ${fastPathTimeZone}${
-      rawTimeZone?.trim() && rawTimeZone.trim() !== fastPathTimeZone
-        ? ` (configured "${rawTimeZone}" is not a known IANA zone)`
-        : ''
-    }`,
-  );
-  // Learned fast path: tenant-wide plans learned from successful agent turns
-  // (persisted in this plugin's memory scope). `fast_path_tools=""` is the
-  // global kill switch — no learning, no use.
-  const learningEnabled = fastPathAllowed.size > 0;
-  const learnedPlans = createLearnedPlanStore({
-    ...(ctx.memory ? { memory: ctx.memory } : {}),
-    log: (m) => ctx.log(m),
-  });
-  ctx.log(`[omadia-ui-orchestrator] learned fast path ${learningEnabled ? 'on' : 'off (fast_path_tools empty)'}`);
-  /** fetch whitelist = the built-in allow-list ∪ tools of ACTIVE learned plans */
-  const allowedFetchTools = (): ReadonlySet<string> =>
-    new Set([...fastPathAllowed, ...learnedPlans.active().map((p) => p.tool)]);
-  /** fast-path failures that count against a learned plan (an invoke error
-   *  may be the asking user's missing permission — not the plan's fault) */
-  const PLAN_FAILURES: ReadonlySet<string> = new Set(['tool-error', 'unmappable', 'truncated']);
+  // Deterministic fast path (`fastPath@1`, @omadia/fast-path): the
+  // allow-list/kill switch (`fast_path_tools`), the channel filter
+  // (`fast_path_channels` — token `canvas`), the timezone and the ONE
+  // tenant-wide learned plan store shared with every other channel. Resolved
+  // LAZILY per turn (activation order is not guaranteed); absent, or the
+  // canvas filtered out → no fast path, no learning: the agent answers.
+  const fastPathService = (): FastPathService | undefined =>
+    (ctx.services as PluginContext['services'] | undefined)?.get<FastPathService>(FAST_PATH_SERVICE);
+  const canvasFastPath = (): FastPathService | undefined => {
+    const fp = fastPathService();
+    return fp?.channelEnabled('canvas') === true ? fp : undefined;
+  };
+  /** `{today}` tokens in fast-path/refresh recipes resolve in this zone. */
+  const fastPathTimeZone = (): string => fastPathService()?.timeZone ?? DEFAULT_TIME_ZONE;
+  // Plans learned before the store moved to @omadia/fast-path live in THIS
+  // plugin's memory (`fastpath/plans.json`): imported once into the shared
+  // store on the first canvas turn that sees the service, then emptied.
+  let legacyPlansMigrated = false;
+  async function migrateLegacyPlans(fp: FastPathService): Promise<void> {
+    if (legacyPlansMigrated) return;
+    legacyPlansMigrated = true;
+    const memory = ctx.memory as PluginContext['memory'] | undefined;
+    if (!memory) return;
+    try {
+      if (!(await memory.exists(LEGACY_PLANS_PATH))) return;
+      const raw = await memory.readFile(LEGACY_PLANS_PATH);
+      const added = await fp.plans.importPlans(raw);
+      await memory.writeFile(
+        LEGACY_PLANS_PATH,
+        JSON.stringify({ schemaVersion: 1, plans: [], migratedTo: '@omadia/fast-path' }),
+      );
+      ctx.log(`[ui-orchestrator] legacy learned plans migrated to @omadia/fast-path: ${added}`);
+    } catch (err) {
+      ctx.log(`[ui-orchestrator] legacy learned plans not migrated: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
   const makeLearner = (
+    fp: FastPathService | undefined,
     input: ChatTurnInput,
     requirements: readonly DataRequirement[],
     privacyForced: boolean,
   ): TurnLearner | undefined => {
     if (
-      !learningEnabled ||
+      fp === undefined ||
       privacyForced ||
       input.action !== undefined ||
       input.target !== undefined ||
@@ -896,7 +912,7 @@ export async function activate(
       question: input.userMessage,
       requirements,
       isProducerTool: (name) => name === CANVAS_PUBLISH_TOOL,
-      store: learnedPlans,
+      store: fp.plans,
       ...(openScope ? { openStoredTextScope: openScope } : {}),
       log: (m) => ctx.log(m),
     });
@@ -952,6 +968,62 @@ export async function activate(
     return mintDataRef(canvasSessionId, containerId);
   };
 
+  /** The record an action turn targets, resolved against the recipe that
+   *  filled its table in THIS canvas (fast path or an agent publish with a
+   *  `source`). No recipe, or a recipe without a rowKey → undefined: the
+   *  agent handles the action. */
+  function resolveTargetRecord(input: ChatTurnInput, canvasSessionId: string): TargetRecord | undefined {
+    const row = actionTargetRow(input);
+    if (!row) return undefined;
+    const recipe = refreshRecipes.get(canvasSessionId, row.containerId);
+    if (!recipe?.rowKey) return undefined;
+    const model = (recipe.input as { model?: unknown } | null)?.model;
+    const id = /^\d{1,15}$/.test(row.key) ? Number(row.key) : row.key;
+    return {
+      containerId: row.containerId,
+      tool: recipe.tool,
+      ...(typeof model === 'string' ? { model } : {}),
+      keyAttr: recipe.rowKey,
+      id,
+    };
+  }
+
+  /** Record an LLM-free canvas answer (fast path, in-place learned plan) as
+   *  a normal turn through the base orchestrator's session logger — the
+   *  `chatAgent` bundle carries it (duck-typed: the channel-sdk bundle type
+   *  does not name it). The rows stay on the canvas; the transcript holds
+   *  the summary sentence. Under a Privacy Shield the masked view is EMPTY:
+   *  no capture decorator sends the turn to a model of its own. Never throws. */
+  async function recordCanvasTurn(
+    input: ChatTurnInput,
+    answer: string,
+    toolCalls: number,
+  ): Promise<string | undefined> {
+    if (input.sessionScope === undefined) return undefined;
+    const bundle = ctx.services.get<ChatAgentBundle & { sessionLogger?: CanvasSessionLogger }>(CHAT_AGENT_SERVICE);
+    const logger = bundle?.sessionLogger;
+    if (!logger) return undefined;
+    const guarded =
+      (ctx.services as PluginContext['services'] | undefined)?.get<PrivacyGuardService>(PRIVACY_REDACT_SERVICE_NAME) !==
+      undefined;
+    try {
+      const { turnExternalId } = await logger.log({
+        scope: input.sessionScope,
+        userMessage: input.userMessage,
+        assistantAnswer: answer,
+        toolCalls,
+        iterations: 0,
+        ...(input.userId !== undefined ? { userId: input.userId } : {}),
+        ...(guarded ? { maskedView: { userMessage: '', assistantAnswer: '' } } : {}),
+        unprotected: !guarded,
+      });
+      return turnExternalId;
+    } catch (err) {
+      ctx.log(`[ui-orchestrator] fast-path session log failed: ${err instanceof Error ? err.message : String(err)}`);
+      return undefined;
+    }
+  }
+
   /** Synthetic `canvas_publish_rows` calls for deterministically fetched
    *  rows — the LLM-free publish shared by canvas_refresh and the fast path.
    *  A `source` rides along so synthesis captures it as the refresh recipe. */
@@ -1000,13 +1072,17 @@ export async function activate(
     startSurfaceSeq: number,
     /** this turn's plannable tools (built-in + offered learned) and the
      *  fetch whitelist (built-in ∪ active learned) */
-    turnTools: { plannable: number; allowed: ReadonlySet<string> },
+    turnTools: { plannable: number; allowed: ReadonlySet<string>; permitted: ReadonlySet<string> },
+    /** an action turn's target record — its plan must query exactly it */
+    target?: TargetRecord,
   ): Promise<FastPathOutcome> {
     const miss = (reason: string): FastPathOutcome => ({ hit: false, reason });
     if (turnTools.plannable === 0) return miss('disabled');
     if (privacyForced) return miss('privacy-forced');
-    // a structured action / row-bound turn acts on something — the agent decides
-    if (input.action !== undefined || input.target !== undefined) return miss('action-turn');
+    // a structured action / row-bound turn acts on something: only a target
+    // row resolved against its table's recipe can be answered here
+    const isActionTurn = input.action !== undefined || input.target !== undefined;
+    if (isActionTurn && target === undefined) return miss('action-turn');
     const plans: Array<{ containerId: string; fetch: RefreshSource }> = [];
     for (const req of skeleton.dataRequirements) {
       if (req.fetch === undefined) return miss('no-plan');
@@ -1014,6 +1090,12 @@ export async function activate(
     }
     if (skeleton.source !== 'model' || plans.length === 0) return miss('no-plan');
     if (plans.some((p) => !turnTools.allowed.has(p.fetch.tool))) return miss('tool-not-allowed');
+    // the base agent itself must offer the tool — a fast path never reaches
+    // a tool the answering agent does not have
+    if (plans.some((p) => !turnTools.permitted.has(p.fetch.tool))) return miss('tool-not-permitted');
+    if (target !== undefined && !plans.every((p) => mentionsValue(p.fetch.input, target.id))) {
+      return miss('target-not-queried');
+    }
     if (skeleton.summary === undefined) return miss('no-summary');
     // ToolsAccessor exposes neither specs nor an availability probe: a tool
     // that is not registered (e.g. odoo_query with generic reads disabled)
@@ -1026,7 +1108,7 @@ export async function activate(
     for (const plan of plans) {
       const fetched = await fetchRecipeRows(invoke, plan.fetch, {
         rejectTruncated: true,
-        timeZone: fastPathTimeZone,
+        timeZone: fastPathTimeZone(),
       });
       if (!fetched.ok) {
         if (fetched.detail !== undefined) {
@@ -1091,21 +1173,6 @@ export async function activate(
     };
   }
 
-  /** Book a fast-path outcome against the ACTIVE learned plans its fetches
-   *  were adapted from; returns their ids (for the hit/miss log). */
-  function bookLearned(fetches: readonly RefreshSource[], ok: boolean, reason?: string): string[] {
-    const ids: string[] = [];
-    for (const f of fetches) {
-      const plan = attributePlan(learnedPlans, f);
-      if (!plan) continue;
-      ids.push(plan.id);
-      if (ok || (reason !== undefined && PLAN_FAILURES.has(reason))) {
-        void learnedPlans.recordExecution(plan.id, ok, reason);
-      }
-    }
-    return ids;
-  }
-
   type InPlaceOutcome =
     | { hit: true; events: ChatStreamEvent[]; prose: string; plan: string; rows: number }
     | { hit: false; reason: string };
@@ -1115,20 +1182,23 @@ export async function activate(
    *  query; the plugin runs it and REPLACES the table's rows. Emits nothing
    *  on a miss — the in-place agent path then runs unchanged. */
   async function runInPlaceLearned(
+    fp: FastPathService | undefined,
     input: ChatTurnInput,
     canvasSessionId: string,
     state: NonNullable<ChatTurnInput['canvasState']>,
     privacyForced: boolean,
+    /** the tools the base agent itself offers — plans outside it never run */
+    permitted: ReadonlySet<string>,
   ): Promise<InPlaceOutcome> {
     const miss = (reason: string): InPlaceOutcome => ({ hit: false, reason });
-    if (!learningEnabled) return miss('disabled');
+    if (fp === undefined) return miss('disabled');
     if (privacyForced) return miss('privacy-forced');
     if (input.action !== undefined || input.target !== undefined) return miss('action-turn');
     const question = input.userMessage.trim();
     if (question.length === 0) return miss('no-question');
     const tables = canvasTables(state.currentTree);
     if (tables.length === 0) return miss('no-table');
-    const matched = matchInPlacePlans(learnedPlans, question, tables);
+    const matched = matchInPlacePlans(fp.plans, question, tables).filter((m) => permitted.has(m.plan.tool));
     if (matched.length === 0) return miss('no-match');
     const invoke = toolsAccessor?.invoke?.bind(toolsAccessor);
     if (!invoke) return miss('no-invoker');
@@ -1147,17 +1217,17 @@ export async function activate(
       tables,
       currentQueries,
       plans: matched,
-      allowedTools: allowedFetchTools(),
+      allowedTools: new Set([...fp.allowedFetchTools()].filter((t) => permitted.has(t))),
       log: (m) => ctx.log(m),
       ...(plannerGuard !== undefined ? { privacy: openSkeletonPrivacy(plannerGuard) } : {}),
     });
     if (!planned.ok) return miss(planned.reason);
     const fetched = await fetchRecipeRows(invoke, planned.fetch, {
       rejectTruncated: true,
-      timeZone: fastPathTimeZone,
+      timeZone: fp.timeZone,
     });
     if (!fetched.ok) {
-      bookLearned([planned.fetch], false, fetched.reason);
+      fp.recordFetchOutcome([planned.fetch], false, fetched.reason);
       return miss(fetched.reason);
     }
     const rendered = renderSummary(planned.summary, {
@@ -1193,7 +1263,7 @@ export async function activate(
     }
     if (!events.some((e) => e.type === 'surface_patch')) return miss('unpublishable');
     for (const r of recipes) refreshRecipes.set(canvasSessionId, planned.containerId, r);
-    const ids = bookLearned([planned.fetch], true);
+    const ids = fp.recordFetchOutcome([planned.fetch], true);
     return { hit: true, events, prose: rendered.text, plan: ids[0] ?? 'adapted', rows: fetched.rows.length };
   }
 
@@ -1392,14 +1462,41 @@ export async function activate(
     );
     const privacyForced =
       process.env[PRIVACY_FORCE_GUARDED_ENV_VAR] === 'true' && privacyGuard === undefined;
-    if (learningEnabled && !privacyForced) await learnedPlans.load();
+    // The fast path runs tools on the base agent's behalf, so only tools the
+    // agent offers itself (`ChatAgent.offeredToolNames`); an agent that cannot
+    // name its tools gets no fast path at all (fail closed).
+    const permitted = base.offeredToolNames?.();
+    let fp = canvasFastPath();
+    if (fp !== undefined && permitted === undefined) {
+      ctx.log('[fast-path] miss channel=canvas reason=tool-set-unknown');
+      fp = undefined;
+    }
+    const permittedTools: ReadonlySet<string> = permitted ?? new Set<string>();
+    if (fp !== undefined && !privacyForced) {
+      await migrateLegacyPlans(fp);
+      await fp.plans.load();
+    }
 
     if (input.canvasState) {
-      const learnedHit = await runInPlaceLearned(input, canvasSessionId, input.canvasState, privacyForced);
+      const learnedHit = await runInPlaceLearned(
+        fp,
+        input,
+        canvasSessionId,
+        input.canvasState,
+        privacyForced,
+        permittedTools,
+      );
       if (learnedHit.hit) {
         yield* learnedHit.events;
         yield { type: 'text_delta', text: learnedHit.prose };
-        yield { type: 'done', answer: learnedHit.prose, toolCalls: 1, iterations: 0 };
+        const turnId = await recordCanvasTurn(input, learnedHit.prose, 1);
+        yield {
+          type: 'done',
+          answer: learnedHit.prose,
+          toolCalls: 1,
+          iterations: 0,
+          ...(turnId !== undefined ? { turnId } : {}),
+        };
         ctx.log(
           `[ui-orchestrator] learned-plan hit plan=${learnedHit.plan} path=in-place ` +
             `rows=${learnedHit.rows} ms=${Date.now() - turnStartedAt}`,
@@ -1410,7 +1507,7 @@ export async function activate(
         ctx.log(`[ui-orchestrator] learned-plan miss reason=${learnedHit.reason} path=in-place`);
       }
       const requirements = deriveDataRequirements(input.canvasState.currentTree);
-      const inPlaceLearner = makeLearner(input, requirements, privacyForced);
+      const inPlaceLearner = makeLearner(fp, input, requirements, privacyForced);
       const augmentedInPlace: ChatTurnInput = {
         ...input,
         userMessage:
@@ -1470,21 +1567,39 @@ export async function activate(
     //    Learned fast path: the top-K active plans most similar to the ask
     //    ride along as validated examples (their tools join the whitelist).
     const offered =
-      learningEnabled &&
+      fp !== undefined &&
       !privacyForced &&
       input.action === undefined &&
       input.target === undefined &&
       input.userMessage.trim().length > 0
-        ? learnedPlans.rank(input.userMessage, COMPOSER_TOP_K).map((s) => s.plan)
+        ? fp.plans
+            .rank(input.userMessage, COMPOSER_TOP_K * 2)
+            .map((s) => s.plan)
+            .filter((p) => permittedTools.has(p.tool))
+            .slice(0, COMPOSER_TOP_K)
         : [];
-    const turnTools = composerTools(fastPathTools, offered);
+    const turnTools =
+      fp !== undefined
+        ? offeredTools(
+            fp.plannableTools().filter((t) => permittedTools.has(t.name)),
+            offered,
+          )
+        : [];
+    // An action/row-bound turn ("Details" on a row): with the row's record
+    // identity known from its table's recipe, the composer may plan ONE
+    // deterministic detail query for exactly that record.
+    const target =
+      fp !== undefined && !privacyForced && (input.action !== undefined || input.target !== undefined)
+        ? resolveTargetRecord(input, canvasSessionId)
+        : undefined;
     const skeleton = await composeSkeleton({
       llm,
       model,
       userText:
-        input.userMessage.trim().length > 0
+        (input.userMessage.trim().length > 0
           ? input.userMessage
-          : `UI action: ${JSON.stringify(input.action ?? {})}`,
+          : `UI action: ${JSON.stringify(input.action ?? {})}`) +
+        (target !== undefined && turnTools.length > 0 ? targetRecordBlock(target) : ''),
       log: (message) => ctx.log(message),
       skipModel: privacyForced,
       fastPathTools: turnTools,
@@ -1509,12 +1624,13 @@ export async function activate(
     //    the agent path below, exactly as before.
     const fast = await runFastPath(input, canvasSessionId, skeleton, privacyForced, surfaceSeq, {
       plannable: turnTools.length,
-      allowed: allowedFetchTools(),
-    });
+      allowed: fp?.allowedFetchTools() ?? new Set<string>(),
+      permitted: permittedTools,
+    }, target);
     const fetches = skeleton.dataRequirements.flatMap((r) => (r.fetch ? [r.fetch] : []));
     const learnedIds = fast.hit
-      ? bookLearned(fetches, true)
-      : bookLearned(fast.failedFetch ? [fast.failedFetch] : [], false, fast.reason);
+      ? (fp?.recordFetchOutcome(fetches, true) ?? [])
+      : (fp?.recordFetchOutcome(fast.failedFetch ? [fast.failedFetch] : [], false, fast.reason) ?? []);
     if (fast.hit && learnedIds.length > 0) {
       ctx.log(`[ui-orchestrator] learned-plan hit plan=${learnedIds.join(',')} path=new-canvas`);
     } else if (!fast.hit && offered.length > 0) {
@@ -1527,19 +1643,25 @@ export async function activate(
       yield* fast.events;
       const prose = fast.prose;
       yield { type: 'text_delta', text: prose };
-      // Session history gap: SessionLogger / ChatSessionStore live inside the
-      // base orchestrator and are published to no plugin (not in this
-      // manifest's grantable services), so a fast-path turn is NOT recorded
-      // in the session log or the conversation the next turn continues — the
-      // same as the LLM-free refresh and deterministic-action paths.
-      yield { type: 'done', answer: prose, toolCalls: fast.toolCalls, iterations: 0 };
+      // Recorded like any turn (session log → chat session → graph), so the
+      // conversation the next turn continues contains it.
+      const turnId = await recordCanvasTurn(input, prose, fast.toolCalls);
+      yield {
+        type: 'done',
+        answer: prose,
+        toolCalls: fast.toolCalls,
+        iterations: 0,
+        ...(turnId !== undefined ? { turnId } : {}),
+      };
       ctx.log(
         `[ui-orchestrator] fast-path hit tool=${fast.tool} rows=${fast.rows} ` +
           `ms=${Date.now() - turnStartedAt}`,
       );
+      ctx.log(`[fast-path] hit channel=canvas tool=${fast.tool} rows=${fast.rows} ms=${Date.now() - turnStartedAt}`);
       return;
     }
     ctx.log(`[ui-orchestrator] fast-path miss reason=${fast.reason}`);
+    if (fp !== undefined) ctx.log(`[fast-path] miss channel=canvas reason=${fast.reason}`);
 
     // 3. Requirement handoff — the main turn carries what the skeleton
     //    promised, so Tier 3 returns payloads matching those exact fields.
@@ -1563,7 +1685,7 @@ export async function activate(
     // 4. Delegate + canvas-aware synthesis continuing seq/revision after the
     //    skeleton. The learner watches the turn and, on a clean `done`,
     //    records the ONE read query behind the published rows as a candidate.
-    const learner = makeLearner(input, skeleton.dataRequirements, privacyForced);
+    const learner = makeLearner(fp, input, skeleton.dataRequirements, privacyForced);
     const synthesized = synthesizeSurfaceEvents(base.chatStream(augmented, observer), {
       canvasSessionId,
       authorizedToolNames: canvasOutputTools,
@@ -1634,7 +1756,7 @@ export async function activate(
           deterministic = false;
           break;
         }
-        const fetched = await fetchRecipeRows(invoke, recipe, { timeZone: fastPathTimeZone });
+        const fetched = await fetchRecipeRows(invoke, recipe, { timeZone: fastPathTimeZone() });
         if (!fetched.ok) {
           ctx.log(
             fetched.reason === 'unmappable' || fetched.reason === 'truncated'
@@ -1839,4 +1961,52 @@ export function deriveDataRequirements(tree: unknown, scope?: string): DataRequi
 
 async function* errorStream(): AsyncGenerator<ChatStreamEvent> {
   yield { type: 'error', message: 'orchestrator unavailable' };
+}
+
+/** The row an action/row-bound turn refers to: its container and row key —
+ *  from the TargetRef, the action's target, or a `{containerId, rowKey}`
+ *  action payload. */
+export function actionTargetRow(input: ChatTurnInput): { containerId: string; key: string } | undefined {
+  const candidates: unknown[] = [input.target, input.action?.target, input.action?.payload];
+  for (const c of candidates) {
+    if (typeof c !== 'object' || c === null) continue;
+    const o = c as Record<string, unknown>;
+    const containerId = o['containerId'];
+    const key = o['rowKey'] ?? o['itemKey'];
+    if (typeof containerId === 'string' && containerId.length > 0 && (typeof key === 'string' || typeof key === 'number')) {
+      return { containerId, key: String(key) };
+    }
+  }
+  return undefined;
+}
+
+/** A target row resolved against the recipe that filled its table: the
+ *  record id (the recipe's rowKey attribute) and the source it came from. */
+export interface TargetRecord {
+  containerId: string;
+  tool: string;
+  model?: string;
+  keyAttr: string;
+  id: string | number;
+}
+
+/** True when `value` contains `id` as a scalar anywhere (a domain operand). */
+export function mentionsValue(value: unknown, id: string | number): boolean {
+  if (value === id || (typeof value === 'string' && typeof id === 'number' && value === String(id))) return true;
+  if (Array.isArray(value)) return value.some((v) => mentionsValue(v, id));
+  if (typeof value === 'object' && value !== null) return Object.values(value).some((v) => mentionsValue(v, id));
+  return false;
+}
+
+/** The composer's TARGET RECORD block for an action turn. */
+export function targetRecordBlock(t: TargetRecord): string {
+  const domain = JSON.stringify([[t.keyAttr, '=', t.id]]);
+  return (
+    `\n\nTARGET RECORD (the action refers to exactly this record): tool "${t.tool}"` +
+    (t.model !== undefined ? `, model "${t.model}"` : '') +
+    `, record ${t.keyAttr} ${JSON.stringify(t.id)}. For a details/open request plan ONE query for exactly ` +
+    `this record — e.g. "domain": ${domain} — with the detail fields of that model from the FIELD CATALOG, ` +
+    'and a summary such as "Details ({count} Datensatz).". Anything else (a change, several records, ' +
+    'reasoning) → no fetch.'
+  );
 }

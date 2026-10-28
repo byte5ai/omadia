@@ -1,20 +1,18 @@
 import {
-  COMPOSER_REASONING,
+  containsPlaceholder,
+  FAST_MODEL_REASONING,
+  jaccard,
+  parseRefreshSource,
   parseSummary,
-  type CompositionLlm,
-  type FastPathToolSpec,
-} from './composition.js';
-import { FAST_PATH_TOOL_SPECS, supportedLocale } from './fastPath.js';
-import type { SkeletonPrivacyRun } from './skeletonPrivacy.js';
-import {
-  planId,
   planToFetch,
-  type LearnedPlan,
+  questionTokens,
+  supportedLocale,
+  type FastLlm,
   type LearnedPlanStore,
+  type RefreshSource,
   type ScoredPlan,
-} from './learnedPlanStore.js';
-import { containsPlaceholder, jaccard, questionTokens, stripLiterals } from './literalStripping.js';
-import { parseRefreshSource, type RefreshFilter, type RefreshSource } from './refreshRecipes.js';
+  type StoredTextPrivacyRun,
+} from '@omadia/fast-path';
 
 /**
  * Learned fast path — using active plans.
@@ -35,48 +33,6 @@ export const IN_PLACE_TOP_K = 3;
 export const IN_PLACE_MIN_SCORE = 0.35;
 /** Bonus when a plan's columns are exactly a visible table's columns. */
 const COLUMN_MATCH_BONUS = 0.5;
-
-/** Composer spec of a learned tool without a built-in one: its learned input
- *  template IS the spec — the composer may only adapt an example. */
-export function learnedToolSpec(plan: LearnedPlan): string {
-  return (
-    `${plan.tool} — learned read tool, NO free-form spec: plan it ONLY by adapting one of its ` +
-    `VALIDATED EXAMPLES below (input shape e.g. ${JSON.stringify(plan.inputTemplate)}; records at ` +
-    `itemsPath ${plan.itemsPath !== undefined ? `"${plan.itemsPath}"` : '(first array)'}` +
-    `${plan.rowKey !== undefined ? `, rowKey "${plan.rowKey}"` : ''}).`
-  );
-}
-
-/** The built-in plannable tools plus a spec for every learned tool of the
- *  offered plans that has none. */
-export function composerTools(
-  builtIn: readonly FastPathToolSpec[],
-  offered: readonly LearnedPlan[],
-): FastPathToolSpec[] {
-  const out = [...builtIn];
-  for (const p of offered) {
-    if (out.some((t) => t.name === p.tool)) continue;
-    out.push({ name: p.tool, spec: FAST_PATH_TOOL_SPECS[p.tool] ?? learnedToolSpec(p) });
-  }
-  return out;
-}
-
-/** The ACTIVE learned plan a concrete fetch was adapted from — the fetch,
- *  literal-stripped again, has the plan's structure — else undefined. */
-export function attributePlan(store: LearnedPlanStore, fetch: RefreshSource): LearnedPlan | undefined {
-  const { template } = stripLiterals({ input: fetch.input, filter: fetch.filter ?? null });
-  const t = template as { input: unknown; filter: RefreshFilter[] | null };
-  const id = planId({
-    tool: fetch.tool,
-    inputTemplate: t.input,
-    map: fetch.map,
-    ...(t.filter ? { filter: t.filter } : {}),
-    ...(fetch.rowKey ? { rowKey: fetch.rowKey } : {}),
-    ...(fetch.itemsPath ? { itemsPath: fetch.itemsPath } : {}),
-  });
-  const plan = store.get(id);
-  return plan?.active === true ? plan : undefined;
-}
 
 export interface CanvasTable {
   containerId: string;
@@ -190,7 +146,7 @@ export function parseInPlacePlan(
  *  Gets table STRUCTURE, the tables' current recipes and the matched plans —
  *  never row data. Never throws. */
 export async function planInPlace(opts: {
-  llm: CompositionLlm;
+  llm: FastLlm;
   model: string;
   question: string;
   tables: readonly CanvasTable[];
@@ -202,7 +158,7 @@ export async function planInPlace(opts: {
   /** #1540 — with a privacy guard running, the prompt (question + table
    *  titles) reaches the model masked and its plan is restored; a refused
    *  mask skips the call (the in-place agent path runs instead). */
-  privacy?: SkeletonPrivacyRun;
+  privacy?: StoredTextPrivacyRun;
 }): Promise<InPlacePlan> {
   const tableLines = opts.tables.map((t) => {
     const current = opts.currentQueries.get(t.containerId);
@@ -233,7 +189,7 @@ export async function planInPlace(opts: {
       system: IN_PLACE_SYSTEM,
       messages: [{ role: 'user', content }],
       maxTokens: 1024,
-      ...COMPOSER_REASONING,
+      ...FAST_MODEL_REASONING,
     });
     opts.log(`[ui-orchestrator] in-place planner call: ${Date.now() - t0}ms, ${res.text.length} chars`);
     const text = opts.privacy !== undefined ? opts.privacy.restore(res.text) : res.text;

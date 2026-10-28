@@ -44,6 +44,40 @@ export interface C1HttpDetectorOptions {
    *  (false-positive cascade class, see #242 / the plan on #361). */
   readonly labels?: readonly string[];
   readonly threshold?: number;
+  /**
+   * Sidecar scheduling lane, sent as `X-PII-Priority`. Default
+   * `interactive`: the plugin's one shared detector serves turn masking
+   * (prompt, recalled tail, verifier, tool errors). Background callers
+   * (stored-text scope: memory jobs, skeleton masking) rebind it with
+   * {@link withC1Priority}.
+   */
+  readonly priority?: C1Priority;
+}
+
+/**
+ * Scheduling lane on the sidecar's single inference slot: queued
+ * `interactive` requests are served before `background` ones (a background
+ * request waiting > 5 s is served next regardless). Results are identical.
+ */
+export type C1Priority = 'interactive' | 'background';
+
+/** Request header the sidecar reads the lane from (case-insensitive). */
+export const C1_PRIORITY_HEADER = 'x-pii-priority';
+
+/** Detectors built here, mapped to a factory for the same detector on another lane. */
+const rebinders = new WeakMap<PromptPiiDetector, (priority: C1Priority) => PromptPiiDetector>();
+
+/**
+ * `detector` on the given sidecar lane — a new detector, the input is not
+ * modified. A detector not built by {@link createC1HttpDetector} (stub,
+ * test fake, memoized pass-through) has no lane and is returned unchanged.
+ */
+export function withC1Priority(
+  detector: PromptPiiDetector,
+  priority: C1Priority,
+): PromptPiiDetector {
+  const rebind = rebinders.get(detector);
+  return rebind === undefined ? detector : rebind(priority);
 }
 
 /**
@@ -105,8 +139,9 @@ export function createC1HttpDetector(
   const fetchFn = opts.fetchFn ?? globalThis.fetch;
   const labels = opts.labels ?? DEFAULT_LABELS;
   const threshold = opts.threshold ?? DEFAULT_THRESHOLD;
+  const priority = opts.priority ?? 'interactive';
 
-  return {
+  const detector: PromptPiiDetector = {
     id: C1_DETECTOR_ID,
     async detect(text: string): Promise<readonly PromptPiiSpan[]> {
       const rawUrl = opts.resolveUrl();
@@ -119,7 +154,10 @@ export function createC1HttpDetector(
       const body = await withTimeout(timeoutMs, async (signal) => {
         const res = await fetchFn(`${url.replace(/\/+$/, '')}/detect`, {
           method: 'POST',
-          headers: { 'content-type': 'application/json' },
+          headers: {
+            'content-type': 'application/json',
+            [C1_PRIORITY_HEADER]: priority,
+          },
           body: JSON.stringify({ text, labels, threshold }),
           signal,
         });
@@ -140,6 +178,10 @@ export function createC1HttpDetector(
       return toPromptSpans(text, sidecarSpans);
     },
   };
+  rebinders.set(detector, (next) =>
+    next === priority ? detector : createC1HttpDetector({ ...opts, priority: next }),
+  );
+  return detector;
 }
 
 // ---------------------------------------------------------------------------

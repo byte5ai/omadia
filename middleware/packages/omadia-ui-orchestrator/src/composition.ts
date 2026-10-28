@@ -1,7 +1,14 @@
-import { SUM_PLACEHOLDER, supportedLocale } from './fastPath.js';
-import { containsPlaceholder } from './literalStripping.js';
-import { parseRefreshSource, type RefreshSource } from './refreshRecipes.js';
-import type { SkeletonPrivacyRun } from './skeletonPrivacy.js';
+import {
+  containsPlaceholder,
+  FAST_MODEL_REASONING,
+  parseRefreshSource,
+  parseSummary,
+  supportedLocale,
+  type FastLlm,
+  type FastPathToolSpec,
+  type RefreshSource,
+  type StoredTextPrivacyRun,
+} from '@omadia/fast-path';
 import { validateTree } from './treeValidator.js';
 
 /**
@@ -12,18 +19,8 @@ import { validateTree } from './treeValidator.js';
  * promised.
  */
 
-/** Narrow LLM port — structurally satisfied by `ctx.llm` (LlmAccessor); injected
- *  so composition is testable without network or SDK coupling. */
-export interface CompositionLlm {
-  complete(req: {
-    model: string;
-    system?: string;
-    messages: ReadonlyArray<{ role: 'user' | 'assistant'; content: string }>;
-    maxTokens?: number;
-    effort?: 'low' | 'medium' | 'high' | 'xhigh';
-    thinking?: 'off';
-  }): Promise<{ text: string }>;
-}
+/** Narrow LLM port — structurally satisfied by `ctx.llm` (LlmAccessor). */
+export type CompositionLlm = FastLlm;
 
 /**
  * The composer call gates the first paint of EVERY canvas turn, so it asks
@@ -33,7 +30,7 @@ export interface CompositionLlm {
  * they do not apply. Composing a skeleton is pattern-following, not
  * reasoning — a measured 3.4–10 s on adaptive thinking.
  */
-export const COMPOSER_REASONING = { effort: 'low', thinking: 'off' } as const;
+export const COMPOSER_REASONING = FAST_MODEL_REASONING;
 
 /** What the skeleton promised the user — handed to the delegated main turn as
  *  the `[canvas-context]` block (the requirement-handoff contract). */
@@ -60,15 +57,8 @@ export interface SkeletonResult {
   locale?: string;
 }
 
-/** A tool the composer may plan a fast-path `fetch` for: its name and a
- *  compact input/output spec the composer builds the query from. */
-export interface FastPathToolSpec {
-  name: string;
-  spec: string;
-}
+export type { FastPathToolSpec };
 
-const MAX_SUMMARY_CHARS = 280;
-const COUNT_PLACEHOLDER = '{count}';
 
 /** A learned plan handed to the composer as a validated example: a past
  *  question (literal-stripped) and the fetch that answered it. */
@@ -122,14 +112,7 @@ function withFetchPlans(
   });
 }
 
-/** Kept only with at least one placeholder — a fixed sentence could not be
- *  correct for every result. */
-export function parseSummary(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const s = value.trim();
-  if (s.length === 0 || s.length > MAX_SUMMARY_CHARS) return undefined;
-  return s.includes(COUNT_PLACEHOLDER) || new RegExp(SUM_PLACEHOLDER.source).test(s) ? s : undefined;
-}
+export { parseSummary };
 
 export const FALLBACK_SKELETON = {
   type: 'container',
@@ -250,7 +233,7 @@ function parseResult(
 }
 
 /** `value` with `privacy.restore` applied to every string in it (keys stay). */
-function restoreStrings<T>(value: T, privacy: SkeletonPrivacyRun): T {
+function restoreStrings<T>(value: T, privacy: StoredTextPrivacyRun): T {
   if (typeof value === 'string') return privacy.restore(value) as T;
   if (Array.isArray(value)) return value.map((v: unknown) => restoreStrings(v, privacy)) as T;
   if (value !== null && typeof value === 'object') {
@@ -278,7 +261,7 @@ export async function composeSkeleton(opts: {
   /** #1540 — a privacy guard runs: the text reaches the model masked through
    *  this run, and the output is restored. A run that cannot mask skips the
    *  model call (fallback skeleton). Absent ⇒ the text goes out as written. */
-  privacy?: SkeletonPrivacyRun;
+  privacy?: StoredTextPrivacyRun;
   /** Tools the composer may plan a deterministic `fetch` for (the plugin's
    *  `fast_path_tools` with a known spec). Empty/absent: no FAST PATH prompt
    *  section, and every `fetch`/`summary` the model emits anyway is dropped. */

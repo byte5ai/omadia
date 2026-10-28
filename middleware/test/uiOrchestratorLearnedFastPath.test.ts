@@ -29,16 +29,17 @@ import {
   PLANS_PATH,
   type PlanCandidate,
   type PlanMemory,
-} from '../packages/omadia-ui-orchestrator/src/learnedPlanStore.js';
+} from '../packages/harness-plugin-fast-path/src/learnedPlanStore.js';
 import {
   isLearnableToolName,
   isRowTool,
   stripLiterals,
   stripQuestion,
   templateShape,
-} from '../packages/omadia-ui-orchestrator/src/literalStripping.js';
+} from '../packages/harness-plugin-fast-path/src/literalStripping.js';
+import { createFastPathService, FAST_PATH_SERVICE } from '../packages/harness-plugin-fast-path/src/service.js';
 import { activate, handleCanvasPublishRows } from '../packages/omadia-ui-orchestrator/src/plugin.js';
-import { markSurrogates, maskExampleQuestion, PERSON_CANARY } from '../packages/omadia-ui-orchestrator/src/exampleMasking.js';
+import { markSurrogates, maskExampleQuestion, PERSON_CANARY } from '../packages/harness-plugin-fast-path/src/exampleMasking.js';
 import type {
   PrivacyPromptMaskResult,
   PrivacyStoredTextScope,
@@ -218,6 +219,8 @@ async function harness(opts: {
   invoke?: (name: string, input: unknown) => Promise<string>;
   memory?: ReturnType<typeof fakeMemory>;
   privacy?: PrivacyMode;
+  /** the base agent's own tool list (default: odoo_query) */
+  offeredTools?: string[];
 } = {}): Promise<Harness> {
   const reg = new Map<string, unknown>();
   const logs: string[] = [];
@@ -266,6 +269,8 @@ async function harness(opts: {
   } as unknown as PluginContext;
   reg.set(CHAT_AGENT_SERVICE, {
     agent: {
+      // the base agent's own tool list — the fast path stays within it
+      offeredToolNames: () => new Set(opts.offeredTools ?? ['odoo_query']),
       chat: () => Promise.reject(new Error('unused')),
       async *chatStream(input: ChatTurnInput) {
         baseInputs.push(input);
@@ -274,6 +279,17 @@ async function harness(opts: {
       },
     },
   } satisfies ChatAgentBundle);
+  reg.set(
+    FAST_PATH_SERVICE,
+    createFastPathService({
+      config: ctx.config,
+      model: 'class:fast',
+      memory,
+      privacyGuard: () => reg.get('privacyRedact') as never,
+      privacyForced: () => false,
+      log: (m) => logs.push(m),
+    }),
+  );
   await activate(ctx);
   const agent = (reg.get('canvasChatAgent') as ChatAgentBundle).agent;
   return { agent, logs, invokeCalls, baseInputs, composerSystems, plannerUsers, memory, s };
@@ -398,7 +414,7 @@ describe('learned fast path — plan store', () => {
     assert.equal(b.plan.successes, 2);
     assert.deepEqual(b.plan.examples, ['q mar', 'q jan']);
     assert.deepEqual(store.active().map((p) => p.id), [a.plan.id]);
-    assert.ok(logs.includes(`[ui-orchestrator] learned plan activated plan=${a.plan.id} tool=odoo_query`));
+    assert.ok(logs.includes(`[fast-path] learned plan activated plan=${a.plan.id} tool=odoo_query`));
   });
 
   it('persists a schema-versioned file and reloads it (round trip)', async () => {
@@ -447,7 +463,7 @@ describe('learned fast path — plan store', () => {
     assert.equal((await store.recordExecution(plan.id, false, 'unmappable')).deactivated, false);
     assert.equal((await store.recordExecution(plan.id, false, 'truncated')).deactivated, true);
     assert.equal(store.active().length, 0);
-    assert.ok(logs.some((m) => m.startsWith(`[ui-orchestrator] learned plan deactivated plan=${plan.id}`)));
+    assert.ok(logs.some((m) => m.startsWith(`[fast-path] learned plan deactivated plan=${plan.id}`)));
   });
 });
 
@@ -461,8 +477,8 @@ describe('learned fast path — capture from agent turns', () => {
   it('candidate after one clean turn, active after the second; persisted without literals', async () => {
     const h = await harness();
     const id = await learnInvoicePlan(h);
-    assert.ok(h.logs.includes(`[ui-orchestrator] learned candidate plan=${id} tool=odoo_query successes=1`));
-    assert.ok(h.logs.includes(`[ui-orchestrator] learned candidate plan=${id} tool=odoo_query successes=2`));
+    assert.ok(h.logs.includes(`[fast-path] learned candidate plan=${id} tool=odoo_query successes=1`));
+    assert.ok(h.logs.includes(`[fast-path] learned candidate plan=${id} tool=odoo_query successes=2`));
     const file = h.memory.files.get(PLANS_PATH) ?? '';
     assert.match(file, /offene rechnungen von \{\{text_1\}\} im märz 2026/);
     assert.doesNotMatch(file, /Müller|Schmidt|müller|schmidt|RE\/2026/, 'no literal, no row data persisted');
@@ -477,9 +493,9 @@ describe('learned fast path — capture from agent turns', () => {
       await janTurn(),
     );
     for (let i = 0; i < 4; i += 1) await collect(h.agent.chatStream(turn(JAN_Q)));
-    assert.ok(h.logs.includes('[ui-orchestrator] learned skip reason=blocked'));
-    assert.ok(h.logs.includes('[ui-orchestrator] learned skip reason=tool-error'));
-    assert.ok(h.logs.includes('[ui-orchestrator] learned skip reason=turn-error'));
+    assert.ok(h.logs.includes('[fast-path] learned skip reason=blocked'));
+    assert.ok(h.logs.includes('[fast-path] learned skip reason=tool-error'));
+    assert.ok(h.logs.includes('[fast-path] learned skip reason=turn-error'));
     assert.equal(h.logs.filter((m) => m.includes('learned candidate')).length, 1);
     assert.ok(h.logs.some((m) => m.includes('successes=1')));
     assert.equal(h.logs.some((m) => m.includes('activated')), false);
@@ -498,9 +514,9 @@ describe('learned fast path — capture from agent turns', () => {
       await agentTurn({ input: invoiceInput('A', '2026-01-01', '2026-02-01') }),
     );
     for (let i = 0; i < 3; i += 1) await collect(h.agent.chatStream(turn(JAN_Q)));
-    assert.ok(h.logs.includes('[ui-orchestrator] learned skip reason=read-calls=2'));
-    assert.ok(h.logs.includes('[ui-orchestrator] learned skip reason=non-read-tool'));
-    assert.ok(h.logs.includes('[ui-orchestrator] learned skip reason=no-map'));
+    assert.ok(h.logs.includes('[fast-path] learned skip reason=read-calls=2'));
+    assert.ok(h.logs.includes('[fast-path] learned skip reason=non-read-tool'));
+    assert.ok(h.logs.includes('[fast-path] learned skip reason=no-map'));
     assert.equal(h.logs.some((m) => m.includes('learned candidate')), false);
   });
 
@@ -587,7 +603,7 @@ describe('learned fast path — example questions are privacy-masked before stor
       await collect(h.agent.chatStream(turn(PERSON_Q)));
       await collect(h.agent.chatStream(turn(MAR_Q)));
       assert.equal(
-        h.logs.filter((m) => m === `[ui-orchestrator] learned skip reason=example-unmasked detail=${detail}`).length,
+        h.logs.filter((m) => m === `[fast-path] learned skip reason=example-unmasked detail=${detail}`).length,
         2,
         h.logs.filter((m) => m.includes('learned')).join(' | '),
       );
@@ -602,7 +618,7 @@ describe('learned fast path — example questions are privacy-masked before stor
     await collect(h.agent.chatStream(turn(JAN_Q)));
     h.s.privacy = 'degraded';
     await collect(h.agent.chatStream(turn(PERSON_Q)));
-    assert.ok(h.logs.includes('[ui-orchestrator] learned example not stored reason=example-unmasked detail=canary-degraded'));
+    assert.ok(h.logs.includes('[fast-path] learned example not stored reason=example-unmasked detail=canary-degraded'));
     assert.ok(h.logs.some((m) => m.includes('learned plan activated')));
     const doc = JSON.parse(h.memory.files.get(PLANS_PATH) ?? '{}') as { plans: Array<{ examples: string[] }> };
     assert.deepEqual(doc.plans[0]?.examples, ['offene rechnungen von {{text_1}} im januar 2026']);
@@ -645,7 +661,10 @@ describe('learned fast path — use', () => {
       rowKey: 'id',
     });
     const contracts = JSON.stringify({ items: [{ id: 1, ref: 'C-1', customer: 'Acme', end_date: '2026-12-31', value: 10 }] });
-    const h = await harness({ invoke: (name) => Promise.resolve(name === 'search_contracts' ? contracts : odooOutput([])) });
+    const h = await harness({
+      invoke: (name) => Promise.resolve(name === 'search_contracts' ? contracts : odooOutput([])),
+      offeredTools: ['odoo_query', 'search_contracts'],
+    });
     const learnTurn = (q: string): Promise<ChatStreamEvent[]> =>
       agentTurn({ tool: 'search_contracts', input: contractsSource(q)['input'], source: contractsSource(q) });
     h.s.turns.push(await learnTurn('Acme'), await learnTurn('Globex'));
@@ -658,6 +677,28 @@ describe('learned fast path — use', () => {
     assert.deepEqual(h.invokeCalls.at(-1), { name: 'search_contracts', input: { query: 'Initech', status: 'active', limit: 50 } });
     assert.equal(h.baseInputs.length, 2);
     assert.deepEqual(events.filter((e) => e.type === 'text_delta').map((e) => field(e, 'text')), ['1 aktive Verträge.']);
+  });
+
+  it('a learned tool the base agent does not offer is never offered, planned or run', async () => {
+    const contractsSource = (q: string): Record<string, unknown> => ({
+      tool: 'search_contracts',
+      input: { query: q, status: 'active', limit: 50 },
+      map: { number: 'ref', partner: 'customer', date: 'end_date', open: 'value' },
+      itemsPath: 'items',
+      rowKey: 'id',
+    });
+    const h = await harness();
+    const learnTurn = (q: string): Promise<ChatStreamEvent[]> =>
+      agentTurn({ tool: 'search_contracts', input: contractsSource(q)['input'], source: contractsSource(q) });
+    h.s.turns.push(await learnTurn('Acme'), await learnTurn('Globex'));
+    await collect(h.agent.chatStream(turn('Aktive Verträge von Acme')));
+    await collect(h.agent.chatStream(turn('Aktive Verträge von Globex')));
+    assert.ok(h.logs.some((m) => m.includes('learned plan activated') && m.includes('tool=search_contracts')));
+    h.s.composer = composerOutput(contractsSource('Initech'), '{count} aktive Verträge.');
+    await collect(h.agent.chatStream(turn('Aktive Verträge von Initech')));
+    assert.doesNotMatch(h.composerSystems.at(-1) ?? '', /search_contracts/, 'not offered to the composer');
+    assert.ok(!h.invokeCalls.some((c) => c.name === 'search_contracts'), 'never invoked');
+    assert.equal(h.baseInputs.length, 3, 'the agent answers');
   });
 
   it('an unlearned tool outside the allow-list stays refused', async () => {
@@ -719,7 +760,7 @@ describe('learned fast path — use', () => {
     await collect(h.agent.chatStream(turn('Offene Rechnungen von Weber KG im Februar 2026')));
     assert.ok(h.logs.includes(`[ui-orchestrator] learned-plan miss reason=tool-error path=new-canvas offered=1 plan=${id}`));
     await collect(h.agent.chatStream(turn('Offene Rechnungen von Weber KG im Februar 2026')));
-    assert.ok(h.logs.some((m) => m.startsWith(`[ui-orchestrator] learned plan deactivated plan=${id}`)));
+    assert.ok(h.logs.some((m) => m.startsWith(`[fast-path] learned plan deactivated plan=${id}`)));
     await collect(h.agent.chatStream(turn('Offene Rechnungen von Weber KG im Februar 2026')));
     assert.doesNotMatch(h.composerSystems.at(-1) ?? '', /VALIDATED EXAMPLES/);
   });

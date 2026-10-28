@@ -1,7 +1,6 @@
 import type { ChatStreamEvent } from '@omadia/channel-sdk';
 import type { PrivacyStoredTextScope } from '@omadia/plugin-api';
 
-import type { DataRequirement } from './composition.js';
 import { maskExampleQuestion, STORED_TEXT_JOB } from './exampleMasking.js';
 import { planId, type LearnedPlanStore, type PlanCandidate } from './learnedPlanStore.js';
 import { isLearnableToolName, isRowTool, stripLiterals } from './literalStripping.js';
@@ -35,11 +34,17 @@ interface Publish {
   datasetPaths?: string[];
 }
 
+/** The field contract of one data container (a canvas table's columns). */
+export interface ContainerFields {
+  containerId: string;
+  fields: ReadonlyArray<{ fieldKey: string }>;
+}
+
 export interface TurnLearnerOptions {
   /** the user's question (raw text of the turn) */
   question: string;
   /** the field contract of the turn's containers */
-  requirements: readonly DataRequirement[];
+  requirements: readonly ContainerFields[];
   /** canvas producer tools (canvas_publish_rows, …) — not data calls */
   isProducerTool: (name: string) => boolean;
   store: LearnedPlanStore;
@@ -143,16 +148,16 @@ export function createTurnLearner(opts: TurnLearnerOptions): TurnLearner {
   /** Never throws; never logs the question. */
   async function commit(done: Extract<ChatStreamEvent, { type: 'done' }>): Promise<void> {
     if (done.answerSource === 'verifier-blocked' || done.answerIsError === true) {
-      opts.log(`[ui-orchestrator] learned skip reason=blocked`);
+      opts.log(`[fast-path] learned skip reason=blocked`);
       return;
     }
     if (sawError) {
-      opts.log(`[ui-orchestrator] learned skip reason=turn-error`);
+      opts.log(`[fast-path] learned skip reason=turn-error`);
       return;
     }
     const d = derive();
     if (!d.ok) {
-      opts.log(`[ui-orchestrator] learned skip reason=${d.reason}`);
+      opts.log(`[fast-path] learned skip reason=${d.reason}`);
       return;
     }
     const open = opts.openStoredTextScope;
@@ -168,11 +173,11 @@ export function createTurnLearner(opts: TurnLearnerOptions): TurnLearner {
     // no safe example: the success counts only for a plan that already has one
     const prev = opts.store.get(planId(d.candidate));
     if (prev !== undefined && prev.examples.length > 0) {
-      opts.log(`[ui-orchestrator] learned example not stored reason=example-unmasked detail=${masked.detail}`);
+      opts.log(`[fast-path] learned example not stored reason=example-unmasked detail=${masked.detail}`);
       await opts.store.recordSuccess(d.candidate);
       return;
     }
-    opts.log(`[ui-orchestrator] learned skip reason=example-unmasked detail=${masked.detail}`);
+    opts.log(`[fast-path] learned skip reason=example-unmasked detail=${masked.detail}`);
   }
 
   function observe(ev: ChatStreamEvent): void {
@@ -208,7 +213,7 @@ export function createTurnLearner(opts: TurnLearnerOptions): TurnLearner {
         // before the yield so a consumer that stops at `done` still commits
         if (ev.type === 'done') {
           pending = commit(ev).catch((err: unknown) => {
-            opts.log(`[ui-orchestrator] learned commit failed: ${err instanceof Error ? err.message : 'error'}`);
+            opts.log(`[fast-path] learned commit failed: ${err instanceof Error ? err.message : 'error'}`);
           });
         } else observe(ev);
         yield ev;

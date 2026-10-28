@@ -6379,11 +6379,23 @@ export class Orchestrator {
    * the routing decision (when routing ran) so the streaming path can surface
    * it inline in the UI as soon as the classifier resolves.
    */
-  private async resolveTurnModel(userMessage: string): Promise<{
+  private async resolveTurnModel(
+    userMessage: string,
+    /** the fast-path triage's verdict for this turn (`ChatTurnInput.routeHint`)
+     *  — taken as the routing decision, no second classifier call */
+    routeHint?: 'simple' | 'complex',
+  ): Promise<{
     model: string;
     routing?: { bucket: RoutingBucket; classifierModel: string; model: string };
   }> {
     if (!this.modelRouting) return { model: this.model };
+    if (routeHint !== undefined) {
+      const model = routeHint === 'simple' ? this.modelRouting.simpleModel : this.modelRouting.complexModel;
+      return {
+        model,
+        routing: { bucket: routeHint, classifierModel: this.modelRouting.classifierModel, model },
+      };
+    }
     const r = await routeTurnModel(
       this.provider,
       this.modelRouting,
@@ -6628,7 +6640,7 @@ export class Orchestrator {
     // non-streaming path has no event channel, so both decisions are simply
     // applied (channels that want to surface them use chatStream).
     const [turnModelResolved, turnPersonaResolved] = await Promise.all([
-      this.resolveTurnModel(wireUserMessage),
+      this.resolveTurnModel(wireUserMessage, input.routeHint),
       this.resolveTurnPersona(wireUserMessage),
     ]);
     const turnModel = turnModelResolved.model;
@@ -7983,7 +7995,7 @@ export class Orchestrator {
     // classifier calls — run in parallel so persona routing adds no serial
     // latency. Resolved once so the whole streamed turn runs on one model.
     const [resolved, resolvedPersona] = await Promise.all([
-      this.resolveTurnModel(wireUserMessage),
+      this.resolveTurnModel(wireUserMessage, input.routeHint),
       this.resolveTurnPersona(wireUserMessage),
     ]);
     const turnModel = resolved.model;
@@ -10452,6 +10464,22 @@ export class Orchestrator {
     return (
       this.chatParticipantsTool !== undefined &&
       turnContext.current()?.chatParticipants !== undefined
+    );
+  }
+
+  /**
+   * The tool names this orchestrator offers its model on a turn now — the
+   * names of {@link buildToolsList} (kernel tools, ready + offered plugin
+   * tools, domain tools). Called outside a turn scope, per-turn extras
+   * (chat roster, Privacy v4 verbs) are simply absent and a per-turn
+   * `isAvailable` that needs the scope hides its tool: the set errs small.
+   * The fast path (fastPathAgent.ts) may only run tools in this set.
+   */
+  offeredToolNames(): ReadonlySet<string> {
+    return new Set(
+      this.buildToolsList()
+        .map((t: { name?: unknown }) => t.name)
+        .filter((n): n is string => typeof n === 'string'),
     );
   }
 
