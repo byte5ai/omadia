@@ -141,7 +141,15 @@ export interface PublicPathValidationContext {
 
 export type PublicPathValidation =
   | { readonly ok: true; readonly path: string }
-  | { readonly ok: false; readonly path: string; readonly reason: string };
+  | {
+      readonly ok: false;
+      readonly path: string;
+      readonly reason: string;
+      /** #1465 — `unserved`: the path is well-formed and grantable in
+       *  principle, the plugin just registered no router under it (typically a
+       *  feature switched off). Every other failure is a manifest error. */
+      readonly code?: 'unserved';
+    };
 
 /**
  * Validate ONE declared path against everything that does not require knowing
@@ -195,13 +203,17 @@ export function validateDeclaredPublicPath(
     isUnderPrefix(p, prefix),
   );
   if (!underReservedRoot && !underOwnRoute) {
+    // #1465 — one router per `register` call, so the same prefix can arrive
+    // several times; name each once.
+    const ownPrefixes = [...new Set(ctx.ownRoutePrefixes)];
     return {
       ok: false,
       path: p,
+      code: 'unserved',
       reason:
-        ctx.ownRoutePrefixes.length === 0
+        ownPrefixes.length === 0
           ? `must start with '${PLUGIN_PUBLIC_PATH_ROOT}' — the plugin registered no routers, so it owns no other prefix`
-          : `must start with '${PLUGIN_PUBLIC_PATH_ROOT}' or lie under a prefix this plugin registers (${ctx.ownRoutePrefixes.join(', ')})`,
+          : `must start with '${PLUGIN_PUBLIC_PATH_ROOT}' or lie under a prefix this plugin registers (${ownPrefixes.join(', ')})`,
     };
   }
 
@@ -260,8 +272,17 @@ export class PublicPathGrantRegistry {
    * behind — a rejection rolls back the prefixes this call already took, so a
    * failed activation cannot squat on a prefix nobody can then reclaim.
    *
+   * #1465 — a declared prefix the plugin serves no router under is only a
+   * failure when the operator GRANTED it: that grant would make public
+   * something nobody answers. Ungranted, it makes nothing public, so it is
+   * reserved like any other ungranted prefix (still exclusive, still behind
+   * `requireAuth`) and reported back instead of failing the activation. A
+   * plugin that registers that router only when a feature is on would
+   * otherwise be unable to start with the feature off.
+   *
    * @param grantedPrefixes prefixes the operator has already consented to.
    *        Anything outside this set is claimed but not served.
+   * @returns the ungranted prefixes the plugin registered no router under.
    */
   claim(
     pluginId: string,
@@ -269,7 +290,7 @@ export class PublicPathGrantRegistry {
     ctx: PublicPathValidationContext & {
       readonly grantedPrefixes: ReadonlySet<string>;
     },
-  ): void {
+  ): { readonly unserved: readonly string[] } {
     if (declaredPaths.length > MAX_DECLARED_PUBLIC_PATHS) {
       throw new PublicPathClaimError(
         pluginId,
@@ -282,12 +303,18 @@ export class PublicPathGrantRegistry {
     this.releaseBySource(pluginId);
 
     const taken: string[] = [];
+    const unserved: string[] = [];
     try {
       for (const raw of declaredPaths) {
         const check = validateDeclaredPublicPath(raw, ctx);
-        if (!check.ok) {
+        const unservedButUngranted =
+          !check.ok &&
+          check.code === 'unserved' &&
+          !ctx.grantedPrefixes.has(check.path);
+        if (!check.ok && !unservedButUngranted) {
           throw new PublicPathClaimError(pluginId, check.path, check.reason);
         }
+        if (unservedButUngranted) unserved.push(check.path);
         const prefix = check.path;
         for (const [existing, owner] of this.byPrefix) {
           if (prefixesOverlap(prefix, existing)) {
@@ -309,6 +336,7 @@ export class PublicPathGrantRegistry {
       for (const prefix of taken) this.byPrefix.delete(prefix);
       throw err;
     }
+    return { unserved };
   }
 
   /**

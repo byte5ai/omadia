@@ -4372,7 +4372,12 @@
       "allInstalled": "Everything installed",
       "allActive": "{name} and all prerequisites are active.",
       "errorKicker": "Error",
-      "stepValidationFailed": "{label}: the input contains errors."
+      "stepValidationFailed": "{label}: the input contains errors.",
+      "updateFrom": "Update {from} → {to}",
+      "fromHub": "from the Hub",
+      "stepActivationFailed": "{label}: installed, but it did not start: {error}",
+      "stepUpdatedNotStarted": "{label}: updated, but not started. Activate it on its store page, then install again.",
+      "stepNeedsParents": "{label}: needs other plugins installed first. Install it from its store page, then install again."
     },
     "upload": {
       "onlyZip": "Only .zip allowed, got: {name}",
