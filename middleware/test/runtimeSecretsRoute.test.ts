@@ -392,6 +392,51 @@ describe('runtime secrets route — schema-driven secret/config split', () => {
     assert.equal(installed?.config['tenant_id'], undefined);
   });
 
+  it('#1468 — PATCH delete removes a vault key the manifest does not declare', async () => {
+    // An orphaned provider key in an LLM scope: written by the settings page,
+    // never part of the plugin's own setup schema.
+    h = await makeHarness({
+      setupFields: [{ key: 'tenant_id', type: 'string' }],
+      initialConfig: { tenant_id: 't-keep' },
+    });
+    await h.vault.setMany('de.byte5.agent.test', {
+      'provider:ollama/api_key': 'ollama-test-123',
+      'provider:ollama/verified_at': '2026-10-27T08:16:44Z',
+    });
+    const res = await fetch(
+      `${h.baseUrl}/api/v1/admin/runtime/installed/de.byte5.agent.test/secrets`,
+      {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ delete: ['provider:ollama/api_key'] }),
+      },
+    );
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { keys: string[] };
+    assert.deepEqual(body.keys, ['provider:ollama/verified_at']);
+    assert.equal(
+      await h.vault.get('de.byte5.agent.test', 'provider:ollama/api_key'),
+      undefined,
+    );
+    // A non-secret config key is still deleted from config, untouched here.
+    assert.equal(h.registry.get('de.byte5.agent.test')?.config['tenant_id'], 't-keep');
+  });
+
+  it('#1468 — an undeclared vault key outside provider:* keeps its manifest routing', async () => {
+    h = await makeHarness({ setupFields: [{ key: 'tenant_id', type: 'string' }] });
+    await h.vault.setMany('de.byte5.agent.test', { database_url: 'postgres://x' });
+    const res = await fetch(
+      `${h.baseUrl}/api/v1/admin/runtime/installed/de.byte5.agent.test/secrets`,
+      {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ delete: ['database_url'] }),
+      },
+    );
+    assert.equal(res.status, 200);
+    assert.equal(await h.vault.get('de.byte5.agent.test', 'database_url'), 'postgres://x');
+  });
+
   it('PATCH config update merges into existing registry config (preserves untouched keys)', async () => {
     h = await makeHarness({
       setupFields: [

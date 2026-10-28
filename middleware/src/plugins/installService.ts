@@ -687,6 +687,83 @@ export class InstallService {
    *          caller ignores it.
    */
   async reactivate(agentId: string): Promise<InstalledAgent['status'] | undefined> {
+    const status = await this.reactivateOne(agentId);
+    if (status !== undefined) {
+      // The cascade is a consequence of this call, not part of its verdict:
+      // nothing it does may turn the caller's save into a failure.
+      try {
+        await this.reactivateDependents(agentId);
+      } catch (err) {
+        console.error(
+          `[install] re-activating the dependents of ${agentId} failed:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+    return status;
+  }
+
+  /**
+   * #1462 — re-activate every installed plugin that `depends_on` `parentId`,
+   * transitively, parents before children.
+   *
+   * A dependent fetches its parent's service objects (`odoo.client`, a
+   * toolkit closing over it) once, in its own `activate()`. Re-activating
+   * only the parent publishes a NEW client and leaves the dependent on the
+   * old one: a rotated key, a moved host or an updated package never reach
+   * it, and a parent that failed to come back up stays hidden behind a
+   * dependent that keeps answering through the client of the version that is
+   * no longer running. Re-activating the dependent makes it re-resolve —
+   * against the new client, or, when the parent is down, into its own
+   * recorded activation failure instead of stale answers.
+   *
+   * Every installed dependent is re-activated whatever its status except
+   * `inactive` (stood down on purpose): one left `errored` by a broken parent
+   * is exactly the one a fixed parent must bring back. Each one is re-activated alone (no further cascade from inside the
+   * loop), because the walk below already covers the grandchildren once.
+   * Failures are recorded per dependent by `reactivateOne` and never stop the
+   * walk or reach the caller — the same contract `reactivate` has.
+   */
+  async reactivateDependents(parentId: string): Promise<void> {
+    const affected: string[] = [];
+    const seen = new Set<string>([parentId]);
+    for (let i = -1; i < affected.length; i += 1) {
+      const id = i < 0 ? parentId : affected[i]!;
+      for (const dependent of this.findDependents(id)) {
+        if (seen.has(dependent)) continue;
+        seen.add(dependent);
+        affected.push(dependent);
+      }
+    }
+    // Longest-path depth from `parentId`, so a dependent that also depends on
+    // another affected plugin comes after it (diamond: A ← B ← C and A ← C).
+    // Bounded relaxation: a `depends_on` cycle cannot loop forever.
+    const depth = new Map<string, number>([[parentId, 0]]);
+    for (let round = 0; round <= affected.length; round += 1) {
+      for (const id of affected) {
+        const parents = this.deps.catalog.get(id)?.plugin.depends_on ?? [];
+        const d =
+          1 + Math.max(0, ...parents.map((p) => depth.get(p) ?? -1));
+        depth.set(id, Math.min(d, affected.length));
+      }
+    }
+    const order = [...affected].sort(
+      (a, b) => (depth.get(a) ?? 0) - (depth.get(b) ?? 0),
+    );
+    for (const dependent of order) {
+      // `inactive` is a deliberate stand-down (the exclusive embedding /
+      // transcription provider switch); a parent's change must not start it.
+      if (this.deps.registry.get(dependent)?.status === 'inactive') continue;
+      console.log(
+        `[install] re-activating ${dependent} — it depends on ${parentId}, which was re-activated`,
+      );
+      await this.reactivateOne(dependent);
+    }
+  }
+
+  private async reactivateOne(
+    agentId: string,
+  ): Promise<InstalledAgent['status'] | undefined> {
     if (!this.deps.registry.has(agentId)) return undefined;
     if (this.deps.onUninstall) {
       try {

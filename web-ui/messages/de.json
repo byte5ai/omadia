@@ -4415,7 +4415,12 @@
       "notAllRunning": "Installiert – nicht alles läuft",
       "notRunningList": "{name} und die Voraussetzungen sind installiert, aber diese sind nicht gestartet: {plugins}. Öffne die Seite des jeweiligen Plugins im Store, um den Grund zu sehen.",
       "errorKicker": "Fehler",
-      "stepValidationFailed": "{label}: Eingaben enthalten Fehler."
+      "stepValidationFailed": "{label}: Eingaben enthalten Fehler.",
+      "updateFrom": "Aktualisieren {from} → {to}",
+      "fromHub": "aus dem Hub",
+      "stepActivationFailed": "{label}: installiert, aber nicht gestartet: {error}",
+      "stepUpdatedNotStarted": "{label}: aktualisiert, aber nicht gestartet. Auf der Store-Seite aktivieren und die Installation wiederholen.",
+      "stepNeedsParents": "{label}: braucht zuerst weitere Plugins. Über die Store-Seite installieren und die Installation wiederholen."
     },
     "upload": {
       "onlyZip": "Nur .zip erlaubt, bekommen: {name}",

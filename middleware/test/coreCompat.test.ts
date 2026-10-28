@@ -168,6 +168,37 @@ describe('checkCoreCompat', () => {
   });
 });
 
+describe('#1463 — versions the range admits but this core cannot start', () => {
+  const HOST = '1.40.0';
+
+  it('refuses a listed plugin below its minimum startable version, naming the way out', () => {
+    for (const [id, version, minimum] of [
+      ['@omadia/integration-odoo', '0.2.0', '0.2.1'],
+      ['@omadia/agent-odoo-hr', '0.2.7', '0.2.8'],
+      ['@omadia/agent-odoo-accounting', '0.1.3', '0.1.4'],
+      ['@omadia/agent-confluence', '0.3.2', '0.3.3'],
+    ] as const) {
+      const refusal = checkCoreCompat({ id, version }, HOST);
+      assert.equal(refusal?.reason, 'below_minimum', id);
+      assert.match(refusal?.message ?? '', new RegExp(`${minimum} or newer`));
+    }
+  });
+
+  it('admits the minimum version and anything newer, and every other plugin', () => {
+    assert.equal(checkCoreCompat({ id: '@omadia/integration-odoo', version: '0.2.1' }, HOST), null);
+    assert.equal(checkCoreCompat({ id: '@omadia/integration-odoo', version: '0.3.0' }, HOST), null);
+    assert.equal(checkCoreCompat({ id: '@acme/integration-odoo', version: '0.0.1' }, HOST), null);
+  });
+
+  it('still reports an unsatisfied range first', () => {
+    const refusal = checkCoreCompat(
+      { id: '@omadia/integration-odoo', version: '0.2.0', compat_core: '>=2.0' },
+      HOST,
+    );
+    assert.equal(refusal?.reason, 'unsatisfied');
+  });
+});
+
 describe('compat.core at upload and install', () => {
   let tmp: string;
 

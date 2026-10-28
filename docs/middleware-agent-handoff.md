@@ -2609,7 +2609,12 @@ Aufrufstelle kopiert, sondern lebt als `recordActivationFailure` /
 `recordActivationSuccess` in `plugins/installedRegistry.ts`; benutzt wird es
 von `installService.completeInstall`, `installService.reactivate`, dem
 Upload-Seam (`PackageUploadService.ingest` → `onPackageReady`) und
-`channelRegistry.activate`. `recordActivationFailure` gibt die vorhandene
+`channelRegistry.activate`. Seit #1462 re-aktiviert `installService.reactivate`
+danach alle installierten `depends_on`-Abhängigen (`reactivateDependents`,
+transitiv, Eltern zuerst, unabhängig vom Status), und der Upload-Seam ruft
+dasselbe über `onDependentsStale`, nachdem er das Urteil des Elternteils
+gebucht hat — ein Agent hält sonst den Client, den er in seinem eigenen
+`activate()` geholt hat. `recordActivationFailure` gibt die vorhandene
 `unresolved_requires`-Liste weiter, weil ein weggelassenes Argument sie löscht
 und `bootstrap.retryErroredPlugins` genau diese Liste braucht, um ein Plugin
 nach dem Nachinstallieren des Providers automatisch zurückzusetzen. Der

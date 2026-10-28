@@ -10,6 +10,7 @@ import {
   ApiError,
   configureInstallJob,
   createInstallJob,
+  installFromRegistry,
 } from '../../_lib/api';
 import type {
   CapabilityProviderRef,
@@ -291,7 +292,11 @@ export function RequiresWizard({
   // ---------------------------------------------------------------------
 
   async function runInstallChain(): Promise<void> {
-    const steps: Array<{ pluginId: string; label: string }> = [];
+    const steps: Array<{
+      pluginId: string;
+      label: string;
+      hub?: { version: string; update: boolean };
+    }> = [];
     for (const sel of selections) {
       if (!sel.providerId) {
         setPhase({
@@ -304,7 +309,20 @@ export function RequiresWizard({
       const label = cand
         ? `${cand.name} (${sel.capability})`
         : `${sel.providerId} (${sel.capability})`;
-      steps.push({ pluginId: sel.providerId, label });
+      steps.push({
+        pluginId: sel.providerId,
+        label,
+        // #1463 — a Hub provider is fetched first; an installed one is
+        // updated in place, and the update activates it.
+        ...(cand?.source === 'registry'
+          ? {
+              hub: {
+                version: cand.version,
+                update: cand.update_from !== undefined,
+              },
+            }
+          : {}),
+      });
     }
     steps.push({
       pluginId: targetPluginId,
@@ -325,6 +343,45 @@ export function RequiresWizard({
           requiresForm: false,
           stepError: null,
         });
+        if (step.hub) {
+          const ingested = await installFromRegistry(
+            step.pluginId,
+            step.hub.version,
+          );
+          if (ingested.activation_error) {
+            setPhase({
+              kind: 'error',
+              message: t('stepActivationFailed', {
+                label: step.label,
+                error: ingested.activation_error,
+              }),
+            });
+            return;
+          }
+          if (step.hub.update) {
+            // An update starts the provider only when the core reactivates
+            // it — not for one the circuit breaker latched or that was
+            // stood down. Going on would fail the target on a provider that
+            // is not running.
+            if (!ingested.activated) {
+              setPhase({
+                kind: 'error',
+                message: t('stepUpdatedNotStarted', { label: step.label }),
+              });
+              return;
+            }
+            continue;
+          }
+          // A Hub provider with `depends_on` parents of its own that are not
+          // installed would be refused by the install gate below.
+          if ((ingested.chain?.available_providers.length ?? 0) > 0) {
+            setPhase({
+              kind: 'error',
+              message: t('stepNeedsParents', { label: step.label }),
+            });
+            return;
+          }
+        }
         const created = await createInstallJob(step.pluginId);
         const job = created.job;
         const fields = job.setup_schema?.fields ?? [];
@@ -485,10 +542,19 @@ function ProviderPickRow({
                   {singleProvider ? (
                     <Chip tone="accent">{t('recommended')}</Chip>
                   ) : null}
-                  {cand.already_installed && cand.active ? (
+                  {cand.update_from !== undefined ? (
+                    <Chip tone="accent">
+                      {t('updateFrom', {
+                        from: cand.update_from,
+                        to: cand.version,
+                      })}
+                    </Chip>
+                  ) : cand.already_installed && cand.active ? (
                     <Chip tone="muted">{t('active')}</Chip>
                   ) : cand.already_installed ? (
                     <Chip tone="muted">{t('installedInactive')}</Chip>
+                  ) : cand.source === 'registry' ? (
+                    <Chip tone="muted">{t('fromHub')}</Chip>
                   ) : null}
                   <Chip tone="mono">{cand.kind}</Chip>
                 </div>

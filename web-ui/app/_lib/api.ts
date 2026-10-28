@@ -1276,6 +1276,8 @@ export interface RegistryInstallResponse {
   activation_error?: string;
   /** #1497 — the shared activation result; narrow with `parseActivationResult`. */
   activation?: unknown;
+  /** #1463 — present (true) only when this ingest started the plugin. */
+  activated?: true;
   next: { install: string };
 }
 

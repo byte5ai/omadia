@@ -597,7 +597,9 @@ export class ToolPluginRuntime {
     // mistake as trusting it about authentication.
     //
     // A rejected claim is a hard activation failure with the SAME rollback the
-    // catch above performs. Half-activating a plugin whose public-path
+    // catch above performs. #1465 — "rejected" excludes a declared prefix the
+    // plugin serves nothing under while it is ungranted: that one makes nothing
+    // public, so `claim()` reserves it and reports it instead. Half-activating a plugin whose public-path
     // declaration conflicts with another plugin's is the one outcome worse than
     // refusing it: the operator would see a healthy plugin serving a prefix
     // somebody else owns.
@@ -608,14 +610,22 @@ export class ToolPluginRuntime {
           const granted =
             (await this.deps.publicPathGrantStore?.listForPlugin(agentId)) ??
             new Set<string>();
-          this.deps.publicPathGrants.claim(agentId, declared, {
-            corePublicPaths: this.deps.corePublicPaths ?? [],
-            ownRoutePrefixes: this.deps.pluginRouteRegistry
-              .list()
-              .filter((r) => r.source === agentId && !r.disposed)
-              .map((r) => r.prefix),
-            grantedPrefixes: granted,
-          });
+          const { unserved } = this.deps.publicPathGrants.claim(
+            agentId,
+            declared,
+            {
+              corePublicPaths: this.deps.corePublicPaths ?? [],
+              ownRoutePrefixes: [
+                ...new Set(
+                  this.deps.pluginRouteRegistry
+                    .list()
+                    .filter((r) => r.source === agentId && !r.disposed)
+                    .map((r) => r.prefix),
+                ),
+              ],
+              grantedPrefixes: granted,
+            },
+          );
           const ungranted = declared.filter((p) => !granted.has(p));
           // Epic #470 C16 (#817) — name the remedy, not just the state.
           //
@@ -635,6 +645,14 @@ export class ToolPluginRuntime {
                   `PUT /api/v1/admin/runtime/installed/${encodeURIComponent(agentId)}/grants`
                 : ''),
           );
+          // #1465 — declared, ungranted, and no router registered under it
+          // (a feature switched off). Not a failure; granting it would be.
+          if (unserved.length > 0) {
+            log(
+              `[tool-runtime] ${agentId} registered no router under ${unserved.join(', ')} — ` +
+                'the declared prefix serves nothing in this configuration and stays behind requireAuth; a grant for it is only valid once the plugin serves it',
+            );
+          }
         } catch (err) {
           this.deps.publicPathGrants.releaseBySource(agentId);
           this.deps.pluginRouteRegistry.disposeBySource(agentId);
