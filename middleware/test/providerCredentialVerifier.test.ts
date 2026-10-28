@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, it } from 'node:test';
 
 import {
   __clearVerificationCache,
+  getKeylessVerification,
   decodeVerifiedRecord,
   encodeVerifiedRecord,
   getCachedVerification,
@@ -467,17 +468,68 @@ describe('verifyProviderCredential — wire formats', () => {
     assert.equal(calls.length, 0);
   });
 
-  it('short-circuits a keyless provider to verified with ZERO fetches', async () => {
-    const { impl, calls } = stubFetch(() => new Response('', { status: 500 }));
+  // #1460 — a keyless provider used to short-circuit to `verified` with zero
+  // requests, so a stack with no Ollama daemon showed a green chip.
+  it('probes a keyless provider without a key and verifies only on a model list', async () => {
+    const { impl, calls } = stubFetch(() => modelListResponse());
     const v = await verifyProviderCredential({
       providerId: 'ollama',
-      apiKey: 'unused',
+      apiKey: '',
       wireFormat: 'openai-compatible',
+      baseURL: 'http://localhost:11434/v1',
       requiresApiKey: false,
       fetchImpl: impl,
     });
     assert.equal(v.status, 'verified');
-    assert.equal(calls.length, 0, 'a local provider must never be probed');
+    assert.equal(calls.length, 1, 'a keyless provider is verified by reaching it');
+    assert.equal(calls[0]?.url, 'http://localhost:11434/v1/models');
+    assert.equal(calls[0]?.headers['Authorization'], undefined, 'no key, no header');
+  });
+
+  it('reports an unreachable keyless provider as unverified, never verified', async () => {
+    const { impl } = stubFetch(() => {
+      throw new TypeError('fetch failed');
+    });
+    const v = await verifyProviderCredential({
+      providerId: 'ollama',
+      apiKey: '',
+      wireFormat: 'openai-compatible',
+      baseURL: 'http://localhost:11434/v1',
+      requiresApiKey: false,
+      fetchImpl: impl,
+    });
+    assert.equal(v.status, 'unverified');
+    assert.equal(v.reason, 'network_error');
+    assert.deepEqual(getKeylessVerification('ollama', ''), v,
+      'the read path shows the last check that actually ran');
+  });
+
+  it('does not call a keyless 401 without a stored key a rejected key', async () => {
+    const { impl } = stubFetch(() => new Response('', { status: 401 }));
+    const v = await verifyProviderCredential({
+      providerId: 'ollama',
+      apiKey: '',
+      wireFormat: 'openai-compatible',
+      baseURL: 'http://proxy.internal/v1',
+      requiresApiKey: false,
+      fetchImpl: impl,
+    });
+    assert.equal(v.status, 'unverified');
+    assert.equal(v.reason, 'forbidden');
+  });
+
+  it('sends an optional stored key to a keyless provider behind an auth proxy', async () => {
+    const { impl, calls } = stubFetch(() => new Response('', { status: 401 }));
+    const v = await verifyProviderCredential({
+      providerId: 'ollama',
+      apiKey: 'proxy-key',
+      wireFormat: 'openai-compatible',
+      baseURL: 'http://proxy.internal/v1',
+      requiresApiKey: false,
+      fetchImpl: impl,
+    });
+    assert.equal(calls[0]?.headers['Authorization'], 'Bearer proxy-key');
+    assert.equal(v.status, 'invalid', 'a key that was sent can be rejected');
   });
 
   it('reads wireFormat / baseURL / requiresApiKey from an injected catalog', async () => {

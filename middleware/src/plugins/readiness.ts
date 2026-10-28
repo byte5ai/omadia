@@ -40,6 +40,7 @@ import type {
 } from '../api/admin-v1.js';
 import type { ProviderVerification } from '../platform/providerCredentialVerifier.js';
 import type { InstalledAgent, InstalledRegistry } from './installedRegistry.js';
+import { activationErrorCodeOf } from './activationFailure.js';
 
 export type { PluginReadiness } from '../api/admin-v1.js';
 
@@ -148,6 +149,9 @@ export async function computeReadiness(
       missing_fields: [],
       verified_at: null,
       ...(detail ? { error_detail: detail } : {}),
+      // #1456 — always present for `errored`: `unknown` for an entry recorded
+      // before codes existed, so the UI still has localized copy to show.
+      error_code: activationErrorCodeOf(entry),
     };
   }
 
@@ -204,7 +208,15 @@ export async function computeReadiness(
 
   try {
     const verdict = await llmProbe.resolve(plugin.id, entry.config);
-    if (verdict !== undefined && verdict.status !== 'verified') {
+    // #1460 — a keyless provider (Ollama) nobody has checked since boot is
+    // "we do not know", not a missing credential: like a vault hiccup, it must
+    // not turn the plugin amber after every restart. A check that RAN and
+    // failed still does.
+    if (
+      verdict !== undefined &&
+      verdict.status !== 'verified' &&
+      verdict.reason !== 'not_checked'
+    ) {
       return { state: 'awaiting_llm', missing_fields: [], verified_at: null };
     }
   } catch {

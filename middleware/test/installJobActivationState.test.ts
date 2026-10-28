@@ -272,12 +272,16 @@ function makeStickyActiveHarness(
         installed.set(id, blockActivation(current, error, new Date().toISOString()));
       }
     },
-    markActivationFailed: async (id: string, error: string) => {
+    markActivationFailed: async (
+      id: string,
+      error: string | { message: string; code: string },
+    ) => {
       const current = installed.get(id);
       if (!current) return;
       installed.set(id, {
         ...current,
-        last_activation_error: error,
+        // #1456 — seams hand over a classified `ActivationFailure`.
+        last_activation_error: typeof error === 'string' ? error : error.message,
         last_activation_error_at: new Date().toISOString(),
       });
     },
@@ -592,6 +596,7 @@ void describe('#825 — re-activation refreshes completed install jobs', () => {
       state: 'active',
       ok: true,
       error: null,
+      error_code: null,
       missing: [],
     });
   });
@@ -619,6 +624,8 @@ void describe('#825 — re-activation refreshes completed install jobs', () => {
       state: 'errored',
       ok: false,
       error: 'still broken',
+      // #1456 — recorded before codes existed (no field) → `unknown`.
+      error_code: 'unknown',
       missing: [],
     });
   });

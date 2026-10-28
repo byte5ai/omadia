@@ -75,6 +75,81 @@ changelog.
   empty line says what it covers: "No grant needed: this plugin requests neither
   its own database tables nor public paths."
 
+
+### Fixed — the store says truthfully whether a plugin is running, and why not (#1456, #1497, #1496, #1492, #1460)
+
+2026-10-28. Five places reported a plugin's activation state wrong.
+
+**One activation-result shape (#1497).** Every write that (re)activates a
+plugin now answers `PluginActivationResult` — `{ state, ok, error,
+error_code }`, read back from the registry after the attempt: the install
+job's `activation_state` (unchanged fields plus `error_code`), the setup-field
+writes `PATCH /api/v1/admin/runtime/installed/:id/secrets`, `…/config` and
+`POST …/secrets/from-json` (new `activation`), and the update/upload ingest
+routes `POST /api/v1/install/registry/:id` and `POST /api/v1/install/packages`
+(new `activation`, next to the existing `activation_error`). The secrets PATCH
+used to answer only key names, so the store rendered "✓ Saved" over a plugin
+that had just failed to start on the new values, and kept the old badge until
+a reload. The setup editor now says "Saved — but the plugin did not start with
+the new values" with the reason, and refreshes the page either way.
+
+**Operator-facing activation errors (#1456).** The registry kept only the raw
+exception message — plugin-API text for plugin authors, English in the German
+UI, telling the operator to edit a manifest. It now also records
+`last_activation_error_code` (`ActivationErrorCode`: `secret_missing`,
+`config_missing`, `capability_not_declared`, `network_not_permitted`,
+`permission_not_granted`, `dependency_unresolved`, `provider_conflict`,
+`target_unreachable`, `unknown`), classified from the error object at every
+seam (install, reactivate, upload/update, tool/agent/channel boot), never from
+the message. Readiness carries `error_code` for `errored` (`unknown` for
+entries written before this change); `GET /runtime/installed[/:id]` and
+`GET …/grants` carry `last_activation_error_code`. The store renders
+`store.activationError.<code>` — what went wrong and what to do — in the
+drawer, under the installed pill, in the update banner, the upload panel and
+the grants panel; the raw sentence is a collapsed "Technical detail". The
+store-list badge's `title=` is the localized reason instead of the raw tail.
+
+**No success styling on an errored plugin (#1496).** The sidebar no longer
+shows a green check, "Attach to an orchestrator" and "Try it in chat" under a
+red "Activation failed" (or "Connection failed") pill, and the installed pill
+is red for `connection_failed` too (it was green). The prerequisites wizard's
+final screen names the steps that installed but did not start instead of
+"… and all prerequisites are active".
+
+**Next steps fit the plugin (#1492).** The hint now depends on kind and
+attachment: an agent/tool already enabled on an orchestrator reads "is attached
+to <names>" with "Manage orchestrators"; integrations say they are used through
+the agents that depend on them; extensions and channels say they are running —
+neither gets orchestrator or chat links. The store page looks attachments up via
+`GET /api/v1/operator/agents` (best effort; unknown falls back to the generic
+hint).
+
+**Keyless providers are actually checked (#1460).** A provider with
+`requiresApiKey: false` (Ollama, vLLM) was "verified" with zero requests — on
+the providers list, from "Test key", and for any key saved on it. Verify now
+probes `GET {baseURL}/models` (bare, unless an optional key is stored; a 401
+without a key is `unverified`, never `invalid`). The list shows the last check
+this process ran, or `unverified` before any — never probed from the read path,
+never persisted, because a daemon's reachability does not survive a restart as
+a fact. `claude-cli` and OAuth providers keep their own check (CLI login /
+stored grant) on the verify route. The provider DTO gains `requiresApiKey` and
+`hasKey`; "Change key"/"Remove key" appear only when a key is stored, and the
+button reads "Test connection" for keyless providers. Before any check the row
+reads "not verified" with the reason `not_checked`; readiness treats that as
+"we do not know" (like a vault hiccup), so plugins assigned to Ollama do not
+turn amber after every restart, while a check that ran and failed still makes
+them `awaiting_llm`. Removing or replacing an optional key drops the last
+verdict (`invalidate`).
+
+**#1461** (updating an `errored` plugin never re-activated it) was fixed by
+#1473: the update path now activates an `errored` entry below the circuit
+breaker and lifts the old error on success; a regression test here pins that
+the old error code goes with it. **#1453**'s call-time half lives in the
+integration repos: `byte5ai/omadia-integration-odoo` and
+`byte5ai/omadia-integration-confluence` now export `verifyConnection` and
+report runtime 401s through `ctx.status` (separate PRs and releases).
+
+No plugin-api change; no new env var, migration or secret.
 ### Fixed — the storage overlay pulls again: SeaweedFS replaces MinIO (#1506)
 
 2026-10-28. `minio/minio` and `minio/mc` were removed from Docker Hub, and
@@ -104,6 +179,54 @@ on a user's machine. Base images of the locally built sidecars (pii-detector,
 skillspector) are not covered. Fly (Tigris)
 and `render.yaml` (no object storage) never used these images and are
 unaffected.
+
+### Fixed — integration and provider changes reach their dependents and vault scopes (#1462, #1463, #1465, #1468)
+
+2026-10-28. Four places where a change to one plugin did not reach what
+depended on it.
+
+- **#1462 — `depends_on` cascade.** Re-activating or updating an integration
+  re-activated only the integration. Its agents kept the client they fetched in
+  their own `activate()`, so a rotated key, a moved `odoo_url` or a new package
+  version never reached them, and an integration that failed to come back up
+  stayed hidden behind agents still answering through the old client.
+  `InstallService.reactivate` now re-activates every installed `depends_on`
+  dependent, transitively and parents first (`reactivateDependents`), whatever
+  its status except a deliberate `inactive`, so a dependent left `errored` by a
+  broken parent recovers with the fixed one. The upload/update seam does the same after it recorded the
+  parent's verdict (`PackageUploadService` `onDependentsStale`). Failures are
+  recorded per dependent and never fail the triggering save.
+- **#1463 — versions the core cannot start.** `integration-odoo` < 0.2.1,
+  `agent-odoo-hr` < 0.2.8, `agent-odoo-accounting` < 0.1.4 and
+  `agent-confluence` < 0.3.3 relied on the legacy service grants #839 retired;
+  their `compat_core` still admitted every 1.x core. `checkCoreCompat` now
+  refuses them (`reason: 'below_minimum'`, `MINIMUM_STARTABLE_VERSIONS` in
+  `coreCompat.ts`) wherever it already refuses an incompatible range — ingest,
+  install, and now `POST /install/registry/:id` before the download. A 409
+  `install.missing_capability` whose capability has no catalog provider now
+  looks at the Hub's latest versions (`registryCapabilityProviders.ts`): an
+  installed, outdated parent is offered as "Update 0.2.0 → 0.2.1"
+  (`source: 'registry'`, `update_from`), and the wizard updates it from the
+  Hub instead of asking for an upload (only where package upload is enabled).
+  Ingest and registry-install responses carry `activated: true` when the ingest
+  started the plugin, so the wizard stops instead of continuing over a
+  provider the update did not start.
+- **#1465 — unserved, ungranted public path.** A declared public path the
+  plugin registered no router under (a feature switched off, e.g.
+  dev-platform's GitHub webhooks) failed the whole activation even when the
+  operator never granted it. `PublicPathGrantRegistry.claim` now reserves such
+  a prefix ungranted and reports it (`unserved`); only a GRANTED prefix the
+  plugin does not serve still fails. The error lists each own route prefix
+  once.
+- **#1468 — provider keys outlived the provider.** Uninstalling a provider
+  plugin left `provider:<id>/api_key`, `verified_at` and OAuth leaves in the
+  `@omadia/orchestrator`, `@omadia/verifier` and `@omadia/orchestrator-extras`
+  scopes; a reinstall inherited the key. A real uninstall now removes every
+  `provider:<id>/*` leaf from those scopes (`providerCredentialPurge.ts`),
+  unless the id is a built-in one (#1451) or another installed plugin still
+  declares it. `PATCH /admin/runtime/installed/:id/secrets` with `delete` now
+  removes an undeclared `provider:<id>/<leaf>` vault key instead of answering
+  200 and keeping it, so keys orphaned before this fix can be removed.
 
 ### Fixed — plugin registries: a hanging one no longer blanks the store, failures are visible, removal sticks, changes are audited (#1458, #1482, #1483, #1487)
 

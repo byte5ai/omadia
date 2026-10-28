@@ -5697,6 +5697,41 @@ tamper-proof against an operator with database access. Install rows cover
 the install wizard; a package ingested from a registry or uploaded is not an
 install until the wizard completes.
 
+## 10s. Provider credentials leave with the provider plugin (#1468)
+
+A provider plugin's API key is not stored in the plugin's own vault namespace.
+The settings page and `POST /admin/providers/:id/verify` write
+`provider:<id>/api_key` and `provider:<id>/verified_at` (OAuth providers also
+`provider:<id>/oauth_*`) into the three LLM scopes `@omadia/orchestrator`,
+`@omadia/verifier` and `@omadia/orchestrator-extras`. Uninstall's
+`vault.purge(pluginId)` never reached them, so the key outlived the plugin and a
+reinstall under the same id inherited it without the operator entering one.
+
+On a real uninstall (not a reactivation) the `onUninstall` hook now deletes
+every `provider:<id>/<leaf>` key from the three scopes
+(`platform/providerCredentialPurge.ts`). The match is exact: one leaf segment
+under exactly that id, so `ollama` never touches `ollama-cloud`. Three cases
+keep the key (`providerCredentialPurgeBlocker`): a built-in id, bundled or
+experimental whatever the feature flag says, because the built-in owns the same
+key (#1451); another installed plugin declaring the same `llm_provider.id`,
+because the catalog records no owner per entry; and a reactivation, because the
+plugin comes back at once. A scope that cannot be read is logged and the others are still
+cleaned; the uninstall completes regardless, as for `vault.purge`. Only key
+names are logged.
+
+Keys orphaned before this change stay in the vault until removed.
+`PATCH /api/v1/admin/runtime/installed/<scope>/secrets` with `delete` now
+deletes a `provider:<id>/<leaf>` key from the vault whenever the vault holds it,
+even if the scope's manifest does not declare it as a secret field. Before, such
+a key was routed to the config branch, the request answered 200, and the secret
+stayed. The widening is limited to that namespace on purpose: other undeclared
+leaves of a scope (a database URL, say) keep their manifest routing. It is the
+same admin surface that already sets and removes those keys via the settings
+page, and it touches only the scope named in the path.
+
+Residual: a key save or verify racing the uninstall can write a leaf after the
+purge listed that scope; the window is the uninstall itself.
+
 ## 10r. Ephemeral run state and the owner-scoped run seams (conductor 0012)
 
 `conductorEphemeralRuns` lets an agent plugin read back, persist working state

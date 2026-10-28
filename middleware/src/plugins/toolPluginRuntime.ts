@@ -35,6 +35,7 @@ import {
   type BoundProbe,
   type ConnectionProbeOutcome,
 } from './connectionProbe.js';
+import { describeActivationFailure } from './activationFailure.js';
 import type { InstalledRegistry } from './installedRegistry.js';
 import type { JobScheduler } from './jobScheduler.js';
 import type { PluginCatalog, PluginCatalogEntry } from './manifestLoader.js';
@@ -284,10 +285,10 @@ export class ToolPluginRuntime {
         // A manifest-mtime reset in retryErroredPlugins is self-correcting:
         // the next resolution drops and blocks the duplicate again, with a
         // fresh error timestamp, without aborting boot or looping here.
-        await this.deps.registry.markActivationBlocked(
-          duplicate.droppedId,
-          duplicate.message,
-        );
+        await this.deps.registry.markActivationBlocked(duplicate.droppedId, {
+          message: duplicate.message,
+          code: 'provider_conflict',
+        });
       } catch (regErr) {
         log(
           `[tool-runtime] registry markActivationBlocked FAILED for ${duplicate.droppedId}: ${regErr instanceof Error ? regErr.message : String(regErr)}`,
@@ -304,7 +305,7 @@ export class ToolPluginRuntime {
         // without re-running the resolver itself (S+8.5 sub-commit 3).
         await this.deps.registry.markActivationFailed(
           u.consumerId,
-          msg,
+          { message: msg, code: 'dependency_unresolved' },
           u.requires,
         );
       } catch (regErr) {
@@ -327,7 +328,10 @@ export class ToolPluginRuntime {
         const msg = err instanceof Error ? err.message : String(err);
         log(`[tool-runtime] activate FAILED for ${id}: ${msg}`);
         try {
-          await this.deps.registry.markActivationFailed(id, msg);
+          await this.deps.registry.markActivationFailed(
+            id,
+            describeActivationFailure(err),
+          );
         } catch (regErr) {
           log(
             `[tool-runtime] registry markActivationFailed FAILED for ${id}: ${regErr instanceof Error ? regErr.message : String(regErr)}`,
@@ -593,7 +597,9 @@ export class ToolPluginRuntime {
     // mistake as trusting it about authentication.
     //
     // A rejected claim is a hard activation failure with the SAME rollback the
-    // catch above performs. Half-activating a plugin whose public-path
+    // catch above performs. #1465 — "rejected" excludes a declared prefix the
+    // plugin serves nothing under while it is ungranted: that one makes nothing
+    // public, so `claim()` reserves it and reports it instead. Half-activating a plugin whose public-path
     // declaration conflicts with another plugin's is the one outcome worse than
     // refusing it: the operator would see a healthy plugin serving a prefix
     // somebody else owns.
@@ -604,14 +610,22 @@ export class ToolPluginRuntime {
           const granted =
             (await this.deps.publicPathGrantStore?.listForPlugin(agentId)) ??
             new Set<string>();
-          this.deps.publicPathGrants.claim(agentId, declared, {
-            corePublicPaths: this.deps.corePublicPaths ?? [],
-            ownRoutePrefixes: this.deps.pluginRouteRegistry
-              .list()
-              .filter((r) => r.source === agentId && !r.disposed)
-              .map((r) => r.prefix),
-            grantedPrefixes: granted,
-          });
+          const { unserved } = this.deps.publicPathGrants.claim(
+            agentId,
+            declared,
+            {
+              corePublicPaths: this.deps.corePublicPaths ?? [],
+              ownRoutePrefixes: [
+                ...new Set(
+                  this.deps.pluginRouteRegistry
+                    .list()
+                    .filter((r) => r.source === agentId && !r.disposed)
+                    .map((r) => r.prefix),
+                ),
+              ],
+              grantedPrefixes: granted,
+            },
+          );
           const ungranted = declared.filter((p) => !granted.has(p));
           // Epic #470 C16 (#817) — name the remedy, not just the state.
           //
@@ -631,6 +645,14 @@ export class ToolPluginRuntime {
                   `PUT /api/v1/admin/runtime/installed/${encodeURIComponent(agentId)}/grants`
                 : ''),
           );
+          // #1465 — declared, ungranted, and no router registered under it
+          // (a feature switched off). Not a failure; granting it would be.
+          if (unserved.length > 0) {
+            log(
+              `[tool-runtime] ${agentId} registered no router under ${unserved.join(', ')} — ` +
+                'the declared prefix serves nothing in this configuration and stays behind requireAuth; a grant for it is only valid once the plugin serves it',
+            );
+          }
         } catch (err) {
           this.deps.publicPathGrants.releaseBySource(agentId);
           this.deps.pluginRouteRegistry.disposeBySource(agentId);

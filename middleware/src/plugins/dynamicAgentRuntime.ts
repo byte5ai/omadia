@@ -54,6 +54,7 @@ import { compileSycophancyGuard } from './sycophancyGuard.js';
 import { topoSortByDependsOn } from './topoSort.js';
 import type { UploadedPackageStore } from './uploadedPackageStore.js';
 import { zodToJsonSchema } from './zodToJsonSchema.js';
+import { describeActivationFailure } from './activationFailure.js';
 
 /**
  * Runtime for uploaded agent packages.
@@ -344,7 +345,10 @@ export class DynamicAgentRuntime {
         const msg = err instanceof Error ? err.message : String(err);
         log(`[dynamic-runtime] activate FAILED for ${id}: ${msg}`);
         try {
-          await this.deps.registry.markActivationFailed(id, msg);
+          await this.deps.registry.markActivationFailed(
+            id,
+            describeActivationFailure(err),
+          );
         } catch (registryErr) {
           // Registry write failure is secondary — log but don't rethrow.
           log(

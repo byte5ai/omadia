@@ -284,6 +284,13 @@ export interface CapabilityProviderRef {
   /** True iff `installedRegistry.get(id).status === 'active'`. The
    *  wizard uses this to suggest "reactivate" vs. "install". */
   active: boolean;
+  /** #1463 — absent (or `catalog`): a local catalog entry. `registry`: the
+   *  latest Hub version, offered because the catalog had no provider; the
+   *  wizard installs it from the Hub (see registryCapabilityProviders.ts). */
+  source?: 'catalog' | 'registry';
+  /** #1463 — with `source: 'registry'`: the installed, older version the Hub
+   *  one would replace ("update 0.2.0 → `version`"). */
+  update_from?: string;
 }
 
 export interface UnresolvedCapabilityEntry {

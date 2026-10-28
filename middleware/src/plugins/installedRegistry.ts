@@ -10,7 +10,13 @@
  * secrets are encrypted blobs.
  */
 
-import type { AgentId, ISO8601, PluginInstallOrigin } from '../api/admin-v1.js';
+import type {
+  ActivationErrorCode,
+  AgentId,
+  ISO8601,
+  PluginInstallOrigin,
+} from '../api/admin-v1.js';
+import { toActivationFailure, type ActivationFailure } from './activationFailure.js';
 
 /**
  * #1089 — WHO put this entry in the registry. Re-exported from the API type so
@@ -56,6 +62,11 @@ export interface InstalledAgent {
   last_activation_error?: string;
   /** ISO8601 of the last activation failure. */
   last_activation_error_at?: ISO8601;
+  /** #1456 — the operator-facing kind of the last activation failure
+   *  (`plugins/activationFailure.ts`). Written and cleared together with
+   *  `last_activation_error`; absent on entries recorded before it existed and
+   *  on failures recorded from a bare string — readers degrade to `unknown`. */
+  last_activation_error_code?: ActivationErrorCode;
   /** OM-16 — ISO8601 of the last SUCCESSFUL activation. Written by
    *  `markActivationSucceeded`; surfaced through `Plugin.readiness.verified_at`
    *  so the store can say "Aktiv · geprüft <time>" instead of an unqualified
@@ -94,7 +105,7 @@ export interface InstalledRegistry {
    *  re-check whether the chain is now resolvable on the next boot. */
   markActivationFailed(
     id: AgentId,
-    error: string,
+    error: string | ActivationFailure,
     unresolvedRequires?: readonly string[],
   ): Promise<void>;
   /** Record a deterministic configuration block: immediately sets 'errored',
@@ -105,7 +116,7 @@ export interface InstalledRegistry {
    *  OM-87 uses a distinct operation because a non-retryable conflict is not
    *  a failed activation attempt. Keeping markActivationFailed unchanged also
    *  preserves every existing two- and three-argument caller's retry policy. */
-  markActivationBlocked(id: AgentId, error: string): Promise<void>;
+  markActivationBlocked(id: AgentId, error: string | ActivationFailure): Promise<void>;
   /** Record a successful activation. Clears failure count + last error +
    *  unresolved_requires. */
   markActivationSucceeded(id: AgentId): Promise<void>;
@@ -131,19 +142,36 @@ export interface InstalledRegistry {
   ): Promise<void>;
 }
 
-function bumpFailure(
+/** Error tail + code, written together so a new reason never keeps the code
+ *  of the previous one. */
+function withFailureReason(
   current: InstalledAgent,
-  error: string,
+  error: string | ActivationFailure,
+  nowIso: string,
+): InstalledAgent {
+  const { message, code } = toActivationFailure(error);
+  const next: InstalledAgent = {
+    ...current,
+    last_activation_error: message.slice(0, ERROR_TAIL_MAX),
+    last_activation_error_at: nowIso,
+  };
+  if (code !== undefined) next.last_activation_error_code = code;
+  else delete next.last_activation_error_code;
+  return next;
+}
+
+/** Shared failed-attempt transition for memory and file registries. */
+export function bumpFailure(
+  current: InstalledAgent,
+  error: string | ActivationFailure,
   nowIso: string,
   unresolvedRequires?: readonly string[],
 ): InstalledAgent {
   const prevCount = current.activation_failure_count ?? 0;
   const nextCount = prevCount + 1;
   const next: InstalledAgent = {
-    ...current,
+    ...withFailureReason(current, error, nowIso),
     activation_failure_count: nextCount,
-    last_activation_error: error.slice(0, ERROR_TAIL_MAX),
-    last_activation_error_at: nowIso,
   };
   if (unresolvedRequires && unresolvedRequires.length > 0) {
     next.unresolved_requires = [...unresolvedRequires];
@@ -159,11 +187,11 @@ function bumpFailure(
 /** Shared terminal transition for memory and file registries (OM-87). */
 export function blockActivation(
   current: InstalledAgent,
-  error: string,
+  error: string | ActivationFailure,
   nowIso: string,
 ): InstalledAgent {
   const next: InstalledAgent = {
-    ...current,
+    ...withFailureReason(current, error, nowIso),
     status: 'errored',
     // The count is exposed by the runtime API, but no reader enforces
     // errored => count >= threshold. Preserve that convention here without
@@ -172,8 +200,6 @@ export function blockActivation(
       current.activation_failure_count ?? 0,
       CIRCUIT_BREAKER_THRESHOLD,
     ),
-    last_activation_error: error.slice(0, ERROR_TAIL_MAX),
-    last_activation_error_at: nowIso,
   };
   // A provided capability must never become a re-checkable dependency,
   // including a stale requires-list left by a previous activation attempt.
@@ -186,6 +212,7 @@ function clearFailure(current: InstalledAgent): InstalledAgent {
     !current.activation_failure_count &&
     !current.last_activation_error &&
     !current.last_activation_error_at &&
+    !current.last_activation_error_code &&
     !current.unresolved_requires
   ) {
     return current;
@@ -194,6 +221,7 @@ function clearFailure(current: InstalledAgent): InstalledAgent {
   delete next.activation_failure_count;
   delete next.last_activation_error;
   delete next.last_activation_error_at;
+  delete next.last_activation_error_code;
   delete next.unresolved_requires;
   return next;
 }
@@ -233,7 +261,7 @@ function liftErrored(current: InstalledAgent): InstalledAgent {
 export async function recordActivationFailure(
   registry: InstalledRegistry,
   id: AgentId,
-  error: string,
+  error: string | ActivationFailure,
 ): Promise<void> {
   const pending = registry.get(id)?.unresolved_requires;
   await registry.markActivationFailed(id, error, pending);
@@ -293,7 +321,7 @@ export class InMemoryInstalledRegistry implements InstalledRegistry {
 
   async markActivationFailed(
     id: AgentId,
-    error: string,
+    error: string | ActivationFailure,
     unresolvedRequires?: readonly string[],
   ): Promise<void> {
     const current = this.agents.get(id);
@@ -304,7 +332,10 @@ export class InMemoryInstalledRegistry implements InstalledRegistry {
     );
   }
 
-  async markActivationBlocked(id: AgentId, error: string): Promise<void> {
+  async markActivationBlocked(
+    id: AgentId,
+    error: string | ActivationFailure,
+  ): Promise<void> {
     const current = this.agents.get(id);
     if (!current) return;
     this.agents.set(id, blockActivation(current, error, new Date().toISOString()));

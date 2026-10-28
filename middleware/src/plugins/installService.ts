@@ -25,6 +25,11 @@ import type { PluginSqlGrantStore } from '../platform/pluginSqlGrantStore.js';
 import type { PublicPathGrantStore } from '../platform/publicPathGrantStore.js';
 import type { SecretVault } from '../secrets/vault.js';
 import {
+  activationErrorCodeOf,
+  describeActivationFailure,
+  type ActivationFailure,
+} from './activationFailure.js';
+import {
   findActiveProviderCollision,
   walkCapabilityInstallChain,
 } from './capabilityResolver.js';
@@ -429,7 +434,7 @@ export class InstallService {
     // hook's failure is swallowed (the install itself completed and must not be
     // rolled back over it), so without this the only surviving trace inside
     // this function would be a console line.
-    let hookError: string | undefined;
+    let hookError: ActivationFailure | undefined;
 
     try {
       if (Object.keys(secrets).length > 0) {
@@ -475,13 +480,14 @@ export class InstallService {
         try {
           await this.deps.onInstalled(job.plugin_id);
         } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
           // #825 — remember the throw. This is the FIRST-HAND observation of
           // whether the plugin came up; everything below is the recording of it.
-          hookError = message;
+          // #1456 — classified here, while the error object still exists: the
+          // string alone cannot say what the operator can do about it.
+          hookError = describeActivationFailure(err, 'onInstalled threw without a message');
           console.error(
             `[install] onInstalled hook failed for ${job.plugin_id}:`,
-            message,
+            hookError.message,
           );
           // The registry was written `status: 'active'` a few lines above —
           // BEFORE the hook that does the activating. Swallowing the hook's
@@ -496,7 +502,7 @@ export class InstallService {
           // reason via `markActivationFailed`, then the status explicitly,
           // because `CIRCUIT_BREAKER_THRESHOLD` is 3 and an install-time
           // failure is one definitive event, not the first of three strikes.
-          await recordActivationFailure(this.deps.registry, job.plugin_id, message);
+          await recordActivationFailure(this.deps.registry, job.plugin_id, hookError);
         }
       }
 
@@ -527,7 +533,7 @@ export class InstallService {
    */
   private async finishInstall(
     job: InstallJob,
-    hookError: string | undefined,
+    hookError: ActivationFailure | undefined,
   ): Promise<void> {
     const activation = await this.buildActivationState(job.plugin_id, hookError);
     job.activation_state = activation;
@@ -587,7 +593,7 @@ export class InstallService {
    */
   private async buildActivationState(
     pluginId: string,
-    hookError: string | undefined,
+    hookError: ActivationFailure | undefined,
   ): Promise<InstallActivationState> {
     const entry = this.deps.registry.get(pluginId);
     const recordedStatus = entry?.status;
@@ -619,7 +625,15 @@ export class InstallService {
       ok: state === 'active',
       // Prefer what the registry recorded (it is what the grants panel shows);
       // fall back to the throw we saw, for registries that record nothing.
-      error: entry?.last_activation_error ?? hookError ?? null,
+      error: entry?.last_activation_error ?? hookError?.message ?? null,
+      // #1456 — the code travels with the reason it explains: the registry's
+      // when it recorded one, the hook's observation otherwise.
+      error_code:
+        state === 'active'
+          ? null
+          : entry?.last_activation_error !== undefined
+            ? activationErrorCodeOf(entry)
+            : (hookError?.code ?? 'unknown'),
       missing,
     };
   }
@@ -673,6 +687,83 @@ export class InstallService {
    *          caller ignores it.
    */
   async reactivate(agentId: string): Promise<InstalledAgent['status'] | undefined> {
+    const status = await this.reactivateOne(agentId);
+    if (status !== undefined) {
+      // The cascade is a consequence of this call, not part of its verdict:
+      // nothing it does may turn the caller's save into a failure.
+      try {
+        await this.reactivateDependents(agentId);
+      } catch (err) {
+        console.error(
+          `[install] re-activating the dependents of ${agentId} failed:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+    return status;
+  }
+
+  /**
+   * #1462 — re-activate every installed plugin that `depends_on` `parentId`,
+   * transitively, parents before children.
+   *
+   * A dependent fetches its parent's service objects (`odoo.client`, a
+   * toolkit closing over it) once, in its own `activate()`. Re-activating
+   * only the parent publishes a NEW client and leaves the dependent on the
+   * old one: a rotated key, a moved host or an updated package never reach
+   * it, and a parent that failed to come back up stays hidden behind a
+   * dependent that keeps answering through the client of the version that is
+   * no longer running. Re-activating the dependent makes it re-resolve —
+   * against the new client, or, when the parent is down, into its own
+   * recorded activation failure instead of stale answers.
+   *
+   * Every installed dependent is re-activated whatever its status except
+   * `inactive` (stood down on purpose): one left `errored` by a broken parent
+   * is exactly the one a fixed parent must bring back. Each one is re-activated alone (no further cascade from inside the
+   * loop), because the walk below already covers the grandchildren once.
+   * Failures are recorded per dependent by `reactivateOne` and never stop the
+   * walk or reach the caller — the same contract `reactivate` has.
+   */
+  async reactivateDependents(parentId: string): Promise<void> {
+    const affected: string[] = [];
+    const seen = new Set<string>([parentId]);
+    for (let i = -1; i < affected.length; i += 1) {
+      const id = i < 0 ? parentId : affected[i]!;
+      for (const dependent of this.findDependents(id)) {
+        if (seen.has(dependent)) continue;
+        seen.add(dependent);
+        affected.push(dependent);
+      }
+    }
+    // Longest-path depth from `parentId`, so a dependent that also depends on
+    // another affected plugin comes after it (diamond: A ← B ← C and A ← C).
+    // Bounded relaxation: a `depends_on` cycle cannot loop forever.
+    const depth = new Map<string, number>([[parentId, 0]]);
+    for (let round = 0; round <= affected.length; round += 1) {
+      for (const id of affected) {
+        const parents = this.deps.catalog.get(id)?.plugin.depends_on ?? [];
+        const d =
+          1 + Math.max(0, ...parents.map((p) => depth.get(p) ?? -1));
+        depth.set(id, Math.min(d, affected.length));
+      }
+    }
+    const order = [...affected].sort(
+      (a, b) => (depth.get(a) ?? 0) - (depth.get(b) ?? 0),
+    );
+    for (const dependent of order) {
+      // `inactive` is a deliberate stand-down (the exclusive embedding /
+      // transcription provider switch); a parent's change must not start it.
+      if (this.deps.registry.get(dependent)?.status === 'inactive') continue;
+      console.log(
+        `[install] re-activating ${dependent} — it depends on ${parentId}, which was re-activated`,
+      );
+      await this.reactivateOne(dependent);
+    }
+  }
+
+  private async reactivateOne(
+    agentId: string,
+  ): Promise<InstalledAgent['status'] | undefined> {
     if (!this.deps.registry.has(agentId)) return undefined;
     if (this.deps.onUninstall) {
       try {
@@ -699,13 +790,13 @@ export class InstallService {
     try {
       await this.deps.onInstalled(agentId);
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const failure = describeActivationFailure(err, 'onInstalled threw without a message');
       console.error(
         `[install] reactivate.onInstalled hook failed for ${agentId}:`,
-        message,
+        failure.message,
       );
-      await recordActivationFailure(this.deps.registry, agentId, message);
-      await this.refreshInstalledJobs(agentId, message);
+      await recordActivationFailure(this.deps.registry, agentId, failure);
+      await this.refreshInstalledJobs(agentId, failure);
       return this.deps.registry.get(agentId)?.status;
     }
     // Success. Both writes, in that order (see `recordActivationSuccess`):
@@ -846,7 +937,7 @@ export class InstallService {
    */
   private async refreshInstalledJobs(
     agentId: string,
-    hookError: string | undefined,
+    hookError: ActivationFailure | undefined,
   ): Promise<void> {
     for (const job of this.jobs.values()) {
       if (job.plugin_id !== agentId || !isInstalledTerminal(job.state)) continue;

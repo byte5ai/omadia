@@ -14,6 +14,7 @@ import {
   resolveDependencyParents,
 } from '../plugins/dependencyChainResolver.js';
 import { isTruthyFlag } from '../http/requestFlags.js';
+import { checkCoreCompat } from '../plugins/coreCompat.js';
 
 export interface RegistryInstallDeps {
   client: RegistryClient;
@@ -112,6 +113,22 @@ export function createRegistryInstallRouter(deps: RegistryInstallDeps): Router {
         return;
       }
 
+      // #1463 — refuse a version this core cannot run before downloading it.
+      // The ingest pipeline would refuse it too, with the same code; checking
+      // the index entry first just saves the fetch and names the reason.
+      const coreRefusal = checkCoreCompat({
+        id,
+        version: verEntry.version,
+        compat_core: verEntry.compat_core,
+      });
+      if (coreRefusal) {
+        res.status(refusalStatus('package.incompatible_core')).json({
+          code: 'package.incompatible_core',
+          message: coreRefusal.message,
+        });
+        return;
+      }
+
       const { buffer, sha256 } = await deps.client.fetchPackage({
         registry: resolved.registry,
         downloadUrl: verEntry.download_url,
@@ -177,6 +194,9 @@ export function createRegistryInstallRouter(deps: RegistryInstallDeps): Router {
         ...(result.activation_error !== undefined
           ? { activation_error: result.activation_error }
           : {}),
+        ...(result.activation !== undefined ? { activation: result.activation } : {}),
+        // #1463 — the running plugin was (re)started by this ingest.
+        ...(result.activated ? { activated: true } : {}),
         // Missing depends_on parents to install first (empty → install target
         // directly). Same shape as the capability-chain wizard consumes.
         chain,
