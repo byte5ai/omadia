@@ -16,6 +16,7 @@ import {
   summariseRequest,
 } from './materializer.js';
 import {
+  abandonPlan,
   advanceStep,
   applyReplan,
   finishPlan,
@@ -37,7 +38,8 @@ import {
  *     before the turn executes.
  *   - onAfterToolCall: advance step status / record evidence (E3); on a tool
  *     failure, replan the remainder of the DAG (E4).
- *   - onAfterTurn: finalise the in-progress step.
+ *   - onAfterTurn: close the plan — steps the turn never reached end
+ *     `skipped` (#1502).
  *
  * On by default: the `enabled` setup field defaults to `on` (a cheap Haiku
  * gate keeps simple Q&A neutral; set `enabled=off` to disarm). The plugin
@@ -275,6 +277,20 @@ export async function activate(
   const turns = new Map<string, TurnRecord>();
   const disposers: Array<() => void> = [];
 
+  // #1502 — a replan that throws after marking the step `failed` must not
+  // leave the cursor on it, or the turn's end would rewrite that `failed`.
+  const replanOrAbandon = async (
+    record: TurnRecord,
+    input: Parameters<typeof replanRemainder>[0],
+  ): ReturnType<typeof replanRemainder> => {
+    try {
+      return await replanRemainder(input);
+    } catch (err) {
+      abandonPlan(record.plan);
+      throw err;
+    }
+  };
+
   // #133 (E9) — build the `plan` annotation the orchestrator streams to the UI.
   // Reads the current step state from the graph so the snapshot reflects live
   // status. Never throws (a failed snapshot just means no UI update this tick).
@@ -434,13 +450,18 @@ export async function activate(
       hook: async (hookCtx, payload): Promise<void | TurnAnnotation[]> => {
         const record = turns.get(hookCtx.turnId);
         if (!record) return;
+        // #1502 — memory reads, answer rendering and follow-up cards serve the
+        // turn, not a plan step: they neither advance nor fail one.
+        if (payload.toolIsBookkeeping === true) return;
         const currentId = record.plan.stepExternalIds[record.plan.cursor];
         if (currentId === undefined) return;
 
-        // Trigger (a) — tool failure → replan the remainder of the DAG.
-        if (isToolFailure(payload.toolResult)) {
+        // Trigger (a) — tool failure → replan the remainder of the DAG. The
+        // orchestrator's `toolFailed` also covers a sub-agent whose inner calls
+        // all failed; the `Error:` check is the fallback for older kernels.
+        if (payload.toolFailed ?? isToolFailure(payload.toolResult)) {
           record.generation += 1;
-          const { newStepExternalIds } = await replanRemainder({
+          const { newStepExternalIds } = await replanOrAbandon(record, {
             planExternalId: record.planExternalId,
             planId: record.planId,
             scope: record.scope,
@@ -460,7 +481,7 @@ export async function activate(
             );
           } else {
             // No recovery path — abandon the plan but don't loop.
-            record.plan.cursor += 1;
+            abandonPlan(record.plan);
           }
           return await planAnnotation(record.planExternalId, record.reusedProcessTitle);
         }
@@ -477,7 +498,7 @@ export async function activate(
           !(await exitConditionMet(exitCond, payload.toolResult, llm))
         ) {
           record.generation += 1;
-          const { newStepExternalIds } = await replanRemainder({
+          const { newStepExternalIds } = await replanOrAbandon(record, {
             planExternalId: record.planExternalId,
             planId: record.planId,
             scope: record.scope,
@@ -496,7 +517,7 @@ export async function activate(
               )} steps)`,
             );
           } else {
-            record.plan.cursor += 1;
+            abandonPlan(record.plan);
           }
           return await planAnnotation(record.planExternalId, record.reusedProcessTitle);
         }
@@ -544,8 +565,8 @@ export async function activate(
           }
         }
         await finishPlan(record.plan, kg);
-        // E9 — emit the final plan snapshot (all reached steps done) before the
-        // turn's `done` event, then drop the per-turn state.
+        // E9 — emit the final plan snapshot (unreached steps skipped, #1502)
+        // before the turn's `done` event, then drop the per-turn state.
         const annotation = await planAnnotation(record.planExternalId, record.reusedProcessTitle);
         turns.delete(hookCtx.turnId);
         return annotation;

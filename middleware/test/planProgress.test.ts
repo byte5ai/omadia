@@ -4,8 +4,10 @@ import { strict as assert } from 'node:assert';
 import { InMemoryKnowledgeGraph } from '@omadia/knowledge-graph-inmemory';
 import { planNodeId, planStepNodeId } from '@omadia/plugin-api';
 import {
+  abandonPlan,
   advanceStep,
   finishPlan,
+  NOT_REACHED_SUMMARY,
   startFirstStep,
   type TurnPlanState,
 } from '@omadia/plugin-plan-runner';
@@ -102,12 +104,45 @@ describe('#133 E3 — progress cursor', () => {
     assert.equal(state.cursor, 1);
   });
 
-  it('finishPlan leaves never-reached steps pending (plan over-counted)', async () => {
+  // #1502 — the turn's end used to mark the in-progress step `done` whether
+  // or not a call ever worked on it, and left later steps `pending` (which
+  // plan recall then read as an interrupted plan with "done" work).
+  it('finishPlan skips every step the turn did not reach', async () => {
     const kg = new InMemoryKnowledgeGraph();
     const state = await seedPlan(kg, ['s0', 's1', 's2']);
     await startFirstStep(state, kg);
     await advanceStep(state, kg); // s0 done, s1 in_progress
-    await finishPlan(state, kg); // s1 done; s2 never reached
-    assert.deepEqual(await statusOf(kg), ['done', 'done', 'pending']);
+    await finishPlan(state, kg); // s1 never got its call; s2 never reached
+    assert.deepEqual(await statusOf(kg), ['done', 'skipped', 'skipped']);
+    const steps = await kg.getPlanSteps(planNodeId('p1'));
+    assert.equal(steps[1]!.props['resultSummary'], NOT_REACHED_SUMMARY);
+  });
+
+  it('finishPlan skips the whole plan when no step was worked on', async () => {
+    const kg = new InMemoryKnowledgeGraph();
+    const state = await seedPlan(kg, ['s0', 's1']);
+    await startFirstStep(state, kg);
+    await finishPlan(state, kg);
+    assert.deepEqual(await statusOf(kg), ['skipped', 'skipped']);
+  });
+
+  it('finishPlan lets the answer complete the last step once all before it are done', async () => {
+    const kg = new InMemoryKnowledgeGraph();
+    const state = await seedPlan(kg, ['s0', 's1']);
+    await startFirstStep(state, kg);
+    await advanceStep(state, kg); // s0 done, s1 (present) in_progress
+    await finishPlan(state, kg);
+    assert.deepEqual(await statusOf(kg), ['done', 'done']);
+  });
+
+  it('finishPlan leaves an abandoned plan as the replanner left it', async () => {
+    const kg = new InMemoryKnowledgeGraph();
+    const state = await seedPlan(kg, ['s0', 's1']);
+    await startFirstStep(state, kg);
+    await kg.setPlanStepStatus(planStepNodeId('s0'), 'failed');
+    await kg.setPlanStepStatus(planStepNodeId('s1'), 'skipped');
+    abandonPlan(state);
+    await finishPlan(state, kg);
+    assert.deepEqual(await statusOf(kg), ['failed', 'skipped']);
   });
 });
