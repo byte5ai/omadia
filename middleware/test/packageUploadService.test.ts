@@ -639,6 +639,7 @@ describe('PackageUploadService ingest × activation failure (issue #1452)', () =
   function service(
     registry: InMemoryInstalledRegistry,
     onPackageReady: (agentId: string) => Promise<void>,
+    onDependentsStale?: (agentId: string) => Promise<void>,
   ): PackageUploadService {
     return new PackageUploadService({
       store: fakeStore(),
@@ -648,6 +649,7 @@ describe('PackageUploadService ingest × activation failure (issue #1452)', () =
       hostDependencies: {},
       registry,
       onPackageReady,
+      ...(onDependentsStale ? { onDependentsStale } : {}),
       log: () => undefined,
     });
   }
@@ -750,6 +752,49 @@ describe('PackageUploadService ingest × activation failure (issue #1452)', () =
       (registry.get(PLUGIN_ID)?.last_activation_error ?? '').length > 0,
       'and so does the next operator reading the registry',
     );
+  });
+
+  it('#1462 — hands the dependents on after the verdict is recorded, success or failure', async () => {
+    for (const fail of [false, true]) {
+      const registry = await activeRegistry();
+      const seen: Array<{ id: string; status: string | undefined }> = [];
+      const result = await ingest(
+        service(
+          registry,
+          async () => {
+            if (fail) throw new Error('down');
+          },
+          async (id) => {
+            seen.push({ id, status: registry.get(id)?.status });
+            throw new Error('cascade hiccup');
+          },
+        ),
+      );
+      assert.equal(result.ok, true, 'a cascade failure does not fail the ingest');
+      assert.equal(
+        (result as { activated?: true }).activated,
+        fail ? undefined : true,
+        '#1463 — `activated` is reported only when the hook started the plugin',
+      );
+      assert.deepEqual(seen, [
+        { id: PLUGIN_ID, status: fail ? 'errored' : 'active' },
+      ]);
+    }
+  });
+
+  it('#1462 — does not touch dependents of a plugin it did not reactivate', async () => {
+    const registry = new InMemoryInstalledRegistry();
+    let called = false;
+    await ingest(
+      service(
+        registry,
+        async () => undefined,
+        async () => {
+          called = true;
+        },
+      ),
+    );
+    assert.equal(called, false);
   });
 
   it('leaves a plugin that is not installed to the install flow', async () => {

@@ -83,6 +83,14 @@ export interface IngestSuccess {
    * every upload that never attempted an activation.
    */
   activation_error?: string;
+  /**
+   * #1463 — true only when this ingest started the plugin (`onPackageReady`
+   * ran and returned). Absent otherwise: no activation attempted (not
+   * installed, `inactive`, latched by the circuit breaker) or it failed (then
+   * `activation_error` says why). A caller that needs the plugin running
+   * after an update reads this, not the absence of an error.
+   */
+  activated?: true;
 }
 
 export interface IngestFailure {
@@ -156,6 +164,14 @@ export interface PackageUploadServiceDeps {
    * the package exports no usable plugin.
    */
   onPackageReady?: (agentId: string) => Promise<void>;
+  /**
+   * #1462 — runs after `onPackageReady` settled (success OR failure, once the
+   * verdict is recorded), so the plugins that `depends_on` the updated one
+   * drop the service objects they took from the previous version. Errors are
+   * the hook's own to record; a throw here is logged and does not change the
+   * ingest result.
+   */
+  onDependentsStale?: (agentId: string) => Promise<void>;
   /**
    * Registry of installed agents. Required when `migrationRunner` is set —
    * the upload flow reads the previous config from here before invoking
@@ -630,9 +646,11 @@ export class PackageUploadService {
       // Same bug the install path had in #799 / #825, on the path an operator
       // uses far more often: the update button.
       let activationError: string | undefined;
+      let activated = false;
       if (this.deps.onPackageReady && this.shouldReactivate(plugin.id)) {
         try {
           await this.deps.onPackageReady(plugin.id);
+          activated = true;
           await this.noteActivationSuccess(plugin.id);
         } catch (err) {
           // A message, always. `new Error()` leaves `err.message` empty, and
@@ -648,6 +666,15 @@ export class PackageUploadService {
             `[upload] onPackageReady hook failed for ${plugin.id}: ${activationError}`,
           );
           await this.noteActivationFailure(plugin.id, activationError);
+        }
+        if (this.deps.onDependentsStale) {
+          try {
+            await this.deps.onDependentsStale(plugin.id);
+          } catch (err) {
+            log(
+              `[upload] re-activating the dependents of ${plugin.id} failed: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
         }
       }
 
@@ -676,6 +703,7 @@ export class PackageUploadService {
         ...(activationError !== undefined
           ? { activation_error: activationError }
           : {}),
+        ...(activated ? { activated: true as const } : {}),
       };
     } finally {
       await fs.rm(tmpRoot, { recursive: true, force: true }).catch(() => {});

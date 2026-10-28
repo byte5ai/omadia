@@ -36,6 +36,54 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — integration and provider changes reach their dependents and vault scopes (#1462, #1463, #1465, #1468)
+
+2026-10-28. Four places where a change to one plugin did not reach what
+depended on it.
+
+- **#1462 — `depends_on` cascade.** Re-activating or updating an integration
+  re-activated only the integration. Its agents kept the client they fetched in
+  their own `activate()`, so a rotated key, a moved `odoo_url` or a new package
+  version never reached them, and an integration that failed to come back up
+  stayed hidden behind agents still answering through the old client.
+  `InstallService.reactivate` now re-activates every installed `depends_on`
+  dependent, transitively and parents first (`reactivateDependents`), whatever
+  its status except a deliberate `inactive`, so a dependent left `errored` by a
+  broken parent recovers with the fixed one. The upload/update seam does the same after it recorded the
+  parent's verdict (`PackageUploadService` `onDependentsStale`). Failures are
+  recorded per dependent and never fail the triggering save.
+- **#1463 — versions the core cannot start.** `integration-odoo` < 0.2.1,
+  `agent-odoo-hr` < 0.2.8, `agent-odoo-accounting` < 0.1.4 and
+  `agent-confluence` < 0.3.3 relied on the legacy service grants #839 retired;
+  their `compat_core` still admitted every 1.x core. `checkCoreCompat` now
+  refuses them (`reason: 'below_minimum'`, `MINIMUM_STARTABLE_VERSIONS` in
+  `coreCompat.ts`) wherever it already refuses an incompatible range — ingest,
+  install, and now `POST /install/registry/:id` before the download. A 409
+  `install.missing_capability` whose capability has no catalog provider now
+  looks at the Hub's latest versions (`registryCapabilityProviders.ts`): an
+  installed, outdated parent is offered as "Update 0.2.0 → 0.2.1"
+  (`source: 'registry'`, `update_from`), and the wizard updates it from the
+  Hub instead of asking for an upload (only where package upload is enabled).
+  Ingest and registry-install responses carry `activated: true` when the ingest
+  started the plugin, so the wizard stops instead of continuing over a
+  provider the update did not start.
+- **#1465 — unserved, ungranted public path.** A declared public path the
+  plugin registered no router under (a feature switched off, e.g.
+  dev-platform's GitHub webhooks) failed the whole activation even when the
+  operator never granted it. `PublicPathGrantRegistry.claim` now reserves such
+  a prefix ungranted and reports it (`unserved`); only a GRANTED prefix the
+  plugin does not serve still fails. The error lists each own route prefix
+  once.
+- **#1468 — provider keys outlived the provider.** Uninstalling a provider
+  plugin left `provider:<id>/api_key`, `verified_at` and OAuth leaves in the
+  `@omadia/orchestrator`, `@omadia/verifier` and `@omadia/orchestrator-extras`
+  scopes; a reinstall inherited the key. A real uninstall now removes every
+  `provider:<id>/*` leaf from those scopes (`providerCredentialPurge.ts`),
+  unless the id is a built-in one (#1451) or another installed plugin still
+  declares it. `PATCH /admin/runtime/installed/:id/secrets` with `delete` now
+  removes an undeclared `provider:<id>/<leaf>` vault key instead of answering
+  200 and keeping it, so keys orphaned before this fix can be removed.
+
 ### Fixed — an integration with a refused API key no longer shows "Active · configured" (#1453)
 
 2026-10-27. Activation never checked credentials: `activate()` builds a client
