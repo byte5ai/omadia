@@ -1823,12 +1823,30 @@ async function wireExtraSystemHint(
     callerHint !== undefined && callerHint.trim().length > 0
       ? await maskPromptForWire(privacy, callerHint)
       : undefined;
+  // `fixedSystemHint` is NOT masked: it is a compile-time constant from a
+  // trusted in-process wrapper (see its doc on `ChatTurnInput`) — kernel-grade
+  // prose with no user data, so it joins the static blocks, not the caller's.
+  const fixedHint = input.fixedSystemHint?.trim();
   return composeExtraSystemHint(
     input.freshCheck,
     wireHint,
     parseAnswerVerbosity(input.answerVerbosity),
+    input.canvasSessionId !== undefined,
+    fixedHint !== undefined && fixedHint.length > 0 ? fixedHint : undefined,
   );
 }
+
+/**
+ * Canvas turns: suspend the stable prompt's start-of-task `/memories` read.
+ * The canvas is a render surface for one concrete data ask — the directory
+ * listing costs a full main-model round per turn and feeds nothing the
+ * canvas shows. The `memory` tool stays wired: a targeted read or a write
+ * remains possible when the ask genuinely needs it.
+ */
+export const CANVAS_TURN_MEMORY_HINT = `# CANVAS-TURN (Memory-Lese-Konvention ausgesetzt)
+
+Dieser Turn kommt aus einem Canvas-Client. Für diesen EINEN Turn gilt die Konvention „zu Beginn jeder neuen Aufgabe den /memories-Verzeichnisinhalt lesen" aus dem stabilen System-Prompt NICHT: kein einleitender \`memory\`-View auf \`/memories\` und kein vorsorglicher Read unter \`/memories/_rules/\`. Geh direkt zum passenden Fach-Agent-Tool-Call.
+Das \`memory\`-Tool bleibt verfügbar — lies eine konkrete Memory-Datei nur, wenn die Anfrage ausdrücklich darauf angewiesen ist, und schreib, wenn sich ein verifizierter Fakt ergibt.`;
 
 /**
  * Combines the caller-supplied hint (already masked for the wire, see
@@ -1836,12 +1854,16 @@ async function wireExtraSystemHint(
  * when the user clicked "🔄 Fresh Check" on the previous card. The
  * fresh-check hint tells the model to bypass the memory-read convention for
  * this turn — both hints (verifier correction + fresh-check bypass) can
- * coexist.
+ * coexist. A canvas turn adds {@link CANVAS_TURN_MEMORY_HINT}; a trusted
+ * wrapper's `fixedSystemHint` (unmasked, static) lands before the caller's
+ * hint so a verifier correction stays the last word.
  */
 function composeExtraSystemHint(
   freshCheck: ChatTurnInput['freshCheck'],
   callerHint: string | undefined,
   turnVerbosity?: AnswerVerbosity,
+  isCanvasTurn = false,
+  fixedHint?: string,
 ): string | undefined {
   const parts: string[] = [];
   // Phase 3 — the user's per-turn answer-size pick. Same home as Fresh
@@ -1864,6 +1886,12 @@ Stattdessen:
 
 Der Grund für diesen Modus: der User vermutet, dass dich ein früherer Memory-Eintrag oder ein FTS-Treffer auf eine falsche Antwort gelockt hat. Jetzt ist die Chance, unabhängig von diesem Altlast-Pfad zu antworten.`,
     );
+  }
+  if (isCanvasTurn) {
+    parts.push(CANVAS_TURN_MEMORY_HINT);
+  }
+  if (fixedHint !== undefined) {
+    parts.push(fixedHint);
   }
   if (callerHint !== undefined && callerHint.trim().length > 0) {
     parts.push(callerHint);
@@ -6395,9 +6423,12 @@ export class Orchestrator {
     turnId: string,
     turnMemory: TurnMemoryBinding | undefined,
   ): Promise<ChatTurnResult> {
-    await this.fireTurnHook('onBeforeTurn', turnId, input, {
-      userMessage: input.userMessage,
-    });
+    // A canvas turn skips `onBeforeTurn` (see `chatStream`'s mirror).
+    if (input.canvasSessionId === undefined) {
+      await this.fireTurnHook('onBeforeTurn', turnId, input, {
+        userMessage: input.userMessage,
+      });
+    }
     // #361 — mask the wire-bound prompt BEFORE anything LLM-adjacent sees
     // it. `wireUserMessage` is the LLM-facing variant (pseudonyms for
     // detected PII spans when the operator flag is on; the original text
@@ -7453,7 +7484,11 @@ export class Orchestrator {
       // materialiser are LLM calls on the raw message, and the buffered path
       // fires the hook only inside `chatInContextInner`, which a refused turn
       // never reaches (#1535 security review).
-      if (!screeningBlocked) {
+      // Not on a canvas turn either: the plan-runner's Haiku gate +
+      // materialiser (and its KG writes) gate the first token, and the canvas
+      // client discards `plan` annotations. Without a plan record the
+      // plan-runner's onAfterToolCall / onAfterTurn are no-ops.
+      if (!screeningBlocked && input.canvasSessionId === undefined) {
         yield* this.toAnnotationEvents(
           await this.fireTurnHook('onBeforeTurn', turnId, input, {
             userMessage: input.userMessage,
@@ -8253,10 +8288,16 @@ export class Orchestrator {
           // wire variants in; its OUTPUT is persisted (auto-promotion) and
           // user-facing (modal prefill), so surrogates are restored to real
           // values before either consumer sees it.
-          const palaiaExcerpt = await restoreExcerptForPersistence(
-            privacyForPrompt,
-            await this.maybeExtractExcerpt(wireUserMessage, answer),
-          );
+          // Skipped on a canvas turn: the canvas has no save-as-memory modal,
+          // so the Haiku call only delayed `done`. Auto-promotion then skips
+          // with `no-excerpt` (#1527), as it does on any excerpt miss.
+          const palaiaExcerpt =
+            input.canvasSessionId === undefined
+              ? await restoreExcerptForPersistence(
+                  privacyForPrompt,
+                  await this.maybeExtractExcerpt(wireUserMessage, answer),
+                )
+              : undefined;
           if (deferring !== undefined && row !== undefined) {
             // Promotion follows the row, so it is the delivered pass's too.
             this.turnRecords.offerRow(deferring, row, 'answer', async (turnId) => {

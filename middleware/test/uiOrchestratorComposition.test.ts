@@ -29,7 +29,7 @@ import {
   type CompositionLlm,
 } from '../packages/omadia-ui-orchestrator/src/composition.js';
 import { composeStructuredPayloadPatch } from '../packages/omadia-ui-orchestrator/src/patchComposition.js';
-import { activate } from '../packages/omadia-ui-orchestrator/src/plugin.js';
+import { activate, CANVAS_TURN_DIRECTIVE } from '../packages/omadia-ui-orchestrator/src/plugin.js';
 
 const SKELETON_TREE = {
   type: 'container',
@@ -459,7 +459,14 @@ describe('canvasChatAgent — Haiku composition step', () => {
     assert.equal(seen.length, 1);
     assert.match(seen[0]?.userMessage ?? '', /\[canvas-context\]/);
     assert.match(seen[0]?.userMessage ?? '', /"containerId":"tickets"/);
-    assert.match(seen[0]?.userMessage ?? '', /call the canvas_publish_rows tool/);
+    // the fixed protocol directive rides in the system prompt, not the
+    // (masked, plan-gated, logged) user message
+    assert.equal(seen[0]?.fixedSystemHint, CANVAS_TURN_DIRECTIVE);
+    assert.match(seen[0]?.fixedSystemHint ?? '', /call the canvas_publish_rows tool/);
+    assert.doesNotMatch(seen[0]?.userMessage ?? '', /call the canvas_publish_rows tool|BATCH RULE|PRIVACY-SHIELD/);
+    assert.ok(seen[0]?.userMessage.startsWith('show tickets with budgets\n\n[canvas-context]\n'));
+    // datasetIds are published directly — no v4_select shaping round
+    assert.doesNotMatch(CANVAS_TURN_DIRECTIVE, /v4_select|v4_sort/);
 
     // (c) authorised structured payload → surface_patch based on the skeleton
     const patch = events.find((e) => e.type === 'surface_patch');

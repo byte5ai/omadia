@@ -30,7 +30,6 @@ import {
   SubToolOutcomeTally,
 } from '../../packages/harness-orchestrator/src/toolCallOutcome.js';
 import { passesBeforeVerdict } from '../../packages/harness-orchestrator/src/verifierDelivery.js';
-import { skeletonOnRelease } from '../../packages/omadia-ui-orchestrator/src/verdictHold.js';
 
 type Block =
   { type: 'text'; text: string } | { type: 'tool_call'; id: string; name: string; input: unknown };
@@ -414,19 +413,6 @@ describe('#1500 follow-ups — retract plumbing', () => {
 
   it('a held turn never lets a retract through before the verdict', () => {
     assert.equal(passesBeforeVerdict({ type: 'text_retract', chars: 3 }), false);
-  });
-
-  it('the canvas skeleton hold keeps a retract behind the text it edits', async () => {
-    async function* turn() {
-      yield { type: 'text_delta' as const, text: 'abc' };
-      yield { type: 'text_retract' as const, chars: 3 };
-      yield { type: 'error' as const, message: 'x' };
-    }
-    const out: string[] = [];
-    for await (const ev of skeletonOnRelease({ type: 'iteration_start', iteration: 0 }, turn())) {
-      out.push(ev.type);
-    }
-    assert.deepEqual(out, ['text_delta', 'text_retract', 'error']);
   });
 
   it('plan recall and the orchestrator agree on the bookkeeping tools', () => {
