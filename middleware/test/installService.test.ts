@@ -811,3 +811,105 @@ describe('extractSetupSchema — install_hidden flag', () => {
     assert.equal(fieldByKey(schema, 'app_id')?.install_hidden, undefined);
   });
 });
+
+describe('InstallService.reactivate — #1462 depends_on cascade', () => {
+  function harness(opts: { failOn?: ReadonlySet<string> } = {}) {
+    // integration ← agent-a, integration ← agent-b ← agent-c, and agent-c
+    // also depends on integration directly (diamond); `other` is unrelated.
+    const catalog = makeCatalog([
+      { id: 'integration', provides: [], requires: [], depends_on: [] },
+      { id: 'agent-a', provides: [], requires: [], depends_on: ['integration'] },
+      { id: 'agent-c', provides: [], requires: [], depends_on: ['integration', 'agent-b'] },
+      { id: 'agent-b', provides: [], requires: [], depends_on: ['integration'] },
+      { id: 'other', provides: [], requires: [], depends_on: [] },
+      { id: 'not-installed', provides: [], requires: [], depends_on: ['integration'] },
+    ]);
+    const errored = makeActive('agent-b');
+    const registry = makeRegistry([
+      makeActive('integration'),
+      makeActive('agent-a'),
+      makeActive('agent-c'),
+      { ...errored, status: 'errored' },
+      makeActive('other'),
+    ]);
+    const activated: string[] = [];
+    const service = new InstallService({
+      catalog,
+      registry,
+      vault: noopVault,
+      onUninstall: async () => {},
+      onInstalled: async (id) => {
+        activated.push(id);
+        if (opts.failOn?.has(id)) throw new Error(`${id} down`);
+      },
+    });
+    return { service, activated };
+  }
+
+  it('re-activates every installed dependent after the parent, parents before children', async (t) => {
+    t.mock.method(console, 'log', () => {});
+    const { service, activated } = harness();
+
+    await service.reactivate('integration');
+
+    assert.equal(activated[0], 'integration');
+    assert.deepEqual(new Set(activated.slice(1)), new Set(['agent-a', 'agent-b', 'agent-c']));
+    // Once each, and agent-c (depends on agent-b too) after agent-b.
+    assert.equal(activated.length, 4);
+    assert.ok(activated.indexOf('agent-b') < activated.indexOf('agent-c'));
+  });
+
+  it('still reaches the dependents when the parent fails to come back up', async (t) => {
+    t.mock.method(console, 'log', () => {});
+    t.mock.method(console, 'error', () => {});
+    const { service, activated } = harness({ failOn: new Set(['integration']) });
+
+    const status = await service.reactivate('integration');
+
+    assert.equal(status, 'errored');
+    assert.deepEqual(new Set(activated), new Set(['integration', 'agent-a', 'agent-b', 'agent-c']));
+  });
+
+  it('keeps going past a dependent that fails, and does not cascade from a leaf', async (t) => {
+    t.mock.method(console, 'log', () => {});
+    t.mock.method(console, 'error', () => {});
+    const { service, activated } = harness({ failOn: new Set(['agent-a']) });
+
+    await service.reactivate('integration');
+    assert.equal(activated.length, 4);
+
+    activated.length = 0;
+    await service.reactivate('agent-a');
+    assert.deepEqual(activated, ['agent-a']);
+  });
+
+  it('leaves a dependent that was stood down (inactive) alone', async (t) => {
+    t.mock.method(console, 'log', () => {});
+    const catalog = makeCatalog([
+      { id: 'parent', provides: [], requires: [], depends_on: [] },
+      { id: 'standby', provides: [], requires: [], depends_on: ['parent'] },
+    ]);
+    const registry = makeRegistry([
+      makeActive('parent'),
+      { ...makeActive('standby'), status: 'inactive' },
+    ]);
+    const activated: string[] = [];
+    const service = new InstallService({
+      catalog,
+      registry,
+      vault: noopVault,
+      onUninstall: async () => {},
+      onInstalled: async (id) => {
+        activated.push(id);
+      },
+    });
+    await service.reactivate('parent');
+    assert.deepEqual(activated, ['parent']);
+  });
+
+  it('is a no-op for a plugin that is not installed', async () => {
+    const { service, activated } = harness();
+    assert.equal(await service.reactivate('not-installed'), undefined);
+    assert.deepEqual(activated, []);
+  });
+});

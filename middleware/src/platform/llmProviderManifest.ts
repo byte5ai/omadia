@@ -335,6 +335,19 @@ export function registerPluginLlmProvider(
   return resolved;
 }
 
+/** The `llm_provider.id` a plugin manifest declares, or `undefined` when it
+ *  declares none or the block is malformed (it never registered then). */
+export function pluginLlmProviderId(manifest: unknown): string | undefined {
+  const block = (manifest as { llm_provider?: unknown } | null | undefined)
+    ?.llm_provider;
+  if (block === undefined || block === null) return undefined;
+  try {
+    return parseLlmProviderManifestBlock(block).id;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Counterpart to {@link registerPluginLlmProvider}: drop a plugin's contributed
  *  provider (and its models) from `catalog`. Returns the unregistered provider
  *  id, or `undefined` when the manifest declares no provider OR the provider was

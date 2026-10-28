@@ -165,6 +165,80 @@ describe('#470 C4/H1 — public-path declaration validation', () => {
   });
 });
 
+describe('#1465 — a declared prefix the plugin serves nothing under', () => {
+  let grants: PublicPathGrantRegistry;
+  beforeEach(() => {
+    grants = new PublicPathGrantRegistry();
+  });
+  // dev-platform with webhooks off: two routers registered, the webhook one not.
+  const OWN = ['/api/v1/dev-runner', '/api/v1/dev-runner', '/api/v1/dev-platform'];
+  const DECLARED = ['/api/v1/dev-runner', '/api/webhooks/github', '/api/v1/dev-platform'];
+
+  it('is NOT a claim failure while ungranted, and is reported as unserved', () => {
+    const { unserved } = grants.claim('dev', DECLARED, {
+      corePublicPaths: publicPaths(),
+      ownRoutePrefixes: OWN,
+      grantedPrefixes: new Set(),
+    });
+    assert.deepEqual(unserved, ['/api/webhooks/github']);
+    // Still reserved (exclusive) but serves nothing.
+    assert.deepEqual(
+      grants.list().map((c) => [c.prefix, c.granted]),
+      DECLARED.map((p) => [p, false]),
+    );
+    assert.equal(grants.resolve('/api/webhooks/github/push'), null);
+  });
+
+  it('keeps the reservation exclusive against another plugin', () => {
+    grants.claim('dev', DECLARED, {
+      corePublicPaths: publicPaths(),
+      ownRoutePrefixes: OWN,
+      grantedPrefixes: new Set(),
+    });
+    assert.throws(
+      () =>
+        grants.claim('other', ['/api/webhooks/github'], {
+          corePublicPaths: publicPaths(),
+          ownRoutePrefixes: ['/api/webhooks/github'],
+          grantedPrefixes: new Set(),
+        }),
+      /already owned by plugin 'dev'/,
+    );
+  });
+
+  it('still fails when the operator GRANTED the unserved prefix, naming each own prefix once', () => {
+    assert.throws(
+      () =>
+        grants.claim('dev', DECLARED, {
+          corePublicPaths: publicPaths(),
+          ownRoutePrefixes: OWN,
+          grantedPrefixes: new Set(['/api/webhooks/github']),
+        }),
+      (err: unknown) => {
+        assert.ok(err instanceof PublicPathClaimError);
+        assert.ok(
+          err.message.includes('(/api/v1/dev-runner, /api/v1/dev-platform)'),
+          err.message,
+        );
+        return true;
+      },
+    );
+    assert.equal(grants.list().length, 0);
+  });
+
+  it('does not relax manifest errors: a core-reserved root still fails ungranted', () => {
+    assert.throws(
+      () =>
+        grants.claim('dev', ['/api/v1/admin/hook'], {
+          corePublicPaths: publicPaths(),
+          ownRoutePrefixes: [],
+          grantedPrefixes: new Set(),
+        }),
+      /core-reserved/,
+    );
+  });
+});
+
 describe('#470 C4/H1 — exclusive prefix ownership', () => {
   let grants: PublicPathGrantRegistry;
   beforeEach(() => {
