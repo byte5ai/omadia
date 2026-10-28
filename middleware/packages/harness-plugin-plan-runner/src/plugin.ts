@@ -522,13 +522,15 @@ export async function activate(
           return await planAnnotation(record.planExternalId, record.reusedProcessTitle);
         }
 
-        await advanceStep(
-          record.plan,
-          kg,
+        // #1502 — always record evidence: recall only trusts an evidenced
+        // `done` (`isEvidencedPlanStepDone`).
+        const summary =
           payload.toolResult !== undefined
-            ? { resultSummary: summarise(payload.toolName, payload.toolResult) }
-            : undefined,
-        );
+            ? summarise(payload.toolName, payload.toolResult)
+            : '';
+        await advanceStep(record.plan, kg, {
+          resultSummary: summary || payload.toolName || 'tool call',
+        });
         // E9 — emit the refreshed plan snapshot so the UI advances the step live.
         return await planAnnotation(record.planExternalId, record.reusedProcessTitle);
       },

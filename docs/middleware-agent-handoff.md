@@ -1987,7 +1987,7 @@ seit #760 gated (DE/ES/IT/UK/FR-Patterns in C0; NL BSN bewusst ungepattern —
 `test/privacyCustomTermsAndIdnum.test.ts`, `test/privacyMissReports.test.ts`.
 
 **Masking-Randfälle (#1525, #1528, #1529, privacy-guard 0.11.0, plugin-api
-1.36.0).** `custom_patterns` ist `multiline: true`; Katalog-Projektion
+1.37.0).** `custom_patterns` ist `multiline: true`; Katalog-Projektion
 (`manifestLoader`) und Edit-Formular (`CredentialsEditor`, `<textarea>`)
 tragen das Flag jetzt wie schon das Install-Schema. Neues Modul
 `harness-plugin-privacy-guard/src/promptSurrogates.ts`: tolerantes Restore
@@ -4364,6 +4364,9 @@ NDJSON — eine vollständige JSON-Zeile pro Event. Event-Typen:
 type ChatStreamEvent =
   | { type: 'iteration_start'; iteration: number }
   | { type: 'text_delta'; text: string }
+  // #1500 — letzte `chars` Zeichen der Vorschau zurücknehmen (Präambel vor
+  // einem datenholenden Tool-Call); textlos, unter Verifier-`enforce` nie gesendet.
+  | { type: 'text_retract'; chars: number }
   | { type: 'tool_use'; id: string; name: string; input: unknown }
   | { type: 'tool_result'; id: string; output: string; durationMs: number; isError?: boolean }
   | { type: 'done'; answer: string; toolCalls: number; iterations: number }
@@ -5001,6 +5004,23 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 ---
 
 ## 13. Offene Roadmap
+
+### Plan-Schritt-Zuordnung und Canvas-Vorschau (#1502, #1500)
+
+- **Schritt-Zuordnung bleibt Heuristik.** Seit #1522 schließt nur ein
+  erfolgreicher Arbeits-Call einen Plan-Schritt, aber weiter sequenziell
+  (i-ter Call ≈ i-ter Schritt). Ein Call, der den Schritt nicht bedient, hakt
+  ihn trotzdem ab; ein Call, der zwei Schritte abdeckt, lässt die späteren
+  `skipped`. Optionen (Haiku pro Call vs. ein Haiku-Mapping am Turn-Ende) sind
+  eine Kosten-/Latenz-Entscheidung, noch offen.
+- **Canvas sieht `text_retract` nicht.** `canvasConnection.ts` reicht nur
+  `surface_*`, `text_delta` (als `agent_text_delta`) und `error` durch, und der
+  Canvas bekommt auch `done.answer` nie — eine Tool-Call-Präambel bleibt dort im
+  Prosa-Text stehen. Braucht einen eigenen Canvas-Protokoll-Frame.
+- **Alte Pläne vor #1522** behalten ihre falschen `done`-Schritte im Graph;
+  Recall/Resume lesen `isEvidencedPlanStepDone` und ignorieren sie (außer
+  `sideEffecting`). Plan-Karten in bestehenden Transkripten zeigen weiter den
+  alten Status.
 
 ### Plugin-UI-Host-Seite: Live-Appearance-Kanal (#1480)
 

@@ -6971,7 +6971,8 @@ export class Orchestrator {
           // into the next clarification answer. User can ask again after
           // resolving the choice.
           this.drainPendingRoutineList();
-          const answer = answerText.parts().join('\n\n').trim();
+          // #1500 — the card carries its own question; no preamble lead-in.
+          const answer = answerText.keptParts().join('\n\n').trim();
           // #361 — persisted + user-facing: restore surrogates → real values.
           const restoredAnswer = await restoreTurnAnswer(
             privacyForPrompt,
@@ -7024,7 +7025,8 @@ export class Orchestrator {
           this.drainPendingSlotCard();
           this.drainPendingRoutineList();
           const card = toPendingMcpInputCard(pendingMcpInputCard);
-          const answer = answerText.parts().join('\n\n').trim();
+          // #1500 — the card carries its own question; no preamble lead-in.
+          const answer = answerText.keptParts().join('\n\n').trim();
           const restoredAnswer = await restoreTurnAnswer(
             privacyForPrompt,
             answer,
@@ -7934,6 +7936,8 @@ export class Orchestrator {
           (iteration === 0 || turnExec.fallback.provider.id === turnExec.provider.id)
             ? turnExec.fallback
             : undefined;
+        // #1500 — preview characters this iteration streamed, for `text_retract`.
+        let streamedChars = 0;
         for await (const ev of streamMessageEvents({
           provider: turnExec.provider,
           params: { ...streamParams, ...toolParamsForProvider(turnExec.provider) },
@@ -7958,6 +7962,7 @@ export class Orchestrator {
           betas: [MEMORY_BETA_HEADER],
         })) {
           if (ev.type === 'text_delta') {
+            streamedChars += ev.text.length;
             yield { type: 'text_delta', text: ev.text };
           } else if (ev.type === 'fallback') {
             // The hop happened before any output: the rest of this turn —
@@ -7986,7 +7991,15 @@ export class Orchestrator {
           );
         }
         messages.push({ role: 'assistant', content: finalMessage.content });
-        answerText.addIteration(collectTextBlocks(finalMessage.content), toolNamesOf(finalMessage.content));
+        const heldBack = answerText.addIteration(
+          collectTextBlocks(finalMessage.content),
+          toolNamesOf(finalMessage.content),
+        );
+        // #1500 — the preview already showed this iteration's preamble; take
+        // it back now. `done.answer` restores it if nothing follows.
+        if (heldBack && streamedChars > 0) {
+          yield { type: 'text_retract', chars: streamedChars };
+        }
 
         if (finalMessage.stop_reason !== 'tool_use') {
           const answer = finalAnswerText(answerText.parts(), finalMessage.stop_reason);
@@ -8409,7 +8422,8 @@ export class Orchestrator {
           // refinements of a non-existent answer would be confusing.
           this.drainFollowUps();
           this.drainPendingSlotCard();
-          const answer = answerText.parts().join('\n\n').trim();
+          // #1500 — the card carries its own question; no preamble lead-in.
+          const answer = answerText.keptParts().join('\n\n').trim();
           // #361 — persisted + user-facing: restore surrogates → real values.
           const restoredAnswer = await restoreTurnAnswer(
             privacyForPrompt,
@@ -8469,7 +8483,8 @@ export class Orchestrator {
           this.drainFollowUps();
           this.drainPendingSlotCard();
           const card = toPendingMcpInputCard(pendingMcpInputCard);
-          const answer = answerText.parts().join('\n\n').trim();
+          // #1500 — the card carries its own question; no preamble lead-in.
+          const answer = answerText.keptParts().join('\n\n').trim();
           const restoredAnswer = await restoreTurnAnswer(
             privacyForPrompt,
             answer,

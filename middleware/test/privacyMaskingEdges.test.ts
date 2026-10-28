@@ -65,7 +65,7 @@ describe('#1529 deny-list term inside the shield placeholder', () => {
         [MASK_USER_PROMPT_CONFIG_KEY]: 'on',
         [CUSTOM_TERMS_CONFIG_KEY]: terms,
       });
-      const result = await svc.maskUserPrompt({ turnId: 't', text: message });
+      const result = await svc.maskUserPrompt!({ sessionId: 's', turnId: 't', text: message });
       assert.equal(result.outcome, 'masked', JSON.stringify(result));
       if (result.outcome !== 'masked') return;
       assert.ok(result.spans.length > 0);
@@ -145,7 +145,7 @@ describe('#1528 tolerant pseudonym restore', () => {
 
   it('countUnresolvedSurrogates keeps same-value hits but can drop unreadable literals', async () => {
     const svc = serviceWith({ [MASK_USER_PROMPT_CONFIG_KEY]: 'on' });
-    const masked = await svc.maskUserPrompt({ turnId: 't', text: 'Geboren am 24.12.1987.' });
+    const masked = await svc.maskUserPrompt!({ sessionId: 's', turnId: 't', text: 'Geboren am 24.12.1987.' });
     assert.equal(masked.outcome, 'masked');
     if (masked.outcome !== 'masked') return;
     assert.ok(masked.maskedText.includes('01.01.1970'), masked.maskedText);
@@ -206,7 +206,8 @@ describe('#1528 one surrogate per value, none re-masked', () => {
   it('does not mask a surrogate a replayed answer kept as a new real value (live repro)', async () => {
     const svc = serviceWith({ [MASK_USER_PROMPT_CONFIG_KEY]: 'on' });
     // Turn 1: the user names a colleague; the model upper-cases the stand-in.
-    const turn1 = await svc.maskUserPrompt({
+    const turn1 = await svc.maskUserPrompt!({
+      sessionId: 's',
       turnId: 't1',
       text: 'Mein Kollege Jonas Weber, jonas.weber@example.com, schreib seine Adresse in GROSSBUCHSTABEN.',
     });
@@ -220,6 +221,7 @@ describe('#1528 one surrogate per value, none re-masked', () => {
 
     // Turn 2 (an older answer that still carried the stand-in is replayed).
     const replayed = await svc.maskReplayedAnswer!({
+      sessionId: 's',
       turnId: 't2',
       text: `Klar: ${surrogate.toUpperCase()}`,
     });
@@ -227,7 +229,7 @@ describe('#1528 one surrogate per value, none re-masked', () => {
     if (replayed.outcome !== 'masked') return;
     assert.equal(replayed.maskedText, `Klar: ${surrogate.toUpperCase()}`);
     assert.equal(replayed.spans.length, 0);
-    const question = await svc.maskUserPrompt({ turnId: 't2', text: 'Was steht vor dem @?' });
+    const question = await svc.maskUserPrompt!({ sessionId: 's', turnId: 't2', text: 'Was steht vor dem @?' });
     assert.equal(question.outcome, 'masked');
     const receipt = await svc.finalizeTurn('t2');
     assert.equal(receipt?.maskedPromptSpans?.length ?? 0, 0, 'no e-mail masked in turn 2');
@@ -239,6 +241,7 @@ describe('#1528 one surrogate per value, none re-masked', () => {
       [CUSTOM_TERMS_CONFIG_KEY]: 'custom',
     });
     const result = await svc.maskReplayedAnswer!({
+      sessionId: 's',
       turnId: 't',
       text: 'Gemeint war PLATZHALTER-CUSTOM-1, nicht custom.',
     });
@@ -280,7 +283,7 @@ describe('#1525 custom_patterns is a multi-line setup field', () => {
       [MASK_USER_PROMPT_CONFIG_KEY]: 'on',
       [CUSTOM_PATTERNS_CONFIG_KEY]: 'PRJ-\\d{4}\nKD[0-9]{3};?',
     });
-    const result = await svc.maskUserPrompt({ turnId: 't', text: 'Siehe PRJ-1234 und KD123.' });
+    const result = await svc.maskUserPrompt!({ sessionId: 's', turnId: 't', text: 'Siehe PRJ-1234 und KD123.' });
     assert.equal(result.outcome, 'masked');
     if (result.outcome !== 'masked') return;
     assert.equal(result.spans.length, 2);

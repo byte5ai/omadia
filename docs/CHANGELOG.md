@@ -64,8 +64,34 @@ changelog.
   still masked. The block notice is persisted in German and English and
   delivered in the turn's language.
 
-`@omadia/plugin-privacy-guard` 0.11.0, `@omadia/plugin-api` 1.36.0
+`@omadia/plugin-privacy-guard` 0.11.0, `@omadia/plugin-api` 1.37.0
 (`countUnresolvedSurrogates` takes an optional `options`).
+
+### Fixed — follow-ups to #1522: old false "done" plan steps, the preamble preview, card lead-ins (#1502, #1500)
+
+2026-10-28. Three gaps #1522 left open.
+
+- **Plans written before #1522.** Their false `done` steps stay in the graph,
+  and plan recall and `buildResumePlan` kept citing them as "Bereits erledigt
+  (NICHT wiederholen)". Both now read `isEvidencedPlanStepDone`
+  (`@omadia/plugin-api` 1.36.0): a `done` step counts only when its
+  `resultSummary` names a work tool or the turn's answer
+  (`PLAN_STEP_ANSWER_EVIDENCE`). A `done` with no evidence or with a
+  bookkeeping tool's (`memory:`, `v4_render_answer:`, …) counts as neither done
+  nor open — unless the step is `sideEffecting`, which stays done so a write is
+  never invited to run twice. No graph data is rewritten. The plan-runner now records evidence
+  on every step it closes, including the one the answer completes. Plan cards
+  already stored in chat transcripts keep the status they showed.
+- **Streamed preview.** A new textless stream event `text_retract { chars }`
+  takes the preamble back out of the `text_delta` preview as soon as the model
+  calls a data-gathering tool; `done.answer` restores it if no answer follows.
+  The verifier's `enforce` hold drops the event (it edits a preview the held
+  turn never streamed). The web-ui trims the pending message. The canvas
+  (`omadia-ui-channel`) does not get the event yet — handoff §13.
+  `ChatStreamEvent` (`@omadia/channel-sdk`) gains the variant; an exhaustive
+  `switch` in a third-party channel needs a case for it.
+- **Choice and MCP-input cards.** Their lead-in is the kept answer text only,
+  so "I'll check my memory directory first." no longer introduces a card.
 
 ### Fixed — Privacy Shield settings the UI hid or misreported, two masking bugs (#1510, #1508, #1507, #1503, #1467)
 

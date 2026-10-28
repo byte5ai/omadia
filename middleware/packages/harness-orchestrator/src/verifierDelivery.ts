@@ -396,7 +396,12 @@ function* releasedTurn(
       const text = withoutFoldedDisclosure(done.answer, done.aiDisclosure);
       if (text.length > 0) yield { type: 'text_delta', text };
       yield done;
-    } else if (event.type !== 'text_delta' && event.type !== 'done') {
+    } else if (
+      // A retract edits the preview that a held turn never streamed.
+      event.type !== 'text_delta' &&
+      event.type !== 'text_retract' &&
+      event.type !== 'done'
+    ) {
       yield event;
     }
   }
