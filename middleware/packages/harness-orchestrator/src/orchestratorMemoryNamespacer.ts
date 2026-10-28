@@ -1,3 +1,5 @@
+import { posix } from 'node:path';
+
 import type { MemoryEntry, MemoryStore } from '@omadia/plugin-api';
 import {
   isUnprotectedNote,
@@ -77,6 +79,17 @@ const MODEL_DENIED_SEGMENTS = new Set(['chat-sessions']);
  * transcripts stay readable.
  */
 const SHIELDED_SEGMENTS = new Set(['sessions']);
+
+/**
+ * Physical trees refused while a Privacy Shield runs (#1540): a plugin's
+ * `ctx.memory` (`/memories/orchestrators/<slug>/plugins/<id>/`) sits inside
+ * the agent's private root, so the `memory` tool reached it as
+ * `/memories/plugins/…` (or `~agent/plugins/…` in a context turn). A plugin
+ * stores what it fetched with its real values, whatever the turn's
+ * protection, so the tree is refused like the transcripts. Matched on the
+ * normalised physical path.
+ */
+const SHIELDED_PHYSICAL = /^\/memories\/orchestrators\/[^/]+\/plugins(\/|$)/;
 
 /** Thrown for a path in {@link MODEL_DENIED_SEGMENTS}, in
  *  {@link SHIELDED_SEGMENTS} under a shield, or for an unprotected note under
@@ -191,6 +204,14 @@ abstract class MemoryNamespacerBase implements MemoryStore {
 
   /** Model-facing `/memories/...` → physical path. */
   protected toInner(path: string): string {
+    const inner = this.mapToInner(path);
+    if (this.shieldActive?.() === true && SHIELDED_PHYSICAL.test(posix.normalize(inner))) {
+      throw new MemoryPathDenied(path, 'privacy-shield');
+    }
+    return inner;
+  }
+
+  private mapToInner(path: string): string {
     if (path === MEMORIES_ROOT) return this.privateRoot;
     if (!path.startsWith(`${MEMORIES_ROOT}/`)) return path; // not ours; leave it
     const rest = path.slice(MEMORIES_ROOT.length); // '/...'

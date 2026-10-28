@@ -83,9 +83,6 @@ export async function neighborsForPlugin(
 ): Promise<GraphNode[]> {
   const neighbors = await kg.getNeighbors(nodeId);
   if (!shieldActive) return neighbors;
-  const kept: GraphNode[] = [];
-  for (const node of neighbors) {
-    if (await keepUnderShield(kg, node)) kept.push(node);
-  }
-  return kept;
+  const keep = await Promise.all(neighbors.map((node) => keepUnderShield(kg, node)));
+  return neighbors.filter((_, i) => keep[i]);
 }

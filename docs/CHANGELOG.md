@@ -87,11 +87,14 @@ review listed.
   rename and overwrite still work); a turn without one, the subscription CLI
   included, reads it without the line. `_rules/` files follow the same rule.
   The durable-rules promotion (and `scripts/backfill-durable-rules.ts`) and the
-  scratch reaper strip the line and stamp what they derive `unprotected`.
+  scratch reaper strip the line and stamp what they derive `unprotected`. A
+  plugin's own `ctx.memory` tree, which holds what the plugin fetched in clear,
+  is refused to the `memory` tool under a shield.
 - **A plugin's `ctx.knowledgeGraph.getNeighbors`.** Inside a shielded turn it
   drops unprotected Turns and Facts, plans and memories derived from them,
   and every derived node without provenance (run traces, plan steps, topics).
-- **Stored processes.** `processes.unprotected` (migration 0035). Under a
+- **Stored processes.** `processes.unprotected` (knowledge-graph migration
+  `harness-knowledge-graph-neon/src/migrations/0035_process_unprotected.sql`). Under a
   shield `query_processes`, the process recall leg and the plan-runner's
   process reuse skip unprotected processes, `run_stored_process` refuses
   them, and `write_process`/`edit_process` withhold their title and id.

@@ -312,6 +312,25 @@ describe('#1540 · memory tool and unprotected notes', () => {
   });
 });
 
+describe('#1540 · plugin memory is refused to the memory tool under a shield', () => {
+  it('blocks /memories/plugins and ~agent/plugins while the shield is active', async () => {
+    const inner = new InMemoryMemoryStore();
+    await inner.writeFile('/memories/orchestrators/agent-a/plugins/crm/cache.json', REAL);
+    const shield = { on: true };
+    const ns = new OrchestratorMemoryNamespacer('agent-a', inner, () => shield.on);
+    await assert.rejects(() => ns.readFile('/memories/plugins/crm/cache.json'), MemoryPathDenied);
+    await assert.rejects(() => ns.list('/memories/plugins'), MemoryPathDenied);
+    await assert.rejects(() => ns.readFile('/memories/x/../plugins/crm/cache.json'), MemoryPathDenied);
+    const ctxNs = new ContextMemoryNamespacer(
+      { privateRoot: '/memories/contexts/agent-a/channel/k', agentRoot: '/memories/orchestrators/agent-a', shieldActive: () => shield.on },
+      inner,
+    );
+    await assert.rejects(() => ctxNs.readFile('/memories/~agent/plugins/crm/cache.json'), MemoryPathDenied);
+    shield.on = false;
+    assert.equal(await ns.readFile('/memories/plugins/crm/cache.json'), REAL);
+  });
+});
+
 describe('#1540 · raw-store readers carry the mark over', () => {
   it('the durable-rule promotion strips the marker and stamps the memory', async () => {
     const created: MemorableKnowledgeIngest[] = [];

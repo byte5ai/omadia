@@ -1862,7 +1862,11 @@ The same provenance reaches three more readers (#1540):
   gets the note without the marker line. `_rules/` files follow the same rule.
   The readers of the raw store carry the mark over: the durable-rules
   promotion and its backfill script, and the scratch-promotion reaper, strip
-  the line and stamp the memory they derive `unprotected`.
+  the line and stamp the memory they derive `unprotected`. A plugin's
+  `ctx.memory` (`/memories/orchestrators/<slug>/plugins/<id>/`) lies inside
+  the agent's private root and holds what the plugin fetched in clear, so
+  under a shield the namespacers refuse that physical tree for every
+  operation (`SHIELDED_PHYSICAL`), whatever model-facing path reaches it.
 - **Stored processes.** `processes.unprotected` (migration 0035, plugin-api
   1.40.0) is set by `write_process`/`edit_process` in an unprotected turn and
   never cleared by an edit. Under a turn's privacy handle `query_processes`,
