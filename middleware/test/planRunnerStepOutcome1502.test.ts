@@ -37,7 +37,10 @@ const THREE_STEPS =
   '{"goal":"fetch the open invoices","dependsOn":[0]},' +
   '{"goal":"present the invoices","dependsOn":[1]}]';
 
-async function runTurn(llmTexts: string[], calls: TurnHookPayload[]): Promise<unknown[]> {
+async function runTurnKg(
+  llmTexts: string[],
+  calls: TurnHookPayload[],
+): Promise<InMemoryKnowledgeGraph> {
   const hooks = new Map<TurnHookPoint, TurnHook>();
   const kg = new InMemoryKnowledgeGraph();
   const config: Record<string, unknown> = {
@@ -71,6 +74,11 @@ async function runTurn(llmTexts: string[], calls: TurnHookPayload[]): Promise<un
   }
   await hooks.get('onAfterTurn')!(hookCtx, { assistantAnswer: 'answer' });
   await handle.close();
+  return kg;
+}
+
+async function runTurn(llmTexts: string[], calls: TurnHookPayload[]): Promise<unknown[]> {
+  const kg = await runTurnKg(llmTexts, calls);
   const steps = await kg.getPlanSteps(planNodeId(TURN));
   return steps.map((s) => s.props['status']);
 }
@@ -156,6 +164,12 @@ describe('#1502 — plan steps are done only when a call did them', () => {
       ],
     );
     assert.deepEqual(statuses, ['failed', 'skipped', 'skipped']);
+  });
+
+  it('records evidence even when the call had no string result', async () => {
+    const kg = await runTurnKg(['PLAN', THREE_STEPS], [{ toolName: 'query_odoo', toolFailed: false }]);
+    const steps = await kg.getPlanSteps(planNodeId(TURN));
+    assert.equal(steps[0]!.props['resultSummary'], 'query_odoo');
   });
 
   it('falls back to the `Error:` convention when the kernel sends no toolFailed', async () => {

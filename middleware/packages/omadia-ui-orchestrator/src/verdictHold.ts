@@ -29,7 +29,8 @@ export async function* skeletonOnRelease(
       yield event;
       continue;
     }
-    if (event.type === 'text_delta') {
+    // A retract edits the text before it, so it waits with that text.
+    if (event.type === 'text_delta' || event.type === 'text_retract') {
       text = [...text, event];
       continue;
     }
