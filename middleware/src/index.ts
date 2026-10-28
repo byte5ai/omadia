@@ -172,6 +172,8 @@ import { createInstallRouter } from './routes/install.js';
 import { readGrantSnapshot } from './routes/runtimeGrants.js';
 import { createAdminRegistriesRouter } from './routes/adminRegistries.js';
 import { RegistryClient } from './plugins/registryClient.js';
+import { addRegistryCapabilityProviders } from './plugins/registryCapabilityProviders.js';
+import type { InstallChainResolution } from './plugins/capabilityResolver.js';
 import {
   VaultBackedRegistryConfigStore,
   InMemoryRegistrySettings,
@@ -387,10 +389,15 @@ import { FileSecretVault, resolveMasterKey } from './secrets/fileVault.js';
 import { VaultBackupService } from './secrets/vaultBackup.js';
 import { createAnthropicLlmProvider } from './platform/anthropicLlmProvider.js';
 import {
+  pluginLlmProviderId,
   registerPluginLlmProvider,
   unregisterPluginLlmProvider,
 } from './platform/llmProviderManifest.js';
-import { registerBuiltinLlmProviders } from './platform/builtinLlmProviders.js';
+import {
+  BUILTIN_LLM_PROVIDERS,
+  EXPERIMENTAL_LLM_PROVIDERS,
+  registerBuiltinLlmProviders,
+} from './platform/builtinLlmProviders.js';
 import {
   createModelCatalogSync,
   type ModelCatalogSync,
@@ -399,6 +406,10 @@ import {
   classifyProviderCredentialKey,
   createProviderPoolCredentialListener,
 } from './platform/providerPoolInvalidation.js';
+import {
+  providerCredentialPurgeBlocker,
+  purgeProviderCredentials,
+} from './platform/providerCredentialPurge.js';
 import { createSharedAnthropicClientRefresher } from './platform/sharedAnthropicClientRefresher.js';
 import { BackgroundJobRegistry } from './platform/backgroundJobRegistry.js';
 import { ChatAgentWrapRegistry } from './platform/chatAgentWrapRegistry.js';
@@ -1140,7 +1151,10 @@ async function main(): Promise<void> {
       );
     }
   };
-  const unregisterProviderFromPlugin = (pluginId: string): void => {
+  // Returns the provider id when the plugin contributed one and no provider of
+  // that id is left afterwards (#1468 — its stored credentials are orphaned
+  // then); `undefined` otherwise, including when a bundled one was restored.
+  const unregisterProviderFromPlugin = (pluginId: string): string | undefined => {
     let id: string | undefined;
     try {
       id = unregisterPluginLlmProvider(
@@ -1157,9 +1171,9 @@ async function main(): Promise<void> {
         `[middleware] llm provider cleanup for ${pluginId} did not complete:`,
         err instanceof Error ? err.message : err,
       );
-      return;
+      return undefined;
     }
-    if (id === undefined) return;
+    if (id === undefined) return undefined;
     kernelProviderPool.invalidate(id);
     // #1451 — the catalog restores a BUNDLED descriptor the plugin had
     // shadowed, so the id is a live provider again. Heal the consumers the way
@@ -1176,11 +1190,12 @@ async function main(): Promise<void> {
           : ''
       }`,
     );
-    if (restored === undefined) return;
+    if (restored === undefined) return id;
     if (restored.discovery !== undefined) {
       void modelCatalogSync.refresh(id);
     }
     void classDefaultRebuilder.onDefaultsChanged(id);
+    return undefined;
   };
 
   // Populate the LLM provider catalog from INSTALLED plugins at boot. Done
@@ -1797,7 +1812,48 @@ async function main(): Promise<void> {
       // Symmetric to onInstalled: drop a contributed provider + its models so
       // an uninstalled provider plugin disappears from the admin Providers page
       // without a restart. Runs BEFORE runtime deactivation/registry removal.
-      unregisterProviderFromPlugin(agentId);
+      const goneProviderId = unregisterProviderFromPlugin(agentId);
+      // #1468 — on a real uninstall the provider's key, verify stamp and OAuth
+      // leaves leave the LLM scopes with it, as the uninstall dialog promises;
+      // a reinstall then starts without a key. Not on reactivate (the plugin
+      // comes straight back), and not when a bundled provider of the same id
+      // was restored (it owns that key, #1451).
+      const purgeBlocker =
+        reason === 'uninstall' && goneProviderId !== undefined
+          ? providerCredentialPurgeBlocker(goneProviderId, {
+              builtinIds: new Set(
+                [...BUILTIN_LLM_PROVIDERS, ...EXPERIMENTAL_LLM_PROVIDERS].map((d) => d.id),
+              ),
+              otherPluginsDeclaring: installedRegistry
+                .list()
+                .map((e) => e.id)
+                .filter(
+                  (id) =>
+                    id !== agentId &&
+                    pluginLlmProviderId(pluginCatalog.get(id)?.manifest) === goneProviderId,
+                ),
+            })
+          : undefined;
+      if (purgeBlocker !== undefined) {
+        console.log(
+          `[install] kept the stored credentials of provider '${String(goneProviderId)}' — ${purgeBlocker}`,
+        );
+      }
+      if (reason === 'uninstall' && goneProviderId !== undefined && purgeBlocker === undefined) {
+        const removed = await purgeProviderCredentials(secretVault, goneProviderId, {
+          onError: (scope, err) => {
+            console.error(
+              `[install] could not purge provider '${goneProviderId}' credentials from ${scope}:`,
+              err instanceof Error ? err.message : err,
+            );
+          },
+        });
+        if (removed.length > 0) {
+          console.log(
+            `[install] removed ${String(removed.length)} stored credential(s) of provider '${goneProviderId}' (${removed.join(', ')})`,
+          );
+        }
+      }
       const kind = pluginCatalog.get(agentId)?.plugin.kind ?? 'agent';
       switch (kind) {
         case 'channel':
@@ -5130,6 +5186,21 @@ async function main(): Promise<void> {
       ...(adminAudit ? { audit: adminAudit } : {}),
       grantsOf: (pluginId) =>
         readGrantSnapshot({ publicPathGrantStore, sqlGrantStore }, pluginId),
+      // #1463 — a capability the local catalog cannot provide may be provided
+      // by the Hub's newer version of an installed parent.
+      // Only offered where the wizard can act on it: Hub installs go through
+      // /api/v1/install/registry, which needs the package-upload subsystem.
+      ...(registryClient.hasRegistries() && config.PACKAGE_UPLOAD_ENABLED
+        ? {
+            enrichMissingCapability: (chain: InstallChainResolution) =>
+              addRegistryCapabilityProviders(chain, {
+                listRegistryPlugins: async () =>
+                  (await registryClient.listAll()).plugins.map((p) => p.entry),
+                registry: installedRegistry,
+                log: (m) => console.warn(m),
+              }),
+          }
+        : {}),
     }),
   );
   console.log('[middleware] plugin install endpoints ready at /api/v1/install (auth: required)');
@@ -5251,6 +5322,10 @@ async function main(): Promise<void> {
       // Issue #453 — advisory SkillSpector scan, fire-and-forget after a
       // successful ingest. Absent without a Postgres graph backend.
       scanScheduler: pluginScanScheduler,
+      // #1462 — an updated integration publishes new service objects; its
+      // `depends_on` agents must re-resolve them instead of serving through
+      // the previous version's client.
+      onDependentsStale: (agentId) => installService.reactivateDependents(agentId),
       // After a re-upload onto an already installed agent (registry entry
       // still alive, package was deleted + re-uploaded) we activate the
       // runtime directly — otherwise the tool stays unknown until the user

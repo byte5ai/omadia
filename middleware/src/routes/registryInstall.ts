@@ -16,6 +16,7 @@ import {
   resolveDependencyParents,
 } from '../plugins/dependencyChainResolver.js';
 import { isTruthyFlag } from '../http/requestFlags.js';
+import { checkCoreCompat } from '../plugins/coreCompat.js';
 
 export interface RegistryInstallDeps {
   client: RegistryClient;
@@ -129,6 +130,22 @@ export function createRegistryInstallRouter(deps: RegistryInstallDeps): Router {
         return;
       }
 
+      // #1463 — refuse a version this core cannot run before downloading it.
+      // The ingest pipeline would refuse it too, with the same code; checking
+      // the index entry first just saves the fetch and names the reason.
+      const coreRefusal = checkCoreCompat({
+        id,
+        version: verEntry.version,
+        compat_core: verEntry.compat_core,
+      });
+      if (coreRefusal) {
+        res.status(ingestFailureStatus('package.incompatible_core')).json({
+          code: 'package.incompatible_core',
+          message: coreRefusal.message,
+        });
+        return;
+      }
+
       // #1495 — already fetched: same version AND same bytes. A different
       // sha256 under the same version (an operator's own zip, a republished
       // Hub version) is NOT this package and still goes to the ingest, which
@@ -147,6 +164,7 @@ export function createRegistryInstallRouter(deps: RegistryInstallDeps): Router {
         direction?: string;
         replaced_version?: string;
         activation_error?: string;
+        activated?: boolean;
       } = { plugin_id: id, version: verEntry.version };
       if (alreadyPresent) {
         log(
@@ -217,6 +235,8 @@ export function createRegistryInstallRouter(deps: RegistryInstallDeps): Router {
         ...(ingested.activation_error !== undefined
           ? { activation_error: ingested.activation_error }
           : {}),
+        // #1463 — the running plugin was (re)started by this ingest.
+        ...(ingested.activated === true ? { activated: true } : {}),
         // Missing depends_on parents to install first (empty → install target
         // directly). Same shape as the capability-chain wizard consumes.
         chain,

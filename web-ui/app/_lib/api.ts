@@ -1274,6 +1274,8 @@ export interface RegistryInstallResponse {
    *  attempted no activation (fresh install — the install job reports that
    *  one), and on an older middleware. */
   activation_error?: string;
+  /** #1463 — present (true) only when this ingest started the plugin. */
+  activated?: true;
   next: { install: string };
 }
 
