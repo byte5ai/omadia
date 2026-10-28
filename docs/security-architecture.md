@@ -1882,11 +1882,18 @@ The same provenance reaches three more readers (#1540):
   node (run traces with tool arguments, plan steps, topics, conflict and
   duplicate markers) is dropped: none carries provenance to check.
 
-Not covered: content stored before its flag existed carries none. That holds
-for notes and processes written before #1540, raw MCP results and rule
-promotions stored before #1536, and turns before #1507; under a shield they
-count as protected until a backfill marks them. A memory a user saves by hand
-counts as protected unless it names an unprotected turn.
+Content stored before its flag existed carries none. For notes and processes
+written before #1540 and for raw MCP results and rule promotions stored
+before #1536, `scripts/backfill-unprotected-provenance.ts`
+(`runProvenanceBackfill`, #1540) marks the items the guard's detectors flag:
+the C0 identity shapes (not dates or amounts) and, with the C1 sidecar
+configured, person names and addresses. Unflagged legacy items stay
+protected: marking everything would hide every curated rule from shielded
+turns. It skips the transcripts, the web UI's chat copies, the operator audit,
+plugin trees and non-text notes, is a dry run unless `--apply` is passed, and
+aborts when a detector fails. Not covered: names in legacy content that C1
+misses, and turns stored before #1507. A memory a user saves by hand counts as
+protected unless it names an unprotected turn.
 
 Accepted with notes and the canvas skeleton (#1540):
 

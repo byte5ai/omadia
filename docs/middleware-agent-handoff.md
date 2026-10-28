@@ -5511,12 +5511,13 @@ laufen. Ein neuer Modellaufruf außerhalb des Turns gehört in §6f. Offen:
   der gespeicherte Turn behält die Realwerte. Seit #1540 maskiert der Scorer
   selbst über `createJobPrivacy`, also auch der vom Operator gestartete
   Backfill (`bulkPromotion.ts`) und der Scratch-Promotion-Reaper.
-- **Provenienz-Backfill für Altbestände (#1540, offen).** Notizen und
-  Prozesse von vor #1540, rohe MCP-Ergebnisse und Regel-Promotions von vor
-  #1536 und Turns von vor #1507 tragen kein `unprotected`-Flag und gelten unter
-  einem Shield als geschützt. Ein Backfill müsste sie markieren; ob pauschal
-  (alles Unbekannte als `unprotected`, fail-closed, verliert Recall auf
-  Instanzen mit Guard) oder gar nicht, ist eine Produktentscheidung.
+- **Provenienz-Backfill für Altbestände (#1540): erledigt, detektorbasiert.**
+  `scripts/backfill-unprotected-provenance.ts --before <Deploy von #1587>`
+  (`runProvenanceBackfill` in orchestrator-extras) markiert Notizen, Prozesse,
+  Regel-Promotions und rohe MCP-Ergebnisse von vorher nur, wenn C0
+  (Identitätsmuster) oder C1 (Personen, Adressen) anschlagen; der Rest bleibt
+  lesbar. Dry-Run ohne `--apply`, Abbruch bei Detektorfehler. Offen: Turns von
+  vor #1507 (keine Provenienz, bewusst nicht im Backfill).
 - **Ausgefallener C1-Detektor: der Rest des Turns läuft still auf C0.**
   Wirft der konfigurierte C1-Detektor, sperrt `c1DetectorFor`
   (`harness-plugin-privacy-guard/src/service.ts`) C1 für den Rest des Turns.

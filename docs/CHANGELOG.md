@@ -67,6 +67,18 @@ changelog.
 `@omadia/plugin-privacy-guard` 0.11.0, `@omadia/plugin-api` 1.37.0
 (`countUnresolvedSurrogates` takes an optional `options`).
 
+### Added — Provenance backfill for legacy Privacy Shield content (#1540)
+
+2026-10-28. Closes the last path of #1540. Notes and processes written before
+#1587, and rule promotions and raw MCP results stored before #1536, had no
+`unprotected` flag and counted as protected under a shield.
+`scripts/backfill-unprotected-provenance.ts --before <instant> [--apply]`
+marks the ones the guard's own detectors flag: C0 identity shapes (e-mail,
+IBAN, phone, address, ID number) and, with `PRIVACY_C1_DETECTOR_URL` set, the
+C1 sidecar's person names and addresses. Content without a hit stays readable,
+so curated conventions are kept. Dry run by default; a detector failure
+aborts the run. Turns stored before #1507 are not covered.
+
 ### Fixed — Privacy Shield leak paths that predate its guards (#1540)
 
 2026-10-28. Follow-up to #1539; six of the seven paths the S2-N15 security

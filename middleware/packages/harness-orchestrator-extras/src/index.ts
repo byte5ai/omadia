@@ -154,6 +154,16 @@ export {
   markUnprotectedNote,
   stripUnprotectedNoteMarker,
 } from './noteProvenance.js';
+export {
+  runProvenanceBackfill,
+  ProvenanceDetectorError,
+} from './provenanceBackfill.js';
+export type {
+  ProvenanceBackfillOptions,
+  ProvenanceBackfillResult,
+  ProvenanceBackfillScope,
+  ProvenanceDetector,
+} from './provenanceBackfill.js';
 
 // KG-ACL Slice 8 — operator-triggered retrospective bulk score +
 // promotion. Two-phase pass over historical Turns: (1) Haiku-score
