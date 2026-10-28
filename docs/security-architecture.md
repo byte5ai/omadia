@@ -1889,10 +1889,14 @@ before #1536, `scripts/backfill-unprotected-provenance.ts`
 the C0 identity shapes (not dates or amounts) and, with the C1 sidecar
 configured, person names and addresses. Unflagged legacy items stay
 protected: marking everything would hide every curated rule from shielded
-turns. It skips the transcripts, the web UI's chat copies, the operator audit,
-plugin trees and non-text notes, is a dry run unless `--apply` is passed, and
-aborts when a detector fails. Not covered: names in legacy content that C1
-misses, and turns stored before #1507. A memory a user saves by hand counts as
+turns. Scratch-reaper memories derived from legacy notes are judged the same
+way. It skips the transcripts, the web UI's chat copies, the operator audit,
+both plugin trees, `_brand/` and non-text notes, logs which detector hit each
+item, is a dry run unless `--apply` is passed, refuses `--apply` without a C1
+URL unless `--c0-only` is given, and aborts when a detector fails (the items
+marked so far stay marked; a rerun is idempotent). Not covered: names in
+legacy content that C1 misses, turns stored before #1507, and memories
+auto-promoted from those turns. A memory a user saves by hand counts as
 protected unless it names an unprotected turn.
 
 Accepted with notes and the canvas skeleton (#1540):

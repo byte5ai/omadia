@@ -11,8 +11,11 @@
  *   npx tsx scripts/backfill-unprotected-provenance.ts --before 2026-10-28T16:00:00Z
  *   npx tsx scripts/backfill-unprotected-provenance.ts --before 2026-10-28T16:00:00Z --apply
  *
- * `--before` is required: the deploy time of #1587, so content written with
- * provenance is never reclassified.
+ * `--before` is required: the deploy time of #1587. It applies to every
+ * scope, so rule promotions and MCP results stored between #1536 and #1587
+ * (which already carry provenance) are judged again; that can only add marks.
+ * `--apply` without a C1 URL is refused (C0 cannot see names) unless
+ * `--c0-only` is passed. Review the dry run's list before applying.
  * Env: DATABASE_URL (required), GRAPH_TENANT_ID (default 'default'),
  *      PRIVACY_C1_DETECTOR_URL (optional).
  */
@@ -34,22 +37,26 @@ async function main(): Promise<void> {
   if (!before || Number.isNaN(before.getTime())) throw new Error('--before <ISO instant> required');
   const apply = process.argv.includes('--apply');
   const c1Url = process.env['PRIVACY_C1_DETECTOR_URL']?.trim();
+  if (apply && !c1Url && !process.argv.includes('--c0-only')) {
+    throw new Error('PRIVACY_C1_DETECTOR_URL is not set: names would go undetected. Set it, or pass --c0-only.');
+  }
   const c1 = createC1HttpDetector({ resolveUrl: () => c1Url });
+  const tenantId = process.env['GRAPH_TENANT_ID'] ?? 'default';
 
   console.log(
-    `[provenance-backfill] mode=${apply ? 'APPLY' : 'DRY-RUN'} before=${before.toISOString()} c1=${c1Url ? 'on' : 'off'}`,
+    `[provenance-backfill] mode=${apply ? 'APPLY' : 'DRY-RUN'} before=${before.toISOString()} tenant=${tenantId} c1=${c1Url ? 'on' : 'off'}`,
   );
   const pool = new Pool({ connectionString: dbUrl, max: 2 });
   try {
     await runProvenanceBackfill({
       pool,
-      tenantId: process.env['GRAPH_TENANT_ID'] ?? 'default',
+      tenantId,
       before,
       apply,
       detect: async (text) => {
-        if (baselineHasIdentityPii(text)) return true;
+        if (baselineHasIdentityPii(text)) return 'c0';
         // The detector only asks the sidecar for person and address labels.
-        return (await c1.detect(text)).length > 0;
+        return (await c1.detect(text)).length > 0 ? 'c1' : undefined;
       },
       log: (m) => console.log(m),
     });
