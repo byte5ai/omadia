@@ -24,7 +24,10 @@ import {
   isPromptMaskBlockedNotice,
   PRIVACY_SHIELD_REQUIRED_ANSWER,
 } from '@omadia/orchestrator/dist/orchestrator.js';
+import { createJobPrivacy } from '@omadia/orchestrator-extras/dist/jobPrivacy.js';
 import { PRIVACY_FORCE_GUARDED_ENV_VAR } from '@omadia/plugin-api';
+
+import { composeSkeleton } from '../packages/omadia-ui-orchestrator/src/composition.js';
 
 import {
   CliChatAgent,
@@ -146,8 +149,14 @@ function countingProvider(calls: { n: number }): LlmProvider {
   } as unknown as LlmProvider;
 }
 
-function orchestrator(calls: { n: number }): Orchestrator {
+function orchestrator(calls: { n: number }, hooks: string[] = []): Orchestrator {
   return new Orchestrator({
+    turnHookRegistry: {
+      run: async (point: string) => {
+        hooks.push(point);
+        return [];
+      },
+    },
     provider: countingProvider(calls),
     model: 'test',
     maxTokens: 256,
@@ -171,11 +180,13 @@ describe('#1535 OMADIA_PRIVACY_FORCE_GUARDED fails closed', () => {
   it('refuses a turn without a running provider; the model never runs', async () => {
     process.env[PRIVACY_FORCE_GUARDED_ENV_VAR] = 'true';
     const calls = { n: 0 };
-    const result = await orchestrator(calls).runTurn({
+    const hooks: string[] = [];
+    const result = await orchestrator(calls, hooks).runTurn({
       userMessage: 'Wer ist Marc Demo?',
       sessionScope: 's-1',
     });
     assert.equal(calls.n, 0, 'no model call');
+    assert.deepEqual(hooks, [], 'no turn hook on a refused turn');
     assert.equal(result.answer, PRIVACY_SHIELD_REQUIRED_ANSWER);
     assert.ok(isPromptMaskBlockedNotice(result.answer), 'the verifier treats it as a refusal');
   });
@@ -183,14 +194,17 @@ describe('#1535 OMADIA_PRIVACY_FORCE_GUARDED fails closed', () => {
   it('refuses a streamed turn the same way', async () => {
     process.env[PRIVACY_FORCE_GUARDED_ENV_VAR] = 'true';
     const calls = { n: 0 };
+    const hooks: string[] = [];
     const events = [];
-    for await (const event of orchestrator(calls).chatStream({
+    for await (const event of orchestrator(calls, hooks).chatStream({
       userMessage: 'Wer ist Marc Demo?',
       sessionScope: 's-2',
     })) {
       events.push(event);
     }
     assert.equal(calls.n, 0, 'no model call');
+    // The plan-runner's gate is an LLM call on the raw message: no hook runs.
+    assert.deepEqual(hooks, [], 'no turn hook on a refused turn');
     const done = events.find((e) => e.type === 'done');
     assert.ok(done && done.type === 'done');
     // Delivered in the turn's language, with the AI disclosure folded in.
@@ -200,12 +214,14 @@ describe('#1535 OMADIA_PRIVACY_FORCE_GUARDED fails closed', () => {
   it('runs the turn as before without the policy', async () => {
     delete process.env[PRIVACY_FORCE_GUARDED_ENV_VAR];
     const calls = { n: 0 };
-    const result = await orchestrator(calls).runTurn({
+    const hooks: string[] = [];
+    const result = await orchestrator(calls, hooks).runTurn({
       userMessage: 'Hallo',
       sessionScope: 's-3',
     });
     assert.equal(calls.n, 1);
     assert.match(result.answer, /Marc Demo/);
+    assert.ok(hooks.includes('onBeforeTurn'), `hooks run without the policy: ${hooks.join()}`);
   });
 
   it('refuses every subscription-CLI turn under the policy, before any spawn', async () => {
@@ -229,5 +245,33 @@ describe('#1535 OMADIA_PRIVACY_FORCE_GUARDED fails closed', () => {
       ['done'],
     );
     assert.equal(spawned, 0);
+  });
+});
+
+describe('#1535 the policy reaches the model calls around the turn', () => {
+  it('memory jobs refuse outside a turn without a guard under the policy', async () => {
+    const forced = createJobPrivacy(() => undefined, { [PRIVACY_FORCE_GUARDED_ENV_VAR]: 'true' });
+    const refused = await forced('inconsistency-detector' as never).mask('Marc Demo');
+    assert.equal(refused.send, false);
+    const open = createJobPrivacy(() => undefined, {});
+    const sent = await open('inconsistency-detector' as never).mask('Marc Demo');
+    assert.deepEqual(sent, { send: true, text: 'Marc Demo' }, 'unchanged without the policy');
+  });
+
+  it('the canvas skeleton is not composed by a model', async () => {
+    let llmCalls = 0;
+    const skeleton = await composeSkeleton({
+      llm: {
+        complete: async () => {
+          llmCalls += 1;
+          return { text: '{}' };
+        },
+      } as never,
+      model: 'm',
+      userText: 'Zeig mir Marc Demo',
+      skipModel: true,
+    });
+    assert.equal(llmCalls, 0);
+    assert.equal(skeleton.source, 'fallback');
   });
 });

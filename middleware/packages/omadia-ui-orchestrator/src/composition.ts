@@ -147,12 +147,19 @@ export async function composeSkeleton(opts: {
   userText: string;
   /** observability for the never-throw contract: every fallback states why. */
   log?: (message: string) => void;
+  /** #1535 — the text may not reach a model (the org policy requires the
+   *  Privacy Shield and none runs): go straight to the fallback. */
+  skipModel?: boolean;
 }): Promise<SkeletonResult> {
   const fallback: SkeletonResult = {
     tree: structuredClone(FALLBACK_SKELETON),
     dataRequirements: [{ containerId: 'root', description: opts.userText, fields: [] }],
     source: 'fallback',
   };
+  if (opts.skipModel === true) {
+    opts.log?.('[composition] model call skipped (privacy policy) → fallback skeleton');
+    return fallback;
+  }
 
   let user = `User request: ${opts.userText}`;
   for (let attempt = 0; attempt < 2; attempt += 1) {

@@ -4075,7 +4075,10 @@ Abgeleitetes: `excludeUnprotected` auf MK-, Excerpt- und Plan-Suche
 (plugin-api 1.39.0), in beiden Backends über Property-Stempel oder
 `DERIVED_FROM`/`PLAN_OF` auf eine `unprotected`-Turn; Stempel setzen die
 MCP-KG-Ingestion (gebypasstes Rohergebnis), der Durable-Rules-Hook und
-`transcribe_recording` (Turns immer `unprotected`).
+`transcribe_recording` (Turns immer `unprotected`). Ein abgelehnter Turn feuert
+keine Turn-Hooks und keinen MCP-Input-Replay; das Canvas-Skeleton nutzt dann
+den statischen Fallback (`composeSkeleton({ skipModel })`), und
+`createJobPrivacy` verweigert Memory-Jobs ohne Guard unter der Policy.
 
 ### Abo-CLI-Turn-Budget (OM-104, Beta-Runde 5)
 

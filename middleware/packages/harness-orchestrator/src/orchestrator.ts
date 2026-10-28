@@ -5117,8 +5117,9 @@ export class Orchestrator {
       },
       () => this.closePassOnThrow(undeliveredPass, async () => {
         // W2-1 (#544) — forced replay of the parked MCP tool call, before the
-        // model runs. Writes its outcome onto the live turn context.
-        if (mcpInputReply) {
+        // model runs. Writes its outcome onto the live turn context. A
+        // refused turn (blocked mask, #1535 shield required) runs no tool.
+        if (mcpInputReply && !screeningBlocked) {
           await this.applyMcpInputReplay(mcpInputReply, input, turnId);
         }
         // #332 Layer 2 — Direct Line short-circuit (non-streaming / Teams
@@ -7441,17 +7442,23 @@ export class Orchestrator {
       // Commit-on-delivery — mirror of `runTurnCore`.
       this.bindRequestAfterTurn(bound?.ledger, turnId, input);
       // W2-1 (#544) — forced replay before the model runs. Mirror of `runTurn`.
-      if (mcpInputReply) {
+      // A refused turn (blocked mask, #1535 shield required) runs no tool.
+      if (mcpInputReply && !screeningBlocked) {
         await this.applyMcpInputReplay(mcpInputReply, input, turnId);
       }
       // #133 (E9) — onBeforeTurn is unbounded, so the plan-runner's plan
       // snapshot is emitted as the FIRST stream event, before any answer
-      // tokens.
-      yield* this.toAnnotationEvents(
-        await this.fireTurnHook('onBeforeTurn', turnId, input, {
-          userMessage: input.userMessage,
-        }),
-      );
+      // tokens. Not on a refused turn: the plan-runner's gate and
+      // materialiser are LLM calls on the raw message, and the buffered path
+      // fires the hook only inside `chatInContextInner`, which a refused turn
+      // never reaches (#1535 security review).
+      if (!screeningBlocked) {
+        yield* this.toAnnotationEvents(
+          await this.fireTurnHook('onBeforeTurn', turnId, input, {
+            userMessage: input.userMessage,
+          }),
+        );
+      }
       // Mid-turn steering — register this turn as live so `/chat/steer` can
       // inject extra user messages keyed by the same session scope. The inner
       // loop drains them at each iteration boundary; `endTurn` clears the
@@ -7695,16 +7702,23 @@ export class Orchestrator {
             privacySettled = true;
           }
           // #133 (E8) — persisted Turn node id for graph-linking observers.
-          yield* this.toAnnotationEvents(
-            await this.afterTurn(turnId, input, doneEvent.answer, doneEvent.turnId),
-          );
+          // Not for a refused turn (see the branch below).
+          if (!promptMaskBlocked) {
+            yield* this.toAnnotationEvents(
+              await this.afterTurn(turnId, input, doneEvent.answer, doneEvent.turnId),
+            );
+          }
           yield this.discloseDoneEvent(doneEvent, input);
           continue;
         }
         if (event.type === 'done') {
-          yield* this.toAnnotationEvents(
-            await this.afterTurn(turnId, input, event.answer, event.turnId),
-          );
+          // A refused turn fires no `onAfterTurn`, as on the buffered path,
+          // where only `chatInContextInner` fires it (#1535 security review).
+          if (!promptMaskBlocked) {
+            yield* this.toAnnotationEvents(
+              await this.afterTurn(turnId, input, event.answer, event.turnId),
+            );
+          }
           // #644 — fold the disclosure at the boundary, AFTER the hook (which
           // records the raw answer, matching the non-streaming path where
           // `toSemanticAnswer` folds only after `runTurn` persisted the turn).

@@ -1829,8 +1829,9 @@ none.
 Content derived from such a turn follows it (#1536). Under a shield the
 memory, excerpt and durable recall legs skip a MemorableKnowledge stamped
 `unprotected` (`MemorableKnowledgeIngest.unprotected`) or linked by
-`DERIVED_FROM` to an `unprotected` Turn; the edge check also covers memories
-stored before the stamp existed. The stamp is written where no edge can carry
+`DERIVED_FROM` to an `unprotected` Turn; the edge check also covers
+auto-promoted memories stored before the stamp existed (raw MCP results and
+rule promotions stored before it carry neither and stay recallable). The stamp is written where no edge can carry
 it: a bypassed MCP result ingested into the graph (epic #459), and a `_rules/`
 file the durable-rules hook promotes from a turn without a shield or with a
 bypassed tool (no turn context reads as unprotected). As with turns, an
@@ -1842,8 +1843,11 @@ by `transcribe_recording` are stored `unprotected` (raw speech no shield
 masked), so they stay out of cross-session recall under a shield; their own
 session keeps them. Not covered: extracted facts reach no model prompt (a
 plugin's `ctx.knowledgeGraph.getNeighbors` can still return them and Turn
-nodes unfiltered), stored-process titles carry no provenance, and a memory a
-user saves by hand counts as protected unless it names an unprotected turn.
+nodes unfiltered), stored-process titles carry no provenance, a memory a user
+saves by hand counts as protected unless it names an unprotected turn, and the
+intern-exempt `memory` tool still serves notes and `_rules/` files written in
+an unprotected turn in clear (only `sessions/` is refused; a transcript copied
+into notes while no shield ran stays readable).
 
 The session transcripts under `/memories/sessions/` hold every turn with its
 real values restored, protected or not, and `memory` is intern-exempt. While a
@@ -1901,7 +1905,11 @@ These tool results skip the digest:
   guard can be repaired; only chat answers with the refusal until it is back.
   A turn on the subscription CLI (`claude-cli`), which has no shield, is
   refused the same way under the clamp, before the child is spawned
-  (`CliChatAgent`, `CLI_PRIVACY_SHIELD_REQUIRED_ANSWER`).
+  (`CliChatAgent`, `CLI_PRIVACY_SHIELD_REQUIRED_ANSWER`). A refused
+  turn fires no turn hook and runs no parked MCP input replay; the canvas
+  skeleton skips its model call (`composeSkeleton({ skipModel })`); and the
+  memory jobs outside a turn refuse without a guard (`createJobPrivacy`).
+  Not gated: the operator-only builder preview chat.
   `OMADIA_PRIVACY_FORCE_GUARDED=true` switches all three off for the result
   the model gets, and for the MCP-to-knowledge-graph ingestion
   (`Orchestrator.dispatchTool`, epic #459) as well: every seam that reads a
