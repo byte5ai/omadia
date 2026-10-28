@@ -2131,6 +2131,7 @@ export interface PrivacyReplayedAnswerRequest {
 readonly sessionId: string;
 readonly turnId: string;
 readonly text: string;
+readonly segments?: readonly string[];
 }
 export interface PrivacyStoredTextScopeRequest {
 readonly job: string;
