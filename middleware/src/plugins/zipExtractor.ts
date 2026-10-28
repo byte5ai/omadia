@@ -113,6 +113,7 @@ export interface ExtractResult {
 }
 
 const MAX_PARAM_CHARS = 256;
+const MAX_MESSAGE_CHARS = 512;
 
 export class ZipExtractionError extends Error {
   public readonly params?: Record<string, string>;
@@ -131,7 +132,8 @@ export class ZipExtractionError extends Error {
      *  locale, e.g. `{ entry }` for the offending archive entry. */
     params?: Record<string, string>,
   ) {
-    super(message);
+    // The message carries the entry name too — same clip.
+    super(message.length > MAX_MESSAGE_CHARS ? `${message.slice(0, MAX_MESSAGE_CHARS)}…` : message);
     this.name = 'ZipExtractionError';
     // An entry name is the uploader's text and can be up to 64 KiB long; it
     // travels into a JSON response and onto the operator's screen.
@@ -156,15 +158,21 @@ const YAUZL_UNSAFE_NAME =
   /^(?:invalid characters in fileName|absolute path|invalid relative path): ([\s\S]*)$/;
 
 /**
- * Turn whatever the archive reader threw into a {@link ZipExtractionError},
- * so every caller can map it to a 4xx. Two exceptions pass through as-is:
- * our own errors, and filesystem errors (`ENOSPC`, `EACCES`, … — they carry
- * a `syscall`), which are this host's fault, not the archive's.
+ * Turn what the ARCHIVE READER threw into a {@link ZipExtractionError}, so
+ * every caller can map it to a 4xx. Only two shapes are the archive's fault:
+ * yauzl's own errors (a plain `Error` without a `code`) and zlib's inflate
+ * errors (`code: 'Z_…'`). Everything else passes through unchanged — our own
+ * errors, filesystem errors (`ENOSPC`, `EACCES`, …), Node stream errors
+ * (`ERR_…`) and programming errors (`TypeError`, …): those are this host's
+ * fault, and dressing them up as `zip.invalid` would hide a 500 behind a 422.
  */
 export function toZipExtractionError(err: unknown): unknown {
   if (err instanceof ZipExtractionError) return err;
   if (!(err instanceof Error)) return err;
-  if (typeof (err as NodeJS.ErrnoException).syscall === 'string') return err;
+  const code = (err as NodeJS.ErrnoException).code;
+  const fromYauzl = err.constructor === Error && code === undefined;
+  const fromZlib = typeof code === 'string' && code.startsWith('Z_');
+  if (!fromYauzl && !fromZlib) return err;
   const unsafe = YAUZL_UNSAFE_NAME.exec(err.message);
   if (unsafe) {
     const entry = unsafe[1] ?? '';

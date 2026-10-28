@@ -5350,6 +5350,7 @@ async function main(): Promise<void> {
         catalog: pluginCatalog,
         maxBytes: config.PACKAGE_UPLOAD_MAX_BYTES,
         log: (msg) => console.log(msg),
+        ...(adminAudit ? { audit: adminAudit } : {}),
       }),
     );
     console.log(

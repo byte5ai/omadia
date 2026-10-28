@@ -124,3 +124,31 @@ describe('retired package copies', () => {
     assert.deepEqual(left.sort(), ['1.0.0', '2.0.0']);
   });
 });
+
+describe('UploadedPackageStore.remove — containment (N02 security review)', () => {
+  it('never deletes a stored path outside the packages root', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'contain-test-'));
+    try {
+      const outside = path.join(root, 'outside');
+      await fs.mkdir(outside, { recursive: true });
+      await fs.writeFile(path.join(outside, 'keep.txt'), 'x');
+      const logs: string[] = [];
+      const store = new UploadedPackageStore(
+        path.join(root, 'index.json'),
+        path.join(root, 'packages'),
+        (m) => logs.push(m),
+      );
+      await store.load();
+      await store.register({
+        id: '@test/evil', version: '1.0.0', path: outside,
+        uploaded_at: '', uploaded_by: '', sha256: 'a'.repeat(64),
+        peers_missing: [], zip_bytes: 1, extracted_bytes: 1, file_count: 1,
+      });
+      assert.equal(await store.remove('@test/evil'), true);
+      await fs.access(path.join(outside, 'keep.txt'));
+      assert.ok(logs.some((l) => l.includes('outside')));
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+});

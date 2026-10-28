@@ -268,12 +268,23 @@ export function createStoreRouter(deps: StoreDeps): Router {
       // button skipped the Hub route, created the install job directly, and
       // an agent whose parent was missing got a raw 409
       // `install.missing_dependencies` instead of the prerequisites wizard.
-      // Only when the Hub offers THIS version: `source` makes the button
-      // fetch, and it must fetch what the page shows (the Hub route then
-      // recognises the package as already present).
-      if (plugin.install_state === 'available' && !plugin.source) {
+      // Only for exactly that package: in the upload store, and byte-identical
+      // (sha256) to a version the Hub offers. `source` makes the button go
+      // through the Hub route, which then recognises the package as already
+      // present. A bundled or built-in plugin the Hub mirrors, or an
+      // operator's own zip at the Hub's version, keeps installing directly —
+      // through the Hub route the ingest would refuse both.
+      const uploaded =
+        plugin.install_state === 'available' && !plugin.source
+          ? deps.uploadedPackages?.get(id)
+          : undefined;
+      if (uploaded) {
         const resolved = await resolveRegistryEntry(deps.client, id);
-        const same = resolved?.entry.versions.find((v) => v.version === plugin.version);
+        const same = resolved?.entry.versions.find(
+          (v) =>
+            v.version === uploaded.version &&
+            v.sha256.toLowerCase() === uploaded.sha256.toLowerCase(),
+        );
         if (resolved && same) {
           plugin = {
             ...plugin,

@@ -116,6 +116,8 @@ function hubIndex(id: string, versions: string[]): string {
 async function detail(opts: {
   plugins: Plugin[];
   uploaded: string[];
+  /** version + sha256 of the stored package; default: the plugin's version, SHA. */
+  stored?: { version: string; sha256: string };
   hub?: { id: string; versions: string[] };
   id: string;
 }): Promise<Plugin> {
@@ -137,7 +139,17 @@ async function detail(opts: {
       registry: fakeRegistry,
       ...(client ? { client } : {}),
       uploadedPackages: {
-        get: (id: string) => (opts.uploaded.includes(id) ? ({ id } as never) : undefined),
+        get: (id: string) =>
+          opts.uploaded.includes(id)
+            ? ({
+                id,
+                version:
+                  opts.stored?.version ??
+                  opts.plugins.find((p) => p.id === id)?.version ??
+                  '0.0.0',
+                sha256: opts.stored?.sha256 ?? SHA,
+              } as never)
+            : undefined,
       },
     }),
   );
@@ -187,6 +199,27 @@ describe('store router · Hub source on a fetched, not installed package (#1495)
     });
     assert.equal(p.source?.registry, 'omadia-public');
     assert.equal(p.source?.download_url, `${HUB}/registry/0.2.8/plugin.zip`);
+  });
+
+  it('carries no source for a bundled/built-in plugin the Hub mirrors (not in the upload store)', async () => {
+    const p = await detail({
+      plugins: [plugin('@x/builtin', { version: '0.2.8' })],
+      uploaded: [],
+      hub: { id: '@x/builtin', versions: ['0.2.8'] },
+      id: '@x/builtin',
+    });
+    assert.equal(p.source, undefined);
+  });
+
+  it("carries no source for an operator's own zip at the Hub's version but other bytes", async () => {
+    const p = await detail({
+      plugins: [plugin('@x/agent', { version: '0.2.8' })],
+      uploaded: ['@x/agent'],
+      stored: { version: '0.2.8', sha256: 'c'.repeat(64) },
+      hub: { id: '@x/agent', versions: ['0.2.8'] },
+      id: '@x/agent',
+    });
+    assert.equal(p.source, undefined);
   });
 
   it('carries no source when the Hub does not offer the local version', async () => {

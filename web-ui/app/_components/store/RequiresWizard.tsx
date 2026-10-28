@@ -8,6 +8,7 @@ import { useTranslations } from 'next-intl';
 import { cn } from '../../_lib/cn';
 import {
   ApiError,
+  cancelInstallJob,
   configureInstallJob,
   createInstallJob,
 } from '../../_lib/api';
@@ -349,6 +350,12 @@ export function RequiresWizard({
 
         const configured = await configureInstallJob(job.id, values);
         if (!isInstalledTerminal(configured.job.state)) {
+          // #1494 — a validation failure now leaves the job `awaiting_config`
+          // instead of ending it. This wizard stops the chain here, so it
+          // ends the job itself rather than leaving it open on the server.
+          if (configured.job.state === 'awaiting_config') {
+            await cancelInstallJob(configured.job.id).catch(() => undefined);
+          }
           // #1401 — `validation_failed` carries German server text; say it
           // from the catalog. Other codes keep the server message.
           const error = configured.job.error;

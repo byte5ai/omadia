@@ -479,3 +479,23 @@ describe('Hub install route — same contract as the upload, idempotent re-click
     }
   });
 });
+
+describe('toZipExtractionError — only archive faults become zip.* (N02 security review)', async () => {
+  const { toZipExtractionError, ZipExtractionError } = await import('../src/plugins/zipExtractor.js');
+  it('wraps yauzl and zlib errors, passes host errors through', () => {
+    assert.ok(toZipExtractionError(new Error('invalid relative path: ../x')) instanceof ZipExtractionError);
+    const z = Object.assign(new Error('incorrect header check'), { code: 'Z_DATA_ERROR' });
+    assert.equal((toZipExtractionError(z) as { code: string }).code, 'zip.invalid');
+    const t = new TypeError('x is undefined');
+    assert.equal(toZipExtractionError(t), t);
+    const fsErr = Object.assign(new Error('no space'), { code: 'ENOSPC', syscall: 'write' });
+    assert.equal(toZipExtractionError(fsErr), fsErr);
+    const stream = Object.assign(new Error('closed'), { code: 'ERR_STREAM_PREMATURE_CLOSE' });
+    assert.equal(toZipExtractionError(stream), stream);
+  });
+  it('clips a huge entry name in message and params', () => {
+    const e = toZipExtractionError(new Error(`invalid relative path: ../${'a'.repeat(5000)}`)) as InstanceType<typeof ZipExtractionError>;
+    assert.ok(e.message.length <= 513);
+    assert.ok((e.params?.entry ?? '').length <= 256);
+  });
+});

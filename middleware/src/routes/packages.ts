@@ -11,6 +11,7 @@ import {
 import type { UploadedPackageStore } from '../plugins/uploadedPackageStore.js';
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
 import { isTruthyFlag } from '../http/requestFlags.js';
+import { auditActorFromRequest, type AdminAuditLog } from '../auth/adminAuditLog.js';
 
 /**
  * Zip-upload endpoints for agent packages.
@@ -32,6 +33,9 @@ export interface PackagesRouterDeps {
   catalog: PluginCatalog;
   maxBytes: number;
   log?: (msg: string) => void;
+  /** #1490 — package removal is an admin action like uninstall. Optional:
+   *  without it (no database) only the log line is written. */
+  audit?: AdminAuditLog;
 }
 
 export function createPackagesRouter(deps: PackagesRouterDeps): Router {
@@ -186,12 +190,24 @@ export function createPackagesRouter(deps: PackagesRouterDeps): Router {
     // Reload here = accurate state for all following store/install calls.
     await deps.catalog.load();
     // #1490 — the removal used to leave no trace at all.
-    const actor =
-      (req as Request & { session?: { email?: string } }).session?.email ??
-      'unknown';
+    const actor = auditActorFromRequest(req);
     log(
-      `[upload] package removed id=${id} version=${removed?.version ?? '?'} by=${actor}`,
+      `[upload] package removed id=${id} version=${removed?.version ?? '?'} by=${actor.email ?? actor.id ?? 'unknown'}`,
     );
+    if (deps.audit) {
+      try {
+        await deps.audit.record({
+          actor,
+          action: 'plugin.package_remove',
+          target: `plugin:${id}`,
+          before: { version: removed?.version ?? null, uploaded_by: removed?.uploaded_by ?? null },
+        });
+      } catch (err) {
+        log(
+          `[upload] audit write failed for package removal ${id}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
     res.status(204).end();
   });
 

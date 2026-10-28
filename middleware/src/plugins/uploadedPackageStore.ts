@@ -168,6 +168,15 @@ export class UploadedPackageStore {
     // Best-effort: remove the package dir. Errors are logged, but not thrown —
     // the registry entry is already gone. (#1490 — they were said to be
     // logged and were dropped.)
+    // Security review (N02) — `pkg.path` comes from index.json; a recursive
+    // delete must never follow a path that points outside the packages root.
+    const root = path.resolve(this.packagesDir);
+    if (!path.resolve(pkg.path).startsWith(root + path.sep)) {
+      this.log(
+        `[upload] package ${id}: stored path ${pkg.path} is outside ${root} — index entry removed, folder left alone`,
+      );
+      return true;
+    }
     await fs.rm(pkg.path, { recursive: true, force: true }).catch((err: unknown) => {
       this.log(
         `[upload] package ${id}: could not remove ${pkg.path}: ${err instanceof Error ? err.message : String(err)}`,
