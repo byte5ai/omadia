@@ -30,6 +30,7 @@ import {
   AdminUiProvider,
   AdminUiToggle,
 } from '../../_components/store/AdminUiPanel';
+import { ConnectionCheckButton } from '../../_components/store/ConnectionCheckButton';
 import { ActionStatusBanner } from '../../_components/store/ActionStatusBanner';
 import { Chip } from '../../_components/store/Chip';
 import { AuditModeSwitch } from '../../_components/store/AuditModeSwitch';
@@ -147,6 +148,9 @@ export default async function PluginDetailPage({
                   state={plugin.install_state}
                   isLegacy={isLegacy}
                   readiness={plugin.readiness}
+                  // #1453 — same precedence as the card: a reported problem
+                  // outranks a badge that only knows activation happened.
+                  actionStatus={plugin.action_status}
                 />
                 <Chip tone="mono">v{plugin.version}</Chip>
                 {plugin.signed ? (
@@ -186,6 +190,14 @@ export default async function PluginDetailPage({
           ok, e.g. after connecting via the admin UI below). */}
       <div className="mt-8">
         <ActionStatusBanner pluginId={plugin.id} initial={plugin.action_status} />
+        {/* #1453 — ask the target system now. The banner above and the badge
+            pick up the resulting status on their own poll; this only reports
+            what the check just answered. Installed plugins only: there is
+            nothing running to probe otherwise. */}
+        {plugin.install_state === 'installed' ||
+        plugin.install_state === 'update-available' ? (
+          <ConnectionCheckButton pluginId={plugin.id} />
+        ) : null}
       </div>
 
       {/* Two-column body */}

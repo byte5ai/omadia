@@ -36,6 +36,75 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — an integration with a refused API key no longer shows "Active · configured" (#1453)
+
+2026-10-27. Activation never checked credentials: `activate()` builds a client
+and publishes services without a request to the target system, so a wrong,
+revoked or expired API key activated cleanly, readiness said `ready`, and
+`GET /runtime/installed` said `status: "active"` with
+`last_activation_error: null`. The 401 at call time never reached the plugin's
+status either — the operator found out from a failed chat turn.
+
+Plugins may now export **`verifyConnection(ctx)`** next to `activate`,
+returning a `PluginConnectionVerdict` (`connected` / `rejected` /
+`inconclusive`). The kernel runs it after every successful activation —
+including the reactivation that follows a secret edit — bounded at 5s, never
+awaited on the boot path and never able to fail an activation; the verdict goes
+through `ctx.status`, which already feeds the store badge, the detail banner
+and the orchestrator's tool gate (#474). Only an explicit `rejected` turns a
+plugin red: a timeout, 5xx or DNS failure stays `inconclusive` and leaves the
+operator's status untouched, the rule `providerCredentialVerifier.ts` carries
+for LLM keys.
+
+Readiness gains **`connection_failed`** (`PluginReadinessState`): fields all
+filled, plugin up, target system refusing the credentials. Not
+`config_required` — the form is complete — and not `errored`, which would claim
+the plugin never came up (that is #1452). Any reported `error` produces it — the probe's
+`rejected` verdict or a plugin's own `ctx.status` error report (which already
+closed the tool gate before #1453);
+`needs_action` stays `ready` and keeps its own amber pill. The store badge
+renders it red.
+
+New `POST /api/v1/admin/runtime/installed/:id/verify` re-checks in place (for a
+key revoked or repaired upstream, where nothing on the omadia side changed);
+`GET /api/v1/admin/runtime/installed` now carries `action_status`. In the store
+UI the green badge no longer says "configured": `readiness.verified_at` is the
+last ACTIVATION, so the message key is now `store.stateBadge.activeSince`
+("Active · since {time}" / "Aktiv · seit {time}") and the badge is withheld
+entirely while the plugin reports `needs_action`/`error` — previously the red
+pill sat next to an unchanged green badge.
+
+A `rejected` verdict must name its cause (`ConnectionRejectionCause`:
+`http_401`, `http_403_auth`, `protocol_auth_failure`) or the kernel demotes it
+to `inconclusive` — core cannot see the exchange, but it can refuse to paint an
+outage red on an unexplained claim, and `rejected` also withholds the plugin's
+tools. `classifyHttpAuthFailure(status, body)` in `@omadia/plugin-api` carries
+core's HTTP rules (401 yes, bare 403 no) so no plugin re-derives them.
+
+Decided verdicts are cached for 5 minutes per `pluginId` + credential
+fingerprint (SHA-256 of the plugin's vault entries AND its non-secret setup
+values; never the secret), with a `force` bypass the operator's re-check always
+uses. The config half matters as much as the key: `url`/`db`/`login` are
+written through `PATCH /installed/:id/config`, which reactivates, so a
+vault-only fingerprint would have re-served the cached `rejected` to a host the
+operator had just repaired. The point is the fan-out: a
+provider write reactivates every dependent plugin, which would otherwise probe
+every target system again for credentials that did not change. `inconclusive`
+is never cached.
+
+The store detail page gains a **"Test connection"** button
+(`ConnectionCheckButton`) on the verify route. Its three outcomes stay
+distinct — "could not be checked" is never rendered as "working".
+
+`@omadia/plugin-api` goes to **1.35.0** — added symbols only
+(`PluginConnectionVerdict`, `VerifyConnection`, `ConnectionRejectionCause`,
+`classifyHttpAuthFailure`), no existing shape touched.
+
+Kernel-side only. The integration packages (`@omadia/integration-odoo`,
+`@omadia/integration-confluence`) live in their own repos and still have to
+export `verifyConnection` and report their runtime 401s; until they do, the new
+path is present and inert for them.
+
 ### Fixed — a failed activation after a plugin update is no longer reported as active (#1452)
 
 2026-10-26. Updating a plugin (store "Update" button, Hub install onto an

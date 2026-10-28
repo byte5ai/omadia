@@ -53,6 +53,14 @@ export interface ReadinessVault {
  *  working credential?". Structural for the same reason `ReadinessVault` is:
  *  a test passes a one-line stub and the real resolver fits without a cast.
  *  Returns `undefined` for a plugin that consumes no LLM at all. */
+/** #1453 — read-only view of the plugin's own pushed status, so readiness can
+ *  answer "the credentials were checked and refused" instead of `ready`.
+ *  Structural for the same reason the two probes above are: a test passes a
+ *  one-line stub and the real `PluginStatusRegistry` fits without a cast. */
+export interface ReadinessStatusProbe {
+  get(pluginId: string): { readonly state: string } | undefined;
+}
+
 export interface ReadinessLlmProbe {
   resolve(
     pluginId: string,
@@ -92,9 +100,15 @@ function hasConfigValue(
   return true;
 }
 
-/** Best-known moment this plugin was last observed working. Prefers the
- *  explicit activation timestamp; falls back to `installed_at` on registry
- *  entries written before that field existed (old JSON on disk). */
+/** The moment this plugin last ACTIVATED. Prefers the explicit activation
+ *  timestamp; falls back to `installed_at` on registry entries written before
+ *  that field existed (old JSON on disk).
+ *
+ *  #1453 — deliberately not "last observed working": activation builds a
+ *  client, it does not talk to the target system. Readiness answers "are the
+ *  fields filled and did it come up"; whether the credentials are ACCEPTED is
+ *  the connection probe's question, and its answer arrives through
+ *  `ctx.status` (see `connectionProbe.ts`), not through this value. */
 function verifiedAt(entry: InstalledAgent): string | null {
   return entry.last_activated_at ?? entry.installed_at ?? null;
 }
@@ -106,9 +120,12 @@ function verifiedAt(entry: InstalledAgent): string | null {
  *   1. not in the installed registry              → 'not_installed'
  *   2. registry entry status === 'errored'        → 'errored' (+ error detail)
  *   3. a required, checkable setup field is empty → 'config_required'
- *   4. the plugin's assigned LLM provider has no
+ *   4. the plugin's pushed status is `error` —
+ *      a probe `rejected` verdict or the plugin's
+ *      own error report                           → 'connection_failed' (#1453)
+ *   5. the plugin's assigned LLM provider has no
  *      VERIFIED credential                        → 'awaiting_llm'
- *   5. otherwise                                  → 'ready'
+ *   6. otherwise                                  → 'ready'
  *
  * Never rejects: a vault failure degrades to 'ready'.
  */
@@ -117,6 +134,7 @@ export async function computeReadiness(
   registry: InstalledRegistry,
   vault?: ReadinessVault,
   llmProbe?: ReadinessLlmProbe,
+  statusProbe?: ReadinessStatusProbe,
 ): Promise<PluginReadiness> {
   const entry = registry.get(plugin.id);
   if (!entry) {
@@ -163,6 +181,23 @@ export async function computeReadiness(
     return { state: 'config_required', missing_fields: missing, verified_at: null };
   }
 
+  // #1453 — the plugin's own probe said the target system refused its
+  // credentials. Checked AFTER the field check (an empty form is the more
+  // actionable problem) and BEFORE the LLM probe (this one is fixed on the
+  // plugin's own page, the LLM one is not).
+  //
+  // Only `error` counts. `needs_action` is the spec-004 "finish connecting me"
+  // signal and has its own amber pill; reading it as a refused credential
+  // would state something the kernel does not know.
+  try {
+    if (statusProbe?.get(plugin.id)?.state === 'error') {
+      return { state: 'connection_failed', missing_fields: [], verified_at: null };
+    }
+  } catch {
+    // Same rule as the vault and the LLM probe: an infrastructure-side failure
+    // must never invent a problem with the operator's plugin.
+  }
+
   if (!llmProbe) {
     return { state: 'ready', missing_fields: [], verified_at: verifiedAt(entry) };
   }
@@ -188,9 +223,16 @@ export async function withReadiness(
   registry: InstalledRegistry,
   vault?: ReadinessVault,
   llmProbe?: ReadinessLlmProbe,
+  statusProbe?: ReadinessStatusProbe,
 ): Promise<Plugin> {
   try {
-    const readiness = await computeReadiness(plugin, registry, vault, llmProbe);
+    const readiness = await computeReadiness(
+      plugin,
+      registry,
+      vault,
+      llmProbe,
+      statusProbe,
+    );
     return { ...plugin, readiness };
   } catch {
     return plugin;

@@ -132,6 +132,9 @@ export function PluginCard({
           state={hasUpdate ? 'installed' : plugin.install_state}
           isLegacy={isLegacy}
           readiness={plugin.readiness}
+          // #1453 — the badge yields to the plugin's own verdict instead of
+          // asserting health beside the warning pill below.
+          actionStatus={plugin.action_status}
         />
         {/* Spec 004 — operator-action signal pushed by the active plugin via
             ctx.status. Persists across visits and clears once the plugin

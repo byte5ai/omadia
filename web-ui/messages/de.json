@@ -1368,6 +1368,14 @@
       "ledger_already_owned": {
         "what": "Ein anderes Plugin besitzt bereits die Tabelle, die dieses Plugin migrieren möchte.",
         "next": "Eine Tabelle gehört genau einem Plugin. Deinstallieren Sie das Plugin, das sie hält, oder bitten Sie den Autor dieses Plugins um einen anderen Tabellennamen."
+      },
+      "not_active": {
+        "what": "Dieses Plugin läuft nicht, also gibt es nichts, was gegen sein Zielsystem geprüft werden könnte.",
+        "next": "Bring das Plugin erst zum Laufen — der Aktivierungsfehler auf seiner Seite sagt, warum es nicht startete."
+      },
+      "verify_failed": {
+        "what": "Die Verbindungsprüfung konnte nicht durchgeführt werden.",
+        "next": "Versuch es erneut. Wenn es sich wiederholt, nennt das Detail unten, was im Server schiefging."
       }
     },
     "settings": {
@@ -4194,8 +4202,9 @@
       "configRequired": "Konfiguration erforderlich",
       "awaitingLlm": "Konfiguriert – wartet auf LLM-Zugang",
       "errored": "Aktivierung fehlgeschlagen",
-      "readyVerified": "Aktiv · konfiguriert {time}",
-      "missingFields": "Fehlt: {fields}"
+      "activeSince": "Aktiv · seit {time}",
+      "missingFields": "Fehlt: {fields}",
+      "connectionFailed": "Verbindung fehlgeschlagen"
     },
     "workaroundBadge": {
       "active": "Workaround aktiv",
@@ -4437,6 +4446,14 @@
         "errored": "Läuft nicht. Das Plugin konnte nach der letzten Änderung nicht starten.",
         "inactive": "Nicht aktiv."
       }
+    },
+    "connectionCheck": {
+      "check": "Verbindung testen",
+      "checking": "Prüfe…",
+      "connected": "Verbindung funktioniert",
+      "rejected": "Das Zielsystem hat die Zugangsdaten abgelehnt",
+      "inconclusive": "Die Verbindung konnte nicht geprüft werden",
+      "noProbe": "Dieses Plugin unterstützt keine Verbindungsprüfung"
     }
   },
   "adminAuth": {

@@ -8,6 +8,30 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.35.0 — 2026-10-27
+
+Additive. A plugin can declare its own credential check, so an integration
+holding a wrong, revoked or expired key stops reading as healthy (#1453).
+
+### Added
+
+- **`VerifyConnection`** — the shape of the optional `verifyConnection(ctx)`
+  export the kernel calls after every successful activation (bounded, never
+  awaited on the boot path, never able to fail an activation) and on the
+  operator's re-check.
+- **`PluginConnectionVerdict`** — what that export answers: `status`
+  (`connected` / `rejected` / `inconclusive`), an optional `cause`, and the
+  plugin's own localized `title` / `detail` (core ships no operator copy).
+- **`ConnectionRejectionCause`** — `http_401`, `http_403_auth`,
+  `protocol_auth_failure`. A `rejected` verdict without one of these is
+  demoted to `inconclusive` by the kernel: `rejected` turns a plugin red and
+  withholds its tools, so core refuses to take an unnamed one on trust.
+- **`classifyHttpAuthFailure(status, bodyText?)`** — core's HTTP rules (401
+  yes, a bare 403 no), so no plugin re-derives them.
+
+Nothing existing was touched; a plugin without `verifyConnection` keeps the
+shape it had. `1.34.0` was not released.
+
 ## 1.33.0 — 2026-10-16
 
 Additive. A Privacy Shield v4 table render keeps its canvas snapshot off the

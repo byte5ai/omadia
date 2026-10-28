@@ -134,7 +134,68 @@ Tool-Bridge versteht:
     Tool-Use-UX. Bei den unterstützten Typen bleiben.
 
 ### 9. Lifecycle-Budgets
-- `activate(ctx)`: **10s**. Self-Test = ein GET, kein Vollcrawl, kein Bulk-Sync.
+- `activate(ctx)`: **10s**. Kein Vollcrawl, kein Bulk-Sync. Der Credential-Check
+  gehört **nicht** hierher, sondern in `verifyConnection` (siehe unten) — eine
+  Aktivierung darf an einer Störung des Zielsystems nicht scheitern.
+- `verifyConnection(ctx)` (optional, #1453): **5s**. Ein billiger
+  authentifizierter Request, der beantwortet, ob die Credentials akzeptiert
+  werden. Läuft **nach** `activate()`, bei jeder Aktivierung (Install, Boot,
+  Reaktivierung nach Secret-Edit) und über
+  `POST /api/v1/admin/runtime/installed/:id/verify`. Rückgabe:
+
+  ```ts
+  import {
+    classifyHttpAuthFailure,
+    type PluginConnectionVerdict,
+    type PluginContext,
+  } from '@omadia/plugin-api';
+
+  export async function verifyConnection(
+    ctx: PluginContext,
+  ): Promise<PluginConnectionVerdict> {
+    try {
+      // ctx.http, nicht globales fetch: Allowlist, SSRF-Guard, Rate-Limit.
+      // Der Probe-Host muss in permissions.network.outbound stehen.
+      if (!ctx.http) return { status: 'inconclusive' };
+      const res = await ctx.http.fetch(whoamiUrl, { headers });  // ein GET, kein Sync
+      // HTTP-Fall: Core hält die Regeln, nicht jedes Plugin neu.
+      const cause = classifyHttpAuthFailure(res.status, await res.text());
+      if (cause) {
+        return { status: 'rejected', cause, title: 'Nicht verbunden',
+                 detail: 'Zielsystem hat den API-Key abgelehnt' };
+      }
+      if (!res.ok) return { status: 'inconclusive' };   // 5xx, 429, 404 …
+      return { status: 'connected', title: 'Verbunden' };
+    } catch {
+      // Timeout, DNS, Air-Gap → der Operator behält seinen Status.
+      return { status: 'inconclusive' };
+    }
+  }
+  ```
+
+  **`rejected` braucht ein `cause`.** Der Kernel kann den Austausch nicht
+  selbst sehen (Odoo lehnt mit `authenticate → false` über HTTP 200 ab), also
+  verlangt er, dass das Plugin die konkrete Ablehnung benennt:
+  `http_401`, `http_403_auth` (nur ein 403, dessen Body selbst von
+  Authentifizierung spricht) oder `protocol_auth_failure` (Ablehnung außerhalb
+  des HTTP-Status, z. B. Odoos `false`). Ein `rejected` **ohne** erkanntes
+  `cause` wird zu `inconclusive` degradiert — ein blankes
+  `catch { return { status: 'rejected' } }` kann also keine Störung als toten
+  Key anmalen. Für den HTTP-Fall nimm `classifyHttpAuthFailure` statt eigener
+  Statuslogik.
+
+  Warum so streng: `rejected` färbt das Plugin rot **und** nimmt seine Tools
+  aus dem Orchestrator — eine als `rejected` fehlgedeutete Störung entzieht dem
+  Modell stillschweigend Werkzeuge. `title`/`detail` sind die lokalisierten
+  Strings des Plugins; der Kernel liefert keine eigene Copy.
+
+  Verdicts werden pro Credential-Fingerprint **5 Minuten gecacht** (nur
+  entschiedene, nie `inconclusive`). Der Fingerprint deckt Secrets **und**
+  Nicht-Secret-Setup-Felder ab, also probt jede Reaktivierung nach einer
+  Credential- oder Config-Änderung neu; der Operator-Button probt mit
+  `force`. Wer zur Laufzeit einen 401 sieht (Key upstream widerrufen), meldet
+  ihn zusätzlich selbst per `ctx.status.report({ state: 'error', … })` — die
+  Probe läuft nur bei Aktivierung und auf Anforderung.
 - `close()`: **5s**. Timer, Sockets, Watches, Intervals **wirklich** freigeben —
   wird beim Uninstall aufgerufen; hängende Handles blockieren Hot-Uninstall.
 

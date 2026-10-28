@@ -5406,6 +5406,18 @@ async function main(): Promise<void> {
       catalog: pluginCatalog,
       reactivate: reactivateAgent,
       dynamicAgentRuntime,
+      // #1453 — the operator-facing half of the credential check: `GET
+      // /installed` reports what a plugin pushed through `ctx.status`, and
+      // `POST /installed/:id/verify` re-runs that plugin's own probe.
+      pluginStatusRegistry,
+      verifyConnection: async (agentId: string) =>
+        // A plugin lives in exactly one of the two runtimes. Ask the tool
+        // runtime first (every `kind: integration` package is there) and fall
+        // through to the agent runtime; `undefined` from both means "this
+        // plugin declares no connection check", which the route reports as
+        // such rather than as health.
+        (await toolPluginRuntime.verifyConnectionNow(agentId)) ??
+        (await dynamicAgentRuntime.verifyConnectionNow(agentId)),
       // Epic #470 C4 / H1 — operator consent for unauthenticated plugin path
       // prefixes. Behind requireAuth like every other runtime endpoint.
       publicPathGrantStore,

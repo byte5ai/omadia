@@ -35,6 +35,12 @@ import {
 
 import { parseAgentMd } from './agentMdFrontmatter.js';
 import { bridgedToolError, type BridgeStage } from './bridgedToolError.js';
+import {
+  PluginProbeTracker,
+  credentialFingerprint,
+  type BoundProbe,
+  type ConnectionProbeOutcome,
+} from './connectionProbe.js';
 import { selectSubAgentHost } from './subAgentHostModel.js';
 import type { BuiltInPackageStore } from './builtInPackageStore.js';
 import type { InstalledRegistry } from './installedRegistry.js';
@@ -104,8 +110,11 @@ interface UploadedAgentHandle {
 
 interface UploadedModuleShape {
   activate?: (ctx: unknown) => Promise<UploadedAgentHandle>;
+  /** Issue #1453 — optional credential check. See `connectionProbe.ts`. */
+  verifyConnection?: (ctx: unknown) => unknown;
   default?: {
     activate?: (ctx: unknown) => Promise<UploadedAgentHandle>;
+    verifyConnection?: (ctx: unknown) => unknown;
   };
 }
 
@@ -126,6 +135,10 @@ interface ActiveAgent {
    *  entry. Called on deactivate so a hot-upgrade doesn't leave a stale
    *  DomainTool reachable via `ctx.subAgent.ask`. */
   disposeSubAgentService: () => void;
+  /** Issue #1453 — bound connection probe, kept so the operator-triggered
+   *  re-check can run it against the SAME context the agent activated with.
+   *  Absent for a package that exports no `verifyConnection`. */
+  probe?: BoundProbe;
 }
 
 export interface DynamicAgentRuntimeDeps {
@@ -224,7 +237,28 @@ export class DynamicAgentRuntime {
   private readonly active = new Map<string, ActiveAgent>();
   private orchestrator: Orchestrator | null = null;
 
-  constructor(private readonly deps: DynamicAgentRuntimeDeps) {}
+  /** Issue #1453 — binds and backgrounds each agent's credential check. Same
+   *  tracker the tool runtime holds; see `connectionProbe.ts`. */
+  private readonly probes: PluginProbeTracker;
+
+  constructor(private readonly deps: DynamicAgentRuntimeDeps) {
+    // #1453 — built in the body, not as a field initializer: field
+    // initializers run before the parameter property `deps` is assigned.
+    this.probes = new PluginProbeTracker({
+      isActive: (id) => this.active.has(id),
+      log: (msg) => {
+        this.log(msg);
+      },
+    });
+  }
+
+  /** The runtime's own logger, resolved per call so a dep set later still
+   *  wins over the console fallback. */
+  private log(msg: string): void {
+    (this.deps.log ?? ((m: string) => {
+      console.log(m);
+    }))(msg);
+  }
 
   /** Must be set exactly once after orchestrator construction.
    *  Hot-register only takes effect after this.
@@ -539,6 +573,26 @@ export class DynamicAgentRuntime {
       domainTool,
     );
 
+    // Issue #1453 — bind the package's own credential check, if it exports one.
+    // The fingerprint keys the verdict cache: a provider write reactivates
+    // every dependent plugin, and re-probing each target system for
+    // credentials that did not change is exactly the waste the cache exists
+    // to avoid. It spans the secrets AND the non-secret config, because a
+    // `PATCH /installed/:id/config` reactivates too — a repaired `url` must
+    // not be served the rejection the wrong one earned.
+    // Unavailable vault ⇒ no fingerprint ⇒ no caching.
+    const fingerprint = await credentialFingerprint(
+      this.deps.vault,
+      agentId,
+      this.deps.registry.get(agentId)?.config,
+    );
+    const probe = this.probes.bind(
+      agentId,
+      mod,
+      ctx,
+      fingerprint !== undefined ? { credentialFingerprint: fingerprint } : {},
+    );
+
     this.active.set(agentId, {
       agentId,
       handle,
@@ -546,6 +600,7 @@ export class DynamicAgentRuntime {
       rawTools: handle.toolkit.tools,
       subAgentTools,
       disposeSubAgentService,
+      ...(probe ? { probe } : {}),
     });
     this.orchestrator?.registerDomainTool(domainTool);
 
@@ -597,7 +652,27 @@ export class DynamicAgentRuntime {
     log(
       `[dynamic-runtime] ACTIVATED ${agentId} as ${toolName} (tools=${subAgentTools.length}, entry=${entryRel})`,
     );
+
+    // Issue #1453 — credential check after the agent is up, never awaited.
+    if (probe) this.probes.start(agentId, probe);
     return domainTool;
+  }
+
+  /** Issue #1453 — settle every connection probe this runtime has started.
+   *  For tests; nothing on the boot path waits for probes. */
+  async whenConnectionProbesSettled(): Promise<void> {
+    await this.probes.settled();
+  }
+
+  /** Issue #1453 — re-run one active agent's credential check in place.
+   *  `undefined` means "no answer": not active here, or no probe declared. */
+  async verifyConnectionNow(
+    agentId: string,
+  ): Promise<ConnectionProbeOutcome | undefined> {
+    const probe = this.active.get(agentId)?.probe;
+    if (!probe) return undefined;
+    // `force`: a "check now" that answers from a cache is not a check.
+    return this.probes.run(agentId, probe, { force: true });
   }
 
   async deactivate(agentId: string): Promise<boolean> {
