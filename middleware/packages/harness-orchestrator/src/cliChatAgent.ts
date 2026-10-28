@@ -1178,6 +1178,13 @@ export class CliChatAgent implements ChatAgent {
       lines.push(neutralizeRoleMarkers(recalled));
     }
 
+    // The canvas protocol directive moved out of userMessage into
+    // fixedSystemHint; without this line a canvas turn on the CLI backend
+    // would lose its instructions.
+    if (typeof input.fixedSystemHint === 'string' && input.fixedSystemHint.trim().length > 0) {
+      lines.push(`System Hint: ${neutralizeRoleMarkers(input.fixedSystemHint)}`);
+    }
+
     if (typeof input.extraSystemHint === 'string' && input.extraSystemHint.trim().length > 0) {
       lines.push(`System Hint: ${neutralizeRoleMarkers(input.extraSystemHint)}`);
     }

@@ -20,12 +20,18 @@ import { today, turnContext } from '@omadia/orchestrator';
 import { composeSkeleton, type CompositionLlm, type DataRequirement } from './composition.js';
 import { mintDataRef } from './dataRef.js';
 import {
-  applyRefreshSource,
+  fetchRecipeRows,
+  parseFastPathTools,
+  plannableTools,
+  renderSummary,
+} from './fastPath.js';
+import {
   createRecipeStore,
   parseRefreshSource,
+  type RefreshSource,
 } from './refreshRecipes.js';
 import { synthesizeSurfaceEvents } from './surfaceSynthesis.js';
-import { skeletonOnRelease } from './verdictHold.js';
+import { replaceSkeletonOnWithheld } from './verdictHold.js';
 import { resolveReferenceLumen } from './referenceLumens.js';
 import { validateLumenNode } from './treeValidator.js';
 import { buildDatasetLumen } from './datasetLumen.js';
@@ -83,6 +89,42 @@ const OPS_CATALOG_VERSION = '1.0';
 // bigger class via the `ui_orchestrator_model` config only if the tree-validity
 // gate (<95% first-attempt schema-valid) demands it.
 const DEFAULT_COMPOSITION_MODEL = 'class:fast';
+
+/**
+ * The canvas protocol directive for a skeleton-path turn. Sent as
+ * `ChatTurnInput.fixedSystemHint` — appended UNMASKED to the system prompt —
+ * instead of riding in `userMessage`, where its ~2 KB inflated the plan gate,
+ * the C1 PII detector, recall and the session log on every canvas turn. MUST
+ * stay a compile-time constant (the field's contract): no user text, no model
+ * output, no tool data. Everything derived from the request (the skeleton's
+ * dataRequirements) stays in the user message's compact [canvas-context].
+ */
+export const CANVAS_TURN_DIRECTIVE =
+  'CANVAS TURN — the user message ends with a [canvas-context] block: a canvas skeleton with ' +
+  'those data requirements is already rendered. Work silently: do NOT narrate planning, ' +
+  'lookups, memory checks, or tool calls — the canvas is the output channel. Fetch the data, ' +
+  'then call the canvas_publish_rows tool for each containerId with rows keyed EXACTLY by the ' +
+  'promised fieldKeys. A dataRequirement that describes a SCALAR/KPI block (named single ' +
+  'values, e.g. a score block — its fields are individual metrics, not table columns) is ' +
+  'filled by passing `fields` ({ fieldKey: value }) INSTEAD of rows. PRIVACY-SHIELD RULE: when ' +
+  'a tool returned a datasetId and you only see masked values, pass that `datasetId` to ' +
+  'canvas_publish_rows directly INSTEAD of rows — the server resolves the real rows and maps ' +
+  'the dataset’s own columns; no reshaping step first, never retype masked data. BATCH RULE: ' +
+  'at most 30 rows per call — for larger sets publish batch after batch to the same ' +
+  'containerId (calls append), one call at a time, until every row is out; NEVER pack the ' +
+  'whole set into one giant call (it gets truncated and dropped). Publish rows: [] when the ' +
+  'data set is genuinely empty (never invent rows). On the FIRST publish per container also ' +
+  'pass `source` (the exact tool + input you used + fieldKey→attribute map) so the canvas can ' +
+  'refresh without you — use the source’s RELATIVE date operators for relative periods ' +
+  '(FetchXML next-week, this-year, …), literal values only for ranges the user named ' +
+  'explicitly; omit source if not expressible time-safely. All published values are PLAIN ' +
+  'TEXT — never markdown (**bold**, `code`, # headings); labels belong in columns, not inline ' +
+  'markers. Pass 1–3 `actions` (row context-menu entries) that fit the CURRENT view, in the ' +
+  'user’s language — never one that re-opens the current view. If the request is AMBIGUOUS ' +
+  '(several plausible records match), call canvas_publish_choice with one option per ' +
+  'alternative instead of asking back in prose. The published data renders into the visible ' +
+  'canvas — after publishing, reply with ONE short summary sentence only and do NOT repeat ' +
+  'the data as text or markdown tables.';
 
 export interface UiOrchestratorPluginHandle {
   close(): Promise<void>;
@@ -185,7 +227,7 @@ export async function handleCanvasPublishRows(
   if (datasetId !== undefined && (hasRows || hasFields)) {
     return (
       'Error: canvas_publish_rows takes EITHER datasetId OR rows/fields — not both. ' +
-      'For shielded data pass ONLY the datasetId (shape it first with v4_select/v4_sort if needed).'
+      'For shielded data pass ONLY the datasetId — the server maps its columns onto the canvas.'
     );
   }
   let rows = hasRows
@@ -529,9 +571,9 @@ export async function activate(
         'oversized call risks being truncated and dropped). (2) SCALAR/KPI containers (named ' +
         'single values, e.g. a score block) → pass `fields` as a { fieldKey: value } object ' +
         'instead of rows. (3) PRIVACY-SHIELD datasets (a tool returned a datasetId and you only ' +
-        'see masked values) → pass `datasetId` INSTEAD of rows; the server resolves the real ' +
-        'rows into the canvas (shape them first with v4_select/v4_sort — the column paths ' +
-        'become the fieldKeys). NEVER retype masked rows and never wrap the id into `rows`. ' +
+        'see masked values) → pass that `datasetId` directly INSTEAD of rows; the server ' +
+        'resolves the real rows and maps the dataset’s own columns into the canvas — no ' +
+        'reshaping step needed. NEVER retype masked rows and never wrap the id into `rows`. ' +
         'The data renders directly into the already-visible canvas — do not repeat it as text ' +
         'afterwards. If the tool returns an Error result, do NOT claim success — say briefly ' +
         'what failed.',
@@ -567,8 +609,8 @@ export async function activate(
             description:
               'PRIVACY-SHIELD datasets ONLY: the dataset id (ds_…) a tool returned THIS turn. ' +
               'Use INSTEAD of rows/fields — the server resolves the real (unmasked) rows into ' +
-              'the canvas; you never see them. Shape the dataset first with v4_select/v4_sort ' +
-              'so its column paths match the promised fieldKeys.',
+              'the canvas; you never see them. Publish it directly — its own column paths are ' +
+              'mapped onto the table, no v4_select/v4_sort shaping first.',
           },
           prose: {
             type: 'string',
@@ -775,6 +817,19 @@ export async function activate(
     complete: () => Promise.reject(new Error('llm unavailable')),
   };
 
+  // Deterministic fast path allow-list (`fast_path_tools`; unset → odoo_query,
+  // empty → off). Only tools with a known composer spec can be planned.
+  const fastPathAllowed: ReadonlySet<string> = new Set(
+    parseFastPathTools(ctx.config?.get<string>('fast_path_tools')),
+  );
+  const fastPathTools = plannableTools([...fastPathAllowed]);
+  const unplannable = [...fastPathAllowed].filter((t) => !fastPathTools.some((p) => p.name === t));
+  ctx.log(
+    `[omadia-ui-orchestrator] fast path ${
+      fastPathTools.length > 0 ? `tools: ${fastPathTools.map((t) => t.name).join(',')}` : 'disabled'
+    }${unplannable.length > 0 ? ` (no composer spec, ignored: ${unplannable.join(',')})` : ''}`,
+  );
+
   const resolveBase = (): ChatAgent | undefined =>
     ctx.services.get<ChatAgentBundle>(CHAT_AGENT_SERVICE)?.agent;
 
@@ -820,6 +875,123 @@ export async function activate(
     // announce refreshability to the client (surface_data_ref_created)
     return mintDataRef(canvasSessionId, containerId);
   };
+
+  /** Synthetic `canvas_publish_rows` calls for deterministically fetched
+   *  rows — the LLM-free publish shared by canvas_refresh and the fast path.
+   *  A `source` rides along so synthesis captures it as the refresh recipe. */
+  async function* publishRowsEvents(
+    jobs: ReadonlyArray<{
+      containerId: string;
+      rows: Array<Record<string, unknown>>;
+      source?: RefreshSource;
+    }>,
+  ): AsyncGenerator<ChatStreamEvent> {
+    for (const job of jobs) {
+      const id = randomUUID();
+      yield { type: 'tool_use', id, name: CANVAS_PUBLISH_TOOL, input: { containerId: job.containerId } };
+      const output = await handleCanvasPublishRows({
+        containerId: job.containerId,
+        rows: job.rows,
+        ...(job.source ? { source: job.source } : {}),
+      });
+      yield { type: 'tool_result', id, output, durationMs: 0 };
+    }
+  }
+
+  type FastPathOutcome =
+    | {
+        hit: true;
+        events: ChatStreamEvent[];
+        summary: string;
+        tool: string;
+        rows: number;
+        toolCalls: number;
+      }
+    | { hit: false; reason: string };
+
+  /** The deterministic fast path (see fastPath.ts). Runs only when EVERY
+   *  data requirement carries a valid `fetch` for an allow-listed tool; any
+   *  miss returns its reason and has emitted NOTHING — the surface events
+   *  are buffered until every container is patched, and the recipes commit
+   *  only then — so the agent fallback starts from the bare skeleton. The
+   *  tool rows never reach a model: they go tool → mapper → canvas patch. */
+  async function runFastPath(
+    input: ChatTurnInput,
+    canvasSessionId: string,
+    skeleton: Awaited<ReturnType<typeof composeSkeleton>>,
+    privacyForced: boolean,
+    startSurfaceSeq: number,
+  ): Promise<FastPathOutcome> {
+    const miss = (reason: string): FastPathOutcome => ({ hit: false, reason });
+    if (fastPathTools.length === 0) return miss('disabled');
+    if (privacyForced) return miss('privacy-forced');
+    // a structured action / row-bound turn acts on something — the agent decides
+    if (input.action !== undefined || input.target !== undefined) return miss('action-turn');
+    const plans: Array<{ containerId: string; fetch: RefreshSource }> = [];
+    for (const req of skeleton.dataRequirements) {
+      if (req.fetch === undefined) return miss('no-plan');
+      plans.push({ containerId: req.containerId, fetch: req.fetch });
+    }
+    if (skeleton.source !== 'model' || plans.length === 0) return miss('no-plan');
+    if (plans.some((p) => !fastPathAllowed.has(p.fetch.tool))) return miss('tool-not-allowed');
+    if (skeleton.summary === undefined) return miss('no-summary');
+    // ToolsAccessor exposes neither specs nor an availability probe: a tool
+    // that is not registered (e.g. odoo_query with generic reads disabled)
+    // surfaces as invoke's "unknown or handler-less" → miss tool-unavailable.
+    const invoke = toolsAccessor?.invoke?.bind(toolsAccessor);
+    if (!invoke) return miss('no-invoker');
+
+    const jobs: Array<{ containerId: string; rows: Array<Record<string, unknown>>; source: RefreshSource }> = [];
+    for (const plan of plans) {
+      const fetched = await fetchRecipeRows(invoke, plan.fetch, { rejectTruncated: true });
+      if (!fetched.ok) {
+        if (fetched.detail !== undefined) {
+          ctx.log(`[ui-orchestrator] fast-path ${plan.fetch.tool} ${fetched.reason}: ${fetched.detail}`);
+        }
+        return miss(fetched.reason);
+      }
+      jobs.push({ containerId: plan.containerId, rows: fetched.rows, source: plan.fetch });
+    }
+
+    const recipes: Array<{ containerId: string; source: RefreshSource }> = [];
+    const events: ChatStreamEvent[] = [];
+    for await (const ev of synthesizeSurfaceEvents(publishRowsEvents(jobs), {
+      canvasSessionId,
+      authorizedToolNames: canvasOutputTools,
+      protocolVersion: CANVAS_PROTOCOL_VERSION,
+      opsCatalogVersion: OPS_CATALOG_VERSION,
+      startSurfaceSeq,
+      baseRevision: '0' as RevisionId,
+      baseTree: skeleton.tree,
+      dataRequirements: skeleton.dataRequirements,
+      onPublishedSource: (containerId, raw) => {
+        const source = parseRefreshSource(raw);
+        if (!source) return undefined;
+        recipes.push({ containerId, source });
+        return mintDataRef(canvasSessionId, containerId);
+      },
+      log: (message) => ctx.log(message),
+    })) {
+      // only the surface events go out — the synthetic tool events carry rows
+      if (ev.type.startsWith('surface_')) events.push(ev);
+    }
+    if (events.filter((e) => e.type === 'surface_patch').length < jobs.length) {
+      return miss('unpublishable');
+    }
+    for (const r of recipes) {
+      refreshRecipes.set(canvasSessionId, r.containerId, r.source);
+      ctx.log(`[canvas-refresh] recipe captured: ${r.containerId} via ${r.source.tool} (fast path)`);
+    }
+    return {
+      hit: true,
+      events,
+      summary: skeleton.summary,
+      tool: [...new Set(plans.map((p) => p.fetch.tool))].join(','),
+      // `{count}` = rows of the FIRST requirement (the composer prompt's contract)
+      rows: jobs[0]?.rows.length ?? 0,
+      toolCalls: jobs.length,
+    };
+  }
 
   async function* canvasTurnStream(
     input: ChatTurnInput,
@@ -1056,12 +1228,17 @@ export async function activate(
     //    throws: schema failure → bounded repair retry → deterministic fallback.
     //    An action-only turn (choice pick, button click) has no text — the
     //    structured action then IS the request the skeleton is composed for.
-    //    On a base that holds content until the verdict (answer verifier in
-    //    `enforce`), the skeleton — model output as well — waits for it and
-    //    goes out with a released turn only (verdictHold.ts).
+    //    It goes out immediately on every base — also one that holds content
+    //    until the verdict (verdictHold.ts says why that is safe).
     //    #1535 — composed by a model outside the turn's privacy handle. With
     //    the org policy on and no Privacy Shield running, the base turn
     //    refuses, so the raw text must not reach this model either.
+    const turnStartedAt = Date.now();
+    const privacyForced =
+      process.env[PRIVACY_FORCE_GUARDED_ENV_VAR] === 'true' &&
+      (ctx.services as PluginContext['services'] | undefined)?.get<PrivacyGuardService>(
+        PRIVACY_REDACT_SERVICE_NAME,
+      ) === undefined;
     const skeleton = await composeSkeleton({
       llm,
       model,
@@ -1070,11 +1247,8 @@ export async function activate(
           ? input.userMessage
           : `UI action: ${JSON.stringify(input.action ?? {})}`,
       log: (message) => ctx.log(message),
-      skipModel:
-        process.env[PRIVACY_FORCE_GUARDED_ENV_VAR] === 'true' &&
-        (ctx.services as PluginContext['services'] | undefined)?.get<PrivacyGuardService>(
-          PRIVACY_REDACT_SERVICE_NAME,
-        ) === undefined,
+      skipModel: privacyForced,
+      fastPathTools,
     });
     let surfaceSeq = 0;
     const initialRevision = '0' as RevisionId;
@@ -1087,11 +1261,35 @@ export async function activate(
       protocolVersion: CANVAS_PROTOCOL_VERSION,
       opsCatalogVersion: OPS_CATALOG_VERSION,
     };
-    const holdSkeleton = base.holdsContentUntilVerdict === true;
-    if (!holdSkeleton) yield skeletonSnapshot;
+    yield skeletonSnapshot;
 
-    // 2. Requirement handoff — the main turn carries what the skeleton
+    // 2. Deterministic fast path — the composer planned the ONE query per
+    //    container: run it here, LLM-free, and finish the turn. Any miss →
+    //    the agent path below, exactly as before.
+    const fast = await runFastPath(input, canvasSessionId, skeleton, privacyForced, surfaceSeq);
+    if (fast.hit) {
+      yield* fast.events;
+      const prose = renderSummary(fast.summary, fast.rows);
+      yield { type: 'text_delta', text: prose };
+      // Session history gap: SessionLogger / ChatSessionStore live inside the
+      // base orchestrator and are published to no plugin (not in this
+      // manifest's grantable services), so a fast-path turn is NOT recorded
+      // in the session log or the conversation the next turn continues — the
+      // same as the LLM-free refresh and deterministic-action paths.
+      yield { type: 'done', answer: prose, toolCalls: fast.toolCalls, iterations: 0 };
+      ctx.log(
+        `[ui-orchestrator] fast-path hit tool=${fast.tool} rows=${fast.rows} ` +
+          `ms=${Date.now() - turnStartedAt}`,
+      );
+      return;
+    }
+    ctx.log(`[ui-orchestrator] fast-path miss reason=${fast.reason}`);
+
+    // 3. Requirement handoff — the main turn carries what the skeleton
     //    promised, so Tier 3 returns payloads matching those exact fields.
+    //    Only the request-derived part rides in the (masked) user message;
+    //    the fixed protocol directive goes to the system prompt. The
+    //    composer's `fetch` plans are internal and stay out.
     const augmented: ChatTurnInput = {
       ...input,
       userMessage:
@@ -1101,46 +1299,12 @@ export async function activate(
         '\n\n[canvas-context]\n' +
         JSON.stringify({
           canvasSkeleton: { revision: initialRevision, source: skeleton.source },
-          dataRequirements: skeleton.dataRequirements,
-          instruction:
-            'A canvas skeleton with the above data requirements is already ' +
-            'rendered. Work silently: do NOT narrate planning, lookups, memory ' +
-            'checks, or tool calls — the canvas is the output channel. Fetch ' +
-            'the data, then call the canvas_publish_rows tool for each ' +
-            'containerId with rows keyed EXACTLY by the promised fieldKeys. ' +
-            'A dataRequirement that describes a SCALAR/KPI block (named single ' +
-            'values, e.g. a score block — its fields are individual metrics, ' +
-            'not table columns) is filled by passing `fields` ({ fieldKey: ' +
-            'value }) INSTEAD of rows. ' +
-            'PRIVACY-SHIELD RULE: when a tool returned a datasetId and you ' +
-            'only see masked values, pass that `datasetId` to ' +
-            'canvas_publish_rows INSTEAD of rows (shape it first with ' +
-            'v4_select/v4_sort so the column paths match the fieldKeys) — ' +
-            'the server resolves the real rows; never retype masked data. ' +
-            'BATCH RULE: at most 30 rows per call — for larger sets publish ' +
-            'batch after batch to the same containerId (calls append), one ' +
-            'call at a time, until every row is out; NEVER pack the whole set ' +
-            'into one giant call (it gets truncated and dropped). Publish ' +
-            'rows: [] when the data set is genuinely empty (never invent ' +
-            'rows). On the FIRST publish per container also pass `source` ' +
-            '(the exact tool + input you used + fieldKey→attribute map) so ' +
-            'the canvas can refresh without you — use the source’s RELATIVE ' +
-            'date operators for relative periods (FetchXML next-week, ' +
-            'this-year, …), literal values only for ranges the user named ' +
-            'explicitly; omit source if not expressible time-safely. All published values are PLAIN TEXT — never ' +
-            'markdown (**bold**, `code`, # headings); labels belong in ' +
-            'columns, not inline markers. Pass 1–3 `actions` (row context-menu ' +
-            'entries) that fit the CURRENT view, in the user’s language — ' +
-            'never one that re-opens the current view. If the request is ' +
-            'AMBIGUOUS (several plausible records match), call ' +
-            'canvas_publish_choice with one option per alternative instead of ' +
-            'asking back in prose. The published data renders into the visible ' +
-            'canvas — after publishing, reply with ONE short summary sentence ' +
-            'only and do NOT repeat the data as text or markdown tables.',
+          dataRequirements: skeleton.dataRequirements.map(({ fetch: _fetch, ...req }) => req),
         }),
+      fixedSystemHint: CANVAS_TURN_DIRECTIVE,
     };
 
-    // 3. Delegate + canvas-aware synthesis continuing seq/revision after the
+    // 4. Delegate + canvas-aware synthesis continuing seq/revision after the
     //    skeleton.
     const turn = synthesizeSurfaceEvents(base.chatStream(augmented, observer), {
       canvasSessionId,
@@ -1155,7 +1319,17 @@ export async function activate(
       takeRawSentinel: tapCanvasSentinels((m) => ctx.log(m)),
       log: (message) => ctx.log(message),
     });
-    yield* holdSkeleton ? skeletonOnRelease(skeletonSnapshot, turn) : turn;
+    // A held (verifier-enforce) turn that ends withheld or failed replaces
+    // the already-visible skeleton, so no loading placeholder is orphaned.
+    yield* base.holdsContentUntilVerdict === true
+      ? replaceSkeletonOnWithheld(turn, {
+          canvasSessionId,
+          protocolVersion: CANVAS_PROTOCOL_VERSION,
+          opsCatalogVersion: OPS_CATALOG_VERSION,
+          lastSurfaceSeq: surfaceSeq - 1,
+          lastRevision: initialRevision,
+        })
+      : turn;
   }
 
   /** Deterministic refresh (protocol 1.1 `canvas_refresh`, omadia-ui#5, v1):
@@ -1200,50 +1374,26 @@ export async function activate(
           deterministic = false;
           break;
         }
-        try {
-          const t0 = Date.now();
-          const raw = await invoke(recipe.tool, recipe.input);
-          const rows = applyRefreshSource(raw, recipe);
-          if (rows === null) {
-            ctx.log(
-              `[canvas-refresh] recipe for ${req.containerId} unmappable — agent fallback`,
-            );
-            deterministic = false;
-            break;
-          }
+        const fetched = await fetchRecipeRows(invoke, recipe);
+        if (!fetched.ok) {
           ctx.log(
-            `[canvas-refresh] deterministic: ${req.containerId} via ${recipe.tool} → ` +
-              `${rows.length} rows in ${Date.now() - t0}ms (no LLM)`,
-          );
-          jobs.push({ containerId: req.containerId, rows });
-        } catch (err) {
-          ctx.log(
-            `[canvas-refresh] recipe ${recipe.tool} failed: ${
-              err instanceof Error ? err.message : String(err)
-            } — agent fallback`,
+            fetched.reason === 'unmappable' || fetched.reason === 'truncated'
+              ? `[canvas-refresh] recipe for ${req.containerId} ${fetched.reason} — agent fallback`
+              : `[canvas-refresh] recipe ${recipe.tool} failed (${fetched.reason}): ${
+                  fetched.detail ?? ''
+                } — agent fallback`,
           );
           deterministic = false;
           break;
         }
+        ctx.log(
+          `[canvas-refresh] deterministic: ${req.containerId} via ${recipe.tool} → ` +
+            `${fetched.rows.length} rows in ${fetched.ms}ms (no LLM)`,
+        );
+        jobs.push({ containerId: req.containerId, rows: fetched.rows });
       }
       if (deterministic) {
-        const publishEvents = async function* (): AsyncGenerator<ChatStreamEvent> {
-          for (const job of jobs) {
-            const id = randomUUID();
-            yield {
-              type: 'tool_use',
-              id,
-              name: CANVAS_PUBLISH_TOOL,
-              input: { containerId: job.containerId },
-            };
-            const output = await handleCanvasPublishRows({
-              containerId: job.containerId,
-              rows: job.rows,
-            });
-            yield { type: 'tool_result', id, output, durationMs: 0 };
-          }
-        };
-        yield* synthesizeSurfaceEvents(publishEvents(), {
+        yield* synthesizeSurfaceEvents(publishRowsEvents(jobs), {
           canvasSessionId,
           authorizedToolNames: canvasOutputTools,
           protocolVersion: CANVAS_PROTOCOL_VERSION,

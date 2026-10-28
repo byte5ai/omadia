@@ -91,9 +91,10 @@ export interface ChatAgent {
    * the stream carries liveness, progress and usage events only; a turn
    * whose content was withheld ends in a `done` marked `answerSource:
    * 'verifier-blocked'`. A wrapper that adds content of its own to such a
-   * stream (a canvas skeleton) holds it until the base's releasing `done` and
-   * drops it with a withheld or failed turn. Absent or `false`: the stream
-   * delivers content as it is produced.
+   * stream must not put model claims in it: the canvas orchestrator sends its
+   * skeleton (built from the user's request only, no figures) immediately and
+   * replaces it with a status tree when the turn ends withheld or failed.
+   * Absent or `false`: the stream delivers content as it is produced.
    */
   readonly holdsContentUntilVerdict?: boolean;
 }
@@ -522,6 +523,15 @@ export interface ChatTurnInput {
    * Tier 1 can correlate them to the right canvas. Never reaches the model prompt.
    */
   canvasSessionId?: string;
+  /**
+   * Fixed, per-turn system directive from a TRUSTED in-process wrapper (the
+   * canvas orchestrator's `[canvas-context]` protocol instructions). MUST be a
+   * compile-time constant: no user text, no model output, no tool data — it
+   * is appended to the system prompt UNMASKED and kept out of `userMessage`,
+   * so the plan gate, the C1 detector, recall and the session log only ever
+   * see what the user actually asked. Never set it from channel input.
+   */
+  fixedSystemHint?: string;
   /**
    * Structured UI action from an Omadia UI canvas client (button click,
    * choice pick, row action) — the typed field promised in protocol 1.0 §5.1

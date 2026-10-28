@@ -111,6 +111,21 @@ function collectIdentityValues(value: unknown, out: Set<string>): void {
   }
 }
 
+/**
+ * The canvas orchestrator's producer tools (`@omadia/ui-orchestrator`
+ * plugin.ts). Their results are still INTERNED — a `datasetId` publish
+ * resolves real rows — but they skip the Haiku schema classifier: its verdict
+ * only feeds the receipt's `identityValuesOnWire` count (never masking), and
+ * the rows they publish come from a source tool result whose values were
+ * classified when IT was interned. Without this, every canvas turn paid one
+ * Haiku round per publish for a count that cannot change.
+ */
+const CANVAS_PRODUCER_TOOLS: ReadonlySet<string> = new Set([
+  'canvas_publish_rows',
+  'canvas_publish_choice',
+  'canvas_publish_lumen',
+]);
+
 /** Per-turn counters drained into the user-facing `PrivacyReceipt`. */
 interface V4ReceiptAccum {
   datasetsInterned: number;
@@ -422,11 +437,24 @@ export function createPrivacyGuardService(deps?: {
     if (cached !== undefined) {
       return { detector: { id: c1.id, detect: async () => cached }, degraded: false };
     }
+    // The sidecar is an HTTP hop with a generous timeout — log its wall time
+    // on every outcome so a slow pass is visible in the turn log, not a
+    // silent gap.
+    const startedAt = Date.now();
+    const logC1 = (spans: number, failed: boolean): void => {
+      console.log(
+        `[privacy-guard v4] c1-detect ms=${String(Date.now() - startedAt)} ` +
+          `chars=${String(text.length)} spans=${String(spans)} ` +
+          `turn=${turnId}${failed ? ' failed' : ''}`,
+      );
+    };
     try {
       const c1Spans = await c1.detect(text);
+      logC1(c1Spans.length, false);
       c1CacheSet(turnId, text, c1Spans);
       return { detector: { id: c1.id, detect: async () => c1Spans }, degraded: false };
     } catch (err) {
+      logC1(0, true);
       c1FailedTurns.add(turnId);
       console.warn(
         `[privacy-guard v4] ${degradeLogTag} turn=${turnId} ` +
@@ -625,8 +653,9 @@ export function createPrivacyGuardService(deps?: {
       );
       // Slice 2 — schema-level PII classification. Schema only (field names
       // + types, never a value); cached per tool shape. Never throws; the
-      // verdict drives detection only, not masking.
-      if (piiClassifier !== undefined) {
+      // verdict drives detection only, not masking. Canvas producers are
+      // interned above but not classified (see CANVAS_PRODUCER_TOOLS).
+      if (piiClassifier !== undefined && !CANVAS_PRODUCER_TOOLS.has(request.toolName)) {
         const dataset = stores.get(request.turnId)?.get(result.datasetId);
         if (dataset !== undefined) {
           const piiPaths = await piiClassifier.classify(
