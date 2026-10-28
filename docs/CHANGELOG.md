@@ -36,6 +36,61 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Privacy Shield settings the UI hid or misreported, two masking bugs (#1510, #1508, #1507, #1503, #1467)
+
+2026-10-28. Five gaps between what the Privacy Shield does and what the
+product shows or renders.
+
+- **#1510 — per-tool list editable.** "Per-tool (whitelist)" pointed the
+  operator to `_privacy_bypass_scopes`, a kernel-synthetic key no page
+  showed. The store's privacy picker (now `PrivacyModePicker.tsx`) edits the
+  list next to the mode. `PATCH /api/v1/admin/runtime/installed/:id/config`
+  now validates both privacy keys (`checkPrivacyConfigValue`,
+  `middleware/src/plugins/privacyPosture.ts`): a PATCH stores
+  `_privacy_bypass_scopes` as the `string[]` that `parseScopes` (the dispatch
+  hook's own parser) produces, and an unknown `_privacy_mode` is refused with
+  `400 runtime.invalid_config` instead of being stored and silently read as
+  `guarded`. A change to either key is written to the admin audit trail as
+  `plugin.privacy_change` (before/after hold only those two keys).
+- **#1508 — org lock visible.** New authenticated
+  `GET /api/v1/admin/runtime/privacy-posture` →
+  `{ shield_active, force_guarded, provider_ids }`. With
+  `OMADIA_PRIVACY_FORCE_GUARDED=true` the picker shows "Locked by org
+  policy", is disabled, drops the "raw results reach the LLM" help text, and
+  names a stored bypass as ineffective. `force_guarded` uses the same
+  comparison as `resolveEffectivePrivacyMode`.
+- **#1507 — shield-off state visible (partly).** `shield_active` is false
+  while no `privacy.redact@1` provider is published. The dashboard and
+  `/admin` then show a non-dismissible `PrivacyShieldBanner` (worded
+  differently when the guard is installed but failed to start). The uninstall
+  dialog of a plugin that provides `privacy.redact@1` says that masking stops
+  for every chat. Not in `/health`, on purpose, for the same reason as the
+  master-key posture (#1332). Still open: recall of turns answered while the
+  shield was off (names need the optional `pii-detector`), the boot reseed
+  dropping the operator's guard config, and whether uninstalling the guard
+  should be blocked.
+- **#1503 — Odoo `false` renders as empty.** Odoo sends `false` for an empty
+  non-boolean field. The materializer printed it as "false" and reported it
+  as a protected value, so the web chat highlighted it. Outside a column the
+  classifier typed `boolean` it now renders as "—" (`fieldCell`) and is never
+  reported in `maskedValues`. Display only: the classifier still counts that
+  `false`, so a string or date column holding one stays masked from the
+  model. Ignoring it there was tried and dropped in review — a sparse column
+  (three e-mails among many `false`s) then passed the low-cardinality enum
+  rule into cleartext. Known limit: a column that is `false` in EVERY row
+  types `boolean` and still shows "false".
+- **#1467 — empty result is empty.** `{"datasets":[]}` (any object holding an
+  empty list and otherwise only empty lists, `0` or `null`, such as
+  `{"items":[],"total":0}`) used to become one row with one masked field,
+  and the model rendered a blind, contentless list. It now interns as zero
+  rows, and a zero-row digest tells the model to say there is no data instead
+  of calling `v4_render_answer`.
+
+`@omadia/plugin-privacy-guard` 0.10.0 → 0.10.1. Tests:
+`middleware/test/privacyV4OdooFalseAndEmpty.test.ts`,
+`middleware/test/runtimePrivacyPostureRoute.test.ts`,
+`web-ui/app/_components/store/__tests__/PrivacyShieldConfig.test.tsx`.
+
 ### Fixed — plugin install and upload pipeline: one error contract, no dead ends (#1477, #1488, #1489, #1490, #1494, #1495)
 
 2026-10-28. ZIP upload, Hub install and builder install all feed the same
