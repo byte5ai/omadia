@@ -1,11 +1,12 @@
 /**
  * The canvas composer's skeleton on a base that holds content until the
- * verdict (the answer verifier in `enforce` mode). The skeleton is model
- * output — the composer writes its headings, labels and text from the user's
- * request — so it waits for the verdict like the rest of the turn: it leads
- * a released turn, and a withheld or failed turn never shows it. On a base
- * that streams as it goes (`shadow`, no verifier) it still goes out first,
- * before the main turn runs.
+ * verdict (the answer verifier in `enforce` mode). The skeleton is built from
+ * the user's request only and the verifier never judges it, so it goes out
+ * IMMEDIATELY — before the main turn and its verdict — on every base. What
+ * the verdict gates is the TURN's content (text, the published rows): a
+ * released turn patches onto the skeleton; a withheld or failed turn replaces
+ * it with a status tree, so no loading placeholder is orphaned and no
+ * withheld figure reaches the canvas.
  *
  * Drives the REAL canvas agent over a REAL `VerifierService`; only the
  * orchestrator (a scripted stream), the verifier pipeline and the composer
@@ -24,20 +25,19 @@ import {
 import type { PluginContext } from '../packages/plugin-api/src/index.js';
 import type { CompositionLlm } from '../packages/omadia-ui-orchestrator/src/composition.js';
 import { activate } from '../packages/omadia-ui-orchestrator/src/plugin.js';
+import { validateTree } from '../packages/omadia-ui-orchestrator/src/treeValidator.js';
+import { withheldTree } from '../packages/omadia-ui-orchestrator/src/verdictHold.js';
 import { createVerifierHarness } from './_helpers/verifierServiceHarness.js';
 import type { ScriptedVerdict } from './_helpers/verifierServiceHarness.js';
 import { AMOUNT_TEXT, approved, blocked } from './_helpers/verifierVerdictFixtures.js';
 import { ANSWER, deltasOf, doneOf } from './_helpers/verifierStreamScript.js';
-
-/** A figure the composer wrote into the skeleton; nothing checks it. */
-const SKELETON_FIGURE = '7.000.000 €';
 
 const SKELETON_TREE = {
   type: 'container',
   id: 'root',
   layout: 'stack',
   children: [
-    { type: 'text', id: 'lead', content: `Q3-Umsatz: ${SKELETON_FIGURE}` },
+    { type: 'text', id: 'lead', content: 'Q3-Umsatz je Monat' },
     {
       type: 'table',
       id: 'revenue',
@@ -136,26 +136,24 @@ const surfacesOf = (events: readonly ChatStreamEvent[]): ChatStreamEvent[] =>
 const field = (e: ChatStreamEvent | undefined, key: string): unknown =>
   (e as unknown as Record<string, unknown> | undefined)?.[key];
 
-describe('canvasChatAgent over an enforce-mode verifier — the skeleton waits for the verdict', () => {
-  it('a withheld turn never shows the skeleton, its prose or a patch', async () => {
-    const { events } = await canvasTurn('enforce', [blocked()]);
-    assert.deepEqual(surfacesOf(events), [], 'no surface event reaches the canvas');
-    const wire = JSON.stringify(events);
-    assert.equal(wire.includes(SKELETON_FIGURE), false, 'the skeleton prose leaked');
-    assert.equal(wire.includes(AMOUNT_TEXT), false, 'the withheld figure leaked');
-    assert.equal(deltasOf(events).length, 1, 'the notice is the only text');
-    assert.equal(doneOf(events)?.answerSource, 'verifier-blocked');
+describe('canvasChatAgent over an enforce-mode verifier — skeleton early, content on release', () => {
+  it('the skeleton goes out before the verdict, as the first event', async () => {
+    const { events, atVerify } = await canvasTurn('enforce', [approved()]);
+    assert.equal(events[0]?.type, 'surface_snapshot');
+    assert.deepEqual(field(events[0], 'tree'), SKELETON_TREE);
+    assert.equal(atVerify.length, 1);
+    assert.deepEqual(
+      atVerify[0]?.filter((t) => t.startsWith('surface_')),
+      ['surface_snapshot'],
+      'only the skeleton is visible before the verdict — no patch, no text',
+    );
+    assert.equal(atVerify[0]?.includes('text_delta'), false);
   });
 
-  it('a released turn leads with the skeleton, which was not sent before the verdict', async () => {
-    const { events, atVerify } = await canvasTurn('enforce', [approved()]);
-    assert.equal(atVerify.length, 1);
-    assert.equal(atVerify[0]?.some((t) => t.startsWith('surface_')), false, 'nothing before the verdict');
-
+  it('a released turn patches onto the skeleton after the verdict', async () => {
+    const { events } = await canvasTurn('enforce', [approved()]);
     const [skeleton, patch, ...rest] = surfacesOf(events);
     assert.equal(rest.length, 0);
-    assert.equal(skeleton?.type, 'surface_snapshot');
-    assert.deepEqual(field(skeleton, 'tree'), SKELETON_TREE);
     assert.equal(field(skeleton, 'producesRevision'), '0');
     assert.equal(field(skeleton, 'surfaceSeq'), 0);
     assert.equal(patch?.type, 'surface_patch');
@@ -170,7 +168,29 @@ describe('canvasChatAgent over an enforce-mode verifier — the skeleton waits f
     assert.equal(doneOf(events)?.answer, ANSWER);
   });
 
-  it('a failed turn shows no skeleton', async () => {
+  it('a withheld turn replaces the skeleton with the notice — no patch, no figure', async () => {
+    const { events } = await canvasTurn('enforce', [blocked()]);
+    const [skeleton, replacement, ...rest] = surfacesOf(events);
+    assert.equal(rest.length, 0);
+    assert.deepEqual(field(skeleton, 'tree'), SKELETON_TREE);
+    assert.equal(replacement?.type, 'surface_snapshot', 'a full replace, not a patch');
+    assert.equal(field(replacement, 'producesRevision'), '1');
+    assert.equal(field(replacement, 'surfaceSeq'), 1);
+    assert.ok(validateTree(field(replacement, 'tree')).ok, 'valid canvas tree');
+    const notice = deltasOf(events);
+    assert.equal(notice.length, 1, 'the notice is the only text');
+    const status = (field(replacement, 'tree') as { children: Array<{ text: string; tone: string }> }).children[0];
+    assert.equal(status?.text, notice[0]?.trim(), 'the status carries the verifier notice');
+    assert.equal(status?.tone, 'warning');
+    assert.ok(
+      events.indexOf(replacement as ChatStreamEvent) < events.findIndex((e) => e.type === 'done'),
+      'replaced before the terminal done',
+    );
+    assert.equal(JSON.stringify(events).includes(AMOUNT_TEXT), false, 'the withheld figure leaked');
+    assert.equal(doneOf(events)?.answerSource, 'verifier-blocked');
+  });
+
+  it('a failed turn replaces the skeleton with an error status before the error', async () => {
     const failing: ChatStreamEvent[] = [
       { type: 'iteration_start', iteration: 1 },
       { type: 'tool_use', id: 't1', name: 'revenue_tool', input: {} },
@@ -178,8 +198,18 @@ describe('canvasChatAgent over an enforce-mode verifier — the skeleton waits f
     ];
     const { events, atVerify } = await canvasTurn('enforce', [approved()], failing);
     assert.equal(atVerify.length, 0, 'never verified');
-    assert.deepEqual(surfacesOf(events), []);
+    const [skeleton, replacement, ...rest] = surfacesOf(events);
+    assert.equal(rest.length, 0);
+    assert.deepEqual(field(skeleton, 'tree'), SKELETON_TREE);
+    assert.deepEqual(field(replacement, 'tree'), withheldTree('failed'));
     assert.equal(events.at(-1)?.type, 'error');
+    assert.equal(events.at(-2), replacement);
+  });
+
+  it('both replacement trees are valid canvas trees', () => {
+    assert.ok(validateTree(withheldTree('failed')).ok);
+    assert.ok(validateTree(withheldTree('withheld')).ok);
+    assert.ok(validateTree(withheldTree('withheld', 'Die Antwort wurde zurückgehalten.')).ok);
   });
 });
 
@@ -189,5 +219,6 @@ describe('canvasChatAgent over a shadow-mode verifier — skeleton-first is unch
     assert.equal(events[0]?.type, 'surface_snapshot');
     assert.deepEqual(field(events[0], 'tree'), SKELETON_TREE);
     assert.ok(atVerify[0]?.includes('surface_snapshot'), 'shadow sends the skeleton before the verdict');
+    assert.equal(surfacesOf(events).filter((e) => e.type === 'surface_snapshot').length, 1, 'never replaced');
   });
 });
