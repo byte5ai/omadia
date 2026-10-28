@@ -2220,12 +2220,14 @@ readonly visibility: string;
 readonly version: number;
 readonly createdAt: string;
 readonly updatedAt: string;
+readonly unprotected?: boolean;
 }
 export interface WriteProcessInput {
 readonly title: string;
 readonly steps: readonly string[];
 readonly scope: string;
 readonly visibility?: string;
+readonly unprotected?: boolean;
 }
 export type WriteProcessResult = {
 ok: true;
@@ -2240,6 +2242,7 @@ reason: 'duplicate';
 conflictingId: string;
 conflictingTitle: string;
 similarity: number;
+conflictingUnprotected?: boolean;
 } | {
 ok: false;
 reason: 'embedding-unavailable';
@@ -2250,6 +2253,7 @@ readonly id: string;
 readonly title?: string;
 readonly steps?: readonly string[];
 readonly visibility?: string;
+readonly unprotected?: boolean;
 }
 export type EditProcessResult = {
 ok: true;
@@ -2270,6 +2274,7 @@ export interface QueryProcessesInput {
 readonly query: string;
 readonly scope?: string;
 readonly limit?: number;
+readonly excludeUnprotected?: boolean;
 }
 export interface ProcessQueryHit {
 readonly record: ProcessRecord;

@@ -55,6 +55,13 @@ export interface ProcessRecord {
   readonly createdAt: string;
   /** ISO-8601 string. */
   readonly updatedAt: string;
+  /**
+   * #1540 — written or edited in a turn without a Privacy Shield, or after a
+   * tool bypassed it: title and steps can hold values no shield masked.
+   * Sticky: a later edit never clears it. Absent on processes stored before
+   * the flag existed.
+   */
+  readonly unprotected?: boolean;
 }
 
 export interface WriteProcessInput {
@@ -64,6 +71,8 @@ export interface WriteProcessInput {
   readonly scope: string;
   /** Default `'team'`. */
   readonly visibility?: string;
+  /** #1540 — see {@link ProcessRecord.unprotected}. */
+  readonly unprotected?: boolean;
 }
 
 /**
@@ -80,6 +89,9 @@ export type WriteProcessResult =
       conflictingId: string;
       conflictingTitle: string;
       similarity: number;
+      /** #1540 — the existing process is stored `unprotected`: a caller
+       *  under a Privacy Shield must not show its title. */
+      conflictingUnprotected?: boolean;
     }
   | { ok: false; reason: 'embedding-unavailable'; message: string };
 
@@ -92,6 +104,9 @@ export interface EditProcessInput {
   readonly steps?: readonly string[];
   /** Operator override, e.g. `'private'`. */
   readonly visibility?: string;
+  /** #1540 — the edit comes from an unprotected turn: the process is stored
+   *  `unprotected` from now on. `false`/absent keeps the stored flag. */
+  readonly unprotected?: boolean;
 }
 
 export type EditProcessResult =
@@ -107,6 +122,9 @@ export interface QueryProcessesInput {
   readonly scope?: string;
   /** Default 10. */
   readonly limit?: number;
+  /** #1540 — leave out processes stored `unprotected`. Set by a recall or a
+   *  tool that runs under a Privacy Shield. */
+  readonly excludeUnprotected?: boolean;
 }
 
 export interface ProcessQueryHit {

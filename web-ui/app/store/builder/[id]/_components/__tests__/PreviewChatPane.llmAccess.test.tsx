@@ -85,6 +85,23 @@ describe('<PreviewChatPane /> — missing LLM access', () => {
     expect(screen.queryByText(LLM_ACCESS_MISSING)).not.toBeInTheDocument();
   });
 
+  it('names the org privacy policy instead of the raw refusal text (#1540)', async () => {
+    streamOf({
+      type: 'error',
+      code: 'builder.privacy_shield_required',
+      message: 'OMADIA_PRIVACY_FORCE_GUARDED=true: the preview chat runs without the Privacy Shield and is disabled.',
+    });
+    renderPane();
+    sendMessage('Preview message', 'test the agent');
+
+    expect(
+      await screen.findByText(
+        'Your organization requires the Privacy Shield. The preview chat runs without it, so it is turned off.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/OMADIA_PRIVACY_FORCE_GUARDED/)).not.toBeInTheDocument();
+  });
+
   it('renders the German sentence from de.json', async () => {
     streamOf({
       type: 'error',

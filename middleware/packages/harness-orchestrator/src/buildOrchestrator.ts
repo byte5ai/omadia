@@ -70,7 +70,10 @@ import type {
 } from './mcp/pendingMcpInput.js';
 import { CliChatAgent } from './cliChatAgent.js';
 import { ToolDispatchService } from './toolDispatchService.js';
-import { OrchestratorMemoryNamespacer } from './orchestratorMemoryNamespacer.js';
+import {
+  OrchestratorMemoryNamespacer,
+  TURN_NOTE_PROVENANCE,
+} from './orchestratorMemoryNamespacer.js';
 import { DurableRulesMemoryStore } from './durableRulesMemoryStore.js';
 import { MemoryBinder, type ContextMemoryMode } from './memoryBinder.js';
 import {
@@ -604,10 +607,13 @@ export function buildOrchestratorForAgent(
   // too, so a turn that slips past the fail-closed gate (#1535) still cannot.
   const shieldActive = (): boolean =>
     deps.privacyGuard() !== undefined || isPrivacyForceGuarded(process.env);
+  // #1540 — notes written in an unprotected turn are marked, and refused to
+  // a turn the shield masks.
   const namespacedStore: MemoryStore = new OrchestratorMemoryNamespacer(
     config.agentId,
     scopedStore,
     shieldActive,
+    TURN_NOTE_PROVENANCE,
   );
   const durableRulesHookEnabled =
     process.env['KG_DURABLE_RULES_HOOK'] !== 'false' && !!deps.graphPool;
@@ -649,6 +655,7 @@ export function buildOrchestratorForAgent(
     root: deps.memoryStore,
     mode: config.contextMemory ?? 'off',
     shieldActive,
+    noteProvenance: TURN_NOTE_PROVENANCE,
     ...(durableRulesHookEnabled
       ? {
           durableRules: {

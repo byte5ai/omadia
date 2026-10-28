@@ -23,11 +23,13 @@ there only once you switch on prompt masking
 scoring get the turn's text as the turn's model saw and wrote it, masked by
 the same rules. The stored memories and earlier turns the memory jobs send to
 their own model (the recall relevance judge, the session briefing,
-topic-cluster naming, the inconsistency detector and the Teams topic detector)
-are masked whatever the settings, and a job that cannot mask skips its model
-call. Every other model call sends its text as it is, with prompt masking on
-or off. That covers the embedding of stored memories and plugin calls through
-`ctx.llm` such as the canvas composer and the plan runner. Images you attach go to an
+topic-cluster naming, the inconsistency detector, the Teams topic detector and
+the significance scorer) are masked whatever the settings, and a job that
+cannot mask skips its model call. The canvas composer's request before the
+turn is masked the same way while a privacy guard runs. Every other model call
+sends its text as it is, with prompt masking on or off. That covers the
+embedding of stored memories and plugin calls through `ctx.llm` such as the
+plan runner. Images you attach go to an
 image-capable model unmasked,
 and agents on the Claude subscription CLI run without the shield. The
 exceptions are listed under [Trust & privacy architecture](#trust--privacy-architecture).
@@ -45,7 +47,7 @@ without a receipt.
 
 | Capability | What you get |
 |---|---|
-| 🛡️&nbsp;**Privacy&nbsp;Shield** | Raw results of data-source tools stay behind a data-plane boundary. The shield acts in a turn's own model requests, from the agent's loop and its sub-agents to the verifier's checks, and in the memory jobs' requests. In a turn's requests the LLM works from an identity-free digest of each tool result and gets tool errors redacted or withheld, and a result the shield cannot intern is withheld. `guarded` by default, with `bypass`, `per_tool` and a per-MCP-server bypass as opt-ins and an org-wide clamp (`OMADIA_PRIVACY_FORCE_GUARDED`) that also covers knowledge-graph ingestion of MCP results. `read_attachment` (uploaded documents; it refuses tables and points the model to `query_dataset`) and a short allowlist of the agent's own tools return their results in clear, while their errors are redacted or withheld like any tool's; the errors a bypassed tool returns reach the model as they are. The answers a channel replays as chat history and recalled context are masked there whatever the settings, because an answer the shield rendered carries real values. Your messages and the user messages a channel replays are masked there only while prompt masking (`mask_user_prompt`, off by default) is on, so by default they reach the model as typed. The inbound security screener and turn scoring get the turn's text as the turn's model saw and wrote it. The stored text the memory jobs send to their own model (the recall judge, the session briefing, cluster naming, the inconsistency and topic detectors) is masked whatever the settings, and a job that cannot mask skips its model call. Every other model call sends its text as it is, with masking on or off, from the embedding of stored memories to plugin calls through `ctx.llm` such as the canvas composer and the plan runner. Attached images go to an image-capable model unmasked, and the Claude subscription CLI (`claude-cli`) runs without the shield. |
+| 🛡️&nbsp;**Privacy&nbsp;Shield** | Raw results of data-source tools stay behind a data-plane boundary. The shield acts in a turn's own model requests, from the agent's loop and its sub-agents to the verifier's checks, and in the memory jobs' requests. In a turn's requests the LLM works from an identity-free digest of each tool result and gets tool errors redacted or withheld, and a result the shield cannot intern is withheld. `guarded` by default, with `bypass`, `per_tool` and a per-MCP-server bypass as opt-ins and an org-wide clamp (`OMADIA_PRIVACY_FORCE_GUARDED`) that also covers knowledge-graph ingestion of MCP results. `read_attachment` (uploaded documents; it refuses tables and points the model to `query_dataset`) and a short allowlist of the agent's own tools return their results in clear, while their errors are redacted or withheld like any tool's; the errors a bypassed tool returns reach the model as they are. The answers a channel replays as chat history and recalled context are masked there whatever the settings, because an answer the shield rendered carries real values. Your messages and the user messages a channel replays are masked there only while prompt masking (`mask_user_prompt`, off by default) is on, so by default they reach the model as typed. The inbound security screener and turn scoring get the turn's text as the turn's model saw and wrote it. The stored text the memory jobs send to their own model (the recall judge, the session briefing, cluster naming, the inconsistency and topic detectors, the significance scorer) is masked whatever the settings, and a job that cannot mask skips its model call; the canvas composer's request is masked the same way while a privacy guard runs. Every other model call sends its text as it is, with masking on or off, from the embedding of stored memories to plugin calls through `ctx.llm` such as the plan runner. Attached images go to an image-capable model unmasked, and the Claude subscription CLI (`claude-cli`) runs without the shield. |
 | ✅&nbsp;**Answer&nbsp;verification** | Optional and off by default (`verifier_enabled`). Once switched on, it checks an answer against the run's own sources only if one of its trigger patterns matches, such as a euro amount, an accounting reference like `INV/2026/0042` or a date written as `2026-10-02`, and records a verdict. Figures in other formats, such as other currencies or English-format dates, match no trigger pattern unless the answer also holds an aggregate keyword such as `total` and a number of three or more digits. An answer in which the verifier finds nothing to check is `skipped`, a verifier that could not run is `unavailable`, and `approved` means that every claim the verifier extracted was checked and confirmed. The default mode, `shadow`, only records. `enforce` holds each answer until its verdict and delivers an answer the verifier confirmed. It withholds an answer with a refuted claim, a missing or invented source citation or data the run never fetched, and an answer the verifier could not check because it could not run, every check failed or the Privacy Shield kept the answer from it. An answer whose claims it could not all confirm, with none of them refuted, goes out with a note that its statements could not be confirmed automatically. An answer that no trigger pattern matched, or in which the extraction found no claim, goes out unchecked in `enforce` too, and so does a turn that carries an input card. |
 | 🧮&nbsp;**Excel&nbsp;from&nbsp;real&nbsp;rows** | `create_xlsx` writes the real rows behind a `datasetId` into the workbook server-side, so they never pass through the model, and adds sums and pivots as Excel formulas. omadia runs no spreadsheet engine of its own: the workbook asks the spreadsheet application to recalculate when it opens the file, and that application computes every formula result. |
 | 🧾&nbsp;**Traces&nbsp;and&nbsp;receipts** | The call-stack viewer shows a run step by step, with each tool call and decision. That trace is best-effort telemetry, so a run can lack one. Privacy receipts (`/operator/receipts`, Postgres backend) are hash-chained and written best-effort, one for each turn in which the privacy shield acted. A failed write is logged and not retried, and a receipt that was never written leaves no gap in the chain. |
@@ -156,12 +158,15 @@ answer:
   (privacy guard 0.8.0), the job skips its model call; without a privacy
   guard the jobs send the text as stored.
 
+  The significance scorer (live capture, an operator's backfill over stored
+  turns, the scratch-promotion reaper) and, while a guard runs, the canvas
+  composer mask the same way (#1540).
+
   Every other model call sends its text as it is, with prompt masking on or
-  off. A significance backfill an operator starts over stored turns sends them
-  as stored. With the OpenAI-compatible embedding adapter, stored turns and
+  off. With the OpenAI-compatible embedding adapter, stored turns and
   memories are embedded at that provider as stored, real values included, and
-  masking them is still open. Through `ctx.llm`, the canvas composer and the plan-runner's
-  planning check send the user's message before the turn starts. Images the
+  masking them is still open. Through `ctx.llm`, the plan-runner's
+  planning check sends the user's message before the turn starts. Images the
   user attaches are not masked in any request, because the shield reads text
   only. Agents on the Claude subscription CLI (`claude-cli`) run without the
   shield, and `agents.privacy_profile` is not a shield setting
