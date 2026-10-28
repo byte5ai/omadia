@@ -9,6 +9,8 @@ import path from 'node:path';
 import express from 'express';
 import yazl from 'yazl';
 
+import { ServiceNotDeclaredError } from '@omadia/plugin-api';
+
 import { PackageUploadService } from '../src/plugins/packageUploadService.js';
 import { createPackagesRouter } from '../src/routes/packages.js';
 import { InMemoryInstalledRegistry } from '../src/plugins/installedRegistry.js';
@@ -684,6 +686,50 @@ describe('PackageUploadService ingest × activation failure (issue #1452)', () =
       entry?.last_activation_error,
       'the caller is told the same thing the registry was told',
     );
+  });
+
+  // #1497 / #1456 — the update answers the same activation-result shape the
+  // install job and the setup-field writes answer, with a classified code.
+  it('answers the shared activation result with a classified code on failure', async () => {
+    const registry = await activeRegistry();
+    const result = await ingest(
+      service(registry, async () => {
+        throw new ServiceNotDeclaredError(PLUGIN_ID, 'entityRefBus');
+      }),
+    );
+    assert.equal(result.ok, true);
+    const activation = (result as { activation?: Record<string, unknown> }).activation;
+    assert.equal(activation?.['state'], 'errored');
+    assert.equal(activation?.['ok'], false);
+    assert.equal(activation?.['error_code'], 'capability_not_declared');
+    assert.equal(registry.get(PLUGIN_ID)?.last_activation_error_code, 'capability_not_declared');
+  });
+
+  // #1461 — the update that is meant to fix a start error is activated, and on
+  // success neither the old error nor its code survives.
+  it('activates an update over an errored entry and drops the old error code', async () => {
+    const registry = await activeRegistry();
+    await registry.register({
+      ...registry.get(PLUGIN_ID)!,
+      status: 'errored',
+      activation_failure_count: 1,
+      last_activation_error: 'old version did not start',
+      last_activation_error_code: 'capability_not_declared',
+    });
+    let activated = 0;
+    const result = await ingest(
+      service(registry, async () => {
+        activated += 1;
+      }),
+    );
+    assert.equal(activated, 1, 'the new version is started');
+    assert.deepEqual((result as { activation?: unknown }).activation, {
+      state: 'active',
+      ok: true,
+      error: null,
+      error_code: null,
+    });
+    assert.equal(registry.get(PLUGIN_ID)?.last_activation_error_code, undefined);
   });
 
   it('lifts a previous errored state when the next update activates', async () => {

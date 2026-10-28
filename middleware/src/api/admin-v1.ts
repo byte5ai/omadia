@@ -502,6 +502,9 @@ export interface PluginReadiness {
   verified_at: string | null;
   /** Tail of the last activation error. Only for `state === 'errored'`. */
   error_detail?: string;
+  /** #1456 — classified reason, only for `state === 'errored'`. `unknown` for
+   *  an entry recorded before codes existed. */
+  error_code?: ActivationErrorCode;
 }
 
 /**
@@ -865,6 +868,74 @@ export type MissingGrant =
   | { readonly kind: 'public_path'; readonly path: string };
 
 /**
+ * #1456 — WHY an activation failed, as a closed set the UI can translate.
+ *
+ * The registry used to keep only the raw exception message, which is written
+ * for plugin authors ("add 'entityRefBus@<major>' to the manifest's
+ * `requires:` list"), is English in both locales, and cannot say what the
+ * OPERATOR can do. One code per operator action, not per exception class:
+ *
+ *  - `secret_missing` / `config_missing` — a required setup value is not
+ *    stored. Fix: fill it in on the setup form.
+ *  - `capability_not_declared` — the plugin reached for a core service its
+ *    manifest does not declare. A plugin defect the operator cannot fix:
+ *    this version does not fit this server; update, roll back or report.
+ *  - `network_not_permitted` — the plugin may not reach the configured
+ *    address under its declared network permissions.
+ *  - `permission_not_granted` — a declared permission has no operator grant.
+ *  - `dependency_unresolved` — a plugin this one requires is not installed or
+ *    not running.
+ *  - `provider_conflict` — another installed plugin already provides the same
+ *    capability.
+ *  - `target_unreachable` — a host the plugin talks to during activation did
+ *    not answer (DNS, refused, timeout).
+ *  - `unknown` — anything else, AND every registry entry written before this
+ *    field existed. The raw message stays available as the technical detail.
+ *
+ * Classified from the error OBJECT (`err.name`, typed fields, `code`), never
+ * from the message text — see `plugins/activationFailure.ts`.
+ */
+export type ActivationErrorCode =
+  | 'secret_missing'
+  | 'config_missing'
+  | 'capability_not_declared'
+  | 'network_not_permitted'
+  | 'permission_not_granted'
+  | 'dependency_unresolved'
+  | 'provider_conflict'
+  | 'target_unreachable'
+  | 'unknown';
+
+/**
+ * #1497 / #1456 — the one shape every write that (re)activates a plugin
+ * answers with: the install job (`activation_state`), the setup-field writes
+ * (`PATCH …/installed/:id/secrets`, `…/config`, `POST …/secrets/from-json` →
+ * `activation`) and the update/upload ingest routes (`activation`).
+ *
+ * Read back from the registry AFTER the attempt, so it is the same truth
+ * `GET /runtime/installed` and readiness serve — never an inference from the
+ * absence of a throw. Before this, the setup-field PATCH answered only the key
+ * names it stored and the store rendered "✓ Saved" over a plugin that had just
+ * failed to come back up.
+ */
+export interface PluginActivationResult {
+  /** The registry's status for this plugin, read back AFTER the activation
+   *  attempt. This is the #799 truthful status, not an inference from the
+   *  absence of a throw. */
+  state: 'active' | 'inactive' | 'errored';
+  /** `state === 'active'`. Restated so a client need not special-case the
+   *  status vocabulary to answer "did it come up?". */
+  ok: boolean;
+  /** `last_activation_error` from the registry — the raw activation message,
+   *  written for plugin authors. A technical detail, never the headline;
+   *  `null` on success. */
+  error: string | null;
+  /** #1456 — what kind of failure it was, for operator-facing copy. `null` on
+   *  success; `unknown` for a failure recorded without a code. */
+  error_code: ActivationErrorCode | null;
+}
+
+/**
  * #825 — the outcome of the ACTIVATION, reported separately from the outcome of
  * the JOB.
  *
@@ -894,17 +965,7 @@ export type MissingGrant =
  * the job is still running and on `failed`/`cancelled`, where nothing was
  * installed and there was no activation to report on.
  */
-export interface InstallActivationState {
-  /** The registry's status for this plugin, read back AFTER the activation
-   *  attempt. This is the #799 truthful status, not an inference from the
-   *  absence of a throw. */
-  state: 'active' | 'inactive' | 'errored';
-  /** `state === 'active'`. Restated so a client need not special-case the
-   *  status vocabulary to answer "did it come up?". */
-  ok: boolean;
-  /** `last_activation_error` from the registry — the activation hook's message.
-   *  `null` on success. */
-  error: string | null;
+export interface InstallActivationState extends PluginActivationResult {
   /** Declared-but-not-granted permissions, derived exactly as
    *  `GET /api/v1/admin/runtime/installed/:id/grants` derives its `missing[]`
    *  (literally the same function — `plugins/grantGap.ts`). Non-empty here is

@@ -490,11 +490,82 @@ Credential-Änderung automatisch mit.
   Badge. Das Feld `verified_at` behält seinen Namen (20+ Consumer), die
   Doku-Kommentare sagen jetzt, was es wirklich ist.
 
-**Offen (nicht in diesem Change):** Die Integrations-Plugins selbst müssen
-`verifyConnection` exportieren und ihre 401s zur Laufzeit melden — sie liegen in
-eigenen Repos (`byte5ai/omadia-integration-odoo`,
-`byte5ai/omadia-integration-confluence`). Bis dahin ist der Kernel-Pfad da und
-inert.
+**Plugin-Seite (Sweep 2 / N03):** Die Integrations-Plugins exportieren
+`verifyConnection` und melden 401s zur Laufzeit selbst per
+`ctx.status.report({ state: 'error' })` (und `ok`, sobald ein späterer Call
+wieder durchgeht und der Fehler vom Plugin selbst stammte) — PRs in
+`byte5ai/omadia-integration-odoo` (0.3.0) und
+`byte5ai/omadia-integration-confluence` (0.4.0). Beide ohne Status-Text (kein
+Locale im Plugin) und ohne Wechsel auf `ctx.http`: der Allow-List-Abgleich
+von `$config.*`-URLs gegen Hostnamen und das 60/min-Limit blockieren das noch
+(Kern-Follow-up).
+
+### Aktivierungs-Ergebnis + Fehlercodes (#1456, #1497, #1496, #1492)
+
+Ein fehlgeschlagener Plugin-Start wurde nur als Freitext gespeichert — die
+Exception-Message der Plugin-API, geschrieben für Plugin-Autoren, englisch in
+beiden UI-Sprachen ("add 'entityRefBus@<major>' to the manifest's `requires:`
+list"). Und nur der Install-Job meldete überhaupt, ob das Plugin hochkam; der
+Setup-Feld-PATCH antwortete mit Key-Namen, die Store-Seite zeigte "✓ Saved".
+
+- **`ActivationErrorCode`** (`api/admin-v1.ts`): geschlossene Menge, ein Code
+  pro *Handlung des Operators* — `secret_missing`, `config_missing`,
+  `capability_not_declared`, `network_not_permitted`,
+  `permission_not_granted`, `dependency_unresolved`, `provider_conflict`,
+  `target_unreachable`, `unknown`. Klassifiziert in
+  `plugins/activationFailure.ts` aus dem Error-**Objekt** (`err.name`,
+  `SqlPermissionError.reason`, errno-`code` inkl. undici-`cause`), nie aus der
+  Message. `name` statt `instanceof`, weil ein Plugin seine eigene Kopie von
+  `@omadia/plugin-api` bündeln kann.
+- **Registry:** `InstalledAgent.last_activation_error_code` neben
+  `last_activation_error` (der bleibt der rohe 500-Zeichen-Tail).
+  `markActivationFailed`/`markActivationBlocked`/`recordActivationFailure`
+  nehmen `string | ActivationFailure`; ein bloßer String löscht einen alten
+  Code. Erfolg löscht beides. Die File-Registry nutzt jetzt `bumpFailure`
+  statt einer eigenen Kopie. Alle Seams klassifizieren: Install, Reactivate,
+  Upload/Update, Tool-Runtime-Boot (unresolved requires →
+  `dependency_unresolved`, OM-87-Duplikat → `provider_conflict`),
+  Dynamic-Agent-Boot, Channel-Boot.
+- **`PluginActivationResult`** `{ state, ok, error, error_code }` — die eine
+  Form, die jeder (re)aktivierende Write zurückgibt: Install-Job
+  (`activation_state`, `InstallActivationState extends …`),
+  `PATCH …/installed/:id/secrets`, `PATCH …/installed/:id/config`,
+  `POST …/secrets/from-json` (`activation`) und die Ingest-Routen
+  `POST /install/registry/:id` + `POST /install/packages` (`activation`,
+  neben dem bisherigen `activation_error`). Aus der Registry zurückgelesen,
+  `activationResultOf()`. Readiness bekommt `error_code` (für `errored`
+  immer gesetzt, `unknown` bei Alt-Einträgen), `GET /runtime/installed[/:id]`
+  und `GET …/grants` `last_activation_error_code`.
+- **Web-UI:** `ActivationFailureNotice` rendert `store.activationError.<code>`
+  (`what` + `next`), den Rohtext nur eingeklappt als "Technisches Detail" —
+  im Install-Drawer, unter der Pille, im Update-Banner, im Upload-Panel, im
+  Grants-Panel und nach einem Setup-Save ("Gespeichert – aber das Plugin ist
+  mit den neuen Werten nicht gestartet", plus `router.refresh()`).
+  `StateBadge`-`title=` ist die lokalisierte Kurzform. `PostInstallNextSteps`
+  zeigt für `errored`/`connection_failed` nichts (kein grüner Haken, kein
+  "Im Chat ausprobieren"), für Setup-Fälle keinen Haken, und passt den Hinweis
+  an Art + Anbindung an (Agent/Tool: angehängt an …/anhängen; Integration:
+  wird über abhängige Agenten genutzt; Extension/Channel: läuft). Der
+  RequiresWizard nennt am Ende die Schritte, die installiert, aber nicht
+  gestartet sind.
+
+### Keyless-Provider werden wirklich geprüft (#1460)
+
+`requiresApiKey: false` (Ollama, vLLM) hieß bisher "verified" ohne Request —
+im Read-Pfad, in `POST /admin/providers/:id/verify` und in
+`verifyProviderCredential`. Jetzt: der Verify-Pfad probt `GET {baseURL}/models`
+(ohne `Authorization`, wenn kein Key gespeichert ist; ein 401 ohne Key ist
+`unverified`/`forbidden`, nie `invalid`). Der Read-Pfad liefert das letzte
+Ergebnis aus diesem Prozess (`getKeylessVerification`, ohne TTL, keyed wie der
+Cache) oder `unverified` mit Reason `not_checked` — nie geprobt, nie
+persistiert (Erreichbarkeit eines Daemons überlebt keinen Neustart als
+Tatsache). Readiness wertet `not_checked` nicht als `awaiting_llm` (kein
+Amber nach jedem Neustart), ein gelaufener, fehlgeschlagener Check schon.
+`invalidate(providerId)` löscht auch die Keyless-Verdicts. `claude-cli` und
+OAuth-Provider gehen im Verify-Route an `resolveProviderVerification` (Login
+bzw. Token sind ihr Check). Das Provider-DTO trägt `requiresApiKey` + `hasKey`;
+"Schlüssel ändern/entfernen" erscheint nur mit gespeichertem Key, der
+Test-Button heißt bei Keyless "Verbindung testen".
 
 ### Sub-Agents (lokal, in-process)
 

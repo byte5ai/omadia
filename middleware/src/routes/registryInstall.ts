@@ -164,6 +164,7 @@ export function createRegistryInstallRouter(deps: RegistryInstallDeps): Router {
         ...(result.activation_error !== undefined
           ? { activation_error: result.activation_error }
           : {}),
+        ...(result.activation !== undefined ? { activation: result.activation } : {}),
         // Missing depends_on parents to install first (empty → install target
         // directly). Same shape as the capability-chain wizard consumes.
         chain,

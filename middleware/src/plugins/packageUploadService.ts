@@ -13,6 +13,12 @@ import {
   versionDirection,
   type VersionChangeDirection,
 } from './versionDirection.js';
+import type { PluginActivationResult } from '../api/admin-v1.js';
+import {
+  activationResultOf,
+  describeActivationFailure,
+  type ActivationFailure,
+} from './activationFailure.js';
 import { checkCoreCompat } from './coreCompat.js';
 import {
   CIRCUIT_BREAKER_THRESHOLD,
@@ -83,6 +89,10 @@ export interface IngestSuccess {
    * every upload that never attempted an activation.
    */
   activation_error?: string;
+  /** #1497 — the shared activation result (`PluginActivationResult`), present
+   *  only when this ingest (re)activated an installed plugin. Same absence
+   *  rule as `activation_error`. */
+  activation?: PluginActivationResult;
 }
 
 export interface IngestFailure {
@@ -630,7 +640,9 @@ export class PackageUploadService {
       // Same bug the install path had in #799 / #825, on the path an operator
       // uses far more often: the update button.
       let activationError: string | undefined;
-      if (this.deps.onPackageReady && this.shouldReactivate(plugin.id)) {
+      const reactivated =
+        this.deps.onPackageReady !== undefined && this.shouldReactivate(plugin.id);
+      if (reactivated && this.deps.onPackageReady) {
         try {
           await this.deps.onPackageReady(plugin.id);
           await this.noteActivationSuccess(plugin.id);
@@ -641,15 +653,24 @@ export class PackageUploadService {
           // `computeReadiness`, `last_activation_error` in the registry), so an
           // empty string would flip the entry to `errored` with the reason
           // readable nowhere — this fix's own failure mode.
-          activationError =
-            (err instanceof Error ? err.message : String(err)) ||
-            'onPackageReady threw without a message';
+          const failure = describeActivationFailure(
+            err,
+            'onPackageReady threw without a message',
+          );
+          activationError = failure.message;
           log(
             `[upload] onPackageReady hook failed for ${plugin.id}: ${activationError}`,
           );
-          await this.noteActivationFailure(plugin.id, activationError);
+          await this.noteActivationFailure(plugin.id, failure);
         }
       }
+      // #1497 — the shared activation-result shape, only when this ingest
+      // actually (re)activated the plugin, read back from the registry so it
+      // agrees with `GET /runtime/installed`. No registry, no recorded truth.
+      const activation =
+        reactivated && this.deps.registry
+          ? (activationResultOf(this.deps.registry.get(plugin.id)) ?? undefined)
+          : undefined;
 
       // #1455 — the retired copy has served its purpose once the new version
       // is up. It is kept on a failed activation, and its path is logged
@@ -676,6 +697,7 @@ export class PackageUploadService {
         ...(activationError !== undefined
           ? { activation_error: activationError }
           : {}),
+        ...(activation !== undefined ? { activation } : {}),
       };
     } finally {
       await fs.rm(tmpRoot, { recursive: true, force: true }).catch(() => {});
@@ -765,12 +787,12 @@ export class PackageUploadService {
    */
   private async noteActivationFailure(
     pluginId: string,
-    message: string,
+    failure: ActivationFailure,
   ): Promise<void> {
     const registry = this.deps.registry;
     if (!registry) return;
     try {
-      await recordActivationFailure(registry, pluginId, message);
+      await recordActivationFailure(registry, pluginId, failure);
     } catch (err) {
       this.log(
         `[upload] registry markActivationFailed FAILED for ${pluginId}: ${err instanceof Error ? err.message : String(err)}`,

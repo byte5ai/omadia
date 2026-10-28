@@ -423,6 +423,11 @@ function ProviderRow({
   // means a pre-OM-11 middleware that cannot tell us, so we assume present and
   // keep the previous behaviour rather than disabling an action that works.
   const cliMissing = p.toolLess && p.installed === false;
+  // #1460 — a keyless provider (Ollama) is `connected` with no key at all, so
+  // `connected` cannot decide whether "Change key" / "Remove key" have
+  // anything to act on. `hasKey` can; an older middleware falls back.
+  const keyless = p.requiresApiKey === false && !p.toolLess && !p.oauthConnect;
+  const hasStoredKey = p.hasKey ?? p.connected;
   const modelsDiscoveredAt =
     p.modelsSource === 'discovered' && p.modelsDiscoveredAt
       ? new Date(p.modelsDiscoveredAt)
@@ -552,7 +557,7 @@ function ProviderRow({
           )}
         </span>
         <span className="flex items-center gap-3">
-          <ConnectionChip provider={p} now={now} t={t} />
+          <ConnectionChip provider={p} now={now} t={t} keylessWithoutKey={keyless && !hasStoredKey} />
           {/* Explicit re-probe. Only offered where there is a credential to
               probe — the CLI provider authenticates on the Subscriptions tab,
               and an OAuth provider has no key to probe. */}
@@ -564,7 +569,11 @@ function ProviderRow({
               disabled={verifying || saveStatus === 'saving'}
               className="text-[13px] font-medium text-[color:var(--accent)] disabled:opacity-50"
             >
-              {verifying ? t('providers.testing') : t('providers.testKey')}
+              {verifying
+                ? t('providers.testing')
+                : keyless
+                  ? t('providers.testConnection')
+                  : t('providers.testKey')}
             </button>
           )}
           {!p.toolLess && p.status !== 'no_key' && (
@@ -630,7 +639,7 @@ function ProviderRow({
             )
           ) : (
             !editing &&
-            (p.connected ? (
+            (hasStoredKey ? (
               <span className="flex items-center gap-3">
                 {/* eslint-disable-next-line no-restricted-syntax -- inline text link (bare accent text, no border/bg) */}
                 <button
@@ -659,7 +668,7 @@ function ProviderRow({
                 onClick={() => setEditing(true)}
                 className="text-[13px] font-medium text-[color:var(--accent)]"
               >
-                {t('providers.addKey')} →
+                {keyless ? t('providers.addOptionalKey') : t('providers.addKey')} →
               </button>
             ))
           )}
@@ -835,6 +844,7 @@ const UNVERIFIED_REASON_KEYS: Record<string, string | undefined> = {
   http_error: 'providers.unverifiedReason.httpError',
   network_error: 'providers.unverifiedReason.networkError',
   no_probe: 'providers.unverifiedReason.noProbe',
+  not_checked: 'providers.unverifiedReason.notChecked',
 };
 
 /**
@@ -846,10 +856,13 @@ function ConnectionChip({
   provider: p,
   now,
   t,
+  keylessWithoutKey = false,
 }: {
   provider: AdminProvider;
   now: number;
   t: T;
+  /** #1460 — "key stored, not verified" would be false: there is no key. */
+  keylessWithoutKey?: boolean;
 }): React.ReactElement {
   const format = useFormatter();
   return (
@@ -860,7 +873,9 @@ function ConnectionChip({
           CHIP_CLASS[p.status],
         ].join(' ')}
       >
-        {t(CHIP_LABEL_KEY[p.status])}
+        {keylessWithoutKey && p.status === 'unverified'
+          ? t('providers.unverifiedKeyless')
+          : t(CHIP_LABEL_KEY[p.status])}
       </span>
       {p.status === 'verified' && p.verifiedAt && (
         <span className="text-[11px] text-[color:var(--fg-muted)]">

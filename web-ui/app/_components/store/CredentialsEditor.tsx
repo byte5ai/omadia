@@ -24,6 +24,7 @@ import {
   ShieldAlert,
   Trash2,
 } from 'lucide-react';
+import { useRouter } from 'next/navigation';
 import { useLocale, useTranslations } from 'next-intl';
 
 import {
@@ -34,6 +35,10 @@ import {
   patchInstalledSecrets,
   type SetupOption,
 } from '../../_lib/api';
+import {
+  parseActivationResult,
+  type PluginActivationResult,
+} from '../../_lib/activationError';
 import { enumOptionLabel, pickLocalized } from '../../_lib/localized';
 import {
   resolveSetupFieldHint,
@@ -43,6 +48,7 @@ import type { PluginSetupField } from '../../_lib/storeTypes';
 import { Button } from '@/app/_components/ui/Button';
 import { ErrorHelp } from '@/app/_components/ErrorHelp';
 import { resolveErrorHelp } from '../../_lib/errorHelp';
+import { ActivationFailureNotice } from './ActivationFailureNotice';
 
 interface CredentialsEditorProps {
   pluginId: string;
@@ -111,6 +117,9 @@ export function CredentialsEditor({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<EditorError | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
+  // #1497 — the save re-activates the plugin; this is whether it came back up.
+  const [activation, setActivation] = useState<PluginActivationResult | null>(null);
+  const router = useRouter();
 
   const refreshKeys = useCallback(async () => {
     try {
@@ -193,10 +202,8 @@ export function CredentialsEditor({
       const patch: { set?: Record<string, string>; delete?: string[] } = {};
       if (Object.keys(set).length > 0) patch.set = set;
       if (del.length > 0) patch.delete = del;
-      const { keys, config_keys, config_values } = await patchInstalledSecrets(
-        pluginId,
-        patch,
-      );
+      const { keys, config_keys, config_values, activation: rawActivation } =
+        await patchInstalledSecrets(pluginId, patch);
       setStoredKeys(new Set([...keys, ...config_keys]));
       setStoredValues(config_values ?? {});
       setFieldStates((prev) =>
@@ -216,6 +223,10 @@ export function CredentialsEditor({
         ),
       );
       setSavedAt(Date.now());
+      setActivation(parseActivationResult(rawActivation));
+      // Header badge, sidebar pill and readiness are server-rendered: without
+      // this they kept the pre-save state until a manual reload.
+      router.refresh();
     } catch (err) {
       const hint = resolveSecretsPatchHint(err, setupFields, locale);
       setError(hint !== undefined ? { kind: 'hint', text: hint } : { kind: 'api', err });
@@ -230,6 +241,7 @@ export function CredentialsEditor({
     fieldStates,
     pluginId,
     locale,
+    router,
   ]);
 
   if (setupFields.length === 0) {
@@ -549,7 +561,7 @@ export function CredentialsEditor({
             ? t('saveWithCount', { count: dirtyCount })
             : t('save')}
         </Button>
-        {savedAt !== null ? (
+        {savedAt !== null && activation?.state !== 'errored' ? (
           <span className="text-[11px] text-[color:var(--muted-ink)]">
             {t('savedCheck')}
           </span>
@@ -565,6 +577,14 @@ export function CredentialsEditor({
           />
         )}
       </div>
+      {savedAt !== null && activation?.state === 'errored' ? (
+        <ActivationFailureNotice
+          className="mt-3"
+          lead={t('savedNotStarted')}
+          code={activation.error_code}
+          detail={activation.error}
+        />
+      ) : null}
     </div>
   );
 }
@@ -662,6 +682,9 @@ function MultiselectField({
   const [freeText, setFreeText] = useState<string>('');
   const [saving, setSaving] = useState(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
+  // #1497 — same as the scalar editor: the save re-activates the plugin.
+  const [activation, setActivation] = useState<PluginActivationResult | null>(null);
+  const router = useRouter();
 
   // Hydrate the current selection from the stored value ONCE it arrives. The
   // parent fetches config values async, so `storedValue` is undefined on the
@@ -712,14 +735,16 @@ function MultiselectField({
               .map((s) => s.trim())
               .filter(Boolean)
           : selected;
-      await patchInstalledConfig(pluginId, { [fieldKey]: values });
+      const res = await patchInstalledConfig(pluginId, { [fieldKey]: values });
       setSavedAt(Date.now());
+      setActivation(parseActivationResult(res.activation));
+      router.refresh();
     } catch (err) {
       setError(humanizeError(err, tRoot));
     } finally {
       setSaving(false);
     }
-  }, [status, freeText, selected, pluginId, fieldKey, tRoot]);
+  }, [status, freeText, selected, pluginId, fieldKey, tRoot, router]);
 
   const groups = useMemo(() => {
     const m = new Map<string, SetupOption[]>();
@@ -797,7 +822,7 @@ function MultiselectField({
             ? t('saveSelectionWithCount', { count: selected.length })
             : t('saveSelection')}
         </Button>
-        {savedAt !== null ? (
+        {savedAt !== null && activation?.state !== 'errored' ? (
           <span className="text-[11px] text-[color:var(--muted-ink)]">
             {t('savedCheck')}
           </span>
@@ -813,6 +838,14 @@ function MultiselectField({
           </button>
         ) : null}
       </div>
+      {savedAt !== null && activation?.state === 'errored' ? (
+        <ActivationFailureNotice
+          className="mt-3"
+          lead={t('savedNotStarted')}
+          code={activation.error_code}
+          detail={activation.error}
+        />
+      ) : null}
     </div>
   );
 }
