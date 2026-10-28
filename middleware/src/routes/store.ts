@@ -5,6 +5,7 @@ import type {
   Plugin,
   PluginPermissionsSummary,
   PluginSetupField,
+  RegistrySourceStatus,
   StoreGetResponse,
   StoreListResponse,
 } from '../api/admin-v1.js';
@@ -122,12 +123,20 @@ export function createStoreRouter(deps: StoreDeps): Router {
       // "Hub" view alongside its real install_state — an already-installed or
       // built-in plugin that the hub also offers must not vanish from the Hub
       // tab. A registry hiccup degrades to local-only, never 500s.
+      //
+      // #1458 — "never breaks the local listing" used to hold for fast
+      // failures only: a hanging registry delayed this response past the web
+      // UI's budget. The client now bounds every fetch below that budget and
+      // caches outcomes; `registries` tells the UI which source answered.
+      let sources: RegistrySourceStatus[] | undefined;
       if (deps.client?.hasRegistries()) {
         // id → index into `items`, so a colliding remote entry can enrich the
         // local plugin in place rather than being dropped.
         const indexById = new Map(items.map((p, i) => [p.id, i]));
         try {
-          const { plugins, errors } = await deps.client.listAll();
+          const listed = await deps.client.listAll();
+          const { plugins } = listed;
+          sources = listed.sources;
           for (const resolved of plugins) {
             const existingIdx = indexById.get(resolved.entry.id);
             if (existingIdx !== undefined) {
@@ -150,9 +159,6 @@ export function createStoreRouter(deps: StoreDeps): Router {
               indexById.set(remote.id, items.length);
               items.push(remote);
             }
-          }
-          for (const e of errors) {
-            console.warn(`[store] registry '${e.registry}' skipped: ${e.message}`);
           }
         } catch (err) {
           console.warn(
@@ -185,6 +191,7 @@ export function createStoreRouter(deps: StoreDeps): Router {
         items: decorated,
         next_cursor: null,
         total: decorated.length,
+        ...(sources ? { registries: sources } : {}),
       };
       res.json(body);
     } catch (err) {

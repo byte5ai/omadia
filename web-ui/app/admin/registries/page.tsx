@@ -13,6 +13,7 @@ import {
   listRegistries,
   updateRegistry,
 } from '../../_lib/api';
+import { registryErrorKey } from '../../_lib/registryErrors';
 
 type TFn = (key: string, values?: Record<string, string | number>) => string;
 
@@ -27,10 +28,13 @@ type State =
  * Backend: /api/v1/admin/registries (CRUD). The bearer token is write-only —
  * the listing only flags `has_token`. Changes apply without a restart (the
  * live RegistryClient is reloaded server-side after each mutation). A fresh
- * install is seeded with the public default `hub.omadia.ai`.
+ * install is seeded with the public default `hub.omadia.ai`; a list emptied
+ * here stays empty across restarts (#1483). Each row shows the outcome of the
+ * registry's last index fetch (#1482).
  */
 export default function AdminRegistriesPage(): React.ReactElement {
   const t = useTranslations('adminRegistries');
+  const tReason = useTranslations('registryStatus');
   const [state, setState] = useState<State>({ kind: 'loading' });
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -216,10 +220,25 @@ export default function AdminRegistriesPage(): React.ReactElement {
                       {r.name}
                     </span>
                     <TokenBadge hasToken={r.has_token} />
+                    <StatusBadge status={r.status} />
                   </div>
                   <code className="text-[13px] text-[color:var(--fg-muted)]">
                     {r.url}
                   </code>
+                  {r.status && !r.status.ok ? (
+                    <>
+                      <p className="text-[13px] text-[color:var(--danger)]">
+                        {t('status.errorDetail', {
+                          reason: tReason(`errors.${registryErrorKey(r.status.error?.code)}`),
+                        })}
+                      </p>
+                      {r.status.error ? (
+                        <p className="font-mono-num text-[12px] text-[color:var(--fg-subtle)]">
+                          {tReason('detail', { message: r.status.error.message })}
+                        </p>
+                      ) : null}
+                    </>
+                  ) : null}
                 </div>
                 <div className="flex items-center gap-2">
                   <Button
@@ -322,6 +341,33 @@ function TokenBadge({ hasToken }: { hasToken: boolean }): React.ReactElement {
       ].join(' ')}
     >
       {hasToken ? t('tokenSet') : t('public')}
+    </span>
+  );
+}
+
+function StatusBadge({
+  status,
+}: {
+  status: StoredRegistry['status'];
+}): React.ReactElement {
+  const t = useTranslations('adminRegistries.status');
+  const tone = !status
+    ? 'bg-[color:var(--border)]/40 text-[color:var(--fg-muted)]'
+    : status.ok
+      ? 'bg-[color:var(--success)]/10 text-[color:var(--success)]'
+      : 'bg-[color:var(--danger)]/10 text-[color:var(--danger)]';
+  return (
+    <span
+      className={[
+        'inline-flex items-center gap-2 rounded-full px-2 py-0.5 text-[11px] uppercase tracking-[0.16em]',
+        tone,
+      ].join(' ')}
+    >
+      {!status
+        ? t('unchecked')
+        : status.ok
+          ? t('ok', { count: status.plugin_count ?? 0 })
+          : t('error')}
     </span>
   );
 }

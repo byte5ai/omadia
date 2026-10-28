@@ -4116,6 +4116,11 @@
       "emptyLocalHint": "Upload a plugin package via drag & drop above — the server validates the manifest and registers it in the catalog.",
       "emptyHubTitle": "No plugins available in the Hub.",
       "emptyHubBody": "Connect a registry under <adminLink>Admin · Registries</adminLink> — or upload your own package in the <localLink>Local</localLink> tab.",
+      "emptyHubNoPluginsBody": "The connected registries offer no plugins right now. Upload your own package in the <localLink>Local</localLink> tab.",
+      "emptyHubFailedTitle": "The Hub could not be loaded.",
+      "emptyHubFailedBody": "No registry could be read — the reasons are listed above. Check the sources under <adminLink>Admin · Registries</adminLink>, or upload your own package in the <localLink>Local</localLink> tab.",
+      "registryErrorsTitle": "{count, plural, one {A registry could not be read.} other {# registries could not be read.}}",
+      "registryErrorsHint": "The Hub shows what the other registries returned; local and installed plugins are not affected. Check the sources under <adminLink>Admin · Registries</adminLink>.",
       "errorKicker": "Error",
       "errorTitle": "The catalog could not be loaded.",
       "errorHint": "Check that the middleware is reachable and that the endpoint <endpoint>/api/v1/store/plugins</endpoint> responds.",
@@ -4225,6 +4230,7 @@
       "unexpectedJobState": "Unexpected job state: {state}",
       "activationFailed": "Installed, but the plugin did not start: {message}",
       "updateActivationFailed": "Updated, but the plugin did not start: {message}",
+      "registryUnavailable": "The plugin could not be looked up: the registry {registries} could not be read. Check it under Admin · Registries and try again.",
       "updateAvailable": "Update available",
       "updating": "Updating …",
       "update": "Update",
@@ -4753,7 +4759,7 @@
   },
   "adminRegistries": {
     "title": "Plugin Registries",
-    "intro": "Sources from which plugins are pulled into the store. New instances start with <hub>hub.omadia.ai</hub>. The token is stored encrypted and never shown again — only whether one is set. Changes take effect without a restart.",
+    "intro": "Sources from which plugins are pulled into the store. New instances start with <hub>hub.omadia.ai</hub>. The token is stored encrypted and never shown again — only whether one is set. Changes take effect without a restart. If you remove every registry, the instance stays without one, also after a restart.",
     "addHeading": "Add registry",
     "fields": {
       "name": "Name",
@@ -4778,6 +4784,12 @@
     "badge": {
       "tokenSet": "Token set",
       "public": "public"
+    },
+    "status": {
+      "ok": "Reachable · {count, plural, one {# plugin} other {# plugins}}",
+      "error": "Unreachable",
+      "errorDetail": "Last check failed. {reason}",
+      "unchecked": "Not checked yet"
     },
     "confirmDelete": "Really remove registry \"{name}\"?",
     "errors": {
@@ -5096,6 +5108,7 @@
         "memory": "Memory purges",
         "conductor": "Conductor changes",
         "profileSnapshot": "Profile snapshots",
+        "registry": "Plugin registries",
         "channel": "Channels"
       }
     },
@@ -6329,5 +6342,16 @@
     "copy": "Copy",
     "copied": "Copied",
     "copyFailed": "Couldn't copy automatically — select the secret above and copy it manually."
+  },
+  "registryStatus": {
+    "errors": {
+      "timeout": "It did not answer in time.",
+      "network": "It could not be reached (connection refused, unknown host or a redirect).",
+      "http": "It answered with an HTTP error.",
+      "badIndex": "It answered, but not with a valid registry index.",
+      "tooLarge": "Its index is larger than allowed.",
+      "unknown": "It could not be read."
+    },
+    "detail": "Technical detail: {message}"
   }
 }
