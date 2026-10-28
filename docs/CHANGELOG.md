@@ -75,6 +75,50 @@ changelog.
   empty line says what it covers: "No grant needed: this plugin requests neither
   its own database tables nor public paths."
 
+
+### Fixed — built-in plugins: version after an image update, sticky uninstall, attach on install (#1505, #1481, #1498, #1491, #1499, #1484)
+
+2026-10-28. Built-ins (the packages under `middleware/packages/*`) are seeded
+by the boot, and four things about that went wrong.
+
+**Version (#1505).** The seeders only wrote `installed_version` when they
+created an entry, so after an image update the registry kept the old version.
+Profile bundles pinned it and the importer refused them with
+`bundle.unknown_plugin`, even on the same instance. `runLegacyBootstrap` now
+ends with `reconcileBuiltInVersions`, which sets every built-in to the version
+the image ships (config kept). Boot log: `[bootstrap] built-in version
+reconcile: N updated, M already current`.
+
+**Uninstall (#1481).** Uninstalling a built-in lasted until the next restart,
+which re-installed it with default settings. The uninstall is now recorded in
+`builtin-uninstalls.json` next to `installed.json` (and in the vault backup);
+the seeders skip recorded ids until the operator installs the plugin again.
+The providers the boot selects from the environment (orchestrator, memory,
+embeddings, knowledge graph) still come back when the host needs them. The
+store's uninstall dialog says which of the two applies
+(`Plugin.built_in_uninstall`) and no longer offers to delete an uploaded
+package file for a built-in.
+
+**Attach to the default orchestrator (#1498, #1491).** A built-in the boot
+installs on an existing instance, and every non-agent plugin installed from the
+Hub, was installed but not attached to the fallback agent; an agent's parent
+integration was not attached either ("Parent missing"). Boot reconciliation and
+runtime installs of every kind now attach the plugin and its installed
+`depends_on` parents, through the same `attachAllPlugins` primitive first boot
+uses. Only missing rows are created — an operator's disabled or configured row
+stays as it is — and a reactivation does not re-attach.
+
+**canvas-core (#1499).** `multi_instance: false` without a justification
+logged a manifest warning on every boot and ingest. The plugin publishes one
+stateless validator service, so it is multi-instance now. A test runs every
+bundled manifest through the rule.
+
+**Onboarding profiles (#1484).** `minimal-dev` and `production` no longer list
+channel ids that are not in the catalog or memory/knowledge-graph providers the
+next boot removes; `blank` no longer points at `/store/upload`. Apply skips a
+plugin whose capability is already provided (`skipped[].reason:
+'capability_provided'`), the shipped profile descriptions are translated, and
+the outcome says that the plugins become active after a restart.
 ### Fixed — follow-ups to #1522: old false "done" plan steps, the preamble preview, card lead-ins (#1502, #1500)
 
 2026-10-28. Three gaps #1522 left open.

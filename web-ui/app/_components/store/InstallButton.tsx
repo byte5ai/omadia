@@ -80,6 +80,10 @@ interface InstallButtonProps {
    *  the post-install next-step links. Absent on a pre-OM-16 middleware, in
    *  which case the pill renders as before. */
   readiness?: PluginReadiness;
+  /** #1481 — set for a package that ships in the image; the uninstall dialog
+   *  says whether the uninstall survives a restart and drops the
+   *  uploaded-package checkbox (there is no uploaded package). */
+  builtInUninstall?: 'persistent' | 'reinstalled_at_boot';
   /** Capabilities the plugin provides. #1507 — a `privacy.redact@1` provider
    *  gets a data-protection warning in its uninstall dialog. */
   provides?: string[];
@@ -128,6 +132,7 @@ export function InstallButton({
   availableVersion,
   setupGuide,
   readiness,
+  builtInUninstall,
   provides,
   removablePackage = false,
   kind,
@@ -165,6 +170,7 @@ export function InstallButton({
           provides?.includes(PRIVACY_REDACT_CAPABILITY) ?? false
         }
         {...(readiness ? { readiness } : {})}
+        {...(builtInUninstall ? { builtInUninstall } : {})}
         {...(kind ? { kind } : {})}
         attachedTo={attachedTo ?? null}
         {...(installState === 'update-available' && availableVersion
@@ -489,12 +495,15 @@ function InstalledPanel({
   pluginName,
   update,
   readiness,
+  builtInUninstall,
   providesPrivacyShield = false,
   kind,
   attachedTo,
 }: {
   pluginId: string;
   pluginName: string;
+  /** #1481 — see `InstallButtonProps.builtInUninstall`. */
+  builtInUninstall?: 'persistent' | 'reinstalled_at_boot';
   /** #1507 — this plugin IS the Privacy Shield; uninstalling it turns masking
    *  off for every chat, so the confirm dialog says so. */
   providesPrivacyShield?: boolean;
@@ -768,28 +777,42 @@ function InstalledPanel({
               <span>{t('confirmRemovePrivacyShield')}</span>
             </p>
           ) : null}
-          <label className="mt-3 flex items-start gap-2 text-[12px] leading-relaxed text-[color:var(--fg)]">
-            <input
-              type="checkbox"
-              checked={alsoDeletePackage}
-              onChange={(e) => setAlsoDeletePackage(e.target.checked)}
-              className="mt-0.5 size-3.5 accent-[color:var(--danger,#b03030)]"
-            />
-            <span>
-              {t.rich('deletePackageLabel', {
-                mono: (chunks) => (
-                  <span className="font-mono-num text-[color:var(--fg-muted)]">
-                    {chunks}
-                  </span>
-                ),
-                subtle: (chunks) => (
-                  <span className="text-[color:var(--fg-subtle)]">
-                    {chunks}
-                  </span>
-                ),
-              })}
-            </span>
-          </label>
+          {builtInUninstall ? (
+            <p className="mt-2 text-[12px] leading-relaxed text-[color:var(--fg)]">
+              {t.rich(
+                builtInUninstall === 'persistent'
+                  ? 'builtInUninstallPersistent'
+                  : 'builtInUninstallReinstalled',
+                {
+                  name: pluginName,
+                  strong: (chunks) => <strong>{chunks}</strong>,
+                },
+              )}
+            </p>
+          ) : (
+            <label className="mt-3 flex items-start gap-2 text-[12px] leading-relaxed text-[color:var(--fg)]">
+              <input
+                type="checkbox"
+                checked={alsoDeletePackage}
+                onChange={(e) => setAlsoDeletePackage(e.target.checked)}
+                className="mt-0.5 size-3.5 accent-[color:var(--danger,#b03030)]"
+              />
+              <span>
+                {t.rich('deletePackageLabel', {
+                  mono: (chunks) => (
+                    <span className="font-mono-num text-[color:var(--fg-muted)]">
+                      {chunks}
+                    </span>
+                  ),
+                  subtle: (chunks) => (
+                    <span className="text-[color:var(--fg-subtle)]">
+                      {chunks}
+                    </span>
+                  ),
+                })}
+              </span>
+            </label>
+          )}
           <div className="mt-3 flex gap-2">
             <Button variant="danger" pill onClick={doUninstall}>
               {alsoDeletePackage

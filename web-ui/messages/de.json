@@ -977,7 +977,7 @@
     "ariaCloseBackdrop": "Modal schließen",
     "ariaClose": "Schließen",
     "kicker": "Erste Einrichtung",
-    "title": "Profil wählen — in <60 Sekunden arbeitsfähig",
+    "title": "Startprofil wählen",
     "intro": "Du hast noch keine Plugins installiert — die bereits laufenden Pakete kommen aus dem Image. Wähle ein curated Profil, dann werden dessen Plugins in der korrekten Capability-Reihenfolge registriert. Secrets wie API-Keys setzt du im Anschluss je Plugin auf dessen Detail-Seite.",
     "exportPrefix": "Bereits eingerichtet?",
     "exportLink": "Profil als YAML exportieren",
@@ -989,11 +989,18 @@
     "outcomeAppliedTitle": "Profil <id>{profileId}</id> angewendet",
     "outcomeStats": "{installed} installiert, {skipped} übersprungen, {errored} fehlgeschlagen",
     "sectionInstalled": "Neu installiert",
-    "sectionSkipped": "Bereits installiert (übersprungen)",
+    "sectionSkipped": "Übersprungen",
+    "skippedCapabilityProvided": " — {capability} liefert bereits {owner}, das Backend, das diese Instanz beim Start ausgewählt hat",
     "sectionErrored": "Fehler — bitte manuell prüfen",
     "secretsHint": "Plugins, die operator-Secrets benötigen (z.B. anthropic_api_key, telegram_bot_token), starten im Status <erroredTag>errored</erroredTag> bis du die Secrets über den Wizard auf der jeweiligen Detail-Seite setzt. Aktiviere danach via \"Reactivate\".",
     "errorTitle": "Profil <id>{profileId}</id> konnte nicht angewendet werden",
-    "tryAnother": "Anderes Profil wählen"
+    "tryAnother": "Anderes Profil wählen",
+    "restartHint": "Die Plugins sind registriert. Aktiv werden sie nach dem nächsten Neustart der Middleware.",
+    "profiles": {
+      "blank": "Leeres Profil. Stell den Stack selbst im Plugin-Store zusammen; eigene Plugins lädst du als ZIP im Tab \"Lokal\" des Stores hoch.",
+      "minimal-dev": "Orchestrator-Stack ohne Verifier. Embeddings sind enthalten, weil orchestrator-extras sie braucht. Das Memory- und Knowledge-Graph-Backend richtet sich nach DATABASE_URL und wird beim Start eingerichtet. Channel-Plugins fügst du danach im Store hinzu.",
+      "production": "Vollständiger Orchestrator-Stack mit Verifier. Setze vor dem Anwenden DATABASE_URL, damit der Start das Postgres-Memory- und Knowledge-Graph-Backend wählt, und einen LLM-Key. Channel-Plugins (Teams, Telegram, …) installierst du danach im Store."
+    }
   },
   "chatTabs": {
     "newChat": "Neuer Chat",
@@ -4303,6 +4310,8 @@
       "uninstallAria": "{name} deinstallieren",
       "uninstall": "Deinstallieren",
       "confirmRemove": "<strong>{name}</strong> entfernen? Tool wird sofort aus dem Orchestrator abgebaut, der Vault-Namespace wird geleert, Registry-Eintrag gelöscht.",
+      "builtInUninstallPersistent": "<strong>{name}</strong> ist in omadia enthalten. Es bleibt auch nach einem Neustart deinstalliert; du kannst es jederzeit wieder aus dem Store installieren, dann mit Standardeinstellungen.",
+      "builtInUninstallReinstalled": "<strong>{name}</strong> ist in omadia enthalten und ein Provider, den diese Instanz beim Start auswählt. Braucht die Instanz ihn, installiert ihn der nächste Neustart wieder, mit Standardeinstellungen.",
       "deletePackageLabel": "Auch die hochgeladene Paketdatei unter <mono>.uploaded-packages/</mono> entfernen. <subtle>Ohne Haken bleibt das Package im Katalog und ist neu installierbar — nur Built-ins sind davon unberührt.</subtle>",
       "confirmUninstallDelete": "Ja, deinstallieren + löschen",
       "confirmUninstall": "Ja, deinstallieren",
