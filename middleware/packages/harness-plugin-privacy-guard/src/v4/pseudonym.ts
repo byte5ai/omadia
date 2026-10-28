@@ -17,12 +17,12 @@
 import type { Dataset, DatasetRow, PseudonymMap } from './types.js';
 
 // Realistic German-style name pools — the dataset domain is German HR.
-const FIRST_NAMES: ReadonlyArray<string> = [
+export const FIRST_NAMES: ReadonlyArray<string> = [
   'Lukas', 'Mia', 'Felix', 'Emma', 'Jonas', 'Hannah', 'Paul', 'Lena',
   'Tim', 'Sophie', 'Finn', 'Clara', 'Noah', 'Laura', 'Elias', 'Marie',
   'Ben', 'Julia', 'Leon', 'Nina', 'Jan', 'Sarah', 'Max', 'Eva',
 ];
-const LAST_NAMES: ReadonlyArray<string> = [
+export const LAST_NAMES: ReadonlyArray<string> = [
   'Becker', 'Schulz', 'Hoffmann', 'Wagner', 'Richter', 'Klein', 'Wolf',
   'Schröder', 'Neumann', 'Schwarz', 'Braun', 'Krüger', 'Hofmann', 'Hartmann',
   'Lange', 'Werner', 'Krause', 'Lehmann', 'Köhler', 'Maier', 'Frank',
@@ -215,6 +215,50 @@ function surrogateCandidates(type: string): Generator<string> {
 }
 
 /**
+ * `target` in the letter case of `sample`: all upper, all lower, or unchanged
+ * when `sample` is mixed or has no cased letters. How a surrogate follows the
+ * case the user wrote, and how a restored value follows the case the model
+ * wrote (#1528).
+ */
+export function caseLike(sample: string, target: string): string {
+  if (sample.toUpperCase() === sample.toLowerCase()) return target;
+  if (sample === sample.toUpperCase()) return target.toUpperCase();
+  if (sample === sample.toLowerCase()) return target.toLowerCase();
+  return target;
+}
+
+function isAllUpper(value: string): boolean {
+  return value.toUpperCase() !== value.toLowerCase() && value === value.toUpperCase();
+}
+
+/**
+ * The surrogate for a case variant of a value `forward` already holds: that
+ * value's surrogate in the variant's case. `undefined` when there is no such
+ * value, or when the re-cased surrogate is already taken or equals a real
+ * value — a caseless placeholder (`PLATZHALTER-CUSTOM-1`) cannot carry the
+ * variant's case, so the variant gets a surrogate of its own and restore
+ * gives back exactly what the user wrote.
+ */
+function caseVariantSurrogate(
+  value: string,
+  forward: ReadonlyMap<string, string>,
+  reverse: ReadonlyMap<string, string>,
+  realsLower: ReadonlySet<string>,
+  avoid: string,
+): string | undefined {
+  const key = value.toLowerCase();
+  for (const [real, surrogate] of forward) {
+    if (real.toLowerCase() !== key) continue;
+    const candidate = caseLike(value, surrogate);
+    if (reverse.has(candidate) || realsLower.has(candidate.toLowerCase())) return undefined;
+    // Never a spelling the text already carries (same rule as a fresh mint).
+    if (avoid.includes(candidate.toLowerCase())) return undefined;
+    return candidate;
+  }
+  return undefined;
+}
+
+/**
  * Build (or extend) a pseudonym map for detected prompt spans. Guarantees:
  *   - stable: a value already in `existing` keeps its surrogate;
  *   - bijective: no two real values share a surrogate;
@@ -244,18 +288,36 @@ export function createPromptPseudonymMap(
   // calls (message, ingested tail, recalled context). Without the latter, a
   // later call could mint a surrogate equal to a real value masked earlier
   // in the turn — answer-side restore would then corrupt that span.
-  const realSet = new Set(pending.keys());
-  for (const real of forward.keys()) realSet.add(real);
+  // Compared case-insensitively, like everything below: surrogates that
+  // differ only in case would let restore swap two people (#1528 review).
+  const realsLower = new Set([...pending.keys(), ...forward.keys()].map((v) => v.toLowerCase()));
+  const takenLower = new Set([...reverse.keys()].map((v) => v.toLowerCase()));
+  // Case-insensitive, so a surrogate never equals a spelling of the text the
+  // model already reads (#1528).
+  const avoid = avoidText.toLowerCase();
 
   for (const [value, type] of [...pending.entries()].sort((a, b) =>
     a[0].localeCompare(b[0]),
   )) {
+    // #1528 — a case variant of a value this turn already masked ("JONAS…"
+    // after "jonas…") is the same value: it gets the same surrogate in its
+    // own case, so the model does not see two people where there is one.
+    const variant = caseVariantSurrogate(value, forward, reverse, realsLower, avoid);
+    if (variant !== undefined) {
+      forward.set(value, variant);
+      reverse.set(variant, value);
+      takenLower.add(variant.toLowerCase());
+      continue;
+    }
     let surrogate: string | undefined;
-    for (const candidate of surrogateCandidates(type)) {
+    for (const raw of surrogateCandidates(type)) {
+      // An upper-case value gets an upper-case surrogate, so the model sees
+      // the case the user wrote.
+      const candidate = isAllUpper(value) ? raw.toUpperCase() : raw;
       if (
-        !reverse.has(candidate) &&
-        !realSet.has(candidate) &&
-        !avoidText.includes(candidate)
+        !takenLower.has(candidate.toLowerCase()) &&
+        !realsLower.has(candidate.toLowerCase()) &&
+        !avoid.includes(candidate.toLowerCase())
       ) {
         surrogate = candidate;
         break;
@@ -267,6 +329,7 @@ export function createPromptPseudonymMap(
     }
     forward.set(value, surrogate);
     reverse.set(surrogate, value);
+    takenLower.add(surrogate.toLowerCase());
   }
   return { forward, reverse };
 }

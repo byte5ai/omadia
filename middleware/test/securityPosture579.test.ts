@@ -38,6 +38,7 @@ import { createPrivacyGuardService } from '@omadia/plugin-privacy-guard/dist/ind
 import {
   PROMPT_MASK_BLOCKED_ANSWER,
   SECURITY_QUARANTINE_NOTICE,
+  localizeRefusalNotice,
 } from '../packages/harness-orchestrator/src/orchestrator.js';
 // #1208 — the budget constants are internal to the package (not barrel
 // exports); the test pins both the wire value and the number itself.
@@ -823,7 +824,9 @@ describe('WP-09 — the inbound screener sees the masked turn (posture auto)', (
     const seen: LlmRequest[] = [];
     const orch = maskedOrchestrator({ privacyGuard: blockingService, payloads, seen });
     const done = await streamDone(orch, turnWithPii('wp09-blocked-stream'));
-    assert.ok(done.answer.startsWith(PROMPT_MASK_BLOCKED_ANSWER), done.answer);
+    // Delivered in the turn's language (#1529) — German by default.
+    const delivered = localizeRefusalNotice(PROMPT_MASK_BLOCKED_ANSWER, undefined);
+    assert.ok(done.answer.startsWith(delivered), done.answer);
     assert.equal(payloads.length, 0, 'the screener must not be called');
     assert.equal(seen.length, 0, 'the model must not be called');
   });

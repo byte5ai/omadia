@@ -21,9 +21,14 @@
  * Everything here is pure; the per-turn state lives in the service.
  */
 
-import type { PromptPiiDetector, PromptPiiSpan } from '@omadia/plugin-api';
+import type {
+  PromptPiiDetector,
+  PromptPiiSpan,
+  UnresolvedSurrogateCountOptions,
+} from '@omadia/plugin-api';
 
 import { detectBaselineSync } from './promptMask.js';
+import { countUnresolvedForms } from './promptSurrogates.js';
 import type { PseudonymMap } from './v4/types.js';
 import {
   asValueLiteral,
@@ -155,17 +160,21 @@ const MIN_NUMERIC_SURROGATE_DIGITS = 5;
 export function countUnresolvedSurrogates(
   text: string,
   map: PseudonymMap | undefined,
+  options: UnresolvedSurrogateCountOptions = {},
 ): number {
   if (map === undefined || map.reverse.size === 0) return 0;
   const lower = text.toLowerCase();
   const digitText = joinDigitGroups(text);
   const literals = indexByKind(findValueLiterals(text));
-  return [...map.reverse.keys()].filter(
+  const failClosed = options.unreadableLiterals !== false;
+  const surrogates = [...map.reverse.keys()].filter(
     (surrogate) =>
       lower.includes(surrogate.toLowerCase()) ||
       carriesDigitsOf(digitText, surrogate) ||
-      carriesValueOf(literals, surrogate),
+      carriesValueOf(literals, surrogate, failClosed),
   ).length;
+  // #1528 — and the forms restore had no real value for.
+  return surrogates + countUnresolvedForms(text, map);
 }
 
 function carriesDigitsOf(digitText: string, surrogate: string): boolean {
@@ -196,15 +205,17 @@ function indexByKind(literals: readonly ValueLiteral[]): ReadonlyMap<ValueKind, 
   );
 }
 
-/** A date or amount placeholder whose value the text names in any spelling. */
+/** A date or amount placeholder whose value the text names in any spelling.
+ *  `failClosed`: an unreadable literal or placeholder counts as a hit. */
 function carriesValueOf(
   literals: ReadonlyMap<ValueKind, KindValues>,
   surrogate: string,
+  failClosed: boolean,
 ): boolean {
   const placeholder = asValueLiteral(surrogate);
   if (placeholder === undefined) return false;
   const seen = literals.get(placeholder.kind);
   if (seen === undefined) return false;
-  if (seen.unreadable || placeholder.values.length === 0) return true;
+  if (failClosed && (seen.unreadable || placeholder.values.length === 0)) return true;
   return placeholder.values.some((value) => seen.values.has(value));
 }
