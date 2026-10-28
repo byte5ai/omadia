@@ -4385,7 +4385,7 @@
         "idConflictBundled": "Plugin id {pluginId} belongs to a plugin bundled with this installation. An upload cannot replace a bundled plugin — give the package its own id. To override deliberately, set {overrideEnv}=1 in the middleware environment.",
         "idConflictBuiltin": "Plugin id {pluginId} collides with a built-in catalog entry.",
         "duplicateVersion": "Version {version} of {pluginId} is already uploaded. Bump the version or remove the upload first.",
-        "downgradeBlocked": "Version {toVersion} of {pluginId} is older than the installed version {fromVersion}. A downgrade swaps out the running plugin and cannot be undone — confirm it explicitly.",
+        "downgradeBlocked": "Version {toVersion} of {pluginId} is older than the installed version {fromVersion}. A downgrade swaps out the running plugin — confirm it explicitly.",
         "noFile": "The request contains no file."
       }
     },

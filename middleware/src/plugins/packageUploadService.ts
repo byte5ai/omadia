@@ -460,7 +460,7 @@ export class PackageUploadService {
         return fail(
           'package.downgrade_blocked',
           `Version ${plugin.version} von ${plugin.id} ist älter als die installierte Version ${existingUploaded.version}. ` +
-            'Ein Downgrade tauscht die laufende Instanz aus und ist nicht umkehrbar — es muss ausdrücklich bestätigt werden ' +
+            'Ein Downgrade tauscht die laufende Instanz aus — es muss ausdrücklich bestätigt werden ' +
             '(allow_downgrade).',
           undefined,
           {

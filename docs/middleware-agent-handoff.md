@@ -3332,7 +3332,7 @@ gelöscht, sondern nach `<packagesDir>/<id>/.retired-<version>/` verschoben
 und erst nach einem fehlerfreien `onPackageReady` entfernt — bzw. sofort, wenn
 nichts aktiviert wurde (`index.ts` steigt früh aus, wenn die Registry das Plugin
 nicht `active` führt): dann gab es keine laufende Instanz zu schützen. Scheitert
-die Aktivierung (#1452 — der Fehler wird weiterhin geschluckt), bleibt der
+die Aktivierung (die Antwort trägt dann `activation_error`, #1452), bleibt der
 Ordner liegen und das Log nennt den Pfad. Pro Plugin bleibt **eine** Kopie: die vorige
 wird beim nächsten Tausch und bei `DELETE /packages/:id` gelöscht. Kein
 Side-by-Side: der Store-Index zeigt weiter auf genau eine Version, und der

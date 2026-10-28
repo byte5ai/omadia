@@ -4385,7 +4385,7 @@
         "idConflictBundled": "Plugin-ID {pluginId} gehört zu einem mitgelieferten Plugin dieser Installation. Ein Upload darf ein mitgeliefertes Plugin nicht überschreiben — vergib dem Paket eine eigene ID. Für einen bewussten Override setze {overrideEnv}=1 in der Middleware-Umgebung.",
         "idConflictBuiltin": "Plugin-ID {pluginId} kollidiert mit einem Built-in-Eintrag im Katalog.",
         "duplicateVersion": "Version {version} von {pluginId} ist bereits hochgeladen. Version anheben oder den Upload erst entfernen.",
-        "downgradeBlocked": "Version {toVersion} von {pluginId} ist älter als die installierte Version {fromVersion}. Ein Downgrade tauscht das laufende Plugin aus und ist nicht umkehrbar — es muss ausdrücklich bestätigt werden.",
+        "downgradeBlocked": "Version {toVersion} von {pluginId} ist älter als die installierte Version {fromVersion}. Ein Downgrade tauscht das laufende Plugin aus — es muss ausdrücklich bestätigt werden.",
         "noFile": "Die Anfrage enthält keine Datei."
       }
     },

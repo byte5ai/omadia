@@ -60,7 +60,7 @@ describe('retired package copies', () => {
     assert.equal(retired, path.join(root, 'packages', '@test/retire', '.retired-1.0.0'));
     assert.equal(await fs.readFile(path.join(retired!, 'manifest.yaml'), 'utf-8'), '# 1.0.0\n');
     await assert.rejects(fs.access(first.path), 'the live path moved, not copied');
-    assert.deepEqual(logs, [], 'a clean retire says nothing');
+    assert.equal(logs.length, 0, 'a clean retire says nothing');
 
     // Retiring again drops the earlier copy: one per plugin.
     const second = await layDown('@test/retire', '1.1.0');

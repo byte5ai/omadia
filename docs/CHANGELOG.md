@@ -306,8 +306,9 @@ and "older" were the same code path.
 - **A replaced version is no longer deleted before the new one activates.**
   It is moved to `<packagesDir>/<id>/.retired-<version>/` and removed only
   after `onPackageReady` returns cleanly (or at once when nothing activated —
-  no live instance, nothing to protect); when activation throws (#1452, still
-  swallowed) the copy stays and its path is logged as the way back. At most one
+  no live instance, nothing to protect); when activation throws, the response
+  carries `activation_error` (#1452) and the copy stays, its path logged as
+  the way back. At most one
   retired copy per plugin — earlier ones are pruned on the next swap and on
   `DELETE /packages/:id`, so peak disk per plugin doubles at most. The store
   index still points at exactly one version, and the catalog is built from
