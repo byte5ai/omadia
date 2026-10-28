@@ -37,8 +37,10 @@ export interface PluginSetupField {
    *  install wizard and the post-install editor; render with `pickLocalized`. */
   help?: LocalizedMarkdown;
   /** Manifest default. The post-install editor pre-selects this value in
-   *  an `enum` dropdown when nothing is stored yet. */
-  default?: string;
+   *  an `enum` dropdown when nothing is stored yet. A `string[]` for
+   *  `type === 'host_list'`, a `boolean` for `type === 'boolean'` (#1464).
+   *  Mirrors middleware admin-v1. */
+  default?: string | string[] | boolean;
   /** Allowed values for `type === 'enum'`. When present, the
    *  post-install editor renders a `<select>` instead of a text input. */
   enum?: Array<{ value: string; label: string; label_localized?: LocalizedMarkdown }>;
