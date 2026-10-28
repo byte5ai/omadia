@@ -3926,7 +3926,7 @@ DIAGRAM_PUBLIC_BASE_URL=http://localhost:3979  # Base-URL für signierte URLs
 DIAGRAM_SIGNED_URL_TTL_SEC=900             # 15 min
 DIAGRAM_MAX_SOURCE_BYTES=64000             # Quellcode-Cap
 DIAGRAM_MAX_PNG_BYTES=900000               # <1 MB Teams-Limit
-# Object-storage (Tigris auf Fly, MinIO lokal — auto-provisioniert via `fly storage create`)
+# Object-storage (Tigris auf Fly, SeaweedFS lokal via docker-compose.storage.yaml — Fly auto-provisioniert via `fly storage create`)
 BUCKET_NAME, AWS_ENDPOINT_URL_S3, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
 # Lokaler Attachment-Store ohne S3 (platform/attachmentStore.ts). Greift nur, wenn
 # die vier S3-Werte NICHT alle gesetzt sind; wird als `tigrisStore` veröffentlicht.
