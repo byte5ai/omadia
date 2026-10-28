@@ -145,6 +145,52 @@ changelog.
   empty line says what it covers: "No grant needed: this plugin requests neither
   its own database tables nor public paths."
 
+### Fixed — Privacy Shield follow-ups: guard uninstall, recall of unprotected turns, per-tool scope (#1507)
+
+2026-10-28. Follow-ups to #1516.
+
+- **Uninstall blocked under the org policy.** With
+  `OMADIA_PRIVACY_FORCE_GUARDED=true`, uninstalling the last
+  `privacy.redact@1` provider answers `409 install.privacy_guard_required`
+  (`InstallService.uninstall`, `uninstallVoidsForceGuarded`). Without a
+  provider no turn is masked, so the uninstall would void the policy. The
+  store hides the button and says why. Without the policy the warning from
+  #1516 stays the only guard (decision: Marcel, 2026-10-28).
+- **Unprotected turns stay out of recall.** A turn that ran without a shield,
+  or in which a tool bypassed it, is stored `unprotected`
+  (`TurnIngest.unprotected`, `@omadia/plugin-api` 1.38.0, from
+  `PrivacyTurnHandle.hasBypassed()`). A turn under a shield recalls with
+  `excludeUnprotected`, so the full-text, embedding and entity legs of
+  "Inhaltlich verwandte Turns", the `query_knowledge_graph` turn search and a
+  plugin's `ctx.knowledgeGraph` turn search return none of them. Subscription
+  CLI turns are always flagged. The flag is only written when present, so a
+  backfill from transcripts keeps it. On an instance that ran without a
+  shield, every turn so far is flagged: installing one later drops that
+  history from cross-session recall. That block was how names
+  from an unprotected window reached the model again, because recall masking
+  only catches detector-visible spans. Both KG backends; Neon keeps the flag
+  in `properties` without a migration. A session-briefing summary of such a
+  turn inherits the flag. Not covered: the same chat's tail and briefing keep
+  such turns, turns from before this change carry no flag, facts, memories
+  and plans derived from them keep their values, and the `memory` tool can
+  still read session transcripts under `/memories/sessions/`.
+- The uninstall block counts only running providers: an errored second
+  provider does not make the active one removable.
+- **Per-tool scope stays with its owner.** The bypass resolver moved to
+  `harness-orchestrator/src/privacyBypassResolver.ts`. A tool that has an
+  owner is decided by that owner alone: an ownerless native or domain tool
+  (kernel meta-tools, MCP handlers, `mcp.*`, skill sub-agents) is never
+  bypassed, and another agent's domain tool follows that agent. Before, a
+  sub-agent owner set to `bypass`, or naming such a tool in its `per_tool`
+  list, unmasked it. A sub-agent's toolkit tools still follow the owning
+  agent, the case the setting exists for.
+- The boot reseed that drops the guard's operator config is left to #1481
+  (cluster S2-N05, built-in lifecycle).
+
+Tests: `middleware/test/privacyFollowups1507.test.ts`,
+`middleware/test/recallUnprotectedTurns1507.test.ts`, and the store case in
+`web-ui/app/_components/store/__tests__/PrivacyShieldConfig.test.tsx`.
+
 ### Fixed — built-in plugins: version after an image update, sticky uninstall, attach on install (#1505, #1481, #1498, #1491, #1499, #1484)
 
 2026-10-28. Built-ins (the packages under `middleware/packages/*`) are seeded

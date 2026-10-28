@@ -330,6 +330,10 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
         // unconditionally (see the Neon backend): props are merged on upsert,
         // so an omitted flag could never clear a stale `true`.
         tailOnly: turn.tailOnly === true,
+        // #1507 — only written when set, like `owners`: a re-ingest from the
+        // session transcript (backfill, replay) carries no flag and must not
+        // clear one the live turn recorded.
+        ...(turn.unprotected !== undefined ? { unprotected: turn.unprotected } : {}),
         // Member-scoped memory — see the Neon backend. Only written when set,
         // so a re-ingest without it keeps the owners the live turn recorded.
         ...(turn.owners !== undefined ? { owners: canonicalOwners(turn.owners) } : {}),
@@ -747,6 +751,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       // #1096 — tail-only turns are conversation, not knowledge: the session
       // tail reads them, recall must not.
       if (node.props['tailOnly'] === true) continue;
+      if (opts.excludeUnprotected === true && node.props['unprotected'] === true) continue;
       const scope = String(node.props['scope'] ?? '');
       if (opts.excludeScope && scope === opts.excludeScope) continue;
       if (!matchesAgentScopePrefix(scope, opts.agentScopePrefix)) continue;
@@ -820,6 +825,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       if (excludeTurnIds.has(node.id)) continue;
       // #1096 — see searchTurns.
       if (node.props['tailOnly'] === true) continue;
+      if (opts.excludeUnprotected === true && node.props['unprotected'] === true) continue;
       const scope = String(node.props['scope'] ?? '');
       if (opts.excludeScope && scope === opts.excludeScope) continue;
       if (!matchesAgentScopePrefix(scope, opts.agentScopePrefix)) continue;
@@ -3345,6 +3351,9 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
           // #1096 — see searchTurns. A tail-only ingest carries no entityRefs,
           // so this is belt-and-braces for backfilled or legacy edges.
           if (turnNode.props['tailOnly'] === true) continue;
+          if (opts.excludeUnprotected === true && turnNode.props['unprotected'] === true) {
+            continue;
+          }
           if (opts.userId && turnNode.props['userId'] !== opts.userId) continue;
           if (opts.excludeScope && turnNode.props['scope'] === opts.excludeScope) continue;
           // Entity node stays global; entity-anchored recall is agent-isolated.

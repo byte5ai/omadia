@@ -1117,6 +1117,10 @@
       "wrong_state": {
         "what": "Dieser Installationslauf ist bereits über den Konfigurationsschritt hinaus.",
         "next": "Lade die Seite neu, um zu sehen, wo die Installation wirklich steht."
+      },
+      "privacy_guard_required": {
+        "what": "Dieses Plugin ist der einzige Privacy Shield, und die Org-Richtlinie OMADIA_PRIVACY_FORCE_GUARDED verlangt Maskierung, deshalb lässt es sich nicht deinstallieren.",
+        "next": "Installiere zuerst einen anderen Privacy-Shield-Provider oder schalte die Org-Richtlinie in der Middleware-Umgebung ab."
       }
     },
     "cli_install": {
@@ -4364,7 +4368,8 @@
       "removePackageConfirm": "Das hochgeladene Paket von <strong>{name}</strong> entfernen? Es ist nicht installiert, es läuft also nichts daraus. Es verschwindet aus dem Katalog; ein Hub-Plugin lässt sich erneut abrufen.",
       "removePackageYes": "Ja, entfernen",
       "removingPackage": "Wird entfernt …",
-      "removePackageFailed": "Das Paket konnte nicht entfernt werden: {message}"
+      "removePackageFailed": "Das Paket konnte nicht entfernt werden: {message}",
+      "uninstallBlockedByPolicy": "Deinstallation gesperrt: Das ist der einzige Privacy Shield, und die Org-Richtlinie OMADIA_PRIVACY_FORCE_GUARDED verlangt Maskierung."
     },
     "auditMode": {
       "singleHostHelp": "Nur die im Manifest deklarierten Hosts.",

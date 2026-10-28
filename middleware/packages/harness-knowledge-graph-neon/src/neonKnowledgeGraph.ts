@@ -476,6 +476,11 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         // that a replay (capture_level=off) or a backfill re-ingests as real
         // knowledge — invisible to recall for good, with nothing to clear it.
         tailOnly: turn.tailOnly === true,
+        // #1507 — the turn answered from values the model saw raw. Only
+        // written when set, like `owners`: a re-ingest from the session
+        // transcript (backfill, replay) carries no flag and must not clear one
+        // the live turn recorded; a live re-ingest sets it either way.
+        ...(turn.unprotected !== undefined ? { unprotected: turn.unprotected } : {}),
         // Member-scoped memory — who owns this turn's knowledge. Only written
         // when set: a re-ingest without it (backfill, replay) keeps the owners
         // the live turn recorded instead of erasing them.
@@ -1918,6 +1923,8 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
           OR ($7 = 'default::' AND scope NOT LIKE '%::%'))
         -- Member-scoped memory: everyone present must own the turn.
         AND ($8::jsonb IS NULL OR properties @> jsonb_build_object('owners', $8::jsonb))
+        -- #1507 — a recall under a Privacy Shield skips unprotected turns.
+        AND (NOT $9::boolean OR COALESCE((properties->>'unprotected')::boolean, FALSE) = FALSE)
         AND to_tsvector(
           'simple',
           coalesce(properties->>'userMessage', '') || ' ' ||
@@ -1935,6 +1942,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         limit,
         agentScopePrefix,
         audienceOwners,
+        opts.excludeUnprotected === true,
       ],
     );
 
@@ -2015,6 +2023,8 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     //   $12 weight task
     //   $13 LIMIT (overshoot)
     //   $14 agentScopePrefix (nullable) — per-orchestrator isolation
+    //   $15 audienceOwners (nullable jsonb) — member-scoped memory
+    //   $16 excludeUnprotected (boolean) — #1507, skip `unprotected` turns
     const sql = `
       WITH scored AS (
         SELECT
@@ -2065,6 +2075,8 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
             OR ($14 = 'default::' AND scope NOT LIKE '%::%'))
           -- Member-scoped memory (see searchTurns).
           AND ($15::jsonb IS NULL OR properties @> jsonb_build_object('owners', $15::jsonb))
+          -- #1507 — see searchTurns.
+          AND (NOT $16::boolean OR COALESCE((properties->>'unprotected')::boolean, FALSE) = FALSE)
           AND ($7::text[] IS NULL OR entry_type = ANY($7::text[]))
           AND ($8::boolean = TRUE OR tier IN ('HOT', 'WARM'))
           AND (
@@ -2150,6 +2162,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       overshoot,
       agentScopePrefix,
       audienceOwners,
+      opts.excludeUnprotected === true,
     ]);
 
     return result.rows
@@ -5524,6 +5537,8 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
             OR ($6 = 'default::' AND t.scope NOT LIKE '%::%'))
           -- Member-scoped memory (see searchTurns).
           AND ($7::jsonb IS NULL OR t.properties @> jsonb_build_object('owners', $7::jsonb))
+          -- #1507 — see searchTurns.
+          AND (NOT $8::boolean OR COALESCE((t.properties->>'unprotected')::boolean, FALSE) = FALSE)
         ORDER BY (t.properties->>'time') DESC
         LIMIT $5
         `,
@@ -5535,6 +5550,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
           perEntityLimit,
           agentScopePrefix,
           audienceOwners,
+          opts.excludeUnprotected === true,
         ],
       );
 

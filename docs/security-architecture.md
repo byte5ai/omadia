@@ -1809,6 +1809,24 @@ session log behind it stores each answer with its real values restored, so
 a recalled answer would otherwise hand them to the model two turns later. A user message a channel replays still
 follows `mask_user_prompt`.
 
+`maskReplayedAnswer` only masks what its detectors see: e-mail addresses
+always, person names only with the optional `pii-detector`. A turn that ran
+without a shield, or in which a tool bypassed it, put names on the record that
+no shield ever masked, so the session log stores its Turn `unprotected`
+(`TurnIngest.unprotected`, from the turn's privacy handle: no handle, or
+`hasBypassed()`; a turn on the subscription CLI always). Every turn search
+that runs under a shield passes `excludeUnprotected` and returns no such
+turn: the cross-session recall legs (full-text, embedding, entity), the
+`query_knowledge_graph` turn search, and a plugin's `ctx.knowledgeGraph` turn
+search (#1507). On an instance that ran without a shield, every turn so far is
+stored `unprotected`, so installing one later drops that history from
+cross-session recall. A session-briefing summary of such a
+turn inherits the flag. Not covered: the same chat's tail and briefing keep
+them (conversation continuity); turns stored before the flag existed carry
+none; facts, curated memories and plans derived from such a turn keep their
+values; and the intern-exempt `memory` tool can read the session transcripts
+under `/memories/sessions/` with real values whatever the flag.
+
 These tool results skip the digest:
 
 - **Intern-exempt tools.** `INTERN_EXEMPT_TOOLS`
@@ -1830,13 +1848,23 @@ These tool results skip the digest:
   resolver) passes the raw result and records the tool on the receipt. The
   bypass applies even when recording it throws, and the receipt itself is
   persisted best-effort (§7b). A sub-agent that read a bypassed result and
-  interned no dataset hands its answer up raw as well.
+  interned no dataset hands its answer up raw as well. A tool is decided by
+  its own owner (`privacyBypassResolver.ts`): a kernel tool by the plugin
+  that registered it; an ownerless native tool (memory, `query_dataset`, an
+  MCP native handler) or ownerless domain tool (`mcp.*`, a skill sub-agent)
+  is never bypassed; another agent's domain tool follows that agent; and only
+  a sub-agent's toolkit tools follow the sub-agent's owning agent. Before
+  this, a sub-agent owner set to `bypass` or naming such a tool in its
+  `per_tool` list unmasked tools whose owner never opted out.
   The store's privacy picker shows the clamp as "Locked by org policy" and
   edits the `per_tool` list; both read the authenticated
   `GET /api/v1/admin/runtime/privacy-posture` (#1508, #1510), which also
   reports `shield_active: false` while no `privacy.redact@1` provider runs —
   every turn then reaches the model unmasked, and the dashboard says so
-  (#1507). The posture is not on the public `/health`.
+  (#1507). The posture is not on the public `/health`. While the clamp is
+  on, uninstalling the last `privacy.redact@1` provider is refused
+  (`409 install.privacy_guard_required`), since without one no turn is
+  masked and the policy would be void.
   `OMADIA_PRIVACY_FORCE_GUARDED=true` switches all three off for the result
   the model gets, and for the MCP-to-knowledge-graph ingestion
   (`Orchestrator.dispatchTool`, epic #459) as well: every seam that reads a
