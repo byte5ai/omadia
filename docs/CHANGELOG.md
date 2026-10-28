@@ -74,8 +74,12 @@ changelog.
 `unprotected` flag and counted as protected under a shield.
 `scripts/backfill-unprotected-provenance.ts --before <instant> [--apply]`
 marks the ones the guard's own detectors flag: C0 identity shapes (e-mail,
-IBAN, phone, address, ID number) and, with `PRIVACY_C1_DETECTOR_URL` set, the
-C1 sidecar's person names and addresses. Content without a hit stays readable,
+IBAN, phone, address, ID number) and, with `PRIVACY_C1_DETECTOR_URL` set, C1
+spans that look like a personal name (two or more capitalised words at
+confidence 0.9 or more; C1 also tags role nouns like "User" as persons).
+Run on our instance: 9 of 23 notes, 9 of 13 rule promotions and 14 of 97
+scratch memories marked, each naming an employee; generic conventions and
+both processes stay readable. Content without a hit stays readable,
 so curated conventions are kept. Dry run by default; a detector failure
 aborts the run. Turns stored before #1507 are not covered.
 

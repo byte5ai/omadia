@@ -4,8 +4,8 @@
  * (`runProvenanceBackfill`, `harness-orchestrator-extras/src/provenanceBackfill.ts`).
  *
  * Detection: the guard's C0 identity baseline (e-mail, IBAN, phone, address,
- * ID number) plus, when `PRIVACY_C1_DETECTOR_URL` is set, the C1 sidecar's
- * person and address spans. A detector failure aborts the run.
+ * ID number) plus, when `PRIVACY_C1_DETECTOR_URL` is set, C1 spans that look
+ * like a personal name (see `isNameLike`). A detector failure aborts the run.
  *
  * Usage (DRY-RUN by default — lists what it would mark, writes nothing):
  *   npx tsx scripts/backfill-unprotected-provenance.ts --before 2026-10-28T16:00:00Z
@@ -23,6 +23,20 @@ import 'dotenv/config';
 import { Pool } from 'pg';
 import { runProvenanceBackfill } from '@omadia/orchestrator-extras';
 import { baselineHasIdentityPii, createC1HttpDetector } from '@omadia/plugin-privacy-guard';
+
+/**
+ * C1 also tags role nouns ("User", "Kunde", "Claude") as persons, at scores
+ * up to 0.99; a real name in legacy content shows up as a multi-word span at
+ * about 1.0 ("Marcel Wege"). For this one-off classification a C1 hit counts
+ * only as two or more capitalised words with confidence >= 0.9. The live
+ * shield keeps its own threshold.
+ */
+const C1_BACKFILL_MIN_CONFIDENCE = 0.9;
+function isNameLike(span: string, confidence: number): boolean {
+  if (confidence < C1_BACKFILL_MIN_CONFIDENCE) return false;
+  const words = span.trim().split(/\s+/);
+  return words.length >= 2 && words.every((w) => /^\p{Lu}/u.test(w));
+}
 
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(name);
@@ -55,8 +69,10 @@ async function main(): Promise<void> {
       apply,
       detect: async (text) => {
         if (baselineHasIdentityPii(text)) return 'c0';
-        // The detector only asks the sidecar for person and address labels.
-        return (await c1.detect(text)).length > 0 ? 'c1' : undefined;
+        const spans = await c1.detect(text);
+        return spans.some((span) => isNameLike(text.slice(span.start, span.end), span.confidence))
+          ? 'c1'
+          : undefined;
       },
       log: (m) => console.log(m),
     });
