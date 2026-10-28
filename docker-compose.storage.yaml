@@ -1,6 +1,6 @@
-# Overlay: S3-compatible object storage (MinIO, a Tigris stand-in).
+# Overlay: S3-compatible object storage (SeaweedFS, a Tigris stand-in).
 #
-# Adds the `minio` + `minio-init` sidecars and wires the kernel's object
+# Adds the `s3` + `s3-init` sidecars and wires the kernel's object
 # store. Enabling this turns on chat ATTACHMENT ingestion (the bot can read
 # uploaded files) and is a prerequisite for the diagrams + office plugins.
 #
@@ -11,67 +11,84 @@
 # rather than failing. (Vault, installed.json, builder drafts.db and uploaded
 # plugin packages live on the local PLATFORM_DATA_DIR volume, NOT in S3, so
 # the minimal core keeps all of them.)
+#
+# Why not MinIO (#1506): `minio/minio` and `minio/mc` were removed from
+# Docker Hub and quay.io no longer serves them either, so the old overlay
+# failed on any machine without a cached copy. SeaweedFS is Apache-2.0,
+# actively released on Docker Hub, and speaks the path-style S3 API the
+# kernel uses. Both images are pinned to a version tag — bump them together
+# with a fresh `up -d` + upload/download check.
 
 services:
   middleware:
     environment:
-      # In-network wiring — the middleware container reaches MinIO over the
-      # shared `omadia` network's DNS name, never the host's localhost.
-      AWS_ENDPOINT_URL_S3: http://minio:9000
-      AWS_ACCESS_KEY_ID: minioadmin
-      AWS_SECRET_ACCESS_KEY: minioadmin
+      # In-network wiring — the middleware container reaches the S3 server
+      # over the shared `omadia` network's DNS name, never the host's
+      # localhost.
+      AWS_ENDPOINT_URL_S3: http://s3:9000
+      AWS_ACCESS_KEY_ID: omadia
+      AWS_SECRET_ACCESS_KEY: omadia-local-secret
       BUCKET_NAME: diagrams
     depends_on:
       # Wait for the bucket to exist before the kernel boots, so the object
       # store is ready the moment a consumer plugin activates.
-      minio-init:
+      s3-init:
         condition: service_completed_successfully
 
   # --- S3-compatible object storage (Tigris stand-in) -----------------------
-  minio:
-    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+  s3:
+    image: chrislusf/seaweedfs:4.51
     restart: unless-stopped
-    command: server /data --console-address ':9001'
+    # `weed mini` = master + volume + filer + S3 gateway in one process, sized
+    # for a single machine. The S3 API listens on 9000 (the port the MinIO
+    # overlay used, so host-side tooling keeps working).
+    command: mini -dir=/data -ip.bind=0.0.0.0 -s3.port=9000
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+      # SeaweedFS turns these into its admin S3 identity at every start.
+      # Local-only credentials: the port is bound to 127.0.0.1 below.
+      AWS_ACCESS_KEY_ID: omadia
+      AWS_SECRET_ACCESS_KEY: omadia-local-secret
     ports:
       - '127.0.0.1:9000:9000'   # S3 API
-      - '127.0.0.1:9001:9001'   # Web console (login: minioadmin / minioadmin)
     volumes:
-      - minio-data:/data
+      - s3-data:/data
     networks: [omadia]
     healthcheck:
-      test: ['CMD', 'mc', 'ready', 'local']
+      test: ['CMD', 'wget', '-q', '-O', '/dev/null', 'http://127.0.0.1:9000/healthz']
       interval: 5s
       timeout: 3s
-      retries: 10
+      retries: 20
+      start_period: 10s
 
-  # One-shot container that waits for MinIO to be ready, then provisions the
+  # One-shot container that waits for the S3 server, then provisions the
   # bucket and applies the 90-day expiration rule. Re-running is idempotent.
-  minio-init:
-    image: minio/mc:latest
+  s3-init:
+    image: amazon/aws-cli:2.39.0
     depends_on:
-      minio:
+      s3:
         condition: service_healthy
     networks: [omadia]
+    environment:
+      AWS_ACCESS_KEY_ID: omadia
+      AWS_SECRET_ACCESS_KEY: omadia-local-secret
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_ENDPOINT_URL: http://s3:9000
     entrypoint:
       - sh
       - -c
       - |
         set -eu
-        mc alias set local http://minio:9000 minioadmin minioadmin
-        mc mb --ignore-existing local/diagrams
+        aws s3api head-bucket --bucket diagrams 2>/dev/null || \
+          aws s3api create-bucket --bucket diagrams
         # Lifecycle: expire all objects after 90 days. Mirror the production
         # constraint (Tigris allows one rule per bucket) so we catch mistakes
-        # locally too.
-        mc ilm rule add --expire-days 90 local/diagrams || \
-          mc ilm rule import local/diagrams <<'EOF'
-        {"Rules":[{"ID":"expire-90d","Status":"Enabled","Filter":{"Prefix":""},"Expiration":{"Days":90}}]}
-        EOF
-        mc ilm rule list local/diagrams
-        echo '[minio-init] diagrams bucket ready with 90d expiration.'
+        # locally too. PUT replaces the whole configuration, so re-runs are
+        # idempotent.
+        aws s3api put-bucket-lifecycle-configuration --bucket diagrams \
+          --lifecycle-configuration '{"Rules":[{"ID":"expire-90d","Status":"Enabled","Filter":{"Prefix":""},"Expiration":{"Days":90}}]}'
+        aws s3api get-bucket-lifecycle-configuration --bucket diagrams
+        echo '[s3-init] diagrams bucket ready with 90d expiration.'
     restart: 'no'
 
 volumes:
-  minio-data:
+  s3-data:

@@ -8,7 +8,7 @@
 #
 # Optional features are opt-in overlay files, composed with `-f` (each adds
 # its sidecar service AND the env that activates the matching plugin):
-#   -f docker-compose.storage.yaml     object storage (MinIO) — chat attachments
+#   -f docker-compose.storage.yaml     object storage (SeaweedFS) — chat attachments
 #   -f docker-compose.diagrams.yaml    Kroki diagram rendering (needs storage too)
 #   -f docker-compose.embeddings.yaml  in-tenant embeddings (Ollama)
 #   -f docker-compose.skillspector.yaml  advisory plugin code scanning (SkillSpector)
