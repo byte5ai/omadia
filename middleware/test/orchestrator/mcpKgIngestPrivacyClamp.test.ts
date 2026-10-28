@@ -101,13 +101,15 @@ function maskingPrivacyService(): PrivacyGuardService {
   } as unknown as PrivacyGuardService;
 }
 
-/** Runs one turn that calls the ingest-flagged MCP tool; returns the stored rationales. */
-async function ingestOneResult(): Promise<string[]> {
+/** Runs one turn that calls the ingest-flagged MCP tool; returns the stored
+ *  rationales. `stamps` collects each row's `unprotected` (#1536). */
+async function ingestOneResult(stamps: Array<boolean | undefined> = []): Promise<string[]> {
   const rationales: string[] = [];
   const knowledgeGraph = new Proxy(
     {
-      createMemorableKnowledge: (row: { rationale: string }) => {
+      createMemorableKnowledge: (row: { rationale: string; unprotected?: boolean }) => {
         rationales.push(row.rationale);
+        stamps.push(row.unprotected);
         return Promise.resolve({ id: `mk-${String(rationales.length)}` });
       },
     } as Record<string, unknown>,
@@ -158,9 +160,11 @@ describe('MCP → Knowledge-Graph ingestion honours the org privacy clamp', () =
     setMcpPrivacyBypassServers([SERVER_ID]);
     process.env[CLAMP] = 'true';
 
-    const rationales = await ingestOneResult();
+    const stamps: Array<boolean | undefined> = [];
+    const rationales = await ingestOneResult(stamps);
 
     assert.equal(rationales.length, 1, 'one Knowledge-Graph row for the call');
+    assert.deepEqual(stamps, [undefined], 'a digest holds no value: not stamped');
     assert.equal(rationales[0]!.includes(EMAIL), false, `raw value stored: ${rationales[0]!}`);
     assert.equal(rationales[0]!.includes('K-1001'), false, `raw value stored: ${rationales[0]!}`);
     assert.equal(rationales[0], 'Fields: customer, email (values masked)');
@@ -173,10 +177,13 @@ describe('MCP → Knowledge-Graph ingestion honours the org privacy clamp', () =
     setMcpPrivacyBypassServers([SERVER_ID]);
     delete process.env[CLAMP];
 
-    const rationales = await ingestOneResult();
+    const stamps: Array<boolean | undefined> = [];
+    const rationales = await ingestOneResult(stamps);
 
     assert.equal(rationales.length, 1);
     assert.equal(rationales[0], RAW_RESULT);
+    // #1536 — the raw result is stamped, so recall under a shield skips it.
+    assert.deepEqual(stamps, [true]);
   });
 
   it('a server that is not bypassed stores the digest with or without the clamp', async () => {

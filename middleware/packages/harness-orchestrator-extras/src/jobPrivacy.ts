@@ -30,6 +30,7 @@
  * model call (`send: false`, with the reason for the job's log line).
  */
 
+import { PRIVACY_FORCE_GUARDED_ENV_VAR } from '@omadia/plugin-api';
 import type {
   PrivacyGuardService,
   PrivacyPromptMaskResult,
@@ -117,6 +118,8 @@ function turnRun(handle: TurnPrivacyHandleLike): JobPrivacyRun {
  */
 export function createJobPrivacy(
   resolveGuard: () => PrivacyGuardService | undefined,
+  /** #1535 — read for `OMADIA_PRIVACY_FORCE_GUARDED`; a seam for tests. */
+  env: NodeJS.ProcessEnv = process.env,
 ): OpenJobPrivacy {
   return (job) => {
     let guard: PrivacyGuardService | undefined;
@@ -125,7 +128,13 @@ export function createJobPrivacy(
     } catch (err) {
       return refusedRun(`privacy guard lookup failed: ${messageOf(err)}`);
     }
-    if (guard === undefined) return UNGUARDED_RUN;
+    if (guard === undefined) {
+      // #1535 — the org policy requires masking: no guard, no run, rather
+      // than sending stored real values to the model unmasked.
+      return env[PRIVACY_FORCE_GUARDED_ENV_VAR] === 'true'
+        ? refusedRun('OMADIA_PRIVACY_FORCE_GUARDED=true and no privacy guard is running')
+        : UNGUARDED_RUN;
+    }
     if (guard.openStoredTextScope === undefined) {
       return refusedRun('the installed privacy guard cannot mask stored text');
     }

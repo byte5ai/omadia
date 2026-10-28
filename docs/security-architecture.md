@@ -177,8 +177,9 @@ never went to the model), and that tree was a shared passthrough of the memory
 namespacer, so an intern-exempt `view` sent those rows to the model in clear —
 on the API path too. The namespacers now refuse `chat-sessions` for every
 operation (`MemoryPathDenied`); the kernel's own `ChatSessionStore` writes
-around them. The `/memories/sessions/` transcripts stay readable: they are
-written before the render swap and hold the model's own prose.
+around them. The `/memories/sessions/` transcripts are written before the
+render swap, but `SessionLogger` stores every turn there with its real values
+restored, so under a Privacy Shield they are refused too (#1534, below).
 
 This is a deliberate trade-off in line with the UI's notice not to route
 personal data through this provider; the decision is recorded on #1087.
@@ -1823,9 +1824,40 @@ stored `unprotected`, so installing one later drops that history from
 cross-session recall. A session-briefing summary of such a
 turn inherits the flag. Not covered: the same chat's tail and briefing keep
 them (conversation continuity); turns stored before the flag existed carry
-none; facts, curated memories and plans derived from such a turn keep their
-values; and the intern-exempt `memory` tool can read the session transcripts
-under `/memories/sessions/` with real values whatever the flag.
+none.
+
+Content derived from such a turn follows it (#1536). Under a shield the
+memory, excerpt and durable recall legs skip a MemorableKnowledge stamped
+`unprotected` (`MemorableKnowledgeIngest.unprotected`) or linked by
+`DERIVED_FROM` to an `unprotected` Turn; the edge check also covers
+auto-promoted memories stored before the stamp existed (raw MCP results and
+rule promotions stored before it carry neither and stay recallable). The stamp is written where no edge can carry
+it: a bypassed MCP result ingested into the graph (epic #459), and a `_rules/`
+file the durable-rules hook promotes from a turn without a shield or with a
+bypassed tool (no turn context reads as unprotected). As with turns, an
+instance that ran without a shield stamps every rule it promotes, and a shield
+installed later drops them from durable recall. The plan leg keeps only a
+plan whose Turn (`PLAN_OF`, or its `turnId` property) is known and not
+`unprotected`; a plan of no known Turn is dropped. Meeting transcripts written
+by `transcribe_recording` are stored `unprotected` (raw speech no shield
+masked), so they stay out of cross-session recall under a shield; their own
+session keeps them. Not covered: extracted facts reach no model prompt (a
+plugin's `ctx.knowledgeGraph.getNeighbors` can still return them and Turn
+nodes unfiltered), stored-process titles carry no provenance, a memory a user
+saves by hand counts as protected unless it names an unprotected turn, and the
+intern-exempt `memory` tool still serves notes and `_rules/` files written in
+an unprotected turn in clear (only `sessions/` is refused; a transcript copied
+into notes while no shield ran stays readable).
+
+The session transcripts under `/memories/sessions/` hold every turn with its
+real values restored, protected or not, and `memory` is intern-exempt. While a
+`privacy.redact@1` provider runs, or `OMADIA_PRIVACY_FORCE_GUARDED` is on, the
+memory namespacers refuse that tree for every operation (`MemoryPathDenied`,
+`SHIELDED_SEGMENTS` in `orchestratorMemoryNamespacer.ts`, #1534). Masking the
+text on the way out would only catch detector-visible spans. The check is read
+per call, so a cached binding follows the provider. Earlier conversations
+reach the model through recall, which masks and skips `unprotected` turns.
+Without a shield the transcripts stay readable: nothing is masked then anyway.
 
 These tool results skip the digest:
 
@@ -1864,7 +1896,20 @@ These tool results skip the digest:
   (#1507). The posture is not on the public `/health`. While the clamp is
   on, uninstalling the last `privacy.redact@1` provider is refused
   (`409 install.privacy_guard_required`), since without one no turn is
-  masked and the policy would be void.
+  masked and the policy would be void. A provider that is installed but not
+  running (failed boot activation, a reactivation in flight, a tripped
+  breaker) is caught per turn instead: the clamp makes the turn fail closed
+  with a refusal (`PrivacyShieldRequiredError`, `PRIVACY_SHIELD_REQUIRED_ANSWER`)
+  before the screener, a Direct Line dispatch or the model see it (#1535). The
+  instance still boots, and the admin UI and the store keep working, so the
+  guard can be repaired; only chat answers with the refusal until it is back.
+  A turn on the subscription CLI (`claude-cli`), which has no shield, is
+  refused the same way under the clamp, before the child is spawned
+  (`CliChatAgent`, `CLI_PRIVACY_SHIELD_REQUIRED_ANSWER`). A refused
+  turn fires no turn hook and runs no parked MCP input replay; the canvas
+  skeleton skips its model call (`composeSkeleton({ skipModel })`); and the
+  memory jobs outside a turn refuse without a guard (`createJobPrivacy`).
+  Not gated: the operator-only builder preview chat.
   `OMADIA_PRIVACY_FORCE_GUARDED=true` switches all three off for the result
   the model gets, and for the MCP-to-knowledge-graph ingestion
   (`Orchestrator.dispatchTool`, epic #459) as well: every seam that reads a

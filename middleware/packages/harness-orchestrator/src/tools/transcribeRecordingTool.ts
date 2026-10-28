@@ -196,6 +196,12 @@ export class TranscribeRecordingTool {
         assistantAnswer: `_(Transkript-Ingest via ${transcript.provider}, Quelle: ${storageKey})_`,
         ...(segment.speaker !== undefined ? { speaker: segment.speaker } : {}),
         ...(userId !== undefined ? { userId } : {}),
+        // #1536 — raw speech of everyone in the recording, which no shield
+        // ever masked (the model saw it only as an interned tool result).
+        // Recall masks only detector-visible spans, so under a shield these
+        // utterances stay out of cross-session recall like any unprotected
+        // turn. The session's own tail keeps them.
+        unprotected: true,
       });
       written += 1;
     }

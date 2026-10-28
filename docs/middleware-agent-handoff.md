@@ -4029,7 +4029,7 @@ weil das README die Variable nennt.
 
 | Variable | Wirkung |
 |---|---|
-| `OMADIA_PRIVACY_FORCE_GUARDED` | Genau `true` klemmt jedes Tool-Plugin auf `guarded`, egal was in seinem `_privacy_mode` steht (`bypass`/`per_tool` und der Privacy-Bypass eines MCP-Servers, `mcpPrivacyBypass.ts`, wirken dann für das Ergebnis, das das Modell bekommt, nicht). Jeder andere Wert ist wirkungslos. Erfasst ist auch die MCP→Knowledge-Graph-Ingestion (Epic #459, `Orchestrator.dispatchTool`): Jede Stelle, die das Bypass-Flag eines MCP-Servers liest, entscheidet über `isMcpServerBypassInForce` (Flag → `resolveEffectivePrivacyMode`), also speichert ein Server mit `kgIngest` und `privacyBypass` mit Klammer nur die wertfreie Form-Notiz (`mcpObservationDigest`) statt bis zu 8.000 Zeichen des Rohergebnisses. Ändert nur die Moduswahl: die Ausnahmen aus `docs/security-architecture.md` §6f (intern-exempte Tools, Control-Flow, Prompt-Text samt vom Channel wiederholtem Verlauf, Modellaufrufe außerhalb des Privacy-Handles) bleiben. Schaltet kein Prompt-Masking ein (`mask_user_prompt` bleibt eine Einstellung des Privacy-Guard-Plugins, Default aus) und erreicht keine Agenten auf dem Abo-CLI-Provider (`claude-cli`), die ohne Shield laufen (`docs/security-architecture.md` §3a). |
+| `OMADIA_PRIVACY_FORCE_GUARDED` | Genau `true` klemmt jedes Tool-Plugin auf `guarded`, egal was in seinem `_privacy_mode` steht (`bypass`/`per_tool` und der Privacy-Bypass eines MCP-Servers, `mcpPrivacyBypass.ts`, wirken dann für das Ergebnis, das das Modell bekommt, nicht). Jeder andere Wert ist wirkungslos. Erfasst ist auch die MCP→Knowledge-Graph-Ingestion (Epic #459, `Orchestrator.dispatchTool`): Jede Stelle, die das Bypass-Flag eines MCP-Servers liest, entscheidet über `isMcpServerBypassInForce` (Flag → `resolveEffectivePrivacyMode`), also speichert ein Server mit `kgIngest` und `privacyBypass` mit Klammer nur die wertfreie Form-Notiz (`mcpObservationDigest`) statt bis zu 8.000 Zeichen des Rohergebnisses. Ändert nur die Moduswahl: die Ausnahmen aus `docs/security-architecture.md` §6f (intern-exempte Tools, Control-Flow, Prompt-Text samt vom Channel wiederholtem Verlauf, Modellaufrufe außerhalb des Privacy-Handles) bleiben. Schaltet kein Prompt-Masking ein (`mask_user_prompt` bleibt eine Einstellung des Privacy-Guard-Plugins, Default aus). Fail-closed (#1535): Läuft kein `privacy.redact@1`-Provider, wird jeder Chat-Turn mit einer Absage beantwortet statt ungeschützt zu laufen (`PrivacyShieldRequiredError`); Turns auf dem Abo-CLI-Provider (`claude-cli`), der keinen Shield hat, werden immer abgelehnt. Instanz, Admin-UI und Store laufen weiter, damit der Guard repariert werden kann. |
 
 **Sichtbarkeit (#1508, #1507).** `GET /api/v1/admin/runtime/privacy-posture`
 (hinter `requireAuth`, nicht in `/health`) liefert
@@ -4063,6 +4063,22 @@ eine Briefing-Zusammenfassung erbt das Flag, und es wird nur geschrieben, wenn
 gesetzt (ein Backfill aus Transkripten löscht es nicht). Tail und
 Session-Briefing derselben Session behalten sie. Der Bypass-Resolver steckt jetzt in `privacyBypassResolver.ts`: ein Tool
 mit Eigentümer fällt nie auf den Sub-Agent-Owner durch.
+
+**Restlecks S2-N15 (#1534, #1535, #1536).** Unter einem Shield (Provider läuft
+oder `OMADIA_PRIVACY_FORCE_GUARDED`) verweigern beide Memory-Namespacer
+`/memories/sessions/` (`SHIELDED_SEGMENTS`, Prädikat `shieldActive` aus
+`buildOrchestrator` über `MemoryBinder`), weil die Transkripte echte Werte
+tragen. `privacyPolicy.ts` (`isPrivacyForceGuarded`) liefert die Policy für
+den Fail-Closed-Turn (`Orchestrator.shieldRequiredButMissing` vor dem
+Screening-Gate in `runTurnCore`/`chatStream`, `CliChatAgent.refusedByPolicy`).
+Abgeleitetes: `excludeUnprotected` auf MK-, Excerpt- und Plan-Suche
+(plugin-api 1.39.0), in beiden Backends über Property-Stempel oder
+`DERIVED_FROM`/`PLAN_OF` auf eine `unprotected`-Turn; Stempel setzen die
+MCP-KG-Ingestion (gebypasstes Rohergebnis), der Durable-Rules-Hook und
+`transcribe_recording` (Turns immer `unprotected`). Ein abgelehnter Turn feuert
+keine Turn-Hooks und keinen MCP-Input-Replay; das Canvas-Skeleton nutzt dann
+den statischen Fallback (`composeSkeleton({ skipModel })`), und
+`createJobPrivacy` verweigert Memory-Jobs ohne Guard unter der Policy.
 
 ### Abo-CLI-Turn-Budget (OM-104, Beta-Runde 5)
 

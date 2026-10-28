@@ -133,6 +133,13 @@ export interface KnowledgeGraph {
      * {@link agentScopePrefix} — per-orchestrator KG isolation.
      */
     agentScopePrefix?: string;
+    /**
+     * #1536 — leave out plans that cannot be shown under a Privacy Shield:
+     * one linked (`PLAN_OF`, or its `turnId` property) to a Turn stored
+     * `unprotected`, and one linked to no Turn at all, whose provenance is
+     * unknown. Set by a recall that runs under a shield.
+     */
+    excludeUnprotected?: boolean;
   }): Promise<GraphNode[]>;
   /**
    * Structured run-subgraph for a single Turn: Run node + AgentInvocations
@@ -942,6 +949,13 @@ export interface MemorableKnowledgeSearchOptions {
    * `viewerAgentSlug` still applies. See {@link TurnIngest.owners}.
    */
   audienceOwners?: readonly string[];
+  /**
+   * #1536 — leave out memories that hold values no shield masked: stamped
+   * `unprotected` at write time (see {@link MemorableKnowledgeIngest}), or
+   * derived (`DERIVED_FROM`) from a Turn stored `unprotected`. Set by a recall
+   * that runs under a Privacy Shield.
+   */
+  excludeUnprotected?: boolean;
 }
 
 /** Slice 7 — single MK hit from semantic search. */
@@ -990,6 +1004,12 @@ export interface ExcerptSearchOptions {
    * owner branch to the parent MK's `origin_agent`. Omit on legacy callers.
    */
   viewerAgentSlug?: string;
+  /**
+   * #1536 — the rule of
+   * {@link MemorableKnowledgeSearchOptions.excludeUnprotected}, applied to the
+   * excerpt's parent MK.
+   */
+  excludeUnprotected?: boolean;
 }
 
 /** Slice 7 — single excerpt hit, carries the parent-MK external_id
@@ -1443,6 +1463,14 @@ export interface MemorableKnowledgeIngest {
    * user-ACL branches.
    */
   originAgent?: string;
+  /**
+   * #1536 — the MK holds values no Privacy Shield masked: it was written in a
+   * turn without a shield or with a bypassed tool, or from a raw (bypassed)
+   * tool result. Stored as a property; a recall with `excludeUnprotected`
+   * skips it. A MK derived from a Turn stored `unprotected` is skipped too,
+   * flag or not.
+   */
+  unprotected?: boolean;
   /**
    * Slice 3 — cluster-root that triggered the create. Audited as the
    * `actor_omadia_user_id` of the `create` row. Falls back to

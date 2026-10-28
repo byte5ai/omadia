@@ -36,6 +36,7 @@ import {
 // (the caller's captured async context), and the store is a different thing.
 import { turnContext as turnContextStore } from './turnContext.js';
 import type { PrivacyTurnHandle } from './privacyHandle.js';
+import { isPrivacyForceGuarded } from './privacyPolicy.js';
 import type { LoopbackMcpServerHandle } from './loopbackMcpServer.js';
 import { CLI_CHAT_USAGE_SOURCE, recordUsage } from '@omadia/usage-telemetry';
 import {
@@ -899,6 +900,11 @@ export interface CliChatAgentDeps {
    * `buildOrchestratorForAgent` to `orchestrator.bindCliTurnMemory()`.
    */
   readonly bindTurnMemory?: (input: ChatTurnInput) => Promise<CliTurnMemory | undefined>;
+  /**
+   * #1535 — the environment the org policy `OMADIA_PRIVACY_FORCE_GUARDED` is
+   * read from. Defaults to `process.env`; a seam for tests.
+   */
+  readonly policyEnv?: NodeJS.ProcessEnv;
 }
 
 /**
@@ -984,6 +990,29 @@ interface CapturedTurnContext {
   readonly assertTurnOwner?: () => void;
 }
 
+const CLI_PRIVACY_SHIELD_REQUIRED_ANSWER_DE =
+  'Diese Nachricht wurde nicht verarbeitet: Die Organisation verlangt den ' +
+  'Datenschutz-Schild, und der Abo-CLI-Anbieter dieses Agents unterstützt ihn ' +
+  'nicht. Deshalb wurde nichts an das Sprachmodell gesendet. Bitte wende dich ' +
+  'an deinen Betreiber.';
+const CLI_PRIVACY_SHIELD_REQUIRED_ANSWER_EN =
+  'This message was not processed: your organisation requires the Privacy ' +
+  "Shield, and this agent's subscription CLI provider does not support it, " +
+  'so nothing was sent to the language model. Please contact your operator.';
+
+/** #1535 — the answer of a CLI turn refused by the org policy. Both
+ *  languages: this path has no turn locale to pick one. */
+export const CLI_PRIVACY_SHIELD_REQUIRED_ANSWER = `${CLI_PRIVACY_SHIELD_REQUIRED_ANSWER_DE} / ${CLI_PRIVACY_SHIELD_REQUIRED_ANSWER_EN}`;
+
+/** The stream of a refused turn: one `done`, after clearing any card state a
+ *  previous turn left behind (as `streamTurn` does). */
+async function* refusedTurnStream(
+  drainTurnCards: (() => CliTurnCards) | undefined,
+): AsyncGenerator<ChatStreamEvent> {
+  drainTurnCards?.();
+  yield { type: 'done', answer: CLI_PRIVACY_SHIELD_REQUIRED_ANSWER, toolCalls: 0, iterations: 0 };
+}
+
 // SEAM (M3): boot/resolveChatAgent/provider routing constructs + selects this agent.
 export class CliChatAgent implements ChatAgent {
   private readonly turnSemaphore: TurnSemaphore;
@@ -1021,6 +1050,7 @@ export class CliChatAgent implements ChatAgent {
    * ignored; it can never fail the turn.
    */
   public async chat(input: ChatTurnInput, hooks?: CliChatHooks): Promise<SemanticAnswer> {
+    if (this.refusedByPolicy()) return { text: CLI_PRIVACY_SHIELD_REQUIRED_ANSWER };
     const lifecycle = this.runLifecycle(input, this.captureTurnContext(input));
 
     while (true) {
@@ -1070,7 +1100,19 @@ export class CliChatAgent implements ChatAgent {
     input: ChatTurnInput,
     observer?: ChatStreamObserver,
   ): AsyncGenerator<ChatStreamEvent> {
+    if (this.refusedByPolicy()) return refusedTurnStream(this.deps.drainTurnCards);
     return this.streamTurn(input, this.captureTurnContext(input), observer);
+  }
+
+  /**
+   * #1535 — this path has no Privacy Shield: the user message, the replayed
+   * history and every tool result reach the CLI child unmasked. Under the
+   * org policy `OMADIA_PRIVACY_FORCE_GUARDED` the turn is therefore refused
+   * before anything is spawned, whether or not a guard runs for the
+   * in-process path. Read per turn, like the in-process check.
+   */
+  private refusedByPolicy(): boolean {
+    return isPrivacyForceGuarded(this.deps.policyEnv ?? process.env);
   }
 
   private async *streamTurn(

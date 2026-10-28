@@ -382,6 +382,35 @@ function buildAggregateSelectSql(
 }
 
 /**
+ * #1536 — the Turns a Plan `p` belongs to: through `PLAN_OF`, or the `turnId`
+ * property of a plan ingested before its Turn. `$1` is the tenant. A SELECT
+ * over `graph_nodes t`, for `EXISTS (…)`.
+ */
+const PLAN_TURNS_SQL = `SELECT 1 FROM graph_nodes t
+             WHERE t.tenant_id = $1 AND t.type = 'Turn'
+               AND (t.external_id = p.properties->>'turnId'
+                 OR t.id IN (SELECT e.to_node FROM graph_edges e
+                              WHERE e.tenant_id = $1 AND e.type = 'PLAN_OF'
+                                AND e.from_node = p.id))`;
+
+/**
+ * #1536 — SQL predicate: the MemorableKnowledge row `alias` holds no value a
+ * shield never masked. Neither stamped `unprotected` at write time nor
+ * derived (`DERIVED_FROM`) from a Turn stored `unprotected`; the edge check
+ * also covers MK written before the stamp existed. `tenantParam` is the
+ * placeholder of the tenant id.
+ */
+function mkProtectedSql(alias: string, tenantParam: string): string {
+  return `COALESCE((${alias}.properties->>'unprotected')::boolean, FALSE) = FALSE
+          AND NOT EXISTS (
+            SELECT 1 FROM graph_edges d
+              JOIN graph_nodes src ON src.id = d.to_node AND src.type = 'Turn'
+             WHERE d.tenant_id = ${tenantParam} AND d.type = 'DERIVED_FROM'
+               AND d.from_node = ${alias}.id
+               AND COALESCE((src.properties->>'unprotected')::boolean, FALSE))`;
+}
+
+/**
  * Postgres-backed knowledge graph (Neon serverless).
  *
  * Identity model: every node has a stable `external_id` (session:<scope>,
@@ -1732,6 +1761,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     limit?: number;
     openOnly?: boolean;
     agentScopePrefix?: string;
+    excludeUnprotected?: boolean;
   }): Promise<GraphNode[]> {
     const limit = Math.max(1, Math.min(opts.limit ?? 5, 50));
     // `user_id` lives in its own column (set on ingest), not in props.
@@ -1760,6 +1790,16 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
                AND s.type = 'PlanStep'
                AND s.properties->>'status' IN ('pending', 'in_progress')
           ))
+          -- #1536 — under a Privacy Shield only a plan whose Turn is known and
+          -- not unprotected. The Turn is found through PLAN_OF or, for a plan
+          -- ingested before its Turn, the turnId property.
+          AND (NOT $6::boolean OR (
+            EXISTS (${PLAN_TURNS_SQL})
+            AND NOT EXISTS (
+              ${PLAN_TURNS_SQL}
+                AND COALESCE((t.properties->>'unprotected')::boolean, FALSE)
+            )
+          ))
         ORDER BY (p.properties->>'createdAt') DESC NULLS LAST
         LIMIT $4`,
       [
@@ -1768,6 +1808,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         opts.openOnly === true,
         limit,
         opts.agentScopePrefix ?? null,
+        opts.excludeUnprotected === true,
       ],
     );
     return res.rows.map((r) => rowToNode(r));
@@ -2481,6 +2522,8 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         // Per-orchestrator isolation: stamp the producing Agent so recall can
         // default-isolate by origin (team/public visibility still shares).
         ...(input.originAgent ? { origin_agent: input.originAgent } : {}),
+        // #1536 — holds values no shield masked; recall under a shield skips it.
+        ...(input.unprotected === true ? { unprotected: true } : {}),
         acl_owners: initialOwners,
         created_at: now,
         created_by: input.createdBy,
@@ -3512,6 +3555,8 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         -- that IS team/public still qualifies while an owner-owned private one
         -- cannot slip through the owner branch.
         AND ($8::boolean IS NOT TRUE OR COALESCE(visibility, 'team') IN ('team', 'public'))
+        -- #1536 — under a Privacy Shield skip MK that holds unmasked values.
+        AND ($10::boolean IS NOT TRUE OR (${mkProtectedSql('graph_nodes', '$2')}))
         AND (
           -- Member-scoped memory: the room rule REPLACES the viewer ACL.
           -- Everyone present owns the row, or an operator authored it.
@@ -3557,6 +3602,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       opts.manuallyAuthoredOnly === true,
       opts.sharedOnly === true,
       audienceOwners,
+      opts.excludeUnprotected === true,
     ]);
     return rows.rows
       .filter((r) => Number(r.cosine_sim) >= minSimilarity)
@@ -3597,6 +3643,8 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         -- #575 sharedOnly: the excerpt inherits its parent MK's tier, so the
         -- narrowing runs against the PARENT's visibility.
         AND ($7::boolean IS NOT TRUE OR COALESCE(mk.visibility, 'team') IN ('team', 'public'))
+        -- #1536 — the parent MK's rule (see searchMemorableKnowledgeByEmbedding).
+        AND ($9::boolean IS NOT TRUE OR (${mkProtectedSql('mk', '$2')}))
         AND (
           -- Member-scoped memory: the parent MK's room rule (see
           -- searchMemorableKnowledgeByEmbedding) replaces the viewer ACL.
@@ -3644,6 +3692,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       opts.viewerAgentSlug ?? null,
       opts.sharedOnly === true,
       audienceOwners,
+      opts.excludeUnprotected === true,
     ]);
 
     return rows.rows

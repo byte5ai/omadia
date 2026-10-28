@@ -34,7 +34,7 @@ export const CLI_MEMORY_RULES = [
   'Memory conventions for the `memory` tool:',
   '- /memories/_rules/… holds curated rules. Read the relevant ones before answering a new domain question and follow them. Never overwrite or delete them on your own; add to them only when the user explicitly confirms.',
   '- /memories/customers/… holds stable facts about individual customers; /memories/observations/… holds dated observations.',
-  '- /memories/sessions/… holds chat transcripts written by omadia, not by you. Look there only when the user refers to an earlier conversation.',
+  '- /memories/sessions/… holds chat transcripts written by omadia, not by you. Look there only when the user refers to an earlier conversation. While the Privacy Shield is active the tool refuses this path; earlier conversations then come only through the recalled context.',
   '- Store new learnings and user preferences in topic files. Only say you saved something after the tool call succeeded.',
 ].join('\n');
 

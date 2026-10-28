@@ -8,6 +8,22 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.39.0 — 2026-10-28
+
+Additive. Memories and plans derived from an unprotected turn stay out of
+recall under a Privacy Shield (#1536).
+
+### Added
+
+- **`MemorableKnowledgeIngest.unprotected`** — the memory holds values no
+  shield masked (written in an unprotected turn, or from a bypassed tool
+  result). Stored as a property.
+- **`excludeUnprotected`** on `MemorableKnowledgeSearchOptions`,
+  `ExcerptSearchOptions` and `listRecentPlans` — leave out memories stamped
+  `unprotected` or derived from an `unprotected` Turn, and plans linked to
+  such a Turn or to no Turn at all. A backend that ignores it stays correct
+  for instances without a shield.
+
 ## 1.38.0 — 2026-10-28
 
 Additive. A turn answered without Privacy Shield protection can be kept out of

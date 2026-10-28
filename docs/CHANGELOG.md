@@ -67,6 +67,57 @@ changelog.
 `@omadia/plugin-privacy-guard` 0.11.0, `@omadia/plugin-api` 1.37.0
 (`countUnresolvedSurrogates` takes an optional `options`).
 
+### Fixed — Privacy Shield residual leaks: session transcripts, fail-closed policy, derived recall (#1534, #1535, #1536)
+
+2026-10-28. Follow-ups to #1507 (#1516, #1537).
+
+- **Session transcripts refused to `memory` under a shield (#1534).**
+  `SessionLogger` stores every turn under `/memories/sessions/` with its real
+  values restored, and `memory` is intern-exempt, so a `view` there handed the
+  model values the shield had masked. While a `privacy.redact@1` provider runs
+  or `OMADIA_PRIVACY_FORCE_GUARDED` is on, both memory namespacers refuse the
+  tree for every operation (`MemoryPathDenied`, `SHIELDED_SEGMENTS`). The check
+  is read per call. Without a shield the transcripts stay readable.
+- **`OMADIA_PRIVACY_FORCE_GUARDED` fails closed (#1535).** With the policy on
+  and no provider running (failed boot activation, a reactivation in flight, a
+  tripped breaker), a turn is refused before the screener, a Direct Line
+  dispatch or the model see it (`PrivacyShieldRequiredError`, a
+  `PromptMaskBlockedError`, so every refusal seam handles it). The instance
+  still boots, and admin UI and store keep working, so the guard can be
+  repaired; chat answers with the refusal until it is back. A subscription-CLI
+  turn (`claude-cli`, no shield at all) is refused the same way under the
+  policy, before the child is spawned, even while the guard runs: **an agent
+  on the CLI provider stops answering on an instance with the policy on.**
+  A refused turn also runs no turn hook (the plan-runner's gate is an LLM call
+  on the raw message; the streaming path fired `onBeforeTurn` before it
+  refused, a blocked prompt mask included) and no parked MCP input replay. The
+  canvas skeleton (`composeSkeleton`, a model call of its own) falls back to
+  the static skeleton, and the memory jobs outside a turn
+  (`createJobPrivacy`) refuse instead of running unmasked. Without the policy
+  nothing changes.
+- **Derived content from unprotected turns stays out of recall (#1536).**
+  Under a shield, the memory, excerpt and durable legs skip a MemorableKnowledge
+  that is stamped `unprotected` or derived (`DERIVED_FROM`) from an
+  `unprotected` Turn. The edge check covers auto-promoted memories stored
+  before this change; raw MCP results and `_rules/` promotions stored before
+  it carry neither edge nor stamp and stay recallable (no backfill). The stamp is written for a bypassed MCP result ingested into the
+  graph (its edge never finds the Turn) and for a `_rules/` file written in an
+  unprotected turn. On an instance without a shield every new `_rules/`
+  promotion is therefore stamped, and installing a shield later drops those
+  rules from durable recall, as #1537 does for turns. The plan leg keeps only plans whose Turn is known and
+  protected; a plan linked to no Turn is dropped. Meeting transcripts from
+  `transcribe_recording` are stored `unprotected`: raw speech no shield
+  masked. `@omadia/plugin-api` 1.39.0 (`MemorableKnowledgeIngest.unprotected`,
+  `excludeUnprotected` on the MK, excerpt and plan searches). Not covered:
+  extracted facts reach no model prompt (only a plugin's
+  `ctx.knowledgeGraph.getNeighbors`), stored-process titles carry no
+  provenance, and the `memory` tool still serves notes and `_rules/` files
+  written in an unprotected turn in clear (only `sessions/` is refused).
+
+Tests: `middleware/test/privacyResidualLeaksN15.test.ts`,
+`middleware/test/recallDerivedUnprotected1536.test.ts` (in-memory and real
+Postgres), and the stamp in `middleware/test/orchestrator/mcpKgIngestPrivacyClamp.test.ts`.
+
 ### Fixed — middleware correctness: integer setup defaults, receipt chain order, fenced Haiku JSON (#1524, #1526, #1527)
 
 2026-10-28.

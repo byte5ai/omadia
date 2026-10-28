@@ -187,6 +187,7 @@ import {
 } from './nudgePipeline.js';
 import { LoopGuard } from './loopGuard.js';
 import { createPrivacyBypassResolver } from './privacyBypassResolver.js';
+import { isPrivacyForceGuarded } from './privacyPolicy.js';
 import {
   createPrivacyTurnHandle,
   ensureWellFormedParams,
@@ -1268,13 +1269,50 @@ const PROMPT_MASK_BLOCKED_ANSWER_EN =
  *  answer ({@link isPromptMaskBlockedNotice}). */
 export const PROMPT_MASK_BLOCKED_ANSWER = `${PROMPT_MASK_BLOCKED_ANSWER_DE} / ${PROMPT_MASK_BLOCKED_ANSWER_EN}`;
 
-/** True when `text` is the prompt-mask refusal, in either delivered language
- *  or in the persisted bilingual form. */
+/**
+ * #1535 — the org policy `OMADIA_PRIVACY_FORCE_GUARDED` requires the Privacy
+ * Shield, but no `privacy.redact@1` provider is running. Failure-closed like a
+ * blocked mask: the turn is refused before the screener, a Direct Line
+ * dispatch or the model see anything. A subclass, so every seam that already
+ * turns a {@link PromptMaskBlockedError} into a refusal handles this one too.
+ */
+export class PrivacyShieldRequiredError extends PromptMaskBlockedError {
+  constructor() {
+    super('no privacy.redact@1 provider is running and OMADIA_PRIVACY_FORCE_GUARDED=true');
+    this.name = 'PrivacyShieldRequiredError';
+  }
+}
+
+const PRIVACY_SHIELD_REQUIRED_ANSWER_DE =
+  'Diese Nachricht wurde nicht verarbeitet: Die Organisation verlangt den ' +
+  'Datenschutz-Schild, er läuft aber gerade nicht. Deshalb wurde nichts an ' +
+  'das Sprachmodell gesendet. Bitte wende dich an deinen Betreiber.';
+const PRIVACY_SHIELD_REQUIRED_ANSWER_EN =
+  'This message was not processed: your organisation requires the Privacy ' +
+  'Shield, but it is not running right now, so nothing was sent to the ' +
+  'language model. Please contact your operator.';
+
+/** User-facing answer for a turn refused by {@link PrivacyShieldRequiredError}.
+ *  Both languages, like {@link PROMPT_MASK_BLOCKED_ANSWER}. */
+export const PRIVACY_SHIELD_REQUIRED_ANSWER = `${PRIVACY_SHIELD_REQUIRED_ANSWER_DE} / ${PRIVACY_SHIELD_REQUIRED_ANSWER_EN}`;
+
+/** The refusal a blocked turn answers with. */
+function promptMaskBlockedAnswer(err: PromptMaskBlockedError): string {
+  return err instanceof PrivacyShieldRequiredError
+    ? PRIVACY_SHIELD_REQUIRED_ANSWER
+    : PROMPT_MASK_BLOCKED_ANSWER;
+}
+
+/** True when `text` is the prompt-mask refusal or the shield-required refusal
+ *  (#1535), in either delivered language or in the persisted bilingual form. */
 export function isPromptMaskBlockedNotice(text: string): boolean {
   return (
     text === PROMPT_MASK_BLOCKED_ANSWER ||
     text === PROMPT_MASK_BLOCKED_ANSWER_DE ||
-    text === PROMPT_MASK_BLOCKED_ANSWER_EN
+    text === PROMPT_MASK_BLOCKED_ANSWER_EN ||
+    text === PRIVACY_SHIELD_REQUIRED_ANSWER ||
+    text === PRIVACY_SHIELD_REQUIRED_ANSWER_DE ||
+    text === PRIVACY_SHIELD_REQUIRED_ANSWER_EN
   );
 }
 
@@ -1910,10 +1948,16 @@ export const MODEL_REFUSAL_NOTICE = `${MODEL_REFUSAL_NOTICE_DE} / ${MODEL_REFUSA
 
 /** Every notice a turn persists in both languages, as
  *  `[bilingual, de, en]`. The model refusal (#1401), the prompt-mask refusal
- *  (#1529) and the unresolved-placeholder note (#1528). */
+ *  (#1529), the shield-required refusal (#1535) and the unresolved-placeholder
+ *  note (#1528). */
 const BILINGUAL_NOTICES: ReadonlyArray<readonly [string, string, string]> = [
   [MODEL_REFUSAL_NOTICE, MODEL_REFUSAL_NOTICE_DE, MODEL_REFUSAL_NOTICE_EN],
   [PROMPT_MASK_BLOCKED_ANSWER, PROMPT_MASK_BLOCKED_ANSWER_DE, PROMPT_MASK_BLOCKED_ANSWER_EN],
+  [
+    PRIVACY_SHIELD_REQUIRED_ANSWER,
+    PRIVACY_SHIELD_REQUIRED_ANSWER_DE,
+    PRIVACY_SHIELD_REQUIRED_ANSWER_EN,
+  ],
   [PSEUDONYM_UNRESOLVED_NOTICE, PSEUDONYM_UNRESOLVED_NOTICE_DE, PSEUDONYM_UNRESOLVED_NOTICE_EN],
 ];
 
@@ -2200,7 +2244,7 @@ Memory-Namensräume (Konvention):
 - /memories/_rules/… → **gepflegte Regeln aus dem Repo**. Nicht eigenständig überschreiben oder löschen. Nur ergänzen, wenn der Nutzer es ausdrücklich bestätigt.
 - /memories/customers/… → stabile Fakten zu einzelnen Kunden.
 - /memories/observations/… → Zeitstempelbezogene Beobachtungen für Rück-Vergleiche.
-- /memories/sessions/<scope>/YYYY-MM-DD.md → **chronologische Q&A-Transkripte**, von der Middleware geschrieben (nicht von dir). Diese enthalten echte vorangegangene Konversationen. Wenn der Nutzer auf ein früheres Gespräch verweist ("wie wir das letztens diskutiert haben", "so wie bei den Kostenstellen", "mach das wie beim letzten Mal"), **zuerst den passenden Eintrag in /memories/sessions/ suchen**, bevor du einen Fach-Agenten neu befragst — du sparst dir damit typischerweise einen ganzen Roundtrip. Aber: lies nicht standardmäßig alle Sessions, das wäre Token-Verschwendung. Nur auf Rückbezug gezielt nachschlagen.
+- /memories/sessions/<scope>/YYYY-MM-DD.md → **chronologische Q&A-Transkripte**, von der Middleware geschrieben (nicht von dir). Diese enthalten echte vorangegangene Konversationen. Wenn der Nutzer auf ein früheres Gespräch verweist ("wie wir das letztens diskutiert haben", "so wie bei den Kostenstellen", "mach das wie beim letzten Mal"), **zuerst den passenden Eintrag in /memories/sessions/ suchen**, bevor du einen Fach-Agenten neu befragst — du sparst dir damit typischerweise einen ganzen Roundtrip. Aber: lies nicht standardmäßig alle Sessions, das wäre Token-Verschwendung. Nur auf Rückbezug gezielt nachschlagen. Bei aktivem Datenschutz-Schild verweigert das memory-Tool diesen Pfad (die Transkripte tragen echte Werte); frühere Gespräche kommen dann nur über den mitgegebenen Kontext — versuch es dort nicht erneut.
 
 ${contextMemoryBlock}**Regel für /memories/_rules/ lesen:**
 - Bei einer **neuen fachlichen Frage** (Erstfrage zu einer Domäne in dieser Session, oder Wechsel der Domäne) zuerst die relevanten Regel-Dateien unter /memories/_rules/ lesen und die Konventionen strikt befolgen.
@@ -4507,6 +4551,19 @@ export class Orchestrator {
   }
 
   /**
+   * #1535 — must a turn be refused because the org policy requires a shield
+   * and `service` (this turn's resolution of the provider) is absent? Read
+   * per turn, so chat resumes the moment the guard is back. The trade-off is
+   * deliberate: while the guard is down (boot before it activates, a failed
+   * reactivation, a tripped breaker) chat answers with a refusal instead of
+   * running unmasked; the instance, the admin UI and the store keep working,
+   * so an operator can repair or reinstall the guard.
+   */
+  private shieldRequiredButMissing(service: PrivacyGuardService | undefined): boolean {
+    return service === undefined && isPrivacyForceGuarded(process.env);
+  }
+
+  /**
    * Hand a held turn's privacy state to the verifier wrapper instead of
    * finalizing it. The receipt's model attribution is taken NOW: the
    * verifier runs for seconds, and the bounded attribution map could evict
@@ -4906,12 +4963,16 @@ export class Orchestrator {
     // privacy state is closed here. Proceed may hand back a marker-augmented
     // input (fail-open evidence). A blocked screening mask runs the turn into
     // the privacy refusal below, the exit a blocked model call takes.
-    const gate = await this.closePassOnThrow(gatePass, () =>
-      this.screenInboundTurn(input, {
-        exempt: mcpInputReply !== undefined || this.screeningReentries.has(input),
-        privacy: privacyHandle,
-      }),
-    );
+    // #1535 — the org policy requires the shield and none is running: refuse
+    // before the screener (an egress too) or anything else sees the turn.
+    const gate = this.shieldRequiredButMissing(privacyService)
+      ? ({ action: 'blocked', error: new PrivacyShieldRequiredError() } as const)
+      : await this.closePassOnThrow(gatePass, () =>
+          this.screenInboundTurn(input, {
+            exempt: mcpInputReply !== undefined || this.screeningReentries.has(input),
+            privacy: privacyHandle,
+          }),
+        );
     if (gate.action === 'quarantine') {
       if (gatePass) await this.closeUndeliveredPass(gatePass);
       return { answer: gate.answer, toolCalls: 0, iterations: 0 };
@@ -5056,8 +5117,9 @@ export class Orchestrator {
       },
       () => this.closePassOnThrow(undeliveredPass, async () => {
         // W2-1 (#544) — forced replay of the parked MCP tool call, before the
-        // model runs. Writes its outcome onto the live turn context.
-        if (mcpInputReply) {
+        // model runs. Writes its outcome onto the live turn context. A
+        // refused turn (blocked mask, #1535 shield required) runs no tool.
+        if (mcpInputReply && !screeningBlocked) {
           await this.applyMcpInputReplay(mcpInputReply, input, turnId);
         }
         // #332 Layer 2 — Direct Line short-circuit (non-streaming / Teams
@@ -5101,7 +5163,7 @@ export class Orchestrator {
             if (toolReplayLedger.mode === 'replay') {
               toolReplayLedger.abort(REENTRY_ABANDONED.promptMaskBlocked);
             } else {
-              result = { answer: PROMPT_MASK_BLOCKED_ANSWER, toolCalls: 0, iterations: 0 };
+              result = { answer: promptMaskBlockedAnswer(err), toolCalls: 0, iterations: 0 };
               promptMaskBlocked = true;
             }
           } else if (!(err instanceof ToolReplayAbortError)) {
@@ -7157,12 +7219,15 @@ export class Orchestrator {
     // prompt-mask refusal path below. `proceed` may hand back a
     // marker-augmented input (fail-open evidence); a blocked screening mask
     // runs into that refusal path.
-    const streamGate = await this.closePassOnThrow(gatePass, () =>
-      this.screenInboundTurn(input, {
-        exempt: mcpInputReply !== undefined || this.screeningReentries.has(input),
-        privacy: privacyHandle,
-      }),
-    );
+    // #1535 — see `runTurnCore`.
+    const streamGate = this.shieldRequiredButMissing(privacyService)
+      ? ({ action: 'blocked', error: new PrivacyShieldRequiredError() } as const)
+      : await this.closePassOnThrow(gatePass, () =>
+          this.screenInboundTurn(input, {
+            exempt: mcpInputReply !== undefined || this.screeningReentries.has(input),
+            privacy: privacyHandle,
+          }),
+        );
     if (streamGate.action === 'quarantine') {
       if (gatePass) await this.closeUndeliveredPass(gatePass);
       // Fold the AI disclosure the same way the non-streaming quarantine does
@@ -7377,17 +7442,23 @@ export class Orchestrator {
       // Commit-on-delivery — mirror of `runTurnCore`.
       this.bindRequestAfterTurn(bound?.ledger, turnId, input);
       // W2-1 (#544) — forced replay before the model runs. Mirror of `runTurn`.
-      if (mcpInputReply) {
+      // A refused turn (blocked mask, #1535 shield required) runs no tool.
+      if (mcpInputReply && !screeningBlocked) {
         await this.applyMcpInputReplay(mcpInputReply, input, turnId);
       }
       // #133 (E9) — onBeforeTurn is unbounded, so the plan-runner's plan
       // snapshot is emitted as the FIRST stream event, before any answer
-      // tokens.
-      yield* this.toAnnotationEvents(
-        await this.fireTurnHook('onBeforeTurn', turnId, input, {
-          userMessage: input.userMessage,
-        }),
-      );
+      // tokens. Not on a refused turn: the plan-runner's gate and
+      // materialiser are LLM calls on the raw message, and the buffered path
+      // fires the hook only inside `chatInContextInner`, which a refused turn
+      // never reaches (#1535 security review).
+      if (!screeningBlocked) {
+        yield* this.toAnnotationEvents(
+          await this.fireTurnHook('onBeforeTurn', turnId, input, {
+            userMessage: input.userMessage,
+          }),
+        );
+      }
       // Mid-turn steering — register this turn as live so `/chat/steer` can
       // inject extra user messages keyed by the same session scope. The inner
       // loop drains them at each iteration boundary; `endTurn` clears the
@@ -7505,7 +7576,7 @@ export class Orchestrator {
             }
             yield {
               type: 'done',
-              answer: PROMPT_MASK_BLOCKED_ANSWER,
+              answer: promptMaskBlockedAnswer(err),
               toolCalls: 0,
               iterations: 0,
             } as Extract<ChatStreamEvent, { type: 'done' }>;
@@ -7631,16 +7702,23 @@ export class Orchestrator {
             privacySettled = true;
           }
           // #133 (E8) — persisted Turn node id for graph-linking observers.
-          yield* this.toAnnotationEvents(
-            await this.afterTurn(turnId, input, doneEvent.answer, doneEvent.turnId),
-          );
+          // Not for a refused turn (see the branch below).
+          if (!promptMaskBlocked) {
+            yield* this.toAnnotationEvents(
+              await this.afterTurn(turnId, input, doneEvent.answer, doneEvent.turnId),
+            );
+          }
           yield this.discloseDoneEvent(doneEvent, input);
           continue;
         }
         if (event.type === 'done') {
-          yield* this.toAnnotationEvents(
-            await this.afterTurn(turnId, input, event.answer, event.turnId),
-          );
+          // A refused turn fires no `onAfterTurn`, as on the buffered path,
+          // where only `chatInContextInner` fires it (#1535 security review).
+          if (!promptMaskBlocked) {
+            yield* this.toAnnotationEvents(
+              await this.afterTurn(turnId, input, event.answer, event.turnId),
+            );
+          }
           // #644 — fold the disclosure at the boundary, AFTER the hook (which
           // records the raw answer, matching the non-streaming path where
           // `toSemanticAnswer` folds only after `runTurn` persisted the turn).
@@ -9272,6 +9350,10 @@ export class Orchestrator {
               aclOwners: [...owners],
               ...(tc?.agentSlug ? { originAgent: tc.agentSlug } : {}),
               ...(tc?.turnId ? { derivedFromTurnIds: [tc.turnId] } : {}),
+              // #1536 — the raw result no shield masked: kept out of recall
+              // under a shield. The edge above never finds its Turn (the id is
+              // the per-turn uuid), so the stamp is the only record of it.
+              ...(bypassed ? { unprotected: true } : {}),
             })
             .catch(() => {
               /* KG ingestion is best-effort — never break the tool call */
