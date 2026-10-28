@@ -393,6 +393,13 @@ export type ProviderCredentialStatus =
 export interface AdminProvider {
   id: string;
   label: string;
+  /** #1460 — `false` for a keyless provider (Ollama, vLLM …): it is verified
+   *  by reaching it, and a key is optional (auth proxy). Absent on an older
+   *  middleware. */
+  requiresApiKey?: boolean;
+  /** #1460 — a key is actually stored. `connected` is true for a keyless
+   *  provider without any key, so it cannot gate "Change/Remove key". */
+  hasKey?: boolean;
   /** Credential verdict. Prefer this over `connected` everywhere. */
   status: ProviderCredentialStatus;
   /** ISO timestamp of the last successful probe (`verified` only). */
@@ -1274,6 +1281,8 @@ export interface RegistryInstallResponse {
    *  attempted no activation (fresh install — the install job reports that
    *  one), and on an older middleware. */
   activation_error?: string;
+  /** #1497 — the shared activation result; narrow with `parseActivationResult`. */
+  activation?: unknown;
   /** #1463 — present (true) only when this ingest started the plugin. */
   activated?: true;
   next: { install: string };
@@ -2616,6 +2625,9 @@ export interface InstalledSecretsState {
   keys: string[];
   config_keys: string[];
   config_values: Record<string, string>;
+  /** #1497 — whether the plugin came back up after the write re-activated it.
+   *  Narrow with `parseActivationResult`; absent on an older middleware. */
+  activation?: unknown;
 }
 
 /**
@@ -2693,7 +2705,7 @@ export async function fetchSetupFieldOptions(
 export async function patchInstalledConfig(
   pluginId: string,
   patch: Record<string, unknown>,
-): Promise<void> {
+): Promise<{ activation?: unknown }> {
   const forwarded = await forwardCookieHeader();
   const res = await fetch(
     botApi(
@@ -2719,6 +2731,9 @@ export async function patchInstalledConfig(
       text,
     );
   }
+  // #1497 — the write re-activated the plugin; `activation` says whether it
+  // came back up.
+  return ((await res.json().catch(() => ({}))) ?? {}) as { activation?: unknown };
 }
 
 /**
@@ -2801,6 +2816,8 @@ export interface PluginGrantsView {
   orphaned_public_paths: string[];
   last_activation_error: string | null;
   last_activation_error_at: string | null;
+  /** #1456 — classified reason; absent on an older middleware. */
+  last_activation_error_code?: string | null;
 }
 
 function grantsUrl(pluginId: string): string {

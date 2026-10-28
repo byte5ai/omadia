@@ -2,8 +2,8 @@
 
 import { useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Check, X } from 'lucide-react';
-import { useTranslations } from 'next-intl';
+import { AlertTriangle, Check, X } from 'lucide-react';
+import { useFormatter, useTranslations } from 'next-intl';
 
 import { cn } from '../../_lib/cn';
 import {
@@ -75,7 +75,9 @@ type Phase =
       requiresForm: boolean;
       stepError: string | null;
     }
-  | { kind: 'success' }
+  /** #1496 — `notRunning` names the steps that installed but did not start
+   *  (`errored`); the final screen must not call those "active". */
+  | { kind: 'success'; notRunning: string[] }
   | { kind: 'error'; message: string };
 
 /**
@@ -202,7 +204,7 @@ export function RequiresWizard({
               }}
             />
           ) : phase.kind === 'success' ? (
-            <SuccessBody targetPluginName={targetPluginName} />
+            <SuccessBody targetPluginName={targetPluginName} notRunning={phase.notRunning} />
           ) : (
             <ErrorBody message={phase.message} />
           )}
@@ -328,6 +330,7 @@ export function RequiresWizard({
       label: targetPluginName,
     });
 
+    const notRunning: string[] = [];
     for (let i = 0; i < steps.length; i++) {
       const step = steps[i];
       if (!step) continue;
@@ -427,6 +430,7 @@ export function RequiresWizard({
           setPhase({ kind: 'error', message });
           return;
         }
+        if (configured.job.state === 'errored') notRunning.push(step.label);
       } catch (err) {
         const message = describeError(err);
         setPhase({ kind: 'error', message: `${step.label}: ${message}` });
@@ -434,7 +438,7 @@ export function RequiresWizard({
       }
     }
 
-    setPhase({ kind: 'success' });
+    setPhase({ kind: 'success', notRunning });
   }
 }
 
@@ -651,10 +655,30 @@ function InstallingBody({
 
 function SuccessBody({
   targetPluginName,
+  notRunning,
 }: {
   targetPluginName: string;
+  notRunning: string[];
 }): React.ReactElement {
   const t = useTranslations('store.requiresWizard');
+  const format = useFormatter();
+  if (notRunning.length > 0) {
+    // #1496 — everything is INSTALLED (the chain's contract), but not
+    // everything runs. Say which, instead of "all prerequisites are active".
+    return (
+      <div className="flex flex-col items-center gap-3 py-6 text-center">
+        <div className="flex size-12 items-center justify-center text-[color:var(--danger)]">
+          <AlertTriangle className="size-6" aria-hidden />
+        </div>
+        <div className="font-display text-xl text-[color:var(--ink)]">
+          {t('notAllRunning')}
+        </div>
+        <p className="text-[12px] text-[color:var(--muted-ink)]">
+          {t('notRunningList', { name: targetPluginName, plugins: format.list(notRunning) })}
+        </p>
+      </div>
+    );
+  }
   return (
     <div className="flex flex-col items-center gap-3 py-6 text-center">
       <div className="flex size-12 items-center justify-center text-[color:var(--success)]">

@@ -5,10 +5,12 @@ import { useRouter } from 'next/navigation';
 import { useTranslations } from 'next-intl';
 
 import { ApiError, uploadPackage } from '../../_lib/api';
-import type { UploadedPackage } from '../../_lib/storeTypes';
+import { parseActivationResult } from '../../_lib/activationError';
+import type { UploadedPackage, UploadPackageResponse } from '../../_lib/storeTypes';
 import { cn } from '../../_lib/cn';
 import { packageErrorText } from '../../_lib/packageErrorText';
 import { Button } from '@/app/_components/ui/Button';
+import { ActivationFailureNotice } from './ActivationFailureNotice';
 
 type UploadState =
   | { kind: 'idle' }
@@ -16,7 +18,7 @@ type UploadState =
   | {
       kind: 'success';
       pkg: UploadedPackage;
-      activationError?: string;
+      activationError?: ActivationErrorInfo;
       /** #1490 — the version this upload replaced, when it replaced one. */
       replacedVersion?: string;
     }
@@ -71,7 +73,11 @@ export function UploadDropzone(): React.ReactElement {
           // not come back up. Still the success panel (the package IS in the
           // catalog), with the reason named — reporting this as a clean upload
           // is what left operators with a green panel over a dead plugin.
-          ...(resp.activation_error ? { activationError: resp.activation_error } : {}),
+          // #1456 — classified when the middleware sends the shared result.
+          ...((): { activationError?: ActivationErrorInfo } => {
+            const activationError = activationErrorOf(resp);
+            return activationError ? { activationError } : {};
+          })(),
           ...(resp.replaced_version ? { replacedVersion: resp.replaced_version } : {}),
         });
         router.refresh();
@@ -299,6 +305,24 @@ function UploadingRow({
   );
 }
 
+interface ActivationErrorInfo {
+  code: unknown;
+  detail: string | null;
+}
+
+/** The re-activation failure of an upload, from the shared `activation` result
+ *  or — on an older middleware — the bare `activation_error` string. */
+function activationErrorOf(resp: UploadPackageResponse): ActivationErrorInfo | null {
+  const activation = parseActivationResult(resp.activation);
+  if (activation?.state === 'errored') {
+    return { code: activation.error_code, detail: activation.error };
+  }
+  // `activation_error` is the hook's first-hand verdict. It wins even over an
+  // `active` read-back: a registry write that failed after the throw leaves
+  // the entry reading `active` over a plugin that did not start.
+  return resp.activation_error ? { code: undefined, detail: resp.activation_error } : null;
+}
+
 function SuccessRow({
   pkg,
   onDismiss,
@@ -308,7 +332,7 @@ function SuccessRow({
   pkg: UploadedPackage;
   onDismiss: () => void;
   /** #1452 — set when the re-activation of the already-running plugin threw. */
-  activationError?: string;
+  activationError?: ActivationErrorInfo;
   /** #1490 — set when this upload replaced another version of the package. */
   replacedVersion?: string;
 }): React.ReactElement {
@@ -348,9 +372,12 @@ function SuccessRow({
         </p>
       )}
       {activationError ? (
-        <p className="mt-3 text-[12px] text-[color:var(--danger,#b03030)]">
-          {t('activationFailed', { message: activationError })}
-        </p>
+        <ActivationFailureNotice
+          className="mt-3"
+          lead={t('activationFailedLead')}
+          code={activationError.code}
+          detail={activationError.detail}
+        />
       ) : null}
       <div className="mt-3 flex gap-3">
         {/* eslint-disable-next-line no-restricted-syntax -- inline text link (bare text, no border/bg) */}

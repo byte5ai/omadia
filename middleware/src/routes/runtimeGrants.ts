@@ -2,7 +2,7 @@ import type { Request, Response, Router } from 'express';
 
 import type { SqlPermission } from '@omadia/plugin-api';
 
-import type { MissingGrant } from '../api/admin-v1.js';
+import type { ActivationErrorCode, MissingGrant } from '../api/admin-v1.js';
 import { declaredPublicPathsOf, declaredSqlOf, readGrantGap } from '../plugins/grantGap.js';
 import type { PluginSqlGrantStore } from '../platform/pluginSqlGrantStore.js';
 import { LedgerAlreadyOwnedError } from '../platform/pluginSqlGrantStore.js';
@@ -13,6 +13,7 @@ import { auditActorFromRequest, type AdminAuditLog } from '../auth/adminAuditLog
 import { publicPaths } from '../auth/publicPaths.js';
 import type { InstalledAgent, InstalledRegistry } from '../plugins/installedRegistry.js';
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
+import { activationResultOf } from '../plugins/activationFailure.js';
 
 /**
  * Epic #470 C16 (issue #817) — ONE operator consent surface for the two grants
@@ -114,6 +115,8 @@ export interface GrantsView {
   readonly orphaned_public_paths: readonly string[];
   readonly last_activation_error: string | null;
   readonly last_activation_error_at: string | null;
+  /** #1456 — classified reason; `null` unless the plugin is `errored`. */
+  readonly last_activation_error_code: ActivationErrorCode | null;
 }
 
 /** `{ code, message }` — the shape every route in this tree answers errors with. */
@@ -180,6 +183,7 @@ export async function buildGrantsView(
     ),
     last_activation_error: entry?.last_activation_error ?? null,
     last_activation_error_at: entry?.last_activation_error_at ?? null,
+    last_activation_error_code: activationResultOf(entry)?.error_code ?? null,
   };
 }
 

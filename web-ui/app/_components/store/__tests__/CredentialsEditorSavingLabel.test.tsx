@@ -16,6 +16,11 @@ const { mockListKeys, mockPatchSecrets } = vi.hoisted(() => ({
   mockPatchSecrets: vi.fn(),
 }));
 
+// #1497 — the editor refreshes the server-rendered page after a save.
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ refresh: vi.fn(), push: vi.fn() }),
+}));
+
 vi.mock('../../../_lib/api', () => ({
   listInstalledSecretKeys: mockListKeys,
   patchInstalledSecrets: mockPatchSecrets,

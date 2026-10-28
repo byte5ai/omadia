@@ -235,6 +235,7 @@ export function createRegistryInstallRouter(deps: RegistryInstallDeps): Router {
         ...(ingested.activation_error !== undefined
           ? { activation_error: ingested.activation_error }
           : {}),
+        ...(result.activation !== undefined ? { activation: result.activation } : {}),
         // #1463 — the running plugin was (re)started by this ingest.
         ...(ingested.activated === true ? { activated: true } : {}),
         // Missing depends_on parents to install first (empty → install target
