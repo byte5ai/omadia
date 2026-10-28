@@ -59,6 +59,18 @@ export interface TurnHookPayload {
   readonly assistantAnswer?: string;
   readonly toolName?: string;
   readonly toolResult?: string;
+  /**
+   * #1502 — set on `onAfterToolCall`: the call failed. True for an `Error:`
+   * result and for a sub-agent whose every inner tool call failed (it still
+   * answers in prose, so `toolResult` alone reads like a success).
+   */
+  readonly toolFailed?: boolean;
+  /**
+   * #1502 — set on `onAfterToolCall`: the tool serves the turn itself
+   * (`memory`, `v4_render_answer`, `suggest_follow_ups`, `ask_user_choice`),
+   * not the user's task. Hooks that track task progress skip these calls.
+   */
+  readonly toolIsBookkeeping?: boolean;
   /** #133 (E6) — verifier block reason, set on `onVerifierBlocked`. */
   readonly blockReason?: string;
   /**
