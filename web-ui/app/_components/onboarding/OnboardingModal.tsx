@@ -220,7 +220,12 @@ function ProfileGrid({
               {profile.name}
             </h3>
             <p className="mt-2 flex-1 text-[12px] leading-relaxed text-[color:var(--muted-ink)]">
-              {profile.description}
+              {/* #1484 — the shipped profiles carry catalog copy in both
+                  languages; a custom profile's own description is shown as
+                  written. */}
+              {t.has(`profiles.${profile.id}`)
+                ? t(`profiles.${profile.id}`)
+                : profile.description}
             </p>
             <div className="mt-4 flex items-center gap-2 text-[11px] text-[color:var(--faint-ink)]">
               <span className="border border-[color:var(--rule)] px-2 py-0.5">
@@ -305,12 +310,28 @@ function OutcomeBody({
         </Section>
       ) : null}
 
+      {/* #1484 — apply only writes registry entries; activation happens at
+          the next boot. */}
+      {outcome.installed.length > 0 ? (
+        <p className="text-[12px] leading-relaxed text-[color:var(--ink)]">
+          {t('restartHint')}
+        </p>
+      ) : null}
+
       {outcome.skipped.length > 0 ? (
         <Section title={t('sectionSkipped')}>
           <ul className="space-y-1 text-[12px] text-[color:var(--muted-ink)]">
             {outcome.skipped.map((p) => (
-              <li key={p.id} className="font-mono">
-                {p.id}
+              <li key={p.id}>
+                <span className="font-mono">{p.id}</span>
+                {p.reason === 'capability_provided' ? (
+                  <span>
+                    {t('skippedCapabilityProvided', {
+                      capability: p.capability,
+                      owner: p.owner_id,
+                    })}
+                  </span>
+                ) : null}
               </li>
             ))}
           </ul>
