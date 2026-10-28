@@ -36,6 +36,25 @@ changelog.
 
 ## [Unreleased]
 
+### Security — dependency sweep; time-boxed production audit exceptions
+
+2026-10-28. Rolls up 15 Dependabot PRs and clears the high/critical advisories
+that turned every audit leg red: `next` 16.4.2 (three critical/high),
+`dompurify` 3.4.17 via the web-ui override (monaco-editor pins 3.4.15),
+`@azure/msal-node` 7.1.2 (also forced under `@azure/identity`, whose latest
+release still asks for ^6), `undici` 8.12.2, `express` 5.3.0 with the patched
+`body-parser`/`multer`, `follow-redirects`, `vite` ≥ 8.1.6 and `electron`
+44.10.0 with `electron-updater`/`electron-builder` patches; node images move
+to 22.23.4. Electron 45 is left for its own PR, because a major needs the
+dispatch builds §4a asks for.
+
+The audit gate gains `"production": true` exceptions (30 days at most, every
+route named in `via`) for an advisory no release fixes in the major a
+production dependency pins. The first covers zod 3.25.x inside `botbuilder`
+4.23.3 (GHSA-mrhx-c7xc-m3w5): the fix only exists in zod 4, botbuilder throws
+on load under zod 4, and inbound Bot Framework requests never reach the array
+schemas the advisory is about. The stale `braces` exception is removed.
+
 ### Changed — an unconfirmed answer no longer carries a "Hinweis" paragraph
 
 2026-10-16. In `enforce` mode an answer whose claims the verifier could not
