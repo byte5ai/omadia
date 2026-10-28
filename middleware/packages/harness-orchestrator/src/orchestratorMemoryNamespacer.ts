@@ -1,4 +1,11 @@
 import type { MemoryEntry, MemoryStore } from '@omadia/plugin-api';
+import {
+  isUnprotectedNote,
+  markUnprotectedNote,
+  stripUnprotectedNoteMarker,
+} from '@omadia/orchestrator-extras';
+
+import { currentTurnIsShielded, isCurrentTurnUnprotected } from './turnProtection.js';
 
 /**
  * Per-orchestrator memory namespacer.
@@ -71,16 +78,19 @@ const MODEL_DENIED_SEGMENTS = new Set(['chat-sessions']);
  */
 const SHIELDED_SEGMENTS = new Set(['sessions']);
 
-/** Thrown for a path in {@link MODEL_DENIED_SEGMENTS}, or in
- *  {@link SHIELDED_SEGMENTS} under a shield; the memory tool turns it into an
- *  `Error:` result. */
+/** Thrown for a path in {@link MODEL_DENIED_SEGMENTS}, in
+ *  {@link SHIELDED_SEGMENTS} under a shield, or for an unprotected note under
+ *  a shield (#1540); the memory tool turns it into an `Error:` result. */
 export class MemoryPathDenied extends Error {
-  constructor(path: string, reason?: 'privacy-shield') {
+  constructor(path: string, reason?: 'privacy-shield' | 'unprotected-note') {
     super(
       reason === 'privacy-shield'
         ? `The path ${path} is not available to the memory tool while the Privacy Shield is active. ` +
             'Earlier conversations reach you through the recalled context instead.'
-        : `The path ${path} is not available to the memory tool.`,
+        : reason === 'unprotected-note'
+          ? `The note ${path} was written in a conversation without the Privacy Shield and is not ` +
+              'available while the Privacy Shield is active. You may delete it or write a new note in its place.'
+          : `The path ${path} is not available to the memory tool.`,
     );
     this.name = 'MemoryPathDenied';
   }
@@ -92,6 +102,27 @@ export class MemoryPathDenied extends Error {
  * callers without a shield).
  */
 export type ShieldActive = () => boolean;
+
+/**
+ * #1540 — where a note's provenance comes from. `writtenUnprotected` is read
+ * on each write: true marks the note unprotected (`noteProvenance.ts` in
+ * orchestrator-extras). `readerShielded` is read on each read of a marked
+ * note: true refuses it while the shield is active. Omitted: no note is
+ * marked, and a marked note is refused whenever the shield is active.
+ */
+export interface NoteProvenance {
+  writtenUnprotected(): boolean;
+  readerShielded(): boolean;
+}
+
+/** The kernel's provenance: the current turn's privacy handle. A turn without
+ *  one (no guard, or the subscription CLI, which has no shield) writes
+ *  unprotected notes and reads them without the marker line: its model sees
+ *  every value as it is anyway, and a CLI agent keeps its own notes. */
+export const TURN_NOTE_PROVENANCE: NoteProvenance = {
+  writtenUnprotected: isCurrentTurnUnprotected,
+  readerShielded: currentTurnIsShielded,
+};
 
 /**
  * Reserved model-facing first segments, recognised ONLY in context mode.
@@ -146,6 +177,8 @@ abstract class MemoryNamespacerBase implements MemoryStore {
     private readonly reservedSegments: ReadonlySet<string>,
     /** #1534 — refuse {@link SHIELDED_SEGMENTS} while this returns true. */
     private readonly shieldActive: ShieldActive | undefined,
+    /** #1540 — see {@link NoteProvenance}. */
+    private readonly noteProvenance: NoteProvenance | undefined,
   ) {
     const bindings: RootBinding[] = [
       { outer: MEMORIES_ROOT, inner: privateRoot },
@@ -189,6 +222,17 @@ abstract class MemoryNamespacerBase implements MemoryStore {
     return path; // shared / unmapped — already in the outer namespace
   }
 
+  /**
+   * #1540 — a note written in a turn without a shield, or after a tool
+   * bypassed it, is marked unprotected. A note written in a protected turn is
+   * stored as written: its model only saw masked values.
+   */
+  private withProvenance(content: string): string {
+    return this.noteProvenance?.writtenUnprotected() === true
+      ? markUnprotectedNote(content)
+      : content;
+  }
+
   // `async`, so a denied path (`toInner` throws) rejects like any store error.
   async list(virtualPath: string): Promise<MemoryEntry[]> {
     const entries = await this.inner.list(this.toInner(virtualPath));
@@ -203,16 +247,27 @@ abstract class MemoryNamespacerBase implements MemoryStore {
     return this.inner.directoryExists(this.toInner(virtualPath));
   }
 
+  /**
+   * #1540 — a note written in an unprotected turn is refused to a reader the
+   * shield masks (masking on the way out would only catch detector-visible
+   * spans, as for the transcripts). Any other reader gets it without the
+   * marker line.
+   */
   async readFile(virtualPath: string): Promise<string> {
-    return this.inner.readFile(this.toInner(virtualPath));
+    const content = await this.inner.readFile(this.toInner(virtualPath));
+    if (!isUnprotectedNote(content)) return content;
+    if (this.shieldActive?.() === true && this.noteProvenance?.readerShielded() !== false) {
+      throw new MemoryPathDenied(virtualPath, 'unprotected-note');
+    }
+    return stripUnprotectedNoteMarker(content);
   }
 
   async createFile(virtualPath: string, content: string): Promise<void> {
-    return this.inner.createFile(this.toInner(virtualPath), content);
+    return this.inner.createFile(this.toInner(virtualPath), this.withProvenance(content));
   }
 
   async writeFile(virtualPath: string, content: string): Promise<void> {
-    return this.inner.writeFile(this.toInner(virtualPath), content);
+    return this.inner.writeFile(this.toInner(virtualPath), this.withProvenance(content));
   }
 
   async delete(virtualPath: string): Promise<void> {
@@ -231,13 +286,19 @@ const NO_RESERVED_ROOTS: ReadonlyMap<string, string> = new Map();
 const NO_RESERVED_SEGMENTS: ReadonlySet<string> = new Set<string>();
 
 export class OrchestratorMemoryNamespacer extends MemoryNamespacerBase {
-  constructor(agentSlug: string, inner: MemoryStore, shieldActive?: ShieldActive) {
+  constructor(
+    agentSlug: string,
+    inner: MemoryStore,
+    shieldActive?: ShieldActive,
+    noteProvenance?: NoteProvenance,
+  ) {
     super(
       inner,
       `${MEMORIES_ROOT}/orchestrators/${agentSlug}`,
       NO_RESERVED_ROOTS,
       NO_RESERVED_SEGMENTS,
       shieldActive,
+      noteProvenance,
     );
   }
 }
@@ -284,6 +345,8 @@ export interface ContextMemoryNamespacerOptions {
   readonly sharedRoots?: ReadonlyMap<string, string>;
   /** #1534 — refuse `/memories/sessions/` while this returns true. */
   readonly shieldActive?: ShieldActive;
+  /** #1540 — see {@link NoteProvenance}. */
+  readonly noteProvenance?: NoteProvenance;
 }
 
 /**
@@ -334,6 +397,7 @@ export class ContextMemoryNamespacer extends MemoryNamespacerBase {
       roots,
       new Set([TEAM_SEGMENT, AGENT_SEGMENT, ...listed]),
       options.shieldActive,
+      options.noteProvenance,
     );
     this.listedSegments = listed;
   }

@@ -8,6 +8,8 @@ import type {
 } from '@omadia/plugin-api';
 import { PROCESS_TITLE_REGEX } from '@omadia/plugin-api';
 
+import { currentTurnIsShielded, isCurrentTurnUnprotected } from '../turnProtection.js';
+
 /**
  * Palaia Phase 7 (OB-76) — vier native Orchestrator-Tools, die gegen die
  * `processMemory@1`-Capability laufen.
@@ -198,6 +200,21 @@ Wenn du einen mehrschrittigen Workflow neu beschreiben würdest:
 
 \`write_process\` blockt Duplikate (cosine ≥ 0.9). Bei Conflict siehst du die ID des Originals — entscheide ob du \`edit_process\` aufrufst statt eines neuen \`write_process\`.`;
 
+/**
+ * #1540 — provenance of stored processes. `query_processes` and
+ * `run_stored_process` are exempt from interning, so their results reach the
+ * model as stored. A process written or edited in an unprotected turn (no
+ * shield, or a bypassed tool; no turn context counts as unprotected) is
+ * stored `unprotected`, and a turn the shield masks never sees its title or
+ * steps. Its id is withheld too: it embeds the slug of the title.
+ */
+const WITHHELD_PROCESS_NOTICE =
+  'Ein bestehender Process wurde in einem Gespräch ohne Datenschutz-Schild gespeichert; Titel und Schritte stehen unter aktivem Schild nicht zur Verfügung.';
+
+function withheldUnderShield(record: Pick<ProcessRecord, 'unprotected'>): boolean {
+  return record.unprotected === true && currentTurnIsShielded();
+}
+
 function recordToBrief(record: ProcessRecord): {
   id: string;
   title: string;
@@ -234,6 +251,7 @@ export function createWriteProcessHandler(
       ...(parsed.data.visibility !== undefined
         ? { visibility: parsed.data.visibility }
         : {}),
+      ...(isCurrentTurnUnprotected() ? { unprotected: true } : {}),
     };
     const result = await service.write(writeInput);
     if (result.ok) {
@@ -244,6 +262,13 @@ export function createWriteProcessHandler(
       });
     }
     if (result.reason === 'duplicate') {
+      if (result.conflictingUnprotected === true && currentTurnIsShielded()) {
+        return JSON.stringify({
+          status: 'duplicate_blocked',
+          similarity: Number(result.similarity.toFixed(3)),
+          note: `${WITHHELD_PROCESS_NOTICE} Er ist deinem Workflow nahezu identisch; formuliere title/steps unterscheidbarer.`,
+        });
+      }
       return JSON.stringify({
         status: 'duplicate_blocked',
         conflictingId: result.conflictingId,
@@ -275,8 +300,18 @@ export function createEditProcessHandler(
       ...(parsed.data.visibility !== undefined
         ? { visibility: parsed.data.visibility }
         : {}),
+      ...(isCurrentTurnUnprotected() ? { unprotected: true } : {}),
     };
     const result = await service.edit(editInput);
+    if (result.ok && withheldUnderShield(result.record)) {
+      return JSON.stringify({
+        status: 'process_updated',
+        // The caller passed the id; echoing it adds nothing, and it embeds the
+        // slug of the stored title.
+        record: { version: result.record.version },
+        note: WITHHELD_PROCESS_NOTICE,
+      });
+    }
     if (result.ok) {
       return JSON.stringify({
         status: 'process_updated',
@@ -306,6 +341,7 @@ export function createQueryProcessesHandler(
       query: parsed.data.query,
       limit: parsed.data.limit,
       ...(parsed.data.scope !== undefined ? { scope: parsed.data.scope } : {}),
+      ...(currentTurnIsShielded() ? { excludeUnprotected: true } : {}),
     };
     const hits = await service.query(queryInput);
     return JSON.stringify({
@@ -337,6 +373,9 @@ export function createRunStoredProcessHandler(
     const record = await service.get(parsed.data.id);
     if (!record) {
       return `Error: run_stored_process — kein Process mit ID '${parsed.data.id}' im aktuellen Tenant.`;
+    }
+    if (withheldUnderShield(record)) {
+      return `Error: run_stored_process — ${WITHHELD_PROCESS_NOTICE}`;
     }
     return JSON.stringify({
       status: 'process_loaded',

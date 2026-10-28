@@ -67,6 +67,44 @@ changelog.
 `@omadia/plugin-privacy-guard` 0.11.0, `@omadia/plugin-api` 1.37.0
 (`countUnresolvedSurrogates` takes an optional `options`).
 
+### Fixed — Privacy Shield leak paths that predate its guards (#1540)
+
+2026-10-28. Follow-up to #1539; six of the seven paths the S2-N15 security
+review listed.
+
+- **Canvas skeleton.** The composition call sends the user's text to a model
+  before the turn has a privacy handle. With a privacy guard running it now
+  goes through the guard's stored-text scope (`skeletonPrivacy.ts`) and the
+  skeleton is restored; a guard that cannot mask skips the call (static
+  skeleton).
+- **Significance scorer.** The live capture filter, the operator's bulk
+  promotion over stored turns and the scratch-promotion reaper score through
+  `createJobPrivacy`. A run that cannot mask fails the score instead of
+  scoring the turn as insignificant.
+- **`memory` notes.** A note written in a turn without a shield, or after a
+  tool bypassed it, carries an `<!-- omadia:unprotected -->` line. Under a
+  shield the memory tool refuses it to a turn with a privacy handle (delete,
+  rename and overwrite still work); a turn without one, the subscription CLI
+  included, reads it without the line. `_rules/` files follow the same rule.
+  The durable-rules promotion (and `scripts/backfill-durable-rules.ts`) and the
+  scratch reaper strip the line and stamp what they derive `unprotected`.
+- **A plugin's `ctx.knowledgeGraph.getNeighbors`.** Inside a shielded turn it
+  drops unprotected Turns and Facts, plans and memories derived from them,
+  and every derived node without provenance (run traces, plan steps, topics).
+- **Stored processes.** `processes.unprotected` (migration 0035). Under a
+  shield `query_processes`, the process recall leg and the plan-runner's
+  process reuse skip unprotected processes, `run_stored_process` refuses
+  them, and `write_process`/`edit_process` withhold their title and id.
+- **Builder preview chat.** Refused under `OMADIA_PRIVACY_FORCE_GUARDED`, even
+  while the guard runs: its model loop has no shield.
+
+Still open in #1540: content stored before its flag existed (notes and
+processes before this change, raw MCP results and rule promotions before
+#1536) counts as protected until a backfill marks it.
+
+`@omadia/plugin-api` 1.40.0 (`ProcessRecord.unprotected`,
+`QueryProcessesInput.excludeUnprotected`, `conflictingUnprotected`).
+
 ### Fixed — Privacy Shield residual leaks: session transcripts, fail-closed policy, derived recall (#1534, #1535, #1536)
 
 2026-10-28. Follow-ups to #1507 (#1516, #1537).

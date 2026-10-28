@@ -268,7 +268,9 @@ export function PreviewChatPane({
           setError(
             ev.code === 'builder.llm_access_missing'
               ? t('error.llmAccessMissing')
-              : humanizeProviderError(ev.message, t('error.providerGeneric')),
+              : ev.code === 'builder.privacy_shield_required'
+                ? t('error.privacyShieldRequired')
+                : humanizeProviderError(ev.message, t('error.providerGeneric')),
           );
           break;
         }

@@ -1256,6 +1256,8 @@ export class ContextRetriever {
       const hits = await this.processMemory.query({
         query: input.userMessage,
         limit: this.opts.processLimit,
+        // #1540 — under a shield, no process stored from an unprotected turn.
+        ...(input.excludeUnprotected ? { excludeUnprotected: true } : {}),
       });
       return hits
         .filter((h) => h.score >= this.opts.processMinScore)

@@ -4080,6 +4080,24 @@ keine Turn-Hooks und keinen MCP-Input-Replay; das Canvas-Skeleton nutzt dann
 den statischen Fallback (`composeSkeleton({ skipModel })`), und
 `createJobPrivacy` verweigert Memory-Jobs ohne Guard unter der Policy.
 
+**Vorbestehende Lecks S2-N16 (#1540).** Canvas-Skeleton maskiert mit laufendem
+Guard über `openStoredTextScope` (`omadia-ui-orchestrator/src/skeletonPrivacy.ts`,
+Fallback-Skeleton, wenn das nicht geht). Der Significance-Scorer bekommt
+`privacy: outsideTurnPrivacy` (Live-Capture, `bulkPromotion`, Scratch-Reaper);
+ein verweigerter Lauf wirft. Notizen aus ungeschützten Turns tragen
+`<!-- omadia:unprotected -->` (`noteProvenance.ts` in orchestrator-extras);
+die Namespacer stempeln beim Schreiben und verweigern beim Lesen unter Shield,
+wenn der Turn ein Privacy-Handle hat (`NoteProvenance`, Produktion:
+`TURN_NOTE_PROVENANCE` aus `buildOrchestrator` über `MemoryBinder`; ohne
+Injektion wird nichts gestempelt). `promoteRuleFileToDurable` und der
+Scratch-Reaper übernehmen den Marker als `unprotected`-Stempel.
+`ctx.knowledgeGraph.getNeighbors` filtert unter Handle
+(`src/platform/shieldedNeighbors.ts`). Prozesse: Spalte `processes.unprotected`
+(Migration 0035, plugin-api 1.40.0), gesetzt von den Prozess-Tools über
+`turnProtection.ts`, gefiltert in Tools, Recall-Leg und Plan-Runner-Reuse.
+Builder-Preview-Chat unter `OMADIA_PRIVACY_FORCE_GUARDED` verweigert
+(`builder.privacy_shield_required`). Offen: Backfill für Altbestände ohne Flag.
+
 ### Abo-CLI-Turn-Budget (OM-104, Beta-Runde 5)
 
 Wird vom `@omadia/orchestrator`-Package gelesen (`resolveCliSpawnTimeoutMs()` in

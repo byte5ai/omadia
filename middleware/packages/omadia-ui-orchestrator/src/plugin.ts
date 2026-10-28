@@ -25,6 +25,7 @@ import {
   parseRefreshSource,
 } from './refreshRecipes.js';
 import { synthesizeSurfaceEvents } from './surfaceSynthesis.js';
+import { openSkeletonPrivacy } from './skeletonPrivacy.js';
 import { skeletonOnRelease } from './verdictHold.js';
 import { resolveReferenceLumen } from './referenceLumens.js';
 import { validateLumenNode } from './treeValidator.js';
@@ -1059,9 +1060,14 @@ export async function activate(
     //    On a base that holds content until the verdict (answer verifier in
     //    `enforce`), the skeleton — model output as well — waits for it and
     //    goes out with a released turn only (verdictHold.ts).
-    //    #1535 — composed by a model outside the turn's privacy handle. With
-    //    the org policy on and no Privacy Shield running, the base turn
-    //    refuses, so the raw text must not reach this model either.
+    //    #1535/#1540 — composed by a model BEFORE the turn has a privacy
+    //    handle. With a privacy guard running, the text goes through the
+    //    guard's stored-text scope (skeletonPrivacy.ts). With the org policy
+    //    on and no guard running, the base turn refuses, so the raw text must
+    //    not reach this model either.
+    const privacyGuard = (ctx.services as PluginContext['services'] | undefined)?.get<PrivacyGuardService>(
+      PRIVACY_REDACT_SERVICE_NAME,
+    );
     const skeleton = await composeSkeleton({
       llm,
       model,
@@ -1070,11 +1076,8 @@ export async function activate(
           ? input.userMessage
           : `UI action: ${JSON.stringify(input.action ?? {})}`,
       log: (message) => ctx.log(message),
-      skipModel:
-        process.env[PRIVACY_FORCE_GUARDED_ENV_VAR] === 'true' &&
-        (ctx.services as PluginContext['services'] | undefined)?.get<PrivacyGuardService>(
-          PRIVACY_REDACT_SERVICE_NAME,
-        ) === undefined,
+      skipModel: process.env[PRIVACY_FORCE_GUARDED_ENV_VAR] === 'true' && privacyGuard === undefined,
+      ...(privacyGuard !== undefined ? { privacy: openSkeletonPrivacy(privacyGuard) } : {}),
     });
     let surfaceSeq = 0;
     const initialRevision = '0' as RevisionId;

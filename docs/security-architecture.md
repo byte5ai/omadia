@@ -1794,8 +1794,14 @@ inconsistency pass leaves the memory unchecked for the next sweep, and the
 topic detector asks the user. A privacy provider without `openStoredTextScope`
 (or a turn handle without `maskReplayedAnswer`) skips the job's model call the
 same way. Only a host with no privacy-guard provider sends the stored text as
-stored. The capture filter's significance score and the embeddings below are
-not covered.
+stored. The significance scorer takes the outside-turn route too (#1540): the
+live capture filter (the turn's masked view, or the stored turn when the turn
+had no shield), the operator's bulk promotion over stored turns
+(`bulkPromotion.ts`) and the scratch-promotion reaper (agent notes). A run
+that cannot mask fails the score (the turn is stored with the default
+classification, bulk promotion counts it as failed, the reaper leaves the
+note for the next pass) instead of scoring it as insignificant. The
+embeddings below are not covered.
 
 Replayed answers are masked whatever `mask_user_prompt` says because an
 answer rendered by `v4_render_answer` carries real values (`maskedValues`,
@@ -1841,13 +1847,42 @@ plan whose Turn (`PLAN_OF`, or its `turnId` property) is known and not
 `unprotected`; a plan of no known Turn is dropped. Meeting transcripts written
 by `transcribe_recording` are stored `unprotected` (raw speech no shield
 masked), so they stay out of cross-session recall under a shield; their own
-session keeps them. Not covered: extracted facts reach no model prompt (a
-plugin's `ctx.knowledgeGraph.getNeighbors` can still return them and Turn
-nodes unfiltered), stored-process titles carry no provenance, a memory a user
-saves by hand counts as protected unless it names an unprotected turn, and the
-intern-exempt `memory` tool still serves notes and `_rules/` files written in
-an unprotected turn in clear (only `sessions/` is refused; a transcript copied
-into notes while no shield ran stays readable).
+session keeps them.
+
+The same provenance reaches three more readers (#1540):
+
+- **Notes.** A note the `memory` tool writes in a turn without a shield, or
+  after a tool bypassed it (no turn context counts as unprotected), carries
+  the line `<!-- omadia:unprotected -->` (`noteProvenance.ts` in
+  orchestrator-extras, `TURN_NOTE_PROVENANCE` in the namespacers). `memory` is
+  intern-exempt, so under a shield the namespacers refuse such a note to a
+  turn with a privacy handle (`MemoryPathDenied`, also for `str_replace` and
+  `insert`, which read first); delete, rename and overwrite still work. A turn
+  without a handle (no guard, or the subscription CLI, which has no shield)
+  gets the note without the marker line. `_rules/` files follow the same rule.
+  The readers of the raw store carry the mark over: the durable-rules
+  promotion and its backfill script, and the scratch-promotion reaper, strip
+  the line and stamp the memory they derive `unprotected`.
+- **Stored processes.** `processes.unprotected` (migration 0035, plugin-api
+  1.40.0) is set by `write_process`/`edit_process` in an unprotected turn and
+  never cleared by an edit. Under a turn's privacy handle `query_processes`,
+  the process recall leg and the plan-runner's process reuse skip such a
+  process, `run_stored_process` refuses it, and the duplicate branch of
+  `write_process` and the result of `edit_process` withhold its title and id
+  (the id embeds the title's slug).
+- **A plugin's `ctx.knowledgeGraph.getNeighbors`.** Inside a turn with a
+  privacy handle (`shieldedNeighbors.ts`) it keeps reference nodes (sessions,
+  entities, users, channel identities), Turns not stored `unprotected`, Facts
+  and Plans linked to a known protected Turn, MemorableKnowledge that passes
+  the memory leg's check and excerpts of such memories. Every other derived
+  node (run traces with tool arguments, plan steps, topics, conflict and
+  duplicate markers) is dropped: none carries provenance to check.
+
+Not covered: content stored before its flag existed carries none. That holds
+for notes and processes written before #1540, raw MCP results and rule
+promotions stored before #1536, and turns before #1507; under a shield they
+count as protected until a backfill marks them. A memory a user saves by hand
+counts as protected unless it names an unprotected turn.
 
 The session transcripts under `/memories/sessions/` hold every turn with its
 real values restored, protected or not, and `memory` is intern-exempt. While a
@@ -1909,7 +1944,10 @@ These tool results skip the digest:
   turn fires no turn hook and runs no parked MCP input replay; the canvas
   skeleton skips its model call (`composeSkeleton({ skipModel })`); and the
   memory jobs outside a turn refuse without a guard (`createJobPrivacy`).
-  Not gated: the operator-only builder preview chat.
+  The operator-only builder preview chat is refused on every turn under the
+  clamp, even while the guard runs (`PreviewChatService.runTurn`,
+  `builder.privacy_shield_required`, #1540): its model loop has no privacy
+  handle, so the draft toolkit's results reach the model as they come back.
   `OMADIA_PRIVACY_FORCE_GUARDED=true` switches all three off for the result
   the model gets, and for the MCP-to-knowledge-graph ingestion
   (`Orchestrator.dispatchTool`, epic #459) as well: every seam that reads a
@@ -1988,11 +2026,13 @@ provider as its caller built it, with prompt masking on or off: `mask_user_promp
 below (the embedded recall query in the last entry aside), and the shield
 masks text only, so it reads no image block. In-tree these are:
 
-- **Operator backfill and the scratch-promotion reaper.** The significance
-  backfill an operator starts over stored turns (`bulkPromotion.ts`) and the
-  scratch-promotion reaper (`scratchPromotionReaper.ts`) score stored text,
-  which holds real values, with the turn scorer through the own provider of
-  `@omadia/orchestrator-extras`. The plugin's other memory jobs mask what they
+- **Operator backfill and the scratch-promotion reaper, without a guard.**
+  The significance backfill an operator starts over stored turns
+  (`bulkPromotion.ts`) and the scratch-promotion reaper
+  (`scratchPromotionReaper.ts`) score stored text, which holds real values,
+  with the turn scorer through the own provider of
+  `@omadia/orchestrator-extras`. With a privacy guard running the scorer masks
+  it through a stored-text scope (#1540, "Memory jobs" above). The plugin's other memory jobs mask what they
   send (see "Memory jobs" above).
 - **Plugin requests through `ctx.llm`.** A plugin that holds the `llm`
   permission sends its `ctx.llm` requests itself, and the accessor
@@ -2000,7 +2040,11 @@ masks text only, so it reads no image block. In-tree these are:
   handle, so a request reaches the provider as the plugin built it (§6c,
   residuals). In-tree, the canvas composer sends the user's message, or the
   serialised UI action, to its composition model before the turn starts
-  (`composeSkeleton`, `omadia-ui-orchestrator/src/composition.ts`). The
+  (`composeSkeleton`, `omadia-ui-orchestrator/src/composition.ts`). With a
+  privacy guard running that text goes through the guard's stored-text scope
+  first (`skeletonPrivacy.ts`, #1540): the C0 identity shapes, the deny-list
+  and C1, with the skeleton restored afterwards; a scope that cannot mask
+  skips the model call and the turn gets the static skeleton. The
   plan-runner's planning gate and planner send the user's message from the
   `onBeforeTurn` hook, which fires before the turn masks anything
   (`harness-plugin-plan-runner/src/gate.ts`, `materializer.ts`). A tool that

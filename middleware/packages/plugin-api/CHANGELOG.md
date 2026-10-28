@@ -8,6 +8,25 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.40.0 — 2026-10-28
+
+Additive. Stored processes carry their provenance, so a Privacy Shield can
+keep processes written in an unprotected turn out of recall and the process
+tools (#1540).
+
+### Added
+
+- **`ProcessRecord.unprotected`**, **`WriteProcessInput.unprotected`** and
+  **`EditProcessInput.unprotected`** — the process was written or edited in a
+  turn without a shield, or after a tool bypassed it. Sticky: an edit never
+  clears it.
+- **`QueryProcessesInput.excludeUnprotected`** — leave out processes stored
+  `unprotected`. A provider that ignores it stays correct for instances
+  without a shield.
+- **`conflictingUnprotected`** on the `duplicate` variant of
+  `WriteProcessResult` — the existing process is stored `unprotected`, so a
+  caller under a shield must not show its title or id.
+
 ## 1.39.0 — 2026-10-28
 
 Additive. Memories and plans derived from an unprotected turn stay out of

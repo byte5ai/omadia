@@ -15,6 +15,7 @@ import {
 import {
   ContextMemoryNamespacer,
   OrchestratorMemoryNamespacer,
+  type NoteProvenance,
   type ShieldActive,
 } from './orchestratorMemoryNamespacer.js';
 import { MEMBERS_SHARED_SEGMENT_PREFIX, MembersIndex } from './membersMemory.js';
@@ -117,6 +118,8 @@ export interface MemoryBinderOptions {
    * the provider coming and going.
    */
   readonly shieldActive?: ShieldActive;
+  /** #1540 — note provenance for every namespacer this binder builds. */
+  readonly noteProvenance?: NoteProvenance;
 }
 
 /**
@@ -261,7 +264,7 @@ export class MemoryBinder {
   }
 
   private buildMembers(axes: MemoryAxes, key: string | null, shared: readonly string[]): BoundTurnMemory {
-    const { agentSlug, root, durableRules, log, shieldActive } = this.options;
+    const { agentSlug, root, durableRules, log, shieldActive, noteProvenance } = this.options;
     // `ro:core-notes` as in `enforce-strict`; no agent tier, no channel tier —
     // both are shared by people who were never all present.
     const scope = [
@@ -279,6 +282,7 @@ export class MemoryBinder {
           shared.map((k) => [`${MEMBERS_SHARED_SEGMENT_PREFIX}${k}`, membersTierRoot(agentSlug, k)]),
         ),
         ...(shieldActive ? { shieldActive } : {}),
+        ...(noteProvenance ? { noteProvenance } : {}),
       },
       scoped,
     );
@@ -297,7 +301,7 @@ export class MemoryBinder {
   }
 
   private build(axes: MemoryAxes): BoundTurnMemory {
-    const { agentSlug, root, durableRules, log, shieldActive } = this.options;
+    const { agentSlug, root, durableRules, log, shieldActive, noteProvenance } = this.options;
     const scope =
       this.mode === 'off'
         ? effectiveMemoryScope(agentSlug, CONTEXT_FREE_MEMORY_AXES)
@@ -315,7 +319,7 @@ export class MemoryBinder {
 
     const namespaced: MemoryStore =
       axes.isContextFree || !axes.narrowest
-        ? new OrchestratorMemoryNamespacer(agentSlug, scoped, shieldActive)
+        ? new OrchestratorMemoryNamespacer(agentSlug, scoped, shieldActive, noteProvenance)
         : new ContextMemoryNamespacer(
             {
               privateRoot: contextTierRoot(
@@ -326,6 +330,7 @@ export class MemoryBinder {
               agentRoot: `/memories/orchestrators/${agentSlug}`,
               ...this.teamRootFor(axes),
               ...(shieldActive ? { shieldActive } : {}),
+              ...(noteProvenance ? { noteProvenance } : {}),
             },
             scoped,
           );

@@ -12,6 +12,7 @@ import {
 } from '@omadia/orchestrator';
 
 import { recordForeignToolCall } from '../../platform/foreignToolMetrics.js';
+import { isForceGuarded } from '../privacyPosture.js';
 import { bridgedToolError, type BridgeStage } from '../bridgedToolError.js';
 import {
   inferFamilyFromModel,
@@ -112,7 +113,16 @@ export interface PreviewChatServiceDeps {
   subAgentMaxTokens?: number;
   subAgentMaxIterations?: number;
   logger?: (...args: unknown[]) => void;
+  /** #1540 — read for `OMADIA_PRIVACY_FORCE_GUARDED`; a seam for tests. */
+  policyEnv?: NodeJS.ProcessEnv;
 }
+
+/**
+ * #1540 — the error code of a preview turn refused by the org privacy policy.
+ * The preview agent runs its own model loop with no Privacy Shield: the tool
+ * results of the draft's toolkit reach the model as they come back.
+ */
+export const PREVIEW_PRIVACY_REFUSED_CODE = 'builder.privacy_shield_required';
 
 export interface RunTurnOptions {
   handle: PreviewHandle;
@@ -144,6 +154,7 @@ export class PreviewChatService {
   private readonly maxTokens: number;
   private readonly maxIterations: number;
   private readonly log: (...args: unknown[]) => void;
+  private readonly policyEnv: NodeJS.ProcessEnv;
 
   constructor(deps: PreviewChatServiceDeps) {
     this.resolveProvider = deps.resolveProvider;
@@ -153,9 +164,24 @@ export class PreviewChatService {
     this.maxTokens = deps.subAgentMaxTokens ?? DEFAULT_MAX_TOKENS;
     this.maxIterations = deps.subAgentMaxIterations ?? DEFAULT_MAX_ITERATIONS;
     this.log = deps.logger ?? (() => {});
+    this.policyEnv = deps.policyEnv ?? process.env;
   }
 
   async *runTurn(opts: RunTurnOptions): AsyncIterable<PreviewChatEvent> {
+    // #1540 — the preview's model loop has no Privacy Shield (no turn handle,
+    // no interning), even while a privacy guard runs. Under the org policy it
+    // is refused before anything is stored or sent, like a CLI turn
+    // (`CliChatAgent.refusedByPolicy`). Read per turn: the policy can change
+    // without a restart of this service.
+    if (isForceGuarded(this.policyEnv)) {
+      yield {
+        type: 'error',
+        code: PREVIEW_PRIVACY_REFUSED_CODE,
+        message:
+          'OMADIA_PRIVACY_FORCE_GUARDED=true: the preview chat runs without the Privacy Shield and is disabled.',
+      };
+      return;
+    }
     const draftId = opts.handle.draftId;
     const draft = await this.draftStore.load(opts.userEmail, draftId);
     if (!draft) {

@@ -3131,7 +3131,8 @@
           "connectionLost": "Connection lost: {message}",
           "unknownTurn": "Unknown error during the preview turn",
           "providerGeneric": "Something went wrong while talking to the AI provider. Please try again.",
-          "llmAccessMissing": "The plugin builder needs LLM access (an API key or a connected subscription)."
+          "llmAccessMissing": "The plugin builder needs LLM access (an API key or a connected subscription).",
+          "privacyShieldRequired": "Your organization requires the Privacy Shield. The preview chat runs without it, so it is turned off."
         },
         "externalReadsHint": "Preview does not run cross-integration lookups (<code>spec.external_reads</code>) — the agent correctly detects the missing service and throws. Publish the agent to the platform store to test the real data path.",
         "agentStuck": {

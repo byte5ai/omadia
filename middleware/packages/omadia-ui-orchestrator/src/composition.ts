@@ -1,3 +1,4 @@
+import type { SkeletonPrivacyRun } from './skeletonPrivacy.js';
 import { validateTree } from './treeValidator.js';
 
 /**
@@ -150,6 +151,10 @@ export async function composeSkeleton(opts: {
   /** #1535 — the text may not reach a model (the org policy requires the
    *  Privacy Shield and none runs): go straight to the fallback. */
   skipModel?: boolean;
+  /** #1540 — a privacy guard runs: the text reaches the model masked through
+   *  this run, and the output is restored. A run that cannot mask skips the
+   *  model call (fallback skeleton). Absent ⇒ the text goes out as written. */
+  privacy?: SkeletonPrivacyRun;
 }): Promise<SkeletonResult> {
   const fallback: SkeletonResult = {
     tree: structuredClone(FALLBACK_SKELETON),
@@ -161,7 +166,17 @@ export async function composeSkeleton(opts: {
     return fallback;
   }
 
-  let user = `User request: ${opts.userText}`;
+  let requestText = opts.userText;
+  if (opts.privacy !== undefined) {
+    const masked = await opts.privacy.mask(opts.userText);
+    if (!masked.send) {
+      opts.log?.(`[composition] model call skipped (privacy: ${masked.reason}) → fallback skeleton`);
+      return fallback;
+    }
+    requestText = masked.text;
+  }
+
+  let user = `User request: ${requestText}`;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     let raw: string;
     const startedAt = Date.now();
@@ -172,7 +187,9 @@ export async function composeSkeleton(opts: {
         messages: [{ role: 'user', content: user }],
         maxTokens: 2048,
       });
-      raw = result.text;
+      // #1540 — real values back into the skeleton's labels (identity
+      // without a privacy run, or when nothing was masked).
+      raw = opts.privacy === undefined ? result.text : opts.privacy.restore(result.text);
       // Latency observability: the skeleton gates the first paint, so every
       // model call logs its duration (a retry doubles the wait).
       opts.log?.(
@@ -187,7 +204,7 @@ export async function composeSkeleton(opts: {
     const parsed = parseResult(raw);
     if (!parsed) {
       opts.log?.(`[composition] attempt ${attempt + 1}: output not parseable as raw JSON`);
-      user = `User request: ${opts.userText}\nYour previous output was not valid raw JSON. Emit ONLY the JSON object.`;
+      user = `User request: ${requestText}\nYour previous output was not valid raw JSON. Emit ONLY the JSON object.`;
       continue;
     }
     const valid = validateTree(parsed.tree);
@@ -195,7 +212,7 @@ export async function composeSkeleton(opts: {
       return { ...parsed, source: 'model' };
     }
     opts.log?.(`[composition] attempt ${attempt + 1}: tree schema-invalid: ${valid.errors}`);
-    user = `User request: ${opts.userText}\nYour previous tree was schema-invalid: ${valid.errors}. Emit a corrected JSON object.`;
+    user = `User request: ${requestText}\nYour previous tree was schema-invalid: ${valid.errors}. Emit a corrected JSON object.`;
   }
   opts.log?.('[composition] both attempts schema-invalid → fallback skeleton');
   return fallback;

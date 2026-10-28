@@ -3131,7 +3131,8 @@
           "connectionLost": "Verbindung verloren: {message}",
           "unknownTurn": "Unbekannter Fehler beim Preview-Turn",
           "providerGeneric": "Beim Zugriff auf den KI-Anbieter ist etwas schiefgelaufen. Bitte versuch es erneut.",
-          "llmAccessMissing": "Der Plugin-Builder braucht einen LLM-Zugang (API-Key oder verbundenes Abo)."
+          "llmAccessMissing": "Der Plugin-Builder braucht einen LLM-Zugang (API-Key oder verbundenes Abo).",
+          "privacyShieldRequired": "Deine Organisation verlangt den Privacy Shield. Der Vorschau-Chat läuft ohne ihn und ist deshalb abgeschaltet."
         },
         "externalReadsHint": "Preview führt Cross-Integration-Lookups (<code>spec.external_reads</code>) nicht aus — der Agent erkennt den fehlenden Service korrekt und wirft. Stelle den Agent in deiner Instanz bereit, um den echten Datenpfad zu testen.",
         "agentStuck": {
