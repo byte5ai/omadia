@@ -382,14 +382,6 @@ function buildAggregateSelectSql(
 }
 
 /**
- * Postgres-backed knowledge graph (Neon serverless).
- *
- * Identity model: every node has a stable `external_id` (session:<scope>,
- * turn:<scope>:<time>, <system>:<model>:<id>) that matches the in-memory
- * implementation. Callers keep using those string ids; the UUID primary key
- * only matters inside SQL.
- */
-/**
  * #1536 — the Turns a Plan `p` belongs to: through `PLAN_OF`, or the `turnId`
  * property of a plan ingested before its Turn. `$1` is the tenant. A SELECT
  * over `graph_nodes t`, for `EXISTS (…)`.
@@ -418,6 +410,14 @@ function mkProtectedSql(alias: string, tenantParam: string): string {
                AND COALESCE((src.properties->>'unprotected')::boolean, FALSE))`;
 }
 
+/**
+ * Postgres-backed knowledge graph (Neon serverless).
+ *
+ * Identity model: every node has a stable `external_id` (session:<scope>,
+ * turn:<scope>:<time>, <system>:<model>:<id>) that matches the in-memory
+ * implementation. Callers keep using those string ids; the UUID primary key
+ * only matters inside SQL.
+ */
 export class NeonKnowledgeGraph implements KnowledgeGraph {
   private readonly pool: Pool;
 

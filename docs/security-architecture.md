@@ -1833,7 +1833,9 @@ memory, excerpt and durable recall legs skip a MemorableKnowledge stamped
 stored before the stamp existed. The stamp is written where no edge can carry
 it: a bypassed MCP result ingested into the graph (epic #459), and a `_rules/`
 file the durable-rules hook promotes from a turn without a shield or with a
-bypassed tool (no turn context reads as unprotected). The plan leg keeps only a
+bypassed tool (no turn context reads as unprotected). As with turns, an
+instance that ran without a shield stamps every rule it promotes, and a shield
+installed later drops them from durable recall. The plan leg keeps only a
 plan whose Turn (`PLAN_OF`, or its `turnId` property) is known and not
 `unprotected`; a plan of no known Turn is dropped. Meeting transcripts written
 by `transcribe_recording` are stored `unprotected` (raw speech no shield

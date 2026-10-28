@@ -86,14 +86,18 @@ changelog.
   still boots, and admin UI and store keep working, so the guard can be
   repaired; chat answers with the refusal until it is back. A subscription-CLI
   turn (`claude-cli`, no shield at all) is refused the same way under the
-  policy, before the child is spawned. Without the policy nothing changes.
+  policy, before the child is spawned, even while the guard runs: **an agent
+  on the CLI provider stops answering on an instance with the policy on.**
+  Without the policy nothing changes.
 - **Derived content from unprotected turns stays out of recall (#1536).**
   Under a shield, the memory, excerpt and durable legs skip a MemorableKnowledge
   that is stamped `unprotected` or derived (`DERIVED_FROM`) from an
   `unprotected` Turn; the edge check also covers memories stored before this
   change. The stamp is written for a bypassed MCP result ingested into the
   graph (its edge never finds the Turn) and for a `_rules/` file written in an
-  unprotected turn. The plan leg keeps only plans whose Turn is known and
+  unprotected turn. On an instance without a shield every new `_rules/`
+  promotion is therefore stamped, and installing a shield later drops those
+  rules from durable recall, as #1537 does for turns. The plan leg keeps only plans whose Turn is known and
   protected; a plan linked to no Turn is dropped. Meeting transcripts from
   `transcribe_recording` are stored `unprotected`: raw speech no shield
   masked. `@omadia/plugin-api` 1.39.0 (`MemorableKnowledgeIngest.unprotected`,

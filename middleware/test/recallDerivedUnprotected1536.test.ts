@@ -240,15 +240,24 @@ describe('#1536 context retriever forwards the flag to every derived leg', () =>
   });
 });
 
-function recordingKg(): { kg: KnowledgeGraph; created: MemorableKnowledgeIngest[] } {
+function recordingKg(): {
+  kg: KnowledgeGraph;
+  created: MemorableKnowledgeIngest[];
+  first: Promise<void>;
+} {
   const created: MemorableKnowledgeIngest[] = [];
+  let resolveFirst: () => void = () => undefined;
+  const first = new Promise<void>((resolve) => {
+    resolveFirst = resolve;
+  });
   const kg = {
     createMemorableKnowledge: async (input: MemorableKnowledgeIngest) => {
       created.push(input);
+      resolveFirst();
       return { memorableKnowledgeNodeId: 'mk:1', skippedInvolved: 0, skippedRequired: 0, skippedDerivedFrom: 0 };
     },
   } as unknown as KnowledgeGraph;
-  return { kg, created };
+  return { kg, created, first };
 }
 
 const noRowsPool = { query: async () => ({ rows: [] }) } as unknown as Pool;
@@ -265,21 +274,35 @@ function guardHandle(bypassed: boolean) {
 }
 
 describe('#1536 durable rules written in an unprotected turn are stamped', () => {
-  async function promote(privacyHandle: ReturnType<typeof guardHandle> | undefined): Promise<MemorableKnowledgeIngest> {
-    const { kg, created } = recordingKg();
+  async function promote(
+    privacyHandle: ReturnType<typeof guardHandle> | undefined,
+    inTurn = true,
+  ): Promise<MemorableKnowledgeIngest> {
+    const { kg, created, first } = recordingKg();
     const store = new DurableRulesMemoryStore(new InMemoryMemoryStore(), {
       pool: noRowsPool,
       kg,
       tenantId: 't',
     });
-    await srcTurnContext.run(
-      { turnId: 't', ...(privacyHandle ? { privacyHandle } : {}) } as never,
-      () => store.writeFile('/memories/_rules/kontakt.md', 'Ansprechpartner Lilium: Marc Demo'),
-    );
-    for (let i = 0; i < 20 && created.length === 0; i++) await new Promise((r) => setTimeout(r, 5));
+    const write = () =>
+      store.writeFile('/memories/_rules/kontakt.md', 'Ansprechpartner Lilium: Marc Demo');
+    if (inTurn) {
+      await srcTurnContext.run(
+        { turnId: 't', ...(privacyHandle ? { privacyHandle } : {}) } as never,
+        write,
+      );
+    } else {
+      await write();
+    }
+    // The promotion is fire-and-forget; wait for its one graph write.
+    await first;
     assert.equal(created.length, 1);
     return created[0]!;
   }
+
+  it('no turn context at all: stamped (fail closed)', async () => {
+    assert.equal((await promote(undefined, false)).unprotected, true);
+  });
 
   it('no shield: stamped', async () => {
     assert.equal((await promote(undefined)).unprotected, true);
