@@ -521,7 +521,7 @@ export const ConfigSchema = z.object({
     .transform((v) => v === 'true')
     .default(false),
 
-  // Diagram rendering (Kroki + Tigris/MinIO). When all required fields are
+  // Diagram rendering (Kroki + Tigris/SeaweedFS). When all required fields are
   // present, the orchestrator exposes `render_diagram` and the middleware
   // mounts the HMAC-signed image-proxy at /diagrams/<key>. Missing values
   // disable the feature cleanly — the rest of the middleware is unaffected.
@@ -541,7 +541,7 @@ export const ConfigSchema = z.object({
   // Teams rejects card images > 1 MB; be strict and cap below that.
   DIAGRAM_MAX_PNG_BYTES: z.coerce.number().int().positive().default(900_000),
 
-  // Object-storage (S3-compatible). Locally: MinIO from compose.yml. On Fly:
+  // Object-storage (S3-compatible). Locally: SeaweedFS from docker-compose.storage.yaml. On Fly:
   // auto-populated by `fly storage create` (Tigris).
   BUCKET_NAME: z.string().optional(),
   AWS_ENDPOINT_URL_S3: optionalNonEmpty(z.string().url()),

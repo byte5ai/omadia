@@ -10,7 +10,7 @@ interface DocumentsRouterDeps {
 
 /**
  * HMAC-signed proxy that streams office documents (.xlsx/.docx) from
- * Tigris/MinIO to channels.
+ * Tigris/SeaweedFS to channels.
  *
  * The URL format is `/documents/<url-encoded-key>?exp=<unix-seconds>&sig=<hex>`
  * where the signature covers `<decoded-key>.<exp>`. Expired or tampered URLs
