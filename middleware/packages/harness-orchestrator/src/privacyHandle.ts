@@ -158,8 +158,14 @@ export interface PrivacyTurnHandle {
    * `maskUserPrompt` instead, as before it existed. Optional so hand-built
    * handles (tests, wrappers) stay valid; absent ⇒ callers mask through
    * `maskUserPrompt` themselves.
+   *
+   * `segments` — optional partition of `text` into whole stored units (the
+   * recalled tail's turns), see `PrivacyReplayedAnswerRequest.segments`.
    */
-  maskReplayedAnswer?(text: string): Promise<PrivacyPromptMaskResult>;
+  maskReplayedAnswer?(
+    text: string,
+    segments?: readonly string[],
+  ): Promise<PrivacyPromptMaskResult>;
   /**
    * How many of this turn's surrogates still occur in `text` (see
    * `PrivacyGuardService.countUnresolvedSurrogates`). `0` when the provider
@@ -329,7 +335,7 @@ export function createPrivacyTurnHandle(deps: {
       });
     },
 
-    async maskReplayedAnswer(text) {
+    async maskReplayedAnswer(text, segments) {
       const request = { sessionId: deps.sessionId, turnId: deps.turnId, text };
       // Optional on the service contract. A provider that predates it masks a
       // replayed answer like any prompt text: only while `mask_user_prompt`
@@ -338,7 +344,9 @@ export function createPrivacyTurnHandle(deps: {
         if (deps.service.maskUserPrompt === undefined) return { outcome: 'disabled' };
         return deps.service.maskUserPrompt(request);
       }
-      return deps.service.maskReplayedAnswer(request);
+      return deps.service.maskReplayedAnswer(
+        segments !== undefined ? { ...request, segments } : request,
+      );
     },
 
     async countUnresolvedSurrogates(text, options) {

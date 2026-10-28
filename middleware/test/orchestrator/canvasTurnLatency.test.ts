@@ -12,7 +12,11 @@
  *   3. a canvas turn carries a static hint that suspends the start-of-task
  *      `/memories` read (only canvas turns — the memory tool stays wired);
  *   4. the palaia excerpt pass (save-as-memory modal prefill) is skipped on
- *      a canvas turn — the canvas has no such modal.
+ *      a canvas turn — the canvas has no such modal;
+ *   5. a canvas turn recalls at most the last `CANVAS_RECALL_TAIL_TURNS`
+ *      turns of the session tail (its context rides the skeleton);
+ *   6. the recalled tail reaches the C1 detector per stored-turn segment,
+ *      so a later turn only sends the turns it has not seen before.
  */
 
 import { strict as assert } from 'node:assert';
@@ -32,7 +36,10 @@ import {
   type TurnHookPoint,
   type TurnHookRunner,
 } from '@omadia/orchestrator';
-import { CANVAS_TURN_MEMORY_HINT } from '@omadia/orchestrator/dist/orchestrator.js';
+import {
+  CANVAS_RECALL_TAIL_TURNS,
+  CANVAS_TURN_MEMORY_HINT,
+} from '@omadia/orchestrator/dist/orchestrator.js';
 import type { PromptPiiDetector, PromptPiiSpan } from '@omadia/plugin-api';
 import { createPrivacyGuardService } from '@omadia/plugin-privacy-guard/dist/index.js';
 
@@ -131,7 +138,10 @@ interface World {
   readonly excerptCalls: Array<{ cleanedUserMessage: string }>;
 }
 
-function buildWorld(): World {
+/** What the fake retriever recalls on each call (0-based call index). */
+type RecallScript = (call: number) => { text: string; segments?: readonly string[] };
+
+function buildWorld(recall?: RecallScript): World {
   const requests: LlmRequest[] = [];
   const hooks = recordingHooks();
   const c1Seen: string[] = [];
@@ -151,9 +161,10 @@ function buildWorld(): World {
 
   const contextRetriever = {
     assembleForBudget: async (opts: unknown): Promise<unknown> => {
+      const call = recallQueries.length;
       recallQueries.push(JSON.stringify(opts));
       return {
-        text: '',
+        ...(recall !== undefined ? recall(call) : { text: '' }),
         included: [],
         excluded: [],
         stats: { candidatePool: 0, compactMode: false, tokensUsed: 0 },
@@ -169,6 +180,10 @@ function buildWorld(): World {
     },
   } as unknown as OrchestratorOptions['excerptExtractor'];
 
+  const privacy = createPrivacyGuardService({
+    readConfig: (key: string) => (key === 'mask_user_prompt' ? 'on' : undefined),
+    c1Detector: recordingC1(c1Seen),
+  });
   const orch = new Orchestrator({
     provider: recordingProvider(requests),
     model: 'test',
@@ -180,11 +195,9 @@ function buildWorld(): World {
     sessionLogger,
     contextRetriever,
     excerptExtractor,
-    privacyGuard: () =>
-      createPrivacyGuardService({
-        readConfig: (key: string) => (key === 'mask_user_prompt' ? 'on' : undefined),
-        c1Detector: recordingC1(c1Seen),
-      }),
+    // One service for the world's lifetime, as the plugin provides it in
+    // production — its process-wide C1 segment cache spans turns.
+    privacyGuard: () => privacy,
   });
   return { orch, requests, hooks, c1Seen, logged, recallQueries, excerptCalls };
 }
@@ -277,6 +290,57 @@ for (const path of ['stream', 'runTurn'] as const) {
         !systemText(chat.requests[0]!).includes(CANVAS_TURN_MEMORY_HINT),
         'a regular chat turn keeps the standing memory-read convention',
       );
+    });
+
+    it(`a canvas turn recalls at most ${String(CANVAS_RECALL_TAIL_TURNS)} tail turns; other turns keep the configured tail`, async () => {
+      assert.equal(CANVAS_RECALL_TAIL_TURNS, 2);
+      const canvas = buildWorld();
+      await runOn(path, canvas.orch, canvasInput());
+      assert.equal(canvas.recallQueries.length, 1);
+      const canvasQuery = JSON.parse(canvas.recallQueries[0]!) as { tailLimit?: number };
+      assert.equal(canvasQuery.tailLimit, CANVAS_RECALL_TAIL_TURNS);
+
+      const chat = buildWorld();
+      await runOn(path, chat.orch, chatInput());
+      assert.equal(chat.recallQueries.length, 1);
+      const chatQuery = JSON.parse(chat.recallQueries[0]!) as { tailLimit?: number };
+      assert.equal(chatQuery.tailLimit, undefined, 'no tail cap outside the canvas');
+    });
+
+    it('the recalled tail reaches C1 per stored turn; the next turn sends only the new one', async () => {
+      const header = '## Letzte Turns in diesem Chat';
+      const t1 = '\n- [2026-10-01T08:00:00Z]\n  Nutzer: Wer ist Anna?\n  Assistent: Kollegin.';
+      const t2 = '\n- [2026-10-01T08:05:00Z]\n  Nutzer: Und Marvin?\n  Assistent: Kollege.';
+      const t3 = '\n- [2026-10-01T08:10:00Z]\n  Nutzer: Und Jens?\n  Assistent: Teamlead.';
+      const tails: ReadonlyArray<readonly string[]> = [
+        [header, t1, t2],
+        [header, t1, t2, t3],
+      ];
+      const w = buildWorld((call) => {
+        const segments = tails[Math.min(call, tails.length - 1)]!;
+        return { text: segments.join(''), segments };
+      });
+
+      await runOn(path, w.orch, chatInput());
+      const firstTurn = [...w.c1Seen];
+      for (const seg of [header, t1, t2]) {
+        assert.ok(firstTurn.includes(seg), `turn 1 scanned segment ${JSON.stringify(seg.slice(0, 30))}`);
+      }
+      assert.ok(
+        !firstTurn.includes([header, t1, t2].join('')),
+        'the concatenated tail is not sent as one text',
+      );
+
+      w.c1Seen.length = 0;
+      await runOn(path, w.orch, chatInput());
+      assert.ok(w.c1Seen.includes(t3), 'the new stored turn is scanned');
+      for (const seg of [header, t1, t2]) {
+        assert.ok(!w.c1Seen.includes(seg), 'a stored turn already scanned is served from cache');
+      }
+      for (const req of w.requests) {
+        const wire = JSON.stringify(req);
+        assert.ok(wire.includes('Kollegin'), 'the recalled tail still reaches the model');
+      }
     });
   });
 }

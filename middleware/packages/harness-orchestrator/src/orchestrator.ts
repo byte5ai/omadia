@@ -1400,15 +1400,20 @@ async function maskIngestedForWire(
  *  masking of turn N. So it is masked like a replayed answer
  *  ({@link maskReplayedAnswerForWire}), whatever `mask_user_prompt` says,
  *  through the SAME turn map, so answer-side restore covers these spans too.
- *  Server-side stores stay raw — only the injected copy is masked. */
+ *  Server-side stores stay raw — only the injected copy is masked.
+ *
+ *  `segments` — the block's partition into whole stored turns (from
+ *  `retrievePriorContext`), so the C1 detector scans each stored turn once
+ *  and serves it from its process-wide cache on every later turn. */
 async function maskRecalledForWire(
   privacy: PrivacyTurnHandle | undefined,
   recalledText: string | undefined,
+  segments?: readonly string[],
 ): Promise<string | undefined> {
   if (recalledText === undefined || recalledText.trim().length === 0) {
     return recalledText;
   }
-  return maskReplayedAnswerForWire(privacy, recalledText);
+  return maskReplayedAnswerForWire(privacy, recalledText, segments);
 }
 
 /**
@@ -1423,9 +1428,10 @@ async function maskRecalledForWire(
 async function maskReplayedAnswerForWire(
   privacy: PrivacyTurnHandle | undefined,
   answer: string,
+  segments?: readonly string[],
 ): Promise<string> {
   if (privacy?.maskReplayedAnswer === undefined) return maskPromptForWire(privacy, answer);
-  const result = await privacy.maskReplayedAnswer(answer);
+  const result = await privacy.maskReplayedAnswer(answer, segments);
   if (result.outcome === 'blocked') {
     throw new PromptMaskBlockedError(result.reason);
   }
@@ -1847,6 +1853,15 @@ export const CANVAS_TURN_MEMORY_HINT = `# CANVAS-TURN (Memory-Lese-Konvention au
 
 Dieser Turn kommt aus einem Canvas-Client. Für diesen EINEN Turn gilt die Konvention „zu Beginn jeder neuen Aufgabe den /memories-Verzeichnisinhalt lesen" aus dem stabilen System-Prompt NICHT: kein einleitender \`memory\`-View auf \`/memories\` und kein vorsorglicher Read unter \`/memories/_rules/\`. Geh direkt zum passenden Fach-Agent-Tool-Call.
 Das \`memory\`-Tool bleibt verfügbar — lies eine konkrete Memory-Datei nur, wenn die Anfrage ausdrücklich darauf angewiesen ist, und schreib, wenn sich ein verifizierter Fakt ergibt.`;
+
+/**
+ * Canvas turns: the most session-tail turns context assembly recalls. A
+ * canvas turn carries its working context in the skeleton, so the verbatim
+ * tail is only conversational glue — and every recalled turn is LLM-bound
+ * text the C1 detector has to scan. Other channels keep the operator's
+ * `context_tail_size`.
+ */
+export const CANVAS_RECALL_TAIL_TURNS = 2;
 
 /**
  * Combines the caller-supplied hint (already masked for the wire, see
@@ -4000,6 +4015,13 @@ export class Orchestrator {
      * on tail alone. Absent on every early return — no retrieval, no recall.
      */
     recallUsed?: boolean;
+    /**
+     * `text` partitioned into whole stored units (briefing, recall blocks,
+     * headers, one segment per rendered turn) — `segments.join('') === text`.
+     * Lets the privacy mask scan each stored turn once and cache it across
+     * turns. Absent when the retriever does not report segments.
+     */
+    segments?: readonly string[];
   }> {
     // Use console.error so the trace lands on stderr — Fly's log aggregator
     // has been observed to drop some stdout INFO lines under load, and this
@@ -4108,6 +4130,11 @@ export class Orchestrator {
         ...(turnContext.current()?.privacyHandle !== undefined
           ? { excludeUnprotected: true }
           : {}),
+        // A canvas turn carries its context in the skeleton: recall only the
+        // last few tail turns (see CANVAS_RECALL_TAIL_TURNS).
+        ...(input.canvasSessionId !== undefined
+          ? { tailLimit: CANVAS_RECALL_TAIL_TURNS }
+          : {}),
       });
       console.error(
         `[context] assembled scope=${input.sessionScope ?? '-'} user=${input.userId ?? '-'} pool=${String(result.stats.candidatePool)} included=${String(result.included.length)} excluded=${String(result.excluded.length)} compact=${String(result.stats.compactMode)} tokens=${String(result.stats.tokensUsed)} rendered=${String(result.text.length)}B`,
@@ -4150,6 +4177,16 @@ export class Orchestrator {
           : briefingText.length > 0
             ? briefingText
             : result.text;
+      // The same composition, kept partitioned: the briefing (with its
+      // separator) is one unit, the assembler's segments follow unchanged.
+      const segments =
+        result.segments === undefined
+          ? undefined
+          : briefingText.length > 0 && result.text.length > 0
+            ? [`${briefingText}\n\n---\n\n`, ...result.segments]
+            : briefingText.length > 0
+              ? [briefingText]
+              : result.segments;
       // Recall vs. tail. `AssembledHit.origin` is the leg that DELIVERED the
       // hit: `'tail'` is the verbatim window of THIS conversation, `'entity'`
       // and `'fts'` are topical recall the retriever went looking for. Only the
@@ -4169,6 +4206,7 @@ export class Orchestrator {
         text: merged.length > 0 ? merged : undefined,
         recalled: result.recalled,
         ...(recallUsed ? { recallUsed: true } : {}),
+        ...(segments !== undefined && merged.length > 0 ? { segments } : {}),
       };
     } catch (err) {
       console.error(
@@ -6445,16 +6483,21 @@ export class Orchestrator {
     // structured `recalled` payload rides out on the ChatTurnResult so
     // non-streaming channels (Teams) can render a recall card (the streaming
     // path emits it as a `kg_recall` annotation instead).
-    const { text: rawPriorContext, recalled, recallUsed } =
-      await this.retrievePriorContext(input, wireUserMessage, turnMemory?.isolation);
+    const {
+      text: rawPriorContext,
+      recalled,
+      recallUsed,
+      segments: priorContextSegments,
+    } = await this.retrievePriorContext(input, wireUserMessage, turnMemory?.isolation);
     // #361 — the recalled TEXT is LLM-bound wire content: it carries real
     // values persisted from earlier turns, so it is masked through the SAME
     // turn map before injection (answer-side restore covers these spans).
     // The structured `recalled` payload stays raw — it goes to the UI, not
-    // the model.
+    // the model. Its stored-turn segments let C1 skip turns already scanned.
     const priorContext = await maskRecalledForWire(
       privacyForPrompt,
       rawPriorContext,
+      priorContextSegments,
     );
     // #268 — pre-fetch + extract any uploaded document text for this turn.
     // #504/#505 — the same pass also resolves image attachments (Teams
@@ -7792,13 +7835,17 @@ export class Orchestrator {
     // builds no `memoryUsed`, and its only consumer is the non-streaming Teams
     // card (`toSemanticAnswer`). Wire it through with the flag if a streaming
     // channel ever grows a Fresh-Check affordance.
-    const { text: rawPriorContext, recalled } =
-      await this.retrievePriorContext(input, wireUserMessage, turnMemory?.isolation);
+    const {
+      text: rawPriorContext,
+      recalled,
+      segments: priorContextSegments,
+    } = await this.retrievePriorContext(input, wireUserMessage, turnMemory?.isolation);
     // #361 — the recalled TEXT is LLM-bound wire content; mask through the
     // same turn map before injection (see chatInContextInner).
     const priorContext = await maskRecalledForWire(
       privacyForPrompt,
       rawPriorContext,
+      priorContextSegments,
     );
     // Cross-session recall probe — surface plans/processes/insights pulled
     // from prior sessions as a visible `kg_recall` card before the answer

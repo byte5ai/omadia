@@ -497,6 +497,17 @@ export interface PrivacyReplayedAnswerRequest {
   readonly turnId: string;
   /** The replayed answer as the channel stored it. */
   readonly text: string;
+  /**
+   * Optional partition of `text` into independently stored pieces — the
+   * recalled prior context, one segment per rendered stored turn (plus its
+   * headers). `segments.join('')` MUST equal `text`; a list that does not is
+   * ignored and `text` is detected as a whole. Each segment must be a whole
+   * stored unit, never a cut through one: the C1 transformer detects each
+   * segment on its own (an entity cannot span two segments) and caches the
+   * result by content hash across turns, so a stored turn is not re-scanned
+   * on every turn that recalls it. The C0 baseline always sees `text` whole.
+   */
+  readonly segments?: readonly string[];
 }
 
 /**
