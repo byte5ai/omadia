@@ -36,6 +36,59 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — uninstalling a provider plugin no longer takes the built-in provider with it (#1451)
+
+2026-10-26. A Hub plugin may register its LLM provider under a BUILT-IN id —
+`@omadia/plugin-llm-anthropic` ships `id: anthropic`, the id the bundled
+descriptor owns — and `LlmProviderCatalog.register` replaced the bundled entry
+in place. Uninstalling the plugin then left the id with **no** entry until the
+next middleware restart: `/api/v1/admin/providers` lost `anthropic`, its
+`verify` endpoint answered `providers.unknown_provider`, and no Anthropic model
+remained in the registry. Nothing broke until the orchestrator was next rebuilt
+(any setup-field save), at which point it published the raw class ref
+`class:balanced` as its model and every chat turn failed with an Anthropic 404
+`model: class:balanced`, on every channel.
+
+Four changes:
+
+- **`LlmProviderCatalog` keeps the bundled descriptors as a base layer.**
+  `registerBase` (used by `registerBuiltinLlmProviders`) remembers them, and
+  `unregister` registers the bundled one again instead of leaving the id empty,
+  so a plugin that shadowed a built-in restores it on uninstall. `isBundled(id)`
+  is new; `clear()` drops the base layer too.
+- **The uninstall path heals the consumers.** `unregisterProviderFromPlugin`
+  (`src/index.ts`) now re-runs discovery for a restored built-in and calls
+  `classDefaultRebuilder.onDefaultsChanged(id)` (#1359), so orchestrator,
+  verifier and extras are rebuilt on a concrete model without a restart — the
+  mirror image of what the install path already did. Taking over a bundled id
+  is now logged as a WARNING at registration, naming the plugin's baseURL.
+- **A class ref can no longer reach the wire.** The orchestrator plugin keeps
+  its two resolution tiers but drops the `?? configuredModelRef` tail: with a
+  provider that serves no model it fails activation naming
+  `orchestrator_model` instead of publishing `class:*`. `buildForAgent` drops
+  its `|| DEFAULT_ORCHESTRATOR_MODEL` tail — which was itself a class ref — and
+  throws `UnresolvedModelRefError` naming the Agent. Registry-unknown concrete
+  ids (custom vendor ids, bare CLI aliases) still pass through raw, and
+  cross-provider pinned ids still fall back to the shipped default rather than
+  being coerced — both unchanged.
+- **Sub-agents, too.** `buildSubAgentDomainTools` skips a sub-agent whose model
+  ref resolves to nothing instead of handing `class:balanced` (the kernel's
+  `SUBAGENT_DEFAULT_MODEL`) to `LocalSubAgent`, which sends it raw. Skipped and
+  logged like an unresolvable tool grant — the hydration path is not
+  per-agent-isolated, so the orchestrator keeps working and only that one
+  delegation target is withheld.
+- **The admin UI stops lying.** On "LLM access" → "Per-agent assignment", an
+  assigned provider missing from the list now renders as a disabled
+  "`<id>` (not registered)" option instead of the browser showing the first
+  option in its place, and the row no longer borrows that first provider's
+  legal notices: the Art. 28 disclosure names the stored id and the EU-hosting
+  and subscription warnings are withheld instead of describing a provider the
+  agent never ran on. New key `adminProviders.assignments.providerMissing`.
+
+Operator-visible trade: an orchestrator whose configured model nothing can
+serve now fails to activate (plugin status `errored`, message names
+`orchestrator_model`) rather than activating and 404ing per turn.
+
 ### Security — dependency sweep; time-boxed production audit exceptions
 
 2026-10-28. Rolls up 15 Dependabot PRs and clears the high/critical advisories

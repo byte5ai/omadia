@@ -1347,3 +1347,63 @@ describe('<ProvidersPanel />', () => {
     });
   });
 });
+
+/**
+ * #1451 — the assigned provider can be missing from `providers[]` entirely
+ * (its catalog entry was unregistered when a provider plugin that had shadowed
+ * a built-in id got uninstalled). The select kept `value="anthropic"` with no
+ * matching option, so the browser rendered the FIRST option instead and the
+ * page claimed the agent ran on a provider it was never assigned to.
+ */
+describe('<ProvidersPanel /> — an assigned provider that is not registered', () => {
+  const providerLabel = en.adminProviders.assignments.providerLabel;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetProviders.mockResolvedValue(
+      providersResponse({
+        providers: [
+          provider({
+            id: 'claude-cli',
+            label: 'Claude (subscription CLI)',
+            subscriptionNotice: true,
+            euHosted: true,
+          }),
+        ],
+        assignments: [orchestratorAssignment({ provider: 'anthropic' })],
+      }),
+    );
+  });
+
+  it('keeps the stored provider selected as a disabled option, not option 0', async () => {
+    renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+    const select = (await screen.findByLabelText(providerLabel)) as HTMLSelectElement;
+    expect(select.value).toBe('anthropic');
+    const selected = select.options[select.selectedIndex];
+    expect(selected?.textContent).toBe('anthropic (not registered)');
+    expect(selected?.disabled).toBe(true);
+  });
+
+  it('writes nothing — rendering the missing provider is not a selection', async () => {
+    renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+    await screen.findByLabelText(providerLabel);
+    expect(mockAssignProvider).not.toHaveBeenCalled();
+  });
+
+  it('borrows no legal notice from the first provider in the list', async () => {
+    renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+    await screen.findByLabelText(providerLabel);
+    // The only listed provider is EU-hosted and subscription-backed; the agent
+    // runs on neither, so neither claim may appear.
+    expect(screen.queryByText(/hosted in the EU/)).toBeNull();
+    expect(screen.queryByText(/personal Claude subscription/)).toBeNull();
+    // The Art. 28 disclosure stays on (conservative default) and names the
+    // stored provider, not the one that happens to be listed first.
+    const disclosure = screen.getByText(/third-party processor/);
+    expect(disclosure.textContent).toContain('anthropic');
+    expect(disclosure.textContent).not.toContain('Claude (subscription CLI)');
+  });
+});

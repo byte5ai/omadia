@@ -424,6 +424,9 @@ export const EXPERIMENTAL_LLM_PROVIDERS: ReadonlyArray<LlmProviderDescriptor> = 
  * their models into the global overlay). Idempotent per catalog. Call at boot
  * before plugin activation, and in tests that need a populated model registry.
  *
+ * Registered as the catalog's BASE LAYER — see `LlmProviderCatalog.registerBase`
+ * for why (#1451).
+ *
  * `includeExperimental` (default false) additionally registers
  * {@link EXPERIMENTAL_LLM_PROVIDERS} — the `openai-chatgpt` "Sign in with
  * ChatGPT" backend (#294) — gated on `CHATGPT_SUBSCRIPTION_EXPERIMENTAL`.
@@ -433,11 +436,11 @@ export function registerBuiltinLlmProviders(
   opts: { includeExperimental?: boolean } = {},
 ): void {
   for (const descriptor of BUILTIN_LLM_PROVIDERS) {
-    catalog.register(descriptor);
+    catalog.registerBase(descriptor);
   }
   if (opts.includeExperimental === true) {
     for (const descriptor of EXPERIMENTAL_LLM_PROVIDERS) {
-      catalog.register(descriptor);
+      catalog.registerBase(descriptor);
     }
   }
 }
