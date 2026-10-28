@@ -71,3 +71,21 @@ export function decodePluginIdSegment(segment: string): string | null {
   }
   return isValidPluginId(decoded) ? decoded : null;
 }
+
+/**
+ * The bundle entry of a plugin's compiled SPA, as a same-origin path:
+ * `/p/<pluginId>/ui/index.html` (epic #470 C8).
+ *
+ * Shared by the two callers that must agree on it — `PluginUiFrame` builds the
+ * iframe `src` from it, and the host page's bundle probe
+ * (`pluginUiBundle.ts`) asks the middleware for the same URL (#1454). They
+ * disagreeing is the #1399 bug class: `encodeURIComponent` keeps a scoped id
+ * in ONE path segment, where a raw `@omadia/example-ui` would make
+ * `:pluginId` just `@omadia` and 404 every scoped plugin.
+ *
+ * Callers pass an id that already cleared `isValidPluginId`; this function
+ * encodes, it does not validate.
+ */
+export function pluginUiEntryPath(pluginId: string): string {
+  return `/p/${encodeURIComponent(pluginId)}/ui/index.html`;
+}

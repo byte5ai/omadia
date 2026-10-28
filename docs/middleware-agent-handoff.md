@@ -4618,6 +4618,40 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 
 ## 13. Offene Roadmap
 
+### Plugin-UI-Host-Seite: Restrisiko nach dem Bundle-Gate (#1454)
+
+`/plugin-ui/<pluginId>` prüft seit #1454 vor dem Rendern, ob überhaupt ein
+UI-Bundle existiert: die Server-Komponente fragt
+`HEAD /p/<pluginId>/ui/index.html` gegen `MIDDLEWARE_URL`
+(`web-ui/app/_lib/pluginUiBundle.ts`, Pfad gemeinsam mit dem Frame über
+`pluginUiEntryPath` in `web-ui/app/_lib/pluginId.ts`) und ruft bei einer
+404-Antwort `notFound()` in der Page-Datei selbst auf — dadurch echte
+HTTP-404 plus omadia-404-Seite statt Roh-JSON im Frame. Die Middleware
+selbst wurde nicht geändert; `/p/<id>/ui/*` antwortet API-Aufrufern
+weiterhin mit `{"error":"plugin_ui_not_found"}` als JSON. Der
+HEAD-Vertrag, auf dem die Probe aufsetzt, ist in
+`middleware/test/pluginUiStaticServing.test.ts` festgenagelt.
+
+Bewusst offen geblieben:
+
+- **Fail-open bei Middleware-Störung.** Nur eine eindeutige 404 gilt als
+  „kein UI“. 5xx, Timeout und tote Verbindung rendern den Frame weiter,
+  damit ein Ausfall nicht als „Plugin existiert nicht“ erscheint. Preis:
+  während einer Störung kann der Frame das Roh-JSON wieder anzeigen — jetzt
+  sporadisch statt deterministisch.
+- **Rennen zwischen Probe und Frame-Load.** Wird das Plugin zwischen Prüfung
+  und Iframe-Request deaktiviert oder deinstalliert, zeigt der Frame
+  dasselbe JSON.
+- **Sub-Ressourcen.** Eine fehlende `.../ui/app.js` liefert unverändert
+  JSON in den Frame; das Gate deckt nur das Dokument ab.
+
+Gegenmittel, falls das auffällt (im Triage von #1454 als Option 6 notiert,
+höchstens eines davon): in `middleware/src/routes/pluginUiStatic.ts` bei
+Dokument-Anfragen (`Sec-Fetch-Dest: iframe|document` bzw. `Accept: text/html`)
+einen minimalen HTML-Body statt JSON ausliefern — JSON-Form für API-Aufrufer
+bleibt —, oder `PluginUiFrame` einen lokalisierten „UI nicht verfügbar“-Zustand
+geben (zwei neue Keys in allen `web-ui/messages/*.json`).
+
 ### Ephemere Runs: stiller TTL-Kill + Per-Caller-Service (nach 0012)
 
 - **TTL-Ablauf ist ein stiller Kill.** Läuft `expires_at` ab, cancelt der Reaper
