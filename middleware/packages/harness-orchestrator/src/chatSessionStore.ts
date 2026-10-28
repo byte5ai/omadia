@@ -95,18 +95,18 @@ export interface ChatProactiveMarker {
 /**
  * Per-session config snapshot (US6 / T024).
  *
- * Captured at session start and pinned for the session's entire lifetime so
- * a mid-flight reload (US5) cannot mutate the tool / plugin / memory-scope
- * surface a turn is reasoning over. The session's `agentSlug` is the
- * routing key — even if the registry rebuilds the Agent, the session keeps
- * the snapshot's view until a `force-invalidate` (T026) flips it.
+ * Captured at session start. The session's `agentSlug` is the routing key:
+ * it binds the session to its Agent until a `force-invalidate` (T026) clears
+ * it.
  *
  * The snapshot stores **ids only**, not live object references — sessions
  * are serialised to JSON on disk, so the data must round-trip. The actual
- * `Orchestrator` instance is resolved lazily from the registry on each
- * turn using `agentSlug`; the snapshot's tool / plugin lists are the
- * authoritative view of what the session is allowed to see (US8 will
- * wire memory-scope enforcement against this list).
+ * `Orchestrator` instance is resolved on each turn from `agentSlug` alone
+ * (`lookupForSession`), so it is always the CURRENT build: a plugin change
+ * rebuilds the Agent (`plugin_grants`, #989) and the session's next turn
+ * already runs on the new plugin set. `pluginIds` / `toolIds` /
+ * `memoryScope` record what the Agent had when the session started; nothing
+ * enforces them (#1476).
  */
 export interface SessionConfigSnapshot {
   agentSlug: string;

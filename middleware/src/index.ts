@@ -1697,8 +1697,10 @@ async function main(): Promise<void> {
           enabled: true,
         });
         // Refresh `entry.plugins` from the DB so the scoping check below
-        // sees the freshly-enabled row. Idempotent no-op when unchanged;
-        // a plugin-only change is an `update` (no rebuild → sessions kept).
+        // sees the freshly-enabled row. Idempotent no-op when unchanged.
+        // A changed plugin set is a full `rebuild` (reason `plugin_grants`,
+        // #989): conversation history and the session's Agent binding
+        // survive it, and the new plugin set applies from the next turn.
         await reg.reload();
       }
     } catch (err) {

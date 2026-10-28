@@ -5,10 +5,17 @@ import type { KnowledgeGraph } from '@omadia/plugin-api';
  *
  * The plan is advisory: the orchestrator's tool loop is driven by the LLM,
  * not by the plan. We map tool activity to plan steps with a simple
- * sequential cursor — the i-th tool call advances the i-th step. This is a
- * heuristic (one tool ≈ one step), good enough to surface live progress and
- * to satisfy the "inspect a turn as a plan structure" goal; a precise mapping
- * (e.g. LLM- or evidence-driven) is a later refinement.
+ * sequential cursor — the i-th successful work call advances the i-th step.
+ * This is a heuristic (one tool ≈ one step), good enough to surface live
+ * progress and to satisfy the "inspect a turn as a plan structure" goal; a
+ * precise mapping (e.g. LLM- or evidence-driven) is a later refinement.
+ *
+ * #1502 — the cursor only moves on real work: the plugin skips bookkeeping
+ * calls (memory, answer rendering) and routes failed calls to the replanner.
+ * Invariant: every step before the cursor is `done`. At turn end only the
+ * last step may still be completed by the answer itself; every other step
+ * the turn did not reach ends `skipped`, so neither the plan card nor plan
+ * recall reports work that never ran.
  */
 
 export interface TurnPlanState {
@@ -53,17 +60,38 @@ export async function advanceStep(
   }
 }
 
-/** At turn end, mark the still-in-progress cursor step `done` (the turn
- *  produced its answer). Steps never reached stay `pending` — an honest
- *  record that the plan over-counted. */
+/** Evidence recorded on a step the turn ended without reaching. */
+export const NOT_REACHED_SUMMARY = 'not reached: the turn ended before this step ran';
+
+/** At turn end, close the steps from the cursor on (#1502). The answer
+ *  completes the last step when every step before it is done (the typical
+ *  "present the results" step needs no tool). Any other step the turn did not
+ *  reach — including one left `in_progress` because its call never came —
+ *  ends `skipped`, never `done`. */
 export async function finishPlan(
   state: TurnPlanState,
   kg: KnowledgeGraph,
 ): Promise<void> {
-  const current = state.stepExternalIds[state.cursor];
-  if (current !== undefined) {
-    await kg.setPlanStepStatus(current, 'done');
+  const lastIndex = state.stepExternalIds.length - 1;
+  for (let i = state.cursor; i <= lastIndex; i++) {
+    const id = state.stepExternalIds[i]!;
+    // Only the last step, and only when it is the sole step still open.
+    if (i === lastIndex && i === state.cursor) {
+      await kg.setPlanStepStatus(id, 'done');
+    } else {
+      await kg.setPlanStepStatus(id, 'skipped', {
+        resultSummary: NOT_REACHED_SUMMARY,
+      });
+    }
   }
+  state.cursor = state.stepExternalIds.length;
+}
+
+/** A failed step left no recovery path: the replanner already marked it
+ *  `failed` and the rest `skipped`, so park the cursor past the end — later
+ *  calls and {@link finishPlan} must not touch the plan again. */
+export function abandonPlan(state: TurnPlanState): void {
+  state.cursor = state.stepExternalIds.length;
 }
 
 /** #133 (E4) — after a replan produced `newStepExternalIds`, splice them in:
