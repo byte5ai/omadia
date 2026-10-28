@@ -52,19 +52,46 @@ const SHARED_SEGMENTS = new Set(['core', 'sessions']);
  * 'privacy-render'`): real rows that never went to the model. `memory` is
  * exempt from interning (`privacyInternPolicy.ts`), so a `view` here handed
  * those rows to the model in clear (#1102). The model has no use for the raw
- * chat JSON; the `/memories/sessions/` transcripts, written before the render
- * swap, stay readable.
+ * chat JSON. The `/memories/sessions/` transcripts are refused only while a
+ * Privacy Shield runs (see {@link SHIELDED_SEGMENTS}).
  */
 const MODEL_DENIED_SEGMENTS = new Set(['chat-sessions']);
 
-/** Thrown for a path in {@link MODEL_DENIED_SEGMENTS}; the memory tool turns
- *  it into an `Error:` result. */
+/**
+ * First segments refused while a Privacy Shield provider runs (#1534).
+ *
+ * `SessionLogger` writes every turn to `/memories/sessions/<scope>/<day>.md`
+ * with its real values restored, protected or not. `memory` is intern-exempt,
+ * so a `view` there handed the model names and e-mail addresses the shield
+ * masked during the turn itself, from any chat. Masking the text on the way
+ * out would only catch detector-visible spans, so the tree is refused instead;
+ * earlier conversations reach the model through recall, which masks and skips
+ * `unprotected` turns. Without a shield nothing is masked anyway, and the
+ * transcripts stay readable.
+ */
+const SHIELDED_SEGMENTS = new Set(['sessions']);
+
+/** Thrown for a path in {@link MODEL_DENIED_SEGMENTS}, or in
+ *  {@link SHIELDED_SEGMENTS} under a shield; the memory tool turns it into an
+ *  `Error:` result. */
 export class MemoryPathDenied extends Error {
-  constructor(path: string) {
-    super(`The path ${path} is not available to the memory tool.`);
+  constructor(path: string, reason?: 'privacy-shield') {
+    super(
+      reason === 'privacy-shield'
+        ? `The path ${path} is not available to the memory tool while the Privacy Shield is active. ` +
+            'Earlier conversations reach you through the recalled context instead.'
+        : `The path ${path} is not available to the memory tool.`,
+    );
     this.name = 'MemoryPathDenied';
   }
 }
+
+/**
+ * Is a Privacy Shield in force for the memory tool right now? Read on every
+ * call, since the provider can come and go at runtime. Omitted: never (tests,
+ * callers without a shield).
+ */
+export type ShieldActive = () => boolean;
 
 /**
  * Reserved model-facing first segments, recognised ONLY in context mode.
@@ -117,6 +144,8 @@ abstract class MemoryNamespacerBase implements MemoryStore {
     private readonly reservedRoots: ReadonlyMap<string, string>,
     /** Segments recognised as reserved, bound or not. */
     private readonly reservedSegments: ReadonlySet<string>,
+    /** #1534 — refuse {@link SHIELDED_SEGMENTS} while this returns true. */
+    private readonly shieldActive: ShieldActive | undefined,
   ) {
     const bindings: RootBinding[] = [
       { outer: MEMORIES_ROOT, inner: privateRoot },
@@ -135,6 +164,9 @@ abstract class MemoryNamespacerBase implements MemoryStore {
 
     const seg = firstSegment(rest);
     if (MODEL_DENIED_SEGMENTS.has(seg)) throw new MemoryPathDenied(path);
+    if (SHIELDED_SEGMENTS.has(seg) && this.shieldActive?.() === true) {
+      throw new MemoryPathDenied(path, 'privacy-shield');
+    }
     if (this.reservedSegments.has(seg)) {
       const root = this.reservedRoots.get(seg);
       // Unbound reserved segment → leave it outside every compiled scope.
@@ -199,12 +231,13 @@ const NO_RESERVED_ROOTS: ReadonlyMap<string, string> = new Map();
 const NO_RESERVED_SEGMENTS: ReadonlySet<string> = new Set<string>();
 
 export class OrchestratorMemoryNamespacer extends MemoryNamespacerBase {
-  constructor(agentSlug: string, inner: MemoryStore) {
+  constructor(agentSlug: string, inner: MemoryStore, shieldActive?: ShieldActive) {
     super(
       inner,
       `${MEMORIES_ROOT}/orchestrators/${agentSlug}`,
       NO_RESERVED_ROOTS,
       NO_RESERVED_SEGMENTS,
+      shieldActive,
     );
   }
 }
@@ -249,6 +282,8 @@ export interface ContextMemoryNamespacerOptions {
    * patterns of the `ScopedMemoryStore`, not by this mapper.
    */
   readonly sharedRoots?: ReadonlyMap<string, string>;
+  /** #1534 — refuse `/memories/sessions/` while this returns true. */
+  readonly shieldActive?: ShieldActive;
 }
 
 /**
@@ -263,6 +298,7 @@ export interface ContextMemoryNamespacerOptions {
  * /memories/core/...   → unchanged           (shared passthrough)
  * /memories/_rules/... → unchanged           (shared passthrough)
  * /memories/chat-sessions/... → refused      (MemoryPathDenied)
+ * /memories/sessions/...      → refused under a Privacy Shield (#1534)
  * ```
  *
  * `list` never leaks a physical `contexts/...` path outward: every entry is
@@ -297,6 +333,7 @@ export class ContextMemoryNamespacer extends MemoryNamespacerBase {
       options.privateRoot,
       roots,
       new Set([TEAM_SEGMENT, AGENT_SEGMENT, ...listed]),
+      options.shieldActive,
     );
     this.listedSegments = listed;
   }

@@ -80,6 +80,7 @@ import {
 import type { TurnHookRunner } from './turnHooks.js';
 import type { ChatAgentBundle } from './plugin.js';
 import { SessionLogger, isChatSessionScope } from './sessionLogger.js';
+import { isPrivacyForceGuarded } from './privacyPolicy.js';
 import type { RunTraceOutcomeStats } from './runTraceObservability.js';
 import { AskUserChoiceTool } from './tools/askUserChoiceTool.js';
 import { BookMeetingTool } from './tools/bookMeetingTool.js';
@@ -598,9 +599,15 @@ export function buildOrchestratorForAgent(
   // durable MemorableKnowledge. Needs the graph pool; gated off when absent or
   // via KG_DURABLE_RULES_HOOK=false. Decorator sits OUTSIDE the namespacer so
   // it sees the model-facing `_rules/` path (namespacer passes `_` through).
+  // #1534 — under a Privacy Shield the `memory` tool may not read the session
+  // transcripts: they hold every turn's real values. The org policy counts
+  // too, so a turn that slips past the fail-closed gate (#1535) still cannot.
+  const shieldActive = (): boolean =>
+    deps.privacyGuard() !== undefined || isPrivacyForceGuarded(process.env);
   const namespacedStore: MemoryStore = new OrchestratorMemoryNamespacer(
     config.agentId,
     scopedStore,
+    shieldActive,
   );
   const durableRulesHookEnabled =
     process.env['KG_DURABLE_RULES_HOOK'] !== 'false' && !!deps.graphPool;
@@ -641,6 +648,7 @@ export function buildOrchestratorForAgent(
     agentSlug: config.agentId,
     root: deps.memoryStore,
     mode: config.contextMemory ?? 'off',
+    shieldActive,
     ...(durableRulesHookEnabled
       ? {
           durableRules: {
