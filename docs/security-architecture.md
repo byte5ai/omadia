@@ -1887,7 +1887,9 @@ written before #1540 and for raw MCP results and rule promotions stored
 before #1536, `scripts/backfill-unprotected-provenance.ts`
 (`runProvenanceBackfill`, #1540) marks the items the guard's detectors flag:
 the C0 identity shapes (not dates or amounts) and, with the C1 sidecar
-configured, person names and addresses. Unflagged legacy items stay
+configured, a C1 span that looks like a personal name (two or more capitalised
+words at confidence 0.9 or more: C1 also tags role nouns such as "User" or
+"Kunde" as persons, which flagged nearly every convention in a first dry run). Unflagged legacy items stay
 protected: marking everything would hide every curated rule from shielded
 turns. Scratch-reaper memories derived from legacy notes are judged the same
 way. It skips the transcripts, the web UI's chat copies, the operator audit,
