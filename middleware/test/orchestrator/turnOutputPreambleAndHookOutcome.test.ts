@@ -23,10 +23,14 @@ import {
   type TurnHookPayload,
   type TurnHookPoint,
 } from '@omadia/orchestrator';
+import { PLAN_BOOKKEEPING_TOOL_NAMES } from '@omadia/plugin-api';
 import {
   afterToolCallPayload,
+  BOOKKEEPING_TOOL_NAMES,
   SubToolOutcomeTally,
 } from '../../packages/harness-orchestrator/src/toolCallOutcome.js';
+import { passesBeforeVerdict } from '../../packages/harness-orchestrator/src/verifierDelivery.js';
+import { skeletonOnRelease } from '../../packages/omadia-ui-orchestrator/src/verdictHold.js';
 
 type Block =
   { type: 'text'; text: string } | { type: 'tool_call'; id: string; name: string; input: unknown };
@@ -61,7 +65,11 @@ function scriptedProvider(script: LlmResponse[]): LlmProvider {
     complete: async (): Promise<LlmResponse> => next(),
     stream: (): AsyncIterable<LlmStreamEvent> => ({
       async *[Symbol.asyncIterator]() {
-        yield { type: 'final', response: next() };
+        const res = next();
+        for (const block of res.content) {
+          if (block.type === 'text') yield { type: 'text_delta', text: block.text };
+        }
+        yield { type: 'final', response: res };
       },
     }),
     classifyError: () => ({ retryable: false, kind: 'other' as const }),
@@ -314,5 +322,114 @@ describe('#1502 — onAfterToolCall reports failure and bookkeeping', () => {
     tally.record('p', false);
     assert.equal(tally.allFailed('p'), false);
     assert.equal(tally.allFailed('never-called'), false);
+  });
+});
+
+describe('#1500 — the streamed preview retracts the preamble', () => {
+  async function events(script: LlmResponse[]) {
+    const out: Array<{ type: string; text?: string; chars?: number }> = [];
+    for await (const ev of build(script, []).chatStream({ userMessage: 'Wie ist der Stand?' })) {
+      out.push(ev as { type: string });
+    }
+    return out;
+  }
+
+  it('retracts exactly the preamble characters once the model calls a data tool', async () => {
+    const evs = await events([
+      response(
+        [
+          { type: 'text', text: PREAMBLE },
+          { type: 'tool_call', id: 't1', name: 'lookup', input: {} },
+        ],
+        'tool_use',
+      ),
+      response([{ type: 'text', text: ANSWER }], 'end_turn'),
+    ]);
+    const retract = evs.find((e) => e.type === 'text_retract');
+    assert.equal(retract?.chars, PREAMBLE.length);
+    const types = evs.map((e) => e.type);
+    // Retracted before the tool runs — before the answer's delta.
+    assert.ok(types.indexOf('text_retract') < types.indexOf('tool_result'), types.join(','));
+  });
+
+  it('does not retract an answer written after data arrived', async () => {
+    const evs = await events([
+      response([{ type: 'tool_call', id: 't1', name: 'lookup', input: {} }], 'tool_use'),
+      response(
+        [
+          { type: 'text', text: ANSWER },
+          { type: 'tool_call', id: 't2', name: 'lookup', input: {} },
+        ],
+        'tool_use',
+      ),
+      response([{ type: 'text', text: 'Fertig.' }], 'end_turn'),
+    ]);
+    assert.equal(
+      evs.some((e) => e.type === 'text_retract'),
+      false,
+    );
+  });
+
+  it('a card lead-in keeps only the kept text, never the preamble', () => {
+    const acc = new AnswerTextAccumulator();
+    assert.equal(acc.addIteration([PREAMBLE], ['memory']), true);
+    assert.equal(acc.addIteration([], ['ask_user_choice']), false);
+    assert.deepEqual(acc.keptParts(), []);
+    assert.deepEqual(acc.parts(), [PREAMBLE]);
+  });
+});
+
+describe('#1500 follow-ups — retract plumbing', () => {
+  it('retracts each preamble iteration and done.answer restores them when no answer follows', async () => {
+    const evs: Array<{ type: string; chars?: number; answer?: string }> = [];
+    for await (const ev of build(
+      [
+        response(
+          [
+            { type: 'text', text: PREAMBLE },
+            { type: 'tool_call', id: 't1', name: 'lookup', input: {} },
+          ],
+          'tool_use',
+        ),
+        response(
+          [
+            { type: 'text', text: 'Ich frage nach.' },
+            { type: 'tool_call', id: 't2', name: 'lookup', input: {} },
+          ],
+          'tool_use',
+        ),
+        response([], 'end_turn'),
+      ],
+      [],
+    ).chatStream({ userMessage: 'Wie ist der Stand?' })) {
+      evs.push(ev as { type: string });
+    }
+    const retracts = evs.filter((e) => e.type === 'text_retract').map((e) => e.chars);
+    // The second iteration comes after a work result, so it is kept.
+    assert.deepEqual(retracts, [PREAMBLE.length]);
+    const done = evs.find((e) => e.type === 'done');
+    const answer = done?.answer ?? '';
+    assert.ok(answer.startsWith('Ich frage nach.'), answer);
+  });
+
+  it('a held turn never lets a retract through before the verdict', () => {
+    assert.equal(passesBeforeVerdict({ type: 'text_retract', chars: 3 }), false);
+  });
+
+  it('the canvas skeleton hold keeps a retract behind the text it edits', async () => {
+    async function* turn() {
+      yield { type: 'text_delta' as const, text: 'abc' };
+      yield { type: 'text_retract' as const, chars: 3 };
+      yield { type: 'error' as const, message: 'x' };
+    }
+    const out: string[] = [];
+    for await (const ev of skeletonOnRelease({ type: 'iteration_start', iteration: 0 }, turn())) {
+      out.push(ev.type);
+    }
+    assert.deepEqual(out, ['text_delta', 'text_retract', 'error']);
+  });
+
+  it('plan recall and the orchestrator agree on the bookkeeping tools', () => {
+    assert.deepEqual([...PLAN_BOOKKEEPING_TOOL_NAMES].sort(), [...BOOKKEEPING_TOOL_NAMES].sort());
   });
 });

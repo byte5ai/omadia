@@ -2312,6 +2312,36 @@ export function planStepNodeId(stepId: string): string {
   return `planstep:${stepId}`;
 }
 
+/** #1502 — evidence the plan-runner records on the step a turn's answer
+ *  completed (the last step, once every step before it is done). */
+export const PLAN_STEP_ANSWER_EVIDENCE = "answer: completed by the turn's answer";
+
+/** #1502 — tools that serve the turn itself (memory directory, rendered
+ *  answer, follow-up and choice cards), not a plan step. The orchestrator
+ *  flags their calls `toolIsBookkeeping`; their evidence never proves work. */
+export const PLAN_BOOKKEEPING_TOOL_NAMES: readonly string[] = [
+  'memory',
+  'v4_render_answer',
+  'suggest_follow_ups',
+  'ask_user_choice',
+];
+
+/**
+ * #1502 — whether a PlanStep is done AND its record shows the work. Before
+ * #1502 the plan-runner closed steps no call worked on: with no evidence (the
+ * turn's end closed the open step) or with a bookkeeping call's evidence
+ * (`memory: …`, `v4_render_answer: …`). Plan recall and resume read this
+ * instead of `status === 'done'`, so such a step is not handed to a later
+ * turn as finished work. Steps closed since carry a work tool's evidence or
+ * {@link PLAN_STEP_ANSWER_EVIDENCE}.
+ */
+export function isEvidencedPlanStepDone(props: Readonly<Record<string, unknown>>): boolean {
+  if (props['status'] !== 'done') return false;
+  const evidence = props['resultSummary'];
+  if (typeof evidence !== 'string' || evidence.trim().length === 0) return false;
+  return !PLAN_BOOKKEEPING_TOOL_NAMES.some((n) => evidence.startsWith(`${n}:`));
+}
+
 export function entityNodeId(ref: EntityRef): string {
   return `${ref.system}:${ref.model}:${String(ref.id)}`;
 }
