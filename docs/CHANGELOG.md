@@ -135,6 +135,7 @@ Audit gains a "Plugin registries" filter.
   allow-scripts` on purpose. It now says the view runs with the operator's
   session and the same access as the rest of the interface, and that it is not
   isolated from it.
+
 ### Fixed — a boolean setup field with `default: "true"` installs as `true` (#1464)
 
 2026-10-28. dev-platform 0.3.5 declares `webhooks_enabled` with
