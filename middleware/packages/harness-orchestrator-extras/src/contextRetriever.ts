@@ -178,6 +178,8 @@ export interface ContextBuildInput {
    * of no known turn).
    */
   excludeUnprotected?: boolean;
+  /** See the field of the same name on {@link AssembleForBudgetInput}. */
+  tailLimit?: number;
   /** External id of the turn currently being answered — excluded from hits. */
   currentTurnId?: string;
   /**
@@ -311,6 +313,13 @@ export interface AssembleForBudgetInput {
   audienceOwners?: readonly string[];
   /** #1507 — see the field of the same name on {@link ContextBuildInput}. */
   excludeUnprotected?: boolean;
+  /**
+   * Per-call cap on the verbatim session tail: at most this many of the
+   * newest tail turns, and never more than the configured `tailSize`
+   * (`context_tail_size`). Set by the orchestrator for canvas turns, whose
+   * context rides the skeleton. Undefined ⇒ the configured `tailSize`.
+   */
+  tailLimit?: number;
   /** Optional override; otherwise `defaultBudgetTokens` from ContextRetriever-Opts. */
   budget?: { tokens: number };
 }
@@ -361,6 +370,15 @@ export interface AssembledContext {
   /** Final-rendered prose, ≤ budget tokens (best-effort, based on
    *  `chars/charsPerToken`). Empty string when nothing fit. */
   text: string;
+  /**
+   * `text` partitioned into whole rendered units — the recall blocks, each
+   * section header, and ONE segment per rendered turn (its leading newline
+   * included, so a stored turn renders to the identical segment on every
+   * later turn). `segments.join('') === text`. Lets the privacy mask scan a
+   * stored turn once and serve it from a content-hash cache afterwards.
+   * Optional so hand-built results (tests, wrappers) stay valid.
+   */
+  segments?: readonly string[];
   included: AssembledHit[];
   excluded: AssembledExclusion[];
   /** Cross-session probe payload — plans/processes/insights from prior
@@ -620,6 +638,7 @@ export class ContextRetriever {
       ...(input.currentTurnId ? { currentTurnId: input.currentTurnId } : {}),
       ...(input.audienceOwners ? { audienceOwners: input.audienceOwners } : {}),
       ...(input.excludeUnprotected ? { excludeUnprotected: true } : {}),
+      ...(input.tailLimit !== undefined ? { tailLimit: input.tailLimit } : {}),
       // Per-orchestrator KG isolation is OPT-IN: only when the caller (the
       // orchestrator) passes an agent prefix do we constrain recall to that
       // Agent. Its `sessionScope` then already arrives qualified, so
@@ -953,13 +972,21 @@ export class ContextRetriever {
       if (chunkChars > turnBudgetChars) break;
     }
 
-    const turnText = renderAssembled(fillOrder, included, compactMode);
+    const turnSegments = renderAssembledSegments(fillOrder, included, compactMode);
+    const turnText = turnSegments.join('');
     const text =
       recallBlocksText.length > 0
         ? turnText.length > 0
           ? `${recallBlocksText}\n\n${turnText}`
           : recallBlocksText
         : turnText;
+    // The same composition, kept partitioned (see `AssembledContext.segments`).
+    const segments: readonly string[] =
+      recallBlocksText.length > 0
+        ? turnText.length > 0
+          ? [`${recallBlocksText}\n\n`, ...turnSegments]
+          : [recallBlocksText]
+        : turnSegments;
     const tokensUsed = turnTokensUsed + recallTokens;
 
     const scope = input.sessionScope ?? '<no-scope>';
@@ -994,6 +1021,7 @@ export class ContextRetriever {
 
     return {
       text,
+      segments,
       included,
       excluded,
       recalled,
@@ -1094,7 +1122,16 @@ export class ContextRetriever {
           t.time.length > 0 &&
           (t.userMessage.length > 0 || t.assistantAnswer.length > 0),
       );
-    return turns.slice(-this.opts.tailSize);
+    // `tailLimit` only ever narrows the configured window. Computed as a
+    // start index: `slice(-0)` would return the whole list.
+    const keep = Math.max(
+      0,
+      Math.min(
+        this.opts.tailSize,
+        input.tailLimit !== undefined ? Math.floor(input.tailLimit) : this.opts.tailSize,
+      ),
+    );
+    return turns.slice(Math.max(0, turns.length - keep));
   }
 
   private async loadEntityHits(
@@ -1818,12 +1855,29 @@ interface AssembledHitLookup {
   meta: AssembledHit;
 }
 
-function renderAssembled(
+/**
+ * The assembled turn block as segments: each header and each rendered turn
+ * is one segment, every segment after the first carrying the `\n` joiner as
+ * its LEADING character. `segments.join('')` is the block `parts.join('\n')`
+ * always produced, and a turn renders to the same segment wherever it sits
+ * (the first part is always a header), so it stays cacheable across turns.
+ */
+function renderAssembledSegments(
   fillOrder: ReadonlyArray<CandidateHit>,
   included: ReadonlyArray<AssembledHit>,
   compactMode: boolean,
-): string {
-  if (included.length === 0) return '';
+): string[] {
+  return renderAssembledParts(fillOrder, included, compactMode).map((part, i) =>
+    i === 0 ? part : `\n${part}`,
+  );
+}
+
+function renderAssembledParts(
+  fillOrder: ReadonlyArray<CandidateHit>,
+  included: ReadonlyArray<AssembledHit>,
+  compactMode: boolean,
+): string[] {
+  if (included.length === 0) return [];
   const includedIds = new Set(included.map((h) => h.turnId));
   const ordered: AssembledHitLookup[] = [];
   for (const c of fillOrder) {
@@ -1852,5 +1906,5 @@ function renderAssembled(
       parts.push(renderHitChunk(o.candidate, compactMode));
     }
   }
-  return parts.join('\n');
+  return parts;
 }

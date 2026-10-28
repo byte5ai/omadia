@@ -67,6 +67,9 @@ export async function activate(
     // via the install UI applies on the very next turn (no restart).
     readConfig: (key) => ctx.config.get(key),
     c1Detector,
+    // The live sidecar URL scopes the process-wide C1 segment cache: a
+    // reconfigured sidecar misses, an unconfigured one caches nothing.
+    c1CacheScope: resolveC1Url,
   });
   const disposeService = ctx.services.provide<PrivacyGuardService>(
     PRIVACY_REDACT_SERVICE_NAME,

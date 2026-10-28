@@ -13,6 +13,10 @@
  *   - `Map<turnId, string>` — the server-materialized final answer a
  *     `v4_render_answer` call produced, drained by `takeRenderedAnswerV4`.
  *   - `Map<turnId, V4ReceiptAccum>` — per-turn counters for the receipt.
+ *
+ * One exception outlives a turn, still in the service closure: the C1
+ * segment cache (`c1SegmentCache.ts`) — sha256-keyed span offsets for the
+ * recalled tail's stored turns, bounded, holding no text and no value.
  */
 
 import type {
@@ -77,6 +81,8 @@ import {
   withoutMaskMarkers,
 } from './toolErrorRedact.js';
 import { findIdentityLeaks } from './v4/onTheWire.js';
+import { c1SegmentKey, createC1SegmentCache } from './c1SegmentCache.js';
+import { propagatePersonNames } from './c1NamePropagation.js';
 import { findResidualRealValues, resolvePromptPseudonyms } from './promptSurrogates.js';
 import type { PseudonymMap } from './v4/types.js';
 import {
@@ -313,6 +319,16 @@ export function createPrivacyGuardService(deps?: {
    * tier 1); it never silently passes an unmasked prompt.
    */
   readonly c1Detector?: PromptPiiDetector;
+  /**
+   * Identity of the C1 detector's LIVE configuration (the plugin passes its
+   * sidecar-URL resolver). Part of the process-wide segment-cache key, so a
+   * reconfigured sidecar never serves the previous one's spans; `undefined`
+   * means C1 is currently unconfigured (its `detect()` returns `[]`) and
+   * nothing is cached — a configured sidecar later must not be shadowed by
+   * those empty results. Absent ⇒ one fixed scope (a detector whose
+   * configuration cannot change, e.g. in tests).
+   */
+  readonly c1CacheScope?: () => string | undefined;
 }): PrivacyGuardService {
   // One turn-scoped Dataset Store per turn, minted lazily on the first
   // `internToolResultV4` and dropped by `finalizeTurn`.
@@ -437,31 +453,137 @@ export function createPrivacyGuardService(deps?: {
     if (cached !== undefined) {
       return { detector: { id: c1.id, detect: async () => cached }, degraded: false };
     }
-    // The sidecar is an HTTP hop with a generous timeout — log its wall time
-    // on every outcome so a slow pass is visible in the turn log, not a
-    // silent gap.
     const startedAt = Date.now();
-    const logC1 = (spans: number, failed: boolean): void => {
-      console.log(
-        `[privacy-guard v4] c1-detect ms=${String(Date.now() - startedAt)} ` +
-          `chars=${String(text.length)} spans=${String(spans)} ` +
-          `turn=${turnId}${failed ? ' failed' : ''}`,
-      );
-    };
     try {
       const c1Spans = await c1.detect(text);
-      logC1(c1Spans.length, false);
+      logC1Detect({ startedAt, text, turnId, spans: c1Spans.length, cached: 0, total: 1 });
       c1CacheSet(turnId, text, c1Spans);
       return { detector: { id: c1.id, detect: async () => c1Spans }, degraded: false };
     } catch (err) {
-      logC1(0, true);
-      c1FailedTurns.add(turnId);
-      console.warn(
-        `[privacy-guard v4] ${degradeLogTag} turn=${turnId} ` +
-          `detector=${c1.id}: ${err instanceof Error ? err.message : String(err)} ` +
-          `(C1 disabled for the remainder of this turn)`,
-      );
-      return { degraded: true };
+      logC1Detect({ startedAt, text, turnId, spans: 0, cached: 0, total: 1, failed: true });
+      return latchC1Failure(turnId, c1.id, degradeLogTag, err);
+    }
+  }
+
+  /** The sidecar is an HTTP hop with a generous timeout — its wall time is
+   *  logged on every outcome so a slow pass is visible in the turn log, not
+   *  a silent gap. `cached=<n>/<total>`: segments served from the
+   *  process-wide segment cache out of those that needed detection. */
+  function logC1Detect(entry: {
+    readonly startedAt: number;
+    readonly text: string;
+    readonly turnId: string;
+    readonly spans: number;
+    readonly cached: number;
+    readonly total: number;
+    readonly failed?: boolean;
+  }): void {
+    console.log(
+      `[privacy-guard v4] c1-detect ms=${String(Date.now() - entry.startedAt)} ` +
+        `chars=${String(entry.text.length)} spans=${String(entry.spans)} ` +
+        `cached=${String(entry.cached)}/${String(entry.total)} ` +
+        `turn=${entry.turnId}${entry.failed === true ? ' failed' : ''}`,
+    );
+  }
+
+  /** #980 — the first C1 failure marks the turn degraded (see the latch
+   *  rationale above); audited, and the caller falls back to C0. */
+  function latchC1Failure(
+    turnId: string,
+    detectorId: string,
+    degradeLogTag: string,
+    err: unknown,
+  ): { readonly degraded: true } {
+    c1FailedTurns.add(turnId);
+    console.warn(
+      `[privacy-guard v4] ${degradeLogTag} turn=${turnId} ` +
+        `detector=${detectorId}: ${err instanceof Error ? err.message : String(err)} ` +
+        `(C1 disabled for the remainder of this turn)`,
+    );
+    return { degraded: true };
+  }
+
+  // Process-wide C1 span cache for the recalled tail, keyed by sha256 of
+  // each stored-turn segment (see `c1SegmentCache.ts`). Unlike `c1Cache` it
+  // outlives the turn: it holds no text and no value — offsets, type and
+  // confidence only — so there is nothing in it to drop at `finalizeTurn`.
+  const c1SegmentCache = createC1SegmentCache();
+  // A fixed scope for a detector whose configuration cannot change.
+  const readC1CacheScope = deps?.c1CacheScope ?? ((): string => '');
+
+  /**
+   * `c1DetectorFor` for text the caller hands over as a partition of whole
+   * stored units (`segments.join('') === text`): C1 runs per segment, a
+   * segment already scanned in ANY earlier turn is served from the
+   * process-wide cache, and the segment spans are shifted onto `text`'s
+   * offsets. Only cache misses reach the sidecar. Failure behaviour is that
+   * of `c1DetectorFor`: the per-turn latch first, and the first failing
+   * segment degrades the WHOLE text to C0 (no partial C1 result) and latches
+   * the turn. A list that is not a partition of `text` is ignored.
+   */
+  async function c1SegmentedDetectorFor(
+    turnId: string,
+    text: string,
+    segments: readonly string[] | undefined,
+    degradeLogTag: string,
+  ): Promise<{ readonly detector?: PromptPiiDetector; readonly degraded: boolean }> {
+    if (segments === undefined || segments.join('') !== text) {
+      return c1DetectorFor(turnId, text, degradeLogTag);
+    }
+    const c1 = deps?.c1Detector;
+    if (c1 === undefined) return { degraded: false };
+    if (text.trim().length === 0) return { degraded: false };
+    if (c1FailedTurns.has(turnId)) return { degraded: true };
+
+    const startedAt = Date.now();
+    const spans: PromptPiiSpan[] = [];
+    let offset = 0;
+    let cached = 0;
+    let total = 0;
+    for (const segment of segments) {
+      const base = offset;
+      offset += segment.length;
+      // Nothing to detect in a blank segment (a separator) — same rule as a
+      // blank whole text; the sidecar would chunk it to nothing.
+      if (segment.trim().length === 0) continue;
+      total += 1;
+      const segmentSpans = await detectSegment(c1, segment);
+      if (segmentSpans instanceof Error) {
+        logC1Detect({ startedAt, text, turnId, spans: 0, cached, total, failed: true });
+        return latchC1Failure(turnId, c1.id, degradeLogTag, segmentSpans);
+      }
+      if (segmentSpans.cached) cached += 1;
+      for (const s of segmentSpans.spans) {
+        spans.push({ ...s, start: s.start + base, end: s.end + base });
+      }
+    }
+    // Per-segment detection loses GLiNER's cross-turn context (a surname-only
+    // "Frau Weißenborn" in one turn, the full name in another): propagate
+    // person-name tokens over the full text. Only adds spans; runs on cached
+    // and uncached passes alike, so both stay identical.
+    const propagated = propagatePersonNames(text, spans);
+    logC1Detect({ startedAt, text, turnId, spans: propagated.length, cached, total });
+    return { detector: { id: c1.id, detect: async () => propagated }, degraded: false };
+  }
+
+  /** One segment through the process-wide cache. A miss calls the detector
+   *  and caches the result only when the detector's configuration scope was
+   *  the same before and after the call (and defined — see `c1CacheScope`).
+   *  Returns the thrown error instead of throwing. */
+  async function detectSegment(
+    c1: PromptPiiDetector,
+    segment: string,
+  ): Promise<{ readonly spans: readonly PromptPiiSpan[]; readonly cached: boolean } | Error> {
+    const scope = readC1CacheScope();
+    const key = scope === undefined ? undefined : c1SegmentKey(c1.id, scope, segment);
+    const hit = key === undefined ? undefined : c1SegmentCache.get(key);
+    if (hit !== undefined) return { spans: hit, cached: true };
+    try {
+      const detected = await c1.detect(segment);
+      if (key !== undefined && readC1CacheScope() === scope) c1SegmentCache.set(key, detected);
+      return { spans: detected, cached: false };
+    } catch (err) {
+      return err instanceof Error ? err : new Error(String(err));
     }
   }
 
@@ -962,15 +1084,20 @@ export function createPrivacyGuardService(deps?: {
     // with the per-turn cache and degrade latch), minus caller-named values,
     // and booked as the turn's own egress. Through the turn's map, so the
     // answer-side restore covers these spans; failure-closed in `maskOnce`.
+    // The recalled prior context arrives here with its stored-turn
+    // `segments`: C1 then runs per segment through the process-wide segment
+    // cache (only turns not scanned before reach the sidecar); C0 and the
+    // deny-list still see the whole text.
     async maskReplayedAnswer(
       request: PrivacyReplayedAnswerRequest,
     ): Promise<PrivacyPromptMaskResult> {
       const detectors: PromptPiiDetector[] = [createBaselineIdentityDetector()];
       const customDetector = resolveCustomDetector(deps?.readConfig);
       if (customDetector) detectors.push(customDetector);
-      const c1 = await c1DetectorFor(
+      const c1 = await c1SegmentedDetectorFor(
         request.turnId,
         request.text,
+        request.segments,
         'promptMaskDegraded',
       );
       if (c1.detector) detectors.push(c1.detector);
