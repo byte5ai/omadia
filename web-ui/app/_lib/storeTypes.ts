@@ -267,6 +267,11 @@ export interface Plugin {
    *  middleware that records the field; absent means "this server cannot tell
    *  me", which `isOperatorInstalled` reads as the pre-#1089 behaviour. */
   install_origin?: PluginInstallOrigin;
+  /** #1481 — present only for a package that ships in the middleware image:
+   *  whether an uninstall sticks across restarts (`persistent`) or the boot
+   *  installs it again because it is a provider the host selects at startup
+   *  (`reinstalled_at_boot`). Mirrors middleware admin-v1. */
+  built_in_uninstall?: 'persistent' | 'reinstalled_at_boot';
   incompatibility_reasons?: string[];
   depends_on: string[];
   /** Manifest-declared background jobs. Always present (defaults to []). */

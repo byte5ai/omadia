@@ -33,7 +33,11 @@ compat:
   core: ">=1.0 <2.0"
   node: ">=20"
 
-multi_instance: false
+# #1499 — multi-instance (the default). The plugin publishes one stateless
+# validator service (`canvasValidator@1`, pure functions); attaching it to a
+# second orchestrator creates no second instance and shares no state, so there
+# is no reason to refuse it. The previous `multi_instance: false` had no
+# justification and logged a manifest warning on every boot and ingest.
 privacy_class: "strict"
 
 lifecycle:
