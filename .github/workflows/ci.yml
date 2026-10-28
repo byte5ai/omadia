@@ -194,6 +194,36 @@ jobs:
           UPDATER_TOKEN: ci-render-only-not-a-secret
         run: docker compose -f docker-compose.yaml -f docker-compose.update.yaml config --quiet
 
+      # Overlay images must still exist upstream (#1506). Nothing here pulls
+      # them, so when minio/minio and minio/mc vanished from Docker Hub the
+      # storage overlay broke on users' machines only. `manifest inspect`
+      # fetches just the manifest, no layers. Locally built images (no tag)
+      # are skipped.
+      - name: Compose — overlay images are pullable (docker manifest inspect)
+        working-directory: .
+        env:
+          UPDATER_TOKEN: ci-render-only-not-a-secret
+        run: |
+          set -euo pipefail
+          files="-f docker-compose.yaml -f docker-compose.storage.yaml -f docker-compose.diagrams.yaml -f docker-compose.embeddings.yaml -f docker-compose.update.yaml"
+          docker compose $files config --quiet
+          images=$(docker compose $files config --images | grep ':' | grep -v '^ghcr.io/byte5ai/' | sort -u)
+          # Guard: an empty list would pass without checking anything.
+          [ -n "$images" ] || { echo "no overlay images found to check" >&2; exit 1; }
+          for image in $images; do
+            echo "checking $image"
+            if ! out=$(docker manifest inspect "$image" 2>&1 >/dev/null); then
+              # A Docker Hub rate limit says nothing about the image; only a
+              # missing/denied repository or tag fails the step.
+              if grep -qi 'toomanyrequests' <<<"$out"; then
+                echo "::warning::rate-limited checking $image, skipped"
+                continue
+              fi
+              echo "::error::$image cannot be pulled: $out"
+              exit 1
+            fi
+          done
+
       # PII-detector sidecar (#361). Python, therefore outside every glob
       # above — until now it was tested nowhere, which is how a shipped
       # IPv4-only bind and a CPU-dependent broken model export both reached
