@@ -16,7 +16,7 @@
  * secrets after registration, etc.). Same vault, different UX moment.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
 import {
   CheckCircle2,
   KeyRound,
@@ -481,29 +481,36 @@ export function CredentialsEditor({
                           ? t('storedRetypeToOverwrite')
                           : t('clearToDelete')
                         : (field.placeholder ?? t('notSetYet'));
-                    return (
-                      <input
-                        type={isSecret ? 'password' : 'text'}
-                        value={inputValue}
-                        disabled={state.pendingDelete || saving}
-                        aria-invalid={isInvalid || undefined}
-                        onChange={(e) =>
-                          setFieldStates((prev) => ({
-                            ...prev,
-                            [field.key]: {
-                              draft: e.target.value,
-                              dirty: true,
-                              pendingDelete: false,
-                            },
-                          }))
-                        }
-                        placeholder={placeholder}
-                        className={`min-w-0 flex-1 rounded-md border bg-[color:var(--bg)] px-3 py-2 text-[12px] text-[color:var(--ink)] placeholder:text-[color:var(--faint-ink)] focus:outline-none disabled:opacity-50 ${
-                          isInvalid
-                            ? 'border-[color:var(--danger)] focus:border-[color:var(--danger)]'
-                            : 'border-[color:var(--rule)] focus:border-[color:var(--accent)]'
-                        }`}
-                      />
+                    const inputProps = {
+                      value: inputValue,
+                      disabled: state.pendingDelete || saving,
+                      'aria-invalid': isInvalid || undefined,
+                      onChange: (
+                        e: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>,
+                      ) =>
+                        setFieldStates((prev) => ({
+                          ...prev,
+                          [field.key]: {
+                            draft: e.target.value,
+                            dirty: true,
+                            pendingDelete: false,
+                          },
+                        })),
+                      placeholder,
+                      className: `min-w-0 flex-1 rounded-md border bg-[color:var(--bg)] px-3 py-2 text-[12px] text-[color:var(--ink)] placeholder:text-[color:var(--faint-ink)] focus:outline-none disabled:opacity-50 ${
+                        isInvalid
+                          ? 'border-[color:var(--danger)] focus:border-[color:var(--danger)]'
+                          : 'border-[color:var(--rule)] focus:border-[color:var(--accent)]'
+                      }`,
+                    };
+                    // #1525 — a `multiline` field takes one entry per line
+                    // (e.g. privacy-guard `custom_patterns`); a single-line
+                    // input swallowed Enter, so only one entry could be
+                    // saved. Secrets stay a masked single-line input.
+                    return field.multiline && !isSecret ? (
+                      <textarea {...inputProps} rows={4} className={`${inputProps.className} font-mono`} />
+                    ) : (
+                      <input type={isSecret ? 'password' : 'text'} {...inputProps} />
                     );
                   })()
                 )}

@@ -36,6 +36,37 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Privacy Shield masking edge cases (#1525, #1528, #1529)
+
+2026-10-28. Three ways prompt masking got in its own way.
+
+- **Several custom patterns from the UI (#1525).** `custom_patterns` takes one
+  regex per line, but the edit form rendered a single-line input, so only one
+  pattern could be saved. The manifest marks the field `multiline`, the store
+  catalog (`manifestLoader`) now passes that flag on like the install schema
+  does, and the post-install editor (`CredentialsEditor`) renders a textarea
+  for it.
+- **Rewritten pseudonyms (#1528).** Restore only matched a surrogate verbatim.
+  It now also maps it back in any letter case, and for an e-mail surrogate its
+  local part and the name read out of it (`resolvePromptPseudonyms`). A case
+  variant of a value already masked in the turn gets the same surrogate in its
+  case, and unrelated values never get surrogates that differ only in case. A
+  surrogate shape no real value can have (`first.last@example.net` from the
+  name pool, `PLATZHALTER-CUSTOM-n`) is no longer masked again as a new person
+  when a replayed answer still carries it. What restore still
+  cannot map back gets a localized notice under the answer instead of reading
+  as the user's own value.
+- **Deny-list term inside the placeholder (#1529).** A term like `CUSTOM` or
+  `Tom` occurs in its own placeholder `PLATZHALTER-CUSTOM-1`; the known-value
+  sweep rewrote it inside the placeholder and the residual check blocked the
+  whole message. Both now skip occurrences wholly inside a surrogate (tool
+  errors likewise skip `[masked:…]`); a real value that only overlaps one is
+  still masked. The block notice is persisted in German and English and
+  delivered in the turn's language.
+
+`@omadia/plugin-privacy-guard` 0.11.0, `@omadia/plugin-api` 1.36.0
+(`countUnresolvedSurrogates` takes an optional `options`).
+
 ### Fixed — plugin install and upload pipeline: one error contract, no dead ends (#1477, #1488, #1489, #1490, #1494, #1495)
 
 2026-10-28. ZIP upload, Hub install and builder install all feed the same

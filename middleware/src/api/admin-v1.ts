@@ -139,6 +139,9 @@ export interface PluginSetupField {
   /** When true, this field holds MULTIPLE selected values (stored as a
    *  JSON-encoded `string[]`). Only meaningful alongside `options_provider`. */
   multi?: boolean;
+  /** #1525 — `string` / `secret` only: the value takes line breaks (one entry
+   *  per line), so the editor renders a textarea. */
+  multiline?: boolean;
   /**
    * OM-16 — whether the operator MUST supply a value for this field before the
    * plugin can serve a request. Required-by-default: a manifest field that

@@ -43,6 +43,7 @@ import type {
   PromptPiiDetector,
   PromptPiiSpan,
   ToolErrorEntry,
+  UnresolvedSurrogateCountOptions,
 } from '@omadia/plugin-api';
 import { isControlFlowToolResult } from '@omadia/plugin-api';
 
@@ -73,9 +74,10 @@ import {
 import {
   createToolErrorBaselineDetector,
   redactToolErrorSpans,
+  withoutMaskMarkers,
 } from './toolErrorRedact.js';
 import { findIdentityLeaks } from './v4/onTheWire.js';
-import { resolvePseudonyms } from './v4/pseudonym.js';
+import { findResidualRealValues, resolvePromptPseudonyms } from './promptSurrogates.js';
 import type { PseudonymMap } from './v4/types.js';
 import {
   countUnresolvedSurrogates as countResidualSurrogates,
@@ -139,9 +141,10 @@ function isPromptMaskEnabled(value: unknown): boolean {
   return value === true || value === 'true' || value === 'on';
 }
 
-/** Split a config value into entries. Terms additionally split on ';' (the
- *  setup UI renders a single-line input); patterns split ONLY on newlines —
- *  ';' is legal inside a regex and silently splitting one would corrupt it. */
+/** Split a config value into entries. Terms additionally split on ';' (their
+ *  setup field is a single-line input); patterns split ONLY on newlines —
+ *  ';' is legal inside a regex and silently splitting one would corrupt it,
+ *  so their field is `multiline` (#1525). */
 function configLines(value: unknown, alsoSemicolon: boolean): string[] {
   if (typeof value !== 'string') return [];
   return value
@@ -518,10 +521,10 @@ export function createPrivacyGuardService(deps?: {
     try {
       const result = await maskPrompt(text, detectors, promptMaskMaps.get(turnId));
       // Post-mask invariant: no detected real value may survive in the
-      // wire-bound text. A hit means substitution failed — block.
-      const residual = findIdentityLeaks(result.maskedText, [
-        ...result.map.forward.keys(),
-      ]);
+      // wire-bound text outside a surrogate. A hit means substitution failed
+      // — block. A term inside the shield's own placeholder is no hit
+      // (#1529).
+      const residual = findResidualRealValues(result.maskedText, result.map);
       if (residual.length > 0) {
         console.error(
           `[privacy-guard v4] ${label}Blocked turn=${turnId} ` +
@@ -969,8 +972,12 @@ export function createPrivacyGuardService(deps?: {
       });
     },
 
-    async countUnresolvedSurrogates(turnId: string, text: string): Promise<number> {
-      return countResidualSurrogates(text, promptMaskMaps.get(turnId));
+    async countUnresolvedSurrogates(
+      turnId: string,
+      text: string,
+      options?: UnresolvedSurrogateCountOptions,
+    ): Promise<number> {
+      return countResidualSurrogates(text, promptMaskMaps.get(turnId), options);
     },
 
     // Tool-error redaction. The same detector assembly as `maskUserPrompt`
@@ -997,7 +1004,9 @@ export function createPrivacyGuardService(deps?: {
       try {
         const known = promptMaskMaps.get(request.turnId)?.forward.keys() ?? [];
         const result = await redactToolErrorSpans(request.text, detectors, known);
-        const residual = findIdentityLeaks(result.text, [...result.values]);
+        const residual = findIdentityLeaks(withoutMaskMarkers(result.text), [
+          ...result.values,
+        ]);
         if (residual.length > 0) {
           console.error(
             `[privacy-guard v4] toolErrorRedactWithheld turn=${request.turnId} ` +
@@ -1032,7 +1041,7 @@ export function createPrivacyGuardService(deps?: {
     async restorePromptPseudonyms(turnId: string, text: string): Promise<string> {
       const map = promptMaskMaps.get(turnId);
       if (map === undefined || map.reverse.size === 0) return text;
-      return resolvePseudonyms(text, map);
+      return resolvePromptPseudonyms(text, map);
     },
 
     snapshotPromptRestorer(
@@ -1048,7 +1057,7 @@ export function createPrivacyGuardService(deps?: {
         forward: new Map(map.forward),
         reverse: new Map(map.reverse),
       };
-      return (text: string): string => resolvePseudonyms(text, snapshot);
+      return (text: string): string => resolvePromptPseudonyms(text, snapshot);
     },
 
     resolveDatasetForRender(turnId, datasetId) {

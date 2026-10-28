@@ -491,6 +491,11 @@ export function adaptManifestV1(
     const optionsProvider = asString(f['options_provider']);
     if (optionsProvider) entry.options_provider = optionsProvider;
     if (f['multi'] === true) entry.multi = true;
+    // #1525 — same rule as the install schema (installService): the editor
+    // renders a textarea, so a one-entry-per-line field can hold more than one.
+    if ((type === 'string' || type === 'secret') && f['multiline'] === true) {
+      entry.multiline = true;
+    }
     setupFields.push(entry);
   }
 

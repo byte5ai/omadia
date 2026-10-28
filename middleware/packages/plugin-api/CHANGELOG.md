@@ -8,6 +8,19 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.36.0 — 2026-10-28
+
+Additive. Prompt-surrogate restore tells the user what it could not map back
+(#1528).
+
+### Added
+
+- **`UnresolvedSurrogateCountOptions`** — `{ unreadableLiterals?: boolean }`.
+- **`PrivacyGuardService.countUnresolvedSurrogates(turnId, text, options?)`**
+  — the new optional third parameter. `unreadableLiterals: false` drops the
+  fail-closed hit on a date or amount literal whose value cannot be read, for
+  a notice to the user. Default unchanged.
+
 ## 1.35.0 — 2026-10-27
 
 Additive. A plugin can declare its own credential check, so an integration

@@ -27,6 +27,11 @@ import {
   type PromptSpanValue,
 } from './v4/pseudonym.js';
 import type { PseudonymMap } from './v4/types.js';
+import {
+  insideAny,
+  isReservedSurrogateShape,
+  protectedRanges,
+} from './promptSurrogates.js';
 
 // ---------------------------------------------------------------------------
 // C0 — deterministic regex baseline.
@@ -648,7 +653,16 @@ export async function maskPrompt(
   existingMap?: PseudonymMap,
 ): Promise<MaskPromptResult> {
   const detected = await collectDetectorSpans(text, detectors);
-  const spans = dedupSpans(text, detected);
+  // #1528 / #1529 — a surrogate is not a new real value. A span that is (or,
+  // after word-boundary extension, swallowed) a reserved surrogate shape — a
+  // replayed answer that kept `LUKAS.BECKER@EXAMPLE.NET`, a deny-list term
+  // inside `PLATZHALTER-CUSTOM-1` — stays as written: masking it again would
+  // give the model a second stand-in for the same person. Realistic
+  // surrogates ("Lukas Becker") are not exempt: a real person may bear the
+  // name.
+  const spans = dedupSpans(text, detected).filter(
+    (s) => !isReservedSurrogateShape(s.value),
+  );
   if (spans.length === 0) {
     // NOTHING DETECTED IN *THIS* TEXT IS NOT NOTHING TO MASK.
     //
@@ -708,7 +722,31 @@ function sweepKnownValues(text: string, map: PseudonymMap): string {
   for (const [real, surrogate] of [...map.forward.entries()].sort(
     (a, b) => b[0].length - a[0].length,
   )) {
-    if (masked.includes(real)) masked = masked.split(real).join(surrogate);
+    if (masked.includes(real)) masked = replaceOutsideSurrogates(masked, real, surrogate, map);
   }
   return masked;
+}
+
+/**
+ * Every occurrence of `real` in `text` that is not wholly inside a surrogate,
+ * replaced by `surrogate` (#1529). Without the exception, the deny-list term
+ * `CUSTOM` (or `TOM`) was swept out of its own placeholder
+ * `PLATZHALTER-CUSTOM-1`, the placeholder came out mangled with the term
+ * still in it, and the residual check blocked the whole message.
+ */
+function replaceOutsideSurrogates(
+  text: string,
+  real: string,
+  surrogate: string,
+  map: PseudonymMap,
+): string {
+  const ranges = protectedRanges(text, map);
+  let out = '';
+  let cursor = 0;
+  for (let at = text.indexOf(real); at !== -1; at = text.indexOf(real, at + real.length)) {
+    if (insideAny(at, at + real.length, ranges)) continue;
+    out += text.slice(cursor, at) + surrogate;
+    cursor = at + real.length;
+  }
+  return out + text.slice(cursor);
 }
