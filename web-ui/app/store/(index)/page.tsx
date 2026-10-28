@@ -12,12 +12,17 @@ import {
 } from '../../_lib/pluginCounts';
 import { deriveInitialsForSet } from '../../_lib/pluginInitials';
 import { redirectIfUnauthorized } from '../../_lib/authRedirect';
-import type { Plugin, PluginKind } from '../../_lib/storeTypes';
+import type {
+  Plugin,
+  PluginKind,
+  RegistrySourceStatus,
+} from '../../_lib/storeTypes';
 import type { ProfileSummary } from '../../_lib/profileTypes';
 import { OnboardingModal } from '../../_components/onboarding/OnboardingModal';
 import { PluginCard } from '../../_components/store/PluginCard';
 import { UploadDropzone } from '../../_components/store/UploadDropzone';
 import { cn } from '../../_lib/cn';
+import { registryErrorKey } from '../../_lib/registryErrors';
 
 export async function generateMetadata(): Promise<Metadata> {
   const t = await getTranslations('store.page');
@@ -45,12 +50,14 @@ export default async function StorePage({
   const tPage = await getTranslations('store.page');
 
   let plugins: Plugin[] = [];
+  let registries: RegistrySourceStatus[] = [];
   let loadError: string | null = null;
   let profiles: ProfileSummary[] = [];
 
   try {
     const resp = await listStorePlugins();
     plugins = Array.isArray(resp?.items) ? resp.items : [];
+    registries = Array.isArray(resp?.registries) ? resp.registries : [];
   } catch (err) {
     await redirectIfUnauthorized(err);
     loadError =
@@ -83,6 +90,9 @@ export default async function StorePage({
   // through the one shared `isInstalled` predicate (app/_lib/pluginCounts.ts),
   // which is also what the dashboard tile uses, so they can no longer drift.
   const hubPlugins = plugins.filter((p) => p.source != null);
+  // #1482 — a registry that could not be read used to be indistinguishable
+  // from "no registry connected". The middleware now says which one failed.
+  const failedRegistries = registries.filter((r) => !r.ok);
   const installedPlugins = plugins.filter(isInstalled);
   const localPlugins = plugins.filter(
     (p) => p.source == null && !isInstalled(p),
@@ -211,12 +221,20 @@ export default async function StorePage({
         )}
       </nav>
 
+      {source === 'hub' && !loadError && failedRegistries.length > 0 ? (
+        <RegistryErrors failed={failedRegistries} />
+      ) : null}
+
       {/* Grid or error */}
       <section className="mt-8">
         {loadError ? (
           <LoadErrorState message={loadError} />
         ) : visible.length === 0 ? (
-          <EmptyState source={source} filter={filter} />
+          <EmptyState
+            source={source}
+            filter={filter}
+            hubState={hubState(registries)}
+          />
         ) : (
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             {visible.map((plugin) => (
@@ -332,12 +350,74 @@ async function SourceTabs({
   );
 }
 
+/**
+ * #1482 — which registries failed, and why. Shown above the Hub grid, so a
+ * partial catalog never reads as the whole one.
+ */
+async function RegistryErrors({
+  failed,
+}: {
+  failed: RegistrySourceStatus[];
+}): Promise<React.ReactElement> {
+  const t = await getTranslations('store.page');
+  const tReason = await getTranslations('registryStatus');
+  return (
+    <div
+      role="status"
+      className="mt-6 rounded-lg border border-[color:var(--warning)]/40 bg-[color:var(--warning)]/6 p-4"
+    >
+      <p className="text-[14px] font-semibold text-[color:var(--fg-strong)]">
+        {t('registryErrorsTitle', { count: failed.length })}
+      </p>
+      <ul className="mt-2 flex flex-col gap-1">
+        {failed.map((r) => (
+          <li key={r.name} className="text-[13px] text-[color:var(--fg-muted)]">
+            <span className="font-semibold text-[color:var(--fg)]">{r.name}</span>
+            {' — '}
+            {tReason(`errors.${registryErrorKey(r.error?.code)}`)}
+            {r.error ? (
+              <span className="block font-mono-num text-[12px] text-[color:var(--fg-subtle)]">
+                {tReason('detail', { message: r.error.message })}
+              </span>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+      <p className="mt-2 text-[13px] leading-relaxed text-[color:var(--fg-muted)]">
+        {t.rich('registryErrorsHint', {
+          adminLink: (chunks) => (
+            <Link
+              href="/admin/registries"
+              className="font-semibold text-[color:var(--accent)] underline-offset-4 hover:underline"
+            >
+              {chunks}
+            </Link>
+          ),
+        })}
+      </p>
+    </div>
+  );
+}
+
+/** Why the Hub view can be empty: no registry configured, a registry that
+ *  could not be read, or registries that answered with nothing to offer. */
+type HubState = 'none' | 'failed' | 'empty';
+
+function hubState(registries: RegistrySourceStatus[]): HubState {
+  if (registries.length === 0) return 'none';
+  // 'failed' says no registry could be read; with one that answered, the
+  // banner above names the failing ones and the Hub is just empty.
+  return registries.every((r) => !r.ok) ? 'failed' : 'empty';
+}
+
 async function EmptyState({
   source,
   filter,
+  hubState,
 }: {
   source: SourceFilter;
   filter: CategoryFilter;
+  hubState: HubState;
 }): Promise<React.ReactElement> {
   const t = await getTranslations('store.page');
 
@@ -396,19 +476,23 @@ async function EmptyState({
     );
   }
 
-  // source === 'hub' and empty — no remote registry advertises an installable
-  // (not-yet-local) plugin. Either no registry is reachable, or every hub
-  // entry is already installed locally (the merge drops those).
+  // source === 'hub' and empty. #1482 — "connect a registry" is only the
+  // right advice when none is configured; a failing one is named above.
+  const links = {
+    adminLink: link('/admin/registries'),
+    localLink: link(buildHref('local', 'all')),
+  };
   return (
     <div className="rounded-lg border border-dashed border-[color:var(--border-strong)] bg-[color:var(--bg-soft)] p-12 text-center">
       <p className="font-display text-[22px] text-[color:var(--fg-strong)]">
-        {t('emptyHubTitle')}
+        {hubState === 'failed' ? t('emptyHubFailedTitle') : t('emptyHubTitle')}
       </p>
       <p className="mt-3 text-sm leading-relaxed text-[color:var(--fg-muted)]">
-        {t.rich('emptyHubBody', {
-          adminLink: link('/admin/registries'),
-          localLink: link(buildHref('local', 'all')),
-        })}
+        {hubState === 'failed'
+          ? t.rich('emptyHubFailedBody', links)
+          : hubState === 'empty'
+            ? t.rich('emptyHubNoPluginsBody', { localLink: links.localLink })
+            : t.rich('emptyHubBody', links)}
       </p>
     </div>
   );
