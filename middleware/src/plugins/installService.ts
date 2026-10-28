@@ -42,6 +42,7 @@ import {
 import { checkCoreCompat } from './coreCompat.js';
 import { readGrantGap } from './grantGap.js';
 import { extractTemplateDeclarations } from './manifestLoader.js';
+import { uninstallVoidsForceGuarded } from './privacyPosture.js';
 import type { PluginCatalog, PluginCatalogEntry } from './manifestLoader.js';
 import { loadPluginTemplates } from './pluginTemplates.js';
 import type { PluginTemplateRegistrar } from './pluginTemplates.js';
@@ -94,6 +95,9 @@ export interface InstallServiceDeps {
   catalog: PluginCatalog;
   registry: InstalledRegistry;
   vault: SecretVault;
+  /** #1507 — process env for the org privacy policy; defaults to
+   *  `process.env`. Injectable for tests. */
+  env?: NodeJS.ProcessEnv;
   /** Called after a successful `configure()` — e.g. to activate an uploaded
    *  agent via DynamicAgentRuntime. Errors in the hook do not cause the
    *  installation to be marked `failed`: registry entries are already
@@ -823,6 +827,21 @@ export class InstallService {
         'install.not_installed',
         `plugin '${agentId}' is not installed`,
         404,
+      );
+    }
+
+    if (
+      uninstallVoidsForceGuarded({
+        pluginId: agentId,
+        installedRegistry: this.deps.registry,
+        catalog: this.deps.catalog,
+        env: this.deps.env ?? process.env,
+      })
+    ) {
+      throw new InstallError(
+        'install.privacy_guard_required',
+        `cannot uninstall '${agentId}' — it is the only Privacy Shield provider and OMADIA_PRIVACY_FORCE_GUARDED=true requires masking`,
+        409,
       );
     }
 

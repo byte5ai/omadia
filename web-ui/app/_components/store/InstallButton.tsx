@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import { useLocale, useTranslations } from 'next-intl';
@@ -18,6 +18,7 @@ import {
   configureInstallJob,
   createInstallJob,
   deleteUploadedPackage,
+  getPrivacyPosture,
   installFromRegistry,
   uninstallPlugin,
   ApiError,
@@ -596,6 +597,26 @@ function InstalledPanel({
 
   const working = state.kind === 'working';
 
+  // #1507 — the last Privacy Shield under OMADIA_PRIVACY_FORCE_GUARDED cannot
+  // be uninstalled (the server answers 409 `install.privacy_guard_required`).
+  // Say so up front instead of offering a button that can only fail. A failed
+  // posture read keeps the button: the server still enforces the rule.
+  const [uninstallLocked, setUninstallLocked] = useState(false);
+  useEffect(() => {
+    if (!providesPrivacyShield) return;
+    let cancelled = false;
+    getPrivacyPosture()
+      .then((p) => {
+        if (!cancelled) {
+          setUninstallLocked(p.force_guarded && p.provider_ids.length <= 1);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [providesPrivacyShield]);
+
   async function doUninstall(): Promise<void> {
     setState({ kind: 'working' });
     try {
@@ -734,7 +755,17 @@ function InstalledPanel({
           keys no manifest setup field covers. */}
       <PrivacyModePicker pluginId={pluginId} />
 
-      {state.kind === 'idle' && (
+      {state.kind === 'idle' && uninstallLocked && (
+        <p
+          data-testid="uninstall-locked"
+          className="inline-flex items-start gap-2 text-[12px] leading-relaxed text-[color:var(--fg-muted)]"
+        >
+          <Lock className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+          {t('uninstallBlockedByPolicy')}
+        </p>
+      )}
+
+      {state.kind === 'idle' && !uninstallLocked && (
         // eslint-disable-next-line no-restricted-syntax -- inline text link (bare text + icon, no border/bg)
         <button
           type="button"
