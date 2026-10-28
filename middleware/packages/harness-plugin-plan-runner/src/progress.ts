@@ -1,4 +1,4 @@
-import type { KnowledgeGraph } from '@omadia/plugin-api';
+import { PLAN_STEP_ANSWER_EVIDENCE, type KnowledgeGraph } from '@omadia/plugin-api';
 
 /**
  * #133 (plan-as-data) slice E3 — in-turn progress tracking.
@@ -77,7 +77,9 @@ export async function finishPlan(
     const id = state.stepExternalIds[i]!;
     // Only the last step, and only when it is the sole step still open.
     if (i === lastIndex && i === state.cursor) {
-      await kg.setPlanStepStatus(id, 'done');
+      await kg.setPlanStepStatus(id, 'done', {
+        resultSummary: PLAN_STEP_ANSWER_EVIDENCE,
+      });
     } else {
       await kg.setPlanStepStatus(id, 'skipped', {
         resultSummary: NOT_REACHED_SUMMARY,

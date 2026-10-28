@@ -58,6 +58,8 @@ export type ChatStreamEvent =
       skillName: string | null;
     }
   | { type: 'text_delta'; text: string }
+  /** #1500 — drop the last `chars` preview characters (tool-call preamble). */
+  | { type: 'text_retract'; chars: number }
   | {
       type: 'tool_use';
       id: string;
@@ -242,6 +244,11 @@ function foldIntoMessage(m: Message, event: ChatStreamEvent): Message {
   switch (event.type) {
     case 'text_delta':
       return { ...m, content: m.content + event.text };
+    case 'text_retract': {
+      // A malformed count must not wipe the preview.
+      if (!Number.isFinite(event.chars) || event.chars <= 0) return m;
+      return { ...m, content: m.content.slice(0, Math.max(0, m.content.length - event.chars)) };
+    }
     case 'turn_routing':
       return {
         ...m,
