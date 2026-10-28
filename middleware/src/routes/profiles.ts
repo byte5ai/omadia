@@ -8,6 +8,8 @@ import { stringify as stringifyYaml } from 'yaml';
 
 import { auditActorFromRequest, type AdminAuditLog } from '../auth/adminAuditLog.js';
 import type { DraftStore } from '../plugins/builder/draftStore.js';
+import type { BuiltInOptOutStore } from '../plugins/builtInOptOuts.js';
+import { findActiveProviderCollision } from '../plugins/capabilityResolver.js';
 import {
   reconstructSpecFromBundle,
   SpecReconstructError,
@@ -46,6 +48,13 @@ import {
 interface ProfilesDeps {
   catalog: PluginCatalog;
   registry: InstalledRegistry;
+  /** #1481 — applying a profile re-installs a built-in the operator had
+   *  uninstalled, so its uninstall mark is cleared. Optional. */
+  builtInOptOuts?: BuiltInOptOutStore;
+  /** #1491 — called after an apply with the ids it newly registered, so the
+   *  host attaches them to the default orchestrator like any other install.
+   *  Must not throw (the host fences it). */
+  onPluginsRegistered?: (pluginIds: readonly string[]) => Promise<void>;
   /** Profile-Quellverzeichnis. Default: built-in `<middleware>/profiles/`.
    *  Tests override this with a tmp dir. */
   profilesDir?: string;
@@ -86,7 +95,21 @@ const MAX_BODY_BYTES = 5 * 1024 * 1024;
 export interface ProfileApplyOutcome {
   profile_id: string;
   installed: Array<{ id: string; version: string }>;
-  skipped: Array<{ id: string; reason: 'already_installed' }>;
+  /** `capability_provided` (#1484): the plugin provides a capability an
+   *  active plugin already provides (the memory / knowledge-graph backend the
+   *  boot selected). Registering it anyway made apply report it as installed
+   *  and the next boot remove it again. `message` names the owner. */
+  skipped: Array<
+    | { id: string; reason: 'already_installed' }
+    | {
+        id: string;
+        reason: 'capability_provided';
+        /** The capability (`memoryStore@1`) and the active plugin providing it. */
+        capability: string;
+        owner_id: string;
+        message: string;
+      }
+  >;
   errored: Array<{
     id: string;
     reason: 'not_in_catalog' | 'incompatible' | 'register_failed';
@@ -606,6 +629,9 @@ export function createProfilesRouter(deps: ProfilesDeps): Router {
 
     try {
       const outcome = await applyProfile(profile, deps);
+      if (outcome.installed.length > 0) {
+        await deps.onPluginsRegistered?.(outcome.installed.map((p) => p.id));
+      }
       res.json(outcome);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -1348,6 +1374,22 @@ async function applyProfile(
       continue;
     }
 
+    const collision = findActiveProviderCollision(
+      entry.id,
+      deps.catalog,
+      deps.registry,
+    );
+    if (collision) {
+      outcome.skipped.push({
+        id: entry.id,
+        reason: 'capability_provided',
+        capability: collision.capability,
+        owner_id: collision.ownerId,
+        message: `'${collision.capability}' is already provided by ${collision.ownerId}`,
+      });
+      continue;
+    }
+
     if (catalogEntry.plugin.install_state === 'incompatible') {
       outcome.errored.push({
         id: entry.id,
@@ -1371,6 +1413,8 @@ async function applyProfile(
         origin: 'operator',
         config: entry.config,
       });
+      // #1481 — the operator asked for this built-in by name.
+      await forgetBuiltInOptOut(deps, entry.id);
       outcome.installed.push({
         id: entry.id,
         version: catalogEntry.plugin.version,
@@ -1385,6 +1429,21 @@ async function applyProfile(
   }
 
   return outcome;
+}
+
+async function forgetBuiltInOptOut(
+  deps: ProfilesDeps,
+  pluginId: string,
+): Promise<void> {
+  if (!deps.builtInOptOuts?.has(pluginId)) return;
+  try {
+    await deps.builtInOptOuts.remove(pluginId);
+  } catch (err) {
+    console.error(
+      `[profiles] clearing the built-in uninstall mark FAILED for ${pluginId}:`,
+      err instanceof Error ? err.message : err,
+    );
+  }
 }
 
 function toProfileSummary(profile: Profile): {

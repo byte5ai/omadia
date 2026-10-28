@@ -427,6 +427,9 @@ export default async function PluginDetailPage({
             enabled={install_available}
             remote={Boolean(plugin.source)}
             installedVersion={plugin.version}
+            {...(plugin.built_in_uninstall
+              ? { builtInUninstall: plugin.built_in_uninstall }
+              : {})}
             removablePackage={plugin.removable_package === true}
             {...(plugin.readiness ? { readiness: plugin.readiness } : {})}
             {...(plugin.setup_guide ? { setupGuide: plugin.setup_guide } : {})}

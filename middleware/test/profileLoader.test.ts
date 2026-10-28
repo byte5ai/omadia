@@ -30,22 +30,21 @@ function writeYaml(dir: string, name: string, body: string): string {
 }
 
 describe('profileLoader / built-in profiles', () => {
-  it('loads production.yaml with all 8 plugins normalized', async () => {
+  // #1484 — the shipped profiles no longer list memory / knowledge-graph
+  // providers (the boot selects those from DATABASE_URL and removes any other
+  // one again) nor channel ids (Hub plugins, not in the local catalog).
+  // `shippedProfiles.test.ts` checks them against the real catalog.
+  it('loads production.yaml with its 4 plugins normalized', async () => {
     const profile = await loadProfile(join(BUILT_IN_DIR, 'production.yaml'));
     assert.equal(profile.id, 'production');
     assert.equal(profile.schema_version, 1);
-    assert.equal(profile.plugins.length, 8);
     assert.deepEqual(
       profile.plugins.map((p) => p.id),
       [
-        '@omadia/memory',
-        '@omadia/knowledge-graph-neon',
         '@omadia/embeddings',
         '@omadia/orchestrator-extras',
         '@omadia/verifier',
         '@omadia/orchestrator',
-        'de.byte5.channel.teams',
-        'de.byte5.channel.telegram',
       ],
     );
     // string-shorthand entries normalize to empty config object
@@ -62,9 +61,7 @@ describe('profileLoader / built-in profiles', () => {
       ids.has('@omadia/embeddings'),
       'minimal-dev must include embeddings — orchestrator-extras requires embeddingClient@^1',
     );
-    assert.ok(ids.has('@omadia/knowledge-graph-inmemory'));
     assert.ok(!ids.has('@omadia/verifier'));
-    assert.ok(!ids.has('de.byte5.channel.telegram'));
   });
 
   it('loads blank.yaml as empty plugin list', async () => {

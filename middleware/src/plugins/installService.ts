@@ -39,6 +39,7 @@ import {
   type InstalledAgent,
   type InstalledRegistry,
 } from './installedRegistry.js';
+import type { BuiltInOptOutStore } from './builtInOptOuts.js';
 import { checkCoreCompat } from './coreCompat.js';
 import { readGrantGap } from './grantGap.js';
 import { extractTemplateDeclarations } from './manifestLoader.js';
@@ -103,7 +104,14 @@ export interface InstallServiceDeps {
    *  installation to be marked `failed`: registry entries are already
    *  persisted and the agent counts as installed. The caller must handle
    *  hook errors separately. */
-  onInstalled?: (agentId: string) => Promise<void>;
+  onInstalled?: (
+    agentId: string,
+    /** #1491 — `install` for a fresh install, `reactivate` for a runtime
+     *  restart of an installed plugin. Only an install attaches the plugin to
+     *  the default orchestrator; a reactivation must not re-attach a plugin
+     *  the operator detached. */
+    reason: 'install' | 'reactivate',
+  ) => Promise<void>;
   /** Runtime teardown before uninstall or reactivation. The reason keeps
    *  consent-removal hooks from deleting grants during a runtime restart. */
   onUninstall?: (
@@ -143,6 +151,10 @@ export interface InstallServiceDeps {
   /** OM-95 — late-resolved orchestrator config store. Bindings are purged only
    *  on real uninstall; `onUninstall` also runs during `reactivate()`. */
   agentPluginBindingStore?: () => AgentPluginBindingStore | undefined;
+  /** #1481 — uninstalling a package that ships in the image records the id
+   *  here so the boot seeders stop re-installing it; installing it again
+   *  clears the mark. Optional: without it built-ins come back at boot. */
+  builtInOptOuts?: BuiltInOptOutStore;
   /**
    * This host's `@omadia/plugin-api` version, which a plugin's `compat.core`
    * must admit. Default: read from the installed package (coreCompat.ts).
@@ -465,6 +477,8 @@ export class InstallService {
         origin: 'operator',
         config,
       });
+      // #1481 — the operator wants this built-in again; boot may seed it.
+      await this.forgetBuiltInOptOut(job.plugin_id);
       // #825 — NOT `active` yet. The registry row above says `active` because
       // that is what an install intends; whether the plugin actually comes up
       // is decided by the `onInstalled` hook a few lines down, and the job's
@@ -490,7 +504,7 @@ export class InstallService {
 
       if (this.deps.onInstalled) {
         try {
-          await this.deps.onInstalled(job.plugin_id);
+          await this.deps.onInstalled(job.plugin_id, 'install');
         } catch (err) {
           // #825 — remember the throw. This is the FIRST-HAND observation of
           // whether the plugin came up; everything below is the recording of it.
@@ -800,7 +814,7 @@ export class InstallService {
       return this.deps.registry.get(agentId)?.status;
     }
     try {
-      await this.deps.onInstalled(agentId);
+      await this.deps.onInstalled(agentId, 'reactivate');
     } catch (err) {
       const failure = describeActivationFailure(err, 'onInstalled threw without a message');
       console.error(
@@ -899,6 +913,41 @@ export class InstallService {
     // #478 — contributed workflow templates leave the catalog with the plugin.
     this.deps.conductorTemplates?.()?.unregisterPluginTemplates(agentId);
     await this.deps.registry.remove(agentId);
+    await this.recordBuiltInOptOut(agentId);
+  }
+
+  /**
+   * #1481 — make the uninstall of a built-in survive the next boot. Only
+   * packages the image ships are recorded (an uploaded package has nothing
+   * that could re-seed it). A failed write is logged, not thrown: the
+   * uninstall itself completed, and the worst case is the pre-#1481
+   * behaviour (the built-in comes back at the next boot).
+   */
+  private async recordBuiltInOptOut(agentId: string): Promise<void> {
+    const optOuts = this.deps.builtInOptOuts;
+    if (!optOuts) return;
+    if (this.deps.catalog.get(agentId)?.origin !== 'bundled') return;
+    try {
+      await optOuts.add(agentId);
+    } catch (err) {
+      console.error(
+        `[install] recording the built-in uninstall FAILED for ${agentId} — it will be re-installed at the next boot:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  private async forgetBuiltInOptOut(agentId: string): Promise<void> {
+    const optOuts = this.deps.builtInOptOuts;
+    if (!optOuts?.has(agentId)) return;
+    try {
+      await optOuts.remove(agentId);
+    } catch (err) {
+      console.error(
+        `[install] clearing the built-in uninstall mark FAILED for ${agentId}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
   }
 
   /**
