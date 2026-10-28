@@ -6,6 +6,7 @@ import type {
   PluginReadiness,
 } from '../../_lib/storeTypes';
 import { cn } from '../../_lib/cn';
+import { useActivationErrorLabel } from './ActivationFailureNotice';
 
 interface StateBadgeProps {
   state: PluginInstallState;
@@ -66,6 +67,7 @@ export function StateBadge({
 }: StateBadgeProps): React.ReactElement {
   const t = useTranslations('store.stateBadge');
   const format = useFormatter();
+  const activationErrorLabel = useActivationErrorLabel();
 
   if (isLegacy) {
     return (
@@ -84,10 +86,12 @@ export function StateBadge({
   const isPresent = state === 'installed' || state === 'update-available';
 
   if (isPresent && readiness?.state === 'errored') {
+    // #1456 — the localized short reason, not the raw plugin-API sentence,
+    // which leaked English developer text into the German store list.
     return (
       <span
         className={cn(PILL, DANGER_STYLE, className)}
-        title={readiness.error_detail ?? undefined}
+        title={activationErrorLabel(readiness.error_code)}
       >
         {t('errored')}
       </span>

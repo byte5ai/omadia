@@ -201,7 +201,7 @@ function assertSurvivingActivation(harness: RuntimeHarness): void {
   assert.deepEqual(harness.activated, [OLDER, CONSUMER]);
   assert.deepEqual(harness.serviceRegistry.get('fooClient'), { providerId: OLDER });
   assert.deepEqual(harness.serviceRegistry.get('consumerResult'), { providerId: OLDER });
-  assert.deepEqual(harness.registry.blockCalls, [[YOUNGER, DUPLICATE_MESSAGE]],
+  assert.deepEqual(harness.registry.blockCalls, [[YOUNGER, { message: DUPLICATE_MESSAGE, code: 'provider_conflict' }]],
     'duplicate failure must use the terminal path without a requires-array');
   assert.deepEqual(harness.registry.failureCalls, [],
     'deterministic conflicts must not consume transient retries');
@@ -284,10 +284,12 @@ describe('ToolPluginRuntime.activateAllInstalled — duplicate providers (OM-87)
     assert.equal(blockedAgain.activation_failure_count, CIRCUIT_BREAKER_THRESHOLD);
     assert.equal(blockedAgain.unresolved_requires, undefined);
     assert.equal(blockedAgain.last_activation_error, DUPLICATE_MESSAGE);
+    assert.equal(blockedAgain.last_activation_error_code, 'provider_conflict');
     assert.ok(blockedAgain.last_activation_error_at && blockedAgain.last_activation_error_at > mtime.toISOString());
+    const blocked = { message: DUPLICATE_MESSAGE, code: 'provider_conflict' };
     assert.deepEqual(harness.registry.blockCalls, [
-      [YOUNGER, DUPLICATE_MESSAGE],
-      [YOUNGER, DUPLICATE_MESSAGE],
+      [YOUNGER, blocked],
+      [YOUNGER, blocked],
     ]);
     assert.deepEqual(harness.registry.failureCalls, []);
     assert.equal(harness.registry.get(OLDER)?.status, 'active');
@@ -311,7 +313,7 @@ describe('ToolPluginRuntime.activateAllInstalled — duplicate providers (OM-87)
       assert.equal(entry.last_activation_error, activationError);
       assert.equal(entry.unresolved_requires, undefined);
       assert.equal(harness.registry.failureCalls.length, attempt);
-      assert.deepEqual(harness.registry.failureCalls.at(-1), [OLDER, activationError]);
+      assert.deepEqual(harness.registry.failureCalls.at(-1), [OLDER, { message: activationError, code: 'unknown' }]);
       assert.deepEqual(harness.registry.blockCalls, []);
     }
 
@@ -335,7 +337,11 @@ describe('ToolPluginRuntime.activateAllInstalled — duplicate providers (OM-87)
       assert.equal(entry.last_activation_error, message);
       assert.deepEqual(entry.unresolved_requires, requires);
       assert.equal(harness.registry.failureCalls.length, attempt);
-      assert.deepEqual(harness.registry.failureCalls.at(-1), [CONSUMER, message, requires]);
+      assert.deepEqual(harness.registry.failureCalls.at(-1), [
+        CONSUMER,
+        { message, code: 'dependency_unresolved' },
+        requires,
+      ]);
       assert.deepEqual(harness.registry.blockCalls, []);
     }
 

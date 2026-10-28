@@ -37,6 +37,7 @@ import {
   declaredPublicPathsOf,
   registerGrantRoutes,
 } from './runtimeGrants.js';
+import { activationResultOf } from '../plugins/activationFailure.js';
 
 /** Per-call budget for invoking a plugin's dynamic options provider. */
 const SETUP_OPTIONS_TIMEOUT_MS = 8_000;
@@ -135,6 +136,7 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
       activation_failure_count: entry.activation_failure_count ?? 0,
       last_activation_error: entry.last_activation_error ?? null,
       last_activation_error_at: entry.last_activation_error_at ?? null,
+      last_activation_error_code: activationResultOf(entry)?.error_code ?? null,
       // #1453 — a plugin can activate perfectly and still be unusable because
       // the target system refuses its credentials. That verdict lives in the
       // status channel, so an operator reading this endpoint alone used to see
@@ -174,6 +176,7 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
       activation_failure_count: entry.activation_failure_count ?? 0,
       last_activation_error: entry.last_activation_error ?? null,
       last_activation_error_at: entry.last_activation_error_at ?? null,
+      last_activation_error_code: activationResultOf(entry)?.error_code ?? null,
     });
   });
 
@@ -321,6 +324,8 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
                 status: updated.status,
               }
             : null,
+          // #1497 — did the plugin come back up on the new values?
+          activation: activationResultOf(updated),
         });
       } catch (err) {
         if (err instanceof ProviderDependentRebuildError) {
@@ -1069,6 +1074,11 @@ async function applySetupValues(
       keys: keys.sort(),
       config_keys: configKeys.sort(),
       config_values: configValues,
+      // #1497 — the write re-activated the plugin; this is whether it came
+      // back up. Without it the store rendered "✓ Saved" over a plugin that
+      // had just failed to start on the new values (or had just recovered),
+      // and the page kept the old badge until a reload.
+      activation: activationResultOf(updated),
     });
   } catch (err) {
     if (err instanceof ProviderDependentRebuildError) {

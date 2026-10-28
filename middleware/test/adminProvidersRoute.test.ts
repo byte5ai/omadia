@@ -526,6 +526,66 @@ describe('admin providers route — POST /:id/verify', () => {
   });
 });
 
+// #1460 — a keyless provider (Ollama) was reported `verified` with zero
+// requests and offered "Change key" / "Remove key" with no key stored.
+describe('admin providers route — keyless provider (#1460)', () => {
+  let h: Harness;
+  afterEach(async () => {
+    if (h) await h.close();
+    clearExternalModels();
+    __clearVerificationCache();
+  });
+
+  function registerOllama(harness: Harness): void {
+    harness.catalog.register({
+      id: 'ollama',
+      label: 'Ollama (local)',
+      wireFormat: 'openai-compatible',
+      baseURL: 'http://ollama.test:11434/v1',
+      policy: { requiresApiKey: false },
+      models: [
+        { id: 'ollama:llama3', provider: 'ollama', modelId: 'llama3', class: 'balanced' },
+      ],
+    } as never);
+  }
+
+  it('lists an unchecked keyless provider as unverified with no key on file', async () => {
+    h = await makeHarness([{ id: ORCH }]);
+    registerOllama(h);
+    const body = await getProviders(h);
+    const row = body.providers.find((p) => p.id === 'ollama') as Record<string, unknown> | undefined;
+    assert.equal(row?.['status'], 'unverified', 'nothing has checked it yet');
+    assert.equal(row?.['requiresApiKey'], false);
+    assert.equal(row?.['hasKey'], false, 'so the UI offers no "Change/Remove key"');
+    assert.equal(h.probeCalls.length, 0, 'the listing still never probes');
+  });
+
+  it('verify reaches the server and the listing then serves that check', async () => {
+    h = await makeHarness([{ id: ORCH }], { probeStatus: 200 });
+    registerOllama(h);
+    const res = await fetch(`${h.baseUrl}/api/v1/admin/providers/ollama/verify`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+    });
+    const json = (await res.json()) as Record<string, unknown>;
+    assert.equal(json['status'], 'verified');
+    assert.deepEqual(h.probeCalls, ['http://ollama.test:11434/v1/models']);
+    const row = (await getProviders(h)).providers.find((p) => p.id === 'ollama');
+    assert.equal(row?.status, 'verified');
+  });
+
+  it('verify against an unreachable server is unverified, not verified', async () => {
+    h = await makeHarness([{ id: ORCH }], { probeStatus: 503 });
+    registerOllama(h);
+    const res = await fetch(`${h.baseUrl}/api/v1/admin/providers/ollama/verify`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+    });
+    const json = (await res.json()) as Record<string, unknown>;
+    assert.equal(json['status'], 'unverified');
+  });
+});
+
 describe('admin providers route — POST /assignment', () => {
   let h: Harness;
   afterEach(async () => {

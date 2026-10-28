@@ -3860,10 +3860,12 @@
       "connected": "connected",
       "notConnected": "no key",
       "unverified": "key stored, not verified",
+      "unverifiedKeyless": "not verified",
       "verified": "verified",
       "invalid": "key rejected",
       "verifiedAt": "verified {time}",
       "testKey": "Test key",
+      "testConnection": "Test connection",
       "testing": "Testing …",
       "refreshModels": "Refresh models",
       "refreshingModels": "Refreshing …",
@@ -3877,6 +3879,7 @@
       "modelsSourceSeed": "seed list",
       "unclassifiedModels": "{count, plural, one {# model} other {# models}} hidden (no discovery rule): {models}",
       "addKey": "Add key",
+      "addOptionalKey": "Add key (optional)",
       "changeKey": "Change key",
       "removeKey": "Remove key",
       "removeKeyConfirm": "Remove the stored API key for {provider}? Agents assigned to it will stop working until a new key is added.",
@@ -3894,7 +3897,8 @@
         "unexpectedBody": "The provider answered, but not with a model list we recognise.",
         "httpError": "The provider returned an error (server-side or rate limit). Not your key.",
         "networkError": "The provider could not be reached — timeout, DNS or no connection.",
-        "noProbe": "This provider type cannot be probed cheaply, so the key stays unverified."
+        "noProbe": "This provider type cannot be probed cheaply, so the key stays unverified.",
+        "notChecked": "Not checked since the last restart — use “Test connection”."
       },
       "oauthConnect": "Sign in with ChatGPT",
       "oauthReconnect": "Reconnect ChatGPT",
@@ -4228,6 +4232,45 @@
       "errorTitle": "Error",
       "actionRequired": "Action required"
     },
+    "activationError": {
+      "technicalDetail": "Technical detail",
+      "secret_missing": {
+        "what": "A required secret is not stored.",
+        "next": "Open “Edit setup fields” on the plugin's store page, enter the missing value and save — the plugin is restarted with it."
+      },
+      "config_missing": {
+        "what": "A required setup value is missing.",
+        "next": "Open “Edit setup fields” on the plugin's store page, fill in the missing value and save — the plugin is restarted with it."
+      },
+      "capability_not_declared": {
+        "what": "This version of the plugin does not run on this server.",
+        "next": "There is nothing to change in your setup. Install a different version of the plugin (update it, or go back to the previous one), or report the problem to its publisher."
+      },
+      "network_not_permitted": {
+        "what": "The plugin is not allowed to reach the address it needs.",
+        "next": "Check the address in the setup fields. If it is correct, the plugin's network permissions do not cover it — report this to the plugin's publisher."
+      },
+      "permission_not_granted": {
+        "what": "A permission the plugin needs has not been granted.",
+        "next": "Grant it in the “Permissions” section of the plugin's store page; the plugin is restarted afterwards."
+      },
+      "dependency_unresolved": {
+        "what": "A plugin this one depends on is not installed or not running.",
+        "next": "Install or fix the plugin it depends on first, then save this plugin's setup again to restart it."
+      },
+      "provider_conflict": {
+        "what": "Another installed plugin already provides the same function.",
+        "next": "Only one of them can run. Uninstall the one you do not need."
+      },
+      "target_unreachable": {
+        "what": "A server the plugin needs did not respond while it was starting.",
+        "next": "Check the address in the setup fields and that the server is reachable, then save the setup again to retry."
+      },
+      "unknown": {
+        "what": "The plugin did not start.",
+        "next": "The technical detail below may help. If it does not, report it to the plugin's publisher."
+      }
+    },
     "install": {
       "blocked": "Installation blocked",
       "installAria": "Install {name}",
@@ -4235,8 +4278,8 @@
       "installNow": "Install now",
       "unknownError": "Unknown error.",
       "unexpectedJobState": "Unexpected job state: {state}",
-      "activationFailed": "Installed, but the plugin did not start: {message}",
-      "updateActivationFailed": "Updated, but the plugin did not start: {message}",
+      "updateActivationFailedLead": "Updated, but the plugin did not start.",
+      "activationFailedLead": "Installed, but the plugin did not start.",
       "registryUnavailable": "The plugin could not be looked up: the registry {registries} could not be read. Check it under Admin · Registries and try again.",
       "updateAvailable": "Update available",
       "updating": "Updating …",
@@ -4244,6 +4287,12 @@
       "installed": "Installed",
       "active": "active",
       "installedNext": "\"{name}\" installed — attach it to an orchestrator to start using it.",
+      "toManageOrchestrators": "Manage orchestrators",
+      "nextLlm": "\"{name}\" is installed, but the LLM provider it is assigned to has no verified access yet.",
+      "nextSetup": "\"{name}\" is installed, but needs setup before it can run.",
+      "nextRunning": "\"{name}\" is installed and running.",
+      "nextIntegration": "\"{name}\" is running. Agents that depend on it use it automatically — there is nothing to attach.",
+      "nextAttached": "\"{name}\" is attached to {agents}.",
       "toOrchestrators": "Attach to an orchestrator",
       "toSetup": "Complete setup ({count} missing)",
       "toLlmProvider": "Connect an LLM provider",
@@ -4323,6 +4372,7 @@
       "save": "Save",
       "saveWithCount": "Save ({count})",
       "savedCheck": "✓ Saved",
+      "savedNotStarted": "Saved — but the plugin did not start with the new values.",
       "connected": "Connected",
       "notConnected": "Not connected",
       "reconnect": "Reconnect",
@@ -4371,6 +4421,8 @@
       "installing": "Installing …",
       "allInstalled": "Everything installed",
       "allActive": "{name} and all prerequisites are active.",
+      "notAllRunning": "Installed — not everything is running",
+      "notRunningList": "{name} and its prerequisites are installed, but these did not start: {plugins}. Open each plugin's page in the store to see why.",
       "errorKicker": "Error",
       "stepValidationFailed": "{label}: the input contains errors.",
       "updateFrom": "Update {from} → {to}",
@@ -4391,7 +4443,7 @@
       "inCatalog": "<idTag>{id}</idTag> <versionTag>v{version}</versionTag> is in the catalog. Select and install it below.",
       "sizeLabel": "Size",
       "peersMissing": "⚠ Missing peer deps: {peers} — the agent may fail at runtime.",
-      "activationFailed": "⚠ Uploaded, but the running plugin did not restart: {message}",
+      "activationFailedLead": "Uploaded, but the running plugin did not restart.",
       "close": "Close",
       "failedKicker": "Upload failed",
       "reset": "Reset",

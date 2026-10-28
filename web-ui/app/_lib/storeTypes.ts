@@ -229,8 +229,12 @@ export interface PluginReadiness {
    *  the badge renders it as "active since", never "configured". A checked
    *  connection arrives as `action_status.checked_at` instead. */
   verified_at: string | null;
-  /** Tail of the last activation error; only for `errored`. */
+  /** Tail of the last activation error; only for `errored`. Developer text —
+   *  shown as a technical detail only (#1456). */
   error_detail?: string;
+  /** #1456 — classified reason for `errored`; narrow with
+   *  `parseActivationErrorCode` (`unknown` for anything else). */
+  error_code?: string;
 }
 
 export interface Plugin {
@@ -437,6 +441,8 @@ export interface InstallActivationState {
   state: 'active' | 'inactive' | 'errored';
   ok: boolean;
   error: string | null;
+  /** #1456 — classified reason; absent on an older middleware. */
+  error_code?: string | null;
   missing: InstallMissingGrant[];
 }
 
@@ -593,6 +599,8 @@ export interface UploadPackageResponse {
    *  activation (plugin not installed-and-running), and on an older
    *  middleware. */
   activation_error?: string;
+  /** #1497 — the shared activation result; narrow with `parseActivationResult`. */
+  activation?: unknown;
 }
 
 export interface ListUploadedPackagesResponse {

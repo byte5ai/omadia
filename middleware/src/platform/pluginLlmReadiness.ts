@@ -20,6 +20,7 @@ import {
 import {
   decodeVerifiedRecord,
   getCachedVerification,
+  getKeylessVerification,
   primeVerification,
   providerVerifiedAtVaultKey,
   type ProviderVerification,
@@ -168,7 +169,8 @@ async function isProviderOAuthConnected(
 /**
  * The provider's credential verdict, WITHOUT touching the network:
  *   - no key in any scope                       → `no_key`
- *   - keyless provider (local/self-hosted)      → `verified`
+ *   - keyless provider (local/self-hosted)      → its last reachability
+ *                                                 check, else `unverified`
  *   - a fresh cached probe for THIS key         → that verdict
  *   - a durable `verified_at` record for THIS key → `verified`
  *   - otherwise                                 → `unverified`
@@ -181,11 +183,20 @@ async function resolveKeyBasedStatus(
   provider: ProviderId,
   descriptor: LlmProviderDescriptorView | undefined,
 ): Promise<ProviderVerification> {
-  // Local / self-hosted providers have no credential to reject.
-  if (descriptor?.policy?.requiresApiKey === false) {
-    return { status: 'verified' };
-  }
   const found = await findProviderKey(vault, provider);
+  // #1460 — a local / self-hosted provider has no credential to reject, but
+  // it can be down. "Verified" means a reachability check ran and succeeded:
+  // the last one this process ran for the key stored now (none → `''`), or
+  // `unverified` before any has. Never probed from here — read paths do not
+  // touch the network.
+  if (descriptor?.policy?.requiresApiKey === false) {
+    return (
+      getKeylessVerification(provider, found?.apiKey ?? '') ?? {
+        status: 'unverified',
+        reason: 'not_checked',
+      }
+    );
+  }
   if (found === undefined) return { status: 'no_key' };
 
   const cached = getCachedVerification(provider, found.apiKey);

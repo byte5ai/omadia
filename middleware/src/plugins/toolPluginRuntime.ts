@@ -35,6 +35,7 @@ import {
   type BoundProbe,
   type ConnectionProbeOutcome,
 } from './connectionProbe.js';
+import { describeActivationFailure } from './activationFailure.js';
 import type { InstalledRegistry } from './installedRegistry.js';
 import type { JobScheduler } from './jobScheduler.js';
 import type { PluginCatalog, PluginCatalogEntry } from './manifestLoader.js';
@@ -284,10 +285,10 @@ export class ToolPluginRuntime {
         // A manifest-mtime reset in retryErroredPlugins is self-correcting:
         // the next resolution drops and blocks the duplicate again, with a
         // fresh error timestamp, without aborting boot or looping here.
-        await this.deps.registry.markActivationBlocked(
-          duplicate.droppedId,
-          duplicate.message,
-        );
+        await this.deps.registry.markActivationBlocked(duplicate.droppedId, {
+          message: duplicate.message,
+          code: 'provider_conflict',
+        });
       } catch (regErr) {
         log(
           `[tool-runtime] registry markActivationBlocked FAILED for ${duplicate.droppedId}: ${regErr instanceof Error ? regErr.message : String(regErr)}`,
@@ -304,7 +305,7 @@ export class ToolPluginRuntime {
         // without re-running the resolver itself (S+8.5 sub-commit 3).
         await this.deps.registry.markActivationFailed(
           u.consumerId,
-          msg,
+          { message: msg, code: 'dependency_unresolved' },
           u.requires,
         );
       } catch (regErr) {
@@ -327,7 +328,10 @@ export class ToolPluginRuntime {
         const msg = err instanceof Error ? err.message : String(err);
         log(`[tool-runtime] activate FAILED for ${id}: ${msg}`);
         try {
-          await this.deps.registry.markActivationFailed(id, msg);
+          await this.deps.registry.markActivationFailed(
+            id,
+            describeActivationFailure(err),
+          );
         } catch (regErr) {
           log(
             `[tool-runtime] registry markActivationFailed FAILED for ${id}: ${regErr instanceof Error ? regErr.message : String(regErr)}`,

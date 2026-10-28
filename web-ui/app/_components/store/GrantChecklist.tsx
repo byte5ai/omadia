@@ -19,6 +19,7 @@ import { Database, Globe, Puzzle } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 
 import type { PluginGrantsView } from '../../_lib/api';
+import { useActivationErrorLabel } from './ActivationFailureNotice';
 
 export interface GrantSelection {
   /** Undefined when the manifest declares no `permissions.sql` — there is
@@ -205,6 +206,7 @@ export function GrantState({
   view: PluginGrantsView;
 }): React.ReactElement {
   const t = useTranslations('store.grants');
+  const activationErrorLabel = useActivationErrorLabel();
   const tone =
     view.state === 'active'
       ? 'text-[color:var(--accent)]'
@@ -212,7 +214,19 @@ export function GrantState({
   return (
     <div className="flex flex-col gap-1 text-[12px]">
       <span className={tone}>{t(`state.${view.state}`)}</span>
-      {view.state !== 'active' && view.last_activation_error ? (
+      {view.state === 'errored' && view.last_activation_error ? (
+        // #1456 — the localized short reason first, then the middleware's own
+        // sentence as a secondary line (since C16 it names the missing grant).
+        // Not the full alert: on the plugin page that already sits under the
+        // installed pill, and in the wizard this line is enough next to the
+        // grant checklist.
+        <>
+          <span className="text-[color:var(--fg)]">
+            {activationErrorLabel(view.last_activation_error_code)}
+          </span>
+          <span className="text-[color:var(--fg-muted)]">{view.last_activation_error}</span>
+        </>
+      ) : view.state !== 'active' && view.last_activation_error ? (
         // The middleware's own sentence, which since C16 names the missing
         // grant AND where to fix it. Secondary, never the headline — the
         // headline is the localized state line above.
