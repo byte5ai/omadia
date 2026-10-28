@@ -911,7 +911,9 @@ export interface OrchestratorOptions {
    * {kind, summary, rationale?, excerpts[]} suggestion, then ships it
    * to the chat UI via the `done` event so the save-as-memory modal
    * can pre-fill. Absent → no enrichment, the modal falls back to its
-   * 240-char prefix and (Slice 4b) auto-promotion is a no-op.
+   * 240-char prefix and (Slice 4b) auto-promotion stores an answer-prefix
+   * summary. Set but returning `undefined` for a turn → that turn is not
+   * auto-promoted (#1527, the `palaiaExcerpt@1` contract).
    */
   excerptExtractor?: PalaiaExcerptExtractor;
   /**
@@ -2909,6 +2911,9 @@ export class Orchestrator {
         ? { durableKinds: this.autoPromoteDurableKinds }
         : {}),
       ...(opts.palaiaExcerpt ? { palaiaExcerpt: opts.palaiaExcerpt } : {}),
+      // #1527 — with an extractor installed, no excerpt means it failed:
+      // skip rather than store the raw answer prefix.
+      excerptRequired: this.excerptExtractor !== undefined,
     };
     try {
       const result = await promoteTurnIfSignificant(promotionInput);
