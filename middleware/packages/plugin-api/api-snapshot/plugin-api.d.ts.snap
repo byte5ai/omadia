@@ -899,6 +899,7 @@ entryType?: EntryType;
 visibility?: Visibility;
 significance?: number | null;
 tailOnly?: boolean;
+unprotected?: boolean;
 owners?: readonly string[];
 maskedView?: TurnMaskedView;
 }
@@ -1049,6 +1050,7 @@ excludeTurnIds?: readonly string[];
 agentScopePrefix?: string;
 audienceOwners?: readonly string[];
 limit?: number;
+excludeUnprotected?: boolean;
 }
 export interface TurnSearchHit {
 turnId: string;
@@ -1075,6 +1077,7 @@ recallRecencyBoost?: number;
 typeWeights?: Partial<Record<EntryType, number>>;
 entryTypes?: readonly EntryType[];
 includeCold?: boolean;
+excludeUnprotected?: boolean;
 }
 export interface SessionReadOptions {
 audienceOwners?: readonly string[];
@@ -1087,6 +1090,7 @@ agentScopePrefix?: string;
 audienceOwners?: readonly string[];
 perEntityLimit?: number;
 entityLimit?: number;
+excludeUnprotected?: boolean;
 }
 export interface FindEntitiesOptions {
 model: string;
