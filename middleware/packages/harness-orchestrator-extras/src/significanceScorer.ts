@@ -15,6 +15,7 @@ import { collectText, textMessage } from '@omadia/llm-provider';
 import type { EntryType } from '@omadia/plugin-api';
 
 import type { SignificanceScorer } from './captureFilter.js';
+import type { OpenJobPrivacy } from './jobPrivacy.js';
 import { parseLlmJson } from './llmJson.js';
 
 export interface HaikuSignificanceScorerOptions {
@@ -26,6 +27,16 @@ export interface HaikuSignificanceScorerOptions {
   maxTokens?: number;
   /** Optional log sink. Defaults to `console.error`. */
   log?: (msg: string) => void;
+  /**
+   * #1540 — the Privacy Shield route for the scored text. Every caller sends
+   * stored text: the live capture filter (the turn's masked view, or the
+   * stored turn when the turn had no shield), the bulk promotion job (stored
+   * turns with their real values) and the scratch-promotion reaper (agent
+   * notes). A run that cannot mask throws, so each caller counts a failed
+   * score instead of an insignificant turn. Absent ⇒ the text goes out as
+   * stored.
+   */
+  privacy?: OpenJobPrivacy;
 }
 
 const DEFAULT_MODEL = 'claude-haiku-4-5-20251001';
@@ -82,11 +93,17 @@ export function createHaikuSignificanceScorer(
         return { score: 0 };
       }
 
+      const run = opts.privacy?.('significance-scorer');
+      const masked = run ? await run.mask(trimmed) : { send: true as const, text: trimmed };
+      if (!masked.send) {
+        throw new Error(`privacy: ${masked.reason} — score skipped`);
+      }
+
       const response = await opts.llm.complete({
         model,
         maxTokens,
         system: SYSTEM_PROMPT,
-        messages: [textMessage('user', `<turn>\n${trimmed}\n</turn>`)],
+        messages: [textMessage('user', `<turn>\n${masked.text}\n</turn>`)],
       });
 
       const replyText = collectText(response.content);

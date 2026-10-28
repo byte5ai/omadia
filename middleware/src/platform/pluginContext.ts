@@ -106,6 +106,7 @@ import {
   createPluginMemoryToolStore,
 } from './memoryAccessor.js';
 import { SCRATCH_DIR } from './paths.js';
+import { neighborsForPlugin } from './shieldedNeighbors.js';
 import type { ServiceRegistry } from './serviceRegistry.js';
 import {
   createServiceGrantGate,
@@ -1551,7 +1552,10 @@ function createKnowledgeGraphAccessor(
         .map((hit) => ({ ...hit, turns: hit.turns.filter((t) => bounded.scopeAllowed(t.scope)) }))
         .filter((hit) => hit.turns.length > 0);
     },
-    getNeighbors: (nodeId) => resolveKg().getNeighbors(nodeId),
+    // #1540 — under a shield, as the turn search: no content of a turn
+    // stored `unprotected` (shieldedNeighbors.ts).
+    getNeighbors: (nodeId) =>
+      neighborsForPlugin(resolveKg(), nodeId, turnContext.current()?.privacyHandle !== undefined),
     stats: () => resolveKg().stats(),
   };
 }

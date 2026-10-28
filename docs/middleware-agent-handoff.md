@@ -4080,6 +4080,27 @@ keine Turn-Hooks und keinen MCP-Input-Replay; das Canvas-Skeleton nutzt dann
 den statischen Fallback (`composeSkeleton({ skipModel })`), und
 `createJobPrivacy` verweigert Memory-Jobs ohne Guard unter der Policy.
 
+**Vorbestehende Lecks S2-N16 (#1540).** Canvas-Skeleton maskiert mit laufendem
+Guard über `openStoredTextScope` (`omadia-ui-orchestrator/src/skeletonPrivacy.ts`,
+Fallback-Skeleton, wenn das nicht geht). Der Significance-Scorer bekommt
+`privacy: outsideTurnPrivacy` (Live-Capture, `bulkPromotion`, Scratch-Reaper);
+ein verweigerter Lauf wirft. Notizen aus ungeschützten Turns tragen
+`<!-- omadia:unprotected -->` (`noteProvenance.ts` in orchestrator-extras);
+die Namespacer stempeln beim Schreiben und verweigern beim Lesen unter Shield,
+wenn der Turn ein Privacy-Handle hat (`NoteProvenance`, Produktion:
+`TURN_NOTE_PROVENANCE` aus `buildOrchestrator` über `MemoryBinder`; ohne
+Injektion wird nichts gestempelt). `promoteRuleFileToDurable` und der
+Scratch-Reaper übernehmen den Marker als `unprotected`-Stempel.
+`ctx.knowledgeGraph.getNeighbors` filtert unter Handle
+(`src/platform/shieldedNeighbors.ts`). Prozesse: Spalte `processes.unprotected`
+(Migration 0035, plugin-api 1.40.0), gesetzt von den Prozess-Tools über
+`turnProtection.ts`, gefiltert in Tools, Recall-Leg und Plan-Runner-Reuse.
+Builder-Preview-Chat unter `OMADIA_PRIVACY_FORCE_GUARDED` verweigert
+(`builder.privacy_shield_required`). Unter Shield verweigern die Namespacer
+auch den physischen Plugin-Memory-Baum
+`/memories/orchestrators/<slug>/plugins/` (`SHIELDED_PHYSICAL`). Offen:
+Backfill für Altbestände ohne Flag (§13).
+
 ### Abo-CLI-Turn-Budget (OM-104, Beta-Runde 5)
 
 Wird vom `@omadia/orchestrator`-Package gelesen (`resolveCliSpawnTimeoutMs()` in
@@ -5457,8 +5478,7 @@ laufen. Ein neuer Modellaufruf außerhalb des Turns gehört in §6f. Offen:
   Shield wirkt nur in den Modellanfragen des Turns selbst. Ungemaskt, mit
   `mask_user_prompt` an oder aus, gehen: plugin-eigene `ctx.llm`-Anfragen (der
   Accessor `createLlmAccessor`, `src/platform/pluginContext.ts`, liest keinen
-  Privacy-Handle), darunter die Skelett-Komposition des Canvas
-  (`composeSkeleton`, schickt `input.userMessage` vor dem Turn), Planungs-Gate
+  Privacy-Handle), Planungs-Gate
   und Planer des Plan-Runners (`gate.ts`, `materializer.ts`, aus
   `onBeforeTurn` mit der Rohnachricht) und jedes Tool, das Daten holt und
   selbst ein Modell fragt; die Memory-Jobs von `@omadia/orchestrator-extras`
@@ -5469,7 +5489,9 @@ laufen. Ein neuer Modellaufruf außerhalb des Turns gehört in §6f. Offen:
   ein Modell mit Bild-Eingabe (`buildUserContent`) und, mit dem
   OpenAI-kompatiblen Embedding-Adapter, gespeicherte Turns und Memories im
   Klartext an dessen Endpunkt. Inbound-Screener und Signifikanz-Scorer haben
-  einen eigenen Punkt (unten). Die Einzelpunkte zu
+  einen eigenen Punkt (unten). Die Skelett-Komposition des Canvas maskiert
+  bei laufendem Guard seit #1540 über `openStoredTextScope`
+  (`skeletonPrivacy.ts`). Die Einzelpunkte zu
   `ctx.llm`, Canvas und Bildern stehen unter „Tool-Fehler-Politik“ und
   „Verifier-Wiedereintritt“; diese Unit fasst sie zusammen: `ctx.llm`- und
   Memory-Job-Anfragen über die Prompt-Maske des Turns bzw. eine Maske für
@@ -5486,9 +5508,15 @@ laufen. Ein neuer Modellaufruf außerhalb des Turns gehört in §6f. Offen:
   wie das Modell; eine blockierte Maske endet geschlossen ohne Screener- und
   Modell-Aufruf. Der Capture-Filter bewertet `TurnIngest.maskedView`
   (`@omadia/plugin-api` 1.24.0), also den Turn so, wie das Modell ihn sah;
-  der gespeicherte Turn behält die Realwerte. Offen: Der vom Operator
-  gestartete Backfill (`bulkPromotion.ts`) und der Scratch-Promotion-Reaper
-  bewerten gespeicherten Text weiter unmaskiert (§6f nennt beide).
+  der gespeicherte Turn behält die Realwerte. Seit #1540 maskiert der Scorer
+  selbst über `createJobPrivacy`, also auch der vom Operator gestartete
+  Backfill (`bulkPromotion.ts`) und der Scratch-Promotion-Reaper.
+- **Provenienz-Backfill für Altbestände (#1540, offen).** Notizen und
+  Prozesse von vor #1540, rohe MCP-Ergebnisse und Regel-Promotions von vor
+  #1536 und Turns von vor #1507 tragen kein `unprotected`-Flag und gelten unter
+  einem Shield als geschützt. Ein Backfill müsste sie markieren; ob pauschal
+  (alles Unbekannte als `unprotected`, fail-closed, verliert Recall auf
+  Instanzen mit Guard) oder gar nicht, ist eine Produktentscheidung.
 - **Ausgefallener C1-Detektor: der Rest des Turns läuft still auf C0.**
   Wirft der konfigurierte C1-Detektor, sperrt `c1DetectorFor`
   (`harness-plugin-privacy-guard/src/service.ts`) C1 für den Rest des Turns.
@@ -5917,16 +5945,10 @@ Stand nach „Wiedereintritte führen kein Tool erneut aus“ (§3,
   ersten Laufs, in dem sie wirklich liefen, wird nicht geschrieben. Fix:
   `replayed` als Knoten-Property in beiden Backends mitschreiben (JSONB, keine
   SQL-Migration) — plugin-api 1.21.0 dokumentiert die Lücke.
-- **Canvas-Skelett-Komposition umgeht die Privacy-Grenze.** Vor dem
-  geschützten Turn schickt der ui-orchestrator `input.userMessage` (oder die
-  serialisierte Aktion) über den LLM-Accessor des Plugins an das
-  Kompositionsmodell (`composition.ts`, `composeSkeleton`;
-  `pluginContext.ts`) — ohne das Prompt-Masking des Turns. `verdictHold.ts`
-  regelt nur, wann das Skelett ausgeliefert wird, nicht, was an den Provider
-  geht. Mit `mask_user_prompt` an verlässt der Nutzertext den Prozess damit
-  unmaskiert. Fix (eigener Fix, außerhalb dieses Bündels): Komposition über
-  die Privacy-Sicht des Turns führen, oder bei aktivem Shield das
-  deterministische Fallback-Skelett nehmen.
+- **Canvas-Skelett-Komposition: erledigt (#1540).** Bei laufendem Guard geht
+  der Nutzertext über dessen Stored-Text-Scope (`skeletonPrivacy.ts`), das
+  Skelett wird zurückgerechnet; kann der Scope nicht maskieren, kommt das
+  statische Fallback-Skelett ohne Modellaufruf.
 - **Kalibrierung vor `enforce`: verborgene Antworten haben keine Zeile.**
   `verifier_verdicts.reason` (KG-Migration 0034) macht `skipped`-Gründe
   abfragbar (`docs/upgrading.md`). `shadow` schreibt aber keine Zeile für eine

@@ -1,4 +1,5 @@
 import { parseRefreshSource, type RefreshSource } from './refreshRecipes.js';
+import type { SkeletonPrivacyRun } from './skeletonPrivacy.js';
 import { validateTree } from './treeValidator.js';
 
 /**
@@ -205,6 +206,18 @@ function parseResult(
   };
 }
 
+/** `value` with `privacy.restore` applied to every string in it (keys stay). */
+function restoreStrings<T>(value: T, privacy: SkeletonPrivacyRun): T {
+  if (typeof value === 'string') return privacy.restore(value) as T;
+  if (Array.isArray(value)) return value.map((v: unknown) => restoreStrings(v, privacy)) as T;
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([k, v]) => [k, restoreStrings(v, privacy)]),
+    ) as T;
+  }
+  return value;
+}
+
 /**
  * Compose the skeleton-first tree. One bounded repair retry on schema failure
  * (the retry prompt carries the validator errors); deterministic fallback after
@@ -219,6 +232,10 @@ export async function composeSkeleton(opts: {
   /** #1535 — the text may not reach a model (the org policy requires the
    *  Privacy Shield and none runs): go straight to the fallback. */
   skipModel?: boolean;
+  /** #1540 — a privacy guard runs: the text reaches the model masked through
+   *  this run, and the output is restored. A run that cannot mask skips the
+   *  model call (fallback skeleton). Absent ⇒ the text goes out as written. */
+  privacy?: SkeletonPrivacyRun;
   /** Tools the composer may plan a deterministic `fetch` for (the plugin's
    *  `fast_path_tools` with a known spec). Empty/absent: no FAST PATH prompt
    *  section, and every `fetch`/`summary` the model emits anyway is dropped. */
@@ -238,7 +255,17 @@ export async function composeSkeleton(opts: {
     return fallback;
   }
 
-  let user = `User request: ${opts.userText}`;
+  let requestText = opts.userText;
+  if (opts.privacy !== undefined) {
+    const masked = await opts.privacy.mask(opts.userText);
+    if (!masked.send) {
+      opts.log?.(`[composition] model call skipped (privacy: ${masked.reason}) → fallback skeleton`);
+      return fallback;
+    }
+    requestText = masked.text;
+  }
+
+  let user = `User request: ${requestText}`;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     let raw: string;
     const startedAt = Date.now();
@@ -264,15 +291,21 @@ export async function composeSkeleton(opts: {
     const parsed = parseResult(raw, allowedFetchTools);
     if (!parsed) {
       opts.log?.(`[composition] attempt ${attempt + 1}: output not parseable as raw JSON`);
-      user = `User request: ${opts.userText}\nYour previous output was not valid raw JSON. Emit ONLY the JSON object.`;
+      user = `User request: ${requestText}\nYour previous output was not valid raw JSON. Emit ONLY the JSON object.`;
       continue;
     }
+    // Validated on the model's (masked) tree, so a retry prompt built from
+    // the validator errors carries no restored value.
     const valid = validateTree(parsed.tree);
     if (valid.ok) {
-      return { ...parsed, source: 'model' };
+      // #1540 — real values back into the skeleton's string leaves, after
+      // parsing: a restored value cannot break the JSON.
+      return opts.privacy === undefined
+        ? { ...parsed, source: 'model' }
+        : { ...restoreStrings(parsed, opts.privacy), source: 'model' };
     }
     opts.log?.(`[composition] attempt ${attempt + 1}: tree schema-invalid: ${valid.errors}`);
-    user = `User request: ${opts.userText}\nYour previous tree was schema-invalid: ${valid.errors}. Emit a corrected JSON object.`;
+    user = `User request: ${requestText}\nYour previous tree was schema-invalid: ${valid.errors}. Emit a corrected JSON object.`;
   }
   opts.log?.('[composition] both attempts schema-invalid → fallback skeleton');
   return fallback;

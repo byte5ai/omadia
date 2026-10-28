@@ -5,7 +5,7 @@ import type {
   ProcessMemoryService,
 } from '@omadia/plugin-api';
 import type { TurnAnnotation, TurnHookRegistrar } from '@omadia/orchestrator';
-import { graphScopeFor } from '@omadia/orchestrator';
+import { graphScopeFor, turnContext } from '@omadia/orchestrator';
 
 import { shouldPlan } from './gate.js';
 import { buildPlanSnapshot } from './snapshot.js';
@@ -188,7 +188,14 @@ export async function pickReusableProcess(
 ): Promise<ReusableProcess | null> {
   let hits: Awaited<ReturnType<ProcessMemoryService['query']>>;
   try {
-    hits = await processMemory.query({ query, limit: 1 });
+    // #1540 — a turn the Privacy Shield masks reuses no process stored from
+    // an unprotected turn: its title and steps go into the plan, and so into
+    // the prompt.
+    hits = await processMemory.query({
+      query,
+      limit: 1,
+      ...(turnContext.current()?.privacyHandle !== undefined ? { excludeUnprotected: true } : {}),
+    });
   } catch {
     return null;
   }

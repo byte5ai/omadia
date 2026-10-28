@@ -567,9 +567,10 @@ export async function activate(
   // privacy + hint stripping (no LLM, no drop). At level=normal (the default,
   // `DEFAULT_CAPTURE_LEVEL`) and level=aggressive the significance scorer
   // also runs: it is built whenever this plugin's LLM provider resolves, and
-  // it sends each captured turn — the user's message as the session log
-  // stores it, plus the answer — to that provider, outside the turn's
-  // privacy handle (docs/security-architecture.md §6f).
+  // it sends each captured turn — the turn's masked view, or the stored turn
+  // when the turn ran without a shield — to that provider. With a privacy
+  // guard installed that text goes through the job's own stored-text scope
+  // (#1540, docs/security-architecture.md §6f).
   //
   // The filter wraps `knowledgeGraph` via
   // `CaptureFilteringKnowledgeGraph` and replaces the registry entry, so
@@ -598,6 +599,9 @@ export async function activate(
         llm,
         model: factModel,
         log: ctx.log,
+        // #1540 — the live filter, bulk promotion and the scratch reaper all
+        // score outside the turn's map (fire-and-forget or a batch job).
+        privacy: outsideTurnPrivacy,
       })
     : undefined;
 

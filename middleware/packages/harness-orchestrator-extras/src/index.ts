@@ -148,6 +148,12 @@ export type {
   PromoteRuleInput,
   PromoteRuleResult,
 } from './promoteDurableRule.js';
+export {
+  UNPROTECTED_NOTE_MARKER,
+  isUnprotectedNote,
+  markUnprotectedNote,
+  stripUnprotectedNoteMarker,
+} from './noteProvenance.js';
 
 // KG-ACL Slice 8 — operator-triggered retrospective bulk score +
 // promotion. Two-phase pass over historical Turns: (1) Haiku-score
