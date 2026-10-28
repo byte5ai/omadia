@@ -586,6 +586,15 @@ export interface Plugin {
    * catalog's own `PluginOrigin` (whether the package ships in the image).
    */
   install_origin?: PluginInstallOrigin;
+  /**
+   * #1481 — present only for a package that ships inside the middleware image.
+   * `persistent`: an uninstall sticks across restarts (the boot no longer
+   * re-seeds it). `reinstalled_at_boot`: a provider the boot selects from the
+   * environment (orchestrator, memory, knowledge graph, embeddings) — the next
+   * restart installs it again, with default settings, if this host needs it.
+   * Absent for uploaded/Hub packages, which an uninstall simply removes.
+   */
+  built_in_uninstall?: 'persistent' | 'reinstalled_at_boot';
   incompatibility_reasons?: string[];
   /** Present only for entries sourced from a remote registry that are not yet
    *  downloaded/ingested locally. Its presence is what tells the install flow

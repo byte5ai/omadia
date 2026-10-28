@@ -9,6 +9,7 @@ import {
 import { parseCapabilityRef } from '@omadia/plugin-api';
 
 import type { Config } from '../config.js';
+import type { BuiltInOptOutStore } from './builtInOptOuts.js';
 import type { BuiltInPackageStore } from './builtInPackageStore.js';
 import {
   findActiveProviderCollision,
@@ -102,6 +103,33 @@ export interface BootstrapDeps {
    * `pendingBindingPurge.ts`). A throwing hook is logged, never fatal.
    */
   onPluginRemoved?: (pluginId: string) => void;
+  /**
+   * #1481 — built-ins the operator uninstalled on purpose. The boot seeders
+   * skip these instead of re-installing them with manifest defaults. Absent →
+   * every built-in is seeded as before.
+   */
+  builtInOptOuts?: BuiltInOptOutStore;
+  /**
+   * #1498 — called once per plugin id this bootstrap run ADDED to the
+   * registry. On an existing instance that is a built-in new in the image, a
+   * provider swap, or a built-in back after an uninstall; the host attaches
+   * these to the default orchestrator once its config store exists (queue,
+   * like `onPluginRemoved`). A throwing hook is logged, never fatal.
+   */
+  onPluginInstalled?: (pluginId: string) => void;
+}
+
+/** #1481 — true (and logged) when the operator uninstalled this built-in. */
+function isOptedOut(
+  deps: BootstrapDeps,
+  pluginId: string,
+  log: (msg: string) => void,
+): boolean {
+  if (!deps.builtInOptOuts?.has(pluginId)) return false;
+  log(
+    `[bootstrap] built-in ${pluginId} skipped — the operator uninstalled it (install it from the Store to bring it back)`,
+  );
+  return true;
 }
 
 /**
@@ -280,6 +308,8 @@ function resolvePackagePath(
 }
 
 export async function runLegacyBootstrap(deps: BootstrapDeps): Promise<void> {
+  const log = deps.log ?? ((m) => console.log(m));
+  const before = new Set(deps.registry.list().map((e) => e.id));
   // bootstrapConfluenceFromEnv + bootstrapOdooFromEnv removed in Phase 5B
   // M3+M4 catch-up — those byte5-customer integrations no longer ship in
   // the public core. Operators install them via Admin-UI ZIP upload and
@@ -300,6 +330,91 @@ export async function runLegacyBootstrap(deps: BootstrapDeps): Promise<void> {
   await mirrorProviderKeysToUiOrchestrator(deps);
   if (deps.builtInStore) {
     await bootstrapBuiltInPackages(deps);
+  }
+  await reconcileBuiltInVersions(deps);
+  await reconcileBuiltInOptOuts(deps, log);
+  for (const entry of deps.registry.list()) {
+    if (before.has(entry.id)) continue;
+    try {
+      deps.onPluginInstalled?.(entry.id);
+    } catch (err) {
+      log(
+        `[bootstrap] onPluginInstalled hook FAILED for ${entry.id}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+}
+
+/**
+ * #1505 — bring `installed_version` of every built-in in line with the
+ * version the image ships and runs.
+ *
+ * The seeders only write a version when they CREATE an entry, and
+ * `updateVersion` is reached only by the upload pipeline, which refuses
+ * built-in ids. So after an image update the registry kept the old version:
+ * profile bundles pinned it and the importer rejected them
+ * (`bundle.unknown_plugin`), and the store's update check compared the hub
+ * against it. Only entries whose catalog entry is the image's own package
+ * (`origin: 'bundled'`) are touched — an uploaded package that shadows a
+ * built-in id carries its own version through the upload pipeline. A
+ * downgrade (older image) is synced too: the field states what runs.
+ */
+export async function reconcileBuiltInVersions(
+  deps: Pick<BootstrapDeps, 'catalog' | 'registry' | 'log'>,
+): Promise<void> {
+  const log = deps.log ?? ((m) => console.log(m));
+  let updated = 0;
+  let current = 0;
+  for (const entry of deps.registry.list()) {
+    const catalogEntry = deps.catalog.get(entry.id);
+    if (catalogEntry?.origin !== 'bundled') continue;
+    const shipped = catalogEntry.plugin.version;
+    if (entry.installed_version === shipped) {
+      current += 1;
+      continue;
+    }
+    try {
+      await deps.registry.updateVersion(entry.id, shipped, entry.config);
+      updated += 1;
+      log(
+        `[bootstrap] ⚐ built-in ${entry.id} installed_version ${entry.installed_version} → ${shipped} (version shipped in this image)`,
+      );
+    } catch (err) {
+      log(
+        `[bootstrap] built-in version reconcile FAILED for ${entry.id}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+  log(
+    `[bootstrap] built-in version reconcile: ${updated} updated, ${current} already current`,
+  );
+}
+
+/**
+ * #1481 — an opt-out mark only means something while the plugin is absent.
+ * A boot-managed provider the boot re-installed (see
+ * `BOOT_MANAGED_BUILT_IN_IDS`) is installed again, so its mark is dropped
+ * here; otherwise a later uninstall of the non-selected alternative would
+ * inherit a stale mark.
+ */
+async function reconcileBuiltInOptOuts(
+  deps: BootstrapDeps,
+  log: (msg: string) => void,
+): Promise<void> {
+  const optOuts = deps.builtInOptOuts;
+  if (!optOuts) return;
+  for (const id of optOuts.list()) {
+    if (!deps.registry.has(id)) continue;
+    try {
+      await optOuts.remove(id);
+      log(
+        `[bootstrap] built-in ${id} is installed again — uninstall mark cleared`,
+      );
+    } catch (err) {
+      log(
+        `[bootstrap] clearing the uninstall mark FAILED for ${id}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 }
 
@@ -878,6 +993,7 @@ async function bootstrapOrchestratorExtrasFromEnv(
   await migrateAnthropicKeyToCanonical(deps, ORCHESTRATOR_EXTRAS_TOOL_ID, log);
 
   if (deps.registry.has(ORCHESTRATOR_EXTRAS_TOOL_ID)) return;
+  if (isOptedOut(deps, ORCHESTRATOR_EXTRAS_TOOL_ID, log)) return;
 
   const catalogEntry = deps.catalog.get(ORCHESTRATOR_EXTRAS_TOOL_ID);
   if (!catalogEntry) {
@@ -961,6 +1077,7 @@ export async function bootstrapVerifierFromEnv(
   await migrateAnthropicKeyToCanonical(deps, VERIFIER_TOOL_ID, log);
 
   if (deps.registry.has(VERIFIER_TOOL_ID)) return;
+  if (isOptedOut(deps, VERIFIER_TOOL_ID, log)) return;
 
   const catalogEntry = deps.catalog.get(VERIFIER_TOOL_ID);
   if (!catalogEntry) {
@@ -1150,6 +1267,7 @@ async function bootstrapDiagramsFromEnv(deps: BootstrapDeps): Promise<void> {
   const log = deps.log ?? ((m) => console.log(m));
 
   if (deps.registry.has(DIAGRAMS_TOOL_ID)) return;
+  if (isOptedOut(deps, DIAGRAMS_TOOL_ID, log)) return;
 
   const {
     KROKI_BASE_URL,
@@ -1232,6 +1350,7 @@ async function bootstrapOfficeFromEnv(deps: BootstrapDeps): Promise<void> {
   const log = deps.log ?? ((m) => console.log(m));
 
   if (deps.registry.has(OFFICE_TOOL_ID)) return;
+  if (isOptedOut(deps, OFFICE_TOOL_ID, log)) return;
 
   const {
     DIAGRAM_URL_SECRET,
@@ -1302,12 +1421,13 @@ async function bootstrapOfficeFromEnv(deps: BootstrapDeps): Promise<void> {
  * safe to auto-install; ones with secret/oauth fields are left uninstalled
  * (the user has to run the setup flow so credentials reach the vault).
  *
- * An operator who hard-removes a built-in via the admin UI will see it
- * re-seeded on the next boot — built-ins are part of the image, not
- * operator-managed state. The supported way to disable a built-in is to
- * flip its status (or let the circuit-breaker flip it to `errored`): both
- * cases leave the entry in the registry, so `has(id)` returns true and the
- * seeder skips it.
+ * #1481 — an operator uninstall sticks: `InstallService.uninstall` records
+ * the id in `builtInOptOuts` and this seeder skips it until the operator
+ * installs the plugin again. (Before, the seeder re-installed it with manifest
+ * defaults on the next boot, and the documented alternative — flipping the
+ * entry's status — had no UI or API.) The boot-managed providers in
+ * `BOOT_MANAGED_BUILT_IN_IDS` are seeded by their own `bootstrap*FromEnv`
+ * and are the exception.
  */
 export async function bootstrapBuiltInPackages(
   deps: BootstrapDeps,
@@ -1323,6 +1443,7 @@ export async function bootstrapBuiltInPackages(
 
   for (const pkg of store.list()) {
     if (deps.registry.has(pkg.id)) continue;
+    if (isOptedOut(deps, pkg.id, log)) continue;
     // S+11-2b / OM-87: The Wizard and `bootstrapKnowledgeGraphFromEnv` own KG
     // selection. This opt-in policy applies even without an active provider;
     // the generic check below owns capability collision safety.
