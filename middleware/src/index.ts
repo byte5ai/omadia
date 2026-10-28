@@ -5258,22 +5258,49 @@ async function main(): Promise<void> {
       // integration re-upload was routed through dynamicAgentRuntime; there
       // the PluginContext lacks e.g. `core`, and plugin-activate crashed with
       // "Cannot read properties of undefined (reading 'log')".
+      // #1452 — whether this hook runs at all is decided by the upload
+      // service (`shouldReactivate`), not here. The gate used to sit on this
+      // line as `status !== 'active'`, and it has to move because the service
+      // now RECORDS the outcome: a plugin left `errored` by a failed update
+      // must be reactivated by the next (fixed) version, and a second gate
+      // here would turn the service's success write into a lie for every
+      // entry this hook silently declined to touch.
       onPackageReady: async (agentId) => {
-        if (installedRegistry.get(agentId)?.status !== 'active') return;
-
         const kind = pluginCatalog.get(agentId)?.plugin.kind ?? 'agent';
         switch (kind) {
           case 'channel': {
             if (!channelRegistryRef) {
-              console.warn(
-                `[upload] channel '${agentId}' re-uploaded before channelRegistry was wired — hot-swap skipped, will pick up at next boot`,
+              // #1452 — a throw, not a warn-and-return. The caller records
+              // this hook's verdict, so "returned normally" has to mean "the
+              // plugin is running"; an early return here would be filed as a
+              // successful activation. Reachable only for an ingest that
+              // arrives before `channelRegistryRef` is assigned (boot is not
+              // serving requests yet), and the next boot activates the
+              // channel regardless of the `errored` this records.
+              throw new Error(
+                `channel '${agentId}' was re-uploaded before channelRegistry was wired — hot-swap skipped, will pick up at next boot`,
               );
-              return;
             }
-            if (channelRegistryRef.isActive(agentId)) {
-              await channelRegistryRef.deactivate(agentId);
-            }
+            // Unconditional, not `if (isActive)`: `deactivate` invalidates the
+            // resolver's agentId-keyed module cache, and that cache can hold
+            // the PRE-UPDATE `dist/plugin.js` for a channel that is currently
+            // down (no handle → `isActive` false). Skipping the call there let
+            // `activate()` re-activate the old module and, now that the caller
+            // records the verdict, file it as a fresh success. `deactivate`
+            // returns early for a channel without a handle, so this is cheap.
+            await channelRegistryRef.deactivate(agentId);
             await channelRegistryRef.activate(agentId);
+            // `channelRegistry.activate()` warns and returns when the resolver
+            // yields no usable `ChannelPlugin` — a broken export in the new
+            // package, which ingest does not check (it verifies the entry file
+            // exists, not what it exports). "Returned normally" has to mean
+            // "running", or the caller stamps `last_activated_at` and lifts a
+            // genuine `errored` over a channel serving nothing.
+            if (!channelRegistryRef.isActive(agentId)) {
+              throw new Error(
+                `channel '${agentId}' did not come up after activation — the package exports no usable ChannelPlugin`,
+              );
+            }
             return;
           }
           case 'tool':
@@ -5292,7 +5319,16 @@ async function main(): Promise<void> {
             if (dynamicAgentRuntime.isActive(agentId)) {
               await dynamicAgentRuntime.deactivate(agentId);
             }
-            await dynamicAgentRuntime.activate(agentId);
+            // #1452 — `activate()` answers `null` when the agent is in no
+            // package store, i.e. it activated nothing. Same reason the
+            // channel branch asserts `isActive`: the caller records a normal
+            // return as "this plugin is running".
+            const domainTool = await dynamicAgentRuntime.activate(agentId);
+            if (!domainTool) {
+              throw new Error(
+                `agent '${agentId}' did not come up after activation — no package source in any store`,
+              );
+            }
             // Hub/registry install + package re-upload land here. Propagate the
             // (fresh) tool onto the per-Agent orchestrators so the new/updated
             // capability is live for the next chat turn without a restart.

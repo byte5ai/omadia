@@ -109,7 +109,15 @@ export function createPackagesRouter(deps: PackagesRouterDeps): Router {
         return;
       }
 
-      res.status(201).json({ package: result.package });
+      // #1452 — `activation_error` present means the ZIP was ingested but the
+      // re-activation of the running plugin threw; the registry entry has been
+      // flipped to `errored` with the same message.
+      res.status(201).json({
+        package: result.package,
+        ...(result.activation_error !== undefined
+          ? { activation_error: result.activation_error }
+          : {}),
+      });
     },
   );
 

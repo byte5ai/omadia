@@ -207,6 +207,65 @@ function liftErrored(current: InstalledAgent): InstalledAgent {
   return next;
 }
 
+/**
+ * #1452 — "the activation did not take", written down once.
+ *
+ * Every seam that activates a plugin on an operator's behalf (install,
+ * config-save reactivation, post-ingest update) owes the registry the same two
+ * writes, and all three had their own copy of them:
+ *
+ *  1. `markActivationFailed` records WHY and feeds `retryErroredPlugins`. It
+ *     does not flip the status on its own — `CIRCUIT_BREAKER_THRESHOLD` is 3,
+ *     which is right for a boot loop retrying a transient failure and wrong
+ *     for an action the operator just took and is watching: that is one
+ *     definitive event, not the first of three strikes. So the status is set
+ *     explicitly, and only when the entry still reads `active` (the threshold
+ *     may already have done it).
+ *  2. The entry's existing `unresolved_requires` is forwarded, because
+ *     `markActivationFailed` reads an omitted list as "clear it". Wiping it
+ *     strands the plugin: `retryErroredPlugins`' capability path reads exactly
+ *     that list to auto-reset the plugin once the missing provider arrives.
+ *
+ * No-op for an id the registry does not hold — same contract as the registry
+ * methods it calls. Throws only what the registry throws; callers that must
+ * not fail over a registry write (the upload path) keep their own try/catch.
+ */
+export async function recordActivationFailure(
+  registry: InstalledRegistry,
+  id: AgentId,
+  error: string,
+): Promise<void> {
+  const pending = registry.get(id)?.unresolved_requires;
+  await registry.markActivationFailed(id, error, pending);
+  const entry = registry.get(id);
+  if (entry && entry.status === 'active') {
+    await registry.register({ ...entry, status: 'errored' });
+  }
+}
+
+/**
+ * #1452 — "the plugin is running", written down once. Counterpart of
+ * {@link recordActivationFailure}.
+ *
+ * Order matters: `clearActivationError` lifts `errored` → `active` and drops
+ * the error fields, `markActivationSucceeded` then stamps `last_activated_at`
+ * (which `readiness.verified_at` is derived from). `markActivationSucceeded`
+ * deliberately does not lift `errored` on its own, so a plugin that comes back
+ * up after the operator installed a fixed version needs both — or the update
+ * would appear not to have worked.
+ *
+ * Only call this where "the activation returned" really means "the plugin is
+ * running": a seam whose activate path can return without having activated
+ * must check that first, or this writes a lie.
+ */
+export async function recordActivationSuccess(
+  registry: InstalledRegistry,
+  id: AgentId,
+): Promise<void> {
+  await registry.clearActivationError(id);
+  await registry.markActivationSucceeded(id);
+}
+
 export class InMemoryInstalledRegistry implements InstalledRegistry {
   private readonly agents = new Map<AgentId, InstalledAgent>();
 

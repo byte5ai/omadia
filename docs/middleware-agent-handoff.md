@@ -2410,7 +2410,22 @@ hinterlässt das Plugin als `errored` in der Registry. Letzteres ist der
 Produktionsfall, denn `installService.reactivate` wirft bei einem
 Aktivierungsfehler nie, sondern ruft `markActivationFailed`, setzt `errored` und
 kehrt zurück; ein erfolgreicher Rebuild hebt `errored` über
-`clearActivationError` wieder auf. Ein erneutes Speichern **desselben**
+`clearActivationError` wieder auf. Seit #1452 ist dieses Paar nicht mehr pro
+Aufrufstelle kopiert, sondern lebt als `recordActivationFailure` /
+`recordActivationSuccess` in `plugins/installedRegistry.ts`; benutzt wird es
+von `installService.completeInstall`, `installService.reactivate`, dem
+Upload-Seam (`PackageUploadService.ingest` → `onPackageReady`) und
+`channelRegistry.activate`. `recordActivationFailure` gibt die vorhandene
+`unresolved_requires`-Liste weiter, weil ein weggelassenes Argument sie löscht
+und `bootstrap.retryErroredPlugins` genau diese Liste braucht, um ein Plugin
+nach dem Nachinstallieren des Providers automatisch zurückzusetzen. Der
+Upload-Seam entscheidet über `shouldReactivate` selbst, ob reaktiviert wird
+(`active`, oder `errored` unterhalb von `CIRCUIT_BREAKER_THRESHOLD`; `inactive`,
+geblockt/gelatcht und nicht installiert nicht) — ein zweites Gate im Host-Hook
+würde die Erfolgsbuchung dort zur Lüge machen. Wer `onPackageReady` erweitert,
+muss deshalb werfen statt früh zurückzukehren, wenn nicht wirklich aktiviert
+wurde; der Channel- und der Agent-Zweig prüfen dafür `isActive` bzw. den
+`DomainTool`-Rückgabewert nach. Ein erneutes Speichern **desselben**
 Providers (der Retry-Button nach der Fehlermeldung) ist keine effektive
 Änderung, baut aber jedes abhängige Plugin neu, das noch `errored` ist
 (`providerWritten` im Helper, gesetzt, sobald der Write `llm_provider` enthält);
