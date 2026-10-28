@@ -3279,6 +3279,73 @@ laufender DB gezeigt und liest dann die authentifizierte Vault-Status-Route.
 `_lib/runtimeReadiness.ts` der Zustand `database_unavailable`. Dashboard-Karten
 ohne Daten zeigen „Status nicht abrufbar“ statt ihres Leerzustands.
 
+### Versions-Wechsel eines Plugin-Pakets: Richtung, Downgrade-Gate, Rollback-Kopie (#1455)
+
+`PackageUploadService.ingest` ist der einzige Weg, auf dem ein Plugin-Paket auf
+die Platte kommt (ZIP-Upload, Hub-Install, Builder-Install, Dependency-Chain,
+Profile-Bundle). Bis #1455 hatte die Pipeline genau **eine** Versionsprüfung —
+Gleichheit (`package.duplicate_version`) —, also lief eine ältere Version durch
+denselben Pfad wie eine neuere: `onMigrate` lief, der `onPackageReady`-Hook
+tauschte die laufende Instanz, und der Ordner der ersetzten Version wurde
+gelöscht. Antwort und Log nannten keine Richtung.
+
+**Richtung.** `plugins/versionDirection.ts` (`versionDirection(from, to)` →
+`'upgrade' | 'downgrade' | null`) vergleicht über `update/semver.ts` —
+derselbe Komparator wie der Self-Update-Pfad, kein dritter daneben. `null`
+heißt „keine Richtung“: Erst-Upload oder gleiche Präzedenz (identischer String
+oder Unterschied nur in Build-Metadaten, semver §10). Prerelease-Ordnung nach
+§11: `1.0.0-rc.1 → 1.0.0` ist ein Upgrade, umgekehrt ein Downgrade.
+
+**Gate.** Sortiert die neue Version **unter** der im Store stehenden, antwortet
+der Ingest `package.downgrade_blocked` mit
+`params: { pluginId, fromVersion, toVersion }`. Verglichen wird gegen den
+**Store-Eintrag**, nicht gegen die Installed-Registry: der Store hält eine
+Version pro Plugin, und genau dieses Paket würde der Ingest ersetzen und
+löschen. Die Absage ist vollständig — Store-Index, Ordner und laufende Instanz
+bleiben unberührt, es läuft keine Migration.
+
+**Zustimmung.** `allowDowngrade` auf `IngestInput`:
+`POST /api/v1/install/registry/:id?version=X&allow_downgrade=1` (Query) und
+`POST /api/v1/install/packages/upload` mit Multipart-Feld `allow_downgrade`
+(Query ebenfalls akzeptiert). Beide lesen über `http/requestFlags.ts`
+(`isTruthyFlag`), damit die akzeptierten Schreibweisen nicht auseinanderlaufen.
+Der Profile-Bundle-Import setzt die Zustimmung selbst (ein Bundle pinnt exakte
+Versionen) und loggt den Tausch. Die Store-UI zeigt die Absage lokalisiert
+(`store.upload.errors.downgradeBlocked`) und bietet „Ältere Version trotzdem
+installieren“ an, das dasselbe ZIP mit `allow_downgrade=1` erneut schickt.
+
+**HTTP-Status.** 409 auf beiden Routen — das Paket ist in Ordnung, der Zustand
+dieses Hosts sagt nein (gleiche Klasse wie `duplicate_version`,
+`id_conflict_bundled`, `incompatible_core`). Der Doc-Kommentar der Hub-Route
+behauptet nicht länger, sie aktiviere nie: über `onPackageReady` tut sie das,
+und genau daran war der Tausch unsichtbar.
+
+**Richtung in Antwort und Log.** Beide Routen liefern bei einem Versionstausch
+`direction`; das Ingest-Log trägt `[downgrade]`, das Migrations-Log
+`v0.2.1 → v0.2.0 (downgrade)`. `onMigrate` läuft weiterhin bei jedem
+Versions**wechsel**, bei einem bestätigten Downgrade also mit `fromVersion`
+über `toVersion`.
+
+**Rollback-Kopie.** Die ersetzte Version wird nicht mehr vor der Aktivierung
+gelöscht, sondern nach `<packagesDir>/<id>/.retired-<version>/` verschoben
+(`RETIRED_DIR_PREFIX`, `pruneRetiredPackageDirs` in `uploadedPackageStore.ts`)
+und erst nach einem fehlerfreien `onPackageReady` entfernt — bzw. sofort, wenn
+nichts aktiviert wurde (`index.ts` steigt früh aus, wenn die Registry das Plugin
+nicht `active` führt): dann gab es keine laufende Instanz zu schützen. Scheitert
+die Aktivierung (die Antwort trägt dann `activation_error`, #1452), bleibt der
+Ordner liegen und das Log nennt den Pfad. Pro Plugin bleibt **eine** Kopie: die vorige
+wird beim nächsten Tausch und bei `DELETE /packages/:id` gelöscht. Kein
+Side-by-Side: der Store-Index zeigt weiter auf genau eine Version, und der
+Katalog wird aus diesem Index gespeist (`index.ts` → `extraSources`), nicht aus
+einem Verzeichnis-Scan — ein `.retired-*`-Ordner kann also kein Plugin
+wiederbeleben.
+
+**Dependency-Chain.** `dependencyChainResolver` zieht die *latest*-Version eines
+Parents. Ist lokal eine neuere vorhanden, sagt der Ingest ab; der Resolver
+behandelt das wie bisher (Katalog löst auf → „schon vorhanden“, sonst
+`DependencyChainError` mit dem Ingest-Code). Ein Parent wird damit nicht unter
+einem installierten Child zurückgerollt.
+
 ## 4. Migration Managed Agents → Lokal
 
 ### Warum migriert
@@ -5170,7 +5237,10 @@ ein Update auf ein beliebiges Release-Tag anstoßen. Offen:
   (`routes/adminUpdate.ts`) lehnt nur das laufende Release ab, der Sidecar
   (`config.mjs`, `TAG_RE`) prüft nur die Form des Tags. Ein
   „nicht älter als laufend“-Gate (mit ausdrücklichem Operator-Override für echte
-  Rollbacks) fehlt.
+  Rollbacks) fehlt. Für **Plugin-Pakete** existiert dieses Gate seit #1455
+  (`package.downgrade_blocked` + `allow_downgrade`, siehe §3); der Host-Updater
+  ist das offene Gegenstück und könnte `plugins/versionDirection.ts`
+  weiterverwenden.
 - **Control-Plane-Hostnamen im Plugin-Egress sperren.**
   `extractOutboundAllowlist` (`platform/pluginContext.ts`) nimmt jeden String als
   Host an, und die Static-Allow-List-Modi von `ctx.http` vertrauen benannten Hosts

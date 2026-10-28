@@ -153,8 +153,14 @@ const BUNDLE_BASENAME_ALLOWLIST: ReadonlySet<string> = new Set(['plugins.lock'])
 export class ProfileBundleImporter {
   constructor(private readonly deps: ImporterDeps) {}
 
+  /** Injected sink when there is one, console otherwise. A getter rather than
+   *  a per-method `??` chain — two methods log, and they must not drift. */
+  private get log(): (msg: string) => void {
+    return this.deps.log ?? ((m) => console.log(m));
+  }
+
   async import(input: ImportProfileBundleInput): Promise<ImportResult> {
-    const log = this.deps.log ?? ((m) => console.log(m));
+    const log = this.log;
     const maxBytes = this.deps.maxBytes ?? DEFAULT_MAX_BYTES;
 
     if (input.fileBuffer.byteLength > maxBytes) {
@@ -391,11 +397,23 @@ export class ProfileBundleImporter {
           },
         };
       }
+      // #1455 — a bundle pins an exact version, and that pin can be older
+      // than the version this host happens to have installed. The pin is the
+      // operator's stated intent (they chose this bundle), so the import
+      // carries the downgrade consent instead of failing on the ingest guard.
+      // Logged, because the swap is otherwise invisible in an import that
+      // touches several plugins.
+      if (existing && existing.version !== pin.version) {
+        this.log(
+          `[bundle] vendored ${pin.id}: ${existing.version} → ${pin.version} (bundle pin)`,
+        );
+      }
       const ingestResult = await this.deps.uploadService.ingest({
         fileBuffer: buf,
         originalFilename: `${pin.id}-${pin.version}.zip`,
         uploadedBy,
         sha256: pin.sha256,
+        allowDowngrade: true,
       });
       if (!ingestResult.ok) {
         return fail(

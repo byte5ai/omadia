@@ -438,6 +438,30 @@ describe('installDraft (B.6-1 orchestrator)', () => {
     assert.equal(result.code, 'package.duplicate_version');
   });
 
+  // #1455 — a builder install normally bumps the patch, but `spec.version` is
+  // operator-editable, so an older version can reach the ingest. The refusal is
+  // the operator's to fix (409), not a pipeline fault (500).
+  it('conflict ingest code → reason conflict (downgrade_blocked)', async () => {
+    const pipeline = makeFakePipeline({ store: h.store });
+    const ingest = makeFakeIngest({
+      failCode: 'package.downgrade_blocked',
+      failMessage: 'Version 0.1.0 ist älter als die installierte Version 0.2.0.',
+    });
+    const result = await installDraft(
+      { userEmail: h.userEmail, draftId: h.draftId },
+      {
+        draftStore: h.store,
+        buildPipeline: pipeline.pipeline,
+        packageUploadService: ingest.service,
+        log: () => {},
+      },
+    );
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.equal(result.reason, 'conflict');
+    assert.equal(result.code, 'package.downgrade_blocked');
+  });
+
   it('too_large ingest code → reason too_large', async () => {
     const pipeline = makeFakePipeline({ store: h.store });
     const ingest = makeFakeIngest({

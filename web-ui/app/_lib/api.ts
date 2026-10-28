@@ -974,11 +974,18 @@ export async function getInstallJob(jobId: string): Promise<InstallJob> {
  */
 export async function uploadPackage(
   file: File,
-  opts: { signal?: AbortSignal; onProgress?: (loaded: number, total: number) => void } = {},
+  opts: {
+    signal?: AbortSignal;
+    onProgress?: (loaded: number, total: number) => void;
+    /** #1455 — confirm replacing the installed version with an older one.
+     *  Without it the route answers 409 `package.downgrade_blocked`. */
+    allowDowngrade?: boolean;
+  } = {},
 ): Promise<UploadPackageResponse> {
   const forwarded = await forwardCookieHeader();
   const form = new FormData();
   form.append('file', file, file.name);
+  if (opts.allowDowngrade === true) form.append('allow_downgrade', '1');
 
   // fetch() has no upload-progress in the browser; XHR is the only path that
   // exposes xhr.upload.onprogress. We fall back to fetch() in non-DOM

@@ -9,6 +9,10 @@ import {
 } from '@omadia/plugin-api';
 
 import { findUnscannableSegment } from '../services/pluginScanner.js';
+import {
+  versionDirection,
+  type VersionChangeDirection,
+} from './versionDirection.js';
 import { checkCoreCompat } from './coreCompat.js';
 import {
   CIRCUIT_BREAKER_THRESHOLD,
@@ -19,10 +23,10 @@ import {
 import type { PluginCatalog } from './manifestLoader.js';
 import { loadManifestFromPath } from './manifestLoader.js';
 import type { MigrationRunner } from './migrationRunner.js';
-import type {
-  UploadedPackageStore} from './uploadedPackageStore.js';
 import {
+  retirePackageDir,
   type UploadedPackage,
+  type UploadedPackageStore,
 } from './uploadedPackageStore.js';
 import { extractZipToDir, ZipExtractionError } from './zipExtractor.js';
 import {
@@ -45,6 +49,17 @@ export interface IngestInput {
   uploadedBy: string;
   /** SHA-256 of the supplied buffer; computed when not provided. */
   sha256?: string;
+  /**
+   * #1455 — the caller's explicit consent to install a version that is OLDER
+   * than the one currently in the store. Absent or false, such an ingest is
+   * refused with `package.downgrade_blocked`.
+   *
+   * A request flag rather than an env var (unlike the bundled-id override at
+   * `ALLOW_BUNDLED_ID_OVERRIDE`): a downgrade harms nothing but the operator's
+   * own running plugin, and the decision belongs to whoever is pressing the
+   * button — it is a confirmation, not a privilege.
+   */
+  allowDowngrade?: boolean;
 }
 
 export interface IngestSuccess {
@@ -52,6 +67,10 @@ export interface IngestSuccess {
   package: UploadedPackage;
   plugin_id: string;
   version: string;
+  /** #1455 — set only when this ingest replaced another version of the same
+   *  plugin, so a caller can report the swap in the direction it happened.
+   *  Absent on a first upload. */
+  direction?: VersionChangeDirection;
   /**
    * #1452 — the `onPackageReady` hook threw: the package is ingested, the
    * plugin is NOT running, and this is why. The registry entry has been
@@ -80,6 +99,23 @@ export interface IngestFailure {
 }
 
 export type IngestResult = IngestSuccess | IngestFailure;
+
+/**
+ * Refusals that are about the STATE of this host rather than about the package:
+ * the zip is well-formed and the request answerable, but an id is taken or a
+ * version already sits there. Routes answer these 409, which is why the set
+ * lives with the codes rather than in each route (#1455 added the fourth one
+ * and had to touch three places to do it).
+ *
+ * `package.incompatible_core` is deliberately absent: the builder maps it to a
+ * reason of its own, and merging the two would change that route's status.
+ */
+export const INGEST_CONFLICT_CODES: ReadonlySet<string> = new Set([
+  'package.id_conflict_builtin',
+  'package.id_conflict_bundled',
+  'package.duplicate_version',
+  'package.downgrade_blocked',
+]);
 
 export interface PackageUploadServiceDeps {
   store: UploadedPackageStore;
@@ -399,12 +435,53 @@ export class PackageUploadService {
         );
       }
 
+      // --- 9a. Version direction (#1455) -----------------------------------
+      // The equality check above used to be the ONLY version check in this
+      // pipeline, which made "newer" and "older" the same code path: the
+      // migration below ran, `onPackageReady` swapped the running instance,
+      // and the replaced package folder was deleted — with nothing in the
+      // response or the log naming a direction. An older version arriving for
+      // a plugin that is already installed is an operator slip far more often
+      // than an intent (a stale `?version=` on the Hub route, a stale zip), so
+      // it has to be asked for rather than assumed.
+      //
+      // The comparison is against the STORE entry, not against the installed
+      // registry: the store holds one version per plugin, and that is the
+      // package this ingest is about to replace and delete — whether or not a
+      // runtime instance happens to be running on it.
+      const direction: VersionChangeDirection | null = existingUploaded
+        ? versionDirection(existingUploaded.version, plugin.version)
+        : null;
+      if (
+        existingUploaded &&
+        direction === 'downgrade' &&
+        input.allowDowngrade !== true
+      ) {
+        return fail(
+          'package.downgrade_blocked',
+          `Version ${plugin.version} von ${plugin.id} ist älter als die installierte Version ${existingUploaded.version}. ` +
+            'Ein Downgrade tauscht die laufende Instanz aus — es muss ausdrücklich bestätigt werden ' +
+            '(allow_downgrade).',
+          undefined,
+          {
+            pluginId: plugin.id,
+            fromVersion: existingUploaded.version,
+            toVersion: plugin.version,
+          },
+        );
+      }
+
       // --- 9b. Migration-Hook (onMigrate) ----------------------------------
-      // Only runs on a genuine version upgrade of an agent already installed
-      // in the registry. Fresh uploads (no registry entry) or re-uploads of
-      // the same version (caught above) do not trigger migration. The hook
-      // runs BEFORE the packages are swapped — if it throws, v1 stays
-      // unchanged and the upload is rejected.
+      // Runs on a version CHANGE of an agent already installed in the
+      // registry. Fresh uploads (no registry entry) or re-uploads of the same
+      // version (caught above) do not trigger migration. The hook runs BEFORE
+      // the packages are swapped — if it throws, v1 stays unchanged and the
+      // upload is rejected.
+      //
+      // #1455 — a change, not strictly an upgrade: a confirmed downgrade runs
+      // the hook too, with `fromVersion` above `toVersion`. The direction is
+      // in the log line the runner writes, and a plugin that needs to tell the
+      // two apart can compare the versions its `onMigrate` is handed.
       const installedBefore = this.deps.registry?.get(plugin.id);
       const shouldMigrate =
         !!existingUploaded && !!installedBefore && existingUploaded.version !== plugin.version;
@@ -477,13 +554,18 @@ export class PackageUploadService {
         file_count: fileCount,
       };
 
-      // If there was a previous upload with a different version, remove the
-      // old folder. A side-by-side layout is only permitted once a
-      // version-switching UI exists.
+      // #1455 — retire the replaced version instead of deleting it here. This
+      // used to be an `fs.rm`, several steps BEFORE `onPackageReady` activates
+      // the new version, so a swap whose activation failed left the operator
+      // with no package to go back to (the swallowed activation error itself
+      // is #1452). The copy is removed once activation has succeeded, so this
+      // is not the side-by-side layout the old comment ruled out: the store
+      // index still points at exactly one version per plugin, and the catalog
+      // is built from that index rather than from a directory scan.
+      let retired: { dir: string; version: string } | null = null;
       if (existingUploaded && existingUploaded.path !== finalDir) {
-        await fs
-          .rm(existingUploaded.path, { recursive: true, force: true })
-          .catch(() => {});
+        const dir = await retirePackageDir(existingUploaded, log);
+        if (dir !== null) retired = { dir, version: existingUploaded.version };
       }
 
       await this.deps.store.register(pkgRecord);
@@ -505,8 +587,11 @@ export class PackageUploadService {
         );
       }
 
+      // #1455 — the direction tag is independent of `[migrated]`: a downgrade
+      // onto a package that is uploaded but not installed runs no migration
+      // and would otherwise leave no trace in the log at all.
       log(
-        `[upload] ingest OK id=${plugin.id} version=${plugin.version} sha256=${sha256.slice(0, 12)} peers_missing=${peersMissing.length}${migratedConfig !== null ? ' [migrated]' : ''}`,
+        `[upload] ingest OK id=${plugin.id} version=${plugin.version} sha256=${sha256.slice(0, 12)} peers_missing=${peersMissing.length}${direction === 'downgrade' ? ' [downgrade]' : ''}${migratedConfig !== null ? ' [migrated]' : ''}`,
       );
 
       // Advisory code scan (issue #453) — fire-and-forget AFTER the package
@@ -566,11 +651,28 @@ export class PackageUploadService {
         }
       }
 
+      // #1455 — the retired copy has served its purpose once the new version
+      // is up. It is kept on a failed activation, and its path is logged
+      // because it is the way back: that folder holds the complete previous
+      // package, so zipping it and uploading it again restores what was
+      // running — with `allow_downgrade`, since going back is itself a
+      // downgrade.
+      if (retired !== null) {
+        if (activationError !== undefined) {
+          log(
+            `[upload] ${plugin.id}: new version did not activate — previous version ${retired.version} kept at ${retired.dir} (re-upload that folder with allow_downgrade to go back)`,
+          );
+        } else {
+          await fs.rm(retired.dir, { recursive: true, force: true }).catch(() => {});
+        }
+      }
+
       return {
         ok: true,
         package: pkgRecord,
         plugin_id: plugin.id,
         version: plugin.version,
+        ...(direction !== null ? { direction } : {}),
         ...(activationError !== undefined
           ? { activation_error: activationError }
           : {}),

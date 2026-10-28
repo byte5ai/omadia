@@ -276,6 +276,49 @@ unchanged. No middleware behaviour changed — `/p/<id>/ui/*` keeps its JSON 404
 `middleware/test/pluginUiStaticServing.test.ts`, including the
 installed-without-`ui/` case.
 
+### Fixed — installing an older plugin version is refused instead of silently downgrading (#1455)
+
+2026-10-27. `POST /api/v1/install/registry/:id?version=<older>` and an older
+ZIP through `POST /api/v1/install/packages/upload` replaced a running plugin
+with a version below the installed one: the migration ran, `onPackageReady`
+swapped the live instance, the replaced package folder was deleted, and the
+response and log read exactly like an update. `PackageUploadService.ingest`
+had one version check — equality (`package.duplicate_version`) — so "newer"
+and "older" were the same code path.
+
+- **New refusal `package.downgrade_blocked` (HTTP 409)** with
+  `params: { pluginId, fromVersion, toVersion }`, rendered in the operator's
+  locale by the store UI (`store.upload.errors.downgradeBlocked`, en + de).
+  The refusal is total: the installed version keeps its store entry, its
+  folder and its running instance.
+- **Explicit consent to downgrade:** `allowDowngrade` on `IngestInput`, taken
+  from `?allow_downgrade=1` on the Hub route and from the `allow_downgrade`
+  multipart field (or query) on the upload route. Profile-bundle imports set
+  it themselves — a bundle pins an exact version, which is the operator's
+  stated intent — and log the swap.
+- **Direction is named** everywhere a version change is reported: the Hub
+  route answers `direction: "upgrade" | "downgrade"`, the ingest log line
+  carries `[downgrade]`, and the migration log reads
+  `v0.2.1 → v0.2.0 (downgrade)` instead of a bare arrow. New
+  `plugins/versionDirection.ts` compares with the existing `update/semver.ts`
+  (semver §11 prerelease ordering: `1.0.0-rc.1 → 1.0.0` is an upgrade, the
+  reverse a downgrade) rather than adding a third comparator.
+- **A replaced version is no longer deleted before the new one activates.**
+  It is moved to `<packagesDir>/<id>/.retired-<version>/` and removed only
+  after `onPackageReady` returns cleanly (or at once when nothing activated —
+  no live instance, nothing to protect); when activation throws, the response
+  carries `activation_error` (#1452) and the copy stays, its path logged as
+  the way back. At most one
+  retired copy per plugin — earlier ones are pruned on the next swap and on
+  `DELETE /packages/:id`, so peak disk per plugin doubles at most. The store
+  index still points at exactly one version, and the catalog is built from
+  that index, so a retired folder cannot resurrect a plugin.
+
+Chain installs keep their "already on disk" fallback, but a refused parent
+downgrade now surfaces as a chain error instead of rolling a parent back under
+an installed child. The Hub route's doc comment no longer claims it never
+activates — through `onPackageReady` it does, which is what made this silent.
+
 ### Changed — an unconfirmed answer no longer carries a "Hinweis" paragraph
 
 2026-10-16. In `enforce` mode an answer whose claims the verifier could not

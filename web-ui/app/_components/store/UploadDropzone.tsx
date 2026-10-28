@@ -14,7 +14,9 @@ type UploadState =
   | { kind: 'idle' }
   | { kind: 'uploading'; filename: string; loaded: number; total: number }
   | { kind: 'success'; pkg: UploadedPackage; activationError?: string }
-  | { kind: 'error'; code: string; message: string };
+  // #1455 — `downgrade` carries the refused file back, so the operator can
+  // confirm without picking the same zip a second time.
+  | { kind: 'error'; code: string; message: string; downgrade?: File };
 
 const ACCEPTED_MIME = 'application/zip,application/x-zip-compressed,.zip';
 
@@ -28,7 +30,7 @@ export function UploadDropzone(): React.ReactElement {
   const router = useRouter();
 
   const handleFile = useCallback(
-    async (file: File) => {
+    async (file: File, allowDowngrade = false) => {
       if (!file.name.toLowerCase().endsWith('.zip')) {
         setState({
           kind: 'error',
@@ -54,6 +56,7 @@ export function UploadDropzone(): React.ReactElement {
           onProgress: (loaded, total) => {
             setState({ kind: 'uploading', filename: file.name, loaded, total });
           },
+          ...(allowDowngrade ? { allowDowngrade: true } : {}),
         });
         setState({
           kind: 'success',
@@ -78,6 +81,9 @@ export function UploadDropzone(): React.ReactElement {
               parsed.message ?? err.message,
               tErr,
             ),
+            // Only the downgrade refusal is retryable as-is: every other code
+            // means the zip itself has to change.
+            ...(code === 'package.downgrade_blocked' ? { downgrade: file } : {}),
           });
         } else {
           setState({
@@ -114,6 +120,10 @@ export function UploadDropzone(): React.ReactElement {
     abortRef.current?.abort();
     setState({ kind: 'idle' });
   }, []);
+
+  // #1455 — the zip a downgrade refusal sent back, narrowed once so the
+  // confirm handler closes over a `File` rather than over the state union.
+  const refusedDowngrade = state.kind === 'error' ? state.downgrade : undefined;
 
   return (
     <section
@@ -215,6 +225,13 @@ export function UploadDropzone(): React.ReactElement {
               code={state.code}
               message={state.message}
               onDismiss={reset}
+              {...(refusedDowngrade
+                ? {
+                    onConfirmDowngrade: () => {
+                      void handleFile(refusedDowngrade, true);
+                    },
+                  }
+                : {})}
             />
           )}
 
@@ -337,10 +354,14 @@ function ErrorRow({
   code,
   message,
   onDismiss,
+  onConfirmDowngrade,
 }: {
   code: string;
   message: string;
   onDismiss: () => void;
+  /** #1455 — present only for `package.downgrade_blocked`: re-sends the zip
+   *  that was refused, with the operator's consent. */
+  onConfirmDowngrade?: () => void;
 }): React.ReactElement {
   const t = useTranslations('store.upload');
   return (
@@ -353,14 +374,21 @@ function ErrorRow({
         </span>
       </div>
       <p className="mt-2 text-sm text-[color:var(--fg-strong)]">{message}</p>
-      {/* eslint-disable-next-line no-restricted-syntax -- inline text link (bare text, no border/bg) */}
-      <button
-        type="button"
-        onClick={onDismiss}
-        className="mt-3 text-[12px] text-[color:var(--fg-subtle)] hover:text-[color:var(--fg)]"
-      >
-        {t('reset')}
-      </button>
+      <div className="mt-3 flex flex-wrap items-center gap-3">
+        {onConfirmDowngrade && (
+          <Button variant="secondary" pill onClick={onConfirmDowngrade}>
+            {t('confirmDowngrade')}
+          </Button>
+        )}
+        {/* eslint-disable-next-line no-restricted-syntax -- inline text link (bare text, no border/bg) */}
+        <button
+          type="button"
+          onClick={onDismiss}
+          className="text-[12px] text-[color:var(--fg-subtle)] hover:text-[color:var(--fg)]"
+        >
+          {t('reset')}
+        </button>
+      </div>
     </div>
   );
 }

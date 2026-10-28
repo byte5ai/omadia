@@ -3,9 +3,13 @@ import type { Request, Response } from 'express';
 import multer from 'multer';
 
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
-import type { PackageUploadService } from '../plugins/packageUploadService.js';
+import {
+  INGEST_CONFLICT_CODES,
+  type PackageUploadService,
+} from '../plugins/packageUploadService.js';
 import type { UploadedPackageStore } from '../plugins/uploadedPackageStore.js';
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
+import { isTruthyFlag } from '../http/requestFlags.js';
 
 /**
  * Zip-upload endpoints for agent packages.
@@ -15,7 +19,7 @@ import type { InstalledRegistry } from '../plugins/installedRegistry.js';
  * router (endpoint absent → 404 instead of 503, so scrapers learn nothing).
  *
  * Endpoints:
- *   POST   /packages/upload      multipart file=<zip>
+ *   POST   /packages/upload      multipart file=<zip> [, allow_downgrade=1]
  *   GET    /packages             list uploaded
  *   DELETE /packages/:id         remove uploaded (reject if installed)
  */
@@ -92,10 +96,22 @@ export function createPackagesRouter(deps: PackagesRouterDeps): Router {
         .session;
       const uploadedBy = session?.email ?? 'unknown';
 
+      // #1455 — an older zip of an installed plugin is refused unless the
+      // operator confirms. The consent travels as a multipart text field (what
+      // the upload dialog sends alongside the file); a query parameter is
+      // accepted too, for curl. An EMPTY field is not consent — that is what a
+      // form sends when the operator left it alone — so only the query string
+      // may use the bare-flag spelling.
+      const allowDowngrade =
+        isTruthyFlag(
+          (req.body as Record<string, unknown> | undefined)?.['allow_downgrade'],
+        ) || isTruthyFlag(req.query['allow_downgrade'], { bareFlag: true });
+
       const result = await deps.service.ingest({
         fileBuffer: file.buffer,
         originalFilename: file.originalname,
         uploadedBy,
+        ...(allowDowngrade ? { allowDowngrade: true } : {}),
       });
 
       if (!result.ok) {
@@ -109,11 +125,15 @@ export function createPackagesRouter(deps: PackagesRouterDeps): Router {
         return;
       }
 
+      // #1455 — `direction` is present only when this upload replaced another
+      // version. It is here so a caller cannot mistake a downgrade for an
+      // update; the store dialog reports the refusal, not this field.
       // #1452 — `activation_error` present means the ZIP was ingested but the
       // re-activation of the running plugin threw; the registry entry has been
       // flipped to `errored` with the same message.
       res.status(201).json({
         package: result.package,
+        ...(result.direction !== undefined ? { direction: result.direction } : {}),
         ...(result.activation_error !== undefined
           ? { activation_error: result.activation_error }
           : {}),
@@ -166,6 +186,11 @@ export function createPackagesRouter(deps: PackagesRouterDeps): Router {
 }
 
 function mapIngestCodeToStatus(code: string): number {
+  // Host-state refusals (id taken, version already there, older version) come
+  // from one set shared with the Hub-install route — see
+  // `INGEST_CONFLICT_CODES`. `package.incompatible_core` is not in it but
+  // answers the same status, for the reason noted below.
+  if (INGEST_CONFLICT_CODES.has(code)) return 409;
   switch (code) {
     case 'package.too_large':
     case 'zip.file_too_large':
@@ -183,14 +208,10 @@ function mapIngestCodeToStatus(code: string): number {
     case 'zip.symlink':
     case 'zip.forbidden_extension':
       return 422;
-    // `package.id_conflict_bundled` (#789) belongs here rather than with the
-    // 422s: the zip is well-formed, the id is simply already taken by a
-    // package this image ships.
-    // `package.incompatible_core` likewise: a valid package whose compat.core
-    // range excludes this host's @omadia/plugin-api.
-    case 'package.id_conflict_builtin':
-    case 'package.id_conflict_bundled':
-    case 'package.duplicate_version':
+    // `package.incompatible_core` belongs with the conflicts rather than the
+    // 422s: a valid package whose compat.core range excludes this host's
+    // @omadia/plugin-api. It stays a case of its own because the builder route
+    // maps it to a reason of its own.
     case 'package.incompatible_core':
       return 409;
     default:

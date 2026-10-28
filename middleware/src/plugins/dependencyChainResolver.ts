@@ -101,6 +101,13 @@ export async function resolveDependencyParents(
       // A duplicate-version failure means the package is already on disk —
       // treat as present if the catalog now resolves it. Anything else is a
       // genuine ingest error.
+      //
+      // #1455 — this is also where a `package.downgrade_blocked` would land:
+      // the parent is absent from the catalog but a NEWER version of it sits
+      // in the upload store, and the registry's latest is older. The refusal
+      // is the right answer there (the chain must not quietly roll a parent
+      // back under an installed child), so it surfaces as a chain error with
+      // the pipeline's own code rather than being papered over here.
       if (deps.catalog.get(id)) return true;
       throw new DependencyChainError(res.code, res.message);
     }

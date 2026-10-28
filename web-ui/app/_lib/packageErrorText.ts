@@ -25,6 +25,12 @@ export const UPLOAD_ERRORS: Readonly<Record<string, readonly [string, readonly s
   'package.id_conflict_bundled': ['idConflictBundled', ['pluginId', 'overrideEnv']],
   'package.id_conflict_builtin': ['idConflictBuiltin', ['pluginId']],
   'package.duplicate_version': ['duplicateVersion', ['pluginId', 'version']],
+  // #1455 — an older version than the installed one, refused unless the
+  // operator confirms the downgrade.
+  'package.downgrade_blocked': [
+    'downgradeBlocked',
+    ['pluginId', 'fromVersion', 'toVersion'],
+  ],
   'upload.no_file': ['noFile', []],
 };
 

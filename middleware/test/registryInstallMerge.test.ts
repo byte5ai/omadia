@@ -605,6 +605,156 @@ describe('registry install router (C2)', () => {
     assert.equal(res.status, 422);
     assert.equal((await res.json() as Record<string, unknown>)['code'], 'package.id_conflict');
   });
+
+  // #1455 — `?version=` with a version older than the installed one is the
+  // route that silently downgraded a running plugin.
+  it('409 (not 422) with the params when ingest refuses a downgrade', async () => {
+    reset();
+    ingestResult = {
+      ok: false,
+      code: 'package.downgrade_blocked',
+      message: 'älter als die installierte Version',
+      params: {
+        pluginId: '@omadia/plugin-office',
+        fromVersion: '0.2.0',
+        toVersion: '0.1.0',
+      },
+    };
+    const res = await post(encodeURIComponent('@omadia/plugin-office'));
+    assert.equal(res.status, 409);
+    const body = (await res.json()) as Record<string, unknown>;
+    assert.equal(body['code'], 'package.downgrade_blocked');
+    assert.deepEqual(body['params'], {
+      pluginId: '@omadia/plugin-office',
+      fromVersion: '0.2.0',
+      toVersion: '0.1.0',
+    });
+    // Default is refusal: the route must not have asked for the override.
+    assert.equal(ingestCalls[0]!.allowDowngrade, undefined);
+  });
+
+  it('passes the operator consent through as allowDowngrade and reports the direction', async () => {
+    reset();
+    ingestResult = {
+      ok: true,
+      plugin_id: '@omadia/plugin-office',
+      version: '0.1.0',
+      direction: 'downgrade',
+      package: {} as never,
+    };
+    const res = await fetch(
+      `${base}/${encodeURIComponent('@omadia/plugin-office')}?version=0.1.0&allow_downgrade=1`,
+      { method: 'POST' },
+    );
+    assert.equal(res.status, 201);
+    assert.equal(ingestCalls[0]!.allowDowngrade, true);
+    // The response has to name the direction — a caller that sees only
+    // `{ok:true, version}` cannot tell a downgrade from an update.
+    assert.equal((await res.json() as Record<string, unknown>)['direction'], 'downgrade');
+  });
+});
+
+// #1455 — a refusal raised while resolving the target's depends_on parents used
+// to land on the catch-all 500 with the pipeline's code dropped. Driven through
+// the real resolver: the target ingests, its parent is refused, and the parent
+// does not turn up in the catalog afterwards.
+describe('registry install router · a refused depends_on parent', () => {
+  const PARENT = '@omadia/integration-parent';
+  const PARENT_ZIP = Buffer.from('PK\x03\x04 parent plugin zip');
+  const PARENT_SHA = createHash('sha256').update(PARENT_ZIP).digest('hex');
+
+  function parentEntry(): unknown {
+    return {
+      id: PARENT,
+      name: 'Parent',
+      kind: 'integration',
+      domain: 'x.y',
+      description: '',
+      categories: [],
+      authors: [{ name: 'byte5' }],
+      license: 'MIT',
+      icon_url: null,
+      latest_version: '0.1.0',
+      versions: [
+        {
+          version: '0.1.0',
+          compat_core: '>=1.0 <2.0',
+          sha256: PARENT_SHA,
+          size_bytes: PARENT_ZIP.byteLength,
+          download_url: `${HUB}/registry/parent/0.1.0/plugin.zip`,
+          published_at: '2026-05-29T11:00:00Z',
+          manifest_summary: { provides: [], requires: [] },
+        },
+      ],
+    };
+  }
+
+  it('answers 409 with the ingest code instead of 500', async () => {
+    const ingested: string[] = [];
+    const client = new RegistryClient({
+      registries: [{ name: 'omadia-public', url: HUB }],
+      log: () => {},
+      fetchImpl: mockFetch({
+        [`${HUB}/registry/index.json`]: () => new Response(indexJson([parentEntry()])),
+        [`${HUB}/registry/@omadia/plugin-office/0.1.0/plugin.zip`]: () => new Response(ZIP),
+        [`${HUB}/registry/parent/0.1.0/plugin.zip`]: () => new Response(PARENT_ZIP),
+      }),
+    });
+
+    const packageUpload = {
+      ingest: async (input: IngestInput): Promise<IngestResult> => {
+        // First call is the target, which succeeds; the parent that follows is
+        // the one a newer local copy makes un-ingestable.
+        if (input.fileBuffer.equals(ZIP)) {
+          ingested.push('target');
+          return {
+            ok: true,
+            plugin_id: '@omadia/plugin-office',
+            version: '0.1.0',
+            package: {} as never,
+          };
+        }
+        ingested.push('parent');
+        return {
+          ok: false,
+          code: 'package.downgrade_blocked',
+          message: `Version 0.1.0 von ${PARENT} ist älter als die installierte Version 0.2.0.`,
+          params: { pluginId: PARENT, fromVersion: '0.2.0', toVersion: '0.1.0' },
+        };
+      },
+    } as unknown as PackageUploadService;
+
+    const app = express();
+    app.use(express.json());
+    app.use(
+      '/install/registry',
+      createRegistryInstallRouter({
+        client,
+        packageUpload,
+        // The target is in the catalog with an unmet parent; the parent is not,
+        // and a refused ingest never puts it there.
+        catalog: fakeCatalog([
+          plugin('@omadia/plugin-office', { depends_on: [PARENT] }),
+        ]),
+        registry: fakeRegistry,
+      }),
+    );
+    const server = await listenLoopback(app);
+    const base = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}/install/registry`;
+    try {
+      const res = await fetch(`${base}/${encodeURIComponent('@omadia/plugin-office')}`, {
+        method: 'POST',
+      });
+      assert.deepEqual(ingested, ['target', 'parent']);
+      assert.equal(res.status, 409);
+      assert.equal(
+        (await res.json() as Record<string, unknown>)['code'],
+        'package.downgrade_blocked',
+      );
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
 });
 
 describe('registry install router · no registries configured', () => {

@@ -1,4 +1,4 @@
-import { promises as fs } from 'node:fs';
+import { promises as fs, type Dirent } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 
@@ -9,12 +9,43 @@ import path from 'node:path';
  *   <UPLOADED_PACKAGES_DIR>/
  *     index.json                       { version: 1, packages: Record<id, UploadedPackage> }
  *     <plugin-id>/<version>/           extracted package contents (manifest.yaml, dist/, …)
+ *     <plugin-id>/.retired-<version>/  #1455 — the version a swap replaced, kept
+ *                                      until the new one has activated
  *     .staging/<uuid>/                 staging during validation — renamed away on success
  *
  * The store is `register()`-write-only from the upload flow; reads happen
  * during the manifest-catalog merge and the UI list call. Atomic writes via
  * tmpfile + rename — mirrors the pattern in fileInstalledRegistry.
  */
+
+/**
+ * #1455 — prefix of the folder a replaced version is moved to instead of being
+ * deleted outright. Dot-prefixed on purpose: the catalog is fed from this
+ * store's index (`index.ts` → `extraSources`), never from a directory scan, and
+ * the dot keeps the folder out of the way of any future scan as well.
+ */
+export const RETIRED_DIR_PREFIX: string = '.retired-';
+
+/**
+ * Remove every retired copy under `pluginDir`. Called before a new copy is
+ * laid down (at most one is kept per plugin) and when the package is deleted —
+ * otherwise an uninstall would leave an orphan nothing refers to, since the
+ * store index points only at the live version.
+ */
+export async function pruneRetiredPackageDirs(pluginDir: string): Promise<void> {
+  let entries: Dirent[];
+  try {
+    entries = await fs.readdir(pluginDir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith(RETIRED_DIR_PREFIX)) continue;
+    await fs
+      .rm(path.join(pluginDir, entry.name), { recursive: true, force: true })
+      .catch(() => {});
+  }
+}
 
 export interface UploadedPackage {
   id: string;
@@ -37,6 +68,42 @@ export interface UploadedPackage {
 interface StoreFile {
   version: 1;
   packages: Record<string, UploadedPackage>;
+}
+
+/**
+ * #1455 — move a replaced package out of the way instead of deleting it, and
+ * return where it went (null when the move failed, in which case the caller
+ * simply has no rollback copy — never a failed ingest: the replacement is
+ * already on disk at that point).
+ *
+ * At most one retired copy per plugin: any earlier one is pruned first, so a
+ * run of upgrades cannot fill the packages volume. Lives here rather than in
+ * the upload service because the layout it writes — `<id>/.retired-<version>`
+ * next to `<id>/<version>` — is this module's to define.
+ */
+export async function retirePackageDir(
+  replaced: UploadedPackage,
+  log: (msg: string) => void,
+): Promise<string | null> {
+  const pluginDir = path.dirname(replaced.path);
+  await pruneRetiredPackageDirs(pluginDir);
+  const target = path.join(
+    pluginDir,
+    `${RETIRED_DIR_PREFIX}${path.basename(replaced.path)}`,
+  );
+  try {
+    await fs.rename(replaced.path, target);
+    return target;
+  } catch (err) {
+    // The folder is usually simply gone (the typical re-upload case: the
+    // package was deleted and is being restored), which is nothing to fix.
+    // Logged either way: the alternative is an operator who believes a
+    // rollback copy exists because the feature promises one.
+    log(
+      `[upload] ${replaced.id}: no rollback copy — could not retire ${replaced.path}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return null;
+  }
 }
 
 export class UploadedPackageStore {
@@ -100,6 +167,8 @@ export class UploadedPackageStore {
     // Best-effort: remove the package dir. Errors are logged, but not thrown —
     // the registry entry is already gone.
     await fs.rm(pkg.path, { recursive: true, force: true }).catch(() => {});
+    // #1455 — and the retired sibling, which the index never pointed at.
+    await pruneRetiredPackageDirs(path.dirname(pkg.path));
     return true;
   }
 
