@@ -26,10 +26,17 @@ import {
 import { invoke } from './_helpers/httpInvoke.js';
 
 const PLUGIN_ID = 'proof-plugin';
+/**
+ * Installed, resolvable — and shipping no `ui/` directory at all. The second
+ * of the two cases the host page must refuse (#1454), and the common one:
+ * most plugins have no UI.
+ */
+const NO_UI_PLUGIN_ID = 'ui-less-plugin';
 const CONTENT_TYPE_FIXTURE_PREFIX = 'content-type-probe';
 
 let root: string;
 let packageRoot: string;
+let noUiPackageRoot: string;
 let app: Express;
 
 function fixtureBodyForExtension(ext: string): string | Uint8Array {
@@ -86,11 +93,20 @@ before(async () => {
   // A secret NEXT to the bundle: the thing traversal would be aiming at.
   await fs.writeFile(path.join(packageRoot, 'manifest.yaml'), 'schema_version: "1"\n');
 
+  // An installed plugin with a package root but no bundle in it.
+  noUiPackageRoot = path.join(root, 'packages', NO_UI_PLUGIN_ID, '1.0.0');
+  await fs.mkdir(noUiPackageRoot, { recursive: true });
+  await fs.writeFile(path.join(noUiPackageRoot, 'manifest.yaml'), 'schema_version: "1"\n');
+
   app = express();
   app.use(
     '/p',
     createPluginUiStaticRouter({
-      resolvePackageRoot: (id) => (id === PLUGIN_ID ? packageRoot : undefined),
+      resolvePackageRoot: (id) => {
+        if (id === PLUGIN_ID) return packageRoot;
+        if (id === NO_UI_PLUGIN_ID) return noUiPackageRoot;
+        return undefined;
+      },
     }),
   );
   // Anything the static router passes through must be visibly distinct from
@@ -382,5 +398,49 @@ describe('safeRelativePath', () => {
 
   it('rejects a malformed percent escape rather than guessing', () => {
     assert.equal(safeRelativePath('%zz'), null);
+  });
+});
+
+describe('plugin UI static serving — the host page probe contract (#1454)', () => {
+  /**
+   * `web-ui/app/_lib/pluginUiBundle.ts` asks this handler whether a plugin has
+   * a UI before the host page renders a frame for it, and it asks with `HEAD`.
+   * Express answers `HEAD` off the `router.get` registration — these tests pin
+   * that, because the web-ui side cannot: a mocked `fetch` would agree with
+   * whatever the mock was told, and the page would go back to painting
+   * `{"error":"plugin_ui_not_found"}` in its frame if this ever stopped
+   * answering.
+   */
+  it('answers HEAD on a served bundle entry with 200 and no body', async () => {
+    const res = await invoke(app, 'HEAD', `/p/${PLUGIN_ID}/ui/index.html`);
+    assert.equal(res.status, 200);
+    assert.equal(res.headers['content-type'], 'text/html; charset=utf-8');
+    assert.equal(res.text, '');
+  });
+
+  it('answers HEAD with 404 for an unknown plugin id', async () => {
+    const res = await invoke(app, 'HEAD', '/p/not-installed/ui/index.html');
+    assert.equal(res.status, 404);
+  });
+
+  it('answers 404 for an installed plugin that ships no ui/ directory', async () => {
+    // The case the issue was filed for: the plugin resolves, the bundle does
+    // not exist. GET and HEAD must agree on it.
+    const get = await invoke(app, 'GET', `/p/${NO_UI_PLUGIN_ID}/ui/index.html`);
+    assert.equal(get.status, 404);
+    assert.deepEqual(JSON.parse(get.text), { error: 'plugin_ui_not_found' });
+    const head = await invoke(app, 'HEAD', `/p/${NO_UI_PLUGIN_ID}/ui/index.html`);
+    assert.equal(head.status, 404);
+  });
+
+  it('answers a scoped id encoded as one segment, the way the probe sends it', async () => {
+    // `encodeURIComponent('@scope/name')` on both sides — the probe and the
+    // iframe `src`. A raw slash would split the id across two params.
+    const res = await invoke(
+      app,
+      'HEAD',
+      `/p/${encodeURIComponent('@omadia/not-installed')}/ui/index.html`,
+    );
+    assert.equal(res.status, 404);
   });
 });

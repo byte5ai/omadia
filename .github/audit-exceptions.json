@@ -1,14 +1,19 @@
 {
-  "$comment": "High or critical dependency advisories the CI audit leg accepts for a limited time: only advisories with no fixed release that reach a workspace through development tooling alone. The rules are in .github/scripts/audit-gate.mjs and docs/security-architecture.md section 4a.",
+  "$comment": "High or critical dependency advisories the CI audit leg accepts for a limited time: advisories with no fixed release that reach a workspace through development tooling alone (90 days at most), or, marked \"production\": true, advisories no release fixes for the major a production dependency pins (30 days at most). The rules are in .github/scripts/audit-gate.mjs and docs/security-architecture.md section 4a.",
   "exceptions": [
     {
-      "advisory": "GHSA-vfj7-8cjw-p6xm",
-      "package": "braces",
-      "workspaces": ["web-ui"],
-      "via": ["eslint-config-next"],
-      "reason": "Reached only through the lint configuration: eslint-config-next, @next/eslint-plugin-next, fast-glob (pinned 3.3.1 by the plugin, latest 16.3.8), micromatch, braces. It runs in `npm run lint` and expands the repository's own static glob patterns, never request or user input, and it is absent from the production tree. No braces release fixes the advisory yet (latest 3.0.3).",
-      "reviewed": "2026-10-04",
-      "expires": "2026-11-15"
+      "advisory": "GHSA-mrhx-c7xc-m3w5",
+      "package": "zod",
+      "workspaces": [
+        "middleware"
+      ],
+      "via": [
+        "botbuilder"
+      ],
+      "production": true,
+      "reason": "botbuilder 4.23.3 (latest; host-provided for the Teams channel plugin) and its botbuilder-core, botframework-connector and botframework-schema pin zod ^3.23.8, and the fix exists only in zod 4.6.6; forcing zod 4 makes botbuilder throw on load (z.object().nonstrict). The vulnerable code is the per-element issue accumulation of array schemas. Inbound Bot Framework requests reach zod only through CloudAdapter.process, which checks the body with z.record(z.unknown()) and never parses the array schemas in botframework-schema; the other parse calls validate configuration, sockets and callbacks, not request data. Remove this entry once botbuilder ships on zod 4.6.6 or later.",
+      "reviewed": "2026-10-28",
+      "expires": "2026-11-27"
     }
   ]
 }

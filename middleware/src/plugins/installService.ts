@@ -27,9 +27,11 @@ import {
   findActiveProviderCollision,
   walkCapabilityInstallChain,
 } from './capabilityResolver.js';
-import type {
-  InstalledAgent,
-  InstalledRegistry,
+import {
+  recordActivationFailure,
+  recordActivationSuccess,
+  type InstalledAgent,
+  type InstalledRegistry,
 } from './installedRegistry.js';
 import { checkCoreCompat } from './coreCompat.js';
 import { readGrantGap } from './grantGap.js';
@@ -487,20 +489,13 @@ export class InstallService {
           // registered: a green status over a plugin serving nothing, with the
           // only trace a console line. Correct it here.
           //
-          // Two writes, because they answer different questions.
-          // `markActivationFailed` records WHY and feeds
-          // `bootstrap.retryErroredPlugins`. It does not flip the status on its
-          // own — `CIRCUIT_BREAKER_THRESHOLD` is 3, which is right for a boot
-          // loop retrying a transient failure and wrong here: an install-time
-          // activation failure is a single definitive event an operator is
-          // watching, not the first of three strikes. So the status is set
-          // explicitly, and only when the entry still reads `active` (the
-          // threshold may already have done it).
-          await this.deps.registry.markActivationFailed(job.plugin_id, message);
-          const entry = this.deps.registry.get(job.plugin_id);
-          if (entry && entry.status === 'active') {
-            await this.deps.registry.register({ ...entry, status: 'errored' });
-          }
+          // Two writes, because they answer different questions — see
+          // `recordActivationFailure` (installedRegistry.ts), which owns the
+          // pair for every seam that activates on an operator's behalf: the
+          // reason via `markActivationFailed`, then the status explicitly,
+          // because `CIRCUIT_BREAKER_THRESHOLD` is 3 and an install-time
+          // failure is one definitive event, not the first of three strikes.
+          await recordActivationFailure(this.deps.registry, job.plugin_id, message);
         }
       }
 
@@ -708,22 +703,16 @@ export class InstallService {
         `[install] reactivate.onInstalled hook failed for ${agentId}:`,
         message,
       );
-      await this.deps.registry.markActivationFailed(agentId, message);
-      const failed = this.deps.registry.get(agentId);
-      if (failed && failed.status === 'active') {
-        await this.deps.registry.register({ ...failed, status: 'errored' });
-      }
+      await recordActivationFailure(this.deps.registry, agentId, message);
       await this.refreshInstalledJobs(agentId, message);
       return this.deps.registry.get(agentId)?.status;
     }
-    // Success. `markActivationSucceeded` clears the failure fields but
-    // deliberately does not lift `errored` — that is `clearActivationError`'s
-    // job — so both run, in that order: lift the circuit breaker, then stamp
-    // `last_activated_at`. A plugin that comes back up after the operator
-    // granted the missing permission must stop reading `errored`, or the
-    // consent flow would appear not to have worked.
-    await this.deps.registry.clearActivationError(agentId);
-    await this.deps.registry.markActivationSucceeded(agentId);
+    // Success. Both writes, in that order (see `recordActivationSuccess`):
+    // lift the circuit breaker, then stamp `last_activated_at`. A plugin that
+    // comes back up after the operator granted the missing permission must
+    // stop reading `errored`, or the consent flow would appear not to have
+    // worked.
+    await recordActivationSuccess(this.deps.registry, agentId);
     await this.refreshInstalledJobs(agentId, undefined);
     return this.deps.registry.get(agentId)?.status;
   }

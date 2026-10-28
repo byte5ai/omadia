@@ -7,7 +7,11 @@ import {
 import type { OrchestratorPersonaSkill } from '../orchestrator.js';
 import { DEFAULT_MODEL_POLICY, isModelRef, resolveModelPolicyRuntime } from './modelPolicy.js';
 import type { ModelPolicy, ModelRef } from '@omadia/plugin-api';
-import { resolveModelRef } from '@omadia/llm-provider';
+import {
+  isClassRef,
+  resolveModelRef,
+  UnresolvedModelRefError,
+} from '@omadia/llm-provider';
 
 /** #1033 W3 — the fallback as a concrete ref, or undefined for `none`. */
 function fallbackRefFor(
@@ -242,11 +246,18 @@ export function buildForAgent(
   // fallback are CLASS refs since the catalog went live-discovered — they go
   // through `resolveConfiguredModel`, which never lets a class ref reach the
   // wire (it falls back to the nearest served class instead).
+  // #1451 — the raw fallthrough above must never hand back a CLASS ref. It is
+  // right for an id the curated registry does not list (a custom vendor id, a
+  // bare CLI alias); `class:frontier` reaching an adapter is an opaque 404 on
+  // every turn. With a provider that serves no model at all every resolver
+  // returns undefined, so a tier reports "unresolved" instead of the ref.
+  const concrete = (id: string | undefined): string | undefined =>
+    id !== undefined && isClassRef(id) ? undefined : id;
   const activeProvider = deps.provider?.id;
   const resolveOverlay = (ref: string | undefined): string | undefined =>
-    (resolveModelIdForProvider(ref, activeProvider) ?? ref?.trim()) || undefined;
+    concrete((resolveModelIdForProvider(ref, activeProvider) ?? ref?.trim()) || undefined);
   const resolveConfigured = (ref: string | undefined): string | undefined =>
-    (resolveConfiguredModel(ref, activeProvider) ?? ref?.trim()) || undefined;
+    concrete((resolveConfiguredModel(ref, activeProvider) ?? ref?.trim()) || undefined);
 
   // Per-instance model resolution (issue #296 AC#2), three tiers:
   //   1. the Agent's `model_routing.main` (operator's per-Agent choice)
@@ -270,12 +281,33 @@ export function buildForAgent(
       `[registry] agent '${agent.slug}': model policy names provider '${policy.deferredProvider}' but the active provider is '${activeProvider ?? 'unknown'}' and no provider pool is wired — running the auto-resolved model`,
     );
   }
+  // #1451 — no `|| DEFAULT_ORCHESTRATOR_MODEL` tail: that default IS a class
+  // ref, so it used to be the very value that reached the wire when nothing
+  // resolved. An Agent with no servable model fails to build instead; the
+  // caller isolates the throw per Agent (T022) and the error names the ref,
+  // the provider and the Agent so the operator can fix the setting.
+  // `policy.model` goes through `concrete` too. A pinned primary is a concrete
+  // id by construction (write-time validation), so this changes nothing today
+  // — it is what keeps the guard TOTAL rather than true-by-luck for one tier.
   const model =
-    policy.model ||
+    concrete(policy.model) ||
     resolveOverlay(routing.model) ||
     resolveConfigured(runtime.model) ||
-    resolveConfigured(DEFAULT_ORCHESTRATOR_MODEL) ||
-    DEFAULT_ORCHESTRATOR_MODEL;
+    resolveConfigured(DEFAULT_ORCHESTRATOR_MODEL);
+  if (model === undefined) {
+    // Name the SETTING the operator edits, not a sentence: the error text
+    // reads `… — set <configKey> to a concrete model id of '<provider>'`.
+    const configKey =
+      routing.model?.trim()
+        ? `model_routing.main of agent '${agent.slug}'`
+        : 'ORCHESTRATOR_MODEL';
+    throw new UnresolvedModelRefError(
+      // The ref the operator would recognise as theirs.
+      routing.model?.trim() || runtime.model?.trim() || DEFAULT_ORCHESTRATOR_MODEL,
+      activeProvider ?? 'unknown',
+      configKey,
+    );
+  }
 
   // Resolve the per-turn routing sub-models the same way. Any sub-model that
   // does not resolve to the active provider falls back to the resolved `model`

@@ -468,7 +468,15 @@ function InstalledPanel({
     setUpdating(true);
     setUpdateError(null);
     try {
-      await installFromRegistry(pluginId, update.to);
+      const res = await installFromRegistry(pluginId, update.to);
+      // #1452 — the ingest succeeded and the new version did not come up. The
+      // middleware has flipped the registry entry to `errored`, so the refresh
+      // below now repaints an honest badge; naming the reason here is what
+      // tells the operator who clicked "Update" that the plugin is down and
+      // why. `router.refresh()` still runs: the installed version DID change.
+      if (res.activation_error) {
+        setUpdateError(t('updateActivationFailed', { message: res.activation_error }));
+      }
       router.refresh();
     } catch (err) {
       setUpdateError(
@@ -524,6 +532,16 @@ function InstalledPanel({
 
   return (
     <div className="space-y-3">
+      {/* #1452 — outside the `update` block on purpose. A failed activation
+          still bumps `installed_version`, so the refresh that follows repaints
+          the plugin as plain `installed`, the update banner unmounts, and an
+          error rendered inside it would disappear together with the only
+          statement of WHY the plugin is down. */}
+      {updateError ? (
+        <p className="font-mono-num text-[11px] text-[color:var(--danger,#b03030)]">
+          {updateError}
+        </p>
+      ) : null}
       {update ? (
         <div className="rounded-md border border-[color:var(--accent)]/40 bg-[color:var(--accent)]/5 px-4 py-3">
           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -545,11 +563,7 @@ function InstalledPanel({
               {t('update')}
             </Button>
           </div>
-          {updateError ? (
-            <p className="font-mono-num mt-2 text-[11px] text-[color:var(--danger,#b03030)]">
-              {updateError}
-            </p>
-          ) : null}
+
         </div>
       ) : null}
       {/* OM-16 — this pill used to read "Installiert · AKTIV" unconditionally,
@@ -578,6 +592,16 @@ function InstalledPanel({
           {readinessLabel}
         </span>
       </div>
+      {/* #1452 — the issue asks for the failure "with the error message, in the
+          store". The pill carries it in `title=` only, which a keyboard or
+          screen-reader user never reaches and a touch user cannot hover. The
+          reason the plugin is down is the one actionable thing on this page, so
+          it is rendered as text. */}
+      {readiness?.state === 'errored' && readiness.error_detail ? (
+        <p className="font-mono-num text-[11px] text-[color:var(--danger,#b03030)]">
+          {t('activationFailed', { message: readiness.error_detail })}
+        </p>
+      ) : null}
 
       {/* OM-06/07 — installing is not the finish line: a plugin does nothing
           until it is attached to an orchestrator. Mirrors the skill-import

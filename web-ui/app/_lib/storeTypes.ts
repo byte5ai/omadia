@@ -561,6 +561,12 @@ export interface UploadedPackage {
 
 export interface UploadPackageResponse {
   package: UploadedPackage;
+  /** #1452 — the ZIP was ingested and the re-activation of the running plugin
+   *  threw; the middleware has flipped the registry entry to `errored` with
+   *  this message. Absent on success, on an upload that attempted no
+   *  activation (plugin not installed-and-running), and on an older
+   *  middleware. */
+  activation_error?: string;
 }
 
 export interface ListUploadedPackagesResponse {

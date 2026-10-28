@@ -13,6 +13,11 @@
 //   - the exception names the advisory, the package and this workspace, gives a
 //     reason, was reviewed by today, and has not expired (at most 90 days after
 //     its review).
+// A finding in the production tree fails unless an entry marked
+// `"production": true` covers it: such an entry is for an advisory no release
+// fixes for the major a production dependency pins, it runs at most 30 days, and
+// every route to a vulnerable copy must start at a dependency it names in `via`
+// (security-architecture §4a).
 // The routes come from `package-lock.json`, resolved the way Node resolves
 // `node_modules`, not from the report's `effects` links: npm leaves dependents
 // out of `effects` (only the first advisory per range records them, and a
@@ -32,6 +37,9 @@ export const RUNTIME_DEV_DEPENDENCIES = Object.freeze({ desktop: Object.freeze([
 
 /** The longest an exception may run from its review before it has to be reviewed again. */
 export const MAX_EXCEPTION_DAYS = 90;
+
+/** The longest a production exception may run from its review. */
+export const MAX_PRODUCTION_EXCEPTION_DAYS = 30;
 
 /** How far ahead of its expiry an exception is announced. */
 export const EXPIRY_NOTICE_DAYS = 14;
@@ -173,7 +181,11 @@ export function exceptionProblems(entry) {
   if (typeof entry.advisory !== 'string' || !GHSA_ID.test(entry.advisory)) problems.push('"advisory" must be a GHSA id');
   if (typeof entry.package !== 'string' || entry.package === '') problems.push('"package" is missing');
   if (!nonEmptyStrings(entry.workspaces)) problems.push('"workspaces" must list at least one workspace');
-  if (!nonEmptyStrings(entry.via)) problems.push('"via" must list the devDependencies the package is reached through');
+  if (entry.production !== undefined && typeof entry.production !== 'boolean') problems.push('"production" must be true or false');
+  const production = entry.production === true;
+  if (!nonEmptyStrings(entry.via)) {
+    problems.push(`"via" must list the ${production ? 'dependencies' : 'devDependencies'} the package is reached through`);
+  }
   else {
     for (const workspace of entry.workspaces ?? []) {
       const runtime = (RUNTIME_DEV_DEPENDENCIES[workspace] ?? []).filter((name) => entry.via.includes(name));
@@ -189,8 +201,9 @@ export function exceptionProblems(entry) {
   if (expires === null) problems.push('"expires" must be a valid YYYY-MM-DD date');
   if (reviewed !== null && expires !== null) {
     const days = (expires - reviewed) / DAY_MS;
+    const maxDays = production ? MAX_PRODUCTION_EXCEPTION_DAYS : MAX_EXCEPTION_DAYS;
     if (days < 0) problems.push('"expires" lies before "reviewed"');
-    else if (days > MAX_EXCEPTION_DAYS) problems.push(`"expires" lies more than ${MAX_EXCEPTION_DAYS} days after "reviewed"`);
+    else if (days > maxDays) problems.push(`"expires" lies more than ${maxDays} days after "reviewed"`);
   }
   return problems;
 }
@@ -231,19 +244,53 @@ export function evaluate({ workspace, full, prod, lock, exceptions, today }) {
     else valid.push(entry);
   });
 
-  const inProduction = new Set();
-  for (const advisory of blockingAdvisories(prod)) {
-    inProduction.add(`${advisory.id} ${advisory.package}`);
-    failures.push(
-      `${advisory.severity} ${advisory.id} in ${advisory.package} is in the production tree (${advisory.url}); ` +
-        'no exception covers a production dependency',
+  const findEntry = (advisory) =>
+    valid.find(
+      (e) => e.advisory.toUpperCase() === advisory.id.toUpperCase() && e.package === advisory.package && e.workspaces.includes(workspace),
     );
-  }
-
+  const prodAdvisories = blockingAdvisories(prod);
   const fullAdvisories = blockingAdvisories(full);
-  const graph = fullAdvisories.some((a) => !inProduction.has(`${a.id} ${a.package}`)) ? lockGraph(lock) : null;
+  const inProduction = new Set(prodAdvisories.map((a) => `${a.id} ${a.package}`));
+  const needsGraph =
+    prodAdvisories.some((a) => findEntry(a)?.production === true) || fullAdvisories.some((a) => !inProduction.has(`${a.id} ${a.package}`));
+  const graph = needsGraph ? lockGraph(lock) : null;
   const runtimeNames = new Set(RUNTIME_DEV_DEPENDENCIES[workspace] ?? []);
   const used = new Set();
+
+  for (const advisory of prodAdvisories) {
+    const label = `${advisory.severity} ${advisory.id} in ${advisory.package} is in the production tree (${advisory.url})`;
+    const entry = findEntry(advisory);
+    if (entry?.production !== true) {
+      failures.push(`${label}; no exception covers a production dependency`);
+      continue;
+    }
+    used.add(entry);
+    // The production report's nodes can miss dev-only copies; the full report lists them all.
+    const fullEntry = fullAdvisories.find((a) => a.id === advisory.id && a.package === advisory.package);
+    const nodes = fullEntry?.nodes.length ? fullEntry.nodes : advisory.nodes;
+    if (nodes.length === 0) {
+      failures.push(`${label}: the report lists no vulnerable copies ("nodes"), so its routes cannot be checked`);
+      continue;
+    }
+    const { roots, unrooted } = routesTo(graph, nodes);
+    const unnamed = [...new Set(roots.filter((r) => !entry.via.includes(r.name)).map(routeLabel))];
+    if (today > entry.expires) {
+      failures.push(`${label}: its production exception expired on ${entry.expires}; review it again or remove the dependency`);
+    } else if (unrooted.length > 0) {
+      failures.push(`${label}: ${unrooted.join(', ')} has no route from the project in package-lock.json`);
+    } else if (roots.length === 0) {
+      failures.push(`${label}: no route from the project reaches it in package-lock.json`);
+    } else if (unnamed.length > 0) {
+      failures.push(`${label}: the production exception does not name ${unnamed.join(', ')} in "via"`);
+    } else {
+      notices.push(`${label} accepted as a production exception until ${entry.expires}: ${entry.reason}`);
+      const daysLeft = (parseDate(entry.expires) - parseDate(today)) / DAY_MS;
+      if (daysLeft <= EXPIRY_NOTICE_DAYS) {
+        warnings.push(`the production exception for ${entry.advisory} in ${entry.package} expires on ${entry.expires}: review it again or remove the dependency before then`);
+      }
+    }
+  }
+
   for (const advisory of fullAdvisories) {
     if (inProduction.has(`${advisory.id} ${advisory.package}`)) continue;
     if (advisory.nodes.length === 0) {
@@ -252,9 +299,7 @@ export function evaluate({ workspace, full, prod, lock, exceptions, today }) {
     }
     const { roots, unrooted, runtime } = routesTo(graph, advisory.nodes, runtimeNames);
     const label = `${advisory.severity} ${advisory.id} in ${advisory.package} (via ${roots.map(routeLabel).join(', ') || 'no route'})`;
-    const entry = valid.find(
-      (e) => e.advisory.toUpperCase() === advisory.id.toUpperCase() && e.package === advisory.package && e.workspaces.includes(workspace),
-    );
+    const entry = findEntry(advisory);
     if (entry === undefined) {
       failures.push(`${label} has no exception in .github/audit-exceptions.json; upgrade or remove the dependency`);
       continue;
