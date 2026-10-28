@@ -2,10 +2,11 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { getLocale, getTranslations } from 'next-intl/server';
 
-import { getVaultStatus } from '../_lib/api';
+import { getPrivacyPosture, getVaultStatus } from '../_lib/api';
 import { fetchNavEntries } from '../_lib/navigation';
 import { fetchMiddlewareHealth, platformNotice } from '../_lib/platformHealth';
 import { PlatformHealthBanner } from '../_components/PlatformHealthBanner';
+import { PrivacyShieldBanner } from '../_components/PrivacyShieldBanner';
 
 export const dynamic = 'force-dynamic';
 
@@ -113,10 +114,12 @@ export default async function AdminIndexPage(): Promise<React.ReactElement> {
   const locale = await getLocale();
   // #1332 — /health for outages, the authenticated vault status for the
   // dev-key posture (deliberately not on the public endpoint).
-  const [navEntries, health, vault] = await Promise.all([
+  const [navEntries, health, vault, privacy] = await Promise.all([
     fetchNavEntries(locale),
     fetchMiddlewareHealth(),
     getVaultStatus().catch(() => null),
+    // #1507 — no banner on a failed read, see PrivacyShieldBanner.
+    getPrivacyPosture().catch(() => null),
   ]);
   const contributed = new Set(navEntries.map((e) => `${e.pluginId}::${e.href}`));
   const groups = GROUPS.map((group) => ({
@@ -130,6 +133,7 @@ export default async function AdminIndexPage(): Promise<React.ReactElement> {
   return (
     <main className="mx-auto max-w-[960px] px-6 py-12 lg:px-8 lg:py-16">
       <PlatformHealthBanner notice={platformNotice({ health, vault })} />
+      <PrivacyShieldBanner posture={privacy} />
       <header className="mb-8">
         <h1 className="font-display text-[clamp(2rem,4vw,3rem)] leading-[1.1] text-[color:var(--fg-strong)]">
           {t('h1')}

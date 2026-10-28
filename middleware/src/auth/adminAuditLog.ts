@@ -62,6 +62,11 @@ export type AuditAction =
   // row lists the grants that left with it.
   | 'plugin.install'
   | 'plugin.uninstall'
+  // #1510/#1508 — a plugin's Privacy Shield setting (`_privacy_mode`,
+  // `_privacy_bypass_scopes`) changed. A switch to `bypass` sends that
+  // plugin's raw results to the LLM, so who flipped it belongs in the trail.
+  // `before`/`after` carry only those two keys.
+  | 'plugin.privacy_change'
   // #1490 — an uploaded (or Hub-fetched), not installed package was removed.
   | 'plugin.package_remove'
   // #1342 — a stdio MCP server was saved (manual or catalog import). It runs
