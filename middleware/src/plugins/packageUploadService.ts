@@ -14,7 +14,12 @@ import {
   type VersionChangeDirection,
 } from './versionDirection.js';
 import { checkCoreCompat } from './coreCompat.js';
-import type { InstalledRegistry } from './installedRegistry.js';
+import {
+  CIRCUIT_BREAKER_THRESHOLD,
+  recordActivationFailure,
+  recordActivationSuccess,
+  type InstalledRegistry,
+} from './installedRegistry.js';
 import type { PluginCatalog } from './manifestLoader.js';
 import { loadManifestFromPath } from './manifestLoader.js';
 import type { MigrationRunner } from './migrationRunner.js';
@@ -66,6 +71,18 @@ export interface IngestSuccess {
    *  plugin, so a caller can report the swap in the direction it happened.
    *  Absent on a first upload. */
   direction?: VersionChangeDirection;
+  /**
+   * #1452 — the `onPackageReady` hook threw: the package is ingested, the
+   * plugin is NOT running, and this is why. The registry entry has been
+   * flipped to `errored` with the same message.
+   *
+   * Absence is deliberately not a positive "it is running" claim — this seam
+   * cannot make one. The host hook returns early for a plugin that is not
+   * installed-and-active (a fresh ingest goes through the install flow, which
+   * reports activation itself), so an `ok` field would read as "activated" for
+   * every upload that never attempted an activation.
+   */
+  activation_error?: string;
 }
 
 export interface IngestFailure {
@@ -120,11 +137,23 @@ export interface PackageUploadServiceDeps {
    */
   hostPluginApiVersion?: string;
   /**
-   * Optional hook. Called after a successful ingest when the registry entry
-   * for this agent already exists and is `active` (typical re-upload case:
-   * package was deleted, install status stayed). Lets the runtime
-   * (re-)activate the agent directly, without the user having to trigger
-   * the install flow again.
+   * Optional hook that (re)activates the plugin after a successful ingest.
+   * Called only when `shouldReactivate` says this ingest landed on a plugin
+   * the host is supposed to be running — an `active` entry (the update /
+   * re-upload case this exists for) or an `errored` one below the
+   * circuit-breaker threshold (so a fixed version can recover it). Not called
+   * for `inactive`, for a latched/blocked entry, or for a plugin that is not
+   * installed, whose activation the install flow owns. Without a `registry`
+   * dep there is nothing to gate on and the hook always runs.
+   *
+   * #1452 — THE HOOK'S VERDICT IS RECORDED. Returning normally is written to
+   * the registry as "this plugin is running" (`recordActivationSuccess`), a
+   * throw as `errored` plus the message (`recordActivationFailure`), and the
+   * throw also travels back to the caller in `IngestSuccess.activation_error`.
+   * So an implementation must throw rather than return early whenever it did
+   * not actually activate — see the channel branch in index.ts, which asserts
+   * `isActive` afterwards because `channelRegistry.activate()` only warns when
+   * the package exports no usable plugin.
    */
   onPackageReady?: (agentId: string) => Promise<void>;
   /**
@@ -591,17 +620,34 @@ export class PackageUploadService {
       // Re-upload onto an already installed agent (typical: package file
       // was deleted, registry entry still `active`). Without the hook the
       // agent stays "installed but inactive" — the tool would be visible
-      // neither in Harness nor in Teams. The hook is best-effort; errors
-      // are logged but do not break the upload response.
-      let activationFailed = false;
-      if (this.deps.onPackageReady) {
+      // neither in Harness nor in Teams. The hook does not break the upload
+      // response — the package IS ingested, and an activation failure is a
+      // separate fact — but #1452: NOT RE-THROWING IS NOT THE SAME AS NOT
+      // RECORDING. Swallowing the throw here left the registry entry claiming
+      // `active` with `last_activation_error: null` over a plugin whose
+      // `undo()` had rolled everything back, so the store badge kept showing
+      // the last SUCCESSFUL activation and readiness kept answering `ready`.
+      // Same bug the install path had in #799 / #825, on the path an operator
+      // uses far more often: the update button.
+      let activationError: string | undefined;
+      if (this.deps.onPackageReady && this.shouldReactivate(plugin.id)) {
         try {
           await this.deps.onPackageReady(plugin.id);
+          await this.noteActivationSuccess(plugin.id);
         } catch (err) {
-          activationFailed = true;
+          // A message, always. `new Error()` leaves `err.message` empty, and
+          // every consumer of this value tests truthiness (`if
+          // (res.activation_error)` in the store, `error_detail` in
+          // `computeReadiness`, `last_activation_error` in the registry), so an
+          // empty string would flip the entry to `errored` with the reason
+          // readable nowhere — this fix's own failure mode.
+          activationError =
+            (err instanceof Error ? err.message : String(err)) ||
+            'onPackageReady threw without a message';
           log(
-            `[upload] onPackageReady hook failed for ${plugin.id}: ${err instanceof Error ? err.message : String(err)}`,
+            `[upload] onPackageReady hook failed for ${plugin.id}: ${activationError}`,
           );
+          await this.noteActivationFailure(plugin.id, activationError);
         }
       }
 
@@ -612,7 +658,7 @@ export class PackageUploadService {
       // running — with `allow_downgrade`, since going back is itself a
       // downgrade.
       if (retired !== null) {
-        if (activationFailed) {
+        if (activationError !== undefined) {
           log(
             `[upload] ${plugin.id}: new version did not activate — previous version ${retired.version} kept at ${retired.dir} (re-upload that folder with allow_downgrade to go back)`,
           );
@@ -627,11 +673,116 @@ export class PackageUploadService {
         plugin_id: plugin.id,
         version: plugin.version,
         ...(direction !== null ? { direction } : {}),
+        ...(activationError !== undefined
+          ? { activation_error: activationError }
+          : {}),
       };
     } finally {
       await fs.rm(tmpRoot, { recursive: true, force: true }).catch(() => {});
       await fs.rm(stagingRoot, { recursive: true, force: true }).catch(() => {});
     }
+  }
+
+  /**
+   * #1452 — does this ingest land on a plugin the host is supposed to be
+   * running? The gate lives here, next to the recording, rather than inside
+   * the host's hook: a second gate in the hook would silently turn the
+   * success recording below into a lie for every entry the hook declines to
+   * touch. Without a registry there is nothing to gate on (bare setups,
+   * tests) — the hook runs as before and nothing is recorded.
+   *
+   *   * `active`   → the update / re-upload case this hook exists for.
+   *   * `errored` below the circuit-breaker threshold → a previous activation
+   *                  failed. Reactivating is the ONLY way an operator can
+   *                  recover by installing a fixed version; skipping it would
+   *                  make the `errored` state this change introduces a dead
+   *                  end, because `retryErroredPlugins`' mtime path cannot
+   *                  help here (`last_activation_error_at` is stamped after
+   *                  the package rename, so the manifest is never newer).
+   *   * `errored` at or above the threshold → left alone. The count is the
+   *                  only thing separating two states that share the
+   *                  `errored` word: a plugin the breaker latched after
+   *                  `CIRCUIT_BREAKER_THRESHOLD` boot failures, and an OM-87
+   *                  `markActivationBlocked` (non-retryable by definition,
+   *                  floors the count at the threshold without counting an
+   *                  attempt). Neither may be walked around by an upload —
+   *                  `bootstrap.retryErroredPlugins` lifts them on evidence.
+   *   * `inactive` → deliberately stood down (e.g. the embedding-provider
+   *                  swap in adminEmbeddingProvider.ts). An upload must not
+   *                  start it again.
+   *   * absent     → not installed; the install flow activates and reports.
+   */
+  private shouldReactivate(pluginId: string): boolean {
+    const registry = this.deps.registry;
+    if (!registry) return true;
+    const entry = registry.get(pluginId);
+    if (!entry) return false;
+    if (entry.status === 'active') return true;
+    if (entry.status !== 'errored') return false;
+    return (entry.activation_failure_count ?? 0) < CIRCUIT_BREAKER_THRESHOLD;
+  }
+
+  /**
+   * #1452 — the hook returned, so the plugin is running. Lift the
+   * circuit-breaker state first, then stamp the activation: a plugin that
+   * comes back up after the operator installed a fixed version must stop
+   * reading `errored`, or the update would appear not to have worked.
+   *
+   * Same pair, in the same order, as `InstallService.reactivate`'s success
+   * path. The tool and agent runtimes already stamp
+   * `markActivationSucceeded` themselves, so for those this is the lift;
+   * channels record nothing of their own (`channelRegistry` never writes to
+   * the registry), so for those it is both.
+   */
+  private async noteActivationSuccess(pluginId: string): Promise<void> {
+    const registry = this.deps.registry;
+    if (!registry) return;
+    try {
+      await recordActivationSuccess(registry, pluginId);
+    } catch (err) {
+      this.log(
+        `[upload] registry markActivationSucceeded FAILED for ${pluginId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  /**
+   * #1452 — write down that the post-ingest (re)activation did not take.
+   *
+   * Two writes, because they answer different questions — the same pair
+   * `InstallService.completeInstall` makes for the install path.
+   * `markActivationFailed` records WHY and feeds
+   * `bootstrap.retryErroredPlugins`; it does not flip the status on its own,
+   * because `CIRCUIT_BREAKER_THRESHOLD` is 3. That threshold is right for a
+   * boot loop retrying a transient failure and wrong here: an update the
+   * operator just clicked is a single definitive event they are watching, not
+   * the first of three strikes. So the status is set explicitly, and only when
+   * the entry still reads `active` (the threshold may already have done it).
+   *
+   * The registry writes are themselves contained: a failing registry must not
+   * turn a successful ingest into an HTTP error, and the hook's verdict still
+   * travels back to the caller in `activation_error`.
+   */
+  private async noteActivationFailure(
+    pluginId: string,
+    message: string,
+  ): Promise<void> {
+    const registry = this.deps.registry;
+    if (!registry) return;
+    try {
+      await recordActivationFailure(registry, pluginId, message);
+    } catch (err) {
+      this.log(
+        `[upload] registry markActivationFailed FAILED for ${pluginId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  /** The file's logger, not `deps.log?.()` — a setup without the dep must
+   *  still put a failed registry write on stdout, or the reason this change
+   *  exists to record is readable nowhere. Mirrors `ingest`'s own fallback. */
+  private log(msg: string): void {
+    (this.deps.log ?? ((m: string) => console.log(m)))(msg);
   }
 
   private resolvePeers(pkgJson: Record<string, unknown> | null): string[] {

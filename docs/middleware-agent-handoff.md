@@ -373,6 +373,129 @@ der MCP-Server-spezifischen Auth-Lücke (`mcpOAuthService`), die für
 MCP-Server bereits existiert — dieses Gate deckt nur native
 Plugin-Tool-Registrierungen ab.
 
+### Connection-Probe für Plugin-Credentials (#1453)
+
+Aktivierung hat nie geprüft, ob die hinterlegten Zugangsdaten funktionieren.
+`activate()` baut einen Client und veröffentlicht Services, ohne einen einzigen
+Request an das Zielsystem — ein falscher, widerrufener oder abgelaufener
+API-Key aktivierte sauber, der Store zeigte "Active · configured <Zeit>", und
+der erste echte Call scheiterte mit 401. Der Statuskanal (`ctx.status`) war
+verdrahtet (Badge, Banner, Tool-Gate #474), aber kein Plugin schrieb hinein.
+
+**Plugin-Contract.** Ein Package darf neben `activate` ein optionales
+`verifyConnection(ctx)` exportieren, das einen `PluginConnectionVerdict`
+(`@omadia/plugin-api`) zurückgibt:
+
+- `connected` — Zielsystem hat die Credentials akzeptiert. Mit `title`
+  (z. B. "Verbunden") rendert die UI ein positives Badge mit
+  kernel-gestempelter Zeit; ohne `title` wird nur ein früheres Urteil
+  zurückgezogen.
+- `rejected` — Zielsystem hat die Credentials **ausdrücklich** abgelehnt. Das
+  ist das einzige Urteil, das rot macht **und** die Tools des Plugins aus dem
+  Orchestrator nimmt (`PluginStatusRegistry.isReady`, siehe
+  Plugin-Tool-Readiness-Gate oben).
+- `inconclusive` — alles andere: Timeout, 5xx, DNS, Air-Gap. Der Operator
+  behält den Status, den er hatte. Eine Störung darf niemandem vorwerfen, einen
+  kaputten Key zu haben.
+
+Die Klassifikation liegt beim Plugin, weil nur es sein Wire-Protokoll kennt
+(Odoo antwortet auf einen falschen Key mit `authenticate → false` über 200,
+Confluence mit 401, andere mit einem 403, das gar nichts über den Key sagt).
+`title`/`detail` sind die lokalisierten Strings des Plugins — der Kernel liefert
+keine eigene Copy, sonst stünde untranslatiertes Englisch in der Admin-UI.
+
+**Aber `rejected` wird nicht auf Zuruf geglaubt.** Es ist das einzige Urteil,
+das rot färbt und die Tools entzieht, also verlangt der Kernel ein benanntes
+`cause` (`ConnectionRejectionCause`: `http_401`, `http_403_auth`,
+`protocol_auth_failure`) und degradiert ein `rejected` ohne erkanntes Cause zu
+`inconclusive` (`reason: 'unexplained_rejection'`). Ein blankes
+`catch { return { status: 'rejected' } }` kann damit keine Störung als toten Key
+ausgeben. Die HTTP-Regeln liegen als `classifyHttpAuthFailure(status, body)` in
+`@omadia/plugin-api` — dieselben, die `providerCredentialVerifier` für
+LLM-Keys trägt (401 ja, blankes 403 nein) —, damit kein Plugin sie neu
+herleitet.
+
+**Verdict-Cache.** `connectionProbe.ts` cacht entschiedene Urteile 5 Minuten
+(`CONNECTION_PROBE_CACHE_TTL_MS`), Key = `pluginId` + `credentialFingerprint`
+(SHA-256 über die Vault-Keys/-Werte **und** die Nicht-Secret-Config des Plugins,
+`credentialFingerprint()`; Hash, nie das Secret). Die Config gehört dazu, weil
+`url`/`db`/`login` genauso Teil der Verbindung sind und über
+`PATCH /installed/:id/config` geschrieben werden — das reaktiviert, und ein
+Fingerprint nur über den Vault hätte dem reparierten Host das alte `rejected`
+aus dem Cache erneut vorgehalten. Gleiche Form wie
+`providerCredentialVerifier`: Map, TTL, `force`-Bypass,
+`__clearConnectionProbeCache()`-Test-Seam. Zweck ist nicht der
+Lesepfad (es gibt keinen), sondern der Fan-out: ein Provider-Write reaktiviert
+**jedes** abhängige Plugin, und ohne Cache würde jedes davon sein Zielsystem
+erneut für unveränderte Credentials fragen. `inconclusive` wird nie gecacht —
+eine Störung darf "wir wissen es nicht" nicht für das ganze Fenster festpinnen.
+Ohne Fingerprint (Vault nicht lesbar) wird gar nicht gecacht.
+
+**Kernel-Seite.** `middleware/src/plugins/connectionProbe.ts`
+(`runConnectionProbe`) bindet das Urteil, begrenzt es (`5s`) und schreibt es
+durch **denselben** `ctx.status`-Accessor, den auch das Plugin benutzt — damit
+Normalisierung und `checked_at` an genau einer Stelle passieren. Jeder
+Fehlermodus (Throw, Hang, unverständlicher Rückgabewert) degradiert zu
+`inconclusive`; eine Probe kann eine Aktivierung nie scheitern lassen.
+
+`ToolPluginRuntime` und `DynamicAgentRuntime` starten die Probe **nach**
+erfolgreicher Aktivierung und warten **nicht** auf sie: der Client des Plugins
+existiert zu diesem Zeitpunkt, und N Integrationen dürfen dem Boot nicht N
+Netzwerk-Roundtrips anhängen. Für Tests und den On-Demand-Pfad bleiben die
+Promises beobachtbar (`whenConnectionProbesSettled()`,
+`verifyConnectionNow(agentId)`). Da jeder Secret-Write über
+`reactivateAfterProviderWrite` reaktiviert, läuft die Probe nach jeder
+Credential-Änderung automatisch mit.
+
+**Operator-Fläche.**
+
+- `POST /api/v1/admin/runtime/installed/:id/verify` — prüft jetzt neu, ohne
+  Reaktivierung, immer mit `force` (ein "jetzt prüfen", das aus dem Cache
+  antwortet, ist keine Prüfung). In der Store-Detail-Seite hängt der Button
+  `ConnectionCheckButton` daran; `ActionStatusBanner` und Badge ziehen die
+  neue Lage über ihren eigenen Poll nach. Für den Fall, den sonst nichts abdeckt: Key wurde
+  *upstream* widerrufen oder repariert, auf omadia-Seite hat sich nichts
+  geändert. Antwortet mit dem Urteil (`status`, optional `reason`, `title`,
+  `detail`); `404 runtime.not_installed`, `409 runtime.not_active` (ein Plugin,
+  das nie hochkam, hat nichts zu proben — das ist #1452, nicht #1453),
+  `502 runtime.verify_failed` (die Kernel-Verdrahtung selbst hat geworfen —
+  `runConnectionProbe` lehnt nie ab; `web-ui/app/_lib/errorHelp.ts` kennt beide
+  Codes). Ein Plugin ohne `verifyConnection` bekommt
+  `{status:'inconclusive', reason:'no_probe'}` — nie ein positives Urteil für
+  eine Prüfung, die es nicht gibt. Spiegelt
+  `POST /api/v1/admin/providers/:id/verify` für LLM-Keys.
+- `GET /api/v1/admin/runtime/installed` trägt zusätzlich `action_status`.
+  Vorher sagte die Runtime-API `status: "active"` /
+  `last_activation_error: null` und sonst nichts, auch wenn jeder Call 401 bekam.
+- **Eigener Readiness-State.** `computeReadiness` (`plugins/readiness.ts`)
+  liest zusätzlich die gepushte Status-Lage und liefert
+  **`connection_failed`**, wenn `ctx.status` auf `error` steht — egal ob aus
+  dem `rejected`-Verdict der Probe oder aus einem eigenen `error`-Report des
+  Plugins (der schon vor #1453 das Tool-Gate geschlossen hat): Felder alle
+  gefüllt, Plugin hochgekommen, Zielsystem lehnt die Credentials ab. Nicht
+  `config_required` (das Formular ist vollständig) und nicht `errored` (die
+  Aktivierung hat funktioniert — das ist #1452). Reihenfolge:
+  `errored` → `config_required` → `connection_failed` → `awaiting_llm` →
+  `ready`; nur `error` zählt, `needs_action` bleibt `ready` (eigene gelbe
+  Pille). Der Store rendert es rot als `store.stateBadge.connectionFailed`.
+  Ein werfender Status-Probe degradiert zu `ready` — dieselbe Regel wie beim
+  Vault und beim LLM-Probe: eine Infrastruktur-Störung darf nie ein Problem
+  erfinden.
+- **Badge-Wording.** `readiness.verified_at` ist der Zeitpunkt der letzten
+  **Aktivierung**, nicht einer Prüfung. Der Message-Key heißt deshalb
+  `store.stateBadge.activeSince` ("Aktiv · seit {time}", vorher
+  `readyVerified` / "Aktiv · konfiguriert {time}"), und das grüne Badge wird
+  ganz unterdrückt, sobald das Plugin selbst `needs_action`/`error` gemeldet
+  hat — vorher stand die rote Pille direkt neben einem unverändert grünen
+  Badge. Das Feld `verified_at` behält seinen Namen (20+ Consumer), die
+  Doku-Kommentare sagen jetzt, was es wirklich ist.
+
+**Offen (nicht in diesem Change):** Die Integrations-Plugins selbst müssen
+`verifyConnection` exportieren und ihre 401s zur Laufzeit melden — sie liegen in
+eigenen Repos (`byte5ai/omadia-integration-odoo`,
+`byte5ai/omadia-integration-confluence`). Bis dahin ist der Kernel-Pfad da und
+inert.
+
 ### Sub-Agents (lokal, in-process)
 
 - **Datei:** `services/localSubAgent.ts` (`LocalSubAgent`-Klasse).
@@ -2410,7 +2533,22 @@ hinterlässt das Plugin als `errored` in der Registry. Letzteres ist der
 Produktionsfall, denn `installService.reactivate` wirft bei einem
 Aktivierungsfehler nie, sondern ruft `markActivationFailed`, setzt `errored` und
 kehrt zurück; ein erfolgreicher Rebuild hebt `errored` über
-`clearActivationError` wieder auf. Ein erneutes Speichern **desselben**
+`clearActivationError` wieder auf. Seit #1452 ist dieses Paar nicht mehr pro
+Aufrufstelle kopiert, sondern lebt als `recordActivationFailure` /
+`recordActivationSuccess` in `plugins/installedRegistry.ts`; benutzt wird es
+von `installService.completeInstall`, `installService.reactivate`, dem
+Upload-Seam (`PackageUploadService.ingest` → `onPackageReady`) und
+`channelRegistry.activate`. `recordActivationFailure` gibt die vorhandene
+`unresolved_requires`-Liste weiter, weil ein weggelassenes Argument sie löscht
+und `bootstrap.retryErroredPlugins` genau diese Liste braucht, um ein Plugin
+nach dem Nachinstallieren des Providers automatisch zurückzusetzen. Der
+Upload-Seam entscheidet über `shouldReactivate` selbst, ob reaktiviert wird
+(`active`, oder `errored` unterhalb von `CIRCUIT_BREAKER_THRESHOLD`; `inactive`,
+geblockt/gelatcht und nicht installiert nicht) — ein zweites Gate im Host-Hook
+würde die Erfolgsbuchung dort zur Lüge machen. Wer `onPackageReady` erweitert,
+muss deshalb werfen statt früh zurückzukehren, wenn nicht wirklich aktiviert
+wurde; der Channel- und der Agent-Zweig prüfen dafür `isActive` bzw. den
+`DomainTool`-Rückgabewert nach. Ein erneutes Speichern **desselben**
 Providers (der Retry-Button nach der Fehlermeldung) ist keine effektive
 Änderung, baut aber jedes abhängige Plugin neu, das noch `errored` ist
 (`providerWritten` im Helper, gesetzt, sobald der Write `llm_provider` enthält);
@@ -4685,6 +4823,40 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 
 ## 13. Offene Roadmap
 
+### Plugin-UI-Host-Seite: Restrisiko nach dem Bundle-Gate (#1454)
+
+`/plugin-ui/<pluginId>` prüft seit #1454 vor dem Rendern, ob überhaupt ein
+UI-Bundle existiert: die Server-Komponente fragt
+`HEAD /p/<pluginId>/ui/index.html` gegen `MIDDLEWARE_URL`
+(`web-ui/app/_lib/pluginUiBundle.ts`, Pfad gemeinsam mit dem Frame über
+`pluginUiEntryPath` in `web-ui/app/_lib/pluginId.ts`) und ruft bei einer
+404-Antwort `notFound()` in der Page-Datei selbst auf — dadurch echte
+HTTP-404 plus omadia-404-Seite statt Roh-JSON im Frame. Die Middleware
+selbst wurde nicht geändert; `/p/<id>/ui/*` antwortet API-Aufrufern
+weiterhin mit `{"error":"plugin_ui_not_found"}` als JSON. Der
+HEAD-Vertrag, auf dem die Probe aufsetzt, ist in
+`middleware/test/pluginUiStaticServing.test.ts` festgenagelt.
+
+Bewusst offen geblieben:
+
+- **Fail-open bei Middleware-Störung.** Nur eine eindeutige 404 gilt als
+  „kein UI“. 5xx, Timeout und tote Verbindung rendern den Frame weiter,
+  damit ein Ausfall nicht als „Plugin existiert nicht“ erscheint. Preis:
+  während einer Störung kann der Frame das Roh-JSON wieder anzeigen — jetzt
+  sporadisch statt deterministisch.
+- **Rennen zwischen Probe und Frame-Load.** Wird das Plugin zwischen Prüfung
+  und Iframe-Request deaktiviert oder deinstalliert, zeigt der Frame
+  dasselbe JSON.
+- **Sub-Ressourcen.** Eine fehlende `.../ui/app.js` liefert unverändert
+  JSON in den Frame; das Gate deckt nur das Dokument ab.
+
+Gegenmittel, falls das auffällt (im Triage von #1454 als Option 6 notiert,
+höchstens eines davon): in `middleware/src/routes/pluginUiStatic.ts` bei
+Dokument-Anfragen (`Sec-Fetch-Dest: iframe|document` bzw. `Accept: text/html`)
+einen minimalen HTML-Body statt JSON ausliefern — JSON-Form für API-Aufrufer
+bleibt —, oder `PluginUiFrame` einen lokalisierten „UI nicht verfügbar“-Zustand
+geben (zwei neue Keys in allen `web-ui/messages/*.json`).
+
 ### Ephemere Runs: stiller TTL-Kill + Per-Caller-Service (nach 0012)
 
 - **TTL-Ablauf ist ein stiller Kill.** Läuft `expires_at` ab, cancelt der Reaper
@@ -5699,6 +5871,36 @@ verschiebt der Anbieter die Klasse, wird unbeaufsichtigt reaktiviert — derselb
 Teardown wie beim Speichern eines Modells auf der LLM-Zugangsseite. Nicht
 serialisiert gegen gleichzeitige Admin-Reaktivierungen (`InstallService.reactivate`
 hat keinen Lock); ein globaler Reaktivierungs-Lock wäre ein eigener Schritt.
+
+**Provider-Plugin auf einer gebündelten ID — Base-Layer im Katalog (#1451).**
+Ein Hub-Plugin darf seinen Provider unter einer **built-in** ID registrieren
+(`@omadia/plugin-llm-anthropic` liefert `id: anthropic`) und ersetzt damit den
+gebündelten Deskriptor komplett: baseURL, Wire-Format und Modelle bedienen diese
+ID, solange das Plugin installiert ist — der Operator-Key bleibt im Vault unter
+der Provider-ID. Die Registrierung loggt das jetzt als WARNING (vorher
+lautlos). `LlmProviderCatalog` hält die gebündelten Deskriptoren als
+**Base-Layer**: `registerBase` (von `registerBuiltinLlmProviders` benutzt) merkt
+sie, `unregister` registriert den gebündelten wieder, statt die ID leer zu
+lassen, `isBundled(id)` sagt, ob eine ID gebündelt ist, `clear()` leert beide
+Ebenen. Vorher war die ID nach dem Uninstall bis zum nächsten Neustart **gar
+nicht** belegt: `/api/v1/admin/providers` ohne `anthropic`, `verify` mit
+`providers.unknown_provider`, kein Anthropic-Modell in der Registry — und der
+nächste Orchestrator-Rebuild veröffentlichte den rohen Klassen-Ref
+`class:balanced`, was jeden Turn mit einem Anthropic-404 beendete.
+`unregisterProviderFromPlugin` (`src/index.ts`) heilt die Konsumenten
+symmetrisch zum Install-Pfad: Discovery-Refresh für den restaurierten Built-in
+plus `classDefaultRebuilder.onDefaultsChanged(id)`. Zusätzlich kann seitdem kein
+Klassen-Ref mehr auf die Leitung: das Orchestrator-Plugin behält seine zwei
+Auflösungsstufen, lässt aber den rohen `?? configuredModelRef`-Schwanz weg und
+**scheitert** bei einem Provider ohne jedes Modell mit Nennung des Settings
+(Plugin-Status `errored`); `buildForAgent` wirft `UnresolvedModelRefError` mit
+Agent-Slug statt `DEFAULT_ORCHESTRATOR_MODEL` (selbst ein Klassen-Ref) als
+letzte Stufe durchzulassen. Registry-**unbekannte** konkrete IDs (eigene Vendor-IDs, nackte
+CLI-Aliase) gehen unverändert roh durch — genau deshalb bleibt der Zustand
+„Provider ohne Modelle" erreichbar, und `buildSubAgentDomainTools`
+**überspringt** einen Sub-Agenten, dessen Modell-Ref zu nichts auflöst (geloggt
+wie ein nicht auflösbarer Tool-Grant), statt `class:balanced` an `LocalSubAgent`
+zu geben.
 
 ### Dynamische Sub-Agenten übernehmen Key-Änderungen erst nach Rebuild (#1080 follow-up)
 

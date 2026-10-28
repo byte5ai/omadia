@@ -128,9 +128,15 @@ export function createPackagesRouter(deps: PackagesRouterDeps): Router {
       // #1455 — `direction` is present only when this upload replaced another
       // version. It is here so a caller cannot mistake a downgrade for an
       // update; the store dialog reports the refusal, not this field.
+      // #1452 — `activation_error` present means the ZIP was ingested but the
+      // re-activation of the running plugin threw; the registry entry has been
+      // flipped to `errored` with the same message.
       res.status(201).json({
         package: result.package,
         ...(result.direction !== undefined ? { direction: result.direction } : {}),
+        ...(result.activation_error !== undefined
+          ? { activation_error: result.activation_error }
+          : {}),
       });
     },
   );

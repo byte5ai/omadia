@@ -577,6 +577,9 @@ async function makeConsentHarness(opts: {
     '/api/v1/admin/runtime',
     createRuntimeRouter({
       installedRegistry: installed,
+      // #1453 — required dependency; this suite does not exercise the verify
+      // endpoint, so it answers "this plugin declares no probe".
+      verifyConnection: async () => undefined,
       serviceRegistry: stub as never,
       turnHookRegistry: stub as never,
       backgroundJobRegistry: stub as never,

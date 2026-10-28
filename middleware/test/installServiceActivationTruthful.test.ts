@@ -157,6 +157,24 @@ void describe('install reports activation truthfully (#470 P5)', () => {
     );
   });
 
+  void it('keeps unresolved_requires when a reactivation fails again', async () => {
+    // #1452 — the same wipe the upload path had. `markActivationFailed` reads
+    // an omitted requires list as "clear it", and `retryErroredPlugins`' cap
+    // path reads exactly that list to auto-reset the plugin once the operator
+    // installs the missing provider. A failing reactivation must not take the
+    // plugin's only route back with it.
+    const { service, registry, pluginId } = makeService(async () => {
+      throw new Error('still unresolved');
+    });
+    await install(service, pluginId);
+    const installed = registry.get(pluginId)!;
+    await registry.register({ ...installed, unresolved_requires: ['@omadia/foo@1'] });
+
+    await service.reactivate(pluginId);
+
+    assert.deepEqual(registry.get(pluginId)?.unresolved_requires, ['@omadia/foo@1']);
+  });
+
   void it('does not wait for the circuit breaker to flip the status', async () => {
     // `markActivationFailed` alone would NOT do it: CIRCUIT_BREAKER_THRESHOLD
     // is 3, which is right for a boot loop retrying a transient failure and

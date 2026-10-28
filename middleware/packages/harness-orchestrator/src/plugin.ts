@@ -15,6 +15,8 @@ import type {
 import type { EmbeddingClient } from '@omadia/embeddings';
 import {
   createLlmProviderPool,
+  isClassRef,
+  UnresolvedModelRefError,
   type LlmProviderCatalog,
   type LlmProviderPool,
 } from '@omadia/llm-provider';
@@ -767,13 +769,26 @@ export async function activate(
   // class ref (`class:frontier`, the default), an alias or a vendor id — and
   // is resolved against the live catalog for the active provider here, at
   // build time, so the turn loop only ever sends a concrete vendor id.
+  //
+  // #1451 — the two tiers are unchanged; what is gone is the third,
+  // `?? configuredModelRef`, which broke the promise above whenever the
+  // provider served no model in the registry: the published `class:*` 404'd
+  // every turn. Activation fails instead, leaving the plugin `errored` with a
+  // message naming the setting to fix — the same trade the sub-agent host
+  // (#1079) and the verifier already make.
   const configuredModelRef =
     (ctx.config.get<string>('orchestrator_model') ?? '').trim() ||
     DEFAULT_MODEL;
   const model =
     resolveConfiguredModel(configuredModelRef, providerId) ??
-    resolveConfiguredModel(DEFAULT_MODEL, providerId) ??
-    configuredModelRef;
+    resolveConfiguredModel(DEFAULT_MODEL, providerId);
+  if (model === undefined || isClassRef(model)) {
+    throw new UnresolvedModelRefError(
+      configuredModelRef,
+      providerId,
+      'orchestrator_model (ORCHESTRATOR_MODEL)',
+    );
+  }
   // Operator persona. Empty → Orchestrator falls back to its generic,
   // integration-agnostic `DEFAULT_ASSISTANT_IDENTITY`. Lets a deployment
   // brand the bot without a hardcoded "byte5 / Odoo" identity in the harness.

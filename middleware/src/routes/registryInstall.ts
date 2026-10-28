@@ -156,6 +156,14 @@ export function createRegistryInstallRouter(deps: RegistryInstallDeps): Router {
         // #1455 — present only when this ingest replaced another version.
         // Without it a caller cannot tell an update from a downgrade.
         ...(result.direction !== undefined ? { direction: result.direction } : {}),
+        // #1452 — the ingest succeeded and the plugin did NOT come back up.
+        // Still 201: the package is registered, which is what this endpoint
+        // promises; the activation is a separate fact the operator who
+        // clicked "Update" has to see, and before this field the only trace
+        // was one log line.
+        ...(result.activation_error !== undefined
+          ? { activation_error: result.activation_error }
+          : {}),
         // Missing depends_on parents to install first (empty → install target
         // directly). Same shape as the capability-chain wizard consumes.
         chain,

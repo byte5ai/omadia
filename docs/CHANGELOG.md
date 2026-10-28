@@ -36,6 +36,246 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — an integration with a refused API key no longer shows "Active · configured" (#1453)
+
+2026-10-27. Activation never checked credentials: `activate()` builds a client
+and publishes services without a request to the target system, so a wrong,
+revoked or expired API key activated cleanly, readiness said `ready`, and
+`GET /runtime/installed` said `status: "active"` with
+`last_activation_error: null`. The 401 at call time never reached the plugin's
+status either — the operator found out from a failed chat turn.
+
+Plugins may now export **`verifyConnection(ctx)`** next to `activate`,
+returning a `PluginConnectionVerdict` (`connected` / `rejected` /
+`inconclusive`). The kernel runs it after every successful activation —
+including the reactivation that follows a secret edit — bounded at 5s, never
+awaited on the boot path and never able to fail an activation; the verdict goes
+through `ctx.status`, which already feeds the store badge, the detail banner
+and the orchestrator's tool gate (#474). Only an explicit `rejected` turns a
+plugin red: a timeout, 5xx or DNS failure stays `inconclusive` and leaves the
+operator's status untouched, the rule `providerCredentialVerifier.ts` carries
+for LLM keys.
+
+Readiness gains **`connection_failed`** (`PluginReadinessState`): fields all
+filled, plugin up, target system refusing the credentials. Not
+`config_required` — the form is complete — and not `errored`, which would claim
+the plugin never came up (that is #1452). Any reported `error` produces it — the probe's
+`rejected` verdict or a plugin's own `ctx.status` error report (which already
+closed the tool gate before #1453);
+`needs_action` stays `ready` and keeps its own amber pill. The store badge
+renders it red.
+
+New `POST /api/v1/admin/runtime/installed/:id/verify` re-checks in place (for a
+key revoked or repaired upstream, where nothing on the omadia side changed);
+`GET /api/v1/admin/runtime/installed` now carries `action_status`. In the store
+UI the green badge no longer says "configured": `readiness.verified_at` is the
+last ACTIVATION, so the message key is now `store.stateBadge.activeSince`
+("Active · since {time}" / "Aktiv · seit {time}") and the badge is withheld
+entirely while the plugin reports `needs_action`/`error` — previously the red
+pill sat next to an unchanged green badge.
+
+A `rejected` verdict must name its cause (`ConnectionRejectionCause`:
+`http_401`, `http_403_auth`, `protocol_auth_failure`) or the kernel demotes it
+to `inconclusive` — core cannot see the exchange, but it can refuse to paint an
+outage red on an unexplained claim, and `rejected` also withholds the plugin's
+tools. `classifyHttpAuthFailure(status, body)` in `@omadia/plugin-api` carries
+core's HTTP rules (401 yes, bare 403 no) so no plugin re-derives them.
+
+Decided verdicts are cached for 5 minutes per `pluginId` + credential
+fingerprint (SHA-256 of the plugin's vault entries AND its non-secret setup
+values; never the secret), with a `force` bypass the operator's re-check always
+uses. The config half matters as much as the key: `url`/`db`/`login` are
+written through `PATCH /installed/:id/config`, which reactivates, so a
+vault-only fingerprint would have re-served the cached `rejected` to a host the
+operator had just repaired. The point is the fan-out: a
+provider write reactivates every dependent plugin, which would otherwise probe
+every target system again for credentials that did not change. `inconclusive`
+is never cached.
+
+The store detail page gains a **"Test connection"** button
+(`ConnectionCheckButton`) on the verify route. Its three outcomes stay
+distinct — "could not be checked" is never rendered as "working".
+
+`@omadia/plugin-api` goes to **1.35.0** — added symbols only
+(`PluginConnectionVerdict`, `VerifyConnection`, `ConnectionRejectionCause`,
+`classifyHttpAuthFailure`), no existing shape touched.
+
+Kernel-side only. The integration packages (`@omadia/integration-odoo`,
+`@omadia/integration-confluence`) live in their own repos and still have to
+export `verifyConnection` and report their runtime 401s; until they do, the new
+path is present and inert for them.
+
+### Fixed — a failed activation after a plugin update is no longer reported as active (#1452)
+
+2026-10-26. Updating a plugin (store "Update" button, Hub install onto an
+installed plugin, ZIP re-upload, builder install, dependency chain, profile
+import) activates the new version through `PackageUploadService.ingest` →
+`onPackageReady`. That hook's throw was caught, logged, and dropped: the
+registry entry kept `status: "active"` with `last_activation_error: null`,
+`GET /api/v1/admin/runtime/installed` and readiness kept answering
+`active` / `ready`, and the store badge kept showing the time of the last
+*successful* activation — over a plugin whose `undo()` had rolled back every
+route and tool it registered. Only the third failed BOOT activation flipped
+the entry, via `CIRCUIT_BREAKER_THRESHOLD`. Same bug the install path had in
+#799 / #825, on the path operators use far more often.
+
+`PackageUploadService` now records the hook's verdict: on a throw
+`markActivationFailed` plus an explicit flip to `errored` (not waiting for the
+circuit breaker — an update the operator just clicked is one definitive event),
+on success `clearActivationError` + `markActivationSucceeded`, so installing a
+fixed version lifts the `errored` state again. That pair is no longer copied
+per call site: **`recordActivationFailure` / `recordActivationSuccess` in
+`plugins/installedRegistry.ts`** now own it, used by
+`installService.completeInstall`, `installService.reactivate`, the upload seam
+and `channelRegistry`. `recordActivationFailure` forwards the entry's existing
+`unresolved_requires` — an omitted argument clears the list, which strands the
+plugin, because `bootstrap.retryErroredPlugins` reads exactly that list to
+auto-reset it once the missing provider arrives (this also fixes the same wipe
+on `installService.reactivate`). A hook that throws without a message still
+records a reason.
+
+The decision whether to reactivate at all moved from `index.ts` into the
+service: `shouldReactivate` admits `active`, and `errored` only below
+`CIRCUIT_BREAKER_THRESHOLD` — the failure count is the only thing separating a
+plain failed update from a breaker-latched entry or an OM-87
+`markActivationBlocked` (non-retryable by definition, floors the count at the
+threshold), and an upload must walk around neither. `inactive` and
+not-installed are left alone. A second gate in the host hook would have made
+the success write a lie, so `onPackageReady` must now throw rather than return
+early whenever it did not activate: the channel branch asserts `isActive`
+after `activate()` (which only warns when the package exports no usable
+`ChannelPlugin`) and deactivates unconditionally (the resolver's module cache
+can hold the pre-update `dist/plugin.js` for a channel that is currently
+down); the agent branch checks `activate()`'s `DomainTool` return, which is
+`null` when the agent is in no package store.
+
+**`channelRegistry` now records its own activation outcomes**, which it never
+did — that is why `kind: channel` had no circuit breaker at all. `activate()`
+stamps success (lifting a stale `errored`), and the boot loop
+`activateAllInstalled` records a failure with `markActivationFailed` (no
+explicit flip: at boot the threshold is the right policy, as in the tool and
+dynamic-agent boot loops) and treats "activated but not in the handle map" as
+a failure. Without this the new `errored` would never clear for channels: the
+boot loop activates them regardless of status, and
+`retryErroredPlugins`' mtime path cannot help (`last_activation_error_at` is
+stamped after the package rename, so the manifest is never newer).
+
+Both ingest routes (`POST /api/v1/install/registry/:id`,
+`POST /api/v1/install/packages`) answer 201 as before and now carry
+`activation_error` when the plugin did not come up. The store's update banner
+renders it (`store.install.updateActivationFailed`, en + de) — outside the
+banner's own conditional, because the failed update still bumps
+`installed_version` and the refresh that follows unmounts the banner — and the
+ZIP-upload panel renders it on its success row
+(`store.upload.activationFailed`). Absence of the field is deliberately not a
+positive "it is running" claim. The installed pill also states a readiness
+error as text now instead of only in `title=`, which no keyboard, screen-reader
+or touch user reaches. Still not surfaced in a response: the builder /
+profile-import ingest callers (the registry entry and the badge carry it), and
+a dependency-chain parent that fails to restart — the chain result shape has no
+per-parent verdict, so that one is logged.
+
+Not covered, a separate defect: `onPackageReady` does not call
+`registerProviderFromPlugin` (which `InstallService.onInstalled` does first),
+so updating a provider plugin keeps the pre-update provider/model registration
+live until the next boot.
+
+### Fixed — uninstalling a provider plugin no longer takes the built-in provider with it (#1451)
+
+2026-10-26. A Hub plugin may register its LLM provider under a BUILT-IN id —
+`@omadia/plugin-llm-anthropic` ships `id: anthropic`, the id the bundled
+descriptor owns — and `LlmProviderCatalog.register` replaced the bundled entry
+in place. Uninstalling the plugin then left the id with **no** entry until the
+next middleware restart: `/api/v1/admin/providers` lost `anthropic`, its
+`verify` endpoint answered `providers.unknown_provider`, and no Anthropic model
+remained in the registry. Nothing broke until the orchestrator was next rebuilt
+(any setup-field save), at which point it published the raw class ref
+`class:balanced` as its model and every chat turn failed with an Anthropic 404
+`model: class:balanced`, on every channel.
+
+Four changes:
+
+- **`LlmProviderCatalog` keeps the bundled descriptors as a base layer.**
+  `registerBase` (used by `registerBuiltinLlmProviders`) remembers them, and
+  `unregister` registers the bundled one again instead of leaving the id empty,
+  so a plugin that shadowed a built-in restores it on uninstall. `isBundled(id)`
+  is new; `clear()` drops the base layer too.
+- **The uninstall path heals the consumers.** `unregisterProviderFromPlugin`
+  (`src/index.ts`) now re-runs discovery for a restored built-in and calls
+  `classDefaultRebuilder.onDefaultsChanged(id)` (#1359), so orchestrator,
+  verifier and extras are rebuilt on a concrete model without a restart — the
+  mirror image of what the install path already did. Taking over a bundled id
+  is now logged as a WARNING at registration, naming the plugin's baseURL.
+- **A class ref can no longer reach the wire.** The orchestrator plugin keeps
+  its two resolution tiers but drops the `?? configuredModelRef` tail: with a
+  provider that serves no model it fails activation naming
+  `orchestrator_model` instead of publishing `class:*`. `buildForAgent` drops
+  its `|| DEFAULT_ORCHESTRATOR_MODEL` tail — which was itself a class ref — and
+  throws `UnresolvedModelRefError` naming the Agent. Registry-unknown concrete
+  ids (custom vendor ids, bare CLI aliases) still pass through raw, and
+  cross-provider pinned ids still fall back to the shipped default rather than
+  being coerced — both unchanged.
+- **Sub-agents, too.** `buildSubAgentDomainTools` skips a sub-agent whose model
+  ref resolves to nothing instead of handing `class:balanced` (the kernel's
+  `SUBAGENT_DEFAULT_MODEL`) to `LocalSubAgent`, which sends it raw. Skipped and
+  logged like an unresolvable tool grant — the hydration path is not
+  per-agent-isolated, so the orchestrator keeps working and only that one
+  delegation target is withheld.
+- **The admin UI stops lying.** On "LLM access" → "Per-agent assignment", an
+  assigned provider missing from the list now renders as a disabled
+  "`<id>` (not registered)" option instead of the browser showing the first
+  option in its place, and the row no longer borrows that first provider's
+  legal notices: the Art. 28 disclosure names the stored id and the EU-hosting
+  and subscription warnings are withheld instead of describing a provider the
+  agent never ran on. New key `adminProviders.assignments.providerMissing`.
+
+Operator-visible trade: an orchestrator whose configured model nothing can
+serve now fails to activate (plugin status `errored`, message names
+`orchestrator_model`) rather than activating and 404ing per turn.
+
+### Security — dependency sweep; time-boxed production audit exceptions
+
+2026-10-28. Rolls up 15 Dependabot PRs and clears the high/critical advisories
+that turned every audit leg red: `next` 16.4.2 (three critical/high),
+`dompurify` 3.4.17 via the web-ui override (monaco-editor pins 3.4.15),
+`@azure/msal-node` 7.1.2 (also forced under `@azure/identity`, whose latest
+release still asks for ^6), `undici` 8.12.2, `express` 5.3.0 with the patched
+`body-parser`/`multer`, `follow-redirects`, `vite` ≥ 8.1.6 and `electron`
+44.10.0 with `electron-updater`/`electron-builder` patches; node images move
+to 22.23.4. Electron 45 is left for its own PR, because a major needs the
+dispatch builds §4a asks for.
+
+The audit gate gains `"production": true` exceptions (30 days at most, every
+route named in `via`) for an advisory no release fixes in the major a
+production dependency pins. The first covers zod 3.25.x inside `botbuilder`
+4.23.3 (GHSA-mrhx-c7xc-m3w5): the fix only exists in zod 4, botbuilder throws
+on load under zod 4, and inbound Bot Framework requests never reach the array
+schemas the advisory is about. The stale `braces` exception is removed.
+
+### Fixed — a plugin id without a UI bundle gets the 404 page, not raw JSON (#1454)
+
+2026-10-27. `/plugin-ui/<pluginId>` rendered heading, subtitle and iframe for
+every *well-formed* id and answered HTTP 200, so the frame displayed the
+middleware's own API error — `{"error":"plugin_ui_not_found"}` as document text
+— for an unknown id (`/plugin-ui/does-not-exist`) and, more commonly, for an
+installed, active plugin that simply ships no `ui/` directory. The charset gate
+(#1398/#1399/#1414) was the page's only check; nothing asked whether a bundle
+existed. The page now probes the serving handler before it renders —
+`web-ui/app/_lib/pluginUiBundle.ts`, `HEAD /p/<id>/ui/index.html` against
+`MIDDLEWARE_URL`, the id encoded as one segment so scoped ids keep working —
+and calls `notFound()` in the page file itself for a 404, which yields the
+omadia 404 page with a real 404 status. `generateMetadata` gates the same way,
+so the tab stops being titled after a plugin UI that does not exist. Anything
+other than a definite 404 (5xx, timeout, unreachable middleware) counts as
+present: an outage must not masquerade as a missing plugin. The residue of
+that choice is stated rather than hidden — while the middleware is down or
+timing out, the frame can still paint that JSON, now intermittently where it
+used to be deterministic, and a 404 on a sub-resource (`.../ui/app.js`) is
+unchanged. No middleware behaviour changed — `/p/<id>/ui/*` keeps its JSON 404 for API callers; the
+`HEAD` contract the probe depends on is now pinned in
+`middleware/test/pluginUiStaticServing.test.ts`, including the
+installed-without-`ui/` case.
+
 ### Fixed — installing an older plugin version is refused instead of silently downgrading (#1455)
 
 2026-10-27. `POST /api/v1/install/registry/:id?version=<older>` and an older

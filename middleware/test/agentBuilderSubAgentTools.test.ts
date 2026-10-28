@@ -374,3 +374,51 @@ test('mcp adapters: native tool name + spec + result rendering + command split',
     'a b',
   ]);
 });
+
+/**
+ * #1451 — a sub-agent whose model ref nothing can resolve must not be built.
+ *
+ * `resolveSubAgentModel` ends in a raw tail and the parent's default is itself
+ * a class ref (`SUBAGENT_DEFAULT_MODEL = 'class:balanced'`), so with a provider
+ * that serves no model in the registry `LocalSubAgent` used to be constructed
+ * with `class:balanced` and sent it RAW — a vendor 404 on every delegated turn.
+ * The tool is skipped instead, like an unresolvable tool grant, and the skip is
+ * logged.
+ */
+test('a sub-agent whose class-ref model resolves to nothing is skipped, not built', () => {
+  const logs: string[] = [];
+  const tools = buildSubAgentDomainTools(
+    { subAgents: [sub()], toolGrants: [nativeGrant()], skills: [skill()] },
+    {
+      provider: { id: 'anthropic' } as unknown as LlmProvider,
+      // The kernel's hydration default (`src/index.ts`), with an EMPTY model
+      // registry — the #1451 state.
+      defaultModel: 'class:balanced',
+      defaultMaxTokens: 2048,
+      defaultMaxIterations: 6,
+      nativeTool: (ref) => (ref === 'web_search' ? stubNativeTool : undefined),
+      log: (m) => logs.push(m),
+    },
+  );
+
+  assert.equal(tools.length, 0, 'no delegation target may run on a class ref');
+  assert.equal(logs.length, 1);
+  assert.match(logs[0]!, /Researcher Bot/);
+  assert.match(logs[0]!, /class:balanced/);
+  assert.match(logs[0]!, /skipped/);
+});
+
+test('a resolvable model still builds the sub-agent tool', () => {
+  const tools = buildSubAgentDomainTools(
+    { subAgents: [sub()], toolGrants: [nativeGrant()], skills: [skill()] },
+    {
+      provider: { id: 'anthropic' } as unknown as LlmProvider,
+      defaultModel: 'claude-sonnet-4-6',
+      defaultMaxTokens: 2048,
+      defaultMaxIterations: 6,
+      nativeTool: (ref) => (ref === 'web_search' ? stubNativeTool : undefined),
+    },
+  );
+
+  assert.equal(tools.length, 1);
+});

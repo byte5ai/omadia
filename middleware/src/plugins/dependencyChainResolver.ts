@@ -112,6 +112,17 @@ export async function resolveDependencyParents(
       throw new DependencyChainError(res.code, res.message);
     }
     log(`[registry] ingested dependency ${id}@${ver.version} from '${r.registry}'`);
+    // #1452 — reachable when the chain parent is installed and running but its
+    // package file is gone (the case `onPackageReady` exists for): the ingest
+    // re-activates it and that can throw. The registry entry is already
+    // `errored` with the reason, and the chain's own result shape carries no
+    // room for a per-parent activation verdict, so this is where the fact is
+    // kept visible rather than dropped silently.
+    if (res.activation_error !== undefined) {
+      log(
+        `[registry] dependency ${id}@${ver.version} was ingested but did not restart: ${res.activation_error}`,
+      );
+    }
     return true;
   };
 

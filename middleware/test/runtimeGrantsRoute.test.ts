@@ -269,6 +269,9 @@ async function makeHarness(
     '/api/v1/admin/runtime',
     createRuntimeRouter({
       installedRegistry: registry,
+      // #1453 — required dependency; this suite does not exercise the verify
+      // endpoint, so it answers "this plugin declares no probe".
+      verifyConnection: async () => undefined,
       serviceRegistry: stub as never,
       turnHookRegistry: stub as never,
       backgroundJobRegistry: stub as never,

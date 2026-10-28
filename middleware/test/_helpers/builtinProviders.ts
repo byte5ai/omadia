@@ -17,6 +17,20 @@ import { afterEach, beforeEach } from 'node:test';
 
 import { registerBuiltinLlmProviders } from '../../src/platform/builtinLlmProviders.js';
 
+/**
+ * Register the bundled built-in providers into the GLOBAL model overlay, the
+ * way the kernel does at boot (`src/index.ts`, before any plugin activates).
+ * The catalog itself is a throwaway — what the registry reads is the overlay.
+ *
+ * For suites that need the models in only SOME of their tests (e.g. #1451's
+ * class-ref guards, which also exercise the modelless state) and therefore
+ * cannot use the `useBuiltinProviders()` hooks below.
+ */
+export function registerBuiltinProvidersIntoOverlay(): void {
+  clearExternalModels();
+  registerBuiltinLlmProviders(new LlmProviderCatalog());
+}
+
 /** Register the bundled built-in providers (anthropic/openai/mistral) into the
  *  global model overlay before each test; clear it after. Also registers the
  *  wire-format adapters into the process-default registry so a built provider
@@ -24,8 +38,7 @@ import { registerBuiltinLlmProviders } from '../../src/platform/builtinLlmProvid
  *  Idempotent. */
 export function useBuiltinProviders(): void {
   beforeEach(() => {
-    clearExternalModels();
-    registerBuiltinLlmProviders(new LlmProviderCatalog());
+    registerBuiltinProvidersIntoOverlay();
     registerAnthropicAdapter(defaultLlmAdapters);
     registerOpenAiAdapter(defaultLlmAdapters);
   });

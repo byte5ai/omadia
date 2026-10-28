@@ -6,7 +6,10 @@ import type { NotificationRouter } from '../platform/notificationRouter.js';
 import type { PluginStatusRegistry } from '../platform/pluginStatusRegistry.js';
 import type { UiRouteCatalog } from '../platform/uiRouteCatalog.js';
 import type { ServiceRegistry } from '../platform/serviceRegistry.js';
-import type { InstalledRegistry } from '../plugins/installedRegistry.js';
+import {
+  recordActivationSuccess,
+  type InstalledRegistry,
+} from '../plugins/installedRegistry.js';
 import type { JobScheduler } from '../plugins/jobScheduler.js';
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
 import type { SecretVault } from '../secrets/vault.js';
@@ -87,12 +90,39 @@ export class DefaultChannelRegistry implements ChannelRegistry {
       if (!plugin || plugin.plugin.kind !== 'channel') continue;
       try {
         await this.activate(entry.id);
+        // #1452 — `activate()` warns and returns when the resolver yields no
+        // usable ChannelPlugin, so a normal return is not proof the channel is
+        // up. Ask the handle map instead.
+        if (!this.isActive(entry.id)) {
+          throw new Error(
+            `the package exports no usable ChannelPlugin (resolver returned nothing for ${entry.id})`,
+          );
+        }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         console.error(
           `[channels] failed to activate ${entry.id}:`,
           message,
         );
+        // #1452 — write it down. This runtime used to record nothing at all,
+        // which is why `kind: channel` had no circuit breaker and a dead
+        // channel kept reading `active`. Deliberately `markActivationFailed`
+        // alone, no explicit status flip: at boot the threshold is the right
+        // policy (a transient infra outage must not latch the entry on the
+        // first try), exactly as the tool and dynamic-agent boot loops do it.
+        // The operator-triggered seams flip immediately instead.
+        try {
+          await this.deps.installedRegistry.markActivationFailed(
+            entry.id,
+            message,
+            entry.unresolved_requires,
+          );
+        } catch (regErr) {
+          console.error(
+            `[channels] registry markActivationFailed FAILED for ${entry.id}:`,
+            regErr instanceof Error ? regErr.message : String(regErr),
+          );
+        }
       }
     }
   }
@@ -149,6 +179,19 @@ export class DefaultChannelRegistry implements ChannelRegistry {
     }
     this.deps.routes.setActive(agentId, true);
     this.deps.webSockets?.setActive(agentId, true);
+    // #1452 — the channel is up; say so in the registry. Mirrors
+    // `toolPluginRuntime.activate`, which has always stamped its own success
+    // here. Lifting a previous `errored` is part of it: a channel the update
+    // seam flipped must stop reading failed once a version comes up. Contained
+    // — a registry write must not undo an activation that already happened.
+    try {
+      await recordActivationSuccess(this.deps.installedRegistry, agentId);
+    } catch (err) {
+      console.error(
+        `[channels] registry markActivationSucceeded FAILED for ${agentId}:`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
     console.log(`[channels] ✓ activated ${agentId}`);
   }
 

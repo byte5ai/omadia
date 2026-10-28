@@ -150,6 +150,11 @@ export function createStoreRouter(deps: StoreDeps): Router {
             deps.registry,
             deps.vault,
             deps.llmReadiness,
+            // #1453 — the same pushed status, read a second time for a
+            // different question: `withActionStatus` carries the plugin's own
+            // copy for the pill, readiness turns an `error` into a state the
+            // badge cannot render as healthy.
+            deps.pluginStatusRegistry,
           ),
         ),
       );
@@ -275,6 +280,7 @@ export function createStoreRouter(deps: StoreDeps): Router {
         deps.registry,
         deps.vault,
         deps.llmReadiness,
+        deps.pluginStatusRegistry,
       );
       // Issue #453 — decorate with the advisory code-scan verdict. Pure
       // lookup (never triggers a scan); a store hiccup degrades to "no

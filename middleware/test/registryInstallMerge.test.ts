@@ -570,6 +570,34 @@ describe('registry install router (C2)', () => {
     assert.equal(ingestCalls.length, 0, 'no ingest on resolution failure');
   });
 
+  /**
+   * #1452 — the update path. The ingest succeeds, the new version fails to
+   * activate, and the response is the only place the operator who clicked
+   * "Update" could learn that. Still 201: the package IS registered, which is
+   * what this endpoint promises.
+   */
+  it('passes the ingest activation error through on 201', async () => {
+    reset();
+    ingestResult = {
+      ...(ingestResult as Extract<IngestResult, { ok: true }>),
+      activation_error: "called ctx.services.get('entityRefBus') without declaring it",
+    };
+    const res = await post(encodeURIComponent('@omadia/plugin-office'));
+    assert.equal(res.status, 201);
+    const body = (await res.json()) as Record<string, unknown>;
+    assert.equal(
+      body['activation_error'],
+      "called ctx.services.get('entityRefBus') without declaring it",
+    );
+  });
+
+  it('omits activation_error when the plugin came up', async () => {
+    reset();
+    const res = await post(encodeURIComponent('@omadia/plugin-office'));
+    const body = (await res.json()) as Record<string, unknown>;
+    assert.equal('activation_error' in body, false);
+  });
+
   it('422 when the ingest pipeline rejects the package', async () => {
     reset();
     ingestResult = { ok: false, code: 'package.id_conflict', message: 'collides with a built-in' };
