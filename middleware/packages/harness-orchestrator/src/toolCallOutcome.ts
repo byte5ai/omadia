@@ -21,7 +21,9 @@ import { SUGGEST_FOLLOW_UPS_TOOL_NAME } from './tools/suggestFollowUpsTool.js';
 import type { TurnHookPayload } from './turnHooks.js';
 import { V4_RENDER_TOOL_NAME } from './v4RenderSideChannel.js';
 
-const BOOKKEEPING_TOOL_NAMES: ReadonlySet<string> = new Set([
+/** Mirrored by `PLAN_BOOKKEEPING_TOOL_NAMES` (`@omadia/plugin-api`), which
+ *  plan recall reads; a test keeps the two equal. */
+export const BOOKKEEPING_TOOL_NAMES: ReadonlySet<string> = new Set([
   MEMORY_TOOL_NAME,
   V4_RENDER_TOOL_NAME,
   SUGGEST_FOLLOW_UPS_TOOL_NAME,

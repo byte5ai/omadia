@@ -14,8 +14,10 @@
  * `ask_user_choice` or `v4_render_answer` is attached to an answer, never a
  * preamble.
  *
- * When no later text arrives (the final message is empty, or a choice card
- * ends the turn), the provisional text is all there is and is delivered.
+ * When no later text arrives (the final message is empty), the provisional
+ * text is all there is and is delivered. A choice or MCP-input card that ends
+ * the turn carries its own question, so its lead-in is the kept text only
+ * ({@link keptParts}).
  */
 
 import { MEMORY_TOOL_NAME } from './registry/subAgentMemoryTool.js';
@@ -26,25 +28,32 @@ export class AnswerTextAccumulator {
   private provisional: string[] = [];
   private workResultSeen = false;
 
-  /** Record one model iteration: its text blocks and the tools it called. */
-  addIteration(text: readonly string[], toolNames: readonly string[]): void {
+  /** Record one model iteration: its text blocks and the tools it called.
+   *  Returns true when the iteration's text was held back as provisional
+   *  preamble — the streaming loop then retracts it from the live preview. */
+  addIteration(text: readonly string[], toolNames: readonly string[]): boolean {
     const gathersData =
       toolNames.length > 0 &&
       toolNames.every((n) => n === MEMORY_TOOL_NAME || !isBookkeepingTool(n));
-    if (text.length > 0) {
-      if (gathersData && !this.workResultSeen) {
-        this.provisional = [...this.provisional, ...text];
-      } else {
-        this.kept = [...this.kept, ...text];
-        this.provisional = [];
-      }
+    const provisional = text.length > 0 && gathersData && !this.workResultSeen;
+    if (provisional) {
+      this.provisional = [...this.provisional, ...text];
+    } else if (text.length > 0) {
+      this.kept = [...this.kept, ...text];
+      this.provisional = [];
     }
     if (toolNames.some((n) => !isBookkeepingTool(n))) this.workResultSeen = true;
+    return provisional;
   }
 
   /** The answer parts collected so far. */
   parts(): string[] {
     return this.kept.length > 0 ? [...this.kept] : [...this.provisional];
+  }
+
+  /** The answer text without provisional preamble — a card's lead-in. */
+  keptParts(): string[] {
+    return [...this.kept];
   }
 
   /** Drop all text (a forced retry starts the answer over). */

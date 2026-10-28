@@ -16,6 +16,7 @@ import {
   type RecalledPlan,
   type RecalledProcess,
   type TurnSearchHit,
+  isEvidencedPlanStepDone,
 } from '@omadia/plugin-api';
 
 import type {
@@ -1169,6 +1170,10 @@ export class ContextRetriever {
           const goal = String(s.props['goal'] ?? '');
           if (goal.length > 0) goalTexts.push(goal);
           if (status === 'done') {
+            // #1502 — a pre-fix plan-runner closed steps no call worked on;
+            // such a step is neither finished work nor open. A side-effecting
+            // one stays done: never invite a second run of a write.
+            if (!isEvidencedPlanStepDone(s.props) && s.props['sideEffecting'] !== true) continue;
             doneCount += 1;
             if (goal.length > 0) completedStepGoals.push(goal);
           } else if (status === 'pending' || status === 'in_progress') {
