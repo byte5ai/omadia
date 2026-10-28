@@ -3,7 +3,10 @@ import type { Request, Response } from 'express';
 
 import type { RegistryClient } from '../plugins/registryClient.js';
 import { RegistryError } from '../plugins/registryClient.js';
-import type { PackageUploadService } from '../plugins/packageUploadService.js';
+import type {
+  IngestSuccess,
+  PackageUploadService,
+} from '../plugins/packageUploadService.js';
 import {
   ingestFailureBody,
   ingestFailureStatus,
@@ -165,6 +168,7 @@ export function createRegistryInstallRouter(deps: RegistryInstallDeps): Router {
         replaced_version?: string;
         activation_error?: string;
         activated?: boolean;
+        activation?: IngestSuccess['activation'];
       } = { plugin_id: id, version: verEntry.version };
       if (alreadyPresent) {
         log(
@@ -235,7 +239,7 @@ export function createRegistryInstallRouter(deps: RegistryInstallDeps): Router {
         ...(ingested.activation_error !== undefined
           ? { activation_error: ingested.activation_error }
           : {}),
-        ...(result.activation !== undefined ? { activation: result.activation } : {}),
+        ...(ingested.activation !== undefined ? { activation: ingested.activation } : {}),
         // #1463 — the running plugin was (re)started by this ingest.
         ...(ingested.activated === true ? { activated: true } : {}),
         // Missing depends_on parents to install first (empty → install target
