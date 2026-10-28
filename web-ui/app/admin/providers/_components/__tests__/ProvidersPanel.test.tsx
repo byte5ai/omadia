@@ -136,6 +136,52 @@ describe('<ProvidersPanel />', () => {
     expect(screen.queryByText(/Add key/)).toBeNull();
   });
 
+  // #1460 — a keyless provider (Ollama) is `connected` without any key.
+  it('offers no "Change/Remove key" for a keyless provider with no key stored', async () => {
+    mockGetProviders.mockResolvedValue(
+      providersResponse({
+        providers: [
+          provider({
+            id: 'ollama',
+            label: 'Ollama (local)',
+            connected: true,
+            status: 'unverified',
+            requiresApiKey: false,
+            hasKey: false,
+          }),
+        ],
+      }),
+    );
+    renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+    expect(await screen.findByText(/Add key \(optional\)/)).toBeTruthy();
+    expect(screen.queryByText(/Change key/)).toBeNull();
+    expect(screen.queryByText('Remove key')).toBeNull();
+    expect(screen.getByText('Test connection')).toBeTruthy();
+    expect(screen.queryByText('Test key')).toBeNull();
+  });
+
+  it('offers "Change/Remove key" for a keyless provider once a key is stored', async () => {
+    mockGetProviders.mockResolvedValue(
+      providersResponse({
+        providers: [
+          provider({
+            id: 'ollama',
+            label: 'Ollama (local)',
+            connected: true,
+            status: 'unverified',
+            requiresApiKey: false,
+            hasKey: true,
+          }),
+        ],
+      }),
+    );
+    renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+    expect(await screen.findByText(/Change key/)).toBeTruthy();
+    expect(screen.getByText('Remove key')).toBeTruthy();
+  });
+
   it('opens the key input and PATCHes the new key when "Change key" is clicked', async () => {
     mockGetProviders.mockResolvedValue(
       providersResponse({
