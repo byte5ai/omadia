@@ -79,6 +79,36 @@ next boot removes; `blank` no longer points at `/store/upload`. Apply skips a
 plugin whose capability is already provided (`skipped[].reason:
 'capability_provided'`), the shipped profile descriptions are translated, and
 the outcome says that the plugins become active after a restart.
+### Fixed — the storage overlay pulls again: SeaweedFS replaces MinIO (#1506)
+
+2026-10-28. `minio/minio` and `minio/mc` were removed from Docker Hub, and
+quay.io serves neither tag, so `docker compose -f docker-compose.yaml -f
+docker-compose.storage.yaml up -d` failed with `pull access denied` on every
+machine without a cached copy. That meant no chat attachments and no
+diagrams/office on a fresh install.
+
+`docker-compose.storage.yaml` now runs **SeaweedFS** (`chrislusf/seaweedfs:4.51`,
+`weed mini`, Apache-2.0, released weekly on Docker Hub) with its S3 API on the
+old port 9000. The bucket-init step uses **`amazon/aws-cli:2.39.0`** instead of
+`mc`: it creates the `diagrams` bucket if missing and sets the same one-rule
+90-day expiration. SeaweedFS stores the rule and applies it with its built-in
+`s3_lifecycle` job (enabled by default, runs daily). The expiry itself was not
+observed end to end. Both images are pinned to a version tag. Services are now
+called `s3` / `s3-init`, the volume `s3-data`, and the local credentials
+`omadia` / `omadia-local-secret` (`middleware/.env.example` updated for
+bare-metal dev). The kernel needs no change because it already uses path-style
+S3. Objects in an old `minio-data` volume are not migrated (see the
+getting-started troubleshooting, which also covers `--remove-orphans` for
+the old containers).
+
+CI now also renders the storage, diagrams, embeddings and update overlays and
+checks with `docker manifest inspect` that each third-party image they
+reference can still be pulled, so a vanished upstream image fails in CI and not
+on a user's machine. Base images of the locally built sidecars (pii-detector,
+skillspector) are not covered. Fly (Tigris)
+and `render.yaml` (no object storage) never used these images and are
+unaffected.
+
 ### Fixed — plugin registries: a hanging one no longer blanks the store, failures are visible, removal sticks, changes are audited (#1458, #1482, #1483, #1487)
 
 2026-10-28. **#1458** — one registry that accepted the connection and never
@@ -148,6 +178,7 @@ Audit gains a "Plugin registries" filter.
   allow-scripts` on purpose. It now says the view runs with the operator's
   session and the same access as the rest of the interface, and that it is not
   isolated from it.
+
 ### Fixed — a boolean setup field with `default: "true"` installs as `true` (#1464)
 
 2026-10-28. dev-platform 0.3.5 declares `webhooks_enabled` with

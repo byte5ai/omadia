@@ -115,7 +115,7 @@ object storage are off by default. Each is an overlay file you add with `-f`,
 which starts the sidecar and switches on the matching plugin.
 
 ```bash
-# Object storage (MinIO): chat attachment ingestion
+# Object storage (SeaweedFS, S3 API on localhost:9000): chat attachments
 docker compose -f docker-compose.yaml -f docker-compose.storage.yaml up -d
 
 # Diagram rendering (Kroki). Needs object storage, so add both overlays:
@@ -147,6 +147,19 @@ re-run `docker compose up -d`.
 repeated `-f` flags, not Compose profiles. Pass the full filename, for example
 `-f docker-compose.yaml -f docker-compose.storage.yaml`. A bare `--profile
 storage` matches nothing here.
+
+**Storage overlay fails with `pull access denied for minio/minio`.** Your
+checkout predates #1506. MinIO's images were removed from Docker Hub, and the
+overlay now runs SeaweedFS (`chrislusf/seaweedfs`) with an `aws-cli` bucket-init
+step. Pull the latest `docker-compose.storage.yaml` and start it with
+`--remove-orphans` so the old `minio` / `minio-init` containers go away:
+`docker compose -f docker-compose.yaml -f docker-compose.storage.yaml up -d --remove-orphans`.
+Objects in the old
+`minio-data` volume are not migrated: diagram PNGs are rendered again on demand,
+but attachments stored before the switch can no longer be read (the bucket
+expires every object after 90 days, so this only affects recent ones). Once you
+no longer need it, remove the old volume with
+`docker volume ls | grep minio-data` and `docker volume rm <name>`.
 
 **Node version mismatch from source.** The middleware pins its Node major
 version in `.nvmrc` and stops `npm install` on a different one, because
