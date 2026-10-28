@@ -109,7 +109,10 @@ export async function resolveDependencyParents(
       // back under an installed child), so it surfaces as a chain error with
       // the pipeline's own code rather than being papered over here.
       if (deps.catalog.get(id)) return true;
-      throw new DependencyChainError(res.code, res.message);
+      throw new DependencyChainError(res.code, res.message, {
+        ...(res.params !== undefined ? { params: res.params } : {}),
+        ...(res.details !== undefined ? { details: res.details } : {}),
+      });
     }
     log(`[registry] ingested dependency ${id}@${ver.version} from '${r.registry}'`);
     // #1452 — reachable when the chain parent is installed and running but its
@@ -175,10 +178,20 @@ export async function resolveDependencyParents(
 
 export class DependencyChainError extends Error {
   readonly code: string;
-  constructor(code: string, message: string) {
+  /** #1477 — the refused parent's ingest `params`/`details`, kept so the Hub
+   *  route answers a parent's refusal with the same body as the target's. */
+  readonly params?: Record<string, string>;
+  readonly details?: unknown;
+  constructor(
+    code: string,
+    message: string,
+    extra: { params?: Record<string, string>; details?: unknown } = {},
+  ) {
     super(message);
     this.name = 'DependencyChainError';
     this.code = code;
+    if (extra.params !== undefined) this.params = extra.params;
+    if (extra.details !== undefined) this.details = extra.details;
   }
 }
 

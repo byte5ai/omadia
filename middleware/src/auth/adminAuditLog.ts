@@ -67,6 +67,8 @@ export type AuditAction =
   // plugin's raw results to the LLM, so who flipped it belongs in the trail.
   // `before`/`after` carry only those two keys.
   | 'plugin.privacy_change'
+  // #1490 — an uploaded (or Hub-fetched), not installed package was removed.
+  | 'plugin.package_remove'
   // #1342 — a stdio MCP server was saved (manual or catalog import). It runs
   // as a child process of the middleware, so who added it belongs in the
   // trail. `after` holds name + source, never the command line.

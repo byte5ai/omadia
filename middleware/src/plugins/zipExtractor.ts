@@ -112,7 +112,12 @@ export interface ExtractResult {
   totalBytes: number;
 }
 
+const MAX_PARAM_CHARS = 256;
+const MAX_MESSAGE_CHARS = 512;
+
 export class ZipExtractionError extends Error {
+  public readonly params?: Record<string, string>;
+
   constructor(
     public readonly code:
       | 'zip.invalid'
@@ -123,10 +128,61 @@ export class ZipExtractionError extends Error {
       | 'zip.file_too_large'
       | 'zip.total_too_large',
     message: string,
+    /** #1488 — what the UI needs to name the problem in the operator's
+     *  locale, e.g. `{ entry }` for the offending archive entry. */
+    params?: Record<string, string>,
   ) {
-    super(message);
+    // The message carries the entry name too — same clip.
+    super(message.length > MAX_MESSAGE_CHARS ? `${message.slice(0, MAX_MESSAGE_CHARS)}…` : message);
     this.name = 'ZipExtractionError';
+    // An entry name is the uploader's text and can be up to 64 KiB long; it
+    // travels into a JSON response and onto the operator's screen.
+    if (params) {
+      this.params = Object.fromEntries(
+        Object.entries(params).map(([k, v]) => [k, v.slice(0, MAX_PARAM_CHARS)]),
+      );
+    }
   }
+}
+
+/**
+ * #1488 — yauzl validates entry names itself and refuses `..` segments,
+ * absolute paths and backslashes BEFORE an entry reaches the checks below,
+ * as a plain `Error` on the zipfile's `error` event. Unwrapped, that error
+ * escaped `ingest` and the upload answered 500 `internal` for exactly the
+ * case `zip.path_escape` exists for. These are yauzl 3's own messages
+ * (`validateFileName` in yauzl/index.js); the test suite pins them against
+ * the installed version.
+ */
+const YAUZL_UNSAFE_NAME =
+  /^(?:invalid characters in fileName|absolute path|invalid relative path): ([\s\S]*)$/;
+
+/**
+ * Turn what the ARCHIVE READER threw into a {@link ZipExtractionError}, so
+ * every caller can map it to a 4xx. Only two shapes are the archive's fault:
+ * yauzl's own errors (a plain `Error` without a `code`) and zlib's inflate
+ * errors (`code: 'Z_…'`). Everything else passes through unchanged — our own
+ * errors, filesystem errors (`ENOSPC`, `EACCES`, …), Node stream errors
+ * (`ERR_…`) and programming errors (`TypeError`, …): those are this host's
+ * fault, and dressing them up as `zip.invalid` would hide a 500 behind a 422.
+ */
+export function toZipExtractionError(err: unknown): unknown {
+  if (err instanceof ZipExtractionError) return err;
+  if (!(err instanceof Error)) return err;
+  const code = (err as NodeJS.ErrnoException).code;
+  const fromYauzl = err.constructor === Error && code === undefined;
+  const fromZlib = typeof code === 'string' && code.startsWith('Z_');
+  if (!fromYauzl && !fromZlib) return err;
+  const unsafe = YAUZL_UNSAFE_NAME.exec(err.message);
+  if (unsafe) {
+    const entry = unsafe[1] ?? '';
+    return new ZipExtractionError(
+      'zip.path_escape',
+      `zip contains an escaping path: ${entry}`,
+      { entry },
+    );
+  }
+  return new ZipExtractionError('zip.invalid', err.message);
 }
 
 export async function extractZipToDir(
@@ -149,7 +205,7 @@ export async function extractZipToDir(
 
       zipfile.on('entry', (entry: yauzl.Entry) => {
         const done = (err?: Error): void => {
-          if (err) reject(err);
+          if (err) reject(toZipExtractionError(err));
           else zipfile.readEntry();
         };
 
@@ -165,6 +221,7 @@ export async function extractZipToDir(
             throw new ZipExtractionError(
               'zip.symlink',
               `zip contains a symlink (${entry.fileName}) — not allowed`,
+              { entry: entry.fileName },
             );
           }
 
@@ -173,6 +230,7 @@ export async function extractZipToDir(
             throw new ZipExtractionError(
               'zip.path_escape',
               `zip contains an escaping path: ${entry.fileName}`,
+              { entry: entry.fileName },
             );
           }
 
@@ -181,6 +239,7 @@ export async function extractZipToDir(
             throw new ZipExtractionError(
               'zip.path_escape',
               `resolved path escapes staging root: ${entry.fileName}`,
+              { entry: entry.fileName },
             );
           }
 
@@ -198,6 +257,7 @@ export async function extractZipToDir(
               throw new ZipExtractionError(
                 'zip.forbidden_extension',
                 `entry ${relativeName} has a disallowed extension (${ext || '<none>'})`,
+                { entry: relativeName },
               );
             }
           } else {
@@ -221,6 +281,7 @@ export async function extractZipToDir(
               throw new ZipExtractionError(
                 'zip.forbidden_extension',
                 `entry ${relativeName} has a disallowed extension (${ext || '<none>'})`,
+                { entry: relativeName },
               );
             }
           }
@@ -264,7 +325,7 @@ export async function extractZipToDir(
       });
 
       zipfile.on('end', () => resolve());
-      zipfile.on('error', (err) => reject(err));
+      zipfile.on('error', (err) => reject(toZipExtractionError(err)));
     });
   } finally {
     try {
