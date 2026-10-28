@@ -248,7 +248,9 @@ function PluginConfigRow(props: {
       ? field.default
       : Array.isArray(field.default)
         ? field.default.join(', ')
-        : undefined;
+        : typeof field.default === 'number'
+          ? String(field.default)
+          : undefined;
 
   return (
     <li className="flex flex-col gap-2 py-4 sm:flex-row sm:items-start sm:gap-6">

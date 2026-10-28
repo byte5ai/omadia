@@ -1155,7 +1155,9 @@ export interface PluginSetupFieldDto {
   type: SetupFieldType;
   /** #602 (OM-17) — localized help map; same contract as `label`. */
   help?: LocalizedMarkdown | string;
-  default?: string | string[];
+  /** Typed like the manifest field: `boolean` (#1464), `number` for an
+   *  `integer` field (#1524), `string[]` for a `host_list`. */
+  default?: string | string[] | boolean | number;
   enum?: Array<{ value: string; label: string; label_localized?: LocalizedMarkdown }>;
 }
 

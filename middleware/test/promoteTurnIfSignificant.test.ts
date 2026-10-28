@@ -158,6 +158,30 @@ describe('Slice 4b · promoteTurnIfSignificant', () => {
     assert.match(createCalls[0]!.summary, /pgvector|Migration/);
   });
 
+  it('#1527: skips with no-excerpt when the extractor is installed but produced none', async () => {
+    const { pool } = makeFakePool({
+      significanceRows: [{ significance: 0.9 }],
+    });
+    const { kg, createCalls } = makeFakeKg({});
+    const logs: string[] = [];
+    const out = await promoteTurnIfSignificant({
+      pool: pool as never,
+      tenantId: 'byte5',
+      kg,
+      turnId: TURN_ID,
+      userId: USER_ID,
+      threshold: 0.7,
+      excerptRequired: true,
+      fallbackAssistantAnswer: FALLBACK_ANSWER,
+      log: (msg) => logs.push(msg),
+    });
+    assert.equal(out.promoted, false);
+    assert.equal(out.reason, 'no-excerpt');
+    assert.equal(out.significance, 0.9);
+    assert.equal(createCalls.length, 0, 'the raw answer prefix must not be stored');
+    assert.match(logs.join('\n'), /reason=no-excerpt/);
+  });
+
   it('skips when significance < threshold', async () => {
     const { pool } = makeFakePool({
       significanceRows: [{ significance: 0.4 }],

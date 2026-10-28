@@ -35,6 +35,7 @@ import type { LlmProvider } from '@omadia/llm-provider';
 import { collectText, textMessage } from '@omadia/llm-provider';
 
 import type { OpenJobPrivacy } from './jobPrivacy.js';
+import { parseLlmJson } from './llmJson.js';
 
 export type RecallCandidateKind = 'plan' | 'process' | 'insight';
 
@@ -193,7 +194,7 @@ export function createRecallRelevanceJudge(
           log('[recall-judge] empty response — keeping all candidates');
           return allIds;
         }
-        const parsed = parseJsonStrict(replyText);
+        const parsed = parseLlmJson(replyText);
         const rawRelevant = (parsed as { relevant?: unknown } | null)?.relevant;
         if (!Array.isArray(rawRelevant)) {
           log(
@@ -227,18 +228,4 @@ export function createRecallRelevanceJudge(
       }
     },
   };
-}
-
-/** Parse strict JSON, tolerating a stray ```fence the model might add. */
-function parseJsonStrict(raw: string): unknown {
-  const trimmed = raw
-    .trim()
-    .replace(/^```(?:json)?\s*/i, '')
-    .replace(/```$/i, '')
-    .trim();
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    return null;
-  }
 }
