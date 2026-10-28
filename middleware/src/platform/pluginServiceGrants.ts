@@ -142,11 +142,6 @@ export const BUNDLED_LEGACY_SERVICE_GRANTS_2026_08_20: Readonly<
   '@omadia/knowledge-graph-inmemory': Object.freeze(['turnContext']),
   '@omadia/knowledge-graph-neon': Object.freeze(['turnContext']),
   '@omadia/diagrams': Object.freeze(['memoryStore']),
-  '@omadia/ui-orchestrator': Object.freeze([
-    'agentToolInvoker',
-    'canvasOutputRegistry',
-    'deterministicActionRegistry',
-  ]),
   '@omadia/plugin-plan-runner': Object.freeze([
     'knowledgeGraph',
     'processMemory',
@@ -157,7 +152,6 @@ export const BUNDLED_LEGACY_SERVICE_GRANTS_2026_08_20: Readonly<
     'graphPool',
     'processMemory',
   ]),
-  '@omadia/ui-channel': Object.freeze(['graphTenantId']),
   '@omadia/orchestrator': Object.freeze([
     'attachmentBindings',
     'audienceGrants',
