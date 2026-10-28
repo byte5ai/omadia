@@ -922,12 +922,15 @@ function AssignmentRow({
   t: T;
 }): React.ReactElement {
   // The row's own provider may be missing from `providers[]` (a provider with
-  // no models, e.g. its plugin was uninstalled). The fallback to `providers[0]`
-  // is kept for the provider-level notices, but the model select must never
-  // borrow another provider's models or class defaults (#1083): that would
-  // label a stored ref with a model the agent is not running.
+  // no models, e.g. its plugin was uninstalled). Nothing on the row may then be
+  // borrowed from another provider — not its models or class defaults (#1083),
+  // and not its legal notices (#1451): an agent assigned to a missing provider
+  // used to show the FIRST provider's label, EU-hosting note and subscription
+  // warning, i.e. a data-protection statement about a provider it never ran on.
+  // Absent own provider ⇒ the conservative default (disclosure required, no
+  // provider-specific claims) and the stored id as the name.
   const ownProvider = providers.find((p) => p.id === a.provider);
-  const selectedProvider = ownProvider ?? providers[0];
+  const providerName = ownProvider?.label ?? a.provider;
   const models = ownProvider?.models ?? [];
   const disabled = !a.installed;
   // Per-turn routing (#1099) is Anthropic-only — plugin.ts suppresses it under
@@ -937,7 +940,7 @@ function AssignmentRow({
   // Data-driven: surface the AVV / Art. 28 third-party disclosure unless the
   // provider opts out via its policy (the server defaults unknown providers to
   // requiring it). Replaces the previous hard-coded `!== 'anthropic'` check.
-  const showDisclosure = selectedProvider?.requiresAvvDisclosure ?? true;
+  const showDisclosure = ownProvider?.requiresAvvDisclosure ?? true;
 
   const onProvider = (providerId: string): void => {
     const next = providers.find((p) => p.id === providerId);
@@ -991,6 +994,18 @@ function AssignmentRow({
           onChange={(e) => onProvider(e.target.value)}
           className={`${selectCls} sm:max-w-[220px]`}
         >
+          {/* #1451 — the stored provider may be missing from `providers[]` (no
+              models, e.g. its plugin was uninstalled). Without an option
+              carrying that value the browser renders the FIRST option instead,
+              so the row claimed the agent runs on a provider it was never
+              assigned to. A disabled option keeps the select honest; the stored
+              assignment is unchanged either way (`onChange` only fires on a
+              real selection). */}
+          {ownProvider === undefined && (
+            <option value={a.provider} disabled>
+              {t('assignments.providerMissing', { provider: a.provider })}
+            </option>
+          )}
           {providers.map((p) => {
             // A tool-less provider can't drive a tool plugin → offer but disable.
             const blocked = p.toolLess === true && a.requiresTools === true;
@@ -1087,23 +1102,23 @@ function AssignmentRow({
           The gate is deliberately left unchanged here. */}
       {showDisclosure && (
         <p className="rounded-md border border-[color:var(--warning)]/40 bg-[color:var(--warning)]/10 px-3 py-2 text-[12px] leading-[1.5] text-[color:var(--warning)]">
-          {t('assignments.avvDisclosure', { provider: selectedProvider?.label ?? a.provider })}
+          {t('assignments.avvDisclosure', { provider: providerName })}
         </p>
       )}
-      {selectedProvider?.euHosted && (
+      {ownProvider?.euHosted && (
         <p className="rounded-md border border-[color:var(--border)] bg-[color:var(--border)]/10 px-3 py-2 text-[12px] leading-[1.5] text-[color:var(--fg-muted)]">
           {t('assignments.euHostedNote', {
-            provider: selectedProvider?.label ?? a.provider,
+            provider: providerName,
           })}
         </p>
       )}
       {/* Subscription CLIs (consumer plan): no AVV/DPA CAN exist — a stronger
           caveat than the ordinary third-party disclosure, so it gets the
           warning styling, not the muted note styling. */}
-      {selectedProvider?.subscriptionNotice && (
+      {ownProvider?.subscriptionNotice && (
         <p className="rounded-md border border-[color:var(--warning)]/40 bg-[color:var(--warning)]/10 px-3 py-2 text-[12px] leading-[1.5] text-[color:var(--warning)]">
           {t('assignments.subscriptionNotice', {
-            provider: selectedProvider?.label ?? a.provider,
+            provider: providerName,
           })}
         </p>
       )}

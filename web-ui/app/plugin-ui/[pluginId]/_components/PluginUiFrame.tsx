@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 
+import { pluginUiEntryPath } from '@/app/_lib/pluginId';
+
 /**
  * The iframe that hosts a plugin's compiled SPA (epic #470 C8).
  *
@@ -111,7 +113,8 @@ export function PluginUiFrame({ pluginId }: { pluginId: string }): React.ReactEl
 
   const src = useMemo(() => {
     const params = new URLSearchParams({ theme, palette, locale });
-    return `/p/${encodeURIComponent(pluginId)}/ui/index.html?${params.toString()}`;
+    // Same path the host page probed before it rendered this frame (#1454).
+    return `${pluginUiEntryPath(pluginId)}?${params.toString()}`;
   }, [pluginId, theme, palette, locale]);
 
   // Rendering the iframe before the theme is known would load the bundle once

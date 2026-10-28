@@ -310,8 +310,10 @@ export function parseLlmProviderManifestBlock(
  *  Shared by the boot-time registration loop and the hot-install path
  *  (InstallService.onInstalled) so a provider plugin installed at runtime lands
  *  in the catalog + model registry — and thus the admin Providers page —
- *  WITHOUT a middleware restart. Idempotent: `catalog.register` replaces an
- *  existing same-id entry (disposing the old models). */
+ *  WITHOUT a middleware restart. `catalog.register` replaces an existing
+ *  same-id entry (disposing the old models) — for a BUNDLED id that is a
+ *  takeover, not an idempotent no-op; the catalog's base layer is what lets
+ *  {@link unregisterPluginLlmProvider} undo it (`registerBase`, #1451). */
 export function registerPluginLlmProvider(
   manifest: unknown,
   config: Record<string, unknown> | undefined,
@@ -337,7 +339,11 @@ export function registerPluginLlmProvider(
  *  provider (and its models) from `catalog`. Returns the unregistered provider
  *  id, or `undefined` when the manifest declares no provider OR the provider was
  *  not registered. Throws only on a malformed block (which never registered) —
- *  the caller ignores. */
+ *  the caller ignores.
+ *
+ *  For a BUNDLED id the catalog puts the bundled descriptor back, so the
+ *  returned id is still a live provider afterwards (#1451); the caller reads
+ *  `catalog.get(id)` to tell the two cases apart. */
 export function unregisterPluginLlmProvider(
   manifest: unknown,
   catalog: LlmProviderCatalog,

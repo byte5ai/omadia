@@ -1116,6 +1116,16 @@ async function main(): Promise<void> {
         console.log(
           `[middleware] llm provider '${descriptor.id}' registered from ${pluginId} (${String(descriptor.models.length)} seed model(s), baseURL ${descriptor.baseURL}, discovery ${descriptor.discovery !== undefined ? 'on' : 'off'})`,
         );
+        // #1451 — registering under a BUNDLED id replaces the built-in
+        // descriptor wholesale (baseURL, wire format, models) while the stored
+        // credentials stay keyed on the id. That was silent; say it out loud,
+        // so a deployment whose traffic suddenly runs through a plugin's
+        // baseURL can see why.
+        if (llmProviderCatalog.isBundled(descriptor.id)) {
+          console.warn(
+            `[middleware] llm provider '${descriptor.id}' from ${pluginId} SHADOWS the bundled provider of the same id — its baseURL (${descriptor.baseURL}) and models now serve that id, with the stored '${descriptor.id}' credentials; uninstalling the plugin restores the built-in`,
+          );
+        }
         // #1080 — the descriptor decides keyless/oauth/baseURL/wire format;
         // a cached resolution against the previous one is stale.
         kernelProviderPool.invalidate(descriptor.id);
@@ -1131,20 +1141,46 @@ async function main(): Promise<void> {
     }
   };
   const unregisterProviderFromPlugin = (pluginId: string): void => {
+    let id: string | undefined;
     try {
-      const id = unregisterPluginLlmProvider(
+      id = unregisterPluginLlmProvider(
         pluginCatalog.get(pluginId)?.manifest,
         llmProviderCatalog,
       );
-      if (id !== undefined) {
-        kernelProviderPool.invalidate(id);
-        console.log(
-          `[middleware] llm provider '${id}' unregistered (plugin ${pluginId} uninstalled)`,
-        );
-      }
-    } catch {
-      // malformed block never registered — nothing to clean up
+    } catch (err) {
+      // A MALFORMED block never registered — nothing to clean up, and that is
+      // the ordinary case here. A throw from the catalog itself (#1451: the
+      // base-layer restore re-registers the bundled models) is not, and it
+      // leaves the id unregistered with no invalidate/refresh/rebuild — so say
+      // so instead of swallowing it.
+      console.warn(
+        `[middleware] llm provider cleanup for ${pluginId} did not complete:`,
+        err instanceof Error ? err.message : err,
+      );
+      return;
     }
+    if (id === undefined) return;
+    kernelProviderPool.invalidate(id);
+    // #1451 — the catalog restores a BUNDLED descriptor the plugin had
+    // shadowed, so the id is a live provider again. Heal the consumers the way
+    // the install path does: the restored models are an offline seed (discovery
+    // ran against the plugin's catalog), and orchestrator, verifier and extras
+    // still hold what they resolved while the plugin was installed. Kept
+    // OUTSIDE the catch above so a throw in the healing itself is visible
+    // rather than read as "malformed manifest".
+    const restored = llmProviderCatalog.get(id);
+    console.log(
+      `[middleware] llm provider '${id}' unregistered (plugin ${pluginId} uninstalled)${
+        restored !== undefined
+          ? ` — bundled provider restored (${String(restored.models.length)} seed model(s), baseURL ${restored.baseURL})`
+          : ''
+      }`,
+    );
+    if (restored === undefined) return;
+    if (restored.discovery !== undefined) {
+      void modelCatalogSync.refresh(id);
+    }
+    void classDefaultRebuilder.onDefaultsChanged(id);
   };
 
   // Populate the LLM provider catalog from INSTALLED plugins at boot. Done

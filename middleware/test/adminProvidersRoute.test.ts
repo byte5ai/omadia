@@ -20,6 +20,10 @@ import {
   BUILTIN_LLM_PROVIDERS,
   registerBuiltinLlmProviders,
 } from '../src/platform/builtinLlmProviders.js';
+import {
+  registerPluginLlmProvider,
+  unregisterPluginLlmProvider,
+} from '../src/platform/llmProviderManifest.js';
 import { __clearVerificationCache } from '../src/platform/providerCredentialVerifier.js';
 import type {
   ModelCatalogSync,
@@ -919,5 +923,90 @@ describe('admin providers route — live model discovery', () => {
     // fire-and-forget: give the microtask a tick
     await new Promise((r) => setTimeout(r, 10));
     assert.deepEqual(sync.calls, ['openai']);
+  });
+});
+
+/**
+ * #1451 — the route after a provider plugin that SHADOWED a built-in id is
+ * uninstalled. The issue's repro: `GET /api/v1/admin/providers` had no
+ * `anthropic` entry and `POST /anthropic/verify` answered
+ * `404 providers.unknown_provider`, because the catalog entry the plugin had
+ * replaced was simply deleted. The catalog's base layer restores it, so both
+ * endpoints must behave as they did before the install.
+ */
+describe('admin providers route — after a shadowing provider plugin is uninstalled', () => {
+  let h: Harness;
+  afterEach(async () => {
+    if (h) await h.close();
+    clearExternalModels();
+    __clearVerificationCache();
+  });
+
+  /** The `llm_provider` block a plugin like `@omadia/plugin-llm-anthropic`
+   *  ships: the provider id the bundled descriptor already owns. */
+  const SHADOWING_MANIFEST = {
+    kind: 'extension',
+    llm_provider: {
+      id: 'anthropic',
+      label: 'Anthropic (plugin)',
+      wire_format: 'anthropic',
+      default_base_url: 'https://plugin.example/anthropic',
+      models: [
+        {
+          id: 'anthropic:plugin-model-1',
+          model_id: 'plugin-model-1',
+          label: 'Plugin Model 1',
+          class: 'frontier',
+          class_default: true,
+          max_tokens: 8192,
+          context_window: 200_000,
+          vision: false,
+        },
+      ],
+    },
+  };
+
+  it('still lists anthropic with its bundled models, and verify answers 200', async () => {
+    h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }], {
+      probeStatus: 200,
+    });
+    await h.vault.setMany(ORCH, {
+      [providerApiKeyVaultKey('anthropic')]: 'sk-ant-good',
+    });
+
+    // Install, then uninstall the shadowing plugin — the exact sequence from
+    // the issue, through the same helpers the kernel's install/uninstall path
+    // uses.
+    registerPluginLlmProvider(SHADOWING_MANIFEST, undefined, h.catalog);
+    const listedWhileShadowed = await getProviders(h);
+    assert.equal(
+      listedWhileShadowed.providers
+        .find((p) => p.id === 'anthropic')
+        ?.models.some((m) => m.modelId === 'plugin-model-1'),
+      true,
+      'while installed the plugin legitimately serves the id',
+    );
+
+    unregisterPluginLlmProvider(SHADOWING_MANIFEST, h.catalog);
+
+    const body = await getProviders(h);
+    const anthropic = body.providers.find((p) => p.id === 'anthropic');
+    assert.ok(anthropic, 'the bundled anthropic provider must be listed again');
+    assert.ok(
+      anthropic.models.some((m) => m.modelId === 'claude-opus-5'),
+      'with its bundled models, not the plugin ones',
+    );
+    assert.equal(
+      anthropic.models.some((m) => m.modelId === 'plugin-model-1'),
+      false,
+    );
+
+    const res = await fetch(`${h.baseUrl}/api/v1/admin/providers/anthropic/verify`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+    });
+    const json = (await res.json()) as Record<string, unknown>;
+    assert.equal(res.status, 200, JSON.stringify(json));
+    assert.notEqual(json['code'], 'providers.unknown_provider');
   });
 });

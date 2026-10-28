@@ -1,4 +1,4 @@
-import type { LlmProvider } from '@omadia/llm-provider';
+import { isClassRef, type LlmProvider } from '@omadia/llm-provider';
 import type { LocalSubAgentTool } from '@omadia/plugin-api';
 
 import { createCliSubAgent } from '../cliSubAgent.js';
@@ -105,16 +105,32 @@ export function buildSubAgentDomainTools(
       deps,
     );
 
+    // Resolve the picker-stored ref to the bare `modelId` — for the CLI branch
+    // BEFORE the `-cli` strip, exactly like the orchestrator main model (issue
+    // #296 BLOCKER). See `resolveCliSubAgentModel`.
+    const subModel = deps.hostIsCliProvider
+      ? (deps.cliModelAlias ?? ((model: string) => model))(
+          resolveCliSubAgentModel(sub.model, deps.defaultModel),
+        )
+      : resolveSubAgentModel(sub.model, deps);
+    // #1451 — both resolvers end in a raw tail, and the parent's default
+    // (`SUBAGENT_DEFAULT_MODEL`) is itself a class ref: with a provider that
+    // serves no model in the registry, `class:balanced` used to be handed to
+    // `LocalSubAgent`, which sends it RAW — a vendor 404 on every delegated
+    // turn. Skipped like an unresolvable tool grant below: the orchestrator
+    // keeps working, this one delegation target is simply not offered.
+    if (isClassRef(subModel)) {
+      deps.log?.(
+        `sub-agent tool: "${sub.name}" model '${sub.model?.trim() || deps.defaultModel}' does not resolve for provider '${deps.provider?.id ?? 'unknown'}' — skipped`,
+      );
+      continue;
+    }
+
     const agent: Askable = deps.hostIsCliProvider
       ? createCliSubAgent({
           name: sub.name,
           systemPrompt,
-          // Resolve the picker-stored ref to the bare `modelId` BEFORE the
-          // `-cli` strip — exactly like the orchestrator main model (issue #296
-          // BLOCKER). See `resolveCliSubAgentModel`.
-          model: (deps.cliModelAlias ?? ((model) => model))(
-            resolveCliSubAgentModel(sub.model, deps.defaultModel),
-          ),
+          model: subModel,
           tools: subTools,
           ...(deps.resolveCliBinary
             ? { resolveCliBinary: deps.resolveCliBinary }
@@ -123,7 +139,7 @@ export function buildSubAgentDomainTools(
       : new LocalSubAgent({
           name: sub.name,
           provider: deps.provider,
-          model: resolveSubAgentModel(sub.model, deps),
+          model: subModel,
           maxTokens: sub.maxTokens ?? deps.defaultMaxTokens,
           maxIterations: sub.maxIterations ?? deps.defaultMaxIterations,
           systemPrompt,
@@ -227,6 +243,12 @@ export function resolveSubAgentModel(
   // The parent's default is itself a ref (a class ref since the catalog went
   // live-discovered) — resolve it the same way; a raw class ref must never
   // reach the wire.
+  //
+  // #1451 — the tail can still hand back a class ref when the provider serves
+  // NO model in the registry (reachable: an operator-typed, registry-unknown
+  // `orchestrator_model` activates fine in that state). The caller
+  // (`buildSubAgentDomainTools`) therefore skips a sub-agent whose resolved
+  // model is still a class ref rather than letting it reach the wire.
   return resolveConfiguredModel(deps.defaultModel, providerId) ?? deps.defaultModel;
 }
 

@@ -4633,6 +4633,40 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 
 ## 13. Offene Roadmap
 
+### Plugin-UI-Host-Seite: Restrisiko nach dem Bundle-Gate (#1454)
+
+`/plugin-ui/<pluginId>` prüft seit #1454 vor dem Rendern, ob überhaupt ein
+UI-Bundle existiert: die Server-Komponente fragt
+`HEAD /p/<pluginId>/ui/index.html` gegen `MIDDLEWARE_URL`
+(`web-ui/app/_lib/pluginUiBundle.ts`, Pfad gemeinsam mit dem Frame über
+`pluginUiEntryPath` in `web-ui/app/_lib/pluginId.ts`) und ruft bei einer
+404-Antwort `notFound()` in der Page-Datei selbst auf — dadurch echte
+HTTP-404 plus omadia-404-Seite statt Roh-JSON im Frame. Die Middleware
+selbst wurde nicht geändert; `/p/<id>/ui/*` antwortet API-Aufrufern
+weiterhin mit `{"error":"plugin_ui_not_found"}` als JSON. Der
+HEAD-Vertrag, auf dem die Probe aufsetzt, ist in
+`middleware/test/pluginUiStaticServing.test.ts` festgenagelt.
+
+Bewusst offen geblieben:
+
+- **Fail-open bei Middleware-Störung.** Nur eine eindeutige 404 gilt als
+  „kein UI“. 5xx, Timeout und tote Verbindung rendern den Frame weiter,
+  damit ein Ausfall nicht als „Plugin existiert nicht“ erscheint. Preis:
+  während einer Störung kann der Frame das Roh-JSON wieder anzeigen — jetzt
+  sporadisch statt deterministisch.
+- **Rennen zwischen Probe und Frame-Load.** Wird das Plugin zwischen Prüfung
+  und Iframe-Request deaktiviert oder deinstalliert, zeigt der Frame
+  dasselbe JSON.
+- **Sub-Ressourcen.** Eine fehlende `.../ui/app.js` liefert unverändert
+  JSON in den Frame; das Gate deckt nur das Dokument ab.
+
+Gegenmittel, falls das auffällt (im Triage von #1454 als Option 6 notiert,
+höchstens eines davon): in `middleware/src/routes/pluginUiStatic.ts` bei
+Dokument-Anfragen (`Sec-Fetch-Dest: iframe|document` bzw. `Accept: text/html`)
+einen minimalen HTML-Body statt JSON ausliefern — JSON-Form für API-Aufrufer
+bleibt —, oder `PluginUiFrame` einen lokalisierten „UI nicht verfügbar“-Zustand
+geben (zwei neue Keys in allen `web-ui/messages/*.json`).
+
 ### Ephemere Runs: stiller TTL-Kill + Per-Caller-Service (nach 0012)
 
 - **TTL-Ablauf ist ein stiller Kill.** Läuft `expires_at` ab, cancelt der Reaper
@@ -5644,6 +5678,36 @@ verschiebt der Anbieter die Klasse, wird unbeaufsichtigt reaktiviert — derselb
 Teardown wie beim Speichern eines Modells auf der LLM-Zugangsseite. Nicht
 serialisiert gegen gleichzeitige Admin-Reaktivierungen (`InstallService.reactivate`
 hat keinen Lock); ein globaler Reaktivierungs-Lock wäre ein eigener Schritt.
+
+**Provider-Plugin auf einer gebündelten ID — Base-Layer im Katalog (#1451).**
+Ein Hub-Plugin darf seinen Provider unter einer **built-in** ID registrieren
+(`@omadia/plugin-llm-anthropic` liefert `id: anthropic`) und ersetzt damit den
+gebündelten Deskriptor komplett: baseURL, Wire-Format und Modelle bedienen diese
+ID, solange das Plugin installiert ist — der Operator-Key bleibt im Vault unter
+der Provider-ID. Die Registrierung loggt das jetzt als WARNING (vorher
+lautlos). `LlmProviderCatalog` hält die gebündelten Deskriptoren als
+**Base-Layer**: `registerBase` (von `registerBuiltinLlmProviders` benutzt) merkt
+sie, `unregister` registriert den gebündelten wieder, statt die ID leer zu
+lassen, `isBundled(id)` sagt, ob eine ID gebündelt ist, `clear()` leert beide
+Ebenen. Vorher war die ID nach dem Uninstall bis zum nächsten Neustart **gar
+nicht** belegt: `/api/v1/admin/providers` ohne `anthropic`, `verify` mit
+`providers.unknown_provider`, kein Anthropic-Modell in der Registry — und der
+nächste Orchestrator-Rebuild veröffentlichte den rohen Klassen-Ref
+`class:balanced`, was jeden Turn mit einem Anthropic-404 beendete.
+`unregisterProviderFromPlugin` (`src/index.ts`) heilt die Konsumenten
+symmetrisch zum Install-Pfad: Discovery-Refresh für den restaurierten Built-in
+plus `classDefaultRebuilder.onDefaultsChanged(id)`. Zusätzlich kann seitdem kein
+Klassen-Ref mehr auf die Leitung: das Orchestrator-Plugin behält seine zwei
+Auflösungsstufen, lässt aber den rohen `?? configuredModelRef`-Schwanz weg und
+**scheitert** bei einem Provider ohne jedes Modell mit Nennung des Settings
+(Plugin-Status `errored`); `buildForAgent` wirft `UnresolvedModelRefError` mit
+Agent-Slug statt `DEFAULT_ORCHESTRATOR_MODEL` (selbst ein Klassen-Ref) als
+letzte Stufe durchzulassen. Registry-**unbekannte** konkrete IDs (eigene Vendor-IDs, nackte
+CLI-Aliase) gehen unverändert roh durch — genau deshalb bleibt der Zustand
+„Provider ohne Modelle" erreichbar, und `buildSubAgentDomainTools`
+**überspringt** einen Sub-Agenten, dessen Modell-Ref zu nichts auflöst (geloggt
+wie ein nicht auflösbarer Tool-Grant), statt `class:balanced` an `LocalSubAgent`
+zu geben.
 
 ### Dynamische Sub-Agenten übernehmen Key-Änderungen erst nach Rebuild (#1080 follow-up)
 

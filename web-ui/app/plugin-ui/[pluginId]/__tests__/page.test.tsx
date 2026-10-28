@@ -3,12 +3,20 @@ import { PassThrough } from 'node:stream';
 
 import { createTranslator } from 'next-intl';
 import { renderToPipeableStream } from 'react-dom/server';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import enMessages from '../../../../messages/en.json';
 
 /**
  * #1399 — the plugin UI host page 404'd for every scoped plugin id.
+ * #1454 — and then rendered its frame for ids with no bundle at all, so the
+ * middleware's raw `{"error":"plugin_ui_not_found"}` JSON showed as the page
+ * content with an HTTP 200 around it. The bundle probe is mocked here (its own
+ * behaviour is pinned in `app/_lib/__tests__/pluginUiBundle.test.ts`); what
+ * these tests own is that the page REFUSES when the probe says absent, and
+ * that it refuses through `notFound()` in the page file itself — the only
+ * call site `app/__tests__/loadingBoundaries.test.ts` can see, and the only
+ * one that yields a real 404 status (#1398).
  *
  * The unit test on the id gate passed throughout, because it decoded the value
  * itself before checking it: it tested the assumption in a comment ("Next hands
@@ -36,6 +44,12 @@ vi.mock('next-intl/server', () => ({
     }),
 }));
 
+const bundleExists = vi.fn<(pluginId: string) => Promise<boolean>>();
+
+vi.mock('@/app/_lib/pluginUiBundle', () => ({
+  pluginUiBundleMayExist: (pluginId: string) => bundleExists(pluginId),
+}));
+
 vi.mock('../_components/PluginUiFrame', () => ({
   PluginUiFrame: ({ pluginId }: { pluginId: string }) => (
     <div data-testid="frame" data-plugin-id={pluginId} />
@@ -43,6 +57,11 @@ vi.mock('../_components/PluginUiFrame', () => ({
 }));
 
 const { default: PluginUiPage, generateMetadata } = await import('../page');
+
+beforeEach(() => {
+  bundleExists.mockReset();
+  bundleExists.mockResolvedValue(true);
+});
 
 const requireFromHere = createRequire(import.meta.url);
 const { getDynamicParam } = requireFromHere(
@@ -123,5 +142,41 @@ describe('/plugin-ui/[pluginId] — scoped plugin ids (#1399)', () => {
       PluginUiPage({ params: Promise.resolve({ pluginId: '%E0%A4%A' }) }),
     ).rejects.toThrow(NOT_FOUND);
     expect(await generateMetadata({ params: Promise.resolve({ pluginId: '%E0%A4%A' }) })).toEqual({});
+  });
+});
+
+describe('/plugin-ui/[pluginId] — ids with no UI bundle (#1454)', () => {
+  it('404s an unknown id and an installed plugin that ships no ui/', async () => {
+    bundleExists.mockResolvedValue(false);
+    for (const raw of ['does-not-exist', '%40omadia%2Fintegration-confluence']) {
+      await expect(PluginUiPage({ params: paramsFor(raw) })).rejects.toThrow(NOT_FOUND);
+    }
+  });
+
+  it('probes the decoded id, not the raw segment', async () => {
+    bundleExists.mockResolvedValue(false);
+    await expect(
+      PluginUiPage({ params: paramsFor('%40omadia%2Fintegration-confluence') }),
+    ).rejects.toThrow(NOT_FOUND);
+    expect(bundleExists).toHaveBeenCalledWith('@omadia/integration-confluence');
+  });
+
+  it('never probes an id the charset gate already refused', async () => {
+    await expect(PluginUiPage({ params: paramsFor('%2e%2e') })).rejects.toThrow(NOT_FOUND);
+    expect(bundleExists).not.toHaveBeenCalled();
+  });
+
+  it('gives the tab the default title instead of echoing a UI-less id', async () => {
+    bundleExists.mockResolvedValue(false);
+    expect(await generateMetadata({ params: paramsFor('does-not-exist') })).toEqual({});
+  });
+
+  it('renders heading, subtitle and frame once the bundle is there', async () => {
+    bundleExists.mockResolvedValue(true);
+    const html = await renderToHtml(
+      await PluginUiPage({ params: paramsFor('%40omadia%2Fexample-ui') }),
+    );
+    expect(html).toContain('data-plugin-id="@omadia/example-ui"');
+    expect(html).not.toContain('plugin_ui_not_found');
   });
 });
