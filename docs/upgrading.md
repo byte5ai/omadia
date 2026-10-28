@@ -356,6 +356,49 @@ forward-only-migration caveat applies, so snapshot the Postgres volume first
 Do **not** redeploy the `omadia-postgres-<suffix>` app as part of a version
 bump: it holds the data volume, exactly as with the compose stack.
 
+## Upgrading past v0.181.1 — one error contract for plugin uploads, Hub installs and the builder
+
+A plugin package reaches the host through three routes — ZIP upload, Hub
+install and builder install — and all three feed the same ingest pipeline. They
+now answer its refusals the same way (`middleware/src/plugins/ingestErrorContract.ts`):
+
+| Refusal | Status | Codes |
+|---|---|---|
+| Host state says no | **409** | `package.id_conflict_builtin`, `package.id_conflict_bundled`, `package.duplicate_version`, `package.downgrade_blocked`, `package.incompatible_core` |
+| Over a size cap | **413** | `package.too_large`, `zip.file_too_large`, `zip.total_too_large` |
+| The package must change | **422** | everything else (`package.*`, `zip.*`) |
+
+The body always carries `code` and `message`, plus `params` and `details` when
+the pipeline sets them. What changes for an API client:
+
+- **Hub install** (`POST /api/v1/install/registry/:id`): conflicts were partly
+  422 and size refusals 422; they are now 409 and 413, and `params`/`details`
+  are no longer dropped — also for a refused `depends_on` parent.
+- **Builder install** (`POST /api/v1/builder/drafts/:id/install`):
+  `package.incompatible_core` was 500 and is now 409 (`reason: conflict`);
+  `zip.*` and other unmapped ingest codes were 500 and are now 422
+  (`reason: manifest_invalid`); `params` is passed through.
+- **ZIP upload** (`POST /api/v1/install/packages/upload`): codes it had not
+  mapped (`package.entry_unscannable`, `package.ui_arbitrary_tailwind_value`,
+  `package.migration_failed`, …) were 400 and are now 422. A file that is not a
+  ZIP is **422 `zip.invalid`** whatever content-type or file name the client
+  sends (it was 400 `upload.upload.multipart` for a non-zip mimetype); a
+  multipart body that cannot be parsed is 400 `upload.multipart` (single
+  prefix). An entry that escapes the package (`../x`, `/x`) is **422
+  `zip.path_escape`** with `params.entry` (it was 500 `internal`).
+- **Hub install of a package that is already there** (same version, same
+  sha256 in the upload store) answers **200** with `"already_present": true`
+  and the dependency chain, without downloading or ingesting again. It used to
+  answer 422 `package.duplicate_version`.
+- **Install-job configure** (`POST /api/v1/install/jobs/:id/configure`): a
+  validation failure (`install.validation_failed`) leaves the job in
+  **`awaiting_config`** with the field errors on `job.error`, so the corrected
+  values can be sent to the same job. It used to move the job to `failed`, and
+  every further configure answered 409 `install.wrong_state`. Other refusals
+  (e.g. `install.template_invalid`) still end the job.
+
+Nothing to do for the operator UI: it ships with the matching changes.
+
 ## Upgrading past v0.180.1 — installing an older plugin version is refused unless you confirm it
 
 Installing a version **older** than the one a plugin already has used to go
@@ -598,8 +641,9 @@ only displayed. From this release on, a plugin whose `compat.core` excludes
 this host's `@omadia/plugin-api` version is refused:
 
 - **Upload, Hub install, builder install:** the ZIP is rejected before it is
-  stored, with code `package.incompatible_core`
-  (`POST /api/v1/install/packages/upload` answers HTTP 409).
+  stored, with code `package.incompatible_core` (HTTP 409 on all three routes
+  since the error-contract unification above; before it, only the upload
+  answered 409).
 - **Install from the store:** `install.incompatible_core` (HTTP 409). This also
   catches a package uploaded before this release.
 

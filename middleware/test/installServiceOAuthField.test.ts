@@ -144,7 +144,8 @@ describe('Spec 005 — configure with a type:oauth field', () => {
     const { service, pluginId } = makeDeps();
     const job = service.create(pluginId);
     const result = await service.configure(job.id, { client_id: 'cid-123' }); // no client_secret
-    assert.equal(result.state, 'failed');
+    // #1494 — a validation failure keeps the job open for the corrected submit.
+    assert.equal(result.state, 'awaiting_config');
     assert.equal(result.error?.code, 'install.validation_failed');
     const details = result.error?.details as
       | Array<{ key: string; code: string }>

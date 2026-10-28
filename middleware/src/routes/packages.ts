@@ -3,13 +3,15 @@ import type { Request, Response } from 'express';
 import multer from 'multer';
 
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
+import type { PackageUploadService } from '../plugins/packageUploadService.js';
 import {
-  INGEST_CONFLICT_CODES,
-  type PackageUploadService,
-} from '../plugins/packageUploadService.js';
+  ingestFailureBody,
+  ingestFailureStatus,
+} from '../plugins/ingestErrorContract.js';
 import type { UploadedPackageStore } from '../plugins/uploadedPackageStore.js';
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
 import { isTruthyFlag } from '../http/requestFlags.js';
+import { auditActorFromRequest, type AdminAuditLog } from '../auth/adminAuditLog.js';
 
 /**
  * Zip-upload endpoints for agent packages.
@@ -30,6 +32,10 @@ export interface PackagesRouterDeps {
   registry: InstalledRegistry;
   catalog: PluginCatalog;
   maxBytes: number;
+  log?: (msg: string) => void;
+  /** #1490 — package removal is an admin action like uninstall. Optional:
+   *  without it (no database) only the log line is written. */
+  audit?: AdminAuditLog;
 }
 
 export function createPackagesRouter(deps: PackagesRouterDeps): Router {
@@ -42,18 +48,11 @@ export function createPackagesRouter(deps: PackagesRouterDeps): Router {
       files: 1,
       fields: 4,
     },
-    fileFilter: (_req, file, cb) => {
-      if (
-        file.mimetype === 'application/zip' ||
-        file.mimetype === 'application/x-zip-compressed' ||
-        file.mimetype === 'application/octet-stream' ||
-        file.originalname.toLowerCase().endsWith('.zip')
-      ) {
-        cb(null, true);
-        return;
-      }
-      cb(new Error(`unsupported mimetype: ${file.mimetype}`));
-    },
+    // #1489 — no mimetype gate. It only ever read what the client DECLARED
+    // (part content-type and file name), so the same bytes got 400 or 422
+    // depending on the headers, and it stopped nothing: the zip check that
+    // counts is the content one in `PackageUploadService.ingest`, which every
+    // non-zip reaches and answers 422 `zip.invalid`.
   });
 
   router.post(
@@ -64,12 +63,20 @@ export function createPackagesRouter(deps: PackagesRouterDeps): Router {
           next();
           return;
         }
-        const isMulterError =
+        // #1489 — the fallback is the bare suffix: `upload.` is prepended
+        // once, below, for multer's own codes and this one alike. It used to
+        // be `upload.multipart` here as well, which every error without a
+        // `code` (a truncated multipart body, a busboy parse error) answered
+        // as `upload.upload.multipart`.
+        const multerCode =
           err instanceof multer.MulterError ||
-          (typeof err === 'object' && err !== null && 'code' in err);
-        const code = isMulterError
-          ? String((err as { code?: string }).code ?? 'upload.multipart')
-          : 'upload.multipart';
+          (typeof err === 'object' && err !== null && 'code' in err)
+            ? (err as { code?: unknown }).code
+            : undefined;
+        const code =
+          typeof multerCode === 'string' && multerCode.length > 0
+            ? multerCode
+            : 'multipart';
         const message = err instanceof Error ? err.message : String(err);
         const status = code === 'LIMIT_FILE_SIZE' ? 413 : 400;
         res.status(status).json({
@@ -115,13 +122,8 @@ export function createPackagesRouter(deps: PackagesRouterDeps): Router {
       });
 
       if (!result.ok) {
-        const status = mapIngestCodeToStatus(result.code);
-        res.status(status).json({
-          code: result.code,
-          message: result.message,
-          ...(result.details !== undefined ? { details: result.details } : {}),
-          ...(result.params !== undefined ? { params: result.params } : {}),
-        });
+        // #1477 — same status and body as the Hub install and the builder.
+        res.status(ingestFailureStatus(result.code)).json(ingestFailureBody(result));
         return;
       }
 
@@ -134,6 +136,11 @@ export function createPackagesRouter(deps: PackagesRouterDeps): Router {
       res.status(201).json({
         package: result.package,
         ...(result.direction !== undefined ? { direction: result.direction } : {}),
+        // #1490 — the version this upload replaced, so the dropzone can say
+        // so instead of reporting a swap as a first upload.
+        ...(result.replaced_version !== undefined
+          ? { replaced_version: result.replaced_version }
+          : {}),
         ...(result.activation_error !== undefined
           ? { activation_error: result.activation_error }
           : {}),
@@ -146,6 +153,8 @@ export function createPackagesRouter(deps: PackagesRouterDeps): Router {
     const items = deps.store.list();
     res.json({ items });
   });
+
+  const log = deps.log ?? ((msg: string) => console.log(msg));
 
   router.delete('/:id', async (req: Request, res: Response) => {
     const rawId = req.params['id'];
@@ -165,6 +174,7 @@ export function createPackagesRouter(deps: PackagesRouterDeps): Router {
       });
       return;
     }
+    const removed = deps.store.get(id);
     const ok = await deps.store.remove(id);
     if (!ok) {
       res.status(404).json({
@@ -180,42 +190,27 @@ export function createPackagesRouter(deps: PackagesRouterDeps): Router {
     // onInstalled hook in DynamicAgentRuntime silently registers no tool.
     // Reload here = accurate state for all following store/install calls.
     await deps.catalog.load();
+    // #1490 — the removal used to leave no trace at all.
+    const actor = auditActorFromRequest(req);
+    log(
+      `[upload] package removed id=${id} version=${removed?.version ?? '?'} by=${actor.email ?? actor.id ?? 'unknown'}`,
+    );
+    if (deps.audit) {
+      try {
+        await deps.audit.record({
+          actor,
+          action: 'plugin.package_remove',
+          target: `plugin:${id}`,
+          before: { version: removed?.version ?? null, uploaded_by: removed?.uploaded_by ?? null },
+        });
+      } catch (err) {
+        log(
+          `[upload] audit write failed for package removal ${id}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
     res.status(204).end();
   });
 
   return router;
-}
-
-function mapIngestCodeToStatus(code: string): number {
-  // Host-state refusals (id taken, version already there, older version) come
-  // from one set shared with the Hub-install route — see
-  // `INGEST_CONFLICT_CODES`. `package.incompatible_core` is not in it but
-  // answers the same status, for the reason noted below.
-  if (INGEST_CONFLICT_CODES.has(code)) return 409;
-  switch (code) {
-    case 'package.too_large':
-    case 'zip.file_too_large':
-    case 'zip.total_too_large':
-      return 413;
-    case 'package.manifest_missing':
-    case 'package.manifest_invalid':
-    case 'package.package_json_invalid':
-    case 'package.id_mismatch':
-    case 'package.version_mismatch':
-    case 'package.entry_missing':
-    case 'zip.invalid':
-    case 'zip.too_many_entries':
-    case 'zip.path_escape':
-    case 'zip.symlink':
-    case 'zip.forbidden_extension':
-      return 422;
-    // `package.incompatible_core` belongs with the conflicts rather than the
-    // 422s: a valid package whose compat.core range excludes this host's
-    // @omadia/plugin-api. It stays a case of its own because the builder route
-    // maps it to a reason of its own.
-    case 'package.incompatible_core':
-      return 409;
-    default:
-      return 400;
-  }
 }

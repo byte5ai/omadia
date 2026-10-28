@@ -132,6 +132,7 @@ function makeFakeIngest(opts: {
   failCode?: string;
   failMessage?: string;
   failDetails?: unknown;
+  failParams?: Record<string, string>;
   /** Override the pluginId in the success response. */
   pluginId?: string;
   pluginVersion?: string;
@@ -158,6 +159,7 @@ function makeFakeIngest(opts: {
           code: opts.failCode,
           message: opts.failMessage ?? 'fake-ingest failure',
           ...(opts.failDetails !== undefined ? { details: opts.failDetails } : {}),
+          ...(opts.failParams !== undefined ? { params: opts.failParams } : {}),
         };
       }
       return {
@@ -503,7 +505,10 @@ describe('installDraft (B.6-1 orchestrator)', () => {
     assert.equal(result.code, 'package.id_mismatch');
   });
 
-  it('unmapped ingest code → reason ingest_failed', async () => {
+  // #1477 — the reason follows the status the upload and the Hub route answer
+  // (`ingestErrorContract.ts`). An ingest refusal nobody has mapped is a 422
+  // like there, not a 500: every ingest code names a fault in the package.
+  it('unmapped ingest code → reason manifest_invalid (422), not ingest_failed', async () => {
     const pipeline = makeFakePipeline({ store: h.store });
     const ingest = makeFakeIngest({
       failCode: 'package.unknown_code',
@@ -520,8 +525,55 @@ describe('installDraft (B.6-1 orchestrator)', () => {
     );
     assert.equal(result.ok, false);
     if (result.ok) return;
-    assert.equal(result.reason, 'ingest_failed');
+    assert.equal(result.reason, 'manifest_invalid');
     assert.equal(result.code, 'package.unknown_code');
+  });
+
+  // #1477 — these two used to fall through to `ingest_failed`, which the
+  // route answers 500, while the upload answered 409 and 422.
+  for (const [code, reason] of [
+    ['package.incompatible_core', 'conflict'],
+    ['zip.path_escape', 'manifest_invalid'],
+    ['zip.total_too_large', 'too_large'],
+  ] as const) {
+    it(`${code} → reason ${reason}, same family as the upload`, async () => {
+      const pipeline = makeFakePipeline({ store: h.store });
+      const ingest = makeFakeIngest({ failCode: code, failDetails: { x: 1 } });
+      const result = await installDraft(
+        { userEmail: h.userEmail, draftId: h.draftId },
+        {
+          draftStore: h.store,
+          buildPipeline: pipeline.pipeline,
+          packageUploadService: ingest.service,
+          log: () => {},
+        },
+      );
+      assert.equal(result.ok, false);
+      if (result.ok) return;
+      assert.equal(result.reason, reason);
+      assert.deepEqual(result.details, { x: 1 });
+    });
+  }
+
+  it('#1477 — forwards the ingest params, so the builder UI can localize', async () => {
+    const pipeline = makeFakePipeline({ store: h.store });
+    const ingest = makeFakeIngest({
+      failCode: 'package.duplicate_version',
+      failParams: { pluginId: '@x/y', version: '1.0.0' },
+    });
+    const result = await installDraft(
+      { userEmail: h.userEmail, draftId: h.draftId },
+      {
+        draftStore: h.store,
+        buildPipeline: pipeline.pipeline,
+        packageUploadService: ingest.service,
+        log: () => {},
+      },
+    );
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.equal(result.reason, 'conflict');
+    assert.deepEqual(result.params, { pluginId: '@x/y', version: '1.0.0' });
   });
 
   it('ingest throws unexpectedly → reason ingest_failed with builder.ingest_threw', async () => {

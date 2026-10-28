@@ -10,11 +10,11 @@ import type {
 } from '../api/admin-v1.js';
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
+import type { UploadedPackageStore } from '../plugins/uploadedPackageStore.js';
 import {
   extractPermissions,
   parseSetupProfile,
 } from '../plugins/manifestLoader.js';
-import type { UploadedPackage } from '../plugins/uploadedPackageStore.js';
 import type { PluginStatusRegistry } from '../platform/pluginStatusRegistry.js';
 import type { PluginVerdictLookup } from '../services/pluginVerdict.js';
 import {
@@ -36,12 +36,6 @@ interface StoreDeps {
    *  operator can install from the hub. A local plugin of the same id wins;
    *  a registry fetch failure never breaks the local listing. */
   client?: RegistryClient;
-  /** #1459 — where an ingested package came from. A local plugin whose id the
-   *  hub also lists carries the hub `source` only when its package was
-   *  downloaded FROM that registry (`uploaded_by: 'registry:<name>'`); an
-   *  operator upload or a built-in keeps no `source`, whatever version it is.
-   *  Without it no local entry is ever tagged with a hub source. */
-  packages?: { get(id: string): UploadedPackage | undefined };
   /** Spec 004 — read-only access to plugins' pushed `ctx.status` so the list
    *  and detail responses can carry `action_status` for the badge/banner. */
   pluginStatusRegistry?: PluginStatusRegistry;
@@ -59,6 +53,29 @@ interface StoreDeps {
    *  every chat turn through it would fail on a missing key. Optional, so an
    *  older composition root keeps the pre-#884 behaviour. */
   llmReadiness?: ReadinessLlmProbe;
+  /** #1490 — the upload store, read to flag a plugin whose package was
+   *  uploaded or fetched but never installed (`removable_package`), so the UI
+   *  can offer to remove it. Optional: without it no entry carries the flag.
+   *
+   *  #1459 — also where an ingested package came from. A local plugin whose
+   *  id the hub also lists carries the hub `source` only when its package was
+   *  downloaded FROM that registry (`uploaded_by: 'registry:<name>'`); an
+   *  operator upload or a built-in keeps no `source`, whatever version it is.
+   *  Without it no local entry is ever tagged with a hub source. */
+  uploadedPackages?: Pick<UploadedPackageStore, 'get'>;
+}
+
+/** #1490 — flag an uploaded, NOT installed package as removable. An installed
+ *  plugin is removed through the uninstall dialog, and the DELETE route
+ *  refuses it with 409 `package.still_installed`. */
+function withRemovablePackage(
+  plugin: Plugin,
+  uploaded: StoreDeps['uploadedPackages'],
+): Plugin {
+  if (plugin.install_state !== 'available' && plugin.install_state !== 'incompatible') {
+    return plugin;
+  }
+  return uploaded?.get(plugin.id) ? { ...plugin, removable_package: true } : plugin;
 }
 
 /** Overlay the live `ctx.status` value (if any) onto a plugin record. Returns
@@ -103,7 +120,12 @@ export function createStoreRouter(deps: StoreDeps): Router {
 
       const local: Plugin[] = deps.catalog
         .list()
-        .map((entry) => applyInstallState(entry.plugin, deps.registry))
+        .map((entry) =>
+          withRemovablePackage(
+            applyInstallState(entry.plugin, deps.registry),
+            deps.uploadedPackages,
+          ),
+        )
         // OB-29-0: builder-reference plugins (`is_reference_only: true`)
         // are not intended for operator install — they are a pattern source
         // for the BuilderAgent via BUILDER_REFERENCE_ESSENTIALS.
@@ -148,7 +170,7 @@ export function createStoreRouter(deps: StoreDeps): Router {
                 items[existingIdx]!,
                 resolved,
                 deps.registry,
-                deps.packages,
+                deps.uploadedPackages,
               );
               continue;
             }
@@ -270,15 +292,52 @@ export function createStoreRouter(deps: StoreDeps): Router {
         return;
       }
 
-      let plugin = applyInstallState(entry.plugin, deps.registry);
+      let plugin = withRemovablePackage(
+        applyInstallState(entry.plugin, deps.registry),
+        deps.uploadedPackages,
+      );
+      // #1495 — a package fetched from the Hub and not installed (a cancelled
+      // prerequisites wizard leaves exactly that) is a local catalog entry,
+      // so this response used to carry no `source`. Without it the install
+      // button skipped the Hub route, created the install job directly, and
+      // an agent whose parent was missing got a raw 409
+      // `install.missing_dependencies` instead of the prerequisites wizard.
+      // Only for exactly that package: in the upload store, and byte-identical
+      // (sha256) to a version the Hub offers. `source` makes the button go
+      // through the Hub route, which then recognises the package as already
+      // present. A bundled or built-in plugin the Hub mirrors, or an
+      // operator's own zip at the Hub's version, keeps installing directly —
+      // through the Hub route the ingest would refuse both.
+      const uploaded =
+        plugin.install_state === 'available' && !plugin.source
+          ? deps.uploadedPackages?.get(id)
+          : undefined;
+      if (uploaded) {
+        const resolved = await resolveRegistryEntry(deps.client, id);
+        const same = resolved?.entry.versions.find(
+          (v) =>
+            v.version === uploaded.version &&
+            v.sha256.toLowerCase() === uploaded.sha256.toLowerCase(),
+        );
+        if (resolved && same) {
+          plugin = {
+            ...plugin,
+            source: {
+              registry: resolved.registry,
+              download_url: same.download_url,
+              sha256: same.sha256,
+            },
+          };
+        }
+      }
       // C6 — update detection on the detail page: if this installed plugin is
       // also advertised by a registry with a newer version, flag it (+ source).
       if (plugin.install_state === 'installed' && deps.client?.hasRegistries()) {
         try {
-          const resolved = await resolveRemoteEntry(deps.client, id);
+          const resolved = await resolveRegistryEntry(deps.client, id);
           // #1459 — the same provenance + update rule as the list.
           if (resolved) {
-            plugin = enrichWithRegistry(plugin, resolved, deps.registry, deps.packages);
+            plugin = enrichWithRegistry(plugin, resolved, deps.registry, deps.uploadedPackages);
           }
         } catch {
           // registry hiccup → keep the local 'installed' view, never 500
@@ -466,13 +525,13 @@ async function resolveRemotePlugin(
   client: RegistryClient | undefined,
   id: string,
 ): Promise<Plugin | null> {
-  const resolved = await resolveRemoteEntry(client, id);
+  const resolved = await resolveRegistryEntry(client, id);
   return resolved ? registryEntryToPlugin(resolved) : null;
 }
 
-/** The raw registry entry for `id`, or null if absent or any registry is
- *  unreachable. */
-async function resolveRemoteEntry(
+/** The registry entry for `id`, or null — no registries, not listed, or a
+ *  registry hiccup (which must never fail a store response). */
+async function resolveRegistryEntry(
   client: RegistryClient | undefined,
   id: string,
 ): Promise<ResolvedRegistryPlugin | null> {
@@ -506,7 +565,7 @@ function registrySource(
 function hubSourceForLocal(
   id: string,
   resolved: ResolvedRegistryPlugin,
-  packages: StoreDeps['packages'],
+  packages: StoreDeps['uploadedPackages'],
 ): Plugin['source'] | undefined {
   const pkg = packages?.get(id);
   if (!pkg || pkg.uploaded_by !== `registry:${resolved.registry}`) return undefined;
@@ -531,7 +590,7 @@ function enrichWithRegistry(
   existing: Plugin,
   resolved: ResolvedRegistryPlugin,
   registry: InstalledRegistry,
-  packages: StoreDeps['packages'],
+  packages: StoreDeps['uploadedPackages'],
 ): Plugin {
   const source =
     existing.source ??

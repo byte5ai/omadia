@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import deMessages from '../../../messages/de.json';
 import enMessages from '../../../messages/en.json';
-import { packageErrorText, UPLOAD_ERRORS } from '../packageErrorText';
+import { packageErrorText, storeErrorText, UPLOAD_ERRORS } from '../packageErrorText';
 
 /**
  * #1401 — the Hub upload showed the middleware's German rejection text in the
@@ -31,7 +31,7 @@ const PARAMS = { pluginId: '@omadia/integration-confluence', version: '0.3.3' };
 describe('packageErrorText', () => {
   it('renders duplicate_version in English for the English UI', () => {
     expect(packageErrorText('package.duplicate_version', PARAMS, GERMAN, tFor('en'))).toBe(
-      'Version 0.3.3 of @omadia/integration-confluence is already uploaded. Bump the version or remove the upload first.',
+      'Version 0.3.3 of @omadia/integration-confluence is already uploaded. Bump the version, or remove the uploaded package on its Store page first.',
     );
   });
 
@@ -57,9 +57,61 @@ describe('packageErrorText', () => {
   });
 
   it('keeps the server message for an unmapped code', () => {
-    expect(packageErrorText('zip.symlink', undefined, 'server text', tFor('en'))).toBe(
+    expect(packageErrorText('zip.mystery', undefined, 'server text', tFor('en'))).toBe(
       'server text',
     );
+  });
+});
+
+describe('#1488 — zip refusals in the operator locale', () => {
+  it('names the offending entry of a path escape', () => {
+    expect(
+      packageErrorText('zip.path_escape', { entry: '../evil.txt' }, 'x', tFor('en')),
+    ).toBe(
+      'The archive contains an entry that points outside the package: ../evil.txt. Rebuild the package without it.',
+    );
+    expect(
+      packageErrorText('zip.path_escape', { entry: '../evil.txt' }, 'x', tFor('de')),
+    ).toContain('../evil.txt');
+  });
+});
+
+describe('storeErrorText (#1477) — one text for drawer, update and upload', () => {
+  function tRootFor(locale: 'en' | 'de') {
+    const t = createTranslator({
+      locale,
+      messages: (locale === 'en' ? enMessages : deMessages) as Record<string, unknown>,
+    });
+    return (key: string): string => (t as unknown as (k: string) => string)(key);
+  }
+
+  it('renders a Hub-install duplicate_version in English, not the German server text', () => {
+    expect(
+      storeErrorText(
+        { code: 'package.duplicate_version', message: GERMAN, params: PARAMS },
+        'fallback',
+        tFor('en'),
+        tRootFor('en'),
+      ),
+    ).toMatch(/^Version 0\.3\.3 of @omadia\/integration-confluence is already uploaded/);
+  });
+
+  it('falls back to the error-help catalogue for install codes', () => {
+    expect(
+      storeErrorText(
+        { code: 'install.wrong_state', message: "job is in state 'failed'" },
+        'fallback',
+        tFor('en'),
+        tRootFor('en'),
+      ),
+    ).toBe(
+      `${enMessages.errorHelp.install.wrong_state.what} ${enMessages.errorHelp.install.wrong_state.next}`,
+    );
+  });
+
+  it('keeps the server message for a code nobody explains, then the fallback', () => {
+    expect(storeErrorText({ code: 'x.y', message: 'srv' }, 'fb', tFor('en'), tRootFor('en'))).toBe('srv');
+    expect(storeErrorText(null, 'fb', tFor('en'), tRootFor('en'))).toBe('fb');
   });
 });
 
@@ -71,6 +123,7 @@ describe('UPLOAD_ERRORS stays in step with the server', () => {
   const sources = [
     '../../../../middleware/src/plugins/packageUploadService.ts',
     '../../../../middleware/src/routes/packages.ts',
+    '../../../../middleware/src/plugins/zipExtractor.ts',
   ].map((rel) => readFileSync(path.resolve(__dirname, rel), 'utf-8'));
 
   for (const [code, [, needed]] of Object.entries(UPLOAD_ERRORS)) {

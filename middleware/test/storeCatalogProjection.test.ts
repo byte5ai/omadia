@@ -209,7 +209,7 @@ async function withStore(
       catalog: fakeCatalog(opts.catalog),
       registry: installed(opts.installed ?? {}),
       client,
-      packages: { get: (id) => packages.get(id) },
+      uploadedPackages: { get: (id) => packages.get(id) },
     }),
   );
   const server = await listenLoopback(app);

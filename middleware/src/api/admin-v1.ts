@@ -611,6 +611,10 @@ export interface Plugin {
    *  configured registry advertises vs the installed one. The `version` field
    *  still reflects what is installed. */
   available_version?: string;
+  /** #1490 — set when the plugin's package sits in the upload store (uploaded
+   *  as a ZIP or fetched from a registry) and the plugin is NOT installed:
+   *  `DELETE /api/v1/install/packages/:id` will remove it. Absent otherwise. */
+  removable_package?: boolean;
   /** Parent plugin identities this one inherits secrets/config from. */
   depends_on: AgentId[];
   /** Background jobs the plugin contributes via its manifest. Always

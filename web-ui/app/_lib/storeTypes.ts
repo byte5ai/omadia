@@ -315,6 +315,10 @@ export interface Plugin {
   /** C6 — newer version a registry advertises when `install_state ===
    *  'update-available'`. `version` still reflects what is installed. */
   available_version?: string;
+  /** #1490 — the package was uploaded or fetched and the plugin is NOT
+   *  installed: the detail page offers to remove it. Mirrors middleware
+   *  admin-v1. */
+  removable_package?: boolean;
   /** Localized markdown installation guide for the plugin's third-party system,
    *  from the manifest's `setup.guide` as a `{ <locale>: markdown }` map. The
    *  UI picks the active locale (with fallback) and renders it on the detail
@@ -601,6 +605,9 @@ export interface UploadPackageResponse {
    *  activation (plugin not installed-and-running), and on an older
    *  middleware. */
   activation_error?: string;
+  /** #1490 — the version this upload replaced in the store. Absent on a first
+   *  upload and on an older middleware. */
+  replaced_version?: string;
   /** #1497 — the shared activation result; narrow with `parseActivationResult`. */
   activation?: unknown;
 }
