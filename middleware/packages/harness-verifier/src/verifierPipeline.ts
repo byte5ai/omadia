@@ -384,6 +384,9 @@ function buildPostconditionVerdicts(input: VerifierInput): ClaimVerdict[] {
 const ODOO_TOOL_PREFIXES: readonly string[] = [
   'query_odoo_',       // fach-agents: query_odoo_accounting, query_odoo_hr
   'odoo_execute',      // raw Odoo RPC (sub-agents + dev)
+  // generic live read (integration-odoo `odoo_generic_read_enabled`). Its
+  // sibling `odoo_describe` returns schema, never data, and stays out.
+  'odoo_query',
 ];
 
 /**
