@@ -41,8 +41,15 @@ requires:
 # `privacy.redact@1`, see `pluginServiceGrants.ts`). Optional: without a
 # privacy guard the lookup degrades to 'unavailable' and activation must not
 # wait on it. Undeclared, the grant gate threw on every datasetId publish.
+#
+# The other three are KERNEL-published services (src/index.ts), carried on the
+# 2026-08-20 legacy allowlist until now. `optional_requires`, not `requires`:
+# no plugin provides them, so a hard requirement would be unresolvable.
 optional_requires:
   - "privacyRedact@1"
+  - "agentToolInvoker@1"
+  - "canvasOutputRegistry@1"
+  - "deterministicActionRegistry@1"
 
 provides:
   - "canvasChatAgent@1"

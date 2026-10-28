@@ -43,6 +43,12 @@ channel:
   dispatch_service: "canvasChatAgent"
   canvas_protocol_version: "1.0"
 
+# KERNEL-published (src/index.ts), carried on the 2026-08-20 legacy allowlist
+# until now. `optional_requires`, not `requires`: no plugin provides it, so a
+# hard requirement would be unresolvable.
+optional_requires:
+  - "graphTenantId@1"
+
 permissions:
   filesystem:
     scratch: false
