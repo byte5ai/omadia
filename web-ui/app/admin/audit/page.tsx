@@ -32,6 +32,7 @@ const ACTION_FILTERS = [
   { key: 'memory', prefix: 'memory.' },
   { key: 'conductor', prefix: 'conductor.' },
   { key: 'profileSnapshot', prefix: 'profile_snapshot.' },
+  { key: 'registry', prefix: 'registry.' },
   { key: 'channel', prefix: 'channel.' },
 ] as const;
 

@@ -745,17 +745,21 @@ export const ConfigSchema = z.object({
   // Remote plugin registries (the plugin "store"). JSON array of
   // {url,name,token?} entries — Core fetches each registry's `index.json`,
   // merges them (first-wins on id collision), and installs ZIPs through the
-  // EXISTING upload pipeline. Empty/unset → no remote registry: OSS instances
-  // run standalone and manual ZIP upload still works. `token`, when present,
+  // EXISTING upload pipeline. Read on FIRST boot only (the list is admin-managed
+  // afterwards): unset → the public hub.omadia.ai; '[]' → no remote registry,
+  // the instance runs standalone and manual ZIP upload still works (#1483).
+  // `token`, when present,
   // is sent as `Authorization: Bearer` (how a private byte5/customer hub is
   // consumed). Example:
   //   REGISTRY_URLS='[{"name":"omadia-public","url":"https://hub.omadia.ai"}]'
   REGISTRY_URLS: z.string().optional(),
+  // #1458 — deadline for one registry's index (headers + body). Kept below
+  // the web UI's 10 s server-side fetch budget; values above 8000 are clamped.
   REGISTRY_FETCH_TIMEOUT_MS: z.coerce
     .number()
     .int()
     .positive()
-    .default(15_000),
+    .default(5_000),
 
   // --- Public MCP endpoint (W2-3, issue #542) ------------------------------
   // omadia's own tools, exposed over a stateless Streamable-HTTP MCP server at
@@ -947,4 +951,27 @@ export function parseRegistries(
     out.push(entry);
   }
   return out;
+}
+
+/**
+ * #1483 — `REGISTRY_URLS` as a first-boot seed. `undefined` means "the
+ * operator said nothing" (unset, blank, or unusable — the seeder then uses
+ * the public default hub); `[]` means the operator wrote `'[]'` and wants an
+ * instance without a registry. `parseRegistries` alone cannot tell the two
+ * apart: it returns [] for both.
+ */
+export function registrySeedFromEnv(
+  raw: string | undefined,
+  log: (msg: string) => void = (m) => console.warn(m),
+): RegistryConfigEntry[] | undefined {
+  if (!raw || raw.trim() === '') return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    parsed = undefined;
+  }
+  if (Array.isArray(parsed) && parsed.length === 0) return [];
+  const entries = parseRegistries(raw, log);
+  return entries.length > 0 ? entries : undefined;
 }

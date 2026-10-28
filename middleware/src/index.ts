@@ -26,7 +26,7 @@ import {
 import express from 'express';
 import type { RequestHandler } from 'express';
 import cookieParser from 'cookie-parser';
-import { config, parseRegistries } from './config.js';
+import { config, registrySeedFromEnv } from './config.js';
 import { LLM_SETUP_HINT } from './llmSetupHint.js';
 import { attachmentStoreHealth, selectAttachmentStore } from './platform/attachmentStore.js';
 import type { MemoryStore } from '@omadia/plugin-api';
@@ -175,7 +175,7 @@ import { RegistryClient } from './plugins/registryClient.js';
 import {
   VaultBackedRegistryConfigStore,
   InMemoryRegistrySettings,
-  seedRegistriesIfEmpty,
+  seedRegistriesOnFirstBoot,
   type RegistrySettingsKV,
 } from './plugins/registryConfigStore.js';
 import { createProfilesRouter } from './routes/profiles.js';
@@ -5030,8 +5030,8 @@ async function main(): Promise<void> {
   // Admin-managed, persistent: the non-secret list lives in platform_settings
   // (Postgres) when a graphPool is present, else an in-memory KV (DB-less boot
   // re-seeds the default each start). Bearer tokens live in the encrypted
-  // vault. Seeded on first boot from REGISTRY_URLS, else the public default
-  // hub.omadia.ai. The live RegistryClient is reloaded from the store here and
+  // vault. Seeded on first boot only (#1483) from REGISTRY_URLS ('[]' = none),
+  // else the public default hub.omadia.ai. The live RegistryClient is reloaded from the store here and
   // again after every admin mutation, so changes apply without a restart.
   const registrySettings: RegistrySettingsKV = graphPool
     ? new PlatformSettingsStore(graphPool)
@@ -5040,9 +5040,9 @@ async function main(): Promise<void> {
     settings: registrySettings,
     vault: secretVault,
   });
-  await seedRegistriesIfEmpty(
+  await seedRegistriesOnFirstBoot(
     registryConfigStore,
-    parseRegistries(config.REGISTRY_URLS),
+    registrySeedFromEnv(config.REGISTRY_URLS),
     (m) => console.log(m),
   );
   const registryClient = new RegistryClient({
@@ -5056,6 +5056,8 @@ async function main(): Promise<void> {
     createAdminRegistriesRouter({
       store: registryConfigStore,
       client: registryClient,
+      // #1487 — registry changes belong in the admin audit trail.
+      ...(adminAudit ? { audit: adminAudit } : {}),
       log: (m) => console.log(m),
     }),
   );
