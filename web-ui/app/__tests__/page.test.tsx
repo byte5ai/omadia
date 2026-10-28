@@ -24,6 +24,7 @@ const {
   mockGetEmbeddingStatus,
   mockFetchHealth,
   mockGetVaultStatus,
+  mockGetPrivacyPosture,
   healthyHealth,
 } = vi.hoisted(() => {
   // #1384 — the middleware's /health. Healthy by default, so the suites that
@@ -37,6 +38,8 @@ const {
     mockFetchHealth: vi.fn(healthyHealth),
     // #1332 — the dev-key banner reads the authenticated vault status.
     mockGetVaultStatus: vi.fn(async (): Promise<unknown> => null),
+    // #1507 — the Privacy Shield posture. Unknown (null) by default.
+    mockGetPrivacyPosture: vi.fn(async (): Promise<unknown> => null),
     mockGetProviders: vi.fn(),
     mockListStorePlugins: vi.fn(),
     mockListOperatorAgents: vi.fn(),
@@ -72,6 +75,7 @@ vi.mock('../_lib/api', async (importOriginal) => ({
   getCliBackends: mockGetCliBackends,
   getEmbeddingProviderStatus: mockGetEmbeddingStatus,
   getVaultStatus: mockGetVaultStatus,
+  getPrivacyPosture: mockGetPrivacyPosture,
 }));
 
 vi.mock('../_lib/agents', () => ({
@@ -93,6 +97,17 @@ vi.mock('../_components/PlatformHealthBanner', () => ({
   }): React.ReactElement | null =>
     notice === null ? null : (
       <div data-testid="platform-health-banner" data-kind={notice.kind} />
+    ),
+}));
+
+vi.mock('../_components/PrivacyShieldBanner', () => ({
+  PrivacyShieldBanner: ({
+    posture,
+  }: {
+    posture: { shield_active: boolean } | null;
+  }): React.ReactElement | null =>
+    posture === null || posture.shield_active ? null : (
+      <div data-testid="privacy-shield-banner" />
     ),
 }));
 
@@ -749,5 +764,29 @@ describe('dashboard — dev master key banner (#1332)', () => {
     mockGetVaultStatus.mockResolvedValueOnce(vaultWith('env', 'env'));
     render(await DashboardPage());
     expect(screen.queryByTestId('platform-health-banner')).toBeNull();
+  });
+});
+
+describe('dashboard — Privacy Shield off (#1507)', () => {
+  it('warns when no Privacy Guard is running', async () => {
+    mockGetProviders.mockResolvedValue(providersResponse([]));
+    mockGetPrivacyPosture.mockResolvedValueOnce({
+      shield_active: false,
+      force_guarded: false,
+      provider_ids: [],
+    });
+    render(await DashboardPage());
+    expect(screen.getByTestId('privacy-shield-banner')).toBeTruthy();
+  });
+
+  it('stays quiet while the shield runs', async () => {
+    mockGetProviders.mockResolvedValue(providersResponse([]));
+    mockGetPrivacyPosture.mockResolvedValueOnce({
+      shield_active: true,
+      force_guarded: false,
+      provider_ids: ['@omadia/plugin-privacy-guard'],
+    });
+    render(await DashboardPage());
+    expect(screen.queryByTestId('privacy-shield-banner')).toBeNull();
   });
 });
