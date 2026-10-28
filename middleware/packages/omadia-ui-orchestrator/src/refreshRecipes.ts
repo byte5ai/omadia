@@ -109,6 +109,68 @@ export function parseRefreshSource(value: unknown): RefreshSource | null {
   return source;
 }
 
+/** `{today}`, `{today-30d}`, `{today+7d}` — a WHOLE string value only. */
+const DATE_TOKEN = /^\{today(?:([+-])(\d{1,4})d)?\}$/;
+
+/** Zone the `fast_path_timezone` setting defaults to. */
+export const DEFAULT_TIME_ZONE = 'Europe/Berlin';
+
+/** The configured IANA zone when the runtime knows it, else the default. */
+export function resolveTimeZone(raw: string | undefined): string {
+  const tz = raw?.trim();
+  if (!tz) return DEFAULT_TIME_ZONE;
+  try {
+    return new Intl.DateTimeFormat('en-US', { timeZone: tz }).resolvedOptions().timeZone;
+  } catch {
+    return DEFAULT_TIME_ZONE; // RangeError: unknown zone
+  }
+}
+
+/** `YYYY-MM-DD` of the calendar day `days` after `now`'s day in `timeZone`. */
+function zonedIsoDate(now: Date, timeZone: string, days: number): string {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+  }).formatToParts(now);
+  const part = (type: string): number => Number(parts.find((p) => p.type === type)?.value);
+  // calendar arithmetic on a zone-free UTC date — no DST edge can shift it
+  return new Date(Date.UTC(part('year'), part('month') - 1, part('day') + days)).toISOString().slice(0, 10);
+}
+
+/**
+ * Relative dates for sources without relative operators (an Odoo domain has
+ * no "today"): a recipe input may carry `{today}` / `{today±Nd}` as a whole
+ * string value, resolved HERE, at execution, to the calendar date
+ * `YYYY-MM-DD` in `timeZone` (the business day, not the server clock). The
+ * stored recipe keeps the token, so every refresh re-resolves it —
+ * "überfällig" stays relative to the day it is replayed. Returns a resolved
+ * deep copy; the input is never mutated.
+ */
+export function resolveRecipeInput(
+  input: unknown,
+  now: Date = new Date(),
+  timeZone: string = DEFAULT_TIME_ZONE,
+): unknown {
+  if (typeof input === 'string') {
+    const m = DATE_TOKEN.exec(input);
+    if (!m) return input;
+    const days = m[1] === undefined ? 0 : (m[1] === '-' ? -1 : 1) * Number(m[2]);
+    return zonedIsoDate(now, timeZone, days);
+  }
+  if (Array.isArray(input)) return input.map((v) => resolveRecipeInput(v, now, timeZone));
+  if (typeof input === 'object' && input !== null) {
+    return Object.fromEntries(
+      Object.entries(input as Record<string, unknown>).map(([k, v]) => [
+        k,
+        resolveRecipeInput(v, now, timeZone),
+      ]),
+    );
+  }
+  return input;
+}
+
 export interface RecipeStore {
   get(canvasSessionId: string, containerId: string): RefreshSource | undefined;
   set(canvasSessionId: string, containerId: string, source: RefreshSource): void;
@@ -211,6 +273,16 @@ export function applyRefreshSource(
   raw: string,
   source: RefreshSource,
 ): Array<Record<string, unknown>> | null {
+  return mapRefreshRecords(raw, source)?.rows ?? null;
+}
+
+/** {@link applyRefreshSource} plus the RAW records behind the rows
+ *  (`records[i]` produced `rows[i]`, after the filter) — for checks on
+ *  attributes no column shows, e.g. the currency behind a summed amount. */
+export function mapRefreshRecords(
+  raw: string,
+  source: RefreshSource,
+): { rows: Array<Record<string, unknown>>; records: Array<Record<string, unknown>> } | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -221,6 +293,7 @@ export function applyRefreshSource(
   if (!records) return null;
   if (source.filter && isTruncatedOutput(raw)) return null;
   const rows: Array<Record<string, unknown>> = [];
+  const kept: Array<Record<string, unknown>> = [];
   for (const rec of records) {
     if (typeof rec !== 'object' || rec === null) return null;
     const r = rec as Record<string, unknown>;
@@ -245,6 +318,7 @@ export function applyRefreshSource(
       if (key !== undefined && key !== null) row['rowKey'] = String(key);
     }
     rows.push(row);
+    kept.push(r);
   }
-  return rows;
+  return { rows, records: kept };
 }

@@ -17,7 +17,12 @@ import {
 } from '@omadia/channel-sdk';
 import { today, turnContext } from '@omadia/orchestrator';
 
-import { composeSkeleton, type CompositionLlm, type DataRequirement } from './composition.js';
+import {
+  COMPOSER_REASONING,
+  composeSkeleton,
+  type CompositionLlm,
+  type DataRequirement,
+} from './composition.js';
 import { mintDataRef } from './dataRef.js';
 import {
   fetchRecipeRows,
@@ -28,6 +33,7 @@ import {
 import {
   createRecipeStore,
   parseRefreshSource,
+  resolveTimeZone,
   type RefreshSource,
 } from './refreshRecipes.js';
 import { synthesizeSurfaceEvents } from './surfaceSynthesis.js';
@@ -830,6 +836,20 @@ export async function activate(
       fastPathTools.length > 0 ? `tools: ${fastPathTools.map((t) => t.name).join(',')}` : 'disabled'
     }${unplannable.length > 0 ? ` (no composer spec, ignored: ${unplannable.join(',')})` : ''}`,
   );
+  // `{today}` tokens in fast-path/refresh recipes resolve in this zone.
+  const rawTimeZone = ctx.config?.get<string>('fast_path_timezone');
+  const fastPathTimeZone = resolveTimeZone(rawTimeZone);
+  ctx.log(
+    `[omadia-ui-orchestrator] fast path timezone: ${fastPathTimeZone}${
+      rawTimeZone?.trim() && rawTimeZone.trim() !== fastPathTimeZone
+        ? ` (configured "${rawTimeZone}" is not a known IANA zone)`
+        : ''
+    }`,
+  );
+  ctx.log(
+    `[omadia-ui-orchestrator] composer reasoning: effort=${COMPOSER_REASONING.effort} ` +
+      `thinking=${COMPOSER_REASONING.thinking} (hints; the provider applies them where the model supports them)`,
+  );
 
   const resolveBase = (): ChatAgent | undefined =>
     ctx.services.get<ChatAgentBundle>(CHAT_AGENT_SERVICE)?.agent;
@@ -903,7 +923,8 @@ export async function activate(
     | {
         hit: true;
         events: ChatStreamEvent[];
-        summary: string;
+        /** the rendered summary sentence */
+        prose: string;
         tool: string;
         rows: number;
         toolCalls: number;
@@ -943,15 +964,34 @@ export async function activate(
     if (!invoke) return miss('no-invoker');
 
     const jobs: Array<{ containerId: string; rows: Array<Record<string, unknown>>; source: RefreshSource }> = [];
+    let firstRecords: Array<Record<string, unknown>> = [];
     for (const plan of plans) {
-      const fetched = await fetchRecipeRows(invoke, plan.fetch, { rejectTruncated: true });
+      const fetched = await fetchRecipeRows(invoke, plan.fetch, {
+        rejectTruncated: true,
+        timeZone: fastPathTimeZone,
+      });
       if (!fetched.ok) {
         if (fetched.detail !== undefined) {
           ctx.log(`[ui-orchestrator] fast-path ${plan.fetch.tool} ${fetched.reason}: ${fetched.detail}`);
         }
         return miss(fetched.reason);
       }
+      if (jobs.length === 0) firstRecords = fetched.records;
       jobs.push({ containerId: plan.containerId, rows: fetched.rows, source: plan.fetch });
+    }
+    // `{count}` / `{sum:…}` = rows of the FIRST requirement (the composer
+    // prompt's contract); rendered before anything is emitted, so a sum it
+    // cannot state exactly (mixed currencies included) is a clean miss.
+    const first = jobs[0];
+    const rendered = renderSummary(skeleton.summary, {
+      rows: first?.rows ?? [],
+      records: firstRecords,
+      map: first?.source.map ?? {},
+      ...(skeleton.locale !== undefined ? { locale: skeleton.locale } : {}),
+    });
+    if (!rendered.ok) {
+      ctx.log(`[ui-orchestrator] fast-path summary unresolvable: ${rendered.detail}`);
+      return miss('summary-unresolvable');
     }
 
     const recipes: Array<{ containerId: string; source: RefreshSource }> = [];
@@ -986,10 +1026,9 @@ export async function activate(
     return {
       hit: true,
       events,
-      summary: skeleton.summary,
+      prose: rendered.text,
       tool: [...new Set(plans.map((p) => p.fetch.tool))].join(','),
-      // `{count}` = rows of the FIRST requirement (the composer prompt's contract)
-      rows: jobs[0]?.rows.length ?? 0,
+      rows: first?.rows.length ?? 0,
       toolCalls: jobs.length,
     };
   }
@@ -1273,7 +1312,7 @@ export async function activate(
     const fast = await runFastPath(input, canvasSessionId, skeleton, privacyForced, surfaceSeq);
     if (fast.hit) {
       yield* fast.events;
-      const prose = renderSummary(fast.summary, fast.rows);
+      const prose = fast.prose;
       yield { type: 'text_delta', text: prose };
       // Session history gap: SessionLogger / ChatSessionStore live inside the
       // base orchestrator and are published to no plugin (not in this
@@ -1378,7 +1417,7 @@ export async function activate(
           deterministic = false;
           break;
         }
-        const fetched = await fetchRecipeRows(invoke, recipe);
+        const fetched = await fetchRecipeRows(invoke, recipe, { timeZone: fastPathTimeZone });
         if (!fetched.ok) {
           ctx.log(
             fetched.reason === 'unmappable' || fetched.reason === 'truncated'

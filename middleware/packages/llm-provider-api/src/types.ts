@@ -183,6 +183,14 @@ export interface LlmRequest {
    */
   readonly effort?: EffortLevel;
   /**
+   * `'off'` asks for no extended reasoning on a latency-critical call. A
+   * best-effort HINT: an adapter switches thinking off only on models that
+   * accept it (Anthropic: `thinking: {type:'disabled'}` where the model takes
+   * it at the requested effort) and otherwise IGNORES it — never errors — so
+   * pair it with a low {@link LlmRequest.effort}, the lever every model has.
+   */
+  readonly thinking?: 'off';
+  /**
    * Schema-constrained response (#1219). The adapter maps it to its vendor's
    * structured-output channel (Anthropic `output_config.format`); adapters and
    * endpoints without the concept IGNORE it — never error — with a one-time

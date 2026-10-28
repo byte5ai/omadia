@@ -1864,6 +1864,8 @@ readonly content: string;
 }>;
 readonly maxTokens?: number;
 readonly temperature?: number;
+readonly effort?: 'low' | 'medium' | 'high' | 'xhigh';
+readonly thinking?: 'off';
 readonly outputFormat?: {
 readonly type: 'json_schema';
 readonly schema: Record<string, unknown>;

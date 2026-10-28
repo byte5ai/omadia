@@ -89,6 +89,9 @@ export function createLlmProviderFromNeutral(
         ...(req.temperature !== undefined
           ? { temperature: req.temperature }
           : {}),
+        // Reasoning hints — adapters/models without the knob ignore them.
+        ...(req.effort !== undefined ? { effort: req.effort } : {}),
+        ...(req.thinking !== undefined ? { thinking: req.thinking } : {}),
         // #1219 — forwarded as-is; an adapter without a structured-output
         // channel drops it, so a plugin asking for a schema never breaks a turn.
         ...(req.outputFormat !== undefined
