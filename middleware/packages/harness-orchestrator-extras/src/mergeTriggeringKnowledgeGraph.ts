@@ -323,11 +323,9 @@ export class MergeTriggeringKnowledgeGraph implements KnowledgeGraph {
   deletePlan(planExternalId: string): Promise<PlanDeleteResult> {
     return this.inner.deletePlan(planExternalId);
   }
-  listRecentPlans(opts: {
-    userId?: string;
-    limit?: number;
-    openOnly?: boolean;
-  }): Promise<GraphNode[]> {
+  listRecentPlans(
+    opts: Parameters<KnowledgeGraph['listRecentPlans']>[0],
+  ): Promise<GraphNode[]> {
     return this.inner.listRecentPlans(opts);
   }
   getRunForTurn(turnExternalId: string): Promise<RunTraceView | null> {

@@ -472,6 +472,7 @@ userId?: string;
 limit?: number;
 openOnly?: boolean;
 agentScopePrefix?: string;
+excludeUnprotected?: boolean;
 }): Promise<GraphNode[]>;
 getRunForTurn(turnExternalId: string): Promise<RunTraceView | null>;
 getSession(scope: string, options?: SessionReadOptions): Promise<SessionView | null>;
@@ -647,6 +648,7 @@ sharedOnly?: boolean;
 viewerAgentSlug?: string;
 manuallyAuthoredOnly?: boolean;
 audienceOwners?: readonly string[];
+excludeUnprotected?: boolean;
 }
 export interface MemorableKnowledgeHit {
 mk: GraphNode;
@@ -661,6 +663,7 @@ audienceOwners?: readonly string[];
 teamVisibility?: boolean;
 sharedOnly?: boolean;
 viewerAgentSlug?: string;
+excludeUnprotected?: boolean;
 }
 export interface PalaiaExcerptHit {
 excerpt: PalaiaExcerptNode;
@@ -808,6 +811,7 @@ derivedFromTurnIds?: string[];
 aclOwners?: string[];
 visibility?: Visibility;
 originAgent?: string;
+unprotected?: boolean;
 actorOmadiaUserId?: string;
 palaiaExcerpts?: PalaiaExcerptInput;
 manuallyAuthored?: boolean;

@@ -22,6 +22,8 @@ import {
   promoteRuleFileToDurable,
 } from '@omadia/orchestrator-extras';
 
+import { turnContext } from './turnContext.js';
+
 export interface DurableRulesHookDeps {
   pool: Pool;
   kg: KnowledgeGraph;
@@ -38,8 +40,14 @@ export class DurableRulesMemoryStore implements MemoryStore {
 
   private maybePromote(virtualPath: string, content: string): void {
     if (!isDurableRulePath(virtualPath)) return;
+    // #1536 — a rule written in a turn without a shield, or after a tool
+    // bypassed it, can hold values no shield masked. Read here, inside the
+    // turn's dispatch; no turn context reads as unprotected (fail closed).
+    const privacy = turnContext.current()?.privacyHandle;
+    const unprotected = privacy === undefined || privacy.hasBypassed?.() === true;
     // Fire-and-forget — never block or fail the originating write.
     void promoteRuleFileToDurable({
+      ...(unprotected ? { unprotected: true } : {}),
       pool: this.deps.pool,
       kg: this.deps.kg,
       tenantId: this.deps.tenantId,

@@ -9336,6 +9336,10 @@ export class Orchestrator {
               aclOwners: [...owners],
               ...(tc?.agentSlug ? { originAgent: tc.agentSlug } : {}),
               ...(tc?.turnId ? { derivedFromTurnIds: [tc.turnId] } : {}),
+              // #1536 — the raw result no shield masked: kept out of recall
+              // under a shield. The edge above never finds its Turn (the id is
+              // the per-turn uuid), so the stamp is the only record of it.
+              ...(bypassed ? { unprotected: true } : {}),
             })
             .catch(() => {
               /* KG ingestion is best-effort — never break the tool call */

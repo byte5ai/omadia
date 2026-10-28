@@ -172,7 +172,10 @@ export interface ContextBuildInput {
    * #1507 — the recalling turn runs under a Privacy Shield: leave out turns
    * stored `unprotected` (answered without a shield, or with a bypassed
    * tool) from the cross-session turn legs (full-text, embedding, entity).
-   * The same-chat tail keeps them for conversational continuity.
+   * The same-chat tail keeps them for conversational continuity. #1536 —
+   * likewise the memory, excerpt and durable legs (MK stamped `unprotected`
+   * or derived from such a turn) and the plan leg (a plan of such a turn, or
+   * of no known turn).
    */
   excludeUnprotected?: boolean;
   /** External id of the turn currently being answered — excluded from hits. */
@@ -1150,6 +1153,8 @@ export class ContextRetriever {
         ...(input.agentScopePrefix
           ? { agentScopePrefix: input.agentScopePrefix }
           : {}),
+        // #1536 — under a shield, no plan from an unprotected (or unknown) turn.
+        ...(input.excludeUnprotected ? { excludeUnprotected: true } : {}),
       });
       // Cross-session only — drop same-session plans before fetching steps so
       // the batched read does no wasted work.
@@ -1296,6 +1301,8 @@ export class ContextRetriever {
     const viewer = memoryViewer(input);
     if (!this.embeddingClient || !viewer) return [];
     const audience = input.audienceOwners ? { audienceOwners: input.audienceOwners } : {};
+    // #1536 — under a shield, no memory that holds values no shield masked.
+    const shielded = input.excludeUnprotected ? { excludeUnprotected: true } : {};
 
     let queryVector: number[];
     try {
@@ -1328,6 +1335,7 @@ export class ContextRetriever {
           teamVisibility: this.opts.teamVisibility,
           ...(input.agentSlug ? { viewerAgentSlug: input.agentSlug } : {}),
           ...audience,
+          ...shielded,
         }),
         this.graph.searchExcerptsByEmbedding({
           queryEmbedding: queryVector,
@@ -1338,6 +1346,7 @@ export class ContextRetriever {
           teamVisibility: this.opts.teamVisibility,
           ...(input.agentSlug ? { viewerAgentSlug: input.agentSlug } : {}),
           ...audience,
+          ...shielded,
         }),
       ]);
     } catch (err) {
@@ -1454,6 +1463,7 @@ export class ContextRetriever {
         manuallyAuthoredOnly: true,
         ...(input.agentSlug ? { viewerAgentSlug: input.agentSlug } : {}),
         ...(input.audienceOwners ? { audienceOwners: input.audienceOwners } : {}),
+        ...(input.excludeUnprotected ? { excludeUnprotected: true } : {}),
       });
     } catch (err) {
       console.error(

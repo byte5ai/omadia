@@ -39,6 +39,9 @@ export interface PromoteRuleInput {
    *  immediately reachable by searchMemorableKnowledgeByEmbedding. */
   embeddingClient?: EmbeddingClient;
   log?: (msg: string) => void;
+  /** #1536 — the write came from a turn without a shield, or with a bypassed
+   *  tool: stamp the MK so recall under a shield skips it. */
+  unprotected?: boolean;
 }
 
 export interface PromoteRuleResult {
@@ -86,6 +89,7 @@ export async function promoteRuleFileToDurable(
       involvedOmadiaUserIds: [],
       aclOwners: [], // team-visible curated rule (no per-user ownership)
       visibility: 'team',
+      ...(input.unprotected === true ? { unprotected: true } : {}),
     });
     const mkId = result.memorableKnowledgeNodeId;
 

@@ -1122,6 +1122,8 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
           ? { significance: input.significance }
           : {}),
         ...(input.originAgent ? { origin_agent: input.originAgent } : {}),
+        // #1536 — holds values no shield masked; recall under a shield skips it.
+        ...(input.unprotected === true ? { unprotected: true } : {}),
         acl_owners: initialOwners,
         created_at: now,
         created_by: input.createdBy,
@@ -1827,6 +1829,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
             agentMatch
           : ownerMatch || teamMatch;
       if (!admitted || !sharedOk) continue;
+      if (opts.excludeUnprotected === true && !this.isProtectedMemory(node)) continue;
       const vector = this.embeddings.get(node.id);
       if (!vector) continue;
       const sim = cosine(opts.queryEmbedding, vector);
@@ -1886,6 +1889,7 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
             agentMatch
           : ownerMatch || teamMatch;
       if (!admitted || !sharedOk) continue;
+      if (opts.excludeUnprotected === true && !this.isProtectedMemory(parent)) continue;
       const sim = cosine(opts.queryEmbedding, vector);
       if (!Number.isFinite(sim) || sim < minSimilarity) continue;
       hits.push({
@@ -3554,9 +3558,13 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     limit?: number;
     openOnly?: boolean;
     agentScopePrefix?: string;
+    excludeUnprotected?: boolean;
   }): Promise<GraphNode[]> {
     const limit = Math.max(1, Math.min(opts.limit ?? 5, 50));
     let plans = [...this.nodes.values()].filter((n) => n.type === 'Plan');
+    if (opts.excludeUnprotected === true) {
+      plans = plans.filter((p) => this.isProtectedPlan(p));
+    }
     if (opts.userId !== undefined) {
       plans = plans.filter((n) => n.props['userId'] === opts.userId);
     }
@@ -3589,6 +3597,33 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
         ),
       )
       .slice(0, limit);
+  }
+
+  /** #1536 — mirror of Neon `mkProtectedSql`: not stamped `unprotected`,
+   *  and derived from no Turn stored `unprotected`. */
+  private isProtectedMemory(mk: GraphNode): boolean {
+    if (mk.props['unprotected'] === true) return false;
+    for (const edge of this.edges.values()) {
+      if (edge.type !== 'DERIVED_FROM' || edge.from !== mk.id) continue;
+      const turn = this.nodes.get(edge.to);
+      if (turn?.type === 'Turn' && turn.props['unprotected'] === true) return false;
+    }
+    return true;
+  }
+
+  /** #1536 — mirror of the Neon plan predicate: the plan's Turns (PLAN_OF,
+   *  or the `turnId` property) exist, and none is stored `unprotected`. */
+  private isProtectedPlan(plan: GraphNode): boolean {
+    const turnIds = new Set<string>();
+    const propTurn = plan.props['turnId'];
+    if (typeof propTurn === 'string') turnIds.add(propTurn);
+    for (const edge of this.edges.values()) {
+      if (edge.type === 'PLAN_OF' && edge.from === plan.id) turnIds.add(edge.to);
+    }
+    const turns = [...turnIds]
+      .map((id) => this.nodes.get(id))
+      .filter((n): n is GraphNode => n !== undefined && n.type === 'Turn');
+    return turns.length > 0 && turns.every((t) => t.props['unprotected'] !== true);
   }
 
   private upsertNode(node: GraphNode): void {
