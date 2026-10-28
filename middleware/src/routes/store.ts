@@ -3,7 +3,6 @@ import type { Request, Response } from 'express';
 
 import type {
   Plugin,
-  PluginPermissionsSummary,
   PluginSetupField,
   RegistrySourceStatus,
   StoreGetResponse,
@@ -16,7 +15,10 @@ import type {
   PluginCatalogEntry,
 } from '../plugins/manifestLoader.js';
 import type { UploadedPackageStore } from '../plugins/uploadedPackageStore.js';
-import { parseSetupProfile } from '../plugins/manifestLoader.js';
+import {
+  extractPermissions,
+  parseSetupProfile,
+} from '../plugins/manifestLoader.js';
 import type { PluginStatusRegistry } from '../platform/pluginStatusRegistry.js';
 import type { PluginVerdictLookup } from '../services/pluginVerdict.js';
 import {
@@ -57,7 +59,13 @@ interface StoreDeps {
   llmReadiness?: ReadinessLlmProbe;
   /** #1490 — the upload store, read to flag a plugin whose package was
    *  uploaded or fetched but never installed (`removable_package`), so the UI
-   *  can offer to remove it. Optional: without it no entry carries the flag. */
+   *  can offer to remove it. Optional: without it no entry carries the flag.
+   *
+   *  #1459 — also where an ingested package came from. A local plugin whose
+   *  id the hub also lists carries the hub `source` only when its package was
+   *  downloaded FROM that registry (`uploaded_by: 'registry:<name>'`); an
+   *  operator upload or a built-in keeps no `source`, whatever version it is.
+   *  Without it no local entry is ever tagged with a hub source. */
   uploadedPackages?: Pick<UploadedPackageStore, 'get'>;
 }
 
@@ -87,16 +95,24 @@ function withActionStatus(
 /**
  * Plugin-Store endpoints — first vertical slice of the Admin API v1.
  *
- * Contract lives in docs/harness-platform/api/admin-api.v1.ts,
- * namespace `Store`. Mounted at /api/v1/store/plugins.
+ * Contract lives in `src/api/admin-v1.ts` (`Plugin`, `StoreListResponse`,
+ * `StoreGetResponse`). Mounted at /api/v1/store/plugins.
  *
- * Slice 1.1 scope:
- *   GET /        — list all known plugins (sorted by display name)
+ *   GET /        — list all known plugins, local and hub-only, sorted by
+ *                  display name (#1471). `?search=` matches name, id and the
+ *                  English and localized descriptions; `?category=` matches
+ *                  a manifest category.
  *   GET /:id     — detail + parsed manifest for a single plugin
  *
- * Out of scope for this slice: pagination cursors, search/category filters,
- * signed-package verification. The catalog is small enough that we return
- * it in full; cursor plumbing is wired but inert until the catalog grows.
+ * Out of scope: pagination cursors, signed-package verification. The catalog
+ * is small enough that we return it in full; cursor plumbing is wired but
+ * inert until the catalog grows.
+ *
+ * #1469 / #1459 — `source` means "these bytes are (or would be) the hub's
+ * artifact": set on hub-only entries and on local packages downloaded from
+ * that registry, never on uploads or built-ins. Together with `install_state`
+ * that gives the store page a partition: installed, else hub (`source` set),
+ * else local.
  */
 export function createStoreRouter(deps: StoreDeps): Router {
   const router = Router();
@@ -106,7 +122,7 @@ export function createStoreRouter(deps: StoreDeps): Router {
       const search = asOptionalString(req.query['search']);
       const category = asOptionalString(req.query['category']);
 
-      const items: Plugin[] = deps.catalog
+      const local: Plugin[] = deps.catalog
         .list()
         .map((entry) =>
           withRemovablePackage(
@@ -117,16 +133,22 @@ export function createStoreRouter(deps: StoreDeps): Router {
         // OB-29-0: builder-reference plugins (`is_reference_only: true`)
         // are not intended for operator install — they are a pattern source
         // for the BuilderAgent via BUILDER_REFERENCE_ESSENTIALS.
-        .filter((plugin) => plugin.is_reference_only !== true)
+        .filter((plugin) => plugin.is_reference_only !== true);
+      // Every local id, BEFORE search/category: a hub copy whose local twin
+      // was filtered out must be dropped, not re-added as a hub-only
+      // `available` entry — that would list an installed plugin as
+      // installable as soon as `?search=` matches only the hub's text.
+      const localIds = new Set(local.map((p) => p.id));
+      const items: Plugin[] = local
         .filter((plugin) => matchesSearch(plugin, search))
         .filter((plugin) => matchesCategory(plugin, category));
 
       // Merge remote-registry plugins (the "store sources"). On an id collision
-      // the LOCAL entry wins on content (version, install_state, permissions),
-      // but we tag it with the hub `source` so it still surfaces in the store's
-      // "Hub" view alongside its real install_state — an already-installed or
-      // built-in plugin that the hub also offers must not vanish from the Hub
-      // tab. A registry hiccup degrades to local-only, never 500s.
+      // the LOCAL entry wins on content (version, install_state, permissions).
+      // It carries the hub `source` only when its package really is the hub's
+      // download (#1459), and an installed one leaves the hub tab for the
+      // installed tab (#1469) — the page partitions on install_state first.
+      // A registry hiccup degrades to local-only, never 500s.
       //
       // #1458 — "never breaks the local listing" used to hold for fast
       // failures only: a hanging registry delayed this response past the web
@@ -152,9 +174,11 @@ export function createStoreRouter(deps: StoreDeps): Router {
                 items[existingIdx]!,
                 resolved,
                 deps.registry,
+                deps.uploadedPackages,
               );
               continue;
             }
+            if (localIds.has(resolved.entry.id)) continue;
             const remote = registryEntryToPlugin(resolved);
             if (
               matchesSearch(remote, search) &&
@@ -176,6 +200,9 @@ export function createStoreRouter(deps: StoreDeps): Router {
       // OM-16 — decorate with the kernel-derived readiness alongside the
       // push-based action_status. Same insertion point, same "never breaks the
       // response" contract: `withReadiness` swallows its own failures.
+      // #1471 — one order across local and hub-only entries. The catalog sorts
+      // its own entries, but hub-only ones used to follow in index order.
+      items.sort(byDisplayName);
       const decorated = await Promise.all(
         items.map((p) =>
           withReadiness(
@@ -311,20 +338,10 @@ export function createStoreRouter(deps: StoreDeps): Router {
       // also advertised by a registry with a newer version, flag it (+ source).
       if (plugin.install_state === 'installed' && deps.client?.hasRegistries()) {
         try {
-          const remote = await resolveRemotePlugin(deps.client, id);
-          if (remote?.source) {
-            const installedVersion =
-              deps.registry.get(id)?.installed_version ?? plugin.version;
-            if (isNewerVersion(remote.version, installedVersion)) {
-              plugin = {
-                ...plugin,
-                install_state: 'update-available',
-                available_version: remote.version,
-                source: remote.source,
-              };
-            } else if (!plugin.source) {
-              plugin = { ...plugin, source: remote.source };
-            }
+          const resolved = await resolveRegistryEntry(deps.client, id);
+          // #1459 — the same provenance + update rule as the list.
+          if (resolved) {
+            plugin = enrichWithRegistry(plugin, resolved, deps.registry, deps.uploadedPackages);
           }
         } catch {
           // registry hiccup → keep the local 'installed' view, never 500
@@ -473,11 +490,27 @@ function applyInstallState(
 
 function matchesSearch(plugin: Plugin, search: string | undefined): boolean {
   if (!search) return true;
-  const needle = search.toLowerCase();
+  const needle = search.trim().toLowerCase();
+  if (!needle) return true;
+  // #1471 — the localized descriptions too: a word that only appears in the
+  // German description is what a German-speaking operator types.
+  const haystack = [
+    plugin.name,
+    plugin.description,
+    plugin.id,
+    ...Object.values(plugin.description_localized ?? {}),
+  ];
+  return haystack.some(
+    (text) => typeof text === 'string' && text.toLowerCase().includes(needle),
+  );
+}
+
+/** #1471 — display-name order, case-insensitive; the id breaks ties so two
+ *  plugins with the same name keep a stable order between requests. */
+function byDisplayName(a: Plugin, b: Plugin): number {
   return (
-    plugin.name.toLowerCase().includes(needle) ||
-    plugin.description.toLowerCase().includes(needle) ||
-    plugin.id.toLowerCase().includes(needle)
+    a.name.localeCompare(b.name, 'en', { sensitivity: 'base' }) ||
+    a.id.localeCompare(b.id)
   );
 }
 
@@ -527,8 +560,7 @@ async function resolveRegistryEntry(
 }
 
 /** The `source` marker for a remote registry entry: the download coordinates
- *  of its latest advertised version. Reused to (a) build a fully-remote Plugin
- *  and (b) tag a colliding local plugin with its hub origin. */
+ *  of its latest advertised version. */
 function registrySource(
   resolved: ResolvedRegistryPlugin,
 ): NonNullable<Plugin['source']> {
@@ -539,31 +571,59 @@ function registrySource(
   return { registry, download_url: ver.download_url, sha256: ver.sha256 };
 }
 
-/** Enrich a local store entry with its hub `source`, and flag it as
- *  `update-available` (C6) when the hub advertises a newer version than the
- *  installed one. Only installed plugins are eligible — an `available` or
- *  `incompatible` entry keeps its state. Returns a copy (catalog objects are
- *  shared across requests and must not be mutated). */
+/** #1459 — the hub `source` a LOCAL plugin may carry: only when its ingested
+ *  package was downloaded from that very registry. The coordinates are those
+ *  of the downloaded version and the checksum is the one recorded at ingest,
+ *  not the hub's latest artifact. An operator upload, a built-in or a
+ *  local-dev package gets none: the hub listing the same id says nothing about
+ *  where these bytes came from. */
+function hubSourceForLocal(
+  id: string,
+  resolved: ResolvedRegistryPlugin,
+  packages: StoreDeps['uploadedPackages'],
+): Plugin['source'] | undefined {
+  const pkg = packages?.get(id);
+  if (!pkg || pkg.uploaded_by !== `registry:${resolved.registry}`) return undefined;
+  // A version the index no longer lists has no coordinates to name; pairing
+  // the latest artifact's URL with this package's checksum would be wrong.
+  const ver = resolved.entry.versions.find((v) => v.version === pkg.version);
+  if (!ver) return undefined;
+  return {
+    registry: resolved.registry,
+    download_url: ver.download_url,
+    sha256: pkg.sha256 || ver.sha256,
+  };
+}
+
+/** Enrich a local store entry with its hub `source` (when its package is the
+ *  hub's download, #1459), and flag it as `update-available` (C6) when the hub
+ *  advertises a newer version than the installed one — whatever the origin of
+ *  the installed bytes. Only installed plugins are eligible — an `available`
+ *  or `incompatible` entry keeps its state. Returns a copy (catalog objects
+ *  are shared across requests and must not be mutated). */
 function enrichWithRegistry(
   existing: Plugin,
   resolved: ResolvedRegistryPlugin,
   registry: InstalledRegistry,
+  packages: StoreDeps['uploadedPackages'],
 ): Plugin {
-  const source = existing.source ?? registrySource(resolved);
+  const source =
+    existing.source ??
+    hubSourceForLocal(existing.id, resolved, packages);
+  const withSource = source ? { ...existing, source } : { ...existing };
   if (existing.install_state === 'installed') {
     const hubLatest = resolved.entry.latest_version;
     const installedVersion =
       registry.get(existing.id)?.installed_version ?? existing.version;
     if (isNewerVersion(hubLatest, installedVersion)) {
       return {
-        ...existing,
-        source,
+        ...withSource,
         install_state: 'update-available',
         available_version: hubLatest,
       };
     }
   }
-  return { ...existing, source };
+  return withSource;
 }
 
 /** Parse the numeric `X.Y.Z` core of a semver (pre-release/build stripped).
@@ -595,10 +655,13 @@ function isNewerVersion(candidate: string, current: string): boolean {
 }
 
 /** Map a remote registry entry → the `Plugin` shape the store list returns.
- *  Uses the latest advertised version. Permissions/integrations are left
- *  minimal here — the registry's `manifest_summary` is a display teaser; the
- *  authoritative summary is computed from the real manifest after the package
- *  is fetched + ingested (the install wizard shows that). */
+ *  Uses the latest advertised version. The registry's `manifest_summary` is a
+ *  display teaser; the authoritative summary is computed from the real
+ *  manifest once the package is fetched + ingested. The permissions are
+ *  projected anyway (#1457): the detail page is where an operator reviews them
+ *  BEFORE installing, and the install flow never shows memory, graph or
+ *  network access. They go through the same parser as a local manifest, so an
+ *  untrusted or malformed block degrades to "declared none" field by field. */
 function registryEntryToPlugin(resolved: ResolvedRegistryPlugin): Plugin {
   const { entry } = resolved;
   const ver =
@@ -636,7 +699,10 @@ function registryEntryToPlugin(resolved: ResolvedRegistryPlugin): Plugin {
     signed: false,
     signed_by: null,
     setup_fields: setupFields,
-    permissions_summary: emptyPermissionsSummary(),
+    permissions_summary: extractPermissions(
+      asPermissionsRecord(summary.permissions),
+      entry.id,
+    ),
     integrations_summary: [],
     install_state: 'available',
     depends_on: Array.isArray(summary.depends_on) ? summary.depends_on : [],
@@ -658,17 +724,12 @@ function registryEntryToPlugin(resolved: ResolvedRegistryPlugin): Plugin {
   };
 }
 
-function emptyPermissionsSummary(): PluginPermissionsSummary {
-  return {
-    memory_reads: [],
-    memory_writes: [],
-    graph_reads: [],
-    graph_writes: [],
-    network_outbound: [],
-    // Epic #470 C4 / H1 — the empty summary must claim NO public paths. This
-    // is the fallback used when a package has no readable manifest, and a
-    // fallback that invented an unauthenticated prefix would be the worst
-    // possible default.
-    public_paths: [],
-  };
+/** The registry payload is untrusted: anything but a plain object is
+ *  "declared none". */
+function asPermissionsRecord(
+  value: unknown,
+): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
 }

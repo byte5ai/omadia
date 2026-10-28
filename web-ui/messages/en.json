@@ -4140,7 +4140,15 @@
       "errorTitle": "The catalog could not be loaded.",
       "errorHint": "Check that the middleware is reachable and that the endpoint <endpoint>/api/v1/store/plugins</endpoint> responds.",
       "footerSource": "Source:",
-      "footerSourceValue": "connected registries and uploaded packages"
+      "footerSourceValue": "connected registries and uploaded packages",
+      "search": {
+        "label": "Search the store",
+        "placeholder": "Search by name, id or description",
+        "submit": "Search",
+        "clear": "Clear search",
+        "emptyTitle": "Nothing matches “{query}”.",
+        "emptyBody": "Try another word, or <clearLink>clear the search</clearLink>."
+      }
     },
     "detail": {
       "notFoundTitle": "Plugin not found · Store",
@@ -4184,7 +4192,8 @@
         "publicPathsBody": "This plugin asks to answer the URL prefixes below without an operator session. Anyone who can reach this deployment can reach them, and the plugin alone is responsible for authenticating those requests.",
         "publicPathsNotGranted": "Declaring is not granting: a prefix is not reachable at all until you consent to it, and consent is withdrawn automatically when the plugin is deactivated.",
         "none": "No permissions declared.",
-        "runtimeCredentials": "Runtime credentials"
+        "runtimeCredentials": "Runtime credentials",
+        "sqlNotGranted": "Declaring is not granting: the plugin gets no database connection until you consent under “Grants” after installing it."
       },
       "capabilities": {
         "provides": "Provides",
@@ -4193,7 +4202,7 @@
         "noRequirements": "No prerequisites.",
         "installHint": "During install the middleware checks these prerequisites transitively. If a provider is missing, a wizard opens with the matching plugins from the catalog."
       },
-      "sectionGrants": "Permissions",
+      "sectionGrants": "Grants",
       "footerManifestLegacy": "Manifest: Legacy",
       "footerManifestSchema": "Manifest: Schema v{version}"
     },
@@ -4211,7 +4220,8 @@
           "end_user": "Setup by end user"
         },
         "minutes": "~{minutes} min"
-      }
+      },
+      "hubChip": "Hub · {registry}"
     },
     "stateBadge": {
       "available": "Available",
@@ -4519,7 +4529,7 @@
       "iframeTitle": "{plugin} admin UI"
     },
     "grants": {
-      "stepTitle": "Permissions",
+      "stepTitle": "Grants",
       "stepIntro": "This plugin asks for access that only you can grant. Nothing below is implied by installing it, and every grant can be withdrawn later from the plugin page.",
       "sqlTitle": "Own database tables",
       "sqlBody": "The plugin receives a connection to your database and owns its own tables — it creates and migrates them itself. It cannot read or write tables belonging to omadia or to another plugin.",
@@ -4533,16 +4543,16 @@
       "currentNotGranted": "Currently not granted",
       "grantAndActivate": "Grant & activate",
       "skip": "Skip",
-      "skippedBody": "Nothing was granted. You can grant it at any time on the plugin page under Permissions — the plugin does not need to be reinstalled.",
+      "skippedBody": "Nothing was granted. You can grant it at any time on the plugin page under Grants — the plugin does not need to be reinstalled.",
       "apply": "Apply",
       "close": "Close",
-      "openPanel": "Open the permissions panel",
+      "openPanel": "Open the grants panel",
       "saving": "Saving and re-activating…",
       "saved": "Saved",
-      "loading": "Loading permissions…",
-      "loadFailed": "The permissions for this plugin could not be loaded.",
-      "grantFailed": "The permissions could not be saved.",
-      "nothingDeclared": "This plugin asks for no special permissions.",
+      "loading": "Loading grants…",
+      "loadFailed": "The grants for this plugin could not be loaded.",
+      "grantFailed": "The grants could not be saved.",
+      "nothingDeclared": "No grant needed: this plugin requests neither its own database tables nor public paths. Its other permissions are listed under “Permissions”.",
       "state": {
         "active": "Active — the plugin is running with the permissions granted.",
         "errored": "Not running. The plugin failed to start after the last change.",

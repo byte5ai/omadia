@@ -5209,6 +5209,8 @@ async function main(): Promise<void> {
       registry: installedRegistry,
       client: registryClient,
       // #1490 — flags uploaded-but-not-installed packages as removable.
+      // #1459 — and gives package provenance: only a hub download carries the
+      // hub `source` tag, never an operator upload of the same id.
       uploadedPackages: uploadedPackageStore,
       pluginStatusRegistry,
       // OM-16 — key-name-only vault access so the store can report whether an

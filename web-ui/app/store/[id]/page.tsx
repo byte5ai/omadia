@@ -8,6 +8,7 @@ import {
   Database,
   Globe,
   KeyRound,
+  LockKeyhole,
   Network,
   Plug,
   ShieldAlert,
@@ -298,9 +299,14 @@ export default async function PluginDetailPage({
 
               Rendered for every INSTALLED plugin, not only for one that
               declares a grant today: the panel is also where an operator
-              confirms that a plugin asks for NOTHING, and a section that
+              confirms that a plugin needs NO grant, and a section that
               silently disappears cannot answer that question. The panel itself
               says so when the manifest declares neither.
+
+              #1474 — titled "Grants", not "Permissions", with its own icon:
+              it covers only the two grantable requests, while the
+              "Permissions" section below lists everything the manifest
+              declares. Two sections of the same name contradicted each other.
 
               `id="grants"` is the deep-link target the install wizard and the
               activation error message both point at. */}
@@ -309,7 +315,7 @@ export default async function PluginDetailPage({
             <Section
               label={t('sectionGrants')}
               id="grants"
-              icon={<ShieldCheck className="size-4" aria-hidden />}
+              icon={<LockKeyhole className="size-4" aria-hidden />}
             >
               <GrantsPanel pluginId={plugin.id} />
             </Section>
@@ -633,6 +639,7 @@ async function PermissionsBlock({
   perms: Plugin['permissions_summary'];
 }): Promise<React.ReactElement> {
   const t = await getTranslations('store.detail.permissions');
+  const tGrants = await getTranslations('store.grants');
   const groups: Array<{
     label: string;
     icon: React.ReactNode;
@@ -696,8 +703,17 @@ async function PermissionsBlock({
   // its own labelled block, and the copy says plainly that declaring is not
   // granting.
   const publicPaths = perms.public_paths ?? [];
+  // #1457 — own database tables. Installed plugins also show this under
+  // "Grants", but a hub plugin's detail page is reviewed BEFORE install, and
+  // this block is all it has.
+  const sql = perms.sql ?? null;
 
-  if (active.length === 0 && flags.length === 0 && publicPaths.length === 0) {
+  if (
+    active.length === 0 &&
+    flags.length === 0 &&
+    publicPaths.length === 0 &&
+    !sql
+  ) {
     return (
       <p className="text-sm italic text-[color:var(--faint-ink)]">
         {t('none')}
@@ -728,6 +744,25 @@ async function PermissionsBlock({
           </ul>
           <p className="mt-2 text-xs italic text-[color:var(--faint-ink)]">
             {t('publicPathsNotGranted')}
+          </p>
+        </div>
+      ) : null}
+      {sql ? (
+        <div data-testid="sql-permission">
+          <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-[color:var(--muted-ink)]">
+            <Database className="size-3.5" aria-hidden />
+            {tGrants('sqlTitle')}
+          </div>
+          <p className="mt-2 text-sm text-[color:var(--muted-ink)]">
+            {tGrants('sqlBody')}
+          </p>
+          <p className="mt-2">
+            <Chip tone="mono" className="normal-case tracking-normal">
+              {tGrants('sqlLedger', { ledger: sql.ledger })}
+            </Chip>
+          </p>
+          <p className="mt-2 text-xs italic text-[color:var(--faint-ink)]">
+            {t('sqlNotGranted')}
           </p>
         </div>
       ) : null}

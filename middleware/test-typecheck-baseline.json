@@ -73,7 +73,6 @@
   "test/jobScheduler.test.ts": 5,
   "test/llmClassRefGate.test.ts": 1,
   "test/manageRoutineTool.test.ts": 1,
-  "test/mcpClient.test.ts": 1,
   "test/mcpOAuth.test.ts": 5,
   "test/mcpRegistryClient.test.ts": 8,
   "test/mcpRescan.test.ts": 1,

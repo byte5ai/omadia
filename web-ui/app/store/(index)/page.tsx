@@ -1,14 +1,15 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
-import { HardDrive, PackageCheck, Store } from 'lucide-react';
+import { HardDrive, PackageCheck, Search, Store, X } from 'lucide-react';
 import { getTranslations } from 'next-intl/server';
 
 import { listProfiles, listStorePlugins } from '../../_lib/api';
 import { APP_VERSION } from '../../_lib/appVersion';
 import {
   countReadiness,
-  isInstalled,
   isOperatorInstalled,
+  storeTab,
+  type StoreTab,
 } from '../../_lib/pluginCounts';
 import { deriveInitialsForSet } from '../../_lib/pluginInitials';
 import { redirectIfUnauthorized } from '../../_lib/authRedirect';
@@ -21,6 +22,7 @@ import type { ProfileSummary } from '../../_lib/profileTypes';
 import { OnboardingModal } from '../../_components/onboarding/OnboardingModal';
 import { PluginCard } from '../../_components/store/PluginCard';
 import { UploadDropzone } from '../../_components/store/UploadDropzone';
+import { Button } from '../../_components/ui/Button';
 import { cn } from '../../_lib/cn';
 import { registryErrorKey } from '../../_lib/registryErrors';
 
@@ -33,19 +35,33 @@ export const dynamic = 'force-dynamic';
 
 type CategoryFilter = 'all' | PluginKind;
 
+/** #1470 — one pill per plugin kind, so the pill counts add up to "All". */
+const CATEGORY_FILTERS: readonly CategoryFilter[] = [
+  'all',
+  'integration',
+  'agent',
+  'channel',
+  'tool',
+  'extension',
+];
+
+/** Upper bound for `?q=`; the middleware substring-matches it per entry. */
+const MAX_QUERY_LENGTH = 100;
+
 /** Top-level view switch by plugin origin: `hub` = advertised by a remote
  *  registry, `local` = local catalog package (not installed), `installed` =
- *  already in the runtime registry. */
-type SourceFilter = 'hub' | 'local' | 'installed';
+ *  already in the runtime registry. See `storeTab`. */
+type SourceFilter = StoreTab;
 
 export default async function StorePage({
   searchParams,
 }: {
-  searchParams: Promise<{ kind?: string; source?: string }>;
+  searchParams: Promise<{ kind?: string; source?: string; q?: string }>;
 }): Promise<React.ReactElement> {
   const params = await searchParams;
   const source = parseSource(params.source);
   const filter = parseFilter(params.kind);
+  const query = parseQuery(params.q);
   const t = await getTranslations('store.hero');
   const tPage = await getTranslations('store.page');
 
@@ -55,7 +71,9 @@ export default async function StorePage({
   let profiles: ProfileSummary[] = [];
 
   try {
-    const resp = await listStorePlugins();
+    // #1471 — the middleware already searches name, id and descriptions, and
+    // sorts by display name; every count below then refers to the result.
+    const resp = await listStorePlugins(query ? { search: query } : {});
     plugins = Array.isArray(resp?.items) ? resp.items : [];
     registries = Array.isArray(resp?.registries) ? resp.registries : [];
   } catch (err) {
@@ -74,29 +92,25 @@ export default async function StorePage({
     profiles = [];
   }
 
-  // Three origins, partitioned so every plugin lands in exactly one bucket:
-  //   • Hub         — advertised by a remote registry (`plugin.source` set),
-  //                   available to fetch + install. An installed hub plugin
-  //                   becomes local and leaves this bucket (the store router's
-  //                   local-wins merge drops the remote entry on id collision).
-  //   • Lokal       — local catalog packages (examples / uploaded ZIPs) that
-  //                   are not yet installed.
-  //   • Installiert — anything already in the runtime registry.
+  // Three origins, partitioned so every plugin lands in exactly one bucket
+  // (`storeTab` in app/_lib/pluginCounts.ts):
+  //   • Installiert — anything already in the runtime registry, whether or not
+  //                   the hub also offers it (#1469).
+  //   • Hub         — not installed, and the bytes are the hub's artifact
+  //                   (`plugin.source` set): hub-only entries and hub
+  //                   downloads that were not installed yet.
+  //   • Lokal       — everything else not installed: built-ins and uploaded
+  //                   ZIPs, including an upload whose id the hub also lists
+  //                   (#1459 — the middleware sets no `source` on those).
   //
-  // OM-27: the "Installiert" bucket used to test `install_state === 'installed'`
-  // ONLY, so a locally-catalogued plugin with a pending update
-  // (`update-available`) fell out of "Installiert" and inflated "Lokal" — it was
-  // counted as not-yet-installed while being installed. Both buckets now go
-  // through the one shared `isInstalled` predicate (app/_lib/pluginCounts.ts),
-  // which is also what the dashboard tile uses, so they can no longer drift.
-  const hubPlugins = plugins.filter((p) => p.source != null);
+  // OM-27: "installed" goes through the shared `isInstalled` predicate, which
+  // the dashboard tile uses too, so `update-available` counts as installed.
+  const hubPlugins = plugins.filter((p) => storeTab(p) === 'hub');
+  const installedPlugins = plugins.filter((p) => storeTab(p) === 'installed');
+  const localPlugins = plugins.filter((p) => storeTab(p) === 'local');
   // #1482 — a registry that could not be read used to be indistinguishable
   // from "no registry connected". The middleware now says which one failed.
   const failedRegistries = registries.filter((r) => !r.ok);
-  const installedPlugins = plugins.filter(isInstalled);
-  const localPlugins = plugins.filter(
-    (p) => p.source == null && !isInstalled(p),
-  );
   const hubCount = hubPlugins.length;
   const localCount = localPlugins.length;
   const installedCount = installedPlugins.length;
@@ -153,6 +167,7 @@ export default async function StorePage({
       {/* Source switch — the primary view selector by plugin origin. */}
       <SourceTabs
         source={source}
+        query={query}
         hubCount={hubCount}
         localCount={localCount}
         installedCount={installedCount}
@@ -180,12 +195,56 @@ export default async function StorePage({
         </div>
       ) : null}
 
+      {/* #1471 — search. A plain GET form, so the server-rendered page and its
+          bookmarkable URL stay the single source of truth; the hidden fields
+          keep the active tab and category. */}
+      <form
+        role="search"
+        action="/store"
+        method="get"
+        className="mt-8 flex max-w-xl items-center gap-2"
+      >
+        {source !== 'hub' ? (
+          <input type="hidden" name="source" value={source} />
+        ) : null}
+        {filter !== 'all' ? (
+          <input type="hidden" name="kind" value={filter} />
+        ) : null}
+        <label className="relative flex-1">
+          <span className="sr-only">{tPage('search.label')}</span>
+          <Search
+            className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[color:var(--fg-subtle)]"
+            aria-hidden
+          />
+          <input
+            type="search"
+            name="q"
+            defaultValue={query}
+            maxLength={MAX_QUERY_LENGTH}
+            placeholder={tPage('search.placeholder')}
+            className="w-full rounded-full border border-[color:var(--border)] bg-[color:var(--bg)] py-2 pl-9 pr-4 text-[13px] text-[color:var(--fg)] placeholder:text-[color:var(--fg-subtle)] focus:border-[color:var(--accent)] focus:outline-none"
+          />
+        </label>
+        <Button type="submit" variant="secondary" size="sm" pill>
+          {tPage('search.submit')}
+        </Button>
+        {query ? (
+          <Link
+            href={buildHref(source, filter)}
+            className="inline-flex items-center gap-1 text-[12px] text-[color:var(--fg-muted)] hover:text-[color:var(--fg-strong)]"
+          >
+            <X className="size-3.5" aria-hidden />
+            {tPage('search.clear')}
+          </Link>
+        ) : null}
+      </form>
+
       {/* Category filter tabs — scoped to the active source. */}
       <nav
-        className="mt-8 flex flex-wrap items-center gap-2"
+        className="mt-4 flex flex-wrap items-center gap-2"
         aria-label={tPage('filterCategoryAria')}
       >
-        {(['all', 'integration', 'agent', 'channel'] as CategoryFilter[]).map(
+        {CATEGORY_FILTERS.map(
           (f) => {
             const count =
               f === 'all' ? scoped.length : countsByKind[f as PluginKind];
@@ -193,7 +252,7 @@ export default async function StorePage({
             return (
               <Link
                 key={f}
-                href={buildHref(source, f)}
+                href={buildHref(source, f, query)}
                 className={cn(
                   'inline-flex items-center gap-2 rounded-full px-4 py-2',
                   'text-[12px] font-semibold transition-colors duration-[140ms]',
@@ -233,6 +292,7 @@ export default async function StorePage({
           <EmptyState
             source={source}
             filter={filter}
+            query={query}
             hubState={hubState(registries)}
           />
         ) : (
@@ -274,11 +334,13 @@ export default async function StorePage({
  */
 async function SourceTabs({
   source,
+  query,
   hubCount,
   localCount,
   installedCount,
 }: {
   source: SourceFilter;
+  query: string;
   hubCount: number;
   localCount: number;
   installedCount: number;
@@ -320,7 +382,7 @@ async function SourceTabs({
         return (
           <Link
             key={tab.key}
-            href={buildHref(tab.key, 'all')}
+            href={buildHref(tab.key, 'all', query)}
             aria-current={active ? 'page' : undefined}
             className={cn(
               'inline-flex items-center gap-2 rounded-full px-4 py-2',
@@ -413,10 +475,12 @@ function hubState(registries: RegistrySourceStatus[]): HubState {
 async function EmptyState({
   source,
   filter,
+  query,
   hubState,
 }: {
   source: SourceFilter;
   filter: CategoryFilter;
+  query: string;
   hubState: HubState;
 }): Promise<React.ReactElement> {
   const t = await getTranslations('store.page');
@@ -432,6 +496,22 @@ async function EmptyState({
         </Link>
       );
     };
+
+  // #1471 — searched into emptiness: say so, and offer the way back.
+  if (query) {
+    return (
+      <div className="rounded-lg border border-dashed border-[color:var(--border-strong)] bg-[color:var(--bg-soft)] p-12 text-center">
+        <p className="font-display text-[22px] text-[color:var(--fg-strong)]">
+          {t('search.emptyTitle', { query })}
+        </p>
+        <p className="mt-3 text-sm leading-relaxed text-[color:var(--fg-muted)]">
+          {t.rich('search.emptyBody', {
+            clearLink: link(buildHref(source, filter)),
+          })}
+        </p>
+      </div>
+    );
+  }
 
   // Kind-filtered-into-emptiness inside a non-empty source: keep it short.
   if (filter !== 'all') {
@@ -477,7 +557,8 @@ async function EmptyState({
   }
 
   // source === 'hub' and empty. #1482 — "connect a registry" is only the
-  // right advice when none is configured; a failing one is named above.
+  // right advice when none is configured; a failing one is named above. Hub
+  // entries that are installed count under "Installiert" (#1469).
   const links = {
     adminLink: link('/admin/registries'),
     localLink: link(buildHref('local', 'all')),
@@ -545,14 +626,24 @@ function parseSource(raw: string | undefined): SourceFilter {
   return 'hub';
 }
 
-/** Build a `/store` href preserving the source/kind pair. `hub` + `all` are
- *  the defaults, so they are omitted to keep the canonical URL clean. */
-function buildHref(source: SourceFilter, kind: CategoryFilter): string {
+/** Build a `/store` href preserving the source/kind pair and the search.
+ *  `hub` + `all` + no query are the defaults, so they are omitted to keep the
+ *  canonical URL clean. */
+function buildHref(
+  source: SourceFilter,
+  kind: CategoryFilter,
+  query = '',
+): string {
   const params = new URLSearchParams();
   if (source !== 'hub') params.set('source', source);
   if (kind !== 'all') params.set('kind', kind);
+  if (query) params.set('q', query);
   const qs = params.toString();
   return qs ? `/store?${qs}` : '/store';
+}
+
+function parseQuery(raw: string | undefined): string {
+  return typeof raw === 'string' ? raw.trim().slice(0, MAX_QUERY_LENGTH) : '';
 }
 
 function parseFilter(raw: string | undefined): CategoryFilter {

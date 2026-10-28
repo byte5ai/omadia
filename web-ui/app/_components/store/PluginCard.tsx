@@ -175,13 +175,13 @@ export function PluginCard({
             ) : null}
           </span>
         ) : null}
-        {/* Origin marker — present only on remote-registry (Hub) entries that
-            are not yet ingested locally. Lets the Hub view distinguish a
-            hub-sourced plugin from a local catalog package at a glance. */}
+        {/* Origin marker — present when the bytes are the hub's artifact:
+            hub-only entries and packages downloaded from that registry, never
+            an operator upload of the same id (#1459). */}
         {plugin.source ? (
           <Chip tone="accent">
             <Store className="mr-1 size-3" aria-hidden />
-            Hub · {plugin.source.registry}
+            {t('hubChip', { registry: plugin.source.registry })}
           </Chip>
         ) : null}
         {visibleCategories.map((cat) => (
