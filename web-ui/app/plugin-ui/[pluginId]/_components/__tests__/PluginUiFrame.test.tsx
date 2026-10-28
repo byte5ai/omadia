@@ -33,7 +33,7 @@ import { PluginUiFrame } from '../PluginUiFrame';
 const SANDBOX = 'allow-same-origin allow-scripts allow-forms';
 
 function frame(): HTMLIFrameElement {
-  const { container } = renderWithIntl(<PluginUiFrame pluginId="@omadia/example-ui" />);
+  const { container } = renderWithIntl(<PluginUiFrame pluginId="@omadia/example-ui" name="Example UI" />);
   const el = container.querySelector('iframe');
   if (!el) throw new Error('no iframe rendered');
   return el;

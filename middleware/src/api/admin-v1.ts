@@ -117,8 +117,9 @@ export interface PluginSetupField {
   expect?: Record<string, unknown>;
   /** Manifest default. Forwarded so the post-install editor can pre-select
    *  the default option in an `enum` dropdown when no value is stored yet.
-   *  A `string[]` for `type === 'host_list'`, a `string` otherwise. */
-  default?: string | string[];
+   *  A `string[]` for `type === 'host_list'`, a `boolean` for
+   *  `type === 'boolean'` (#1464 — `"true"` normalized), a `string` otherwise. */
+  default?: string | string[] | boolean;
   /** Allowed values for `type === 'enum'`. Mirrors the install-wizard
    *  schema so the post-install editor can render a `<select>` instead of
    *  a free-text input. */
@@ -773,7 +774,29 @@ export type PluginJobSchedule =
   | { cron: string }
   | { intervalMs: number };
 
-export type StoreListResponse = Page<Plugin>;
+/**
+ * #1482 — the outcome of the last index fetch of one configured registry.
+ * `ok: false` carries the reason the Hub tab and Admin · Registries show.
+ * The store and the admin listing wait for every registry (each bounded by
+ * its deadline), so every configured registry has an entry.
+ */
+export interface RegistrySourceStatus {
+  name: string;
+  ok: boolean;
+  /** When the outcome was fetched (it may be served from the cache). */
+  checked_at: ISO8601;
+  /** Plugins the index advertised. Present when `ok`. */
+  plugin_count?: number;
+  /** Present when not `ok`. `code` is a `registry.*` code. */
+  error?: { code: string; message: string };
+}
+
+export interface StoreListResponse extends Page<Plugin> {
+  /** #1458/#1482 — one entry per configured registry, in configured order.
+   *  Absent when no registry is configured. The list is partial when one of
+   *  them failed: the local and installed plugins are always there. */
+  registries?: RegistrySourceStatus[];
+}
 
 /** Advisory code-scan verdict for an ingested plugin package (issue #453).
  *  Absent when the plugin was never scanned (built-ins, no scanner). */

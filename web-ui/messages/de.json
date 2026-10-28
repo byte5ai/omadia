@@ -4116,6 +4116,11 @@
       "emptyLocalHint": "Lade ein Plugin-Paket per Drag-&-Drop oben hoch — der Server validiert das Manifest und registriert es im Katalog.",
       "emptyHubTitle": "Keine Plugins im Hub verfügbar.",
       "emptyHubBody": "Verbinde eine Registry unter <adminLink>Admin · Registries</adminLink> — oder lade ein eigenes Paket im <localLink>Lokal</localLink>-Tab hoch.",
+      "emptyHubNoPluginsBody": "Die verbundenen Registries bieten gerade keine Plugins an. Lade ein eigenes Paket im <localLink>Lokal</localLink>-Tab hoch.",
+      "emptyHubFailedTitle": "Der Hub konnte nicht geladen werden.",
+      "emptyHubFailedBody": "Keine Registry konnte gelesen werden — die Gründe stehen oben. Prüfe die Quellen unter <adminLink>Admin · Registries</adminLink> oder lade ein eigenes Paket im <localLink>Lokal</localLink>-Tab hoch.",
+      "registryErrorsTitle": "{count, plural, one {Eine Registry konnte nicht gelesen werden.} other {# Registries konnten nicht gelesen werden.}}",
+      "registryErrorsHint": "Der Hub zeigt, was die übrigen Registries geliefert haben; lokale und installierte Plugins sind nicht betroffen. Prüfe die Quellen unter <adminLink>Admin · Registries</adminLink>.",
       "errorKicker": "Fehler",
       "errorTitle": "Katalog konnte nicht geladen werden.",
       "errorHint": "Prüfe, ob die Middleware erreichbar ist und der Endpoint <endpoint>/api/v1/store/plugins</endpoint> antwortet.",
@@ -4225,6 +4230,7 @@
       "unexpectedJobState": "Unerwarteter Job-Zustand: {state}",
       "activationFailed": "Installiert, aber das Plugin ist nicht gestartet: {message}",
       "updateActivationFailed": "Aktualisiert, aber das Plugin ist nicht gestartet: {message}",
+      "registryUnavailable": "Das Plugin konnte nicht nachgeschlagen werden: Die Registry {registries} war nicht lesbar. Prüfe sie unter Admin · Registries und versuche es erneut.",
       "updateAvailable": "Update verfügbar",
       "updating": "Aktualisiere …",
       "update": "Aktualisieren",
@@ -4325,7 +4331,7 @@
       "optionsUnavailable": "Optionen nicht verfügbar ({error}). Werte/IDs kommagetrennt eingeben.",
       "pluginInactive": "Plugin inaktiv",
       "noEntries": "Keine auswählbaren Einträge (nichts mit der Integration geteilt?).",
-      "saving": "Speichern",
+      "saving": "Wird gespeichert",
       "saveSelection": "Auswahl speichern",
       "saveSelectionWithCount": "Auswahl speichern ({count})",
       "refreshList": "Liste aktualisieren",
@@ -4748,7 +4754,7 @@
   },
   "adminRegistries": {
     "title": "Plugin-Registries",
-    "intro": "Quellen, aus denen Plugins in den Store gezogen werden. Neue Instanzen starten mit <hub>hub.omadia.ai</hub>. Der Token wird verschlüsselt gespeichert und nie wieder angezeigt — nur, ob einer hinterlegt ist. Änderungen wirken ohne Neustart.",
+    "intro": "Quellen, aus denen Plugins in den Store gezogen werden. Neue Instanzen starten mit <hub>hub.omadia.ai</hub>. Der Token wird verschlüsselt gespeichert und nie wieder angezeigt — nur, ob einer hinterlegt ist. Änderungen wirken ohne Neustart. Entfernst du alle Registries, bleibt die Instanz ohne Registry, auch nach einem Neustart.",
     "addHeading": "Registry hinzufügen",
     "fields": {
       "name": "Name",
@@ -4773,6 +4779,12 @@
     "badge": {
       "tokenSet": "Token gesetzt",
       "public": "öffentlich"
+    },
+    "status": {
+      "ok": "Erreichbar · {count, plural, one {# Plugin} other {# Plugins}}",
+      "error": "Nicht erreichbar",
+      "errorDetail": "Letzte Prüfung fehlgeschlagen. {reason}",
+      "unchecked": "Noch nicht geprüft"
     },
     "confirmDelete": "Registry „{name}\" wirklich entfernen?",
     "errors": {
@@ -5091,6 +5103,7 @@
         "memory": "Memory-Purges",
         "conductor": "Conductor-Änderungen",
         "profileSnapshot": "Profil-Snapshots",
+        "registry": "Plugin-Registries",
         "channel": "Kanäle"
       }
     },
@@ -6239,10 +6252,10 @@
     }
   },
   "pluginUi": {
-    "metaTitle": "{pluginId} — Plugin-Oberfläche",
-    "title": "{pluginId}",
-    "subtitle": "Diese Ansicht stammt aus dem Plugin und läuft in einem abgeschotteten Frame.",
-    "frameTitle": "Oberfläche des Plugins {pluginId}",
+    "metaTitle": "{name} — Plugin-Oberfläche",
+    "title": "{name}",
+    "subtitle": "Diese Ansicht stammt aus dem Plugin. Sie läuft mit deiner Sitzung und denselben Rechten wie der Rest dieser Oberfläche und ist davon nicht abgeschottet.",
+    "frameTitle": "Oberfläche des Plugins {name}",
     "loading": "Plugin-Oberfläche wird geladen…"
   },
   "operatorTeamsSignIn": {
@@ -6331,5 +6344,16 @@
     "bodyForceGuarded": "Es läuft kein Privacy Guard, obwohl OMADIA_PRIVACY_FORCE_GUARDED gesetzt ist: Ohne ihn kann die Org-Richtlinie nichts maskieren. Jeder Chat schickt Tool-Ergebnisse, Chatverlauf und abgerufenen Kontext unmaskiert an das LLM. Installiere den Privacy Guard neu.",
     "cta": "Privacy Guard",
     "bodyNotRunning": "Der Privacy Guard ist installiert, läuft aber nicht, daher wird nichts maskiert: Jeder Chat schickt Tool-Ergebnisse, Chatverlauf und abgerufenen Kontext unmaskiert an das LLM. Öffne den Privacy Guard, um zu sehen, warum er nicht gestartet ist."
+  },
+  "registryStatus": {
+    "errors": {
+      "timeout": "Sie hat nicht rechtzeitig geantwortet.",
+      "network": "Sie war nicht erreichbar (Verbindung abgelehnt, unbekannter Host oder eine Weiterleitung).",
+      "http": "Sie hat mit einem HTTP-Fehler geantwortet.",
+      "badIndex": "Sie hat geantwortet, aber nicht mit einem gültigen Registry-Index.",
+      "tooLarge": "Ihr Index ist größer als erlaubt.",
+      "unknown": "Sie konnte nicht gelesen werden."
+    },
+    "detail": "Technisches Detail: {message}"
   }
 }
