@@ -91,7 +91,11 @@ RUN apt-get update \
 # a legal review; the local/dev compose enables it via build arg. Login is still
 # per-host (`claude auth login`), never baked into the image.
 ARG INSTALL_SUBSCRIPTION_CLIS=false
-ARG CLAUDE_CODE_VERSION=2.1.187
+# 2.1.312 (#1581): 2.1.187 sent the first model request without the loopback
+# MCP tools whenever the handshake took more than a few seconds, so the model
+# faked tool calls (memory) as text. 2.1.312 waits for the connection. Its
+# login prompt matches what `cliAuthService.ts` expects.
+ARG CLAUDE_CODE_VERSION=2.1.312
 RUN if [ "${INSTALL_SUBSCRIPTION_CLIS}" = "true" ]; then \
       npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
    && npm cache clean --force; \
