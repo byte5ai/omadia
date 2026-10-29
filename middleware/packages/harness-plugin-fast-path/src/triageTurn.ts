@@ -60,6 +60,9 @@ export async function triageTurn(opts: {
   /** the zero-LLM answer cache — pass it only for a plain text turn whose
    *  `question` is the user's own text (not an action/target turn) */
   answerCache?: Pick<AnswerCache, 'load' | 'lookup'>;
+  /** told the cache verdict as soon as the lookup ran (before router and
+   *  planner) — the canvas builds its skeleton from a hit without waiting */
+  onCacheLookup?: (hit: boolean) => void;
   log: (message: string) => void;
 }): Promise<TriageOutcome> {
   const t0 = Date.now();
@@ -72,6 +75,7 @@ export async function triageTurn(opts: {
   const previous = opts.previous !== undefined;
   if (opts.answerCache) {
     const cached = await lookupAnswerCache(opts.answerCache, { ...opts, previous }, t0);
+    opts.onCacheLookup?.(cached !== undefined);
     if (cached) return cached;
   }
   let message = buildTurnMessage(opts);

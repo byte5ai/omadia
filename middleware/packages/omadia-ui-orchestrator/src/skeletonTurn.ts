@@ -17,6 +17,7 @@ import { CANVAS_PROTOCOL_VERSION, CANVAS_TURN_DIRECTIVE, OPS_CATALOG_VERSION } f
 import { type CanvasRuntime } from './canvasRuntime.js';
 import { tapCanvasSentinels } from './canvasSentinelTap.js';
 import { type CanvasTurnBlocks, type CanvasTurnGate } from './canvasTurn.js';
+import { CACHE_PEEK_MS, peekCacheHit, planSkeleton } from './cachedSkeleton.js';
 import { composeSkeleton, type SkeletonResult } from './composition.js';
 import { bindPlanToSkeleton, type PlannedSkeleton } from './fastPathBinding.js';
 import { runFastPath, type FastPathOutcome } from './fastPathRun.js';
@@ -64,15 +65,21 @@ export async function* skeletonTurnStream(
   //    planner call against the skeleton's data container. Learned plans:
   //    the top-K active plans most similar to the ask are the router's
   //    intents and the planner's examples (their tools join the whitelist).
+  //    Answer-cache hit (resolves in ms): the cached plan knows its table,
+  //    so the skeleton is built from it and the composer is not called.
   const turnTriage = startTriage(rt, input, canvasSessionId, base, gate);
-  const skeleton = await composeSkeleton({
-    llm,
-    model,
-    userText: turnTriage.turnText,
-    log: (message) => ctx.log(message),
-    skipModel: privacyForced,
-    ...(privacyGuard !== undefined ? { privacy: openSkeletonPrivacy(privacyGuard) } : {}),
-  });
+  const cachedPlan = await peekCacheHit(turnTriage.triage, turnTriage.cacheVerdict, CACHE_PEEK_MS);
+  const skeleton: SkeletonResult = cachedPlan
+    ? planSkeleton(cachedPlan, input.userMessage)
+    : await composeSkeleton({
+        llm,
+        model,
+        userText: turnTriage.turnText,
+        log: (message) => ctx.log(message),
+        skipModel: privacyForced,
+        ...(privacyGuard !== undefined ? { privacy: openSkeletonPrivacy(privacyGuard) } : {}),
+      });
+  if (cachedPlan) ctx.log('[composition] skipped — answer-cache hit → plan skeleton');
   let surfaceSeq = 0;
   const initialRevision = '0' as RevisionId;
   const skeletonSnapshot: ChatStreamEvent = {
@@ -178,6 +185,12 @@ function startTriage(
   // user's text) — never an action/row-bound turn
   const plainTurn = input.action === undefined && input.target === undefined && input.userMessage.trim().length > 0;
   const answerCache = plainTurn ? fp?.answerCache : undefined;
+  let tellVerdict: ((hit: boolean) => void) | undefined;
+  const cacheVerdict = answerCache
+    ? new Promise<boolean>((resolve) => {
+        tellVerdict = resolve;
+      })
+    : undefined;
   const triage: Promise<TriageOutcome> | undefined =
     fp !== undefined && !privacyForced && turnTools.length > 0
       ? triageTurn({
@@ -190,11 +203,12 @@ function startTriage(
           allowedTools: fp.allowedFetchTools(),
           ...(previousQuery ? { previous: previousQuery } : {}),
           ...(fastPrivacy ? { privacy: fastPrivacy } : {}),
-          ...(answerCache ? { answerCache } : {}),
+          ...(answerCache ? { answerCache, onCacheLookup: (hit: boolean) => tellVerdict?.(hit) } : {}),
           log: (m) => ctx.log(m),
         })
       : undefined;
-  return { offered, turnTools, target, turnText, fastPathKey, triage };
+  if (triage === undefined) tellVerdict?.(false); // no triage → no lookup
+  return { offered, turnTools, target, turnText, fastPathKey, triage, cacheVerdict };
 }
 
 /** Await the triage, bind its plan to the skeleton and run the fast path;

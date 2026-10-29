@@ -68,7 +68,7 @@ export async function runFastPath(
     if (req.fetch === undefined) return miss('no-plan');
     plans.push({ containerId: req.containerId, fetch: req.fetch });
   }
-  if (skeleton.source !== 'model' || plans.length === 0) return miss('no-plan');
+  if (skeleton.source === 'fallback' || plans.length === 0) return miss('no-plan');
   if (plans.some((p) => !turnTools.allowed.has(p.fetch.tool))) return miss('tool-not-allowed');
   // the base agent itself must offer the tool — a fast path never reaches
   // a tool the answering agent does not have
