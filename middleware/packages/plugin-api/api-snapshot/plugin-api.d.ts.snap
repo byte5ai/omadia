@@ -2073,7 +2073,9 @@ readonly turnId: string;
 readonly toolName: string;
 readonly rawResult: string;
 readonly toolInput?: unknown;
+readonly audience?: PrivacyDigestAudience;
 }
+export type PrivacyDigestAudience = 'chat' | 'public-api';
 export interface PrivacyDatasetVerbStep {
 readonly verb: string;
 readonly args: Readonly<Record<string, unknown>>;
@@ -2099,10 +2101,12 @@ readonly sessionId: string;
 readonly turnId: string;
 readonly toolName: string;
 readonly input: unknown;
+readonly fileExportAvailable?: boolean;
 }
 export interface PrivacyV4ToolResult {
 readonly resultText: string;
 readonly canvasSentinel?: string;
+readonly renderProvenance?: string;
 }
 export interface PrivacyV4ToolSpec {
 readonly name: string;
@@ -2235,6 +2239,8 @@ datasetProvenance?(turnId: string, datasetId: string): PrivacyDatasetProvenance 
 maskUserPrompt?(request: PrivacyPromptMaskRequest): Promise<PrivacyPromptMaskResult>;
 restorePromptPseudonyms?(turnId: string, text: string): Promise<string>;
 snapshotPromptRestorer?(turnId: string): ((text: string) => string) | undefined;
+remaskPromptValues?(turnId: string, text: string): string;
+restoreToolInputValues?(turnId: string, text: string): string;
 projectVerifierText?(request: PrivacyVerifierProjectionRequest): Promise<PrivacyPromptMaskResult>;
 maskReplayedAnswer?(request: PrivacyReplayedAnswerRequest): Promise<PrivacyPromptMaskResult>;
 openStoredTextScope?(request: PrivacyStoredTextScopeRequest): PrivacyStoredTextScope;

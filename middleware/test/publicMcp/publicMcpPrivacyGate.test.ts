@@ -2,6 +2,8 @@ import { strict as assert } from 'node:assert';
 import { afterEach, beforeEach, describe, it, mock } from 'node:test';
 
 import type { PrivacyTurnHandle } from '@omadia/orchestrator';
+import { createPrivacyTurnHandle } from '@omadia/orchestrator';
+import { createPrivacyGuardService } from '@omadia/plugin-privacy-guard/dist/index.js';
 
 import {
   createFailClosedPrivacyGate,
@@ -98,5 +100,55 @@ describe('public MCP privacy gate — the nested-call handle', () => {
 
     assert.equal(gate.handle.forNestedCalls?.(), nested);
     assert.equal(nested.forNestedCalls?.(), nested);
+  });
+});
+
+describe('#1561 — the public MCP digest is written for an API caller', () => {
+  beforeEach(() => {
+    mock.method(console, 'warn', () => {});
+    mock.method(console, 'log', () => {});
+  });
+  afterEach(() => {
+    mock.restoreAll();
+  });
+
+  it("asks for the 'public-api' text for the call's own result, the chat text for nested calls", async () => {
+    const seen: unknown[] = [];
+    const base = {
+      ...baseHandle({}),
+      async internToolResultV4(input: { audience?: unknown }) {
+        seen.push(input.audience);
+        return { digestText: 'digest', datasetId: 'ds-1' };
+      },
+    } as unknown as PrivacyTurnHandle;
+    const gate = createFailClosedPrivacyGate(base);
+
+    await gate.handle.internToolResultV4({ toolName: 'query_odoo_hr', rawResult: 'x' });
+    await gate.handle.forNestedCalls?.().internToolResultV4({ toolName: 'odoo_execute', rawResult: 'y' });
+
+    assert.deepEqual(seen, ['public-api', undefined]);
+  });
+
+  it('with the real guard: no verb-tool instruction, no datasetId, no real value', async () => {
+    const service = createPrivacyGuardService();
+    const base = createPrivacyTurnHandle({ service, sessionId: 's', turnId: 't-mcp-1561' });
+    const gate = createFailClosedPrivacyGate(base);
+
+    const out = await gate.handle.internToolResultV4({
+      toolName: 'query_odoo_hr',
+      rawResult: JSON.stringify([
+        { name: 'Jane Doe', work_email: EMAIL, level: 3 },
+        { name: 'John Roe', work_email: 'john.roe@customer.example', level: 4 },
+      ]),
+    });
+
+    assert.equal(gate.masked(), true);
+    for (const banned of ['v4_', 'verb tools', 'datasetId', 'ds_', 'Jane Doe', EMAIL]) {
+      assert.ok(!out.digestText.includes(banned), `public MCP text carries "${banned}": ${out.digestText}`);
+    }
+    assert.ok(out.digestText.includes('Returned: 2 rows'), out.digestText);
+    assert.ok(out.digestText.includes('"work_email"'), 'names the masked field paths');
+    assert.ok(out.digestText.includes('not served to API callers'), out.digestText);
+    assert.ok(out.digestText.includes('/api/public/v1/chat'), 'says where the values can be had');
   });
 });

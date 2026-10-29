@@ -148,9 +148,10 @@ const MIN_NUMERIC_SURROGATE_DIGITS = 5;
  * How many surrogates of `map` still occur in `text`. A restored answer
  * should carry none; a hit means the model wrote a placeholder back in a
  * form restore cannot map back: in a different case, with re-grouped digits
- * ("€10000" as "10.000 €"), or — for a date or an amount placeholder — as
- * any literal of the same VALUE ("01.01.1970" as "1970-01-01" or
- * "1. Januar 1970", "€10000" as "10 Tsd. €"; see `valueLiterals.ts`). A
+ * ("€12357" as "12.357 €"), or — for a date or an amount placeholder — as
+ * any literal of the same VALUE ("19.02.2012" as "2012-02-19" or
+ * "19. Februar 2012", "€12357" as "EUR 12.357"; see `valueLiterals.ts`)
+ * that restore could not read back to exactly one placeholder. A
  * value that cannot be read counts as a match (fail closed): a literal with
  * no readable value matches every placeholder of its kind, and a placeholder
  * with none matches every literal of its kind. Heuristic by design — it errs

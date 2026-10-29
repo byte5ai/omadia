@@ -152,22 +152,20 @@ describe('privacy-guard — replayed assistant answers', () => {
     assert.deepEqual(findIdentityLeaks(result.maskedText, [MAIL]), []);
   });
 
-  it('blocks when a detector fails inside the masking pass', async (t) => {
+  it('blocks when a detector fails inside the masking pass', async () => {
+    // `(?:q|qq)+z` passes vetting (no nested quantifier, no probe holds a
+    // run of q) but backtracks exponentially on one (#1553).
     const svc = createPrivacyGuardService({
-      readConfig: (key: string) => (key === 'custom_patterns' ? 'PRJ-\\d{4}' : undefined),
+      readConfig: (key: string) => (key === 'custom_patterns' ? 'PRJ-\\d{4}\n(?:q|qq)+z' : undefined),
     });
-    // The first call builds the deny-list detector (pattern vetting reads the
-    // clock, so the clock is faked only afterwards) and masks as usual.
     const first = await svc.maskReplayedAnswer!({ ...TURN, text: 'Ticket PRJ-1234 ist erledigt' });
     assert.equal(first.outcome, 'masked');
 
-    // An operator pattern over its runtime budget throws mid-pass
+    // An operator pattern over its runtime budget is aborted mid-pass
     // (`CustomPatternRuntimeError`). The answer must not go out unmasked.
-    let now = Date.now();
-    t.mock.method(Date, 'now', () => (now += 1_000));
     const result = await svc.maskReplayedAnswer!({
       ...TURN,
-      text: `Kontakt ${MAIL} zu PRJ-1234`,
+      text: `Kontakt ${MAIL} zu PRJ-1234 ${'q'.repeat(60)}`,
     });
     assert.equal(result.outcome, 'blocked');
   });

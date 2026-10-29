@@ -23,6 +23,7 @@ import type {
   BypassedToolEntry,
   PrivacyBypassedToolRequest,
   PrivacyDatasetProvenance,
+  PrivacyDigestAudience,
   PrivacyDatasetVerbStep,
   PrivacyEgressStage,
   PrivacyNameDetectorStatus,
@@ -69,6 +70,7 @@ import {
 } from './v4/toolDefs.js';
 import { FILE_EXPORT_EXCEPTION, RENDER_CONTRACT } from './v4/promptText.js';
 import { materialize } from './v4/materializer.js';
+import { describeRenderProvenance } from './v4/renderProvenance.js';
 import {
   createPiiSchemaClassifier,
   type LlmComplete,
@@ -88,7 +90,12 @@ import {
 import { findIdentityLeaks } from './v4/onTheWire.js';
 import { c1SegmentKey, createC1SegmentCache } from './c1SegmentCache.js';
 import { propagatePersonNames } from './c1NamePropagation.js';
-import { findResidualRealValues, resolvePromptPseudonyms } from './promptSurrogates.js';
+import {
+  findResidualRealValues,
+  remaskKnownValues,
+  resolvePromptPseudonyms,
+  restoreToolInputSurrogates,
+} from './promptSurrogates.js';
 import { countIdentityValuesNamed } from './identityOnWire.js';
 import type { PseudonymMap } from './v4/types.js';
 import {
@@ -281,19 +288,38 @@ function buildRenderSnapshotSentinel(structuredTable: RenderedStructuredTable): 
   return JSON.stringify(payload);
 }
 
-/** #1402 — the model's `tool_result` for a table render: shape only (row
- *  counts and the column labels the model itself chose), never a cell. */
+/** #1402 — the model's `tool_result` for a render: shape only (row counts,
+ *  the column labels the model itself chose, the columns that could not be
+ *  rendered, the provenance note), never a cell. */
 function buildRenderAckText(
-  structuredTable: RenderedStructuredTable,
-  rowCount: number,
-  renderedRowCount: number,
+  rendered: ReturnType<typeof materialize>,
+  provenance: string | undefined,
 ): string {
-  const labels = structuredTable.columns.map((c) => c.label);
-  const rows =
-    renderedRowCount < rowCount
-      ? `${String(renderedRowCount)} of ${String(rowCount)} rows`
-      : `${String(rowCount)} rows`;
-  return `${V4_RENDER_NOTE} Rendered a table with ${rows}; columns: ${JSON.stringify(labels)}.`;
+  const parts = [V4_RENDER_NOTE];
+  const table = rendered.structuredTable;
+  if (table !== undefined) {
+    const labels = table.columns.map((c) => c.label);
+    const rows =
+      rendered.renderedRowCount < rendered.rowCount
+        ? `${String(rendered.renderedRowCount)} of ${String(rendered.rowCount)} rows`
+        : `${String(rendered.rowCount)} rows`;
+    parts.push(`Rendered a table with ${rows}; columns: ${JSON.stringify(labels)}.`);
+  }
+  // #1542 — a column whose cells could not be rendered is not silently
+  // empty: the server put a note under the table, and the model learns it
+  // so it never claims that column's content was shown.
+  if (rendered.unrenderedColumns.length > 0) {
+    parts.push(
+      `Could not be rendered: ${JSON.stringify(rendered.unrenderedColumns)} — those ` +
+        'cells show a "not renderable" marker, the content is withheld, and a ' +
+        'server note under the table told the user that an administrator can ' +
+        "set the agent's privacy mode to bypass to show it. You may state this " +
+        'fact; never claim that content was shown.',
+    );
+  }
+  // #1543 — the rows are gone next turn; this is what a follow-up re-runs.
+  if (provenance !== undefined) parts.push(provenance);
+  return parts.join(' ');
 }
 
 /**
@@ -844,6 +870,7 @@ export function createPrivacyGuardService(deps?: {
     toolName: string,
     rawResult: string,
     toolInput?: unknown,
+    audience?: PrivacyDigestAudience,
   ): PrivacyToolResultV4Result {
     const store = storeFor(turnId);
     const { digest } = store.internToolResult(toolName, rawResult, toolInput);
@@ -866,7 +893,7 @@ export function createPrivacyGuardService(deps?: {
         `masked=${String(maskedFields)}${digest.truncated ? ' truncated' : ''}`,
     );
     return {
-      digestText: digestToToolResultText(digest),
+      digestText: digestToToolResultText(digest, audience !== undefined ? { audience } : undefined),
       datasetId: digest.datasetId,
     };
   }
@@ -880,6 +907,7 @@ export function createPrivacyGuardService(deps?: {
         request.toolName,
         request.rawResult,
         request.toolInput,
+        request.audience,
       );
       // Slice 2 — schema-level PII classification. Schema only (field names
       // + types, never a value); cached per tool shape. Never throws; the
@@ -1001,7 +1029,9 @@ export function createPrivacyGuardService(deps?: {
       try {
         if (request.toolName === RENDER_TOOL_SPEC.name) {
           const directive = parseRenderDirective(request.input);
-          const rendered = materialize(store, directive);
+          const rendered = materialize(store, directive, {
+            fileExportAvailable: request.fileExportAvailable === true,
+          });
           // #1097 — a render of control flow (a tool error, an MCP auth
           // prompt) is a rendered FAILURE, not a result. Flag it so channels
           // can display it as one instead of presenting the model's success
@@ -1024,16 +1054,17 @@ export function createPrivacyGuardService(deps?: {
               `rendered=${String(rendered.renderedRowCount)} format=${directive.format}` +
               `${renderIsError ? ' isError=true' : ''}`,
           );
-          if (rendered.structuredTable === undefined) {
-            return { resultText: V4_RENDER_NOTE };
-          }
+          // A render of control flow has no query to re-run.
+          const renderProvenance = renderIsError
+            ? undefined
+            : describeRenderProvenance(store, directive, rendered);
+          const resultText = buildRenderAckText(rendered, renderProvenance);
           return {
-            resultText: buildRenderAckText(
-              rendered.structuredTable,
-              rendered.rowCount,
-              rendered.renderedRowCount,
-            ),
-            canvasSentinel: buildRenderSnapshotSentinel(rendered.structuredTable),
+            resultText,
+            ...(rendered.structuredTable !== undefined
+              ? { canvasSentinel: buildRenderSnapshotSentinel(rendered.structuredTable) }
+              : {}),
+            ...(renderProvenance !== undefined ? { renderProvenance } : {}),
           };
         }
         const engine = createVerbEngine({
@@ -1348,6 +1379,24 @@ export function createPrivacyGuardService(deps?: {
         reverse: new Map(map.reverse),
       };
       return (text: string): string => resolvePromptPseudonyms(text, snapshot);
+    },
+
+    // #1544 — the kernel restores the user's values into tool inputs; an
+    // interning-exempt tool can echo them back in a result the model reads in
+    // clear. Matched case-insensitively and with whitespace in the value read
+    // as any run of spaces, `-` or `_`, so a slug of the value
+    // (`/memories/projekt-falkenstein.md`) is caught too. One pass, longest
+    // value first, so an inserted surrogate is never rewritten again.
+    restoreToolInputValues(turnId: string, text: string): string {
+      const map = promptMaskMaps.get(turnId);
+      if (map === undefined || map.reverse.size === 0 || text.length === 0) return text;
+      return restoreToolInputSurrogates(text, map);
+    },
+
+    remaskPromptValues(turnId: string, text: string): string {
+      const map = promptMaskMaps.get(turnId);
+      if (map === undefined || map.forward.size === 0 || text.length === 0) return text;
+      return remaskKnownValues(text, map);
     },
 
     resolveDatasetForRender(turnId, datasetId) {

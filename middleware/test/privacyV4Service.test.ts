@@ -466,3 +466,68 @@ describe('PrivacyGuardService — control-flow text is never a cleartext channel
     );
   });
 });
+
+describe('PrivacyGuardService.runV4Tool — render ack (#1542, #1543, #1559)', () => {
+  const PAGE = {
+    id: 98765,
+    title: 'Kontaktliste Testteam',
+    raw: { a: { b: { c: { d: 'Jonas Weber' } } }, e: { f: { g: 'jonas.weber@example.com' } } },
+  };
+  const PAGE_VALUES = ['Jonas', 'Weber', 'jonas.weber@example.com', 'Kontaktliste'];
+
+  it('names the unrenderable columns and the provenance — and no value', async () => {
+    const svc = createPrivacyGuardService();
+    const turnId = 't-ack-1542';
+    const interned = await svc.internToolResultV4({
+      sessionId: 's',
+      turnId,
+      toolName: 'confluence_get_page',
+      rawResult: JSON.stringify([PAGE]),
+    });
+    const rendered = await svc.runV4Tool({
+      sessionId: 's',
+      turnId,
+      toolName: 'v4_render_answer',
+      input: {
+        datasetId: datasetIdOf(interned.digestText),
+        columns: [{ field: 'title', label: 'Titel' }, { field: 'raw', label: 'Inhalt (wörtlich)' }],
+        format: 'table',
+      },
+    });
+    assert.ok(rendered.resultText.includes('Could not be rendered: ["Inhalt (wörtlich)"]'), rendered.resultText);
+    assert.ok(rendered.renderProvenance?.includes('source tool `confluence_get_page`'));
+    assert.ok(rendered.resultText.includes(rendered.renderProvenance ?? '\u0000'));
+    for (const value of PAGE_VALUES) {
+      assert.ok(!rendered.resultText.includes(value), `ack leaked "${value}"`);
+      assert.ok(!rendered.renderProvenance?.includes(value), `provenance leaked "${value}"`);
+    }
+    // The user's answer says the content could not be shown, and how to get it.
+    const answer = await svc.takeRenderedAnswerV4(turnId);
+    assert.ok(answer?.text.includes('lässt sich in dieser geschützten Ansicht nicht darstellen'));
+  });
+
+  it('a list render carries the provenance too; the export flag reaches the footer', async () => {
+    const svc = createPrivacyGuardService();
+    const rows = Array.from({ length: 60 }, (_, i) => ({ employee: `Quentin Zabrowski ${String(i)}`, days: i }));
+    for (const fileExportAvailable of [false, true]) {
+      const turnId = `t-list-1559-${String(fileExportAvailable)}`;
+      const interned = await svc.internToolResultV4({
+        sessionId: 's',
+        turnId,
+        toolName: 'hr.leave',
+        rawResult: JSON.stringify(rows),
+      });
+      const rendered = await svc.runV4Tool({
+        sessionId: 's',
+        turnId,
+        toolName: 'v4_render_answer',
+        input: { datasetId: datasetIdOf(interned.digestText), columns: ['employee'], format: 'list' },
+        fileExportAvailable,
+      });
+      assert.ok(rendered.resultText.includes('Table provenance'), rendered.resultText);
+      assert.ok(!rendered.resultText.includes('Zabrowski'));
+      const answer = await svc.takeRenderedAnswerV4(turnId);
+      assert.equal(answer?.text.includes('Excel-Datei') === true, fileExportAvailable, answer?.text ?? '');
+    }
+  });
+});

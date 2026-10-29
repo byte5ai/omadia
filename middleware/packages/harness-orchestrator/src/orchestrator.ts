@@ -158,6 +158,7 @@ import type {
   PrivacyGuardService,
   PrivacyReceipt,
   PrivacyRenderedAnswer,
+  PrivacyV4ToolResult,
   ProcessMemoryService,
   ProfileQualityConfig,
   ResponseGuardService,
@@ -230,6 +231,10 @@ import type {
   CliTurnRecord,
 } from './cliTurnRecord.js';
 import { internFailedNotice, isInternExemptTool } from './privacyInternPolicy.js';
+import {
+  remaskEchoedValues,
+  restorePromptSurrogatesInToolInput,
+} from './promptSurrogateToolInput.js';
 import {
   errorClassForLog,
   guardControlFlowResult,
@@ -2317,6 +2322,21 @@ const MEMORY_PROMPT_BLOCKS: Readonly<Record<MemoryPromptKind, string>> = {
   'members-unknown': MEMBERS_UNKNOWN_MEMORY_PROMPT_BLOCK,
 };
 
+/** #1559 — the spreadsheet export tool (`@omadia/plugin-office`). Optional:
+ *  a file is only offered on a turn that actually carries it. */
+const FILE_EXPORT_TOOL_NAME = 'create_xlsx';
+
+/**
+ * #1559 — rule a)'s sentence about results above the chat row cap. Offers an
+ * Excel file only when `create_xlsx` is offered this turn; without it the
+ * model states the row count and promises nothing.
+ */
+function privacyRowCapRule(hasFileExport: boolean): string {
+  return hasFileExport
+    ? 'Hat ein Ergebnis mehr Zeilen, sag das im Prosa-Teil und biete die vollständige Liste als Excel an — bzw. erzeuge sie direkt mit `create_xlsx` und derselben `datasetId`, wenn der User erkennbar die ganze Liste will (z.B. „alle", „komplett", „exportieren").'
+    : 'Hat ein Ergebnis mehr Zeilen, sag das im Prosa-Teil (wie viele Zeilen es insgesamt sind). **Biete KEINE Excel- oder andere Datei an** — in dieser Instanz gibt es kein Export-Werkzeug (`create_xlsx` ist nicht verfügbar). Will der User alles sehen, schlag eine engere Abfrage vor (Filter, Sortierung, Top-N).';
+}
+
 function buildSystemPrompt(
   assistantIdentity: string,
   domainTools: DomainTool[],
@@ -2330,6 +2350,8 @@ function buildSystemPrompt(
   extraToolDocs: readonly string[] = [],
   memoryPrompt?: MemoryPromptKind,
   answerVerbosity: AnswerVerbosity = DEFAULT_ANSWER_VERBOSITY,
+  /** #1559 — `create_xlsx` is offered this turn. */
+  hasFileExport = false,
 ): string {
   // Operator's answer-size contract. `standard` is '' so the delivered state
   // keeps the prompt (and its cache key) unchanged.
@@ -2379,9 +2401,12 @@ function buildSystemPrompt(
 
 Fach-Agent-Ergebnisse durchlaufen eine Datenschutz-Grenze: statt der Rohdaten erhältst du einen **Digest** (identitätsfreie Strukturbeschreibung). Felder mit \`"classification":"sensitive-masked"\` zeigen dir nur den Platzhalter \`[masked]\` — **nicht weil der User sie nicht sehen darf, sondern nur weil DU sie nicht sehen sollst.** Der angemeldete User IST berechtigt, diese Werte (Namen, E-Mails, …) zu sehen.
 
-a) **Jede Datenantwort (Tabelle, Liste, Ranking, Einzelwert) endet zwingend mit einem \`v4_render_answer\`-Aufruf.** Schreibe die Daten-Tabelle/-Liste NIEMALS selbst in den Antworttext und kopiere NIEMALS \`[masked]\` in eine Antwort. Der Server füllt in \`v4_render_answer\` die echten Werte ein — auch die maskierten — und stellt sie dem User zu. Nimm die Identitäts-Spalte (\`employee\`, \`name\`, …) immer in \`columns\` mit auf. **Chat-Ausgaben sind auf 50 Zeilen begrenzt:** der Server zeigt die ersten 50 und schreibt die Gesamtzahl darunter. Hat ein Ergebnis mehr Zeilen, sag das im Prosa-Teil und biete die vollständige Liste als Excel an — bzw. erzeuge sie direkt mit \`create_xlsx\` und derselben \`datasetId\`, wenn der User erkennbar die ganze Liste will (z.B. „alle", „komplett", „exportieren").
+a) **Jede Datenantwort (Tabelle, Liste, Ranking, Einzelwert) endet zwingend mit einem \`v4_render_answer\`-Aufruf.** Schreibe die Daten-Tabelle/-Liste NIEMALS selbst in den Antworttext und kopiere NIEMALS \`[masked]\` in eine Antwort. Der Server füllt in \`v4_render_answer\` die echten Werte ein — auch die maskierten — und stellt sie dem User zu. Nimm die Identitäts-Spalte (\`employee\`, \`name\`, …) immer in \`columns\` mit auf. **Chat-Ausgaben sind auf 50 Zeilen begrenzt:** der Server zeigt die ersten 50 und schreibt die Gesamtzahl darunter. ${privacyRowCapRule(hasFileExport)}
+
+a2) **Ist ein maskiertes Feld das SUBJEKT der Antwort** (z.B. „Welche Abteilung hat die meisten …?"), kannst du es im Prosa-Teil nicht nennen. Schreib dann einen **vollständigen Satz, der auf die Tabelle verweist**, z.B. „Die Abteilung mit den meisten aktiven Mitarbeitern steht in der Tabelle unten (7 Mitarbeiter)." — nie einen Satz mit einer Lücke, wo der Name stünde, und nie einen Satz ohne Verb.
 
 b) **Behaupte NIEMALS, Daten seien „gefiltert", „maskiert" oder „aus Datenschutzgründen nicht verfügbar".** Kein „⚠️ Datenschutzfilter aktiv", kein „wende dich an einen Administrator". Du siehst \`[masked]\` — der User bekommt den echten Wert. Erfinde maskierte Werte niemals selbst.
+   **Ausnahme — vom Server gemeldet:** Nennt das Ergebnis von \`v4_render_answer\` Spalten unter „Could not be rendered", dann konnte der Server deren Inhalt NICHT darstellen (z.B. einen Confluence-Seiteninhalt) und hat das unter der Tabelle vermerkt. Diese Tatsache darfst du weitergeben: der Inhalt dieser Spalte wurde nicht angezeigt; ein Administrator kann den Datenschutz-Modus des Agenten auf „Bypass" stellen. Ein Feld mit \`"shape":"nested"\` im Digest ist eine verschachtelte Struktur — versprich nie seinen „wörtlichen" Inhalt.
 
 b2) **Aussagen über den Schutz-STATUS von Daten sind Tatsachenbehauptungen — nur belegte sind erlaubt.** Du weißt über den Datenschutz-Status einer Datei oder eines Tool-Ergebnisses **ausschließlich** das, was in einem \`PRIVACY STATUS\`-Satz, einem \`[dataset-imported]\`-, \`[attachment-content]\`- oder \`[attachment-not-ingested]\`-Block oder im Digest steht. Gib genau das wieder — wörtlich, nicht ausgeschmückt.
 
@@ -2403,6 +2428,10 @@ d) **Dateien zusammenführen / Duplikate entfernen (Dedup):** Hochgeladene Tabel
    3. \`v4_distinct\` mit \`by: ["__k_E-Mail"]\` (oder \`["__k_Vorname","__k_Nachname"]\`), \`keep: "first"\`.
    4. Ausgabe über \`v4_render_answer\` bzw. — wenn der User eine Datei will — \`create_xlsx\` mit der Ergebnis-\`datasetId\`. \`__k_*\`-Spalten **nie** in \`columns\` aufnehmen.
    Die Zeilenzahl vor und nach \`v4_distinct\` steht in den Digests — nenne die Differenz als Anzahl entfernter Duplikate. Fehlt einer Datei die \`__k_\`-Spalte (steht im \`[dataset-imported]\`-Block), ist dateiübergreifendes Dedup nicht möglich — sag genau das. **Frag den User nicht, ob er selbst deduplizieren möchte** — das ist deine Aufgabe.
+
+e) **Rückfragen zu einer früher gezeigten Tabelle.** Die Zeilen einer gerenderten Tabelle gelten nur für ihren Turn — im nächsten Turn sind sie weg, und du hast sie nie gesehen. Wie die Tabelle entstand, steht in ihrer \`Table provenance\`-Notiz (im Ergebnis von \`v4_render_answer\` bzw. im früheren Gesprächsverlauf als \`<!-- orchestrator:rendered_table … -->\`): Quell-Tool, Schritte (Filter-Felder und -Operatoren, Sortierung, Top-N, Spalten) und Zeilenzahl — ohne Werte. Bezieht sich der User auf „die Tabelle" („die erste Person aus der Tabelle", „Zeile 3"):
+   1. Führe **dieselbe Quell-Abfrage** erneut aus (derselbe Fach-Agent, gleiche Frage, gleicher Umfang) und wende **dieselben Schritte in derselben Reihenfolge** an (gleiche Filter, gleiche Sortierung und Richtung).
+   2. Weicht die neue Zeilenzahl von der Notiz ab, fehlt die Notiz, oder kannst du einen Schritt nicht nachbilden (z.B. weil seine Filterwerte nicht in der Notiz stehen), dann **sag ausdrücklich, dass deine Antwort auf einer neuen Abfrage beruht** und von der angezeigten Tabelle abweichen kann — und behaupte nicht, du beschreibst „die Tabelle".
 `
     : '';
 
@@ -5332,6 +5361,8 @@ export class Orchestrator {
         memoryFileRead: { value: false },
         // The turn's wire view (prompt + answer), for a verifier hand-over.
         wireView: {},
+        // #1543 — this turn's render provenance notes, for the persisted row.
+        renderProvenance: { notes: [] },
         graphReadScope: {},
         // Where this turn's model calls run — the sub-agents' fallback.
         orchestratorExecution: {},
@@ -7632,6 +7663,7 @@ export class Orchestrator {
       sessionScope: sessionId,
       // The turn's wire view (prompt + answer), for a verifier hand-over.
       wireView: {},
+      renderProvenance: { notes: [] },
       graphReadScope: {},
       orchestratorExecution: {},
       ...(parent?.chatParticipants
@@ -9287,16 +9319,23 @@ export class Orchestrator {
     /** Filled with what the loop needs beyond the result (a replay). */
     meta?: ToolDispatchMeta,
   ): Promise<string> {
+    // #1544 — whatever the model gets back (a digest's clear-text values, a
+    // bypassed result, an error) never carries a value this turn masked in
+    // the user's prompt: a tool may have been run on it.
+    const privacy = turnContext.current()?.privacyHandle;
     try {
-      return await this.dispatchToolWithDeadline(name, input, observer, turnMemory, meta);
+      return remaskEchoedValues(
+        privacy,
+        await this.dispatchToolWithDeadline(name, input, observer, turnMemory, meta),
+      );
     } catch (err) {
       const outcome = await withholdThrownToolError({
         toolName: name,
         err,
-        privacy: turnContext.current()?.privacyHandle,
+        privacy,
         site: 'orchestrator.dispatchTool',
       });
-      return outcome.text;
+      return remaskEchoedValues(privacy, outcome.text);
     }
   }
 
@@ -9377,6 +9416,41 @@ export class Orchestrator {
     }
   }
 
+  /**
+   * #1559 — is the spreadsheet export tool offered on THIS turn? Same gates
+   * as the tool list (`buildToolsList`) and the prompt docs: registered,
+   * its plugin ready, and offered by its per-turn predicate. Only then may a
+   * truncated render or the system prompt offer the full list as a file.
+   */
+  private isFileExportOfferedThisTurn(): boolean {
+    const entry = this.nativeTools.get(FILE_EXPORT_TOOL_NAME);
+    return (
+      entry !== undefined && this.isToolAvailable(entry.agentId) && isOfferedThisTurn(entry)
+    );
+  }
+
+  /**
+   * Run a `v4_*` tool through the turn's privacy handle. Tells the render
+   * whether a file export exists this turn (#1559) and keeps a render's
+   * provenance note — values-free — for the turn's persisted row, so the
+   * next turn knows which query produced the table on screen (#1543).
+   */
+  private async runV4ToolForTurn(
+    privacy: PrivacyTurnHandle,
+    name: string,
+    input: unknown,
+  ): Promise<PrivacyV4ToolResult> {
+    const result = await privacy.runV4Tool({
+      toolName: name,
+      input,
+      fileExportAvailable: this.isFileExportOfferedThisTurn(),
+    });
+    if (result.renderProvenance !== undefined) {
+      turnContext.current()?.renderProvenance?.notes.push(result.renderProvenance);
+    }
+    return result;
+  }
+
   private async dispatchToolDeadlined(
     name: string,
     input: unknown,
@@ -9399,7 +9473,7 @@ export class Orchestrator {
     if (privacy !== undefined && name.startsWith('v4_')) {
       const v4Tool = splitV4ToolResult(
         name,
-        await privacy.runV4Tool({ toolName: name, input }),
+        await this.runV4ToolForTurn(privacy, name, input),
       );
       if (v4Tool.canvasSentinel !== undefined) {
         tapCanvasSentinel(name, v4Tool.canvasSentinel);
@@ -9475,6 +9549,19 @@ export class Orchestrator {
         ? new SubEventRecorder(observer)
         : undefined;
     const dispatchObserver = recorder?.observer ?? observer;
+    // #1544 — a native or MCP tool runs on the values the user wrote, not on
+    // the prompt placeholders the model saw. A domain tool's input is the
+    // question for its sub-agent's model, so it keeps the placeholders; the
+    // sub-agent restores them for its own inner tools (`LocalSubAgent`).
+    // A top-level MCP grant is registered as a domain tool too, but calls its
+    // server directly (`mcpGrantToDomainTool`): only a tool WITHOUT an MCP
+    // server id runs a sub-agent model.
+    const domainTool = this.domainToolsByName.get(name);
+    const asksSubAgentModel = domainTool !== undefined && domainTool.mcpServerId === undefined;
+    const handlerInput =
+      asksSubAgentModel || isInternExemptTool(name)
+        ? input
+      : restorePromptSurrogatesInToolInput(privacy, input);
     const execute = async (): Promise<string> => {
       if (
         privacy !== undefined &&
@@ -9496,7 +9583,8 @@ export class Orchestrator {
                 ? { subAgentOwnerPluginId: domainToolAgentId }
                 : {}),
             },
-            () => this.dispatchToolInner(name, input, dispatchObserver, turnMemory, kernelRefusal),
+            () =>
+              this.dispatchToolInner(name, handlerInput, dispatchObserver, turnMemory, kernelRefusal),
           ),
         );
       }
@@ -9509,11 +9597,12 @@ export class Orchestrator {
         return runWithMcpAuthPromptMint(mcpAuthPromptMint, () =>
           turnContext.run(
             { ...ctx, mcpInputSentinelMint },
-            () => this.dispatchToolInner(name, input, dispatchObserver, turnMemory, kernelRefusal),
+            () =>
+              this.dispatchToolInner(name, handlerInput, dispatchObserver, turnMemory, kernelRefusal),
           ),
         );
       }
-      return this.dispatchToolInner(name, input, dispatchObserver, turnMemory, kernelRefusal);
+      return this.dispatchToolInner(name, handlerInput, dispatchObserver, turnMemory, kernelRefusal);
     };
     let result: string;
     if (replay !== undefined) {
@@ -9642,7 +9731,9 @@ export class Orchestrator {
             authPromptMint: mcpAuthPromptMint,
           });
         }
-        return result;
+        // #1544 — the handler ran on the user's values; what it echoes goes
+        // back to the model as the placeholders it wrote.
+        return remaskEchoedValues(privacy, result);
       }
       // MCP → Knowledge-Graph ingestion (epic #459, opt-in per server). Runs
       // before masking so it sees the raw result; fire-and-forget so it never
@@ -9719,7 +9810,9 @@ export class Orchestrator {
             );
           }
         }
-        return result;
+        // #1544 — bypass passes the tool's DATA raw; the user's own masked
+        // values it was handed (and may echo) stay masked.
+        return remaskEchoedValues(privacy, result);
       }
       // Sub-agent bridge: the sub-agent interned ≥1 dataset this dispatch —
       // pass those REAL datasets up by reference so the parent agent's
@@ -9744,7 +9837,7 @@ export class Orchestrator {
       // agent's LLM read them directly), so re-interning the prose would
       // mask the synthesis the user actually asked for. Pass raw.
       if (subAgentBypassFlag.value && subAgentSink.length === 0) {
-        return result;
+        return remaskEchoedValues(privacy, result);
       }
       // Canvas sentinel tap: interning is about the LLM wire — the surface
       // synthesis is server-side and must compose from the RAW directive
@@ -10108,6 +10201,7 @@ export class Orchestrator {
       extraDocs,
       memoryPrompt,
       this.answerVerbosity,
+      this.isFileExportOfferedThisTurn(),
     );
   }
 
@@ -11120,9 +11214,26 @@ function appendToolDigest(
       `  - kind=file producer=${f.producer ?? 'file'} name=${JSON.stringify(f.altText)} bytes=${String(f.sizeBytes ?? 0)}`,
     );
   }
-  if (lines.length === 0) return answer;
+  const withProvenance = prependRenderProvenance(answer);
+  if (lines.length === 0) return withProvenance;
   const digest = ['', '<!-- orchestrator:rendered_attachments', ...lines, '-->'].join('\n');
-  return `${answer}${digest}`;
+  return `${withProvenance}${digest}`;
+}
+
+/**
+ * #1543 — put this turn's render provenance notes (values-free: source tool,
+ * verb chain, row counts, column labels) in front of the persisted answer.
+ * The rendered rows are turn-scoped, so a follow-up turn can only re-run the
+ * query; this is how it learns which one. In front, not behind: recall
+ * truncates a stored answer from the end.
+ */
+function prependRenderProvenance(answer: string): string {
+  const notes = turnContext.current()?.renderProvenance?.notes ?? [];
+  if (notes.length === 0) return answer;
+  const block = ['<!-- orchestrator:rendered_table', ...notes.map((n) => `  - ${n.replace(/-->/g, '- ->')}`), '-->'].join(
+    '\n',
+  );
+  return answer.length > 0 ? `${block}\n${answer}` : block;
 }
 
 function toolNamesOf(content: ContentBlock[]): string[] {
