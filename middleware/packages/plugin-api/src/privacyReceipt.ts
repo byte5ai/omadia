@@ -860,6 +860,14 @@ export interface PrivacyGuardService {
    */
   remaskPromptValues?(turnId: string, text: string): string;
   /**
+   * #1544 — the turn's prompt surrogates in a tool INPUT replaced by the
+   * user's values: whole surrogates only (any letter case), no date or amount
+   * surrogates, so every value it puts in is one `remaskPromptValues` masks
+   * again in what the tool echoes. Identity when the turn masked nothing.
+   * Optional; the kernel restores tool inputs only when a provider has both.
+   */
+  restoreToolInputValues?(turnId: string, text: string): string;
+  /**
    * Project a verifier-composed text through this turn's surrogate map —
    * always on, independent of `mask_user_prompt` (see
    * {@link PrivacyVerifierProjectionRequest}). Never returns `disabled`;

@@ -1739,23 +1739,27 @@ requests, and only there, the shield acts on four kinds of text:
   that throws is logged and leaves the surrogates in place
   (`restorePromptForPersistence`).
   **Tools get the real values (#1544).** The model writes its tool calls with
-  the surrogates it saw. Before a tool handler runs, the turn's surrogates in
-  its input are restored (`promptSurrogateToolInput.ts`, in
-  `Orchestrator.dispatchToolDeadlined` and `LocalSubAgent.dispatch`), so a
+  the surrogates it saw. Before a data tool's handler runs, whole surrogates
+  in its input (any letter case; not date or amount surrogates, not name
+  parts) are restored (`restoreToolInputValues`, `promptSurrogateToolInput.ts`,
+  in `Orchestrator.dispatchToolDeadlined` and `LocalSubAgent.dispatch`), so a
   search for a masked term finds it; a top-level MCP grant counts as such a
-  tool. A domain tool that runs a sub-agent keeps the surrogates in its
-  input (the question is for the sub-agent's model); the sub-agent's inner
-  tool calls are restored in turn. What an intern-exempt or bypassed tool
-  echoes back in clear (`memory`: "created /memories/<value>.md") gets the
-  surrogates again (`remaskPromptValues`: case-insensitive, whitespace in the
-  value also matching `-`/`_`, so a slug is caught); every other result is
-  interned, and tool errors run through the known-value sweep of §6c. The
-  restore runs only when the provider implements `remaskPromptValues`
-  (privacy guard 0.12.0); an older provider keeps giving tools the
-  surrogates. Residuals: an echo in another spelling than the value (a first
-  name alone) is not re-masked, and a plugin tool that hands its input to a
-  model through `ctx.llm` sends that model the real value, as it would with
-  the setting off.
+  tool. Kept on the surrogates: a domain tool that runs a sub-agent (its
+  input is a question for a model; the sub-agent's inner data tools are
+  restored in turn) and the intern-exempt self tools (`memory`, stored
+  processes), whose stored text is read back in clear in later turns that no
+  longer know the value. Every tool result text a model gets, digests,
+  bypassed results and errors included, is masked again with the turn's
+  known values (`remaskPromptValues`: case-insensitive, whitespace in the
+  value also matching `-`/`_`), and because restore only ever puts in a
+  whole real value, every restored value is one the re-mask catches. The
+  restore runs only when the provider implements both methods (privacy guard
+  0.12.0); an older provider keeps giving tools the surrogates. Residuals: a
+  tool that echoes the value in another form (an abbreviation, a translation)
+  is not re-masked, a plugin tool that hands its input to a model through
+  `ctx.llm` sends that model the real value, as it would with the setting
+  off, and the subscription-CLI path does not restore (its tools keep the
+  surrogates).
 
 **Surrogate edge cases (#1528, #1529).** Restore (`resolvePromptPseudonyms`,
 `promptSurrogates.ts`) also maps back a surrogate the model rewrote: in any

@@ -9091,16 +9091,23 @@ export class Orchestrator {
     /** Filled with what the loop needs beyond the result (a replay). */
     meta?: ToolDispatchMeta,
   ): Promise<string> {
+    // #1544 — whatever the model gets back (a digest's clear-text values, a
+    // bypassed result, an error) never carries a value this turn masked in
+    // the user's prompt: a tool may have been run on it.
+    const privacy = turnContext.current()?.privacyHandle;
     try {
-      return await this.dispatchToolWithDeadline(name, input, observer, turnMemory, meta);
+      return remaskEchoedValues(
+        privacy,
+        await this.dispatchToolWithDeadline(name, input, observer, turnMemory, meta),
+      );
     } catch (err) {
       const outcome = await withholdThrownToolError({
         toolName: name,
         err,
-        privacy: turnContext.current()?.privacyHandle,
+        privacy,
         site: 'orchestrator.dispatchTool',
       });
-      return outcome.text;
+      return remaskEchoedValues(privacy, outcome.text);
     }
   }
 
@@ -9323,8 +9330,9 @@ export class Orchestrator {
     // server id runs a sub-agent model.
     const domainTool = this.domainToolsByName.get(name);
     const asksSubAgentModel = domainTool !== undefined && domainTool.mcpServerId === undefined;
-    const handlerInput = asksSubAgentModel
-      ? input
+    const handlerInput =
+      asksSubAgentModel || isInternExemptTool(name)
+        ? input
       : restorePromptSurrogatesInToolInput(privacy, input);
     const execute = async (): Promise<string> => {
       if (

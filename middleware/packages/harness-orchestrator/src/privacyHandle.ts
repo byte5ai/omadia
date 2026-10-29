@@ -203,6 +203,12 @@ export interface PrivacyTurnHandle {
    */
   remaskPromptValues?(text: string): string;
   /**
+   * #1544 — restore this turn's surrogates in a tool input (see
+   * `PrivacyGuardService.restoreToolInputValues`). Optional like
+   * `remaskPromptValues`.
+   */
+  restoreToolInputValues?(text: string): string;
+  /**
    * Drop the turn's Dataset Store and drain the user-facing receipt.
    * `turnInput` — the requester's own message text — lets the receipt
    * report identity values the user named themselves. Returns `undefined`
@@ -380,10 +386,14 @@ export function createPrivacyTurnHandle(deps: {
 
     // Only on a provider that implements it: the kernel restores tool inputs
     // only where echoes can be masked again (`promptSurrogateToolInput.ts`).
-    ...(deps.service.remaskPromptValues !== undefined
+    ...(deps.service.remaskPromptValues !== undefined &&
+    deps.service.restoreToolInputValues !== undefined
       ? {
           remaskPromptValues(text: string): string {
             return deps.service.remaskPromptValues?.(deps.turnId, text) ?? text;
+          },
+          restoreToolInputValues(text: string): string {
+            return deps.service.restoreToolInputValues?.(deps.turnId, text) ?? text;
           },
         }
       : {}),

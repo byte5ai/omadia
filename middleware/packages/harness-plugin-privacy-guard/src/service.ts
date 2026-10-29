@@ -91,6 +91,7 @@ import {
   findResidualRealValues,
   remaskKnownValues,
   resolvePromptPseudonyms,
+  restoreToolInputSurrogates,
 } from './promptSurrogates.js';
 import type { PseudonymMap } from './v4/types.js';
 import {
@@ -1317,6 +1318,12 @@ export function createPrivacyGuardService(deps?: {
     // as any run of spaces, `-` or `_`, so a slug of the value
     // (`/memories/projekt-falkenstein.md`) is caught too. One pass, longest
     // value first, so an inserted surrogate is never rewritten again.
+    restoreToolInputValues(turnId: string, text: string): string {
+      const map = promptMaskMaps.get(turnId);
+      if (map === undefined || map.reverse.size === 0 || text.length === 0) return text;
+      return restoreToolInputSurrogates(text, map);
+    },
+
     remaskPromptValues(turnId: string, text: string): string {
       const map = promptMaskMaps.get(turnId);
       if (map === undefined || map.forward.size === 0 || text.length === 0) return text;

@@ -478,7 +478,7 @@ export class LocalSubAgent {
             inputHash,
           )
             ? refusedRepeat(this.name, toolName)
-            : await this.dispatch(use.name, use.input);
+            : await this.dispatchRemasked(use.name, use.input);
           if (outcomeUnknown === true) unknownOutcome.add(toolName, inputHash);
           const elapsed = Date.now() - started;
           const isError = output.startsWith('Error:') || postcondition !== undefined;
@@ -563,6 +563,15 @@ export class LocalSubAgent {
     }
   }
 
+  /** #1544 — every tool result this sub-agent's model reads, errors and
+   *  bypassed results included, with the turn's masked prompt values masked
+   *  again: the inner tool may have run on them. */
+  private async dispatchRemasked(toolName: string, input: unknown): Promise<SubToolOutcome> {
+    const outcome = await this.dispatch(toolName, input);
+    const privacy = turnContext.current()?.privacyHandle;
+    return { ...outcome, output: remaskEchoedValues(privacy, outcome.output) };
+  }
+
   private async dispatch(toolName: string, input: unknown): Promise<SubToolOutcome> {
     const tool = this.toolsByName.get(toolName);
     if (!tool) return { output: `Error: unknown tool \`${toolName}\`.` };
@@ -610,7 +619,11 @@ export class LocalSubAgent {
               runWithMcpAuthPromptMint(authPromptMint, () =>
                 // #1544 — the inner tool runs on the user's values; this
                 // sub-agent's model keeps reading the placeholders.
-                tool.handle(restorePromptSurrogatesInToolInput(privacy, input)),
+                tool.handle(
+                  isInternExemptTool(toolName)
+                    ? input
+                    : restorePromptSurrogatesInToolInput(privacy, input),
+                ),
               ),
             );
     } catch (err) {

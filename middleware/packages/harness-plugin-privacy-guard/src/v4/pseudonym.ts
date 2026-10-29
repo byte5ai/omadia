@@ -455,19 +455,57 @@ export function createPromptPseudonymMap(
     ]);
     return takenValues;
   };
-  const isFree = (candidate: string, type: string): boolean => {
+  // #1554 security review — the pool names an e-mail or person surrogate
+  // carries, lower-cased, keyed by the surrogate. A pool address and a person
+  // surrogate that share a name part would read to the model as ONE person
+  // although they stand for two, and restore would then join the wrong
+  // address to the wrong name. Only the address minted FROM that person's
+  // surrogate (`personEmailCandidate`) may share its parts.
+  const namePartsOf = (surrogate: string): string[] => {
+    const person = personSurrogateParts(surrogate);
+    if (person !== undefined) return [person.first.toLowerCase(), person.last.toLowerCase()];
+    const at = surrogate.indexOf('@');
+    const name = at > 0 ? nameFromLocalPart(surrogate.slice(0, at).replace(/\d+$/u, '')) : undefined;
+    return name === undefined ? [] : wordsOf(name);
+  };
+  const sharesNameWith = (candidate: string, allowed: ReadonlySet<string>): boolean => {
+    const parts = new Set(namePartsOf(candidate));
+    if (parts.size === 0) return false;
+    return [...reverse.keys()].some(
+      (taken) => !allowed.has(taken.toLowerCase()) && namePartsOf(taken).some((p) => parts.has(p)),
+    );
+  };
+  const isFree = (candidate: string, type: string, value: string): boolean => {
     const lower = candidate.toLowerCase();
     if (takenLower.has(lower) || realsLower.has(lower) || avoid.includes(lower)) return false;
     if (type === 'person') {
       const [first, last] = wordsOf(candidate);
-      return !avoidWords.has(first ?? '') && !avoidWords.has(last ?? '');
+      if (avoidWords.has(first ?? '') || avoidWords.has(last ?? '')) return false;
+      return !sharesNameWith(candidate, linkedSurrogates(value));
     }
+    if (type === 'email') return !sharesNameWith(candidate, linkedSurrogates(value));
     if (type === 'amount' || type === 'date') {
       const literal = asValueLiteral(candidate);
       const taken = valuesTaken();
       return literal !== undefined && !valueKeys([literal]).some((key) => taken.has(key));
     }
     return true;
+  };
+  /** The surrogates already standing for the same person as `value`: for an
+   *  address whose local part names a masked person, that person's
+   *  surrogate; for a person, the surrogates of addresses that name them. */
+  const linkedSurrogates = (value: string): ReadonlySet<string> => {
+    const linked = new Set<string>();
+    const at = value.indexOf('@');
+    const ownName = at > 0 ? nameFromLocalPart(value.slice(0, at)) : value;
+    if (ownName === undefined) return linked;
+    const key = ownName.toLowerCase();
+    for (const [real, surrogate] of forward) {
+      const realAt = real.indexOf('@');
+      const realName = realAt > 0 ? nameFromLocalPart(real.slice(0, realAt)) : real;
+      if (realName?.toLowerCase() === key) linked.add(surrogate.toLowerCase());
+    }
+    return linked;
   };
   const record = (value: string, surrogate: string): void => {
     forward.set(value, surrogate);
@@ -498,7 +536,7 @@ export function createPromptPseudonymMap(
       // An upper-case value gets an upper-case surrogate, so the model sees
       // the case the user wrote.
       const candidate = isAllUpper(value) ? raw.toUpperCase() : raw;
-      if (isFree(candidate, type)) {
+      if (isFree(candidate, type, value)) {
         surrogate = candidate;
         break;
       }

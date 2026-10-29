@@ -218,6 +218,11 @@ describe('Verb API — link keys are never filter targets (#1560)', () => {
     );
   });
 
+  it('refuses renaming a link key to a plain name in v4_union (filter bypass)', () => {
+    const { engine, a, b } = twoFiles();
+    assert.throws(() => engine.union(a, b, { renameRight: { __k_email: 'k' } }), /link-key field/);
+  });
+
   it('still takes the key as a v4_distinct key', () => {
     const { engine, a } = twoFiles();
     assert.doesNotThrow(() => engine.distinct(a, ['__k_email']));

@@ -195,9 +195,14 @@ function sameReal(a: string | undefined, b: string | undefined): boolean {
 
 /** First and last token of a real person name; `undefined` parts for a name
  *  of a single token ("Jonas"), which has no first/last split to map to. */
+/** First and last name of a plain two-word real name ("Jonas Weber").
+ *  Anything else — "Weber, Jonas", "Dr. Jonas Weber", "Jonas von Weber" —
+ *  yields no parts: which token is which is a guess, and a wrong guess puts
+ *  the wrong name in the answer. Its parts then count as unresolved. */
 function realNameParts(real: string): { readonly first?: string; readonly last?: string } {
   const tokens = real.trim().split(/\s+/u);
-  return tokens.length < 2 ? {} : { first: tokens[0]!, last: tokens[tokens.length - 1]! };
+  if (tokens.length !== 2 || !tokens.every((t) => /^\p{L}[\p{L}'-]*$/u.test(t))) return {};
+  return { first: tokens[0]!, last: tokens[1]! };
 }
 
 /**
@@ -320,20 +325,22 @@ function neighbourWord(text: string, start: number, end: number, side: 'before' 
 }
 
 /**
- * #1545 review — a lone part glued to another capitalised name word ("Lukas
- * Schmidt" from tool data, "Kollege Becker") may be a different person who
- * shares the part: restoring would rename them. Such a part is reported as
- * unresolved (the answer gets the notice) instead of rewritten. Salutations
- * and greetings ("Herr Becker", "Hallo Lukas") are fine.
+ * #1545 security review — a lone part is restored only where it plainly
+ * addresses the masked person: right after a salutation or greeting ("Herr
+ * Becker", "Hallo Lukas") and not continued by another capitalised name word.
+ * Anywhere else ("Lukas Schmidt" from tool data, "Becker GmbH", "laut
+ * Becker") it may be someone else who shares the part, and restoring would
+ * rename them: it is reported as unresolved and the answer gets the notice.
  */
-function nextToOtherName(text: string, start: number, end: number): boolean {
-  return (['before', 'after'] as const).some((side) => {
-    const word = neighbourWord(text, start, end, side);
-    if (word === undefined) return false;
-    const first = word.charAt(0);
-    if (first === first.toLowerCase()) return false;
-    return !NAME_NEIGHBOURS.has(word.replace(/\.$/u, '').toLowerCase());
-  });
+function addressesMaskedPerson(text: string, start: number, end: number): boolean {
+  const before = neighbourWord(text, start, end, 'before');
+  if (before === undefined || !NAME_NEIGHBOURS.has(before.replace(/\.$/u, '').toLowerCase())) {
+    return false;
+  }
+  const after = neighbourWord(text, start, end, 'after');
+  if (after === undefined) return true;
+  const initial = after.charAt(0);
+  return initial === initial.toLowerCase() || NAME_NEIGHBOURS.has(after.toLowerCase());
 }
 
 function partClaims(text: string, parts: ReadonlyMap<string, PartForm>): Claim[] {
@@ -345,7 +352,7 @@ function partClaims(text: string, parts: ReadonlyMap<string, PartForm>): Claim[]
     const part = parts.get(match[0].toUpperCase());
     if (part === undefined || !part.spellings.has(match[0])) return [];
     if (!onWordBoundaries(text, start, end)) return [];
-    if (part.real === undefined || nextToOtherName(text, start, end)) {
+    if (part.real === undefined || !addressesMaskedPerson(text, start, end)) {
       return [{ start, end, text: match[0], unresolved: true, rank: 2 }];
     }
     return [{ start, end, text: caseLike(match[0], part.real), unresolved: false, rank: 2 }];
@@ -469,4 +476,33 @@ export function remaskKnownValues(text: string, map: PseudonymMap): string {
 /** Lower case, every run of whitespace, `-` or `_` as one space. */
 function slugKey(value: string): string {
   return value.trim().toLowerCase().replace(/[\s_-]+/gu, ' ');
+}
+
+/**
+ * #1544 — the surrogates of `map` in a tool INPUT replaced by their real
+ * values, deliberately narrower than `resolvePromptPseudonyms`: only a whole
+ * surrogate (any letter case, on word boundaries), never a name part, an
+ * e-mail local part or a date/amount re-spelled. What this produces is
+ * exactly a real value of the map, so {@link remaskKnownValues} can always
+ * reverse it in what the tool echoes. Date and amount surrogates are not
+ * restored at all: their echo can come back in any spelling ("12500.00 EUR")
+ * that no re-mask catches, so a tool keeps the placeholder there.
+ */
+export function restoreToolInputSurrogates(text: string, map: PseudonymMap): string {
+  const surrogates = [...map.reverse.keys()].filter(
+    (surrogate) => surrogate.trim().length > 0 && asValueLiteral(surrogate) === undefined,
+  );
+  if (surrogates.length === 0 || text.length === 0) return text;
+  const byKey = new Map<string, string>();
+  for (const surrogate of surrogates) {
+    const key = surrogate.toLowerCase();
+    if (!byKey.has(key)) byKey.set(key, map.reverse.get(surrogate)!);
+  }
+  return text.replace(new RegExp(alternation(surrogates), 'giu'), (match: string, offset: number) => {
+    const exact = map.reverse.get(match);
+    if (exact !== undefined) return exact;
+    const real = byKey.get(match.toLowerCase());
+    if (real === undefined || !onWordBoundaries(text, offset, offset + match.length)) return match;
+    return caseLike(match, real);
+  });
 }

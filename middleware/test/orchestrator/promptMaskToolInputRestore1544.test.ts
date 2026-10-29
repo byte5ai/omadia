@@ -83,7 +83,8 @@ describe('#1544 — tools run on the user values, models see placeholders', () =
     registry.register('search_docs', {
       handler: (input: unknown) => {
         seen.push(input);
-        return Promise.resolve('Error: nothing found');
+        // The error echoes the restored value: it must reach the model masked.
+        return Promise.resolve(`Error: no page matches "${(input as { query: string }).query}"`);
       },
       spec: {
         name: 'search_docs',

@@ -73,11 +73,13 @@ changelog.
 model or the user (#1542–#1546, #1550, #1553–#1556, #1559–#1561, #1577).
 
 - **Tools search for what the user wrote (#1544).** With `mask_user_prompt` on,
-  tools got the placeholder (`PLATZHALTER-CUSTOM-1`) and found nothing. The
-  turn's surrogates are now restored in a tool's input right before its handler
-  runs (`promptSurrogateToolInput.ts`; orchestrator dispatch and sub-agent inner
-  calls). A domain tool's question to its sub-agent keeps the placeholders; what
-  an intern-exempt tool echoes goes back masked (`remaskPromptValues`).
+  tools got the placeholder (`PLATZHALTER-CUSTOM-1`) and found nothing. Whole
+  surrogates (no dates or amounts) are now restored in a data tool's input
+  right before its handler runs (`promptSurrogateToolInput.ts`; orchestrator
+  dispatch, MCP grants and sub-agent inner calls), and every tool result the
+  model reads is masked again (`remaskPromptValues`). A domain tool's question
+  to its sub-agent and the agent's memory/stored-process tools keep the
+  placeholders.
 - **Surrogates that made the model object (#1554, #1555, #1577).** The IBAN
   surrogate has 22 characters; amounts are non-round and dates fall in
   2003–2022 (no more `01.01.1970`). An e-mail surrogate follows the masked
@@ -86,7 +88,8 @@ model or the user (#1542–#1546, #1550, #1553–#1556, #1559–#1561, #1577).
 - **Restore of rewritten surrogates (#1545, #1577).** A first or last name taken
   from a person surrogate ("Hallo Lukas", "Herr Becker") and an amount or date
   the model reformatted (`12.357 €`, `19. Februar 2012`) map back to the user's
-  value; an ambiguous part gets the unresolved-placeholder notice. Name pools
+  value. A lone part is restored only after a salutation or greeting; anywhere
+  else, or when ambiguous, it gets the unresolved-placeholder notice. Name pools
   dropped names that are common words (Sommer, Lange, Jan, Max, …) and the first
   24 person surrogates differ in both first and last name.
 - **Custom regex can no longer stall the middleware (#1553).** Operator
@@ -100,7 +103,8 @@ model or the user (#1542–#1546, #1550, #1553–#1556, #1559–#1561, #1577).
   flagged cells like any other. Datasets imported before this keep their
   collapsed values: re-import them.
 - **Link keys are never filter targets (#1560).** `v4_filter` refuses `__k_*`
-  fields like `query_dataset` does.
+  fields like `query_dataset` does, and `v4_union` cannot rename a link key to
+  a plain name.
 - **Rendering (#1542, #1543, #1559).** Nested cells (a Confluence page body,
   `version`, `space`) render as text; what still cannot be shown is marked and
   named to the model instead of `[nested]`. A rendered table's ack and the

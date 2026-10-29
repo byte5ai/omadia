@@ -2228,6 +2228,7 @@ maskUserPrompt?(request: PrivacyPromptMaskRequest): Promise<PrivacyPromptMaskRes
 restorePromptPseudonyms?(turnId: string, text: string): Promise<string>;
 snapshotPromptRestorer?(turnId: string): ((text: string) => string) | undefined;
 remaskPromptValues?(turnId: string, text: string): string;
+restoreToolInputValues?(turnId: string, text: string): string;
 projectVerifierText?(request: PrivacyVerifierProjectionRequest): Promise<PrivacyPromptMaskResult>;
 maskReplayedAnswer?(request: PrivacyReplayedAnswerRequest): Promise<PrivacyPromptMaskResult>;
 openStoredTextScope?(request: PrivacyStoredTextScopeRequest): PrivacyStoredTextScope;

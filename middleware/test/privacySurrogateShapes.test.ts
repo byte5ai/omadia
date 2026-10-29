@@ -14,7 +14,9 @@ import { describe, it } from 'node:test';
 import {
   countUnresolvedForms,
   isReservedSurrogateShape,
+  remaskKnownValues,
   resolvePromptPseudonyms,
+  restoreToolInputSurrogates,
 } from '@omadia/plugin-privacy-guard/dist/promptSurrogates.js';
 import {
   createPromptPseudonymMap,
@@ -180,10 +182,32 @@ describe('#1545 person surrogate parts', () => {
     assert.equal(resolvePromptPseudonyms(glued, map), glued);
   });
 
-  it('a part next to another name word may be someone else: kept and counted, not renamed', () => {
-    const other = `Laut Odoo ist ${first} Schmidt zuständig, Kollege ${last} auch.`;
+  it('a part outside a salutation may be someone else: kept and counted, not renamed', () => {
+    const other = `Laut Odoo ist ${first} Schmidt zuständig, Kollege ${last} auch, ${last} GmbH.`;
     assert.equal(resolvePromptPseudonyms(other, map), other);
     assert.equal(countUnresolvedForms(other, map), 2);
+    assert.equal(resolvePromptPseudonyms(`Hallo ${first} Schmidt`, map), `Hallo ${first} Schmidt`);
+  });
+
+  it('a real name that is not two plain words gives its parts no real value', () => {
+    const comma = createPromptPseudonymMap([{ value: 'Weber, Jonas', type: 'person' }], 'an Weber, Jonas');
+    const [, cLast] = comma.forward.get('Weber, Jonas')!.split(' ') as [string, string];
+    assert.equal(resolvePromptPseudonyms(`Herr ${cLast}`, comma), `Herr ${cLast}`);
+    assert.equal(countUnresolvedForms(`Herr ${cLast}`, comma), 1);
+  });
+
+  it('a pool address never shares a name with a person surrogate of someone else', () => {
+    const prompt = 'Anna Schmidt und jonas.weber@firma.de';
+    const m = createPromptPseudonymMap(
+      [
+        { value: 'Anna Schmidt', type: 'person' },
+        { value: 'jonas.weber@firma.de', type: 'email' },
+      ],
+      prompt,
+    );
+    const person = m.forward.get('Anna Schmidt')!.toLowerCase().split(' ');
+    const local = m.forward.get('jonas.weber@firma.de')!.split('@')[0]!.toLowerCase();
+    for (const part of person) assert.ok(!local.includes(part), `${local} shares ${part}`);
   });
 
   it('a part shared by two people, or of a one-word real name, stays and is counted', () => {
@@ -265,5 +289,37 @@ describe('#1554 e-mail surrogate next to a name', () => {
     );
     const surrogate = map.forward.get('jonas.weber@example.com')!;
     assert.ok(isReservedSurrogateShape(surrogate), surrogate);
+  });
+});
+
+describe('#1544 — tool-input restore stays reversible', () => {
+  const text = 'Projekt Falkenstein, Rechnung über 1.250,00 € am 02.10.2026, Jonas Weber';
+  const strictMap = createPromptPseudonymMap(
+    [
+      { value: 'Projekt Falkenstein', type: 'custom' },
+      { value: '1.250,00 €', type: 'amount' },
+      { value: '02.10.2026', type: 'date' },
+      { value: 'Jonas Weber', type: 'person' },
+    ],
+    text,
+  );
+  const sur = (real: string): string => strictMap.forward.get(real)!;
+
+  it('restores whole surrogates only, never dates, amounts or name parts', () => {
+    const custom = sur('Projekt Falkenstein');
+    const [first] = sur('Jonas Weber').split(' ') as [string];
+    const input = `${custom.toLowerCase()} ${sur('Jonas Weber')} ${first} ${sur('1.250,00 €')} ${sur('02.10.2026')}`;
+    assert.equal(
+      restoreToolInputSurrogates(input, strictMap),
+      `projekt falkenstein Jonas Weber ${first} ${sur('1.250,00 €')} ${sur('02.10.2026')}`,
+    );
+  });
+
+  it('remaskKnownValues reverses every value the restore can put in, slugs included', () => {
+    const restored = restoreToolInputSurrogates(`${sur('Projekt Falkenstein')} / ${sur('Jonas Weber')}`, strictMap);
+    assert.equal(
+      remaskKnownValues(`${restored} /memories/projekt-falkenstein.md JONAS WEBER`, strictMap),
+      `${sur('Projekt Falkenstein')} / ${sur('Jonas Weber')} /memories/${sur('Projekt Falkenstein').toLowerCase()}.md ${sur('Jonas Weber').toUpperCase()}`,
+    );
   });
 });

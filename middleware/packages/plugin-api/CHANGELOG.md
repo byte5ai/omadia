@@ -15,10 +15,11 @@ Additive. Privacy Shield masking and rendering (S3-B: #1544, #1559, #1561, #1543
 
 ### Added
 
-- **`PrivacyGuardService.remaskPromptValues`** (optional) — replaces the turn's
-  masked prompt values in a text by their surrogates again. The kernel restores
-  surrogates in tool INPUTS (#1544); an interning-exempt tool can echo them,
-  and its result goes back to the model through this.
+- **`PrivacyGuardService.restoreToolInputValues`** /
+  **`remaskPromptValues`** (optional) — the kernel restores whole prompt
+  surrogates (no dates, amounts or name parts) in a data tool's INPUT, and
+  masks the turn's prompt values again in every tool result text the model
+  gets (#1544). The kernel restores only with a provider that has both.
 - **`PrivacyV4ToolRequest.fileExportAvailable`** (optional `boolean`) — whether
   the turn has a file-export tool (`create_xlsx`); a truncated table offers an
   Excel file only then (#1559).
