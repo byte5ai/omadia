@@ -10,6 +10,7 @@ import {
 import { eventEmitIds } from '../platform/eventCatalogRegistry.js';
 import type { PluginRouteRegistry } from '../platform/pluginRouteRegistry.js';
 import { PublicPathClaimError } from '../platform/publicPathGrants.js';
+import { claimDeclaredPublicPaths } from '../platform/publicPathClaim.js';
 import type { PublicPathGrantRegistry } from '../platform/publicPathGrants.js';
 import type { PublicPathGrantStore } from '../platform/publicPathGrantStore.js';
 import type { NotificationRouter } from '../platform/notificationRouter.js';
@@ -607,52 +608,22 @@ export class ToolPluginRuntime {
       const declared = catalogEntry.plugin.permissions_summary?.public_paths ?? [];
       if (declared.length > 0) {
         try {
-          const granted =
-            (await this.deps.publicPathGrantStore?.listForPlugin(agentId)) ??
-            new Set<string>();
-          const { unserved } = this.deps.publicPathGrants.claim(
+          await claimDeclaredPublicPaths(
             agentId,
             declared,
             {
-              corePublicPaths: this.deps.corePublicPaths ?? [],
-              ownRoutePrefixes: [
-                ...new Set(
-                  this.deps.pluginRouteRegistry
-                    .list()
-                    .filter((r) => r.source === agentId && !r.disposed)
-                    .map((r) => r.prefix),
-                ),
-              ],
-              grantedPrefixes: granted,
+              publicPathGrants: this.deps.publicPathGrants,
+              ...(this.deps.publicPathGrantStore
+                ? { publicPathGrantStore: this.deps.publicPathGrantStore }
+                : {}),
+              ...(this.deps.corePublicPaths
+                ? { corePublicPaths: this.deps.corePublicPaths }
+                : {}),
+              pluginRouteRegistry: this.deps.pluginRouteRegistry,
             },
+            log,
+            'tool-runtime',
           );
-          const ungranted = declared.filter((p) => !granted.has(p));
-          // Epic #470 C16 (#817) — name the remedy, not just the state.
-          //
-          // An ungranted prefix is deliberately NOT an activation failure: the
-          // claim holds (nobody else can take the prefix) and the route simply
-          // falls through to `requireAuth`, which is the fail-closed direction
-          // and the behaviour every already-installed plugin depends on. But
-          // "declared-but-awaiting-consent" told an operator what was wrong
-          // without telling them where to fix it, and the answer used to be
-          // "there is no UI" — which is precisely what C16 changes.
-          log(
-            `[tool-runtime] public paths for ${agentId}: ${String(granted.size)} granted, ` +
-              `${String(ungranted.length)} declared-but-awaiting-consent` +
-              (ungranted.length > 0
-                ? ` (${ungranted.join(', ')}) — these prefixes stay behind requireAuth until an operator consents ` +
-                  `in the admin UI under Plugins \u2192 ${agentId} \u2192 Permissions, or with ` +
-                  `PUT /api/v1/admin/runtime/installed/${encodeURIComponent(agentId)}/grants`
-                : ''),
-          );
-          // #1465 — declared, ungranted, and no router registered under it
-          // (a feature switched off). Not a failure; granting it would be.
-          if (unserved.length > 0) {
-            log(
-              `[tool-runtime] ${agentId} registered no router under ${unserved.join(', ')} — ` +
-                'the declared prefix serves nothing in this configuration and stays behind requireAuth; a grant for it is only valid once the plugin serves it',
-            );
-          }
         } catch (err) {
           this.deps.publicPathGrants.releaseBySource(agentId);
           this.deps.pluginRouteRegistry.disposeBySource(agentId);

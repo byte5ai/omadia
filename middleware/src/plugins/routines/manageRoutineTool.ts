@@ -92,6 +92,11 @@ export interface ManageRoutineContext {
    * this flag.
    */
   canTargetOthers?: boolean;
+  /**
+   * #1598 — slug of the orchestrator handling the creating turn. Stored on the
+   * routine so it runs with that orchestrator's plugin grants.
+   */
+  agentSlug?: string;
 }
 
 export type ManageRoutineContextResolver = () =>
@@ -245,6 +250,7 @@ export class ManageRoutineTool {
       channel: ctx.channel,
       conversationRef,
       timeoutMs: args.timeoutMs,
+      ...(ctx.agentSlug ? { agentSlug: ctx.agentSlug } : {}),
     });
     return JSON.stringify({
       action: 'created',

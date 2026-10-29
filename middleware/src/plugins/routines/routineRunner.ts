@@ -186,7 +186,13 @@ export interface RoutineRunnerOptions {
    * (not the higher-level `chat`) so it can persist the per-turn
    * `runTrace` for the call-stack viewer.
    */
-  getOrchestrator: () => OrchestratorLike | undefined;
+  /**
+   * #1598 — called with the routine's `agentSlug` (the orchestrator that
+   * created it; `null` = the standard orchestrator). The host resolves that
+   * orchestrator so the run has exactly its plugin grants; `undefined` when it
+   * no longer exists records an `error` run.
+   */
+  getOrchestrator: (agentSlug: string | null) => OrchestratorLike | undefined;
   senderRegistry: ProactiveSenderRegistry;
   log?: (msg: string) => void;
   /** Override the per-user active-routine cap. */
@@ -215,7 +221,7 @@ export class RoutineRunner {
   private readonly store: RoutineStore;
   private readonly runsStore: RoutineRunsStore;
   private readonly scheduler: JobSchedulerLike;
-  private readonly getOrchestrator: () => OrchestratorLike | undefined;
+  private readonly getOrchestrator: (agentSlug: string | null) => OrchestratorLike | undefined;
   private readonly senders: ProactiveSenderRegistry;
   private readonly log: (msg: string) => void;
   private readonly maxActivePerUser: number;
@@ -363,7 +369,7 @@ export class RoutineRunner {
    * visible in run history.
    */
   chatAgentAvailable(): boolean {
-    return this.getOrchestrator() !== undefined;
+    return this.getOrchestrator(null) !== undefined;
   }
 
   /**
@@ -620,7 +626,7 @@ export class RoutineRunner {
       // chatAgent@^1) are dark too, so a sender-first check would record
       // the misleading 'no proactive sender' error when the actual fix
       // is configuring the key.
-      const orchestrator = this.getOrchestrator();
+      const orchestrator = this.getOrchestrator(fresh.agentSlug ?? null);
       if (!orchestrator) {
         throw new ChatAgentUnavailableError();
       }

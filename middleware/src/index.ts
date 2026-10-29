@@ -1425,6 +1425,10 @@ async function main(): Promise<void> {
     serviceRegistry,
     nativeToolRegistry,
     pluginRouteRegistry,
+    // #1596 follow-up — agent plugins claim their declared public paths too.
+    publicPathGrants,
+    publicPathGrantStore,
+    corePublicPaths: publicPaths(),
     notificationRouter,
     uiRouteCatalog,
     jobScheduler,
@@ -2828,6 +2832,25 @@ async function main(): Promise<void> {
   // LLM access page) is picked up without a restart.
   const getChatAgentBundle = (): ChatAgentBundle | undefined =>
     serviceRegistry.get<ChatAgentBundle>('chatAgent');
+  // #1598 — the chat bundle a request without its own orchestrator gets.
+  //
+  // The legacy `chatAgent@1` bundle is built with no per-Agent plugin grants,
+  // so it offers and runs every plugin's tools. On a registry-less boot it IS
+  // the deployment's only orchestrator and stays the answer. Once the
+  // orchestrator registry exists, the answer is the standard (fallback)
+  // orchestrator, which has grants — and `undefined` when none is set, never
+  // the ungated bundle. `slug` picks a specific orchestrator (a routine's
+  // creator); `'default'` and `null` mean the standard one.
+  const getScopedChatAgentBundle = (
+    slug: string | null = null,
+  ): ChatAgentBundle | undefined => {
+    const registry =
+      serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry');
+    if (!registry) return getChatAgentBundle();
+    const target =
+      slug !== null && slug !== 'default' ? slug : registry.slugForFallback();
+    return target ? registry.get(target)?.built.bundle : undefined;
+  };
   const getChatSessionStore = (): ChatSessionStore | undefined =>
     getChatAgentBundle()?.chatSessionStore;
   // sessionLogger is exposed on the bundle for future channel/route
@@ -3293,7 +3316,8 @@ async function main(): Promise<void> {
     routinesHandle = await initRoutines({
       pool: graphPool,
       scheduler: jobScheduler,
-      getOrchestrator: () => getChatAgentBundle()?.raw,
+      // #1598 — the routine's own orchestrator, with its plugin grants.
+      getOrchestrator: (agentSlug) => getScopedChatAgentBundle(agentSlug)?.raw,
       registerNativeTool: (name, handler, options) =>
         nativeToolRegistry.register(name, {
           handler,
@@ -6676,8 +6700,12 @@ async function main(): Promise<void> {
   const orchestratorDispatcher: TurnDispatcher = createOrchestratorDispatcher({
     getChannelBlock: (channelId) =>
       pluginCatalog.get(channelId)?.plugin.channel,
+    // #1598 — the shared `chatAgent` is the grant-less legacy bundle; with a
+    // registry, a turn that has no binding gets the standard orchestrator.
     getAgentBundle: (service) =>
-      serviceRegistry.get<ChatAgentBundle>(service),
+      service === 'chatAgent'
+        ? getScopedChatAgentBundle()
+        : serviceRegistry.get<ChatAgentBundle>(service),
     // US7 — channelType autodiscovery: prefer the manifest's declared
     // channel_type, else derive it from the channel id's last dotted segment
     // (de.byte5.channel.teams → teams), the convention operators bind under.
@@ -6692,7 +6720,9 @@ async function main(): Promise<void> {
         serviceRegistry.get<ChannelBindingResolver>('channelResolver');
       if (!resolver) return undefined;
       const result = resolver.resolve(channelType, channelKey);
-      return result.decision !== 'reject' ? result.chatAgent : undefined;
+      // #1598 — `null` is an explicit reject: the dispatcher refuses the turn
+      // instead of falling back to an orchestrator nobody bound here.
+      return result.decision !== 'reject' ? result.chatAgent : null;
     },
   });
 
@@ -6778,6 +6808,10 @@ async function main(): Promise<void> {
     serviceRegistry,
     nativeToolRegistry,
     pluginRouteRegistry,
+    // #1596 follow-up — channels claim their declared public paths too.
+    publicPathGrants,
+    publicPathGrantStore,
+    corePublicPaths: publicPaths(),
     notificationRouter,
     uiRouteCatalog,
     jobScheduler,

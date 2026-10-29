@@ -67,6 +67,29 @@ changelog.
 `@omadia/plugin-privacy-guard` 0.11.0, `@omadia/plugin-api` 1.37.0
 (`countUnresolvedSurrogates` takes an optional `options`).
 
+### Security — no ungated orchestrator behind routines and channel fallbacks; Teams tabs served again (#1598, #1596)
+
+2026-10-29. Follow-up to the `/p/` session gate and native-tool grants.
+
+- **Teams tab pages answered 404 (#1596 follow-up).** Only the tool runtime
+  claimed declared `permissions.public_paths`, so channel and agent plugins'
+  granted `auth: 'custom'` routes were never served. The static `/p/`
+  exemption had hidden this until #1596 removed it. All three runtimes now
+  claim via `claimDeclaredPublicPaths`.
+- **Routines ran on the grant-less legacy bundle (#1598).** A routine now
+  stores the orchestrator that created it (routines migration
+  `0005_routines_agent_slug`, nullable, no backfill) and runs there. Routines
+  without an owner run on the standard orchestrator.
+- **Channel fallbacks (#1598).** A turn the binding resolver rejects is
+  refused ("no orchestrator is assigned to this conversation") instead of
+  being answered by the legacy bundle. With a registry, the shared `chatAgent`
+  path uses the standard orchestrator. channel-teams 0.32.0 refuses the same
+  way when its resolver rejects or throws.
+- **Smaller grant gaps (#1598).** Sub-agent `native` grants, deferred
+  sub-agent tools (`orchestratorScope`) and public MCP dispatch follow plugin
+  assignment. `memory` without a turn handler is refused, never routed to the
+  provider's unscoped store.
+
 ### Fixed — Orchestrator and agent wiring (#1585, #1569, #1570, #1581, #1502)
 
 2026-10-29.

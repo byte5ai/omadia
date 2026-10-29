@@ -2,6 +2,9 @@ import { createPluginContext } from '../platform/pluginContext.js';
 import { eventEmitIds } from '../platform/eventCatalogRegistry.js';
 import type { EventCatalogRegistry } from '../platform/eventCatalogRegistry.js';
 import type { PluginRouteRegistry } from '../platform/pluginRouteRegistry.js';
+import { claimDeclaredPublicPaths } from '../platform/publicPathClaim.js';
+import type { PublicPathGrantRegistry } from '../platform/publicPathGrants.js';
+import type { PublicPathGrantStore } from '../platform/publicPathGrantStore.js';
 import type { NotificationRouter } from '../platform/notificationRouter.js';
 import type { PluginStatusRegistry } from '../platform/pluginStatusRegistry.js';
 import type { UiRouteCatalog } from '../platform/uiRouteCatalog.js';
@@ -47,6 +50,12 @@ export interface ChannelRegistryDeps {
   serviceRegistry: ServiceRegistry;
   nativeToolRegistry: NativeToolRegistry;
   pluginRouteRegistry: PluginRouteRegistry;
+  /** #1596 follow-up — claim declared `permissions.public_paths` like the tool
+   *  runtime does, so a channel's granted `auth: 'custom'` route (Teams tab
+   *  pages) is served. Optional; absent ⇒ nothing is claimed (fail-closed). */
+  publicPathGrants?: PublicPathGrantRegistry;
+  publicPathGrantStore?: PublicPathGrantStore;
+  corePublicPaths?: readonly RegExp[];
   notificationRouter: NotificationRouter;
   uiRouteCatalog: UiRouteCatalog;
   jobScheduler: JobScheduler;
@@ -169,6 +178,39 @@ export class DefaultChannelRegistry implements ChannelRegistry {
     });
 
     const handle = await impl.activate(ctx, this.deps.coreApi);
+    try {
+      await claimDeclaredPublicPaths(
+        agentId,
+        catalogEntry.plugin.permissions_summary?.public_paths ?? [],
+        {
+          ...(this.deps.publicPathGrants
+            ? { publicPathGrants: this.deps.publicPathGrants }
+            : {}),
+          ...(this.deps.publicPathGrantStore
+            ? { publicPathGrantStore: this.deps.publicPathGrantStore }
+            : {}),
+          ...(this.deps.corePublicPaths
+            ? { corePublicPaths: this.deps.corePublicPaths }
+            : {}),
+          pluginRouteRegistry: this.deps.pluginRouteRegistry,
+        },
+        (msg) => console.log(msg),
+        'channels',
+      );
+    } catch (err) {
+      // Same rollback as the tool runtime: a channel serving a prefix another
+      // plugin owns is worse than a channel that refuses to start.
+      this.deps.publicPathGrants?.releaseBySource(agentId);
+      this.deps.pluginRouteRegistry.disposeBySource(agentId);
+      this.deps.uiRouteCatalog.disposeBySource(agentId);
+      this.deps.routes.deactivateChannel(agentId);
+      this.deps.webSockets?.deactivateChannel(agentId);
+      await Promise.resolve(handle.close()).catch(() => undefined);
+      throw new Error(
+        `channels: ${agentId} cannot activate — ${err instanceof Error ? err.message : String(err)}`,
+        { cause: err },
+      );
+    }
     this.handles.set(agentId, handle);
     // Register declared event-emit ids (raw manifest `capabilities[].event_emit`) so the channel's
     // `ctx.events.emit(...)` passes the deny-by-default catalog gate and the events surface in the
@@ -215,6 +257,7 @@ export class DefaultChannelRegistry implements ChannelRegistry {
     // would otherwise outlive its plugin in the catalogue and surface
     // a stale entry in channel-teams' Hub + Tab-Config dropdown.
     this.deps.uiRouteCatalog.disposeBySource(agentId);
+    this.deps.publicPathGrants?.releaseBySource(agentId);
     this.deps.pluginStatusRegistry?.clear(agentId);
     this.deps.eventCatalogRegistry?.unregister(agentId);
     if (!handle) return;

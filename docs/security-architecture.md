@@ -1181,14 +1181,31 @@ ungated, and so does `memory`: its provider only backs the store, while the
 kernel scopes what each orchestrator reads and writes. An orchestrator without
 a grant set (legacy single-Agent boot) stays ungated, as for domain tools.
 
-**Open (#1598).** The legacy `default` bundle (`chatAgent@1`) has no grant set,
-so whatever runs on it sees every plugin's tools: routines (they store no
-Agent), the channel dispatcher's fallback when the resolver rejects, and
-Teams' fallback when the resolver throws. Web chat no longer reaches it via
-`agentSlug: "default"` once a registry exists. Also open: `native` tool grants
-on sub-agents are not checked against the parent's plugins, deferred
-sub-agent tools (`LONG_RUNNING_SUBAGENT_TOOLS`) register without an owner,
-and public MCP key bindings are not checked against the Agent's plugins.
+**Closed in the follow-up (#1598).** Everything that used to reach the
+grant-less legacy `chatAgent@1` bundle with a registry present now resolves
+an orchestrator that has grants:
+
+- Routines store the slug of the orchestrator that created them (routines
+  migration `0005_routines_agent_slug`) and run there. A missing orchestrator
+  records an `error` run. Routines without an owner run on the standard
+  (fallback) orchestrator.
+- The channel dispatcher refuses a turn the binding resolver rejects, and its
+  shared-`chatAgent` fallback is the standard orchestrator (`undefined` when
+  none is set), never the legacy bundle (`getScopedChatAgentBundle`).
+  channel-teams refuses the same way when its resolver rejects or throws.
+- A sub-agent's `native` tool grant only resolves a tool its parent
+  orchestrator is granted.
+- Deferred sub-agent tools carry `orchestratorScope`: only the orchestrator
+  that registered them sees or runs them.
+- Public MCP dispatch checks the bound agent's plugin assignment.
+- `memory` on a turn whose binding has no handler is refused rather than
+  falling through to the provider's unscoped handler.
+
+Every runtime that activates plugins (tool, channel, agent) now claims
+declared `permissions.public_paths` (`platform/publicPathClaim.ts`). Before,
+only the tool runtime did, so a channel's granted `auth: 'custom'` route,
+channel-teams' Teams tab pages, was never served once #1596 removed the static
+`/p/` exemption that had hidden it.
 
 ## 6. Defence in depth for cached data
 

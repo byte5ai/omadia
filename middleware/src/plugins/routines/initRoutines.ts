@@ -17,6 +17,8 @@ import {
 } from './routineRunner.js';
 import { RoutineRunsStore } from './routineRunsStore.js';
 import { RoutineStore } from './routineStore.js';
+import { turnContext } from '@omadia/orchestrator';
+
 import { routineTurnContext } from './routineTurnContext.js';
 
 /**
@@ -57,7 +59,8 @@ export interface InitRoutinesOptions {
    * The structural type keeps this layer free of a hard import on the
    * orchestrator package.
    */
-  getOrchestrator: () => OrchestratorLike | undefined;
+  /** #1598 — see `RoutineRunnerOptions.getOrchestrator`. */
+  getOrchestrator: (agentSlug: string | null) => OrchestratorLike | undefined;
   /**
    * Native-tool registration surface. Production passes the kernel-owned
    * `nativeToolRegistry`. The shape is the minimum used here so a stub
@@ -128,7 +131,14 @@ export async function initRoutines(
 
   const tool = new ManageRoutineTool({
     runner,
-    resolveContext: () => routineTurnContext.current(),
+    // #1598 — plus the orchestrator handling the turn, so the routine runs
+    // with that orchestrator's plugin grants.
+    resolveContext: () => {
+      const ctx = routineTurnContext.current();
+      if (!ctx) return undefined;
+      const agentSlug = turnContext.currentAgentSlug();
+      return agentSlug ? { ...ctx, agentSlug } : ctx;
+    },
   });
 
   const disposeTool = opts.registerNativeTool(

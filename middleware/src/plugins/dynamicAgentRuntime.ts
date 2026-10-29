@@ -12,6 +12,9 @@ import { eventEmitIds } from '../platform/eventCatalogRegistry.js';
 import { createPluginContext } from '../platform/pluginContext.js';
 import type { OperatorAuthAccessor } from '@omadia/plugin-api';
 import type { PluginRouteRegistry } from '../platform/pluginRouteRegistry.js';
+import { claimDeclaredPublicPaths } from '../platform/publicPathClaim.js';
+import type { PublicPathGrantRegistry } from '../platform/publicPathGrants.js';
+import type { PublicPathGrantStore } from '../platform/publicPathGrantStore.js';
 import type { NotificationRouter } from '../platform/notificationRouter.js';
 import type { PluginStatusRegistry } from '../platform/pluginStatusRegistry.js';
 import type { UiRouteCatalog } from '../platform/uiRouteCatalog.js';
@@ -174,6 +177,11 @@ export interface DynamicAgentRuntimeDeps {
   /** Shared registry for plugin-contributed Express routers. Activated
    *  plugins register mounts here via `ctx.routes.register(prefix, router)`. */
   pluginRouteRegistry: PluginRouteRegistry;
+  /** #1596 follow-up — claim declared `permissions.public_paths` like the tool
+   *  runtime does. Optional; absent ⇒ nothing is claimed (fail-closed). */
+  publicPathGrants?: PublicPathGrantRegistry;
+  publicPathGrantStore?: PublicPathGrantStore;
+  corePublicPaths?: readonly RegExp[];
   notificationRouter: NotificationRouter;
   uiRouteCatalog: UiRouteCatalog;
   /** Kernel-wide background-job scheduler. Plugin-contributed jobs register
@@ -641,6 +649,35 @@ export class DynamicAgentRuntime {
       );
     }
 
+    // #1596 follow-up — claim declared public paths, as the tool runtime does.
+    // A conflict rolls the whole activation back.
+    try {
+      await claimDeclaredPublicPaths(
+        agentId,
+        catalogEntry.plugin.permissions_summary?.public_paths ?? [],
+        {
+          ...(this.deps.publicPathGrants
+            ? { publicPathGrants: this.deps.publicPathGrants }
+            : {}),
+          ...(this.deps.publicPathGrantStore
+            ? { publicPathGrantStore: this.deps.publicPathGrantStore }
+            : {}),
+          ...(this.deps.corePublicPaths
+            ? { corePublicPaths: this.deps.corePublicPaths }
+            : {}),
+          pluginRouteRegistry: this.deps.pluginRouteRegistry,
+        },
+        (msg) => log(msg),
+        'dynamic-runtime',
+      );
+    } catch (err) {
+      await this.deactivate(agentId).catch(() => false);
+      throw new Error(
+        `dynamic-runtime: ${agentId} cannot activate — ${err instanceof Error ? err.message : String(err)}`,
+        { cause: err },
+      );
+    }
+
     // Circuit-breaker: clear any prior failure counter so an agent that
     // recovers (e.g. after a config fix + re-upload) returns to a healthy
     // starting state for the next boot. Best-effort — registry write errors
@@ -718,6 +755,7 @@ export class DynamicAgentRuntime {
     // v0.4.0 → v0.5.0).
     const disposedCount =
       this.deps.pluginRouteRegistry.disposeBySource(agentId);
+      this.deps.publicPathGrants?.releaseBySource(agentId);
     if (disposedCount > 0) {
       log(
         `[dynamic-runtime] disposed ${String(disposedCount)} route mount(s) for ${agentId}`,

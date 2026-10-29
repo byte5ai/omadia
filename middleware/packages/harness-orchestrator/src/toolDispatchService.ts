@@ -201,7 +201,11 @@ export class ToolDispatchService {
        * legacy single-Agent path, the public MCP endpoint whose key bindings
        * name the exact tools, and the CLI sub-agent's own fixed tool set).
        */
-      readonly isToolGranted?: (name: string, agentId: string | undefined) => boolean;
+      readonly isToolGranted?: (
+        name: string,
+        agentId: string | undefined,
+        orchestratorScope?: string,
+      ) => boolean;
       /**
        * #542 prerequisite — the privacy data-plane boundary for this path.
        *
@@ -273,8 +277,12 @@ export class ToolDispatchService {
   }
 
   /** #1598 — see `deps.isToolGranted`. */
-  private isGranted(name: string, agentId: string | undefined): boolean {
-    return this.deps.isToolGranted?.(name, agentId) ?? true;
+  private isGranted(
+    name: string,
+    agentId: string | undefined,
+    orchestratorScope?: string,
+  ): boolean {
+    return this.deps.isToolGranted?.(name, agentId, orchestratorScope) ?? true;
   }
 
   /** Explicit dep wins; ambient turn handle is the fallback. */
@@ -370,7 +378,7 @@ export class ToolDispatchService {
     // Mirrors Orchestrator ordering: plugin/native handlers win first.
     if (nativeRegistration !== undefined && nativeHandler !== undefined) {
       // #1598 — grant first: the readiness message names the plugin.
-      if (!this.isGranted(name, nativeRegistration.agentId)) {
+      if (!this.isGranted(name, nativeRegistration.agentId, nativeRegistration.orchestratorScope)) {
         return notGranted(name);
       }
       if (!this.isToolAvailable(nativeRegistration.agentId)) {
@@ -660,7 +668,7 @@ export class ToolDispatchService {
       if (!this.isToolAvailable(registration.agentId)) {
         continue;
       }
-      if (!this.isGranted(registration.name, registration.agentId)) {
+      if (!this.isGranted(registration.name, registration.agentId, registration.orchestratorScope)) {
         continue;
       }
       // #1346 — per-turn availability, same gate as the orchestrator's own

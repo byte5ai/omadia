@@ -174,3 +174,41 @@ test('subscription-CLI dispatcher: the granted agent runs it', async () => {
   assert.notEqual(result.isError, true);
   assert.equal(ran.value, true);
 });
+
+test('an orchestrator-scoped tool (deferred sub-agent twin) is only its owner\'s', async () => {
+  const { registry, deps } = setup();
+  let ran = 0;
+  registry.register('ask_hr_start', {
+    spec: { name: 'ask_hr_start', description: 'deferred', input_schema: { type: 'object', properties: {} } },
+    handler: async () => {
+      ran += 1;
+      return 'started';
+    },
+    orchestratorScope: 'hrdesk',
+  });
+  const other = probe(buildForAgent(agentRow('zweiter'), deps, RUNTIME, undefined, []));
+  const owner = probe(buildForAgent(agentRow('hrdesk'), deps, RUNTIME, undefined, []));
+  assert.equal(other.offeredToolNames().has('ask_hr_start'), false);
+  assert.match(await other.dispatchTool('ask_hr_start', {}, undefined, undefined), /not available to this agent/);
+  assert.equal(ran, 0);
+  assert.equal(owner.offeredToolNames().has('ask_hr_start'), true);
+  assert.equal(await owner.dispatchTool('ask_hr_start', {}, undefined, undefined), 'started');
+});
+
+test('memory on a turn the binder denied memory is refused, never the unscoped provider handler', async () => {
+  const { registry, deps } = setup();
+  let providerRan = false;
+  registry.registerHandler('memory', async () => {
+    providerRan = true;
+    return 'ROOT STORE';
+  });
+  const orch = probe(buildForAgent(agentRow('zweiter'), deps, RUNTIME, undefined, []));
+  const result = await orch.dispatchTool('memory', { command: 'view', path: '/memories' }, undefined, {
+    handler: undefined,
+    memoryDenied: true,
+    contextBound: true,
+  } as never);
+  assert.match(result, /not available on this turn/);
+  assert.equal(providerRan, false);
+});
+

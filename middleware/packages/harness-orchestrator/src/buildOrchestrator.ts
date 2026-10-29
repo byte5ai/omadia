@@ -943,7 +943,7 @@ export function buildOrchestratorForAgent(
         ? { isPluginToolsReady: deps.isPluginToolsReady }
         : {}),
       // #1598 — and the per-Agent plugin assignment, for the same reason.
-      isToolGranted: (name, agentId) => orchestrator.isToolGranted(name, agentId),
+      isToolGranted: (name, agentId, scope) => orchestrator.isToolGranted(name, agentId, scope),
     });
     return {
       orchestrator,
