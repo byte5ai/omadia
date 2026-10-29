@@ -39,6 +39,7 @@ import { createFastPathService, FAST_PATH_SERVICE, type FastPathService } from '
 import { validatePlannedQuery, type PlannedQuery } from '../packages/harness-plugin-fast-path/src/triage.js';
 import { triageTurn } from '../packages/harness-plugin-fast-path/src/triageTurn.js';
 import { activate } from '../packages/omadia-ui-orchestrator/src/plugin.js';
+import { peekCacheHit } from '../packages/omadia-ui-orchestrator/src/cachedSkeleton.js';
 import { validateTree } from '../packages/omadia-ui-orchestrator/src/treeValidator.js';
 
 // ── fixtures ──────────────────────────────────────────────────────────────
@@ -641,5 +642,29 @@ describe('answer cache — column headers are not run through the person detecto
       openScope: () => guard().openStoredTextScope!({ job: 'test' }),
     });
     assert.equal(r.stored, false);
+  });
+});
+
+describe('canvas — peeking at the cache verdict never delays a normal turn', () => {
+  const PLAN = planned('Offene Posten von Müller');
+  const never = new Promise<never>(() => {});
+
+  it('a miss returns as soon as the lookup reported — not after router + planner', async () => {
+    const t0 = Date.now();
+    const plan = await peekCacheHit(never, Promise.resolve(false), 5_000);
+    assert.equal(plan, undefined);
+    assert.ok(Date.now() - t0 < 50, `took ${Date.now() - t0} ms`);
+  });
+
+  it('a hit returns the cached plan', async () => {
+    const triage = Promise.resolve({ kind: 'plan' as const, plan: PLAN, ms: 1, cache: { source: 'cache' as const, key: 'k', slots: 1 } });
+    assert.equal(await peekCacheHit(triage, Promise.resolve(true)), PLAN);
+  });
+
+  it('no verdict within the cap → compose (undefined); no cache → no wait at all', async () => {
+    assert.equal(await peekCacheHit(never, never, 20), undefined);
+    const t0 = Date.now();
+    assert.equal(await peekCacheHit(never, undefined, 5_000), undefined);
+    assert.ok(Date.now() - t0 < 50);
   });
 });

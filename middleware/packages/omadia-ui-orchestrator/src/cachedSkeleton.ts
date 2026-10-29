@@ -12,33 +12,33 @@ import type { SkeletonResult } from './composition.js';
  * The text stays local (it is the user's own question, shown back to them).
  */
 
-/** How long the skeleton waits for the cache verdict before composing — a
- *  hit resolves in a few ms; anything slower is no hit worth waiting for. */
+/** Safety cap on waiting for the cache verdict before composing — the
+ *  lookup reports in a few ms (`onCacheLookup`, before router + planner). */
 export const CACHE_PEEK_MS = 100;
 
 const TABLE_ID = 'results';
 const MAX_TITLE = 80;
 
-/** The cached plan of `triage` when it resolves as an answer-cache hit
- *  within `ms`, else undefined (miss, LLM plan, agent route, slow). */
+/** The cached plan when the turn's cache lookup reports a hit (within
+ *  `ms`), else undefined — a miss returns as soon as the lookup ran, so a
+ *  normal turn's composer starts a few ms later, never `ms` later. */
 export async function peekCacheHit(
   triage: Promise<TriageOutcome> | undefined,
+  verdict: Promise<boolean> | undefined,
   ms = CACHE_PEEK_MS,
 ): Promise<PlannedQuery | undefined> {
-  if (triage === undefined) return undefined;
+  if (triage === undefined || verdict === undefined) return undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<undefined>((resolve) => {
-    timer = setTimeout(() => resolve(undefined), ms);
+  const timeout = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => resolve(false), ms);
   });
-  const hit = triage.then(
-    (t) => (t.kind === 'plan' && t.cache?.source === 'cache' ? t.plan : undefined),
-    () => undefined,
-  );
   try {
-    return await Promise.race([hit, timeout]);
+    if (!(await Promise.race([verdict, timeout]))) return undefined;
   } finally {
     clearTimeout(timer);
   }
+  const t = await triage.catch(() => undefined);
+  return t?.kind === 'plan' && t.cache?.source === 'cache' ? t.plan : undefined;
 }
 
 /** The question as a heading: one line, no trailing question mark, capped. */

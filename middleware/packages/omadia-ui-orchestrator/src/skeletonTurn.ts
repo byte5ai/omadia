@@ -68,7 +68,7 @@ export async function* skeletonTurnStream(
   //    Answer-cache hit (resolves in ms): the cached plan knows its table,
   //    so the skeleton is built from it and the composer is not called.
   const turnTriage = startTriage(rt, input, canvasSessionId, base, gate);
-  const cachedPlan = await peekCacheHit(turnTriage.triage, CACHE_PEEK_MS);
+  const cachedPlan = await peekCacheHit(turnTriage.triage, turnTriage.cacheVerdict, CACHE_PEEK_MS);
   const skeleton: SkeletonResult = cachedPlan
     ? planSkeleton(cachedPlan, input.userMessage)
     : await composeSkeleton({
@@ -185,6 +185,12 @@ function startTriage(
   // user's text) — never an action/row-bound turn
   const plainTurn = input.action === undefined && input.target === undefined && input.userMessage.trim().length > 0;
   const answerCache = plainTurn ? fp?.answerCache : undefined;
+  let tellVerdict: ((hit: boolean) => void) | undefined;
+  const cacheVerdict = answerCache
+    ? new Promise<boolean>((resolve) => {
+        tellVerdict = resolve;
+      })
+    : undefined;
   const triage: Promise<TriageOutcome> | undefined =
     fp !== undefined && !privacyForced && turnTools.length > 0
       ? triageTurn({
@@ -197,11 +203,12 @@ function startTriage(
           allowedTools: fp.allowedFetchTools(),
           ...(previousQuery ? { previous: previousQuery } : {}),
           ...(fastPrivacy ? { privacy: fastPrivacy } : {}),
-          ...(answerCache ? { answerCache } : {}),
+          ...(answerCache ? { answerCache, onCacheLookup: (hit: boolean) => tellVerdict?.(hit) } : {}),
           log: (m) => ctx.log(m),
         })
       : undefined;
-  return { offered, turnTools, target, turnText, fastPathKey, triage };
+  if (triage === undefined) tellVerdict?.(false); // no triage → no lookup
+  return { offered, turnTools, target, turnText, fastPathKey, triage, cacheVerdict };
 }
 
 /** Await the triage, bind its plan to the skeleton and run the fast path;
