@@ -914,9 +914,9 @@ export function buildOrchestratorForAgent(
   // Orchestrator is still built + returned (sub-agents attach to it post-activate;
   // exposing those to the CLI dispatch is a follow-up — native tools work now).
   if (deps.provider?.id === 'claude-cli') {
-    // Security note (P2-2): the subscription CLI sees the FULL native tool
-    // registry via the loopback MCP server, with no allowlist beyond MCP
-    // server scoping; a per-agent tool allowlist is a follow-up.
+    // Security note (P2-2): the subscription CLI sees the native tool registry
+    // via the loopback MCP server, filtered by readiness and (#1598) by this
+    // Agent's plugin assignment.
     const dispatch = new ToolDispatchService({
       nativeTools: deps.nativeToolRegistry,
       // Live read: sub-agents (ask_<slug>) attach to `orchestrator` post-activate,
@@ -931,6 +931,8 @@ export function buildOrchestratorForAgent(
       ...(deps.isPluginToolsReady
         ? { isPluginToolsReady: deps.isPluginToolsReady }
         : {}),
+      // #1598 — and the per-Agent plugin assignment, for the same reason.
+      isToolGranted: (name, agentId) => orchestrator.isToolGranted(name, agentId),
     });
     return {
       orchestrator,

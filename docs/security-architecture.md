@@ -1137,6 +1137,59 @@ from the descriptor.
   semantics exactly, because a wrong `<v>` under omadia's name is the defect
   this section closes.
 
+## 5b. Plugin routes: `auth: 'session'` means a session, on every prefix (#1596)
+
+A plugin route registered with `ctx.routes.register(prefix, router)` and no
+`auth` option is a `'session'` route. Until #1596 its gate was the kernel's
+`/api` `requireAuth`, including that middleware's static public-path
+short-circuit, and the static list exempted `/p/<pluginId>/…` "for Teams
+iframes, plugins validate the Teams token themselves". None did. The Odoo HR
+agent's `/p/agent-odoo-hr/absences` (employee, department, leave type such as
+sick leave) and `/birthdays` answered anonymous `curl` with 200, on the
+middleware and through the web-UI `/p/*` proxy.
+
+Now:
+
+- The registry's session gate is `createSessionGate` (`auth/requireAuth.ts`):
+  the same session evaluation as `requireAuth`, from the same deps object, but
+  with no public-path short-circuit. No prefix, `/p/…` or a static `/api` one,
+  opens a `'session'` route.
+- `STATIC_PUBLIC_PATHS` has no `/p/` entry any more. The static plugin UI bundle
+  at `/p/<id>/ui/` stays public: core mounts it outside every `requireAuth`.
+- A plugin route that has to work without an omadia session (a Teams tab that
+  only has a Teams SSO token) registers with `auth: 'custom'`, validates the
+  token itself, declares the prefix in `permissions.public_paths`, and is only
+  served once the operator grants it (§5). Because the static `/p/` entry is
+  gone, such a `/p/<id>/…` declaration now validates
+  (`validateDeclaredPublicPath` used to reject it as "already a static core
+  public path").
+
+Channel plugins' own routes (`ExpressRouteRegistry`, Bot Framework webhooks)
+are a separate mechanism and self-authenticate by contract.
+
+## 5c. Per-orchestrator plugin assignment covers native plugin tools (#1598)
+
+Since #983 an orchestrator refuses a domain tool whose plugin is not in its
+`agent_plugins` grants. Tools registered with `ctx.tools.register` live in one
+kernel-wide registry and had no such check: an orchestrator granted nothing
+was offered, and ran, `odoo_version` of an Odoo integration assigned to no
+orchestrator. `Orchestrator.isToolGranted` now gates them in all three places:
+the tool list, the prompt docs, and dispatch (refused by name, without naming
+the plugin). The subscription-CLI dispatcher (`ToolDispatchService`, loopback
+MCP) asks the same question. Kernel-registered tools (no owning plugin) stay
+ungated, and so does `memory`: its provider only backs the store, while the
+kernel scopes what each orchestrator reads and writes. An orchestrator without
+a grant set (legacy single-Agent boot) stays ungated, as for domain tools.
+
+**Open (#1598).** The legacy `default` bundle (`chatAgent@1`) has no grant set,
+so whatever runs on it sees every plugin's tools: routines (they store no
+Agent), the channel dispatcher's fallback when the resolver rejects, and
+Teams' fallback when the resolver throws. Web chat no longer reaches it via
+`agentSlug: "default"` once a registry exists. Also open: `native` tool grants
+on sub-agents are not checked against the parent's plugins, deferred
+sub-agent tools (`LONG_RUNNING_SUBAGENT_TOOLS`) register without an owner,
+and public MCP key bindings are not checked against the Agent's plugins.
+
 ## 6. Defence in depth for cached data
 
 The Odoo / external-system response cache and the in-memory conversation
@@ -4317,7 +4370,7 @@ has its own reason:
 | `/bot-api/v1/auth/*` | Sign-in, sign-out, OIDC callback, provider list. The middleware lists `/api/v1/auth` as public too (`auth/publicPaths.ts`). |
 | `/_next/*` | Framework assets and dev tooling. |
 | `/health`, `/favicon.ico` | Fly and Compose health checks must answer before anyone has signed in. Since #1382 `/health` also returns the build `version` (`OMADIA_VERSION`), as the middleware's `/health` already did. That exposes the running release to unauthenticated callers. We accept it: the release tags are public, the version is what an operator's script or the updater needs to tell which image serves, and hiding it would not hide a vulnerable build from anyone probing behaviour. |
-| `/p/*` | Plugin UI iframed by Teams Tabs, where only a Teams SSO token exists. The plugin handler runs its own auth. |
+| `/p/*` | Plugin UI iframed by Teams Tabs, where only a Teams SSO token exists. The web-ui only skips its login redirect here; the middleware enforces the session on every `auth: 'session'` plugin route (#1596, §5b), and only the static `/p/<id>/ui/` bundle and operator-granted `auth: 'custom'` routes answer without one. |
 | `/.well-known/omadia-ui`, `/pairing-discovery` | The pairing descriptor (#293), see below. |
 
 **Pairing discovery.** A desktop client that knows only the operator URL
