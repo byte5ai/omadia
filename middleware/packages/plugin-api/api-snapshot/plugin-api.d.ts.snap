@@ -1779,6 +1779,7 @@ createFile(relPath: string, content: string): Promise<void>;
 delete(relPath: string): Promise<void>;
 list(relPath: string): Promise<readonly MemoryEntryInfo[]>;
 exists(relPath: string): Promise<boolean>;
+readonly pluginWide?: MemoryAccessor;
 }
 export interface MemoryEntryInfo {
 readonly relPath: string;
@@ -2137,7 +2138,9 @@ readonly segments?: readonly string[];
 }
 export interface PrivacyStoredTextScopeRequest {
 readonly job: string;
+readonly priority?: PrivacyStoredTextPriority;
 }
+export type PrivacyStoredTextPriority = 'interactive' | 'background';
 export interface PrivacyStoredTextScope {
 maskStoredText(text: string): Promise<PrivacyPromptMaskResult>;
 restoreStoredText(text: string): string;

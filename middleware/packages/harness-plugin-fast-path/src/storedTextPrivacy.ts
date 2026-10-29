@@ -1,4 +1,4 @@
-import type { PrivacyGuardService } from '@omadia/plugin-api';
+import type { PrivacyGuardService, PrivacyStoredTextPriority } from '@omadia/plugin-api';
 
 /**
  * #1540 — Privacy Shield for fast-model calls that run BEFORE a turn has a
@@ -44,14 +44,21 @@ function refused(reason: string): StoredTextPrivacyRun {
   };
 }
 
-/** Opens the privacy run for one fast-model call through `guard`. */
-export function openStoredTextPrivacy(guard: PrivacyGuardService, job: string): StoredTextPrivacyRun {
+/** Opens the privacy run for one fast-model call through `guard`.
+ *  `priority`: the sidecar lane — `interactive` when a turn waits on the
+ *  call (triage, skeleton, in-place planner); the guard defaults to
+ *  `background`. */
+export function openStoredTextPrivacy(
+  guard: PrivacyGuardService,
+  job: string,
+  priority?: PrivacyStoredTextPriority,
+): StoredTextPrivacyRun {
   if (guard.openStoredTextScope === undefined) {
     return refused('the installed privacy guard cannot mask stored text');
   }
   let scope: ReturnType<NonNullable<PrivacyGuardService['openStoredTextScope']>>;
   try {
-    scope = guard.openStoredTextScope({ job });
+    scope = guard.openStoredTextScope({ job, ...(priority !== undefined ? { priority } : {}) });
   } catch (err) {
     return refused(`opening the stored-text scope failed: ${messageOf(err)}`);
   }
@@ -70,7 +77,8 @@ export function openStoredTextPrivacy(guard: PrivacyGuardService, job: string): 
   };
 }
 
-/** The privacy run for one canvas skeleton composition. */
+/** The privacy run for one canvas skeleton composition or in-place plan —
+ *  both gate the turn's first answer, so they mask on the interactive lane. */
 export function openSkeletonPrivacy(guard: PrivacyGuardService): StoredTextPrivacyRun {
-  return openStoredTextPrivacy(guard, SKELETON_PRIVACY_JOB);
+  return openStoredTextPrivacy(guard, SKELETON_PRIVACY_JOB, 'interactive');
 }

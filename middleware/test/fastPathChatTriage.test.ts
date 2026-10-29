@@ -181,7 +181,6 @@ describe('fast-path chat triage — service', () => {
 
   it('misses are reasoned and route-less: invalid plan, tool error, truncated, unknown tool', async () => {
     const cases: Array<[string, Partial<Parameters<typeof serviceHarness>[0]>, string]> = [
-      [deterministic({ summary: 'Hier sind sie.' }), {}, 'invalid-plan:no-summary'],
       [deterministic({ fetch: { ...BIRTHDAY_FETCH, tool: 'odoo_execute' } }), {}, 'invalid-plan:tool-not-allowed'],
       ['nonsense', {}, 'invalid-plan:unparseable'],
       [deterministic(), { invoke: () => Promise.resolve('Error: odoo down') }, 'tool-error'],

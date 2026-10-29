@@ -86,6 +86,8 @@ permissions:
     scratch: false
   # Legacy learned fast path store (`fastpath/plans.json`): read once to
   # migrate its plans into @omadia/fast-path's shared store, then emptied.
+  # Canvas refresh recipes (`canvas-recipes/`, one file per canvas session,
+  # bounded) in the Agent-independent tree (ctx.memory.pluginWide).
   memory:
     reads: ["agent:@omadia/ui-orchestrator:*"]
     writes: ["agent:@omadia/ui-orchestrator:*"]

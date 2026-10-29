@@ -28,6 +28,7 @@ import {
   createRecipeStore,
   createTurnLearner,
   DEFAULT_TIME_ZONE,
+  defaultSummary,
   FAST_PATH_SERVICE,
   fetchRecipeRows,
   offeredTools,
@@ -927,8 +928,16 @@ export async function activate(
 
   // LLM-free refresh recipes (omadia-ui#5 phase 2): captured at publish time
   // from the `source` param, replayed via ctx.tools.invoke on canvas_refresh.
-  // In-memory per process — a recipe-less canvas falls back to the agent path.
-  const refreshRecipes = createRecipeStore();
+  // Persisted per canvas session in THIS plugin's memory (bounded, loaded
+  // lazily on the session's first stream after a restart) so a deploy keeps
+  // every table's query for refresh and row actions; without ctx.memory
+  // in-process only. A recipe-less canvas falls back to the agent path.
+  // Plugin-wide tree: a canvas session's recipes must not depend on which
+  // Agent answers its turns (the per-Agent view resolves per turn).
+  const refreshRecipes = createRecipeStore({
+    ...(ctx.memory ? { memory: ctx.memory.pluginWide ?? ctx.memory } : {}),
+    log: (m) => ctx.log(m),
+  });
 
   // Per-canvasSessionId write mutex (9b-3). A canvas turn mutates ONE shared
   // surface: it counts revisions and patches a tree from a base revision. Two
@@ -1096,7 +1105,12 @@ export async function activate(
     if (target !== undefined && !plans.every((p) => mentionsValue(p.fetch.input, target.id))) {
       return miss('target-not-queried');
     }
-    if (skeleton.summary === undefined) return miss('no-summary');
+    // a valid plan without a usable summary sentence keeps a deterministic
+    // count sentence — the rows are the answer, the sentence is decoration
+    const summaryTemplate = skeleton.summary ?? defaultSummary(skeleton.locale, input.userMessage);
+    if (skeleton.summary === undefined) {
+      ctx.log('[ui-orchestrator] fast-path summary missing — default count sentence');
+    }
     // ToolsAccessor exposes neither specs nor an availability probe: a tool
     // that is not registered (e.g. odoo_query with generic reads disabled)
     // surfaces as invoke's "unknown or handler-less" → miss tool-unavailable.
@@ -1123,7 +1137,7 @@ export async function activate(
     // prompt's contract); rendered before anything is emitted, so a sum it
     // cannot state exactly (mixed currencies included) is a clean miss.
     const first = jobs[0];
-    const rendered = renderSummary(skeleton.summary, {
+    const rendered = renderSummary(summaryTemplate, {
       rows: first?.rows ?? [],
       records: firstRecords,
       map: first?.source.map ?? {},
@@ -1841,9 +1855,15 @@ export async function activate(
       // Serialise all writes to a single canvas behind the per-session mutex.
       if (input.canvasRefresh) {
         const refresh = input.canvasRefresh;
-        return serializePerSession(sid, () => canvasRefreshStream(input, observer, base, sid, refresh));
+        return serializePerSession(sid, async function* () {
+          await refreshRecipes.load(sid);
+          yield* canvasRefreshStream(input, observer, base, sid, refresh);
+        });
       }
-      return serializePerSession(sid, () => canvasTurnStream(input, observer, base, sid));
+      return serializePerSession(sid, async function* () {
+        await refreshRecipes.load(sid);
+        yield* canvasTurnStream(input, observer, base, sid);
+      });
     },
   };
 

@@ -34,7 +34,9 @@ export async function activate(ctx: PluginContext): Promise<FastPathPluginHandle
     ...(ctx.llm ? { llm: ctx.llm } : {}),
     model: TRIAGE_MODEL,
     ...(invoke ? { invoke } : {}),
-    ...(ctx.memory ? { memory: ctx.memory } : {}),
+    // ONE tenant-wide plan file for every Agent: the plugin-wide tree, not
+    // the per-Agent view (which resolves by the active turn's Agent)
+    ...(ctx.memory ? { memory: ctx.memory.pluginWide ?? ctx.memory } : {}),
     privacyGuard,
     privacyForced: () => process.env[PRIVACY_FORCE_GUARDED_ENV_VAR] === 'true' && privacyGuard() === undefined,
     log: (m) => ctx.log(m),

@@ -178,9 +178,10 @@ export function createFastPathService(deps: FastPathServiceDeps): FastPathServic
     const prompt = buildTriagePrompt({ question, tools: specs, examples: offered, ...(previous ? { previous } : {}) });
 
     // #1540 — the turn has no privacy handle yet: with a shield running the
-    // whole prompt goes through its stored-text scope (failure-closed).
+    // whole prompt goes through its stored-text scope (failure-closed) — on
+    // the sidecar's interactive lane: the turn waits for this call.
     const guard = deps.privacyGuard();
-    const privacy = guard !== undefined ? openStoredTextPrivacy(guard, TRIAGE_PRIVACY_JOB) : undefined;
+    const privacy = guard !== undefined ? openStoredTextPrivacy(guard, TRIAGE_PRIVACY_JOB, 'interactive') : undefined;
     let content = prompt;
     if (privacy) {
       const masked = await privacy.mask(prompt);
@@ -204,7 +205,7 @@ export function createFastPathService(deps: FastPathServiceDeps): FastPathServic
       deps.log(`[fast-path] triage failed channel=${channel}: ${err instanceof Error ? err.message : String(err)}`);
       return agent('triage-error');
     }
-    const decision = parseTriage(text, allowedFetchTools());
+    const decision = parseTriage(text, allowedFetchTools(), { question });
     const triageMs = Date.now() - t0;
     if (decision.decision === 'agent') {
       deps.log(`[fast-path] triage channel=${channel} decision=agent:${decision.route ?? 'none'} ms=${triageMs}`);
@@ -219,6 +220,9 @@ export function createFastPathService(deps: FastPathServiceDeps): FastPathServic
       `[fast-path] triage channel=${channel} decision=${decision.decision === 'deterministic' ? 'deterministic' : 'invalid'} ms=${triageMs}`,
     );
     if (decision.decision === 'invalid') return agent(`invalid-plan:${decision.reason}`);
+    if (decision.summaryDefaulted === true) {
+      deps.log(`[fast-path] triage channel=${channel} summary missing/unusable — default count sentence`);
+    }
     if (!permitted.has(decision.fetch.tool)) return agent('tool-not-permitted');
 
     const fetched = await fetchRecipeRows(deps.invoke, decision.fetch, { rejectTruncated: true, timeZone });

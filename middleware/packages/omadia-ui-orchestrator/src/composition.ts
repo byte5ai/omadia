@@ -1,6 +1,8 @@
 import {
   containsPlaceholder,
+  extractFirstJsonObject,
   FAST_MODEL_REASONING,
+  type JsonOutputShape,
   parseRefreshSource,
   parseSummary,
   supportedLocale,
@@ -179,40 +181,26 @@ EXAMPLE — a KPI/score header ("SEO-Score und Kennzahlen"):
 ] },
   "dataRequirements":[ { "containerId":"scores", "description":"SEO-Kennzahlen", "fields":[ { "fieldKey":"seo", "label":"SEO-Score" }, { "fieldKey":"technical", "label":"Technical" } ] } ] }
 
-Output raw JSON only — no prose, no markdown fences.`;
+Output ONLY the JSON object — no code fences, no prose before or after it.`;
 
-/** Models routinely ignore "raw JSON only" and wrap the object in markdown
- *  fences or a prose preamble — extract the JSON payload before parsing. */
-function extractJsonPayload(raw: string): string {
-  let s = raw.trim();
-  const fenced = /```(?:json)?\s*([\s\S]*?)```/.exec(s);
-  if (fenced?.[1]) s = fenced[1].trim();
-  if (!s.startsWith('{')) {
-    const start = s.indexOf('{');
-    const end = s.lastIndexOf('}');
-    if (start >= 0 && end > start) s = s.slice(start, end + 1);
-  }
-  return s;
-}
+type ParsedResult =
+  | { ok: true; result: Omit<SkeletonResult, 'source'>; shape: JsonOutputShape }
+  | { ok: false; shape: JsonOutputShape };
 
-function parseResult(
-  raw: string,
-  allowedFetchTools: ReadonlySet<string>,
-): Omit<SkeletonResult, 'source'> | null {
-  let obj: unknown;
-  try {
-    obj = JSON.parse(extractJsonPayload(raw));
-  } catch {
-    return null;
-  }
-  if (typeof obj !== 'object' || obj === null) return null;
-  const { tree, dataRequirements, summary, locale } = obj as {
+/** Models routinely ignore "JSON only" and wrap the object in markdown
+ *  fences, a preface or a trailing remark — the FIRST balanced top-level
+ *  object is the answer (`extractFirstJsonObject`); its validation is
+ *  unchanged. */
+function parseResult(raw: string, allowedFetchTools: ReadonlySet<string>): ParsedResult {
+  const extracted = extractFirstJsonObject(raw);
+  if (!extracted.ok) return { ok: false, shape: extracted.shape };
+  const { tree, dataRequirements, summary, locale } = extracted.value as {
     tree?: unknown;
     dataRequirements?: unknown;
     summary?: unknown;
     locale?: unknown;
   };
-  if (tree === undefined) return null;
+  if (tree === undefined) return { ok: false, shape: 'no-object' };
   const reqs = Array.isArray(dataRequirements)
     ? dataRequirements.filter(
         (r): r is DataRequirement =>
@@ -223,12 +211,18 @@ function parseResult(
       )
     : [];
   const parsedSummary = allowedFetchTools.size > 0 ? parseSummary(summary) : undefined;
-  const parsedLocale = parsedSummary !== undefined ? supportedLocale(locale) : undefined;
+  // kept without a summary too: the fast path then defaults the sentence
+  // in this locale instead of discarding a valid plan
+  const parsedLocale = allowedFetchTools.size > 0 ? supportedLocale(locale) : undefined;
   return {
-    tree,
-    dataRequirements: withFetchPlans(reqs, allowedFetchTools),
-    ...(parsedSummary !== undefined ? { summary: parsedSummary } : {}),
-    ...(parsedLocale !== undefined ? { locale: parsedLocale } : {}),
+    ok: true,
+    shape: extracted.shape,
+    result: {
+      tree,
+      dataRequirements: withFetchPlans(reqs, allowedFetchTools),
+      ...(parsedSummary !== undefined ? { summary: parsedSummary } : {}),
+      ...(parsedLocale !== undefined ? { locale: parsedLocale } : {}),
+    },
   };
 }
 
@@ -321,12 +315,20 @@ export async function composeSkeleton(opts: {
       );
       return fallback;
     }
-    const parsed = parseResult(raw, allowedFetchTools);
-    if (!parsed) {
-      opts.log?.(`[composition] attempt ${attempt + 1}: output not parseable as raw JSON`);
-      user = `User request: ${requestText}\nYour previous output was not valid raw JSON. Emit ONLY the JSON object.`;
+    const outcome = parseResult(raw, allowedFetchTools);
+    if (!outcome.ok) {
+      // shape only (empty / unbalanced = cut at max tokens / no-object) —
+      // never the output itself, it may carry the user's values
+      opts.log?.(
+        `[composition] attempt ${attempt + 1}: output not parseable as raw JSON (shape=${outcome.shape}, ${raw.length} chars)`,
+      );
+      user = `User request: ${requestText}\nYour previous output was not a valid JSON object. Output ONLY the JSON object — no code fences, no prose.`;
       continue;
     }
+    if (outcome.shape === 'recovered') {
+      opts.log?.(`[composition] attempt ${attempt + 1}: recovered JSON from fenced output`);
+    }
+    const parsed = outcome.result;
     // Validated on the model's (masked) tree, so a retry prompt built from
     // the validator errors carries no restored value.
     const valid = validateTree(parsed.tree);

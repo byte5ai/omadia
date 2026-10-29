@@ -67,11 +67,17 @@ function relativeToScope(prefix: string, abs: string): string {
  * pre-isolation tree `/memories/agents/<pluginId>` is offered as a READ-ONLY
  * fallback for the default Agent only.
  */
+/** The plugin-wide tree (`ctx.memory.pluginWide`) — also the per-Agent
+ *  scope's read-only legacy fallback for the default Agent. */
+function pluginWidePrefix(pluginId: string): string {
+  return `/memories/agents/${pluginId}`;
+}
+
 function pluginMemoryScope(
   pluginId: string,
   resolveAgentSlug: () => string | undefined,
 ): () => MemoryScope {
-  const legacyPrefix = `/memories/agents/${pluginId}`;
+  const legacyPrefix = pluginWidePrefix(pluginId);
   return () => {
     const slug = resolveAgentSlug() ?? 'default';
     const prefix = `/memories/orchestrators/${slug}/plugins/${pluginId}`;
@@ -213,10 +219,18 @@ export function createMemoryAccessor(opts: {
   resolveAgentSlug?: () => string | undefined;
 }): MemoryAccessor {
   const resolveAgentSlug = opts.resolveAgentSlug ?? ((): undefined => undefined);
-  return createScopedMemoryAccessor(
-    opts.store,
-    pluginMemoryScope(opts.pluginId, resolveAgentSlug),
-  );
+  return {
+    ...createScopedMemoryAccessor(
+      opts.store,
+      pluginMemoryScope(opts.pluginId, resolveAgentSlug),
+    ),
+    // One fixed, Agent-independent location for plugin-wide state: the
+    // pre-isolation tree, which is also what the manifest's
+    // `agent:<pluginId>:*` permission names. Same choke point, no fallback.
+    pluginWide: createScopedMemoryAccessor(opts.store, () => ({
+      prefix: pluginWidePrefix(opts.pluginId),
+    })),
+  };
 }
 
 /**

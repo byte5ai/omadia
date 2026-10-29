@@ -33,6 +33,15 @@ lifecycle:
 optional_requires:
   - "privacyRedact@1"
 
+# The learned plan store persists through ctx.memory, which the kernel builds
+# ONCE at activation from the published `memoryStore` service. Without an
+# activation edge this plugin could come up before the memory provider and
+# run with `ctx.memory` undefined for the whole process ("kept in-process
+# only", live v410). `requires` orders the provider first; every deployment
+# runs one (@omadia/memory or @omadia/memory-postgres).
+requires:
+  - "memoryStore@^1"
+
 # fastPath@1 — consumed by @omadia/orchestrator (the chat-agent wrapper for
 # every non-canvas channel) and @omadia/ui-orchestrator (the canvas). Both
 # resolve it lazily per turn; without it every turn runs the agent unchanged.
@@ -77,7 +86,8 @@ permissions:
     scratch: false
   # The tenant-wide learned plan store (`fastpath/plans.json`: literal-stripped
   # tool inputs + stripped example questions — never row data) in this
-  # plugin's own memory scope, persisted on the volume.
+  # plugin's own Agent-independent tree (ctx.memory.pluginWide =
+  # /memories/agents/@omadia/fast-path/), ONE file for every Agent.
   memory:
     reads: ["agent:@omadia/fast-path:*"]
     writes: ["agent:@omadia/fast-path:*"]

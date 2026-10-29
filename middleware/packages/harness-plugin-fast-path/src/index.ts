@@ -5,6 +5,8 @@
  * service contract its consumers type against.
  */
 export * from './refreshRecipes.js';
+export * from './recipeStore.js';
+export * from './jsonExtract.js';
 export * from './fastPath.js';
 export * from './literalStripping.js';
 export * from './learnedPlanStore.js';

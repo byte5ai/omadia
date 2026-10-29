@@ -11,8 +11,9 @@
  * to the then-current week on every refresh, while explicit ranges
  * ("2025 vs 2026") replay literally.
  *
- * Recipes are in-memory per middleware process (LRU-capped); a canvas
- * without a recipe simply falls back to the silent agent-turn refresh.
+ * Recipes are kept per canvas session (recipeStore.ts — persisted in the
+ * canvas orchestrator's plugin memory, bounded); a canvas without a recipe
+ * simply falls back to the silent agent-turn refresh.
  */
 
 export interface RefreshSource {
@@ -169,35 +170,6 @@ export function resolveRecipeInput(
     );
   }
   return input;
-}
-
-export interface RecipeStore {
-  get(canvasSessionId: string, containerId: string): RefreshSource | undefined;
-  set(canvasSessionId: string, containerId: string, source: RefreshSource): void;
-}
-
-const MAX_SESSIONS = 200;
-
-/** In-memory recipe store, LRU-capped by canvas session (insertion order). */
-export function createRecipeStore(): RecipeStore {
-  const sessions = new Map<string, Map<string, RefreshSource>>();
-  return {
-    get(canvasSessionId, containerId) {
-      return sessions.get(canvasSessionId)?.get(containerId);
-    },
-    set(canvasSessionId, containerId, source) {
-      let containers = sessions.get(canvasSessionId);
-      if (!containers) {
-        containers = new Map();
-        sessions.set(canvasSessionId, containers);
-        if (sessions.size > MAX_SESSIONS) {
-          const oldest = sessions.keys().next().value;
-          if (oldest !== undefined) sessions.delete(oldest);
-        }
-      }
-      containers.set(containerId, source);
-    },
-  };
 }
 
 /** Locate the record array in a parsed tool output. */

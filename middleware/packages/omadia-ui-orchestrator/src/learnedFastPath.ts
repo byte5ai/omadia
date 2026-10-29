@@ -1,5 +1,7 @@
 import {
   containsPlaceholder,
+  defaultSummary,
+  extractFirstJsonObject,
   FAST_MODEL_REASONING,
   jaccard,
   parseRefreshSource,
@@ -99,35 +101,37 @@ export function matchInPlacePlans(
 
 const IN_PLACE_SYSTEM = `You are the Omadia UI in-place fast-path planner. The user asks a FOLLOW-UP in a canvas that already shows the tables below. Decide whether ONE read query can re-fill ONE of those tables (same columns) to answer it — typically the same query with changed values (another month, year, partner, status).
 Emit ONLY a raw JSON object, either
-{ "containerId": <id of the table to re-fill>, "fetch": { "tool", "input", "map": { fieldKey: <record attribute> }, "rowKey"?, "itemsPath"?, "filter"? }, "summary": <ONE sentence in the user's language with {count} and/or {sum:<fieldKey>}>, "locale"?: <BCP-47, required with {sum:…}> }
+{ "containerId": <id of the table to re-fill>, "fetch": { "tool", "input", "map": { fieldKey: <record attribute> }, "rowKey"?, "itemsPath"?, "filter"? }, "summary": <ONE sentence in the user's language with {count} and/or {sum:<fieldKey>} — REQUIRED>, "locale": <BCP-47 of the user's language> }
 or { "none": true }.
-RULES: "map" covers EXACTLY the table's fieldKeys. Adapt the CURRENT QUERY of the table or a VALIDATED EXAMPLE — keep tool, input structure and map; change only values. Replace every {{text_N}}/{{email_N}}/{{id_N}} placeholder with the user's value. Relative periods: a whole-string "{today}" / "{today-30d}". When the follow-up needs another view, other columns, reasoning, joins, several queries or you are unsure → { "none": true }. A wrong fetch is worse than none.`;
+RULES: "map" covers EXACTLY the table's fieldKeys. Adapt the CURRENT QUERY of the table or a VALIDATED EXAMPLE — keep tool, input structure and map; change only values. Replace every {{text_N}}/{{email_N}}/{{id_N}} placeholder with the user's value. Relative periods: a whole-string "{today}" / "{today-30d}". When the follow-up needs another view, other columns, reasoning, joins, several queries or you are unsure → { "none": true }. A wrong fetch is worse than none.
+Output ONLY the JSON object — no code fences, no prose before or after it.`;
 
 export type InPlacePlan =
-  | { ok: true; containerId: string; fetch: RefreshSource; summary: string; locale?: string }
+  | {
+      ok: true;
+      containerId: string;
+      fetch: RefreshSource;
+      summary: string;
+      locale?: string;
+      /** the planner's summary was missing/unusable — `summary` is the
+       *  deterministic count sentence */
+      summaryDefaulted?: true;
+    }
   | { ok: false; reason: string };
 
-function extractJson(raw: string): unknown {
-  const s = raw.trim();
-  const start = s.indexOf('{');
-  const end = s.lastIndexOf('}');
-  if (start < 0 || end <= start) return undefined;
-  try {
-    return JSON.parse(s.slice(start, end + 1));
-  } catch {
-    return undefined;
-  }
-}
-
 /** Validate the planner's answer against the visible tables and the
- *  whitelist; anything off is a reasoned miss, never a partial plan. */
+ *  whitelist; anything off is a reasoned miss, never a partial plan. A
+ *  missing or unusable summary is not "off": the plan keeps a deterministic
+ *  count sentence (planner locale, else a guess from `opts.question`). */
 export function parseInPlacePlan(
   raw: string,
   tables: readonly CanvasTable[],
   allowedTools: ReadonlySet<string>,
+  opts: { question?: string } = {},
 ): InPlacePlan {
-  const obj = extractJson(raw) as Record<string, unknown> | undefined;
-  if (typeof obj !== 'object' || obj === null) return { ok: false, reason: 'unparseable' };
+  const extracted = extractFirstJsonObject(raw);
+  if (!extracted.ok) return { ok: false, reason: 'unparseable' };
+  const obj = extracted.value;
   if (obj['none'] === true) return { ok: false, reason: 'planner-none' };
   const table = tables.find((t) => t.containerId === obj['containerId']);
   if (!table) return { ok: false, reason: 'unknown-container' };
@@ -136,10 +140,16 @@ export function parseInPlacePlan(
   if (!allowedTools.has(fetch.tool)) return { ok: false, reason: 'tool-not-allowed' };
   if (containsPlaceholder(fetch)) return { ok: false, reason: 'unfilled-placeholder' };
   if (!sameKeys(Object.keys(fetch.map), table.fieldKeys)) return { ok: false, reason: 'map-mismatch' };
-  const summary = parseSummary(obj['summary']);
-  if (summary === undefined) return { ok: false, reason: 'no-summary' };
   const locale = supportedLocale(obj['locale']);
-  return { ok: true, containerId: table.containerId, fetch, summary, ...(locale ? { locale } : {}) };
+  const parsedSummary = parseSummary(obj['summary']);
+  return {
+    ok: true,
+    containerId: table.containerId,
+    fetch,
+    summary: parsedSummary ?? defaultSummary(locale, opts.question),
+    ...(locale ? { locale } : {}),
+    ...(parsedSummary === undefined ? { summaryDefaulted: true as const } : {}),
+  };
 }
 
 /** ONE fast-model call: re-plan a visible table's query for a follow-up.
@@ -193,7 +203,7 @@ export async function planInPlace(opts: {
     });
     opts.log(`[ui-orchestrator] in-place planner call: ${Date.now() - t0}ms, ${res.text.length} chars`);
     const text = opts.privacy !== undefined ? opts.privacy.restore(res.text) : res.text;
-    return parseInPlacePlan(text, opts.tables, opts.allowedTools);
+    return parseInPlacePlan(text, opts.tables, opts.allowedTools, { question: opts.question });
   } catch (err) {
     opts.log(`[ui-orchestrator] in-place planner failed: ${err instanceof Error ? err.message : String(err)}`);
     return { ok: false, reason: 'planner-error' };
