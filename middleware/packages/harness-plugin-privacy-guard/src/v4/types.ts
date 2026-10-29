@@ -112,6 +112,28 @@ export interface DatasetProvenance {
 }
 
 /**
+ * The wrapper around the records of an envelope-shaped tool result — e.g.
+ * odoo_query's `{ model, scope, count, truncated, records: [ … ] }`. The
+ * dataset rows are the record array's objects. The wrapper's PROTOCOL fields
+ * (the explicit `ENVELOPE_METADATA_KEYS` set: count, truncated, model, page,
+ * cursor, …) describe the whole result and are kept here as metadata, never
+ * as a per-row column (v414: broadcasting them made a published canvas table
+ * show `model, scope, count, truncated` as columns). Any other scalar sibling
+ * is business data and stays a column on every row (a timesheet's `jahr`/`kw`).
+ */
+export interface DatasetEnvelope {
+  /** Key of the record array inside the tool result (e.g. `records`) — a
+   *  refresh recipe replaying the tool reads the rows from here. */
+  readonly itemsPath: string;
+  /** The wrapper's protocol metadata fields — real values, server-side.
+   *  May be empty (an envelope of business scalars only). */
+  readonly values: DatasetRow;
+  /** Their classification (as a one-row dataset); the digest masks a
+   *  `sensitive-masked` metadata field exactly like a row field. */
+  readonly schema: DatasetSchema;
+}
+
+/**
  * An interned, server-held tool result. `rows` is the real data — the single
  * piece of state the boundary exists to keep off the LLM wire. A `Dataset`
  * is never serialized into an LLM-bound message; only its `Digest` is.
@@ -121,6 +143,10 @@ export interface Dataset {
   readonly rows: ReadonlyArray<DatasetRow>;
   readonly schema: DatasetSchema;
   readonly provenance: DatasetProvenance;
+  /** Present only on a tool-interned dataset whose result was an envelope
+   *  (one record array + scalar metadata). Verb-derived datasets carry none:
+   *  the origin's `count`/`truncated` would misdescribe a filtered result. */
+  readonly envelope?: DatasetEnvelope;
 }
 
 /** A pure function that classifies parsed rows into a `DatasetSchema`.
@@ -197,6 +223,10 @@ export interface Digest {
   readonly rowCount: number;
   readonly truncated: boolean;
   readonly fields: ReadonlyArray<FieldDigest>;
+  /** The envelope's scalar fields (`count`, `truncated`, …) — they describe
+   *  the WHOLE result, are not row columns, and obey invariant I1 like
+   *  `fields`. Absent when the result had no envelope. */
+  readonly metadata?: ReadonlyArray<FieldDigest>;
 }
 
 // ---------------------------------------------------------------------------

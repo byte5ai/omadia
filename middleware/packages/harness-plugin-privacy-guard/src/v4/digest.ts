@@ -106,6 +106,11 @@ function buildFieldDigest(
 
 /** Build the identity-free Digest for a stored Dataset. */
 export function buildDigest(dataset: Dataset): Digest {
+  const envelope = dataset.envelope;
+  const metadata =
+    envelope !== undefined && envelope.schema.fields.length > 0
+      ? envelope.schema.fields.map((fc) => buildFieldDigest(fc, [envelope.values]))
+      : undefined;
   return {
     datasetId: dataset.datasetId,
     rowCount: dataset.schema.rowCount,
@@ -113,6 +118,7 @@ export function buildDigest(dataset: Dataset): Digest {
     fields: dataset.schema.fields.map((fc) =>
       buildFieldDigest(fc, dataset.rows),
     ),
+    ...(metadata !== undefined ? { metadata } : {}),
   };
 }
 
@@ -156,5 +162,13 @@ export function digestToToolResultText(digest: Digest): string {
         'v4_render_answer for this dataset — tell the user plainly that ' +
         'there is no matching data.'
       : '';
-  return `${header}${empty}\n\n${JSON.stringify(digest)}`;
+  // v414 — envelope scalars (count, truncated, …) are metadata; a model that
+  // took them for columns published them onto every canvas row.
+  const metadata =
+    digest.metadata !== undefined
+      ? '\n\n"metadata" describes the WHOLE result (e.g. count, truncated) — ' +
+        'it is NOT a row column: never select, render or publish a metadata ' +
+        'path as a column; columns are the paths in "fields".'
+      : '';
+  return `${header}${empty}${metadata}\n\n${JSON.stringify(digest)}`;
 }

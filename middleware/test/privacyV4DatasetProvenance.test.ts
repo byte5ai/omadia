@@ -138,3 +138,109 @@ describe('PrivacyGuardService.datasetProvenance', () => {
     assert.equal(svc.datasetProvenance?.('t4', withInput.datasetId), undefined);
   });
 });
+
+// ---------------------------------------------------------------------------
+// v414 — an envelope-shaped tool result (`{model, scope, count, truncated,
+// records:[…]}`) is interned as its RECORDS; the envelope scalars are dataset
+// metadata. Before the fix they were broadcast onto every row, so a canvas
+// table published by datasetId — and the refresh recipe derived from it —
+// carried `model, scope, count, truncated` as columns.
+// ---------------------------------------------------------------------------
+
+const ODOO_ENVELOPE = {
+  model: 'hr.employee',
+  scope: 'hr',
+  count: 2,
+  truncated: false,
+  records: [
+    { id: 1, name: 'Marvin Vomberg', job_title: 'Developer', work_email: 'marvin@example.com', active: true },
+    { id: 2, name: 'Anna Rüsche', job_title: 'Project Manager', work_email: 'anna@example.com', active: true },
+  ],
+};
+const RECORD_FIELDS = ['id', 'name', 'job_title', 'work_email', 'active'];
+
+interface DigestJson {
+  rowCount: number;
+  fields: { path: string }[];
+  metadata?: { path: string; classification: string; values?: unknown[] }[];
+}
+
+function digestOf(text: string): DigestJson {
+  return JSON.parse(text.slice(text.lastIndexOf('\n\n{') + 2)) as DigestJson;
+}
+
+describe('odoo_query envelope → records-only dataset + metadata', () => {
+  async function intern(turnId: string) {
+    const svc = createPrivacyGuardService();
+    const r = await svc.internToolResultV4({
+      sessionId: 's',
+      turnId,
+      toolName: 'odoo_query',
+      rawResult: JSON.stringify(ODOO_ENVELOPE),
+      toolInput: QUERY,
+    });
+    return { svc, r };
+  }
+
+  it('dataset columns are the record fields only; the envelope rides along as digest metadata', async () => {
+    const { svc, r } = await intern('e1');
+    const resolved = svc.resolveDatasetForRender?.('e1', r.datasetId);
+    assert.ok(resolved);
+    assert.equal(resolved.rowCount, 2);
+    assert.deepEqual(resolved.columns.map((c) => c.path), RECORD_FIELDS);
+    for (const row of resolved.rows) assert.deepEqual(Object.keys(row), RECORD_FIELDS);
+
+    const digest = digestOf(r.digestText);
+    assert.equal(digest.rowCount, 2);
+    assert.deepEqual(digest.fields.map((f) => f.path), RECORD_FIELDS);
+    const meta = new Map((digest.metadata ?? []).map((m) => [m.path, m]));
+    assert.deepEqual([...meta.keys()], ['model', 'scope', 'count', 'truncated']);
+    // count / truncated stay useful to the model …
+    assert.deepEqual(meta.get('count')?.values, [2]);
+    assert.deepEqual(meta.get('truncated')?.values, [false]);
+    // … free-text metadata is deny-by-default masked like any field
+    assert.equal(meta.get('model')?.classification, 'sensitive-masked');
+    // the model is told metadata is not a column
+    assert.match(r.digestText, /"metadata" describes the WHOLE result/);
+    // no record PII on the wire
+    assert.ok(!r.digestText.includes('Marvin') && !r.digestText.includes('anna@example.com'));
+  });
+
+  it('the receipt counts every field the digest exposes (5 record + 4 metadata)', async () => {
+    const { svc } = await intern('e2');
+    const receipt = await svc.finalizeTurn('e2');
+    assert.ok(receipt);
+    assert.equal(receipt.datasetsInterned, 1);
+    assert.equal(receipt.fieldsMasked + receipt.fieldsCleartext, 9);
+    // name, job_title, work_email (record) + model, scope (metadata)
+    assert.equal(receipt.fieldsMasked, 5);
+  });
+
+  it('provenance names the record array; a plain array result has none', async () => {
+    const { svc, r } = await intern('e3');
+    assert.equal(svc.datasetProvenance?.('e3', r.datasetId)?.itemsPath, 'records');
+    const plain = await svc.internToolResultV4({
+      sessionId: 's',
+      turnId: 'e3',
+      toolName: 'odoo_query',
+      rawResult: JSON.stringify(ODOO_ENVELOPE.records),
+      toolInput: QUERY,
+    });
+    const p = svc.datasetProvenance?.('e3', plain.datasetId);
+    assert.ok(p);
+    assert.equal('itemsPath' in p, false);
+  });
+
+  it('a verb-derived dataset keeps the origin itemsPath but carries no metadata of its own', async () => {
+    const { svc, r } = await intern('e4');
+    const selected = await svc.runV4Tool({
+      sessionId: 's',
+      turnId: 'e4',
+      toolName: 'v4_select',
+      input: { datasetId: r.datasetId, columns: ['id', 'name'] },
+    });
+    assert.equal(digestOf(selected.resultText).metadata, undefined);
+    const sid = datasetIdOf(selected.resultText);
+    assert.equal(svc.datasetProvenance?.('e4', sid)?.itemsPath, 'records');
+  });
+});

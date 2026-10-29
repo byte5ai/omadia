@@ -2073,6 +2073,7 @@ readonly tool: string;
 readonly input: unknown;
 readonly verbs: ReadonlyArray<PrivacyDatasetVerbStep>;
 readonly truncated: boolean;
+readonly itemsPath?: string;
 }
 export interface PrivacyToolResultV4Result {
 readonly digestText: string;

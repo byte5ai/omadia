@@ -43,11 +43,20 @@ export interface DatasetStoreDeps {
   readonly maxInternChars?: number;
 }
 
+/** The record array + metadata of an envelope-shaped result (see
+ *  `expandEnvelope`). Classified into a `DatasetEnvelope` by the store. */
+export interface ParsedEnvelope {
+  readonly itemsPath: string;
+  readonly values: DatasetRow;
+}
+
 /** The normalized result of parsing a raw tool result. */
 export interface ParsedResult {
   readonly rows: ReadonlyArray<DatasetRow>;
   readonly shape: DatasetShape;
   readonly truncated: boolean;
+  /** Set when the result was an envelope; `rows` are then its records. */
+  readonly envelope?: ParsedEnvelope;
 }
 
 // ---------------------------------------------------------------------------
@@ -70,13 +79,37 @@ function isRecordArray(v: unknown): v is Record<string, unknown>[] {
 }
 
 /**
- * Is `v` a scalar safe to broadcast as a summary column onto every promoted
- * detail row? Primitives, plus the Odoo many2one `[id, "label"]` tuple, which
- * is a scalar-equivalent reference (the materializer already flattens it to
- * the label). Genuine nested values are NOT broadcast — they would only
- * reintroduce the per-cell JSON dump the expansion exists to remove.
+ * The well-known protocol / pagination keys of a result envelope. ONLY these
+ * become dataset metadata; they describe the transport of the result (which
+ * model, how many, is there more), never a property of a record. Kept small
+ * and explicit on purpose — any other sibling scalar is business data (a
+ * timesheet's `jahr`/`kw`) that consumers rely on as a per-row column.
  */
-function isBroadcastable(v: unknown): boolean {
+export const ENVELOPE_METADATA_KEYS: ReadonlySet<string> = new Set([
+  'model',
+  'scope',
+  'count',
+  'total',
+  'truncated',
+  'limit',
+  'offset',
+  'page',
+  'page_size',
+  'pageSize',
+  'has_more',
+  'hasMore',
+  'next',
+  'cursor',
+  'next_cursor',
+]);
+
+/**
+ * Is `v` a scalar-equivalent envelope value? Primitives, plus the Odoo
+ * many2one `[id, "label"]` tuple (the materializer flattens it to the label).
+ * Genuine nested values (objects, other arrays) are dropped — as a column
+ * they would only reintroduce the per-cell JSON dump the expansion removes.
+ */
+function isEnvelopeScalar(v: unknown): boolean {
   if (v === null) return true;
   const t = typeof v;
   if (t === 'string' || t === 'number' || t === 'boolean') return true;
@@ -89,36 +122,49 @@ function isBroadcastable(v: unknown): boolean {
 }
 
 /**
- * Recognize the "summary + detail" object shape and promote its detail rows.
+ * Recognize an envelope — one object wrapping the real record array in a
+ * single field next to scalar siblings — and promote the records to BE the
+ * dataset rows. Generic, not tool-specific: odoo_query's
+ * `{ model, scope, count, truncated, records: [ … ] }`, a paged
+ * `{ total, items: [ … ] }`, a timesheet `{ jahr, kw, abweichungen_pro_ma:
+ * [ … ] }` all qualify, whatever the array key is called. Left as one
+ * `nested` row, the array would be a single opaque field rendered as one JSON
+ * blob (the timesheet defect this expansion was built for).
  *
- * Tools often return a single object that wraps the real per-record table in
- * one field alongside scalar summary fields — e.g. a timesheet result
- * `{ jahr, kw, …, abweichungen_pro_ma: [ {employee…}, … ] }`. Left as one
- * `nested` row, the detail array stays one opaque field: the materializer can
- * only render its real value (for the authorised user) by JSON-stringifying
- * the whole array into a single cell — the unreadable blob from the timesheet
- * view. (The array never reaches the LLM — it is masked in the digest — so
- * this is a rendering defect, not a data leak.) Here we promote the detail
- * array to BE the dataset rows so every record is classified and rendered
- * individually, broadcasting the scalar summary fields onto each row (a
- * record's own field always wins a key collision).
+ * The scalar siblings split in two:
+ *  - a key in `ENVELOPE_METADATA_KEYS` (`count`, `truncated`, `model`, …) is
+ *    protocol METADATA — returned in `envelope.values`, never a row column
+ *    (v414: broadcasting them made a canvas table published from the dataset,
+ *    and the refresh recipe derived from it, show `model, scope, count,
+ *    truncated` as columns);
+ *  - every other scalar is business data and is copied onto each record as a
+ *    column (`jahr`, `kw` — the timesheet plugin renders them), the record's
+ *    own field winning a key collision.
+ * Nested siblings are dropped.
  *
  * Conservative by design: only fires when the object has EXACTLY ONE
- * record-array field. Zero record-arrays is an ordinary object; more than one
- * is ambiguous (which is the detail table?) — both are left untouched.
+ * record-array field (a non-empty array of plain objects). Zero is an
+ * ordinary object (one row); more than one is ambiguous — which is the record
+ * table? — and stays ONE `nested` row with every field, no metadata.
  */
-function expandSummaryDetail(
+function expandEnvelope(
   obj: Record<string, unknown>,
-): Record<string, unknown>[] | undefined {
-  const detailKeys = Object.keys(obj).filter((k) => isRecordArray(obj[k]));
-  if (detailKeys.length !== 1) return undefined;
-  const detailKey = detailKeys[0] as string;
-  const detail = obj[detailKey] as Record<string, unknown>[];
-  const summary: Record<string, unknown> = {};
+): { rows: Record<string, unknown>[]; envelope: ParsedEnvelope } | undefined {
+  const recordKeys = Object.keys(obj).filter((k) => isRecordArray(obj[k]));
+  if (recordKeys.length !== 1) return undefined;
+  const itemsPath = recordKeys[0] as string;
+  const metadata: Record<string, unknown> = {};
+  const columns: Record<string, unknown> = {};
   for (const [k, val] of Object.entries(obj)) {
-    if (k !== detailKey && isBroadcastable(val)) summary[k] = val;
+    if (k === itemsPath || !isEnvelopeScalar(val)) continue;
+    if (ENVELOPE_METADATA_KEYS.has(k)) metadata[k] = val;
+    else columns[k] = val;
   }
-  return detail.map((rec) => ({ ...summary, ...rec }));
+  const records = obj[itemsPath] as Record<string, unknown>[];
+  return {
+    rows: records.map((rec) => ({ ...columns, ...rec })),
+    envelope: { itemsPath, values: metadata },
+  };
 }
 
 /** An object that wraps an empty list and carries nothing else: at least one
@@ -141,6 +187,7 @@ function isEmptyWrapper(obj: Record<string, unknown>): boolean {
 function normalizeValue(v: unknown): {
   rows: DatasetRow[];
   shape: DatasetShape;
+  envelope?: ParsedEnvelope;
 } {
   if (Array.isArray(v)) {
     if (v.length === 0) return { rows: [], shape: 'rows' };
@@ -158,12 +205,13 @@ function normalizeValue(v: unknown): {
     // blind, contentless list entry instead of saying there is no data
     // (#1467).
     if (isEmptyWrapper(v)) return { rows: [], shape: 'rows' };
-    // "Summary + detail" wrapper → promote the detail rows (timesheet etc.).
-    const expanded = expandSummaryDetail(v);
+    // Envelope → its records are the rows, its scalars are metadata.
+    const expanded = expandEnvelope(v);
     if (expanded !== undefined) {
       return {
-        rows: expanded,
-        shape: expanded.some(rowHasNested) ? 'nested' : 'rows',
+        rows: expanded.rows,
+        shape: expanded.rows.some(rowHasNested) ? 'nested' : 'rows',
+        envelope: expanded.envelope,
       };
     }
     return { rows: [v], shape: rowHasNested(v) ? 'nested' : 'object' };
@@ -196,8 +244,20 @@ function boundRows(
   return { rows: kept, truncated: kept.length < rows.length };
 }
 
+function normalizeAndBound(value: unknown, maxChars: number): ParsedResult {
+  const norm = normalizeValue(value);
+  const bounded = boundRows(norm.rows, maxChars);
+  return {
+    rows: bounded.rows,
+    shape: norm.shape,
+    truncated: bounded.truncated,
+    ...(norm.envelope !== undefined ? { envelope: norm.envelope } : {}),
+  };
+}
+
 /**
- * Parse a raw tool result into `{ rows, shape, truncated }`. Total — never
+ * Parse a raw tool result into `{ rows, shape, truncated }` (+ `envelope` for
+ * an envelope-shaped result, see `expandEnvelope`). Total — never
  * throws: an unparseable value is interned as a single scalar blob.
  *
  *  - A string that is valid JSON is parsed, then normalized + size-bounded.
@@ -226,21 +286,9 @@ export function parseToolResult(
         const text = truncated ? rawResult.slice(0, maxChars) : rawResult;
         return { rows: [{ value: text }], shape: 'scalar', truncated };
       }
-      const norm = normalizeValue(parsed);
-      const bounded = boundRows(norm.rows, maxChars);
-      return {
-        rows: bounded.rows,
-        shape: norm.shape,
-        truncated: bounded.truncated,
-      };
+      return normalizeAndBound(parsed, maxChars);
     }
-    const norm = normalizeValue(rawResult);
-    const bounded = boundRows(norm.rows, maxChars);
-    return {
-      rows: bounded.rows,
-      shape: norm.shape,
-      truncated: bounded.truncated,
-    };
+    return normalizeAndBound(rawResult, maxChars);
   } catch {
     // Last-resort: intern whatever it was as an opaque scalar blob.
     return { rows: [{ value: String(rawResult) }], shape: 'scalar', truncated: false };
@@ -270,6 +318,7 @@ export function createDatasetStore(deps: DatasetStoreDeps): DatasetStore {
     internToolResult(toolName, rawResult, toolInput): DigestEnvelope {
       const parsed = parseToolResult(rawResult, maxChars);
       const schema = deps.classify(parsed.rows, parsed.shape);
+      const envelope = parsed.envelope;
       const dataset: Dataset = {
         datasetId: `ds_${randomUUID()}`,
         rows: parsed.rows,
@@ -281,6 +330,17 @@ export function createDatasetStore(deps: DatasetStoreDeps): DatasetStore {
           createdAt: new Date().toISOString(),
           ...(toolInput !== undefined ? { toolInput } : {}),
         },
+        // The metadata is classified on its own (a one-row object) with the
+        // same classifier, so masking is identical to a row field's.
+        ...(envelope !== undefined
+          ? {
+              envelope: {
+                itemsPath: envelope.itemsPath,
+                values: envelope.values,
+                schema: deps.classify([envelope.values], 'object'),
+              },
+            }
+          : {}),
       };
       interned += 1;
       return register(dataset);

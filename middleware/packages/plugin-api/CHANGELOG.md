@@ -8,6 +8,20 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.45.0 — 2026-10-29
+
+Additive. Envelope-aware dataset provenance (v414).
+
+### Added
+
+- **`PrivacyDatasetProvenance.itemsPath`** (optional `string`) — set when the
+  origin tool result was an envelope (`{ model, scope, count, truncated,
+  records: [ … ] }`) and the dataset rows are that one field's records. A
+  derived refresh recipe carries it as `itemsPath`, so a replay reads the
+  records instead of the first array. The envelope's protocol keys (`count`,
+  `truncated`, `model`, paging/cursor keys) are dataset metadata, never row
+  columns; any other scalar sibling (a timesheet's `jahr`/`kw`) stays a column.
+
 ## 1.44.0 — 2026-10-29
 
 Additive. Structured output by a forced tool call on `ctx.llm` (fast-path

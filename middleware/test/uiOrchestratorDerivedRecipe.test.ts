@@ -35,6 +35,7 @@ import {
 import { PERSON_CANARY } from '../packages/harness-plugin-fast-path/src/exampleMasking.js';
 import { activate } from '../packages/omadia-ui-orchestrator/src/plugin.js';
 import { deriveDatasetRecipe } from '../packages/omadia-ui-orchestrator/src/datasetRecipe.js';
+import { createPrivacyGuardService } from '@omadia/plugin-privacy-guard/dist/index.js';
 
 const QUERY = {
   model: 'hr.employee',
@@ -346,5 +347,44 @@ describe('agent dataset publish → derived recipe', () => {
     h.s.provenance = undefined;
     await collect(h.agent.chatStream({ userMessage: 'Mitarbeiter', canvasSessionId: 'cs-3' }));
     assert.ok(h.logs.includes('[fast-path] recipe-skip container=employees reason=no-provenance'), h.logs.join('\n'));
+  });
+});
+
+describe('deriveDatasetRecipe — envelope-shaped origin (v414)', () => {
+  it('carries the provenance itemsPath; the map references record attributes only', () => {
+    const r = deriveDatasetRecipe(prov({ itemsPath: 'records' }), ['id', 'name', 'birthday']);
+    assert.deepEqual(r, {
+      ok: true,
+      source: {
+        tool: 'odoo_query',
+        input: QUERY,
+        itemsPath: 'records',
+        map: { id: 'id', name: 'name', birthday: 'birthday' },
+        rowKey: 'id',
+      },
+    });
+  });
+
+  it('end-to-end: an interned odoo_query envelope derives a records recipe without envelope columns', async () => {
+    const svc = createPrivacyGuardService();
+    const r = await svc.internToolResultV4({
+      sessionId: 's',
+      turnId: 'env',
+      toolName: 'odoo_query',
+      rawResult: JSON.stringify({ model: 'hr.employee', scope: 'hr', count: 2, truncated: false, records: RECORDS }),
+      toolInput: QUERY,
+    });
+    const resolved = svc.resolveDatasetForRender?.('env', r.datasetId);
+    assert.ok(resolved);
+    const paths = resolved.columns.map((c) => c.path);
+    assert.deepEqual(paths, ['id', 'name', 'birthday']);
+    const derived = deriveDatasetRecipe(svc.datasetProvenance?.('env', r.datasetId), paths);
+    assert.ok(derived.ok);
+    assert.equal(derived.source.itemsPath, 'records');
+    assert.deepEqual(derived.source.map, { id: 'id', name: 'name', birthday: 'birthday' });
+    // the replayed tool output resolves through the recipe's itemsPath to the records
+    const replayed = { model: 'hr.employee', scope: 'hr', count: 2, truncated: false, records: RECORDS };
+    const items = (replayed as Record<string, unknown>)[derived.source.itemsPath ?? ''];
+    assert.deepEqual(items, RECORDS);
   });
 });
