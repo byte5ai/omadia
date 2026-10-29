@@ -67,6 +67,18 @@ changelog.
 `@omadia/plugin-privacy-guard` 0.11.0, `@omadia/plugin-api` 1.37.0
 (`countUnresolvedSurrogates` takes an optional `options`).
 
+
+### Fixed — Verifier no longer withholds a leave total that counts every request (#1575 follow-up)
+
+2026-10-29. Seen live right after #1613: an HR answer stated "counting it
+too, it is 58.35 days", a total that includes a request outside the
+approved/pending reading, and `enforce` withheld the correct answer as a
+contradiction. The `hr.leave` aggregate check now also accepts the total over
+every request, whatever its state. A claim is contradicted only when no
+reading of the records (approved; approved plus pending; every request; the
+turn's own records) supports it, and the approved total stays the reported
+truth.
+
 ### Fixed — Orchestrator and agent wiring (#1585, #1569, #1570, #1581, #1502)
 
 2026-10-29.
