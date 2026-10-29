@@ -297,7 +297,11 @@ import {
   PRIVACY_REDACT_SERVICE_NAME,
   type PrivacyGuardService,
 } from '@omadia/plugin-api';
-import { createRequireAuth, evaluateSessionToken } from './auth/requireAuth.js';
+import {
+  createRequireAuth,
+  createSessionGate,
+  evaluateSessionToken,
+} from './auth/requireAuth.js';
 import { createOperatorAuthAccessor, LateBoundAdminAudit } from './auth/operatorAuthAccessor.js';
 import {
   createConductorWebhooksInboundRouter,
@@ -391,6 +395,7 @@ import {
   FileBuiltInOptOutStore,
 } from './plugins/builtInOptOuts.js';
 import {
+  attachablePluginIds,
   createPendingDefaultAttach,
   withInstalledParents,
 } from './plugins/defaultOrchestratorAttach.js';
@@ -1293,10 +1298,15 @@ async function main(): Promise<void> {
       // not have activated yet on this boot). Drop `errored` only —
       // validateSnapshot would reject those, and the operator should fix
       // the underlying manifest before the platform re-attaches them.
-      return installedRegistry
-        .list()
-        .filter((entry) => entry.status !== 'errored')
-        .map((entry) => entry.id);
+      // #1601 — and reference-only plugins: the only consumer is the
+      // fallback seed's attach, and those must never be attached.
+      return attachablePluginIds(
+        installedRegistry
+          .list()
+          .filter((entry) => entry.status !== 'errored')
+          .map((entry) => entry.id),
+        pluginCatalog,
+      );
     },
   });
 
@@ -1707,10 +1717,13 @@ async function main(): Promise<void> {
     const store =
       serviceRegistry.get<MultiOrchestratorConfigStore>('configStore');
     if (!store) return false; // no-DB / chat-disabled boot — nothing to wire
-    const ids = withInstalledParents(
-      pluginIds.filter((id) => id !== ORCHESTRATOR_PLUGIN_ID),
+    const ids = attachablePluginIds(
+      withInstalledParents(
+        pluginIds.filter((id) => id !== ORCHESTRATOR_PLUGIN_ID),
+        pluginCatalog,
+        installedRegistry,
+      ),
       pluginCatalog,
-      installedRegistry,
     );
     if (ids.length === 0) return true;
     const { agentId, attached } = await attachNewPluginsToFallbackAgent(
@@ -2164,10 +2177,13 @@ async function main(): Promise<void> {
       `[middleware] admin OAuth wired (redirect=${authRedirectUri})`,
     );
   }
-  const requireAuth = createRequireAuth({
+  const sessionDeps = {
     signingKey: sessionSigningKey,
     whitelist: emailWhitelist,
     sessions: sessionRevocation,
+  };
+  const requireAuth = createRequireAuth({
+    ...sessionDeps,
     // OB-106 mounted requireAuth at /api which collaterally gated the
     // public auth endpoints (login providers, login, setup) AND every
     // channel-plugin webhook mounted under /api/* (Teams Bot Framework
@@ -2178,13 +2194,13 @@ async function main(): Promise<void> {
     // `/api/v1/admin/*`, etc. since none of them match these regexes.
     publicPaths: publicPaths(),
   });
-  // Epic #470 C6 / G2 — hand the SAME instance to the plugin route registry.
-  // Same instance, not an equivalent one: a plugin route registered with
-  // `auth: 'session'` must agree with core, byte for byte, on what a valid
-  // operator session is — including the `publicPaths` short-circuit above.
-  // Two `createRequireAuth` calls with drifting options is exactly the class of
-  // bug `auth/requireAuth.ts` extracted `evaluateSessionToken` to prevent.
-  kernelRequireAuthRef.current = requireAuth;
+  // Epic #470 C6 / G2 — the plugin route registry's `auth: 'session'` gate.
+  // Same deps object as `requireAuth`, so both agree on what a valid operator
+  // session is, but WITHOUT the `publicPaths` short-circuit: issue #1596 — the
+  // short-circuit let every `/p/<plugin>/…` "session" route answer anonymous
+  // callers. A plugin route is reached without a session only through the
+  // operator-granted public-path mount, never through the static allowlist.
+  kernelRequireAuthRef.current = createSessionGate(sessionDeps);
 
   // ContextRetriever + FactExtractor construction moved to AFTER
   // `toolPluginRuntime.activateAllInstalled()` below — they consume
@@ -3555,7 +3571,11 @@ async function main(): Promise<void> {
   const resolveChatAgent = (slug: string): ChatAgent | undefined => {
     const entry = getRegistry()?.get(slug);
     if (entry) return entry.built.bundle.agent;
-    if (slug === 'default') return getChatAgentBundle()?.agent;
+    // #1598 — the legacy bundle has no per-Agent plugin grants, so it holds
+    // every plugin's tools. It answers `default` only on a registry-less boot,
+    // where it IS the whole deployment's orchestrator; with a registry, an
+    // explicit `agentSlug: "default"` must not bypass every Agent's grants.
+    if (slug === 'default' && !getRegistry()) return getChatAgentBundle()?.agent;
     return undefined;
   };
   const getDefaultSlug = (): string | undefined => {
