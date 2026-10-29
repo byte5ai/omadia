@@ -56,6 +56,9 @@ export interface MaterializeOptions {
   /** Row cap for the rendered text (and the structured table). Defaults to
    *  {@link MAX_CHAT_ROWS}; must be a positive integer. */
   readonly maxRows?: number;
+  /** #1559 — a spreadsheet export tool is offered this turn. Only then does
+   *  a truncated render's footer offer the full list as a file. */
+  readonly fileExportAvailable?: boolean;
 }
 
 /** Result of materialization — the channel-bound answer body. */
@@ -75,6 +78,13 @@ export interface MaterializeResult {
    * when the rendered columns were all `safe-cleartext`.
    */
   readonly maskedValues: readonly string[];
+  /**
+   * #1542 — labels of rendered columns in which at least one shown cell
+   * could not be rendered (it shows {@link UNRENDERABLE_CELL} or a record
+   * count). Labels only, never a value: the render ack names them so the
+   * model can tell the user the content is withheld.
+   */
+  readonly unrenderedColumns: readonly string[];
   /** Present only for tabular renders with at least one row. */
   readonly structuredTable?: StructuredTable;
 }
@@ -117,11 +127,193 @@ function fieldCell(value: unknown, field: FieldClassification): string {
   return cell(value);
 }
 
-/** Format a single cell value for display. `depth` bounds recursion into nested
- *  objects so a genuinely deep structure degrades to a marker, not a blob. */
+/**
+ * #1542 — what a cell shows when its value cannot be rendered readably (a
+ * deep or large structure with no text or display field). German, like every
+ * other line the user reads from this renderer. Explicit on purpose: the old
+ * `[nested]` read like data and nobody learned the content was not shown.
+ * The column is reported in {@link MaterializeResult.unrenderedColumns} so the
+ * model is told, too.
+ */
+export const UNRENDERABLE_CELL = '[Inhalt hier nicht darstellbar]';
+
+/** A nested value with no readable rendering, inside its parent's. */
+const ELIDED_CELL = '…';
+
+/** Longest text a single cell shows before it is cut with an ellipsis. */
+export const MAX_TEXT_CELL_CHARS = 1500;
+
+/** A string leaf at least this long, and dominating its object, is the
+ *  object's content (a page body) — rendered as text. */
+const LONG_TEXT_MIN_CHARS = 120;
+/** Share of an object's string characters the longest leaf must hold. */
+const DOMINANT_TEXT_SHARE = 0.8;
+/** Bound on the walk that looks for text leaves in a nested object. */
+const MAX_TEXT_LEAF_DEPTH = 4;
+const MAX_TEXT_LEAVES = 50;
+/** Input bound for the HTML → text pass (its regexes are linear). */
+const MAX_HTML_INPUT_CHARS = 50_000;
+/** `key: value` rendering of a small object stops being readable here. */
+const MAX_PAIRS_CHARS = 300;
+const MAX_PAIRS = 20;
+
+/** Display fields, most specific first. `key` + `name` render together. */
+const DISPLAY_KEYS = ['displayName', 'display_name', 'name', 'title', 'number', 'value', 'key'] as const;
+
+/** API bookkeeping (`_expandable`, `_links`, `_meta`): never content. */
+function isNoiseKey(key: string): boolean {
+  return key.startsWith('_');
+}
+
+function contentEntries(obj: Record<string, unknown>): Array<[string, unknown]> {
+  return Object.entries(obj).filter(([k]) => !isNoiseKey(k));
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+const HTML_TAG_RE = /<\/?[a-z][a-z0-9]*\b[^<>]*>/i;
+
+const NAMED_ENTITIES: Readonly<Record<string, string>> = {
+  nbsp: ' ',
+  lt: '<',
+  gt: '>',
+  quot: '"',
+  apos: "'",
+  amp: '&',
+  auml: 'ä',
+  ouml: 'ö',
+  uuml: 'ü',
+  Auml: 'Ä',
+  Ouml: 'Ö',
+  Uuml: 'Ü',
+  szlig: 'ß',
+  euro: '€',
+  ndash: '–',
+  mdash: '—',
+  hellip: '…',
+};
+
+function decodeEntities(text: string): string {
+  return text.replace(/&(#x[0-9a-f]{1,6}|#[0-9]{1,7}|[a-z]{2,8});/gi, (whole, ent: string) => {
+    if (ent.startsWith('#')) {
+      const code =
+        ent[1] === 'x' || ent[1] === 'X'
+          ? Number.parseInt(ent.slice(2), 16)
+          : Number.parseInt(ent.slice(1), 10);
+      return Number.isFinite(code) && code > 0 && code <= 0x10ffff
+        ? String.fromCodePoint(code)
+        : whole;
+    }
+    return Object.hasOwn(NAMED_ENTITIES, ent) ? (NAMED_ENTITIES[ent] ?? whole) : whole;
+  });
+}
+
+/** Plain text of an HTML fragment (a Confluence `body.view.value`): tags
+ *  stripped, block ends kept as line breaks, basic entities decoded. */
+export function htmlToPlainText(html: string): string {
+  const text = html
+    .slice(0, MAX_HTML_INPUT_CHARS)
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<li\b[^<>]*>/gi, '\n• ')
+    .replace(/<\/(p|div|li|tr|h[1-6]|table|ul|ol|blockquote|pre|section)\s*>/gi, '\n')
+    .replace(/<\/t[dh]\s*>/gi, ' ')
+    .replace(/<[^<>]*>/g, '');
+  return decodeEntities(text)
+    .split('\n')
+    .map((line) => line.replace(/[ \t\u00a0]+/g, ' ').trim())
+    .filter((line, i, all) => line.length > 0 || (i > 0 && (all[i - 1] ?? '').length > 0))
+    .join('\n')
+    .trim();
+}
+
+function capText(text: string): string {
+  return text.length > MAX_TEXT_CELL_CHARS
+    ? `${text.slice(0, MAX_TEXT_CELL_CHARS).trimEnd()} …`
+    : text;
+}
+
+/** Text a string leaf shows: HTML becomes plain text, everything is capped. */
+function textCell(text: string): string {
+  return capText(HTML_TAG_RE.test(text) ? htmlToPlainText(text) : text);
+}
+
+function collectTextLeaves(value: unknown, depth: number, out: string[]): void {
+  if (out.length >= MAX_TEXT_LEAVES || depth > MAX_TEXT_LEAF_DEPTH) return;
+  if (typeof value === 'string') {
+    out.push(value);
+    return;
+  }
+  if (isPlainObject(value)) {
+    for (const [, v] of contentEntries(value)) collectTextLeaves(v, depth + 1, out);
+  }
+}
+
+/** The object's text content, when it is essentially one text leaf: the only
+ *  HTML leaf, or a long leaf holding most of its characters (#1542). */
+function dominantText(obj: Record<string, unknown>): string | undefined {
+  const leaves: string[] = [];
+  collectTextLeaves(obj, 0, leaves);
+  if (leaves.length === 0) return undefined;
+  const html = leaves.filter((l) => HTML_TAG_RE.test(l));
+  if (html.length === 1 && html[0] !== undefined) return html[0];
+  const longest = leaves.reduce((a, b) => (b.length > a.length ? b : a));
+  const total = leaves.reduce((sum, l) => sum + l.length, 0);
+  return longest.length >= LONG_TEXT_MIN_CHARS && longest.length >= DOMINANT_TEXT_SHARE * total
+    ? longest
+    : undefined;
+}
+
+function isDisplayScalar(v: unknown): v is string | number {
+  return (typeof v === 'string' && v.trim().length > 0) || typeof v === 'number';
+}
+
+/** The label an object announces itself by (`version` → its `number`,
+ *  `space` → `key – name`), when it has one. */
+function displayLabel(obj: Record<string, unknown>): string | undefined {
+  const key = obj['key'];
+  const name = obj['name'];
+  if (isDisplayScalar(key) && isDisplayScalar(name) && String(key) !== String(name)) {
+    return `${String(key)} – ${String(name)}`;
+  }
+  for (const k of DISPLAY_KEYS) {
+    const v = obj[k];
+    if (isDisplayScalar(v)) return typeof v === 'string' ? textCell(v) : String(v);
+  }
+  return undefined;
+}
+
+/** A readable rendering of an object, or `undefined` when there is none. */
+function renderObject(obj: Record<string, unknown>, depth: number): string | undefined {
+  const entries = contentEntries(obj);
+  if (entries.length === 0) return undefined;
+  const text = dominantText(obj);
+  if (text !== undefined) return textCell(text);
+  const label = displayLabel(obj);
+  if (label !== undefined) return label;
+  // A shallow plain object with scalar-ish leaves is the common "totals" /
+  // "stats" shape (e.g. Strava's `all_ride_totals: {count, distance, …}`).
+  // Render it as readable `key: value` pairs for the AUTHORISED user — the raw
+  // values were already masked from the LLM; the materialiser exists
+  // precisely to show the real data here. Bounded by depth, field count and
+  // length so a large/deep structure degrades to an explicit marker rather
+  // than the unreadable JSON blob the old code guarded against.
+  if (depth >= 2 || entries.length > MAX_PAIRS) return undefined;
+  const pairs = entries.map(([k, v]) => [k, cell(v, depth + 1)] as const);
+  // A pair list with an elided part would hide content silently — then the
+  // whole value counts as not renderable, and says so.
+  if (pairs.some(([, v]) => v === ELIDED_CELL)) return undefined;
+  const rendered = pairs.map(([k, v]) => `${k}: ${v}`).join('; ');
+  return rendered.length <= MAX_PAIRS_CHARS ? rendered : undefined;
+}
+
+/** Format a single cell value for display. `depth` bounds recursion into
+ *  nested objects; a top-level value with no readable rendering becomes
+ *  {@link UNRENDERABLE_CELL}, a nested one an ellipsis inside its parent. */
 function cell(value: unknown, depth = 0): string {
   if (value === null || value === undefined) return '—';
-  if (typeof value === 'string') return value;
+  if (typeof value === 'string') return depth === 0 ? value : textCell(value);
   if (typeof value === 'number' || typeof value === 'boolean') {
     return String(value);
   }
@@ -149,28 +341,26 @@ function cell(value: unknown, depth = 0): string {
   ) {
     return value.map((e) => cell(e, depth + 1)).join(', ');
   }
-  // A shallow plain object with scalar-ish leaves is the common "totals" /
-  // "stats" shape (e.g. Strava's `all_ride_totals: {count, distance, …}`).
-  // Render it as readable `key: value` pairs for the AUTHORISED user instead of
-  // an opaque `[nested]` — the raw values were already masked from the LLM; the
-  // materialiser exists precisely to show the real data here. Bounded by depth,
-  // field count and length so a large/deep structure still degrades to a compact
-  // marker rather than the unreadable JSON blob the old code guarded against.
-  if (
-    !Array.isArray(value) &&
-    typeof value === 'object' &&
-    depth < 2
-  ) {
-    const entries = Object.entries(value as Record<string, unknown>);
-    if (entries.length > 0 && entries.length <= 20) {
-      const rendered = entries
-        .map(([k, v]) => `${k}: ${cell(v, depth + 1)}`)
-        .join('; ');
-      if (rendered.length <= 300) return rendered;
+  if (Array.isArray(value)) {
+    // Records that each announce a label (`[{name:"a"},{name:"b"}]`) read as
+    // a list; anything else stays a structure-only count, never raw JSON.
+    const labels = value.map((e) => (isPlainObject(e) ? displayLabel(e) : undefined));
+    if (labels.length > 0 && labels.every((l) => l !== undefined)) {
+      const joined = labels.join(', ');
+      if (joined.length <= MAX_PAIRS_CHARS) return joined;
     }
+    return `[${String(value.length)} records]`;
   }
-  if (Array.isArray(value)) return `[${String(value.length)} records]`;
-  return '[nested]';
+  if (isPlainObject(value)) {
+    const rendered = renderObject(value, depth);
+    if (rendered !== undefined) return rendered;
+  }
+  return depth === 0 ? UNRENDERABLE_CELL : ELIDED_CELL;
+}
+
+/** A top-level cell that shows a marker instead of the value's content. */
+function isUnrenderedCell(text: string): boolean {
+  return text === UNRENDERABLE_CELL || /^\[\d+ records\]$/.test(text);
 }
 
 /** Escape a value for a Markdown table cell. */
@@ -237,14 +427,38 @@ function renderList(
 }
 
 /** The honest footer under a capped render. German, like every other line
- *  the user reads from this assistant; the numbers are the point. */
-function truncationNote(total: number, shown: number): string {
+ *  the user reads from this assistant; the numbers are the point. The file
+ *  offer only when an export tool can actually build the file (#1559). */
+function truncationNote(total: number, shown: number, fileExportAvailable: boolean): string {
   const omitted = total - shown;
-  return (
+  const counted =
     `_… ${String(omitted)} weitere Zeile${omitted === 1 ? '' : 'n'} nicht angezeigt ` +
-    `(${String(shown)} von ${String(total)}). Die vollständige Liste gibt es als ` +
-    `Excel-Datei — einfach danach fragen._`
+    `(${String(shown)} von ${String(total)}).`;
+  return fileExportAvailable
+    ? `${counted} Die vollständige Liste gibt es als Excel-Datei — einfach danach fragen._`
+    : `${counted}_`;
+}
+
+/** #1542 — the user-facing note under a render with unrenderable cells: the
+ *  content is not lost silently, and the user learns how to get it. */
+function unrenderedNote(labels: readonly string[]): string {
+  const named = labels.map((l) => `„${l}"`).join(', ');
+  const which = labels.length === 1 ? `der Spalte ${named}` : `der Spalten ${named}`;
+  return (
+    `_Hinweis: Der Inhalt ${which} lässt sich in dieser geschützten Ansicht nicht ` +
+    `darstellen. Ein Administrator kann den Datenschutz-Modus des Agenten auf ` +
+    `„Bypass" stellen, dann wird er angezeigt._`
   );
+}
+
+/** Labels of the rendered columns with at least one unrendered shown cell. */
+function collectUnrenderedColumns(
+  rows: ReadonlyArray<Dataset['rows'][number]>,
+  renderedColumns: ReadonlyArray<ResolvedRenderColumn>,
+): string[] {
+  return renderedColumns
+    .filter((c) => rows.some((row) => isUnrenderedCell(fieldCell(row[c.render.field], c.field))))
+    .map((c) => c.render.label);
 }
 
 function resolveMaxRows(opts: MaterializeOptions | undefined): number {
@@ -367,6 +581,7 @@ export function materialize(
       rowCount: 0,
       renderedRowCount: 0,
       maskedValues: [],
+      unrenderedColumns: [],
     };
   }
 
@@ -406,7 +621,14 @@ export function materialize(
         `render directive has an unsupported format "${String(directive.format)}"`,
       );
   }
-  if (shown < total) body = `${body}\n\n${truncationNote(total, shown)}`;
+  if (shown < total) {
+    body = `${body}\n\n${truncationNote(total, shown, opts?.fileExportAvailable === true)}`;
+  }
+  const unrenderedColumns = collectUnrenderedColumns(
+    directive.format === 'scalar' ? rows.slice(0, 1) : rows,
+    renderedColumns,
+  );
+  if (unrenderedColumns.length > 0) body = `${body}\n\n${unrenderedNote(unrenderedColumns)}`;
 
   return {
     text: withProse(directive.prose, body),
@@ -415,6 +637,7 @@ export function materialize(
     // Only what was rendered: a value the footer left out never reached the
     // channel, so it must not be flagged as "resolved behind the boundary".
     maskedValues: collectMaskedValues(rows, renderedColumns),
+    unrenderedColumns,
     ...(structuredTable !== undefined ? { structuredTable } : {}),
   };
 }

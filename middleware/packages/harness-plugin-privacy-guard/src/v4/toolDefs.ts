@@ -53,7 +53,8 @@ export const VERB_TOOL_SPECS: ReadonlyArray<V4ToolSpec> = [
     description:
       'Keep only rows matching a predicate. The predicate is a JSON tree ' +
       'using ops eq/ne/lt/lte/gt/gte/in/between/and/or/not over safe ' +
-      '(non-masked) fields only.',
+      '(non-masked) fields only. Link-key columns (`__k_<column>`) are never ' +
+      'filter targets — use them as keys in v4_join/v4_distinct.',
     inputSchema: {
       type: 'object',
       properties: { datasetId: DATASET_ID, predicate: { type: 'object' } },

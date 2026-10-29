@@ -288,7 +288,20 @@ export interface PrivacyToolResultV4Request {
    * LLM. Absent ⇒ the dataset simply has no provenance.
    */
   readonly toolInput?: unknown;
+  /**
+   * #1561 — who reads the returned `digestText`. Absent / `'chat'` ⇒ the
+   * chat model, which is offered the verb tools and `v4_render_answer` the
+   * digest header refers to. `'public-api'` ⇒ an external API caller (the
+   * public MCP endpoint) that has none of those tools: the text then states
+   * what was returned and that masked values are withheld, and names no tool
+   * the caller cannot call. Same masking either way.
+   */
+  readonly audience?: PrivacyDigestAudience;
 }
+
+/** #1561 — the reader of a digest text; see
+ *  {@link PrivacyToolResultV4Request.audience}. */
+export type PrivacyDigestAudience = 'chat' | 'public-api';
 
 /** One verb applied on the way from a tool result to a dataset (1.44.0). */
 export interface PrivacyDatasetVerbStep {
@@ -360,6 +373,12 @@ export interface PrivacyV4ToolRequest {
   readonly toolName: string;
   /** The unparsed tool input as received from the LLM. */
   readonly input: unknown;
+  /**
+   * #1559 — a spreadsheet export tool (`create_xlsx`) is offered this turn.
+   * Only then may a truncated render's footer offer the full list as a file.
+   * Absent ⇒ `false`: the footer states the omitted row count, no promise.
+   */
+  readonly fileExportAvailable?: boolean;
 }
 
 /** What `runV4Tool` hands back to the kernel. */
@@ -374,6 +393,15 @@ export interface PrivacyV4ToolResult {
    * other canvas tools use before interning) and never to the model.
    */
   readonly canvasSentinel?: string;
+  /**
+   * #1543 — for a render: where the rendered dataset came from, as a
+   * model-safe note (source tool name, verb chain with field paths, ops and
+   * directions, row counts, column labels — never a row value, never a
+   * filter value). Rows are turn-scoped, so a later turn cannot read the
+   * table again; the kernel persists this note with the turn so a follow-up
+   * can re-run the same query or say that it could not.
+   */
+  readonly renderProvenance?: string;
 }
 
 /** An Anthropic-tool-shaped spec for a v4 verb / render tool. */
@@ -881,6 +909,23 @@ export interface PrivacyGuardService {
   snapshotPromptRestorer?(
     turnId: string,
   ): ((text: string) => string) | undefined;
+  /**
+   * #1544 — the inverse direction of `restorePromptPseudonyms`: every real
+   * value of this turn's prompt-surrogate map that occurs in `text` is
+   * replaced by its surrogate. For a tool result the model reads in clear
+   * after the kernel restored the user's values into the tool's input (an
+   * interning-exempt tool can echo them). Identity when the turn masked
+   * nothing. Optional; a provider without it leaves the text as is.
+   */
+  remaskPromptValues?(turnId: string, text: string): string;
+  /**
+   * #1544 — the turn's prompt surrogates in a tool INPUT replaced by the
+   * user's values: whole surrogates only (any letter case), no date or amount
+   * surrogates, so every value it puts in is one `remaskPromptValues` masks
+   * again in what the tool echoes. Identity when the turn masked nothing.
+   * Optional; the kernel restores tool inputs only when a provider has both.
+   */
+  restoreToolInputValues?(turnId: string, text: string): string;
   /**
    * Project a verifier-composed text through this turn's surrogate map —
    * always on, independent of `mask_user_prompt` (see

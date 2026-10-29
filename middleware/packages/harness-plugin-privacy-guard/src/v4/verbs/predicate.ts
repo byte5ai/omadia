@@ -52,11 +52,27 @@ function collectFields(
 }
 
 /**
+ * #1560 — a dataset link-key column (`__k_<column>`, an HMAC of a person's
+ * value, generated on import) or a nested path ending in one. Mirrors the
+ * kernel's `isLinkKeyColumn` (`datasetLinkKey.ts`); the plugin cannot import
+ * the kernel, so the prefix is repeated here.
+ */
+const LINK_KEY_FIELD = /(?:^|\.)__k_/;
+
+export function isLinkKeyField(path: string): boolean {
+  return LINK_KEY_FIELD.test(path);
+}
+
+/**
  * Validate a predicate against a dataset schema (contract P1, P4).
  *
  *  - P1: every referenced field must resolve to a `safe-cleartext` field or a
  *    row handle. A reference to a `sensitive-masked` field is rejected — this
  *    blocks the LLM from binary-searching identity values through predicates.
+ *    A link key is safe to SEE and to join or de-duplicate on, but never a
+ *    filter target (#1560): `query_dataset` refuses it, and this verb is the
+ *    same gate on the other path, so the rule does not depend on which tool
+ *    the model picks.
  *  - P4: combinator nesting is depth-bounded.
  *
  * P2 (closed operator set) is enforced by the `Predicate` type itself.
@@ -72,6 +88,11 @@ export function validatePredicate(
     const field = schema.fields.find((f) => f.path === path);
     if (field === undefined) {
       throw new VerbError(`predicate references unknown field "${path}"`);
+    }
+    if (isLinkKeyField(path)) {
+      throw new VerbError(
+        `predicate may not reference the link-key field "${path}" — link keys are join/distinct keys (v4_join, v4_distinct), never filter targets`,
+      );
     }
     if (field.classification === 'sensitive-masked') {
       throw new VerbError(

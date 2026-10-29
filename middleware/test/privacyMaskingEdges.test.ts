@@ -148,10 +148,12 @@ describe('#1528 tolerant pseudonym restore', () => {
     const masked = await svc.maskUserPrompt!({ sessionId: 's', turnId: 't', text: 'Geboren am 24.12.1987.' });
     assert.equal(masked.outcome, 'masked');
     if (masked.outcome !== 'masked') return;
-    assert.ok(masked.maskedText.includes('01.01.1970'), masked.maskedText);
+    const surrogate = /(\d{2})\.(\d{2})\.(\d{4})/.exec(masked.maskedText);
+    assert.ok(surrogate, masked.maskedText);
     const notice = { unreadableLiterals: false } as const;
-    // The date surrogate restated in another spelling: a hit either way.
-    const restated = 'Das war am 1. Januar 1970.';
+    // The date surrogate restated in another spelling: a hit either way
+    // (restore reads it back; this counts the text before restore).
+    const restated = `Das war am ${surrogate[3]!}-${surrogate[2]!}-${surrogate[1]!}.`;
     assert.equal(await svc.countUnresolvedSurrogates!('t', restated), 1);
     assert.equal(await svc.countUnresolvedSurrogates!('t', restated, notice), 1);
     // A date nobody can read: fail-closed hit for the verifier only.
@@ -209,7 +211,9 @@ describe('#1528 one surrogate per value, none re-masked', () => {
     const turn1 = await svc.maskUserPrompt!({
       sessionId: 's',
       turnId: 't1',
-      text: 'Mein Kollege Jonas Weber, jonas.weber@example.com, schreib seine Adresse in GROSSBUCHSTABEN.',
+      // No name in clear next to the address: its surrogate is a pool
+      // address, a reserved shape (#1554 would pick a neutral one otherwise).
+      text: 'Mein Kollege, jonas.weber@example.com, schreib seine Adresse in GROSSBUCHSTABEN.',
     });
     assert.equal(turn1.outcome, 'masked');
     if (turn1.outcome !== 'masked') return;

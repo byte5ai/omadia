@@ -10,6 +10,10 @@ import { isProviderWideFailure, streamMessageWithObserver } from './streaming.js
 import type { AskObserver, AskOptions } from './tools/domainQueryTool.js';
 import { internFailedNotice, isInternExemptTool } from './privacyInternPolicy.js';
 import {
+  remaskEchoedValues,
+  restorePromptSurrogatesInToolInput,
+} from './promptSurrogateToolInput.js';
+import {
   PrimaryModelCooldown,
   orchestratorFallbackFor,
   type SubAgentExecution,
@@ -474,7 +478,7 @@ export class LocalSubAgent {
             inputHash,
           )
             ? refusedRepeat(this.name, toolName)
-            : await this.dispatch(use.name, use.input);
+            : await this.dispatchRemasked(use.name, use.input);
           if (outcomeUnknown === true) unknownOutcome.add(toolName, inputHash);
           const elapsed = Date.now() - started;
           const isError = output.startsWith('Error:') || postcondition !== undefined;
@@ -559,6 +563,15 @@ export class LocalSubAgent {
     }
   }
 
+  /** #1544 — every tool result this sub-agent's model reads, errors and
+   *  bypassed results included, with the turn's masked prompt values masked
+   *  again: the inner tool may have run on them. */
+  private async dispatchRemasked(toolName: string, input: unknown): Promise<SubToolOutcome> {
+    const outcome = await this.dispatch(toolName, input);
+    const privacy = turnContext.current()?.privacyHandle;
+    return { ...outcome, output: remaskEchoedValues(privacy, outcome.output) };
+  }
+
   private async dispatch(toolName: string, input: unknown): Promise<SubToolOutcome> {
     const tool = this.toolsByName.get(toolName);
     if (!tool) return { output: `Error: unknown tool \`${toolName}\`.` };
@@ -603,7 +616,15 @@ export class LocalSubAgent {
         replay?.kind === 'result'
           ? (replay.value as Awaited<ReturnType<LocalSubAgentTool['handle']>>)
           : await runHandlerAtMostOnce(ledger, () =>
-              runWithMcpAuthPromptMint(authPromptMint, () => tool.handle(input)),
+              runWithMcpAuthPromptMint(authPromptMint, () =>
+                // #1544 — the inner tool runs on the user's values; this
+                // sub-agent's model keeps reading the placeholders.
+                tool.handle(
+                  isInternExemptTool(toolName)
+                    ? input
+                    : restorePromptSurrogatesInToolInput(privacy, input),
+                ),
+              ),
             );
     } catch (err) {
       if (replay === undefined) ledger?.record(seam, toolName, input, { kind: 'rejection', error: err });
@@ -678,7 +699,7 @@ export class LocalSubAgent {
             ...carried,
           };
         }
-        return { output: result, ...carried };
+        return { output: remaskEchoedValues(privacy, result), ...carried };
       }
       // Slice 2.5 — same operator-owned bypass check the orchestrator's
       // outer dispatch consults. If the tool's plugin opted into `bypass`,
@@ -705,7 +726,8 @@ export class LocalSubAgent {
             );
           }
         }
-        return { output: result, ...carried };
+        // #1544 — raw tool data, but the user's own masked values stay masked.
+        return { output: remaskEchoedValues(privacy, result), ...carried };
       }
       // Canvas sentinel tap — sub-tools (e.g. an agent plugin's deterministic
       // canvas tree) emit `_pending*` directives too; the synthesis needs the

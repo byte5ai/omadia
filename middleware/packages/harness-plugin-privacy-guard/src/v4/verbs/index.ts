@@ -23,7 +23,7 @@ import {
   type SortDirection,
   type VerbResult,
 } from '../types.js';
-import { VerbError, evaluatePredicate, validatePredicate } from './predicate.js';
+import { VerbError, evaluatePredicate, isLinkKeyField, validatePredicate } from './predicate.js';
 
 export { VerbError } from './predicate.js';
 
@@ -355,6 +355,13 @@ export function createVerbEngine(deps: VerbEngineDeps): VerbEngine {
         }
         if (targets.has(to)) {
           throw new VerbError(`union renameRight: two fields renamed to "${to}"`);
+        }
+        // #1560 security review — a link key stays a link key: renamed to a
+        // plain name it would no longer be refused as a filter target.
+        if (isLinkKeyField(from) && !isLinkKeyField(to)) {
+          throw new VerbError(
+            `union renameRight: link-key field "${from}" can only be renamed to another __k_ field`,
+          );
         }
         if (rightPaths.has(to) && rename[to] === undefined) {
           throw new VerbError(

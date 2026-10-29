@@ -319,6 +319,15 @@ export interface TurnContextValue {
    */
   wireView?: { userMessage?: string; answer?: string };
   /**
+   * #1543 — the provenance notes of this turn's Privacy Shield renders
+   * (`PrivacyV4ToolResult.renderProvenance`): source tool, verb chain, row
+   * counts, column labels — never a value. Appended to the persisted answer
+   * so the next turn knows which query produced the table the user sees (its
+   * rows are turn-scoped and gone by then). Mutable holder for the same
+   * shallow-copy reason as {@link memoryFileRead}.
+   */
+  renderProvenance?: { notes: string[] };
+  /**
    * Where the orchestrator's own model calls run this turn — its provider and
    * model after `resolveTurnExecution`, and after a fallback hop the fallback.
    * Read by `LocalSubAgent` as ITS fallback: a sub-agent whose configured model

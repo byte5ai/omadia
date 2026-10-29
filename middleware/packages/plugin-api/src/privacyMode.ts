@@ -29,10 +29,12 @@
  *
  * Compliance override — the org-level env var
  * `OMADIA_PRIVACY_FORCE_GUARDED=true` clamps every plugin to `guarded`
- * regardless of operator settings, for the results the model gets. The
- * orchestrator's MCP-to-knowledge-graph ingestion reads a server's bypass
- * flag directly and is not clamped (docs/security-architecture.md §6f). UI
- * MUST surface the override as a "Locked by org policy" badge.
+ * regardless of operator settings, for the results the model gets — and for
+ * the orchestrator's MCP-to-knowledge-graph ingestion: a server flagged for
+ * both ingestion and privacy bypass then stores a value-free digest of each
+ * result instead of the raw result (`isMcpServerBypassInForce`,
+ * docs/security-architecture.md §6f). UI MUST surface the override as a
+ * "Locked by org policy" badge.
  *
  * The constants here are imported by both the orchestrator dispatch hook
  * (to resolve the mode at dispatch time) AND the install service (to
