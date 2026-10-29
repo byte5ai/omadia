@@ -116,6 +116,7 @@ export async function* enforcedVerifierStream(
     await ledger?.turnRecord.commit(FIRST_PASS);
     await ledger?.receipts.commit();
     request?.release();
+    host.judge.release(runId);
   }
 }
 
@@ -131,9 +132,9 @@ function deliver(
   void host.judge.persist(runId, input, verdict, retryCount);
   const releases = verdictReleasesAnswer(verdict);
   if (!releases) {
-    host.log(withheldLogLine(runId, verdict));
+    host.log(withheldLogLine(host.judge.runLabel(runId), verdict));
   } else if (verdictLeavesUnconfirmed(verdict)) {
-    host.log(releasedUnconfirmedLogLine(runId, verdict));
+    host.log(releasedUnconfirmedLogLine(host.judge.runLabel(runId), verdict));
   }
   const summary = summarise(verdict, retryCount, 'enforce');
   return { summary: badge ? { ...summary, badge } : summary, releases };
@@ -169,7 +170,7 @@ async function streamRetry(
     );
   }
   if (!correction) return undefined;
-  host.log(`${retryLogLine(runId, first)} (stream)`);
+  host.log(`${retryLogLine(host.judge.runLabel(runId), first)} (stream)`);
   const retryInput: ChatTurnInput = { ...input, extraSystemHint: correction };
   const pass = prepareReentry(host.orchestrator, retryInput, ledger);
   const retryEgress = passes.open(retryInput);

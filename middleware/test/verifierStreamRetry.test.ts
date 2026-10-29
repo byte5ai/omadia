@@ -66,7 +66,9 @@ describe('VerifierService.chatStream — enforce retries a contradiction over fr
       'the retry’s model saw the first run’s tool result',
     );
     const terminal = doneOf(events);
-    assert.equal(terminal?.answer, CORRECTED);
+    // #1578 — the retry of the conversation's first turn is the answer the
+    // user receives, so it carries the AI disclosure line the first pass folded.
+    assert.equal(terminal?.answer, `${CORRECTED}\n\nDiese Antwort wurde von einem KI-System erzeugt.`);
     assert.equal(terminal?.verifier?.badge, 'corrected');
     assert.deepEqual(t.persisted, [{ status: 'approved', retryCount: 1 }]);
   });

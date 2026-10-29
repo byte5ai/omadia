@@ -183,10 +183,17 @@ describe('autoAssignSubscriptionCli (OM-79)', () => {
 
     const outcome = await autoAssignSubscriptionCli(deps);
 
-    assert.deepEqual([...outcome.assigned].sort(), [EXTRAS, ORCH, VERIFIER].sort());
+    assert.deepEqual([...outcome.assigned].sort(), [EXTRAS, ORCH].sort());
+    // #1583 — the verifier cannot run on the subscription CLI; the hand-off
+    // leaves it on its own provider instead of silently switching it off.
+    assert.ok(
+      outcome.skipped.some((s) => s.pluginId === VERIFIER && s.reason === 'subscription_cli_unsupported'),
+      JSON.stringify(outcome.skipped),
+    );
+    assert.equal(registry.get(VERIFIER)?.config?.['llm_provider'], undefined);
     const model = defaultSubscriptionCliModel();
     assert.ok(model);
-    for (const id of [ORCH, VERIFIER, EXTRAS]) {
+    for (const id of [ORCH, EXTRAS]) {
       assert.equal(registry.get(id)?.config?.['llm_provider'], SUBSCRIPTION_CLI_PROVIDER, id);
     }
     // Extras has two model keys; both must be set.
@@ -196,7 +203,7 @@ describe('autoAssignSubscriptionCli (OM-79)', () => {
     // cascade (extras, then orchestrator) runs after extras has its own final
     // assignment. The orchestrator therefore ends up holding an extras instance
     // built from extras' final config, not an intermediate one.
-    assert.deepEqual(reactivated, [VERIFIER, EXTRAS, EXTRAS, ORCH]);
+    assert.deepEqual(reactivated, [EXTRAS, EXTRAS, ORCH]);
     assert.equal(reactivated.at(-1), ORCH, 'the orchestrator is rebuilt last');
   });
 

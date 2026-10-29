@@ -202,7 +202,7 @@ import {
   type PrivacyEgressContinuation,
   type TurnWireView,
 } from './privacyEgress.js';
-import { RunTraceCollector, type InvocationHandle } from './runTraceCollector.js';
+import { RunTraceCollector, shareEntityRefs, type InvocationHandle } from './runTraceCollector.js';
 import {
   resolveDirectLineTarget,
   directLineLabel,
@@ -2182,6 +2182,28 @@ interface BoundPass {
   readonly ledger: ToolReplayLedger;
   /** 0 for the first run, then 1, 2, … (`ToolReplayLedger.pass`). */
   readonly pass: number;
+}
+
+/**
+ * #1578 — the disclosure seen-store as one verifier request sees it. The
+ * first pass that folds the line marks the conversation seen AND the request
+ * (`ToolReplayLedger.disclosureFolded`); every later pass of that request — a
+ * correction retry, a resample — then folds again, so the answer the user
+ * receives carries the line whichever pass it comes from. Unbound turns use
+ * the store as is.
+ */
+function requestDisclosureSeen(
+  seen: DisclosureSeenStore,
+  ledger: ToolReplayLedger | undefined,
+): DisclosureSeenStore {
+  if (ledger === undefined) return seen;
+  return {
+    hasSeen: (scope) => !ledger.disclosureFolded && seen.hasSeen(scope),
+    markSeen: (scope) => {
+      seen.markSeen(scope);
+      ledger.disclosureFolded = true;
+    },
+  };
 }
 
 /** The pass of `ledger` that starts now, or undefined for an unbound turn. */
@@ -4540,6 +4562,7 @@ export class Orchestrator {
   private discloseDoneEvent(
     done: Extract<ChatStreamEvent, { type: 'done' }>,
     input: ChatTurnInput,
+    ledger?: ToolReplayLedger,
   ): Extract<ChatStreamEvent, { type: 'done' }> {
     // #1094 — expand a degraded turn's marker into the localized notice FIRST,
     // so the disclosure line below folds onto readable text (and so the fold's
@@ -4560,9 +4583,33 @@ export class Orchestrator {
       ...(input.sessionScope
         ? { scope: this.disclosureFoldScope(input.sessionScope) }
         : {}),
-      seen: this.disclosureSeen,
+      seen: requestDisclosureSeen(this.disclosureSeen, ledger),
     });
     return { ...delivered, answer: text, aiDisclosure };
+  }
+
+  /**
+   * #1582 — the AI disclosure for a subscription-CLI turn (`CliChatAgent`),
+   * which never passes through this class's output paths: the same per-turn
+   * resolution (operator level, per-channel override, locale, assistant name,
+   * note) and the same first-turn fold on the same seen-store as an
+   * API-key turn. Returns the answer unchanged and no carrier for an
+   * operator `'off'`.
+   */
+  discloseCliAnswer(
+    answer: string,
+    input: ChatTurnInput,
+  ): { readonly answer: string; readonly aiDisclosure?: AiDisclosure } {
+    const aiDisclosure = this.resolveTurnDisclosure(input);
+    if (!aiDisclosure) return { answer };
+    const { text } = applyAiDisclosure(answer, {
+      disclosure: aiDisclosure,
+      ...(input.sessionScope
+        ? { scope: this.disclosureFoldScope(input.sessionScope) }
+        : {}),
+      seen: this.disclosureSeen,
+    });
+    return { answer: text, aiDisclosure };
   }
 
   /**
@@ -6676,7 +6723,7 @@ export class Orchestrator {
     // Open an EntityRef collection keyed to this turn. Tool handlers that
     // publish during the turn will be matched by turnId via AsyncLocalStorage.
     // Always drain — on success, iteration-overrun throw, or upstream error.
-    const entityCollection = this.entityRefBus?.beginCollection(turnId);
+    const entityCollection = shareEntityRefs(this.entityRefBus?.beginCollection(turnId));
 
     let toolCalls = 0;
     // Claude may emit natural-language text alongside tool_use in the same assistant
@@ -6690,6 +6737,8 @@ export class Orchestrator {
       ? new RunTraceCollector({
           scope: input.sessionScope,
           ...runTraceUserSpread(input),
+          turnId,
+          ...(entityCollection ? { entityRefs: entityCollection } : {}),
         })
       : undefined;
 
@@ -7411,6 +7460,7 @@ export class Orchestrator {
           iterations: 0,
         } as Extract<ChatStreamEvent, { type: 'done' }>,
         input,
+        boundLedger,
       );
       return;
     }
@@ -7724,7 +7774,7 @@ export class Orchestrator {
         yield* this.toAnnotationEvents(
           await this.afterTurn(turnId, input, doneEvent.answer, doneEvent.turnId),
         );
-        yield this.discloseDoneEvent(doneEvent, input);
+        yield this.discloseDoneEvent(doneEvent, input, bound?.ledger);
         return;
       }
       // #361 — failure-closed prompt masking (streaming path): the inner
@@ -7882,7 +7932,7 @@ export class Orchestrator {
               await this.afterTurn(turnId, input, doneEvent.answer, doneEvent.turnId),
             );
           }
-          yield this.discloseDoneEvent(doneEvent, input);
+          yield this.discloseDoneEvent(doneEvent, input, bound?.ledger);
           continue;
         }
         if (event.type === 'done') {
@@ -7896,7 +7946,7 @@ export class Orchestrator {
           // #644 — fold the disclosure at the boundary, AFTER the hook (which
           // records the raw answer, matching the non-streaming path where
           // `toSemanticAnswer` folds only after `runTurn` persisted the turn).
-          yield this.discloseDoneEvent(event, input);
+          yield this.discloseDoneEvent(event, input, bound?.ledger);
           continue;
         }
         yield event;
@@ -8015,7 +8065,7 @@ export class Orchestrator {
       },
     ];
 
-    const entityCollection = this.entityRefBus?.beginCollection(turnId);
+    const entityCollection = shareEntityRefs(this.entityRefBus?.beginCollection(turnId));
     let toolCalls = 0;
     // #1500 — see the buffered twin in runTurnCore.
     const answerText = new AnswerTextAccumulator();
@@ -8052,6 +8102,8 @@ export class Orchestrator {
       ? new RunTraceCollector({
           scope: input.sessionScope,
           ...runTraceUserSpread(input),
+          turnId,
+          ...(entityCollection ? { entityRefs: entityCollection } : {}),
         })
       : undefined;
 

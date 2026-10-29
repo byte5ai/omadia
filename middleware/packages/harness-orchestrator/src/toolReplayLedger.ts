@@ -185,6 +185,14 @@ export class ToolReplayLedger {
   /** The request's recorded turn: the row of the pass the verifier delivers
    *  (`requestTurnRecord.ts`). Used only while {@link defersTurnRecord}. */
   readonly turnRecord = new RequestTurnRecord();
+  /**
+   * #1578 — true once a pass of this request folded the AI disclosure line
+   * (the conversation's first turn). The fold marks the conversation seen, so
+   * without this a verifier re-entry of that first turn — the answer the
+   * user actually receives — would go out unmarked. Every later pass of the
+   * request folds the line too (`requestDisclosureSeen` in the orchestrator).
+   */
+  disclosureFolded = false;
 
   constructor(options: ToolReplayLedgerOptions = {}) {
     this.#retainResults = options.retainResults ?? true;

@@ -1,4 +1,9 @@
-import { knowledgeGraphRefsOf, type RunTracePayload } from './runTraceCollector.js';
+import { toTurnRecords, type TurnRecord } from '@omadia/verifier';
+import {
+  knowledgeGraphRefsOf,
+  turnEvidenceOf,
+  type RunTracePayload,
+} from './runTraceCollector.js';
 
 /**
  * What the answer verifier reads from a turn's run trace: the tools and
@@ -132,4 +137,21 @@ export function extractPostconditionViolations(
     }
   }
   return out;
+}
+
+/**
+ * #1574 — the Odoo records this turn's tools read (model + id), from the
+ * turn's EntityRef collection kept beside the trace. Undefined when no trace
+ * or the trace was not built by a collector.
+ */
+export function extractTurnRecords(
+  trace: RunTracePayload | undefined,
+): readonly TurnRecord[] | undefined {
+  const evidence = trace ? turnEvidenceOf(trace) : undefined;
+  return evidence ? toTurnRecords(evidence.entityRefs) : undefined;
+}
+
+/** #1571 — the id of the turn this trace belongs to, when the collector knew it. */
+export function extractTurnId(trace: RunTracePayload | undefined): string | undefined {
+  return trace ? turnEvidenceOf(trace)?.turnId : undefined;
 }

@@ -148,6 +148,16 @@ export async function applyProviderAssignment(
       message: `${desc.label} needs tool support; the subscription CLI provider is tool-less. Use it only for tool-less roles (e.g. extraction/classification).`,
     };
   }
+  // #1583 — a plugin that cannot run on the subscription CLI at all: refuse,
+  // rather than save an assignment the plugin then silently does not start on.
+  if (desc.rejectsSubscriptionCli === true && providerWire === 'claude-cli') {
+    return {
+      ok: false,
+      status: 400,
+      code: 'providers.subscription_cli_unsupported',
+      message: `${desc.label} cannot run on the subscription CLI: it needs a provider with an API key. Assign it a key-based provider (e.g. Anthropic).`,
+    };
+  }
   const resolution = resolveAssignedModel(model, provider);
   if (!resolution.ok) return resolution;
   const { storeModel, resolvedModel } = resolution;
@@ -334,6 +344,10 @@ export async function autoAssignSubscriptionCli(
     }
     if (desc.requiresTools === true) {
       skipped.push({ pluginId: desc.id, reason: 'requires_tools' });
+      continue;
+    }
+    if (desc.rejectsSubscriptionCli === true) {
+      skipped.push({ pluginId: desc.id, reason: 'subscription_cli_unsupported' });
       continue;
     }
     const cfg = deps.installedRegistry.get(desc.id)?.config ?? {};
