@@ -160,11 +160,13 @@ import type {
   PrivacyRenderedAnswer,
   PrivacyV4ToolResult,
   ProcessMemoryService,
+  ProfileQualityConfig,
   ResponseGuardService,
   SessionBriefingService,
   TurnMaskedView,
   TurnReceiptStore,
 } from '@omadia/plugin-api';
+import { responseGuardProfileFor } from './agentQuality.js';
 import {
   agentScopePrefix,
   isUnknownOutcomeToolErrorNotice,
@@ -461,6 +463,31 @@ const KERNEL_NATIVE_SPECS: ReadonlySet<unknown> = new Set(
 );
 
 /**
+ * #1585 — true when `reg` is a full-form registration made by
+ * {@link registerKernelNativeTools}, not one a plugin contributed under the
+ * same name.
+ *
+ * The registry is one kernel service shared by every Orchestrator build, and
+ * `registerKernelNativeTools` keeps the FIRST build's handler for the life of
+ * the process. That handler's instance is not the one a later build drains
+ * (`drainPendingChoice`, `drainFollowUps`, …), so a kernel-owned registration
+ * must never be dispatched through: each build dispatches to its own instance.
+ */
+export function isKernelNativeRegistration(
+  reg: { readonly spec?: unknown } | undefined,
+): boolean {
+  return reg?.spec !== undefined && KERNEL_NATIVE_SPECS.has(reg.spec);
+}
+
+/** #1585 — the instance in `instances` that serves kernel native `name`. */
+function pickKernelNative(
+  instances: KernelNativeInstances,
+  name: string,
+): KernelNativeHandleable | undefined {
+  return KERNEL_NATIVE_FULL_FORM.find((f) => f.name === name)?.pick(instances);
+}
+
+/**
  * Register the kernel-native tools into `registry`, giving each of the wired
  * five (see {@link KERNEL_NATIVE_FULL_FORM}) a spec + handler so the loopback
  * MCP server actually advertises AND dispatches it on the subscription-CLI
@@ -469,11 +496,22 @@ const KERNEL_NATIVE_SPECS: ReadonlySet<unknown> = new Set(
  *
  * A name already present in `registry` (a plugin got there first) is left
  * untouched, matching the previous loop's `has()` guard.
+ *
+ * #1585 — the registry outlives every build, so the registered handler is
+ * late-bound: it serves the instances of the MOST RECENT build on `registry`,
+ * not the first build's, which no turn drains any more. The orchestrator's own
+ * loop and the subscription-CLI dispatcher do not go through it at all (they
+ * use the build's own instances, see {@link isKernelNativeRegistration}); this
+ * covers the remaining registry readers (sub-agent tool refs, plugin
+ * `tools.invoke`).
  */
+const latestKernelInstances = new WeakMap<NativeToolRegistry, KernelNativeInstances>();
+
 export function registerKernelNativeTools(
   registry: NativeToolRegistry,
   instances: KernelNativeInstances,
 ): void {
+  latestKernelInstances.set(registry, instances);
   const fullByName = new Map(KERNEL_NATIVE_FULL_FORM.map((f) => [f.name, f]));
   for (const name of KERNEL_NATIVE_TOOL_NAMES) {
     if (registry.has(name)) {
@@ -484,7 +522,12 @@ export function registerKernelNativeTools(
     if (full && instance) {
       registry.register(name, {
         spec: full.spec,
-        handler: (input: unknown) => instance.handle(input),
+        handler: (input: unknown) => {
+          const current = full.pick(latestKernelInstances.get(registry) ?? instances);
+          return current
+            ? current.handle(input)
+            : Promise.resolve(`Error: tool \`${name}\` is unavailable for this agent.`);
+        },
       });
     } else {
       registry.register(name);
@@ -828,6 +871,13 @@ export interface OrchestratorOptions {
    * runs `ctx.services.get(RESPONSE_GUARD_SERVICE_NAME)` per call.
    */
   responseGuard?: () => ResponseGuardService | undefined;
+  /**
+   * #1569 — this Agent's own response-quality settings
+   * (`agent_identities.quality`). Handed to the `responseGuard` provider so it
+   * resolves per agent; see `responseGuardProfileFor` for why a field the agent
+   * set itself yields no second block from the guard.
+   */
+  agentQuality?: ProfileQualityConfig;
   /**
    * Optional `privacy.redact@1` provider lookup — Privacy-Proxy Slice 2.1.
    * Late-bound for the same reason as `responseGuard`: the orchestrator
@@ -2812,6 +2862,7 @@ export class Orchestrator {
   private readonly findFreeSlotsTool: FindFreeSlotsTool | undefined;
   private readonly bookMeetingTool: BookMeetingTool | undefined;
   private readonly responseGuard: (() => ResponseGuardService | undefined) | undefined;
+  private readonly agentQuality: ProfileQualityConfig | undefined;
   private readonly privacyGuard: (() => PrivacyGuardService | undefined) | undefined;
   private readonly turnReceiptStore: (() => TurnReceiptStore | undefined) | undefined;
   /**
@@ -2981,6 +3032,7 @@ export class Orchestrator {
     this.findFreeSlotsTool = options.findFreeSlotsTool;
     this.bookMeetingTool = options.bookMeetingTool;
     this.responseGuard = options.responseGuard;
+    this.agentQuality = options.agentQuality;
     this.privacyGuard = options.privacyGuard;
     this.turnReceiptStore = options.turnReceiptStore;
     this.pluginConfigGet = options.pluginConfigGet;
@@ -3022,11 +3074,19 @@ export class Orchestrator {
     // #1102 — the wired five get a spec + handler so the loopback MCP server
     // advertises and dispatches them on the subscription-CLI path; memory and
     // get_chat_participants stay marker-only (see registerKernelNativeTools).
-    registerKernelNativeTools(this.nativeTools, {
-      // The registered handler knows no turn, and it is what the
-      // subscription-CLI path dispatches through. For an agent whose context
-      // memory restricts the graph tool per turn it would read every room of
-      // the tenant, so it sees nothing instead (`unrestrictedGraphToolAllowed`).
+    registerKernelNativeTools(this.nativeTools, this.kernelNativeInstances());
+  }
+
+  /**
+   * The instances this build's kernel natives dispatch to on a path that
+   * knows no turn (the subscription-CLI loopback, see
+   * {@link kernelNativeHandler}).
+   */
+  private kernelNativeInstances(): KernelNativeInstances {
+    return {
+      // This handler knows no turn. For an agent whose context memory
+      // restricts the graph tool per turn it would read every room of the
+      // tenant, so it sees nothing instead (`unrestrictedGraphToolAllowed`).
       knowledgeGraphTool:
         this.knowledgeGraphTool && !this.unrestrictedGraphToolAllowed()
           ? { handle: (input: unknown) => this.knowledgeGraphTool!.handle(input, NOTHING_VISIBLE) }
@@ -3035,7 +3095,23 @@ export class Orchestrator {
       suggestFollowUpsTool: this.suggestFollowUpsTool,
       findFreeSlotsTool: this.findFreeSlotsTool,
       bookMeetingTool: this.bookMeetingTool,
-    });
+    };
+  }
+
+  /**
+   * #1585 — the handler THIS build dispatches kernel native `name` to, for a
+   * dispatcher outside the in-process loop (the subscription-CLI
+   * `ToolDispatchService`). The shared registry holds the first build's
+   * handler, whose pending card no later build ever drains; this one writes
+   * to the instance {@link drainCliTurnCards} reads.
+   *
+   * `undefined` when a plugin owns the name (its registered handler wins, as
+   * before) or this build has no instance for it.
+   */
+  public kernelNativeHandler(name: string): ((input: unknown) => Promise<string>) | undefined {
+    if (!isKernelNativeRegistration(this.nativeTools.get(name))) return undefined;
+    const instance = pickKernelNative(this.kernelNativeInstances(), name);
+    return instance ? (input: unknown) => instance.handle(input) : undefined;
   }
 
   /** Fresh {@link LoopGuard} for one turn, wired to this Agent's thresholds. */
@@ -4544,6 +4620,12 @@ export class Orchestrator {
    *  locale, else the operator's configured one (composers default to `de`). */
   private turnLocale(input: ChatTurnInput): string | undefined {
     return this.resolveTurnDisclosure(input)?.locale ?? this.aiDisclosure?.locale;
+  }
+
+  /** {@link turnLocale} for a runtime outside this loop: the subscription
+   *  CLI's refusal under `OMADIA_PRIVACY_FORCE_GUARDED` (#1535). */
+  public noticeLocale(input: ChatTurnInput): string | undefined {
+    return this.turnLocale(input);
   }
 
   private expandDegradedDoneEvent(
@@ -9797,8 +9879,13 @@ export class Orchestrator {
     // legacy path for tools that have not yet been converted to
     // plugin-registration (memory, knowledge_graph, …). As each kernel tool
     // migrates, its hardcoded branch disappears.
+    //
+    // #1585 — a kernel-owned registration is skipped: it carries the handler
+    // of whichever build registered first, and its pending card would land on
+    // an instance this build never drains. The branches below dispatch to this
+    // build's own instances instead.
     const reg = this.nativeTools.get(name);
-    if (reg?.handler) {
+    if (reg?.handler && !isKernelNativeRegistration(reg)) {
       // Issue #474 — re-check readiness at invocation time, not just at
       // list-assembly time: a plugin's connection/auth state can complete
       // or expire between the two, so list-time filtering alone leaves a
@@ -9989,9 +10076,14 @@ export class Orchestrator {
         role: m.role as 'user' | 'assistant',
         content: typeof m.content === 'string' ? m.content : '',
       }));
+      // #1569 — without the agent id and its own settings the provider can
+      // only ever answer with its install-wide default.
+      const profileQuality = responseGuardProfileFor(this.agentQuality);
       const result = await provider.getRules({
         systemPrompt: this.getSystemPrompt(),
         messages: flat,
+        agentId: this.agentId,
+        ...(profileQuality ? { profileQuality } : {}),
       });
       const rules = result.prependRules ?? '';
       return rules.trim().length > 0 ? rules : '';

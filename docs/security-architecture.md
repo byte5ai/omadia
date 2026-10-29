@@ -2066,7 +2066,10 @@ These tool results skip the digest:
   guard can be repaired; only chat answers with the refusal until it is back.
   A turn on the subscription CLI (`claude-cli`), which has no shield, is
   refused the same way under the clamp, before the child is spawned
-  (`CliChatAgent`, `CLI_PRIVACY_SHIELD_REQUIRED_ANSWER`). A refused
+  (`CliChatAgent`, `cliPrivacyShieldRequiredAnswer`). Its answer names the
+  cause and the API-key provider as the fix, in the turn's language
+  (`Orchestrator.noticeLocale`, `en*` → English, else German), and every
+  refused turn logs `CLI_PRIVACY_SHIELD_REQUIRED_LOG` for the operator. A refused
   turn fires no turn hook and runs no parked MCP input replay; the canvas
   skeleton skips its model call (`composeSkeleton({ skipModel })`); and the
   memory jobs outside a turn refuse without a guard (`createJobPrivacy`).
