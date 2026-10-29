@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/plugin-plan-runner"
   name: "Plan Runner"
-  version: "0.1.0"
+  version: "0.2.0"
   kind: "extension"
   domain: "orchestrator.plan-runner"
   description:
@@ -64,6 +64,25 @@ setup:
           label:
             en: "On — check exit conditions after each tool"
             de: "On — Exit-Conditions nach jedem Tool prüfen"
+    - key: "mapStepsAtTurnEnd"
+      type: "enum"
+      label:
+        en: "Map tool calls to steps at turn end (#1502)"
+        de: "Tool-Aufrufe am Turn-Ende den Schritten zuordnen (#1502)"
+      help:
+        en: "During the turn the plan card credits steps in order: the i-th tool call completes the i-th step. When on, one Haiku call after the turn maps the whole tool trace to the steps and corrects the stored plan, which later turns recall. It fixes a call credited to the wrong step and a call that covered two steps. The live card is not changed, and the turn's answer is not delayed. If the call fails, the stored plan keeps the in-turn result. Costs one Haiku call per planned turn. Default: on."
+        de: "Während des Turns hakt die Plan-Karte Schritte der Reihe nach ab: der i-te Tool-Aufruf erledigt den i-ten Schritt. Wenn aktiviert, ordnet ein Haiku-Aufruf nach dem Turn die ganze Tool-Spur den Schritten zu und korrigiert den gespeicherten Plan, den spätere Turns abrufen. Das behebt einen Aufruf, der dem falschen Schritt zugerechnet wurde, und einen Aufruf, der zwei Schritte erledigt hat. Die Live-Karte bleibt unverändert, und die Antwort des Turns wartet nicht darauf. Schlägt der Aufruf fehl, behält der gespeicherte Plan das Ergebnis aus dem Turn. Kostet einen Haiku-Call pro geplantem Turn. Standard: on."
+      required: false
+      default: "on"
+      enum:
+        - value: "on"
+          label:
+            en: "On — correct the stored plan after the turn"
+            de: "On — gespeicherten Plan nach dem Turn korrigieren"
+        - value: "off"
+          label:
+            en: "Off — keep the in-turn order mapping"
+            de: "Off — Zuordnung der Reihe nach aus dem Turn behalten"
     - key: "gcDuplicatePlans"
       type: "enum"
       label:
@@ -131,7 +150,14 @@ setup:
 # service call itself is the write path). Base: one Haiku gate call + one
 # planning call per plan-worthy turn. With verifyExitConditions=on, one extra
 # Haiku call per completing step that declared an exit condition, plus a
-# planning call per replan — hence the higher per-invocation ceiling.
+# planning call per replan. With mapStepsAtTurnEnd=on (default), one mapping
+# call per planned turn (#1502).
+#
+# `calls_per_invocation` is counted over the plugin context's lifetime, i.e.
+# since activation, not per turn (see handoff "Aufrufzähler des Accessors").
+# At 30 the gate alone used it up after about 30 turns, and planning then
+# stopped silently until the next activation. Same ceiling as the
+# ui-orchestrator for the same reason.
 # ---------------------------------------------------------------------------
 permissions:
   memory:
@@ -147,7 +173,7 @@ permissions:
   llm:
     models_allowed:
       - "claude-haiku-4-5"
-    calls_per_invocation: 30
+    calls_per_invocation: 1000000
     max_tokens_per_call: 2048
 
 playbook:
