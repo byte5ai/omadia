@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useTranslations } from 'next-intl';
 
 import type {
@@ -8,15 +9,21 @@ import type {
   ToolErrorCarrier,
   ToolErrorEntry,
 } from '../../_lib/chatSessions';
+import { receiptHref } from '../../_lib/receipts';
 import { MissReportForm } from './MissReportForm';
 
 interface PrivacyReceiptCardProps {
   receipt: PrivacyReceipt;
   className?: string;
   /** #760 — threads into the miss-report intake so a filed report keeps the
-   *  turn correlation the review schema was built with. */
+   *  turn correlation the review schema was built with. #1573 — also shown on
+   *  the card, linked to the turn's entry on the Receipts page. Absent on the
+   *  Receipts page itself. */
   turnId?: string;
 }
+
+/** Characters of the turn id the card shows; the full id is in the title. */
+const SHORT_TURN_ID = 8;
 
 /**
  * Per-turn Privacy Shield v4 disclosure. Shows what the Data-Plane Boundary
@@ -51,6 +58,7 @@ export function PrivacyReceiptCard({
   const verbs = receipt.verbsExecuted;
   const bypassed = receipt.bypassedTools ?? [];
   const promptSpans = receipt.maskedPromptSpans ?? [];
+  const contextSpans = receipt.maskedContextSpans ?? [];
   const structured = receipt.structuredPayloads ?? [];
   const verifier = receipt.verifierEgress;
   const hasVerifier = verifier !== undefined && verifier.requests > 0;
@@ -61,17 +69,17 @@ export function PrivacyReceiptCard({
   // the user MUST see; bypass is a conscious operator decision but still
   // worth highlighting; default is the boring "boundary did its job".
   const breached = (receipt.identityValuesOnWire ?? 0) > 0;
-  const hasBypass = bypassed.length > 0;
+  // #1557 — the turn's `unprotected` flag covers a bypass the list may lack.
+  const hasBypass = bypassed.length > 0 || receipt.unprotected === true;
+  // #1562 — a failed name detector let names through: worth the amber card.
+  const nameDetectorFailed = receipt.nameDetector === 'failed';
   const palette = breached
     ? PALETTE_BREACH
-    : hasBypass
+    : hasBypass || nameDetectorFailed
       ? PALETTE_BYPASS
       : PALETTE_OK;
 
-  // Which explainer line to show under the facts grid. Bypass explainer
-  // is its own line BELOW the default/breach explainer because they can
-  // co-occur (a turn can both intern AND bypass).
-  const explainerKey = breached ? 'explainerBreach' : 'explainer';
+  const explainerKeys = receiptExplainerKeys(receipt);
 
   return (
     <details
@@ -124,6 +132,13 @@ export function PrivacyReceiptCard({
             <Fact
               label={t('factPromptMasked')}
               value={formatMaskedPromptSpans(promptSpans)}
+              labelClass={palette.label}
+            />
+          )}
+          {contextSpans.length > 0 && (
+            <Fact
+              label={t('factContextMasked')}
+              value={formatMaskedPromptSpans(contextSpans)}
               labelClass={palette.label}
             />
           )}
@@ -243,19 +258,11 @@ export function PrivacyReceiptCard({
             </ul>
           </div>
         )}
-        <div className={['text-[11px] italic', palette.muted].join(' ')}>
-          {t(explainerKey)}
-        </div>
-        {promptSpans.length > 0 && (
-          <div className={['text-[11px] italic', palette.muted].join(' ')}>
-            {t('explainerPromptMasked')}
+        {explainerKeys.map((key) => (
+          <div key={key} className={['text-[11px] italic', palette.muted].join(' ')}>
+            {t(key)}
           </div>
-        )}
-        {hasBypass && (
-          <div className={['text-[11px] italic', palette.muted].join(' ')}>
-            {t('explainerBypassed')}
-          </div>
-        )}
+        ))}
         {structured.length > 0 && (
           <div className={['text-[11px] italic', palette.muted].join(' ')}>
             {t('explainerStructured')}
@@ -269,6 +276,16 @@ export function PrivacyReceiptCard({
         {toolErrors.length > 0 && (
           <div className={['text-[11px] italic', palette.muted].join(' ')}>
             {t('explainerToolErrors')}
+          </div>
+        )}
+        {turnId !== undefined && (
+          <div className={['flex flex-wrap items-baseline gap-x-2 text-[10px]', palette.label].join(' ')}>
+            <span title={turnId} className="font-mono-num">
+              {t('turnId', { id: turnId.slice(0, SHORT_TURN_ID) })}
+            </span>
+            <Link href={receiptHref(turnId)} className="underline underline-offset-2">
+              {t('turnReceiptLink')}
+            </Link>
           </div>
         )}
         {/* #760 — the catch basin's intake: report a value the shield missed. */}
@@ -344,6 +361,10 @@ export function summarisePrivacyReceipt(r: PrivacyReceipt, t: TFn): string {
   if (promptSpans.length > 0) {
     parts.push(t('summaryPromptMasked', { count: promptSpans.length }));
   }
+  const contextSpans = r.maskedContextSpans ?? [];
+  if (contextSpans.length > 0) {
+    parts.push(t('summaryContextMasked', { count: contextSpans.length }));
+  }
   const structured = r.structuredPayloads ?? [];
   if (structured.length > 0) {
     parts.push(t('summaryStructured', { count: structured.length }));
@@ -356,12 +377,40 @@ export function summarisePrivacyReceipt(r: PrivacyReceipt, t: TFn): string {
   if (toolErrors.length > 0) {
     parts.push(t('summaryToolErrors', { count: toolErrors.length }));
   }
+  if (r.nameDetector === 'failed') {
+    parts.unshift(t('summaryNameDetectorFailed'));
+  }
   const onWire = r.identityValuesOnWire ?? 0;
   if (onWire > 0) {
     // Lead with the breach clause so it is the first thing read.
     parts.unshift(t('summaryIdentityOnWire', { count: onWire }));
   }
   return parts.join(' · ');
+}
+
+/**
+ * The explanation lines under the facts, in order. Each states only what this
+ * receipt shows happened (#1557): the "identity-free digest" line needs an
+ * interned tool result and no bypass; a bypass replaces it; a turn without
+ * any tool result gets no tool line at all. Pure, for unit tests.
+ */
+export function receiptExplainerKeys(r: PrivacyReceipt): string[] {
+  const keys: string[] = [];
+  const bypassed = (r.bypassedTools ?? []).length > 0 || r.unprotected === true;
+  const interned = r.datasetsInterned > 0;
+  if ((r.identityValuesOnWire ?? 0) > 0) keys.push('explainerBreach');
+  if (interned && !bypassed) keys.push('explainer');
+  if (interned && bypassed) keys.push('explainerMixed');
+  if (bypassed) keys.push('explainerBypassed');
+  if ((r.maskedPromptSpans ?? []).length > 0) keys.push('explainerPromptMasked');
+  if ((r.maskedContextSpans ?? []).length > 0) keys.push('explainerContextMasked');
+  const maskedFreeText =
+    (r.maskedPromptSpans ?? []).length > 0 || (r.maskedContextSpans ?? []).length > 0;
+  if (r.nameDetector === 'failed') keys.push('explainerNameDetectorFailed');
+  else if (r.nameDetector === 'unconfigured' && maskedFreeText) {
+    keys.push('explainerNameDetectorOff');
+  }
+  return keys;
 }
 
 /**

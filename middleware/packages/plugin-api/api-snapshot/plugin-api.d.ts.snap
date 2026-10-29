@@ -2049,9 +2049,19 @@ readonly pseudonymProjectionUsed: boolean;
 readonly identityValuesOnWire?: number;
 readonly bypassedTools?: readonly BypassedToolEntry[];
 readonly maskedPromptSpans?: readonly PromptMaskedSpanInfo[];
+readonly maskedContextSpans?: readonly PromptMaskedSpanInfo[];
+readonly nameDetector?: PrivacyNameDetectorTurnState;
+readonly unprotected?: boolean;
 readonly structuredPayloads?: readonly StructuredPayloadEntry[];
 readonly verifierEgress?: VerifierEgressSummary;
 readonly toolErrors?: readonly ToolErrorEntry[];
+}
+export type PrivacyNameDetectorTurnState = 'active' | 'unconfigured' | 'failed';
+export interface PrivacyNameDetectorStatus {
+readonly state: 'unconfigured' | 'active' | 'unreachable';
+readonly source: 'setup' | 'env' | null;
+readonly lastFailureAt: string | null;
+readonly promptMasking: boolean;
 }
 export interface VerifierEgressSummary {
 readonly requests: number;
@@ -2149,7 +2159,9 @@ readonly turnId: string;
 readonly text: string;
 readonly stage?: PrivacyEgressStage;
 readonly preview?: boolean;
+readonly origin?: PrivacyPromptOrigin;
 }
+export type PrivacyPromptOrigin = 'message' | 'context';
 export interface PrivacyVerifierProjectionRequest {
 readonly sessionId: string;
 readonly turnId: string;
@@ -2227,6 +2239,7 @@ projectVerifierText?(request: PrivacyVerifierProjectionRequest): Promise<Privacy
 maskReplayedAnswer?(request: PrivacyReplayedAnswerRequest): Promise<PrivacyPromptMaskResult>;
 openStoredTextScope?(request: PrivacyStoredTextScopeRequest): PrivacyStoredTextScope;
 countUnresolvedSurrogates?(turnId: string, text: string, options?: UnresolvedSurrogateCountOptions): Promise<number>;
+nameDetectorStatus?(): Promise<PrivacyNameDetectorStatus>;
 v4ToolSpecs(): ReadonlyArray<PrivacyV4ToolSpec>;
 finalizeTurn(turnId: string, turnInput?: string): Promise<PrivacyReceipt | undefined>;
 }

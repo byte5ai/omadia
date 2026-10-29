@@ -30,6 +30,7 @@ import { isInstalled, isOperatorInstalled, isReady } from '../_lib/pluginCounts'
 import { DashboardOnboarding } from '../_components/dashboard/DashboardOnboarding';
 import { PlatformHealthBanner } from '../_components/PlatformHealthBanner';
 import { PrivacyShieldBanner } from '../_components/PrivacyShieldBanner';
+import { NameDetectorBanner } from '../_components/NameDetectorBanner';
 
 /**
  * Operator landing surface. Replaces the chat as the first screen (chat now
@@ -481,6 +482,7 @@ export default async function DashboardPage(): Promise<React.ReactElement> {
     <main className="mx-auto w-full max-w-[1280px] px-6 py-12 lg:px-8 lg:py-16">
       <PlatformHealthBanner notice={notice} />
       <PrivacyShieldBanner posture={privacy} />
+      <NameDetectorBanner posture={privacy} />
       <header className="mb-10">
         <h1 className="font-display text-[clamp(2rem,4vw,3rem)] leading-[1.1] text-[color:var(--fg-strong)]">
           {t('h1')}

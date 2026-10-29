@@ -1753,8 +1753,9 @@ requests, and only there, the shield acts on four kinds of text:
   IBAN, phone, address, ID number), the operator's deny-list and names when
   the C1 detector is configured, through the turn's prompt map, so the final
   answer gets the real values back. Dates and amounts stay, as in a v4
-  digest. The spans count on the receipt as the turn's own
-  (`maskedPromptSpans`). It fails closed like prompt masking (below): a
+  digest. The spans count on the receipt as the turn's own egress, booked as
+  earlier context (`maskedContextSpans`, #1541) and never as masked in the
+  user's message. It fails closed like prompt masking (below): a
   failing C1 falls back to C0, and a detection failure or a surviving value
   blocks the turn (`PromptMaskBlockedError`).
 - **Prompt text, only while `mask_user_prompt` is on.** The setting is off by
@@ -1828,8 +1829,8 @@ they mask it whatever `mask_user_prompt` says
   turn's handle from the kernel's `turnContext` service and mask their request
   through `maskReplayedAnswer`, never through the flag-gated `maskUserPrompt`:
   the identity shapes of the C0 baseline, the deny-list and C1 through the
-  turn's prompt map, counted on the receipt as the turn's own
-  (`maskedPromptSpans`). The briefing restores its summary through the same
+  turn's prompt map, counted on the receipt as the turn's own egress, as
+  earlier context (`maskedContextSpans`). The briefing restores its summary through the same
   map before it stores it.
 - **Outside a turn.** Topic-cluster naming (`topicClustering.ts`), the
   inconsistency detector (`inconsistencyDetector.ts`, which runs
@@ -2019,7 +2020,19 @@ These tool results skip the digest:
   `GET /api/v1/admin/runtime/privacy-posture` (#1508, #1510), which also
   reports `shield_active: false` while no `privacy.redact@1` provider runs —
   every turn then reaches the model unmasked, and the dashboard says so
-  (#1507). The posture is not on the public `/health`. While the clamp is
+  (#1507). Since #1562 it also reports `name_detector`: whether the C1 name
+  detector is unconfigured, active or unreachable (a probe of the sidecar's
+  `/health`, 2 s timeout, cached 30 s), where its URL comes from, when it last
+  failed in a turn, and whether `mask_user_prompt` is on. The guard's store
+  page shows it; the dashboard and `/admin` warn when C1 is unreachable, or
+  unconfigured while prompt masking is on. A turn's receipt carries
+  `nameDetector: 'failed' | 'unconfigured'` when C1 failed or was not
+  configured for its free-text masking. Its `identityValuesOnWire` ("you
+  named a person", red card) counts only values of PII-classified tool fields
+  that look like a person identifier (a full name, an e-mail address, a phone
+  number) and occur in the user's message as whole words (#1549,
+  `identityOnWire.ts`); it is a transparency notice and never drives masking.
+  The posture is not on the public `/health`. While the clamp is
   on, uninstalling the last `privacy.redact@1` provider is refused
   (`409 install.privacy_guard_required`), since without one no turn is
   masked and the policy would be void. A provider that is installed but not
@@ -2139,9 +2152,14 @@ masks text only, so it reads no image block. In-tree these are:
   first (`skeletonPrivacy.ts`, #1540): the C0 identity shapes, the deny-list
   and C1, with the skeleton restored afterwards; a scope that cannot mask
   skips the model call and the turn gets the static skeleton. The
-  plan-runner's planning gate and planner send the user's message from the
-  `onBeforeTurn` hook, which fires before the turn masks anything
-  (`harness-plugin-plan-runner/src/gate.ts`, `materializer.ts`). A tool that
+  plan-runner's planning gate and planner send the user's message, as the
+  user wrote it, from the `onBeforeTurn` hook
+  (`harness-plugin-plan-runner/src/gate.ts`, `materializer.ts`). Since #1547
+  the turn masks the message before that hook fires, on both paths
+  (`chatInContextInner`; `preMaskUserMessage` in the stream's prelude): a
+  blocked mask refuses the turn before any hook, tool or model sees the text,
+  so the refusal's "not sent to the language model" holds. A message whose
+  mask passes still reaches the plan-runner unmasked. A tool that
   fetches data and asks a model about it sends that data the same way, and
   only the tool's result crosses the shield.
 - **Images.** Images the user attaches go into the turn's own request to a
@@ -2816,8 +2834,9 @@ replayed result the shield cannot intern again is withheld, never sent raw.
   model. So the orchestrator masks a caller's `extraSystemHint` through the
   pass's prompt map like the user's message (`wireExtraSystemHint`, both
   paths): the same surrogates, restored in the delivered answer; its masked
-  spans on the pass's receipt and so on the request's merged receipt
-  (`maskedPromptSpans`); and failure-closed — a re-entry whose prompt cannot
+  spans on the pass's receipt and so on the request's merged receipt (as
+  earlier context, `maskedContextSpans`, #1541: the hint quotes the answer's
+  claims, not the user's words); and failure-closed — a re-entry whose prompt cannot
   be masked is abandoned instead of answered with the privacy error, and the
   first answer's verdict decides. The kernel's fresh-check text is not
   masked. Behind a shield the verifier does not send a hint the contradicted

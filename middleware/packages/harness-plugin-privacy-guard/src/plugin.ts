@@ -4,7 +4,7 @@ import {
   type PrivacyGuardService,
 } from '@omadia/plugin-api';
 
-import { createC1HttpDetector } from './c1Detector.js';
+import { createC1HttpDetector, probeC1Health } from './c1Detector.js';
 import { createPrivacyGuardService } from './service.js';
 
 /**
@@ -32,6 +32,9 @@ import { createPrivacyGuardService } from './service.js';
  * degrade-to-C0 path.
  */
 
+/** #1562 — how long a posture probe of the C1 sidecar is reused. */
+const C1_PROBE_CACHE_MS = 30_000;
+
 export interface PrivacyGuardPluginHandle {
   close(): Promise<void>;
 }
@@ -50,16 +53,17 @@ export async function activate(
   // resolved LIVE per detect() call: operator setup field first, env
   // fallback second (empty strings count as unset — see the `??` vs `||`
   // env gotcha in the handoff doc §10).
-  const resolveC1Url = (): string | undefined => {
+  const resolveC1Source = (): { url: string; source: 'setup' | 'env' } | undefined => {
     const fromConfig = ctx.config.get('c1_detector_url');
-    const configUrl =
-      typeof fromConfig === 'string' && fromConfig.trim() !== ''
-        ? fromConfig.trim()
-        : undefined;
+    if (typeof fromConfig === 'string' && fromConfig.trim() !== '') {
+      return { url: fromConfig.trim(), source: 'setup' };
+    }
     const envUrl = process.env['PRIVACY_C1_DETECTOR_URL']?.trim();
-    return configUrl ?? (envUrl !== undefined && envUrl !== '' ? envUrl : undefined);
+    return envUrl !== undefined && envUrl !== '' ? { url: envUrl, source: 'env' } : undefined;
   };
+  const resolveC1Url = (): string | undefined => resolveC1Source()?.url;
   const c1Detector = createC1HttpDetector({ resolveUrl: resolveC1Url });
+  let probeCache: { url: string; at: number; reachable: Promise<boolean> } | undefined;
   const service = createPrivacyGuardService({
     ...(llm ? { llmComplete: llm.complete.bind(llm) } : {}),
     // #361 — live flag reader for default-off user-prompt masking. Routed
@@ -70,6 +74,19 @@ export async function activate(
     // The live sidecar URL scopes the process-wide C1 segment cache: a
     // reconfigured sidecar misses, an unconfigured one caches nothing.
     c1CacheScope: resolveC1Url,
+    // #1562 — the operator's posture shows whether names are detected:
+    // where the URL comes from and whether the sidecar answers right now.
+    // Cached briefly and shared while in flight: every admin page load reads
+    // the posture, and a down sidecar would hold each one for the timeout.
+    probeC1: async () => {
+      const resolved = resolveC1Source();
+      if (resolved === undefined) return { source: null, reachable: false };
+      const now = Date.now();
+      if (probeCache?.url !== resolved.url || now - probeCache.at > C1_PROBE_CACHE_MS) {
+        probeCache = { url: resolved.url, at: now, reachable: probeC1Health(resolved.url) };
+      }
+      return { source: resolved.source, reachable: await probeCache.reachable };
+    },
   });
   const disposeService = ctx.services.provide<PrivacyGuardService>(
     PRIVACY_REDACT_SERVICE_NAME,
