@@ -237,7 +237,20 @@ export async function verifyReceiptStream(
   pool: Pool,
   opts: VerifyReceiptStreamOptions,
 ): Promise<VerifyReceiptStreamResult> {
-  return withReadSnapshot(pool, (db) => verifyInSnapshot(db, opts));
+  // Copy the witness BEFORE the snapshot (security review N2): a checkpoint
+  // signed or a head read by a concurrent pass after BEGIN is not in this
+  // snapshot and would read as tampering.
+  const witnessView = opts.witness
+    ? { highestHead: opts.witness.highestHead, lastSigned: opts.witness.lastSigned }
+    : undefined;
+  const result = await withReadSnapshot(pool, (db) => verifyInSnapshot(db, opts, witnessView));
+  opts.witness?.noteHead(result.recordedHeadSeq);
+  return result;
+}
+
+interface WitnessView {
+  readonly highestHead: number;
+  readonly lastSigned: ChainWitness['lastSigned'];
 }
 
 interface ChainBreak {
@@ -287,6 +300,7 @@ class ChainWalker {
 async function verifyInSnapshot(
   db: Db,
   opts: VerifyReceiptStreamOptions,
+  witness: WitnessView | undefined,
 ): Promise<VerifyReceiptStreamResult> {
   const now = opts.now?.() ?? new Date();
   const preChain = await db.query<{ n: string }>(
@@ -383,7 +397,7 @@ async function verifyInSnapshot(
 
   // What this process signed must still be there (security review H1): the
   // only DB-independent evidence when there is no anchor file.
-  const signed = opts.witness?.lastSigned;
+  const signed = witness?.lastSigned;
   if (signed) {
     const cp = checkpoints.find((c) => Number(c.seq) === signed.seq);
     if (cp?.head_hash.toString('hex') !== signed.headHashHex) {
@@ -416,12 +430,11 @@ async function verifyInSnapshot(
   ) {
     breakInfo = { firstBrokenSeq: recordedHeadSeq, breakKind: 'head_hash_mismatch' };
   }
-  const highestHead = opts.witness?.highestHead ?? 0;
+  const highestHead = witness?.highestHead ?? 0;
   if (!breakInfo && recordedHeadSeq < highestHead) {
     // #1566 — heads only move forward.
     breakInfo = { firstBrokenSeq: recordedHeadSeq + 1, breakKind: 'head_rollback' };
   }
-  opts.witness?.noteHead(recordedHeadSeq);
   if (!breakInfo && rowCount === 0 && (recordedHeadSeq > 0 || checkpoints.length > 0)) {
     // Empty table while head/checkpoints claim history: never green (mirrors
     // the offline tool's zero-entry refusal).

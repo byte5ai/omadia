@@ -2203,14 +2203,18 @@ it at boot); and the process witness — the highest head this process read,
 the newest checkpoint it signed — must still hold. The checkpoint worker
 signs only a head that is a stored row, and refuses while the witness or
 the anchor disagrees with the database; it and the reaper count only
-signature-valid checkpoints, so a junk row cannot stop signing or widen
-retention. Verify and export read in one REPEATABLE READ snapshot and walk
+signature-valid checkpoints at or below the head, so a junk row above the
+head cannot stop signing or widen retention (junk at the next seqs blocks
+signing at those seqs and shows as `bad_signature`). Verify and export read in one REPEATABLE READ snapshot and walk
 every row (no cap). Migration 0064 rejects deleting, updating or truncating
 checkpoints and rolling back, truncating or re-hashing the head — defence
 in depth: the table owner can drop the triggers. The documented limit:
 without an anchor, an admin who deletes checkpoints can delete or rewrite
 every row above the newest checkpoint left (the chain hash is unkeyed);
-only the running process's witness notices, until it restarts. Without a
+only the witness of the process that signed the deleted checkpoints
+notices — not another replica, and not after a restart. Offline, the anchor
+must be fetched before the export: the export header is unsigned, so a
+record newer than its `exportedAt` is a finding. Without a
 key the verdict is `unsigned`, never `verified`, and a retention prefix is
 reported as unanchored information rather than a break (#1568);
 `checkpoints.verified` counts signature-checked checkpoints only (#1584).

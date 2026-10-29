@@ -286,7 +286,9 @@ if (firstSeq !== undefined && firstSeq > 1) {
 
 // External anchor (#1565). Same record shape the server accepts; lines that
 // are not records (a torn final write) are noted, not findings — the DB
-// admin cannot write this file. Records signed after the export are skipped.
+// admin cannot write this file. Fetch the anchor BEFORE taking the export:
+// a record signed after the export's `exportedAt` then means the header was
+// backdated to hide truncated checkpoints (security review N1) — a finding.
 let anchorSummary;
 if (anchorPath) {
   let anchorLines;
@@ -331,8 +333,11 @@ if (anchorPath) {
       findings.push(`anchor_bad_signature: anchor record seq ${rec.seq} does not verify with the key`);
       continue;
     }
-    if (Date.parse(rec.signedAtIso) > exportedAtMs) {
+    if (!(Date.parse(rec.signedAtIso) <= exportedAtMs)) {
       newer += 1;
+      findings.push(
+        `anchor_newer_than_export: anchor record seq ${rec.seq} was signed after the export's exportedAt — fetch the anchor file BEFORE taking the export, then re-run`,
+      );
       continue;
     }
     if (lastSeq === undefined || rec.seq > lastSeq) {
@@ -350,7 +355,7 @@ if (anchorPath) {
     }
   }
   anchorSummary = `${records} records, ${matched} match the export`;
-  if (newer > 0) anchorSummary += `, ${newer} signed after the export (skipped)`;
+  if (newer > 0) anchorSummary += `, ${newer} signed after the export`;
   if (malformed > 0) anchorSummary += `, ${malformed} malformed line(s) ignored`;
 }
 

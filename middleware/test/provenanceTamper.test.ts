@@ -253,12 +253,14 @@ describe('#1565 external anchor comparison on a healthy chain', () => {
     assert.equal(result.anchor.malformedLines, 1);
   });
 
-  it('offline: anchor records signed after the export are skipped, not truncation', async () => {
+  it('offline: an anchor record newer than the export fails — the header could be backdated', async () => {
+    // Security review N1: with a skip rule, editing the unsigned exportedAt
+    // hid deleted checkpoints. The auditor fetches the anchor first instead.
     const jsonl = await serveExport(rows, cps, signer.publicKeyPem, servers);
     const later = signCheckpoint(signer, 7, Buffer.alloc(32, 3), new Date(Date.now() + 60_000));
     const out = runOffline(jsonl, signer.publicKeyPem, writeAnchorFile([...cps, later]));
-    assert.equal(out.status, 0, out.out);
-    assert.match(out.out, /1 signed after the export \(skipped\)/);
+    assert.equal(out.status, 1, out.out);
+    assert.match(out.out, /anchor_newer_than_export: anchor record seq 7/);
   });
 
   it('a checkpoint rewritten in the DB disagrees with the anchor → mismatch', async () => {
@@ -637,3 +639,25 @@ async function serveExportWithHead(
   const { port } = server.address() as { port: number };
   return (await fetch(`http://127.0.0.1:${String(port)}/p/export`)).text();
 }
+
+describe('security review N2 — concurrent activity is not tampering', () => {
+  it('a checkpoint signed after verify took its witness copy does not read as witness_mismatch', async () => {
+    const { signer, rows, cps } = signedChain(6);
+    const witness = new ChainWitness();
+    witness.noteSigned(6, rows[5]!.entry_hash.toString('hex'));
+    const pool = fakePool(rows, cps);
+    const original = pool.connect.bind(pool);
+    // A concurrent worker pass signs seq 7 while verify's snapshot is open.
+    (pool as unknown as { connect: () => Promise<unknown> }).connect = async () => {
+      const client = await original();
+      witness.noteSigned(7, 'ab'.repeat(32));
+      return client;
+    };
+    const result = await verifyReceiptStream(pool, {
+      ...OPTS,
+      publicKeyPem: signer.publicKeyPem,
+      witness,
+    });
+    assert.equal(result.verdict, 'verified', JSON.stringify(result));
+  });
+});

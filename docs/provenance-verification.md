@@ -79,8 +79,11 @@ missing from the database, and the offline verifier compares it with
 anchored checkpoint the database lacks always is. The worker creates the
 file at boot, so with signing on a missing or unreadable file is a finding
 (`unavailable`). Lines that are not anchor records — a write torn by a
-crash — are counted and ignored, and offline, records signed after the
-export was taken are skipped. One anchor file belongs to one database: after restoring an empty or
+crash — are counted and ignored. **Fetch the anchor file before you take
+the export**: the export header is not signed, so offline an anchor record
+signed after the export's `exportedAt` is a finding
+(`anchor_newer_than_export`) — otherwise a backdated header could hide
+deleted checkpoints. One anchor file belongs to one database: after restoring an empty or
 older database, start a new anchor file, or every verify reports the old
 anchored checkpoints as missing and the worker will not sign until the head
 passes them.
@@ -135,9 +138,11 @@ the certified row itself always survives.
 The checkpoint worker signs only a head that is a stored row, not below
 the highest head its process has read, while the newest checkpoint it
 signed is still stored unchanged, and while no anchored checkpoint is
-missing. It and the reaper count only signature-valid checkpoints, so a
-junk row at a huge seq can neither stop signing nor widen what retention
-deletes.
+missing. It and the reaper count only signature-valid checkpoints at or
+below the head, so a junk row above the head can neither stop signing nor
+widen what retention deletes. Junk rows inserted at the next seqs still
+block signing at exactly those seqs (the insert conflicts); verify shows
+them as `bad_signature`, so that is visible, not silent.
 
 Defence in depth (0064): triggers reject deleting, updating or truncating
 `audit_checkpoints`, and truncating `audit_stream_heads`, moving its
@@ -166,9 +171,12 @@ An admin who deletes checkpoints can delete or rewrite every row above the
 newest one left (the chain hash is unkeyed, so rewritten rows can carry
 correct hashes) and move the head to match; inside the database that state
 is indistinguishable from a shorter or different chain. While the
-middleware that signed the deleted checkpoints keeps running, its witness
-reports it and the worker refuses to sign the result; after a restart only
-the anchor remembers. Also not proved: turns the middleware never wrote (a compromised
+middleware process that signed the deleted checkpoints keeps running, its
+witness reports it and its worker refuses to sign the result; another
+replica, or the same one after a restart, has no such memory — only the
+anchor remembers. The grace before `no_signed_checkpoint` is keyed on row
+`created_at`, which is outside the hash: an admin can keep it open, but
+that only ever yields `unsigned`, never `verified`. Also not proved: turns the middleware never wrote (a compromised
 middleware can lie at write time — the anchoring cadence bounds that
 window), anything about pre-chain rows (NULL chain columns, reported
 separately), or per-row wall-clock time beyond checkpoint granularity.

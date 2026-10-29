@@ -115,13 +115,19 @@ export function checkpointSignatureValid(
 const CHECKPOINT_PAGE = 100;
 
 /**
- * The newest checkpoint whose signature verifies (security review M2): a
- * junk row anyone with INSERT can write at a huge seq must neither stop the
- * worker (`seq <= lastSeq` forever) nor widen the reaper's bound. Pages
- * downward until a valid one is found.
+ * The newest checkpoint at or below the stream head whose signature verifies
+ * (security review M2): a junk row anyone with INSERT can write at a huge
+ * seq must neither stop the worker (`seq <= lastSeq` forever) nor widen the
+ * reaper's bound. Rows above the head are never even read — no checkpoint
+ * can legitimately certify a seq that does not exist yet, so junk there
+ * costs no signature checks. Pages downward until a valid one is found.
  */
 export async function highestValidCheckpointSeq(pool: Pool, publicKey: KeyObject): Promise<number> {
-  let below: string | null = null;
+  const head = await pool.query<{ head_seq: string }>(
+    `SELECT head_seq::text AS head_seq FROM audit_stream_heads WHERE stream_id = $1`,
+    [RECEIPT_STREAM_ID],
+  );
+  let below: string | null = String(Number(head.rows[0]?.head_seq ?? 0) + 1);
   for (;;) {
     const res: { rows: { seq: string; head_hash: Buffer; signed_at: Date; signature: Buffer }[] } =
       await pool.query(
