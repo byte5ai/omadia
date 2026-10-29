@@ -313,7 +313,8 @@ async function maskReplayedText(
   privacy: PrivacyTurnHandle,
   text: string,
 ): Promise<string | undefined> {
-  const result = await privacy.maskUserPrompt(text);
+  // #1541 — replayed history is earlier context, not the user's message.
+  const result = await privacy.maskUserPrompt(text, { origin: 'context' });
   if (result.outcome === 'blocked') return undefined;
   return result.outcome === 'masked' ? result.maskedText : text;
 }

@@ -105,6 +105,9 @@ describe('PrivacyModePicker — per-tool list (#1510)', () => {
       target: { value: 'confluence_search, confluence_get_page' },
     });
     fireEvent.click(screen.getByRole('button', { name: t.privacyScopesSave }));
+    // #1548 — adding a tool to the bypass list asks first.
+    expect(mockUpdateConfig).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: t.privacyConfirmYes }));
 
     await waitFor(() =>
       expect(mockUpdateConfig).toHaveBeenCalledWith(PLUGIN, {

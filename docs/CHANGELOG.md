@@ -67,6 +67,49 @@ changelog.
 `@omadia/plugin-privacy-guard` 0.11.0, `@omadia/plugin-api` 1.37.0
 (`countUnresolvedSurrogates` takes an optional `options`).
 
+### Fixed — What the Privacy Shield tells users and operators is true (#1541, #1547, #1548, #1549, #1551, #1552, #1557, #1558, #1562, #1573, #1599)
+
+2026-10-29. Sweep 3, cluster S3-C.
+
+- **Planning gate leak (#1547).** The plan-runner's gate and materialiser send
+  the user's message to a model from `onBeforeTurn`, which fired before the
+  turn masked it. A blocked mask refused the turn with "not sent to the
+  language model" after the gate had sent it in clear. Both paths now mask
+  before the hook (`chatInContextInner`; `preMaskUserMessage` in the stream
+  prelude), so a blocked turn reaches no hook, tool or model. A message whose
+  mask passes still reaches the plan-runner as written (security §6f).
+- **Receipt counts (#1541).** Values masked in recalled context, replayed
+  answers and replayed user messages are booked as `maskedContextSpans`
+  ("PII masked from earlier conversations"), never as masked in the user's
+  message; each distinct value counts once, however many model calls carried
+  it. With `mask_user_prompt` off, "your message" stays empty.
+- **"You named a person" (#1549).** Only person-shaped values (full name,
+  e-mail, phone) the user wrote as whole words count; a department, a column
+  name like `__k_Name` or a fragment of a longer word does not. The schema
+  classifier no longer calls org units personal data.
+- **Explanation lines (#1557).** The "identity-free digest" line appears only
+  when a tool result was interned and nothing was bypassed; the turn's
+  `unprotected` flag now rides on the receipt.
+- **Name detector (#1562).** The receipt reports C1 as `failed` (amber card,
+  also when nothing else was masked) or `unconfigured`; the privacy posture
+  returns `name_detector` (probe of the sidecar's `/health`), shown on the
+  guard's store page and as a notice on the dashboard and `/admin`.
+- **Turn id (#1573, #1552).** The receipt card shows the turn id and links to
+  `/operator/receipts?turn=<id>`, which opens that receipt. Privacy miss
+  reports show their turn as the same link, and the page filters Open /
+  Resolved / All with who resolved a report and when.
+- **Sub-agent refusals (#1599).** The bridge only drops "cannot show"
+  caveats about masked values; a scope refusal, missing permission or missing
+  data must reach the user.
+- **Bypass confirmation (#1548).** Switching a plugin to Bypass, or adding
+  bypassed tools, asks for confirmation first.
+- **Datasets page (#1558).** The schema example comes from the same first
+  row as the preview; internal `__k_*` link-key columns are hidden and not
+  counted.
+- **Orphaned keys (#1551).** The 40 `privacyOperator.*` keys are gone.
+
+`@omadia/plugin-privacy-guard` 0.12.0, `@omadia/plugin-api` 1.46.0.
+
 ### Added — Provenance backfill for legacy Privacy Shield content (#1540)
 
 2026-10-28. Closes the last path of #1540. Notes and processes written before

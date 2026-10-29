@@ -1245,6 +1245,10 @@ function buildUserContent(
  *  failed C1 detector does not throw — the guard falls back to C0 for the
  *  rest of the turn (`degraded`), so names only C1 detects go out unmasked. */
 export class PromptMaskBlockedError extends Error {
+  /** #1547 — set when the block came after `onBeforeTurn` had fired: a hook
+   *  (the plan-runner's gate) may already have sent the user's message to a
+   *  model, so the refusal must not say it was not sent. */
+  afterTurnHooks = false;
   constructor(reason: string) {
     super(`[privacy] user-prompt masking failed (${reason}) — turn blocked`);
     this.name = 'PromptMaskBlockedError';
@@ -1260,6 +1264,25 @@ const PROMPT_MASK_BLOCKED_ANSWER_EN =
   'This message could not be processed: privacy protection for your text ' +
   'could not be guaranteed (prompt masking failed), so it was not sent to ' +
   'the language model. Please try again or contact your operator.';
+
+const PROMPT_MASK_BLOCKED_AFTER_HOOKS_ANSWER_DE =
+  'Diese Nachricht konnte nicht verarbeitet werden: Der Datenschutz für ' +
+  'einen Teil des Kontexts (etwa einen Anhang oder eine frühere Unterhaltung) ' +
+  'war nicht sicherzustellen, deshalb wurde der Turn vor dem Antwortmodell ' +
+  'gestoppt. Ein vorbereitender Schritt, etwa die Planerkennung, kann deine ' +
+  'Nachricht bereits so erhalten haben, wie du sie geschrieben hast. Versuche ' +
+  'es bitte erneut oder wende dich an deinen Betreiber.';
+const PROMPT_MASK_BLOCKED_AFTER_HOOKS_ANSWER_EN =
+  'This message could not be processed: privacy protection for part of the ' +
+  "turn's context (such as an attachment or an earlier conversation) could " +
+  'not be guaranteed, so the turn was stopped before the answer model ran. A ' +
+  'preparatory step, such as plan detection, may already have received your ' +
+  'message as you wrote it. Please try again or contact your operator.';
+
+/** #1547 — the refusal of a turn blocked after `onBeforeTurn` fired (see
+ *  {@link PromptMaskBlockedError.afterTurnHooks}). Bilingual, like
+ *  {@link PROMPT_MASK_BLOCKED_ANSWER}. */
+export const PROMPT_MASK_BLOCKED_AFTER_HOOKS_ANSWER = `${PROMPT_MASK_BLOCKED_AFTER_HOOKS_ANSWER_DE} / ${PROMPT_MASK_BLOCKED_AFTER_HOOKS_ANSWER_EN}`;
 
 /** User-facing answer for a prompt-mask-blocked turn. Deliberately generic —
  *  it must not echo any detected value. Both languages, like
@@ -1298,9 +1321,8 @@ export const PRIVACY_SHIELD_REQUIRED_ANSWER = `${PRIVACY_SHIELD_REQUIRED_ANSWER_
 
 /** The refusal a blocked turn answers with. */
 function promptMaskBlockedAnswer(err: PromptMaskBlockedError): string {
-  return err instanceof PrivacyShieldRequiredError
-    ? PRIVACY_SHIELD_REQUIRED_ANSWER
-    : PROMPT_MASK_BLOCKED_ANSWER;
+  if (err instanceof PrivacyShieldRequiredError) return PRIVACY_SHIELD_REQUIRED_ANSWER;
+  return err.afterTurnHooks ? PROMPT_MASK_BLOCKED_AFTER_HOOKS_ANSWER : PROMPT_MASK_BLOCKED_ANSWER;
 }
 
 /** True when `text` is the prompt-mask refusal or the shield-required refusal
@@ -1310,6 +1332,9 @@ export function isPromptMaskBlockedNotice(text: string): boolean {
     text === PROMPT_MASK_BLOCKED_ANSWER ||
     text === PROMPT_MASK_BLOCKED_ANSWER_DE ||
     text === PROMPT_MASK_BLOCKED_ANSWER_EN ||
+    text === PROMPT_MASK_BLOCKED_AFTER_HOOKS_ANSWER ||
+    text === PROMPT_MASK_BLOCKED_AFTER_HOOKS_ANSWER_DE ||
+    text === PROMPT_MASK_BLOCKED_AFTER_HOOKS_ANSWER_EN ||
     text === PRIVACY_SHIELD_REQUIRED_ANSWER ||
     text === PRIVACY_SHIELD_REQUIRED_ANSWER_DE ||
     text === PRIVACY_SHIELD_REQUIRED_ANSWER_EN
@@ -1374,13 +1399,34 @@ function turnIncompleteMarker(
 async function maskPromptForWire(
   privacy: PrivacyTurnHandle | undefined,
   text: string,
+  origin?: 'context',
 ): Promise<string> {
   if (privacy === undefined || text.length === 0) return text;
-  const result = await privacy.maskUserPrompt(text);
+  // #1541 — a replayed user message is the user's words from an earlier
+  // turn: the receipt books it as earlier context, not as this message.
+  const result = await privacy.maskUserPrompt(text, origin ? { origin } : undefined);
   if (result.outcome === 'blocked') {
     throw new PromptMaskBlockedError(result.reason);
   }
   return result.outcome === 'masked' ? result.maskedText : text;
+}
+
+/**
+ * #1547 — the streaming path's pre-hook mask of the user message: the
+ * {@link PromptMaskBlockedError} a blocked outcome raises, or `undefined`
+ * when the turn may proceed. Every other error propagates.
+ */
+async function preMaskUserMessage(
+  privacy: PrivacyTurnHandle,
+  userMessage: string,
+): Promise<PromptMaskBlockedError | undefined> {
+  try {
+    await maskPromptForWire(privacy, userMessage);
+    return undefined;
+  } catch (err) {
+    if (err instanceof PromptMaskBlockedError) return err;
+    throw err;
+  }
 }
 
 /** `maskPromptForWire` for the #268 ingested attachment tail — skips the
@@ -1430,7 +1476,9 @@ async function maskReplayedAnswerForWire(
   answer: string,
   segments?: readonly string[],
 ): Promise<string> {
-  if (privacy?.maskReplayedAnswer === undefined) return maskPromptForWire(privacy, answer);
+  if (privacy?.maskReplayedAnswer === undefined) {
+    return maskPromptForWire(privacy, answer, 'context');
+  }
   const result = await privacy.maskReplayedAnswer(answer, segments);
   if (result.outcome === 'blocked') {
     throw new PromptMaskBlockedError(result.reason);
@@ -1456,7 +1504,7 @@ async function maskPriorTurnsForWire(
     if (t.userMessage.trim().length > 0) {
       pairs.push({
         role: 'user',
-        content: await maskPromptForWire(privacy, t.userMessage),
+        content: await maskPromptForWire(privacy, t.userMessage, 'context'),
       });
     }
     if (t.assistantAnswer.trim().length > 0) {
@@ -1486,7 +1534,7 @@ async function screeningBundleForWire(
   for (const t of input.priorTurns ?? []) {
     // The bundle reads the user message only; the answer stays out of it.
     priorTurns.push({
-      userMessage: await maskPromptForWire(privacy, t.userMessage),
+      userMessage: await maskPromptForWire(privacy, t.userMessage, 'context'),
       assistantAnswer: '',
     });
   }
@@ -1827,7 +1875,9 @@ async function wireExtraSystemHint(
   const callerHint = input.extraSystemHint;
   const wireHint =
     callerHint !== undefined && callerHint.trim().length > 0
-      ? await maskPromptForWire(privacy, callerHint)
+      ? // #1541 — the hint quotes claims of the restored answer: tool data,
+        // not the user's words.
+        await maskPromptForWire(privacy, callerHint, 'context')
       : undefined;
   // `fixedSystemHint` is NOT masked: it is a compile-time constant from a
   // trusted in-process wrapper (see its doc on `ChatTurnInput`) — kernel-grade
@@ -1996,6 +2046,11 @@ export const MODEL_REFUSAL_NOTICE = `${MODEL_REFUSAL_NOTICE_DE} / ${MODEL_REFUSA
 const BILINGUAL_NOTICES: ReadonlyArray<readonly [string, string, string]> = [
   [MODEL_REFUSAL_NOTICE, MODEL_REFUSAL_NOTICE_DE, MODEL_REFUSAL_NOTICE_EN],
   [PROMPT_MASK_BLOCKED_ANSWER, PROMPT_MASK_BLOCKED_ANSWER_DE, PROMPT_MASK_BLOCKED_ANSWER_EN],
+  [
+    PROMPT_MASK_BLOCKED_AFTER_HOOKS_ANSWER,
+    PROMPT_MASK_BLOCKED_AFTER_HOOKS_ANSWER_DE,
+    PROMPT_MASK_BLOCKED_AFTER_HOOKS_ANSWER_EN,
+  ],
   [
     PRIVACY_SHIELD_REQUIRED_ANSWER,
     PRIVACY_SHIELD_REQUIRED_ANSWER_DE,
@@ -6361,8 +6416,17 @@ export class Orchestrator {
     turnMemory: TurnMemoryBinding | undefined,
   ): Promise<ChatTurnResult> {
     this.applyTurnAuthContext(input);
+    // #1547 — whether `onBeforeTurn` fired before a later mask blocked.
+    const progress = { beforeTurnFired: false };
     try {
-      const result = await this.chatInContextInner(input, turnId, turnMemory);
+      const result = await this.chatInContextInner(input, turnId, turnMemory, progress).catch(
+        (err: unknown) => {
+          if (err instanceof PromptMaskBlockedError && progress.beforeTurnFired) {
+            err.afterTurnHooks = true;
+          }
+          throw err;
+        },
+      );
       // #133 (E8) — the persisted Turn node id lets observers link to the
       // graph Turn (plan-runner PLAN_OF). Absent if the log failed.
       await this.afterTurn(turnId, input, result.answer, result.turnId);
@@ -6472,13 +6536,8 @@ export class Orchestrator {
     input: ChatTurnInput,
     turnId: string,
     turnMemory: TurnMemoryBinding | undefined,
+    progress: { beforeTurnFired: boolean },
   ): Promise<ChatTurnResult> {
-    // A canvas turn skips `onBeforeTurn` (see `chatStream`'s mirror).
-    if (input.canvasSessionId === undefined) {
-      await this.fireTurnHook('onBeforeTurn', turnId, input, {
-        userMessage: input.userMessage,
-      });
-    }
     // #361 — mask the wire-bound prompt BEFORE anything LLM-adjacent sees
     // it. `wireUserMessage` is the LLM-facing variant (pseudonyms for
     // detected PII spans when the operator flag is on; the original text
@@ -6486,11 +6545,22 @@ export class Orchestrator {
     // persistence (sessionLogger / factExtractor) and receipt attribution.
     // Failure-closed: a `blocked` outcome throws and the turn fails.
     // Recorded on the turn's wire view — the verifier sees this, nothing else.
+    // #1547 — before `onBeforeTurn` as well: the plan-runner's gate and
+    // materialiser send the message to a model from that hook, so a turn
+    // whose mask is blocked must throw before the hook fires, or the refusal
+    // ("not sent to the language model") would be false.
     const privacyForPrompt = turnContext.current()?.privacyHandle;
     const wireUserMessage = await maskTurnPromptForWire(
       privacyForPrompt,
       input.userMessage,
     );
+    // A canvas turn skips `onBeforeTurn` (see `chatStream`'s mirror).
+    if (input.canvasSessionId === undefined) {
+      progress.beforeTurnFired = this.turnHookRegistry !== undefined;
+      await this.fireTurnHook('onBeforeTurn', turnId, input, {
+        userMessage: input.userMessage,
+      });
+    }
     // Non-streaming path: `priorContext` is injected into the prompt; the
     // structured `recalled` payload rides out on the ChatTurnResult so
     // non-streaming channels (Teams) can render a recall card (the streaming
@@ -7486,8 +7556,11 @@ export class Orchestrator {
     readonly screeningBlocked?: PromptMaskBlockedError;
   }): AsyncGenerator<ChatStreamEvent> {
     const { input, turnId, sessionId, mcpInputReply, privacyHandle, observer } = args;
-    const { screeningBlocked } = args;
     const { toolReplayLedger, bound } = args;
+    // A refused turn: the screening gate could not mask, or (#1547) the
+    // pre-hook mask below was blocked.
+    let screeningBlocked = args.screeningBlocked;
+    let beforeTurnFired = false;
     // Set once the turn's privacy state was finalized or handed over. A
     // stream that ends otherwise (thrown, abandoned by the client) drops the
     // state in `finally` — real values must not outlive the turn.
@@ -7528,6 +7601,15 @@ export class Orchestrator {
       this.applyTurnAuthContext(input);
       // Commit-on-delivery — mirror of `runTurnCore`.
       this.bindRequestAfterTurn(bound?.ledger, turnId, input);
+      // #1547 — mask the user message before `onBeforeTurn`: the plan-runner's
+      // gate and materialiser send it to a model from that hook, ahead of
+      // `chatStreamInner`'s own mask. A blocked mask refuses the turn here, so
+      // no hook, tool or model sees the text and the refusal stays true. The
+      // inner mask later reuses the turn's surrogate map (and C1's per-turn
+      // cache), so it yields the same wire text.
+      if (!screeningBlocked && privacyHandle !== undefined) {
+        screeningBlocked = await preMaskUserMessage(privacyHandle, input.userMessage);
+      }
       // W2-1 (#544) — forced replay before the model runs. Mirror of `runTurn`.
       // A refused turn (blocked mask, #1535 shield required) runs no tool.
       if (mcpInputReply && !screeningBlocked) {
@@ -7544,6 +7626,10 @@ export class Orchestrator {
       // client discards `plan` annotations. Without a plan record the
       // plan-runner's onAfterToolCall / onAfterTurn are no-ops.
       if (!screeningBlocked && input.canvasSessionId === undefined) {
+        // #1547 — a mask that blocks after this point (recall, attachments,
+        // replayed turns) refuses with the notice that does not claim the
+        // message stayed unsent.
+        beforeTurnFired = this.turnHookRegistry !== undefined;
         yield* this.toAnnotationEvents(
           await this.fireTurnHook('onBeforeTurn', turnId, input, {
             userMessage: input.userMessage,
@@ -7659,6 +7745,7 @@ export class Orchestrator {
         } catch (err) {
           if (err instanceof PromptMaskBlockedError) {
             console.error(`[orchestrator] ${err.message}`);
+            if (beforeTurnFired && err !== screeningBlocked) err.afterTurnHooks = true;
             promptMaskBlocked = true;
             // A verifier re-entry is abandoned instead (see `runTurnCore`):
             // the check below turns this `done` into the abandonment error.

@@ -2051,13 +2051,26 @@ Tests: `test/conductorWorkflowDelete.test.ts`.
 
 ### Turn-Receipts (#757) — persistierte Per-Turn-Privacy-Receipts
 
+S3-C (#1541, #1549, #1557, #1562, #1573): Die Receipt-Card sagt nur, was
+passiert ist. Felder: `maskedContextSpans` (frühere Unterhaltungen),
+`nameDetector` (`active` | `unconfigured` | `failed`), `unprotected` (der
+Turn-Flag aus #1507, vom Turn-Handle gestempelt). „Hat eine Person genannt“
+(`identityValuesOnWire`) zählt nur personenförmige Werte als ganze Wörter
+(`identityOnWire.ts`). Die Card zeigt die Turn-Id und verlinkt
+`/operator/receipts?turn=<id>`. `GET /api/v1/admin/runtime/privacy-posture`
+liefert `name_detector` (Probe auf `/health` des Sidecars, 2 s Timeout).
+
 Ein Turn persistiert seinen PII-freien `PrivacyReceipt` synchron nach
 `turn_receipts` (Migration `0039`, Postgres-Backend only) — aber **nur, wenn
 der Privacy Shield in diesem Turn aktiv war**: `finalizeTurn()` in
 `harness-plugin-privacy-guard/src/service.ts` liefert nur dann einen Receipt,
 wenn der Turn ein Dataset interniert, einen Bypass oder die strukturierte
-Ausgabe eines angebundenen Tools protokolliert, den Prompt maskiert
-(Letzteres nur bei mindestens einem erkannten PII-Span), einen Tool-Fehler
+Ausgabe eines angebundenen Tools protokolliert, den Prompt oder Text aus
+früheren Unterhaltungen maskiert (Letzteres nur bei mindestens einem
+erkannten PII-Span; `maskedPromptSpans` zählt seit #1541 nur die eigene
+Nachricht, je Wert einmal, `maskedContextSpans` Recall und wiederholte
+Antworten), der C1-Namensdetektor im Turn ausgefallen ist
+(`nameDetector: 'failed'`, #1562), einen Tool-Fehler
 behandelt hat (`toolErrors`: Exception-Text zurückgehalten, `Error:`-Text
 redigiert oder zurückgehalten, MCP-Connect-Prompt durchgereicht — siehe §11
 „Tool-Fehler an den Dispatch-Nähten“) oder der Antwort-Verifier unter seiner
@@ -3298,8 +3311,9 @@ Jetzt erzeugt ein Wiedereintritt nur die Antwort neu:
   wartet auf diesen Import, statt einen zweiten zu starten.
 - **Correction-Hint = Wire-Inhalt.** `wireExtraSystemHint` maskiert den
   `extraSystemHint` des Aufrufers über die Prompt-Map des Laufs wie die
-  User-Nachricht (gleiche Surrogate, Spans im Receipt → `maskedPromptSpans`
-  im gemergten Request-Receipt); der Fresh-Check-Text des Kernels bleibt
+  User-Nachricht (gleiche Surrogate, Spans im Receipt → `maskedContextSpans`
+  im gemergten Request-Receipt, seit #1541: der Hint zitiert Claims der
+  Antwort, nicht die Worte des Users); der Fresh-Check-Text des Kernels bleibt
   unmaskiert. `PromptMaskBlockedError` in einem Wiedereintritt bricht ihn ab
   (`REENTRY_ABANDONED.promptMaskBlocked`) statt die Privacy-Fehlerantwort zu
   liefern; der erste Lauf behält sein Verhalten. Hinter einem Shield schickt
@@ -4033,7 +4047,7 @@ weil das README die Variable nennt.
 
 **Sichtbarkeit (#1508, #1507).** `GET /api/v1/admin/runtime/privacy-posture`
 (hinter `requireAuth`, nicht in `/health`) liefert
-`{ shield_active, force_guarded, provider_ids }` aus
+`{ shield_active, force_guarded, provider_ids, name_detector }` aus
 `middleware/src/plugins/privacyPosture.ts`. `force_guarded` vergleicht exakt
 wie `resolveEffectivePrivacyMode`. Der Privacy-Picker im Store
 (`web-ui/app/_components/store/PrivacyModePicker.tsx`) zeigt damit "Locked by

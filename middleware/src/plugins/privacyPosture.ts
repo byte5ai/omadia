@@ -6,6 +6,7 @@ import {
   PRIVACY_REDACT_CAPABILITY,
   PRIVACY_REDACT_SERVICE_NAME,
   parseScopes,
+  type PrivacyGuardService,
 } from '@omadia/plugin-api';
 
 import type { InstalledRegistry } from './installedRegistry.js';
@@ -27,6 +28,13 @@ import type { PluginCatalog } from './manifestLoader.js';
  *                    installed but not running (failed activation), which the
  *                    banner words differently from "uninstalled".
  *
+ * - `name_detector`  #1562 — the C1 name detector: unconfigured, active or
+ *                    unreachable, where its URL comes from, and when it last
+ *                    failed in a turn. `null` while no shield runs or the
+ *                    provider cannot report it. Without C1, person names in
+ *                    free text reach the model unmasked; before this the only
+ *                    trace was a boot log line.
+ *
  * Authenticated only, like the master-key posture in `/admin/vault-status`:
  * the public `/health` does not tell a scanner that an instance runs without
  * its shield.
@@ -35,6 +43,39 @@ export interface PrivacyPosture {
   readonly shield_active: boolean;
   readonly force_guarded: boolean;
   readonly provider_ids: readonly string[];
+  readonly name_detector?: NameDetectorPosture | null;
+}
+
+export interface NameDetectorPosture {
+  readonly state: 'unconfigured' | 'active' | 'unreachable';
+  readonly source: 'setup' | 'env' | null;
+  readonly last_failure_at: string | null;
+  /** `mask_user_prompt`: only while it is on are names the user types masked. */
+  readonly prompt_masking: boolean;
+}
+
+/**
+ * #1562 — ask the running shield for its name detector's state (it probes
+ * the sidecar with a short timeout). `null` when no shield runs, the provider
+ * has no `nameDetectorStatus`, or the call fails.
+ */
+export async function readNameDetectorPosture(serviceRegistry: {
+  get<T>(name: string): T | undefined;
+}): Promise<NameDetectorPosture | null> {
+  const service = serviceRegistry.get<PrivacyGuardService>(PRIVACY_REDACT_SERVICE_NAME);
+  if (service?.nameDetectorStatus === undefined) return null;
+  try {
+    const status = await service.nameDetectorStatus();
+    return {
+      state: status.state,
+      source: status.source,
+      last_failure_at: status.lastFailureAt,
+      prompt_masking: status.promptMasking,
+    };
+  } catch (err) {
+    console.warn('[privacy-posture] nameDetectorStatus failed:', err);
+    return null;
+  }
 }
 
 export function isForceGuarded(env: NodeJS.ProcessEnv): boolean {
