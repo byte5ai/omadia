@@ -1,5 +1,11 @@
 import type { PrivacyDatasetProvenance } from '@omadia/plugin-api';
-import { isRowTool, parseRefreshSource, type RefreshFilter, type RefreshSource } from '@omadia/fast-path';
+import {
+  isRowTool,
+  parseRefreshSource,
+  type RefreshFilter,
+  type RefreshSort,
+  type RefreshSource,
+} from '@omadia/fast-path';
 
 /**
  * Refresh recipes for AGENT-filled tables (datasetId publishes).
@@ -15,7 +21,14 @@ import { isRowTool, parseRefreshSource, type RefreshFilter, type RefreshSource }
  *   - no verbs                → the call as is
  *   - `select`                → nothing to replay: the map IS the projection
  *   - `filter` (eq / and-eq)  → `RefreshSource.filter` clauses
- *   - anything else (sort, top_n, aggregate, join, …) → skipped
+ *   - `sort` / `top_n`        → `RefreshSource.sort` (+ `take` for top_n)
+ *   - anything else (aggregate, join, …) → skipped
+ *
+ * A RefreshSource applies filter → sort → take, so the chain must reduce to
+ * that order. Filters and sorts commute (a stable sort keeps a filtered
+ * subset's order, a filter keeps a sorted order), and a later stable sort
+ * only breaks ties of an earlier one — it becomes the PRIMARY key. A top_n
+ * cuts the set, so nothing that reorders or filters may follow it.
  *
  * Only a learnable READ tool (fast-path name classifier) qualifies — a
  * replayed write would be a side effect on every refresh. Pure: no I/O.
@@ -24,6 +37,7 @@ import { isRowTool, parseRefreshSource, type RefreshFilter, type RefreshSource }
 export type DerivedRecipe = { ok: true; source: RefreshSource } | { ok: false; reason: string };
 
 const MAX_FILTER_CLAUSES = 4;
+const MAX_SORT_CLAUSES = 3;
 
 type Scalar = string | number | boolean;
 const isScalar = (v: unknown): v is Scalar =>
@@ -50,6 +64,58 @@ function predicateClauses(predicate: unknown): RefreshFilter[] | null {
   return null;
 }
 
+type Direction = RefreshSort['dir'];
+
+/** A verb's `direction` argument; null = invalid. The defaults are the
+ *  verbs' own (v4 `sort` asc, `top_n` desc). */
+function direction(value: unknown, fallback: Direction): Direction | null {
+  if (value === undefined) return fallback;
+  return value === 'asc' || value === 'desc' ? value : null;
+}
+
+/** `clause` as the new primary key; an older clause on the same field is
+ *  fully overridden by it and dropped. */
+const withPrimary = (sort: readonly RefreshSort[], clause: RefreshSort): RefreshSort[] => [
+  clause,
+  ...sort.filter((c) => c.field !== clause.field),
+];
+
+/** Post-fetch steps of a verb chain, or why they are not expressible. */
+type Steps = { filter: RefreshFilter[]; sort: RefreshSort[]; take?: number } | { reason: string };
+
+function replaySteps(verbs: PrivacyDatasetProvenance['verbs']): Steps {
+  const filter: RefreshFilter[] = [];
+  let sort: RefreshSort[] = [];
+  let take: number | undefined;
+  for (const step of verbs) {
+    if (step.verb === 'select') continue;
+    if (step.verb !== 'filter' && step.verb !== 'sort' && step.verb !== 'top_n') {
+      return { reason: `verb-${step.verb}` };
+    }
+    // the cut is final: a filter / reorder after it is no filter → sort → take
+    if (take !== undefined) return { reason: `verb-${step.verb}-after-top_n` };
+    if (step.verb === 'filter') {
+      const clauses = predicateClauses(step.args['predicate']);
+      if (clauses === null) return { reason: 'filter-unsupported' };
+      filter.push(...clauses);
+      continue;
+    }
+    const by = step.args['by'];
+    const dir = direction(step.args['direction'], step.verb === 'sort' ? 'asc' : 'desc');
+    if (typeof by !== 'string' || by.length === 0 || dir === null) return { reason: 'sort-unsupported' };
+    sort = withPrimary(sort, { field: by, dir });
+    if (step.verb === 'top_n') {
+      const n = step.args['n'];
+      // n = 0 is an empty table — nothing worth replaying
+      if (typeof n !== 'number' || !Number.isInteger(n) || n <= 0) return { reason: 'top_n-unsupported' };
+      take = n;
+    }
+  }
+  if (filter.length > MAX_FILTER_CLAUSES) return { reason: 'filter-unsupported' };
+  if (sort.length > MAX_SORT_CLAUSES) return { reason: 'sort-unsupported' };
+  return { filter, sort, ...(take !== undefined ? { take } : {}) };
+}
+
 /**
  * Derive the recipe for a dataset published to a table whose columns are
  * `columnPaths` (the publish's `datasetColumns`).
@@ -65,15 +131,9 @@ export function deriveDatasetRecipe(
     return { ok: false, reason: 'input-not-object' };
   }
   if (columnPaths.length === 0) return { ok: false, reason: 'no-columns' };
-  const filter: RefreshFilter[] = [];
-  for (const step of provenance.verbs) {
-    if (step.verb === 'select') continue;
-    if (step.verb !== 'filter') return { ok: false, reason: `verb-${step.verb}` };
-    const clauses = predicateClauses(step.args['predicate']);
-    if (clauses === null) return { ok: false, reason: 'filter-unsupported' };
-    filter.push(...clauses);
-  }
-  if (filter.length > MAX_FILTER_CLAUSES) return { ok: false, reason: 'filter-unsupported' };
+  const steps = replaySteps(provenance.verbs);
+  if ('reason' in steps) return { ok: false, reason: steps.reason };
+  const { filter, sort, take } = steps;
   const candidate = {
     tool: provenance.tool,
     input,
@@ -82,6 +142,8 @@ export function deriveDatasetRecipe(
     map: Object.fromEntries(columnPaths.map((p) => [p, p])),
     ...(columnPaths.includes('id') ? { rowKey: 'id' } : {}),
     ...(filter.length > 0 ? { filter } : {}),
+    ...(sort.length > 0 ? { sort } : {}),
+    ...(take !== undefined ? { take } : {}),
   };
   // the same whitelist + size bound an agent-declared recipe passes
   const source = parseRefreshSource(candidate);

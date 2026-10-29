@@ -106,6 +106,22 @@ export interface ChatAgent {
    * it that way. Absent: the set is unknown, and such a wrapper fails closed.
    */
   offeredToolNames?(): ReadonlySet<string>;
+  /**
+   * The model-facing definitions (name, description, JSON input schema) of
+   * the PLUGIN tools among {@link offeredToolNames} that a trusted wrapper
+   * can run outside a model turn (`ctx.tools.invoke`), name-ordered. The
+   * deterministic fast path derives planner specs for the read tools among
+   * them. Absent: the wrapper plans only tools it knows itself.
+   */
+  offeredToolDefinitions?(): ReadonlyArray<ChatAgentToolDefinition>;
+}
+
+/** One tool definition as the agent offers it to its model (Anthropic
+ *  `{name, description, input_schema}`). */
+export interface ChatAgentToolDefinition {
+  readonly name: string;
+  readonly description: string;
+  readonly input_schema: Readonly<Record<string, unknown>>;
 }
 
 /** Inbound channel-supplied attachment (image/file/audio/video). Vision-capable
