@@ -1,6 +1,7 @@
 import {
   isTruncatedOutput,
   mapRefreshRecords,
+  requiresCompleteResult,
   resolveRecipeInput,
   type RefreshSource,
 } from './refreshRecipes.js';
@@ -24,6 +25,12 @@ import { extractFirstJsonObject } from './jsonExtract.js';
 export interface FastPathToolSpec {
   name: string;
   spec: string;
+  /** the router's one-liner (generic tools); absent → the catalog purpose,
+   *  else the first sentence of `spec` */
+  purpose?: string;
+  /** derived from the tool's registry definition (genericToolSpecs.ts): its
+   *  output shape is unknown, so a plan for it must name its `itemsPath` */
+  generic?: true;
 }
 
 /** Narrow LLM port — structurally satisfied by `ctx.llm` (LlmAccessor);
@@ -131,8 +138,8 @@ export const FAST_PATH_TOOL_SPECS: Readonly<Record<string, string>> = {
 };
 
 /** One-line purposes of the built-in tools for the router's tool catalog
- *  (the full spec is the planner's). A tool without one — a learned read
- *  tool — gets the first sentence of its spec. */
+ *  (the full spec is the planner's). A generic tool gets its own `purpose`
+ *  (genericToolSpecs.ts), a learned-only tool the first sentence of its spec. */
 export const FAST_PATH_TOOL_PURPOSES: Readonly<Record<string, string>> = {
   odoo_query:
     'Odoo ERP read-only lookup: employees (names, departments, birthdays, contacts), partners/customers/suppliers, ' +
@@ -141,7 +148,7 @@ export const FAST_PATH_TOOL_PURPOSES: Readonly<Record<string, string>> = {
 
 /** The router's one-line purpose of `spec`. */
 export function toolPurpose(spec: FastPathToolSpec): string {
-  const known = FAST_PATH_TOOL_PURPOSES[spec.name];
+  const known = FAST_PATH_TOOL_PURPOSES[spec.name] ?? spec.purpose;
   if (known !== undefined) return known;
   const text = spec.spec.replace(/\s+/g, ' ').trim();
   const end = text.search(/[.:]\s/);
@@ -372,7 +379,8 @@ const UNAVAILABLE = /unknown or handler-less/;
  * fast path. Never throws. `rejectTruncated` refuses a result the tool flags
  * as capped (the fast path's prose states a count, which a prefix would get
  * wrong) and runs an odoo_query with the tool's maximum limit
- * (normalizeFastPathInput); a recipe with a `filter` refuses it either way (applyRefreshSource).
+ * (normalizeFastPathInput); a recipe with a `filter`, `sort` or `take` refuses it either way
+ * (requiresCompleteResult).
  */
 export async function fetchRecipeRows(
   invoke: ToolInvoke,
@@ -394,7 +402,7 @@ export async function fetchRecipeRows(
   if (opts.rejectTruncated === true && isTruncatedOutput(raw)) return { ok: false, reason: 'truncated' };
   const mapped = mapRefreshRecords(raw, recipe);
   if (mapped === null) {
-    return { ok: false, reason: recipe.filter && isTruncatedOutput(raw) ? 'truncated' : 'unmappable' };
+    return { ok: false, reason: requiresCompleteResult(recipe) && isTruncatedOutput(raw) ? 'truncated' : 'unmappable' };
   }
   return { ok: true, rows: mapped.rows, records: mapped.records, ms: Date.now() - t0 };
 }

@@ -1,6 +1,7 @@
 import {
   toSemanticAnswer,
   type ChatAgent,
+  type ChatAgentToolDefinition,
   type ChatStreamEvent,
   type ChatStreamObserver,
   type ChatTurnInput,
@@ -53,6 +54,9 @@ export interface FastPathAgentDeps {
    *  path plans and runs only these (∩ the configured fast-path tools);
    *  undefined = unknown → no fast path (fail closed) */
   permittedTools: () => ReadonlySet<string> | undefined;
+  /** the definitions of those tools the fast path may plan generically
+   *  (`ChatAgent.offeredToolDefinitions`); absent → catalog/learned only */
+  toolDefinitions?: () => ReadonlyArray<ChatAgentToolDefinition>;
   /** the bundle's session logger — a hit is recorded like any turn */
   logSession?: (entry: SessionLogEntry) => Promise<{ turnExternalId: string }>;
   /** a Privacy Shield runs: the recorded turn gets an EMPTY masked view so
@@ -151,11 +155,18 @@ export function wrapChatAgentWithFastPath(inner: ChatAgent, deps: FastPathAgentD
       deps.log(`[fast-path] miss channel=${channel} reason=tool-set-unknown`);
       return { kind: 'agent', input };
     }
+    let toolDefinitions: ReadonlyArray<ChatAgentToolDefinition> | undefined;
+    try {
+      toolDefinitions = deps.toolDefinitions?.();
+    } catch {
+      toolDefinitions = undefined; // generic specs are an extra, never a reason to miss
+    }
     let outcome: ChatTriageOutcome;
     try {
       outcome = await fp.triageChatTurn({
         channel,
         permittedTools,
+        ...(toolDefinitions !== undefined ? { toolDefinitions } : {}),
         ...(input.sessionScope !== undefined ? { sessionKey: input.sessionScope } : {}),
         userMessage: input.userMessage,
       });
@@ -173,6 +184,7 @@ export function wrapChatAgentWithFastPath(inner: ChatAgent, deps: FastPathAgentD
   const agent: FastPathChatAgent = {
     inner,
     offeredToolNames: () => deps.permittedTools() ?? new Set<string>(),
+    ...(deps.toolDefinitions !== undefined ? { offeredToolDefinitions: deps.toolDefinitions } : {}),
     async chat(input: ChatTurnInput): Promise<SemanticAnswer> {
       const d = await decide(input);
       if (d.kind === 'agent') return inner.chat(d.input);

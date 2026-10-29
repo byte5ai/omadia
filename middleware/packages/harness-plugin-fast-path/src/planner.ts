@@ -5,6 +5,7 @@ import {
   type FastLlmTool,
   type FastPathToolSpec,
 } from './fastPath.js';
+import { GENERIC_TOOLS_RULE } from './genericToolSpecs.js';
 import { planToFetch, type LearnedPlan } from './learnedPlanStore.js';
 import { MAX_COLUMNS, validatePlannedQuery, type PlannedQuery } from './triage.js';
 
@@ -75,7 +76,7 @@ export function plannerTool(tools: readonly string[]): FastLlmTool {
         map: { ...stringMap, description: 'fieldKey → record attribute (dot-path allowed)' },
         filter: { type: 'array', items: { type: 'object' } },
         rowKey: { type: 'string' },
-        itemsPath: { type: 'string' },
+        itemsPath: { type: 'string', description: 'dot-path to the record array — REQUIRED for a [generic] tool' },
         labels: { ...stringMap, description: 'fieldKey → column header in the user language' },
         summary: { type: 'string', description: 'one sentence with {count} and/or {sum:<fieldKey>}' },
         locale: { type: 'string', description: 'BCP-47, e.g. de-DE' },
@@ -85,11 +86,14 @@ export function plannerTool(tools: readonly string[]): FastLlmTool {
   };
 }
 
-/** The planner's system prompt: rules + the offered tools' specs + learned
- *  plans of those tools — fixed text, no user-derived values. */
+/** The planner's system prompt: rules + the offered tools' specs (+ the
+ *  generic-tool rule when one is offered) + learned plans of those tools —
+ *  fixed text, no user-derived values. The learned examples (ranked per
+ *  turn) come LAST, so rules + tools stay a stable, cacheable prefix. */
 export function buildPlannerSystem(opts: { tools: readonly FastPathToolSpec[]; examples?: readonly LearnedPlan[] }): string {
   const names = new Set(opts.tools.map((t) => t.name));
   const lines = [PLANNER_SYSTEM, `TOOLS:\n${opts.tools.map((t) => `- ${t.spec}`).join('\n')}`];
+  if (opts.tools.some((t) => t.generic === true)) lines.push(GENERIC_TOOLS_RULE);
   const examples = (opts.examples ?? []).filter((p) => names.has(p.tool));
   if (examples.length > 0) {
     lines.push(
@@ -113,10 +117,24 @@ function restoreStrings(value: unknown, restore: (s: string) => string): unknown
   return value;
 }
 
+/**
+ * The generic tools whose plan must name an `itemsPath`: their output shape
+ * is unknown, and without one `fetchRecipeRows` would take the FIRST array
+ * of the output — any array, maybe not the records. Exempt: a tool with an
+ * offered learned example that itself has none (it was verified that way).
+ */
+export function itemsPathRequired(
+  tools: readonly FastPathToolSpec[],
+  examples: readonly LearnedPlan[] = [],
+): ReadonlySet<string> {
+  const verifiedWithout = new Set(examples.filter((p) => p.itemsPath === undefined).map((p) => p.tool));
+  return new Set(tools.filter((t) => t.generic === true && !verifiedWithout.has(t.name)).map((t) => t.name));
+}
+
 /** The planner answer as a validated plan. */
 export function parsePlan(
   value: Record<string, unknown>,
-  opts: { allowedTools: ReadonlySet<string>; question?: string },
+  opts: { allowedTools: ReadonlySet<string>; question?: string; itemsPathRequired?: ReadonlySet<string> },
 ): { ok: true; plan: PlannedQuery } | { ok: false; reason: string } {
   const { tool, input, map, filter, rowKey, itemsPath, ...rest } = value;
   const fetch = {
@@ -127,9 +145,17 @@ export function parsePlan(
     ...(rowKey !== undefined ? { rowKey } : {}),
     ...(itemsPath !== undefined ? { itemsPath } : {}),
   };
-  return validatePlannedQuery({ ...rest, fetch }, opts.allowedTools, {
+  const validated = validatePlannedQuery({ ...rest, fetch }, opts.allowedTools, {
     ...(opts.question !== undefined ? { question: opts.question } : {}),
   });
+  if (
+    validated.ok &&
+    validated.plan.fetch.itemsPath === undefined &&
+    opts.itemsPathRequired?.has(validated.plan.fetch.tool) === true
+  ) {
+    return { ok: false, reason: 'missing-items-path' };
+  }
+  return validated;
 }
 
 /** Plan the ONE query over the offered `tools`. Never throws. */
@@ -172,7 +198,11 @@ export async function planQuery(opts: {
   const value = answer && restore ? restoreStrings(answer.value, restore) : answer?.value;
   const parsed =
     value !== undefined && typeof value === 'object' && value !== null
-      ? parsePlan(value as Record<string, unknown>, { allowedTools: opts.allowedTools, question: opts.question })
+      ? parsePlan(value as Record<string, unknown>, {
+          allowedTools: opts.allowedTools,
+          question: opts.question,
+          itemsPathRequired: itemsPathRequired(opts.tools, opts.examples),
+        })
       : ({ ok: false, reason: 'no-plan' } as const);
   const ms = Date.now() - t0;
   if (!parsed.ok) {
