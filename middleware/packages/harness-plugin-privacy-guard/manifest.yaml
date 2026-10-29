@@ -169,6 +169,12 @@ playbook:
     zieht einen eingebetteten Snapshot selbst aus dem `tool_result`. Ein
     älterer Orchestrator mit diesem Plugin leakt nichts, ignoriert aber
     `canvasSentinel`: die Canvas zeigt die Tabelle dann nicht (der Chat schon).
+    Ab @omadia/plugin-api 1.46.0 gibt der Orchestrator Tools die echten Werte
+    statt der Prompt-Pseudonyme, aber nur, wenn der Provider
+    `remaskPromptValues` hat (dieses Plugin ab 0.12.0, #1544). Fehlt es,
+    bekommen Tools weiter die Pseudonyme. `fileExportAvailable`,
+    `renderProvenance` und die Digest-Audience `public-api` sind optional: Ein
+    älterer Provider bietet weiter immer Excel an und liefert keine Herkunft.
 
 # ---------------------------------------------------------------------------
 # Permissions. Server-side compute plus ONE deliberate network target

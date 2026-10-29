@@ -126,6 +126,19 @@ describe('#1553 custom patterns never block the event loop', () => {
     assert.ok(detector);
   });
 
+  it('a request queued behind a runaway match is not failed with it', async () => {
+    const { detector } = createCustomTermsDetector({
+      terms: [],
+      patterns: ['(x+x+)+y', 'ORD-\\d{6}'],
+      runtimeBudgetMs: 50,
+    });
+    const runaway = detector!.detect('x'.repeat(40));
+    const queued = detector!.detect('ORD-123456');
+    await assert.rejects(runaway, /exceeded its runtime budget/);
+    const spans = await queued;
+    assert.deepEqual(spans.map((s) => [s.start, s.end]), [[0, 10]]);
+  });
+
   it('stops `(x+x+)+y` on a long x-run during the match (the #1553 repro)', async () => {
     const { detector } = createCustomTermsDetector({
       terms: [],

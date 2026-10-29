@@ -180,6 +180,12 @@ describe('#1545 person surrogate parts', () => {
     assert.equal(resolvePromptPseudonyms(glued, map), glued);
   });
 
+  it('a part next to another name word may be someone else: kept and counted, not renamed', () => {
+    const other = `Laut Odoo ist ${first} Schmidt zuständig, Kollege ${last} auch.`;
+    assert.equal(resolvePromptPseudonyms(other, map), other);
+    assert.equal(countUnresolvedForms(other, map), 2);
+  });
+
   it('a part shared by two people, or of a one-word real name, stays and is counted', () => {
     const shared = mapOf([
       ['Jonas Weber', 'Lukas Becker'],

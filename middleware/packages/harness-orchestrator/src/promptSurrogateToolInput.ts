@@ -51,10 +51,12 @@ export function restorePromptSurrogatesInToolInput(
   privacy: PrivacyTurnHandle | undefined,
   input: unknown,
 ): unknown {
-  // Called optionally: a minimal handle (a test stub, an older wrapper) may
-  // lack the method, and restore is then simply not available.
+  // A provider that cannot mask an echo again (one that predates
+  // `remaskPromptValues`) keeps the old behaviour: the tool gets the
+  // placeholder, so nothing it returns can carry the user's value.
+  if (typeof privacy?.remaskPromptValues !== 'function') return input;
   const restore =
-    typeof privacy?.snapshotPromptRestorer === 'function'
+    typeof privacy.snapshotPromptRestorer === 'function'
       ? privacy.snapshotPromptRestorer()
       : undefined;
   if (restore === undefined) return input;

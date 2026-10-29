@@ -9318,7 +9318,12 @@ export class Orchestrator {
     // the prompt placeholders the model saw. A domain tool's input is the
     // question for its sub-agent's model, so it keeps the placeholders; the
     // sub-agent restores them for its own inner tools (`LocalSubAgent`).
-    const handlerInput = this.domainToolsByName.has(name)
+    // A top-level MCP grant is registered as a domain tool too, but calls its
+    // server directly (`mcpGrantToDomainTool`): only a tool WITHOUT an MCP
+    // server id runs a sub-agent model.
+    const domainTool = this.domainToolsByName.get(name);
+    const asksSubAgentModel = domainTool !== undefined && domainTool.mcpServerId === undefined;
+    const handlerInput = asksSubAgentModel
       ? input
       : restorePromptSurrogatesInToolInput(privacy, input);
     const execute = async (): Promise<string> => {
@@ -9342,7 +9347,8 @@ export class Orchestrator {
                 ? { subAgentOwnerPluginId: domainToolAgentId }
                 : {}),
             },
-            () => this.dispatchToolInner(name, input, dispatchObserver, turnMemory, kernelRefusal),
+            () =>
+              this.dispatchToolInner(name, handlerInput, dispatchObserver, turnMemory, kernelRefusal),
           ),
         );
       }
@@ -9568,7 +9574,9 @@ export class Orchestrator {
             );
           }
         }
-        return result;
+        // #1544 — bypass passes the tool's DATA raw; the user's own masked
+        // values it was handed (and may echo) stay masked.
+        return remaskEchoedValues(privacy, result);
       }
       // Sub-agent bridge: the sub-agent interned ≥1 dataset this dispatch —
       // pass those REAL datasets up by reference so the parent agent's
@@ -9593,7 +9601,7 @@ export class Orchestrator {
       // agent's LLM read them directly), so re-interning the prose would
       // mask the synthesis the user actually asked for. Pass raw.
       if (subAgentBypassFlag.value && subAgentSink.length === 0) {
-        return result;
+        return remaskEchoedValues(privacy, result);
       }
       // Canvas sentinel tap: interning is about the LLM wire — the surface
       // synthesis is server-side and must compose from the RAW directive

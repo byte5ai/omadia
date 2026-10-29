@@ -87,7 +87,11 @@ import {
 import { findIdentityLeaks } from './v4/onTheWire.js';
 import { c1SegmentKey, createC1SegmentCache } from './c1SegmentCache.js';
 import { propagatePersonNames } from './c1NamePropagation.js';
-import { findResidualRealValues, resolvePromptPseudonyms } from './promptSurrogates.js';
+import {
+  findResidualRealValues,
+  remaskKnownValues,
+  resolvePromptPseudonyms,
+} from './promptSurrogates.js';
 import type { PseudonymMap } from './v4/types.js';
 import {
   countUnresolvedSurrogates as countResidualSurrogates,
@@ -1309,16 +1313,14 @@ export function createPrivacyGuardService(deps?: {
 
     // #1544 — the kernel restores the user's values into tool inputs; an
     // interning-exempt tool can echo them back in a result the model reads in
-    // clear. Longest value first, so a value that contains another one is
-    // replaced whole. Exact spelling: a case variant the user wrote has a
-    // surrogate of its own in the map.
+    // clear. Matched case-insensitively and with whitespace in the value read
+    // as any run of spaces, `-` or `_`, so a slug of the value
+    // (`/memories/projekt-falkenstein.md`) is caught too. One pass, longest
+    // value first, so an inserted surrogate is never rewritten again.
     remaskPromptValues(turnId: string, text: string): string {
       const map = promptMaskMaps.get(turnId);
       if (map === undefined || map.forward.size === 0 || text.length === 0) return text;
-      const pairs = [...map.forward.entries()]
-        .filter(([real]) => real.length > 0)
-        .sort((a, b) => b[0].length - a[0].length);
-      return pairs.reduce((acc, [real, surrogate]) => acc.split(real).join(surrogate), text);
+      return remaskKnownValues(text, map);
     },
 
     resolveDatasetForRender(turnId, datasetId) {

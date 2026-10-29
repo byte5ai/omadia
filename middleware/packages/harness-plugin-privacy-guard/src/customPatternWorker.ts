@@ -25,7 +25,9 @@
  * Which pattern was running when the budget ran out is read from a small
  * shared progress buffer the worker updates before every pattern, so the
  * log names the culprit — and a request that finished just as its timer
- * fired is not mistaken for an overrun.
+ * fired is not mistaken for an overrun. A request queued behind another one
+ * does not spend its budget waiting; when a runaway match is stopped, only
+ * that request fails and the queued ones move to a fresh worker.
  */
 
 import { Worker } from 'node:worker_threads';
@@ -102,9 +104,13 @@ export class PatternBudgetExceeded extends Error {
 
 interface Pending {
   readonly patterns: readonly WorkerPattern[];
+  readonly text: string;
+  readonly budgetMs: number;
   readonly resolve: (results: readonly PatternResult[]) => void;
   readonly reject: (err: Error) => void;
   timer?: NodeJS.Timeout;
+  /** When the worker started on this request; unset while it is queued. */
+  startedAt?: number;
 }
 
 interface Live {
@@ -139,12 +145,19 @@ export class CustomPatternWorker {
     await live.online;
     const id = this.nextId++;
     return new Promise<readonly PatternResult[]>((resolve, reject) => {
-      const entry: Pending = { patterns, resolve, reject };
+      const entry: Pending = { patterns, text, budgetMs, resolve, reject };
       this.pending.set(id, entry);
-      const startedAt = Date.now();
-      entry.timer = setTimeout(() => this.onBudget(live, id, startedAt), Math.max(0, budgetMs));
-      live.worker.postMessage({ id, patterns, text });
+      this.post(live, id, entry);
     });
+  }
+
+  /** Hand `entry` to `live` and arm its budget timer. */
+  private post(live: Live, id: number, entry: Pending): void {
+    // Posted to an idle worker, it starts now; behind others, its clock
+    // starts when `onBudget` sees the worker on it (at most one extra window).
+    entry.startedAt = this.pending.size <= 1 ? Date.now() : undefined;
+    entry.timer = setTimeout(() => this.onBudget(live, id), Math.max(0, entry.budgetMs));
+    live.worker.postMessage({ id, patterns: entry.patterns, text: entry.text });
   }
 
   /** Terminate the worker and reject everything it still holds. */
@@ -207,13 +220,48 @@ export class CustomPatternWorker {
     this.scheduleIdle();
   }
 
-  private onBudget(live: Live, id: number, startedAt: number): void {
-    if (this.live !== live || !this.pending.has(id)) return;
+  private onBudget(live: Live, id: number): void {
+    const entry = this.pending.get(id);
+    if (this.live !== live || entry === undefined) return;
     // Finished just as the timer fired: the reply is on its way.
     if (Atomics.load(live.progress, FINISHED_REQUEST) >= id) return;
-    const running = this.pending.get(Atomics.load(live.progress, RUNNING_REQUEST));
-    const culprit = running?.patterns[Atomics.load(live.progress, RUNNING_PATTERN)]?.source;
-    this.dispose(new PatternBudgetExceeded(culprit, Date.now() - startedAt));
+    const runningId = Atomics.load(live.progress, RUNNING_REQUEST);
+    if (runningId < id) {
+      // Still queued behind another request: its own budget starts when the
+      // worker picks it up. The running request's timer stops a runaway.
+      entry.timer = setTimeout(() => this.onBudget(live, id), Math.max(1, entry.budgetMs));
+      return;
+    }
+    if (entry.startedAt === undefined) {
+      // Picked up during this budget window: give it a full budget of its own.
+      entry.startedAt = Date.now();
+      entry.timer = setTimeout(() => this.onBudget(live, id), Math.max(0, entry.budgetMs));
+      return;
+    }
+    // It ran a whole budget: stop it. Only THIS request fails (the caller
+    // blocks its turn); requests queued behind it go to a fresh worker.
+    const culprit = entry.patterns[Atomics.load(live.progress, RUNNING_PATTERN)]?.source;
+    this.pending.delete(id);
+    const queued = [...this.pending.entries()];
+    this.pending.clear();
+    this.dispose();
+    entry.reject(new PatternBudgetExceeded(culprit, Date.now() - entry.startedAt));
+    if (queued.length === 0) return;
+    const fresh = this.spawn();
+    for (const [queuedId, queuedEntry] of queued) {
+      if (queuedEntry.timer !== undefined) clearTimeout(queuedEntry.timer);
+      this.pending.set(queuedId, queuedEntry);
+    }
+    fresh.online.then(
+      () => {
+        for (const [queuedId, queuedEntry] of queued) {
+          if (this.live === fresh && this.pending.get(queuedId) === queuedEntry) {
+            this.post(fresh, queuedId, queuedEntry);
+          }
+        }
+      },
+      () => undefined, // a worker that does not come up rejects them (spawn)
+    );
   }
 
   private scheduleIdle(): void {

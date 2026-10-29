@@ -302,6 +302,40 @@ function looseClaims(text: string, map: PseudonymMap, loose: readonly SurrogateF
   );
 }
 
+/** Words a lone name part may stand next to: salutations, titles, greetings. */
+const NAME_NEIGHBOURS = new Set([
+  'herr', 'herrn', 'frau', 'hr', 'fr', 'dr', 'prof', 'mr', 'mrs', 'ms', 'miss', 'sir',
+  'hallo', 'hi', 'hey', 'liebe', 'lieber', 'lieben', 'dear', 'guten', 'geehrte',
+  'geehrter', 'sehr', 'servus', 'moin', 'grüß', 'gruß', 'danke', 'thanks', 'hello',
+]);
+
+/** The word right next to `[start, end)` across exactly one space, if any. */
+function neighbourWord(text: string, start: number, end: number, side: 'before' | 'after'): string | undefined {
+  if (side === 'before') {
+    const m = /(\p{L}[\p{L}.'-]*)[ \u00a0]$/u.exec(text.slice(Math.max(0, start - 40), start));
+    return m?.[1];
+  }
+  const m = /^[ \u00a0](\p{L}[\p{L}'-]*)/u.exec(text.slice(end, end + 40));
+  return m?.[1];
+}
+
+/**
+ * #1545 review — a lone part glued to another capitalised name word ("Lukas
+ * Schmidt" from tool data, "Kollege Becker") may be a different person who
+ * shares the part: restoring would rename them. Such a part is reported as
+ * unresolved (the answer gets the notice) instead of rewritten. Salutations
+ * and greetings ("Herr Becker", "Hallo Lukas") are fine.
+ */
+function nextToOtherName(text: string, start: number, end: number): boolean {
+  return (['before', 'after'] as const).some((side) => {
+    const word = neighbourWord(text, start, end, side);
+    if (word === undefined) return false;
+    const first = word.charAt(0);
+    if (first === first.toLowerCase()) return false;
+    return !NAME_NEIGHBOURS.has(word.replace(/\.$/u, '').toLowerCase());
+  });
+}
+
 function partClaims(text: string, parts: ReadonlyMap<string, PartForm>): Claim[] {
   if (parts.size === 0) return [];
   const spellings = [...parts.values()].flatMap((p) => [...p.spellings]);
@@ -311,7 +345,9 @@ function partClaims(text: string, parts: ReadonlyMap<string, PartForm>): Claim[]
     const part = parts.get(match[0].toUpperCase());
     if (part === undefined || !part.spellings.has(match[0])) return [];
     if (!onWordBoundaries(text, start, end)) return [];
-    if (part.real === undefined) return [{ start, end, text: match[0], unresolved: true, rank: 2 }];
+    if (part.real === undefined || nextToOtherName(text, start, end)) {
+      return [{ start, end, text: match[0], unresolved: true, rank: 2 }];
+    }
     return [{ start, end, text: caseLike(match[0], part.real), unresolved: false, rank: 2 }];
   });
 }
@@ -396,4 +432,41 @@ export function countUnresolvedForms(text: string, map: PseudonymMap | undefined
       .map((claim) => claim.text.toLowerCase()),
   );
   return hits.size;
+}
+
+// ---------------------------------------------------------------------------
+// #1544 — masking an echoed user value again.
+// ---------------------------------------------------------------------------
+
+/**
+ * Every real value of `map` in `text` replaced by its surrogate, in the case
+ * the text wrote it: case-insensitive, and with whitespace inside the value
+ * read as any run of spaces, `-` or `_` (a slug of the value in a path). For a
+ * tool result the model reads in clear after the kernel restored the user's
+ * values into the tool's input. One pass, longest value first, so a surrogate
+ * just put in is never rewritten. A shorter spelling (a first name alone) is
+ * not caught: the tool must echo the value it was given.
+ */
+export function remaskKnownValues(text: string, map: PseudonymMap): string {
+  const reals = [...map.forward.keys()]
+    .filter((real) => real.trim().length > 0)
+    .sort((a, b) => b.length - a.length);
+  if (reals.length === 0 || text.length === 0) return text;
+  const byKey = new Map<string, string>();
+  for (const real of reals) {
+    const key = slugKey(real);
+    if (!byKey.has(key)) byKey.set(key, map.forward.get(real)!);
+  }
+  const alternation = reals
+    .map((real) => real.trim().split(/\s+/u).map(escapeRegExp).join('[\\s_-]+'))
+    .join('|');
+  return text.replace(new RegExp(alternation, 'giu'), (match: string) => {
+    const surrogate = byKey.get(slugKey(match));
+    return surrogate === undefined ? match : caseLike(match, surrogate);
+  });
+}
+
+/** Lower case, every run of whitespace, `-` or `_` as one space. */
+function slugKey(value: string): string {
+  return value.trim().toLowerCase().replace(/[\s_-]+/gu, ' ');
 }

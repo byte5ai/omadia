@@ -1742,14 +1742,20 @@ requests, and only there, the shield acts on four kinds of text:
   the surrogates it saw. Before a tool handler runs, the turn's surrogates in
   its input are restored (`promptSurrogateToolInput.ts`, in
   `Orchestrator.dispatchToolDeadlined` and `LocalSubAgent.dispatch`), so a
-  search for a masked term finds it. A domain tool's input is the question
-  for its sub-agent's model and keeps the surrogates; the sub-agent's inner
-  tool calls are restored in turn. What an intern-exempt tool echoes back in
-  clear (`memory`: "created /memories/<value>.md") gets the surrogates again
-  (`remaskPromptValues`); every other result is interned, and tool errors run
-  through the known-value sweep of §6c. Residual: a plugin tool that hands its
-  input to a model through `ctx.llm` sends that model the real value, as it
-  would with the setting off.
+  search for a masked term finds it; a top-level MCP grant counts as such a
+  tool. A domain tool that runs a sub-agent keeps the surrogates in its
+  input (the question is for the sub-agent's model); the sub-agent's inner
+  tool calls are restored in turn. What an intern-exempt or bypassed tool
+  echoes back in clear (`memory`: "created /memories/<value>.md") gets the
+  surrogates again (`remaskPromptValues`: case-insensitive, whitespace in the
+  value also matching `-`/`_`, so a slug is caught); every other result is
+  interned, and tool errors run through the known-value sweep of §6c. The
+  restore runs only when the provider implements `remaskPromptValues`
+  (privacy guard 0.12.0); an older provider keeps giving tools the
+  surrogates. Residuals: an echo in another spelling than the value (a first
+  name alone) is not re-masked, and a plugin tool that hands its input to a
+  model through `ctx.llm` sends that model the real value, as it would with
+  the setting off.
 
 **Surrogate edge cases (#1528, #1529).** Restore (`resolvePromptPseudonyms`,
 `promptSurrogates.ts`) also maps back a surrogate the model rewrote: in any

@@ -67,6 +67,56 @@ changelog.
 `@omadia/plugin-privacy-guard` 0.11.0, `@omadia/plugin-api` 1.37.0
 (`countUnresolvedSurrogates` takes an optional `options`).
 
+### Fixed — Privacy Shield masking correctness and data rendering (S3-B)
+
+2026-10-29. Fourteen ways prompt masking and server-rendered answers misled the
+model or the user (#1542–#1546, #1550, #1553–#1556, #1559–#1561, #1577).
+
+- **Tools search for what the user wrote (#1544).** With `mask_user_prompt` on,
+  tools got the placeholder (`PLATZHALTER-CUSTOM-1`) and found nothing. The
+  turn's surrogates are now restored in a tool's input right before its handler
+  runs (`promptSurrogateToolInput.ts`; orchestrator dispatch and sub-agent inner
+  calls). A domain tool's question to its sub-agent keeps the placeholders; what
+  an intern-exempt tool echoes goes back masked (`remaskPromptValues`).
+- **Surrogates that made the model object (#1554, #1555, #1577).** The IBAN
+  surrogate has 22 characters; amounts are non-round and dates fall in
+  2003–2022 (no more `01.01.1970`). An e-mail surrogate follows the masked
+  person's surrogate, and is a neutral `kontaktN@example.net` when the name
+  stays visible in clear, so the model sees no name/address mismatch.
+- **Restore of rewritten surrogates (#1545, #1577).** A first or last name taken
+  from a person surrogate ("Hallo Lukas", "Herr Becker") and an amount or date
+  the model reformatted (`12.357 €`, `19. Februar 2012`) map back to the user's
+  value; an ambiguous part gets the unresolved-placeholder notice. Name pools
+  dropped names that are common words (Sommer, Lange, Jan, Max, …) and the first
+  24 person surrogates differ in both first and last name.
+- **Custom regex can no longer stall the middleware (#1553).** Operator
+  patterns run in a worker thread; the 100 ms budget stops the match while it
+  runs and blocks only that turn. Save-time vetting is bounded too and warns
+  about nested quantifiers (`customPatternNestedQuantifier`) without
+  deactivating the pattern.
+- **Dataset import without a secret (#1546).** One surrogate map per table, so
+  distinct values keep distinct surrogates; and the middleware hands its dev
+  vault key to the dataset resolvers, so an install without `VAULT_KEY` encrypts
+  flagged cells like any other. Datasets imported before this keep their
+  collapsed values: re-import them.
+- **Link keys are never filter targets (#1560).** `v4_filter` refuses `__k_*`
+  fields like `query_dataset` does.
+- **Rendering (#1542, #1543, #1559).** Nested cells (a Confluence page body,
+  `version`, `space`) render as text; what still cannot be shown is marked and
+  named to the model instead of `[nested]`. A rendered table's ack and the
+  persisted answer carry a value-free note of how it was built, and a follow-up
+  that re-queries says so. A truncated table offers Excel only when
+  `create_xlsx` is available.
+- **Public MCP (#1561).** A domain tool called over `/api/v1/mcp` returns a
+  digest text for API callers, without the chat-only verb instructions.
+- **Labels (#1556, partly).** The model writes a complete sentence pointing to
+  the table when a masked label is the subject; letting non-personal labels
+  through is a separate decision.
+- **Docs (#1550).** `mask_user_prompt` help, `.env.example` and the
+  `privacyMode.ts` comment now describe what the code masks.
+
+`@omadia/plugin-privacy-guard` 0.12.0, `@omadia/plugin-api` 1.46.0.
+
 ### Added — Provenance backfill for legacy Privacy Shield content (#1540)
 
 2026-10-28. Closes the last path of #1540. Notes and processes written before

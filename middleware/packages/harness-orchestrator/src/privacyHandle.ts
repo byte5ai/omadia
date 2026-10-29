@@ -378,9 +378,15 @@ export function createPrivacyTurnHandle(deps: {
       return deps.service.snapshotPromptRestorer?.(deps.turnId);
     },
 
-    remaskPromptValues(text) {
-      return deps.service.remaskPromptValues?.(deps.turnId, text) ?? text;
-    },
+    // Only on a provider that implements it: the kernel restores tool inputs
+    // only where echoes can be masked again (`promptSurrogateToolInput.ts`).
+    ...(deps.service.remaskPromptValues !== undefined
+      ? {
+          remaskPromptValues(text: string): string {
+            return deps.service.remaskPromptValues?.(deps.turnId, text) ?? text;
+          },
+        }
+      : {}),
 
     async finalize(turnInput) {
       return deps.service.finalizeTurn(deps.turnId, turnInput);

@@ -145,6 +145,40 @@ describe('#1544 — tools run on the user values, models see placeholders', () =
     assert.ok(!query.includes('Falkenstein'));
   });
 
+  it('restores the input of a top-level MCP grant (a domain tool without a sub-agent)', async () => {
+    const seen: unknown[] = [];
+    const requests: string[] = [];
+    const orchestrator = new Orchestrator({
+      provider: searchingProvider('mcp_search', requests),
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 3,
+      domainTools: [
+        {
+          name: 'mcp_search',
+          domain: 'mcp.docs',
+          mcpServerId: 'srv-docs',
+          spec: {
+            name: 'mcp_search',
+            description: 'Search via MCP',
+            input_schema: { type: 'object', properties: { query: { type: 'string' } }, required: [] },
+          },
+          handle: (input: unknown) => {
+            seen.push(input);
+            return Promise.resolve('Error: nothing found');
+          },
+        },
+      ],
+      nativeToolRegistry: new NativeToolRegistry(),
+      privacyGuard: () => maskingService(),
+    } as unknown as ConstructorParameters<typeof Orchestrator>[0]);
+
+    await orchestrator.runTurn({ userMessage: `Was ist der aktuelle Stand von ${TERM}?` });
+
+    assert.deepEqual(seen, [{ query: `Stand von ${TERM}?` }]);
+    for (const request of requests) assert.ok(!request.includes('Falkenstein'));
+  });
+
   it('remaskPromptValues turns an echoed user value back into its placeholder', async () => {
     const service = maskingService();
     const masked = await service.maskUserPrompt!({
@@ -158,6 +192,11 @@ describe('#1544 — tools run on the user values, models see placeholders', () =
     assert.equal(
       service.remaskPromptValues!('t-1544', `created /memories/${TERM}.md`),
       `created /memories/${placeholder}.md`,
+    );
+    assert.equal(
+      service.remaskPromptValues!('t-1544', '/memories/projekt-falkenstein.md'),
+      `/memories/${placeholder!.toLowerCase()}.md`,
+      'a lower-case slug of the value is masked too',
     );
     assert.equal(service.remaskPromptValues!('other-turn', TERM), TERM, 'another turn has no map');
   });

@@ -713,7 +713,8 @@ export class LocalSubAgent {
             );
           }
         }
-        return { output: result, ...carried };
+        // #1544 — raw tool data, but the user's own masked values stay masked.
+        return { output: remaskEchoedValues(privacy, result), ...carried };
       }
       // Canvas sentinel tap — sub-tools (e.g. an agent plugin's deterministic
       // canvas tree) emit `_pending*` directives too; the synthesis needs the

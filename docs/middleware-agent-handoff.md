@@ -2008,6 +2008,26 @@ erkennt alle drei Formen. Tests: `test/privacyMaskingEdges.test.ts`,
 `test/orchestrator/promptMaskRewrittenSurrogate.test.ts`,
 `web-ui/…/CredentialsEditorMultiline.test.tsx`.
 
+**Masking-Korrektheit und Rendering (S3-B, privacy-guard 0.12.0, plugin-api
+1.46.0).** Tool-Eingaben laufen auf Realwerten: `promptSurrogateToolInput.ts`
+(`restorePromptSurrogatesInToolInput` vor dem Handler in
+`Orchestrator.dispatchToolDeadlined` — nicht für Domain-Tools, deren Frage an
+das Sub-Agent-Modell geht — und in `LocalSubAgent.dispatch`;
+`remaskEchoedValues` für intern-exempte Ergebnisse, Service-Methode
+`remaskPromptValues`) (#1544). Surrogat-Generatoren in `v4/pseudonym.ts`:
+IBAN 22 Zeichen, Beträge/Daten wertbewusst und ohne Epoch, E-Mail folgt dem
+Personen-Surrogat bzw. neutral `kontaktN@example.net`, bereinigte Namenspools
+(#1545, #1554, #1555, #1577); Restore von Namensteilen und umformatierten
+Beträgen/Daten in `promptSurrogates.ts`. Operator-Regexe laufen in
+`customPatternWorker.ts` (Worker-Thread, Laufzeitbudget bricht den Match ab,
+#1553). Datensatz-Import: eine Surrogat-Map pro Tabelle,
+`setDatasetVaultKeyFallback` aus `src/index.ts` für den Dev-Vault-Key
+(#1546). `v4_filter` lehnt `__k_*` ab (#1560). Rendering: verschachtelte
+Zellen (`materializer.ts`), `v4/renderProvenance.ts` (wertfreie Herkunft im
+Ack und als `<!-- orchestrator:rendered_table … -->` in der persistierten
+Antwort, Prompt-Regel e), `fileExportAvailable` für den Excel-Hinweis,
+Digest-Audience `public-api` für `/api/v1/mcp` (#1542, #1543, #1559, #1561).
+
 ### Conductor-Cancel + Approval-Härtung (#759)
 
 Neu: **`POST /api/v1/operator/conductors/:slug/runs/:runId/cancel`** — `waiting`
