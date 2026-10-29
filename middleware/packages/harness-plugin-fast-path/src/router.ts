@@ -6,8 +6,7 @@ import {
   type FastLlmTool,
   type FastPathToolSpec,
 } from './fastPath.js';
-import type { StoredTextPrivacyRun } from './storedTextPrivacy.js';
-import type { PreviousQuery, TriageRoute } from './triage.js';
+import type { TriageRoute } from './triage.js';
 
 /**
  * Fast-path ROUTER — one tiny classification call per turn, every channel
@@ -20,6 +19,12 @@ import type { PreviousQuery, TriageRoute } from './triage.js';
  * "JSON only" prompt the fast model answered in prose on attempt 1 (live
  * `shape=no-object`). A model that cannot force a tool may still answer in
  * text: its first JSON object is accepted, anything else is a miss.
+ *
+ * Prompt split (privacy latency): the fixed text — rules, tool catalog,
+ * learned intents (stored literal-stripped/masked) — is the SYSTEM prompt and
+ * never goes through the Privacy Shield; the user message is ONLY the
+ * user-derived turn message (triageTurn.ts), masked once per turn and shared
+ * with the planner.
  */
 
 export const ROUTER_TOOL = 'route_turn';
@@ -76,15 +81,10 @@ export function routerTool(toolNames: readonly string[]): FastLlmTool {
   };
 }
 
-/** The router's user prompt: tool catalog (one line each), learned
- *  intents, the session's last fast-path query, the turn. */
-export function buildRouterPrompt(opts: {
-  question: string;
-  tools: readonly FastPathToolSpec[];
-  intents?: readonly RouterIntent[];
-  previous?: PreviousQuery;
-}): string {
-  const lines = [`TOOLS:\n${opts.tools.map((t) => `- ${t.name}: ${toolPurpose(t)}`).join('\n')}`];
+/** The router's system prompt: the fixed rules plus the tool catalog (one
+ *  line each) and the learned intents — no user-derived text. */
+export function buildRouterSystem(opts: { tools: readonly FastPathToolSpec[]; intents?: readonly RouterIntent[] }): string {
+  const lines = [ROUTER_SYSTEM, `TOOLS:\n${opts.tools.map((t) => `- ${t.name}: ${toolPurpose(t)}`).join('\n')}`];
   const intents = opts.intents ?? [];
   if (intents.length > 0) {
     lines.push(
@@ -93,20 +93,7 @@ export function buildRouterPrompt(opts: {
         .join('\n')}`,
     );
   }
-  if (opts.previous) lines.push(`PREVIOUS QUERY: ${previousSummary(opts.previous)}`);
-  lines.push(`USER TURN: ${opts.question}`);
   return lines.join('\n');
-}
-
-/** One line on the previous fast-path query — tool and model, no values. */
-export function previousSummary(prev: PreviousQuery): string {
-  const input = prev.fetch.input;
-  const model =
-    typeof input === 'object' && input !== null ? (input as Record<string, unknown>)['model'] : undefined;
-  return (
-    `user asked "${prev.question}" → ${prev.fetch.tool}` +
-    (typeof model === 'string' ? ` (${model}: ${Object.keys(prev.fetch.map).join(', ')})` : '')
-  );
 }
 
 /** The decision of a router answer, or undefined when it has none. A
@@ -127,11 +114,10 @@ export async function routeTurn(opts: {
   llm: FastLlm;
   model: string;
   channel: string;
-  question: string;
+  /** the turn message (triageTurn.ts) — already masked when a shield runs */
+  message: string;
   tools: readonly FastPathToolSpec[];
   intents?: readonly RouterIntent[];
-  previous?: PreviousQuery;
-  privacy?: StoredTextPrivacyRun;
   log: (message: string) => void;
 }): Promise<RouteOutcome> {
   const t0 = Date.now();
@@ -142,21 +128,12 @@ export async function routeTurn(opts: {
     ...(route ? { route } : {}),
   });
   const toolNames = opts.tools.map((t) => t.name);
-  let content = buildRouterPrompt(opts);
-  if (opts.privacy) {
-    const masked = await opts.privacy.mask(content);
-    if (!masked.send) {
-      opts.log(`[fast-path] router skipped channel=${opts.channel} (privacy: ${masked.reason})`);
-      return agent('privacy-refused');
-    }
-    content = masked.text;
-  }
   let res: Awaited<ReturnType<FastLlm['complete']>>;
   try {
     res = await opts.llm.complete({
       model: opts.model,
-      system: ROUTER_SYSTEM,
-      messages: [{ role: 'user', content }],
+      system: buildRouterSystem(opts),
+      messages: [{ role: 'user', content: opts.message }],
       maxTokens: ROUTER_MAX_TOKENS,
       ...FAST_MODEL_REASONING,
       tools: [routerTool(toolNames)],

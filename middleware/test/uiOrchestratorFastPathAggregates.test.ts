@@ -28,7 +28,7 @@ import {
   type CompositionLlm,
 } from '../packages/omadia-ui-orchestrator/src/composition.js';
 import { plannableTools, renderSummary } from '../packages/harness-plugin-fast-path/src/fastPath.js';
-import { buildPlannerPrompt, parsePlan, PLANNER_SYSTEM } from '../packages/harness-plugin-fast-path/src/planner.js';
+import { buildPlannerSystem, parsePlan } from '../packages/harness-plugin-fast-path/src/planner.js';
 import { ROUTER_SYSTEM } from '../packages/harness-plugin-fast-path/src/router.js';
 import { createFastPathService, FAST_PATH_SERVICE } from '../packages/harness-plugin-fast-path/src/service.js';
 import { activate } from '../packages/omadia-ui-orchestrator/src/plugin.js';
@@ -214,7 +214,7 @@ describe('fast path — Odoo schema hints in the planner prompt', () => {
   it('the odoo_query spec carries the curated catalog and business-term mappings', () => {
     const [tool] = plannableTools(['odoo_query']);
     assert.ok(tool);
-    const prompt = PLANNER_SYSTEM + '\n' + buildPlannerPrompt({ question: 'x', tool });
+    const prompt = buildPlannerSystem({ tools: [tool] });
     for (const needle of [
       'account.move',
       'amount_residual',

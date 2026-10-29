@@ -22,7 +22,8 @@ import {
   OUTPUT_FORMAT_INSTRUCTION,
   fetchRecipeRows,
 } from '../packages/harness-plugin-fast-path/src/fastPath.js';
-import { buildPlannerPrompt, parsePlan, PLAN_EXAMPLE, PLANNER_SYSTEM, plannerTool } from '../packages/harness-plugin-fast-path/src/planner.js';
+import { buildPlannerSystem, parsePlan, PLAN_EXAMPLE, PLANNER_SYSTEM, plannerTool } from '../packages/harness-plugin-fast-path/src/planner.js';
+import { buildTurnMessage } from '../packages/harness-plugin-fast-path/src/triageTurn.js';
 import { parseTriage } from './_helpers/fastPathRouterPlanner.js';
 import type { RefreshSource } from '../packages/harness-plugin-fast-path/src/refreshRecipes.js';
 
@@ -183,10 +184,10 @@ describe('finding 4 — planner required output shape incl. summary', () => {
     assert.equal(d.plan.locale, 'de-DE');
   });
 
-  it('summary and locale are required fields of the forced plan_query tool; the prompt carries the turn', () => {
-    const schema = plannerTool('odoo_query').inputSchema as { required: string[] };
+  it('summary and locale are required fields of the forced plan_query tool; the turn message carries the turn', () => {
+    const schema = plannerTool(['odoo_query']).inputSchema as { required: string[] };
     assert.ok(schema.required.includes('summary') && schema.required.includes('locale'));
-    const prompt = buildPlannerPrompt({ question: 'offene Posten', tool: { name: 'odoo_query', spec: 's' } });
-    assert.match(prompt, /USER TURN: offene Posten/);
+    assert.equal(buildTurnMessage({ question: 'offene Posten' }), 'USER TURN: offene Posten');
+    assert.match(buildPlannerSystem({ tools: [{ name: 'odoo_query', spec: 'SPEC' }] }), /TOOLS:\n- SPEC/);
   });
 });

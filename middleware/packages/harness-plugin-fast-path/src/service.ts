@@ -18,10 +18,9 @@ import {
   type PlanMemory,
 } from './learnedPlanStore.js';
 import { resolveTimeZone, type RefreshSource } from './refreshRecipes.js';
-import { planQuery } from './planner.js';
-import { routeTurn } from './router.js';
 import { openStoredTextPrivacy, TRIAGE_PRIVACY_JOB } from './storedTextPrivacy.js';
 import type { PreviousQuery, TriageRoute } from './triage.js';
+import { triageTurn } from './triageTurn.js';
 
 /** Bare service-registry key (`fastPath@1` in the manifest). */
 export const FAST_PATH_SERVICE = 'fastPath';
@@ -183,42 +182,29 @@ export function createFastPathService(deps: FastPathServiceDeps): FastPathServic
     const previous = req.sessionKey !== undefined ? sessions.get(req.sessionKey) : undefined;
 
     // #1540 — the turn has no privacy handle yet: with a shield running the
-    // router and planner prompts go through ONE stored-text scope
-    // (failure-closed) on the sidecar's interactive lane — the turn waits.
+    // user-derived turn message goes through ONE stored-text scope, masked
+    // once for router + planner (failure-closed) on the sidecar's
+    // interactive lane — the turn waits. Fixed prompt text is never masked.
     const guard = deps.privacyGuard();
     const privacy = guard !== undefined ? openStoredTextPrivacy(guard, TRIAGE_PRIVACY_JOB, 'interactive') : undefined;
-    const llm = deps.llm;
-    const route = await routeTurn({
-      llm,
+    // router ∥ speculative planner (triageTurn.ts)
+    const triage = await triageTurn({
+      llm: deps.llm,
       model: deps.model,
       channel,
       question,
       tools: specs,
-      intents: offered.map((p) => ({ question: p.examples[0] ?? '', tool: p.tool })),
-      ...(previous ? { previous } : {}),
-      ...(privacy ? { privacy } : {}),
-      log: deps.log,
-    });
-    if (route.kind === 'agent') {
-      if (route.route === undefined) deps.log(`[fast-path] miss channel=${channel} reason=${route.reason}`);
-      return { kind: 'agent', reason: route.reason, ms: Date.now() - t0, ...(route.route ? { route: route.route } : {}) };
-    }
-    const spec = specs.find((t) => t.name === route.tool);
-    if (spec === undefined) return agent('router-tool-not-offered');
-    const planned = await planQuery({
-      llm,
-      model: deps.model,
-      channel,
-      question,
-      tool: spec,
+      offered,
       allowedTools: allowedFetchTools(),
-      examples: offered,
       ...(previous ? { previous } : {}),
       ...(privacy ? { privacy } : {}),
       log: deps.log,
     });
-    if (!planned.ok) return agent(planned.reason);
-    const decision = planned.plan;
+    if (triage.kind === 'agent') {
+      if (triage.route === undefined) deps.log(`[fast-path] miss channel=${channel} reason=${triage.reason}`);
+      return { kind: 'agent', reason: triage.reason, ms: Date.now() - t0, ...(triage.route ? { route: triage.route } : {}) };
+    }
+    const decision = triage.plan;
     if (!permitted.has(decision.fetch.tool)) return agent('tool-not-permitted');
 
     const fetched = await fetchRecipeRows(deps.invoke, decision.fetch, { rejectTruncated: true, timeZone });
