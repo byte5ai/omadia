@@ -5143,12 +5143,19 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 
 ### Plan-Schritt-Zuordnung und Canvas-Vorschau (#1502, #1500)
 
-- **Schritt-Zuordnung bleibt Heuristik.** Seit #1522 schließt nur ein
-  erfolgreicher Arbeits-Call einen Plan-Schritt, aber weiter sequenziell
-  (i-ter Call ≈ i-ter Schritt). Ein Call, der den Schritt nicht bedient, hakt
-  ihn trotzdem ab; ein Call, der zwei Schritte abdeckt, lässt die späteren
-  `skipped`. Optionen (Haiku pro Call vs. ein Haiku-Mapping am Turn-Ende) sind
-  eine Kosten-/Latenz-Entscheidung, noch offen.
+- **Schritt-Zuordnung: live Heuristik, gespeichert Haiku (Option C, erledigt).**
+  Während des Turns hakt die Karte weiter sequenziell ab (i-ter Arbeits-Call ≈
+  i-ter Schritt). Nach dem Turn ordnet ein Haiku-Aufruf
+  (`stepMapper.ts`, `remapPlanSteps`) die ganze Tool-Spur den Schritten zu und
+  korrigiert den gespeicherten Plan, den Recall liest. Er läuft
+  fire-and-forget nach dem letzten Snapshot, `done` wartet nicht. Schlägt er
+  fehl oder ist die Antwort unbrauchbar, bleibt das Heuristik-Ergebnis. Er
+  geht unmaskiert über `ctx.llm` und bekommt deshalb nur Schritt-Ziele,
+  Tool-Namen in Aufrufreihenfolge und ob der Turn geantwortet hat, kein
+  Tool-Ergebnis und keinen Antworttext. Ein Schritt, den ein späterer Turn
+  inzwischen geändert hat, bleibt unberührt; `close()` wartet auf laufende
+  Zuordnungen. Schalter `mapStepsAtTurnEnd` (Default `on`).
+  Offen: die Live-Karte bleibt grob (Option B, Haiku pro Call, nicht gebaut).
 - **Canvas sieht `text_retract` nicht.** `canvasConnection.ts` reicht nur
   `surface_*`, `text_delta` (als `agent_text_delta`) und `error` durch, und der
   Canvas bekommt auch `done.answer` nie — eine Tool-Call-Präambel bleibt dort im
@@ -6189,10 +6196,11 @@ für extras, dessen Instanzen der Orchestrator eager festhält.
 Ebenso zählt der Aufrufzähler des Accessors (`callsUsed`) über die Lebenszeit
 des Kontexts. Für ein Extension-Plugin ist `calls_per_invocation` damit ein
 Budget seit der Aktivierung (das ui-orchestrator-Manifest setzt deshalb
-1000000). Der Plan-Runner (`calls_per_invocation: 30`) bekommt nach 30
-Modellaufrufen `LlmBudgetExceededError`; `shouldPlan` fängt ihn und plant bis
-zur nächsten Aktivierung nichts mehr, ohne Meldung. Budget pro Turn zählen oder
-die Obergrenze des Plan-Runners anheben.
+1000000). Der Plan-Runner bekam mit `calls_per_invocation: 30` nach 30
+Modellaufrufen `LlmBudgetExceededError`; `shouldPlan` fing ihn und plante bis
+zur nächsten Aktivierung nichts mehr, ohne Meldung. Seit 0.2.0 (#1502
+Option C) steht er aus demselben Grund auf 1000000. Ein Budget pro Turn
+bleibt offen.
 
 **Klassen-Refs veralten nach Discovery (#1083) — erledigt (#1359).**
 Orchestrator, Verifier und extras lösen einen Klassen-Ref (`class:frontier` …)

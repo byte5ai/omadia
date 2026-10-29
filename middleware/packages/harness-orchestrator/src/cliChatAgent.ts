@@ -40,6 +40,7 @@ import { isPrivacyForceGuarded } from './privacyPolicy.js';
 import type { LoopbackMcpServerHandle } from './loopbackMcpServer.js';
 import { CLI_CHAT_USAGE_SOURCE, recordUsage } from '@omadia/usage-telemetry';
 import {
+  OMADIA_MCP_SERVER_NAME,
   OMADIA_MCP_TOOL_PREFIX,
   buildCliToolGateArgv,
   buildGatedCliEnv,
@@ -475,6 +476,43 @@ export class TurnSemaphore {
   }
 }
 
+/**
+ * #1581 — the CLI's own account of what it loaded, from its `system`/`init`
+ * line. `omadiaServerStatus` is the loopback server's MCP state as the CLI saw
+ * it (`connected`, `pending`, `failed`, …; `absent` when it is not listed).
+ */
+export interface CliInitReport {
+  readonly tools: readonly string[];
+  readonly omadiaServerStatus: string;
+}
+
+/**
+ * #1581 — the error that ends a turn whose CLI loaded none of the tools
+ * omadia offered, or `undefined` when the turn may go on. A CLI that sends
+ * its first model request before the loopback MCP handshake finished (2.1.187
+ * waited only a few seconds) gave the model no tools at all, and the model
+ * then faked a `memory` call in its answer text.
+ */
+export function checkCliInit(
+  init: CliInitReport,
+  offered: number,
+  locale?: string,
+): Error | undefined {
+  if (offered === 0) return undefined;
+  if (init.tools.some((t) => t.startsWith(OMADIA_MCP_TOOL_PREFIX))) return undefined;
+  // Same locale rule as every notice: `en*` → English, anything else → German.
+  const en = locale !== undefined && /^en\b/i.test(locale);
+  return new Error(
+    en
+      ? `The Claude CLI started without omadia's tools (MCP server ${init.omadiaServerStatus}), ` +
+          'so this turn could not use memory or any other tool and nothing was saved. ' +
+          'Please send the message again.'
+      : `Die Claude-CLI ist ohne die Werkzeuge von omadia gestartet (MCP-Server ${init.omadiaServerStatus}). ` +
+          'Dieser Turn konnte deshalb weder das Gedächtnis noch ein anderes Werkzeug nutzen, und es wurde ' +
+          'nichts gespeichert. Bitte sende die Nachricht noch einmal.',
+  );
+}
+
 // The CLI emits NDJSON, not SSE. We intentionally map only the empirically stable shapes:
 // text deltas stream the answer, assistant snapshots are the only reliable full tool_use payloads,
 // user snapshots carry the canonical tool_result content, and the terminal result line is the
@@ -501,6 +539,8 @@ export class StreamJsonParser {
   private terminalIsError = false;
 
   private terminalError = '';
+
+  private pendingInit: CliInitReport | undefined;
 
   public constructor(now: () => number = () => Date.now()) {
     this.now = now;
@@ -536,8 +576,35 @@ export class StreamJsonParser {
     if (topLevelType === 'result') {
       return this.handleTerminalResult(parsed);
     }
+    if (topLevelType === 'system' && asString(parsed.subtype) === 'init') {
+      this.handleInit(parsed);
+    }
 
     return [];
+  }
+
+  /**
+   * #1581 — what the CLI actually loaded, from its `system`/`init` line: the
+   * tools it will send the model and the state of each MCP server. Read once
+   * by the spawn loop through {@link takeInit}.
+   */
+  private handleInit(parsed: Record<string, unknown>): void {
+    const tools = Array.isArray(parsed.tools)
+      ? parsed.tools.filter((t): t is string => typeof t === 'string')
+      : [];
+    const servers = Array.isArray(parsed.mcp_servers) ? parsed.mcp_servers : [];
+    const omadia = servers.find((s) => isRecord(s) && s.name === OMADIA_MCP_SERVER_NAME);
+    this.pendingInit = {
+      tools,
+      omadiaServerStatus: isRecord(omadia) ? (asString(omadia.status) ?? 'unknown') : 'absent',
+    };
+  }
+
+  /** The `init` report, once; `undefined` before it arrived and after. */
+  public takeInit(): CliInitReport | undefined {
+    const init = this.pendingInit;
+    this.pendingInit = undefined;
+    return init;
   }
 
   public finalAnswer(): string {
@@ -906,6 +973,12 @@ export interface CliChatAgentDeps {
    * read from. Defaults to `process.env`; a seam for tests.
    */
   readonly policyEnv?: NodeJS.ProcessEnv;
+  /**
+   * The language a notice to the user is written in, for `input`: the turn's
+   * AI-disclosure locale, else the operator's configured one
+   * (`Orchestrator.noticeLocale`). Absent or `undefined` → German.
+   */
+  readonly noticeLocale?: (input: ChatTurnInput) => string | undefined;
 }
 
 /**
@@ -991,27 +1064,56 @@ interface CapturedTurnContext {
   readonly assertTurnOwner?: () => void;
 }
 
-const CLI_PRIVACY_SHIELD_REQUIRED_ANSWER_DE =
-  'Diese Nachricht wurde nicht verarbeitet: Die Organisation verlangt den ' +
-  'Datenschutz-Schild, und der Abo-CLI-Anbieter dieses Agents unterstützt ihn ' +
-  'nicht. Deshalb wurde nichts an das Sprachmodell gesendet. Bitte wende dich ' +
-  'an deinen Betreiber.';
-const CLI_PRIVACY_SHIELD_REQUIRED_ANSWER_EN =
-  'This message was not processed: your organisation requires the Privacy ' +
-  "Shield, and this agent's subscription CLI provider does not support it, " +
-  'so nothing was sent to the language model. Please contact your operator.';
+/** #1535 — the answer of a CLI turn refused by the org policy, in German. */
+export const CLI_PRIVACY_SHIELD_REQUIRED_ANSWER_DE =
+  'Diese Nachricht wurde nicht verarbeitet. Deine Organisation verlangt für ' +
+  'jede Anfrage den Datenschutz-Schild, der personenbezogene Daten vor dem ' +
+  'Sprachmodell maskiert. Dieser Agent läuft über das Claude-Abo (Claude ' +
+  'Subscription CLI), und dieser Weg hat keinen Datenschutz-Schild. Deshalb ' +
+  'wurde nichts an das Sprachmodell gesendet. Bitte wende dich an deinen ' +
+  'Betreiber: Er kann dem Agenten unter LLM-Zugang einen Anbieter mit ' +
+  'API-Schlüssel zuweisen.';
+/** #1535 — the same answer in English. */
+export const CLI_PRIVACY_SHIELD_REQUIRED_ANSWER_EN =
+  'This message was not processed. Your organisation requires the Privacy ' +
+  'Shield, which masks personal data before it reaches the language model, ' +
+  'on every request. This agent runs on the Claude subscription CLI, and that ' +
+  'path has no Privacy Shield, so nothing was sent to the language model. ' +
+  'Please contact your operator, who can assign this agent a provider with an ' +
+  'API key under LLM access.';
 
-/** #1535 — the answer of a CLI turn refused by the org policy. Both
- *  languages: this path has no turn locale to pick one. */
+/** #1535 — both languages, for a caller that has no turn locale. */
 export const CLI_PRIVACY_SHIELD_REQUIRED_ANSWER = `${CLI_PRIVACY_SHIELD_REQUIRED_ANSWER_DE} / ${CLI_PRIVACY_SHIELD_REQUIRED_ANSWER_EN}`;
+
+/**
+ * The refusal in the turn's language: `en*` → English, anything else
+ * (unknown included) → German. Same rule as the in-process refusal notices
+ * (`localizeRefusalNotice`) and the AI-Act marking.
+ */
+export function cliPrivacyShieldRequiredAnswer(locale: string | undefined): string {
+  return locale !== undefined && /^en\b/i.test(locale)
+    ? CLI_PRIVACY_SHIELD_REQUIRED_ANSWER_EN
+    : CLI_PRIVACY_SHIELD_REQUIRED_ANSWER_DE;
+}
+
+/**
+ * What the operator reads in the log for every refused turn: the cause and
+ * both ways out. The user only sees "contact your operator", so this line is
+ * where the operator learns which switch did it.
+ */
+export const CLI_PRIVACY_SHIELD_REQUIRED_LOG =
+  'turn refused: OMADIA_PRIVACY_FORCE_GUARDED is set and the Claude subscription ' +
+  'CLI (claude-cli) runs without the Privacy Shield. Assign this agent a provider ' +
+  'with an API key under LLM access, or unset OMADIA_PRIVACY_FORCE_GUARDED.';
 
 /** The stream of a refused turn: one `done`, after clearing any card state a
  *  previous turn left behind (as `streamTurn` does). */
 async function* refusedTurnStream(
+  answer: string,
   drainTurnCards: (() => CliTurnCards) | undefined,
 ): AsyncGenerator<ChatStreamEvent> {
   drainTurnCards?.();
-  yield { type: 'done', answer: CLI_PRIVACY_SHIELD_REQUIRED_ANSWER, toolCalls: 0, iterations: 0 };
+  yield { type: 'done', answer, toolCalls: 0, iterations: 0 };
 }
 
 // SEAM (M3): boot/resolveChatAgent/provider routing constructs + selects this agent.
@@ -1051,7 +1153,7 @@ export class CliChatAgent implements ChatAgent {
    * ignored; it can never fail the turn.
    */
   public async chat(input: ChatTurnInput, hooks?: CliChatHooks): Promise<SemanticAnswer> {
-    if (this.refusedByPolicy()) return { text: CLI_PRIVACY_SHIELD_REQUIRED_ANSWER };
+    if (this.refusedByPolicy()) return { text: this.refusalAnswer(input) };
     const lifecycle = this.runLifecycle(input, this.captureTurnContext(input));
 
     while (true) {
@@ -1101,7 +1203,9 @@ export class CliChatAgent implements ChatAgent {
     input: ChatTurnInput,
     observer?: ChatStreamObserver,
   ): AsyncGenerator<ChatStreamEvent> {
-    if (this.refusedByPolicy()) return refusedTurnStream(this.deps.drainTurnCards);
+    if (this.refusedByPolicy()) {
+      return refusedTurnStream(this.refusalAnswer(input), this.deps.drainTurnCards);
+    }
     return this.streamTurn(input, this.captureTurnContext(input), observer);
   }
 
@@ -1114,6 +1218,14 @@ export class CliChatAgent implements ChatAgent {
    */
   private refusedByPolicy(): boolean {
     return isPrivacyForceGuarded(this.deps.policyEnv ?? process.env);
+  }
+
+  /** The refusal for `input`'s language, logged for the operator. */
+  private refusalAnswer(input: ChatTurnInput): string {
+    (this.deps.logger ?? consoleSpawnLogger).warn(CLI_PRIVACY_SHIELD_REQUIRED_LOG, {
+      ...(input.sessionScope !== undefined ? { sessionScope: input.sessionScope } : {}),
+    });
+    return cliPrivacyShieldRequiredAnswer(this.deps.noticeLocale?.(input));
   }
 
   private async *streamTurn(
@@ -1464,7 +1576,7 @@ export class CliChatAgent implements ChatAgent {
   private buildMcpConfig(url: string, bearer: string): string {
     return JSON.stringify({
       mcpServers: {
-        omadia: {
+        [OMADIA_MCP_SERVER_NAME]: {
           type: 'http',
           url,
           headers: {
@@ -1663,6 +1775,8 @@ export class CliChatAgent implements ChatAgent {
         spawnTimeoutMs,
         idleTimeoutMs: this.deps.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS,
         tools: tools.length,
+        // #1581 — the names, so a log shows whether `memory` was offered.
+        toolNames: tools.map((tool) => tool.name),
       });
 
       child = (this.deps.spawnFn ?? nodeSpawn)(
@@ -1756,6 +1870,26 @@ export class CliChatAgent implements ChatAgent {
             }
             toolTrace.observe(event);
             yield event;
+          }
+          // #1581 — the CLI reports what it actually loaded before the first
+          // model request. Without omadia's tools the model writes tool calls
+          // as text and claims a write that never happened, so the turn ends
+          // here with an honest error instead.
+          const init = parser.takeInit();
+          if (init !== undefined) {
+            const missing = checkCliInit(init, tools.length, this.deps.noticeLocale?.(input));
+            logger.info('claude CLI loaded tools', {
+              omadiaServer: init.omadiaServerStatus,
+              omadiaTools: init.tools.filter((t) => t.startsWith(OMADIA_MCP_TOOL_PREFIX)).length,
+            });
+            if (missing !== undefined) {
+              logger.warn('claude CLI started without omadia tools', {
+                omadiaServer: init.omadiaServerStatus,
+                offered: tools.length,
+                cliVersion: cliVersion ?? 'unknown',
+              });
+              failRuntime(missing);
+            }
           }
         }
 
