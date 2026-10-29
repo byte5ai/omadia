@@ -67,19 +67,23 @@ export interface ChannelBindingResolver {
 /**
  * Resolve the {@link ChatAgent} bound to a given `(channelType, channelKey)`
  * via the platform {@link CHANNEL_RESOLVER_SERVICE}, falling back to the shared
- * singleton agent ({@link getChatAgent}) when:
- *   - the resolver service is not published (no multi-orchestrator registry —
- *     e.g. a Postgres-less minimal deployment), or
- *   - the resolver rejects the route (no binding AND no platform fallback
- *     Agent configured).
+ * singleton agent ({@link getChatAgent}) only when the resolver service is not
+ * published (no multi-orchestrator registry — e.g. a Postgres-less minimal
+ * deployment, where the singleton IS the deployment's orchestrator).
+ *
+ * byte5ai/omadia#1598 — a resolver REJECT (no binding and no platform
+ * fallback Agent, or a provisioned bot whose Agent is not servable) returns
+ * `undefined`: the turn is refused, never answered by an orchestrator nobody
+ * bound to this key.
  *
  * Call this **per turn**. A channel adapter that caches the result at
  * activate() defeats per-binding routing and hot config reloads — the whole
  * point of the seam.
  *
- * Returns `undefined` only when neither a bound agent nor the singleton is
+ * Returns `undefined` when the resolver rejects, or when no singleton is
  * available (orchestrator plugin inactive); callers SHOULD surface a clear
- * "orchestrator unavailable" message rather than silently dropping the turn.
+ * "no orchestrator for this conversation" message rather than silently
+ * dropping the turn.
  *
  * @example
  * // Teams: channelType is constant for the plugin; channelKey is the
@@ -98,9 +102,7 @@ export function resolveChatAgentForChannel(
   );
   if (resolver) {
     const result = resolver.resolve(channelType, channelKey);
-    if (result.decision !== 'reject' && result.chatAgent) {
-      return result.chatAgent;
-    }
+    return result.decision !== 'reject' ? result.chatAgent : undefined;
   }
   return getChatAgent(ctx);
 }

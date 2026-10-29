@@ -154,7 +154,7 @@ function hrDomainTool(
 function registryWith(tool: DomainTool): () => OrchestratorRegistry {
   const registry = {
     get: (agentId: string) =>
-      agentId === 'hr' ? { built: { orchestrator: { listDomainTools: () => [tool] } } } : undefined,
+      agentId === 'hr' ? { built: { orchestrator: { listDomainTools: () => [tool], isToolGranted: () => true } } } : undefined,
   } as unknown as OrchestratorRegistry;
   return () => registry;
 }
