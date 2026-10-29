@@ -89,7 +89,10 @@ changelog.
   offered and callable, on both the API-key path and the subscription-CLI path.
   They are now filtered from the tool list and the prompt docs and refused at
   dispatch (`Orchestrator.isToolGranted`). Kernel tools and `memory` stay
-  available everywhere. **Behaviour change:** an orchestrator now only gets
+  available everywhere. With an orchestrator registry, web chat no longer
+  answers `agentSlug: "default"` with the grant-less legacy bundle. Still
+  open (#1598 stays open): routines and the channel reject-fallback run on that
+  legacy bundle. **Behaviour change:** an orchestrator now only gets
   diagrams, office exports, web search, discussion and integration tools if
   the plugin is assigned to it in its Plugins tab.
 - **The Builder reference plugin was attached to the standard orchestrator

@@ -1178,6 +1178,15 @@ ungated, and so does `memory`: its provider only backs the store, while the
 kernel scopes what each orchestrator reads and writes. An orchestrator without
 a grant set (legacy single-Agent boot) stays ungated, as for domain tools.
 
+**Open (#1598).** The legacy `default` bundle (`chatAgent@1`) has no grant set,
+so whatever runs on it sees every plugin's tools: routines (they store no
+Agent), the channel dispatcher's fallback when the resolver rejects, and
+Teams' fallback when the resolver throws. Web chat no longer reaches it via
+`agentSlug: "default"` once a registry exists. Also open: `native` tool grants
+on sub-agents are not checked against the parent's plugins, deferred
+sub-agent tools (`LONG_RUNNING_SUBAGENT_TOOLS`) register without an owner,
+and public MCP key bindings are not checked against the Agent's plugins.
+
 ## 6. Defence in depth for cached data
 
 The Odoo / external-system response cache and the in-memory conversation

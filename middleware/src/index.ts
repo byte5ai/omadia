@@ -3570,7 +3570,11 @@ async function main(): Promise<void> {
   const resolveChatAgent = (slug: string): ChatAgent | undefined => {
     const entry = getRegistry()?.get(slug);
     if (entry) return entry.built.bundle.agent;
-    if (slug === 'default') return getChatAgentBundle()?.agent;
+    // #1598 — the legacy bundle has no per-Agent plugin grants, so it holds
+    // every plugin's tools. It answers `default` only on a registry-less boot,
+    // where it IS the whole deployment's orchestrator; with a registry, an
+    // explicit `agentSlug: "default"` must not bypass every Agent's grants.
+    if (slug === 'default' && !getRegistry()) return getChatAgentBundle()?.agent;
     return undefined;
   };
   const getDefaultSlug = (): string | undefined => {
