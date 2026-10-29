@@ -61,6 +61,13 @@ export interface NativeToolRegistration {
    */
   readonly agentId?: string;
   /**
+   * #1598 — the ONE orchestrator (its `agentId`/slug) this tool belongs to,
+   * for tools an orchestrator registers for itself in this kernel-wide
+   * registry (deferred sub-agent tools). Every other orchestrator neither
+   * sees nor runs it. Absent = not orchestrator-owned.
+   */
+  readonly orchestratorScope?: string;
+  /**
    * Slice 2.5 — closure that reads the originating plugin's runtime
    * config, scoped to the plugin's own ConfigAccessor chain (same one
    * the plugin sees via `ctx.config.get(key)`). Used by the orchestrator
@@ -137,6 +144,8 @@ export interface NativeToolRegistrationOptions {
   /** Slice 2.5 — see `NativeToolRegistration.agentId`. Set by
    *  `ToolsAccessor.register` from the activating plugin's context. */
   agentId?: string;
+  /** #1598 — see `NativeToolRegistration.orchestratorScope`. */
+  orchestratorScope?: string;
   /** Slice 2.5 — see `NativeToolRegistration.readConfig`. Set by
    *  `ToolsAccessor.register` as `(k) => config.get(k)`. */
   readConfig?: (key: string) => unknown | undefined;
@@ -207,6 +216,9 @@ export class NativeToolRegistry {
             : {}),
           ...(options.domain !== undefined ? { domain: options.domain } : {}),
           ...(options.agentId !== undefined ? { agentId: options.agentId } : {}),
+          ...(options.orchestratorScope !== undefined
+            ? { orchestratorScope: options.orchestratorScope }
+            : {}),
           ...(options.readConfig !== undefined
             ? { readConfig: options.readConfig }
             : {}),

@@ -289,11 +289,11 @@ export function createRoutinesRouter(deps: RoutinesRouterDeps): Router {
       // guaranteed to fail in the background — the web-ui maps this code
       // to a "set the key in Settings" message. Cron fires keep recording
       // `error` runs so the misconfiguration stays visible in history.
-      if (!deps.runner.chatAgentAvailable()) {
+      if (!deps.runner.chatAgentAvailable(routine.agentSlug ?? null)) {
         res.status(503).json({
           code: 'routines.chat_unavailable',
           message:
-            'chat agent unavailable — configure the LLM API key in Settings, then trigger again',
+            'chat agent unavailable — the routine\'s orchestrator is gone, no standard orchestrator is set, or the LLM API key is not configured',
         });
         return;
       }

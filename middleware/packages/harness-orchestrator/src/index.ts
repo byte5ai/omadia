@@ -909,3 +909,9 @@ export {
   createLongRunningSubAgentTool,
 } from './tasks/subAgentTaskTool.js';
 export type { LongRunningSubAgentToolOptions } from './tasks/subAgentTaskTool.js';
+export {
+  createScopedChatAgent,
+  NO_ORCHESTRATOR_MESSAGE,
+  resolveScopedBundle,
+} from './scopedChatAgent.js';
+export type { ScopedRegistryView } from './scopedChatAgent.js';

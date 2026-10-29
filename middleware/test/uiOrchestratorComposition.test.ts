@@ -390,9 +390,12 @@ function makeCtx(opts?: { llm?: CompositionLlm; config?: Record<string, string> 
 function baseBundle(
   events: ChatStreamEvent[],
   seen: ChatTurnInput[],
+  /** #1598 — the tools the base orchestrator offers; absent = none. */
+  offered?: readonly string[],
 ): ChatAgentBundle {
   return {
     agent: {
+      ...(offered ? { offeredToolNames: () => new Set(offered) } : {}),
       chat: () => Promise.resolve({ text: 'base answer' }),
       async *chatStream(input) {
         seen.push(input);
@@ -559,7 +562,9 @@ describe('canvasChatAgent — deterministic action (LLM-free dispatch)', () => {
     const seen: ChatTurnInput[] = [];
     reg.set(
       CHAT_AGENT_SERVICE,
-      baseBundle([{ type: 'done', answer: 'x' } as unknown as ChatStreamEvent], seen),
+      baseBundle([{ type: 'done', answer: 'x' } as unknown as ChatStreamEvent], seen, [
+        'studio_load_page',
+      ]),
     );
     await activate(ctx);
     const agent = (reg.get('canvasChatAgent') as ChatAgentBundle).agent;
@@ -579,6 +584,28 @@ describe('canvasChatAgent — deterministic action (LLM-free dispatch)', () => {
     const snap = events.find((e) => e.type === 'surface_snapshot');
     assert.ok(snap, 'surface_snapshot emitted');
     assert.deepEqual(field(snap as ChatStreamEvent, 'tree'), PAGE_TREE);
+  });
+
+  it('#1598 — never runs a native deterministic tool the canvas orchestrator is not offered', async () => {
+    const { ctx, reg, invokeCalls } = makeToolsCtx({
+      deterministic_action_tools: 'studio_load_page',
+      canvas_output_tools: 'studio_load_page',
+    });
+    const seen: ChatTurnInput[] = [];
+    reg.set(
+      CHAT_AGENT_SERVICE,
+      baseBundle([{ type: 'done', answer: 'x' } as unknown as ChatStreamEvent], seen, []),
+    );
+    await activate(ctx);
+    const agent = (reg.get('canvasChatAgent') as ChatAgentBundle).agent;
+    await collect(
+      agent.chatStream({
+        userMessage: '',
+        canvasSessionId: 'cs1',
+        action: { type: 'studio_load_page', payload: { page: 'drafts' } },
+      } as unknown as ChatTurnInput),
+    );
+    assert.deepEqual(invokeCalls, [], 'the un-offered tool must not run');
   });
 
   it('falls through to the agent loop when the tool is NOT in the deterministic allow-set', async () => {

@@ -47,6 +47,11 @@ import {
 /** Minimal structural view of a BuiltOrchestrator's domain-tool surface. */
 interface DomainToolHost {
   readonly orchestrator: {
+    /** #1598 — owner of the deferred native tools registered below. */
+    readonly agentId?: string;
+    /** #1598 — the parent's plugin-assignment check; a sub-agent's `native`
+     *  grant may only name a tool the parent itself is granted. */
+    isToolGranted?(name: string, pluginId: string | undefined, orchestratorScope?: string): boolean;
     hasDomainTool(name: string): boolean;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerDomainTool(tool: any): void;
@@ -349,12 +354,26 @@ export function registerDbSubAgentTools(
           defaultMaxIterations: deps.defaultMaxIterations ?? 8,
           mcpManager: deps.mcpManager,
           mcpServersById,
-          nativeTool: (ref) =>
-            adaptNativeToolForSubAgent(
+          nativeTool: (ref) => {
+            // #1598 — a Builder `native` grant names any registry tool; the
+            // sub-agent must not reach a plugin its parent is not assigned.
+            const reg = deps.nativeToolRegistry.get(ref);
+            if (
+              reg &&
+              built.orchestrator.isToolGranted &&
+              !built.orchestrator.isToolGranted(ref, reg.agentId, reg.orchestratorScope)
+            ) {
+              deps.log?.(
+                `subAgentToolHydration: native grant "${ref}" refused — its plugin is not assigned to this orchestrator`,
+              );
+              return undefined;
+            }
+            return adaptNativeToolForSubAgent(
               deps.nativeToolRegistry,
               ref,
               turnScopedMemoryResolver,
-            ),
+            );
+          },
           ...(deps.blockedMcpGrant ? { blockedMcpGrant: deps.blockedMcpGrant } : {}),
           ...(deps.hostIsCliProvider !== undefined
             ? { hostIsCliProvider: deps.hostIsCliProvider }
@@ -508,6 +527,11 @@ export function registerDbSubAgentTools(
           handler: r.handler,
           spec: r.spec,
           promptDoc: r.promptDoc,
+          // #1598 — the registry is kernel-wide; only THIS orchestrator may
+          // see or run its deferred sub-agent tools.
+          ...(built.orchestrator.agentId !== undefined
+            ? { orchestratorScope: built.orchestrator.agentId }
+            : {}),
         });
         registeredNew += 1;
       }

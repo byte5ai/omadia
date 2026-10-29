@@ -2212,6 +2212,12 @@ interface TurnMemoryBinding {
   readonly isolation?: TurnIsolation;
   /** Which memory convention the system prompt states; absent = the default. */
   readonly memoryPrompt?: MemoryPromptKind;
+  /**
+   * #1598 — the binder decided this turn gets NO memory tool (`forAudience`
+   * failed). Dispatch refuses `memory` instead of falling through to the
+   * provider's own handler on the unscoped root store.
+   */
+  readonly memoryDenied?: true;
 }
 
 /**
@@ -5148,6 +5154,7 @@ export class Orchestrator {
       console.error('[security-audit] orchestrator: MemoryBinder.forAudience threw — no memory tool this turn:', err);
       return {
         handler: undefined,
+        memoryDenied: true,
         contextBound: true,
         memoryPrompt: 'members-unknown',
         isolation: { kind: 'members', audience: audience.kind === 'known' ? audience.members : null },
@@ -9991,6 +9998,13 @@ export class Orchestrator {
       }
       return result;
     }
+    // #1598 — the binder said "no memory tool this turn" (`forAudience`
+    // failed). Deny on loss: falling through would reach the memory PROVIDER's
+    // own handler below, bound to the unscoped root store — every agent's and
+    // context's notes. Never widen.
+    if (name === MEMORY_TOOL_NAME && turnMemory?.memoryDenied === true) {
+      return refuse(`Error: tool \`${name}\` is not available on this turn.`);
+    }
     // `enforce-strict` — the graph tool sees only this turn's conversation;
     // `members` — only this agent's knowledge that everyone present owns.
     // Ahead of the registered-handler branch on purpose: the kernel-native
@@ -10037,7 +10051,7 @@ export class Orchestrator {
       // kernel-wide registry, so without this every Agent could call every
       // plugin's tools, assigned or not. Refused by name, without the owner — and BEFORE the readiness
       // check, whose message names the plugin.
-      if (!this.isToolGranted(name, reg.agentId)) {
+      if (!this.isToolGranted(name, reg.agentId, reg.orchestratorScope)) {
         console.warn(
           `[orchestrator] agent "${this.agentId}" attempted un-granted plugin tool "${name}" — refused`,
         );
@@ -10159,7 +10173,7 @@ export class Orchestrator {
       .filter(
         (e) =>
           this.isToolAvailable(e.agentId) &&
-          this.isToolGranted(e.name, e.agentId) &&
+          this.isToolGranted(e.name, e.agentId, e.orchestratorScope) &&
           isOfferedThisTurn(e),
       )
       .map((e) => e.promptDoc)
@@ -10317,7 +10331,14 @@ export class Orchestrator {
    * wired in `buildOrchestrator.ts`) bypasses `dispatchTool` and must ask the
    * same question.
    */
-  isToolGranted(name: string, pluginId: string | undefined): boolean {
+  isToolGranted(
+    name: string,
+    pluginId: string | undefined,
+    orchestratorScope?: string,
+  ): boolean {
+    // A tool another orchestrator registered for itself (deferred sub-agent
+    // tools) is that orchestrator's alone.
+    if (orchestratorScope !== undefined && orchestratorScope !== this.agentId) return false;
     if (name === MEMORY_TOOL_NAME) return true;
     return this.isPluginGranted(pluginId);
   }
@@ -10917,7 +10938,7 @@ export class Orchestrator {
       if (
         entry.spec &&
         this.isToolAvailable(entry.agentId) &&
-        this.isToolGranted(entry.name, entry.agentId) &&
+        this.isToolGranted(entry.name, entry.agentId, entry.orchestratorScope) &&
         isOfferedThisTurn(entry)
       ) {
         nativeSpecs.push(entry.spec);
