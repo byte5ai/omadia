@@ -336,3 +336,37 @@ describe('#1574 — the pipeline confirms a correct HR answer from the turn\'s r
     assert.equal(judged.length, 1, 'the name went to the judge');
   });
 });
+
+describe('a record reference on a model without known reference fields', () => {
+  // Seen live after #1613: the extractor typed every leave period of a correct
+  // HR answer as an `id` claim on hr.leave, and the name search refuted all 16.
+  const period: HardClaim = {
+    id: 'c_003',
+    text: '15.09.2025–26.09.2025 (10 Tage)',
+    type: 'id',
+    expectedSource: 'odoo',
+    odooRecord: { model: 'hr.leave', ref: '15.09.2025–26.09.2025' },
+    relatedEntities: [],
+  };
+
+  it('stays unverified when the free-text name does not match', async () => {
+    const verdict = await checker({ 'hr.leave': [] }).check(period);
+    assert.equal(verdict.status, 'unverified', JSON.stringify(verdict));
+  });
+
+  it('is still verified when the name matches', async () => {
+    const odoo: OdooReader = { execute: () => Promise.resolve([101]) };
+    const verdict = await new DeterministicChecker({ odoo, log: () => {} }).check(period);
+    assert.equal(verdict.status, 'verified');
+  });
+
+  it('a document number that does not exist is still contradicted', async () => {
+    const odoo: OdooReader = { execute: () => Promise.resolve([]) };
+    const verdict = await new DeterministicChecker({ odoo, log: () => {} }).check({
+      ...period,
+      text: 'INV/2026/9999',
+      odooRecord: { model: 'account.move', ref: 'INV/2026/9999' },
+    });
+    assert.equal(verdict.status, 'contradicted');
+  });
+});
