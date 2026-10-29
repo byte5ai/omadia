@@ -474,10 +474,13 @@ export function composeStructuredPayloadPatch(opts: {
         // `DataRequirement.fields` carries agent keys only), so this is a
         // guess — taken only when the two column lists are the same length,
         // and otherwise declined in favour of the raw path.
+        // A column that names its own label (the fast-path plan's header in
+        // the user's language) is authoritative.
         label:
-          datasetColumns.length === skeletonColumns.length
+          c.label ??
+          (datasetColumns.length === skeletonColumns.length
             ? (skeletonColumns[i]?.label ?? c.path)
-            : c.path,
+            : c.path),
         ...(c.classification === 'sensitive-masked'
           ? { privacy: 'guard-protected' as const }
           : {}),
@@ -566,6 +569,9 @@ export function composeStructuredPayloadPatch(opts: {
   const cloneHit = findNodeById(nextTree, table.node['id'] as string, '');
   if (!cloneHit || !isTableNode(cloneHit.node)) return null;
   if (cloneHit.node.loading === 'skeleton') cloneHit.node['loading'] = 'none';
+  // the server's tree follows the replaced column list, or the next patch
+  // (a refresh) would be mapped against columns the client no longer has
+  if (datasetColumns) cloneHit.node.columns = effectiveColumns;
   if (replaceRows) cloneHit.node.rows.splice(0, cloneHit.node.rows.length, ...mapped);
   else cloneHit.node.rows.push(...mapped);
   if (suggestedActions.length > 0) cloneHit.node['suggestedActions'] = suggestedActions;
@@ -587,19 +593,20 @@ export function composeStructuredPayloadPatch(opts: {
  */
 function readDatasetColumns(
   data: unknown,
-): Array<{ path: string; type: string; classification?: string }> | undefined {
+): Array<{ path: string; type: string; classification?: string; label?: string }> | undefined {
   if (typeof data !== 'object' || data === null) return undefined;
   const raw = (data as { datasetColumns?: unknown }).datasetColumns;
   if (!Array.isArray(raw) || raw.length === 0) return undefined;
-  const columns: Array<{ path: string; type: string; classification?: string }> = [];
+  const columns: Array<{ path: string; type: string; classification?: string; label?: string }> = [];
   for (const entry of raw) {
     if (typeof entry !== 'object' || entry === null) return undefined;
-    const c = entry as { path?: unknown; type?: unknown; classification?: unknown };
+    const c = entry as { path?: unknown; type?: unknown; classification?: unknown; label?: unknown };
     if (typeof c.path !== 'string' || c.path.length === 0) return undefined;
     columns.push({
       path: c.path,
       type: typeof c.type === 'string' ? c.type : 'string',
       ...(typeof c.classification === 'string' ? { classification: c.classification } : {}),
+      ...(typeof c.label === 'string' && c.label.trim().length > 0 ? { label: c.label.trim() } : {}),
     });
   }
   return columns;

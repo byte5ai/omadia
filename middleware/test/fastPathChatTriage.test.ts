@@ -170,6 +170,11 @@ describe('fast-path chat triage — service', () => {
     );
     assert.ok(h.logs.some((m) => /^\[fast-path\] planner channel=web tool=odoo_query ok ms=\d+$/.test(m)));
     assert.equal(h.prompts.length, 2, 'one router call + one planner call');
+    // timing order: the speculative planner is started first, the router right after — same user message
+    assert.match(h.prompts[0]?.system ?? '', /fast-path planner/);
+    assert.match(h.prompts[1]?.system ?? '', /fast-path router/);
+    assert.equal(h.prompts[0]?.content, 'USER TURN: Wer hat im Januar Geburtstag?');
+    assert.equal(h.prompts[1]?.content, h.prompts[0]?.content);
     assert.ok(h.logs.some((m) => /^\[fast-path\] hit channel=web tool=odoo_query rows=2 ms=\d+$/.test(m)));
     // the triage model got the message, never a row
     assert.ok(!h.prompts.some((p) => p.content.includes('1985-01-30')));
@@ -182,7 +187,8 @@ describe('fast-path chat triage — service', () => {
     assert.deepEqual({ kind: out.kind, route: out.kind === 'agent' ? out.route : undefined }, { kind: 'agent', route: 'complex' });
     assert.equal(h.invokes.length, 0);
     assert.ok(h.logs.some((m) => /^\[fast-path\] router channel=web decision=agent_complex tool=- conf=0\.90 ms=\d+$/.test(m)));
-    assert.equal(h.prompts.length, 1, 'no planner call for an agent route');
+    assert.equal(h.prompts.length, 2, 'router + the speculative planner');
+    assert.ok(h.logs.includes('[fast-path] planner discarded (route=agent:complex)'));
   });
 
   it('misses are reasoned and route-less: router/planner invalid, tool error, truncated, unknown tool', async () => {
@@ -248,10 +254,12 @@ describe('fast-path chat triage — service', () => {
     await h.triage('Geburtstage im Januar', { sessionKey: 'sess-1' });
     await h.triage('und im Februar?', { sessionKey: 'sess-1' });
     await h.triage('und im März?', { sessionKey: 'other' });
-    // per hit: [router, planner]
+    // per turn: [planner, router] — the planner starts first (speculative)
+    // and both get the SAME user-derived turn message
+    assert.equal(h.prompts.length, 6);
     assert.ok(!h.prompts[0]?.content.includes('PREVIOUS QUERY'));
-    assert.ok(h.prompts[2]?.content.includes('PREVIOUS QUERY: user asked "Geburtstage im Januar" → odoo_query (hr.employee'));
-    assert.ok(h.prompts[3]?.content.includes('PREVIOUS QUERY: user asked "Geburtstage im Januar"'), 'the planner gets it too');
+    assert.ok(h.prompts[2]?.content.startsWith('PREVIOUS QUERY: user asked "Geburtstage im Januar" → {"tool":"odoo_query"'));
+    assert.equal(h.prompts[3]?.content, h.prompts[2]?.content, 'router and planner share the message');
     assert.ok(!h.prompts[4]?.content.includes('PREVIOUS QUERY'), 'never across conversations');
   });
 
@@ -271,8 +279,9 @@ describe('fast-path chat triage — service', () => {
     assert.equal(plan.active, true);
     const h = serviceHarness({ plans });
     await h.triage('Geburtstage im Januar');
-    assert.ok(h.prompts[0]?.content.includes('LEARNED INTENTS'), 'the router sees the intent');
-    assert.ok(h.prompts[1]?.content.includes('VALIDATED EXAMPLES'), 'the planner sees the template');
+    assert.ok(h.prompts.some((p) => p.system?.includes('LEARNED INTENTS')), 'the router sees the intent');
+    assert.ok(h.prompts.some((p) => p.system?.includes('VALIDATED EXAMPLES')), 'the planner sees the template');
+    assert.ok(!h.prompts.some((p) => /LEARNED INTENTS|VALIDATED EXAMPLES/.test(p.content)), 'fixed text never in the user message');
     assert.ok(h.logs.some((m) => m.includes(`plan=${plan.id}`)), 'the hit is attributed to the learned plan');
     // a failing execution of the same plan counts against it
     const failing = serviceHarness({ plans, invoke: () => Promise.resolve('Error: down') });
@@ -296,9 +305,9 @@ describe('fast-path chat triage — service', () => {
     await plans.recordSuccess(contracts);
     const h = serviceHarness({ plans, permitted: ['search_contracts'] });
     const out = await h.triage('Geburtstage im Januar');
-    assert.equal(h.prompts.length, 1);
-    assert.ok(!h.prompts[0]?.content.includes('odoo_query —'), 'odoo_query spec never offered');
-    assert.ok(h.prompts[0]?.content.includes('search_contracts'));
+    assert.equal(h.prompts.length, 2, 'router + speculative planner');
+    assert.ok(!h.prompts.some((p) => (p.system ?? '').includes('odoo_query —')), 'odoo_query spec never offered');
+    assert.ok(h.prompts.every((p) => (p.system ?? '').includes('search_contracts')), 'both see only the permitted tool');
     assert.equal(out.kind === 'agent' ? out.reason : '', 'router-tool-not-offered');
     assert.equal(h.invokes.length, 0, 'nothing ran');
     // no plannable tool of its own at all → not even a model call

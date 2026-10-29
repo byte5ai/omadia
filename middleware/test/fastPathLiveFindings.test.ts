@@ -201,7 +201,7 @@ describe('fast-path — a missing summary defaults instead of discarding the pla
   });
 
   it('the planner tool requires summary and locale (a forced call has no fences / prose)', () => {
-    const schema = plannerTool('odoo_query').inputSchema as { required: string[] };
+    const schema = plannerTool(['odoo_query']).inputSchema as { required: string[] };
     assert.deepEqual(schema.required, ['tool', 'input', 'map', 'summary', 'locale']);
   });
 
@@ -245,13 +245,9 @@ describe('fast-path — a missing summary defaults instead of discarding the pla
     assert.equal(plan.summaryDefaulted, true);
   });
 
-  it('canvas planner: locale is kept without a summary (the fast path defaults the sentence)', () => {
-    const res = parsePlan(
-      { containerId: 'root', ...FETCH, locale: 'de-DE' },
-      { allowedTools: ALLOWED, containers: [{ containerId: 'root', description: 'x', fields: [] }] },
-    );
+  it('planner: locale is kept without a summary (the fast path defaults the sentence)', () => {
+    const res = parsePlan({ ...FETCH, locale: 'de-DE' }, { allowedTools: ALLOWED });
     assert.ok(res.ok);
-    assert.equal(res.containerId, 'root');
     assert.equal(res.plan.locale, 'de-DE');
     assert.equal(res.plan.summaryDefaulted, true);
   });

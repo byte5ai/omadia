@@ -22,7 +22,6 @@ import {
   composeSkeleton,
   type CompositionLlm,
   type DataRequirement,
-  type SkeletonResult,
 } from './composition.js';
 import { mintDataRef } from './dataRef.js';
 import {
@@ -35,11 +34,10 @@ import {
   offeredTools,
   openSkeletonPrivacy,
   parseRefreshSource,
-  planQuery,
   renderSummary,
-  routeTurn,
+  triageTurn,
   type FastPathService,
-  type RouteOutcome,
+  type TriageOutcome,
   type RefreshSource,
   type TurnLearner,
 } from '@omadia/fast-path';
@@ -50,6 +48,7 @@ import {
   planInPlace,
 } from './learnedFastPath.js';
 import { synthesizeSurfaceEvents } from './surfaceSynthesis.js';
+import { bindPlanToSkeleton, type PlanColumn, type PlannedSkeleton } from './fastPathBinding.js';
 import { replaceSkeletonOnWithheld } from './verdictHold.js';
 import { resolveReferenceLumen } from './referenceLumens.js';
 import { validateLumenNode, validateTree } from './treeValidator.js';
@@ -262,6 +261,9 @@ function tapCanvasSentinels(log?: (m: string) => void): (toolName: string) => st
 export async function handleCanvasPublishRows(
   input: unknown,
   resolveDataset?: CanvasDatasetResolver,
+  /** server-internal (fast path): the plan's columns REPLACE the table's —
+   *  published as `datasetColumns` with labels (never an agent argument) */
+  internal?: { columns?: ReadonlyArray<{ fieldKey: string; label: string }> },
 ): Promise<string> {
   const args = (typeof input === 'object' && input !== null ? input : {}) as Record<string, unknown>;
   const containerId = typeof args['containerId'] === 'string' ? args['containerId'].trim() : '';
@@ -305,8 +307,11 @@ export async function handleCanvasPublishRows(
    *  field keys. Undefined for a plain `rows` publish, where the agent's keys
    *  already are the row keys and nothing needs remapping. */
   let datasetColumns:
-    | Array<{ path: string; type: string; classification?: string }>
-    | undefined;
+    | Array<{ path: string; type: string; classification?: string; label?: string }>
+    | undefined =
+    internal?.columns && internal.columns.length > 0
+      ? internal.columns.map((c) => ({ path: c.fieldKey, type: 'string', label: c.label }))
+      : undefined;
   if (datasetId !== undefined) {
     const resolved = resolveDataset === undefined ? 'unavailable' : resolveDataset(datasetId);
     if (resolved === 'unavailable') {
@@ -1140,24 +1145,26 @@ export async function activate(
       source?: RefreshSource;
       /** suggested actions (deterministic recipe variants) for the table */
       actions?: readonly VariantAction[];
+      /** fast path: the plan's columns replace the table's */
+      columns?: ReadonlyArray<PlanColumn>;
     }>,
   ): AsyncGenerator<ChatStreamEvent> {
     for (const job of jobs) {
       const id = randomUUID();
       yield { type: 'tool_use', id, name: CANVAS_PUBLISH_TOOL, input: { containerId: job.containerId } };
-      const output = await handleCanvasPublishRows({
-        containerId: job.containerId,
-        rows: job.rows,
-        ...(job.source ? { source: job.source } : {}),
-        ...(job.actions && job.actions.length > 0 ? { actions: job.actions } : {}),
-      });
+      const output = await handleCanvasPublishRows(
+        {
+          containerId: job.containerId,
+          rows: job.rows,
+          ...(job.source ? { source: job.source } : {}),
+          ...(job.actions && job.actions.length > 0 ? { actions: job.actions } : {}),
+        },
+        undefined,
+        job.columns ? { columns: job.columns } : undefined,
+      );
       yield { type: 'tool_result', id, output, durationMs: 0 };
     }
   }
-
-  /** The skeleton with the fast-path planner's plan applied: the target
-   *  requirement carries the `fetch`, plus the prose template + locale. */
-  type PlannedSkeleton = SkeletonResult & { summary?: string; locale?: string };
 
   type FastPathOutcome =
     | {
@@ -1226,6 +1233,7 @@ export async function activate(
       rows: Array<Record<string, unknown>>;
       source: RefreshSource;
       actions: VariantAction[];
+      columns?: PlanColumn[];
     }> = [];
     let firstRecords: Array<Record<string, unknown>> = [];
     for (const plan of plans) {
@@ -1246,6 +1254,7 @@ export async function activate(
         source: plan.fetch,
         // e.g. a birthday-month table offers previous/next month, LLM-free
         actions: derivedVariantsEnabled ? monthVariantActions(plan.fetch, variantLang(skeleton.locale)) : [],
+        ...(skeleton.planColumns ? { columns: skeleton.planColumns } : {}),
       });
     }
     // `{count}` / `{sum:…}` = rows of the FIRST requirement (the composer
@@ -1959,22 +1968,24 @@ export async function activate(
       (target !== undefined && turnTools.length > 0 ? targetRecordBlock(target) : '');
     const fastPathKey = `canvas:${canvasSessionId}`;
     const previousQuery = fp?.previousQuery(fastPathKey);
-    // router + planner share ONE privacy run (the planner restores the
-    // values the router's prompt masked); the composer has its own
+    // router ∥ speculative planner (@omadia/fast-path triageTurn.ts) — started
+    // BEFORE the composer, so all three run concurrently. They share ONE
+    // privacy run: the user-derived turn message is masked once and the
+    // plan restored through it; the composer has its own run.
     const fastPrivacy = privacyGuard !== undefined ? openSkeletonPrivacy(privacyGuard) : undefined;
-    const fastLog = (m: string): void => ctx.log(m);
-    const routing: Promise<RouteOutcome> | undefined =
+    const triage: Promise<TriageOutcome> | undefined =
       fp !== undefined && !privacyForced && turnTools.length > 0
-        ? routeTurn({
+        ? triageTurn({
             llm,
             model,
             channel: 'canvas',
             question: turnText,
             tools: turnTools,
-            intents: offered.map((p) => ({ question: p.examples[0] ?? '', tool: p.tool })),
+            offered,
+            allowedTools: fp.allowedFetchTools(),
             ...(previousQuery ? { previous: previousQuery } : {}),
             ...(fastPrivacy ? { privacy: fastPrivacy } : {}),
-            log: fastLog,
+            log: (m) => ctx.log(m),
           })
         : undefined;
     const skeleton = await composeSkeleton({
@@ -1998,47 +2009,19 @@ export async function activate(
     };
     yield skeletonSnapshot;
 
-    // 2. Deterministic fast path — router said deterministic → the planner
-    //    plans the ONE query for the skeleton's data container → run it here,
-    //    LLM-free, and finish the turn. Any miss → the agent path below,
-    //    exactly as before.
-    const route = routing !== undefined ? await routing : undefined;
+    // 2. Deterministic fast path — router said deterministic → the
+    //    (speculative) plan is bound to the skeleton's ONE table container,
+    //    its columns replacing the composer's → run it here, LLM-free, and
+    //    finish the turn. Any miss → the agent path below, exactly as before.
+    const triaged = triage !== undefined ? await triage : undefined;
     let planned: PlannedSkeleton = skeleton;
     let planMiss: string | undefined;
-    if (route?.kind === 'agent') {
-      planMiss = route.reason;
-    } else if (route?.kind === 'plan' && fp !== undefined) {
-      const containers = skeleton.source === 'model' ? skeleton.dataRequirements : [];
-      const spec = turnTools.find((t) => t.name === route.tool);
-      if (containers.length !== 1 || spec === undefined) {
-        planMiss = spec === undefined ? 'router-tool-not-offered' : containers.length === 0 ? 'no-plan' : 'multi-container';
-      } else {
-        const plan = await planQuery({
-          llm,
-          model,
-          channel: 'canvas',
-          question: turnText,
-          tool: spec,
-          allowedTools: fp.allowedFetchTools(),
-          examples: offered,
-          containers,
-          ...(previousQuery ? { previous: previousQuery } : {}),
-          ...(fastPrivacy ? { privacy: fastPrivacy } : {}),
-          log: fastLog,
-        });
-        if (!plan.ok) {
-          planMiss = plan.reason;
-        } else {
-          planned = {
-            ...skeleton,
-            dataRequirements: skeleton.dataRequirements.map((r) =>
-              r.containerId === plan.containerId ? { ...r, fetch: plan.plan.fetch } : r,
-            ),
-            summary: plan.plan.summary,
-            ...(plan.plan.locale !== undefined ? { locale: plan.plan.locale } : {}),
-          };
-        }
-      }
+    if (triaged?.kind === 'agent') {
+      planMiss = triaged.reason;
+    } else if (triaged?.kind === 'plan') {
+      const bound = bindPlanToSkeleton(skeleton, triaged.plan);
+      if (bound.ok) planned = bound.skeleton;
+      else planMiss = bound.reason;
     }
     const fast: FastPathOutcome =
       planMiss !== undefined
