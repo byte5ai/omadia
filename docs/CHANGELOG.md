@@ -129,6 +129,39 @@ changelog.
   activation, so 30 stopped planning silently after about 30 turns.
   `@omadia/plugin-plan-runner` 0.2.0.
 
+### Fixed — Builder: routes reached without a session, Teams tabs after #1596 (S3-G)
+
+- **Channel and Builder-agent plugins now claim their `public_paths`.** Only
+  the tool runtime claimed a declared prefix on activation. Channel plugins
+  (`DefaultChannelRegistry`) and dynamic agents (Builder plugins) never did, so
+  a granted `auth: 'custom'` route there was never matched by the public-path
+  mount and answered 404. That stayed hidden while `/p/` was statically public.
+  Teams' granted `/p/channel-teams` was the live case. All three runtimes now
+  use one helper (`platform/publicPathClaim.ts`): claim after `activate()`,
+  roll back on a rejected claim, release on deactivate.
+- **Builder spec `permissions.public_paths`.** A generated plugin can now
+  declare the prefixes its `activate-body` serves with `auth: 'custom'` (or
+  `body: 'raw'`): webhooks, OAuth callbacks, signed downloads. Before, the spec
+  had no such field, so `ctx.routes.register(..., { auth: 'custom' })` threw at
+  activation. The schema reuses the kernel's `publicPathEntrySchema` (≥ 2
+  segments, no wildcards, query, percent-encoding or dot segments), and codegen
+  writes the list to `manifest.permissions.public_paths`. The prefix is still
+  served only after the operator grants it. `/p/…` is refused there, because
+  that is where `ui_routes` live.
+- **`spec.ui_routes` stay session-gated, now explicitly.** Codegen emits
+  `{ auth: 'session' }` on the `/p/<slug>` mount. These pages render tool data,
+  so a 401 in a Teams tab without an omadia session is intended (#1596). The
+  Builder prompt and the boilerplate `CLAUDE.md` say when `'custom'` is right
+  and when it isn't.
+- **Teams tabs:** `@omadia/channel-teams` 0.31.0 (byte5ai/omadia-channel-teams)
+  serves `/p/channel-teams/{hub,tab-config}` with `auth: 'custom'` and checks a
+  Teams SSO token itself. The operator grants `/p/channel-teams`.
+- Tests: `channelPublicPathClaim.test.ts` (claim on activate, release on
+  deactivate, ungranted not served; fails without the claim),
+  `agentSpec.test.ts` (`public_paths` syntax gate, no `/p/`), `codegen.test.ts`
+  (manifest emission, no key without a declaration), `codegenUiRoute.test.ts`
+  (explicit session gate).
+
 ### Security — plugin routes need a session, native tools follow plugin assignment (#1596, #1598, #1601)
 
 2026-10-29.
