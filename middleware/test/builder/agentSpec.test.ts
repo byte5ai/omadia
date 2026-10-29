@@ -310,7 +310,7 @@ describe('agentSpec', () => {
         permissions: { public_paths: ['/api/plugins/acme/webhook'] },
       });
       assert.deepEqual(spec.permissions?.public_paths, ['/api/plugins/acme/webhook']);
-      for (const bad of ['/api', '/api/plugins/*', '/x/../y', '/a/b?c=1', 'api/x/y', '/a/%62']) {
+      for (const bad of ['/p/de-byte5-agent-x', '/p/x/absences', '/api', '/api/plugins/*', '/x/../y', '/a/b?c=1', 'api/x/y', '/a/%62']) {
         assert.throws(
           () => parseAgentSpec({ ...validBase, permissions: { public_paths: [bad] } }),
           /public_paths/,

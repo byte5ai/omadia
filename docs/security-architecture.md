@@ -1166,6 +1166,12 @@ are a separate mechanism and self-authenticate by contract.
 
 Follow-ups (S3-G):
 
+- Declared public paths are claimed by **every** runtime that activates
+  plugins: the tool runtime, the dynamic-agent runtime (Builder agents) and the
+  channel registry. All three go through `platform/publicPathClaim.ts`. Before,
+  only the tool runtime claimed, so a granted channel or agent prefix was never
+  served (404, the fail-closed direction).
+
 - `@omadia/channel-teams` 0.31.0 serves `/p/channel-teams/{hub,tab-config}`
   this way. The two pages are data-free shells; the plugin catalogue comes only
   from `/p/channel-teams/catalog`, which verifies a Teams SSO token (RS256
@@ -1177,7 +1183,8 @@ Follow-ups (S3-G):
   needs without a session (webhooks, OAuth callbacks) are declared in
   `spec.permissions.public_paths` (same syntax gate as the kernel, written to
   `manifest.permissions.public_paths`) and registered with `auth: 'custom'` in
-  `activate-body`.
+  `activate-body`. The spec refuses `/p/…` there, so a grant can never cover the
+  `ui_routes` mount.
 
 ## 5c. Per-orchestrator plugin assignment covers native plugin tools (#1598)
 

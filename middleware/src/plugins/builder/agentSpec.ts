@@ -306,7 +306,12 @@ export const PermissionsSchema = z
      *  routes: `spec.ui_routes` stay session-gated. Same syntax gate as the
      *  kernel (`publicPathEntrySchema`). */
     public_paths: z
-      .array(publicPathEntrySchema)
+      .array(
+        publicPathEntrySchema.refine(
+          (p) => p !== '/p' && !p.startsWith('/p/'),
+          'must not be under /p/ — that is where ui_routes are mounted, and they stay session-gated',
+        ),
+      )
       .max(MAX_DECLARED_PUBLIC_PATHS)
       .optional(),
   })
