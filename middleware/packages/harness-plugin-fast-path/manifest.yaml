@@ -90,6 +90,16 @@ setup:
         de: "IANA-Zeitzone (z. B. Europe/Berlin), in der relative Datumsangaben einer Schnellpfad- oder Aktualisierungsabfrage — {today}, {today-30d} — zu einem Kalenderdatum aufgelöst werden, damit „überfällig“ nach Ihrem Geschäftstag gilt und nicht nach der Serveruhr. Ungültig oder leer → Europe/Berlin."
       required: false
       default: "Europe/Berlin"
+    - key: "fast_path_answer_cache"
+      type: "boolean"
+      label:
+        en: "Fast-path answer cache"
+        de: "Antwort-Cache für den Schnellpfad"
+      help:
+        en: "When on, a question that repeats one the fast path already answered (same wording, other names or values) runs its query directly, without any model call. Only names and values the question itself contains are swapped; anything unclear goes through the normal check. Stores no personal data (checked by the Privacy Shield; without it nothing is stored). Default: on."
+        de: "Wenn an, läuft eine Frage, die eine bereits vom Schnellpfad beantwortete wiederholt (gleicher Wortlaut, andere Namen oder Werte), direkt ohne Modellaufruf. Getauscht werden nur Namen und Werte, die die Frage selbst nennt; alles Unklare geht durch die normale Prüfung. Speichert keine personenbezogenen Daten (geprüft vom Privacy Shield; ohne ihn wird nichts gespeichert). Standard: an."
+      required: false
+      default: "true"
 
 permissions:
   filesystem:

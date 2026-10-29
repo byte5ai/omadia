@@ -43,7 +43,7 @@ export async function activate(ctx: PluginContext): Promise<FastPathPluginHandle
   });
   ctx.log(
     `[fast-path] ${service.enabled ? `tools: ${[...service.tools].join(',')}` : 'disabled (fast_path_tools empty)'}; ` +
-      `generic tools: ${service.genericToolsEnabled ? 'on' : 'off'}; timezone: ${service.timeZone}; channels: ${ctx.config?.get<string>('fast_path_channels')?.trim() || 'all'}`,
+      `generic tools: ${service.genericToolsEnabled ? 'on' : 'off'}; answer cache: ${service.answerCache ? 'on' : 'off'}; timezone: ${service.timeZone}; channels: ${ctx.config?.get<string>('fast_path_channels')?.trim() || 'all'}`,
   );
   const dispose = ctx.services.provide(FAST_PATH_SERVICE, service);
   return {
