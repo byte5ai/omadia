@@ -130,10 +130,10 @@ export function createTurnLearner(opts: TurnLearnerOptions): TurnLearner {
     const found = recipeFromTurn();
     if ('reason' in found) return { ok: false, reason: found.reason };
     const { recipe } = found;
-    // a learned plan has no post-fetch order yet — learning a ranking
-    // without it would replay the unsorted, uncut set as the answer
-    if (recipe.sort !== undefined || recipe.take !== undefined) return { ok: false, reason: 'sorted-recipe' };
-    // ONE stripper run over input + filter: shared placeholder numbering
+    // ONE stripper run over input + filter: shared placeholder numbering.
+    // A ranking's sort (field names + directions) and take (the user's N —
+    // kept in the example, so the planner adapts it like a slot) carry no
+    // user literal and are stored as they are.
     const { template, literals } = stripLiterals({ input: recipe.input, filter: recipe.filter ?? null });
     const t = template as { input: unknown; filter: RefreshFilter[] | null };
     return {
@@ -144,6 +144,8 @@ export function createTurnLearner(opts: TurnLearnerOptions): TurnLearner {
         inputTemplate: t.input,
         map: recipe.map,
         ...(t.filter ? { filter: t.filter } : {}),
+        ...(recipe.sort ? { sort: recipe.sort } : {}),
+        ...(recipe.take !== undefined ? { take: recipe.take } : {}),
         ...(recipe.rowKey ? { rowKey: recipe.rowKey } : {}),
         ...(recipe.itemsPath ? { itemsPath: recipe.itemsPath } : {}),
       },

@@ -64,7 +64,7 @@ const TEXT: Readonly<Record<Lang, {
 const NUMBER_LOCALE: Readonly<Record<Lang, string>> = { de: 'de-DE', en: 'en-US' };
 
 /** Money attributes (Odoo naming) — rendered with the record's currency. */
-const MONETARY_ATTR = /amount|price|balance|debit|credit|residual|subtotal/i;
+const MONETARY_ATTR = /amount|price|balance|debit|credit|residual|subtotal|total_due|total_overdue/i;
 const EMPTY = '—';
 
 /** True for the structured "Details anzeigen" action. */

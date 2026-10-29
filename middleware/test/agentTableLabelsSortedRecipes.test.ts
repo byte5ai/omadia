@@ -286,7 +286,7 @@ const labelsOf = (cols: ReadonlyArray<{ defaultLabel?: string }>): Array<string 
 describe('withDefaultColumnLabels', () => {
   it('catalog labels of the provenance model, German by default; humanised otherwise', () => {
     const r = withDefaultColumnLabels(EMP_RESOLVED, EMP_PROV);
-    assert.deepEqual(labelsOf(r.columns), ['Id', 'Name', 'Position', 'E-Mail', 'Aktiv', 'X custom field']);
+    assert.deepEqual(labelsOf(r.columns), ['ID', 'Name', 'Position', 'E-Mail', 'Aktiv', 'X custom field']);
     // the column itself is untouched otherwise, the input not mutated
     assert.equal(r.columns[1]?.classification, 'sensitive-masked');
     assert.equal((EMP_COLUMNS[2] as { defaultLabel?: string }).defaultLabel, undefined);
@@ -344,7 +344,7 @@ describe('agent dataset publish → table headers', () => {
     );
     assert.deepEqual(
       cols.map((c) => c.label),
-      ['Id', 'Name', 'Position', 'E-Mail', 'Aktiv', 'X custom field'],
+      ['ID', 'Name', 'Position', 'E-Mail', 'Aktiv', 'X custom field'],
     );
   });
 

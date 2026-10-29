@@ -3,6 +3,7 @@ import type { PrivacyGuardService } from '@omadia/plugin-api';
 import { parseFastPathChannels, renderChatAnswer } from './chatAnswer.js';
 import {
   fetchRecipeRows,
+  parseBooleanSetting,
   parseFastPathTools,
   plannableTools,
   renderSummary,
@@ -85,6 +86,9 @@ export interface FastPathService {
   /** `fast_path_tools` non-empty — the global kill switch */
   readonly enabled: boolean;
   readonly tools: ReadonlySet<string>;
+  /** `fast_path_generic_tools` — other plugins' read tools plannable from
+   *  their own schema (default on); off → only catalog + learned tools */
+  readonly genericToolsEnabled: boolean;
   readonly timeZone: string;
   /** `fast_path_channels` (and the kill switch) allow `channel` */
   channelEnabled(channel: string): boolean;
@@ -127,6 +131,7 @@ export interface FastPathServiceDeps {
 export function createFastPathService(deps: FastPathServiceDeps): FastPathService {
   const tools: ReadonlySet<string> = new Set(parseFastPathTools(deps.config.get<string>('fast_path_tools')));
   const enabled = tools.size > 0;
+  const genericToolsEnabled = parseBooleanSetting(deps.config.get<unknown>('fast_path_generic_tools'), true);
   const timeZone = resolveTimeZone(deps.config.get<string>('fast_path_timezone'));
   const channelAllowed = parseFastPathChannels(deps.config.get<string>('fast_path_channels'));
   const plans =
@@ -141,10 +146,11 @@ export function createFastPathService(deps: FastPathServiceDeps): FastPathServic
     new Set([...tools, ...plans.active().map((p) => p.tool), ...genericTools]);
 
   /** Catalog specs ∪ generic specs of `definitions` (only tools in
-   *  `permitted`, so a foreign tool never takes budget). */
+   *  `permitted`, so a foreign tool never takes budget). With generic tools
+   *  switched off no generic spec is built — so none becomes fetchable. */
   function plannable(definitions?: readonly FastPathToolDefinition[], permitted?: ReadonlySet<string>): FastPathToolSpec[] {
     const catalog = permitted ? builtIn.filter((t) => permitted.has(t.name)) : [...builtIn];
-    if (!enabled || definitions === undefined || definitions.length === 0) return catalog;
+    if (!enabled || !genericToolsEnabled || definitions === undefined || definitions.length === 0) return catalog;
     const generic = genericToolSpecs(permitted ? definitions.filter((d) => permitted.has(d.name)) : definitions, {
       exclude: new Set(catalog.map((t) => t.name)),
     });
@@ -272,6 +278,7 @@ export function createFastPathService(deps: FastPathServiceDeps): FastPathServic
   return {
     enabled,
     tools,
+    genericToolsEnabled,
     timeZone,
     channelEnabled: (channel) => enabled && channelAllowed(channel),
     plans,

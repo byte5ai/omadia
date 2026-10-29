@@ -120,7 +120,8 @@ export const FAST_PATH_TOOL_SPECS: Readonly<Record<string, string>> = {
     'birthday (date "YYYY-MM-DD" — a month needs a datePart filter, Odoo cannot filter it). ' +
     'HR wage/bank/private fields are blocked.\n' +
     '  · res.partner: name, email, phone, city, is_company, customer_rank (>0 = customer), ' +
-    'supplier_rank (>0 = supplier).\n' +
+    'supplier_rank (>0 = supplier), credit (open receivable of the partner, number), debit (open payable, number) — ' +
+    'a {sum:…} over credit/debit needs "currency_id" in "fields".\n' +
     '  · account.move (invoices): name (number), partner_id, invoice_date, invoice_date_due, ' +
     'amount_total, amount_residual (open amount, number), currency_id, state (draft|posted|cancel), ' +
     'payment_state (not_paid|partial|in_payment|paid), move_type (out_invoice = Kundenrechnung, ' +
@@ -163,6 +164,21 @@ export function parseFastPathTools(raw: string | undefined): string[] {
     .split(',')
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
+}
+
+const TRUE_SETTINGS: ReadonlySet<string> = new Set(['true', 'on', '1', 'yes']);
+const FALSE_SETTINGS: ReadonlySet<string> = new Set(['false', 'off', '0', 'no']);
+
+/** A boolean setup field: `true`/`false` (the setup form stores booleans)
+ *  or a string (`true|on|1|yes`, `false|off|0|no`, case-insensitive) from a
+ *  config/env override; unset, empty or unrecognised → `fallback`. */
+export function parseBooleanSetting(raw: unknown, fallback: boolean): boolean {
+  if (typeof raw === 'boolean') return raw;
+  if (typeof raw !== 'string') return fallback;
+  const v = raw.trim().toLowerCase();
+  if (TRUE_SETTINGS.has(v)) return true;
+  if (FALSE_SETTINGS.has(v)) return false;
+  return fallback;
 }
 
 /** The allow-listed tools the composer can plan for (spec known). */
@@ -224,11 +240,11 @@ export function supportedLocale(raw: unknown): string | undefined {
 }
 
 /** Summed attributes treated as MONEY (Odoo naming: amount_*, price_*,
- *  balance, debit, credit) — a total of those needs one currency. Matched
- *  on the record attribute the fieldKey maps to, so it holds whatever the
- *  composer named the column. Deliberately broad: a false positive only
+ *  balance, debit, credit, total_due/total_overdue) — a total of those needs
+ *  one currency. Matched on the record attribute the fieldKey maps to, so it
+ *  holds whatever the composer named the column. Deliberately broad: a false positive only
  *  costs a fast-path miss, a false negative could print a mixed total. */
-const MONETARY_ATTR = /amount|price|balance|debit|credit|residual|subtotal/i;
+const MONETARY_ATTR = /amount|price|balance|debit|credit|residual|subtotal|total_due|total_overdue/i;
 
 /** Record attribute carrying a monetary row's currency (Odoo many2one). */
 export const CURRENCY_ATTR = 'currency_id';

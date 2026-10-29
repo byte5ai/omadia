@@ -9,6 +9,7 @@ import {
   createTurnLearner,
   DEFAULT_TIME_ZONE,
   FAST_PATH_SERVICE,
+  parseBooleanSetting,
   parseRefreshSource,
   type FastPathService,
   type RecipeStore,
@@ -174,13 +175,12 @@ export function createCanvasRuntime(ctx: PluginContext, deps: CanvasRuntimeDeps)
   // Recipe variants of suggested actions (recipeVariant.ts): registered at
   // publish, looked up + validated against the CURRENT recipe on the click.
   const variants = createVariantRegistry();
-  // Deterministic month variants on fast-path tables (previous/next month).
-  // Default OFF: omadia-ui clients up to #49 hide their "Details anzeigen"
-  // fallback as soon as a table carries ANY suggested action — enable once
-  // the client keeps it and sends `recipe_variant` clicks.
-  const derivedVariantsEnabled = [true, 'true', 'on', '1'].includes(
-    ctx.config?.get<string | boolean>('fast_path_variant_actions') ?? false,
-  );
+  // Deterministic month variants on fast-path tables (previous/next month):
+  // LLM-free, derived from the table's own recipe. Default ON (the client
+  // keeps "Details anzeigen" next to suggested actions and sends
+  // `recipe_variant` clicks); `fast_path_variant_actions` false/off turns
+  // them off.
+  const derivedVariantsEnabled = parseBooleanSetting(ctx.config?.get<unknown>('fast_path_variant_actions'), true);
   const registerVariants =
     (canvasSessionId: string) =>
     (containerId: string, actions: readonly unknown[]): void => {

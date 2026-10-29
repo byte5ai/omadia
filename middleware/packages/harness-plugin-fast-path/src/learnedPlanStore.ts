@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 
 import { FAST_PATH_TOOL_SPECS, type FastPathToolSpec } from './fastPath.js';
 import { jaccard, questionTokens, stripLiterals, templateShape } from './literalStripping.js';
-import { parseRefreshSource, type RefreshFilter, type RefreshSource } from './refreshRecipes.js';
+import { parseRefreshSource, type RefreshFilter, type RefreshSort, type RefreshSource } from './refreshRecipes.js';
 
 /**
  * Learned fast path — the tenant-wide plan store.
@@ -33,6 +33,10 @@ export interface LearnedPlan {
   inputTemplate: unknown;
   map: Record<string, string>;
   filter?: RefreshFilter[];
+  /** post-fetch order (field names + directions — structure, never stripped) */
+  sort?: RefreshSort[];
+  /** top-N of the latest success — the user's N, adapted by the planner */
+  take?: number;
   rowKey?: string;
   itemsPath?: string;
   /** stripped, normalised questions (newest first, ≤ MAX_EXAMPLES) */
@@ -51,6 +55,8 @@ export interface PlanCandidate {
   inputTemplate: unknown;
   map: Record<string, string>;
   filter?: RefreshFilter[];
+  sort?: RefreshSort[];
+  take?: number;
   rowKey?: string;
   itemsPath?: string;
   /** the privacy-masked, stripped question; absent when it could not be
@@ -67,12 +73,16 @@ export interface PlanMemory {
 }
 
 /** Stable plan id from the plan's STRUCTURE (tool, input shape, map, filter
- *  shape, itemsPath, rowKey) — equal structure ⇒ equal id. */
+ *  shape, itemsPath, rowKey, sort clauses, whether it takes a top-N) — equal
+ *  structure ⇒ equal id. The take VALUE is not structure ("top 5" and
+ *  "top 10" are one plan). A plan without sort/take hashes exactly as before
+ *  they existed, so ids stored by older releases stay stable. */
 export function planId(p: Omit<PlanCandidate, 'example'>): string {
   const sortedMap = Object.fromEntries(Object.entries(p.map).sort(([a], [b]) => a.localeCompare(b)));
   const filterShape = p.filter?.map((c) =>
     'datePart' in c ? { field: c.field, datePart: c.datePart } : templateShape({ field: c.field, eq: c.eq }),
   );
+  const ranked = p.sort !== undefined || p.take !== undefined;
   const shape = JSON.stringify([
     p.tool,
     templateShape(p.inputTemplate),
@@ -80,6 +90,7 @@ export function planId(p: Omit<PlanCandidate, 'example'>): string {
     filterShape ?? null,
     p.itemsPath ?? null,
     p.rowKey ?? null,
+    ...(ranked ? [p.sort?.map((s) => [s.field, s.dir]) ?? null, p.take !== undefined ? '<take>' : null] : []),
   ]);
   return createHash('sha256').update(shape).digest('hex').slice(0, 12);
 }
@@ -93,6 +104,8 @@ export function planToFetch(p: LearnedPlan): RefreshSource {
     ...(p.itemsPath !== undefined ? { itemsPath: p.itemsPath } : {}),
     ...(p.rowKey !== undefined ? { rowKey: p.rowKey } : {}),
     ...(p.filter !== undefined ? { filter: p.filter } : {}),
+    ...(p.sort !== undefined ? { sort: p.sort } : {}),
+    ...(p.take !== undefined ? { take: p.take } : {}),
   };
 }
 
@@ -106,6 +119,9 @@ function parsePlan(raw: unknown): LearnedPlan | null {
     itemsPath: o['itemsPath'],
     rowKey: o['rowKey'],
     filter: o['filter'],
+    // absent in files written before plans carried a ranking → undefined
+    sort: o['sort'],
+    take: o['take'],
   });
   if (!recipe || typeof o['id'] !== 'string') return null;
   const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0);
@@ -120,6 +136,8 @@ function parsePlan(raw: unknown): LearnedPlan | null {
     inputTemplate: recipe.input,
     map: recipe.map,
     ...(recipe.filter ? { filter: recipe.filter } : {}),
+    ...(recipe.sort ? { sort: recipe.sort } : {}),
+    ...(recipe.take !== undefined ? { take: recipe.take } : {}),
     ...(recipe.rowKey ? { rowKey: recipe.rowKey } : {}),
     ...(recipe.itemsPath ? { itemsPath: recipe.itemsPath } : {}),
     examples,
@@ -226,6 +244,8 @@ export function createLearnedPlanStore(opts: {
         inputTemplate: c.inputTemplate,
         map: c.map,
         ...(c.filter ? { filter: c.filter } : {}),
+        ...(c.sort ? { sort: c.sort } : {}),
+        ...(c.take !== undefined ? { take: c.take } : {}),
         ...(c.rowKey ? { rowKey: c.rowKey } : {}),
         ...(c.itemsPath ? { itemsPath: c.itemsPath } : {}),
         examples: (c.example === undefined
@@ -344,6 +364,8 @@ export function attributePlan(store: LearnedPlanStore, fetch: RefreshSource): Le
     inputTemplate: t.input,
     map: fetch.map,
     ...(t.filter ? { filter: t.filter } : {}),
+    ...(fetch.sort ? { sort: fetch.sort } : {}),
+    ...(fetch.take !== undefined ? { take: fetch.take } : {}),
     ...(fetch.rowKey ? { rowKey: fetch.rowKey } : {}),
     ...(fetch.itemsPath ? { itemsPath: fetch.itemsPath } : {}),
   });

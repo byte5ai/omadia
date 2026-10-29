@@ -27,6 +27,12 @@ const CATALOG_LABELS: Readonly<Record<string, Readonly<Record<string, Labels>>>>
     is_company: { de: 'Firma', en: 'Company' },
     customer_rank: { de: 'Kundenrang', en: 'Customer rank' },
     supplier_rank: { de: 'Lieferantenrang', en: 'Supplier rank' },
+    // account: the partner's receivable / payable balance (company currency)
+    credit: { de: 'Offener Betrag (Forderungen)', en: 'Receivable' },
+    debit: { de: 'Verbindlichkeiten', en: 'Payable' },
+    // account_followup (Odoo 17 Enterprise): open and overdue receivables
+    total_due: { de: 'Fällig gesamt', en: 'Total due' },
+    total_overdue: { de: 'Überfällig gesamt', en: 'Total overdue' },
   },
   'account.move': {
     name: { de: 'Nummer', en: 'Number' },
@@ -40,6 +46,12 @@ const CATALOG_LABELS: Readonly<Record<string, Readonly<Record<string, Labels>>>>
     payment_state: { de: 'Zahlungsstatus', en: 'Payment status' },
     move_type: { de: 'Belegart', en: 'Document type' },
   },
+};
+
+/** Attributes every model shares — labelled whatever the model (also for a
+ *  non-Odoo tool), so a header never reads "Id". */
+const COMMON_LABELS: Readonly<Record<string, Labels>> = {
+  id: { de: 'ID', en: 'ID' },
 };
 
 /** `due_date` / `dueDate` → "Due date". */
@@ -63,7 +75,9 @@ export function catalogColumnLabel(opts: {
   lang: 'de' | 'en';
 }): string {
   const base = opts.attr?.split('.')[0];
-  const entry = opts.model !== undefined && base !== undefined ? CATALOG_LABELS[opts.model]?.[base] : undefined;
+  const entry =
+    (opts.model !== undefined && base !== undefined ? CATALOG_LABELS[opts.model]?.[base] : undefined) ??
+    COMMON_LABELS[base ?? opts.fieldKey];
   return entry?.[opts.lang] ?? humanizeKey(opts.fieldKey);
 }
 

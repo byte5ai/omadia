@@ -80,6 +80,16 @@ setup:
         de: "Kommagetrennte Tool-Namen, die Canvas-Sentinels ausgeben dürfen (_pendingCanvasTree / _pendingStructuredPayload). Übergangsweise vom Operator gepflegte Allow-Liste, bis die beim Boot berechnete Verdrahtung der Canvas-Output-Capability (PR-7b) da ist. Leer → standardmäßig alles verweigert, keine Synthese."
       required: false
       default: ""
+    - key: "fast_path_variant_actions"
+      type: "boolean"
+      label:
+        en: "Month switch on fast-path tables"
+        de: "Monatswechsel an Schnellpfad-Tabellen"
+      help:
+        en: "On: a fast-path table filtered by a month (e.g. birthdays in January) offers \"previous month\" / \"next month\" actions. A click re-runs the table's own query with the shifted month — no model call, no agent turn. Off: no such actions. Default: on."
+        de: "An: Eine Schnellpfad-Tabelle mit Monatsfilter (z. B. Geburtstage im Januar) bietet die Aktionen „Vormonat“ / „Folgemonat“ an. Ein Klick führt die Abfrage der Tabelle mit verschobenem Monat erneut aus — ohne Modellaufruf, ohne Agenten-Zug. Aus: keine solchen Aktionen. Standard: an."
+      required: false
+      default: "true"
 
 permissions:
   filesystem:
