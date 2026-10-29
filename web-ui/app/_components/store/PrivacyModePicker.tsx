@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
-import { Lock, Shield } from 'lucide-react';
+import { AlertTriangle, Lock, Shield } from 'lucide-react';
 
 import { cn } from '../../_lib/cn';
 import {
@@ -26,6 +26,11 @@ import { Button } from '@/app/_components/ui/Button';
 // #1508 — with `OMADIA_PRIVACY_FORCE_GUARDED=true` every plugin runs guarded
 // whatever is stored here. The picker then shows the org lock instead of
 // offering a bypass that would have no effect.
+//
+// #1548 — any change that makes raw results of this plugin reach the LLM
+// provider (mode → bypass, mode → per_tool with a stored tool list, or a list
+// edit that adds tools) waits for an explicit confirm. Cancel keeps the stored
+// value and sends no PATCH. Switching back to guarded needs no confirm.
 // ---------------------------------------------------------------------------
 
 type PrivacyMode = 'guarded' | 'bypass' | 'per_tool';
@@ -49,6 +54,20 @@ function scopesToText(stored: unknown): string {
   }
   return typeof stored === 'string' ? stored : '';
 }
+
+/** Tool names in the editor text, split the way the middleware's
+ *  `parseScopes` splits them (comma-separated, trimmed, empties dropped). */
+function parseScopeText(text: string): string[] {
+  return text
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
+/** A change that starts sending raw results and waits for a confirm. */
+type PendingBypass =
+  | { kind: 'mode'; next: PrivacyMode; tools: string[] }
+  | { kind: 'scopes'; tools: string[] };
 
 function errorText(err: unknown): string {
   return serverErrorMessage(err) ?? (err instanceof Error ? err.message : String(err));
@@ -74,6 +93,7 @@ export function PrivacyModePicker({
   // Tracks whether the GET succeeded at all — without it we render
   // nothing rather than a confusing dropdown over nothing.
   const [loaded, setLoaded] = useState(false);
+  const [pending, setPending] = useState<PendingBypass | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -103,6 +123,39 @@ export function PrivacyModePicker({
       cancelled = true;
     };
   }, [pluginId]);
+
+  function requestChange(next: PrivacyMode): void {
+    if (next === mode) return;
+    if (next === 'bypass') {
+      setPending({ kind: 'mode', next, tools: [] });
+      return;
+    }
+    const storedTools = parseScopeText(savedScopes);
+    // From bypass, a tool list only narrows what goes out raw: no confirm.
+    if (next === 'per_tool' && storedTools.length > 0 && mode !== 'bypass') {
+      setPending({ kind: 'mode', next, tools: storedTools });
+      return;
+    }
+    void handleChange(next);
+  }
+
+  function requestSaveScopes(): void {
+    const stored = new Set(parseScopeText(savedScopes));
+    const added = parseScopeText(scopes).filter((tool) => !stored.has(tool));
+    if (added.length > 0) {
+      setPending({ kind: 'scopes', tools: added });
+      return;
+    }
+    void saveScopes();
+  }
+
+  function confirmPending(): void {
+    const current = pending;
+    setPending(null);
+    if (!current) return;
+    if (current.kind === 'mode') void handleChange(current.next);
+    else void saveScopes();
+  }
 
   async function handleChange(next: PrivacyMode): Promise<void> {
     const previous = mode;
@@ -189,9 +242,15 @@ export function PrivacyModePicker({
       </div>
       <select
         id={`privacy-mode-${pluginId}`}
-        value={forceGuarded ? 'guarded' : mode}
-        disabled={saving || forceGuarded}
-        onChange={(e) => void handleChange(e.target.value as PrivacyMode)}
+        value={
+          forceGuarded
+            ? 'guarded'
+            : pending?.kind === 'mode'
+              ? pending.next
+              : mode
+        }
+        disabled={saving || forceGuarded || pending !== null}
+        onChange={(e) => requestChange(e.target.value as PrivacyMode)}
         className={cn(
           'mt-2 w-full rounded border px-2 py-2 text-[13px]',
           'border-[color:var(--border)] bg-[color:var(--bg)]',
@@ -234,7 +293,7 @@ export function PrivacyModePicker({
               id={`privacy-scopes-${pluginId}`}
               type="text"
               value={scopes}
-              disabled={saving}
+              disabled={saving || pending !== null}
               onChange={(e) => setScopes(e.target.value)}
               placeholder={t('privacyScopesPlaceholder')}
               className="font-mono-num min-w-0 flex-1 rounded border border-[color:var(--border)] bg-[color:var(--bg)] px-2 py-1.5 text-[12px] focus:outline-none focus:ring-1 focus:ring-[color:var(--accent)]"
@@ -242,8 +301,8 @@ export function PrivacyModePicker({
             <Button
               variant="secondary"
               size="sm"
-              onClick={() => void saveScopes()}
-              disabled={saving || scopes === savedScopes}
+              onClick={requestSaveScopes}
+              disabled={saving || pending !== null || scopes === savedScopes}
             >
               {t('privacyScopesSave')}
             </Button>
@@ -253,6 +312,43 @@ export function PrivacyModePicker({
               {t('privacyScopesEmpty')}
             </p>
           ) : null}
+        </div>
+      ) : null}
+      {pending ? (
+        <div
+          role="alertdialog"
+          aria-labelledby={`privacy-confirm-${pluginId}`}
+          data-testid="privacy-bypass-confirm"
+          className="mt-3 rounded-md border border-[color:var(--border-strong)] bg-[color:var(--bg-soft)] p-3"
+        >
+          <p
+            id={`privacy-confirm-${pluginId}`}
+            className="flex items-start gap-2 text-[12px] leading-relaxed text-[color:var(--fg)]"
+          >
+            <AlertTriangle
+              className="mt-0.5 size-3.5 shrink-0 text-[color:var(--warning)]"
+              aria-hidden
+            />
+            <span>
+              {pending.kind === 'mode' && pending.next === 'bypass'
+                ? t('privacyConfirmBypass')
+                : t('privacyConfirmTools', { tools: pending.tools.join(', ') })}
+            </span>
+          </p>
+          <div className="mt-3 flex gap-2">
+            <Button variant="danger" pill size="sm" onClick={confirmPending}>
+              {t('privacyConfirmYes')}
+            </Button>
+            <Button
+              variant="secondary"
+              pill
+              size="sm"
+              onClick={() => setPending(null)}
+              className="font-semibold text-[color:var(--fg-muted)]"
+            >
+              {t('cancel')}
+            </Button>
+          </div>
         </div>
       ) : null}
       {saving && (

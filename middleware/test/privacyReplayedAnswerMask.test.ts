@@ -90,10 +90,12 @@ describe('privacy-guard — replayed assistant answers', () => {
     );
     const receipt = await svc.finalizeTurn(TURN.turnId);
     assert.ok(receipt, 'a turn whose only masking was a replayed answer still gets a receipt');
+    // #1541 — an earlier answer, not the user's message.
     assert.deepEqual(
-      receipt.maskedPromptSpans?.map((s) => s.type),
+      receipt.maskedContextSpans?.map((s) => s.type),
       ['email'],
     );
+    assert.equal(receipt.maskedPromptSpans, undefined);
     assert.equal(receipt.verifierEgress, undefined, 'a replayed answer is no verifier request');
   });
 

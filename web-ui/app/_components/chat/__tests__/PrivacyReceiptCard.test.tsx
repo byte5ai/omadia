@@ -7,6 +7,7 @@ import {
   describeToolErrorOutcome,
   formatMaskedPromptSpans,
   PrivacyReceiptCard,
+  receiptExplainerKeys,
   summarisePrivacyReceipt,
 } from '../PrivacyReceiptCard';
 
@@ -209,7 +210,7 @@ describe('<PrivacyReceiptCard />', () => {
       locale: 'de',
     });
     expect(screen.getByText(/Privacy Shield/).textContent).toContain(
-      'Prompt: 3 maskiert',
+      'deine Nachricht: 3 maskiert',
     );
     expect(
       screen.getByText('Maskierte PII in deiner Nachricht'),
@@ -474,5 +475,106 @@ describe('formatMaskedPromptSpans()', () => {
     );
     expect(value).not.toContain('c1-gliner');
     expect(value).not.toContain('c0-regex');
+  });
+});
+
+describe('receiptExplainerKeys() — only what happened (#1557)', () => {
+  const NONE: PrivacyReceipt = {
+    datasetsInterned: 0,
+    fieldsMasked: 0,
+    fieldsCleartext: 0,
+    verbsExecuted: [],
+    pseudonymProjectionUsed: false,
+  };
+  const BYPASS = [
+    { toolName: 'odoo_query', pluginId: '@omadia/agent-odoo', reason: 'operator_setting' as const, bytes: 10 },
+  ];
+
+  it('claims the identity-free digest only for an interned, unbypassed turn', () => {
+    expect(receiptExplainerKeys(RANKED)).toEqual(['explainer']);
+  });
+
+  it('a bypass-only turn gets no digest line', () => {
+    expect(receiptExplainerKeys({ ...NONE, bypassedTools: BYPASS })).toEqual(['explainerBypassed']);
+  });
+
+  it('the unprotected turn flag counts as a bypass', () => {
+    expect(receiptExplainerKeys({ ...RANKED, unprotected: true })).toEqual([
+      'explainerMixed',
+      'explainerBypassed',
+    ]);
+  });
+
+  it('a turn without any tool result gets no tool line', () => {
+    expect(
+      receiptExplainerKeys({ ...NONE, maskedPromptSpans: [{ type: 'email', detector: 'c0-regex' }] }),
+    ).toEqual(['explainerPromptMasked']);
+  });
+
+  it('a named person no longer implies the tool data stayed server-side', () => {
+    expect(receiptExplainerKeys({ ...NAMED, bypassedTools: BYPASS })).toEqual([
+      'explainerBreach',
+      'explainerMixed',
+      'explainerBypassed',
+    ]);
+  });
+
+  it('reports the name detector: failed always, off only next to masked free text', () => {
+    expect(receiptExplainerKeys({ ...NONE, nameDetector: 'failed' })).toEqual([
+      'explainerNameDetectorFailed',
+    ]);
+    expect(receiptExplainerKeys({ ...RANKED, nameDetector: 'unconfigured' })).toEqual(['explainer']);
+    expect(
+      receiptExplainerKeys({
+        ...NONE,
+        nameDetector: 'unconfigured',
+        maskedPromptSpans: [{ type: 'iban', detector: 'c0-regex' }],
+      }),
+    ).toEqual(['explainerPromptMasked', 'explainerNameDetectorOff']);
+  });
+});
+
+describe('<PrivacyReceiptCard /> — earlier conversations (#1541)', () => {
+  const CONTEXT_ONLY: PrivacyReceipt = {
+    ...RANKED,
+    maskedContextSpans: [{ type: 'email', detector: 'c0-regex' }, { type: 'person', detector: 'c1' }],
+  };
+
+  it('never reports recalled values as masked in your message', () => {
+    renderWithIntl(<PrivacyReceiptCard receipt={CONTEXT_ONLY} />, { locale: 'de' });
+    expect(screen.queryByText('Maskierte PII in deiner Nachricht')).not.toBeInTheDocument();
+    expect(screen.getByText('Maskierte PII aus früheren Unterhaltungen')).toBeInTheDocument();
+    const summary = screen.getByText(/Privacy Shield/);
+    expect(summary.textContent).toContain('frühere Unterhaltungen: 2 maskiert');
+    expect(summary.textContent).not.toContain('deine Nachricht');
+  });
+});
+
+describe('<PrivacyReceiptCard /> — name detector (#1562)', () => {
+  it('turns amber and says names went through when C1 failed', () => {
+    const { container } = renderWithIntl(
+      <PrivacyReceiptCard receipt={{ ...RANKED, nameDetector: 'failed' }} />,
+      { locale: 'de' },
+    );
+    expect(screen.getByText(/Personennamen in diesem Turn das Modell unmaskiert/)).toBeInTheDocument();
+    expect(container.querySelector('details')?.className).toContain('--warning');
+    expect(screen.getByText(/Privacy Shield/).textContent).toContain('Namenserkennung ausgefallen');
+  });
+});
+
+describe('<PrivacyReceiptCard /> — turn id and link (#1573)', () => {
+  it('shows the short turn id and links to the turn on the Receipts page', () => {
+    const turnId = 'f6e8370d-1234-4abc-9def-001122334455';
+    renderWithIntl(<PrivacyReceiptCard receipt={RANKED} receiptId={turnId} />, { locale: 'en' });
+    expect(screen.getByText('Turn f6e8370d')).toHaveAttribute('title', turnId);
+    expect(screen.getByRole('link', { name: 'View on the Receipts page' })).toHaveAttribute(
+      'href',
+      `/operator/receipts?turn=${encodeURIComponent(turnId)}`,
+    );
+  });
+
+  it('shows neither without a receipt id (the Receipts page itself, no row written)', () => {
+    renderWithIntl(<PrivacyReceiptCard receipt={RANKED} />, { locale: 'en' });
+    expect(screen.queryByRole('link', { name: 'View on the Receipts page' })).not.toBeInTheDocument();
   });
 });

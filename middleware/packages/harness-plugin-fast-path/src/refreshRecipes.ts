@@ -268,6 +268,25 @@ function matchesClause(rec: Record<string, unknown>, clause: RefreshFilter): boo
   return v === clause.eq;
 }
 
+/**
+ * One record value as a table cell. An Odoo many2one `[id, "Name"]` shows its
+ * name (a column mapped to `partner_id` instead of `partner_id.1` — the
+ * agent publishes dataset columns by path), a list of scalars is joined, an
+ * empty value is blank; only a genuinely nested value falls back to JSON.
+ * Mirrors the Privacy Shield materializer's `cell` (v4/materializer.ts).
+ */
+export function displayCell(value: unknown): string | number | boolean {
+  if (value === undefined || value === null) return '';
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value;
+  if (Array.isArray(value)) {
+    if (value.length === 2 && typeof value[0] === 'number' && typeof value[1] === 'string') return value[1];
+    if (value.every((e) => e === null || ['string', 'number', 'boolean'].includes(typeof e))) {
+      return value.filter((e) => e !== null).join(', ');
+    }
+  }
+  return JSON.stringify(value);
+}
+
 /** Three-way compare of two attribute values — the Privacy Shield verbs'
  *  `compareUnknown` (v4/verbs), so a replay orders exactly like the dataset
  *  the agent published. */
@@ -357,12 +376,7 @@ export function mapRefreshRecords(
     for (const [fieldKey, attr] of Object.entries(source.map)) {
       const v = readAttr(r, attr);
       if (v !== undefined) mappedAny = true;
-      row[fieldKey] =
-        v === undefined || v === null
-          ? ''
-          : typeof v === 'object'
-            ? JSON.stringify(v)
-            : (v as string | number | boolean);
+      row[fieldKey] = displayCell(v);
     }
     if (!mappedAny) return null; // wrong shape — refuse rather than render blanks
     // filtered AFTER the shape check: a wrong-shaped output is refused even

@@ -487,11 +487,13 @@ describe('#361 prompt masking — orchestrator pipeline', () => {
     // Answer-side restore covers the replayed answer's spans.
     assert.ok(result.answer.includes(RAW_ANSWER_EMAIL), result.answer);
     assert.ok(!result.answer.includes(surrogate!));
-    // Booked as the turn's own egress.
+    // Booked as the turn's own egress, as earlier context (#1541): nothing
+    // was masked in the user's message, with mask_user_prompt off.
     assert.deepEqual(
-      (result.privacyReceipt?.maskedPromptSpans ?? []).map((s) => s.type).sort(),
+      (result.privacyReceipt?.maskedContextSpans ?? []).map((s) => s.type).sort(),
       ['email', 'person'],
     );
+    assert.equal(result.privacyReceipt?.maskedPromptSpans, undefined);
     assert.equal(result.privacyReceipt?.verifierEgress, undefined);
   });
 

@@ -521,6 +521,13 @@ function reproduceManifestCapabilities(
         }
         permsNode.set('llm', doc.createNode(llm));
       }
+      // #1596 follow-up — routes reached without an omadia session
+      // (webhooks, OAuth callbacks) need a manifest declaration before
+      // `ctx.routes.register(..., { auth: 'custom' })` is accepted; the
+      // operator grant then decides whether the kernel serves them.
+      if (perms.public_paths && perms.public_paths.length > 0) {
+        permsNode.set('public_paths', doc.createNode(perms.public_paths));
+      }
       // Epic #459 W7 (issue #458) — declaring permissions.mcp enables ctx.mcp.
       // The operator still grants specific servers; servers_hint is a
       // suggestion surfaced in the grant UI.

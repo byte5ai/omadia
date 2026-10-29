@@ -41,6 +41,8 @@ import { GrantsPanel } from '../../_components/store/GrantsPanel';
 import { EditFromStoreButton } from '../../_components/store/EditFromStoreButton';
 import { SelfExtensionPanel } from '../../_components/store/SelfExtensionPanel';
 import { InstallButton } from '../../_components/store/InstallButton';
+import { NameDetectorStatus } from '../../_components/store/NameDetectorStatus';
+import { PRIVACY_GUARD_ID } from '../../_lib/privacyGuard';
 import { PluginIcon } from '../../_components/store/PluginIcon';
 import { StateBadge } from '../../_components/store/StateBadge';
 
@@ -447,6 +449,14 @@ export default async function PluginDetailPage({
             kind={plugin.kind}
             attachedTo={attachedTo}
           />
+
+          {/* #1562 — whether the guard's C1 name detector runs (off / active /
+              unreachable). Shown only on the Privacy Guard's own page. */}
+          {plugin.id === PRIVACY_GUARD_ID &&
+          (plugin.install_state === 'installed' ||
+            plugin.install_state === 'update-available') ? (
+            <NameDetectorStatus />
+          ) : null}
 
           {/* OM-06 / #671 — the capability this plugin provides is already
               covered by an active plugin, so the install would be refused.

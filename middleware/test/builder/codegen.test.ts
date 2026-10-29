@@ -1066,6 +1066,32 @@ describe('codegen.generate', () => {
     assert.match(text, /- audit-reports/);
   });
 
+  it('#1596 — emits permissions.public_paths from spec.permissions.public_paths', async () => {
+    const { slots } = loadFixture();
+    const spec = parseAgentSpec({
+      id: 'de.byte5.agent.hooky',
+      name: 'Hooky',
+      description: 'receives a signed webhook',
+      category: 'other',
+      depends_on: [],
+      tools: [{ id: 'do_thing', description: 'x', input: { type: 'object' } }],
+      skill: { role: 'x' },
+      playbook: { when_to_use: 'x', not_for: ['x'], example_prompts: ['x', 'y'] },
+      network: { outbound: ['api.example.com'] },
+      permissions: { public_paths: ['/api/plugins/hooky/webhook'] },
+    });
+    const text = (await generate({ spec, slots })).get('manifest.yaml')!.toString('utf-8');
+    const permsMatch = text.match(/\npermissions:\n([\s\S]*?)(?=\n\S)/);
+    assert.ok(permsMatch, 'permissions block present');
+    assert.match(permsMatch[1]!, /public_paths:\s*\n\s*- \/api\/plugins\/hooky\/webhook/);
+  });
+
+  it('#1596 — no public_paths key without a declaration', async () => {
+    const { spec, slots } = loadFixture();
+    const text = (await generate({ spec, slots })).get('manifest.yaml')!.toString('utf-8');
+    assert.doesNotMatch(text, /public_paths:/);
+  });
+
   it('omits Phase-B permission blocks when spec.permissions is undefined', async () => {
     const { spec, slots } = loadFixture();
     // fixture has no permissions field

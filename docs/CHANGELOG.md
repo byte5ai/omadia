@@ -141,6 +141,39 @@ truth.
   activation, so 30 stopped planning silently after about 30 turns.
   `@omadia/plugin-plan-runner` 0.2.0.
 
+### Fixed — Builder: routes reached without a session, Teams tabs after #1596 (S3-G)
+
+- **Channel and Builder-agent plugins now claim their `public_paths`.** Only
+  the tool runtime claimed a declared prefix on activation. Channel plugins
+  (`DefaultChannelRegistry`) and dynamic agents (Builder plugins) never did, so
+  a granted `auth: 'custom'` route there was never matched by the public-path
+  mount and answered 404. That stayed hidden while `/p/` was statically public.
+  Teams' granted `/p/channel-teams` was the live case. All three runtimes now
+  use one helper (`platform/publicPathClaim.ts`): claim after `activate()`,
+  roll back on a rejected claim, release on deactivate.
+- **Builder spec `permissions.public_paths`.** A generated plugin can now
+  declare the prefixes its `activate-body` serves with `auth: 'custom'` (or
+  `body: 'raw'`): webhooks, OAuth callbacks, signed downloads. Before, the spec
+  had no such field, so `ctx.routes.register(..., { auth: 'custom' })` threw at
+  activation. The schema reuses the kernel's `publicPathEntrySchema` (≥ 2
+  segments, no wildcards, query, percent-encoding or dot segments), and codegen
+  writes the list to `manifest.permissions.public_paths`. The prefix is still
+  served only after the operator grants it. `/p/…` is refused there, because
+  that is where `ui_routes` live.
+- **`spec.ui_routes` stay session-gated, now explicitly.** Codegen emits
+  `{ auth: 'session' }` on the `/p/<slug>` mount. These pages render tool data,
+  so a 401 in a Teams tab without an omadia session is intended (#1596). The
+  Builder prompt and the boilerplate `CLAUDE.md` say when `'custom'` is right
+  and when it isn't.
+- **Teams tabs:** `@omadia/channel-teams` 0.31.0 (byte5ai/omadia-channel-teams)
+  serves `/p/channel-teams/{hub,tab-config}` with `auth: 'custom'` and checks a
+  Teams SSO token itself. The operator grants `/p/channel-teams`.
+- Tests: `channelPublicPathClaim.test.ts` (claim on activate, release on
+  deactivate, ungranted not served; fails without the claim),
+  `agentSpec.test.ts` (`public_paths` syntax gate, no `/p/`), `codegen.test.ts`
+  (manifest emission, no key without a declaration), `codegenUiRoute.test.ts`
+  (explicit session gate).
+
 ### Security — plugin routes need a session, native tools follow plugin assignment (#1596, #1598, #1601)
 
 2026-10-29.
@@ -275,6 +308,51 @@ and the AI disclosure line reaches every first answer.
   says that any value of 1 or more runs one retry. The verifier's own
   "Anthropic API Key" field explains that the LLM-access key takes precedence
   and that "not set yet" is normal.
+
+### Fixed — What the Privacy Shield tells users and operators is true (#1541, #1547, #1548, #1549, #1551, #1552, #1557, #1558, #1562, #1573, #1599)
+
+2026-10-29. Sweep 3, cluster S3-C.
+
+- **Planning gate leak (#1547).** The plan-runner's gate and materialiser send
+  the user's message to a model from `onBeforeTurn`, which fired before the
+  turn masked it. A blocked mask refused the turn with "not sent to the
+  language model" after the gate had sent it in clear. Both paths now mask
+  before the hook (`chatInContextInner`; `preMaskUserMessage` in the stream
+  prelude), so a blocked turn reaches no hook, tool or model. A message whose
+  mask passes still reaches the plan-runner as written (security §6f).
+- **Receipt counts (#1541).** Values masked in recalled context, replayed
+  answers and replayed user messages are booked as `maskedContextSpans`
+  ("PII masked from earlier conversations"), never as masked in the user's
+  message; each distinct value counts once, however many model calls carried
+  it. With `mask_user_prompt` off, "your message" stays empty.
+- **"You named a person" (#1549).** Only person-shaped values (full name,
+  e-mail, phone) the user wrote as whole words count; a department, a column
+  name like `__k_Name` or a fragment of a longer word does not. The schema
+  classifier no longer calls org units personal data.
+- **Explanation lines (#1557).** The "identity-free digest" line appears only
+  when a tool result was interned and nothing was bypassed; the turn's
+  `unprotected` flag now rides on the receipt.
+- **Name detector (#1562).** The receipt reports C1 as `failed` (amber card,
+  also when nothing else was masked) or `unconfigured`; the privacy posture
+  returns `name_detector` (probe of the sidecar's `/health`), shown on the
+  guard's store page and as a notice on the dashboard and `/admin`.
+- **Turn id (#1573, #1552).** The receipt card shows the receipt's id (the
+  stream's `done.receiptId`, the receipt store key, not the session-log
+  `turnId`, which the store does not know) and links to
+  `/operator/receipts?turn=<id>`, which opens that receipt. Privacy miss
+  reports show their turn as the same link, and the page filters Open /
+  Resolved / All with who resolved a report and when.
+- **Sub-agent refusals (#1599).** The bridge only drops "cannot show"
+  caveats about masked values; a scope refusal, missing permission or missing
+  data must reach the user.
+- **Bypass confirmation (#1548).** Switching a plugin to Bypass, or adding
+  bypassed tools, asks for confirmation first.
+- **Datasets page (#1558).** The schema example comes from the same first
+  row as the preview; internal `__k_*` link-key columns are hidden and not
+  counted.
+- **Orphaned keys (#1551).** The 40 `privacyOperator.*` keys are gone.
+
+`@omadia/plugin-privacy-guard` 0.12.0, `@omadia/plugin-api` 1.46.0.
 
 ### Added — Provenance backfill for legacy Privacy Shield content (#1540)
 

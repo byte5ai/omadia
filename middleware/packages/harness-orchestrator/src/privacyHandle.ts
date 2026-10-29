@@ -12,6 +12,7 @@
 
 import type {
   PrivacyEgressStage,
+  PrivacyPromptOrigin,
   PrivacyGuardService,
   PrivacyPromptMaskResult,
   PrivacyReceipt,
@@ -31,6 +32,9 @@ export interface PromptMaskOptions {
   readonly stage?: PrivacyEgressStage;
   /** Compute the outcome without extending the map or booking anything. */
   readonly preview?: boolean;
+  /** #1541 — `context` for text from earlier conversations (a replayed user
+   *  message); absent ⇒ the user's own text of this turn. */
+  readonly origin?: PrivacyPromptOrigin;
 }
 
 export interface PrivacyTurnHandle {
@@ -320,6 +324,7 @@ export function createPrivacyTurnHandle(deps: {
         text,
         ...(opts?.stage !== undefined ? { stage: opts.stage } : {}),
         ...(opts?.preview === true ? { preview: true } : {}),
+        ...(opts?.origin !== undefined ? { origin: opts.origin } : {}),
       });
     },
 
@@ -366,7 +371,10 @@ export function createPrivacyTurnHandle(deps: {
     },
 
     async finalize(turnInput) {
-      return deps.service.finalizeTurn(deps.turnId, turnInput);
+      const receipt = await deps.service.finalizeTurn(deps.turnId, turnInput);
+      // #1557 — the turn's `unprotected` flag (#1507) rides on the receipt,
+      // so its wording never claims a boundary a bypass went around.
+      return receipt !== undefined && bypassed ? { ...receipt, unprotected: true } : receipt;
     },
   };
 }

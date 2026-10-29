@@ -24,6 +24,7 @@ import {
   PRIVACY_FORCE_GUARDED_ENV_VAR,
   PRIVACY_REDACT_SERVICE_NAME,
   resolveEffectivePrivacyMode,
+  type PrivacyNameDetectorStatus,
 } from '@omadia/plugin-api';
 
 import { InMemoryInstalledRegistry } from '../src/plugins/installedRegistry.js';
@@ -43,6 +44,8 @@ interface Harness {
 async function makeHarness(opts: {
   readonly guardInstalled: boolean;
   readonly servicePublished: boolean;
+  /** #1562 — the published shield's `nameDetectorStatus`, if any. */
+  readonly nameDetectorStatus?: () => Promise<PrivacyNameDetectorStatus>;
 }): Promise<Harness> {
   const registry = new InMemoryInstalledRegistry();
   const installedAt = '2026-10-28T08:00:00.000Z';
@@ -80,6 +83,10 @@ async function makeHarness(opts: {
     ...stubReg,
     has: (name: string) =>
       opts.servicePublished && name === PRIVACY_REDACT_SERVICE_NAME,
+    get: (name: string) =>
+      opts.servicePublished && name === PRIVACY_REDACT_SERVICE_NAME
+        ? { ...(opts.nameDetectorStatus ? { nameDetectorStatus: opts.nameDetectorStatus } : {}) }
+        : undefined,
   };
 
   const audits: Array<Record<string, unknown>> = [];
@@ -154,7 +161,33 @@ describe('GET /privacy-posture (#1507, #1508)', () => {
       shield_active: true,
       force_guarded: false,
       provider_ids: [GUARD_ID],
+      name_detector: null,
     });
+  });
+
+  it('reports the name detector state of the running shield (#1562)', async () => {
+    delete process.env[PRIVACY_FORCE_GUARDED_ENV_VAR];
+    harness = await makeHarness({
+      guardInstalled: true,
+      servicePublished: true,
+      nameDetectorStatus: async () => ({
+        state: 'unreachable',
+        source: 'env',
+        lastFailureAt: '2026-10-29T10:00:00.000Z',
+        promptMasking: true,
+      }),
+    });
+    assert.deepEqual((await posture()).name_detector, {
+      state: 'unreachable',
+      source: 'env',
+      last_failure_at: '2026-10-29T10:00:00.000Z',
+      prompt_masking: true,
+    });
+  });
+
+  it('reports no name detector while the shield is off (#1562)', async () => {
+    harness = await makeHarness({ guardInstalled: false, servicePublished: false });
+    assert.equal((await posture()).name_detector, null);
   });
 
   it('reports the shield as off once the guard is uninstalled', async () => {

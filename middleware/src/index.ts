@@ -1425,6 +1425,10 @@ async function main(): Promise<void> {
     serviceRegistry,
     nativeToolRegistry,
     pluginRouteRegistry,
+    // S3-G — Builder agents claim declared public paths like the tool runtime.
+    publicPathGrants,
+    publicPathGrantStore,
+    corePublicPaths: publicPaths(),
     notificationRouter,
     uiRouteCatalog,
     jobScheduler,
@@ -6778,6 +6782,11 @@ async function main(): Promise<void> {
     serviceRegistry,
     nativeToolRegistry,
     pluginRouteRegistry,
+    // S3-G — channel plugins claim their declared public paths too (Teams'
+    // `/p/channel-teams`); same registry, store and core list as the runtimes.
+    publicPathGrants,
+    publicPathGrantStore,
+    corePublicPaths: publicPaths(),
     notificationRouter,
     uiRouteCatalog,
     jobScheduler,
