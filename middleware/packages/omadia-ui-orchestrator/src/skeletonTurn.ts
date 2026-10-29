@@ -4,7 +4,14 @@ import {
   type ChatTurnInput,
   type RevisionId,
 } from '@omadia/channel-sdk';
-import { offeredTools, openSkeletonPrivacy, triageTurn, type TriageOutcome } from '@omadia/fast-path';
+import {
+  CACHE_DOUBT_REASON,
+  isCacheDoubt,
+  offeredTools,
+  openSkeletonPrivacy,
+  triageTurn,
+  type TriageOutcome,
+} from '@omadia/fast-path';
 
 import { CANVAS_PROTOCOL_VERSION, CANVAS_TURN_DIRECTIVE, OPS_CATALOG_VERSION } from './canvasProtocol.js';
 import { type CanvasRuntime } from './canvasRuntime.js';
@@ -167,6 +174,10 @@ function startTriage(
   // privacy run: the user-derived turn message is masked once and the
   // plan restored through it; the composer has its own run.
   const fastPrivacy = privacyGuard !== undefined ? openSkeletonPrivacy(privacyGuard) : undefined;
+  // zero-LLM answer cache: only a plain text turn (its question IS the
+  // user's text) — never an action/row-bound turn
+  const plainTurn = input.action === undefined && input.target === undefined && input.userMessage.trim().length > 0;
+  const answerCache = plainTurn ? fp?.answerCache : undefined;
   const triage: Promise<TriageOutcome> | undefined =
     fp !== undefined && !privacyForced && turnTools.length > 0
       ? triageTurn({
@@ -179,6 +190,7 @@ function startTriage(
           allowedTools: fp.allowedFetchTools(),
           ...(previousQuery ? { previous: previousQuery } : {}),
           ...(fastPrivacy ? { privacy: fastPrivacy } : {}),
+          ...(answerCache ? { answerCache } : {}),
           log: (m) => ctx.log(m),
         })
       : undefined;
@@ -209,7 +221,7 @@ async function settleFastPath(
     if (bound.ok) planned = bound.skeleton;
     else planMiss = bound.reason;
   }
-  const fast: FastPathOutcome =
+  let fast: FastPathOutcome =
     planMiss !== undefined
       ? { hit: false, reason: planMiss }
       : await runFastPath(rt, input, canvasSessionId, planned, privacyForced, surfaceSeq, {
@@ -217,6 +229,14 @@ async function settleFastPath(
           allowed: fp?.allowedFetchTools() ?? new Set<string>(),
           permitted: permittedTools,
         }, target);
+  // answer cache: a slot-filled cached plan with no rows is a doubt (agent
+  // path); the plan's execution — not a skeleton binding miss — is booked
+  if (triaged?.kind === 'plan' && fast.hit && isCacheDoubt(triaged, fast.rows)) {
+    fast = { hit: false, reason: CACHE_DOUBT_REASON };
+  }
+  if (triaged !== undefined && planMiss === undefined) {
+    fp?.settleTriage(triaged, fast.hit ? { ok: true } : { ok: false, reason: fast.reason });
+  }
   const fetches = planned.dataRequirements.flatMap((r) => (r.fetch ? [r.fetch] : []));
   if (fast.hit && fetches[0] !== undefined) {
     fp?.rememberQuery(fastPathKey, { question: turnText, fetch: fetches[0] });

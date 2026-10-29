@@ -1,5 +1,14 @@
 import type { PrivacyGuardService } from '@omadia/plugin-api';
 
+import {
+  ANSWER_CACHE_PRIVACY_JOB,
+  answerCacheEnabled,
+  CACHE_DOUBT_REASON,
+  createAnswerCache,
+  isCacheDoubt,
+  settleAnswerCache,
+  type AnswerCache,
+} from './answerCache.js';
 import { parseFastPathChannels, renderChatAnswer } from './chatAnswer.js';
 import {
   fetchRecipeRows,
@@ -22,7 +31,7 @@ import {
 import { resolveTimeZone, type RefreshSource } from './refreshRecipes.js';
 import { openStoredTextPrivacy, TRIAGE_PRIVACY_JOB } from './storedTextPrivacy.js';
 import type { PreviousQuery, TriageRoute } from './triage.js';
-import { triageTurn } from './triageTurn.js';
+import { triageTurn, type TriageOutcome } from './triageTurn.js';
 
 /** Bare service-registry key (`fastPath@1` in the manifest). */
 export const FAST_PATH_SERVICE = 'fastPath';
@@ -94,6 +103,9 @@ export interface FastPathService {
   channelEnabled(channel: string): boolean;
   /** the ONE tenant-wide learned plan store */
   readonly plans: LearnedPlanStore;
+  /** the zero-LLM answer cache (answerCache.ts) — absent when
+   *  `fast_path_answer_cache` is off */
+  readonly answerCache?: AnswerCache;
   /** planner specs: the allow-listed catalog tools, then a generic spec for
    *  every read tool of `definitions` (the agent's offered tools) without
    *  one — budgeted, name-ordered, the same text for the same tool set */
@@ -105,6 +117,10 @@ export interface FastPathService {
   /** Book a fast-path execution against the ACTIVE learned plans its fetches
    *  were adapted from; returns their ids. */
   recordFetchOutcome(fetches: readonly RefreshSource[], ok: boolean, reason?: string): string[];
+  /** Book an executed triage plan in the answer cache: a cached plan is
+   *  kept on a hit and evicted on a miss; an LLM plan of a self-contained
+   *  hit is stored (async, privacy-checked). No-op without a ticket. */
+  settleTriage(outcome: TriageOutcome, result: { ok: true } | { ok: false; reason: string }): void;
   /** Router call → (deterministic) planner call → the query; never throws. */
   triageChatTurn(req: ChatTriageRequest): Promise<ChatTriageOutcome>;
   /** The last fast-path query answered in conversation `key` (follow-ups). */
@@ -126,6 +142,8 @@ export interface FastPathServiceDeps {
   log: (message: string) => void;
   /** test seam — an injected store */
   plans?: LearnedPlanStore;
+  /** test seam — an injected answer cache */
+  answerCache?: AnswerCache;
 }
 
 export function createFastPathService(deps: FastPathServiceDeps): FastPathService {
@@ -137,6 +155,9 @@ export function createFastPathService(deps: FastPathServiceDeps): FastPathServic
   const plans =
     deps.plans ??
     createLearnedPlanStore({ ...(deps.memory ? { memory: deps.memory } : {}), log: deps.log });
+  const answerCache: AnswerCache | undefined = answerCacheEnabled(deps.config.get<string | boolean>('fast_path_answer_cache'))
+    ? (deps.answerCache ?? createAnswerCache({ ...(deps.memory ? { memory: deps.memory } : {}), log: deps.log }))
+    : undefined;
   const builtIn = plannableTools([...tools]);
   const sessions = new Map<string, PreviousQuery>();
   /** read tools a generic spec was built for — planned, so fetchable */
@@ -220,59 +241,88 @@ export function createFastPathService(deps: FastPathServiceDeps): FastPathServic
     // interactive lane — the turn waits. Fixed prompt text is never masked.
     const guard = deps.privacyGuard();
     const privacy = guard !== undefined ? openStoredTextPrivacy(guard, TRIAGE_PRIVACY_JOB, 'interactive') : undefined;
-    // router ∥ speculative planner (triageTurn.ts)
-    const triage = await triageTurn({
-      llm: deps.llm,
-      model: deps.model,
-      channel,
-      question,
-      tools: specs,
-      offered,
-      allowedTools: allowedFetchTools(),
-      ...(previous ? { previous } : {}),
-      ...(privacy ? { privacy } : {}),
-      log: deps.log,
-    });
-    if (triage.kind === 'agent') {
-      if (triage.route === undefined) deps.log(`[fast-path] miss channel=${channel} reason=${triage.reason}`);
-      return { kind: 'agent', reason: triage.reason, ms: Date.now() - t0, ...(triage.route ? { route: triage.route } : {}) };
-    }
-    const decision = triage.plan;
-    if (!permitted.has(decision.fetch.tool)) return agent('tool-not-permitted');
+    const llm = deps.llm;
+    const invoke = deps.invoke;
+    // answer cache → router ∥ speculative planner (triageTurn.ts)
+    const runTriage = (withCache: boolean): Promise<TriageOutcome> =>
+      triageTurn({
+        llm,
+        model: deps.model,
+        channel,
+        question,
+        tools: specs,
+        offered,
+        allowedTools: allowedFetchTools(),
+        ...(previous ? { previous } : {}),
+        ...(privacy ? { privacy } : {}),
+        ...(withCache && answerCache ? { answerCache } : {}),
+        log: deps.log,
+      });
 
-    const fetched = await fetchRecipeRows(deps.invoke, decision.fetch, { rejectTruncated: true, timeZone });
-    if (!fetched.ok) {
-      if (fetched.detail !== undefined) {
-        deps.log(`[fast-path] ${decision.fetch.tool} ${fetched.reason}: ${fetched.detail}`);
+    /** Execute the triage's plan; undefined = a cache doubt (re-triage). */
+    async function execute(triage: TriageOutcome): Promise<ChatTriageOutcome | undefined> {
+      if (triage.kind === 'agent') {
+        if (triage.route === undefined) deps.log(`[fast-path] miss channel=${channel} reason=${triage.reason}`);
+        return { kind: 'agent', reason: triage.reason, ms: Date.now() - t0, ...(triage.route ? { route: triage.route } : {}) };
       }
-      recordFetchOutcome([decision.fetch], false, fetched.reason);
-      return agent(fetched.reason);
+      const decision = triage.plan;
+      const miss = (reason: string): ChatTriageOutcome => {
+        settleTriage(triage, { ok: false, reason });
+        return agent(reason);
+      };
+      if (!permitted.has(decision.fetch.tool)) return miss('tool-not-permitted');
+      const fetched = await fetchRecipeRows(invoke, decision.fetch, { rejectTruncated: true, timeZone });
+      if (!fetched.ok) {
+        if (fetched.detail !== undefined) {
+          deps.log(`[fast-path] ${decision.fetch.tool} ${fetched.reason}: ${fetched.detail}`);
+        }
+        recordFetchOutcome([decision.fetch], false, fetched.reason);
+        return miss(fetched.reason);
+      }
+      if (isCacheDoubt(triage, fetched.rows.length)) {
+        settleTriage(triage, { ok: false, reason: CACHE_DOUBT_REASON });
+        deps.log(`[fast-path] cache miss channel=${channel} reason=${CACHE_DOUBT_REASON}`);
+        return undefined;
+      }
+      const rendered = renderSummary(decision.summary, {
+        rows: fetched.rows,
+        records: fetched.records,
+        map: decision.fetch.map,
+        ...(decision.locale !== undefined ? { locale: decision.locale } : {}),
+      });
+      if (!rendered.ok) {
+        deps.log(`[fast-path] summary unresolvable: ${rendered.detail}`);
+        return miss('summary-unresolvable');
+      }
+      const answer = renderChatAnswer({
+        summary: rendered.text,
+        rows: fetched.rows,
+        columns: Object.keys(decision.fetch.map),
+        labels: decision.labels,
+        ...(decision.locale !== undefined ? { locale: decision.locale } : {}),
+      });
+      const learned = recordFetchOutcome([decision.fetch], true);
+      settleTriage(triage, { ok: true });
+      remember(req.sessionKey, { question, fetch: decision.fetch });
+      const ms = Date.now() - t0;
+      deps.log(
+        `[fast-path] hit channel=${channel} tool=${decision.fetch.tool} rows=${fetched.rows.length} ms=${ms}` +
+          (triage.cache?.source === 'cache' ? ' via=cache' : '') +
+          (learned.length > 0 ? ` plan=${learned.join(',')}` : ''),
+      );
+      return { kind: 'answer', text: answer, tool: decision.fetch.tool, rows: fetched.rows.length, toolCalls: 1, ms };
     }
-    const rendered = renderSummary(decision.summary, {
-      rows: fetched.rows,
-      records: fetched.records,
-      map: decision.fetch.map,
-      ...(decision.locale !== undefined ? { locale: decision.locale } : {}),
-    });
-    if (!rendered.ok) {
-      deps.log(`[fast-path] summary unresolvable: ${rendered.detail}`);
-      return agent('summary-unresolvable');
-    }
-    const answer = renderChatAnswer({
-      summary: rendered.text,
-      rows: fetched.rows,
-      columns: Object.keys(decision.fetch.map),
-      labels: decision.labels,
-      ...(decision.locale !== undefined ? { locale: decision.locale } : {}),
-    });
-    const learned = recordFetchOutcome([decision.fetch], true);
-    remember(req.sessionKey, { question, fetch: decision.fetch });
-    const ms = Date.now() - t0;
-    deps.log(
-      `[fast-path] hit channel=${channel} tool=${decision.fetch.tool} rows=${fetched.rows.length} ms=${ms}` +
-        (learned.length > 0 ? ` plan=${learned.join(',')}` : ''),
-    );
-    return { kind: 'answer', text: answer, tool: decision.fetch.tool, rows: fetched.rows.length, toolCalls: 1, ms };
+
+    // a slot-filled cache plan with no rows is a doubt: re-plan without it
+    return (await execute(await runTriage(true))) ?? (await execute(await runTriage(false))) ?? agent(CACHE_DOUBT_REASON);
+  }
+
+  /** Book a triage plan's execution in the answer cache (see CacheTicket). */
+  function settleTriage(outcome: TriageOutcome, result: { ok: true } | { ok: false; reason: string }): void {
+    if (answerCache === undefined || outcome.kind !== 'plan' || outcome.cache === undefined) return;
+    const guard = deps.privacyGuard();
+    const open = guard?.openStoredTextScope?.bind(guard);
+    settleAnswerCache(answerCache, outcome.cache, outcome.plan, result, open ? () => open({ job: ANSWER_CACHE_PRIVACY_JOB }) : undefined);
   }
 
   return {
@@ -282,9 +332,11 @@ export function createFastPathService(deps: FastPathServiceDeps): FastPathServic
     timeZone,
     channelEnabled: (channel) => enabled && channelAllowed(channel),
     plans,
+    ...(answerCache ? { answerCache } : {}),
     plannableTools: (definitions) => plannable(definitions),
     allowedFetchTools,
     recordFetchOutcome,
+    settleTriage,
     triageChatTurn,
     previousQuery: (key) => sessions.get(key),
     rememberQuery: (key, prev) => remember(key, prev),
