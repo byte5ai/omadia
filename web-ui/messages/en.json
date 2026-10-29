@@ -2464,8 +2464,8 @@
         "prompt": "Prompt"
       },
       "prompt": {
-        "hint": "This exact text opens this agent's system prompt — assembled from its behaviour, character axes, limits and anti-flattery guard.",
-        "hintWithFamily": "This exact text opens the system prompt. The character axes are computed against the {family} model family's own default, so only deviations from it are written at all.",
+        "hint": "This is the agent's own part of its system prompt, assembled from its behaviour, character axes, limits and anti-flattery guard. In a turn, two blocks can come before it: the conversation's earlier context, and the Quality Guard plugin's rules for whatever this agent does not set itself.",
+        "hintWithFamily": "This is the agent's own part of its system prompt. The character axes are computed against the {family} model family's own default, so only deviations from it are written at all. In a turn, two blocks can come before it: the conversation's earlier context, and the Quality Guard plugin's rules for whatever this agent does not set itself.",
         "stale": "Unsaved changes are not in here yet — save to see them.",
         "empty": "Nothing set yet. This agent uses the platform-wide default text."
       },
