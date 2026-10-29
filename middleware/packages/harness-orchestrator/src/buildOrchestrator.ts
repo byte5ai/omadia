@@ -938,6 +938,8 @@ export function buildOrchestratorForAgent(
           // kernel-native tool scheduled this turn on the `done` event, so the
           // subscription-CLI path renders them like the API-key path.
           drainTurnCards: () => orchestrator.drainCliTurnCards(),
+          // #1582 — the AI disclosure, resolved and folded like an API-key turn.
+          discloseAnswer: (answer, input) => orchestrator.discloseCliAnswer(answer, input),
           model: config.model.replace(/-cli$/, '') || 'sonnet',
           // #1391 — persist every successful CLI turn like an in-process one
           // (session log + graph nodes, facts, excerpt, auto-promotion,

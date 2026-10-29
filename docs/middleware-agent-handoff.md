@@ -1743,11 +1743,17 @@ feuert genau einmal pro Session auf dem Übergang pending → authorized
 `src/index.ts` hängt dort `autoAssignSubscriptionCli` aus
 `src/platform/providerAssignment.ts` ein: jedes installierte LLM-Plugin, das
 noch auf dem Plattform-Default (`llm_provider` unset oder `anthropic`) ohne
-Credential steht, wird auf `claude-cli` umgestellt und reaktiviert. Eine
+Credential steht, wird auf `claude-cli` umgestellt und reaktiviert — außer
+einem Plugin mit `rejectsSubscriptionCli` (heute nur `@omadia/verifier`, #1583;
+Skip-Grund `subscription_cli_unsupported`). Eine
 explizite Wahl (`openai`, OAuth, lokaler keyless Server) wird nie überschrieben.
 `applyProviderAssignment` ist dieselbe Funktion, die `POST /admin/providers/assignment`
 benutzt (Fail-closed-Regeln: tool-loser Provider vs. tool-treibendes Plugin,
-Modell/Provider-Mismatch, Routing-Disable bei Nicht-Anthropic).
+`claude-cli` für ein Plugin mit `rejectsSubscriptionCli` →
+`providers.subscription_cli_unsupported` (#1583),
+Modell/Provider-Mismatch, Routing-Disable bei Nicht-Anthropic). `GET
+/admin/providers` liefert pro Zuordnung `requiresTools` und
+`rejectsSubscriptionCli`; die Seite sperrt danach die unpassenden Provider.
 
 **Klassen-Refs bleiben stehen (#1083).** Eine Klassen-Referenz
 (`class:frontier` / `class:balanced` / `class:fast`) speichert
@@ -4168,8 +4174,8 @@ Setup-Felder, nicht mehr die Env.
 | `VERIFIER_MODE` / `verifier_mode` | `shadow` (Default): prüft und speichert nur, die Antwort geht unverändert raus. `enforce`: Auslieferungs-Gate auf Stream **und** `chat()` — eine Antwort geht bei `approved` und `skipped` (`no_trigger`/`no_claims`) raus, bei `approved_with_disclaimer` und `skipped` (`no_checkable_claims`/`incomplete_coverage`) mit lokalisiertem Hinweis „ließ sich nicht automatisch bestätigen“ (außer alle gelaufenen Checks scheiterten technisch: dann zurückgehalten); bei `blocked` oder `unavailable` statt ihrer eine Notiz (`answerSource: 'verifier-blocked'`); im Stream kommt bis zum Urteil kein Antworttext (§11, Security §7c). Eine von Privacy Shield gerenderte Antwort wird an ihrer Prosa geprüft; die Zellwerte sind Systemdaten und gehen nie an den Verifier. Ohne Prosa ist sie reine Systemdaten (`skipped` / `system_data`) und geht ohne Hinweis raus; die Web-UI markiert jede gerenderte Antwort als „Originaldaten aus dem System“. Ein gerenderter Fehler, ein Provider ohne `prose`-Feld und hinter dem Shield ein Lauf ohne Privacy-Sicht (Direct-Line-Relay) gehen nie an den Verifier und werden zurückgehalten (`privacy_shield`), außer an einem Turn mit Input-Karte: Die Karten-Ausnahme (`releasesWithoutVerification`) greift vorher und gibt ihn ungeprüft frei; `shadow` speichert für sie kein Verdict. Gilt nicht für den Abo-CLI-Runtime und nicht für Routinen. |
 | `VERIFIER_MODEL` / `verifier_model` | Modell für Claim-Extraktion und Evidence-Judge. |
 | `VERIFIER_MAX_CLAIMS` / `verifier_max_claims` | Höchstzahl geprüfter Claims pro Antwort, Default `20`. |
-| `VERIFIER_AMOUNT_TOLERANCE` / `verifier_amount_tolerance` | Relative Betragstoleranz, Default `0.01`. |
-| `VERIFIER_MAX_RETRIES` / `verifier_max_retries` | Correction-Retry nach einem Widerspruch in `enforce`, auf `chat()` (`/api/chat`, Scheduler, Conductor) und im Stream (nicht bei Canvas-Turns); `0` schaltet ihn ab, und hinter dem Shield entfällt er, wenn die Maskierung den Correction-Hint verändern würde. Default `1`, max `2`. Der Retry führt keinen aufgezeichneten externen Call erneut aus, er spielt ihn aus dem Replay-Ledger zurück; nur ein Sub-Agent, der hinter dem Shield Daten interniert oder ein Bypass-Tool gelesen hat, läuft neu, seine eigenen Calls wieder aus dem Ledger (§3 und Security §7c). |
+| `VERIFIER_AMOUNT_TOLERANCE` / `verifier_amount_tolerance` | Absolute Toleranz für Betrags- und Summenvergleiche in der Einheit des Felds (`0.01` = ein Cent bzw. 0,01 Urlaubstage, nicht 1 %), Default `0.01` (#1564). |
+| `VERIFIER_MAX_RETRIES` / `verifier_max_retries` | Correction-Retry nach einem Widerspruch in `enforce`, auf `chat()` (`/api/chat`, Scheduler, Conductor) und im Stream (nicht bei Canvas-Turns); `0` schaltet ihn ab, und hinter dem Shield entfällt er, wenn die Maskierung den Correction-Hint verändern würde. Default `1`; jeder Wert ab `1` führt genau einen Retry aus (`2` wird angenommen, wirkt wie `1`, #1564). Der Retry führt keinen aufgezeichneten externen Call erneut aus, er spielt ihn aus dem Replay-Ledger zurück; nur ein Sub-Agent, der hinter dem Shield Daten interniert oder ein Bypass-Tool gelesen hat, läuft neu, seine eigenen Calls wieder aus dem Ledger (§3 und Security §7c). |
 | `VERIFIER_RESAMPLE_ON_BORDERLINE` / `verifier_resample_on_borderline` | `false` schaltet in `enforce` die zweite Stichprobe für Grenzfall-Antworten ab (nur `chat()`); jeder andere Wert lässt sie an. Default `true`. Die Stichprobe führt, wie der Retry, keinen aufgezeichneten externen Call erneut aus. Wie alle `VERIFIER_*` nur beim ersten Boot übernommen. |
 
 ### `middleware/config.ts` — alle Env-Variablen mit zod-Schema
@@ -4642,6 +4648,37 @@ außerhalb der geschlossenen Codes werden `unavailable` / `pipeline_error`; der
 Rohwert steht nur in der Server-Logzeile (`[verifier/service] pipeline verdict
 not taken as returned: …`). Die eingebaute Pipeline ist davon nicht betroffen.
 `verifier_verdicts.unverified_count` zählt die Claims selbst, nicht den Status.
+
+**Zuordnung zum Turn (#1571).** `verifier_verdicts.run_id` und
+`verifier_contradictions.run_id` tragen die Turn-ID des ersten Durchlaufs des
+Requests — denselben Schlüssel wie `turn_receipts.turn_id` —, `agent` die
+`agentId` des Orchestrators. Die Modell-Calls des Verifiers laufen in
+`runWithUsageContext` (`@omadia/usage-telemetry`), ihre `token_usage`-Zeilen
+(`source = 'verifier'`) tragen dieselbe `turn_id`. Die Server-Logzeilen
+(`[verifier/service] … run=<uuid> turn=<turnId>`) nennen beide IDs. Die
+Turn-ID reist neben dem Trace (`turnEvidenceOf`, WeakMap in
+`runTraceCollector.ts`), nie im `done`-Event.
+
+**Turn-Records als Anker (#1574/#1575/#1579).** Neben dem Trace liegen auch
+die Odoo-Records, die die Tools des Turns gelesen haben (EntityRefBus,
+`SharedEntityRefs` teilt die Collection zwischen Trace und Session-Log). Der
+`DeterministicChecker` liest sie selbst neu aus Odoo (`CheckContext.turnRecords`)
+und bestätigt damit Beträge, Daten und Namen, deren Antworttext keine
+Record-ID nennt — hinter dem Privacy Shield der Normalfall. Ein Treffer
+bestätigt nur; ein Fehlschlag bleibt `unverified`. Re-Entries spielen Tools
+ab und lesen nichts selbst; der `VerifierJudge` behält die Records des ersten
+Durchlaufs pro Request. Summen werden nur gegen ihren Scope verglichen: ein
+Mitarbeiter bzw. Partner (aus dem Claim, sonst eindeutig aus den Turn-Records),
+bei `hr.leave` nur genehmigte (`validate`) bzw. genehmigte plus offene
+Anträge, und über die vom Turn gelesenen Records (deren Zeitraum). Ohne
+eindeutigen Scope, oder bei einer Summe mit Zeitraum ohne Turn-Records, ist der
+Claim `unverified`, nie `contradicted`. Eine Summe, die der Extraktor an
+`hr.employee` hängt, wird als `hr.leave`-Summe dieses Mitarbeiters geprüft.
+
+**`shadow`-Diagnose (#1576).** `shadow` schreibt pro geprüfter Antwort
+`[verifier/service] shadow verdict run=… enforce=release|release_unconfirmed|withhold
+status=… cause=… claims=<id>:<ergebnis>[/<cause>],…` — dieselbe Diagnose, die
+`enforce` loggt, plus was `enforce` mit der Antwort getan hätte.
 
 Das Event geht unverändert über `/api/chat/stream` und den Public-API-Key-Stream
 (`chatRouter.ts`) raus. Ein Connector-Badge entsteht daraus nur über
@@ -5545,10 +5582,10 @@ laufen. Ein neuer Modellaufruf außerhalb des Turns gehört in §6f. Offen:
   Antwort mit Zahlen ohne Treffer zurückhalten lassen. Danach README, §7c und
   `docsClaimsGuard.test.ts` nachziehen.
 - **`verifier_max_retries` über 1 wirkt nicht.** Schema (`VERIFIER_MAX_RETRIES`,
-  `max(2)`), `clampMaxRetries` und die Manifest-Hilfe („Max: 2“) erlauben 2,
-  `VerifierService.chat` und `streamRetry` laufen aber höchstens einen Retry.
-  Entweder eine Retry-Schleife bis `maxRetries` bauen oder Schema, Clamp und
-  Hilfetext auf 1 setzen. Die Manifest-Hilfe zu `verifier_mode` („nichts
+  `max(2)`) und `clampMaxRetries` erlauben 2, `VerifierService.chat` und
+  `streamRetry` laufen aber höchstens einen Retry. Die Manifest-Hilfe sagt das
+  seit #1564; offen bleibt, eine Retry-Schleife bis `maxRetries` zu bauen oder
+  Schema und Clamp auf 1 zu setzen. Die Manifest-Hilfe zu `verifier_mode` („nichts
   Prüfbares fand“) dabei auf die Trigger-Muster präzisieren.
 
 ### Self-Update-Steuerungsebene: Vertrauensmodell und offene Härtung (#432 follow-up)

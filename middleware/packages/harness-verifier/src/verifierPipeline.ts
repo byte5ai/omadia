@@ -12,7 +12,7 @@ import type {
 } from './claimTypes.js';
 import { hasOdooRecordAnchor, isHardClaim, isSoftClaim } from './claimTypes.js';
 import type { ClaimExtractor } from './claimExtractor.js';
-import type { DeterministicChecker } from './deterministicChecker.js';
+import type { CheckContext, DeterministicChecker } from './deterministicChecker.js';
 import type { EvidenceJudge } from './evidenceJudge.js';
 import { coverageVerdicts, readExtraction, skipReason } from './extractionCoverage.js';
 import { detectFailureReplay } from './failureReplayDetector.js';
@@ -215,9 +215,14 @@ export class VerifierPipeline {
 
     // Parallelise hard + soft checks. Each branch is fault-tolerant on its
     // own — we never need to wait on one to start the other.
+    // #1574 — the records the turn's tools read anchor claims whose answer
+    // names no record id; the checker re-reads them, server-side.
+    const checkContext: CheckContext = input.turnRecords ? { turnRecords: input.turnRecords } : {};
     const [hardVerdicts, softVerdicts] = await Promise.all([
-      this.deterministic.checkAll(hardToActuallyCheck),
-      this.checkSoftClaims(soft, hard, privacy),
+      input.turnRecords
+        ? this.deterministic.checkAll(hardToActuallyCheck, checkContext)
+        : this.deterministic.checkAll(hardToActuallyCheck),
+      this.checkSoftClaims(soft, hard, privacy, checkContext),
     ]);
 
     const checked: ClaimVerdict[] = [
@@ -251,15 +256,20 @@ export class VerifierPipeline {
    * second re-query would only duplicate the contradiction.
    */
   private async checkSoftClaims(
-    soft: SoftClaim[],
+    allSoft: SoftClaim[],
     hard: readonly HardClaim[],
     privacy: VerifierPrivacy | undefined,
+    ctx: CheckContext,
   ): Promise<ClaimVerdict[]> {
+    // #1574 — a name claim that says nothing beyond a name is confirmed
+    // against the records the turn read (re-read here) before any judge call;
+    // one that does not match goes on to the judge as before.
+    const { confirmed, rest: soft } = await this.confirmNamesFromTurnRecords(allSoft, ctx);
     const coveredByHard = new Set(hard.map(anchorKey).filter(Boolean));
     const anchored = soft.filter(
       (c) => hasOdooRecordAnchor(c) && !coveredByHard.has(anchorKey(c)),
     );
-    if (anchored.length === 0) return this.judge.checkAll(soft, privacy);
+    if (anchored.length === 0) return [...confirmed, ...(await this.judge.checkAll(soft, privacy))];
 
     const existence = await Promise.all(
       anchored.map((c) => this.deterministic.checkRecordExists(c)),
@@ -273,7 +283,23 @@ export class VerifierPipeline {
     }
     const forJudge = soft.filter((c) => !blockedIds.has(c.id));
     const judged = await this.judge.checkAll(forJudge, privacy);
-    return [...contradicted, ...judged];
+    return [...confirmed, ...contradicted, ...judged];
+  }
+
+  /** #1574 — split off the name claims the turn's records confirm. */
+  private async confirmNamesFromTurnRecords(
+    soft: SoftClaim[],
+    ctx: CheckContext,
+  ): Promise<{ confirmed: ClaimVerdict[]; rest: SoftClaim[] }> {
+    if (!ctx.turnRecords || ctx.turnRecords.length === 0) return { confirmed: [], rest: soft };
+    const names = soft.filter((c) => c.type === 'name' && c.expectedSource !== 'confluence');
+    if (names.length === 0) return { confirmed: [], rest: soft };
+    const results = await Promise.all(
+      names.map((c) => this.deterministic.checkNameAgainstTurnRecords(c, ctx)),
+    );
+    const confirmed = results.filter((v) => v.status === 'verified');
+    const ids = new Set(confirmed.map((v) => v.claim.id));
+    return { confirmed, rest: soft.filter((c) => !ids.has(c.id)) };
   }
 }
 

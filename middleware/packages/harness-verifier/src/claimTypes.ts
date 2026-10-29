@@ -1,3 +1,4 @@
+import type { TurnRecord } from './turnRecords.js';
 /**
  * Shared type definitions for the answer-verifier pipeline.
  *
@@ -355,6 +356,14 @@ export interface VerifierInput {
    * Undefined ⇒ not known; the detector then falls back to "any call ran".
    */
   failedToolsCalled?: readonly string[];
+  /**
+   * #1574 — the Odoo records (model + id) the checked turn's tools read,
+   * collected server-side from the turn's EntityRefBus. The deterministic
+   * checker re-reads them to confirm a claim whose answer names no record id
+   * (behind a Privacy Shield the model never sees one). Never sent to a model.
+   * Undefined ⇒ not known; claims without a record id then stay unverified.
+   */
+  turnRecords?: readonly TurnRecord[];
   /**
    * The privacy view of the turn being verified, present when that turn ran
    * behind a Privacy Shield (`privacy.redact@1`). Every stage that sends

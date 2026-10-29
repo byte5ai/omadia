@@ -87,7 +87,10 @@ export { buildCorrectionPrompt } from './correctionPrompt.js';
 
 // DeterministicChecker
 export { DeterministicChecker } from './deterministicChecker.js';
+export { toTurnRecords } from './turnRecords.js';
+export type { TurnRecord } from './turnRecords.js';
 export type {
+  CheckContext,
   DeterministicCheckerOptions,
   GraphReader,
   OdooReader,

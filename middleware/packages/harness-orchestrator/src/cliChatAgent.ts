@@ -6,6 +6,7 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type {
+  AiDisclosure,
   ChatAgent,
   ChatTurnInput,
   ChatStreamEvent,
@@ -811,6 +812,20 @@ export interface CliChatAgentDeps {
    */
   readonly drainTurnCards?: () => CliTurnCards;
   /**
+   * #1582 — the AI disclosure (AI Act Art. 50) for this turn's answer: the
+   * marking line folded in on the conversation's first turn, and the
+   * structured carrier for every turn. Wired by `buildOrchestratorForAgent`
+   * to `orchestrator.discloseCliAnswer()`, so a CLI turn is marked exactly
+   * like an API-key turn. Applied to the delivered answer only — the recorded
+   * turn stays unmarked, as on the in-process path. Left unset (unit tests,
+   * the sub-agent runtime, whose answer goes to an orchestrator rather than a
+   * person) nothing is folded.
+   */
+  readonly discloseAnswer?: (
+    answer: string,
+    input: ChatTurnInput,
+  ) => { readonly answer: string; readonly aiDisclosure?: AiDisclosure };
+  /**
    * Issue #1087 — the chat's own recent turns, oldest first, for the session
    * this turn belongs to. The child process is stateless by design (one fully
    * composed prompt per spawn), so without this the agent has no memory at all
@@ -1068,7 +1083,11 @@ export class CliChatAgent implements ChatAgent {
           const usage = parser.usage();
           this.runHook('onUsage', () => onUsage(usage));
         }
-        return { text: parser.finalAnswer() };
+        const disclosed = this.disclose(parser.finalAnswer(), input);
+        return {
+          text: disclosed.answer,
+          ...(disclosed.aiDisclosure ? { aiDisclosure: disclosed.aiDisclosure } : {}),
+        };
       }
       if (hooks?.onEvent) {
         const onEvent = hooks.onEvent;
@@ -1076,6 +1095,15 @@ export class CliChatAgent implements ChatAgent {
         this.runHook('onEvent', () => onEvent(event));
       }
     }
+  }
+
+  /** #1582 — {@link CliChatAgentDeps.discloseAnswer}; the answer unchanged
+   *  when unwired. */
+  private disclose(
+    answer: string,
+    input: ChatTurnInput,
+  ): { readonly answer: string; readonly aiDisclosure?: AiDisclosure } {
+    return this.deps.discloseAnswer ? this.deps.discloseAnswer(answer, input) : { answer };
   }
 
   private runHook(name: string, fn: () => void): void {
@@ -1138,7 +1166,13 @@ export class CliChatAgent implements ChatAgent {
 
         if (step.value.type === 'done' && !cardsDrained) {
           cardsDrained = true;
-          yield { ...step.value, ...(this.deps.drainTurnCards?.() ?? {}) };
+          const disclosed = this.disclose(step.value.answer, input);
+          yield {
+            ...step.value,
+            ...(this.deps.drainTurnCards?.() ?? {}),
+            answer: disclosed.answer,
+            ...(disclosed.aiDisclosure ? { aiDisclosure: disclosed.aiDisclosure } : {}),
+          };
         } else {
           yield step.value;
         }

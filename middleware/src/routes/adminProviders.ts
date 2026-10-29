@@ -349,6 +349,8 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
           modelKey,
           // This plugin drives a tool loop → the UI disables tool-less providers.
           requiresTools: p.requiresTools === true,
+          // #1583 — the plugin cannot run on the subscription CLI at all.
+          rejectsSubscriptionCli: p.rejectsSubscriptionCli === true,
           // surface the orchestrator's per-turn routing flag so the page can show
           // /edit it directly (it gets force-disabled on a non-Anthropic switch).
           ...(p.id === '@omadia/orchestrator'

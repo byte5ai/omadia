@@ -218,11 +218,16 @@ answer:
   abandoned. Without that replay ledger, which `enforce` binds only when it
   may re-enter, the MCP client retries a call once after a transport failure,
   so an MCP write whose reply was lost can run twice. An answer the shield
-  rendered with real values is never sent to the verifier, so `enforce`
-  withholds it, unless the turn carries an input card: the card exemption runs
-  first, and a turn with an input card goes out unchecked, a rendered answer
-  included. Agents on the Claude subscription CLI and routines are not
-  verified ([`docs/security-architecture.md`](security-architecture.md)
+  rendered with real values is delivered in `enforce` too (#1407): the
+  verifier checks the prose the model wrote around the rows like any answer,
+  and a rendered answer without prose goes out as system data (verdict
+  `skipped` / `system_data`, chip "Original system data"). The rows themselves
+  are never sent to the verifier. `enforce` still withholds a rendered tool
+  error or sign-in prompt, a render whose provider reports no prose field, and
+  a Direct Line relay behind the shield. A turn with an input card goes out
+  unchecked, a rendered answer included: the card exemption runs first. Agents
+  on the Claude subscription CLI and routines are not verified, and the
+  verifier itself cannot be assigned to the subscription CLI (#1583) ([`docs/security-architecture.md`](security-architecture.md)
   §6e, §7c).
 - **Office files from real rows**: when a specialist agent returns a
   `datasetId`, `create_xlsx` resolves the rows server-side and writes them into

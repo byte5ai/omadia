@@ -67,6 +67,69 @@ changelog.
 `@omadia/plugin-privacy-guard` 0.11.0, `@omadia/plugin-api` 1.37.0
 (`countUnresolvedSurrogates` takes an optional `options`).
 
+
+### Fixed — Answer verifier verdicts, observability and the AI disclosure line (#1563, #1564, #1571, #1572, #1574, #1575, #1576, #1578, #1579, #1580, #1582, #1583)
+
+2026-10-29. The verifier confirms correct Odoo answers behind the Privacy
+Shield, compares totals with the right records, can be traced to its turn,
+and the AI disclosure line reaches every first answer.
+
+- **Turn records anchor the checks (#1574).** Behind the shield the model never
+  sees a record id, so the answer names none, and every amount, date and name
+  claim stayed `unverified`. The run trace now keeps the Odoo records the turn's
+  tools read (EntityRefBus, beside the payload like the knowledge-graph refs).
+  The deterministic checker re-reads those records from Odoo itself and
+  confirms a claim when one of them carries the claimed value. A name claim
+  that says nothing beyond a record's name is confirmed the same way before any
+  judge call. A match only ever confirms; a miss stays `unverified`.
+- **Totals against the right records (#1575, #1579).** An aggregate is compared
+  only with one employee's or partner's records (from the claim, else the one
+  owner of the turn's records), for `hr.leave` only approved — or approved plus
+  pending — requests, and over the records the turn read. Without a single
+  owner, or for a total over a named period the turn's records do not cover,
+  the claim stays `unverified` instead of being contradicted. A total the
+  extractor pins on `hr.employee` is checked as that employee's `hr.leave` sum,
+  so a wrong leave total is now contradicted, and the extractor is told to name
+  the summed model. Leave dates are compared with the first and the last day.
+- **Verdicts linked to their turn (#1571).** `verifier_verdicts.run_id` and
+  `verifier_contradictions.run_id` carry the request's turn id (the key of its
+  `turn_receipts` row), `agent` the answering agent, and the verifier's
+  `token_usage` rows the same `turn_id` (`runWithUsageContext` in
+  `@omadia/usage-telemetry`). Log lines name `run=<id> turn=<turnId>`.
+- **`shadow` logs its diagnosis (#1576).** One `[verifier/service] shadow
+  verdict` line per checked answer, with the per-claim results and causes
+  `enforce` logs and what `enforce` would have done
+  (`release` / `release_unconfirmed` / `withhold`).
+- **Badge next to a rendered table (#1580).** A "not checked" hint that speaks
+  of the whole answer ("contains no figures, dates or references") now says
+  that only the model's own text was screened and that the table's values come
+  unchanged from the source system.
+- **Verifier not assignable to the subscription CLI (#1583).** The verifier
+  cannot run on `claude-cli` (it needs an API key), but the assignment saved
+  and the verifier then silently stayed off. `POST /admin/providers/assignment`
+  refuses it (`providers.subscription_cli_unsupported`), the assignment row
+  disables the option with the reason, and the subscription hand-off skips the
+  verifier. **Operators:** an existing install whose verifier is already on
+  `claude-cli` stays off until you assign it a key-based provider under LLM
+  access → Per-agent assignment (the boot log now says so:
+  `the verifier cannot run on the subscription CLI`).
+- **AI disclosure on a verifier retry (#1578).** The first pass of a turn
+  consumed the conversation's first-turn slot, so a correction retry (or the
+  withheld notice built on it) went out without the disclosure line, in web chat
+  and on the Public API. The request now remembers that its first pass folded
+  the line, and every later pass of that request folds it too.
+- **AI disclosure on the subscription CLI (#1582).** `CliChatAgent` turns never
+  carried the line or the `aiDisclosure` field. They now get the same
+  resolution and first-turn fold as API-key turns
+  (`Orchestrator.discloseCliAnswer`).
+- **Setup help and docs (#1563, #1564, #1572).** "Verifier Mode" and
+  `docs/trust-and-privacy.md` describe what `enforce` does with a
+  Privacy-Shield-rendered answer since #1407 (delivered; prose verified, rows
+  are system data). "Amount Tolerance" is absolute, not relative; "Max Retries"
+  says that any value of 1 or more runs one retry. The verifier's own
+  "Anthropic API Key" field explains that the LLM-access key takes precedence
+  and that "not set yet" is normal.
+
 ### Added — Provenance backfill for legacy Privacy Shield content (#1540)
 
 2026-10-28. Closes the last path of #1540. Notes and processes written before
