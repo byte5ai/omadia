@@ -1124,6 +1124,7 @@ export function createPrivacyGuardService(deps?: {
       return createStoredTextScope({
         job: request.job,
         detectors,
+        ...(request.priority !== undefined ? { priority: request.priority } : {}),
         ...(deps?.c1Detector !== undefined ? { c1Detector: deps.c1Detector } : {}),
       });
     },

@@ -446,8 +446,16 @@ describe('canvasChatAgent — deterministic fast path', () => {
   it('miss: a requirement without a fetch plan', () =>
     assertMiss('no-plan', { composer: composerOutput({ fetch: null }) }));
 
-  it('miss: no summary template', () =>
-    assertMiss('no-summary', { composer: composerOutput({ summary: null }) }));
+  it('no summary template: the valid plan still answers, with the default count sentence', async () => {
+    const h = await harness({ composer: composerOutput({ summary: null }) });
+    const events = await collect(h.agent.chatStream(turn()));
+    assert.equal(h.baseInputs.length, 0, 'no agent turn');
+    assert.ok(h.logs.includes('[ui-orchestrator] fast-path summary missing — default count sentence'));
+    assert.deepEqual(
+      events.filter((e) => e.type === 'text_delta').map((e) => field(e, 'text')),
+      ['2 Einträge gefunden.'],
+    );
+  });
 
   it('miss: fast path disabled (fast_path_tools empty)', () =>
     assertMiss('disabled', { config: { fast_path_tools: '' } }));

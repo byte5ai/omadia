@@ -15,9 +15,9 @@ import { composeStructuredPayloadPatch } from '../packages/omadia-ui-orchestrato
 import { deriveDataRequirements } from '../packages/omadia-ui-orchestrator/src/plugin.js';
 import {
   applyRefreshSource,
-  createRecipeStore,
   parseRefreshSource,
 } from '../packages/harness-plugin-fast-path/src/refreshRecipes.js';
+import { createRecipeStore } from '../packages/harness-plugin-fast-path/src/recipeStore.js';
 
 const LIVE_TREE = {
   type: 'container',

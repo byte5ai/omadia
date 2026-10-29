@@ -521,7 +521,18 @@ export interface PrivacyStoredTextScopeRequest {
   /** PII-free name of the job, logged with every mask call
    *  (e.g. `topic-clustering`). */
   readonly job: string;
+  /**
+   * Scheduling lane of the run's C1 (NER sidecar) calls. Default
+   * `background`: memory jobs and learned-example masking run off any
+   * turn's critical path. `interactive` for a mask a turn is waiting on
+   * (the fast-path triage, the canvas skeleton composer, the in-place
+   * planner) — the sidecar serves those first. Results are identical.
+   */
+  readonly priority?: PrivacyStoredTextPriority;
 }
+
+/** Sidecar lane of a stored-text scope ({@link PrivacyStoredTextScopeRequest.priority}). */
+export type PrivacyStoredTextPriority = 'interactive' | 'background';
 
 /**
  * The privacy scope of one job run

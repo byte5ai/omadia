@@ -165,6 +165,11 @@ function fakeMemory(initial?: Record<string, string>): PlanMemory & { files: Map
   };
 }
 
+/** Files of the learned fast path — the canvas refresh recipes the canvas
+ *  orchestrator persists in the same memory are not "learned". */
+const learnedFiles = (files: ReadonlyMap<string, string>): number =>
+  [...files.keys()].filter((p) => !p.startsWith('canvas-recipes/')).length;
+
 type PrivacyMode = 'ok' | 'blocked' | 'degraded' | 'unconfigured' | 'absent';
 
 /** Fake Privacy Shield stored-text scope: C1 finds the listed persons
@@ -527,7 +532,7 @@ describe('learned fast path — capture from agent turns', () => {
     await collect(h.agent.chatStream(turn(MAR_Q)));
     await collect(h.agent.chatStream(turn('und im Februar?', { canvasState: { basedOnRevision: '3', currentTree: INVOICE_TREE } })));
     assert.equal(h.logs.some((m) => /learned (candidate|skip)|learned-plan/.test(m)), false);
-    assert.equal(h.memory.files.size, 0);
+    assert.equal(learnedFiles(h.memory.files), 0);
     assert.equal(h.plannerUsers.length, 0);
     assert.equal(h.baseInputs.length, 3);
   });
@@ -542,7 +547,7 @@ describe('learned fast path — capture from agent turns', () => {
     assert.equal(h.logs.some((m) => m.includes('learned candidate')), false);
     assert.ok(h.logs.includes('[ui-orchestrator] learned-plan miss reason=privacy-forced path=in-place'));
     assert.equal(h.plannerUsers.length, 0);
-    assert.equal(h.memory.files.size, 0);
+    assert.equal(learnedFiles(h.memory.files), 0);
   });
 });
 
@@ -608,7 +613,7 @@ describe('learned fast path — example questions are privacy-masked before stor
         h.logs.filter((m) => m.includes('learned')).join(' | '),
       );
       assert.equal(h.logs.some((m) => m.includes('learned candidate')), false);
-      assert.equal(h.memory.files.size, 0, 'nothing persisted');
+      assert.equal(learnedFiles(h.memory.files), 0, 'nothing persisted');
     });
   }
 

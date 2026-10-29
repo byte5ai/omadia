@@ -1683,6 +1683,16 @@ export interface MemoryAccessor {
   list(relPath: string): Promise<readonly MemoryEntryInfo[]>;
   /** True if the path resolves to an existing file OR directory. */
   exists(relPath: string): Promise<boolean>;
+  /**
+   * The plugin's own AGENT-INDEPENDENT tree — `/memories/agents/<pluginId>/`,
+   * the tree the manifest's `agent:<pluginId>:*` memory permission names.
+   * The accessor itself resolves per Agent (the active turn's slug, else
+   * `default`); this view is the same for every Agent and outside any turn,
+   * so plugin-wide state (a tenant-wide cache, learned data) has ONE
+   * location. Same path rules; no nested `pluginWide`. Absent on hosts that
+   * predate it — callers fall back to the per-Agent view.
+   */
+  readonly pluginWide?: MemoryAccessor;
 }
 
 export interface MemoryEntryInfo {

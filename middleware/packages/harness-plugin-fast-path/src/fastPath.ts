@@ -126,6 +126,26 @@ export function parseSummary(value: unknown): string | undefined {
   return s.includes(COUNT_PLACEHOLDER) || new RegExp(SUM_PLACEHOLDER.source).test(s) ? s : undefined;
 }
 
+/** Words that only (or overwhelmingly) occur in German requests. */
+const GERMAN_HINT =
+  /[äöüß]|\b(?:der|die|das|und|im|von|mit|für|wie|viele|alle|welche|zeig|zeige|mir|ist|sind|haben|hat|offene|nach|bis|seit|heute|gestern|monat|jahr)\b/i;
+
+/** The planner's locale, else a German/English guess from the request. */
+export function summaryLanguage(locale: string | undefined, question?: string): 'de' | 'en' {
+  if (locale !== undefined) return locale.toLowerCase().startsWith('de') ? 'de' : 'en';
+  return question !== undefined && GERMAN_HINT.test(question) ? 'de' : 'en';
+}
+
+/**
+ * The deterministic summary for an otherwise valid plan whose planner
+ * emitted none (or one without a placeholder): states only the row count, so
+ * it is correct for every result. A missing sentence is no reason to discard
+ * a valid query — the rows ARE the answer.
+ */
+export function defaultSummary(locale: string | undefined, question?: string): string {
+  return summaryLanguage(locale, question) === 'de' ? '{count} Einträge gefunden.' : '{count} results found.';
+}
+
 export type RenderedSummary = { ok: true; text: string } | { ok: false; detail: string };
 
 /** A canonical, runtime-supported BCP-47 tag, else undefined. */

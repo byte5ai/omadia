@@ -24,7 +24,7 @@ import type {
   PromptPiiDetector,
 } from '@omadia/plugin-api';
 
-import { withC1Priority } from './c1Detector.js';
+import { withC1Priority, type C1Priority } from './c1Detector.js';
 import { maskPrompt } from './promptMask.js';
 import { findResidualRealValues, resolvePromptPseudonyms } from './promptSurrogates.js';
 import type { PseudonymMap } from './v4/types.js';
@@ -36,6 +36,9 @@ export interface StoredTextScopeDeps {
   readonly detectors: readonly PromptPiiDetector[];
   /** The optional C1 detector; its failure degrades, it never blocks. */
   readonly c1Detector?: PromptPiiDetector;
+  /** Sidecar lane of the C1 calls. Default `background` (job work); a mask
+   *  a turn waits on passes `interactive`. */
+  readonly priority?: C1Priority;
 }
 
 function messageOf(err: unknown): string {
@@ -45,9 +48,12 @@ function messageOf(err: unknown): string {
 export function createStoredTextScope(deps: StoredTextScopeDeps): PrivacyStoredTextScope {
   let map: PseudonymMap | undefined;
   let c1Failed = false;
-  // Job work, off any turn's critical path: the sidecar's background lane.
+  // Job work runs off any turn's critical path (the sidecar's background
+  // lane) unless the caller says a turn is waiting on it.
   const c1Detector =
-    deps.c1Detector === undefined ? undefined : withC1Priority(deps.c1Detector, 'background');
+    deps.c1Detector === undefined
+      ? undefined
+      : withC1Priority(deps.c1Detector, deps.priority ?? 'background');
   // A mask call reads the run's map, awaits its detectors and writes the
   // extended map back; calls of one run therefore go one at a time.
   let tail: Promise<unknown> = Promise.resolve();
