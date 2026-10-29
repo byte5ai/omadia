@@ -19,9 +19,9 @@ import { validatePlannedQuery, type PlannedQuery } from './triage.js';
  *
  *   - STORE: after a fast-path hit of an LLM-planned turn WITHOUT a previous
  *     query (self-contained), the question shape + the literal-stripped plan
- *     (answerCacheShape.ts) — only when the question's remaining words, the
- *     summary and the labels carry NO personal data by the Privacy Shield's
- *     own verdict (stored-text scope, canary-checked like a learned example;
+ *     (answerCacheShape.ts) — only when the question's remaining words and
+ *     the summary carry NO personal data by the Privacy Shield's own verdict
+ *     (the labels: no e-mail / long digit run) (stored-text scope, canary-checked like a learned example;
  *     failure-closed: no shield → nothing stored). Tenant-wide, persisted
  *     next to the learned plans (`fastpath/answer-cache.json`), bounded LRU.
  *   - LOOKUP: before the router/planner (and before any masking — a hit
@@ -193,7 +193,7 @@ const LONG_NUMBER = /\b\d{5,}\b/;
 
 /**
  * Privacy gate of a new entry: the question with its slot spans replaced by
- * neutral sentinels, the summary and the labels must contain NO personal
+ * neutral sentinels and the summary must contain NO personal
  * data at all (the shield finds no span; no e-mail, no long digit run) —
  * stricter than a learned example, which keeps typed placeholders: a cache
  * key must match deterministically, so anything personal is "do not cache".
@@ -351,10 +351,13 @@ export function createAnswerCache(opts: {
     const shape = built.shape;
     const checked = questionWithoutSlots(req.question, shape);
     if (checked === undefined) return skip('round-trip');
-    const refused = await privacyClean(
-      [checked, shape.plan.summary, ...Object.values(shape.plan.labels)].map(placeholdersAsSentinels),
-      req.openScope,
-    );
+    // Column headers get the pattern checks only: C1 tags a lone role noun
+    // ("Kunde") as a person (live), and a header carries no user value the
+    // question check does not already cover — echoed slot values are
+    // placeholders, a name in the question's fixed text refuses it there.
+    const labels = Object.values(shape.plan.labels);
+    if (labels.some((l) => EMAIL_IN_TEXT.test(l) || LONG_NUMBER.test(l))) return skip('privacy:personal-data');
+    const refused = await privacyClean([checked, shape.plan.summary].map(placeholdersAsSentinels), req.openScope);
     if (refused !== undefined) return skip(`privacy:${refused}`);
     await (loading ??= readFromMemory());
     const t = now();

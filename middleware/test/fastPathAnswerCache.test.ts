@@ -602,3 +602,32 @@ describe('answer cache — a span that only masked a slot sentinel is no persona
     assert.equal(r.stored, false);
   });
 });
+
+describe('answer cache — column headers are not run through the person detector', () => {
+  it('a role-noun header C1 tags as a person ("Kunde", live) does not block the entry', async () => {
+    const cache = createAnswerCache({ log: () => {} });
+    const q = 'Offene Posten von Müller';
+    const plan = planned(q);
+    const withRoleHeader = { ...plan, labels: { ...plan.labels, partner: 'Kunde' } };
+    const r = await cache.remember({
+      question: q,
+      plan: withRoleHeader,
+      previous: false,
+      openScope: () => guard({ personIn: 'Kunde' }).openStoredTextScope!({ job: 'test' }),
+    });
+    assert.ok(r.stored, r.reason ?? 'stored');
+  });
+
+  it('an e-mail in a header still blocks it', async () => {
+    const cache = createAnswerCache({ log: () => {} });
+    const q = 'Offene Posten von Müller';
+    const plan = planned(q);
+    const r = await cache.remember({
+      question: q,
+      plan: { ...plan, labels: { ...plan.labels, partner: 'a.b@example.com' } },
+      previous: false,
+      openScope: () => guard().openStoredTextScope!({ job: 'test' }),
+    });
+    assert.equal(r.stored, false);
+  });
+});
