@@ -50,6 +50,10 @@ describe('resolveScopedBundle', () => {
   it('registry, a slug → that orchestrator', () => {
     assert.equal(resolveScopedBundle(reg, legacy, 'hr')?.agent.offeredToolNames?.().has('hr_tool'), true);
   });
+  it('an operator Agent named "default" wins over the standard one', () => {
+    const r = registry('std', { std: agent('std', calls), default: agent('own', calls) });
+    assert.equal(resolveScopedBundle(r, legacy, 'default')?.agent.offeredToolNames?.().has('own_tool'), true);
+  });
   it('an unknown slug → undefined, never the legacy bundle', () => {
     assert.equal(resolveScopedBundle(reg, legacy, 'deleted'), undefined);
   });

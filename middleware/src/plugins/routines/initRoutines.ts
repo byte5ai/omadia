@@ -49,6 +49,8 @@ import { routineTurnContext } from './routineTurnContext.js';
 export interface InitRoutinesOptions {
   pool: Pool;
   scheduler: JobScheduler;
+  /** #1598 — see `ManageRoutineToolOptions.requiresAgentSlug`. */
+  requiresAgentSlug?: () => boolean;
   /**
    * Live resolver for the real `Orchestrator` (typically
    * `() => chatAgentBundle?.raw` over the service registry). Resolved per
@@ -130,6 +132,7 @@ export async function initRoutines(
 
   const tool = new ManageRoutineTool({
     runner,
+    ...(opts.requiresAgentSlug ? { requiresAgentSlug: opts.requiresAgentSlug } : {}),
     // #1598 — plus the orchestrator handling the turn, so the routine runs
     // with that orchestrator's plugin grants.
     resolveContext: () => {

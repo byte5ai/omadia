@@ -191,6 +191,33 @@ describe('ManageRoutineTool — create', () => {
   });
 });
 
+describe('#1598 — a routine records the orchestrator that runs it', () => {
+  const args = { action: 'create' as const, name: 'demo', cron: '0 9 * * 1', prompt: 'ping' };
+
+  it('stores the turn\'s orchestrator slug on the routine', async () => {
+    const { runner, calls } = stubRunner();
+    const tool = new ManageRoutineTool({
+      runner,
+      resolveContext: () => ({ ...ctx, agentSlug: 'hr' }),
+      requiresAgentSlug: () => true,
+    });
+    await tool.handle(args);
+    assert.equal((calls[0]!.args[0] as { agentSlug?: string }).agentSlug, 'hr');
+  });
+
+  it('refuses a create whose orchestrator is unknown when one is required', async () => {
+    const { runner, calls } = stubRunner();
+    const tool = new ManageRoutineTool({
+      runner,
+      resolveContext: () => ctx,
+      requiresAgentSlug: () => true,
+    });
+    const result = await tool.handle(args);
+    assert.match(result, /orchestrator that would run it is unknown/);
+    assert.equal(calls.length, 0);
+  });
+});
+
 describe('ManageRoutineTool — create with targetEmail (cold-start outreach)', () => {
   const baseArgs = {
     action: 'create' as const,

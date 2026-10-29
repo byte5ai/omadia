@@ -12,8 +12,8 @@ export interface ScopedRegistryView<B> {
  * The legacy `chatAgent@1` bundle carries no per-Agent plugin grants, so it
  * holds every plugin's tools. Without a registry (Postgres-less boot) it IS
  * the deployment's orchestrator and answers. With a registry, `slug` names the
- * orchestrator (a routine's creator); `null` and `'default'` mean the standard
- * (fallback) orchestrator. `undefined` when that orchestrator does not exist —
+ * orchestrator (a routine's creator); `null` means the standard (fallback)
+ * orchestrator, and so does `'default'` unless an Agent has that slug. `undefined` when that orchestrator does not exist —
  * never the legacy bundle.
  */
 export function resolveScopedBundle<B>(
@@ -22,8 +22,14 @@ export function resolveScopedBundle<B>(
   slug: string | null = null,
 ): B | undefined {
   if (!registry) return legacy;
-  const target = slug !== null && slug !== 'default' ? slug : registry.slugForFallback();
-  return target ? registry.get(target)?.built.bundle : undefined;
+  if (slug !== null) {
+    const own = registry.get(slug)?.built.bundle;
+    // `'default'` is the legacy bundle's own slug (routines created on it); an
+    // operator-created Agent that happens to be named `default` wins.
+    if (own !== undefined || slug !== 'default') return own;
+  }
+  const fallback = registry.slugForFallback();
+  return fallback ? registry.get(fallback)?.built.bundle : undefined;
 }
 
 export const NO_ORCHESTRATOR_MESSAGE = 'no orchestrator is assigned to this conversation';
@@ -38,10 +44,12 @@ export const NO_ORCHESTRATOR_MESSAGE = 'no orchestrator is assigned to this conv
 export function createScopedChatAgent(
   legacy: ChatAgent,
   getRegistry: () => ScopedRegistryView<{ readonly agent: ChatAgent }> | undefined,
-): ChatAgent {
+): ChatAgent & { readonly legacy: ChatAgent } {
   const target = (): ChatAgent | undefined =>
     resolveScopedBundle(getRegistry(), { agent: legacy })?.agent;
   return {
+    /** The wrapped legacy agent — for introspection (tests), never for turns. */
+    legacy,
     chat(input) {
       const agent = target();
       return agent ? agent.chat(input) : Promise.reject(new Error(NO_ORCHESTRATOR_MESSAGE));

@@ -89,8 +89,10 @@ changelog.
   ("no orchestrator is assigned to this conversation"). channel-teams 0.32.0
   does the same when its resolver rejects or throws.
 - **Smaller grant gaps (#1598).** Sub-agent `native` grants, deferred
-  sub-agent tools (`orchestratorScope`) and public MCP dispatch follow plugin
-  assignment. `memory` on a turn where the binder denied it is refused, never
+  sub-agent tools (`orchestratorScope`), public MCP dispatch and canvas
+  deterministic actions (native tools and `agentToolInvoker`) follow plugin
+  assignment. `manage_routine create` is refused when the turn's orchestrator
+  is unknown. The SDK helper `resolveChatAgentForChannel` refuses on a reject. `memory` on a turn where the binder denied it is refused, never
   routed to the provider's unscoped store.
 - **Upgrade note:** with a registry but no standard orchestrator set, canvas
   turns, unbound channel keys and routines created before migration 0005 are

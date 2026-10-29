@@ -1206,6 +1206,19 @@ turn on the grant-less legacy bundle any more:
   the first one to hydrate gets the deferred twin; the other keeps the blocking
   `ask_<slug>` tool. `LONG_RUNNING_SUBAGENT_TOOLS` is empty by default.
 - Public MCP dispatch checks the bound agent's plugin assignment.
+- Canvas deterministic actions (LLM-free tool runs) only run a native tool the
+  canvas's orchestrator is offered, or the ui-orchestrator's own canvas tool.
+  The kernel's `agentToolInvoker` only runs agent-plugin tools of plugins
+  assigned to the standard orchestrator.
+- `manage_routine create` is refused when a registry exists but the turn's
+  orchestrator is unknown (e.g. a subscription-CLI turn), instead of quietly
+  running the routine on another orchestrator. An operator Agent named
+  `default` keeps its own routines.
+- The channel SDK helper `resolveChatAgentForChannel` returns `undefined` on a
+  resolver reject instead of the shared singleton.
+- Known limit: a deferred sub-agent tool keeps the handler built at first
+  hydration until restart, so a plugin revoked from its sub-agent stays
+  reachable through it until then (only with `LONG_RUNNING_SUBAGENT_TOOLS`).
 - `memory` on a turn where the binder denied memory (`forAudience` failed,
   `memoryDenied`) is refused rather than routed to the provider's unscoped
   handler.

@@ -1450,13 +1450,32 @@ async function main(): Promise<void> {
   // for tools whose raw UploadedToolkit entry carries `runStream()`. This
   // deliberately does NOT add these tools to the main orchestrator's offered-
   // tool list, so agent isolation is preserved.
+  //
+  // #1598 — the canvas runs on the standard orchestrator (chatAgent@1), so a
+  // tool reached here must belong to a plugin assigned to it. Without a
+  // registry (Postgres-less boot) there is no assignment to check.
+  const standardOrchestratorGrants = (toolId: string): boolean => {
+    const owner = dynamicAgentRuntime.ownerOfAgentTool(toolId);
+    if (owner === undefined) return true; // nothing to run — invoke answers undefined
+    const registry =
+      serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry');
+    if (!registry) return true;
+    const slug = registry.slugForFallback();
+    const standard = slug ? registry.get(slug)?.built.orchestrator : undefined;
+    return standard?.isToolGranted(toolId, owner) === true;
+  };
   serviceRegistry.provide('agentToolInvoker', {
     invoke: (toolId: string, input: unknown): Promise<string | undefined> =>
-      dynamicAgentRuntime.invokeAgentTool(toolId, input),
+      standardOrchestratorGrants(toolId)
+        ? dynamicAgentRuntime.invokeAgentTool(toolId, input)
+        : Promise.resolve(undefined),
     hasStream: (toolId: string): boolean =>
+      standardOrchestratorGrants(toolId) &&
       dynamicAgentRuntime.hasStreamingTool(toolId),
     invokeStream: (toolId: string, input: unknown): AsyncGenerator<string> =>
-      dynamicAgentRuntime.invokeAgentToolStream(toolId, input),
+      standardOrchestratorGrants(toolId)
+        ? dynamicAgentRuntime.invokeAgentToolStream(toolId, input)
+        : (async function* () {})(),
   });
 
   // Runtime for `kind: tool` / `kind: extension` plugins. These don't expose
@@ -3317,6 +3336,8 @@ async function main(): Promise<void> {
       scheduler: jobScheduler,
       // #1598 — the routine's own orchestrator, with its plugin grants.
       getOrchestrator: (agentSlug) => getScopedChatAgentBundle(agentSlug)?.raw,
+      requiresAgentSlug: () =>
+        serviceRegistry.get('orchestratorRegistry') !== undefined,
       registerNativeTool: (name, handler, options) =>
         nativeToolRegistry.register(name, {
           handler,
