@@ -56,6 +56,7 @@ export const PLAN_EXAMPLE = {
 export const PLANNER_SYSTEM = `You are the Omadia fast-path planner. Plan the ONE read query that answers the user's turn by calling ${PLANNER_TOOL} — never answer in text.
 - "input": the EXACT tool input per the TOOL spec. "map": {fieldKey: record attribute} with short snake_case fieldKeys (at most ${MAX_COLUMNS}); a value may be a dot-path into the record (e.g. "partner_id.1"). "rowKey": an attribute with a stable id; "itemsPath": dot-path to the record array.
 - "filter" only for what the tool cannot filter itself (e.g. a birthday MONTH): [{"field","datePart":"year"|"month"|"day","eq":<integer>} | {"field","eq":<string|number|boolean>}].
+- Top N ("die 5 größten …", "top 10"): order the query (odoo_query: input "order"; any other tool: "sort": [{"field","dir":"asc"|"desc"}]) AND set "take": N. Never put N into the tool's limit — it is fixed, so the rows would not be cut.
 - Relative periods: a whole-string "{today}" / "{today-30d}" / "{today+7d}" — never the current date literally. A {sum:…} over money needs "currency_id" in the query's fields; write its currency as the token {currency} right after the total — never a symbol or code of your own.
 - "labels": {fieldKey: column header in the user's language}. "summary": ONE plain sentence in the user's language with {count} (= number of rows) and/or {sum:<fieldKey>} (= total of a NUMERIC column); it states ONLY what the query guarantees, never invented figures. "locale": BCP-47 of the user's language (e.g. "de-DE").
 - A follow-up may adapt the PREVIOUS QUERY: keep tool, input structure and map, change only values. Prefer adapting a VALIDATED EXAMPLE with the same intent; replace every {{text_N}}/{{email_N}}/{{id_N}} placeholder with the user's own value — a plan that still contains one is discarded.
@@ -75,6 +76,8 @@ export function plannerTool(tools: readonly string[]): FastLlmTool {
         input: { type: 'object', description: 'the EXACT tool input' },
         map: { ...stringMap, description: 'fieldKey → record attribute (dot-path allowed)' },
         filter: { type: 'array', items: { type: 'object' } },
+        sort: { type: 'array', items: { type: 'object' }, description: '[{field, dir: asc|desc}] — client-side order of the rows' },
+        take: { type: 'integer', description: 'top N: keep only the first N rows (after order/sort)' },
         rowKey: { type: 'string' },
         itemsPath: { type: 'string', description: 'dot-path to the record array — REQUIRED for a [generic] tool' },
         labels: { ...stringMap, description: 'fieldKey → column header in the user language' },
@@ -136,12 +139,14 @@ export function parsePlan(
   value: Record<string, unknown>,
   opts: { allowedTools: ReadonlySet<string>; question?: string; itemsPathRequired?: ReadonlySet<string> },
 ): { ok: true; plan: PlannedQuery } | { ok: false; reason: string } {
-  const { tool, input, map, filter, rowKey, itemsPath, ...rest } = value;
+  const { tool, input, map, filter, sort, take, rowKey, itemsPath, ...rest } = value;
   const fetch = {
     tool,
     input,
     map,
     ...(filter !== undefined ? { filter } : {}),
+    ...(sort !== undefined ? { sort } : {}),
+    ...(take !== undefined ? { take } : {}),
     ...(rowKey !== undefined ? { rowKey } : {}),
     ...(itemsPath !== undefined ? { itemsPath } : {}),
   };
