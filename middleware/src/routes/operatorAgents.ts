@@ -34,6 +34,7 @@ import {
 import type { Plugin, PluginSetupField } from '../api/admin-v1.js';
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
+import { attachablePluginIds } from '../plugins/defaultOrchestratorAttach.js';
 import {
   buildBotHandle,
   TEAMS_CHAT_INSTALL_MIN_CONNECTOR_VERSION,
@@ -4142,10 +4143,17 @@ export function createOperatorAgentsRouter(
       // installedRegistry treats `errored` as un-installable until the
       // operator fixes the manifest). Include `inactive` so a plugin that
       // briefly stopped activating still ends up attached.
-      const pluginIds = installed
+      // #1601 — reference-only plugins never run as an agent and the Plugins
+      // tab does not list them; attaching one shows it as both "active" and
+      // "no longer installed", and the next save drops it again.
+      const installedIds = installed
         .list()
         .filter((e) => e.status !== 'errored')
         .map((e) => e.id);
+      const catalog = options.getPluginCatalog?.();
+      const pluginIds = catalog
+        ? attachablePluginIds(installedIds, catalog)
+        : installedIds;
       const attached = await attachAllPlugins(
         live.store,
         fallback.id,

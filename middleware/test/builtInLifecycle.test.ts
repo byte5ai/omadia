@@ -24,6 +24,7 @@ import {
 } from '../src/plugins/builtInOptOuts.js';
 import { BuiltInPackageStore } from '../src/plugins/builtInPackageStore.js';
 import {
+  attachablePluginIds,
   createPendingDefaultAttach,
   withInstalledParents,
 } from '../src/plugins/defaultOrchestratorAttach.js';
@@ -301,6 +302,24 @@ describe('#1481 — an uninstalled built-in stays uninstalled', () => {
 });
 
 describe('#1491 / #1498 — attach to the default orchestrator', () => {
+  it('#1601 — never attaches a reference-only plugin', () => {
+    const plugins: Record<string, { is_reference_only?: boolean }> = {
+      '@omadia/agent-reference-maximum': { is_reference_only: true },
+      '@omadia/integration-odoo': {},
+    };
+    const catalog = {
+      get: (id: string) => (plugins[id] ? { plugin: plugins[id] } : undefined),
+    } as unknown as Pick<PluginCatalog, 'get'>;
+
+    assert.deepEqual(
+      attachablePluginIds(
+        ['@omadia/agent-reference-maximum', '@omadia/integration-odoo', '@test/unknown'],
+        catalog,
+      ),
+      ['@omadia/integration-odoo', '@test/unknown'],
+    );
+  });
+
   it('expands installed depends_on parents, parents first', async () => {
     await withTmpDir(async (dir) => {
       writeManifest(join(dir, 'integration'), '@test/integration', '1.0.0');

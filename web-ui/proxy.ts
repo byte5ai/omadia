@@ -89,9 +89,10 @@ function isPublicPath(pathname: string): boolean {
   // Plugin-served UI surfaces (Teams Tabs iframe these from the bot-app
   // shell; there is no omadia_session cookie in that context, only a
   // Teams SSO token in the iframe runtime). The next.config rewrite
-  // forwards `/p/:path*` to middleware where the plugin handler runs
-  // its own auth strategy. Bouncing to /login here would render the
-  // operator login form inside the Tab iframe.
+  // forwards `/p/:path*` to middleware, which enforces the session on
+  // every `auth: 'session'` plugin route (#1596) and answers 401 JSON.
+  // Bouncing to /login here would render the operator login form inside
+  // the Tab iframe.
   if (pathname.startsWith('/p/')) return true;
   return false;
 }
