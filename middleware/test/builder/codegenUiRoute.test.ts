@@ -120,6 +120,17 @@ describe('buildUiRouteArtifacts — library mode', () => {
     assert.ok(artifacts.init.includes("title: \"Inbox\""));
   });
 
+  it('#1596 — mounts ui_routes with an explicit session gate, never public', () => {
+    const spec = specWithRoutes([libraryRoute]);
+    const artifacts = buildUiRouteArtifacts(spec, spec.slots);
+    const register = artifacts.init
+      .split('\n')
+      .find((l) => l.includes('ctx.routes.register('));
+    assert.ok(register, 'routes.register line emitted');
+    assert.match(register, /\{ auth: 'session' \}\)/);
+    assert.doesNotMatch(artifacts.init, /auth: '(custom|public)'/);
+  });
+
   it('B.12-fix — library router file references opts so noUnusedParameters passes', () => {
     // Test BOTH the with-data_binding and without-data_binding shapes:
     // before the fix, the no-binding shape left `opts` untouched.

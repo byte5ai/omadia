@@ -304,6 +304,21 @@ describe('agentSpec', () => {
       assert.equal(spec.permissions?.llm?.max_tokens_per_call, 1024);
     });
 
+    it('#1596 — accepts permissions.public_paths with the kernel syntax gate', () => {
+      const spec = parseAgentSpec({
+        ...validBase,
+        permissions: { public_paths: ['/api/plugins/acme/webhook'] },
+      });
+      assert.deepEqual(spec.permissions?.public_paths, ['/api/plugins/acme/webhook']);
+      for (const bad of ['/p/de-byte5-agent-x', '/p/x/absences', '/api', '/api/plugins/*', '/x/../y', '/a/b?c=1', 'api/x/y', '/a/%62']) {
+        assert.throws(
+          () => parseAgentSpec({ ...validBase, permissions: { public_paths: [bad] } }),
+          /public_paths/,
+          `expected '${bad}' to be rejected`,
+        );
+      }
+    });
+
     it('permissions.subAgents.calls accepts both ID formats (mirrors depends_on)', () => {
       const spec = parseAgentSpec({
         ...validBase,

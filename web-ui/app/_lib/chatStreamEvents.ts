@@ -149,6 +149,10 @@ export type ChatStreamEvent =
       pendingMcpInput?: PendingMcpInput;
       followUpOptions?: FollowUpOption[];
       privacyReceipt?: PrivacyReceipt;
+      /** #1107 — the receipt store key of this turn's receipt (the turn's
+       *  own id, not the session-log `turnId`). Present only when a receipt
+       *  row was written for it. */
+      receiptId?: string;
       maskedValues?: readonly string[];
       /** #332 Layer 1 (gap-closure) — see `Message.agentsConsulted`. */
       agentsConsulted?: AgentConsultation[];
@@ -454,6 +458,7 @@ function foldIntoMessage(m: Message, event: ChatStreamEvent): Message {
           ? { followUpOptions: event.followUpOptions }
           : {}),
         ...(event.privacyReceipt ? { privacyReceipt: event.privacyReceipt } : {}),
+        ...(event.receiptId ? { receiptId: event.receiptId } : {}),
         ...(event.maskedValues && event.maskedValues.length > 0
           ? { maskedValues: event.maskedValues }
           : {}),

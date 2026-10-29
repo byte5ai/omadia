@@ -9,8 +9,8 @@ import {
 } from '../platform/pluginHandoffPlan.js';
 import { eventEmitIds } from '../platform/eventCatalogRegistry.js';
 import type { PluginRouteRegistry } from '../platform/pluginRouteRegistry.js';
-import { PublicPathClaimError } from '../platform/publicPathGrants.js';
 import { claimDeclaredPublicPaths } from '../platform/publicPathClaim.js';
+import { PublicPathClaimError } from '../platform/publicPathGrants.js';
 import type { PublicPathGrantRegistry } from '../platform/publicPathGrants.js';
 import type { PublicPathGrantStore } from '../platform/publicPathGrantStore.js';
 import type { NotificationRouter } from '../platform/notificationRouter.js';
@@ -608,22 +608,14 @@ export class ToolPluginRuntime {
       const declared = catalogEntry.plugin.permissions_summary?.public_paths ?? [];
       if (declared.length > 0) {
         try {
-          await claimDeclaredPublicPaths(
-            agentId,
-            declared,
-            {
-              publicPathGrants: this.deps.publicPathGrants,
-              ...(this.deps.publicPathGrantStore
-                ? { publicPathGrantStore: this.deps.publicPathGrantStore }
-                : {}),
-              ...(this.deps.corePublicPaths
-                ? { corePublicPaths: this.deps.corePublicPaths }
-                : {}),
-              pluginRouteRegistry: this.deps.pluginRouteRegistry,
-            },
+          await claimDeclaredPublicPaths(agentId, declared, {
+            grants: this.deps.publicPathGrants,
+            store: this.deps.publicPathGrantStore,
+            corePublicPaths: this.deps.corePublicPaths,
+            routeRegistry: this.deps.pluginRouteRegistry,
             log,
-            'tool-runtime',
-          );
+            tag: 'tool-runtime',
+          });
         } catch (err) {
           this.deps.publicPathGrants.releaseBySource(agentId);
           this.deps.pluginRouteRegistry.disposeBySource(agentId);

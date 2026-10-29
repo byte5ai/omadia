@@ -50,9 +50,9 @@ export interface ChannelRegistryDeps {
   serviceRegistry: ServiceRegistry;
   nativeToolRegistry: NativeToolRegistry;
   pluginRouteRegistry: PluginRouteRegistry;
-  /** #1596 follow-up — claim declared `permissions.public_paths` like the tool
-   *  runtime does, so a channel's granted `auth: 'custom'` route (Teams tab
-   *  pages) is served. Optional; absent ⇒ nothing is claimed (fail-closed). */
+  /** Epic #470 C4 / H1 — claims for a channel's `permissions.public_paths`
+   *  (S3-G: Teams' Hub/Tab-Config under `/p/channel-teams`). Optional; absent
+   *  means nothing is claimed and every route stays behind the session gate. */
   publicPathGrants?: PublicPathGrantRegistry;
   publicPathGrantStore?: PublicPathGrantStore;
   corePublicPaths?: readonly RegExp[];
@@ -178,37 +178,33 @@ export class DefaultChannelRegistry implements ChannelRegistry {
     });
 
     const handle = await impl.activate(ctx, this.deps.coreApi);
-    this.handles.set(agentId, handle);
-    try {
-      await claimDeclaredPublicPaths(
-        agentId,
-        catalogEntry.plugin.permissions_summary?.public_paths ?? [],
-        {
-          ...(this.deps.publicPathGrants
-            ? { publicPathGrants: this.deps.publicPathGrants }
-            : {}),
-          ...(this.deps.publicPathGrantStore
-            ? { publicPathGrantStore: this.deps.publicPathGrantStore }
-            : {}),
-          ...(this.deps.corePublicPaths
-            ? { corePublicPaths: this.deps.corePublicPaths }
-            : {}),
-          pluginRouteRegistry: this.deps.pluginRouteRegistry,
-        },
-        (msg) => console.log(msg),
-        'channels',
-      );
-    } catch (err) {
-      // Same rollback as the tool runtime: a channel serving a prefix another
-      // plugin owns is worse than a channel that refuses to start. The full
-      // `deactivate()` (jobs, senders, cached module, status) plus the routes.
-      this.deps.pluginRouteRegistry.disposeBySource(agentId);
-      await this.deactivate(agentId);
-      throw new Error(
-        `channels: ${agentId} cannot activate — ${err instanceof Error ? err.message : String(err)}`,
-        { cause: err },
-      );
+    // S3-G — claim the declared public paths AFTER activate(), exactly like the
+    // tool runtime; without the claim a granted `auth:'custom'` route is never
+    // served (the public-path mount only dispatches to claimed prefixes).
+    const grants = this.deps.publicPathGrants;
+    if (grants) {
+      try {
+        await claimDeclaredPublicPaths(
+          agentId,
+          catalogEntry.plugin.permissions_summary?.public_paths ?? [],
+          {
+            grants,
+            store: this.deps.publicPathGrantStore,
+            corePublicPaths: this.deps.corePublicPaths,
+            routeRegistry: this.deps.pluginRouteRegistry,
+            log: (m) => console.log(m),
+            tag: 'channels',
+          },
+        );
+      } catch (err) {
+        grants.releaseBySource(agentId);
+        this.deps.pluginRouteRegistry.disposeBySource(agentId);
+        this.deps.uiRouteCatalog.disposeBySource(agentId);
+        await Promise.resolve(handle.close()).catch(() => undefined);
+        throw err;
+      }
     }
+    this.handles.set(agentId, handle);
     // Register declared event-emit ids (raw manifest `capabilities[].event_emit`) so the channel's
     // `ctx.events.emit(...)` passes the deny-by-default catalog gate and the events surface in the
     // Conductor trigger picker. No-op when the manifest declares none.
@@ -254,9 +250,10 @@ export class DefaultChannelRegistry implements ChannelRegistry {
     // would otherwise outlive its plugin in the catalogue and surface
     // a stale entry in channel-teams' Hub + Tab-Config dropdown.
     this.deps.uiRouteCatalog.disposeBySource(agentId);
-    this.deps.publicPathGrants?.releaseBySource(agentId);
     this.deps.pluginStatusRegistry?.clear(agentId);
     this.deps.eventCatalogRegistry?.unregister(agentId);
+    // S3-G — ownership goes with the plugin; re-activation claims again.
+    this.deps.publicPathGrants?.releaseBySource(agentId);
     if (!handle) return;
     this.handles.delete(agentId);
     try {

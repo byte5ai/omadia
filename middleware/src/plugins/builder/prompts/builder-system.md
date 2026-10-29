@@ -432,6 +432,30 @@ erwarteten dynamischen ui-route-Slots als separate Sektion „Dynamic
 ui_routes Slots" — solange dort ✗ missing steht, wirft codegen einen
 `spec_validation`-Error.
 
+### Auth: UI-Routes brauchen eine omadia-Session (#1596)
+
+Codegen mountet jede `ui_routes[i]` mit `{ auth: 'session' }`. Die Seiten
+zeigen Tool-Daten (z.B. Mitarbeiter, Abwesenheiten) und antworten ohne
+Login mit **401** — auch im Teams-Tab, wenn dort keine omadia-Session
+besteht. Das ist Absicht: **nie** eine UI-Route öffentlich machen, um
+einen 401 im Teams-Tab zu „reparieren“.
+
+Ohne Session erreichbar sein müssen nur Routen, die sich **selbst**
+authentifizieren — Webhooks (HMAC über `req.rawBody`), OAuth-Callbacks
+(`state` prüfen), signierte Download-Links. Dafür:
+
+1. `spec.permissions.public_paths` deklarieren, z.B.
+   `['/api/plugins/<slug>/webhook']` (≥ 2 Segmente, keine Wildcards, kein
+   `/api/v1/admin` o.ä.).
+2. Im `activate-body`:
+   `ctx.routes.register('/api/plugins/<slug>/webhook', router, { auth: 'custom', body: 'raw' })`
+   — das Prefix muss **innerhalb** eines deklarierten Pfads liegen, sonst
+   wirft `register()` beim Aktivieren.
+3. Jeden Request im Router selbst prüfen; ohne gültige Signatur → 401.
+
+Ausgeliefert wird der Pfad erst, wenn der Operator ihn nach dem Install
+freigibt (Plugin → „Freigaben“).
+
 ## Plattform-Accessoren auf `ctx`
 
 Über die Standard-Surface (`secrets`, `config`, `services`, `routes`, `uiRoutes`)
