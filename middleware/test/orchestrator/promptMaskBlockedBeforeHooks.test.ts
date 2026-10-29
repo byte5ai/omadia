@@ -128,7 +128,7 @@ describe('#1547 — a blocked prompt mask fires no hook', () => {
     }
 
     // Delivered in the turn's language, with the AI disclosure folded in.
-    assert.ok(answer?.startsWith(PROMPT_MASK_BLOCKED_ANSWER.split(' / ')[0]!), answer);
+    assert.ok(answer?.startsWith(PROMPT_MASK_BLOCKED_ANSWER.split(' / ')[0]!), String(answer));
     assert.deepEqual(gate, [], 'the planning gate must not see the message');
     assert.ok(!hooks.fired.includes('onBeforeTurn'), hooks.fired.join(','));
     assert.equal(requests.length, 0, 'no model request');
