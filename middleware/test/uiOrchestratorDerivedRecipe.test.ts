@@ -354,12 +354,15 @@ describe('agent dataset publish → derived recipe', () => {
       .find((p) => p.path.endsWith('/columns'));
     assert.deepEqual(
       (columnsPatch?.value as Array<{ label: string }> | undefined)?.map((c) => c.label),
-      ['Id', 'Name', 'Geburtstag'],
+      ['ID', 'Name', 'Geburtstag'],
     );
-    // a ranking is not learned until learned plans carry sort / take
+    // a ranking is learned WITH its post-fetch order and top-N
     await new Promise((r) => setTimeout(r, 10));
-    assert.equal(h.candidates.length, 0);
-    assert.ok(h.logs.some((l) => l.includes('reason=sorted-recipe')), h.logs.join('\n'));
+    assert.ok(!h.logs.some((l) => l.includes('reason=sorted-recipe')), h.logs.join('\n'));
+    const c = h.candidates.at(-1);
+    assert.equal(c?.tool, 'odoo_query');
+    assert.deepEqual(c?.sort, [{ field: 'birthday', dir: 'asc' }]);
+    assert.equal(c?.take, 1);
 
     const before = h.baseInputs.length;
     const refresh = await collect(
