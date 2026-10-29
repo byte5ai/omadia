@@ -2,6 +2,10 @@ import { z } from 'zod';
 
 import { PLUGIN_DOMAIN_REGEX } from '@omadia/plugin-api';
 
+import {
+  MAX_DECLARED_PUBLIC_PATHS,
+  publicPathEntrySchema,
+} from '../../platform/publicPathGrants.js';
 import type { JsonSchema } from '../zodToJsonSchema.js';
 import { isReservedToolId } from '../reservedNames.js';
 import { UiRouteSchema } from './uiRouteSchema.js';
@@ -293,6 +297,23 @@ export const PermissionsSchema = z
     llm: LlmPermissionSchema.optional(),
     /** Epic #459 W7 (issue #458) — declaring this enables `ctx.mcp`. */
     mcp: McpPermissionSchema.optional(),
+    /** #1596 follow-up — URL prefixes a route registered in activate-body
+     *  with `auth: 'custom'` / `'public'` (or `body: 'raw'`) is served under
+     *  WITHOUT an omadia session: webhooks, OAuth callbacks, signed
+     *  downloads. Codegen writes them to `manifest.permissions.public_paths`;
+     *  the kernel serves a prefix only after the operator granted it, and
+     *  the route must authenticate every request itself. Never for data
+     *  routes: `spec.ui_routes` stay session-gated. Same syntax gate as the
+     *  kernel (`publicPathEntrySchema`). */
+    public_paths: z
+      .array(
+        publicPathEntrySchema.refine(
+          (p) => p !== '/p' && !p.startsWith('/p/'),
+          'must not be under /p/ — that is where ui_routes are mounted, and they stay session-gated',
+        ),
+      )
+      .max(MAX_DECLARED_PUBLIC_PATHS)
+      .optional(),
   })
   .strict();
 

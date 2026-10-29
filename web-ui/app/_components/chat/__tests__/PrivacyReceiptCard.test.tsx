@@ -565,7 +565,7 @@ describe('<PrivacyReceiptCard /> — name detector (#1562)', () => {
 describe('<PrivacyReceiptCard /> — turn id and link (#1573)', () => {
   it('shows the short turn id and links to the turn on the Receipts page', () => {
     const turnId = 'f6e8370d-1234-4abc-9def-001122334455';
-    renderWithIntl(<PrivacyReceiptCard receipt={RANKED} turnId={turnId} />, { locale: 'en' });
+    renderWithIntl(<PrivacyReceiptCard receipt={RANKED} receiptId={turnId} />, { locale: 'en' });
     expect(screen.getByText('Turn f6e8370d')).toHaveAttribute('title', turnId);
     expect(screen.getByRole('link', { name: 'View on the Receipts page' })).toHaveAttribute(
       'href',
@@ -573,7 +573,7 @@ describe('<PrivacyReceiptCard /> — turn id and link (#1573)', () => {
     );
   });
 
-  it('shows neither without a turn id (the Receipts page itself)', () => {
+  it('shows neither without a receipt id (the Receipts page itself, no row written)', () => {
     renderWithIntl(<PrivacyReceiptCard receipt={RANKED} />, { locale: 'en' });
     expect(screen.queryByRole('link', { name: 'View on the Receipts page' })).not.toBeInTheDocument();
   });

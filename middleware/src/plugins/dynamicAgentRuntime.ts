@@ -12,6 +12,9 @@ import { eventEmitIds } from '../platform/eventCatalogRegistry.js';
 import { createPluginContext } from '../platform/pluginContext.js';
 import type { OperatorAuthAccessor } from '@omadia/plugin-api';
 import type { PluginRouteRegistry } from '../platform/pluginRouteRegistry.js';
+import { claimDeclaredPublicPaths } from '../platform/publicPathClaim.js';
+import type { PublicPathGrantRegistry } from '../platform/publicPathGrants.js';
+import type { PublicPathGrantStore } from '../platform/publicPathGrantStore.js';
 import type { NotificationRouter } from '../platform/notificationRouter.js';
 import type { PluginStatusRegistry } from '../platform/pluginStatusRegistry.js';
 import type { UiRouteCatalog } from '../platform/uiRouteCatalog.js';
@@ -174,6 +177,12 @@ export interface DynamicAgentRuntimeDeps {
   /** Shared registry for plugin-contributed Express routers. Activated
    *  plugins register mounts here via `ctx.routes.register(prefix, router)`. */
   pluginRouteRegistry: PluginRouteRegistry;
+  /** Epic #470 C4 / H1 — claims for an agent's `permissions.public_paths`
+   *  (S3-G: Builder `spec.permissions.public_paths`). Optional; absent means
+   *  nothing is claimed and every route stays behind the session gate. */
+  publicPathGrants?: PublicPathGrantRegistry;
+  publicPathGrantStore?: PublicPathGrantStore;
+  corePublicPaths?: readonly RegExp[];
   notificationRouter: NotificationRouter;
   uiRouteCatalog: UiRouteCatalog;
   /** Kernel-wide background-job scheduler. Plugin-contributed jobs register
@@ -487,6 +496,33 @@ export class DynamicAgentRuntime {
       );
     }
 
+    // S3-G — claim the declared public paths AFTER activate(), exactly like the
+    // tool runtime; without the claim a granted `auth:'custom'` route (webhook,
+    // OAuth callback) is never served.
+    const grants = this.deps.publicPathGrants;
+    if (grants) {
+      try {
+        await claimDeclaredPublicPaths(
+          agentId,
+          catalogEntry.plugin.permissions_summary?.public_paths ?? [],
+          {
+            grants,
+            store: this.deps.publicPathGrantStore,
+            corePublicPaths: this.deps.corePublicPaths,
+            routeRegistry: this.deps.pluginRouteRegistry,
+            log,
+            tag: 'dynamic-runtime',
+          },
+        );
+      } catch (err) {
+        grants.releaseBySource(agentId);
+        this.deps.pluginRouteRegistry.disposeBySource(agentId);
+        this.deps.uiRouteCatalog.disposeBySource(agentId);
+        await entryCloseQuietly(handle);
+        throw err;
+      }
+    }
+
     const subAgentTools: LocalSubAgentTool[] = handle.toolkit.tools.map((t) =>
       bridgeTool(t),
     );
@@ -718,6 +754,8 @@ export class DynamicAgentRuntime {
     // v0.4.0 → v0.5.0).
     const disposedCount =
       this.deps.pluginRouteRegistry.disposeBySource(agentId);
+    // S3-G — ownership goes in the same breath as the routers.
+    this.deps.publicPathGrants?.releaseBySource(agentId);
     if (disposedCount > 0) {
       log(
         `[dynamic-runtime] disposed ${String(disposedCount)} route mount(s) for ${agentId}`,
