@@ -367,6 +367,19 @@ Authentifizierung herausdeklarieren — es kann ein Prefix nur **beantragen**
 (`permissions.public_paths` im Manifest) und braucht dafür die Zustimmung des
 Operators.
 
+**Welche Routen brauchen `'custom'`?** Nur solche, die ein Aufrufer **ohne**
+omadia-Session erreichen muss *und* die jeden Request selbst prüfen:
+Webhooks (HMAC), OAuth-Callbacks (`state`), signierte Download-Links. Im
+Builder deklarierst du den Pfad in `spec.permissions.public_paths`; Codegen
+schreibt ihn nach `manifest.permissions.public_paths`. Der Operator muss ihn
+nach dem Install freigeben, vorher antwortet der Pfad 401.
+
+**UI-Routen bleiben `'session'`.** Codegen mountet `spec.ui_routes` unter
+`/p/<slug>` ausdrücklich mit `{ auth: 'session' }`: Sie zeigen Tool-Daten. Ein
+401 im Teams-Tab ohne omadia-Session ist dort das richtige Verhalten (#1596)
+und kein Grund, die Route auf `'custom'` zu stellen. `'custom'` ohne eigene
+Prüfung in jedem Handler macht Daten öffentlich.
+
 > **Richtung der Prüfung:** Das **registrierte Prefix** muss **innerhalb** eines
 > deklarierten Pfads liegen — nicht umgekehrt. `public_paths:
 > ['/api/plugins/acme/hooks']` erlaubt `register('/api/plugins/acme/hooks', …,

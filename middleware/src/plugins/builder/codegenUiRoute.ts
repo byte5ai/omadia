@@ -143,7 +143,13 @@ export function buildUiRouteArtifacts(
       // `pluginId.replace(/^@[^/]+\\//, '')`). Without this, scoped plugin
       // ids like `@omadia/agent-foo` mount at `/p/@omadia/agent-foo/...`
       // while consumers GET `/p/agent-foo/...` → 404.
-      `  ctx.routes.register('/p/' + AGENT_ID.replace(/^@[^/]+\\//, ''), __uiRoute_${camelize(route.id)}),`,
+      // #1596: ui_routes render tool data (employee lists, absences, …), so
+      // they stay behind the omadia session — spelled out instead of relying
+      // on the default, so nobody "fixes" a 401 inside a Teams tab by
+      // flipping this to 'custom'. Routes that must be reached without a
+      // session (webhooks, OAuth callbacks) belong in activate-body with
+      // `auth: 'custom'` + `spec.permissions.public_paths`.
+      `  ctx.routes.register('/p/' + AGENT_ID.replace(/^@[^/]+\\//, ''), __uiRoute_${camelize(route.id)}, { auth: 'session' }),`,
       `);`,
       `__uiRouteDisposers.push(`,
       `  ctx.uiRoutes.register({`,

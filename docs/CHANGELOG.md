@@ -67,6 +67,28 @@ changelog.
 `@omadia/plugin-privacy-guard` 0.11.0, `@omadia/plugin-api` 1.37.0
 (`countUnresolvedSurrogates` takes an optional `options`).
 
+### Fixed — Builder: routes reached without a session, Teams tabs after #1596 (S3-G)
+
+- **Builder spec `permissions.public_paths`.** A generated plugin can now
+  declare the prefixes its `activate-body` serves with `auth: 'custom'` (or
+  `body: 'raw'`): webhooks, OAuth callbacks, signed downloads. Before, the spec
+  had no such field, so `ctx.routes.register(..., { auth: 'custom' })` threw at
+  activation. The schema reuses the kernel's `publicPathEntrySchema` (≥ 2
+  segments, no wildcards, query, percent-encoding or dot segments), and codegen
+  writes the list to `manifest.permissions.public_paths`. The prefix is still
+  served only after the operator grants it.
+- **`spec.ui_routes` stay session-gated, now explicitly.** Codegen emits
+  `{ auth: 'session' }` on the `/p/<slug>` mount. These pages render tool data,
+  so a 401 in a Teams tab without an omadia session is intended (#1596). The
+  Builder prompt and the boilerplate `CLAUDE.md` say when `'custom'` is right
+  and when it isn't.
+- **Teams tabs:** `@omadia/channel-teams` 0.31.0 (byte5ai/omadia-channel-teams)
+  serves `/p/channel-teams/{hub,tab-config}` with `auth: 'custom'` and checks a
+  Teams SSO token itself. The operator grants `/p/channel-teams`.
+- Tests: `agentSpec.test.ts` (`public_paths` syntax gate), `codegen.test.ts`
+  (manifest emission, no key without a declaration), `codegenUiRoute.test.ts`
+  (explicit session gate).
+
 ### Security — plugin routes need a session, native tools follow plugin assignment (#1596, #1598, #1601)
 
 2026-10-29.
