@@ -2,13 +2,15 @@
  * Dates and amounts read as VALUES, whatever their spelling.
  *
  * A prompt placeholder for a date or an amount is itself a realistic literal
- * ("01.01.1970", "€10000" — `v4/pseudonym.ts`). Restore replaces exact
- * strings, so a model that writes one back in another spelling
- * ("1970-01-01", "1. Januar 1970", "10 Tsd. €") leaves a fake value restore
- * cannot map back. `countUnresolvedSurrogates` therefore compares dates and
- * amounts by value, through this module.
+ * ("19.02.2012", "€12357" — `v4/pseudonym.ts`). A model may write one back
+ * in another spelling ("2012-02-19", "19. Februar 2012", "12.357 €"), which
+ * exact-string restore cannot map back. So dates and amounts are compared by
+ * value, through this module: `resolvePromptPseudonyms` restores a literal
+ * that names exactly one placeholder (#1577), and `countUnresolvedSurrogates`
+ * counts what is left.
  *
- * Reading is generous on purpose — a hit only ever refuses an answer:
+ * Reading is generous on purpose — a counted hit only ever refuses an answer,
+ * and restore acts only on a reading that names exactly one placeholder:
  *   - a literal yields every value it can denote: "01/05/1978" is the 1st of
  *     May or the 5th of January, "10.000 €" ten thousand or ten;
  *   - a literal that names no value — a date shape with a four-digit year

@@ -15,6 +15,7 @@ import { createPrivacyGuardService } from '@omadia/plugin-privacy-guard/dist/ind
 import {
   createBaselineDetector,
   createCustomTermsDetector,
+  hasNestedUnboundedQuantifier,
 } from '@omadia/plugin-privacy-guard/dist/promptMask.js';
 import {
   CUSTOM_PATTERNS_CONFIG_KEY,
@@ -107,6 +108,86 @@ describe('#760 createCustomTermsDetector', () => {
   it('returns no detector at all for empty config (baseline-only fast path)', () => {
     const { detector } = createCustomTermsDetector({ terms: [], patterns: [] });
     assert.equal(detector, undefined);
+  });
+});
+
+describe('#1553 custom patterns never block the event loop', () => {
+  it('flags nested unbounded quantifiers statically and keeps the pattern active', () => {
+    for (const source of ['(x+x+)+y', '(a+)+$', '(\\d+)*', '((ab)*c)+', '(?:\\w+\\s?){2,}x', '(?<n>[a-z]+)+']) {
+      assert.ok(hasNestedUnboundedQuantifier(source), source);
+    }
+    for (const source of ['ORD-\\d{6}', '(?:foo|bar)+', '[+*(]+x', '\\p{L}+', '(a{2,5})+', '\\(a+\\)+', '(?:q|qq)+z', '(ab)?c+']) {
+      assert.ok(!hasNestedUnboundedQuantifier(source), source);
+    }
+    // A flagged pattern stays a protection: rejecting `(\w+\s)+`-style
+    // patterns would silently stop masking what they cover.
+    const { detector, rejected } = createCustomTermsDetector({ terms: [], patterns: ['(x+x+)+y'] });
+    assert.deepEqual(rejected, []);
+    assert.ok(detector);
+  });
+
+  it('stops `(x+x+)+y` on a long x-run during the match (the #1553 repro)', async () => {
+    const { detector } = createCustomTermsDetector({
+      terms: [],
+      patterns: ['(x+x+)+y'],
+      runtimeBudgetMs: 50,
+    });
+    const startedAt = Date.now();
+    await assert.rejects(detector!.detect('x'.repeat(40)), /exceeded its runtime budget/);
+    assert.ok(Date.now() - startedAt < 2_000, `aborted after ${String(Date.now() - startedAt)}ms`);
+    assert.deepEqual(await detector!.detect('xxy'), [{ start: 0, end: 3, type: 'custom', confidence: 1 }]);
+  });
+
+  it('vetting itself stays bounded on a polynomial blowup over the long probes', () => {
+    const startedAt = Date.now();
+    const { rejected } = createCustomTermsDetector({ terms: [], patterns: ['a*a*a*b'] });
+    assert.deepEqual(rejected, [{ source: 'a*a*a*b', reason: 'too_slow' }]);
+    assert.ok(Date.now() - startedAt < 2_000, `vetting took ${String(Date.now() - startedAt)}ms`);
+  });
+
+  it('aborts a vetted pattern that blows up at runtime while the event loop keeps running', async () => {
+    // Passes vetting (no nested quantifier, no probe holds a run of q), but
+    // backtracks exponentially on one: 60 × q would run for hours.
+    const { detector, rejected } = createCustomTermsDetector({
+      terms: ['Nachtfalke'],
+      patterns: ['ORD-\\d{6}', '(?:q|qq)+z'],
+      runtimeBudgetMs: 50,
+    });
+    assert.equal(rejected.length, 0);
+    let ticks = 0;
+    const ticker = setInterval(() => ticks++, 5);
+    const startedAt = Date.now();
+    try {
+      await assert.rejects(detector!.detect(`Nachtfalke ORD-123456 ${'q'.repeat(60)}`), (err: unknown) => {
+        assert.ok(err instanceof Error && err.name === 'CustomPatternRuntimeError');
+        assert.match(err.message, /\(\?:q\|qq\)\+z/);
+        return true;
+      });
+    } finally {
+      clearInterval(ticker);
+    }
+    const elapsed = Date.now() - startedAt;
+    assert.ok(elapsed < 2_000, `aborted after ${String(elapsed)}ms`);
+    assert.ok(ticks >= 3, `event loop ticked ${String(ticks)} times during the match`);
+    // A fresh worker serves the next call.
+    const spans = await detector!.detect('Nachtfalke ORD-123456');
+    assert.equal(spans.length, 2);
+  });
+
+  it('produces the same spans as matching on the main thread', async () => {
+    const patterns = ['ORD-\\d{6}', '\\b[A-Z]{2}-\\d{3}\\b', 'Röntgen\\w*'];
+    const { detector } = createCustomTermsDetector({ terms: ['Projekt Nachtfalke'], patterns });
+    const text = 'projekt nachtfalke: ORD-123456, AB-123 und röntgenblick, ORD-654321 (CD-999).';
+    const spans = await detector!.detect(text);
+    const expected = [
+      ...[...text.matchAll(/(?<![\p{L}\p{N}_])(?:Projekt Nachtfalke)(?![\p{L}\p{N}_])/giu)],
+      ...patterns.flatMap((p) => [...text.matchAll(new RegExp(p, 'giu'))]),
+    ].map((m) => [m.index, m.index + m[0].length]);
+    assert.deepEqual(
+      spans.map((s) => [s.start, s.end]),
+      expected,
+    );
+    assert.equal(spans.length, 6);
   });
 });
 

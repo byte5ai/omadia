@@ -8,8 +8,10 @@
  *   - `resolvePromptPseudonyms` restores surrogates the model rewrote: a
  *     different case ("LUKAS.BECKER@EXAMPLE.NET"), the local part of an e-mail
  *     surrogate ("lukas.becker@…") and the name read out of it ("Lukas
- *     Becker"). The exact form is still the first choice; variants only match
- *     on word boundaries.
+ *     Becker"), a first or last name of a person surrogate alone ("Hallo
+ *     Lukas", "Herr Becker" — #1545) and a date or amount surrogate in another
+ *     spelling ("10.000 €" — #1577). The exact form is still the first choice;
+ *     variants only match on word boundaries.
  *   - `isReservedSurrogateShape` names the surrogate shapes that can never be a
  *     real value (RFC 2606 `example.net` mail, `PLATZHALTER-…`, `Musterstadt`,
  *     IBANs with check digits `00`). A replayed answer that still carries one
@@ -22,9 +24,16 @@
  * none of them is a reserved shape: a real "Lukas Becker" must still be masked.
  */
 
-import { caseLike, FIRST_NAMES, LAST_NAMES } from './v4/pseudonym.js';
+import {
+  caseLike,
+  FIRST_NAMES,
+  LAST_NAMES,
+  nameFromLocalPart,
+  personSurrogateParts,
+} from './v4/pseudonym.js';
 import type { IdentityLeak } from './v4/onTheWire.js';
 import type { PseudonymMap } from './v4/types.js';
+import { asValueLiteral, findValueLiterals } from './valueLiterals.js';
 
 function escapeRegExp(literal: string): string {
   return literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -160,21 +169,35 @@ interface SurrogateForm {
   readonly real: string | undefined;
 }
 
+/** A first or last name of a person surrogate (#1545). Matched only in the
+ *  spellings listed — as minted or all upper — never case-insensitively. */
+interface PartForm {
+  readonly spellings: ReadonlySet<string>;
+  readonly real: string | undefined;
+}
+
+interface Forms {
+  /** Exact surrogates and the forms derived from e-mail surrogates; matched
+   *  case-insensitively. */
+  readonly loose: readonly SurrogateForm[];
+  /** Person-surrogate parts, keyed by their upper-case spelling. */
+  readonly parts: ReadonlyMap<string, PartForm>;
+}
+
 /** Shortest e-mail local part treated as a form of its own. Pool locals are
- *  `first.last` (at least `ben.wolf`), so this only keeps out degenerate
+ *  `first.last` (at least `ben.haas`), so this only keeps out degenerate
  *  cases. */
 const MIN_LOCAL_PART_LENGTH = 5;
 
-const NAME_LIKE_LOCAL = /^(\p{L}+)[._](\p{L}+)$/u;
-
-function capitalize(word: string): string {
-  return word.length === 0 ? word : word[0]!.toUpperCase() + word.slice(1).toLowerCase();
+function sameReal(a: string | undefined, b: string | undefined): boolean {
+  return a !== undefined && b !== undefined && a.toLowerCase() === b.toLowerCase();
 }
 
-/** "jonas.weber" → "Jonas Weber"; undefined when the local part is no name. */
-function nameFromLocalPart(local: string): string | undefined {
-  const m = NAME_LIKE_LOCAL.exec(local);
-  return m === null ? undefined : `${capitalize(m[1]!)} ${capitalize(m[2]!)}`;
+/** First and last token of a real person name; `undefined` parts for a name
+ *  of a single token ("Jonas"), which has no first/last split to map to. */
+function realNameParts(real: string): { readonly first?: string; readonly last?: string } {
+  const tokens = real.trim().split(/\s+/u);
+  return tokens.length < 2 ? {} : { first: tokens[0]!, last: tokens[tokens.length - 1]! };
 }
 
 /**
@@ -184,8 +207,15 @@ function nameFromLocalPart(local: string): string | undefined {
  * case-insensitive hit may restore to either in the case the model wrote.
  * A DERIVED form two surrogates produce is ambiguous: it maps to no real
  * value and counts as unresolved.
+ *
+ * #1545 — a person surrogate also yields its first and last name, mapped to
+ * the first and last token of the real name. Parts are not case-folded: the
+ * pools hold no ordinary words, but "lukas" in lower case is still no name,
+ * and minting keeps every part out of the user's own words. A part two people
+ * share with different real names is ambiguous (unresolved), like a derived
+ * form; a part that equals a loose form is left to the loose form.
  */
-function surrogateForms(map: PseudonymMap): SurrogateForm[] {
+function surrogateForms(map: PseudonymMap): Forms {
   const forms = new Map<string, SurrogateForm>();
   for (const [surrogate, real] of map.reverse) {
     const key = surrogate.toLowerCase();
@@ -197,7 +227,7 @@ function surrogateForms(map: PseudonymMap): SurrogateForm[] {
     if (form.length === 0 || forms.has(key)) return;
     const prior = derived.get(key);
     if (prior === undefined) derived.set(key, { form, real });
-    else if (prior.real?.toLowerCase() !== real?.toLowerCase()) derived.set(key, { form, real: undefined });
+    else if (!sameReal(prior.real, real)) derived.set(key, { form, real: undefined });
   };
   for (const [surrogate, real] of map.reverse) {
     const at = surrogate.indexOf('@');
@@ -212,54 +242,158 @@ function surrogateForms(map: PseudonymMap): SurrogateForm[] {
       addDerived(name, realLocal === undefined ? undefined : nameFromLocalPart(realLocal));
     }
   }
-  return [...forms.values(), ...derived.values()];
+  const loose = [...forms.values(), ...derived.values()];
+  const looseKeys = new Set(loose.map((f) => f.form.toLowerCase()));
+
+  const parts = new Map<string, PartForm>();
+  const addPart = (form: string, real: string | undefined): void => {
+    if (looseKeys.has(form.toLowerCase())) return;
+    const key = form.toUpperCase();
+    const prior = parts.get(key);
+    const spellings = new Set([...(prior?.spellings ?? []), form, key]);
+    const ambiguous = prior !== undefined && !sameReal(prior.real, real);
+    parts.set(key, { spellings, real: ambiguous ? undefined : real });
+  };
+  for (const [surrogate, real] of map.reverse) {
+    const minted = personSurrogateParts(surrogate);
+    if (minted === undefined) continue;
+    const of = realNameParts(real);
+    addPart(minted.first, of.first);
+    addPart(minted.last, of.last);
+  }
+  return { loose, parts };
 }
 
-function formsPattern(forms: readonly SurrogateForm[]): RegExp {
-  const alternation = [...forms]
-    .sort((a, b) => b.form.length - a.form.length)
-    .map((f) => escapeRegExp(f.form))
+function alternation(forms: Iterable<string>): string {
+  return [...forms]
+    .sort((a, b) => b.length - a.length)
+    .map(escapeRegExp)
     .join('|');
-  return new RegExp(alternation, 'giu');
+}
+
+/** One rewrite restore may apply: `[start, end)` becomes `text`. */
+interface Claim {
+  readonly start: number;
+  readonly end: number;
+  readonly text: string;
+  /** A surrogate form restore has no real value for (kept as written). */
+  readonly unresolved: boolean;
+  /** Tie-break among claims of one range: lower wins. */
+  readonly rank: number;
+}
+
+function looseClaims(text: string, map: PseudonymMap, loose: readonly SurrogateForm[]): Claim[] {
+  if (loose.length === 0) return [];
+  const byKey = new Map(loose.map((f) => [f.form.toLowerCase(), f]));
+  return [...text.matchAll(new RegExp(alternation(loose.map((f) => f.form)), 'giu'))].flatMap(
+    (match): Claim[] => {
+      const start = match.index;
+      const end = start + match[0].length;
+      const keep = { start, end, text: match[0], unresolved: false, rank: 0 };
+      const exact = map.reverse.get(match[0]);
+      if (exact !== undefined) return [{ ...keep, text: exact }];
+      const form = byKey.get(match[0].toLowerCase());
+      // A variant glued into a longer word is no surrogate: kept as written,
+      // and its range is not handed to a shorter form either.
+      if (form === undefined || !onWordBoundaries(text, start, end)) return [keep];
+      if (form.real === undefined) return [{ ...keep, unresolved: true }];
+      return [{ ...keep, text: caseLike(match[0], form.real) }];
+    },
+  );
+}
+
+function partClaims(text: string, parts: ReadonlyMap<string, PartForm>): Claim[] {
+  if (parts.size === 0) return [];
+  const spellings = [...parts.values()].flatMap((p) => [...p.spellings]);
+  return [...text.matchAll(new RegExp(alternation(spellings), 'gu'))].flatMap((match): Claim[] => {
+    const start = match.index;
+    const end = start + match[0].length;
+    const part = parts.get(match[0].toUpperCase());
+    if (part === undefined || !part.spellings.has(match[0])) return [];
+    if (!onWordBoundaries(text, start, end)) return [];
+    if (part.real === undefined) return [{ start, end, text: match[0], unresolved: true, rank: 2 }];
+    return [{ start, end, text: caseLike(match[0], part.real), unresolved: false, rank: 2 }];
+  });
+}
+
+/**
+ * #1577 — a date or amount literal the model re-spelled ("10.000 €" for
+ * `€10000`, "1. Januar 2015" for `01.01.2015`) is restored when the values it
+ * can denote name exactly ONE date/amount surrogate of the same kind:
+ * minting keeps every such surrogate's value apart from every real value and
+ * every other surrogate, so the reading is unambiguous. A literal that names
+ * none, or more than one, stays as written (and is counted as unresolved by
+ * `countUnresolvedSurrogates`).
+ */
+function valueClaims(text: string, map: PseudonymMap): Claim[] {
+  const surrogates = [...map.reverse.keys()].flatMap((surrogate) => {
+    const literal = asValueLiteral(surrogate);
+    return literal === undefined || literal.values.length === 0 ? [] : [{ surrogate, literal }];
+  });
+  if (surrogates.length === 0) return [];
+  return findValueLiterals(text).flatMap((literal): Claim[] => {
+    if (literal.values.length === 0) return [];
+    const named = surrogates.filter(
+      (s) => s.literal.kind === literal.kind && s.literal.values.some((v) => literal.values.includes(v)),
+    );
+    const real = named.length === 1 ? map.reverse.get(named[0]!.surrogate) : undefined;
+    if (real === undefined) return [];
+    return [{ start: literal.start, end: literal.end, text: real, unresolved: false, rank: 1 }];
+  });
+}
+
+/**
+ * Every rewrite restore applies to `text`, non-overlapping, in text order:
+ * the earliest claim wins, then the longest, then the surrogate form over a
+ * value reading over a name part. One pass, so a restored value is never
+ * itself rewritten and two readings of one span never both apply.
+ */
+function restoreClaims(text: string, map: PseudonymMap): Claim[] {
+  const { loose, parts } = surrogateForms(map);
+  const all = [...looseClaims(text, map, loose), ...valueClaims(text, map), ...partClaims(text, parts)].sort(
+    (a, b) => a.start - b.start || b.end - a.end || a.rank - b.rank,
+  );
+  const chosen: Claim[] = [];
+  for (const claim of all) {
+    const last = chosen[chosen.length - 1];
+    if (last === undefined || claim.start >= last.end) chosen.push(claim);
+  }
+  return chosen;
 }
 
 /**
  * Restore prompt surrogates to real values, tolerating how a model rewrites
  * them (#1528): the exact surrogate as before, the surrogate in any letter
- * case, the local part of an e-mail surrogate and the name read out of it. A
- * variant is restored in the case the model wrote it. One pass over the text,
- * so a restored value is never itself rewritten. Forms without a real
+ * case, the local part of an e-mail surrogate and the name read out of it, a
+ * first or last name of a person surrogate on its own (#1545: "Hallo Lukas",
+ * "Herr Becker"), and a date or amount surrogate in another spelling (#1577).
+ * A variant is restored in the case the model wrote it. Forms without a real
  * counterpart stay as written — `countUnresolvedForms` reports them.
  */
 export function resolvePromptPseudonyms(text: string, map: PseudonymMap): string {
   if (map.reverse.size === 0 || text.length === 0) return text;
-  const forms = surrogateForms(map);
-  const byKey = new Map(forms.map((f) => [f.form.toLowerCase(), f]));
-  return text.replace(formsPattern(forms), (match: string, offset: number) => {
-    const exact = map.reverse.get(match);
-    if (exact !== undefined) return exact;
-    const form = byKey.get(match.toLowerCase());
-    if (form === undefined || form.real === undefined) return match;
-    if (!onWordBoundaries(text, offset, offset + match.length)) return match;
-    return caseLike(match, form.real);
-  });
+  let out = '';
+  let cursor = 0;
+  for (const claim of restoreClaims(text, map)) {
+    out += text.slice(cursor, claim.start) + claim.text;
+    cursor = claim.end;
+  }
+  return out + text.slice(cursor);
 }
 
 /**
  * How many distinct surrogate forms in `text` restore could not map back:
- * today the name read out of an e-mail surrogate whose real address has no
- * name in it ("Lukas Becker" for `jw1984@…`). Word-bounded, case-insensitive.
+ * the name read out of an e-mail surrogate whose real address has no name in
+ * it ("Lukas Becker" for `jw1984@…`), and a person-surrogate part that names
+ * no single real name part (#1545: two people sharing "Lukas", or a real
+ * name of one token). Word-bounded.
  */
 export function countUnresolvedForms(text: string, map: PseudonymMap | undefined): number {
   if (map === undefined || map.reverse.size === 0 || text.length === 0) return 0;
-  const unresolved = surrogateForms(map).filter((f) => f.real === undefined);
-  if (unresolved.length === 0) return 0;
-  const hits = new Set<string>();
-  for (const match of text.matchAll(formsPattern(unresolved))) {
-    if (match.index === undefined) continue;
-    if (onWordBoundaries(text, match.index, match.index + match[0].length)) {
-      hits.add(match[0].toLowerCase());
-    }
-  }
+  const hits = new Set(
+    restoreClaims(text, map)
+      .filter((claim) => claim.unresolved)
+      .map((claim) => claim.text.toLowerCase()),
+  );
   return hits.size;
 }

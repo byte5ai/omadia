@@ -10,6 +10,10 @@ import { isProviderWideFailure, streamMessageWithObserver } from './streaming.js
 import type { AskObserver, AskOptions } from './tools/domainQueryTool.js';
 import { internFailedNotice, isInternExemptTool } from './privacyInternPolicy.js';
 import {
+  remaskEchoedValues,
+  restorePromptSurrogatesInToolInput,
+} from './promptSurrogateToolInput.js';
+import {
   PrimaryModelCooldown,
   orchestratorFallbackFor,
   type SubAgentExecution,
@@ -603,7 +607,11 @@ export class LocalSubAgent {
         replay?.kind === 'result'
           ? (replay.value as Awaited<ReturnType<LocalSubAgentTool['handle']>>)
           : await runHandlerAtMostOnce(ledger, () =>
-              runWithMcpAuthPromptMint(authPromptMint, () => tool.handle(input)),
+              runWithMcpAuthPromptMint(authPromptMint, () =>
+                // #1544 — the inner tool runs on the user's values; this
+                // sub-agent's model keeps reading the placeholders.
+                tool.handle(restorePromptSurrogatesInToolInput(privacy, input)),
+              ),
             );
     } catch (err) {
       if (replay === undefined) ledger?.record(seam, toolName, input, { kind: 'rejection', error: err });
@@ -678,7 +686,7 @@ export class LocalSubAgent {
             ...carried,
           };
         }
-        return { output: result, ...carried };
+        return { output: remaskEchoedValues(privacy, result), ...carried };
       }
       // Slice 2.5 — same operator-owned bypass check the orchestrator's
       // outer dispatch consults. If the tool's plugin opted into `bypass`,

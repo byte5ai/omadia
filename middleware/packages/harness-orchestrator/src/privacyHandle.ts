@@ -18,6 +18,7 @@ import type {
   PrivacyRenderedAnswer,
   PrivacyToolErrorRedactResult,
   PrivacyV4ToolResult,
+  PrivacyDigestAudience,
   PrivacyV4ToolSpec,
   PromptMaskedSpanInfo,
   ToolErrorCarrier,
@@ -44,6 +45,8 @@ export interface PrivacyTurnHandle {
     readonly rawResult: string;
     /** the call input as dispatched — the dataset's provenance */
     readonly toolInput?: unknown;
+    /** #1561 — who reads the digest text; absent ⇒ the chat model. */
+    readonly audience?: PrivacyDigestAudience;
   }): Promise<{ readonly digestText: string; readonly datasetId: string }>;
   /**
    * Slice 2.5 — record that a tool's raw result was passed through
@@ -105,6 +108,8 @@ export interface PrivacyTurnHandle {
   runV4Tool(input: {
     readonly toolName: string;
     readonly input: unknown;
+    /** #1559 — `create_xlsx` is offered this turn; absent ⇒ false. */
+    readonly fileExportAvailable?: boolean;
   }): Promise<PrivacyV4ToolResult>;
   /**
    * Bridge a sub-agent's result across the data-plane boundary. Given the
@@ -192,6 +197,12 @@ export interface PrivacyTurnHandle {
    */
   snapshotPromptRestorer(): ((text: string) => string) | undefined;
   /**
+   * #1544 — replace this turn's masked prompt values in `text` by their
+   * surrogates again (see `PrivacyGuardService.remaskPromptValues`). Optional:
+   * absent when the provider predates the contract.
+   */
+  remaskPromptValues?(text: string): string;
+  /**
    * Drop the turn's Dataset Store and drain the user-facing receipt.
    * `turnInput` — the requester's own message text — lets the receipt
    * report identity values the user named themselves. Returns `undefined`
@@ -234,6 +245,7 @@ export function createPrivacyTurnHandle(deps: {
         toolName: input.toolName,
         rawResult: input.rawResult,
         ...(input.toolInput !== undefined ? { toolInput: input.toolInput } : {}),
+        ...(input.audience !== undefined ? { audience: input.audience } : {}),
       });
     },
 
@@ -289,6 +301,7 @@ export function createPrivacyTurnHandle(deps: {
         turnId: deps.turnId,
         toolName: input.toolName,
         input: input.input,
+        ...(input.fileExportAvailable === true ? { fileExportAvailable: true } : {}),
       });
     },
 
@@ -363,6 +376,10 @@ export function createPrivacyTurnHandle(deps: {
 
     snapshotPromptRestorer() {
       return deps.service.snapshotPromptRestorer?.(deps.turnId);
+    },
+
+    remaskPromptValues(text) {
+      return deps.service.remaskPromptValues?.(deps.turnId, text) ?? text;
     },
 
     async finalize(turnInput) {

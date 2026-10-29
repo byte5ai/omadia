@@ -115,6 +115,7 @@ import type {
 import {
   RUN_TRACE_STATS_SERVICE,
   attachNewPluginsToFallbackAgent,
+  setDatasetVaultKeyFallback,
 } from '@omadia/orchestrator';
 import { createMemoryRouter } from './routes/memory.js';
 import { createDatasetsRouter } from './routes/datasets.js';
@@ -985,6 +986,11 @@ async function main(): Promise<void> {
       `[middleware] ⚠ vault master key GENERATED at ${DEV_VAULT_KEY_PATH} — DEV ONLY. Set VAULT_KEY for production.`,
     );
   }
+
+  // #1546 — without VAULT_KEY the dataset import found no secret and stored
+  // irreversible surrogates (every e-mail of a column became one address).
+  // It now derives its cell and link keys from the dev key the vault runs on.
+  if (masterKey.source !== 'env') setDatasetVaultKeyFallback(masterKey.key);
 
   const secretVault = new FileSecretVault(VAULT_PATH, masterKey.key);
   await secretVault.load();

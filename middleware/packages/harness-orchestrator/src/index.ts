@@ -765,6 +765,7 @@ export {
   linkKeyColumnName,
   normalizeLinkValue,
   resolveDatasetLinkKeySecret,
+  setDatasetVaultKeyFallback,
   LINK_KEY_COLUMN_PREFIX,
   LINK_KEY_LENGTH,
   LINK_KEY_SECRET_ENV,

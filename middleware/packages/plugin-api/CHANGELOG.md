@@ -8,6 +8,27 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.46.0 — 2026-10-29
+
+Additive. Privacy Shield masking and rendering (S3-B: #1544, #1559, #1561, #1543,
+#1542).
+
+### Added
+
+- **`PrivacyGuardService.remaskPromptValues`** (optional) — replaces the turn's
+  masked prompt values in a text by their surrogates again. The kernel restores
+  surrogates in tool INPUTS (#1544); an interning-exempt tool can echo them,
+  and its result goes back to the model through this.
+- **`PrivacyV4ToolRequest.fileExportAvailable`** (optional `boolean`) — whether
+  the turn has a file-export tool (`create_xlsx`); a truncated table offers an
+  Excel file only then (#1559).
+- **`PrivacyV4ToolResult.renderProvenance`** (optional `string`) — a value-free
+  note of how a rendered table was built (source tool, verb chain, row counts,
+  columns) for follow-up questions (#1543).
+- **`PrivacyToolResultV4Request.audience`** / **`PrivacyDigestAudience`**
+  (`'chat' | 'public-api'`) — the public MCP endpoint gets a digest text written
+  for API callers, without the chat-only verb instructions (#1561).
+
 ## 1.45.0 — 2026-10-29
 
 Additive. Envelope-aware dataset provenance (v414).
