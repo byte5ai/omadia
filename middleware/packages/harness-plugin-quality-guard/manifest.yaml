@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/plugin-quality-guard"
   name: "Quality Guard"
-  version: "0.2.0"
+  version: "0.2.1"
   kind: "tool"
   domain: "quality.response-guard"
   description:
@@ -48,8 +48,8 @@ setup:
         en: "Default sycophancy level"
         de: "Default Sycophancy-Level"
       help:
-        en: "Applies to every profile that does not declare its own `quality.sycophancy`. `off` disables the anti-flattery rules; `medium` is a balanced default for advisory use cases; `high` plays devil's advocate. Within the plugin the sources override each other and resolve to ONE block: AGENT.md `quality` frontmatter → `agent_overrides` → this default. That block is added to the prompt on top of the agent's own anti-flattery setting (agent editor → Boundaries); both blocks can be active at once, neither replaces the other."
-        de: "Wirkt für alle Profile, die selbst keinen `quality.sycophancy`-Wert deklarieren. `off` deaktiviert die Anti-Schmeichel-Regeln; `medium` ist eine balancierte Standardvorgabe für Beratungs-Use-Cases; `high` ist devil's-advocate. Reihenfolge innerhalb des Plugins (überschreibend, ergibt EINEN Block): AGENT.md-`quality`-Frontmatter → `agent_overrides` → dieser Default. Dieser Block wird dann zusätzlich zur agenteneigenen Schmeichel-Bremse (Agent-Editor → Grenzen) in den Prompt gehängt; beide Blöcke können gleichzeitig aktiv sein, keiner ersetzt den anderen."
+        en: "Applies to every agent that sets no anti-flattery level of its own and has no `agent_overrides` entry. `off` disables the anti-flattery rules; `medium` is a balanced default for advisory use cases; `high` plays devil's advocate. Order per agent: the agent's own setting (agent editor → Boundaries, or AGENT.md `quality` frontmatter) → `agent_overrides` → this default. An agent with its own level already carries it in its own prompt, so this plugin adds no second anti-flattery block for that agent; the same holds for boundaries."
+        de: "Wirkt für jeden Agenten, der keine eigene Schmeichel-Bremse gesetzt hat und keinen Eintrag in `agent_overrides` hat. `off` deaktiviert die Anti-Schmeichel-Regeln; `medium` ist eine balancierte Standardvorgabe für Beratungs-Use-Cases; `high` ist devil's-advocate. Reihenfolge pro Agent: die eigene Einstellung des Agenten (Agent-Editor → Grenzen oder AGENT.md-`quality`-Frontmatter) → `agent_overrides` → dieser Default. Ein Agent mit eigener Stufe trägt sie bereits in seinem eigenen Prompt, deshalb hängt dieses Plugin für ihn keinen zweiten Anti-Schmeichel-Block an; für Grenzen gilt dasselbe."
       required: false
       default: "medium"
       enum:
@@ -98,8 +98,8 @@ setup:
         en: "Per-agent overrides (JSON)"
         de: "Per-Agent-Overrides (JSON)"
       help:
-        en: "Optional JSON map agentId → sycophancy level. Example: {\"agent-seo-analyst\":\"medium\",\"agent-reference-maximum\":\"low\"}. AGENT.md `quality` frontmatter overrides this map when present."
-        de: "Optionale Map agentId → SycophancyLevel als JSON. Beispiel: {\"agent-seo-analyst\":\"medium\",\"agent-reference-maximum\":\"low\"}. AGENT.md-`quality`-Frontmatter überschreibt diese Map, wenn vorhanden."
+        en: "Optional JSON map agent slug → sycophancy level. Example: {\"fallback\":\"off\",\"sales\":\"high\"}. The key is the agent's slug, as in its URL (/operator/agents/<slug>). An agent's own anti-flattery setting (agent editor → Boundaries, or AGENT.md `quality` frontmatter) wins over this map."
+        de: "Optionale Map Agent-Slug → SycophancyLevel als JSON. Beispiel: {\"fallback\":\"off\",\"sales\":\"high\"}. Der Schlüssel ist der Slug des Agenten, wie in seiner URL (/operator/agents/<slug>). Die eigene Schmeichel-Bremse des Agenten (Agent-Editor → Grenzen oder AGENT.md-`quality`-Frontmatter) geht dieser Map vor."
       required: false
       default: ""
 

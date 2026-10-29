@@ -22,7 +22,7 @@ import {
   isGuardedControlFlowResult,
   withholdThrownToolError,
 } from './toolErrorRedaction.js';
-import type { WriteCapability } from '@omadia/plugin-api';
+import type { NativeToolHandler, WriteCapability } from '@omadia/plugin-api';
 import type { PrivacyTurnHandle } from './privacyHandle.js';
 import type { DomainTool } from './tools/domainQueryTool.js';
 import { isOfferedThisTurn, type NativeToolRegistry } from './nativeToolRegistry.js';
@@ -250,6 +250,14 @@ export class ToolDispatchService {
        * guarantee — it is NOT distributed idempotency.
        */
       readonly idempotency?: ToolIdempotencyStore;
+      /**
+       * #1585 — the handler the owning Orchestrator build dispatches a kernel
+       * native to (`Orchestrator.kernelNativeHandler`). Wins over the shared
+       * registry's handler, which belongs to whichever build registered first
+       * and would park a choice card on an instance this build never drains.
+       * Returns `undefined` for every name it does not own.
+       */
+      readonly kernelNativeHandler?: (name: string) => NativeToolHandler | undefined;
     },
   ) {}
 
@@ -357,7 +365,8 @@ export class ToolDispatchService {
     options?: ToolDispatchOptions,
   ): Promise<ToolDispatchResult> {
     const nativeRegistration = this.deps.nativeTools.get(name);
-    const nativeHandler = nativeRegistration?.handler;
+    const nativeHandler =
+      this.deps.kernelNativeHandler?.(name) ?? nativeRegistration?.handler;
     // Mirrors Orchestrator ordering: plugin/native handlers win first.
     if (nativeRegistration !== undefined && nativeHandler !== undefined) {
       // #1598 — grant first: the readiness message names the plugin.

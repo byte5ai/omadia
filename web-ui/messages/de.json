@@ -2472,8 +2472,8 @@
         "prompt": "Prompt"
       },
       "prompt": {
-        "hint": "Genau dieser Text steht am Anfang des System-Prompts dieses Agenten — aus Verhalten, Charakter-Achsen, Grenzen und Schmeichel-Bremse zusammengesetzt.",
-        "hintWithFamily": "Genau dieser Text steht am Anfang des System-Prompts. Die Charakter-Achsen sind gegen die Grundhaltung der Modellfamilie {family} gerechnet — nur Abweichungen davon werden überhaupt geschrieben.",
+        "hint": "Das ist der agenteneigene Teil des System-Prompts, zusammengesetzt aus Verhalten, Charakter-Achsen, Grenzen und Schmeichel-Bremse. In einem Turn können zwei Blöcke davor stehen: der bisherige Gesprächskontext und die Regeln des Quality-Guard-Plugins für alles, was dieser Agent nicht selbst festlegt.",
+        "hintWithFamily": "Das ist der agenteneigene Teil des System-Prompts. Die Charakter-Achsen sind gegen die Grundhaltung der Modellfamilie {family} gerechnet, nur Abweichungen davon werden überhaupt geschrieben. In einem Turn können zwei Blöcke davor stehen: der bisherige Gesprächskontext und die Regeln des Quality-Guard-Plugins für alles, was dieser Agent nicht selbst festlegt.",
         "stale": "Ungespeicherte Änderungen sind hier noch nicht drin — erst nach dem Speichern.",
         "empty": "Noch nichts gesetzt. Der Agent nutzt den plattformweiten Standardtext."
       },
