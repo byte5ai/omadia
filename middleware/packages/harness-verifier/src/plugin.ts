@@ -120,7 +120,10 @@ export async function activate(
   });
   if (!baseProvider) {
     ctx.log(
-      `[harness-verifier] no API key for provider '${providerId}' — plugin active but verifier@1 capability NOT published`,
+      providerId === 'claude-cli'
+        ? // #1583 — an assignment saved before the UI/API refused it.
+          "[harness-verifier] the verifier cannot run on the subscription CLI ('claude-cli') — assign it a key-based provider under LLM access; verifier@1 capability NOT published"
+        : `[harness-verifier] no API key for provider '${providerId}' — plugin active but verifier@1 capability NOT published`,
     );
     return {
       async close(): Promise<void> {

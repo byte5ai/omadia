@@ -143,7 +143,9 @@ describe('commit-on-delivery: a delivered re-entry is the request’s record', (
     const events = await drain(t.service.chatStream(REQUEST));
 
     const terminal = doneOf(events);
-    assert.equal(terminal?.answer, CORRECTED);
+    // #1578 — the retry of the conversation's first turn is the answer the
+    // user receives, so it carries the AI disclosure line the first pass folded.
+    assert.equal(terminal?.answer, `${CORRECTED}\n\nDiese Antwort wurde von einem KI-System erzeugt.`);
     assert.equal(terminal?.verifier?.badge, 'corrected');
     assert.deepEqual(rec.logged.map((e) => e.assistantAnswer), [CORRECTED]);
     assert.equal(terminal?.turnId, 'turn:scope-c07:1', 'save-as-memory reaches the delivered answer');

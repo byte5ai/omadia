@@ -862,7 +862,7 @@
     "chainVerifying": "Verifying",
     "chainVerifyNow": "Verify now",
     "chainVerified": "verified — {n} entries intact",
-    "chainVerifiedUnsigned": "verified without signatures — {n} entries intact, no signing key",
+    "chainUnsigned": "unsigned — {n} entries internally consistent, not verifiable without a signing key",
     "chainBroken": "BROKEN — see findings",
     "chainVerifyFailed": "Verification request failed",
     "chainExport": "Download signed export",
@@ -873,7 +873,15 @@
     "chainCheckpointFinding": "Checkpoint finding: {kind} at seq {seq}",
     "chainUnanchoredPrefix": "Retention removed early rows and no signed checkpoint anchors the remaining chain",
     "chainPrematureDeletion": "A checkpoint proves a deleted row was created after {provenAfter} — inside the {days}-day retention window. This is a finding, not retention",
-    "chainPreChainRows": "{n} rows predate the tamper-evidence chain and cannot be verified"
+    "chainPreChainRows": "{n} rows predate the tamper-evidence chain and cannot be verified",
+    "chainAnchorFinding": "Anchor finding: {kind} at seq {seq}",
+    "chainPrefixUnsigned": "Retention removed rows 1–{seq}; not anchored because no signing key is configured",
+    "chainCheckpointsUnchecked": "{n} checkpoints present — signatures not checked (no signing key)",
+    "chainAnchorCompared": "External anchor: {matched} of {records} anchored checkpoints match the database",
+    "chainAnchorMissing": "External anchor configured, but the anchor file is missing",
+    "chainAnchorUnreadable": "External anchor configured, but the anchor file could not be read",
+    "chainAwaitingFirstCheckpoint": "Signing is on, but no checkpoint covers the chain yet — the next checkpoint pass signs it",
+    "chainAnchorMalformed": "{n} lines in the anchor file are not anchor records and were ignored"
   },
   "operatorChannels": {
     "metaTitle": "Channels · omadia",
@@ -1200,6 +1208,10 @@
       "rebuild_failed": {
         "what": "The assignment was saved, but the plugin did not start on it and is not running right now.",
         "next": "Use Retry to start it again. If it keeps failing, the support details carry its activation error."
+      },
+      "subscription_cli_unsupported": {
+        "what": "This plugin cannot run on the subscription CLI: it needs a provider with an API key. With the CLI assigned it would not start — for the answer verifier that means answers go out unchecked.",
+        "next": "Assign this plugin a key-based provider such as Anthropic. The subscription CLI stays available for the orchestrator and the background jobs."
       },
       "tool_incompatible": {
         "what": "This plugin drives a tool loop and the selected provider cannot do that.",
@@ -1779,6 +1791,7 @@
         "unverified": "Not verified: no check confirmed this answer.",
         "noneConfirmed": "Not verified: the verifier checked {count, plural, one {# claim} other {# claims}} in this answer but could not confirm any.",
         "noTrigger": "Not checked: the answer contains no figures, dates or references the verifier checks.",
+        "systemDataProse": "Not checked: the verifier screened only the text the model wrote, and found nothing in it to check. The values in the table come unchanged from the source system.",
         "noClaims": "Not checked: the verifier found no factual claims in this answer.",
         "noCheckableClaims": "Not checked: none of the claims in this answer can be checked against a source.",
         "incompleteCoverage": "Not checked: the verifier covered only part of this answer and found nothing it could check there.",
@@ -2464,8 +2477,8 @@
         "prompt": "Prompt"
       },
       "prompt": {
-        "hint": "This exact text opens this agent's system prompt — assembled from its behaviour, character axes, limits and anti-flattery guard.",
-        "hintWithFamily": "This exact text opens the system prompt. The character axes are computed against the {family} model family's own default, so only deviations from it are written at all.",
+        "hint": "This is the agent's own part of its system prompt, assembled from its behaviour, character axes, limits and anti-flattery guard. In a turn, two blocks can come before it: the conversation's earlier context, and the Quality Guard plugin's rules for whatever this agent does not set itself.",
+        "hintWithFamily": "This is the agent's own part of its system prompt. The character axes are computed against the {family} model family's own default, so only deviations from it are written at all. In a turn, two blocks can come before it: the conversation's earlier context, and the Quality Guard plugin's rules for whatever this agent does not set itself.",
         "stale": "Unsaved changes are not in here yet — save to see them.",
         "empty": "Nothing set yet. This agent uses the platform-wide default text."
       },
@@ -3914,6 +3927,7 @@
       "intro": "Pin each LLM-capable plugin to a provider and model. Saving re-activates the plugin so the change applies immediately.",
       "notInstalled": "not installed",
       "toolLessBlocked": "needs tools — not for this role",
+      "subscriptionCliUnsupported": "needs an API key — not on the subscription CLI",
       "providerMissing": "{provider} (not registered)",
       "providerLabel": "Provider",
       "modelLabel": "Model",
