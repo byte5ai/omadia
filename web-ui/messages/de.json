@@ -875,7 +875,7 @@
     "chainVerifying": "Wird geprüft",
     "chainVerifyNow": "Jetzt prüfen",
     "chainVerified": "geprüft — {n} Einträge intakt",
-    "chainVerifiedUnsigned": "geprüft ohne Signaturen — {n} Einträge intakt, kein Signierschlüssel",
+    "chainUnsigned": "unsigniert — {n} Einträge in sich konsistent, ohne Signierschlüssel nicht prüfbar",
     "chainBroken": "GEBROCHEN — siehe Befunde",
     "chainVerifyFailed": "Prüf-Anfrage fehlgeschlagen",
     "chainExport": "Signierten Export herunterladen",
@@ -886,7 +886,15 @@
     "chainCheckpointFinding": "Checkpoint-Befund: {kind} bei Seq {seq}",
     "chainUnanchoredPrefix": "Retention hat frühe Zeilen entfernt und kein signierter Checkpoint verankert die verbleibende Kette",
     "chainPrematureDeletion": "Ein Checkpoint beweist, dass eine gelöschte Zeile nach {provenAfter} entstand — innerhalb des {days}-Tage-Retention-Fensters. Das ist ein Befund, keine Retention",
-    "chainPreChainRows": "{n} Zeilen stammen aus der Zeit vor der Manipulationsschutz-Kette und sind nicht prüfbar"
+    "chainPreChainRows": "{n} Zeilen stammen aus der Zeit vor der Manipulationsschutz-Kette und sind nicht prüfbar",
+    "chainAnchorFinding": "Anker-Befund: {kind} bei Seq {seq}",
+    "chainPrefixUnsigned": "Retention hat die Zeilen 1–{seq} entfernt; nicht verankert, weil kein Signierschlüssel konfiguriert ist",
+    "chainCheckpointsUnchecked": "{n} Checkpoints vorhanden — Signaturen nicht geprüft (kein Signierschlüssel)",
+    "chainAnchorCompared": "Externer Anker: {matched} von {records} verankerten Checkpoints stimmen mit der Datenbank überein",
+    "chainAnchorMissing": "Externer Anker konfiguriert, aber die Anker-Datei fehlt",
+    "chainAnchorUnreadable": "Externer Anker konfiguriert, aber die Anker-Datei ist nicht lesbar",
+    "chainAwaitingFirstCheckpoint": "Signierung ist aktiv, aber noch kein Checkpoint deckt die Kette ab — der nächste Checkpoint-Lauf signiert sie",
+    "chainAnchorMalformed": "{n} Zeilen der Anker-Datei sind keine Anker-Einträge und wurden ignoriert"
   },
   "operatorChannels": {
     "metaTitle": "Channels · omadia",

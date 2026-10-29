@@ -6,143 +6,23 @@
  */
 
 import { strict as assert } from 'node:assert';
-import { spawnSync } from 'node:child_process';
-import { generateKeyPairSync, sign as edSign } from 'node:crypto';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import type { Server } from 'node:http';
-import type { AddressInfo } from 'node:net';
-import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
 import { after, describe, it } from 'node:test';
-import { fileURLToPath } from 'node:url';
 
-import express from 'express';
-import type { Pool } from 'pg';
+import { RECEIPT_STREAM_ID, computeEntryHash } from '../src/receipts/chain.js';
+import { verifyReceiptStream } from '../src/receipts/verify.js';
 
 import {
-  RECEIPT_STREAM_ID,
-  computeEntryHash,
-  genesisHash,
-} from '../src/receipts/chain.js';
-import { receiptChainPayload } from '../src/receipts/store.js';
-import { checkpointSigningInput, loadCheckpointSigner } from '../src/receipts/checkpoints.js';
-import { verifyReceiptStream } from '../src/receipts/verify.js';
-import { createProvenanceRoutes } from '../src/receipts/verifyRoutes.js';
-
-const HERE = dirname(fileURLToPath(import.meta.url));
-const RECEIPT = {
-  datasetsInterned: 1,
-  fieldsMasked: 2,
-  fieldsCleartext: 1,
-  verbsExecuted: [],
-  pseudonymProjectionUsed: false,
-};
-
-function makeSigner() {
-  const { privateKey } = generateKeyPairSync('ed25519');
-  return loadCheckpointSigner(
-    privateKey.export({ format: 'der', type: 'pkcs8' }).toString('base64'),
-  );
-}
-
-interface Row {
-  turn_id: string;
-  session_scope: string | null;
-  channel: string | null;
-  model: string | null;
-  receipt: unknown;
-  seq: number;
-  prev_hash: Buffer;
-  entry_hash: Buffer;
-  hash_version: number;
-  created_at: Date;
-}
-
-interface Cp {
-  seq: number;
-  head_hash: Buffer;
-  signed_at: Date;
-  signature: Buffer;
-  public_key_fingerprint: string;
-}
-
-function buildChain(count: number): Row[] {
-  const rows: Row[] = [];
-  let prev = genesisHash(RECEIPT_STREAM_ID);
-  for (let seq = 1; seq <= count; seq++) {
-    const turnId = `t-${String(seq)}`;
-    const payload = receiptChainPayload({ turnId, sessionScope: 's', receipt: RECEIPT });
-    const entryHash = computeEntryHash({ streamId: RECEIPT_STREAM_ID, seq, prevHash: prev, payload });
-    rows.push({
-      turn_id: turnId,
-      session_scope: 's',
-      channel: null,
-      model: null,
-      receipt: RECEIPT,
-      seq,
-      prev_hash: prev,
-      entry_hash: entryHash,
-      hash_version: 1,
-      created_at: new Date('2026-08-01T00:00:00Z'),
-    });
-    prev = entryHash;
-  }
-  return rows;
-}
-
-function signCheckpoint(
-  signer: ReturnType<typeof makeSigner>,
-  seq: number,
-  headHash: Buffer,
-  signedAt: Date,
-): Cp {
-  return {
-    seq,
-    head_hash: headHash,
-    signed_at: signedAt,
-    signature: edSign(
-      null,
-      checkpointSigningInput({
-        streamId: RECEIPT_STREAM_ID,
-        seq,
-        headHash,
-        signedAtIso: signedAt.toISOString(),
-      }),
-      signer.privateKey,
-    ),
-    public_key_fingerprint: signer.publicKeyFingerprint,
-  };
-}
-
-function fakePool(rows: Row[], checkpoints: Cp[], preChain = 0, headSeq?: number): Pool {
-  // Default recorded head = the last stored row (the healthy state).
-  const recordedHead = headSeq ?? (rows.length > 0 ? rows[rows.length - 1]!.seq : 0);
-  return {
-    query: async (sql: string) => {
-      if (sql.includes('stream_id IS NULL')) {
-        return { rows: [{ n: String(preChain) }], rowCount: 1 };
-      }
-      if (sql.includes('FROM audit_stream_heads')) {
-        return recordedHead > 0
-          ? { rows: [{ head_seq: String(recordedHead) }], rowCount: 1 }
-          : { rows: [], rowCount: 0 };
-      }
-      if (sql.includes('FROM turn_receipts')) {
-        return {
-          rows: rows.map((r) => ({ ...r, seq: String(r.seq) })),
-          rowCount: rows.length,
-        };
-      }
-      if (sql.includes('FROM audit_checkpoints')) {
-        return {
-          rows: checkpoints.map((c) => ({ ...c, seq: String(c.seq) })),
-          rowCount: checkpoints.length,
-        };
-      }
-      throw new Error(`fakePool: unscripted SQL: ${sql.slice(0, 60)}`);
-    },
-  } as unknown as Pool;
-}
+  RECEIPT,
+  type Cp,
+  type Row,
+  buildChain,
+  fakePool,
+  makeSigner,
+  runOffline as runOfflineVerifier,
+  serveExport as serveExportWith,
+  signCheckpoint,
+} from './_helpers/receiptChainFixtures.js';
 
 const OPTS = { retentionDays: 90 };
 
@@ -315,43 +195,9 @@ describe('#761 export + offline verifier end-to-end', () => {
     await Promise.all(servers.map((s) => new Promise<void>((resolve) => s.close(() => resolve()))));
   });
 
-  async function serveExport(rows: Row[], cps: Cp[], publicKeyPem: string): Promise<string> {
-    const app = express();
-    app.use(
-      '/api/v1/operator/provenance',
-      createProvenanceRoutes(fakePool(rows, cps), {
-        publicKeyPem,
-        publicKeyFingerprint: 'test-fingerprint',
-        retentionDays: 90,
-      }),
-    );
-    const server: Server = await new Promise((resolve) => {
-      const s = app.listen(0, '127.0.0.1', () => resolve(s));
-    });
-    servers.push(server);
-    const port = (server.address() as AddressInfo).port;
-    const res = await fetch(`http://127.0.0.1:${String(port)}/api/v1/operator/provenance/export`);
-    assert.equal(res.status, 200);
-    return res.text();
-  }
-
-  function runOffline(jsonl: string, pubkeyPem?: string): { status: number | null; out: string } {
-    const dir = mkdtempSync(join(tmpdir(), 'audit-export-'));
-    const file = join(dir, 'export.jsonl');
-    writeFileSync(file, jsonl, 'utf-8');
-    const extra: string[] = [];
-    if (pubkeyPem) {
-      const keyFile = join(dir, 'key.pem');
-      writeFileSync(keyFile, pubkeyPem, 'utf-8');
-      extra.push('--pubkey', keyFile);
-    }
-    const out = spawnSync(
-      process.execPath,
-      [join(HERE, '..', 'scripts', 'verify-audit-export.mjs'), file, ...extra],
-      { encoding: 'utf-8', timeout: 60_000 },
-    );
-    return { status: out.status, out: `${out.stdout}\n${out.stderr}` };
-  }
+  const serveExport = (rows: Row[], cps: Cp[], publicKeyPem: string): Promise<string> =>
+    serveExportWith(rows, cps, publicKeyPem, servers);
+  const runOffline = (jsonl: string, pubkeyPem?: string) => runOfflineVerifier(jsonl, pubkeyPem);
 
   it('a clean export verifies offline with the out-of-band public key', async () => {
     const signer = makeSigner();
