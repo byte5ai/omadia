@@ -172,6 +172,8 @@ export const CLI_BUILTIN_TOOL_DENYLIST: readonly string[] = [
   'propose_skills',
   'RefreshMcpTools',
   'SuggestPluginInstall',
+  // 2.1.312 (the image pin since #1581).
+  'PublishPlugin',
   'SuggestConnectors',
   'SuggestSkills',
   'ListConnectors',
@@ -258,8 +260,11 @@ export const CLI_BUILTIN_TOOL_DENYLIST: readonly string[] = [
   'self_hosted_runner_tail_log',
 ];
 
+/** Name of the loopback MCP server in the CLI's `--mcp-config`. */
+export const OMADIA_MCP_SERVER_NAME = 'omadia';
+
 /** Prefix of every tool omadia serves to the CLI over the loopback MCP server. */
-export const OMADIA_MCP_TOOL_PREFIX = 'mcp__omadia__';
+export const OMADIA_MCP_TOOL_PREFIX = `mcp__${OMADIA_MCP_SERVER_NAME}__`;
 
 /**
  * Windows-only environment variables a spawned CLI may keep.
@@ -396,6 +401,15 @@ export const RESTRICTED_FLAG_MIN_CLI_VERSION = '2.1.248';
  * one that knows it gets the same boundary the flag would give.
  */
 export const CLI_RESTRICTED_ENV_KEY = 'CLAUDE_CODE_RESTRICTED';
+
+/**
+ * #1581 — tool search off. Newer CLIs (seen on 2.1.312) defer MCP tools once
+ * their definitions grow large and expect the model to load them through
+ * `ToolSearch`, which {@link CLI_BUILTIN_TOOL_DENYLIST} denies, so a deferred
+ * omadia tool could never be called. With search off every tool is sent with
+ * its schema. An older CLI ignores the key.
+ */
+export const CLI_TOOL_SEARCH_ENV_KEY = 'ENABLE_TOOL_SEARCH';
 
 const VERSION_TRIPLE = /(\d+)\.(\d+)\.(\d+)/;
 
@@ -560,6 +574,7 @@ export function buildGatedCliEnv(
   // CLI older than 2.1.248 ignores the key, a newer one honours it, and the
   // flag itself is only passed where the version is known to accept it.
   env[CLI_RESTRICTED_ENV_KEY] = '1';
+  env[CLI_TOOL_SEARCH_ENV_KEY] = 'false';
 
   return env;
 }

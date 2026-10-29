@@ -31,7 +31,9 @@ import { composeSkeleton } from '../packages/omadia-ui-orchestrator/src/composit
 
 import {
   CliChatAgent,
-  CLI_PRIVACY_SHIELD_REQUIRED_ANSWER,
+  CLI_PRIVACY_SHIELD_REQUIRED_ANSWER_DE,
+  CLI_PRIVACY_SHIELD_REQUIRED_ANSWER_EN,
+  CLI_PRIVACY_SHIELD_REQUIRED_LOG,
 } from '../packages/harness-orchestrator/src/cliChatAgent.js';
 import { MemoryBinder } from '../packages/harness-orchestrator/src/memoryBinder.js';
 import {
@@ -235,7 +237,8 @@ describe('#1535 OMADIA_PRIVACY_FORCE_GUARDED fails closed', () => {
       }) as never,
     });
     const answer = await agent.chat({ userMessage: 'Wer ist Marc Demo?', sessionScope: 's-4' });
-    assert.equal(answer.text, CLI_PRIVACY_SHIELD_REQUIRED_ANSWER);
+    // No locale wired → German, the default of every notice.
+    assert.equal(answer.text, CLI_PRIVACY_SHIELD_REQUIRED_ANSWER_DE);
     const events = [];
     for await (const event of agent.chatStream({ userMessage: 'x', sessionScope: 's-4' })) {
       events.push(event);
@@ -245,6 +248,31 @@ describe('#1535 OMADIA_PRIVACY_FORCE_GUARDED fails closed', () => {
       ['done'],
     );
     assert.equal(spawned, 0);
+  });
+
+  it('words the refusal in the turn language and tells the operator why', async () => {
+    const warned: Array<{ message: string; meta?: Readonly<Record<string, unknown>> }> = [];
+    const agent = new CliChatAgent({
+      dispatch: {} as unknown as ToolDispatchService,
+      policyEnv: { [PRIVACY_FORCE_GUARDED_ENV_VAR]: 'true' },
+      noticeLocale: () => 'en-GB',
+      logger: { info: () => {}, warn: (message, meta) => warned.push({ message, ...(meta ? { meta } : {}) }) },
+      spawnFn: (() => {
+        throw new Error('must not spawn');
+      }) as never,
+    });
+    const answer = await agent.chat({ userMessage: 'Who is Marc Demo?', sessionScope: 's-5' });
+    assert.equal(answer.text, CLI_PRIVACY_SHIELD_REQUIRED_ANSWER_EN);
+    // The user learns why (shield required, CLI has none) and whom to ask.
+    assert.match(answer.text, /Privacy Shield/);
+    assert.match(answer.text, /subscription CLI/);
+    assert.match(answer.text, /operator/);
+    // The operator learns which switch did it and both ways out.
+    assert.equal(warned.length, 1);
+    assert.equal(warned[0]?.message, CLI_PRIVACY_SHIELD_REQUIRED_LOG);
+    assert.match(CLI_PRIVACY_SHIELD_REQUIRED_LOG, /OMADIA_PRIVACY_FORCE_GUARDED/);
+    assert.match(CLI_PRIVACY_SHIELD_REQUIRED_LOG, /API key/);
+    assert.deepEqual(warned[0]?.meta, { sessionScope: 's-5' });
   });
 });
 

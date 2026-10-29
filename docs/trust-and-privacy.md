@@ -166,10 +166,21 @@ answer:
   off. With the OpenAI-compatible embedding adapter, stored turns and
   memories are embedded at that provider as stored, real values included, and
   masking them is still open. Through `ctx.llm`, the plan-runner's
-  planning check sends the user's message before the turn starts. Images the
+  planning check sends the user's message before the turn starts. After a
+  planned turn, its step-mapping call (`mapStepsAtTurnEnd`, on by default)
+  sends the plan's step goals, the names of the tools the turn called and
+  whether it answered. It sends no tool result and no answer text. Images the
   user attaches are not masked in any request, because the shield reads text
   only. Agents on the Claude subscription CLI (`claude-cli`) run without the
-  shield, and `agents.privacy_profile` is not a shield setting
+  shield. While `OMADIA_PRIVACY_FORCE_GUARDED` is set, every turn of such an
+  agent is refused before the CLI starts, so nothing reaches the model (fail
+  closed). The user gets an answer in the turn's language (English for an
+  `en*` locale, German otherwise, as for every notice) saying that the
+  organisation requires the shield, that the subscription CLI has none, and
+  that the operator can assign the agent an API-key provider under LLM
+  access. The operator gets a warning in the log for each refused turn that
+  names `OMADIA_PRIVACY_FORCE_GUARDED` and both ways out: that provider, or
+  unsetting the variable. `agents.privacy_profile` is not a shield setting
   ([`docs/security-architecture.md`](security-architecture.md) §3a, §6b,
   §6c, §6d, §6f, §7b).
   Spec: [`specs/001-privacy-shield-v4/`](../specs/001-privacy-shield-v4/).

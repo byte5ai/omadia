@@ -67,6 +67,68 @@ changelog.
 `@omadia/plugin-privacy-guard` 0.11.0, `@omadia/plugin-api` 1.37.0
 (`countUnresolvedSurrogates` takes an optional `options`).
 
+### Fixed — Orchestrator and agent wiring (#1585, #1569, #1570, #1581, #1502)
+
+2026-10-29.
+
+- **Choice cards appear again (#1585).** The native-tool registry is shared
+  by every orchestrator build, and it kept the first build's `ask_user_choice`
+  handler for the life of the process. The card was parked on that instance
+  while the turn drained the current one, so no card was ever shown, and every
+  later call answered `choice_card_already_scheduled`. Each build now
+  dispatches the kernel natives (`ask_user_choice`, `suggest_follow_ups`,
+  `find_free_slots`, `book_meeting`, `query_knowledge_graph`) to its own
+  instances: `dispatchToolInner` skips a kernel-owned registration
+  (`isKernelNativeRegistration`), and the subscription-CLI dispatcher asks
+  `Orchestrator.kernelNativeHandler` first. The registry's own handler, which
+  sub-agent tool refs and plugin `tools.invoke` still read, now serves the
+  most recent build instead of the first. A plugin that registers one of
+  these names keeps its handler.
+- **Quality Guard resolves per agent (#1569).** The orchestrator now sends
+  the agent's slug and its own `quality` settings (`agent_identities.quality`,
+  joined into the registry's agent row) with every `getRules` call, so
+  `agent_overrides` takes effect. For each field the agent sets itself (level,
+  boundaries) the guard adds nothing, because the agent's prompt already
+  carries it; a turn no longer gets two anti-flattery blocks of different
+  strength. `@omadia/plugin-quality-guard` 0.2.1: help texts and README state
+  the order and that the override key is the agent slug.
+- **Prompt tab copy (#1570).** The hint no longer says the text opens the
+  system prompt. It says this is the agent's own part, and that the earlier
+  conversation context and the Quality Guard rules can come before it. The
+  order itself is deliberate and unchanged.
+- **Memory on the subscription CLI (#1581).** CLI 2.1.187 sent the first
+  model request without the loopback MCP tools whenever the handshake took
+  more than a few seconds (measured with a delayed loopback: `tools: []`,
+  server `pending`). The model then wrote a `memory` call as text and claimed
+  the file was saved. The image now pins 2.1.312, which waits for the
+  connection (its login prompt matches `cliAuthService`). Being newer than
+  2.1.248, it is also spawned with `--restricted` now, the third layer of the
+  CLI gate (OM-85). Version-independent
+  guards: the agent reads the CLI's `init` line and ends a turn whose CLI
+  loaded none of omadia's tools with an error instead of an answer
+  (`checkCliInit`); the spawn log lists the offered tool names; the gated env
+  sets `ENABLE_TOOL_SEARCH=false`, because newer CLIs defer large MCP tool
+  sets behind `ToolSearch`, which the gate denies; `PublishPlugin` (new in
+  2.1.312) joins the built-in deny list.
+- **Subscription CLI under `OMADIA_PRIVACY_FORCE_GUARDED`.** Still refused
+  (fail closed, #1539). The refusal now names the reason (the Privacy Shield
+  is required, the subscription CLI has none) and the fix (an API-key
+  provider under LLM access). It is written in the turn's language, by the
+  same rule as the other notices, and each refused turn logs a warning that
+  names the variable.
+- **Plan steps mapped at turn end (#1502, option C).** After a planned turn,
+  one Haiku call maps the turn's work calls to the plan steps and corrects
+  the stored plan that recall reads. The live card keeps the in-turn order
+  mapping, and `done` does not wait. A failed or unusable verdict keeps the
+  in-turn result. The call goes out through `ctx.llm` unmasked, so it gets
+  only the step goals, the tool names in call order and whether the turn
+  answered: no tool result and no answer text. A step changed by a later turn
+  while the call ran is left alone. New setup field `mapStepsAtTurnEnd`
+  (default `on`).
+  `calls_per_invocation` rises from 30 to 1000000: the counter runs since
+  activation, so 30 stopped planning silently after about 30 turns.
+  `@omadia/plugin-plan-runner` 0.2.0.
+
 ### Security — plugin routes need a session, native tools follow plugin assignment (#1596, #1598, #1601)
 
 2026-10-29.
