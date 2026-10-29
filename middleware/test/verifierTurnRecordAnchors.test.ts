@@ -132,14 +132,25 @@ describe('#1575 — aggregate compared with the records it is about', () => {
     assert.equal(verdict.status, 'verified');
   });
 
-  it('never counts refused requests', async () => {
+  it('accepts a total that counts a refused request too (seen live: "Rechnet man ihn mit, sind es 58,35 Tage")', async () => {
     const verdict = await checker().check({
       ...TOTAL,
       value: 8,
-      text: 'Insgesamt 8 Tage',
+      text: 'Rechnet man den abgelehnten Antrag mit, sind es 8 Tage',
       relatedEntities: ['hr.employee:9'],
     });
+    assert.equal(verdict.status, 'verified', JSON.stringify(verdict));
+  });
+
+  it('contradicts a total no reading of the records supports', async () => {
+    const verdict = await checker().check({
+      ...TOTAL,
+      value: 12,
+      text: 'Insgesamt 12 Tage',
+      relatedEntities: ['hr.employee:15'],
+    });
     assert.equal(verdict.status, 'contradicted');
+    if (verdict.status === 'contradicted') assert.equal(verdict.truth, 9, 'the approved total is the reported truth');
   });
 
   it('does not count a refused request the turn read', async () => {

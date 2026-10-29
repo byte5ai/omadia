@@ -128,12 +128,17 @@ const AGGREGATE_SCOPE_BY_MODEL: Readonly<Record<string, { field: string; model: 
 
 /**
  * #1575 — the request states a total may count, per model. A leave total
- * means approved days (`validate`), or — when the answer counts open
- * requests too — approved plus pending ones; refused and cancelled requests
- * never count. Each set is one candidate total.
+ * usually means approved days (`validate`), or approved plus pending ones.
+ * An answer may also state a total that counts every request ("counting the
+ * refused one too, it is 58.35 days") — `undefined` is that reading. Each set
+ * is one candidate total; a claim is contradicted only when no reading of
+ * the records supports it, so a correct total is never withheld for counting
+ * requests the default reading leaves out.
  */
-const AGGREGATE_STATE_SETS: Readonly<Record<string, ReadonlyArray<readonly string[]>>> = {
-  'hr.leave': [['validate'], ['validate', 'validate1', 'confirm']],
+const AGGREGATE_STATE_SETS: Readonly<
+  Record<string, ReadonlyArray<readonly string[] | undefined>>
+> = {
+  'hr.leave': [['validate'], ['validate', 'validate1', 'confirm'], undefined],
 };
 
 /**
@@ -334,9 +339,9 @@ export class DeterministicChecker {
    *    `<model>:<id>` related entity, else the one owner of the turn's
    *    records. No scope ⇒ `unverified` — a company-wide sum is no truth;
    *  - each candidate total: per request-state set (approved; approved +
-   *    pending), over all of the owner's records and over the ones the turn
-   *    itself read (which carries the turn's period) — a refused request
-   *    counts on neither side. The claim is verified when one matches;
+   *    pending; every request), over all of the owner's records and over
+   *    the ones the turn itself read (which carries the turn's period). The
+   *    claim is verified when one matches;
    *  - contradicted only when none matches and the candidates cover what the
    *    claim is about: the turn read the summed records, or the claim names
    *    no period (there is no period filter of our own).
@@ -375,8 +380,7 @@ export class DeterministicChecker {
     const turnSet = new Set(turnIds);
     const turnRows = rows.filter((row) => typeof row['id'] === 'number' && turnSet.has(row['id']));
     // Every candidate set — all of the owner's records, and the ones the turn
-    // read — is counted per request-state set, so a refused request never
-    // counts on either side.
+    // read — is counted per request-state set.
     const totalsOver = (base: Array<Record<string, unknown>>): number[] =>
       (stateSets ?? [undefined])
         .map((states) => aggregate(states ? base.filter(inState(states)) : base, field, kind))
