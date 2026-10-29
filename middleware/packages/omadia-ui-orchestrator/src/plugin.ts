@@ -49,7 +49,17 @@ import {
 import { synthesizeSurfaceEvents } from './surfaceSynthesis.js';
 import { replaceSkeletonOnWithheld } from './verdictHold.js';
 import { resolveReferenceLumen } from './referenceLumens.js';
-import { validateLumenNode } from './treeValidator.js';
+import { validateLumenNode, validateTree } from './treeValidator.js';
+import {
+  buildRowDetailsTree,
+  isRowDetailsAction,
+  parseRecordId,
+  ROW_DETAILS_TOOL,
+  rowDetailsAnswer,
+  rowDetailsAsk,
+  rowDetailsLanguage,
+  rowDetailsSource,
+} from './rowDetails.js';
 import { buildDatasetLumen } from './datasetLumen.js';
 
 /**
@@ -1007,8 +1017,14 @@ export async function activate(
     input: ChatTurnInput,
     answer: string,
     toolCalls: number,
+    /** transcript line for an action turn without user text */
+    fallbackUserMessage?: string,
   ): Promise<string | undefined> {
     if (input.sessionScope === undefined) return undefined;
+    const userMessage =
+      input.userMessage.trim().length === 0 && fallbackUserMessage !== undefined
+        ? fallbackUserMessage
+        : input.userMessage;
     const bundle = ctx.services.get<ChatAgentBundle & { sessionLogger?: CanvasSessionLogger }>(CHAT_AGENT_SERVICE);
     const logger = bundle?.sessionLogger;
     if (!logger) return undefined;
@@ -1018,7 +1034,7 @@ export async function activate(
     try {
       const { turnExternalId } = await logger.log({
         scope: input.sessionScope,
-        userMessage: input.userMessage,
+        userMessage,
         assistantAnswer: answer,
         toolCalls,
         iterations: 0,
@@ -1184,6 +1200,73 @@ export async function activate(
       tool: [...new Set(plans.map((p) => p.fetch.tool))].join(','),
       rows: first?.rows.length ?? 0,
       toolCalls: jobs.length,
+    };
+  }
+
+  type RowDetailsOutcome =
+    | { hit: true; snapshot: ChatStreamEvent; prose: string; ask: string }
+    | { hit: false; reason: string };
+
+  /** LLM-free "Details anzeigen" (rowDetails.ts): the target row's table
+   *  recipe names tool + model, the row key is the record id — ONE id query,
+   *  rendered as a deterministic key/value view. Emits nothing on a miss: the
+   *  existing composer/agent path then runs unchanged. No model is called
+   *  and no value leaves this function except into the canvas snapshot. */
+  async function runRowDetails(
+    input: ChatTurnInput,
+    canvasSessionId: string,
+    fp: FastPathService | undefined,
+    privacyForced: boolean,
+    permitted: ReadonlySet<string>,
+  ): Promise<RowDetailsOutcome> {
+    const miss = (reason: string): RowDetailsOutcome => ({ hit: false, reason });
+    if (fp === undefined) return miss('disabled');
+    if (privacyForced) return miss('privacy-forced');
+    const row = actionTargetRow(input);
+    if (!row) return miss('no-target');
+    const recipe = refreshRecipes.get(canvasSessionId, row.containerId);
+    if (!recipe) return miss('no-recipe');
+    if (recipe.tool !== ROW_DETAILS_TOOL) return miss('tool-unsupported');
+    if (!fp.allowedFetchTools().has(ROW_DETAILS_TOOL)) return miss('tool-not-allowed');
+    if (!permitted.has(ROW_DETAILS_TOOL)) return miss('tool-not-permitted');
+    // the row key is a record id only when the table keyed its rows by `id`
+    const id = recipe.rowKey === 'id' ? parseRecordId(row.key) : undefined;
+    if (id === undefined) return miss('row-key-invalid');
+    const source = rowDetailsSource(recipe, id);
+    if (!source) return miss('no-recipe');
+    const invoke = toolsAccessor?.invoke?.bind(toolsAccessor);
+    if (!invoke) return miss('no-invoker');
+    const fetched = await fetchRecipeRows(invoke, source, { rejectTruncated: true, timeZone: fp.timeZone });
+    if (!fetched.ok) {
+      if (fetched.detail !== undefined) {
+        ctx.log(`[ui-orchestrator] row-details ${source.tool} ${fetched.reason}: ${fetched.detail}`);
+      }
+      return miss(fetched.reason === 'truncated' || fetched.reason === 'unmappable' ? fetched.reason : 'invoke-error');
+    }
+    const record = fetched.records.find((r) => r['id'] === id);
+    if (!record) return miss('not-found');
+    const model = (source.input as { model: string; fields: string[] }).model;
+    const fields = (source.input as { model: string; fields: string[] }).fields;
+    const lang = rowDetailsLanguage(input);
+    const view = buildRowDetailsTree({ model, record, fields, lang });
+    const valid = validateTree(view.tree);
+    if (!valid.ok) {
+      ctx.log(`[ui-orchestrator] row-details tree invalid: ${valid.errors ?? ''}`);
+      return miss('invalid-tree');
+    }
+    return {
+      hit: true,
+      snapshot: {
+        type: 'surface_snapshot',
+        canvasSessionId,
+        surfaceSeq: 0,
+        producesRevision: '0' as RevisionId,
+        tree: view.tree,
+        protocolVersion: CANVAS_PROTOCOL_VERSION,
+        opsCatalogVersion: OPS_CATALOG_VERSION,
+      },
+      prose: rowDetailsAnswer(view.title, lang),
+      ask: rowDetailsAsk(model, id, lang),
     };
   }
 
@@ -1486,6 +1569,31 @@ export async function activate(
       fp = undefined;
     }
     const permittedTools: ReadonlySet<string> = permitted ?? new Set<string>();
+
+    // ── Row details (LLM-free) ─────────────────────────────────────────────
+    // "Details anzeigen" as a structured action: answered from the row's
+    // table recipe alone (rowDetails.ts). Any miss → the paths below.
+    if (isRowDetailsAction(input)) {
+      const details = await runRowDetails(input, canvasSessionId, fp, privacyForced, permittedTools);
+      if (details.hit) {
+        yield details.snapshot;
+        yield { type: 'text_delta', text: details.prose };
+        const turnId = await recordCanvasTurn(input, details.prose, 1, details.ask);
+        yield {
+          type: 'done',
+          answer: details.prose,
+          toolCalls: 1,
+          iterations: 0,
+          ...(turnId !== undefined ? { turnId } : {}),
+        };
+        ctx.log(
+          `[fast-path] hit channel=canvas kind=row-details tool=${ROW_DETAILS_TOOL} ms=${Date.now() - turnStartedAt}`,
+        );
+        return;
+      }
+      ctx.log(`[fast-path] miss channel=canvas kind=row-details reason=${details.reason}`);
+    }
+
     if (fp !== undefined && !privacyForced) {
       await migrateLegacyPlans(fp);
       await fp.plans.load();
