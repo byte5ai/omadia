@@ -1,7 +1,8 @@
 /**
- * Fast-path router + planner (@omadia/fast-path router.ts / planner.ts):
- * forced tool calls (no prose path), decision parsing, the confidence gate,
- * and the planner's whitelist / canvas-container rules.
+ * Fast-path router + speculative planner (@omadia/fast-path router.ts,
+ * planner.ts, triageTurn.ts): forced tool calls (no prose path), fixed text
+ * in the SYSTEM prompt and only the user-derived turn message in the (masked)
+ * user message, router ∥ planner with discard on an agent route.
  */
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
@@ -19,21 +20,24 @@ import {
   ROUTER_TOOL,
   routeTurn,
 } from '../packages/harness-plugin-fast-path/src/router.js';
+import type { StoredTextPrivacyRun } from '../packages/harness-plugin-fast-path/src/storedTextPrivacy.js';
+import { buildTurnMessage, triageTurn } from '../packages/harness-plugin-fast-path/src/triageTurn.js';
 
 type Req = Parameters<FastLlm['complete']>[0];
 type Res = Awaited<ReturnType<FastLlm['complete']>>;
 
-const TOOLS = [{ name: 'odoo_query', spec: 'odoo_query — Odoo search_read. SPEC-BODY' }];
+const TOOLS = [{ name: 'odoo_query', spec: 'odoo_query — Odoo search_read. SPEC-BODY account.move amount_residual' }];
 const ODOO = new Set(['odoo_query']);
+const MESSAGE = 'USER TURN: Geburtstage im Januar';
 
-function llm(answer: Res | (() => Promise<Res>)): { llm: FastLlm; reqs: Req[] } {
+function llm(answer: Res | ((req: Req) => Promise<Res>)): { llm: FastLlm; reqs: Req[] } {
   const reqs: Req[] = [];
   return {
     reqs,
     llm: {
       complete: (req) => {
         reqs.push(req);
-        return typeof answer === 'function' ? answer() : Promise.resolve(answer);
+        return typeof answer === 'function' ? answer(req) : Promise.resolve(answer);
       },
     },
   };
@@ -41,12 +45,20 @@ function llm(answer: Res | (() => Promise<Res>)): { llm: FastLlm; reqs: Req[] } 
 const toolCall = (name: string, input: unknown): Res => ({ text: '', toolCalls: [{ name, input }] });
 
 const route = (fake: FastLlm, logs: string[] = []): ReturnType<typeof routeTurn> =>
-  routeTurn({ llm: fake, model: 'class:fast', channel: 'web', question: 'Geburtstage im Januar', tools: TOOLS, log: (m) => logs.push(m) });
+  routeTurn({ llm: fake, model: 'class:fast', channel: 'web', message: MESSAGE, tools: TOOLS, log: (m) => logs.push(m) });
 
 describe('router — forced route_turn call', () => {
-  it('request shape: ONE tool, forced by name, small budget, thinking off, low effort; catalog is one line per tool', async () => {
+  it('request shape: ONE forced tool, small budget, thinking off; catalog in the SYSTEM prompt, user = turn message', async () => {
     const f = llm(toolCall(ROUTER_TOOL, { decision: 'agent_simple', confidence: 0.9 }));
-    await route(f.llm);
+    await routeTurn({
+      llm: f.llm,
+      model: 'm',
+      channel: 'web',
+      message: MESSAGE,
+      tools: TOOLS,
+      intents: [{ question: 'geburtstage im {{text_1}}', tool: 'odoo_query' }],
+      log: () => {},
+    });
     const req = f.reqs[0]!;
     assert.deepEqual(req.toolChoice, { name: ROUTER_TOOL });
     assert.deepEqual(req.tools?.map((t) => t.name), [ROUTER_TOOL]);
@@ -56,22 +68,18 @@ describe('router — forced route_turn call', () => {
     const schema = req.tools?.[0]?.inputSchema as { required: string[]; properties: Record<string, { enum?: string[] }> };
     assert.deepEqual(schema.required, ['decision', 'confidence']);
     assert.deepEqual(schema.properties['tool']?.enum, ['odoo_query']);
-    const user = req.messages[0]?.content ?? '';
-    assert.match(user, /^TOOLS:\n- odoo_query: Odoo ERP read-only lookup/);
-    assert.doesNotMatch(user, /SPEC-BODY/, 'the full spec is the planner\'s');
-    assert.match(user, /USER TURN: Geburtstage im Januar$/);
+    assert.match(req.system ?? '', /TOOLS:\n- odoo_query: Odoo ERP read-only lookup/);
+    assert.match(req.system ?? '', /LEARNED INTENTS[\s\S]*"geburtstage im \{\{text_1\}\}" → odoo_query/);
+    assert.doesNotMatch(req.system ?? '', /SPEC-BODY/, "the full spec is the planner's");
+    assert.equal(req.messages[0]?.content, MESSAGE, 'the user message is the turn message only');
   });
 
   it('decisions: agent_simple/complex carry the route hint; deterministic ≥ threshold plans; logged', async () => {
     const logs: string[] = [];
-    assert.deepEqual(
-      await route(llm(toolCall(ROUTER_TOOL, { decision: 'agent_simple', confidence: 0.8 })).llm, logs).then((r) => [r.kind, r.kind === 'agent' && r.route]),
-      ['agent', 'simple'],
-    );
-    assert.deepEqual(
-      await route(llm(toolCall(ROUTER_TOOL, { decision: 'agent_complex', confidence: 0.3 })).llm).then((r) => [r.kind, r.kind === 'agent' && r.route]),
-      ['agent', 'complex'],
-    );
+    const simple = await route(llm(toolCall(ROUTER_TOOL, { decision: 'agent_simple', confidence: 0.8 })).llm, logs);
+    assert.deepEqual([simple.kind, simple.kind === 'agent' && simple.route], ['agent', 'simple']);
+    const complex = await route(llm(toolCall(ROUTER_TOOL, { decision: 'agent_complex', confidence: 0.3 })).llm);
+    assert.deepEqual([complex.kind, complex.kind === 'agent' && complex.route], ['agent', 'complex']);
     const plan = await route(llm(toolCall(ROUTER_TOOL, { decision: 'deterministic', tool: 'odoo_query', confidence: 0.85 })).llm, logs);
     assert.equal(plan.kind, 'plan');
     assert.ok(logs.some((m) => /^\[fast-path\] router channel=web decision=deterministic tool=odoo_query conf=0\.85 ms=\d+$/.test(m)));
@@ -87,7 +95,6 @@ describe('router — forced route_turn call', () => {
     ];
     for (const [answer, reason] of cases) {
       const r = await route(llm(answer).llm);
-      assert.equal(r.kind, 'agent', reason);
       assert.equal(r.kind === 'agent' ? r.reason : '', reason);
       assert.equal(r.kind === 'agent' ? r.route : 'x', undefined, reason);
     }
@@ -111,66 +118,42 @@ describe('router — forced route_turn call', () => {
       confidence: 0.5,
     });
   });
-
-  it('privacy: the prompt is masked; a refused mask skips the call', async () => {
-    const f = llm(toolCall(ROUTER_TOOL, { decision: 'agent_simple', confidence: 0.9 }));
-    await routeTurn({
-      llm: f.llm,
-      model: 'm',
-      channel: 'web',
-      question: 'Geburtstag von Anna Schmidt',
-      tools: TOOLS,
-      privacy: { mask: async (t) => ({ send: true, text: t.replace('Anna Schmidt', 'Lukas Becker') }), restore: (t) => t },
-      log: () => {},
-    });
-    assert.ok(!(f.reqs[0]?.messages[0]?.content ?? '').includes('Anna Schmidt'));
-    const refused = llm(toolCall(ROUTER_TOOL, {}));
-    const r = await routeTurn({
-      llm: refused.llm,
-      model: 'm',
-      channel: 'web',
-      question: 'x',
-      tools: TOOLS,
-      privacy: { mask: async () => ({ send: false, reason: 'blocked' }), restore: (t) => t },
-      log: () => {},
-    });
-    assert.equal(r.kind === 'agent' ? r.reason : '', 'privacy-refused');
-    assert.equal(refused.reqs.length, 0);
-  });
 });
 
 describe('planner — forced plan_query call', () => {
   const plan = (answer: Res | (() => Promise<Res>), over: Partial<Parameters<typeof planQuery>[0]> = {}) => {
     const f = llm(answer);
-    const logs: string[] = [];
     return {
       f,
-      logs,
       out: planQuery({
         llm: f.llm,
         model: 'm',
         channel: 'web',
+        message: 'USER TURN: offene Posten',
         question: 'offene Posten',
-        tool: TOOLS[0]!,
+        tools: TOOLS,
         allowedTools: ODOO,
-        log: (m) => logs.push(m),
+        log: () => {},
         ...over,
       }),
     };
   };
 
-  it('request shape: plan_query forced; free-form input/map; full spec in the prompt', async () => {
+  it('request shape: plan_query forced, free-form input; spec/catalog in the SYSTEM prompt, NOT in the user message', async () => {
     const { f, out } = plan(toolCall(PLANNER_TOOL, { ...PLAN_EXAMPLE }));
     const r = await out;
     assert.ok(r.ok);
     const req = f.reqs[0]!;
     assert.deepEqual(req.toolChoice, { name: PLANNER_TOOL });
     assert.equal(req.maxTokens, PLANNER_MAX_TOKENS);
-    const schema = req.tools?.[0]?.inputSchema as { properties: Record<string, Record<string, unknown>> };
+    const schema = req.tools?.[0]?.inputSchema as { required: string[]; properties: Record<string, Record<string, unknown>> };
     assert.equal(schema.properties['input']?.['type'], 'object');
     assert.equal(schema.properties['input']?.['additionalProperties'], undefined, 'free-form object');
-    assert.match(req.messages[0]?.content ?? '', /SPEC-BODY/);
-    assert.equal(r.plan.fetch.tool, 'odoo_query');
+    assert.deepEqual(schema.properties['tool']?.['enum'], ['odoo_query']);
+    assert.equal(schema.required.includes('containerId'), false, 'the planner never sees the skeleton');
+    assert.match(req.system ?? '', /SPEC-BODY/);
+    assert.equal(req.messages[0]?.content, 'USER TURN: offene Posten');
+    assert.doesNotMatch(req.messages[0]?.content ?? '', /SPEC-BODY|account\.move|EXAMPLE|TOOLS/);
     assert.match(r.plan.summary, /\{sum:open_amount\} \{currency\}/);
   });
 
@@ -188,34 +171,123 @@ describe('planner — forced plan_query call', () => {
     }
   });
 
-  it('canvas: containerId is required (enum of the skeleton containers) and the map must cover its fieldKeys', async () => {
-    const containers = [
-      { containerId: 'items', description: 'Offene Posten', fields: [{ fieldKey: 'number', label: 'Nr.' }, { fieldKey: 'partner', label: 'Kunde' }] },
-    ];
-    const ok = plan(toolCall(PLANNER_TOOL, { ...PLAN_EXAMPLE, containerId: 'items' }), { channel: 'canvas', containers });
-    const r = await ok.out;
-    assert.ok(r.ok);
-    assert.equal(r.containerId, 'items');
-    const schema = ok.f.reqs[0]?.tools?.[0]?.inputSchema as { required: string[]; properties: Record<string, { enum?: string[] }> };
-    assert.ok(schema.required.includes('containerId'));
-    assert.deepEqual(schema.properties['containerId']?.enum, ['items']);
-    assert.match(ok.f.reqs[0]?.messages[0]?.content ?? '', /DATA CONTAINERS:\n- items \(Offene Posten\): fieldKeys number "Nr\.", partner "Kunde"/);
-    const mismatch = await plan(toolCall(PLANNER_TOOL, { ...PLAN_EXAMPLE, map: { other: 'name' } }), { containers }).out;
-    assert.equal(mismatch.ok ? '' : mismatch.reason, 'planner-invalid:map-mismatch');
-  });
-
-  it('privacy: masked prompt in, restored values in the plan out', async () => {
+  it('restore: the plan strings are restored through the per-turn run', async () => {
     const r = await plan(
       toolCall(PLANNER_TOOL, { ...PLAN_EXAMPLE, input: { model: 'res.partner', domain: [['name', 'ilike', 'Lukas Becker']] } }),
-      {
-        question: 'Kontakt von Anna Schmidt',
-        privacy: {
-          mask: async (t) => ({ send: true, text: t.replaceAll('Anna Schmidt', 'Lukas Becker') }),
-          restore: (t) => t.replaceAll('Lukas Becker', 'Anna Schmidt'),
-        },
-      },
+      { restore: (t) => t.replaceAll('Lukas Becker', 'Anna Schmidt') },
     ).out;
     assert.ok(r.ok);
     assert.deepEqual((r.plan.fetch.input as { domain: unknown }).domain, [['name', 'ilike', 'Anna Schmidt']]);
+  });
+});
+
+describe('triageTurn — router ∥ speculative planner, one mask on the user part', () => {
+  /** answers route_turn / plan_query; each call can be held until released */
+  function gated(routeInput: unknown, planInput: unknown = { ...PLAN_EXAMPLE }) {
+    const started: string[] = [];
+    const pending = new Map<string, () => void>();
+    const f = llm(
+      (req) =>
+        new Promise<Res>((resolve) => {
+          const name = req.toolChoice?.name ?? '?';
+          started.push(name);
+          pending.set(name, () => resolve(toolCall(name, name === ROUTER_TOOL ? routeInput : planInput)));
+        }),
+    );
+    return { f, started, release: (name: string) => pending.get(name)?.() };
+  }
+  const flush = async (): Promise<void> => {
+    for (let i = 0; i < 20; i += 1) await new Promise((r) => setImmediate(r));
+  };
+  const masking = (): { run: StoredTextPrivacyRun; masked: string[] } => {
+    const masked: string[] = [];
+    return {
+      masked,
+      run: {
+        mask: async (t) => {
+          masked.push(t);
+          return { send: true, text: t.replaceAll('Anna Schmidt', 'Lukas Becker') };
+        },
+        restore: (t) => t.replaceAll('Lukas Becker', 'Anna Schmidt'),
+      },
+    };
+  };
+
+  it('the planner starts BEFORE the router resolves; a deterministic route uses its plan', async () => {
+    const g = gated({ decision: 'deterministic', tool: 'odoo_query', confidence: 0.9 });
+    const out = triageTurn({
+      llm: g.f.llm, model: 'm', channel: 'web', question: 'offene Posten', tools: TOOLS, offered: [], allowedTools: ODOO, log: () => {},
+    });
+    await flush();
+    assert.deepEqual([...g.started].sort(), [PLANNER_TOOL, ROUTER_TOOL], 'both in flight, nothing resolved');
+    g.release(ROUTER_TOOL);
+    g.release(PLANNER_TOOL);
+    const r = await out;
+    assert.equal(r.kind, 'plan');
+  });
+
+  it('an agent route discards the speculative plan (logged) and keeps the route hint', async () => {
+    const logs: string[] = [];
+    const g = gated({ decision: 'agent_complex', confidence: 0.9 });
+    const out = triageTurn({
+      llm: g.f.llm, model: 'm', channel: 'canvas', question: 'Analysiere', tools: TOOLS, offered: [], allowedTools: ODOO, log: (m) => logs.push(m),
+    });
+    await flush();
+    g.release(ROUTER_TOOL); // the planner never resolves — not awaited
+    const r = await out;
+    assert.deepEqual([r.kind, r.kind === 'agent' && r.route, r.kind === 'agent' && r.reason], ['agent', 'complex', 'agent:complex']);
+    assert.ok(logs.includes('[fast-path] planner discarded (route=agent:complex)'));
+    g.release(PLANNER_TOOL);
+  });
+
+  it('a plan for another tool than the router chose is discarded (planner-tool-mismatch)', async () => {
+    const tools = [...TOOLS, { name: 'search_contracts', spec: 'search_contracts — learned read tool' }];
+    const g = gated(
+      { decision: 'deterministic', tool: 'search_contracts', confidence: 0.9 },
+      { ...PLAN_EXAMPLE },
+    );
+    const out = triageTurn({
+      llm: g.f.llm, model: 'm', channel: 'web', question: 'x', tools, offered: [], allowedTools: new Set(['odoo_query', 'search_contracts']), log: () => {},
+    });
+    await flush();
+    g.release(ROUTER_TOOL);
+    g.release(PLANNER_TOOL);
+    const r = await out;
+    assert.equal(r.kind === 'agent' ? r.reason : '', 'planner-tool-mismatch');
+  });
+
+  it('privacy: ONLY the user-derived turn message is masked, ONCE; both calls get the masked text; the plan is restored', async () => {
+    const m = masking();
+    const previous = { question: 'Kontakt von Anna Schmidt', fetch: { tool: 'odoo_query', input: { model: 'res.partner' }, map: { name: 'name' } } };
+    const f = llm((req) =>
+      Promise.resolve(
+        req.toolChoice?.name === ROUTER_TOOL
+          ? toolCall(ROUTER_TOOL, { decision: 'deterministic', tool: 'odoo_query', confidence: 0.9 })
+          : toolCall(PLANNER_TOOL, { ...PLAN_EXAMPLE, input: { model: 'res.partner', domain: [['name', 'ilike', 'Lukas Becker']] } }),
+      ),
+    );
+    const r = await triageTurn({
+      llm: f.llm, model: 'm', channel: 'web', question: 'Telefon von Anna Schmidt', tools: TOOLS, offered: [], allowedTools: ODOO, previous, privacy: m.run, log: () => {},
+    });
+    assert.equal(m.masked.length, 1, 'one mask call per turn');
+    assert.equal(m.masked[0], buildTurnMessage({ question: 'Telefon von Anna Schmidt', previous }));
+    assert.doesNotMatch(m.masked[0] ?? '', /SPEC-BODY|TOOLS|EXAMPLE|route_turn/, 'fixed text is never masked');
+    for (const req of f.reqs) {
+      assert.ok(!(req.messages[0]?.content ?? '').includes('Anna Schmidt'), 'masked user message');
+      assert.match(req.messages[0]?.content ?? '', /USER TURN: Telefon von Lukas Becker/);
+    }
+    assert.ok(r.kind === 'plan');
+    assert.deepEqual((r.plan.fetch.input as { domain: unknown }).domain, [['name', 'ilike', 'Anna Schmidt']]);
+  });
+
+  it('a refused mask skips both calls', async () => {
+    const f = llm(toolCall(ROUTER_TOOL, {}));
+    const r = await triageTurn({
+      llm: f.llm, model: 'm', channel: 'web', question: 'x', tools: TOOLS, offered: [], allowedTools: ODOO,
+      privacy: { mask: async () => ({ send: false, reason: 'blocked' }), restore: (t) => t },
+      log: () => {},
+    });
+    assert.equal(r.kind === 'agent' ? r.reason : '', 'privacy-refused');
+    assert.equal(f.reqs.length, 0);
   });
 });

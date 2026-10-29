@@ -460,8 +460,8 @@ describe('canvasChatAgent — deterministic fast path', () => {
   it('miss: output not mappable', () =>
     assertMiss('unmappable', { invoke: () => Promise.resolve(JSON.stringify({ records: [{ x: 1 }] })) }));
 
-  it('miss: no table resolves for the planned container', () =>
-    assertMiss('unpublishable', {
+  it('miss: the single data container is no table in the tree (not-a-table)', () =>
+    assertMiss('not-a-table', {
       composer: JSON.stringify({
         ...JSON.parse(composerOutput()),
         dataRequirements: [
@@ -496,7 +496,7 @@ describe('canvasChatAgent — deterministic fast path', () => {
   });
 });
 
-describe('canvasChatAgent — router ∥ composer, then planner', () => {
+describe('canvasChatAgent — router ∥ speculative planner ∥ composer, then binding', () => {
   /** A fake whose every call stays pending until released; records the
    *  call kind (route_turn / plan_query / composer) in start order. */
   const gatedLlm = (): { llm: CompositionLlm; started: string[]; release: () => void } => {
@@ -514,20 +514,26 @@ describe('canvasChatAgent — router ∥ composer, then planner', () => {
     for (let i = 0; i < 200 && !cond(); i += 1) await new Promise((r) => setImmediate(r));
   };
 
-  it('router and composer are BOTH started before either resolves; the planner follows; hit', async () => {
+  it('router, planner and composer are ALL started before any resolves; hit', async () => {
     const g = gatedLlm();
     const h = await harness({ llm: g.llm });
     const done = collect(h.agent.chatStream(turn()));
-    await until(() => g.started.length >= 2);
-    assert.deepEqual([...g.started].sort(), ['composer', 'route_turn'], 'both in flight, nothing resolved yet');
-    g.release();
     await until(() => g.started.length >= 3);
-    assert.equal(g.started[2], 'plan_query');
+    assert.deepEqual([...g.started].sort(), ['composer', 'plan_query', 'route_turn'], 'all in flight, nothing resolved');
     g.release();
     const events = await done;
+    assert.equal(g.started.length, 3, 'no further model call');
     assert.equal(h.baseInputs.length, 0, 'no agent turn');
     assert.ok(events.some((e) => e.type === 'surface_patch'));
     assert.ok(h.logs.some((m) => /^\[fast-path\] router channel=canvas decision=deterministic tool=odoo_query conf=0\.90 ms=\d+$/.test(m)));
+  });
+
+  it('an agent route discards the speculative plan; the agent fills the skeleton', async () => {
+    const h = await harness({ composer: composerOutput({ fetch: null }) });
+    await collect(h.agent.chatStream(turn()));
+    assert.ok(h.logs.includes('[fast-path] planner discarded (route=agent:complex)'));
+    assert.equal(h.invokeCalls.length, 0, 'no query ran');
+    assert.equal(h.baseInputs.length, 1);
   });
 
   it('kill switch, privacy force-guard and an agent without the tool: no router/planner call at all', async () => {
@@ -553,30 +559,51 @@ describe('canvasChatAgent — router ∥ composer, then planner', () => {
     }
   });
 
-  it('a skeleton with two data containers misses before any planner call (multi-container)', async () => {
-    const two = JSON.parse(composerOutput()) as { dataRequirements: Array<Record<string, unknown>>; tree: { children: unknown[] } };
+  it('a skeleton with two data containers misses (multi-container); the plan never runs', async () => {
+    const two = JSON.parse(composerOutput()) as { dataRequirements: Array<Record<string, unknown>> };
     two.dataRequirements.push({ ...two.dataRequirements[0], containerId: 'second' });
-    const kinds: string[] = [];
-    const llm = withRouterPlanner({
-      complete: (req: { toolChoice?: { name: string } }) => {
-        kinds.push(req.toolChoice?.name ?? 'composer');
-        return Promise.resolve({ text: JSON.stringify(two) });
-      },
-    } as CompositionLlm);
-    const h = await harness({ llm });
+    const h = await harness({ composer: JSON.stringify(two) });
     await collect(h.agent.chatStream(turn()));
-    assert.ok(!kinds.includes('plan_query'));
     assert.ok(h.logs.includes('[fast-path] miss channel=canvas reason=multi-container'));
+    assert.equal(h.invokeCalls.length, 0);
+    assert.equal(h.baseInputs.length, 1);
   });
 
-  it('the planner gets the skeleton container and its fieldKeys; a plan off those keys misses (map-mismatch)', async () => {
-    const forced: Array<{ tool: string; system: string; user: string }> = [];
-    const off = composerOutput({ fetch: { ...BIRTHDAY_FETCH, map: { name: 'name' } } });
-    const h = await harness({ llm: withRouterPlanner(llmReturning(off).llm, { text: () => off, forced }) });
-    await collect(h.agent.chatStream(turn()));
-    const planner = forced.find((c) => c.tool === 'plan_query')?.user ?? '';
-    assert.match(planner, /DATA CONTAINERS:\n- birthdays \(.*\): fieldKeys name "Name", birthday "Geburtstag", department "Abteilung"/);
-    assert.ok(h.logs.includes('[fast-path] miss channel=canvas reason=planner-invalid:map-mismatch'));
-    assert.equal(h.baseInputs.length, 1);
+  it('binding: the plan fills the ONE table and its columns + labels REPLACE the composer\'s', async () => {
+    const PLAN = {
+      ...BIRTHDAY_FETCH,
+      map: { person: 'name', born: 'birthday' },
+      labels: { person: 'Mitarbeiterin', born: 'Geboren am' },
+      summary: SUMMARY,
+      locale: 'de-DE',
+    };
+    const llm: CompositionLlm = {
+      complete: (req) =>
+        Promise.resolve(
+          req.toolChoice?.name === 'route_turn'
+            ? { text: '', toolCalls: [{ name: 'route_turn', input: { decision: 'deterministic', tool: 'odoo_query', confidence: 0.9 } }] }
+            : req.toolChoice?.name === 'plan_query'
+              ? { text: '', toolCalls: [{ name: 'plan_query', input: PLAN }] }
+              : { text: composerOutput({ fetch: null }) },
+        ),
+    };
+    const h = await harness({ llm });
+    const events = await collect(h.agent.chatStream(turn()));
+    assert.equal(h.baseInputs.length, 0, 'hit');
+    const columns = events
+      .filter((e) => e.type === 'surface_patch')
+      .flatMap((e) => field(e, 'patches') as Array<{ op: string; path: string; value: unknown }>)
+      .find((p) => p.path.endsWith('/columns'));
+    assert.deepEqual(columns?.value, [
+      { fieldKey: 'person', label: 'Mitarbeiterin' },
+      { fieldKey: 'born', label: 'Geboren am' },
+    ]);
+    assert.deepEqual(
+      patchedRows(events).map((r) => [r.rowKey, r.cells['person'], r.cells['born']]),
+      [
+        ['1', 'Anna Becker', '1990-01-15'],
+        ['3', 'Clara Dietz', '1979-01-31'],
+      ],
+    );
   });
 });

@@ -181,9 +181,11 @@ export async function planInPlace(opts: {
   const exampleLines = opts.plans.map(
     ({ plan }) => `- user asked "${plan.examples[0] ?? ''}" → "fetch": ${JSON.stringify(planToFetch(plan))}`,
   );
-  const user =
-    `TABLES:\n${tableLines.join('\n')}\nVALIDATED EXAMPLES:\n${exampleLines.join('\n')}\n` +
-    `FOLLOW-UP: ${opts.question}\n${OUTPUT_FORMAT_INSTRUCTION}`;
+  // Fixed text (rules + learned plans, stored literal-stripped/masked) is the
+  // SYSTEM prompt and never masked; only the user-derived part — the tables'
+  // titles and current queries, the follow-up — goes through the shield.
+  const system = `${IN_PLACE_SYSTEM}\nVALIDATED EXAMPLES:\n${exampleLines.join('\n')}`;
+  const user = `TABLES:\n${tableLines.join('\n')}\nFOLLOW-UP: ${opts.question}\n${OUTPUT_FORMAT_INSTRUCTION}`;
   let content = user;
   if (opts.privacy !== undefined) {
     const masked = await opts.privacy.mask(user);
@@ -197,7 +199,7 @@ export async function planInPlace(opts: {
   try {
     const res = await opts.llm.complete({
       model: opts.model,
-      system: IN_PLACE_SYSTEM,
+      system,
       messages: [{ role: 'user', content }],
       maxTokens: 1024,
       ...FAST_MODEL_REASONING,
