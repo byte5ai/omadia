@@ -27,6 +27,7 @@ import type { InstalledRegistry } from '../plugins/installedRegistry.js';
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
 import {
   buildPrivacyPosture,
+  readNameDetectorPosture,
   checkPrivacyConfigValue,
   isPrivacyConfigKey,
   privacySettingsOf,
@@ -157,15 +158,18 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
   // does the org-wide `OMADIA_PRIVACY_FORCE_GUARDED` clamp apply? Read by the
   // dashboard/admin banner and the per-plugin privacy picker. Behind
   // requireAuth with the rest of this router, never on /health.
-  router.get('/privacy-posture', (_req: Request, res: Response) => {
-    res.json(
-      buildPrivacyPosture({
-        serviceRegistry: deps.serviceRegistry,
-        installedRegistry: deps.installedRegistry,
-        ...(deps.catalog ? { catalog: deps.catalog } : {}),
-        env: process.env,
-      }),
-    );
+  router.get('/privacy-posture', async (_req: Request, res: Response) => {
+    const posture = buildPrivacyPosture({
+      serviceRegistry: deps.serviceRegistry,
+      installedRegistry: deps.installedRegistry,
+      ...(deps.catalog ? { catalog: deps.catalog } : {}),
+      env: process.env,
+    });
+    // #1562 — the name detector's state; probes the sidecar (short timeout).
+    const nameDetector = posture.shield_active
+      ? await readNameDetectorPosture(deps.serviceRegistry)
+      : null;
+    res.json({ ...posture, name_detector: nameDetector });
   });
 
   // GET /installed/:id — full entry for ONE installed plugin including

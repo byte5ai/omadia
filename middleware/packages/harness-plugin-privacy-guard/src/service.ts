@@ -26,6 +26,9 @@ import type {
   PrivacyDigestAudience,
   PrivacyDatasetVerbStep,
   PrivacyEgressStage,
+  PrivacyNameDetectorStatus,
+  PrivacyNameDetectorTurnState,
+  PrivacyPromptOrigin,
   PrivacyStructuredPayloadRequest,
   StructuredPayloadEntry,
   PrivacyGuardService,
@@ -93,6 +96,7 @@ import {
   resolvePromptPseudonyms,
   restoreToolInputSurrogates,
 } from './promptSurrogates.js';
+import { countIdentityValuesNamed } from './identityOnWire.js';
 import type { PseudonymMap } from './v4/types.js';
 import {
   countUnresolvedSurrogates as countResidualSurrogates,
@@ -148,8 +152,18 @@ interface V4ReceiptAccum {
   fieldsCleartext: number;
   readonly verbsExecuted: string[];
   pseudonymProjectionUsed: boolean;
-  /** #361 — PII-free records of prompt spans masked this turn. */
-  readonly maskedPromptSpans: PromptMaskedSpanInfo[];
+  /** #361 / #1541 — spans masked in the user's own text this turn, one per
+   *  distinct value. Keyed by the value's surrogate (server-side state,
+   *  dropped with the turn); the receipt gets the PII-free records only. */
+  readonly promptSpans: Map<string, PromptMaskedSpanInfo>;
+  /** #1541 — spans masked in text from earlier conversations, one per
+   *  distinct value not already booked as the user's own. */
+  readonly contextSpans: Map<string, PromptMaskedSpanInfo>;
+  /** #1562 — free text of this turn went through the detectors. */
+  freeTextScanned: boolean;
+  /** #1562 — some scan of this turn ran without a configured C1, read when
+   *  the text was masked (a config change mid-turn cannot relabel it). */
+  scannedWithoutC1: boolean;
   /** Answer-verifier requests gated under this turn's privacy view. */
   verifierRequests: number;
   /** PII-free records of spans masked in verifier-bound text. */
@@ -399,6 +413,16 @@ export function createPrivacyGuardService(deps?: {
    * configuration cannot change, e.g. in tests).
    */
   readonly c1CacheScope?: () => string | undefined;
+  /**
+   * #1562 — probe the configured C1 sidecar now: where its URL comes from and
+   * whether its health endpoint answers. The plugin passes one built on the
+   * same live URL resolver as `c1Detector`. Absent ⇒ `nameDetectorStatus`
+   * reports from `c1Detector`/`c1CacheScope` alone (`active` when configured).
+   */
+  readonly probeC1?: () => Promise<{
+    readonly source: 'setup' | 'env' | null;
+    readonly reachable: boolean;
+  }>;
 }): PrivacyGuardService {
   // One turn-scoped Dataset Store per turn, minted lazily on the first
   // `internToolResultV4` and dropped by `finalizeTurn`.
@@ -475,6 +499,13 @@ export function createPrivacyGuardService(deps?: {
   // turn.
   const c1Cache = new Map<string, Map<string, readonly PromptPiiSpan[]>>();
   const c1FailedTurns = new Set<string>();
+  // #1562 — when C1 last failed in any turn, for the operator's posture.
+  let lastC1FailureAt: Date | undefined;
+  /** Is a C1 detector configured right now? An unconfigured sidecar URL
+   *  makes the detector report no spans without a call. */
+  const c1Configured = (): boolean =>
+    deps?.c1Detector !== undefined &&
+    (deps.c1CacheScope === undefined || deps.c1CacheScope() !== undefined);
   const c1CacheGet = (
     turnId: string,
     text: string,
@@ -565,6 +596,7 @@ export function createPrivacyGuardService(deps?: {
     err: unknown,
   ): { readonly degraded: true } {
     c1FailedTurns.add(turnId);
+    lastC1FailureAt = new Date();
     console.warn(
       `[privacy-guard v4] ${degradeLogTag} turn=${turnId} ` +
         `detector=${detectorId}: ${err instanceof Error ? err.message : String(err)} ` +
@@ -692,20 +724,32 @@ export function createPrivacyGuardService(deps?: {
   }
 
   /** Book a masked text into the receipt. `verifier` counts one request even
-   *  when nothing was masked — the request left the process either way. */
+   *  when nothing was masked — the request left the process either way.
+   *  The turn's own egress books each distinct value once (#1541): the same
+   *  message reaches several of the turn's model calls (screener, main call,
+   *  fact extraction), and a value counts as the user's own whenever it
+   *  occurs in their text, as earlier context otherwise. */
   function recordMasked(
     turnId: string,
     stage: PrivacyEgressStage,
-    spanInfos: readonly PromptMaskedSpanInfo[],
+    origin: PrivacyPromptOrigin,
+    spans: ReadonlyArray<{ readonly key: string; readonly info: PromptMaskedSpanInfo }>,
   ): void {
+    const receipt = receiptFor(turnId);
     if (stage === 'verifier') {
-      const receipt = receiptFor(turnId);
       receipt.verifierRequests += 1;
-      receipt.verifierMaskedSpans.push(...spanInfos);
+      receipt.verifierMaskedSpans.push(...spans.map((s) => s.info));
       return;
     }
-    if (spanInfos.length > 0) {
-      receiptFor(turnId).maskedPromptSpans.push(...spanInfos);
+    receipt.freeTextScanned = true;
+    if (!c1Configured()) receipt.scannedWithoutC1 = true;
+    for (const { key, info } of spans) {
+      if (origin === 'message') {
+        receipt.contextSpans.delete(key);
+        if (!receipt.promptSpans.has(key)) receipt.promptSpans.set(key, info);
+      } else if (!receipt.promptSpans.has(key) && !receipt.contextSpans.has(key)) {
+        receipt.contextSpans.set(key, info);
+      }
     }
   }
 
@@ -715,6 +759,8 @@ export function createPrivacyGuardService(deps?: {
     readonly detectors: readonly PromptPiiDetector[];
     readonly degraded: boolean;
     readonly stage: PrivacyEgressStage;
+    /** #1541 — whose text this is (see `PrivacyPromptMaskRequest.origin`). */
+    readonly origin: PrivacyPromptOrigin;
     readonly preview: boolean;
     /** Refusal judged on the turn's map as it stands when this call's turn
      *  in the queue comes; `undefined` lets the call proceed. */
@@ -734,7 +780,7 @@ export function createPrivacyGuardService(deps?: {
   }
 
   async function maskOnce(args: MaskArgs): Promise<PrivacyPromptMaskResult> {
-    const { turnId, text, detectors, degraded, stage, preview } = args;
+    const { turnId, text, detectors, degraded, stage, origin, preview } = args;
     const label = stage === 'verifier' ? 'verifierMask' : 'promptMask';
     const refused = args.precheck?.(promptMaskMaps.get(turnId));
     if (refused !== undefined) return refused;
@@ -761,7 +807,15 @@ export function createPrivacyGuardService(deps?: {
       }));
       if (!preview) {
         promptMaskMaps.set(turnId, result.map);
-        recordMasked(turnId, stage, spanInfos);
+        recordMasked(
+          turnId,
+          stage,
+          origin,
+          result.spans.map((s, i) => ({
+            key: result.map.forward.get(s.value) ?? s.value,
+            info: spanInfos[i]!,
+          })),
+        );
         console.log(
           `[privacy-guard v4] ${label} turn=${turnId} ` +
             `spans=${String(spanInfos.length)}${degraded ? ' degraded=c0-only' : ''}`,
@@ -795,7 +849,10 @@ export function createPrivacyGuardService(deps?: {
         fieldsCleartext: 0,
         verbsExecuted: [],
         pseudonymProjectionUsed: false,
-        maskedPromptSpans: [],
+        promptSpans: new Map(),
+        contextSpans: new Map(),
+        freeTextScanned: false,
+        scannedWithoutC1: false,
         verifierRequests: 0,
         verifierMaskedSpans: [],
       };
@@ -1070,9 +1127,16 @@ export function createPrivacyGuardService(deps?: {
         'sensitive-masked columns — the server fills in their real values.',
         RENDER_CONTRACT,
         FILE_EXPORT_EXCEPTION,
-        'The sub-agent only ever saw "[masked]"; do NOT repeat any "cannot',
-        'show" / "filtered" caveat from its notes — the user receives the',
-        'real values.',
+        'The sub-agent only ever saw "[masked]" placeholders for the values in',
+        'these datasets. A caveat in its notes that it "cannot show" or',
+        '"filtered" those VALUES because they were masked does not apply — the',
+        'user receives the real values; do not repeat it. Every other',
+        'limitation in its notes still applies and MUST reach the user, in',
+        'your own words before the data: a request outside its scope (a space,',
+        'project, area or period it is not configured for), missing',
+        'permissions, or data that does not exist. If the datasets come from',
+        'a different scope than the one the user asked about, say so. State',
+        'such a limitation as a fact; do not quote the notes verbatim.',
       ].join('\n');
       return {
         resultText:
@@ -1103,7 +1167,7 @@ export function createPrivacyGuardService(deps?: {
       if (!isPromptMaskEnabled(deps?.readConfig?.(MASK_USER_PROMPT_CONFIG_KEY))) {
         // Policy off: the text goes out as written. A verifier request still
         // left the process, so the receipt counts it.
-        if (stage === 'verifier' && !preview) recordMasked(request.turnId, stage, []);
+        if (stage === 'verifier' && !preview) recordMasked(request.turnId, stage, 'message', []);
         return { outcome: 'disabled' };
       }
       const detectors: PromptPiiDetector[] = [createBaselineDetector()];
@@ -1126,6 +1190,7 @@ export function createPrivacyGuardService(deps?: {
         detectors,
         degraded: c1.degraded,
         stage,
+        origin: request.origin ?? 'message',
         preview,
       });
     },
@@ -1156,6 +1221,7 @@ export function createPrivacyGuardService(deps?: {
         detectors,
         degraded: c1.degraded,
         stage: 'verifier',
+        origin: 'message',
         preview: false,
         precheck: (map) => {
           if (!hasSurrogateCollision(request.text, map)) return undefined;
@@ -1202,6 +1268,9 @@ export function createPrivacyGuardService(deps?: {
         detectors,
         degraded: c1.degraded,
         stage: 'turn',
+        // #1541 — an earlier answer or recalled context, never the user's
+        // message: its spans must not read as "masked in your message".
+        origin: 'context',
         preview: false,
       });
     },
@@ -1354,6 +1423,22 @@ export function createPrivacyGuardService(deps?: {
       return datasetProvenanceOf(stores.get(turnId), datasetId);
     },
 
+    async nameDetectorStatus(): Promise<PrivacyNameDetectorStatus> {
+      const base = {
+        lastFailureAt: lastC1FailureAt?.toISOString() ?? null,
+        promptMasking: isPromptMaskEnabled(deps?.readConfig?.(MASK_USER_PROMPT_CONFIG_KEY)),
+      };
+      if (!c1Configured()) return { ...base, state: 'unconfigured', source: null };
+      if (deps?.probeC1 === undefined) return { ...base, state: 'active', source: null };
+      try {
+        const probe = await deps.probeC1();
+        if (probe.source === null) return { ...base, state: 'unconfigured', source: null };
+        return { ...base, state: probe.reachable ? 'active' : 'unreachable', source: probe.source };
+      } catch {
+        return { ...base, state: 'unreachable', source: null };
+      }
+    },
+
     v4ToolSpecs(): ReadonlyArray<PrivacyV4ToolSpec> {
       return [...VERB_TOOL_SPECS, RENDER_TOOL_SPEC].map((spec) => ({
         name: spec.name,
@@ -1375,7 +1460,8 @@ export function createPrivacyGuardService(deps?: {
       // #979 — cached C1 spans carry real PII values; drop them with the
       // rest of the turn's server-side state. The degrade latch goes too, so
       // the next turn gets a fresh attempt at a sidecar that may have
-      // recovered.
+      // recovered. #1562 — read first: the receipt reports a failed C1.
+      const c1Failed = c1FailedTurns.has(turnId);
       c1Cache.delete(turnId);
       c1FailedTurns.delete(turnId);
       const accum = receipts.get(turnId);
@@ -1395,8 +1481,20 @@ export function createPrivacyGuardService(deps?: {
       const hasInterned = accum !== undefined && accum.datasetsInterned > 0;
       const hasBypassed = bypassed !== undefined && bypassed.length > 0;
       const hasStructured = structured !== undefined && structured.length > 0;
-      const hasMaskedPrompt =
-        accum !== undefined && accum.maskedPromptSpans.length > 0;
+      const promptSpans = accum ? [...accum.promptSpans.values()] : [];
+      const contextSpans = accum ? [...accum.contextSpans.values()] : [];
+      const hasMaskedPrompt = promptSpans.length > 0;
+      const hasMaskedContext = contextSpans.length > 0;
+      // #1562 — the C1 state of a turn that masked free text. A failed C1
+      // alone is worth a receipt: names in the turn reached the model.
+      const nameDetector: PrivacyNameDetectorTurnState | undefined =
+        accum?.freeTextScanned !== true && !c1Failed
+          ? undefined
+          : c1Failed
+            ? 'failed'
+            : accum?.scannedWithoutC1 === true
+              ? 'unconfigured'
+              : 'active';
       const hasVerifierEgress = accum !== undefined && accum.verifierRequests > 0;
       const hasToolErrors = errors !== undefined && errors.length > 0;
       if (
@@ -1404,19 +1502,20 @@ export function createPrivacyGuardService(deps?: {
         !hasBypassed &&
         !hasStructured &&
         !hasMaskedPrompt &&
+        !hasMaskedContext &&
+        nameDetector !== 'failed' &&
         !hasVerifierEgress &&
         !hasToolErrors
       )
         return undefined;
       // identityValuesOnWire — personal-identity values the requester named
       // in their own message text. A transparency notice (the user put a
-      // real identity on the wire), NOT a leak of tool data.
-      let identityValuesOnWire = 0;
-      if (turnInput !== undefined && piiValues !== undefined) {
-        for (const value of piiValues) {
-          if (turnInput.includes(value)) identityValuesOnWire += 1;
-        }
-      }
+      // real identity on the wire), NOT a leak of tool data. #1549 — whole
+      // words, person-shaped values only (see identityOnWire.ts).
+      const identityValuesOnWire =
+        turnInput !== undefined && piiValues !== undefined
+          ? countIdentityValuesNamed(turnInput, piiValues)
+          : 0;
       console.log(
         `[privacy-guard v4] finalize turn=${turnId} ` +
           `datasets=${String(accum?.datasetsInterned ?? 0)} ` +
@@ -1427,7 +1526,10 @@ export function createPrivacyGuardService(deps?: {
           `structured=${String(structured?.length ?? 0)} ` +
           `verifierRequests=${String(accum?.verifierRequests ?? 0)} ` +
           `toolErrors=${String(errors?.length ?? 0)} ` +
-          `identityOnWire=${String(identityValuesOnWire)}`,
+          `promptSpans=${String(promptSpans.length)} ` +
+          `contextSpans=${String(contextSpans.length)} ` +
+          `identityOnWire=${String(identityValuesOnWire)}` +
+          `${nameDetector !== undefined ? ` c1=${nameDetector}` : ''}`,
       );
       return {
         datasetsInterned: accum?.datasetsInterned ?? 0,
@@ -1438,9 +1540,9 @@ export function createPrivacyGuardService(deps?: {
         identityValuesOnWire,
         ...(hasBypassed ? { bypassedTools: [...bypassed] } : {}),
         ...(hasStructured ? { structuredPayloads: [...structured] } : {}),
-        ...(hasMaskedPrompt
-          ? { maskedPromptSpans: [...accum.maskedPromptSpans] }
-          : {}),
+        ...(hasMaskedPrompt ? { maskedPromptSpans: promptSpans } : {}),
+        ...(hasMaskedContext ? { maskedContextSpans: contextSpans } : {}),
+        ...(nameDetector !== undefined ? { nameDetector } : {}),
         ...(hasVerifierEgress
           ? {
               verifierEgress: {

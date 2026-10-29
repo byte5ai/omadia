@@ -8,7 +8,7 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
-## 1.46.0 — 2026-10-29
+## 1.47.0 — 2026-10-29
 
 Additive. Privacy Shield masking and rendering (S3-B: #1544, #1559, #1561, #1543,
 #1542).
@@ -29,6 +29,34 @@ Additive. Privacy Shield masking and rendering (S3-B: #1544, #1559, #1561, #1543
 - **`PrivacyToolResultV4Request.audience`** / **`PrivacyDigestAudience`**
   (`'chat' | 'public-api'`) — the public MCP endpoint gets a digest text written
   for API callers, without the chat-only verb instructions (#1561).
+
+## 1.46.0 — 2026-10-29
+
+Additive. A truthful privacy receipt (#1541, #1557, #1562).
+
+### Added
+
+- **`PrivacyReceipt.maskedContextSpans`** — spans masked in text from earlier
+  conversations (recalled context, replayed answers and user messages).
+  `maskedPromptSpans` now covers only the user's own text of the turn, one
+  entry per distinct value; with `mask_user_prompt` off it stays absent.
+- **`PrivacyPromptMaskRequest.origin`** (`'message' | 'context'`, default
+  `message`) — which of the two lists a `maskUserPrompt` call books into.
+- **`PrivacyReceipt.nameDetector`** (`'active' | 'unconfigured' | 'failed'`)
+  — the C1 name detector during the turn's free-text masking.
+- **`PrivacyReceipt.unprotected`** — a tool of the turn bypassed the shield.
+- **`PrivacyGuardService.nameDetectorStatus()`** (optional) and
+  **`PrivacyNameDetectorStatus`** — the detector's state now (plus whether
+  `mask_user_prompt` is on), for the operator's privacy posture.
+
+### Changed (meaning, not shape)
+
+- **`PrivacyReceipt.maskedPromptSpans`** covers only the user's own text of
+  the turn, one entry per distinct value. Replayed answers, replayed user
+  messages, recalled context and the verifier's correction hint moved to
+  `maskedContextSpans`.
+- **`PrivacyReceipt.identityValuesOnWire`** counts only person-shaped values
+  (full name, e-mail, phone) the user wrote as whole words (#1549).
 
 ## 1.45.0 — 2026-10-29
 

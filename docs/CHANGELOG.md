@@ -67,6 +67,60 @@ changelog.
 `@omadia/plugin-privacy-guard` 0.11.0, `@omadia/plugin-api` 1.37.0
 (`countUnresolvedSurrogates` takes an optional `options`).
 
+### Fixed — Privacy Shield masking correctness and data rendering (S3-B)
+
+2026-10-29. Fourteen ways prompt masking and server-rendered answers misled the
+model or the user (#1542–#1546, #1550, #1553–#1556, #1559–#1561, #1577).
+
+- **Tools search for what the user wrote (#1544).** With `mask_user_prompt` on,
+  tools got the placeholder (`PLATZHALTER-CUSTOM-1`) and found nothing. Whole
+  surrogates (no dates or amounts) are now restored in a data tool's input
+  right before its handler runs (`promptSurrogateToolInput.ts`; orchestrator
+  dispatch, MCP grants and sub-agent inner calls), and every tool result the
+  model reads is masked again (`remaskPromptValues`). A domain tool's question
+  to its sub-agent and the agent's memory/stored-process tools keep the
+  placeholders.
+- **Surrogates that made the model object (#1554, #1555, #1577).** The IBAN
+  surrogate has 22 characters; amounts are non-round and dates fall in
+  2003–2022 (no more `01.01.1970`). An e-mail surrogate follows the masked
+  person's surrogate, and is a neutral `kontaktN@example.net` when the name
+  stays visible in clear, so the model sees no name/address mismatch.
+- **Restore of rewritten surrogates (#1545, #1577).** A first or last name taken
+  from a person surrogate ("Hallo Lukas", "Herr Becker") and an amount or date
+  the model reformatted (`12.357 €`, `19. Februar 2012`) map back to the user's
+  value. A lone part is restored only after a salutation or greeting; anywhere
+  else, or when ambiguous, it gets the unresolved-placeholder notice. Name pools
+  dropped names that are common words (Sommer, Lange, Jan, Max, …) and the first
+  24 person surrogates differ in both first and last name.
+- **Custom regex can no longer stall the middleware (#1553).** Operator
+  patterns run in a worker thread; the 100 ms budget stops the match while it
+  runs and blocks only that turn. Save-time vetting is bounded too and warns
+  about nested quantifiers (`customPatternNestedQuantifier`) without
+  deactivating the pattern.
+- **Dataset import without a secret (#1546).** One surrogate map per table, so
+  distinct values keep distinct surrogates; and the middleware hands its dev
+  vault key to the dataset resolvers, so an install without `VAULT_KEY` encrypts
+  flagged cells like any other. Datasets imported before this keep their
+  collapsed values: re-import them.
+- **Link keys are never filter targets (#1560).** `v4_filter` refuses `__k_*`
+  fields like `query_dataset` does, and `v4_union` cannot rename a link key to
+  a plain name.
+- **Rendering (#1542, #1543, #1559).** Nested cells (a Confluence page body,
+  `version`, `space`) render as text; what still cannot be shown is marked and
+  named to the model instead of `[nested]`. A rendered table's ack and the
+  persisted answer carry a value-free note of how it was built, and a follow-up
+  that re-queries says so. A truncated table offers Excel only when
+  `create_xlsx` is available.
+- **Public MCP (#1561).** A domain tool called over `/api/v1/mcp` returns a
+  digest text for API callers, without the chat-only verb instructions.
+- **Labels (#1556, partly).** The model writes a complete sentence pointing to
+  the table when a masked label is the subject; letting non-personal labels
+  through is a separate decision.
+- **Docs (#1550).** `mask_user_prompt` help, `.env.example` and the
+  `privacyMode.ts` comment now describe what the code masks.
+
+`@omadia/plugin-privacy-guard` 0.13.0, `@omadia/plugin-api` 1.47.0.
+
 ### Fixed — Orchestrator and agent wiring (#1585, #1569, #1570, #1581, #1502)
 
 2026-10-29.
@@ -264,59 +318,46 @@ and the AI disclosure line reaches every first answer.
   "Anthropic API Key" field explains that the LLM-access key takes precedence
   and that "not set yet" is normal.
 
-### Fixed — Privacy Shield masking correctness and data rendering (S3-B)
+### Fixed — What the Privacy Shield tells users and operators is true (#1541, #1547, #1548, #1549, #1551, #1552, #1557, #1558, #1562, #1573, #1599)
 
-2026-10-29. Fourteen ways prompt masking and server-rendered answers misled the
-model or the user (#1542–#1546, #1550, #1553–#1556, #1559–#1561, #1577).
+2026-10-29. Sweep 3, cluster S3-C.
 
-- **Tools search for what the user wrote (#1544).** With `mask_user_prompt` on,
-  tools got the placeholder (`PLATZHALTER-CUSTOM-1`) and found nothing. Whole
-  surrogates (no dates or amounts) are now restored in a data tool's input
-  right before its handler runs (`promptSurrogateToolInput.ts`; orchestrator
-  dispatch, MCP grants and sub-agent inner calls), and every tool result the
-  model reads is masked again (`remaskPromptValues`). A domain tool's question
-  to its sub-agent and the agent's memory/stored-process tools keep the
-  placeholders.
-- **Surrogates that made the model object (#1554, #1555, #1577).** The IBAN
-  surrogate has 22 characters; amounts are non-round and dates fall in
-  2003–2022 (no more `01.01.1970`). An e-mail surrogate follows the masked
-  person's surrogate, and is a neutral `kontaktN@example.net` when the name
-  stays visible in clear, so the model sees no name/address mismatch.
-- **Restore of rewritten surrogates (#1545, #1577).** A first or last name taken
-  from a person surrogate ("Hallo Lukas", "Herr Becker") and an amount or date
-  the model reformatted (`12.357 €`, `19. Februar 2012`) map back to the user's
-  value. A lone part is restored only after a salutation or greeting; anywhere
-  else, or when ambiguous, it gets the unresolved-placeholder notice. Name pools
-  dropped names that are common words (Sommer, Lange, Jan, Max, …) and the first
-  24 person surrogates differ in both first and last name.
-- **Custom regex can no longer stall the middleware (#1553).** Operator
-  patterns run in a worker thread; the 100 ms budget stops the match while it
-  runs and blocks only that turn. Save-time vetting is bounded too and warns
-  about nested quantifiers (`customPatternNestedQuantifier`) without
-  deactivating the pattern.
-- **Dataset import without a secret (#1546).** One surrogate map per table, so
-  distinct values keep distinct surrogates; and the middleware hands its dev
-  vault key to the dataset resolvers, so an install without `VAULT_KEY` encrypts
-  flagged cells like any other. Datasets imported before this keep their
-  collapsed values: re-import them.
-- **Link keys are never filter targets (#1560).** `v4_filter` refuses `__k_*`
-  fields like `query_dataset` does, and `v4_union` cannot rename a link key to
-  a plain name.
-- **Rendering (#1542, #1543, #1559).** Nested cells (a Confluence page body,
-  `version`, `space`) render as text; what still cannot be shown is marked and
-  named to the model instead of `[nested]`. A rendered table's ack and the
-  persisted answer carry a value-free note of how it was built, and a follow-up
-  that re-queries says so. A truncated table offers Excel only when
-  `create_xlsx` is available.
-- **Public MCP (#1561).** A domain tool called over `/api/v1/mcp` returns a
-  digest text for API callers, without the chat-only verb instructions.
-- **Labels (#1556, partly).** The model writes a complete sentence pointing to
-  the table when a masked label is the subject; letting non-personal labels
-  through is a separate decision.
-- **Docs (#1550).** `mask_user_prompt` help, `.env.example` and the
-  `privacyMode.ts` comment now describe what the code masks.
-
-`@omadia/plugin-privacy-guard` 0.12.0, `@omadia/plugin-api` 1.46.0.
+- **Planning gate leak (#1547).** The plan-runner's gate and materialiser send
+  the user's message to a model from `onBeforeTurn`, which fired before the
+  turn masked it. A blocked mask refused the turn with "not sent to the
+  language model" after the gate had sent it in clear. Both paths now mask
+  before the hook (`chatInContextInner`; `preMaskUserMessage` in the stream
+  prelude), so a blocked turn reaches no hook, tool or model. A message whose
+  mask passes still reaches the plan-runner as written (security §6f).
+- **Receipt counts (#1541).** Values masked in recalled context, replayed
+  answers and replayed user messages are booked as `maskedContextSpans`
+  ("PII masked from earlier conversations"), never as masked in the user's
+  message; each distinct value counts once, however many model calls carried
+  it. With `mask_user_prompt` off, "your message" stays empty.
+- **"You named a person" (#1549).** Only person-shaped values (full name,
+  e-mail, phone) the user wrote as whole words count; a department, a column
+  name like `__k_Name` or a fragment of a longer word does not. The schema
+  classifier no longer calls org units personal data.
+- **Explanation lines (#1557).** The "identity-free digest" line appears only
+  when a tool result was interned and nothing was bypassed; the turn's
+  `unprotected` flag now rides on the receipt.
+- **Name detector (#1562).** The receipt reports C1 as `failed` (amber card,
+  also when nothing else was masked) or `unconfigured`; the privacy posture
+  returns `name_detector` (probe of the sidecar's `/health`), shown on the
+  guard's store page and as a notice on the dashboard and `/admin`.
+- **Turn id (#1573, #1552).** The receipt card shows the turn id and links to
+  `/operator/receipts?turn=<id>`, which opens that receipt. Privacy miss
+  reports show their turn as the same link, and the page filters Open /
+  Resolved / All with who resolved a report and when.
+- **Sub-agent refusals (#1599).** The bridge only drops "cannot show"
+  caveats about masked values; a scope refusal, missing permission or missing
+  data must reach the user.
+- **Bypass confirmation (#1548).** Switching a plugin to Bypass, or adding
+  bypassed tools, asks for confirmation first.
+- **Datasets page (#1558).** The schema example comes from the same first
+  row as the preview; internal `__k_*` link-key columns are hidden and not
+  counted.
+- **Orphaned keys (#1551).** The 40 `privacyOperator.*` keys are gone.
 
 ### Added — Provenance backfill for legacy Privacy Shield content (#1540)
 

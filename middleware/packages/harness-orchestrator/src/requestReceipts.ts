@@ -1,4 +1,8 @@
-import type { PrivacyReceipt, VerifierEgressSummary } from '@omadia/plugin-api';
+import type {
+  PrivacyNameDetectorTurnState,
+  PrivacyReceipt,
+  VerifierEgressSummary,
+} from '@omadia/plugin-api';
 
 /**
  * The privacy receipt of ONE user request that ran in several passes.
@@ -49,6 +53,8 @@ export function mergePrivacyReceipts(receipts: readonly PrivacyReceipt[]): Priva
     : undefined;
   const bypassedTools = union(receipts.map((r) => r.bypassedTools));
   const maskedPromptSpans = union(receipts.map((r) => r.maskedPromptSpans));
+  const maskedContextSpans = union(receipts.map((r) => r.maskedContextSpans));
+  const nameDetector = worstNameDetector(receipts.map((r) => r.nameDetector));
   const structuredPayloads = union(receipts.map((r) => r.structuredPayloads));
   const toolErrors = union(receipts.map((r) => r.toolErrors));
   const verifierEgress = mergeVerifierEgress(receipts.map((r) => r.verifierEgress));
@@ -61,10 +67,24 @@ export function mergePrivacyReceipts(receipts: readonly PrivacyReceipt[]): Priva
     ...(identityValuesOnWire !== undefined ? { identityValuesOnWire } : {}),
     ...(bypassedTools.length > 0 ? { bypassedTools } : {}),
     ...(maskedPromptSpans.length > 0 ? { maskedPromptSpans } : {}),
+    ...(maskedContextSpans.length > 0 ? { maskedContextSpans } : {}),
+    ...(nameDetector !== undefined ? { nameDetector } : {}),
+    ...(receipts.some((r) => r.unprotected === true) ? { unprotected: true } : {}),
     ...(structuredPayloads.length > 0 ? { structuredPayloads } : {}),
     ...(toolErrors.length > 0 ? { toolErrors } : {}),
     ...(verifierEgress ? { verifierEgress } : {}),
   };
+}
+
+/** #1562 — the name detector over several passes: a pass in which it failed
+ *  or was not configured decides, as names of that pass reached the model. */
+function worstNameDetector(
+  states: ReadonlyArray<PrivacyNameDetectorTurnState | undefined>,
+): PrivacyNameDetectorTurnState | undefined {
+  for (const worst of ['failed', 'unconfigured', 'active'] as const) {
+    if (states.includes(worst)) return worst;
+  }
+  return undefined;
 }
 
 /** The verifier's requests over several passes: summed, span types unioned.

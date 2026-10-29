@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/plugin-privacy-guard"
   name: "Privacy Guard"
-  version: "0.12.0"
+  version: "0.13.0"
   kind: "tool"
   domain: "privacy.redact"
   description:
@@ -169,10 +169,17 @@ playbook:
     zieht einen eingebetteten Snapshot selbst aus dem `tool_result`. Ein
     älterer Orchestrator mit diesem Plugin leakt nichts, ignoriert aber
     `canvasSentinel`: die Canvas zeigt die Tabelle dann nicht (der Chat schon).
-    Ab @omadia/plugin-api 1.46.0 gibt der Orchestrator Tools die echten Werte
+    Ab @omadia/plugin-api 1.46.0 bucht dieses Plugin (ab 0.12.0) Text aus
+    früheren Unterhaltungen als `maskedContextSpans`, meldet den Zustand des
+    C1-Namensdetektors (`nameDetector`, `nameDetectorStatus`) und zählt jeden
+    maskierten Wert einmal. Ein älterer Orchestrator übergibt kein `origin`:
+    wiederholte User-Nachrichten landen dann weiter in `maskedPromptSpans`.
+    Mit einer älteren Kopie dieses Plugins liefert die Privacy-Posture
+    `name_detector: null`, und die UI zeigt keinen Detektor-Zustand.
+    Ab @omadia/plugin-api 1.47.0 gibt der Orchestrator Tools die echten Werte
     statt der Prompt-Pseudonyme, aber nur, wenn der Provider
     `restoreToolInputValues` und `remaskPromptValues` hat (dieses Plugin ab
-    0.12.0, #1544). Fehlt es,
+    0.13.0, #1544). Fehlt es,
     bekommen Tools weiter die Pseudonyme. `fileExportAvailable`,
     `renderProvenance` und die Digest-Audience `public-api` sind optional: Ein
     älterer Provider bietet weiter immer Excel an und liefert keine Herkunft.

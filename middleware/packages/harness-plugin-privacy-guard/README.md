@@ -87,7 +87,12 @@ NOT an on-wire token map (deleted for cause by #119/#126/#153).
   span surviving substitution **blocks the turn** — there is no
   pass-through-unmasked path.
 - **Transparency:** masked spans surface (type + detector only, PII-free)
-  as `maskedPromptSpans` on the turn's `PrivacyReceipt`.
+  on the turn's `PrivacyReceipt`, one per distinct value (#1541):
+  `maskedPromptSpans` for the user's own text of the turn,
+  `maskedContextSpans` for text from earlier conversations (replayed user
+  messages, recalled context, replayed answers). `nameDetector` reports C1 as
+  `active`, `unconfigured` or `failed` (#1562); `nameDetectorStatus()` probes
+  the sidecar's `/health` for the operator's privacy posture.
 
 ### Replayed answers (always on)
 
@@ -97,7 +102,7 @@ the turn's model never saw. `maskReplayedAnswer` masks such an answer whatever
 `mask_user_prompt` says: identity-shaped C0 spans (dates and amounts stay, as
 in a v4 digest), the operator deny-list and C1 when wired, through the turn's
 map, so the answer-side restore covers these spans. The spans count as the
-turn's own (`maskedPromptSpans`). Failure-closed like prompt masking: a failing
+turn's own egress, as earlier context (`maskedContextSpans`). Failure-closed like prompt masking: a failing
 C1 degrades to C0, a detection failure or a surviving value answers `blocked`
 and the orchestrator fails the turn rather than replay the answer unmasked. The
 replayed user messages still follow `mask_user_prompt`.

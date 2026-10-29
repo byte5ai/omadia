@@ -184,6 +184,31 @@ export function createC1HttpDetector(
   return detector;
 }
 
+/** #1562 — the posture probe's budget: an operator page waits on it. */
+export const C1_HEALTH_TIMEOUT_MS = 2000;
+
+/**
+ * #1562 — does the sidecar's `GET /health` answer 200 with `{ ok: true }`
+ * within `timeoutMs`? Never throws. For the operator's posture only; a turn
+ * never waits on it.
+ */
+export async function probeC1Health(
+  url: string,
+  opts: { readonly timeoutMs?: number; readonly fetchFn?: typeof fetch } = {},
+): Promise<boolean> {
+  const fetchFn = opts.fetchFn ?? globalThis.fetch;
+  try {
+    return await withTimeout(opts.timeoutMs ?? C1_HEALTH_TIMEOUT_MS, async (signal) => {
+      const res = await fetchFn(`${url.trim().replace(/\/+$/, '')}/health`, { signal });
+      if (res.status !== 200) return false;
+      const body = (await res.json()) as unknown;
+      return body !== null && typeof body === 'object' && (body as { ok?: unknown }).ok === true;
+    });
+  } catch {
+    return false;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Timeout — own ref'ed timer race, not only the fetch signal. A misbehaving
 // transport that ignores the AbortSignal must still not stall

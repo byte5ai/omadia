@@ -3,9 +3,27 @@
 import { useFormatter, useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
-import { renderCell, ROWS_PER_PAGE, tdCls, thCls, type DetailState } from './shared';
+import {
+  fileColumns,
+  renderCell,
+  ROWS_PER_PAGE,
+  tdCls,
+  thCls,
+  type DetailState,
+} from './shared';
 
-/** Schema table + paginated row preview for the one expanded dataset. */
+/** Same cap the import applies to a stored schema sample. */
+const SAMPLE_MAX_CHARS = 200;
+
+/**
+ * Schema table + paginated row preview for the one expanded dataset.
+ *
+ * #1558 — both tables show the columns of the uploaded file: the generated
+ * `__k_*` link-key columns are hidden. The schema's sample values come from
+ * the first preview row, so they show the same (decrypted) values as the
+ * preview; only without a loaded row does it fall back to the sample stored at
+ * import, and then it says that flagged values appear there as a pseudonym.
+ */
 export function DatasetDetail({
   detail,
   onPage,
@@ -31,7 +49,13 @@ export function DatasetDetail({
     );
   }
 
-  const columns = detail.dataset.columns;
+  const columns = fileColumns(detail.dataset.columns);
+  const firstRow = detail.firstRow;
+  const sampleOf = (name: string, stored: string | undefined): string => {
+    if (firstRow === null) return stored ?? '—';
+    return renderCell(firstRow[name]).slice(0, SAMPLE_MAX_CHARS);
+  };
+  const showsStoredSamples = firstRow === null && columns.some((c) => c.sample !== undefined);
   const from = detail.totalMatched === 0 ? 0 : detail.offset + 1;
   const to = Math.min(detail.offset + detail.rows.length, detail.totalMatched);
 
@@ -55,13 +79,21 @@ export function DatasetDetail({
                 <td className={tdCls}>{c.name}</td>
                 <td className={`${tdCls} font-mono`}>{c.type}</td>
                 <td className={`${tdCls} text-[color:var(--fg-muted)]`}>
-                  {c.sample ?? '—'}
+                  {sampleOf(c.name, c.sample)}
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+      {showsStoredSamples ? (
+        <p
+          data-testid="dataset-sample-stored-note"
+          className="mt-2 text-[12px] text-[color:var(--fg-muted)]"
+        >
+          {t('schemaSampleStoredNote')}
+        </p>
+      ) : null}
 
       <h3 className="mt-6 mb-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-[color:var(--fg-muted)]">
         {t('rowsHeading')}
