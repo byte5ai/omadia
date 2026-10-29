@@ -163,6 +163,17 @@ export interface ToolDispatchOptions {
   readonly validateResult?: (result: ToolDispatchResult) => void;
 }
 
+/** #1598 — refused by name, without naming the owning plugin (same wording as
+ *  `Orchestrator.dispatchTool`). */
+function notGranted(name: string): ToolDispatchResult {
+  console.warn(`[toolDispatchService] un-granted tool "${name}" — refused`);
+  return {
+    content: `Error: tool \`${name}\` is not available to this agent.`,
+    isError: true,
+    origin: 'dispatcher',
+  };
+}
+
 export class ToolDispatchService {
   constructor(
     private readonly deps: {
@@ -183,6 +194,14 @@ export class ToolDispatchService {
        * ungated. Absent ⇒ every plugin's tools are always available.
        */
       readonly isPluginToolsReady?: (agentId: string) => boolean;
+      /**
+       * #1598 — per-Agent plugin assignment, the twin of `isPluginToolsReady`:
+       * `Orchestrator.isToolGranted` of the Agent this dispatcher serves. A
+       * tool it denies is neither advertised nor run. Absent ⇒ ungated (the
+       * legacy single-Agent path, the public MCP endpoint whose key bindings
+       * name the exact tools, and the CLI sub-agent's own fixed tool set).
+       */
+      readonly isToolGranted?: (name: string, agentId: string | undefined) => boolean;
       /**
        * #542 prerequisite — the privacy data-plane boundary for this path.
        *
@@ -243,6 +262,11 @@ export class ToolDispatchService {
     if (agentId === undefined) return true;
     if (!this.deps.isPluginToolsReady) return true;
     return this.deps.isPluginToolsReady(agentId);
+  }
+
+  /** #1598 — see `deps.isToolGranted`. */
+  private isGranted(name: string, agentId: string | undefined): boolean {
+    return this.deps.isToolGranted?.(name, agentId) ?? true;
   }
 
   /** Explicit dep wins; ambient turn handle is the fallback. */
@@ -343,6 +367,9 @@ export class ToolDispatchService {
           origin: 'dispatcher',
         };
       }
+      if (!this.isGranted(name, nativeRegistration.agentId)) {
+        return notGranted(name);
+      }
       return this.invoke(name, input, () => nativeHandler(input), options);
     }
 
@@ -357,6 +384,9 @@ export class ToolDispatchService {
           isError: true,
           origin: 'dispatcher',
         };
+      }
+      if (!this.isGranted(name, domainTool.agentId)) {
+        return notGranted(name);
       }
       return this.invoke(name, input, () => domainTool.handle(input), options);
     }
@@ -620,6 +650,9 @@ export class ToolDispatchService {
       if (!this.isToolAvailable(registration.agentId)) {
         continue;
       }
+      if (!this.isGranted(registration.name, registration.agentId)) {
+        continue;
+      }
       // #1346 — per-turn availability, same gate as the orchestrator's own
       // tool list. The CLI lifecycle calls this inside the turn scope; a
       // caller outside any turn (public MCP `tools/list`) sees such tools
@@ -642,6 +675,9 @@ export class ToolDispatchService {
       }
       // Issue #474 follow-up — same gate as the native-tool loop above.
       if (!this.isToolAvailable(tool.agentId)) {
+        continue;
+      }
+      if (!this.isGranted(tool.name, tool.agentId)) {
         continue;
       }
       advertised.set(tool.name, {

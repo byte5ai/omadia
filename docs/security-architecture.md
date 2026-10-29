@@ -1046,6 +1046,50 @@ meets `requireAuth`'s 401 first. What the link buys is
 what it always bought: whoever holds it can fetch that one object until it
 expires; there is no per-tenant or per-session authorisation on top.
 
+## 5b. Plugin routes: `auth: 'session'` means a session, on every prefix (#1596)
+
+A plugin route registered with `ctx.routes.register(prefix, router)` and no
+`auth` option is a `'session'` route. Until #1596 its gate was the kernel's
+`/api` `requireAuth`, including that middleware's static public-path
+short-circuit, and the static list exempted `/p/<pluginId>/…` "for Teams
+iframes, plugins validate the Teams token themselves". None did. The Odoo HR
+agent's `/p/agent-odoo-hr/absences` (employee, department, leave type such as
+sick leave) and `/birthdays` answered anonymous `curl` with 200, on the
+middleware and through the web-UI `/p/*` proxy.
+
+Now:
+
+- The registry's session gate is `createSessionGate` (`auth/requireAuth.ts`):
+  the same session evaluation as `requireAuth`, from the same deps object, but
+  with no public-path short-circuit. No prefix, `/p/…` or a static `/api` one,
+  opens a `'session'` route.
+- `STATIC_PUBLIC_PATHS` has no `/p/` entry any more. The static plugin UI bundle
+  at `/p/<id>/ui/` stays public: core mounts it outside every `requireAuth`.
+- A plugin route that has to work without an omadia session (a Teams tab that
+  only has a Teams SSO token) registers with `auth: 'custom'`, validates the
+  token itself, declares the prefix in `permissions.public_paths`, and is only
+  served once the operator grants it (§5). Because the static `/p/` entry is
+  gone, such a `/p/<id>/…` declaration now validates
+  (`validateDeclaredPublicPath` used to reject it as "already a static core
+  public path").
+
+Channel plugins' own routes (`ExpressRouteRegistry`, Bot Framework webhooks)
+are a separate mechanism and self-authenticate by contract.
+
+## 5c. Per-orchestrator plugin assignment covers native plugin tools (#1598)
+
+Since #983 an orchestrator refuses a domain tool whose plugin is not in its
+`agent_plugins` grants. Tools registered with `ctx.tools.register` live in one
+kernel-wide registry and had no such check: an orchestrator granted nothing
+was offered, and ran, `odoo_version` of an Odoo integration assigned to no
+orchestrator. `Orchestrator.isToolGranted` now gates them in all three places:
+the tool list, the prompt docs, and dispatch (refused by name, without naming
+the plugin). The subscription-CLI dispatcher (`ToolDispatchService`, loopback
+MCP) asks the same question. Kernel-registered tools (no owning plugin) stay
+ungated, and so does `memory`: its provider only backs the store, while the
+kernel scopes what each orchestrator reads and writes. An orchestrator without
+a grant set (legacy single-Agent boot) stays ungated, as for domain tools.
+
 ## 5a. Office exports: formula cells carry no caller-supplied value
 
 `create_xlsx` (`@omadia/plugin-office`) writes descriptor formulas into the

@@ -67,6 +67,34 @@ changelog.
 `@omadia/plugin-privacy-guard` 0.11.0, `@omadia/plugin-api` 1.37.0
 (`countUnresolvedSurrogates` takes an optional `options`).
 
+### Security — plugin routes need a session, native tools follow plugin assignment (#1596, #1598, #1601)
+
+2026-10-29.
+
+- **`/p/<plugin>/…` routes were served without a login (#1596, critical).** A
+  plugin route registered with the default `auth: 'session'` used the `/api`
+  `requireAuth` as its gate, including the static public-path short-circuit,
+  and that list exempted `/p/*`. The Odoo HR agent's absences page (sick leave
+  included) and birthdays page answered anonymous requests. Plugin session
+  routes now use `createSessionGate`: the same session check, with no
+  public-path short-circuit. The `/p/` entry left `STATIC_PUBLIC_PATHS`. The
+  static UI bundle at `/p/<id>/ui/` stays public. A Teams-tab route that has to
+  work without an omadia session registers `auth: 'custom'` and declares an
+  operator-granted public path; `/p/<id>/…` declarations now validate.
+- **Native plugin tools ignored per-orchestrator plugin assignment (#1598).**
+  `ctx.tools.register` tools of plugins not assigned to an orchestrator were
+  offered and callable, on both the API-key path and the subscription-CLI path.
+  They are now filtered from the tool list and the prompt docs and refused at
+  dispatch (`Orchestrator.isToolGranted`). Kernel tools and `memory` stay
+  available everywhere. **Behaviour change:** an orchestrator now only gets
+  diagrams, office exports, web search, discussion and integration tools if
+  the plugin is assigned to it in its Plugins tab.
+- **The Builder reference plugin was attached to the standard orchestrator
+  (#1601).** First boot, "Reset standard to all plugins" and kernel installs
+  now skip `is_reference_only` plugins (`attachablePluginIds`). A row an
+  existing instance already has is dropped on the next save in the Plugins
+  tab, as before.
+
 ### Added — Provenance backfill for legacy Privacy Shield content (#1540)
 
 2026-10-28. Closes the last path of #1540. Notes and processes written before

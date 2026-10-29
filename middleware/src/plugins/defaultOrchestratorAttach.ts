@@ -18,6 +18,22 @@ import type { InstalledRegistry } from './installedRegistry.js';
  */
 
 /**
+ * #1601 — the ids of `pluginIds` that may be attached to an orchestrator at
+ * all. Reference-only plugins (`is_reference_only`, the Builder's pattern
+ * source) never run as an agent, and the Plugins tab's catalog leaves them out
+ * — so an attached row shows as "no longer installed" and the next save drops
+ * it. Every attach path (first boot, "Reset standard to all plugins", kernel
+ * installs) filters through here. An id the catalog does not know is kept:
+ * whether it can be attached is not this filter's question.
+ */
+export function attachablePluginIds(
+  pluginIds: readonly string[],
+  catalog: Pick<PluginCatalog, 'get'>,
+): string[] {
+  return pluginIds.filter((id) => catalog.get(id)?.plugin.is_reference_only !== true);
+}
+
+/**
  * `pluginIds` plus their installed `depends_on` ancestors, parents first.
  * Parents that are not installed are left out: a row for a missing plugin
  * would be a dangling grant.

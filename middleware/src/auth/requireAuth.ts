@@ -182,6 +182,7 @@ export function createRequireAuth(
   },
 ) {
   const publicPaths = deps.publicPaths ?? [];
+  const sessionGate = createSessionGate(deps);
   return async function requireAuth(
     req: Request,
     res: Response,
@@ -191,6 +192,29 @@ export function createRequireAuth(
       next();
       return;
     }
+    await sessionGate(req, res, next);
+  };
+}
+
+/**
+ * The session check of {@link createRequireAuth} WITHOUT the public-path
+ * short-circuit: no URL ever skips it.
+ *
+ * Issue #1596 — plugin routes registered with `auth: 'session'` used the
+ * kernel's `requireAuth`, short-circuit included. The static allowlist then
+ * waved every `/p/<plugin>/…` request through before the cookie was read, so a
+ * "session" route served anonymous callers (employee absences, sick leave).
+ * A route that asked for a session gets one checked, whatever its prefix
+ * matches; reaching a plugin route without a session is the job of the
+ * operator-granted public-path mount (`platform/publicPathMount.ts`), never of
+ * this allowlist.
+ */
+export function createSessionGate(deps: SessionEvaluationDeps) {
+  return async function requireSession(
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
     const cookies = (req as Request & { cookies?: Record<string, string> }).cookies;
     const token = cookies ? cookies[SESSION_COOKIE] : undefined;
     const result = await evaluateSessionToken(token, deps);
