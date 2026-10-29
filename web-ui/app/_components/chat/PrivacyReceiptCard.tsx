@@ -15,11 +15,13 @@ import { MissReportForm } from './MissReportForm';
 interface PrivacyReceiptCardProps {
   receipt: PrivacyReceipt;
   className?: string;
-  /** #760 — threads into the miss-report intake so a filed report keeps the
-   *  turn correlation the review schema was built with. #1573 — also shown on
-   *  the card, linked to the turn's entry on the Receipts page. Absent on the
-   *  Receipts page itself. */
-  turnId?: string;
+  /** #1573 — the key this turn's receipt is stored under (`done.receiptId`),
+   *  shown on the card and linked to its entry on the Receipts page. Also
+   *  threads into the miss-report intake (#760), so a filed report points at
+   *  a receipt a reviewer can open (#1552). Not the session-log turn id: the
+   *  receipt store does not know that one. Absent on the Receipts page
+   *  itself, and for a turn whose receipt row was not written. */
+  receiptId?: string;
 }
 
 /** Characters of the turn id the card shows; the full id is in the title. */
@@ -52,7 +54,7 @@ type TFn = (key: string, values?: Record<string, string | number>) => string;
 export function PrivacyReceiptCard({
   receipt,
   className,
-  turnId,
+  receiptId,
 }: PrivacyReceiptCardProps): React.ReactElement {
   const t = useTranslations('privacyReceipt');
   const verbs = receipt.verbsExecuted;
@@ -278,18 +280,18 @@ export function PrivacyReceiptCard({
             {t('explainerToolErrors')}
           </div>
         )}
-        {turnId !== undefined && (
+        {receiptId !== undefined && (
           <div className={['flex flex-wrap items-baseline gap-x-2 text-[10px]', palette.label].join(' ')}>
-            <span title={turnId} className="font-mono-num">
-              {t('turnId', { id: turnId.slice(0, SHORT_TURN_ID) })}
+            <span title={receiptId} className="font-mono-num">
+              {t('turnId', { id: receiptId.slice(0, SHORT_TURN_ID) })}
             </span>
-            <Link href={receiptHref(turnId)} className="underline underline-offset-2">
+            <Link href={receiptHref(receiptId)} className="underline underline-offset-2">
               {t('turnReceiptLink')}
             </Link>
           </div>
         )}
         {/* #760 — the catch basin's intake: report a value the shield missed. */}
-        <MissReportForm turnId={turnId} />
+        <MissReportForm {...(receiptId ? { turnId: receiptId } : {})} />
       </div>
     </details>
   );
