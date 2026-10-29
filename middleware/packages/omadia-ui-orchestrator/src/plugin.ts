@@ -1949,10 +1949,12 @@ export async function activate(
             .filter((p) => permittedTools.has(p.tool))
             .slice(0, COMPOSER_TOP_K)
         : [];
+    // catalog specs + a generic spec for every read tool the base agent
+    // offers (its own definitions; @omadia/fast-path genericToolSpecs.ts)
     const turnTools =
       fp !== undefined
         ? offeredTools(
-            fp.plannableTools().filter((t) => permittedTools.has(t.name)),
+            fp.plannableTools(base.offeredToolDefinitions?.()).filter((t) => permittedTools.has(t.name)),
             offered,
           )
         : [];
