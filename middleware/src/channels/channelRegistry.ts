@@ -178,6 +178,7 @@ export class DefaultChannelRegistry implements ChannelRegistry {
     });
 
     const handle = await impl.activate(ctx, this.deps.coreApi);
+    this.handles.set(agentId, handle);
     try {
       await claimDeclaredPublicPaths(
         agentId,
@@ -199,19 +200,15 @@ export class DefaultChannelRegistry implements ChannelRegistry {
       );
     } catch (err) {
       // Same rollback as the tool runtime: a channel serving a prefix another
-      // plugin owns is worse than a channel that refuses to start.
-      this.deps.publicPathGrants?.releaseBySource(agentId);
+      // plugin owns is worse than a channel that refuses to start. The full
+      // `deactivate()` (jobs, senders, cached module, status) plus the routes.
       this.deps.pluginRouteRegistry.disposeBySource(agentId);
-      this.deps.uiRouteCatalog.disposeBySource(agentId);
-      this.deps.routes.deactivateChannel(agentId);
-      this.deps.webSockets?.deactivateChannel(agentId);
-      await Promise.resolve(handle.close()).catch(() => undefined);
+      await this.deactivate(agentId);
       throw new Error(
         `channels: ${agentId} cannot activate — ${err instanceof Error ? err.message : String(err)}`,
         { cause: err },
       );
     }
-    this.handles.set(agentId, handle);
     // Register declared event-emit ids (raw manifest `capabilities[].event_emit`) so the channel's
     // `ctx.events.emit(...)` passes the deny-by-default catalog gate and the events surface in the
     // Conductor trigger picker. No-op when the manifest declares none.

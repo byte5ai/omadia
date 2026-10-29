@@ -368,8 +368,9 @@ export class RoutineRunner {
    * `runOnce` and record the failure, keeping the misconfiguration
    * visible in run history.
    */
-  chatAgentAvailable(): boolean {
-    return this.getOrchestrator(null) !== undefined;
+  chatAgentAvailable(agentSlug: string | null = null): boolean {
+    // #1598 — asked for the routine's OWN orchestrator, the one its run uses.
+    return this.getOrchestrator(agentSlug) !== undefined;
   }
 
   /**

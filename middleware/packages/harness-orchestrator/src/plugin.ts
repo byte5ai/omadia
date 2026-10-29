@@ -77,6 +77,7 @@ import {
 import type { ChatPeerAgentsProvider } from './chatParticipants.js';
 // #1085 — the name the kernel's resolver is asked to resolve; one source.
 import { DEFAULT_CLI_BINARY } from './cliChatAgent.js';
+import { createScopedChatAgent } from './scopedChatAgent.js';
 import {
   audienceGuardedAttachmentReader,
   createAttachmentReader,
@@ -1322,7 +1323,20 @@ export async function activate(
     },
     orchestratorDeps,
   );
-  disposeServices.push(ctx.services.provide(CHAT_AGENT_SERVICE, built.bundle));
+  // #1598 — the published `chatAgent@1` is the shared entry point for every
+  // consumer without an orchestrator of its own (canvas, channel plugins'
+  // `defaultOrchestrator`, the shared dispatcher path). The bundle built above
+  // carries no per-Agent plugin grants — it holds every plugin's tools — so it
+  // only answers turns while there is no registry (Postgres-less boot, where it
+  // IS the deployment's orchestrator). Once the registry runs, a turn goes to
+  // the standard (fallback) orchestrator, which has grants; with no standard
+  // orchestrator set, the turn is refused. `raw` and the stores stay the
+  // legacy bundle's: sub-agents attach to it and nothing there runs a turn.
+  let registry: OrchestratorRegistry | undefined;
+  const scopedAgent = createScopedChatAgent(built.bundle.agent, () => registry);
+  disposeServices.push(
+    ctx.services.provide(CHAT_AGENT_SERVICE, { ...built.bundle, agent: scopedAgent }),
+  );
   disposeServices.push(ctx.services.provide(RUN_TRACE_STATS_SERVICE, runTraceStats));
 
   // US4 — multi-orchestrator registry. Optional: only when a Postgres pool
@@ -1332,7 +1346,6 @@ export async function activate(
   // The legacy `chatAgent@1` keeps serving the default boot path — the
   // registry sits alongside it. `graphPool` is already late-resolved at
   // the top of activate() (merged from main 2026-05-26).
-  let registry: OrchestratorRegistry | undefined;
   let reloadBus: ReloadBus | undefined;
   if (graphPool) {
     try {

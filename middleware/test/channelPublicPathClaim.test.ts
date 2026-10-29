@@ -122,7 +122,15 @@ describe('#1596 follow-up — channel plugins claim their declared public paths'
     const grants = new PublicPathGrantRegistry();
     const reg = makeRegistry({ routes, grants, granted: [PREFIX] });
     await reg.activate(TEAMS_ID);
-    await reg.deactivate(TEAMS_ID);
-    assert.equal(grants.releaseBySource(TEAMS_ID), 0, 'nothing left to release');
+    assert.notEqual(grants.resolve(`${PREFIX}/hub`), null, 'the granted claim holds');
+    const { server, base } = await serve(routes, grants);
+    try {
+      assert.equal((await fetch(`${base}${PREFIX}/hub`)).status, 200, 'served while active');
+      await reg.deactivate(TEAMS_ID);
+      assert.equal(grants.releaseBySource(TEAMS_ID), 0, 'deactivate already released the claim');
+      assert.notEqual((await fetch(`${base}${PREFIX}/hub`)).status, 200, 'not served after deactivate');
+    } finally {
+      server.close();
+    }
   });
 });

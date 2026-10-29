@@ -755,7 +755,7 @@ export class DynamicAgentRuntime {
     // v0.4.0 → v0.5.0).
     const disposedCount =
       this.deps.pluginRouteRegistry.disposeBySource(agentId);
-      this.deps.publicPathGrants?.releaseBySource(agentId);
+    this.deps.publicPathGrants?.releaseBySource(agentId);
     if (disposedCount > 0) {
       log(
         `[dynamic-runtime] disposed ${String(disposedCount)} route mount(s) for ${agentId}`,

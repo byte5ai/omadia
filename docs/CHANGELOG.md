@@ -76,19 +76,25 @@ changelog.
   granted `auth: 'custom'` routes were never served. The static `/p/`
   exemption had hidden this until #1596 removed it. All three runtimes now
   claim via `claimDeclaredPublicPaths`.
-- **Routines ran on the grant-less legacy bundle (#1598).** A routine now
-  stores the orchestrator that created it (routines migration
-  `0005_routines_agent_slug`, nullable, no backfill) and runs there. Routines
-  without an owner run on the standard orchestrator.
-- **Channel fallbacks (#1598).** A turn the binding resolver rejects is
-  refused ("no orchestrator is assigned to this conversation") instead of
-  being answered by the legacy bundle. With a registry, the shared `chatAgent`
-  path uses the standard orchestrator. channel-teams 0.32.0 refuses the same
-  way when its resolver rejects or throws.
+- **The grant-less legacy bundle no longer answers turns once a registry
+  exists (#1598).** The published `chatAgent@1` delegates every turn to the
+  standard (fallback) orchestrator and refuses the turn when none is set. This
+  covers canvas, channel plugins' default agent, and the dispatcher's shared
+  path. A Postgres-less boot is unchanged.
+- **Routines (#1598)** store the orchestrator that created them (routines
+  migration `0005_routines_agent_slug`, nullable, no backfill) and run there.
+  A missing orchestrator records an `error` run, and "Run now" answers 503.
+  Routines without an owner run on the standard orchestrator.
+- **Channel rejects (#1598).** A turn the binding resolver rejects is refused
+  ("no orchestrator is assigned to this conversation"). channel-teams 0.32.0
+  does the same when its resolver rejects or throws.
 - **Smaller grant gaps (#1598).** Sub-agent `native` grants, deferred
   sub-agent tools (`orchestratorScope`) and public MCP dispatch follow plugin
-  assignment. `memory` without a turn handler is refused, never routed to the
-  provider's unscoped store.
+  assignment. `memory` on a turn where the binder denied it is refused, never
+  routed to the provider's unscoped store.
+- **Upgrade note:** with a registry but no standard orchestrator set, canvas
+  turns, unbound channel keys and routines created before migration 0005 are
+  now refused. Set a standard orchestrator.
 
 ### Fixed — Orchestrator and agent wiring (#1585, #1569, #1570, #1581, #1502)
 

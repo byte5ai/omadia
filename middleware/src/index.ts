@@ -108,6 +108,7 @@ import {
   type PluginVerdictLookup,
 } from './services/pluginVerdict.js';
 import { ScheduleWorker } from './scheduler/scheduleWorker.js';
+import { resolveScopedBundle } from '@omadia/orchestrator';
 import type {
   ConfigStore as MultiOrchestratorConfigStore,
   OrchestratorRegistry as MultiOrchestratorRegistry,
@@ -2843,14 +2844,12 @@ async function main(): Promise<void> {
   // creator); `'default'` and `null` mean the standard one.
   const getScopedChatAgentBundle = (
     slug: string | null = null,
-  ): ChatAgentBundle | undefined => {
-    const registry =
-      serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry');
-    if (!registry) return getChatAgentBundle();
-    const target =
-      slug !== null && slug !== 'default' ? slug : registry.slugForFallback();
-    return target ? registry.get(target)?.built.bundle : undefined;
-  };
+  ): ChatAgentBundle | undefined =>
+    resolveScopedBundle(
+      serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry'),
+      getChatAgentBundle(),
+      slug,
+    );
   const getChatSessionStore = (): ChatSessionStore | undefined =>
     getChatAgentBundle()?.chatSessionStore;
   // sessionLogger is exposed on the bundle for future channel/route

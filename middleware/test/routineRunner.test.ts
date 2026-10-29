@@ -1494,7 +1494,8 @@ describe('#1598 — a routine runs on the orchestrator that created it', () => {
     });
     const routine = await h.runner.createRoutine(baseInput);
     await h.scheduler.fire(routine.id);
-    assert.deepEqual(asked.filter((a) => a !== null), []);
+    assert.ok(asked.length > 0 && asked.every((a) => a === null), `asked: ${JSON.stringify(asked)}`);
+    assert.equal(h.runsStore.inserts[0]!.status, 'ok');
   });
 });
 
