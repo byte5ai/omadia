@@ -85,6 +85,7 @@ import { TRANSCRIPTION_SERVICE_NAME } from '@omadia/plugin-api';
 import type { TranscriptionService } from '@omadia/plugin-api';
 import { PgTurnReceiptStore, startTurnReceiptReaper } from './receipts/store.js';
 import { createReceiptRoutes } from './receipts/routes.js';
+import { HeadHighWater } from './receipts/anchor.js';
 import { loadCheckpointSigner, startCheckpointWorker } from './receipts/checkpoints.js';
 import { createProvenanceRoutes } from './receipts/verifyRoutes.js';
 import { bindingKeyForTurn } from './conductor/principalId.js';
@@ -4880,10 +4881,14 @@ async function main(): Promise<void> {
     const checkpointSigner = config.AUDIT_SIGNING_KEY
       ? loadCheckpointSigner(config.AUDIT_SIGNING_KEY)
       : undefined;
+    // #1566 — one per process, shared by the worker (refuses to re-sign a
+    // rolled-back head) and verify (reports the rollback).
+    const chainHighWater = new HeadHighWater();
     if (checkpointSigner) {
       startCheckpointWorker(graphPool, checkpointSigner, {
         intervalMs: config.AUDIT_CHECKPOINT_INTERVAL_MINUTES * 60_000,
         ...(config.AUDIT_ANCHOR_PATH ? { anchorPath: config.AUDIT_ANCHOR_PATH } : {}),
+        highWater: chainHighWater,
       });
       console.log(
         `[middleware] audit checkpoints wired (every ${config.AUDIT_CHECKPOINT_INTERVAL_MINUTES}min, fingerprint ${checkpointSigner.publicKeyFingerprint.slice(0, 16)}…${config.AUDIT_ANCHOR_PATH ? ', external anchor on' : ''})`,
@@ -4926,6 +4931,8 @@ async function main(): Promise<void> {
             }
           : {}),
         retentionDays: config.RECEIPT_RETENTION_DAYS,
+        ...(config.AUDIT_ANCHOR_PATH ? { anchorPath: config.AUDIT_ANCHOR_PATH } : {}),
+        highWater: chainHighWater,
       }),
     );
     console.log('[middleware] provenance verify/export wired at /api/v1/operator/provenance (auth-gated)');

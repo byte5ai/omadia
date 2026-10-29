@@ -2195,6 +2195,22 @@ Nachzug hier). UI: Chain-Status-Karte auf `/operator/receipts`. Doku +
 Tamper-Demo: `docs/provenance-verification.md`. Tests:
 `test/provenanceVerify.test.ts` (inkl. Offline-Verifier via spawnSync).
 
+**S3-E (#1565–#1568, #1584):** Server- und Offline-Verifier wenden dieselben
+Regeln an, Verdict `verified | unsigned | broken` (Offline-Exit 0/3/1).
+Ohne Key nie `verified`; Retention-Prefix ohne Key = Info
+(`prefix.unanchoredReason: 'no_signing_key'`), kein Bruch. Prefix gilt als
+verankert, sobald irgendein signaturgültiger Checkpoint eine überlebende
+Zeile zertifiziert (auch offline). Checkpoints über der letzten Zeile =
+`orphaned`; mit Key und ohne zertifizierenden Checkpoint =
+`no_signed_checkpoint`. Anker-Datei wird gelesen (`src/receipts/anchor.ts`,
+`anchor`-Block im Verify-Ergebnis, offline `--anchor`). Checkpoint-Worker
+signiert keinen Head unter Anker-Max oder Prozess-High-Water
+(`HeadHighWater`, eine Instanz in `index.ts`). Reaper löscht nur `seq <`
+max Checkpoint. Migration 0064: Trigger gegen DELETE/UPDATE auf
+`audit_checkpoints` und Head-Rollback. Tests:
+`test/provenanceTamper.test.ts`, `test/receiptChainGuards.pg.test.ts`;
+Fixtures in `test/_helpers/receiptChainFixtures.ts`.
+
 ### Conductor: angesprochener Bot ↔ Agent (Standard-Teams-Bot, 2026-10-07)
 
 Ein über einen Kanal gestarteter Lauf (`teams.*`-Event) bindet jeden

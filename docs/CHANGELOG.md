@@ -67,6 +67,39 @@ changelog.
 `@omadia/plugin-privacy-guard` 0.11.0, `@omadia/plugin-api` 1.37.0
 (`countUnresolvedSurrogates` takes an optional `options`).
 
+### Fixed — receipt chain tamper evidence: truncation, retention, unsigned verdicts (#1565, #1566, #1567, #1568, #1584)
+
+2026-10-29. Server and offline verification of the receipt chain now apply
+the same rules and agree on every case in these issues.
+
+- **Newest receipts deleted with their checkpoints (#1565).** The external
+  anchor file (`AUDIT_ANCHOR_PATH`) was write-only. The server now reads it
+  on every verify and the offline verifier takes `--anchor`: an anchored
+  checkpoint missing from or changed in the database is a finding. With a
+  signing key, a chain no signed checkpoint certifies is never green
+  (`no_signed_checkpoint`). The checkpoint worker refuses to re-sign a head
+  below the anchor or below the highest head its process has seen, so the
+  real key never certifies a rewound chain. Migration 0064 rejects deleting
+  checkpoints and moving the stream head backwards (defence in depth).
+- **Head rolled back, checkpoints kept (#1566).** A checkpoint above the
+  newest stored row is `orphaned` whenever the row fetch was complete, as
+  the offline verifier already reported; a head below the process
+  high-water mark is `head_rollback`.
+- **Retention with a key (#1567).** The offline verifier accepts a reaped
+  prefix when any signature-valid checkpoint certifies a surviving entry,
+  the server's documented rule. The reaper deletes only rows below the
+  newest checkpoint, so the certified row survives.
+- **Retention without a key (#1568).** Verification no longer turns red
+  after the first retention run. The verdict is `unsigned` (`ok: true`,
+  offline exit code 3) and the removed prefix is reported as "not
+  anchored: no signing key". A real break in the surviving rows stays
+  broken.
+- **Unsigned is never "verified" (#1584).** The verify response gains
+  `verdict: verified | unsigned | broken`; `checkpoints.verified` counts only
+  signature-checked checkpoints and `checkpoints.unchecked` the rest. The
+  receipts page shows "unsigned" instead of "verified without signatures",
+  and lists anchor findings and the anchor comparison.
+
 ### Added — Provenance backfill for legacy Privacy Shield content (#1540)
 
 2026-10-28. Closes the last path of #1540. Notes and processes written before

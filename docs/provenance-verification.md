@@ -19,11 +19,24 @@ verdict does and does not prove.
 |---|---|---|
 | UI | the running server | `/operator/receipts` → "Verify now" (chain-status card) |
 | API | the running server | `GET /api/v1/operator/provenance/verify` |
-| **Offline** | **none** — only the public key you received out-of-band | `node middleware/scripts/verify-audit-export.mjs export.jsonl --pubkey omadia-audit.pub.pem` |
+| **Offline** | **none** — only the public key you received out-of-band, plus the anchor file from storage the DB admin cannot rewrite | `node middleware/scripts/verify-audit-export.mjs export.jsonl --pubkey omadia-audit.pub.pem --anchor audit-anchors.jsonl` |
+
+Server and offline verification apply the same rules (#1565–#1568) and
+report one of three verdicts:
+
+| Verdict | Server (`verdict` / `ok`) | Offline exit code | Meaning |
+|---|---|---|---|
+| **verified** | `verified` / `true` | `0` | Every entry intact, and at least one signature-valid checkpoint certifies a stored entry. |
+| **unsigned** | `unsigned` / `true` | `3` | Entries are internally consistent, but there is no signing key: nothing vouches for them. Never reported as "verified". |
+| **broken** | `broken` / `false` | `1` | A break or finding (list below). |
+
+`checkpoints.verified` counts only checkpoints whose signature was checked
+and found valid; without a key it is `0` and `checkpoints.unchecked` holds
+the count (#1584).
 
 The offline layer is the answer to "how do we prove the provability": a
 verification that only works while trusting the exporting server proves
-nothing. The offline verifier is a single ~180-line Node script with zero
+nothing. The offline verifier is a single ~320-line Node script with zero
 dependencies beyond `node:crypto` — an external auditor can read all of it
 before running it.
 
@@ -38,7 +51,23 @@ node middleware/scripts/generate-audit-signing-key.mjs
 Env: `AUDIT_SIGNING_KEY`, `AUDIT_CHECKPOINT_INTERVAL_MINUTES` (default 60),
 `AUDIT_ANCHOR_PATH` (optional external JSONL anchor — point it at storage
 the DB admin cannot rewrite). Without a key the chain still builds; only
-checkpoint signing is off, loudly logged at boot.
+checkpoint signing is off, loudly logged at boot, and every verification
+reports **unsigned** — never "verified". Retention on a keyless install
+(`RECEIPT_RETENTION_DAYS`, default 90) removes early rows by age; both
+verifiers then report the removed prefix as "not anchored: no signing key",
+which is information, not a break (#1568).
+
+**Set `AUDIT_ANCHOR_PATH` if tail truncation matters to you.** An admin who
+deletes the newest receipts *and* their rows in `audit_checkpoints` leaves
+nothing inside the database that proves the rows ever existed. The anchor
+file does: the server compares it with `audit_checkpoints` on every verify,
+the checkpoint worker refuses to re-sign a head below it, and the offline
+verifier compares it with `--anchor` (#1565). A database checkpoint the
+anchor lacks is not a finding (appending is best-effort, and the path may
+have been set later); an anchored checkpoint the database lacks always is. One anchor file belongs to one database: after restoring an empty or
+older database, start a new anchor file, or every verify reports the old
+anchored checkpoints as missing and the worker will not sign until the head
+passes them.
 
 ## The five-minute tamper demo
 
@@ -70,8 +99,27 @@ node middleware/scripts/verify-audit-export.mjs export2.jsonl --pubkey omadia-au
 
 The same offline run also catches: a deleted row (`seq_gap`), a rewritten
 chain re-signed with the wrong key (`bad_signature`), a checkpoint whose
-certified row vanished (`orphaned_checkpoint`), and a reaped prefix no
-checkpoint vouches for (`unanchored_prefix`).
+certified row vanished — inside the range or above the newest entry, after
+the newest rows were deleted and the head rolled back
+(`orphaned_checkpoint`, #1566) — with a key in use, a chain no signed
+checkpoint certifies because `audit_checkpoints` was emptied
+(`no_signed_checkpoint`, #1565), a reaped prefix no checkpoint vouches for
+while a key is in use (`unanchored_prefix`), and, with `--anchor`, an
+anchored checkpoint missing from or changed in the export
+(`anchor_checkpoint_missing`, `anchor_mismatch`) or anchored beyond the
+newest entry (`anchor_beyond_export`).
+
+A retention-removed prefix counts as anchored when any signature-valid
+checkpoint certifies a surviving entry — the first survivor's `prev_hash`
+is an input to every later entry hash. No checkpoint has to sit exactly at
+the reap boundary; the server and the offline tool use this one rule
+(#1567). The reaper deletes only rows *below* the newest checkpoint, so
+the certified row itself always survives.
+
+Defence in depth (0064): triggers reject deleting or updating
+`audit_checkpoints` and moving `audit_stream_heads.head_seq` backwards.
+A superuser can drop them, which is why the anchor and the verifiers are
+the proof, not the triggers.
 
 ## What a green verdict proves — and what it does not
 
@@ -80,13 +128,22 @@ recorded, in order, with no removals inside the verified range; the signed
 checkpoints match the stored chain; a retention-removed prefix is anchored
 (a signature-valid checkpoint in the surviving range transitively covers
 the first survivor's back-link); the recorded stream head agrees with the
-stored rows (a wiped or tail-truncated table is never green); and — the
+stored rows and with every checkpoint (a wiped table, or a tail truncated
+while its checkpoints are kept, is never green); with a key, at least one
+signed checkpoint certifies the stored chain; with an anchor, every
+anchored checkpoint is still in the database unchanged; and — the
 laundering rule, **server verify only** (the offline tool has no retention
 input) — no reaped row sits above a checkpoint younger than the retention
 window, which would prove it was created inside the window and deleted
 early (`premature_deletion`).
 
-**Does not prove:** turns the middleware never wrote (a compromised
+**Does not prove:** without `AUDIT_ANCHOR_PATH` (or without `--anchor`
+offline), that the newest entries were not deleted together with every
+checkpoint that covered them and the head rolled back — inside the
+database that state is indistinguishable from a shorter chain. Until the
+middleware restarts, the server still notices a head below the highest one
+it has seen (`head_rollback`), and the worker refuses to re-sign it. Also
+not proved: turns the middleware never wrote (a compromised
 middleware can lie at write time — the anchoring cadence bounds that
 window), anything about pre-chain rows (NULL chain columns, reported
 separately), or per-row wall-clock time beyond checkpoint granularity.

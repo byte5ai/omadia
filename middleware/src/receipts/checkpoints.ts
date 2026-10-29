@@ -21,6 +21,7 @@ import {
 } from 'node:crypto';
 import type { Pool } from 'pg';
 
+import { type HeadHighWater, maxAnchoredSeq } from './anchor.js';
 import { RECEIPT_STREAM_ID } from './chain.js';
 
 export interface CheckpointSigner {
@@ -94,7 +95,7 @@ export interface CheckpointRecord {
 export async function runCheckpointPass(
   pool: Pool,
   signer: CheckpointSigner,
-  opts: { anchorPath?: string; now?: () => Date },
+  opts: { anchorPath?: string; now?: () => Date; highWater?: HeadHighWater },
 ): Promise<CheckpointRecord | undefined> {
   const head = await pool.query<{ head_seq: string; head_hash: Buffer }>(
     `SELECT head_seq, head_hash FROM audit_stream_heads WHERE stream_id = $1`,
@@ -108,6 +109,22 @@ export async function runCheckpointPass(
     [RECEIPT_STREAM_ID],
   );
   const lastSeq = last.rows[0]?.seq ? Number(last.rows[0].seq) : 0;
+  // #1565 — never certify a head that rolled back. Without this guard an
+  // admin who deletes the newest receipts AND `audit_checkpoints` gets the
+  // shortened chain re-signed with the real key on the next pass. Two pieces
+  // of evidence live outside the database: the highest head this process
+  // has seen, and the highest seq already written to the external anchor
+  // (every anchored seq had a DB checkpoint, so `seq <= anchored` with no
+  // DB checkpoint at or above it means checkpoints were deleted).
+  const highWater = opts.highWater?.value ?? 0;
+  const anchored = opts.anchorPath ? await maxAnchoredSeq(opts.anchorPath, RECEIPT_STREAM_ID) : 0;
+  if (seq < highWater || (seq > lastSeq && seq <= anchored)) {
+    console.error(
+      `[receipts] REFUSING to sign checkpoint: stream head seq=${String(seq)} is below already-observed history (process high-water ${String(highWater)}, external anchor ${String(anchored)}, newest DB checkpoint ${String(lastSeq)}) — receipts or checkpoints were deleted; run provenance verify (#1565)`,
+    );
+    return undefined;
+  }
+  opts.highWater?.note(seq);
   if (seq <= lastSeq) return undefined;
 
   const signedAt = (opts.now?.() ?? new Date()).toISOString();
@@ -160,11 +177,14 @@ export async function runCheckpointPass(
 export function startCheckpointWorker(
   pool: Pool,
   signer: CheckpointSigner,
-  opts: { intervalMs: number; anchorPath?: string },
+  opts: { intervalMs: number; anchorPath?: string; highWater?: HeadHighWater },
 ): { stop: () => void } {
   const tick = async (): Promise<void> => {
     try {
-      const record = await runCheckpointPass(pool, signer, { anchorPath: opts.anchorPath });
+      const record = await runCheckpointPass(pool, signer, {
+        ...(opts.anchorPath ? { anchorPath: opts.anchorPath } : {}),
+        ...(opts.highWater ? { highWater: opts.highWater } : {}),
+      });
       if (record) {
         console.log(
           `[receipts] checkpoint signed: stream=${record.streamId} seq=${String(record.seq)} fingerprint=${record.publicKeyFingerprint.slice(0, 16)}…`,

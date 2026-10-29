@@ -2184,13 +2184,30 @@ checkpoint younger than the retention window, the verifier flags
 inverse — "a checkpoint covering the row bounds its age" — is deliberately
 NOT used: it only upper-bounds creation time and would flag legitimately
 old rows on installs that enabled signing late.) Two structural guards
-accompany it: the retention reaper deletes chained rows only up to the
-greatest checkpointed seq, so a surviving suffix always has a signed
-anchor; and the verifier consults the recorded stream head, so a wiped or
-tail-truncated table can never report green (`empty_chain_with_history`,
-`head_beyond_rows`). Verify surface: `GET /api/v1/operator/provenance/
-verify`, signed export + zero-dependency offline verifier — see
-`docs/provenance-verification.md`.
+accompany it: the retention reaper deletes chained rows only below the
+greatest checkpointed seq, so the certified row survives and the suffix
+always has a signed anchor; and the verifier consults the recorded stream
+head, so a wiped or tail-truncated table can never report green
+(`empty_chain_with_history`, `head_beyond_rows`). Verify surface: `GET
+/api/v1/operator/provenance/verify`, signed export + zero-dependency
+offline verifier — see `docs/provenance-verification.md`.
+
+Tail truncation with the checkpoints deleted too (#1565, #1566): a
+checkpoint above the newest stored row is orphaned whenever the fetch was
+complete; with `AUDIT_SIGNING_KEY` set, a chain no signature-valid
+checkpoint certifies is broken (`no_signed_checkpoint`); the anchor file
+(`AUDIT_ANCHOR_PATH`) is read back and every anchored checkpoint must still
+be in `audit_checkpoints` unchanged; the checkpoint worker refuses to sign a
+head below the anchor or below the highest head its process has seen, so
+the real key never certifies a rewound chain; and migration 0064 rejects
+deleting checkpoints and moving the head backwards (defence in depth, a
+superuser can drop the triggers). Without an anchor, deleting the newest
+rows together with every checkpoint and rolling the head back remains
+undetectable from the database alone after a restart — the documented
+limit. Without a key the verdict is `unsigned`, never `verified`, and a
+retention prefix is reported as unanchored information rather than a break
+(#1568); `checkpoints.verified` counts signature-checked checkpoints only
+(#1584). The server and the offline verifier apply the same rules.
 
 What the chain cannot show is a receipt that was never written. Appending is
 best-effort, because the user's answer outranks the audit row

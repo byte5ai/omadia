@@ -164,19 +164,21 @@ export function startTurnReceiptReaper(
   const intervalMs = opts.intervalMs ?? 6 * 60 * 60 * 1000; // 6h
   const tick = async (): Promise<void> => {
     try {
-      // #761 review H2 — chained rows are reaped only up to the greatest
-      // CHECKPOINTED seq, so the surviving suffix always has a signed anchor
-      // and a healthy install never turns "unanchored" just by aging past
+      // #761 review H2 / #1567 — chained rows are reaped only BELOW the
+      // greatest CHECKPOINTED seq, so the row that checkpoint certifies
+      // always survives and the surviving suffix keeps a signed anchor: a
+      // healthy install never turns "unanchored" just by aging past
       // retention. Pre-chain rows (seq IS NULL) reap freely; with no
       // checkpoints at all (no signing key) the COALESCE degrades to the
-      // plain age rule — an operator without a key has no anchor to protect.
+      // plain age rule — an operator without a key has no anchor to protect,
+      // and the verifiers report that prefix as unsigned, not broken (#1568).
       const result = await pool.query(
         `DELETE FROM turn_receipts
           WHERE created_at < NOW() - make_interval(days => $1)
             AND (seq IS NULL
-                 OR seq <= COALESCE(
+                 OR seq < COALESCE(
                       (SELECT MAX(seq) FROM audit_checkpoints WHERE stream_id = 'receipts'),
-                      seq))`,
+                      seq + 1))`,
         [opts.retentionDays],
       );
       if ((result.rowCount ?? 0) > 0) {

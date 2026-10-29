@@ -4,7 +4,8 @@
  * caller (`index.ts`).
  *
  * GET /verify — walk + verify the stored chain, checkpoints, and the
- *   retention prefix (incl. the #758 M2 premature-deletion check).
+ *   retention prefix (incl. the #758 M2 premature-deletion check), and
+ *   compare the external anchor file against the DB (#1565).
  * GET /export — signed JSONL export: header line (format, stream, public
  *   key + fingerprint), then every chain row, then every checkpoint. The
  *   companion zero-dependency offline verifier
@@ -16,6 +17,7 @@
 import { Router, type Request, type Response } from 'express';
 import type { Pool } from 'pg';
 
+import { type HeadHighWater, readAnchorFile } from './anchor.js';
 import { RECEIPT_STREAM_ID } from './chain.js';
 import { verifyReceiptStream } from './verify.js';
 
@@ -48,15 +50,26 @@ export function createProvenanceRoutes(
     publicKeyPem?: string;
     publicKeyFingerprint?: string;
     retentionDays: number;
+    /** `AUDIT_ANCHOR_PATH` — read back and compared on every verify. */
+    anchorPath?: string;
+    highWater?: HeadHighWater;
   },
 ): Router {
   const router = Router();
 
   router.get('/verify', async (_req: Request, res: Response) => {
     try {
+      const anchor = deps.anchorPath
+        ? await readAnchorFile(deps.anchorPath, RECEIPT_STREAM_ID)
+        : undefined;
+      if (anchor?.status === 'unreadable') {
+        console.error(`[provenance] anchor file unreadable: ${anchor.message}`);
+      }
       const result = await verifyReceiptStream(pool, {
         ...(deps.publicKeyPem ? { publicKeyPem: deps.publicKeyPem } : {}),
         retentionDays: deps.retentionDays,
+        ...(anchor ? { anchor } : {}),
+        ...(deps.highWater ? { highWater: deps.highWater } : {}),
       });
       res.json(result);
     } catch (err) {
