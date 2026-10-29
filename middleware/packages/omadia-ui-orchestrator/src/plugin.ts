@@ -5,7 +5,6 @@ import {
   PRIVACY_REDACT_SERVICE_NAME,
   type PluginContext,
   type PrivacyGuardService,
-  type PrivacyResolvedDataset,
 } from '@omadia/plugin-api';
 import {
   CHAT_AGENT_SERVICE,
@@ -64,6 +63,7 @@ import {
 } from './rowDetails.js';
 import { buildDatasetLumen } from './datasetLumen.js';
 import { createProvenanceStash, deriveDatasetRecipe, readDatasetPublish } from './datasetRecipe.js';
+import { type CanvasResolvedDataset, withDefaultColumnLabels } from './datasetColumnLabels.js';
 import {
   applyVariant,
   createVariantRegistry,
@@ -205,7 +205,7 @@ export const V4_RENDER_TOOL = 'v4_render_answer';
  *  unknown/expired id. Mirrors the office plugin's adapter pattern. */
 export type CanvasDatasetResolver = (
   datasetId: string,
-) => PrivacyResolvedDataset | 'unavailable' | undefined;
+) => CanvasResolvedDataset | 'unavailable' | undefined;
 
 /** Privacy Shield v4: a dataset reference the LLM mistakenly wrapped INTO the
  *  rows array instead of passing `datasetId` top-level. Detecting it turns a
@@ -307,7 +307,7 @@ export async function handleCanvasPublishRows(
    *  field keys. Undefined for a plain `rows` publish, where the agent's keys
    *  already are the row keys and nothing needs remapping. */
   let datasetColumns:
-    | Array<{ path: string; type: string; classification?: string; label?: string }>
+    | Array<{ path: string; type: string; classification?: string; label?: string; defaultLabel?: string }>
     | undefined =
     internal?.columns && internal.columns.length > 0
       ? internal.columns.map((c) => ({ path: c.fieldKey, type: 'string', label: c.label }))
@@ -336,6 +336,8 @@ export async function handleCanvasPublishRows(
       path: c.path,
       type: c.type,
       ...(c.classification ? { classification: c.classification } : {}),
+      // the header when the agent names none (datasetColumnLabels.ts)
+      ...(c.defaultLabel ? { defaultLabel: c.defaultLabel } : {}),
     }));
     if (rows.length > MAX_DATASET_PUBLISH_ROWS) {
       truncatedFrom = rows.length;
@@ -776,12 +778,12 @@ export async function activate(
           return 'unavailable';
         }
         const resolved = privacy.resolveDatasetForRender(turnId, datasetId);
+        if (resolved === undefined) return undefined;
         // provenance is turn-scoped: read it NOW (inside the turn), the
         // synthesis layer consumes it when the publish is composed
-        if (resolved !== undefined) {
-          publishProvenance.put(datasetId, privacy.datasetProvenance?.(turnId, datasetId));
-        }
-        return resolved;
+        const provenance = privacy.datasetProvenance?.(turnId, datasetId);
+        publishProvenance.put(datasetId, provenance);
+        return withDefaultColumnLabels(resolved, provenance);
       }),
   );
   const disposeChoiceTool: (() => void) | undefined = toolsAccessor?.register(
@@ -1947,10 +1949,12 @@ export async function activate(
             .filter((p) => permittedTools.has(p.tool))
             .slice(0, COMPOSER_TOP_K)
         : [];
+    // catalog specs + a generic spec for every read tool the base agent
+    // offers (its own definitions; @omadia/fast-path genericToolSpecs.ts)
     const turnTools =
       fp !== undefined
         ? offeredTools(
-            fp.plannableTools().filter((t) => permittedTools.has(t.name)),
+            fp.plannableTools(base.offeredToolDefinitions?.()).filter((t) => permittedTools.has(t.name)),
             offered,
           )
         : [];

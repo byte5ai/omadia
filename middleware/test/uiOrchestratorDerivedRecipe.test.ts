@@ -6,9 +6,10 @@
  * back to the agent and learning skipped with `no-map`. The Privacy Shield's
  * dataset provenance names the tool call behind the dataset; when it is ONE
  * learnable read tool and the verb chain is expressible as a RefreshSource
- * (none, select → map, eq-filter → filter), the orchestrator derives the
- * recipe, persists it like a fast-path one and feeds the same candidate into
- * learning. Anything else is skipped with a logged reason.
+ * (none, select → map, eq-filter → filter, sort / top_n → sort + take), the
+ * orchestrator derives the recipe, persists it like a fast-path one and feeds
+ * the same candidate into learning (a sorted one is not learned yet). Anything
+ * else is skipped with a logged reason.
  */
 
 import { strict as assert } from 'node:assert';
@@ -117,7 +118,7 @@ describe('deriveDatasetRecipe — pure', () => {
     };
     assert.equal(reason(prov({ tool: 'odoo_write' })), 'tool-not-learnable');
     assert.equal(reason(prov({ tool: 'odoo_describe_model' })), 'tool-not-learnable');
-    assert.equal(reason(prov({ verbs: [{ verb: 'sort', args: { by: 'name' } }] })), 'verb-sort');
+    assert.equal(reason(prov({ verbs: [{ verb: 'aggregate', args: {} }] })), 'verb-aggregate');
     assert.equal(reason(prov({ verbs: [{ verb: 'join', args: {} }] })), 'verb-join');
     assert.equal(
       reason(prov({ verbs: [{ verb: 'filter', args: { predicate: { op: 'gt', field: 'id', value: 1 } } }] })),
@@ -328,9 +329,9 @@ describe('agent dataset publish → derived recipe', () => {
 
   it('skips an unexpressible verb chain (logged) — refresh stays on the agent path', async () => {
     const h = await harness();
-    h.s.provenance = prov({ verbs: [{ verb: 'sort', args: { by: 'name' } }] });
-    await collect(h.agent.chatStream({ userMessage: 'Mitarbeiter sortiert', canvasSessionId: 'cs-2' }));
-    assert.ok(h.logs.includes('[fast-path] recipe-skip container=employees reason=verb-sort'), h.logs.join('\n'));
+    h.s.provenance = prov({ verbs: [{ verb: 'aggregate', args: { by: ['name'] } }] });
+    await collect(h.agent.chatStream({ userMessage: 'Mitarbeiter gruppiert', canvasSessionId: 'cs-2' }));
+    assert.ok(h.logs.includes('[fast-path] recipe-skip container=employees reason=verb-aggregate'), h.logs.join('\n'));
     const before = h.baseInputs.length;
     await collect(
       h.agent.chatStream({
@@ -340,6 +341,43 @@ describe('agent dataset publish → derived recipe', () => {
       }),
     );
     assert.equal(h.baseInputs.length, before + 1, 'refresh fell back to the agent');
+  });
+
+  it('a top_n dataset: human headers on publish, LLM-free refresh replays the ranking', async () => {
+    const h = await harness();
+    h.s.provenance = prov({ verbs: [{ verb: 'top_n', args: { n: 1, by: 'birthday', direction: 'asc' } }] });
+    const turn = await collect(h.agent.chatStream({ userMessage: 'Ältester Geburtstag', canvasSessionId: 'cs-4' }));
+    assert.ok(h.logs.includes('[fast-path] recipe derived container=employees tool=odoo_query'), h.logs.join('\n'));
+    // skeleton (2 columns) ≠ dataset (3 columns): catalog / humanised headers, not raw paths
+    const columnsPatch = turn
+      .flatMap((e) => (e.type === 'surface_patch' ? (e.patches as Array<{ path: string; value: unknown }>) : []))
+      .find((p) => p.path.endsWith('/columns'));
+    assert.deepEqual(
+      (columnsPatch?.value as Array<{ label: string }> | undefined)?.map((c) => c.label),
+      ['Id', 'Name', 'Geburtstag'],
+    );
+    // a ranking is not learned until learned plans carry sort / take
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(h.candidates.length, 0);
+    assert.ok(h.logs.some((l) => l.includes('reason=sorted-recipe')), h.logs.join('\n'));
+
+    const before = h.baseInputs.length;
+    const refresh = await collect(
+      h.agent.chatStream({
+        userMessage: '',
+        canvasSessionId: 'cs-4',
+        canvasRefresh: { basedOnRevision: '3', currentTree: publishedTree },
+      }),
+    );
+    assert.equal(h.baseInputs.length, before, 'no agent turn on refresh');
+    const rowsPatch = refresh
+      .flatMap((e) => (e.type === 'surface_patch' ? (e.patches as Array<{ path: string; value: unknown }>) : []))
+      .find((p) => p.path.endsWith('/rows'));
+    // earliest birthday first, cut to n = 1
+    assert.deepEqual(
+      (rowsPatch?.value as Array<{ rowKey: string }> | undefined)?.map((r) => r.rowKey),
+      ['2'],
+    );
   });
 
   it('skips a dataset without provenance (no input recorded)', async () => {

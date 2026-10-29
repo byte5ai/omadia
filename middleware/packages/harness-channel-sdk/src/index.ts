@@ -114,6 +114,7 @@ export type {
   AnswerVerbosityInfo,
   AnswerVerbosityLevel,
   ChatAgent,
+  ChatAgentToolDefinition,
   ChatStreamObserver,
   ChatTurnInput,
   ChatTurnAttachment,
