@@ -809,13 +809,23 @@ export class DynamicAgentRuntime {
    *  registry says WHICH tools are deterministic, this says HOW to run one
    *  without a model. Data-driven agents never reach here — they go through the
    *  domain tool + compose path instead. */
-  /** #1598 — the agent plugin that owns `toolId` (the first active match, the
-   *  same one `invokeAgentTool` / `invokeAgentToolStream` would run), so the
-   *  kernel can check it against an orchestrator's plugin assignment. */
-  ownerOfAgentTool(toolId: string): string | undefined {
+  /** #1598 — the agent plugin whose tool `invokeAgentTool` (`'invoke'`) or
+   *  `invokeAgentToolStream` (`'stream'`) would actually run for `toolId` —
+   *  the same search as each of them, so the grant is checked against the
+   *  plugin whose code runs even if two plugins expose the same id. */
+  ownerOfAgentTool(toolId: string, kind: 'invoke' | 'stream'): string | undefined {
     for (const [agentId, entry] of this.active) {
-      if (entry.subAgentTools.some((t) => t.spec.name === toolId)) return agentId;
-      if (entry.rawTools.some((c) => toolIdentifier(c) === toolId)) return agentId;
+      if (kind === 'invoke' && entry.subAgentTools.some((t) => t.spec.name === toolId)) {
+        return agentId;
+      }
+      if (
+        kind === 'stream' &&
+        entry.rawTools.some(
+          (c) => toolIdentifier(c) === toolId && isStreamingUploadedToolkitTool(c),
+        )
+      ) {
+        return agentId;
+      }
     }
     return undefined;
   }

@@ -1454,8 +1454,11 @@ async function main(): Promise<void> {
   // #1598 — the canvas runs on the standard orchestrator (chatAgent@1), so a
   // tool reached here must belong to a plugin assigned to it. Without a
   // registry (Postgres-less boot) there is no assignment to check.
-  const standardOrchestratorGrants = (toolId: string): boolean => {
-    const owner = dynamicAgentRuntime.ownerOfAgentTool(toolId);
+  const standardOrchestratorGrants = (
+    toolId: string,
+    kind: 'invoke' | 'stream',
+  ): boolean => {
+    const owner = dynamicAgentRuntime.ownerOfAgentTool(toolId, kind);
     if (owner === undefined) return true; // nothing to run — invoke answers undefined
     const registry =
       serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry');
@@ -1466,14 +1469,14 @@ async function main(): Promise<void> {
   };
   serviceRegistry.provide('agentToolInvoker', {
     invoke: (toolId: string, input: unknown): Promise<string | undefined> =>
-      standardOrchestratorGrants(toolId)
+      standardOrchestratorGrants(toolId, 'invoke')
         ? dynamicAgentRuntime.invokeAgentTool(toolId, input)
         : Promise.resolve(undefined),
     hasStream: (toolId: string): boolean =>
-      standardOrchestratorGrants(toolId) &&
+      standardOrchestratorGrants(toolId, 'stream') &&
       dynamicAgentRuntime.hasStreamingTool(toolId),
     invokeStream: (toolId: string, input: unknown): AsyncGenerator<string> =>
-      standardOrchestratorGrants(toolId)
+      standardOrchestratorGrants(toolId, 'stream')
         ? dynamicAgentRuntime.invokeAgentToolStream(toolId, input)
         : (async function* () {})(),
   });
