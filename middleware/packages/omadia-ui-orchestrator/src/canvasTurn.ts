@@ -107,7 +107,7 @@ export async function* canvasTurnStream(
   const blocks = canvasTurnBlocks(input);
 
   // Deterministic action (LLM-free) — deterministicAction.ts.
-  const direct = deterministicActionStream(rt, input, canvasSessionId);
+  const direct = deterministicActionStream(rt, input, canvasSessionId, base.offeredToolNames?.());
   if (direct !== undefined) {
     yield* direct;
     return;

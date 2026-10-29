@@ -227,6 +227,10 @@ function makeDispatcherResolver(
     const dispatch = new ToolDispatchService({
       nativeTools: nativeToolRegistry,
       domainToolsProvider: () => entry.built.orchestrator.listDomainTools(),
+      // #1598 — a key binding names exact tools, but only tools of plugins
+      // assigned to the bound agent are reachable, as in its own chat.
+      isToolGranted: (name, agentId, scope) =>
+        entry.built.orchestrator.isToolGranted(name, agentId, scope),
       // Explicit, NOT the ambient `turnContext` fallback: this endpoint runs
       // outside any turn, so the ambient handle is always `undefined` here and
       // relying on it would ship an unmasked public endpoint. The dispatcher

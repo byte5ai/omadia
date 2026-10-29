@@ -1203,14 +1203,52 @@ ungated, and so does `memory`: its provider only backs the store, while the
 kernel scopes what each orchestrator reads and writes. An orchestrator without
 a grant set (legacy single-Agent boot) stays ungated, as for domain tools.
 
-**Open (#1598).** The legacy `default` bundle (`chatAgent@1`) has no grant set,
-so whatever runs on it sees every plugin's tools: routines (they store no
-Agent), the channel dispatcher's fallback when the resolver rejects, and
-Teams' fallback when the resolver throws. Web chat no longer reaches it via
-`agentSlug: "default"` once a registry exists. Also open: `native` tool grants
-on sub-agents are not checked against the parent's plugins, deferred
-sub-agent tools (`LONG_RUNNING_SUBAGENT_TOOLS`) register without an owner,
-and public MCP key bindings are not checked against the Agent's plugins.
+**Closed in the follow-up (#1598).** With a registry present, nothing runs a
+turn on the grant-less legacy bundle any more:
+
+- The published `chatAgent@1` delegates every turn to the standard (fallback)
+  orchestrator (`createScopedChatAgent`), and refuses the turn when none is
+  set. This covers every consumer without an orchestrator of its own: canvas
+  (`canvasChatAgent` wraps it), channel plugins' default agent (channel-teams
+  before 0.32.0 included), and the dispatcher's shared path. `raw` and the
+  stores stay the legacy bundle's; nothing there runs a turn. A Postgres-less
+  boot (no registry) keeps the legacy bundle as its only orchestrator.
+- Routines store the slug of the orchestrator that created them (routines
+  migration `0005_routines_agent_slug`) and run there. A missing orchestrator
+  records an `error` run, and the trigger route answers 503. Routines without
+  an owner run on the standard orchestrator.
+- The channel dispatcher refuses a turn the binding resolver rejects.
+  channel-teams 0.32.0 refuses the same way when its resolver rejects or
+  throws.
+- A sub-agent's `native` tool grant only resolves a tool its parent
+  orchestrator is granted.
+- Deferred sub-agent tools carry `orchestratorScope`: only the orchestrator
+  that registered them sees or runs them. The registry is keyed by tool name,
+  so when two orchestrators have a deferred sub-agent of the same name, only
+  the first one to hydrate gets the deferred twin; the other keeps the blocking
+  `ask_<slug>` tool. `LONG_RUNNING_SUBAGENT_TOOLS` is empty by default.
+- Public MCP dispatch checks the bound agent's plugin assignment.
+- Canvas deterministic actions (LLM-free tool runs) only run a native tool the
+  canvas's orchestrator is offered, or the ui-orchestrator's own canvas tool.
+  The kernel's `agentToolInvoker` only runs agent-plugin tools of plugins
+  assigned to the standard orchestrator.
+- `manage_routine create` is refused when a registry exists but the turn's
+  orchestrator is unknown (e.g. a subscription-CLI turn), instead of quietly
+  running the routine on another orchestrator. An operator Agent named
+  `default` keeps its own routines.
+- The channel SDK helper `resolveChatAgentForChannel` returns `undefined` on a
+  resolver reject instead of the shared singleton.
+- Known limit: a deferred sub-agent tool keeps the handler built at first
+  hydration until restart, so a plugin revoked from its sub-agent stays
+  reachable through it until then (only with `LONG_RUNNING_SUBAGENT_TOOLS`).
+- `memory` on a turn where the binder denied memory (`forAudience` failed,
+  `memoryDenied`) is refused rather than routed to the provider's unscoped
+  handler.
+
+**Operator note.** With a registry but no standard orchestrator set, turns that
+have no orchestrator of their own (canvas, unbound channel keys, routines
+created before migration 0005) are refused instead of answered with every
+plugin's tools. Set a standard orchestrator under Orchestrators.
 
 ## 6. Defence in depth for cached data
 
