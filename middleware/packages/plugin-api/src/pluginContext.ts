@@ -919,8 +919,9 @@ export interface ToolRegistrationOptions {
  * Epic #470 C6 / G2 — how a contributed route is authenticated.
  *
  *  - `'session'` — **the default**. The kernel composes the same operator
- *    session gate core mounts at `/api`, per route. Under `/api` that is
- *    defence-in-depth (the blanket gate already ran); outside `/api`
+ *    session check core mounts at `/api`, per route — WITHOUT core's static
+ *    public-path exemptions (#1596), so no prefix opens it. Under `/api` that
+ *    is defence-in-depth (the blanket gate already ran); outside `/api`
  *    (`/diagrams`, `/documents`, `/p/…`) it is the only session gate there is.
  *    CSRF posture is core's own: a `SameSite=Lax` session cookie, no token
  *    layer — a browser never attaches the session to a cross-site request.

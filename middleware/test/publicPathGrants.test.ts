@@ -137,11 +137,24 @@ describe('#470 C4/H1 — public-path declaration validation', () => {
   });
 
   it('rejects a prefix that is already a static core public path', () => {
-    // `/p/<pluginId>` is a live entry in STATIC_PUBLIC_PATHS. Two mechanisms
+    // The CIMD document is a live entry in STATIC_PUBLIC_PATHS. Two mechanisms
     // claiming the same URL is exactly the ambiguity this rejects.
-    const result = validateDeclaredPublicPath('/p/acme/dash', CTX);
+    const result = validateDeclaredPublicPath('/.well-known/omadia-mcp-client', {
+      corePublicPaths: publicPaths(),
+      ownRoutePrefixes: ['/.well-known/omadia-mcp-client'],
+    });
     assert.equal(result.ok, false);
     assert.ok(!result.ok && result.reason.includes('static core public path'));
+  });
+
+  it('accepts a /p/<plugin> prefix the plugin serves, now that core no longer exempts /p/ (#1596)', () => {
+    // The handover: a Teams-tab route that must work without an omadia
+    // session is declared and operator-granted, not statically exempt.
+    const result = validateDeclaredPublicPath('/p/acme/tab', {
+      corePublicPaths: publicPaths(),
+      ownRoutePrefixes: ['/p/acme'],
+    });
+    assert.equal(result.ok, true);
   });
 
   it('rejects a prefix outside both the reserved root and the plugin routes', () => {
