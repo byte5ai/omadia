@@ -3,9 +3,7 @@ import { ArrowRight, ShieldOff } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 
 import type { PrivacyPosture } from '../_lib/api';
-
-/** Store detail page of the built-in Privacy Guard. */
-const PRIVACY_GUARD_STORE_HREF = `/store/${encodeURIComponent('@omadia/plugin-privacy-guard')}`;
+import { PRIVACY_GUARD_STORE_HREF } from '../_lib/privacyGuard';
 
 /**
  * #1507 — the Privacy Shield is an ordinary plugin. Without a running

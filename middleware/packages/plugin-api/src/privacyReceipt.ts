@@ -166,14 +166,40 @@ export interface PrivacyReceipt {
    */
   readonly bypassedTools?: readonly BypassedToolEntry[];
   /**
-   * #361 — PII spans substituted with pseudonyms in text the turn's own model
-   * calls carried: the user's prompt text while prompt masking is on, and,
-   * whatever that setting, the earlier answers a channel replays as chat
-   * history ({@link PrivacyGuardService.maskReplayedAnswer}). Absent when
-   * nothing was masked. PII-free: entries carry the span TYPE + detector id
-   * only, never the value.
+   * #361 — PII spans substituted with pseudonyms in the user's OWN text of
+   * this turn (the message, its ingested attachment text, live steering text)
+   * while prompt masking is on. One entry per distinct masked value, however
+   * many of the turn's model calls carried it (#1541). Absent when nothing
+   * was masked — always absent while `mask_user_prompt` is off. PII-free:
+   * entries carry the span TYPE + detector id only, never the value.
    */
   readonly maskedPromptSpans?: readonly PromptMaskedSpanInfo[];
+  /**
+   * #1541 — PII spans substituted with pseudonyms in text from EARLIER
+   * conversations that the turn's own model calls carried: recalled context
+   * (knowledge-graph recall, the session tail), the answers and user messages
+   * a channel replays as chat history. Masked whatever `mask_user_prompt`
+   * says (the answers) or under it (replayed user messages), and booked apart
+   * from {@link maskedPromptSpans} so a receipt never reports values from
+   * earlier turns as masked in the user's message. A value that also occurs
+   * in the user's own text counts there only. Absent when nothing was masked.
+   * PII-free: span TYPE + detector id only.
+   */
+  readonly maskedContextSpans?: readonly PromptMaskedSpanInfo[];
+  /**
+   * #1562 — the C1 name detector during this turn's free-text masking:
+   * `active` (it ran), `unconfigured` (no sidecar URL: only the C0 patterns
+   * ran, which find no person names), `failed` (configured but it failed;
+   * the rest of the turn ran on C0, so names it would have found reached the
+   * model unmasked). Absent when the turn masked no free text.
+   */
+  readonly nameDetector?: PrivacyNameDetectorTurnState;
+  /**
+   * #1557 — a tool of this turn bypassed the shield (the turn's `unprotected`
+   * flag, #1507): its answer rests on values the model saw raw. Set by the
+   * host's turn handle; absent ⇒ no bypass.
+   */
+  readonly unprotected?: boolean;
   /**
    * #547 / #569 — external MCP tools that returned `structuredContent` this
    * turn. Absent / empty when no connected tool emitted structured output.
@@ -197,6 +223,29 @@ export interface PrivacyReceipt {
    * tool name + carrier + outcome + byte count + masked span types only.
    */
   readonly toolErrors?: readonly ToolErrorEntry[];
+}
+
+/** See {@link PrivacyReceipt.nameDetector}. */
+export type PrivacyNameDetectorTurnState = 'active' | 'unconfigured' | 'failed';
+
+/**
+ * #1562 — the C1 name detector as an operator sees it now.
+ *  - `unconfigured` — no sidecar URL (setup field nor env var): person names
+ *    in free text are not detected.
+ *  - `active` — configured, and its health endpoint answered.
+ *  - `unreachable` — configured, but its health endpoint did not answer.
+ */
+export interface PrivacyNameDetectorStatus {
+  readonly state: 'unconfigured' | 'active' | 'unreachable';
+  /** Where the URL comes from: the guard's `c1_detector_url` setup field or
+   *  the `PRIVACY_C1_DETECTOR_URL` env var. `null` while unconfigured. */
+  readonly source: 'setup' | 'env' | null;
+  /** ISO time of the most recent turn in which C1 failed, since the process
+   *  started. `null` when it never failed. */
+  readonly lastFailureAt: string | null;
+  /** Whether `mask_user_prompt` is on: only then are names the user types
+   *  masked at all, C1 or not. */
+  readonly promptMasking: boolean;
 }
 
 /**
@@ -499,7 +548,17 @@ export interface PrivacyPromptMaskRequest {
    * that must decide whether masking WOULD alter a text before it sends it.
    */
   readonly preview?: boolean;
+  /**
+   * #1541 — whose text this is. `message` (the default) is the user's own
+   * text of this turn and books into `PrivacyReceipt.maskedPromptSpans`;
+   * `context` is text from earlier conversations (a user message a channel
+   * replays as chat history) and books into `maskedContextSpans`.
+   */
+  readonly origin?: PrivacyPromptOrigin;
 }
+
+/** See {@link PrivacyPromptMaskRequest.origin}. */
+export type PrivacyPromptOrigin = 'message' | 'context';
 
 /**
  * Text the answer verifier composed from REAL values (a restored claim plus
@@ -844,8 +903,9 @@ export interface PrivacyGuardService {
    * dates or amounts, which stay as in a v4 digest), the operator deny-list
    * and, when configured, the C1 detector. Reversible: the spans go through
    * the turn's surrogate map, so `restorePromptPseudonyms` restores them in
-   * the answer too. Recorded as the turn's own egress
-   * (`PrivacyReceipt.maskedPromptSpans`), not under `verifierEgress`.
+   * the answer too. Recorded as the turn's own egress, as text from earlier
+   * conversations (`PrivacyReceipt.maskedContextSpans`, #1541), not under
+   * `verifierEgress`.
    * Failure-closed: never returns `disabled`; `blocked` (a detector failed,
    * or a detected value survived substitution) means the answer must not be
    * sent. A failing C1 detector degrades to the baseline, as in
@@ -891,6 +951,13 @@ export interface PrivacyGuardService {
     text: string,
     options?: UnresolvedSurrogateCountOptions,
   ): Promise<number>;
+  /**
+   * #1562 — the C1 name detector's state now (see
+   * {@link PrivacyNameDetectorStatus}); probes the configured sidecar's
+   * health endpoint with a short timeout. Never throws. Optional: a provider
+   * without a name detector simply does not report one.
+   */
+  nameDetectorStatus?(): Promise<PrivacyNameDetectorStatus>;
   /**
    * Privacy Shield v4 — the verb + render tool specs to offer the LLM.
    */

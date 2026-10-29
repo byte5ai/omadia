@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { displayCell } from '@omadia/fast-path';
 
 import { type CanvasResolvedDataset } from './datasetColumnLabels.js';
 import { buildDatasetLumen } from './datasetLumen.js';
@@ -12,6 +13,14 @@ import { validateLumenNode } from './treeValidator.js';
  * string; registration lives in `canvasPublishTools.ts`. Re-exported from
  * `plugin.ts`.
  */
+
+/** A published row with every non-scalar value as its display cell
+ *  (`displayCell`); scalars — numbers for sums and charts — stay as they are. */
+function displayRow(row: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(row).map(([k, v]) => [k, typeof v === 'object' && v !== null ? displayCell(v) : v]),
+  );
+}
 
 /** Tier-3 producer tool — the first consumer of the canvas-output path. The
  *  [canvas-context] handoff instructs the main turn to publish fetched rows
@@ -142,6 +151,9 @@ export async function handleCanvasPublishRows(
       rows = rows.slice(0, MAX_DATASET_PUBLISH_ROWS);
     }
   }
+  // cells, not raw tool values: a dataset column keyed by `partner_id` holds
+  // the Odoo many2one pair `[51, "Name"]`, which the client would print raw
+  rows = rows.map(displayRow);
   // Scalar/KPI payload: keep only scalar values (strings/numbers/booleans).
   const fields = hasFields
     ? Object.fromEntries(

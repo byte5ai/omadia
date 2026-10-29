@@ -7,6 +7,7 @@ import { fetchNavEntries } from '../_lib/navigation';
 import { fetchMiddlewareHealth, platformNotice } from '../_lib/platformHealth';
 import { PlatformHealthBanner } from '../_components/PlatformHealthBanner';
 import { PrivacyShieldBanner } from '../_components/PrivacyShieldBanner';
+import { NameDetectorBanner } from '../_components/NameDetectorBanner';
 
 export const dynamic = 'force-dynamic';
 
@@ -134,6 +135,7 @@ export default async function AdminIndexPage(): Promise<React.ReactElement> {
     <main className="mx-auto max-w-[960px] px-6 py-12 lg:px-8 lg:py-16">
       <PlatformHealthBanner notice={platformNotice({ health, vault })} />
       <PrivacyShieldBanner posture={privacy} />
+      <NameDetectorBanner posture={privacy} />
       <header className="mb-8">
         <h1 className="font-display text-[clamp(2rem,4vw,3rem)] leading-[1.1] text-[color:var(--fg-strong)]">
           {t('h1')}

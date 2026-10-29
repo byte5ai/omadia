@@ -255,12 +255,30 @@ export interface PrivacyReceipt {
    */
   bypassedTools?: readonly BypassedToolEntry[];
   /**
-   * #361 — PII spans detected in the user's own prompt and substituted with
-   * pseudonyms before the prompt crossed the LLM wire. Absent when prompt
-   * masking is off (the default) or nothing was detected. PII-free: entries
-   * carry the span TYPE + detector id only, never the value.
+   * #361 — PII spans detected in the user's own text of this turn and
+   * substituted with pseudonyms before it crossed the LLM wire, one per
+   * distinct value. Absent when prompt masking is off (the default) or
+   * nothing was detected. PII-free: entries carry the span TYPE + detector id
+   * only, never the value.
    */
   maskedPromptSpans?: readonly PromptMaskedSpanInfo[];
+  /**
+   * #1541 — spans masked in text from earlier conversations (recalled
+   * context, replayed answers and user messages). Never part of "your
+   * message". PII-free.
+   */
+  maskedContextSpans?: readonly PromptMaskedSpanInfo[];
+  /**
+   * #1562 — the C1 name detector during this turn's free-text masking.
+   * `unconfigured`: person names are not detected; `failed`: it failed and
+   * names reached the model unmasked. Absent when no free text was masked.
+   */
+  nameDetector?: 'active' | 'unconfigured' | 'failed';
+  /**
+   * #1557 — a tool of this turn bypassed the shield (the turn's
+   * `unprotected` flag): some tool data reached the model raw.
+   */
+  unprotected?: boolean;
   /**
    * #547 / #569 — external MCP tools that returned `structuredContent` this
    * turn. NOT a masking record: the payload is emitted out-of-band and never

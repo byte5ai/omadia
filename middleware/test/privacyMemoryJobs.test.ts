@@ -109,10 +109,12 @@ describe('recall relevance judge — in a turn, through the turn handle', () => 
     assert.match(wire, SURROGATE_MAIL);
     // Identity shapes only: the amount stays readable for the judge.
     assert.ok(wire.includes('1.234,56 EUR'), wire);
-    // Through the turn's map, so the receipt books the spans as the turn's own egress.
+    // Through the turn's map, so the receipt books the spans as the turn's own
+    // egress, as earlier context (#1541), not as the user's message.
     const receipt = await handle.finalize();
-    assert.equal(receipt?.maskedPromptSpans?.length, 2, JSON.stringify(receipt));
-    assert.ok(receipt?.maskedPromptSpans?.some((s) => s.type === 'email'), JSON.stringify(receipt));
+    assert.equal(receipt?.maskedContextSpans?.length, 2, JSON.stringify(receipt));
+    assert.ok(receipt?.maskedContextSpans?.some((s) => s.type === 'email'), JSON.stringify(receipt));
+    assert.equal(receipt?.maskedPromptSpans, undefined, JSON.stringify(receipt));
   });
 
   it('skips the judge without a provider call when the turn handle blocks', async () => {

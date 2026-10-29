@@ -919,6 +919,26 @@ export interface PrivacyPosture {
   shield_active: boolean;
   force_guarded: boolean;
   provider_ids: string[];
+  /**
+   * #1562 — state of the C1 name detector. null when no shield runs or the
+   * provider cannot report it. Optional: an older backend omits the field,
+   * and the UI then renders nothing about name detection.
+   */
+  name_detector?: PrivacyNameDetector | null;
+}
+
+/** #1562 — the Privacy Guard's C1 (GLiNER sidecar) name detector. */
+export interface PrivacyNameDetector {
+  state: 'unconfigured' | 'active' | 'unreachable';
+  /** where the sidecar URL comes from: the guard's `c1_detector_url` setup
+   *  field, or the PRIVACY_C1_DETECTOR_URL env var */
+  source: 'setup' | 'env' | null;
+  /** ISO time of the most recent turn in which C1 failed (since process
+   *  start), else null */
+  last_failure_at: string | null;
+  /** `mask_user_prompt`: only while it is on are names the user types
+   *  masked at all. Optional for an older backend. */
+  prompt_masking?: boolean;
 }
 
 export async function getPrivacyPosture(): Promise<PrivacyPosture> {
