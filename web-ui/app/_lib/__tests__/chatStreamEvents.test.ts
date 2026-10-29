@@ -124,6 +124,30 @@ describe('applyStreamEvent — writes are addressed by session id (#617)', () =>
     expect(next.messages[1]?.answerVerbosity).toEqual({ effective: 'brief', source: 'turn' });
   });
 
+  it('keeps the receipt store key from done, apart from the session-log turn id (#1573)', () => {
+    const { sessions, mutateById } = stubSessions();
+
+    applyStreamEvent(sessions, 'bg', 'pending-1', {
+      type: 'done',
+      answer: 'ok',
+      toolCalls: 1,
+      iterations: 1,
+      turnId: 'turn:fallback::s:2026-10-29T12:00:00.000Z',
+      receiptId: '4de26709-2178-42f7-831f-d1dbfe084dd7',
+      privacyReceipt: {
+        datasetsInterned: 1,
+        fieldsMasked: 0,
+        fieldsCleartext: 1,
+        verbsExecuted: [],
+        pseudonymProjectionUsed: false,
+      },
+    });
+
+    const next = applied(mutateById, session('bg'));
+    expect(next.messages[1]?.receiptId).toBe('4de26709-2178-42f7-831f-d1dbfe084dd7');
+    expect(next.messages[1]?.turnId).toBe('turn:fallback::s:2026-10-29T12:00:00.000Z');
+  });
+
   it('replaces the content wholesale with the authoritative done answer', () => {
     const { sessions, mutateById } = stubSessions();
 

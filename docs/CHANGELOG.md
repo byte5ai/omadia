@@ -291,7 +291,9 @@ and the AI disclosure line reaches every first answer.
   also when nothing else was masked) or `unconfigured`; the privacy posture
   returns `name_detector` (probe of the sidecar's `/health`), shown on the
   guard's store page and as a notice on the dashboard and `/admin`.
-- **Turn id (#1573, #1552).** The receipt card shows the turn id and links to
+- **Turn id (#1573, #1552).** The receipt card shows the receipt's id (the
+  stream's `done.receiptId`, the receipt store key, not the session-log
+  `turnId`, which the store does not know) and links to
   `/operator/receipts?turn=<id>`, which opens that receipt. Privacy miss
   reports show their turn as the same link, and the page filters Open /
   Resolved / All with who resolved a report and when.

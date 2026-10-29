@@ -659,6 +659,12 @@ export interface Message {
    */
   privacyReceipt?: PrivacyReceipt;
   /**
+   * #1573 — the key the receipt is stored under (`GET
+   * /operator/receipts/:id`), from `done.receiptId`. Differs from `turnId`,
+   * the session-log turn id. Absent when no receipt row was written.
+   */
+  receiptId?: string;
+  /**
    * Answer-verifier summary, folded in from `done.verifier` (enforce mode)
    * or the `verifier` event that follows `done` when the verifier is
    * enabled. Rendered by `<VerifierBadge>`. Undefined when the verifier is
