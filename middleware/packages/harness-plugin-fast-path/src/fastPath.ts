@@ -49,6 +49,14 @@ export interface FastLlm {
  */
 export const FAST_MODEL_REASONING = { effort: 'low', thinking: 'off' } as const;
 
+/**
+ * The output-format instruction every fast-path planning call (composer,
+ * triage) carries in its FIRST user message as well as in the system prompt:
+ * Haiku with thinking off frequently answered attempt 1 with prose when only
+ * the system prompt asked for JSON (live self-test v411).
+ */
+export const OUTPUT_FORMAT_INSTRUCTION = 'Output ONLY the JSON object — no code fences, no prose before or after it.';
+
 /** Allow-list when `fast_path_tools` is not configured at all. */
 export const DEFAULT_FAST_PATH_TOOLS: readonly string[] = ['odoo_query'];
 
@@ -68,7 +76,7 @@ export const FAST_PATH_TOOL_SPECS: Readonly<Record<string, string>> = {
   odoo_query:
     'odoo_query — Odoo search_read (read-only). input: { "model": string, "domain"?: Odoo domain e.g. ' +
     '[["department_id.name","ilike","Sales"]] (archived records are excluded by default), ' +
-    '"fields"?: string[], "limit"?: 1–100 (always 100 — a full result of 100 counts as truncated), ' +
+    '"fields"?: string[], "limit": 100 (limit is always 100 — also for a single-record lookup by id; a full result of 100 counts as truncated), ' +
     '"order"?: e.g. "name asc" }. output: { "records": [ { field: value } ], "truncated": boolean } ' +
     '→ itemsPath "records", rowKey "id". many2one fields are [id, "Name"] → map them as ' +
     '"<field>.1". Empty values are false. FIELD CATALOG (plan only with these):\n' +
@@ -248,6 +256,21 @@ export function renderSummary(
   return { ok: true, text };
 }
 
+/** Row cap of `odoo_query` (its `limit` maximum). */
+export const ODOO_QUERY_MAX_LIMIT = 100;
+
+/**
+ * A planner sets `limit: 1` for a single-record lookup, and odoo_query flags
+ * `truncated` as soon as the row count reaches the limit (1 of 1) — a
+ * spurious miss. On the fast path every odoo_query runs with the tool maximum
+ * instead: an id lookup still returns its one row, and `truncated` keeps
+ * meaning a genuinely large result. Returns a copy; other tools unchanged.
+ */
+export function normalizeFastPathInput(tool: string, input: unknown): unknown {
+  if (tool !== 'odoo_query' || typeof input !== 'object' || input === null || Array.isArray(input)) return input;
+  return { ...(input as Record<string, unknown>), limit: ODOO_QUERY_MAX_LIMIT };
+}
+
 export type ToolInvoke = (name: string, input: unknown) => Promise<string>;
 
 export type RecipeFetch =
@@ -271,7 +294,8 @@ const UNAVAILABLE = /unknown or handler-less/;
  * Replay one recipe and map its rows — shared by `canvas_refresh` and the
  * fast path. Never throws. `rejectTruncated` refuses a result the tool flags
  * as capped (the fast path's prose states a count, which a prefix would get
- * wrong); a recipe with a `filter` refuses it either way (applyRefreshSource).
+ * wrong) and runs an odoo_query with the tool's maximum limit
+ * (normalizeFastPathInput); a recipe with a `filter` refuses it either way (applyRefreshSource).
  */
 export async function fetchRecipeRows(
   invoke: ToolInvoke,
@@ -282,7 +306,8 @@ export async function fetchRecipeRows(
   let raw: string;
   try {
     // `{today}` tokens resolve per execution; the recipe itself keeps them
-    raw = await invoke(recipe.tool, resolveRecipeInput(recipe.input, new Date(), opts.timeZone));
+    const input = opts.rejectTruncated === true ? normalizeFastPathInput(recipe.tool, recipe.input) : recipe.input;
+    raw = await invoke(recipe.tool, resolveRecipeInput(input, new Date(), opts.timeZone));
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     return { ok: false, reason: UNAVAILABLE.test(detail) ? 'tool-unavailable' : 'invoke-error', detail };

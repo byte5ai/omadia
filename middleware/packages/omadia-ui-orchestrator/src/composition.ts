@@ -3,6 +3,7 @@ import {
   extractFirstJsonObject,
   FAST_MODEL_REASONING,
   type JsonOutputShape,
+  OUTPUT_FORMAT_INSTRUCTION,
   parseRefreshSource,
   parseSummary,
   supportedLocale,
@@ -291,7 +292,10 @@ export async function composeSkeleton(opts: {
     requestText = masked.text;
   }
 
-  let user = `User request: ${requestText}`;
+  // the format rule rides in EVERY user message, not only the system prompt:
+  // attempt 1 with only the system rule often came back as prose (v411)
+  const request = `User request: ${requestText}\n${OUTPUT_FORMAT_INSTRUCTION}`;
+  let user = request;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     let raw: string;
     const startedAt = Date.now();
@@ -322,7 +326,7 @@ export async function composeSkeleton(opts: {
       opts.log?.(
         `[composition] attempt ${attempt + 1}: output not parseable as raw JSON (shape=${outcome.shape}, ${raw.length} chars)`,
       );
-      user = `User request: ${requestText}\nYour previous output was not a valid JSON object. Output ONLY the JSON object — no code fences, no prose.`;
+      user = `${request}\nYour previous output was not a valid JSON object.`;
       continue;
     }
     if (outcome.shape === 'recovered') {
@@ -340,7 +344,7 @@ export async function composeSkeleton(opts: {
         : { ...restoreStrings(parsed, opts.privacy), source: 'model' };
     }
     opts.log?.(`[composition] attempt ${attempt + 1}: tree schema-invalid: ${valid.errors}`);
-    user = `User request: ${requestText}\nYour previous tree was schema-invalid: ${valid.errors}. Emit a corrected JSON object.`;
+    user = `${request}\nYour previous tree was schema-invalid: ${valid.errors}. Emit a corrected JSON object.`;
   }
   opts.log?.('[composition] both attempts schema-invalid → fallback skeleton');
   return fallback;

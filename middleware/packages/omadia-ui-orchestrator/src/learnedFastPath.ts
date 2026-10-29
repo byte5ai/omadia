@@ -4,6 +4,7 @@ import {
   extractFirstJsonObject,
   FAST_MODEL_REASONING,
   jaccard,
+  OUTPUT_FORMAT_INSTRUCTION,
   parseRefreshSource,
   parseSummary,
   planToFetch,
@@ -182,7 +183,7 @@ export async function planInPlace(opts: {
   );
   const user =
     `TABLES:\n${tableLines.join('\n')}\nVALIDATED EXAMPLES:\n${exampleLines.join('\n')}\n` +
-    `FOLLOW-UP: ${opts.question}`;
+    `FOLLOW-UP: ${opts.question}\n${OUTPUT_FORMAT_INSTRUCTION}`;
   let content = user;
   if (opts.privacy !== undefined) {
     const masked = await opts.privacy.mask(user);
