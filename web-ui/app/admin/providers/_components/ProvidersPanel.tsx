@@ -1024,12 +1024,16 @@ function AssignmentRow({
           {providers.map((p) => {
             // A tool-less provider can't drive a tool plugin → offer but disable.
             const blocked = p.toolLess === true && a.requiresTools === true;
+            // #1583 — a plugin that cannot run on the subscription CLI at all.
+            const cliRefused = p.toolLess === true && a.rejectsSubscriptionCli === true;
             return (
-              <option key={p.id} value={p.id} disabled={blocked}>
+              <option key={p.id} value={p.id} disabled={blocked || cliRefused}>
                 {p.label}
                 {blocked
                   ? ` (${t('assignments.toolLessBlocked')})`
-                  : p.connected
+                  : cliRefused
+                    ? ` (${t('assignments.subscriptionCliUnsupported')})`
+                    : p.connected
                     ? ''
                     : ` (${t('providers.notConnected')})`}
               </option>

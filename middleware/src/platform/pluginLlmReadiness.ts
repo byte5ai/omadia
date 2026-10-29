@@ -45,6 +45,10 @@ export interface LlmPluginDesc {
    *  silently disable its tools. Tool-less plugins (extractors/classifiers)
    *  omit this. */
   readonly requiresTools?: boolean;
+  /** #1583 — this plugin cannot run on the subscription CLI (`claude-cli`) at
+   *  all, so that provider must NOT be assignable to it: the assignment would
+   *  save and the plugin would then silently not publish its capability. */
+  readonly rejectsSubscriptionCli?: boolean;
   /** The plugin whose `llm_provider` this one falls back to when it has none
    *  of its own. A change to THAT plugin's provider must rebuild this one
    *  (`reactivateAfterProviderWrite` in `providerDependents.ts`), because the
@@ -71,9 +75,10 @@ export const LLM_PLUGINS: ReadonlyArray<LlmPluginDesc> = [
     id: '@omadia/verifier',
     label: 'Verifier',
     modelKeys: ['verifier_model'],
-    // The verifier uses FORCED single-tool structured output (claimExtractor /
-    // evidenceJudge), which the claude-cli provider now supports via a
-    // JSON-schema prompt — so the subscription CLI is a valid choice here.
+    // #1583 — the verifier resolves its provider without the provider catalog
+    // and needs an API key; on `claude-cli` it never publishes `verifier@1`
+    // ("no API key for provider 'claude-cli'"). The assignment is refused.
+    rejectsSubscriptionCli: true,
     // The orchestrator captures the `verifier` bundle in its own activate().
     capturedBy: '@omadia/orchestrator',
   },

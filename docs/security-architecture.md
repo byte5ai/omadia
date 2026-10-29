@@ -189,10 +189,13 @@ becomes effective the moment one is installed on this path.
 The answer verifier is never installed on this path: `buildOrchestratorForAgent`
 returns the `CliChatAgent` bundle before the `VerifierService` wrap, so a
 subscription-CLI chat turn has no verifier egress at all, and the subscription
-page tells the operator so (#1391). The reverse case is covered by §6e — the
-verifier plugin's OWN model may be the `claude-cli` completion provider
-(Shape 2), and its requests are masked before `llm.complete` like on any other
-provider.
+page tells the operator so (#1391). The reverse case — the verifier plugin's
+OWN model on the `claude-cli` completion provider — is refused since #1583:
+the verifier resolves its provider without the catalog, needs an API key and
+would never publish `verifier@1` there, so `POST /admin/providers/assignment`
+answers `providers.subscription_cli_unsupported` and the subscription hand-off
+skips it. A verifier whose provider is any other one has its requests masked
+before `llm.complete` (§6e).
 
 ### Why the deny list is generated, not written (#1014)
 
@@ -1708,8 +1711,8 @@ answer they check:
 Callers: every `bundle.agent` caller goes through the wrapper — chat routes,
 channel adapters, the scheduler (`scheduleWorker.ts`) and conductor steps
 (`realStepEffects.ts`, `builderAgent.ts`). The subscription-CLI chat runtime
-is never wrapped (§3a); the verifier's own provider may be `claude-cli`, which
-receives the same masked text. Deliberately unchanged: `verifier_contradictions`
+is never wrapped (§3a); the verifier's own provider cannot be `claude-cli`
+(#1583). Deliberately unchanged: `verifier_contradictions`
 stores claim text, claimed and truth values restored to real values
 (server-side, same trust zone as the session log); prompt masking stays
 default-off, so the extraction request carries the raw prompt when the

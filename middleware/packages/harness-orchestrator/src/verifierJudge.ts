@@ -2,11 +2,13 @@ import type { ChatTurnInput, ChatTurnResult } from './orchestrator.js';
 import type { PrivacyEgressContinuation } from './privacyEgress.js';
 import type { RunTracePayload } from './runTraceCollector.js';
 import type {
+  TurnRecord,
   VerifierPipeline,
   VerifierPrivacy,
   VerifierStore,
   VerifierVerdict,
 } from '@omadia/verifier';
+import { runWithUsageContext } from '@omadia/usage-telemetry';
 import { bindVerdictToClaims } from '@omadia/verifier';
 import { privacyShieldVerdict, systemDataVerdict } from './verifierDelivery.js';
 import {
@@ -20,6 +22,8 @@ import {
   extractKnowledgeGraphToolsCalled,
   extractPostconditionViolations,
   extractToolsCalled,
+  extractTurnId,
+  extractTurnRecords,
 } from './verifierTraceEvidence.js';
 
 export interface VerifierJudgeOptions {
@@ -29,7 +33,22 @@ export interface VerifierJudgeOptions {
   /** The orchestrator's privacy hand-over surface (feature-detected). */
   readonly host: PrivacyEgressHost;
   readonly log: (msg: string) => void;
+  /** #1571 — the agent whose answers are checked (`verifier_verdicts.agent`). */
+  readonly agent?: string;
 }
+
+/** #1571 — what the judge knows about one verified request across its passes. */
+interface RunState {
+  /** The request's turn id: the first pass's, the key of its receipt row. */
+  turnId?: string;
+  /** #1574 — the Odoo records read by the request's passes. A re-entry
+   *  replays the first run's tool calls, so it reads nothing itself. */
+  records: TurnRecord[];
+}
+
+/** Requests whose state the judge keeps at once — a bound in case a request
+ *  ends without `release`; the oldest is dropped beyond it. */
+const MAX_TRACKED_RUNS = 256;
 
 /**
  * The part of `VerifierService` that talks to the injected pipeline and
@@ -44,7 +63,47 @@ export interface VerifierJudgeOptions {
  * never sent.
  */
 export class VerifierJudge {
+  private readonly runs = new Map<string, RunState>();
+
   constructor(private readonly opts: VerifierJudgeOptions) {}
+
+  /**
+   * #1571 — the request's id for logs: the service's run id plus the turn id
+   * the stored verdict, the receipt and the token-usage rows carry, once a
+   * pass reported it.
+   */
+  runLabel(runId: string): string {
+    const turnId = this.runs.get(runId)?.turnId;
+    return turnId !== undefined ? `${runId} turn=${turnId}` : runId;
+  }
+
+  /** Forget a finished request's state (its turn id and records). */
+  release(runId: string): void {
+    this.runs.delete(runId);
+  }
+
+  /** The request's state with this pass's trace evidence folded in. */
+  private noteRun(runId: string, turn: Pick<ChatTurnResult, 'runTrace'>): RunState {
+    let state = this.runs.get(runId);
+    if (state === undefined) {
+      state = { records: [] };
+      this.runs.set(runId, state);
+      if (this.runs.size > MAX_TRACKED_RUNS) {
+        const oldest = this.runs.keys().next().value;
+        if (oldest !== undefined) this.runs.delete(oldest);
+      }
+    }
+    state.turnId ??= extractTurnId(turn.runTrace);
+    const seen = new Set(state.records.map((r) => `${r.model}#${String(r.id)}`));
+    for (const record of extractTurnRecords(turn.runTrace) ?? []) {
+      const key = `${record.model}#${String(record.id)}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        state.records.push(record);
+      }
+    }
+    return state;
+  }
 
   /**
    * The verdict on one pass's answer (a `done` event or a turn result),
@@ -63,9 +122,12 @@ export class VerifierJudge {
     turn: Pick<ChatTurnResult, 'answer' | 'runTrace' | 'answerSource'>,
     egress: PrivacyEgressContinuation | undefined,
   ): Promise<VerifierVerdict | undefined> {
+    const run = this.noteRun(runId, turn);
     const gate = verifierGate(turn.answerSource, egress, this.opts.host);
     if (!gate.verify) {
-      this.opts.log(`[verifier/service] verification skipped run=${runId}: ${gate.reason}`);
+      this.opts.log(
+        `[verifier/service] verification skipped run=${this.runLabel(runId)}: ${gate.reason}`,
+      );
       if (gate.systemData === true) return systemDataVerdict();
       return this.opts.mode === 'enforce' ? privacyShieldVerdict() : undefined;
     }
@@ -75,7 +137,19 @@ export class VerifierJudge {
       gate.renderedProse === true && gate.privacy !== undefined
         ? await this.restoredProse(gate.privacy)
         : turn.answer;
-    return this.safeVerify(runId, input, answer, turn.runTrace, gate.privacy);
+    // #1571 — the verifier's model calls run after the turn's own context
+    // closed; their token-usage rows carry the request's turn id explicitly.
+    const verify = (): Promise<VerifierVerdict> =>
+      this.safeVerify(runId, input, answer, turn.runTrace, gate.privacy, run.records);
+    return run.turnId !== undefined
+      ? runWithUsageContext(
+          {
+            turnId: run.turnId,
+            ...(input.sessionScope !== undefined ? { sessionId: input.sessionScope } : {}),
+          },
+          verify,
+        )
+      : verify();
   }
 
   /** The rendered answer's prose with the turn's prompt surrogates restored —
@@ -96,6 +170,7 @@ export class VerifierJudge {
     answer: string,
     runTrace: RunTracePayload | undefined,
     privacy: VerifierPrivacy | undefined,
+    turnRecords?: readonly TurnRecord[],
   ): Promise<VerifierVerdict> {
     const domainToolsCalled = extractToolsCalled(runTrace);
     const toolPostconditionViolations = extractPostconditionViolations(runTrace);
@@ -118,6 +193,7 @@ export class VerifierJudge {
           : {}),
         ...(knowledgeGraphRefs ? { knowledgeGraphRefs } : {}),
         ...(failedToolsCalled ? { failedToolsCalled } : {}),
+        ...(turnRecords && turnRecords.length > 0 ? { turnRecords } : {}),
         // The pass's privacy view: every model request of the verifier goes
         // through it (absent only when no shield is installed).
         ...(privacy ? { privacy } : {}),
@@ -152,9 +228,12 @@ export class VerifierJudge {
     const store = this.opts.store;
     if (!store) return;
     try {
+      // #1571 — the row carries the request's turn id (the receipt's key and
+      // the token-usage rows' turn id) and the agent that answered.
       await store.persist({
         input: {
-          runId,
+          runId: this.runs.get(runId)?.turnId ?? runId,
+          ...(this.opts.agent !== undefined ? { agent: this.opts.agent } : {}),
           userMessage: input.userMessage,
           answer: '', // intentionally omitted — no PII beyond what's already
           // captured in session_logger/graph. The store only uses `runId`.

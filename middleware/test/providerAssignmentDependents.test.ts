@@ -587,3 +587,42 @@ describe('providerDependentsOf / reactivateAfterProviderWrite', () => {
     assert.equal(isEffectiveProviderChange(undefined, { llm_provider: 'claude-cli' }), true);
   });
 });
+
+describe('#1583 — the verifier is not assignable to the subscription CLI', () => {
+  afterEach(() => {
+    clearExternalModels();
+  });
+
+  it('refuses claude-cli for the verifier with a clear code and saves nothing', async () => {
+    const { registry, reactivated, deps } = await makeDeps([
+      { id: VERIFIER, config: { llm_provider: 'anthropic' } },
+    ]);
+    const result = await applyProviderAssignment(deps, {
+      pluginId: VERIFIER,
+      provider: 'claude-cli',
+      model: 'sonnet-cli',
+    });
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.equal(result.status, 400);
+    assert.equal(result.code, 'providers.subscription_cli_unsupported');
+    assert.match(result.message, /subscription CLI/);
+    assert.equal(registry.get(VERIFIER)?.config?.['llm_provider'], 'anthropic', 'unchanged');
+    assert.deepEqual(reactivated, []);
+  });
+
+  it('still lets the orchestrator run on claude-cli', async () => {
+    const { deps } = await makeDeps([{ id: ORCH, config: { llm_provider: 'anthropic' } }]);
+    const result = await applyProviderAssignment(deps, {
+      pluginId: ORCH,
+      provider: 'claude-cli',
+      model: 'sonnet-cli',
+    });
+    assert.equal(result.ok, true, JSON.stringify(result));
+  });
+
+  it('marks only the verifier as refusing the subscription CLI', () => {
+    const refusing = LLM_PLUGINS.filter((p) => p.rejectsSubscriptionCli === true).map((p) => p.id);
+    assert.deepEqual(refusing, [VERIFIER]);
+  });
+});
