@@ -76,19 +76,24 @@ the same rules and agree on every case in these issues.
   anchor file (`AUDIT_ANCHOR_PATH`) was write-only. The server now reads it
   on every verify and the offline verifier takes `--anchor`: an anchored
   checkpoint missing from or changed in the database is a finding. With a
-  signing key, a chain no signed checkpoint certifies is never green
-  (`no_signed_checkpoint`). The checkpoint worker refuses to re-sign a head
-  below the anchor or below the highest head its process has seen, so the
-  real key never certifies a rewound chain. Migration 0064 rejects deleting
-  checkpoints and moving the stream head backwards (defence in depth).
+  signing key, a chain no signed checkpoint certifies is not green
+  (`no_signed_checkpoint`, after a two-interval grace for a fresh install).
+  The checkpoint worker signs only a head that is a stored row and refuses
+  while the anchor or what its own process saw and signed disagrees with
+  the database, so the real key never certifies a rewound chain it can
+  tell apart. Worker and reaper count only signature-valid checkpoints.
+  Migration 0064 rejects deleting, updating or truncating checkpoints and
+  rolling back, truncating or re-hashing the stream head (defence in depth).
 - **Head rolled back, checkpoints kept (#1566).** A checkpoint above the
-  newest stored row is `orphaned` whenever the row fetch was complete, as
-  the offline verifier already reported; a head below the process
-  high-water mark is `head_rollback`.
+  newest stored row is `orphaned`. Verify and export now read one database
+  snapshot and walk every row (the 50,000-row window and its `truncated`
+  flag are gone), and the export header carries the recorded head, so the
+  offline tool also reports a head beyond the newest entry.
 - **Retention with a key (#1567).** The offline verifier accepts a reaped
   prefix when any signature-valid checkpoint certifies a surviving entry,
-  the server's documented rule. The reaper deletes only rows below the
-  newest checkpoint, so the certified row survives.
+  the server's documented rule, and now also applies the premature-deletion
+  rule. The reaper deletes only rows below the newest valid checkpoint, so
+  the certified row survives.
 - **Retention without a key (#1568).** Verification no longer turns red
   after the first retention run. The verdict is `unsigned` (`ok: true`,
   offline exit code 3) and the removed prefix is reported as "not
@@ -97,6 +102,7 @@ the same rules and agree on every case in these issues.
 - **Unsigned is never "verified" (#1584).** The verify response gains
   `verdict: verified | unsigned | broken`; `checkpoints.verified` counts only
   signature-checked checkpoints and `checkpoints.unchecked` the rest. The
+  offline tool exits 3, not 0, when only the export's own key was used. The
   receipts page shows "unsigned" instead of "verified without signatures",
   and lists anchor findings and the anchor comparison.
 

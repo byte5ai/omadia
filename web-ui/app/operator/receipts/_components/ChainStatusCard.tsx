@@ -40,11 +40,13 @@ export function ChainStatusCard({ initialKey }: ChainStatusCardProps): React.Rea
     }
   }
 
+  // A middleware older than #1568 sends no `verdict`: derive the old meaning.
+  const verdict = result ? (result.verdict ?? (result.ok ? 'unsigned' : 'broken')) : undefined;
   // #1568 — `unsigned` is consistent but unverifiable: never the success tone.
   const tone = result
-    ? result.verdict === 'verified'
+    ? verdict === 'verified'
       ? 'var(--success)'
-      : result.verdict === 'unsigned'
+      : verdict === 'unsigned'
         ? 'var(--warning)'
         : 'var(--danger)'
     : 'var(--fg-muted)';
@@ -61,9 +63,9 @@ export function ChainStatusCard({ initialKey }: ChainStatusCardProps): React.Rea
         </h2>
         {result ? (
           <span className="font-mono text-xs" style={{ color: tone }}>
-            {result.verdict === 'verified'
+            {verdict === 'verified'
               ? t('chainVerified', { n: result.checkedEntries })
-              : result.verdict === 'unsigned'
+              : verdict === 'unsigned'
                 ? t('chainUnsigned', { n: result.checkedEntries })
                 : t('chainBroken')}
           </span>
@@ -111,7 +113,7 @@ export function ChainStatusCard({ initialKey }: ChainStatusCardProps): React.Rea
               {t('chainCheckpointFinding', { kind: f.kind, seq: f.seq })}
             </li>
           ))}
-          {result.anchor.findings.map((f) => (
+          {(result.anchor?.findings ?? []).map((f) => (
             <li key={`anchor-${f.kind}-${String(f.seq)}`}>
               {t('chainAnchorFinding', { kind: f.kind, seq: f.seq })}
             </li>
@@ -150,16 +152,19 @@ function ChainNotes({ result }: { result: ProvenanceVerifyDto }): React.ReactEle
   if (result.prefix.unanchoredReason === 'no_signing_key' && result.prefix.reapedUpToSeq > 0) {
     notes.push(t('chainPrefixUnsigned', { seq: result.prefix.reapedUpToSeq }));
   }
-  if (result.checkpoints.unchecked > 0) {
+  if (result.checkpoints.awaitingFirstCheckpoint) notes.push(t('chainAwaitingFirstCheckpoint'));
+  if ((result.checkpoints.unchecked ?? 0) > 0) {
     notes.push(t('chainCheckpointsUnchecked', { n: result.checkpoints.unchecked }));
   }
-  if (result.anchor.configured) {
-    if (result.anchor.status === 'missing') notes.push(t('chainAnchorMissing'));
-    else if (result.anchor.status === 'unreadable') notes.push(t('chainAnchorUnreadable'));
+  const anchor = result.anchor;
+  if (anchor?.configured) {
+    if (anchor.status === 'missing') notes.push(t('chainAnchorMissing'));
+    else if (anchor.status === 'unreadable') notes.push(t('chainAnchorUnreadable'));
     else {
-      notes.push(
-        t('chainAnchorCompared', { matched: result.anchor.matched, records: result.anchor.records }),
-      );
+      notes.push(t('chainAnchorCompared', { matched: anchor.matched, records: anchor.records }));
+      if (anchor.malformedLines > 0) {
+        notes.push(t('chainAnchorMalformed', { n: anchor.malformedLines }));
+      }
     }
   }
   if (notes.length === 0) return null;

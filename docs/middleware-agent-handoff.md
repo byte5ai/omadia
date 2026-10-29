@@ -2196,18 +2196,24 @@ Tamper-Demo: `docs/provenance-verification.md`. Tests:
 `test/provenanceVerify.test.ts` (inkl. Offline-Verifier via spawnSync).
 
 **S3-E (#1565–#1568, #1584):** Server- und Offline-Verifier wenden dieselben
-Regeln an, Verdict `verified | unsigned | broken` (Offline-Exit 0/3/1).
-Ohne Key nie `verified`; Retention-Prefix ohne Key = Info
-(`prefix.unanchoredReason: 'no_signing_key'`), kein Bruch. Prefix gilt als
-verankert, sobald irgendein signaturgültiger Checkpoint eine überlebende
-Zeile zertifiziert (auch offline). Checkpoints über der letzten Zeile =
-`orphaned`; mit Key und ohne zertifizierenden Checkpoint =
-`no_signed_checkpoint`. Anker-Datei wird gelesen (`src/receipts/anchor.ts`,
-`anchor`-Block im Verify-Ergebnis, offline `--anchor`). Checkpoint-Worker
-signiert keinen Head unter Anker-Max oder Prozess-High-Water
-(`HeadHighWater`, eine Instanz in `index.ts`). Reaper löscht nur `seq <`
-max Checkpoint. Migration 0064: Trigger gegen DELETE/UPDATE auf
-`audit_checkpoints` und Head-Rollback. Tests:
+Regeln an, Verdict `verified | unsigned | broken` (Offline-Exit 0/3/1; 3 auch
+ohne `--pubkey`). Ohne Key nie `verified`; Retention-Prefix ohne Key = Info
+(`prefix.unanchoredReason: 'no_signing_key'`). Prefix verankert, sobald
+irgendein signaturgültiger Checkpoint eine überlebende Zeile zertifiziert.
+Checkpoints über der letzten Zeile = `orphaned`; mit Key und ohne
+zertifizierenden Checkpoint = `no_signed_checkpoint` (Gnade: jüngste
+2 Intervalle → `awaitingFirstCheckpoint`, `unsigned`). Verify + Export in
+einem REPEATABLE-READ-Snapshot, Keyset-Walk ohne Zeilenlimit (`truncated`
+entfällt). Export-Header trägt `recordedHeadSeq/-HashHex`, `retentionDays`,
+`checkpointIntervalMinutes`. Anker-Datei wird gelesen
+(`src/receipts/anchor.ts`; offline `--anchor`), Worker legt sie beim Boot an.
+`ChainWitness` (eine Instanz in `index.ts`): höchster gelesener Head +
+zuletzt selbst signierter Checkpoint; Worker signiert nur einen Head, der
+eine gespeicherte Zeile ist, und verweigert bei Witness-/Anker-Widerspruch.
+Worker + Reaper zählen nur signaturgültige Checkpoints
+(`highestValidCheckpointSeq`); Reaper löscht nur `seq <` diesem Wert.
+Migration 0064: Trigger gegen DELETE/UPDATE/TRUNCATE auf
+`audit_checkpoints`, Head-Rollback/-Rehash/TRUNCATE. Tests:
 `test/provenanceTamper.test.ts`, `test/receiptChainGuards.pg.test.ts`;
 Fixtures in `test/_helpers/receiptChainFixtures.ts`.
 

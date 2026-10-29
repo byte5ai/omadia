@@ -878,8 +878,10 @@
     "chainPrefixUnsigned": "Retention hat die Zeilen 1–{seq} entfernt; nicht verankert, weil kein Signierschlüssel konfiguriert ist",
     "chainCheckpointsUnchecked": "{n} Checkpoints vorhanden — Signaturen nicht geprüft (kein Signierschlüssel)",
     "chainAnchorCompared": "Externer Anker: {matched} von {records} verankerten Checkpoints stimmen mit der Datenbank überein",
-    "chainAnchorMissing": "Externer Anker konfiguriert, aber die Anker-Datei existiert noch nicht",
-    "chainAnchorUnreadable": "Externer Anker konfiguriert, aber die Anker-Datei ist nicht lesbar"
+    "chainAnchorMissing": "Externer Anker konfiguriert, aber die Anker-Datei fehlt",
+    "chainAnchorUnreadable": "Externer Anker konfiguriert, aber die Anker-Datei ist nicht lesbar",
+    "chainAwaitingFirstCheckpoint": "Signierung ist aktiv, aber noch kein Checkpoint deckt die Kette ab — der nächste Checkpoint-Lauf signiert sie",
+    "chainAnchorMalformed": "{n} Zeilen der Anker-Datei sind keine Anker-Einträge und wurden ignoriert"
   },
   "operatorChannels": {
     "metaTitle": "Channels · omadia",

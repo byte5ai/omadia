@@ -85,7 +85,7 @@ import { TRANSCRIPTION_SERVICE_NAME } from '@omadia/plugin-api';
 import type { TranscriptionService } from '@omadia/plugin-api';
 import { PgTurnReceiptStore, startTurnReceiptReaper } from './receipts/store.js';
 import { createReceiptRoutes } from './receipts/routes.js';
-import { HeadHighWater } from './receipts/anchor.js';
+import { ChainWitness } from './receipts/anchor.js';
 import { loadCheckpointSigner, startCheckpointWorker } from './receipts/checkpoints.js';
 import { createProvenanceRoutes } from './receipts/verifyRoutes.js';
 import { bindingKeyForTurn } from './conductor/principalId.js';
@@ -4867,8 +4867,14 @@ async function main(): Promise<void> {
       new PgTurnReceiptStore(graphPool),
     );
     app.use('/api/v1/operator/receipts', requireAuth, createReceiptRoutes(graphPool));
+    // Loaded before the reaper: it bounds the reap by signature-valid
+    // checkpoints only (#1567, security review M2).
+    const checkpointSigner = config.AUDIT_SIGNING_KEY
+      ? loadCheckpointSigner(config.AUDIT_SIGNING_KEY)
+      : undefined;
     startTurnReceiptReaper(graphPool, {
       retentionDays: config.RECEIPT_RETENTION_DAYS,
+      ...(checkpointSigner ? { publicKey: checkpointSigner.publicKey } : {}),
     });
     console.log(
       `[middleware] turn receipts wired at /api/v1/operator/receipts (auth-gated, retention ${config.RECEIPT_RETENTION_DAYS}d)`,
@@ -4878,17 +4884,14 @@ async function main(): Promise<void> {
     // itself always builds (the store appends chained rows unconditionally);
     // signing is the layer that needs the operator-held key. Absent key ⇒
     // loud boot log, not a silent no-op.
-    const checkpointSigner = config.AUDIT_SIGNING_KEY
-      ? loadCheckpointSigner(config.AUDIT_SIGNING_KEY)
-      : undefined;
-    // #1566 — one per process, shared by the worker (refuses to re-sign a
-    // rolled-back head) and verify (reports the rollback).
-    const chainHighWater = new HeadHighWater();
+    // #1565 / #1566 — one per process, shared by the worker (refuses to sign
+    // a rewound or rewritten head) and verify (reports it).
+    const chainWitness = new ChainWitness();
     if (checkpointSigner) {
       startCheckpointWorker(graphPool, checkpointSigner, {
         intervalMs: config.AUDIT_CHECKPOINT_INTERVAL_MINUTES * 60_000,
         ...(config.AUDIT_ANCHOR_PATH ? { anchorPath: config.AUDIT_ANCHOR_PATH } : {}),
-        highWater: chainHighWater,
+        witness: chainWitness,
       });
       console.log(
         `[middleware] audit checkpoints wired (every ${config.AUDIT_CHECKPOINT_INTERVAL_MINUTES}min, fingerprint ${checkpointSigner.publicKeyFingerprint.slice(0, 16)}…${config.AUDIT_ANCHOR_PATH ? ', external anchor on' : ''})`,
@@ -4932,7 +4935,8 @@ async function main(): Promise<void> {
           : {}),
         retentionDays: config.RECEIPT_RETENTION_DAYS,
         ...(config.AUDIT_ANCHOR_PATH ? { anchorPath: config.AUDIT_ANCHOR_PATH } : {}),
-        highWater: chainHighWater,
+        checkpointIntervalMinutes: config.AUDIT_CHECKPOINT_INTERVAL_MINUTES,
+        witness: chainWitness,
       }),
     );
     console.log('[middleware] provenance verify/export wired at /api/v1/operator/provenance (auth-gated)');

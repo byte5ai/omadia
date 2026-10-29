@@ -27,16 +27,27 @@ report one of three verdicts:
 | Verdict | Server (`verdict` / `ok`) | Offline exit code | Meaning |
 |---|---|---|---|
 | **verified** | `verified` / `true` | `0` | Every entry intact, and at least one signature-valid checkpoint certifies a stored entry. |
-| **unsigned** | `unsigned` / `true` | `3` | Entries are internally consistent, but there is no signing key: nothing vouches for them. Never reported as "verified". |
+| **unsigned** | `unsigned` / `true` | `3` | Entries are internally consistent, but nothing vouches for them: no signing key, or (key on) no checkpoint yet while every row is younger than two checkpoint intervals (`checkpoints.awaitingFirstCheckpoint`). Never reported as "verified". |
 | **broken** | `broken` / `false` | `1` | A break or finding (list below). |
 
 `checkpoints.verified` counts only checkpoints whose signature was checked
 and found valid; without a key it is `0` and `checkpoints.unchecked` holds
-the count (#1584).
+the count (#1584). Offline, exit `0` additionally needs the key you pinned
+with `--pubkey`: against only the key embedded in the export, a consistent
+chain exits `3` ("not proven") — whoever handed you the export could have
+re-signed it with a key of their own.
+
+The server walks every row (no row cap) and reads head, rows and
+checkpoints in one database snapshot; the export does the same and carries
+the recorded head, `RECEIPT_RETENTION_DAYS` and the checkpoint interval in
+its header, so the offline tool applies the same head, grace and
+premature-deletion rules. The one server-only signal is the process
+witness: the highest head the running process has read and the newest
+checkpoint it signed must still hold (`head_rollback`, `witness_mismatch`).
 
 The offline layer is the answer to "how do we prove the provability": a
 verification that only works while trusting the exporting server proves
-nothing. The offline verifier is a single ~320-line Node script with zero
+nothing. The offline verifier is a single ~400-line Node script with zero
 dependencies beyond `node:crypto` — an external auditor can read all of it
 before running it.
 
@@ -61,10 +72,15 @@ which is information, not a break (#1568).
 deletes the newest receipts *and* their rows in `audit_checkpoints` leaves
 nothing inside the database that proves the rows ever existed. The anchor
 file does: the server compares it with `audit_checkpoints` on every verify,
-the checkpoint worker refuses to re-sign a head below it, and the offline
-verifier compares it with `--anchor` (#1565). A database checkpoint the
-anchor lacks is not a finding (appending is best-effort, and the path may
-have been set later); an anchored checkpoint the database lacks always is. One anchor file belongs to one database: after restoring an empty or
+the checkpoint worker refuses to sign while an anchored checkpoint is
+missing from the database, and the offline verifier compares it with
+`--anchor` (#1565). A database checkpoint the anchor lacks is not a finding
+(appending is best-effort, and the path may have been set later); an
+anchored checkpoint the database lacks always is. The worker creates the
+file at boot, so with signing on a missing or unreadable file is a finding
+(`unavailable`). Lines that are not anchor records — a write torn by a
+crash — are counted and ignored, and offline, records signed after the
+export was taken are skipped. One anchor file belongs to one database: after restoring an empty or
 older database, start a new anchor file, or every verify reports the old
 anchored checkpoints as missing and the worker will not sign until the head
 passes them.
@@ -116,10 +132,18 @@ the reap boundary; the server and the offline tool use this one rule
 (#1567). The reaper deletes only rows *below* the newest checkpoint, so
 the certified row itself always survives.
 
-Defence in depth (0064): triggers reject deleting or updating
-`audit_checkpoints` and moving `audit_stream_heads.head_seq` backwards.
-A superuser can drop them, which is why the anchor and the verifiers are
-the proof, not the triggers.
+The checkpoint worker signs only a head that is a stored row, not below
+the highest head its process has read, while the newest checkpoint it
+signed is still stored unchanged, and while no anchored checkpoint is
+missing. It and the reaper count only signature-valid checkpoints, so a
+junk row at a huge seq can neither stop signing nor widen what retention
+deletes.
+
+Defence in depth (0064): triggers reject deleting, updating or truncating
+`audit_checkpoints`, and truncating `audit_stream_heads`, moving its
+`head_seq` backwards or changing its hash without its seq. The table owner
+(usually the app role) can drop or disable them, which is why the anchor
+and the verifiers are the proof, not the triggers.
 
 ## What a green verdict proves — and what it does not
 
@@ -132,18 +156,19 @@ stored rows and with every checkpoint (a wiped table, or a tail truncated
 while its checkpoints are kept, is never green); with a key, at least one
 signed checkpoint certifies the stored chain; with an anchor, every
 anchored checkpoint is still in the database unchanged; and — the
-laundering rule, **server verify only** (the offline tool has no retention
-input) — no reaped row sits above a checkpoint younger than the retention
-window, which would prove it was created inside the window and deleted
-early (`premature_deletion`).
+laundering rule — no reaped row sits above a checkpoint younger than the
+retention window, which would prove it was created inside the window and
+deleted early (`premature_deletion`).
 
 **Does not prove:** without `AUDIT_ANCHOR_PATH` (or without `--anchor`
-offline), that the newest entries were not deleted together with every
-checkpoint that covered them and the head rolled back — inside the
-database that state is indistinguishable from a shorter chain. Until the
-middleware restarts, the server still notices a head below the highest one
-it has seen (`head_rollback`), and the worker refuses to re-sign it. Also
-not proved: turns the middleware never wrote (a compromised
+offline), anything about rows above the newest checkpoint the admin keeps.
+An admin who deletes checkpoints can delete or rewrite every row above the
+newest one left (the chain hash is unkeyed, so rewritten rows can carry
+correct hashes) and move the head to match; inside the database that state
+is indistinguishable from a shorter or different chain. While the
+middleware that signed the deleted checkpoints keeps running, its witness
+reports it and the worker refuses to sign the result; after a restart only
+the anchor remembers. Also not proved: turns the middleware never wrote (a compromised
 middleware can lie at write time — the anchoring cadence bounds that
 window), anything about pre-chain rows (NULL chain columns, reported
 separately), or per-row wall-clock time beyond checkpoint granularity.

@@ -2193,21 +2193,29 @@ head, so a wiped or tail-truncated table can never report green
 offline verifier — see `docs/provenance-verification.md`.
 
 Tail truncation with the checkpoints deleted too (#1565, #1566): a
-checkpoint above the newest stored row is orphaned whenever the fetch was
-complete; with `AUDIT_SIGNING_KEY` set, a chain no signature-valid
-checkpoint certifies is broken (`no_signed_checkpoint`); the anchor file
-(`AUDIT_ANCHOR_PATH`) is read back and every anchored checkpoint must still
-be in `audit_checkpoints` unchanged; the checkpoint worker refuses to sign a
-head below the anchor or below the highest head its process has seen, so
-the real key never certifies a rewound chain; and migration 0064 rejects
-deleting checkpoints and moving the head backwards (defence in depth, a
-superuser can drop the triggers). Without an anchor, deleting the newest
-rows together with every checkpoint and rolling the head back remains
-undetectable from the database alone after a restart — the documented
-limit. Without a key the verdict is `unsigned`, never `verified`, and a
-retention prefix is reported as unanchored information rather than a break
-(#1568); `checkpoints.verified` counts signature-checked checkpoints only
-(#1584). The server and the offline verifier apply the same rules.
+checkpoint above the newest stored row is orphaned; with
+`AUDIT_SIGNING_KEY` set, a chain no signature-valid checkpoint certifies is
+broken (`no_signed_checkpoint`) once its oldest row is older than two
+checkpoint intervals; the anchor file (`AUDIT_ANCHOR_PATH`) is read back and
+every anchored checkpoint must still be in `audit_checkpoints` unchanged
+(with signing on, a missing anchor file is a finding — the worker creates
+it at boot); and the process witness — the highest head this process read,
+the newest checkpoint it signed — must still hold. The checkpoint worker
+signs only a head that is a stored row, and refuses while the witness or
+the anchor disagrees with the database; it and the reaper count only
+signature-valid checkpoints, so a junk row cannot stop signing or widen
+retention. Verify and export read in one REPEATABLE READ snapshot and walk
+every row (no cap). Migration 0064 rejects deleting, updating or truncating
+checkpoints and rolling back, truncating or re-hashing the head — defence
+in depth: the table owner can drop the triggers. The documented limit:
+without an anchor, an admin who deletes checkpoints can delete or rewrite
+every row above the newest checkpoint left (the chain hash is unkeyed);
+only the running process's witness notices, until it restarts. Without a
+key the verdict is `unsigned`, never `verified`, and a retention prefix is
+reported as unanchored information rather than a break (#1568);
+`checkpoints.verified` counts signature-checked checkpoints only (#1584).
+The server and the offline verifier apply the same rules; the witness is
+the only server-only signal.
 
 What the chain cannot show is a receipt that was never written. Appending is
 best-effort, because the user's answer outranks the audit row

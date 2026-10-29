@@ -17,15 +17,17 @@ import {
   createPrivateKey,
   createPublicKey,
   sign as edSign,
+  verify as edVerify,
   type KeyObject,
 } from 'node:crypto';
 import type { Pool } from 'pg';
 
-import { type HeadHighWater, maxAnchoredSeq } from './anchor.js';
+import { type ChainWitness, maxAnchoredSeq } from './anchor.js';
 import { RECEIPT_STREAM_ID } from './chain.js';
 
 export interface CheckpointSigner {
   readonly privateKey: KeyObject;
+  readonly publicKey: KeyObject;
   readonly publicKeyPem: string;
   /** sha256 over the SPKI DER of the public key, hex — the stable id an
    *  offline verifier pins. */
@@ -57,6 +59,7 @@ export function loadCheckpointSigner(privateKeyBase64: string): CheckpointSigner
   const spkiDer = publicKey.export({ format: 'der', type: 'spki' });
   return {
     privateKey,
+    publicKey,
     publicKeyPem: publicKey.export({ format: 'pem', type: 'spki' }).toString(),
     publicKeyFingerprint: createHash('sha256').update(spkiDer).digest('hex'),
   };
@@ -86,16 +89,119 @@ export interface CheckpointRecord {
   readonly publicKeyFingerprint: string;
 }
 
+/** Checks one stored checkpoint's Ed25519 signature; a malformed signature
+ *  is invalid, never a crash. */
+export function checkpointSignatureValid(
+  publicKey: KeyObject,
+  cp: { seq: number; headHash: Buffer; signedAtIso: string; signature: Buffer },
+): boolean {
+  try {
+    return edVerify(
+      null,
+      checkpointSigningInput({
+        streamId: RECEIPT_STREAM_ID,
+        seq: cp.seq,
+        headHash: cp.headHash,
+        signedAtIso: cp.signedAtIso,
+      }),
+      publicKey,
+      cp.signature,
+    );
+  } catch {
+    return false;
+  }
+}
+
+const CHECKPOINT_PAGE = 100;
+
+/**
+ * The newest checkpoint whose signature verifies (security review M2): a
+ * junk row anyone with INSERT can write at a huge seq must neither stop the
+ * worker (`seq <= lastSeq` forever) nor widen the reaper's bound. Pages
+ * downward until a valid one is found.
+ */
+export async function highestValidCheckpointSeq(pool: Pool, publicKey: KeyObject): Promise<number> {
+  let below: string | null = null;
+  for (;;) {
+    const res: { rows: { seq: string; head_hash: Buffer; signed_at: Date; signature: Buffer }[] } =
+      await pool.query(
+        `SELECT seq::text AS seq, head_hash, signed_at, signature
+           FROM audit_checkpoints
+          WHERE stream_id = $1 AND ($2::bigint IS NULL OR seq < $2::bigint)
+          ORDER BY audit_checkpoints.seq DESC
+          LIMIT $3`,
+        [RECEIPT_STREAM_ID, below, CHECKPOINT_PAGE],
+      );
+    for (const r of res.rows) {
+      const seq = Number(r.seq);
+      const valid = checkpointSignatureValid(publicKey, {
+        seq,
+        headHash: r.head_hash,
+        signedAtIso: r.signed_at.toISOString(),
+        signature: r.signature,
+      });
+      if (valid) return seq;
+    }
+    if (res.rows.length < CHECKPOINT_PAGE) return 0;
+    below = res.rows[res.rows.length - 1]!.seq;
+  }
+}
+
+/**
+ * Why the current head must not be signed, or undefined when it may be.
+ * The real key must never certify a rewound or rewritten chain (#1565,
+ * security review H1): the head must be a stored row; it must not be below
+ * the highest head this process saw; the newest checkpoint this process
+ * signed must still be in the DB unchanged; and no anchored checkpoint may
+ * lie above the newest signature-valid DB checkpoint (every anchored seq was
+ * stored first, so that means checkpoints were deleted).
+ */
+async function refuseToSign(
+  pool: Pool,
+  head: { seq: number; hash: Buffer },
+  lastSeq: number,
+  opts: { anchorPath?: string; witness?: ChainWitness },
+): Promise<string | undefined> {
+  const stored = await pool.query<{ entry_hash: Buffer }>(
+    `SELECT entry_hash FROM turn_receipts WHERE stream_id = $1 AND seq = $2`,
+    [RECEIPT_STREAM_ID, head.seq],
+  );
+  const headRow = stored.rows[0];
+  if (!headRow || !headRow.entry_hash.equals(head.hash)) {
+    return `the stream head seq=${String(head.seq)} does not match a stored receipt`;
+  }
+  const witness = opts.witness;
+  if (witness && head.seq < witness.highestHead) {
+    return `the stream head seq=${String(head.seq)} is below the highest head this process saw (${String(witness.highestHead)})`;
+  }
+  const signed = witness?.lastSigned;
+  if (signed) {
+    const cp = await pool.query<{ head_hash: Buffer }>(
+      `SELECT head_hash FROM audit_checkpoints WHERE stream_id = $1 AND seq = $2`,
+      [RECEIPT_STREAM_ID, signed.seq],
+    );
+    if (cp.rows[0]?.head_hash.toString('hex') !== signed.headHashHex) {
+      return `the checkpoint this process signed at seq=${String(signed.seq)} is missing or changed`;
+    }
+  }
+  const anchored = opts.anchorPath ? await maxAnchoredSeq(opts.anchorPath, RECEIPT_STREAM_ID) : 0;
+  if (anchored > lastSeq) {
+    return `the external anchor holds seq=${String(anchored)}, above the newest valid DB checkpoint (${String(lastSeq)})`;
+  }
+  return undefined;
+}
+
 /**
  * One checkpoint pass: read the stream head; if it advanced past the last
- * checkpoint, sign and persist (+ optionally anchor). Exported for tests and
- * for an eager boot pass. Returns the record written, or undefined when the
- * head has not moved (no pointless duplicate checkpoints).
+ * valid checkpoint, sign and persist (+ optionally anchor). Exported for
+ * tests and for an eager boot pass. Returns the record written, or undefined
+ * when the head has not moved (no pointless duplicate checkpoints) or the
+ * pass refused to sign (logged loudly).
  */
 export async function runCheckpointPass(
   pool: Pool,
   signer: CheckpointSigner,
-  opts: { anchorPath?: string; now?: () => Date; highWater?: HeadHighWater },
+  opts: { anchorPath?: string; now?: () => Date; witness?: ChainWitness },
 ): Promise<CheckpointRecord | undefined> {
   const head = await pool.query<{ head_seq: string; head_hash: Buffer }>(
     `SELECT head_seq, head_hash FROM audit_stream_heads WHERE stream_id = $1`,
@@ -104,27 +210,16 @@ export async function runCheckpointPass(
   const row = head.rows[0];
   if (!row) return undefined; // nothing recorded yet
   const seq = Number(row.head_seq);
-  const last = await pool.query<{ seq: string }>(
-    `SELECT MAX(seq)::text AS seq FROM audit_checkpoints WHERE stream_id = $1`,
-    [RECEIPT_STREAM_ID],
-  );
-  const lastSeq = last.rows[0]?.seq ? Number(last.rows[0].seq) : 0;
-  // #1565 — never certify a head that rolled back. Without this guard an
-  // admin who deletes the newest receipts AND `audit_checkpoints` gets the
-  // shortened chain re-signed with the real key on the next pass. Two pieces
-  // of evidence live outside the database: the highest head this process
-  // has seen, and the highest seq already written to the external anchor
-  // (every anchored seq had a DB checkpoint, so `seq <= anchored` with no
-  // DB checkpoint at or above it means checkpoints were deleted).
-  const highWater = opts.highWater?.value ?? 0;
-  const anchored = opts.anchorPath ? await maxAnchoredSeq(opts.anchorPath, RECEIPT_STREAM_ID) : 0;
-  if (seq < highWater || (seq > lastSeq && seq <= anchored)) {
+  if (seq === 0) return undefined; // genesis seed, nothing to certify
+  const lastSeq = await highestValidCheckpointSeq(pool, signer.publicKey);
+  const refusal = await refuseToSign(pool, { seq, hash: row.head_hash }, lastSeq, opts);
+  if (refusal) {
     console.error(
-      `[receipts] REFUSING to sign checkpoint: stream head seq=${String(seq)} is below already-observed history (process high-water ${String(highWater)}, external anchor ${String(anchored)}, newest DB checkpoint ${String(lastSeq)}) — receipts or checkpoints were deleted; run provenance verify (#1565)`,
+      `[receipts] REFUSING to sign checkpoint: ${refusal} — receipts or checkpoints were changed; run provenance verify (#1565)`,
     );
     return undefined;
   }
-  opts.highWater?.note(seq);
+  opts.witness?.noteHead(seq);
   if (seq <= lastSeq) return undefined;
 
   const signedAt = (opts.now?.() ?? new Date()).toISOString();
@@ -148,8 +243,9 @@ export async function runCheckpointPass(
   // Replica race (review M1): the loser of the (stream, seq) conflict must
   // NOT anchor or report its own differently-timestamped signature — the
   // anchor file has to correspond to what the DB actually stored, or the
-  // promised anchor↔DB comparison flags phantom "tampering".
+  // anchor↔DB comparison (#1565) flags phantom "tampering".
   if ((insertRes.rowCount ?? 0) === 0) return undefined;
+  opts.witness?.noteSigned(seq, row.head_hash.toString('hex'));
   const record: CheckpointRecord = {
     streamId: RECEIPT_STREAM_ID,
     seq,
@@ -160,8 +256,8 @@ export async function runCheckpointPass(
   };
   if (opts.anchorPath) {
     // External anchor: append-only JSONL outside the DB. Failure is loud but
-    // non-fatal — the in-DB checkpoint stands, and a missing anchor line is
-    // itself detectable when comparing the two.
+    // non-fatal — the in-DB checkpoint stands, and a DB checkpoint the anchor
+    // lacks is not a finding (only the reverse is).
     try {
       await appendFile(opts.anchorPath, `${JSON.stringify(record)}\n`, 'utf-8');
     } catch (err) {
@@ -177,13 +273,13 @@ export async function runCheckpointPass(
 export function startCheckpointWorker(
   pool: Pool,
   signer: CheckpointSigner,
-  opts: { intervalMs: number; anchorPath?: string; highWater?: HeadHighWater },
+  opts: { intervalMs: number; anchorPath?: string; witness?: ChainWitness },
 ): { stop: () => void } {
   const tick = async (): Promise<void> => {
     try {
       const record = await runCheckpointPass(pool, signer, {
         ...(opts.anchorPath ? { anchorPath: opts.anchorPath } : {}),
-        ...(opts.highWater ? { highWater: opts.highWater } : {}),
+        ...(opts.witness ? { witness: opts.witness } : {}),
       });
       if (record) {
         console.log(
@@ -196,6 +292,15 @@ export function startCheckpointWorker(
   };
   const timer = setInterval(() => void tick(), opts.intervalMs);
   timer.unref();
-  void tick();
+  void (async () => {
+    // #1565 — create the anchor file at boot, so a MISSING file means it was
+    // deleted (verify reports that) rather than "nothing signed yet".
+    if (opts.anchorPath) {
+      await appendFile(opts.anchorPath, '', 'utf-8').catch((err: unknown) => {
+        console.error('[receipts] cannot create the checkpoint anchor file:', err);
+      });
+    }
+    await tick();
+  })();
   return { stop: () => clearInterval(timer) };
 }

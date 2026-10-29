@@ -48,7 +48,11 @@ describe('#1565/#1566 receipt chain guards against a real Postgres', { skip: !pg
     await bootstrap.query(`DROP SCHEMA IF EXISTS ${SCHEMA} CASCADE`);
     await bootstrap.query(`CREATE SCHEMA ${SCHEMA}`);
     await bootstrap.end();
-    pool = new Pool({ connectionString: PG_URL, max: 2, options: `-c search_path=${SCHEMA},public` });
+    pool = new Pool({
+      connectionString: PG_URL,
+      max: 2,
+      options: `-c search_path=${SCHEMA},public`,
+    });
     for (const file of [
       '0039_turn_receipts.sql',
       '0041_receipt_hash_chain.sql',
@@ -62,7 +66,8 @@ describe('#1565/#1566 receipt chain guards against a real Postgres', { skip: !pg
     const store = new PgTurnReceiptStore(pool);
     for (let i = 1; i <= 6; i++) {
       await store.record({ turnId: `t-${String(i)}`, sessionScope: 's', receipt: RECEIPT });
-      if (i % 2 === 0) assert.equal((await runCheckpointPass(pool, signer, { anchorPath }))?.seq, i);
+      if (i % 2 === 0)
+        assert.equal((await runCheckpointPass(pool, signer, { anchorPath }))?.seq, i);
     }
   });
 
@@ -92,12 +97,24 @@ describe('#1565/#1566 receipt chain guards against a real Postgres', { skip: !pg
       /append-only/,
     );
     await assert.rejects(
-      pool.query(`UPDATE audit_stream_heads SET head_seq = head_seq - 2 WHERE stream_id = 'receipts'`),
+      pool.query(
+        `UPDATE audit_stream_heads SET head_seq = head_seq - 2 WHERE stream_id = 'receipts'`,
+      ),
       /only moves forward/,
     );
-    await assert.rejects(pool.query(`DELETE FROM audit_stream_heads`), /cannot be deleted/);
+    await assert.rejects(pool.query(`DELETE FROM audit_stream_heads`), /cannot be removed/);
+    await assert.rejects(pool.query(`TRUNCATE audit_checkpoints`), /append-only/);
+    await assert.rejects(pool.query(`TRUNCATE audit_stream_heads`), /cannot be removed/);
+    await assert.rejects(
+      pool.query(`UPDATE audit_stream_heads SET head_hash = '\\x00' WHERE stream_id = 'receipts'`),
+      /cannot change without head_seq/,
+    );
     // Forward moves stay allowed — the store's own append path.
-    await new PgTurnReceiptStore(pool).record({ turnId: 't-7', sessionScope: 's', receipt: RECEIPT });
+    await new PgTurnReceiptStore(pool).record({
+      turnId: 't-7',
+      sessionScope: 's',
+      receipt: RECEIPT,
+    });
     assert.equal((await runCheckpointPass(pool, signer, { anchorPath }))?.seq, 7);
   });
 
@@ -105,6 +122,7 @@ describe('#1565/#1566 receipt chain guards against a real Postgres', { skip: !pg
     // The issue's attack, as a superuser who removes the triggers first.
     await pool.query(`DROP TRIGGER audit_checkpoints_append_only ON audit_checkpoints`);
     await pool.query(`DROP TRIGGER audit_stream_heads_no_rollback ON audit_stream_heads`);
+    await pool.query(`DROP TRIGGER audit_checkpoints_no_truncate ON audit_checkpoints`);
     await pool.query('BEGIN');
     await pool.query(`DELETE FROM turn_receipts WHERE stream_id = 'receipts' AND seq > 5`);
     await pool.query(
@@ -122,8 +140,12 @@ describe('#1565/#1566 receipt chain guards against a real Postgres', { skip: !pg
     const result = await verify();
     assert.equal(result.ok, false, JSON.stringify(result));
     assert.equal(result.checkedEntries, 5);
-    assert.ok(result.checkpoints.findings.some((f) => f.kind === 'no_signed_checkpoint'));
-    const missing = result.anchor.findings.filter((f) => f.kind === 'missing_in_db').map((f) => f.seq);
+    // The rows are minutes old, so the grace window holds back
+    // `no_signed_checkpoint` — the anchor is what proves the deletion here.
+    assert.equal(result.checkpoints.awaitingFirstCheckpoint, true);
+    const missing = result.anchor.findings
+      .filter((f) => f.kind === 'missing_in_db')
+      .map((f) => f.seq);
     assert.deepEqual(missing, [2, 4, 6, 7]);
     assert.ok(result.anchor.findings.some((f) => f.kind === 'beyond_head' && f.seq === 7));
   });

@@ -105,30 +105,46 @@ export async function readAnchorFile(path: string, streamId: string): Promise<An
   return { status: 'ok', ...parseAnchorJsonl(text, streamId) };
 }
 
-/** Highest anchored seq of the stream, 0 when the file has none. Read errors
- *  return 0 — the caller logs; the verifier reports the read status itself. */
+/** Highest anchored seq of the stream, 0 when the file has none or cannot
+ *  be read — a read problem is logged here, because the worker guard then
+ *  runs without the anchor half (the verifier reports the status itself). */
 export async function maxAnchoredSeq(path: string, streamId: string): Promise<number> {
   const res = await readAnchorFile(path, streamId);
+  if (res.status === 'unreadable') {
+    console.error(`[receipts] anchor file unreadable, guard runs without it: ${res.message}`);
+  }
   if (res.status !== 'ok') return 0;
   return res.records.reduce((max, r) => Math.max(max, r.seq), 0);
 }
 
 /**
- * Highest stream-head seq this process has observed (checkpoint passes and
- * verify runs note what they read). Heads only ever move forward, so a
- * recorded head below this mark is a rollback — evidence that survives the
- * deletion of every checkpoint for as long as the process lives. One
- * instance per process, created in `index.ts` and passed to the worker and
- * the verify route; never a module singleton (test isolation).
+ * What this process itself witnessed of the chain (#1565 / #1566): the
+ * highest stream head it read and the newest checkpoint it signed. Heads
+ * only move forward and checkpoints are never deleted, so a recorded head
+ * below `highestHead`, or a DB that no longer holds `lastSigned` unchanged,
+ * is tampering — an in-process anchor that needs no anchor file. It lasts
+ * as long as the process; after a restart only the anchor file remembers.
+ * One instance per process, created in `index.ts` and passed to the worker
+ * and the verify route; never a module singleton (test isolation).
  */
-export class HeadHighWater {
-  private seq = 0;
+export class ChainWitness {
+  private head = 0;
+  private signed: { readonly seq: number; readonly headHashHex: string } | undefined;
 
-  note(seq: number): void {
-    if (seq > this.seq) this.seq = seq;
+  noteHead(seq: number): void {
+    if (seq > this.head) this.head = seq;
   }
 
-  get value(): number {
-    return this.seq;
+  noteSigned(seq: number, headHashHex: string): void {
+    this.noteHead(seq);
+    if (!this.signed || seq > this.signed.seq) this.signed = { seq, headHashHex };
+  }
+
+  get highestHead(): number {
+    return this.head;
+  }
+
+  get lastSigned(): { readonly seq: number; readonly headHashHex: string } | undefined {
+    return this.signed;
   }
 }

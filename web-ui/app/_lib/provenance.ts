@@ -38,7 +38,6 @@ export interface ProvenanceVerifyDto {
   headSeq?: number;
   headHashHex?: string;
   recordedHeadSeq: number;
-  truncated: boolean;
   preChainRows: number;
   firstBrokenSeq?: number;
   breakKind?: string;
@@ -49,6 +48,8 @@ export interface ProvenanceVerifyDto {
     unchecked: number;
     findings: Array<{ seq: number; kind: string }>;
     signaturesChecked: boolean;
+    /** Key configured, rows too young for the first checkpoint yet. */
+    awaitingFirstCheckpoint?: boolean;
   };
   prefix: {
     reapedUpToSeq: number;
@@ -62,6 +63,7 @@ export interface ProvenanceVerifyDto {
     status?: 'ok' | 'missing' | 'unreadable';
     records: number;
     matched: number;
+    malformedLines: number;
     findings: Array<{ seq: number; kind: string }>;
   };
 }

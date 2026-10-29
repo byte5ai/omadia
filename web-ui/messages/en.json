@@ -878,8 +878,10 @@
     "chainPrefixUnsigned": "Retention removed rows 1–{seq}; not anchored because no signing key is configured",
     "chainCheckpointsUnchecked": "{n} checkpoints present — signatures not checked (no signing key)",
     "chainAnchorCompared": "External anchor: {matched} of {records} anchored checkpoints match the database",
-    "chainAnchorMissing": "External anchor configured, but the anchor file does not exist yet",
-    "chainAnchorUnreadable": "External anchor configured, but the anchor file could not be read"
+    "chainAnchorMissing": "External anchor configured, but the anchor file is missing",
+    "chainAnchorUnreadable": "External anchor configured, but the anchor file could not be read",
+    "chainAwaitingFirstCheckpoint": "Signing is on, but no checkpoint covers the chain yet — the next checkpoint pass signs it",
+    "chainAnchorMalformed": "{n} lines in the anchor file are not anchor records and were ignored"
   },
   "operatorChannels": {
     "metaTitle": "Channels · omadia",
