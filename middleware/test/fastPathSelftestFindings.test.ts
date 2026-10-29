@@ -44,7 +44,7 @@ describe('finding 1 — composer output-format instruction on the first attempt'
     await composeSkeleton({ llm, model: 'm', userText: 'Geburtstage im Januar' });
     assert.ok(calls.length >= 1);
     assert.ok(calls[0]?.includes('User request: Geburtstage im Januar'));
-    assert.ok(calls[0]?.includes(OUTPUT_FORMAT_INSTRUCTION), calls[0]);
+    assert.ok(calls[0]?.includes(OUTPUT_FORMAT_INSTRUCTION), calls[0] ?? '(no call)');
   });
 });
 
