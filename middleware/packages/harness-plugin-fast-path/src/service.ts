@@ -10,6 +10,7 @@ import {
   type FastPathToolSpec,
   type ToolInvoke,
 } from './fastPath.js';
+import { genericToolSpecs, type FastPathToolDefinition } from './genericToolSpecs.js';
 import {
   attributePlan,
   createLearnedPlanStore,
@@ -30,6 +31,8 @@ export const FAST_PATH_SERVICE = 'fastPath';
 export const TRIAGE_TOP_K = 5;
 /** Conversations whose last fast-path query is remembered (follow-ups). */
 const MAX_SESSIONS = 500;
+/** Generic tool names kept in the fetch whitelist (process-wide, bounded). */
+const MAX_GENERIC_TOOLS = 500;
 
 /** Fast-path failures that count against a learned plan — an invoke error
  *  may be the asking user's missing permission, not the plan's fault. */
@@ -46,6 +49,11 @@ export interface ChatTriageRequest {
    *  allow-list / learned tools). Required: an unknown set is the caller's
    *  fail-closed pass-through, never "everything". */
   permittedTools: ReadonlySet<string>;
+  /** the agent's own definitions of those tools (`ChatAgent.
+   *  offeredToolDefinitions`): every read tool among them without a catalog
+   *  spec gets a generic planner spec (genericToolSpecs.ts). Absent → only
+   *  catalog and learned tools, as before. */
+  toolDefinitions?: readonly FastPathToolDefinition[];
 }
 
 export type ChatTriageOutcome =
@@ -82,9 +90,13 @@ export interface FastPathService {
   channelEnabled(channel: string): boolean;
   /** the ONE tenant-wide learned plan store */
   readonly plans: LearnedPlanStore;
-  /** built-in planner specs of the allow-listed tools */
-  plannableTools(): FastPathToolSpec[];
-  /** fetch whitelist: the allow-list ∪ tools of ACTIVE learned plans */
+  /** planner specs: the allow-listed catalog tools, then a generic spec for
+   *  every read tool of `definitions` (the agent's offered tools) without
+   *  one — budgeted, name-ordered, the same text for the same tool set */
+  plannableTools(definitions?: readonly FastPathToolDefinition[]): FastPathToolSpec[];
+  /** fetch whitelist: the allow-list ∪ tools of ACTIVE learned plans ∪ the
+   *  generic tools `plannableTools` built a spec for (the caller still
+   *  checks the agent's own tool set) */
   allowedFetchTools(): ReadonlySet<string>;
   /** Book a fast-path execution against the ACTIVE learned plans its fetches
    *  were adapted from; returns their ids. */
@@ -122,9 +134,27 @@ export function createFastPathService(deps: FastPathServiceDeps): FastPathServic
     createLearnedPlanStore({ ...(deps.memory ? { memory: deps.memory } : {}), log: deps.log });
   const builtIn = plannableTools([...tools]);
   const sessions = new Map<string, PreviousQuery>();
+  /** read tools a generic spec was built for — planned, so fetchable */
+  const genericTools = new Set<string>();
 
   const allowedFetchTools = (): ReadonlySet<string> =>
-    new Set([...tools, ...plans.active().map((p) => p.tool)]);
+    new Set([...tools, ...plans.active().map((p) => p.tool), ...genericTools]);
+
+  /** Catalog specs ∪ generic specs of `definitions` (only tools in
+   *  `permitted`, so a foreign tool never takes budget). */
+  function plannable(definitions?: readonly FastPathToolDefinition[], permitted?: ReadonlySet<string>): FastPathToolSpec[] {
+    const catalog = permitted ? builtIn.filter((t) => permitted.has(t.name)) : [...builtIn];
+    if (!enabled || definitions === undefined || definitions.length === 0) return catalog;
+    const generic = genericToolSpecs(permitted ? definitions.filter((d) => permitted.has(d.name)) : definitions, {
+      exclude: new Set(catalog.map((t) => t.name)),
+    });
+    for (const t of generic) {
+      if (genericTools.has(t.name)) continue;
+      if (genericTools.size >= MAX_GENERIC_TOOLS) break;
+      genericTools.add(t.name);
+    }
+    return [...catalog, ...generic.filter((t) => genericTools.has(t.name))];
+  }
 
   function recordFetchOutcome(fetches: readonly RefreshSource[], ok: boolean, reason?: string): string[] {
     const ids: string[] = [];
@@ -174,10 +204,7 @@ export function createFastPathService(deps: FastPathServiceDeps): FastPathServic
       .map((s) => s.plan)
       .filter((p) => permitted.has(p.tool))
       .slice(0, TRIAGE_TOP_K);
-    const specs = offeredTools(
-      builtIn.filter((t) => permitted.has(t.name)),
-      offered,
-    );
+    const specs = offeredTools(plannable(req.toolDefinitions, permitted), offered);
     if (specs.length === 0) return agent('no-tools');
     const previous = req.sessionKey !== undefined ? sessions.get(req.sessionKey) : undefined;
 
@@ -248,7 +275,7 @@ export function createFastPathService(deps: FastPathServiceDeps): FastPathServic
     timeZone,
     channelEnabled: (channel) => enabled && channelAllowed(channel),
     plans,
-    plannableTools: () => [...builtIn],
+    plannableTools: (definitions) => plannable(definitions),
     allowedFetchTools,
     recordFetchOutcome,
     triageChatTurn,

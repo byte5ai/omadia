@@ -8,6 +8,7 @@ export * from './refreshRecipes.js';
 export * from './recipeStore.js';
 export * from './jsonExtract.js';
 export * from './fastPath.js';
+export * from './genericToolSpecs.js';
 export * from './literalStripping.js';
 export * from './learnedPlanStore.js';
 export * from './learningCapture.js';

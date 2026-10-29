@@ -130,6 +130,9 @@ export function createTurnLearner(opts: TurnLearnerOptions): TurnLearner {
     const found = recipeFromTurn();
     if ('reason' in found) return { ok: false, reason: found.reason };
     const { recipe } = found;
+    // a learned plan has no post-fetch order yet — learning a ranking
+    // without it would replay the unsorted, uncut set as the answer
+    if (recipe.sort !== undefined || recipe.take !== undefined) return { ok: false, reason: 'sorted-recipe' };
     // ONE stripper run over input + filter: shared placeholder numbering
     const { template, literals } = stripLiterals({ input: recipe.input, filter: recipe.filter ?? null });
     const t = template as { input: unknown; filter: RefreshFilter[] | null };

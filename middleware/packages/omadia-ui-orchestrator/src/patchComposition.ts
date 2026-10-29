@@ -473,14 +473,16 @@ export function composeStructuredPayloadPatch(opts: {
         // field key and a source path anywhere in the system (checked:
         // `DataRequirement.fields` carries agent keys only), so this is a
         // guess — taken only when the two column lists are the same length,
-        // and otherwise declined in favour of the raw path.
+        // and otherwise declined in favour of the column's default header
+        // (catalog label / humanised path, datasetColumnLabels.ts), else the
+        // raw path. A skeleton label that merely echoes the path is no label.
         // A column that names its own label (the fast-path plan's header in
         // the user's language) is authoritative.
         label:
           c.label ??
-          (datasetColumns.length === skeletonColumns.length
-            ? (skeletonColumns[i]?.label ?? c.path)
-            : c.path),
+          agentLabel(skeletonColumns, datasetColumns.length, i, c.path) ??
+          c.defaultLabel ??
+          c.path,
         ...(c.classification === 'sensitive-masked'
           ? { privacy: 'guard-protected' as const }
           : {}),
@@ -584,6 +586,20 @@ export function composeStructuredPayloadPatch(opts: {
   return { patches, nextTree };
 }
 
+/** The agent's skeleton label for dataset column `i` — positional, so only
+ *  when both column lists have the same length; undefined when there is none
+ *  or it only repeats the raw `path`. */
+function agentLabel(
+  skeletonColumns: ReadonlyArray<{ label?: string }>,
+  datasetColumnCount: number,
+  i: number,
+  path: string,
+): string | undefined {
+  if (datasetColumnCount !== skeletonColumns.length) return undefined;
+  const label = skeletonColumns[i]?.label?.trim();
+  return label !== undefined && label.length > 0 && label !== path ? label : undefined;
+}
+
 /**
  * #326 — the dataset column schema a privacy-shield publish forwards.
  *
@@ -591,22 +607,31 @@ export function composeStructuredPayloadPatch(opts: {
  * and a malformed or absent schema must leave the pre-existing skeleton
  * mapping untouched rather than produce a half-derived column list.
  */
-function readDatasetColumns(
-  data: unknown,
-): Array<{ path: string; type: string; classification?: string; label?: string }> | undefined {
+type DatasetColumn = { path: string; type: string; classification?: string; label?: string; defaultLabel?: string };
+
+function readDatasetColumns(data: unknown): DatasetColumn[] | undefined {
   if (typeof data !== 'object' || data === null) return undefined;
   const raw = (data as { datasetColumns?: unknown }).datasetColumns;
   if (!Array.isArray(raw) || raw.length === 0) return undefined;
-  const columns: Array<{ path: string; type: string; classification?: string; label?: string }> = [];
+  const columns: DatasetColumn[] = [];
   for (const entry of raw) {
     if (typeof entry !== 'object' || entry === null) return undefined;
-    const c = entry as { path?: unknown; type?: unknown; classification?: unknown; label?: unknown };
+    const c = entry as {
+      path?: unknown;
+      type?: unknown;
+      classification?: unknown;
+      label?: unknown;
+      defaultLabel?: unknown;
+    };
     if (typeof c.path !== 'string' || c.path.length === 0) return undefined;
     columns.push({
       path: c.path,
       type: typeof c.type === 'string' ? c.type : 'string',
       ...(typeof c.classification === 'string' ? { classification: c.classification } : {}),
       ...(typeof c.label === 'string' && c.label.trim().length > 0 ? { label: c.label.trim() } : {}),
+      ...(typeof c.defaultLabel === 'string' && c.defaultLabel.trim().length > 0
+        ? { defaultLabel: c.defaultLabel.trim() }
+        : {}),
     });
   }
   return columns;

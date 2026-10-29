@@ -33,6 +33,7 @@ import {
   type SemanticAnswer,
   type AiDisclosure,
   type AiDisclosureLevel,
+  type ChatAgentToolDefinition,
   type AiDisclosurePolicy,
   type DisclosureSeenStore,
   bundleProvenance,
@@ -10534,6 +10535,26 @@ export class Orchestrator {
         .map((t: { name?: unknown }) => t.name)
         .filter((n): n is string => typeof n === 'string'),
     );
+  }
+
+  /**
+   * The definitions of the PLUGIN-contributed native tools among
+   * {@link offeredToolNames} — the ones `ctx.tools.invoke` can run outside a
+   * turn — name-ordered (`ChatAgent.offeredToolDefinitions`). Kernel tools
+   * (no `agentId`) and tools that declare `writeCapabilities` are left out;
+   * the fast path's read-name classifier still decides which of the rest it
+   * plans for. Plugin-authored text only — no turn data.
+   */
+  offeredToolDefinitions(): ReadonlyArray<ChatAgentToolDefinition> {
+    const offered = this.offeredToolNames();
+    const out: ChatAgentToolDefinition[] = [];
+    for (const entry of this.nativeTools.listWithHandler()) {
+      const spec = entry.spec;
+      if (!spec || entry.agentId === undefined || spec.name !== entry.name || !offered.has(entry.name)) continue;
+      if ((entry.writeCapabilities?.length ?? 0) > 0) continue;
+      out.push({ name: spec.name, description: spec.description, input_schema: spec.input_schema });
+    }
+    return sortByToolName(out);
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

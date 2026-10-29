@@ -617,6 +617,9 @@ export function buildOrchestratorForAgent(
           // the tools THIS Agent's orchestrator offers — the fast path runs
           // nothing else (a per-Agent tool set is respected)
           permittedTools: () => orchestrator.offeredToolNames(),
+          // …and their definitions: read tools of every plugin get a generic
+          // planner spec (@omadia/fast-path genericToolSpecs.ts)
+          toolDefinitions: () => orchestrator.offeredToolDefinitions(),
           logSession: (entry) => sessionLogger.log(entry),
           privacyGuarded: () => deps.privacyGuard() !== undefined,
           log: (m) => console.log(m),
