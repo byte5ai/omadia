@@ -21,6 +21,7 @@ import {
 import {
   ANSWER_CACHE_PATH,
   createAnswerCache,
+  onlySentinelsMasked,
   type AnswerCache,
 } from '../packages/harness-plugin-fast-path/src/answerCache.js';
 import {
@@ -539,5 +540,65 @@ describe('answer cache — canvas', () => {
     assert.deepEqual(domain.at(-1), ['partner_id.name', 'ilike', 'Schmidt']);
     const text = events.find((e) => e.type === 'text_delta') as { text?: string } | undefined;
     assert.equal(text?.text, '2 offene Posten von Schmidt.');
+  });
+});
+
+// ── live finding v429: the person detector masks the slot SENTINEL ─────────
+
+describe('answer cache — a span that only masked a slot sentinel is no personal data', () => {
+  /** C1 like live: "von <Capitalised>" reads as a name — also the sentinel
+   *  and a placeholder; `personIn` is a real name in the fixed text. */
+  const liveGuard = (personIn?: string): PrivacyGuardService =>
+    ({
+      openStoredTextScope: () => ({
+        maskStoredText: (text: string): Promise<PrivacyPromptMaskResult> => {
+          let masked = text.replace(/zzslot\d+zz/g, '{{person_1}}');
+          if (personIn !== undefined) masked = masked.replace(personIn, '{{person_2}}');
+          const hits = masked !== text || text === PERSON_CANARY;
+          return Promise.resolve({
+            outcome: 'masked',
+            maskedText: text === PERSON_CANARY ? '{{person_1}}' : masked,
+            spans: hits ? [{ type: 'person', detector: 'c1-test' }] : [],
+            degraded: false,
+          });
+        },
+        restoreStoredText: (t: string) => t,
+      }),
+    }) as unknown as PrivacyGuardService;
+
+  it('onlySentinelsMasked: fixed parts verbatim and in order', () => {
+    assert.equal(onlySentinelsMasked('Posten von zzslot1zz', 'Posten von {{person_1}}'), true);
+    assert.equal(onlySentinelsMasked('zzslot1zz und zzslot2zz heute', '{{a}} und {{b}} heute'), true);
+    // a fixed word swallowed with the sentinel → refused
+    assert.equal(onlySentinelsMasked('Posten von zzslot1zz', 'Posten {{person_1}}'), false);
+    // a name in the fixed text masked too → refused
+    assert.equal(onlySentinelsMasked('Frau Weber: Posten von zzslot1zz', 'Frau {{p_2}}: Posten von {{p_1}}'), false);
+    // no sentinel at all → every span is real
+    assert.equal(onlySentinelsMasked('Posten von Weber', 'Posten von {{p}}'), false);
+  });
+
+  it('the live question is stored although C1 flags its slot', async () => {
+    const cache = createAnswerCache({ log: () => {} });
+    const q = 'Zeige die offenen Posten von Europemobile GmbH';
+    const r = await cache.remember({
+      question: q,
+      plan: planned(q),
+      previous: false,
+      openScope: () => liveGuard().openStoredTextScope!({ job: 'test' }),
+    });
+    assert.ok(r.stored, r.reason ?? 'stored');
+    assert.ok(cache.lookup({ question: 'Zeige die offenen Posten von Carrera Toys GmbH', tools: ODOO, previous: false }).hit);
+  });
+
+  it('a real name OUTSIDE the slot still blocks the entry', async () => {
+    const cache = createAnswerCache({ log: () => {} });
+    const q = 'Frau Weber fragt: offene Posten von Europemobile GmbH';
+    const r = await cache.remember({
+      question: q,
+      plan: planned(q),
+      previous: false,
+      openScope: () => liveGuard('Weber').openStoredTextScope!({ job: 'test' }),
+    });
+    assert.equal(r.stored, false);
   });
 });

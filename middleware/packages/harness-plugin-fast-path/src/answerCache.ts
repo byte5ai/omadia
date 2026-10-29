@@ -143,12 +143,48 @@ function parseEntry(raw: unknown): AnswerCacheEntry | null {
   };
 }
 
-/** Why a mask result is not a clean "no personal data", else undefined. */
-function unclean(r: PrivacyPromptMaskResult): string | undefined {
+/** Why a mask result is not a clean "no personal data", else undefined.
+ *  Spans that replaced ONLY slot sentinels are no personal data: the person
+ *  detector reads "Posten von zzslot1zz" as a name (live), but a slot value
+ *  is never stored. Spans carry no offsets, so that is proven on the masked
+ *  text instead — every fixed part around the sentinels survives verbatim,
+ *  in order; anything else counts as personal data (failure-closed). */
+function unclean(r: PrivacyPromptMaskResult, text: string): string | undefined {
   if (r.outcome === 'blocked') return 'blocked';
   if (r.outcome !== 'masked') return r.outcome;
   if (r.degraded) return 'degraded';
-  return r.spans.length > 0 ? 'personal-data' : undefined;
+  if (r.spans.length === 0) return undefined;
+  // at most one span per sentinel, and the text really changed — a span
+  // that left the text as it was cannot be attributed to a sentinel
+  const sentinels = text.split(SENTINEL_SPLIT).length - 1;
+  const onlySlots = r.spans.length <= sentinels && r.maskedText !== text && onlySentinelsMasked(text, r.maskedText);
+  return onlySlots ? undefined : 'personal-data';
+}
+
+/** A stored text with its plan placeholders (`{{text_1}}`) as sentinels —
+ *  the same "slot, not personal data" proof as the question's slot spans. */
+function placeholdersAsSentinels(text: string): string {
+  let n = 0;
+  return text.replace(/\{\{[a-z]+_\d+\}\}/g, () => sentinel(++n));
+}
+
+const SENTINEL_SPLIT = /zzslot\d+zz/;
+
+/** True when `masked` keeps every non-sentinel part of `text` verbatim and
+ *  in order — i.e. the shield replaced nothing but the slot sentinels. */
+export function onlySentinelsMasked(text: string, masked: string): boolean {
+  const parts = text.split(SENTINEL_SPLIT);
+  if (parts.length < 2) return false; // no sentinel: every span is real
+  const first = parts[0] ?? '';
+  const last = parts[parts.length - 1] ?? '';
+  if (!masked.startsWith(first) || !masked.endsWith(last)) return false;
+  let pos = first.length;
+  for (const part of parts.slice(1, -1)) {
+    const at = masked.indexOf(part, pos);
+    if (at < 0) return false;
+    pos = at + part.length;
+  }
+  return masked.length - last.length >= pos;
 }
 
 const sentinel = (i: number): string => `zzslot${i}zz`;
@@ -182,7 +218,7 @@ async function privacyClean(
     }
     for (const text of texts) {
       if (text.trim().length === 0) continue;
-      const refused = unclean(await scope.maskStoredText(text));
+      const refused = unclean(await scope.maskStoredText(text), text);
       if (refused !== undefined) return refused;
     }
     return undefined;
@@ -316,7 +352,7 @@ export function createAnswerCache(opts: {
     const checked = questionWithoutSlots(req.question, shape);
     if (checked === undefined) return skip('round-trip');
     const refused = await privacyClean(
-      [checked, shape.plan.summary, ...Object.values(shape.plan.labels)],
+      [checked, shape.plan.summary, ...Object.values(shape.plan.labels)].map(placeholdersAsSentinels),
       req.openScope,
     );
     if (refused !== undefined) return skip(`privacy:${refused}`);
