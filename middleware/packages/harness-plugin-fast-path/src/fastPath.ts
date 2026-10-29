@@ -1,6 +1,7 @@
 import {
   isTruncatedOutput,
   mapRefreshRecords,
+  requiresCompleteResult,
   resolveRecipeInput,
   type RefreshSource,
 } from './refreshRecipes.js';
@@ -372,7 +373,8 @@ const UNAVAILABLE = /unknown or handler-less/;
  * fast path. Never throws. `rejectTruncated` refuses a result the tool flags
  * as capped (the fast path's prose states a count, which a prefix would get
  * wrong) and runs an odoo_query with the tool's maximum limit
- * (normalizeFastPathInput); a recipe with a `filter` refuses it either way (applyRefreshSource).
+ * (normalizeFastPathInput); a recipe with a `filter`, `sort` or `take` refuses it either way
+ * (requiresCompleteResult).
  */
 export async function fetchRecipeRows(
   invoke: ToolInvoke,
@@ -394,7 +396,7 @@ export async function fetchRecipeRows(
   if (opts.rejectTruncated === true && isTruncatedOutput(raw)) return { ok: false, reason: 'truncated' };
   const mapped = mapRefreshRecords(raw, recipe);
   if (mapped === null) {
-    return { ok: false, reason: recipe.filter && isTruncatedOutput(raw) ? 'truncated' : 'unmappable' };
+    return { ok: false, reason: requiresCompleteResult(recipe) && isTruncatedOutput(raw) ? 'truncated' : 'unmappable' };
   }
   return { ok: true, rows: mapped.rows, records: mapped.records, ms: Date.now() - t0 };
 }

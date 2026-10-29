@@ -33,6 +33,21 @@ export interface RefreshSource {
    *  for what the source cannot filter server-side (Odoo has no
    *  birthday-month operator). Applied before mapping, on every replay. */
   filter?: RefreshFilter[];
+  /** deterministic post-fetch order, applied after `filter`: clauses by
+   *  priority (the first is the primary key), ties keep the fetch order. */
+  sort?: RefreshSort[];
+  /** keep only the first `take` records after filter + sort (a top-N) */
+  take?: number;
+}
+
+/** One sort clause. `field` names a record attribute (dot-path allowed,
+ *  like `map`). The order mirrors the Privacy Shield's `v4_sort` /
+ *  `v4_top_n`, so a replay reproduces the agent's table: numbers and
+ *  booleans compare by value, everything else by its string form, a missing
+ *  value sorts last ascending (first descending). */
+export interface RefreshSort {
+  field: string;
+  dir: 'asc' | 'desc';
 }
 
 /** One post-filter clause. `field` names a record attribute (dot-path
@@ -45,6 +60,9 @@ export type RefreshFilter =
 
 const MAX_RECIPE_BYTES = 32_768;
 const MAX_FILTER_CLAUSES = 4;
+const MAX_SORT_CLAUSES = 3;
+/** a top-N beyond this is not a ranking, it is the data set */
+export const MAX_RECIPE_TAKE = 1000;
 const DATE_PARTS: ReadonlySet<string> = new Set(['year', 'month', 'day']);
 
 function parseFilterClause(value: unknown): RefreshFilter | null {
@@ -79,6 +97,32 @@ function parseFilter(value: unknown): RefreshFilter[] | undefined | null {
   return out;
 }
 
+/** Whitelist-parse a sort (one clause or a list). `undefined` = none
+ *  declared; null = declared but invalid (refuses the recipe, like a filter). */
+function parseSort(value: unknown): RefreshSort[] | undefined | null {
+  if (value === undefined) return undefined;
+  const list: unknown[] = Array.isArray(value) ? value : [value];
+  if (list.length === 0 || list.length > MAX_SORT_CLAUSES) return null;
+  const out: RefreshSort[] = [];
+  for (const clause of list) {
+    if (typeof clause !== 'object' || clause === null || Array.isArray(clause)) return null;
+    const o = clause as Record<string, unknown>;
+    const field = o['field'];
+    const dir = o['dir'];
+    if (typeof field !== 'string' || field.length === 0) return null;
+    if (dir !== 'asc' && dir !== 'desc') return null;
+    out.push({ field, dir });
+  }
+  return out;
+}
+
+/** `undefined` = none declared; null = not a positive integer ≤ the cap. */
+function parseTake(value: unknown): number | undefined | null {
+  if (value === undefined) return undefined;
+  const ok = typeof value === 'number' && Number.isInteger(value) && value > 0;
+  return ok && value <= MAX_RECIPE_TAKE ? value : null;
+}
+
 /** Whitelist-parse an agent-declared source recipe; null = not storable. */
 export function parseRefreshSource(value: unknown): RefreshSource | null {
   if (typeof value !== 'object' || value === null) return null;
@@ -92,6 +136,10 @@ export function parseRefreshSource(value: unknown): RefreshSource | null {
   if (Object.keys(map).length === 0) return null;
   const filter = parseFilter(o['filter']);
   if (filter === null) return null;
+  const sort = parseSort(o['sort']);
+  if (sort === null) return null;
+  const take = parseTake(o['take']);
+  if (take === null) return null;
   const source: RefreshSource = {
     tool: o['tool'],
     input: o['input'] ?? {},
@@ -101,6 +149,8 @@ export function parseRefreshSource(value: unknown): RefreshSource | null {
       : {}),
     ...(typeof o['rowKey'] === 'string' && o['rowKey'].length > 0 ? { rowKey: o['rowKey'] } : {}),
     ...(filter ? { filter } : {}),
+    ...(sort ? { sort } : {}),
+    ...(take !== undefined ? { take } : {}),
   };
   try {
     if (JSON.stringify(source).length > MAX_RECIPE_BYTES) return null;
@@ -218,9 +268,42 @@ function matchesClause(rec: Record<string, unknown>, clause: RefreshFilter): boo
   return v === clause.eq;
 }
 
+/** Three-way compare of two attribute values — the Privacy Shield verbs'
+ *  `compareUnknown` (v4/verbs), so a replay orders exactly like the dataset
+ *  the agent published. */
+function compareValues(a: unknown, b: unknown): number {
+  if (typeof a === 'number' && typeof b === 'number') return a - b;
+  if (typeof a === 'boolean' && typeof b === 'boolean') return a === b ? 0 : a ? 1 : -1;
+  if (a === null || a === undefined) return b === null || b === undefined ? 0 : 1;
+  if (b === null || b === undefined) return -1;
+  const sa = String(a);
+  const sb = String(b);
+  return sa < sb ? -1 : sa > sb ? 1 : 0;
+}
+
+function compareRecords(
+  a: Record<string, unknown>,
+  b: Record<string, unknown>,
+  sort: readonly RefreshSort[],
+): number {
+  for (const clause of sort) {
+    const c = compareValues(readAttr(a, clause.field), readAttr(b, clause.field));
+    if (c !== 0) return clause.dir === 'desc' ? -c : c;
+  }
+  return 0;
+}
+
+/** True when the recipe changes WHICH records (or in what order) it shows —
+ *  a filter, sort or top-N over a capped prefix is a wrong subset / ranking,
+ *  so such a recipe refuses a truncated tool result. */
+export function requiresCompleteResult(source: RefreshSource): boolean {
+  return source.filter !== undefined || source.sort !== undefined || source.take !== undefined;
+}
+
 /** `true` when the tool flags its result as a capped prefix of the real set
- *  (odoo_query: `truncated: true`). Filtering a prefix yields a wrong subset
- *  and a wrong count, so filtered recipes and the fast path refuse it. */
+ *  (odoo_query: `truncated: true`). Filtering, sorting or cutting a prefix
+ *  yields a wrong subset / ranking and a wrong count, so such recipes
+ *  (requiresCompleteResult) and the fast path refuse it. */
 export function isTruncatedOutput(raw: string): boolean {
   try {
     const parsed: unknown = JSON.parse(raw);
@@ -237,8 +320,8 @@ export function isTruncatedOutput(raw: string): boolean {
 /**
  * Deterministically map a tool's raw string output onto publishable rows.
  * Returns null when the output cannot be mapped (non-JSON, no record array,
- * no mapped field present, a truncated result under a filter) — the caller
- * then falls back to the agent path. An empty record array — or a filter
+ * no mapped field present, a truncated result under a filter, sort or take)
+ * — the caller then falls back to the agent path. An empty record array — or a filter
  * matching nothing — maps to [] (a genuinely empty data set).
  */
 export function applyRefreshSource(
@@ -249,8 +332,9 @@ export function applyRefreshSource(
 }
 
 /** {@link applyRefreshSource} plus the RAW records behind the rows
- *  (`records[i]` produced `rows[i]`, after the filter) — for checks on
- *  attributes no column shows, e.g. the currency behind a summed amount. */
+ *  (`records[i]` produced `rows[i]`, after filter, sort and take) — for
+ *  checks on attributes no column shows, e.g. the currency behind a summed
+ *  amount. */
 export function mapRefreshRecords(
   raw: string,
   source: RefreshSource,
@@ -263,9 +347,8 @@ export function mapRefreshRecords(
   }
   const records = findRecords(parsed, source.itemsPath);
   if (!records) return null;
-  if (source.filter && isTruncatedOutput(raw)) return null;
-  const rows: Array<Record<string, unknown>> = [];
-  const kept: Array<Record<string, unknown>> = [];
+  if (requiresCompleteResult(source) && isTruncatedOutput(raw)) return null;
+  const pairs: Array<{ row: Record<string, unknown>; record: Record<string, unknown> }> = [];
   for (const rec of records) {
     if (typeof rec !== 'object' || rec === null) return null;
     const r = rec as Record<string, unknown>;
@@ -289,8 +372,11 @@ export function mapRefreshRecords(
       const key = r[source.rowKey];
       if (key !== undefined && key !== null) row['rowKey'] = String(key);
     }
-    rows.push(row);
-    kept.push(r);
+    pairs.push({ row, record: r });
   }
-  return { rows, records: kept };
+  const sort = source.sort;
+  // Array#sort is stable: equal keys keep the fetch order, as in the verbs
+  const ordered = sort ? [...pairs].sort((a, b) => compareRecords(a.record, b.record, sort)) : pairs;
+  const taken = source.take !== undefined ? ordered.slice(0, source.take) : ordered;
+  return { rows: taken.map((p) => p.row), records: taken.map((p) => p.record) };
 }
