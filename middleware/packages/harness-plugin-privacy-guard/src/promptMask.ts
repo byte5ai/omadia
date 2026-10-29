@@ -28,6 +28,12 @@ import {
 } from './v4/pseudonym.js';
 import type { PseudonymMap } from './v4/types.js';
 import {
+  CustomPatternWorker,
+  PatternBudgetExceeded,
+  type PatternResult,
+  type WorkerPattern,
+} from './customPatternWorker.js';
+import {
   insideAny,
   isReservedSurrogateShape,
   protectedRanges,
@@ -268,26 +274,22 @@ export function createBaselineDetector(): PromptPiiDetector {
  *  construction (i.e. config-read time), never per turn. */
 const CUSTOM_PATTERN_PROBE_BUDGET_MS = 50;
 
-/** Adversarial probe corpus for the timeout guard. Ordered by ESCALATING
- *  pathological size: a catastrophic pattern like `(a+)+$` or `(\d+)+$`
- *  explodes on a homogeneous run followed by a MISMATCH, and its cost
- *  doubles per added character — so the small probes catch it within the
- *  budget before the larger ones could hang the thread for real. The budget
- *  check runs after EVERY probe; a linear pattern breezes through all.
+/** Adversarial probe corpus for the timeout guard. A catastrophic pattern
+ *  like `(a+)+$` or `(\d+)+$` explodes on a homogeneous run followed by a
+ *  MISMATCH, and its cost doubles per added character.
  *
  *  Character coverage matters as much as shape (review H1): a letter-only
- *  corpus waves `(\d+)+$` straight through — so the escalation runs over
- *  letters AND digits, plus mixed-alphanumeric, unicode-letter, and
+ *  corpus waves `(\d+)+$` straight through — so the corpus runs over letters
+ *  AND digits, plus mixed-alphanumeric, unicode-letter, and
  *  punctuation-heavy long probes. Construction-time vetting still cannot be
- *  sound against every input-dependent blowup — that is what the RUNTIME
- *  backstop in `detect()` below is for. */
-const PROBE_ESCALATION_SIZES = [18, 22, 26];
+ *  sound against every input-dependent blowup — that is what the static
+ *  nested-quantifier check and the RUNTIME backstop in `detect()` are for. */
 const PROBE_TEXTS = [
-  ...PROBE_ESCALATION_SIZES.map((n) => `${'a'.repeat(n)}b`),
-  ...PROBE_ESCALATION_SIZES.map((n) => `${'1'.repeat(n)}x`),
-  ...PROBE_ESCALATION_SIZES.map((n) => `${'a1'.repeat(Math.ceil(n / 2))}!`),
-  'a'.repeat(2_000),
-  '1'.repeat(2_000),
+  `${'a'.repeat(26)}b`,
+  `${'1'.repeat(26)}x`,
+  `${'a1'.repeat(13)}!`,
+  `${'a'.repeat(2_000)}`,
+  `${'1'.repeat(2_000)}`,
   `${'ab'.repeat(1_000)}!`,
   `${'12'.repeat(1_000)}x`,
   `${'ä'.repeat(500)}!`,
@@ -295,12 +297,34 @@ const PROBE_TEXTS = [
   `${'1.'.repeat(1_000)}x`,
 ];
 
+/** #1553 — every probe runs in ESCALATING prefixes (its last character kept
+ *  as the terminator), and the budget is checked after each one. A long
+ *  probe tried in one go could itself freeze the event loop for minutes
+ *  (`a*a*a*b` on 2 000 × `a`); fine steps on short prefixes catch an
+ *  exponential blowup and ×1.5 steps a polynomial one before the next step
+ *  can cost more than a small multiple of the budget. */
+const PROBE_PREFIX_LENGTHS = [
+  8, 12, 16, 18, 20, 22, 24, 26, 28, 32, 48, 64, 96, 128, 192, 256, 384, 512, 768, 1_024, 1_536,
+];
+
+function probeSteps(probe: string): string[] {
+  const chars = [...probe];
+  const terminator = chars[chars.length - 1] ?? '';
+  const prefixes = PROBE_PREFIX_LENGTHS.filter((n) => n < chars.length - 1).map(
+    (n) => chars.slice(0, n).join('') + terminator,
+  );
+  return [...prefixes, probe];
+}
+
 /** Runtime backstop budget for ONE custom pattern over ONE text. The
- *  construction probe bounds what we can foresee; this bounds what we
+ *  construction checks bound what we can foresee; this bounds what we
  *  cannot: a pattern whose blowup is keyed on input the probes don't
- *  contain. Exceeding it disables the pattern process-wide (loudly) and
- *  throws — the service's tier-2 catch turns that into a BLOCKED turn,
- *  never an unmasked pass-through. */
+ *  contain. The patterns run in a worker thread (`customPatternWorker.ts`,
+ *  #1553); the main thread aborts the match once the call's budget (this ×
+ *  the number of operator patterns) is spent, so the event loop never waits
+ *  for it. An overrun throws `CustomPatternRuntimeError` — the service's
+ *  tier-2 catch turns that into a BLOCKED turn, never an unmasked
+ *  pass-through. The pattern stays active (see `detect()`). */
 const RUNTIME_PATTERN_BUDGET_MS = 100;
 
 export interface CustomTermsConfig {
@@ -312,14 +336,19 @@ export interface CustomTermsConfig {
   readonly runtimeBudgetMs?: number;
 }
 
-/** Thrown when a custom pattern blew its RUNTIME budget mid-turn. The
- *  service's tier-2 catch converts this into a blocked turn (fail-closed);
- *  the offending pattern is disabled process-wide so subsequent turns run
- *  without it (loudly logged at disable time). */
+/** Thrown when a custom pattern blew its RUNTIME budget mid-turn (or the
+ *  worker that runs the patterns failed). The service's tier-2 catch converts
+ *  this into a blocked turn (fail-closed). The pattern is NOT disabled: the
+ *  next turn runs it again (in a fresh worker), so the operator has to fix or
+ *  remove it — the log line says which one. */
 export class CustomPatternRuntimeError extends Error {
-  constructor(public readonly source: string, elapsedMs: number) {
+  constructor(
+    public readonly source: string,
+    elapsedMs: number,
+    detail = 'exceeded its runtime budget',
+  ) {
     super(
-      `custom pattern ${JSON.stringify(source)} exceeded its runtime budget (${String(Math.round(elapsedMs))}ms) and was disabled`,
+      `custom pattern ${JSON.stringify(source)} ${detail} (${String(Math.round(elapsedMs))}ms); the turn is blocked`,
     );
     this.name = 'CustomPatternRuntimeError';
   }
@@ -334,10 +363,94 @@ function escapeRegExp(literal: string): string {
   return literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-/** Compile + vet one operator regex: syntax first, then a wall-clock probe
- *  against the adversarial corpus. Rejected patterns are reported, never
- *  silently dropped — an operator who typed a protection deserves to know it
- *  is not active. */
+/** Length of the quantifier at `source[at]` and whether it is unbounded
+ *  (`*`, `+`, `{n,}`); `undefined` when there is none. A `{` that is no
+ *  quantifier (`\p{L}` aside, `{x}`) is a literal. */
+function quantifierAt(source: string, at: number): { length: number; unbounded: boolean } | undefined {
+  const c = source[at];
+  let length: number;
+  let unbounded: boolean;
+  if (c === '*' || c === '+') {
+    length = 1;
+    unbounded = true;
+  } else if (c === '?') {
+    length = 1;
+    unbounded = false;
+  } else if (c === '{') {
+    const m = /^\{(\d+)(,(\d*))?\}/.exec(source.slice(at));
+    if (m === null) return undefined;
+    length = m[0].length;
+    unbounded = m[2] !== undefined && m[3] === '';
+  } else {
+    return undefined;
+  }
+  // A lazy/possessive marker belongs to the quantifier.
+  if (source[at + length] === '?') length++;
+  return { length, unbounded };
+}
+
+/** Length of the group prefix after `(`: `?:`, `?=`, `?!`, `?<=`, `?<!`,
+ *  `?<name>`; 0 for a plain capture group. */
+function groupPrefixLength(source: string, at: number): number {
+  if (source[at] !== '?') return 0;
+  const m = /^\?(?:[:=!]|<[=!]|<[^>]*>)/.exec(source.slice(at));
+  return m === null ? 1 : m[0].length;
+}
+
+/**
+ * #1553 — the classic catastrophic shape, found statically: a group repeated
+ * without bound (`(...)+`, `(...)*`, `(...){n,}`) whose body itself contains
+ * an unbounded quantifier — `(x+x+)+y`, `(a+)+$`, `(\d+)*`, `((ab)*c)+`.
+ * The probe corpus only catches such a pattern when it happens to hold the
+ * character run it explodes on; this check needs no input. Escapes and
+ * character classes are skipped as atoms (`[+*]+` is fine). Errs towards
+ * flagging (`(\w+\s)+` is flagged although its separator keeps it linear),
+ * which is why a hit is only a warning at save time, never a rejection.
+ */
+export function hasNestedUnboundedQuantifier(source: string): boolean {
+  // One frame per open group: does its body hold an unbounded quantifier?
+  const frames: boolean[] = [false];
+  let i = 0;
+  while (i < source.length) {
+    const c = source[i]!;
+    let atomHasUnbounded = false;
+    if (c === '\\') {
+      i += 2;
+    } else if (c === '[') {
+      i++;
+      if (source[i] === '^') i++;
+      while (i < source.length && source[i] !== ']') i += source[i] === '\\' ? 2 : 1;
+      i++;
+    } else if (c === '(') {
+      frames.push(false);
+      i += 1 + groupPrefixLength(source, i + 1);
+      continue;
+    } else if (c === ')') {
+      atomHasUnbounded = frames.length > 1 ? frames.pop()! : false;
+      i++;
+    } else {
+      i++;
+      const q = quantifierAt(source, i - 1);
+      // A bare quantifier character (`*` with no atom) is a syntax matter.
+      if (q !== undefined) {
+        i += q.length - 1;
+        continue;
+      }
+    }
+    const q = quantifierAt(source, i);
+    if (q !== undefined) {
+      if (q.unbounded && atomHasUnbounded) return true;
+      i += q.length;
+    }
+    if (atomHasUnbounded || q?.unbounded === true) frames[frames.length - 1] = true;
+  }
+  return false;
+}
+
+/** Compile + vet one operator regex: syntax first, then the static
+ *  nested-quantifier check, then a wall-clock probe against the adversarial
+ *  corpus. Rejected patterns are reported, never silently dropped — an
+ *  operator who typed a protection deserves to know it is not active. */
 function vetPattern(source: string): { re: RegExp } | { rejected: RejectedCustomPattern } {
   let re: RegExp;
   try {
@@ -350,93 +463,134 @@ function vetPattern(source: string): { re: RegExp } | { rejected: RejectedCustom
       return { rejected: { source, reason: 'syntax' } };
     }
   }
+  // A warning, not a rejection: the check also flags linear patterns like
+  // `(\w+\s)+`, and a rejected pattern is an INACTIVE protection — fail-open
+  // for exactly the values the operator meant to mask. What bounds a truly
+  // catastrophic pattern is the worker's runtime budget (`customPatternWorker`):
+  // the match is stopped, the turn blocked, the event loop never waits.
+  if (hasNestedUnboundedQuantifier(source)) {
+    console.warn(
+      `[privacy-guard v4] customPatternNestedQuantifier pattern=${JSON.stringify(source)} — a repeated group with an unbounded quantifier inside can backtrack catastrophically; it stays active, and a turn whose text makes it exceed its runtime budget is blocked. Rewrite it without the outer repetition if you can`,
+    );
+  }
   const startedAt = Date.now();
   for (const probe of PROBE_TEXTS) {
-    re.lastIndex = 0;
-    re.test(probe);
-    if (Date.now() - startedAt > CUSTOM_PATTERN_PROBE_BUDGET_MS) {
-      return { rejected: { source, reason: 'too_slow' } };
+    for (const step of probeSteps(probe)) {
+      re.lastIndex = 0;
+      re.test(step);
+      if (Date.now() - startedAt > CUSTOM_PATTERN_PROBE_BUDGET_MS) {
+        return { rejected: { source, reason: 'too_slow' } };
+      }
     }
   }
   re.lastIndex = 0;
   return { re };
 }
 
+function customSpan(start: number, end: number): PromptPiiSpan {
+  return { start, end, type: 'custom', confidence: 1 };
+}
+
 /**
  * #760 — operator-defined deny-list detector. Literal `terms` (project code
  * names, customer names, internal identifiers) are matched case-insensitively
  * on word boundaries; `patterns` are operator regexes vetted at construction
- * (syntax + a backtracking time budget). Every span reports type 'custom'
- * with confidence 1 and flows through the same surrogate + fail-closed
- * machinery as the built-in C0 patterns — `findIdentityLeaks` covers custom
- * values automatically.
+ * (syntax, nested quantifiers, a backtracking time budget) and run in a
+ * worker thread under a runtime budget (#1553). Every span reports type
+ * 'custom' with confidence 1 and flows through the same surrogate +
+ * fail-closed machinery as the built-in C0 patterns — `findIdentityLeaks`
+ * covers custom values automatically.
  */
 export function createCustomTermsDetector(config: CustomTermsConfig): {
   detector: PromptPiiDetector | undefined;
   rejected: readonly RejectedCustomPattern[];
 } {
   const rejected: RejectedCustomPattern[] = [];
-  const compiled: Array<{ re: RegExp; source: string; operatorPattern: boolean }> = [];
   const runtimeBudgetMs = config.runtimeBudgetMs ?? RUNTIME_PATTERN_BUDGET_MS;
 
   const terms = config.terms.map((t) => t.trim()).filter((t) => t.length > 0);
-  if (terms.length > 0) {
-    const alternation = terms
-      .sort((a, b) => b.length - a.length) // longest-first alternation
-      .map(escapeRegExp)
-      .join('|');
-    // Unicode-aware boundaries: plain \b misclassifies umlauts under 'u'.
-    // Escaped-literal alternation is linear — exempt from the runtime budget
-    // (throwing here could only ever be load, never pathology).
-    compiled.push({
-      re: new RegExp(`(?<![\\p{L}\\p{N}_])(?:${alternation})(?![\\p{L}\\p{N}_])`, 'giu'),
-      source: '(custom terms)',
-      operatorPattern: false,
-    });
-  }
+  // Unicode-aware boundaries: plain \b misclassifies umlauts under 'u'.
+  // Escaped-literal alternation is linear — it runs on the main thread,
+  // exempt from the runtime budget (throwing here could only ever be load,
+  // never pathology).
+  const termsRe =
+    terms.length === 0
+      ? undefined
+      : new RegExp(
+          `(?<![\\p{L}\\p{N}_])(?:${[...terms]
+            .sort((a, b) => b.length - a.length) // longest-first alternation
+            .map(escapeRegExp)
+            .join('|')})(?![\\p{L}\\p{N}_])`,
+          'giu',
+        );
+  const patterns: WorkerPattern[] = [];
   for (const source of config.patterns.map((p) => p.trim()).filter((p) => p.length > 0)) {
     const vetted = vetPattern(source);
     if ('rejected' in vetted) rejected.push(vetted.rejected);
-    else compiled.push({ re: vetted.re, source, operatorPattern: true });
+    else patterns.push({ source: vetted.re.source, flags: vetted.re.flags });
   }
 
-  if (compiled.length === 0) return { detector: undefined, rejected };
+  if (termsRe === undefined && patterns.length === 0) return { detector: undefined, rejected };
+  const worker = patterns.length > 0 ? new CustomPatternWorker() : undefined;
   return {
     rejected,
     detector: {
       id: 'custom-terms',
       async detect(text: string): Promise<readonly PromptPiiSpan[]> {
         const spans: PromptPiiSpan[] = [];
-        for (const { re, source, operatorPattern } of compiled) {
-          const startedAt = Date.now();
-          const pattern = new RegExp(re.source, re.flags); // fresh lastIndex
-          for (const match of text.matchAll(pattern)) {
-            if (match.index === undefined || match[0].length === 0) continue;
-            spans.push({
-              start: match.index,
-              end: match.index + match[0].length,
-              type: 'custom',
-              confidence: 1,
-            });
+        if (termsRe !== undefined) {
+          for (const match of text.matchAll(new RegExp(termsRe.source, termsRe.flags))) {
+            if (match[0].length > 0) spans.push(customSpan(match.index, match.index + match[0].length));
           }
-          // Runtime backstop (review H1): the construction probes cannot
-          // foresee input-dependent blowup. Over budget ⇒ throw — the
-          // service's tier-2 catch BLOCKS the turn (fail-closed). No
-          // auto-disable: skipping the pattern on later turns would be
-          // fail-OPEN for exactly the values it was meant to protect. The
-          // operator sees the greppable log and removes/fixes the pattern.
-          const elapsedMs = Date.now() - startedAt;
-          if (operatorPattern && elapsedMs > runtimeBudgetMs) {
-            console.error(
-              `[privacy-guard v4] customPatternRuntimeExceeded pattern=${JSON.stringify(source)} elapsedMs=${String(Math.round(elapsedMs))} — turn will be blocked; remove or fix this pattern`,
-            );
-            throw new CustomPatternRuntimeError(source, elapsedMs);
+        }
+        if (worker === undefined) return spans;
+        const results = await runOperatorPatterns(worker, patterns, text, runtimeBudgetMs);
+        for (const [index, result] of results.entries()) {
+          // Runtime backstop (review H1) per pattern, on the worker's own
+          // clock. Over budget ⇒ throw — the service's tier-2 catch BLOCKS
+          // the turn (fail-closed). No auto-disable: skipping the pattern on
+          // later turns would be fail-OPEN for exactly the values it was
+          // meant to protect. The operator sees the greppable log and
+          // removes/fixes the pattern.
+          if (result.elapsedMs > runtimeBudgetMs) {
+            throw runtimeExceeded(patterns[index]!.source, result.elapsedMs);
           }
+          for (const [start, end] of result.spans) spans.push(customSpan(start, end));
         }
         return spans;
       },
     },
   };
+}
+
+function runtimeExceeded(source: string, elapsedMs: number): CustomPatternRuntimeError {
+  console.error(
+    `[privacy-guard v4] customPatternRuntimeExceeded pattern=${JSON.stringify(source)} elapsedMs=${String(Math.round(elapsedMs))} — turn will be blocked; remove or fix this pattern`,
+  );
+  return new CustomPatternRuntimeError(source, elapsedMs);
+}
+
+/** The operator patterns over `text` in the worker, with the call's budget
+ *  (per-pattern budget × pattern count) enforced from the main thread. Every
+ *  failure is a `CustomPatternRuntimeError`, so the caller fails closed. */
+async function runOperatorPatterns(
+  worker: CustomPatternWorker,
+  patterns: readonly WorkerPattern[],
+  text: string,
+  runtimeBudgetMs: number,
+): Promise<readonly PatternResult[]> {
+  try {
+    return await worker.match(patterns, text, runtimeBudgetMs * patterns.length);
+  } catch (err) {
+    if (err instanceof PatternBudgetExceeded) {
+      throw runtimeExceeded(err.culprit ?? '(custom patterns)', err.elapsedMs);
+    }
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(
+      `[privacy-guard v4] customPatternWorkerFailed error=${JSON.stringify(message)} — turn will be blocked`,
+    );
+    throw new CustomPatternRuntimeError('(custom patterns)', 0, 'could not run');
+  }
 }
 
 /**

@@ -3,10 +3,24 @@ import { randomUUID } from 'node:crypto';
 import { type PluginContext } from '@omadia/plugin-api';
 import { type ChatStreamEvent, type ChatTurnInput, type RevisionId } from '@omadia/channel-sdk';
 
+import {
+  CANVAS_CHOICE_TOOL,
+  CANVAS_LUMEN_TOOL,
+  CANVAS_PUBLISH_TOOL,
+  V4_RENDER_TOOL,
+} from './canvasPublishHandlers.js';
 import { CANVAS_PROTOCOL_VERSION, OPS_CATALOG_VERSION } from './canvasProtocol.js';
 import { type CanvasRuntime } from './canvasRuntime.js';
 import { deriveDataRequirements } from './dataRequirements.js';
 import { synthesizeSurfaceEvents } from './surfaceSynthesis.js';
+
+/** This plugin's own canvas tools — always runnable on its own canvas. */
+const OWN_CANVAS_TOOLS: ReadonlySet<string> = new Set([
+  CANVAS_PUBLISH_TOOL,
+  CANVAS_CHOICE_TOOL,
+  CANVAS_LUMEN_TOOL,
+  V4_RENDER_TOOL,
+]);
 
 /** The kernel's invoke-one-agent-tool-by-id service (`agentToolInvoker`). */
 interface AgentToolInvoker {
@@ -34,13 +48,23 @@ export function deterministicActionStream(
   rt: CanvasRuntime,
   input: ChatTurnInput,
   canvasSessionId: string,
+  /** #1598 — the tools the canvas's orchestrator offers (`ChatAgent
+   *  .offeredToolNames`); a NATIVE tool runs here only when it is in it (or is
+   *  this plugin's own canvas tool). Agent-plugin tools are checked by the
+   *  kernel's `agentToolInvoker`. */
+  permitted?: ReadonlySet<string>,
 ): AsyncGenerator<ChatStreamEvent> | undefined {
   const { ctx, toolsAccessor, deterministicActionTools } = rt;
   const directActionTool =
     input.action && typeof (input.action as { type?: unknown }).type === 'string'
       ? ((input.action as { type: string }).type)
       : undefined;
-  const directInvoke = toolsAccessor?.invoke?.bind(toolsAccessor);
+  // #1598 — `ctx.tools.invoke` knows no orchestrator: only a tool the canvas's
+  // orchestrator is offered (plugin assigned + ready), or our own canvas tool.
+  const nativeAllowed =
+    directActionTool !== undefined &&
+    (OWN_CANVAS_TOOLS.has(directActionTool) || permitted?.has(directActionTool) === true);
+  const directInvoke = nativeAllowed ? toolsAccessor?.invoke?.bind(toolsAccessor) : undefined;
   const agentToolInvoker = ctx.services?.get<AgentToolInvoker>('agentToolInvoker');
   const directInvokeStream = agentToolInvoker?.invokeStream?.bind(agentToolInvoker);
   // Streaming deterministic action: an AGENT-plugin tool may emit several

@@ -6184,7 +6184,7 @@
       "triggerTitle": "Trigger the routine manually now — fires an agent run and delivers the result to the channel.",
       "triggerNotice": "Started — the result will appear in the channel in ~30 seconds.",
       "triggerNoticeWeb": "Started — the result is added to the chat this routine was created in and shows up there the next time you open or return to that chat.",
-      "triggerChatUnavailable": "No LLM API key configured — add it in Admin → Settings, then trigger again.",
+      "triggerChatUnavailable": "No orchestrator can run this routine: its orchestrator was deleted, no standard orchestrator is set, or no LLM API key is configured (Admin → Settings).",
       "triggerNotActive": "This routine is paused — resume it first, then trigger it. If it was paused because its chat is gone: when that chat still exists in your browser, open it first; otherwise delete the routine and create it again from a chat.",
       "deleteConfirm": "Delete routine ''{name}''? This cannot be undone."
     },

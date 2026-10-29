@@ -122,7 +122,13 @@ export function createFailClosedPrivacyGate(base: PrivacyTurnHandle): PublicMcpP
     ownResult: boolean,
   ): ReturnType<PrivacyTurnHandle['internToolResultV4']> => {
     try {
-      const result = await base.internToolResultV4(input);
+      // #1561 — the call's own digest goes to the API caller, who has no
+      // verb tools and no `v4_render_answer`: ask for the text written for
+      // that reader. A nested result still goes to the sub-agent's model,
+      // which does have them.
+      const result = await base.internToolResultV4(
+        ownResult ? { ...input, audience: 'public-api' } : input,
+      );
       if (ownResult) didMask = true;
       return result;
     } catch (err) {

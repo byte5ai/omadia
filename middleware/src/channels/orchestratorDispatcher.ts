@@ -120,12 +120,14 @@ export interface OrchestratorDispatcherDeps {
   /**
    * US7 per-binding routing: resolve the *scoped* ChatAgent bound to a turn's
    * `(channelType, channelKey)` via the multi-orchestrator `channelResolver`.
-   * Returns `undefined` when no binding (and no platform fallback Agent)
-   * matches, OR when the resolver is not wired (Postgres-less deployment) — the
+   * Returns `null` when the resolver REJECTS the key (no binding and no
+   * platform fallback Agent, or a provisioned bot whose Agent is not
+   * servable) — #1598: the dispatcher refuses the turn rather than falling
+   * back to the shared bundle. Returns `undefined` when the resolver is not wired (Postgres-less deployment) — the
    * dispatcher then falls back to the static `dispatch_service`. Optional so the
    * legacy single-Agent boot and unit tests work without it.
    */
-  resolveBinding?(channelType: string, channelKey: string): ChatAgent | undefined;
+  resolveBinding?(channelType: string, channelKey: string): ChatAgent | null | undefined;
   /**
    * Map a `channelId` (plugin catalog id) to its `channel_bindings.channel_type`
    * selector (`de.byte5.channel.teams` → `teams`). Optional — paired with
@@ -173,7 +175,15 @@ export function createOrchestratorDispatcher(
       ) {
         const channelType =
           input.channelType ?? deps.channelTypeFor(input.channelId);
-        agent = deps.resolveBinding(channelType, input.channelKey);
+        const bound = deps.resolveBinding(channelType, input.channelKey);
+        if (bound === null) {
+          console.warn(
+            `[channels] no orchestrator serves ${channelType}:${input.channelKey} — turn refused (scope=${input.scope})`,
+          );
+          yield { type: 'error', message: 'no orchestrator is assigned to this conversation' };
+          return;
+        }
+        agent = bound;
       }
 
       // (2) Static dispatch_service fallback (legacy + canvas).

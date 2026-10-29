@@ -212,6 +212,14 @@ export interface MaskedFieldDigest {
   readonly classification: 'sensitive-masked';
   readonly placeholder: string;
   readonly distinctCount: number;
+  /**
+   * #1542 — `nested` when the field holds structures (objects, record
+   * arrays) rather than scalars, e.g. a Confluence page `body`. A structural
+   * hint, never a value: the server renders such a field best-effort as text
+   * and may have to show it as not renderable, so the model must not promise
+   * its verbatim content.
+   */
+  readonly shape?: 'nested';
 }
 
 export type FieldDigest = SafeFieldDigest | MaskedFieldDigest;

@@ -108,6 +108,7 @@ import {
   type PluginVerdictLookup,
 } from './services/pluginVerdict.js';
 import { ScheduleWorker } from './scheduler/scheduleWorker.js';
+import { resolveScopedBundle } from '@omadia/orchestrator';
 import type {
   ConfigStore as MultiOrchestratorConfigStore,
   OrchestratorRegistry as MultiOrchestratorRegistry,
@@ -116,6 +117,7 @@ import type {
 import {
   RUN_TRACE_STATS_SERVICE,
   attachNewPluginsToFallbackAgent,
+  setDatasetVaultKeyFallback,
 } from '@omadia/orchestrator';
 import { createMemoryRouter } from './routes/memory.js';
 import { createDatasetsRouter } from './routes/datasets.js';
@@ -992,6 +994,11 @@ async function main(): Promise<void> {
     );
   }
 
+  // #1546 — without VAULT_KEY the dataset import found no secret and stored
+  // irreversible surrogates (every e-mail of a column became one address).
+  // It now derives its cell and link keys from the dev key the vault runs on.
+  if (masterKey.source !== 'env') setDatasetVaultKeyFallback(masterKey.key);
+
   const secretVault = new FileSecretVault(VAULT_PATH, masterKey.key);
   await secretVault.load();
 
@@ -1449,13 +1456,35 @@ async function main(): Promise<void> {
   // for tools whose raw UploadedToolkit entry carries `runStream()`. This
   // deliberately does NOT add these tools to the main orchestrator's offered-
   // tool list, so agent isolation is preserved.
+  //
+  // #1598 — the canvas runs on the standard orchestrator (chatAgent@1), so a
+  // tool reached here must belong to a plugin assigned to it. Without a
+  // registry (Postgres-less boot) there is no assignment to check.
+  const standardOrchestratorGrants = (
+    toolId: string,
+    kind: 'invoke' | 'stream',
+  ): boolean => {
+    const owner = dynamicAgentRuntime.ownerOfAgentTool(toolId, kind);
+    if (owner === undefined) return true; // nothing to run — invoke answers undefined
+    const registry =
+      serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry');
+    if (!registry) return true;
+    const slug = registry.slugForFallback();
+    const standard = slug ? registry.get(slug)?.built.orchestrator : undefined;
+    return standard?.isToolGranted(toolId, owner) === true;
+  };
   serviceRegistry.provide('agentToolInvoker', {
     invoke: (toolId: string, input: unknown): Promise<string | undefined> =>
-      dynamicAgentRuntime.invokeAgentTool(toolId, input),
+      standardOrchestratorGrants(toolId, 'invoke')
+        ? dynamicAgentRuntime.invokeAgentTool(toolId, input)
+        : Promise.resolve(undefined),
     hasStream: (toolId: string): boolean =>
+      standardOrchestratorGrants(toolId, 'stream') &&
       dynamicAgentRuntime.hasStreamingTool(toolId),
     invokeStream: (toolId: string, input: unknown): AsyncGenerator<string> =>
-      dynamicAgentRuntime.invokeAgentToolStream(toolId, input),
+      standardOrchestratorGrants(toolId, 'stream')
+        ? dynamicAgentRuntime.invokeAgentToolStream(toolId, input)
+        : (async function* () {})(),
   });
 
   // Runtime for `kind: tool` / `kind: extension` plugins. These don't expose
@@ -2832,6 +2861,23 @@ async function main(): Promise<void> {
   // LLM access page) is picked up without a restart.
   const getChatAgentBundle = (): ChatAgentBundle | undefined =>
     serviceRegistry.get<ChatAgentBundle>('chatAgent');
+  // #1598 — the chat bundle a request without its own orchestrator gets.
+  //
+  // The legacy `chatAgent@1` bundle is built with no per-Agent plugin grants,
+  // so it offers and runs every plugin's tools. On a registry-less boot it IS
+  // the deployment's only orchestrator and stays the answer. Once the
+  // orchestrator registry exists, the answer is the standard (fallback)
+  // orchestrator, which has grants — and `undefined` when none is set, never
+  // the ungated bundle. `slug` picks a specific orchestrator (a routine's
+  // creator); `'default'` and `null` mean the standard one.
+  const getScopedChatAgentBundle = (
+    slug: string | null = null,
+  ): ChatAgentBundle | undefined =>
+    resolveScopedBundle(
+      serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry'),
+      getChatAgentBundle(),
+      slug,
+    );
   const getChatSessionStore = (): ChatSessionStore | undefined =>
     getChatAgentBundle()?.chatSessionStore;
   // sessionLogger is exposed on the bundle for future channel/route
@@ -3297,7 +3343,10 @@ async function main(): Promise<void> {
     routinesHandle = await initRoutines({
       pool: graphPool,
       scheduler: jobScheduler,
-      getOrchestrator: () => getChatAgentBundle()?.raw,
+      // #1598 — the routine's own orchestrator, with its plugin grants.
+      getOrchestrator: (agentSlug) => getScopedChatAgentBundle(agentSlug)?.raw,
+      requiresAgentSlug: () =>
+        serviceRegistry.get('orchestratorRegistry') !== undefined,
       registerNativeTool: (name, handler, options) =>
         nativeToolRegistry.register(name, {
           handler,
@@ -6680,8 +6729,12 @@ async function main(): Promise<void> {
   const orchestratorDispatcher: TurnDispatcher = createOrchestratorDispatcher({
     getChannelBlock: (channelId) =>
       pluginCatalog.get(channelId)?.plugin.channel,
+    // #1598 — the shared `chatAgent` is the grant-less legacy bundle; with a
+    // registry, a turn that has no binding gets the standard orchestrator.
     getAgentBundle: (service) =>
-      serviceRegistry.get<ChatAgentBundle>(service),
+      service === 'chatAgent'
+        ? getScopedChatAgentBundle()
+        : serviceRegistry.get<ChatAgentBundle>(service),
     // US7 — channelType autodiscovery: prefer the manifest's declared
     // channel_type, else derive it from the channel id's last dotted segment
     // (de.byte5.channel.teams → teams), the convention operators bind under.
@@ -6696,7 +6749,9 @@ async function main(): Promise<void> {
         serviceRegistry.get<ChannelBindingResolver>('channelResolver');
       if (!resolver) return undefined;
       const result = resolver.resolve(channelType, channelKey);
-      return result.decision !== 'reject' ? result.chatAgent : undefined;
+      // #1598 — `null` is an explicit reject: the dispatcher refuses the turn
+      // instead of falling back to an orchestrator nobody bound here.
+      return result.decision !== 'reject' ? result.chatAgent : null;
     },
   });
 

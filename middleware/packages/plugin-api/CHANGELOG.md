@@ -8,6 +8,28 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.47.0 — 2026-10-29
+
+Additive. Privacy Shield masking and rendering (S3-B: #1544, #1559, #1561, #1543,
+#1542).
+
+### Added
+
+- **`PrivacyGuardService.restoreToolInputValues`** /
+  **`remaskPromptValues`** (optional) — the kernel restores whole prompt
+  surrogates (no dates, amounts or name parts) in a data tool's INPUT, and
+  masks the turn's prompt values again in every tool result text the model
+  gets (#1544). The kernel restores only with a provider that has both.
+- **`PrivacyV4ToolRequest.fileExportAvailable`** (optional `boolean`) — whether
+  the turn has a file-export tool (`create_xlsx`); a truncated table offers an
+  Excel file only then (#1559).
+- **`PrivacyV4ToolResult.renderProvenance`** (optional `string`) — a value-free
+  note of how a rendered table was built (source tool, verb chain, row counts,
+  columns) for follow-up questions (#1543).
+- **`PrivacyToolResultV4Request.audience`** / **`PrivacyDigestAudience`**
+  (`'chat' | 'public-api'`) — the public MCP endpoint gets a digest text written
+  for API callers, without the chat-only verb instructions (#1561).
+
 ## 1.46.0 — 2026-10-29
 
 Additive. A truthful privacy receipt (#1541, #1557, #1562).
