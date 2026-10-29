@@ -25,6 +25,7 @@ export {
   recordUsage,
   providerRecordsOwnUsage,
   setUsageContextProvider,
+  runWithUsageContext,
   flush as flushUsageRecorder,
   shutdownUsageRecorder,
 } from './recorder.js';

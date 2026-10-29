@@ -96,6 +96,7 @@ export const ERROR_HELP_CODES = [
   // errored. Also the row's copy for a dependent_rebuild_failed whose
   // envelope says `primaryApplied: false` (ProvidersPanel.tsx).
   'providers.rebuild_failed',
+  'providers.subscription_cli_unsupported',
   'providers.tool_incompatible',
   'providers.unknown_plugin',
   'providers.unknown_provider',

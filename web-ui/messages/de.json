@@ -1222,6 +1222,10 @@
         "what": "Die Zuordnung wurde gespeichert, aber das Plugin ist damit nicht gestartet und läuft gerade nicht.",
         "next": "Starte es mit „Erneut versuchen“ neu. Bleibt es dabei, nennen die Support-Details seinen Aktivierungsfehler."
       },
+      "subscription_cli_unsupported": {
+        "what": "Dieses Plugin kann nicht über die Abo-CLI laufen: Es braucht einen Provider mit API-Key. Mit der CLI würde es nicht starten — beim Antwort-Verifier gehen Antworten dann ungeprüft raus.",
+        "next": "Weise diesem Plugin einen Key-basierten Provider wie Anthropic zu. Für den Orchestrator und die Hintergrund-Jobs bleibt die Abo-CLI verfügbar."
+      },
       "tool_incompatible": {
         "what": "Dieses Plugin braucht eine Tool-Schleife, die der gewählte Provider nicht kann.",
         "next": "Gib diesem Plugin einen Key-basierten Provider und nutze die Abo-CLI für Tool-lose Rollen."
@@ -1800,6 +1804,7 @@
         "unverified": "Nicht geprüft: Keine Prüfung hat diese Antwort bestätigt.",
         "noneConfirmed": "Nicht bestätigt: Der Verifier hat {count, plural, one {# Aussage} other {# Aussagen}} dieser Antwort geprüft, konnte aber keine bestätigen.",
         "noTrigger": "Nicht geprüft: Die Antwort enthält keine Beträge, Daten oder Referenzen, die der Verifier prüft.",
+        "systemDataProse": "Nicht geprüft: Der Verifier hat nur den Text geprüft, den das Modell selbst geschrieben hat, und darin nichts Prüfbares gefunden. Die Werte in der Tabelle stammen unverändert aus dem Quellsystem.",
         "noClaims": "Nicht geprüft: Der Verifier hat in dieser Antwort keine Faktenaussagen gefunden.",
         "noCheckableClaims": "Nicht geprüft: Keine Aussage dieser Antwort lässt sich gegen eine Quelle prüfen.",
         "incompleteCoverage": "Nicht geprüft: Der Verifier hat nur einen Teil dieser Antwort erfasst und darin nichts Prüfbares gefunden.",
@@ -3902,6 +3907,7 @@
       "intro": "Ordne jedem LLM-fähigen Plugin einen Provider und ein Modell zu. Beim Speichern wird das Plugin neu aktiviert, sodass die Änderung sofort greift.",
       "notInstalled": "nicht installiert",
       "toolLessBlocked": "braucht Tools — nicht für diese Rolle",
+      "subscriptionCliUnsupported": "braucht einen API-Key — nicht über die Abo-CLI",
       "providerMissing": "{provider} (nicht registriert)",
       "providerLabel": "Provider",
       "modelLabel": "Modell",

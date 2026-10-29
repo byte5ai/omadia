@@ -1222,6 +1222,10 @@
         "what": "The assignment was saved, but the plugin did not start on it and is not running right now.",
         "next": "Use Retry to start it again. If it keeps failing, the support details carry its activation error."
       },
+      "subscription_cli_unsupported": {
+        "what": "This plugin cannot run on the subscription CLI: it needs a provider with an API key. With the CLI assigned it would not start — for the answer verifier that means answers go out unchecked.",
+        "next": "Assign this plugin a key-based provider such as Anthropic. The subscription CLI stays available for the orchestrator and the background jobs."
+      },
       "tool_incompatible": {
         "what": "This plugin drives a tool loop and the selected provider cannot do that.",
         "next": "Give this plugin a key-based provider and keep the subscription CLI for tool-less roles."
@@ -1800,6 +1804,7 @@
         "unverified": "Not verified: no check confirmed this answer.",
         "noneConfirmed": "Not verified: the verifier checked {count, plural, one {# claim} other {# claims}} in this answer but could not confirm any.",
         "noTrigger": "Not checked: the answer contains no figures, dates or references the verifier checks.",
+        "systemDataProse": "Not checked: the verifier screened only the text the model wrote, and found nothing in it to check. The values in the table come unchanged from the source system.",
         "noClaims": "Not checked: the verifier found no factual claims in this answer.",
         "noCheckableClaims": "Not checked: none of the claims in this answer can be checked against a source.",
         "incompleteCoverage": "Not checked: the verifier covered only part of this answer and found nothing it could check there.",
@@ -3902,6 +3907,7 @@
       "intro": "Pin each LLM-capable plugin to a provider and model. Saving re-activates the plugin so the change applies immediately.",
       "notInstalled": "not installed",
       "toolLessBlocked": "needs tools — not for this role",
+      "subscriptionCliUnsupported": "needs an API key — not on the subscription CLI",
       "providerMissing": "{provider} (not registered)",
       "providerLabel": "Provider",
       "modelLabel": "Model",

@@ -484,6 +484,8 @@ export interface ProviderAssignment {
   modelRouting?: string;
   /** This plugin drives a tool loop → a tool-less provider is not assignable. */
   requiresTools?: boolean;
+  /** #1583 — this plugin cannot run on the subscription CLI at all. */
+  rejectsSubscriptionCli?: boolean;
 }
 
 export interface ProvidersResponse {

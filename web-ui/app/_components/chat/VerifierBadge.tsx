@@ -22,6 +22,8 @@ const TONE_CLASS: Record<VerifierBadgeTone, string> = {
 interface VerifierBadgeProps {
   /** The turn's verifier summary (`Message.verifier`); untrusted shape. */
   summary: unknown;
+  /** #1580 — the answer also shows rows Privacy Shield rendered. */
+  systemData?: boolean;
 }
 
 /**
@@ -32,9 +34,10 @@ interface VerifierBadgeProps {
  */
 export function VerifierBadge({
   summary,
+  systemData,
 }: VerifierBadgeProps): React.ReactElement | null {
   const t = useTranslations('chat.verifier');
-  const view = verifierBadgeView(summary);
+  const view = verifierBadgeView(summary, { systemData: systemData === true });
   if (!view) return null;
   return (
     <span
