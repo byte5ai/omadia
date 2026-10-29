@@ -262,6 +262,13 @@ export interface PrivacyDatasetProvenance {
   readonly verbs: ReadonlyArray<PrivacyDatasetVerbStep>;
   /** the origin result was bounded at intern time */
   readonly truncated: boolean;
+  /**
+   * The origin result was an envelope (`{ count, truncated, records: [ … ] }`)
+   * and the dataset rows are this field's records — the key a replay of
+   * `tool` reads the records from (a refresh recipe's `itemsPath`). Absent
+   * when the result was a plain record array or a single object.
+   */
+  readonly itemsPath?: string;
 }
 
 export interface PrivacyToolResultV4Result {

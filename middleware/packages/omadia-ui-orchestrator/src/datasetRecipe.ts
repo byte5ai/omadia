@@ -77,6 +77,8 @@ export function deriveDatasetRecipe(
   const candidate = {
     tool: provenance.tool,
     input,
+    // an envelope origin: replay reads the records from here, not "first array"
+    ...(provenance.itemsPath !== undefined ? { itemsPath: provenance.itemsPath } : {}),
     map: Object.fromEntries(columnPaths.map((p) => [p, p])),
     ...(columnPaths.includes('id') ? { rowKey: 'id' } : {}),
     ...(filter.length > 0 ? { filter } : {}),

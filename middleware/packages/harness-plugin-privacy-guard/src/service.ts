@@ -337,6 +337,8 @@ function datasetProvenanceOf(
     input,
     verbs: verbs.map((v) => ({ verb: v.verb, args: copyToolInput(v.args) as Record<string, unknown> })),
     truncated: ds.provenance.truncated,
+    // an envelope origin: where a replay finds the records (v414)
+    ...(ds.envelope !== undefined ? { itemsPath: ds.envelope.itemsPath } : {}),
   };
 }
 
@@ -788,17 +790,22 @@ export function createPrivacyGuardService(deps?: {
   ): PrivacyToolResultV4Result {
     const store = storeFor(turnId);
     const { digest } = store.internToolResult(toolName, rawResult, toolInput);
-    const maskedFields = digest.fields.filter(
+    // The receipt counts every field the digest exposes — record columns AND
+    // envelope metadata (both reach the model, masked or in clear).
+    const metadata = digest.metadata ?? [];
+    const exposed = [...digest.fields, ...metadata];
+    const maskedFields = exposed.filter(
       (f) => f.classification === 'sensitive-masked',
     ).length;
     const receipt = receiptFor(turnId);
     receipt.datasetsInterned += 1;
     receipt.fieldsMasked += maskedFields;
-    receipt.fieldsCleartext += digest.fields.length - maskedFields;
+    receipt.fieldsCleartext += exposed.length - maskedFields;
     console.log(
       `[privacy-guard v4] intern turn=${turnId} ` +
         `tool=${toolName} datasetId=${digest.datasetId} ` +
         `rows=${String(digest.rowCount)} fields=${String(digest.fields.length)} ` +
+        `${metadata.length > 0 ? `metadata=${String(metadata.length)} ` : ''}` +
         `masked=${String(maskedFields)}${digest.truncated ? ' truncated' : ''}`,
     );
     return {
@@ -824,9 +831,17 @@ export function createPrivacyGuardService(deps?: {
       if (piiClassifier !== undefined && !CANVAS_PRODUCER_TOOLS.has(request.toolName)) {
         const dataset = stores.get(request.turnId)?.get(result.datasetId);
         if (dataset !== undefined) {
+          // Envelope metadata is classified too (record paths win a name
+          // collision) — it used to be, as broadcast columns.
+          const metaFields = (dataset.envelope?.schema.fields ?? []).filter(
+            (m) => !dataset.schema.fields.some((f) => f.path === m.path),
+          );
           const piiPaths = await piiClassifier.classify(
             request.toolName,
-            dataset.schema.fields.map((f) => ({ path: f.path, type: f.type })),
+            [...dataset.schema.fields, ...metaFields].map((f) => ({
+              path: f.path,
+              type: f.type,
+            })),
           );
           // Gather the REAL values of the PII-classified fields so the
           // receipt can report which ones the user named themselves. The
@@ -840,6 +855,11 @@ export function createPrivacyGuardService(deps?: {
             for (const row of dataset.rows) {
               for (const path of piiPaths) {
                 collectIdentityValues(row[path], bag);
+              }
+            }
+            for (const m of metaFields) {
+              if (piiPaths.has(m.path)) {
+                collectIdentityValues(dataset.envelope?.values[m.path], bag);
               }
             }
           }
