@@ -81,6 +81,9 @@ changelog.
   static UI bundle at `/p/<id>/ui/` stays public. A Teams-tab route that has to
   work without an omadia session registers `auth: 'custom'` and declares an
   operator-granted public path; `/p/<id>/…` declarations now validate.
+  **Behaviour change:** plugin pages under `/p/` (including Builder-generated
+  UI routes) now answer 401 inside a Teams tab, where there is no omadia
+  session, until the plugin moves to that model.
 - **Native plugin tools ignored per-orchestrator plugin assignment (#1598).**
   `ctx.tools.register` tools of plugins not assigned to an orchestrator were
   offered and callable, on both the API-key path and the subscription-CLI path.

@@ -25,9 +25,11 @@ const ODOO_PLUGIN = '@omadia/integration-odoo';
 const TOOL = 'odoo_version';
 const RUNTIME = { model: 'm', maxTokens: 100, maxToolIterations: 4 };
 
+let rowSeq = 0;
 function agentRow(slug: string): AgentRow {
+  rowSeq += 1;
   return {
-    id: `00000000-0000-0000-0000-0000000000${slug.length.toString().padStart(2, '0')}`,
+    id: `00000000-0000-0000-0000-${rowSeq.toString().padStart(12, '0')}`,
     slug,
     name: slug,
     description: null,
@@ -70,6 +72,7 @@ function setup(): { registry: NativeToolRegistry; ran: { value: boolean }; deps:
 }
 
 interface OrchestratorProbe {
+  getSystemPrompt(): string;
   dispatchTool(n: string, i: unknown, o?: unknown, m?: unknown): Promise<string>;
   offeredToolNames(): ReadonlySet<string>;
   isToolGranted(name: string, pluginId: string | undefined): boolean;
@@ -88,6 +91,24 @@ test('an un-granted plugin native tool is neither offered nor run', async () => 
   assert.equal(ran.value, false, 'the handler must never be reached');
   assert.match(result, /not available to this agent/);
   assert.equal(result.includes(ODOO_PLUGIN), false, 'refusal must not name the plugin');
+});
+
+test('an un-granted tool is not described in the system prompt either', () => {
+  const { deps } = setup();
+  const denied = probe(buildForAgent(agentRow('zweiter'), deps, RUNTIME, undefined, []));
+  const granted = probe(buildForAgent(agentRow('odoo'), deps, RUNTIME, undefined, [ODOO_PLUGIN]));
+  assert.equal(denied.getSystemPrompt().includes('ODOO_VERSION_PROMPT_DOC'), false);
+  assert.equal(granted.getSystemPrompt().includes('ODOO_VERSION_PROMPT_DOC'), true);
+});
+
+test('the grant is checked before readiness, so a refusal never names the plugin', async () => {
+  const { ran, deps } = setup();
+  const notReady = { ...deps, isPluginToolsReady: () => false } as OrchestratorDeps;
+  const orch = probe(buildForAgent(agentRow('zweiter'), notReady, RUNTIME, undefined, []));
+  const result = await orch.dispatchTool(TOOL, {}, undefined, undefined);
+  assert.match(result, /not available to this agent/);
+  assert.equal(result.includes(ODOO_PLUGIN), false);
+  assert.equal(ran.value, false);
 });
 
 test('the granted agent is offered and runs the very same tool', async () => {

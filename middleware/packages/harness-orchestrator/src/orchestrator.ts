@@ -9712,20 +9712,21 @@ export class Orchestrator {
       // matching the `unknown tool` fallback below — both the streaming and
       // non-streaming dispatch loops key `is_error` off that prefix, and
       // both also fold a thrown rejection into the same convention (#1095).
-      if (!this.isToolAvailable(reg.agentId)) {
-        return refuse(
-          `Error: tool \`${name}\` is unavailable — plugin \`${reg.agentId}\` has not completed its connection/auth setup.`,
-        );
-      }
       // #1598 — THE AUTHORISATION GATE for `ctx.tools.register` tools, the
       // twin of the domain-tool gate below. Native tools live in ONE
       // kernel-wide registry, so without this every Agent could call every
-      // plugin's tools, assigned or not. Refused by name, without the owner.
+      // plugin's tools, assigned or not. Refused by name, without the owner — and BEFORE the readiness
+      // check, whose message names the plugin.
       if (!this.isToolGranted(name, reg.agentId)) {
         console.warn(
           `[orchestrator] agent "${this.agentId}" attempted un-granted plugin tool "${name}" — refused`,
         );
         return refuse(`Error: tool \`${name}\` is not available to this agent.`);
+      }
+      if (!this.isToolAvailable(reg.agentId)) {
+        return refuse(
+          `Error: tool \`${name}\` is unavailable — plugin \`${reg.agentId}\` has not completed its connection/auth setup.`,
+        );
       }
       return reg.handler(input);
     }

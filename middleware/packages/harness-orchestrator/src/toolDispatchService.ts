@@ -360,15 +360,16 @@ export class ToolDispatchService {
     const nativeHandler = nativeRegistration?.handler;
     // Mirrors Orchestrator ordering: plugin/native handlers win first.
     if (nativeRegistration !== undefined && nativeHandler !== undefined) {
+      // #1598 — grant first: the readiness message names the plugin.
+      if (!this.isGranted(name, nativeRegistration.agentId)) {
+        return notGranted(name);
+      }
       if (!this.isToolAvailable(nativeRegistration.agentId)) {
         return {
           content: `Error: tool \`${name}\` is unavailable — plugin \`${nativeRegistration.agentId}\` has not completed its connection/auth setup.`,
           isError: true,
           origin: 'dispatcher',
         };
-      }
-      if (!this.isGranted(name, nativeRegistration.agentId)) {
-        return notGranted(name);
       }
       return this.invoke(name, input, () => nativeHandler(input), options);
     }
@@ -378,15 +379,15 @@ export class ToolDispatchService {
       // Issue #474 follow-up — same gate as the native-handler branch above;
       // DomainTools carry an `agentId` too and were previously dispatchable
       // through this bridge regardless of the owning plugin's readiness.
+      if (!this.isGranted(name, domainTool.agentId)) {
+        return notGranted(name);
+      }
       if (!this.isToolAvailable(domainTool.agentId)) {
         return {
           content: `Error: tool \`${name}\` is unavailable — plugin \`${domainTool.agentId}\` has not completed its connection/auth setup.`,
           isError: true,
           origin: 'dispatcher',
         };
-      }
-      if (!this.isGranted(name, domainTool.agentId)) {
-        return notGranted(name);
       }
       return this.invoke(name, input, () => domainTool.handle(input), options);
     }
