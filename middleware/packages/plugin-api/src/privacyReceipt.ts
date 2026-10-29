@@ -231,6 +231,37 @@ export interface PrivacyToolResultV4Request {
   readonly toolName: string;
   /** The tool's raw text result as the handler returned it. */
   readonly rawResult: string;
+  /**
+   * The tool call input as dispatched to the handler (1.44.0). Optional:
+   * kept server-side, turn-scoped, as the dataset's provenance — so a
+   * consumer can learn WHICH call produced a dataset
+   * ({@link PrivacyGuardService.datasetProvenance}). Never serialized to an
+   * LLM. Absent ⇒ the dataset simply has no provenance.
+   */
+  readonly toolInput?: unknown;
+}
+
+/** One verb applied on the way from a tool result to a dataset (1.44.0). */
+export interface PrivacyDatasetVerbStep {
+  /** verb name without the `v4_` prefix (`select`, `filter`, `sort`, …) */
+  readonly verb: string;
+  /** the verb's arguments, dataset ids excluded (e.g. `{ columns }`,
+   *  `{ predicate }`) */
+  readonly args: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * Where a dataset came from (1.44.0): the ONE tool call that produced its
+ * origin dataset and the verbs applied since, in order. The input is the
+ * call's REAL input (it may carry literal filter values) — server-side only,
+ * never for an LLM-bound message.
+ */
+export interface PrivacyDatasetProvenance {
+  readonly tool: string;
+  readonly input: unknown;
+  readonly verbs: ReadonlyArray<PrivacyDatasetVerbStep>;
+  /** the origin result was bounded at intern time */
+  readonly truncated: boolean;
 }
 
 export interface PrivacyToolResultV4Result {
@@ -741,6 +772,17 @@ export interface PrivacyGuardService {
     turnId: string,
     datasetId: string,
   ): PrivacyResolvedDataset | undefined;
+  /**
+   * Privacy Shield v4 — the provenance of a datasetId interned earlier THIS
+   * TURN (1.44.0): originating tool + input + the verb chain applied since.
+   * `undefined` for an unknown/expired id, after `finalizeTurn`, or when the
+   * origin was interned without its tool input. Optional — consumers
+   * feature-detect.
+   */
+  datasetProvenance?(
+    turnId: string,
+    datasetId: string,
+  ): PrivacyDatasetProvenance | undefined;
   /**
    * #361 — mask PII spans in a free-text prompt before it crosses the LLM
    * wire. Gated on the plugin's default-off `mask_user_prompt` config; when

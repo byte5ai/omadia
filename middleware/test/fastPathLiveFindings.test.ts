@@ -40,7 +40,8 @@ import {
   openSkeletonPrivacy,
   openStoredTextPrivacy,
 } from '../packages/harness-plugin-fast-path/src/storedTextPrivacy.js';
-import { parseTriage, TRIAGE_SYSTEM } from '../packages/harness-plugin-fast-path/src/triage.js';
+import { parsePlan, plannerTool } from '../packages/harness-plugin-fast-path/src/planner.js';
+import { parseTriage, withRouterPlanner } from './_helpers/fastPathRouterPlanner.js';
 import { createC1HttpDetector } from '../packages/harness-plugin-privacy-guard/src/c1Detector.js';
 import { createPrivacyGuardService } from '../packages/harness-plugin-privacy-guard/src/service.js';
 import { createStoredTextScope } from '../packages/harness-plugin-privacy-guard/src/storedTextScope.js';
@@ -199,20 +200,20 @@ describe('fast-path — a missing summary defaults instead of discarding the pla
     assert.equal(kept.summaryDefaulted, undefined);
   });
 
-  it('the triage prompt requires summary and locale and forbids fences', () => {
-    assert.match(TRIAGE_SYSTEM, /"summary" and "locale" are REQUIRED/);
-    assert.match(TRIAGE_SYSTEM, /no code fences/);
+  it('the planner tool requires summary and locale (a forced call has no fences / prose)', () => {
+    const schema = plannerTool('odoo_query').inputSchema as { required: string[] };
+    assert.deepEqual(schema.required, ['tool', 'input', 'map', 'summary', 'locale']);
   });
 
   it('service: a summary-less deterministic triage answers with the default sentence', async () => {
     const logs: string[] = [];
     const service = createFastPathService({
       config: { get: <T>(k: string): T | undefined => (k === 'fast_path_tools' ? ('odoo_query' as T) : undefined) },
-      llm: {
+      llm: withRouterPlanner({
         complete: async () => ({
           text: JSON.stringify({ decision: 'deterministic', fetch: FETCH, labels: { name: 'Name', birthday: 'Geburtstag' } }),
         }),
-      },
+      }),
       model: 'class:fast',
       invoke: async () =>
         JSON.stringify({ records: [{ id: 1, name: 'Anna', birthday: '1990-01-12' }, { id: 2, name: 'Peter', birthday: '1985-01-30' }] }),
@@ -228,7 +229,7 @@ describe('fast-path — a missing summary defaults instead of discarding the pla
     assert.equal(out.kind, 'answer', logs.join('\n'));
     assert.ok(out.kind === 'answer');
     assert.match(out.text, /^2 Einträge gefunden\./);
-    assert.ok(logs.some((l) => l.includes('default count sentence')));
+    assert.ok(logs.some((l) => /\[fast-path\] planner channel=web tool=odoo_query ok ms=\d+ summary=default/.test(l)));
   });
 
   it('in-place planner: a summary-less plan for a visible table is kept', () => {
@@ -244,25 +245,15 @@ describe('fast-path — a missing summary defaults instead of discarding the pla
     assert.equal(plan.summaryDefaulted, true);
   });
 
-  it('canvas composer: locale is kept without a summary (the fast path defaults the sentence)', async () => {
-    const res = await composeSkeleton({
-      llm: {
-        complete: async () => ({
-          text: JSON.stringify({
-            tree: { type: 'container', id: 'root', layout: 'stack', children: [] },
-            dataRequirements: [{ containerId: 'root', description: 'x', fields: [], fetch: FETCH }],
-            locale: 'de-DE',
-          }),
-        }),
-      },
-      model: 'class:fast',
-      userText: 'Geburtstage',
-      fastPathTools: [{ name: 'odoo_query', spec: 'odoo_query(...)' }],
-    });
-    assert.equal(res.source, 'model');
-    assert.equal(res.summary, undefined);
-    assert.equal(res.locale, 'de-DE');
-    assert.ok(res.dataRequirements[0]?.fetch);
+  it('canvas planner: locale is kept without a summary (the fast path defaults the sentence)', () => {
+    const res = parsePlan(
+      { containerId: 'root', ...FETCH, locale: 'de-DE' },
+      { allowedTools: ALLOWED, containers: [{ containerId: 'root', description: 'x', fields: [] }] },
+    );
+    assert.ok(res.ok);
+    assert.equal(res.containerId, 'root');
+    assert.equal(res.plan.locale, 'de-DE');
+    assert.equal(res.plan.summaryDefaulted, true);
   });
 });
 
@@ -315,7 +306,7 @@ describe('privacy stored-text scope — priority lane per request', () => {
 
     const service = createFastPathService({
       config: { get: <T>(k: string): T | undefined => (k === 'fast_path_tools' ? ('odoo_query' as T) : undefined) },
-      llm: { complete: async () => ({ text: JSON.stringify({ decision: 'agent', route: 'simple' }) }) },
+      llm: withRouterPlanner({ complete: async () => ({ text: JSON.stringify({ decision: 'agent', route: 'simple' }) }) }),
       model: 'class:fast',
       invoke: async () => '[]',
       privacyGuard: () => guard,

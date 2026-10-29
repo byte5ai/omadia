@@ -22,6 +22,8 @@
 import type {
   BypassedToolEntry,
   PrivacyBypassedToolRequest,
+  PrivacyDatasetProvenance,
+  PrivacyDatasetVerbStep,
   PrivacyEgressStage,
   PrivacyStructuredPayloadRequest,
   StructuredPayloadEntry,
@@ -296,6 +298,46 @@ function isControlFlowDataset(dataset: Dataset | undefined): boolean {
     typeof only === 'string' &&
     isControlFlowToolResult(only)
   );
+}
+
+/** Longest verb chain walked back to its origin — a guard, verbs nest shallowly. */
+const MAX_PROVENANCE_HOPS = 16;
+
+/** Copy of a JSON-shaped tool input; `undefined` when it is not JSON. */
+function copyToolInput(input: unknown): unknown {
+  try {
+    return JSON.parse(JSON.stringify(input)) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Walk a dataset's `derivedFrom` chain back to the tool result it came from.
+ * The verbs come out in application order (origin first). No provenance when
+ * the origin carries no tool input (interned without it, a sub-agent
+ * narration, a canvas producer) or the chain is broken/too deep.
+ */
+function datasetProvenanceOf(
+  store: DatasetStore | undefined,
+  datasetId: string,
+): PrivacyDatasetProvenance | undefined {
+  let ds = store?.get(datasetId);
+  const verbs: PrivacyDatasetVerbStep[] = [];
+  for (let hops = 0; ds?.provenance.derivedFrom !== undefined; hops++) {
+    if (hops >= MAX_PROVENANCE_HOPS) return undefined;
+    verbs.unshift({ verb: ds.provenance.toolName, args: ds.provenance.verbArgs ?? {} });
+    ds = store?.get(ds.provenance.derivedFrom);
+  }
+  if (ds?.provenance.toolInput === undefined) return undefined;
+  const input = copyToolInput(ds.provenance.toolInput);
+  if (input === undefined) return undefined;
+  return {
+    tool: ds.provenance.toolName,
+    input,
+    verbs: verbs.map((v) => ({ verb: v.verb, args: copyToolInput(v.args) as Record<string, unknown> })),
+    truncated: ds.provenance.truncated,
+  };
 }
 
 export function createPrivacyGuardService(deps?: {
@@ -742,9 +784,10 @@ export function createPrivacyGuardService(deps?: {
     turnId: string,
     toolName: string,
     rawResult: string,
+    toolInput?: unknown,
   ): PrivacyToolResultV4Result {
     const store = storeFor(turnId);
-    const { digest } = store.internToolResult(toolName, rawResult);
+    const { digest } = store.internToolResult(toolName, rawResult, toolInput);
     const maskedFields = digest.fields.filter(
       (f) => f.classification === 'sensitive-masked',
     ).length;
@@ -772,6 +815,7 @@ export function createPrivacyGuardService(deps?: {
         request.turnId,
         request.toolName,
         request.rawResult,
+        request.toolInput,
       );
       // Slice 2 — schema-level PII classification. Schema only (field names
       // + types, never a value); cached per tool shape. Never throws; the
@@ -1235,6 +1279,10 @@ export function createPrivacyGuardService(deps?: {
         })),
         rows: dataset.rows as ReadonlyArray<Record<string, unknown>>,
       };
+    },
+
+    datasetProvenance(turnId, datasetId) {
+      return datasetProvenanceOf(stores.get(turnId), datasetId);
     },
 
     v4ToolSpecs(): ReadonlyArray<PrivacyV4ToolSpec> {

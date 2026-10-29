@@ -9,6 +9,7 @@
 
 import { strict as assert } from 'node:assert';
 import { afterEach, describe, it } from 'node:test';
+import { withRouterPlanner } from './_helpers/fastPathRouterPlanner.js';
 
 import {
   CHAT_AGENT_SERVICE,
@@ -98,12 +99,12 @@ async function harness(): Promise<Harness> {
         return () => reg.delete(name);
       },
     },
-    llm: {
+    llm: withRouterPlanner({
       complete: () => {
         llmCalls.n += 1;
         return Promise.resolve({ text: listComposer });
       },
-    },
+    }),
     config: { get: <T>(): T | undefined => undefined },
     tools: {
       register: () => () => {},

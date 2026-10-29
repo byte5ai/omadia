@@ -9554,6 +9554,7 @@ export class Orchestrator {
         const v4 = await privacy.internToolResultV4({
           toolName: name,
           rawResult: result,
+          toolInput: input,
         });
         return v4.digestText;
       } catch (err) {

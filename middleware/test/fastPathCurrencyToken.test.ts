@@ -9,8 +9,7 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
 import { renderSummary } from '../packages/harness-plugin-fast-path/src/fastPath.js';
-import { parseTriage, TRIAGE_OUTPUT_EXAMPLE, TRIAGE_SYSTEM } from '../packages/harness-plugin-fast-path/src/triage.js';
-import { fastPathPromptSection } from '../packages/omadia-ui-orchestrator/src/composition.js';
+import { parsePlan, PLAN_EXAMPLE, PLANNER_SYSTEM } from '../packages/harness-plugin-fast-path/src/planner.js';
 
 const MAP = { number: 'name', open_amount: 'amount_residual', ranks: 'customer_rank' };
 const rec = (amount: number, currency: unknown): Record<string, unknown> => ({
@@ -72,16 +71,11 @@ describe('{currency} token', () => {
 });
 
 describe('planner prompts show the currency with the money total', () => {
-  it('the triage output example sums with {currency} and still parses', () => {
-    assert.match(TRIAGE_OUTPUT_EXAMPLE, /\{sum:open_amount\} \{currency\}/);
-    assert.ok(TRIAGE_SYSTEM.includes('{currency}'));
-    const d = parseTriage(TRIAGE_OUTPUT_EXAMPLE, new Set(['odoo_query']));
-    assert.equal(d.decision, 'deterministic');
-  });
-
-  it('the canvas composer example uses {currency} instead of a hard-coded symbol', () => {
-    const section = fastPathPromptSection([{ name: 'odoo_query', spec: 's' }]);
-    assert.match(section, /\{sum:amount\} \{currency\}/);
-    assert.doesNotMatch(section, /\{sum:amount\} €/);
+  it('the planner example sums with {currency} and still parses', () => {
+    assert.match(PLAN_EXAMPLE.summary, /\{sum:open_amount\} \{currency\}/);
+    assert.ok(PLANNER_SYSTEM.includes('{currency}'));
+    assert.doesNotMatch(PLANNER_SYSTEM, /\{sum:[a-z_]+\} €/);
+    const d = parsePlan({ ...PLAN_EXAMPLE }, { allowedTools: new Set(['odoo_query']) });
+    assert.ok(d.ok);
   });
 });

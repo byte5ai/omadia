@@ -13,6 +13,7 @@
 
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
+import { withRouterPlanner } from './_helpers/fastPathRouterPlanner.js';
 
 import {
   CHAT_AGENT_SERVICE,
@@ -27,6 +28,8 @@ import {
   type CompositionLlm,
 } from '../packages/omadia-ui-orchestrator/src/composition.js';
 import { plannableTools, renderSummary } from '../packages/harness-plugin-fast-path/src/fastPath.js';
+import { buildPlannerPrompt, parsePlan, PLANNER_SYSTEM } from '../packages/harness-plugin-fast-path/src/planner.js';
+import { ROUTER_SYSTEM } from '../packages/harness-plugin-fast-path/src/router.js';
 import { createFastPathService, FAST_PATH_SERVICE } from '../packages/harness-plugin-fast-path/src/service.js';
 import { activate } from '../packages/omadia-ui-orchestrator/src/plugin.js';
 import { resolveRecipeInput, resolveTimeZone } from '../packages/harness-plugin-fast-path/src/refreshRecipes.js';
@@ -138,7 +141,7 @@ async function harness(opts: {
         return () => reg.delete(name);
       },
     },
-    llm: llmReturning(opts.composer).llm,
+    llm: withRouterPlanner(llmReturning(opts.composer).llm),
     config: { get: <T>(): T | undefined => undefined },
     tools: {
       register: () => () => {},
@@ -207,11 +210,11 @@ function patchedRows(events: readonly ChatStreamEvent[]): Array<{ rowKey: string
 
 // ── composer prompt: schema hints ──────────────────────────────────────────
 
-describe('fast path — Odoo schema hints in the composer prompt', () => {
-  it('the odoo_query spec carries the curated catalog and business-term mappings', async () => {
-    const { llm, reqs } = llmReturning(openItemsComposer());
-    await composeSkeleton({ llm, model: 'm', userText: 'x', fastPathTools: plannableTools(['odoo_query']) });
-    const prompt = String(reqs[0]?.['system'] ?? '');
+describe('fast path — Odoo schema hints in the planner prompt', () => {
+  it('the odoo_query spec carries the curated catalog and business-term mappings', () => {
+    const [tool] = plannableTools(['odoo_query']);
+    assert.ok(tool);
+    const prompt = PLANNER_SYSTEM + '\n' + buildPlannerPrompt({ question: 'x', tool });
     for (const needle of [
       'account.move',
       'amount_residual',
@@ -236,7 +239,7 @@ describe('fast path — Odoo schema hints in the composer prompt', () => {
     ]) {
       assert.ok(prompt.includes(needle), `prompt mentions ${needle}`);
     }
-    assert.match(prompt, /unsure of the field names/, 'the omit-when-unsure rule stays');
+    assert.match(ROUTER_SYSTEM, /or when unsure/, 'the agent-when-unsure rule stays (router)');
     // HR red-line fields (omadia-integration-odoo odooCore.ts) are never
     // suggested as fields (the prose "HR wage/bank/private fields are
     // blocked" notice is intended)
@@ -334,24 +337,24 @@ describe('fast path — summary aggregates ({count}, {sum:fieldKey})', () => {
     );
   });
 
-  it('composeSkeleton keeps a sum-only summary and a valid locale, drops an invalid locale', async () => {
-    const tools = plannableTools(['odoo_query']);
-    const ok = await composeSkeleton({
-      llm: llmReturning(openItemsComposer({ summary: 'Offen: {sum:amount} €.' })).llm,
-      model: 'm',
-      userText: 'aktuelle offene Posten',
-      fastPathTools: tools,
-    });
-    assert.equal(ok.summary, 'Offen: {sum:amount} €.');
-    assert.equal(ok.locale, 'de-DE');
-    const bad = await composeSkeleton({
-      llm: llmReturning(openItemsComposer({ locale: 'not a locale!' })).llm,
-      model: 'm',
-      userText: 'aktuelle offene Posten',
-      fastPathTools: tools,
-    });
-    assert.equal(bad.summary, SUM_SUMMARY);
-    assert.equal(bad.locale, undefined);
+  it('the planner keeps a sum-only summary and a valid locale, drops an invalid locale', () => {
+    const fetchOf = (text: string): Record<string, unknown> =>
+      (JSON.parse(text) as { dataRequirements: Array<{ fetch: Record<string, unknown> }> }).dataRequirements[0]!.fetch;
+    const allowedTools = new Set(['odoo_query']);
+    const ok = parsePlan(
+      { ...fetchOf(openItemsComposer()), summary: 'Offen: {sum:amount} €.', locale: 'de-DE' },
+      { allowedTools, question: 'aktuelle offene Posten' },
+    );
+    assert.ok(ok.ok);
+    assert.equal(ok.plan.summary, 'Offen: {sum:amount} €.');
+    assert.equal(ok.plan.locale, 'de-DE');
+    const bad = parsePlan(
+      { ...fetchOf(openItemsComposer()), summary: SUM_SUMMARY, locale: 'not a locale!' },
+      { allowedTools, question: 'aktuelle offene Posten' },
+    );
+    assert.ok(bad.ok);
+    assert.equal(bad.plan.summary, SUM_SUMMARY);
+    assert.equal(bad.plan.locale, undefined);
   });
 });
 

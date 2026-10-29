@@ -80,6 +80,15 @@ export interface SurfaceSynthesisConfig {
   /** learned fast path: every parsed structured payload's `data` (container,
    *  source, dataset column schema), before composition — observation only. */
   onPublishedPayload?: (data: unknown) => void;
+  /** derived refresh recipes: for a publish WITHOUT a declared `source`, the
+   *  caller may derive one (agent datasetId publishes — datasetRecipe.ts).
+   *  A returned recipe is treated exactly like a declared one: it reaches
+   *  `onPublishedSource` and `onPublishedPayload` sees it as `data.source`. */
+  deriveSource?: (data: unknown) => unknown;
+  /** recipe variants: every publish's raw `actions` (suggested actions,
+   *  possibly carrying a declarative `variant`) — the caller registers the
+   *  variants server-side; patches never carry them to the client. */
+  onPublishedActions?: (containerId: string, actions: readonly unknown[]) => void;
 }
 
 /**
@@ -150,6 +159,15 @@ function applySurfacePatch(
     }
   }
   return patches.length > 0 ? { nextTree: next, patches } : null;
+}
+
+/** `data` with a derived `source` when it declares none and `derive` yields one. */
+function withDerivedSource(data: unknown, derive: ((data: unknown) => unknown) | undefined): unknown {
+  if (derive === undefined || typeof data !== 'object' || data === null) return data;
+  const d = data as { containerId?: unknown; source?: unknown };
+  if (typeof d.containerId !== 'string' || (typeof d.source === 'object' && d.source !== null)) return data;
+  const derived = derive(data);
+  return typeof derived === 'object' && derived !== null ? { ...d, source: derived } : data;
 }
 
 export async function* synthesizeSurfaceEvents(
@@ -227,12 +245,17 @@ export async function* synthesizeSurfaceEvents(
 
     const payload = parseToolEmittedStructuredPayload(output);
     if (!payload) return;
-    config.onPublishedPayload?.(payload.data);
+    const data = withDerivedSource(payload.data, config.deriveSource);
+    config.onPublishedPayload?.(data);
+    const acted = data as { containerId?: unknown; actions?: unknown } | null;
+    if (config.onPublishedActions && typeof acted?.containerId === 'string' && Array.isArray(acted.actions)) {
+      config.onPublishedActions(acted.containerId, acted.actions);
+    }
       // recipe capture happens regardless of compose success — a recipe for
       // a payload whose patch was skipped is still a valid refresh source
       let mintedRef: DataRef | undefined;
       if (config.onPublishedSource) {
-        const d = payload.data as { containerId?: unknown; source?: unknown } | null;
+        const d = data as { containerId?: unknown; source?: unknown } | null;
         if (
           typeof d?.containerId === 'string' &&
           typeof d.source === 'object' &&

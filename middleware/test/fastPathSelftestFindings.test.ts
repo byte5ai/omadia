@@ -22,12 +22,8 @@ import {
   OUTPUT_FORMAT_INSTRUCTION,
   fetchRecipeRows,
 } from '../packages/harness-plugin-fast-path/src/fastPath.js';
-import {
-  buildTriagePrompt,
-  parseTriage,
-  TRIAGE_OUTPUT_EXAMPLE,
-  TRIAGE_SYSTEM,
-} from '../packages/harness-plugin-fast-path/src/triage.js';
+import { buildPlannerPrompt, parsePlan, PLAN_EXAMPLE, PLANNER_SYSTEM, plannerTool } from '../packages/harness-plugin-fast-path/src/planner.js';
+import { parseTriage } from './_helpers/fastPathRouterPlanner.js';
 import type { RefreshSource } from '../packages/harness-plugin-fast-path/src/refreshRecipes.js';
 
 const ODOO = new Set(['odoo_query']);
@@ -169,27 +165,28 @@ describe('finding 3 — human column labels in the chat answer', () => {
   });
 });
 
-describe('finding 4 — triage required output shape incl. summary', () => {
+describe('finding 4 — planner required output shape incl. summary', () => {
   it('the system prompt carries the example shape with {count}, {sum:…} and currency_id', () => {
-    assert.ok(TRIAGE_SYSTEM.includes(TRIAGE_OUTPUT_EXAMPLE));
-    assert.match(TRIAGE_OUTPUT_EXAMPLE, /\{count\}/);
-    assert.match(TRIAGE_OUTPUT_EXAMPLE, /\{sum:open_amount\}/);
-    assert.match(TRIAGE_OUTPUT_EXAMPLE, /"currency_id"/);
-    assert.match(TRIAGE_OUTPUT_EXAMPLE, /"labels"/);
+    const example = JSON.stringify(PLAN_EXAMPLE);
+    assert.ok(PLANNER_SYSTEM.includes(example));
+    assert.match(example, /\{count\}/);
+    assert.match(example, /\{sum:open_amount\}/);
+    assert.match(example, /"currency_id"/);
+    assert.match(example, /"labels"/);
   });
 
   it('the parser accepts the example as a deterministic plan with its own summary', () => {
-    const d = parseTriage(TRIAGE_OUTPUT_EXAMPLE, ODOO);
-    assert.equal(d.decision, 'deterministic');
-    if (d.decision !== 'deterministic') return;
-    assert.equal(d.summaryDefaulted, undefined);
-    assert.match(d.summary, /\{sum:open_amount\}/);
-    assert.equal(d.locale, 'de-DE');
+    const d = parsePlan({ ...PLAN_EXAMPLE }, { allowedTools: ODOO });
+    assert.ok(d.ok);
+    assert.equal(d.plan.summaryDefaulted, undefined);
+    assert.match(d.plan.summary, /\{sum:open_amount\}/);
+    assert.equal(d.plan.locale, 'de-DE');
   });
 
-  it('the user message also carries the output-format instruction', () => {
-    const prompt = buildTriagePrompt({ question: 'offene Posten', tools: [{ name: 'odoo_query', spec: 's' }], examples: [] });
-    assert.ok(prompt.includes(OUTPUT_FORMAT_INSTRUCTION));
-    assert.match(prompt, /"summary"/);
+  it('summary and locale are required fields of the forced plan_query tool; the prompt carries the turn', () => {
+    const schema = plannerTool('odoo_query').inputSchema as { required: string[] };
+    assert.ok(schema.required.includes('summary') && schema.required.includes('locale'));
+    const prompt = buildPlannerPrompt({ question: 'offene Posten', tool: { name: 'odoo_query', spec: 's' } });
+    assert.match(prompt, /USER TURN: offene Posten/);
   });
 });
