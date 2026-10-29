@@ -54,9 +54,9 @@ export type RouteOutcome =
   | { kind: 'agent'; route?: TriageRoute; reason: string; ms: number };
 
 export const ROUTER_SYSTEM = `You are the Omadia fast-path router. Classify ONE user turn by calling ${ROUTER_TOOL} — never answer the turn itself.
-- "deterministic": the answer IS the rows of exactly ONE read query with ONE of the TOOLS — a plain lookup or list, optionally counted or with a numeric column totalled ("Geburtstage im Januar", "offene Posten von Müller", "wie viele Kunden in Berlin"). Set "tool".
+- "deterministic": the answer IS the rows of exactly ONE read query with ONE of the TOOLS — a plain lookup or list, optionally counted, with a numeric column totalled, or the top N ROWS by one of their own columns ("Geburtstage im Januar", "offene Posten von Müller", "wie viele Kunden in Berlin", "die 5 größten offenen Rechnungen"). Set "tool".
 - "agent_simple": greeting, chit-chat, a short confirmation, a one-step question that needs none of the TOOLS.
-- "agent_complex": explanations, advice, opinions, writes or changes, several queries, joins, comparisons, analysis, planning, code — or when unsure.
+- "agent_complex": explanations, advice, opinions, writes or changes, several queries, joins, comparisons, analysis, planning, code — or when unsure. Also every total, count or ranking PER GROUP (per customer, per month, per department): "Kunden mit dem höchsten offenen Betrag" sums invoices per customer — that is not the rows of one query.
 A follow-up of the PREVIOUS QUERY that only changes values ("und im Februar?", "and for Weber?") is deterministic with the same tool.
 "confidence": the probability (0..1) that your decision is right. A wrong deterministic decision is worse than an agent turn.`;
 

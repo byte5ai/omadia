@@ -22,7 +22,7 @@ import type {
 } from '@omadia/channel-sdk';
 import type { EmbeddingClient } from '@omadia/embeddings';
 import type { EffortLevel, LlmProvider, LlmProviderPool } from '@omadia/llm-provider';
-import type { ModelRef } from '@omadia/plugin-api';
+import type { ModelRef, ProfileQualityConfig } from '@omadia/plugin-api';
 import type {
   ContextRetriever,
   FactExtractor,
@@ -149,6 +149,13 @@ export interface AgentRuntimeConfig {
    * slot for one turn, which is what they always did.
    */
   readonly identityInstructions?: string;
+  /**
+   * #1569 — the Agent's own response-quality settings
+   * (`agent_identities.quality`), for the `responseGuard` provider. Absent =
+   * the agent set none; the provider then uses its `agent_overrides` and
+   * default.
+   */
+  readonly quality?: ProfileQualityConfig;
   /**
    * #967 — the name this Agent answers to (`agent_identities.display_name`),
    * already trimmed and non-empty when present.
@@ -835,6 +842,7 @@ export function buildOrchestratorForAgent(
     ...(bookMeetingTool ? { bookMeetingTool } : {}),
     ...(deps.embeddingClient ? { embeddingClient: deps.embeddingClient } : {}),
     responseGuard: deps.responseGuard,
+    ...(config.quality ? { agentQuality: config.quality } : {}),
     privacyGuard: deps.privacyGuard,
     ...(deps.turnReceiptStore
       ? { turnReceiptStore: deps.turnReceiptStore }
@@ -914,9 +922,9 @@ export function buildOrchestratorForAgent(
   // Orchestrator is still built + returned (sub-agents attach to it post-activate;
   // exposing those to the CLI dispatch is a follow-up — native tools work now).
   if (deps.provider?.id === 'claude-cli') {
-    // Security note (P2-2): the subscription CLI sees the FULL native tool
-    // registry via the loopback MCP server, with no allowlist beyond MCP
-    // server scoping; a per-agent tool allowlist is a follow-up.
+    // Security note (P2-2): the subscription CLI sees the native tool registry
+    // via the loopback MCP server, filtered by readiness and (#1598) by this
+    // Agent's plugin assignment.
     const dispatch = new ToolDispatchService({
       nativeTools: deps.nativeToolRegistry,
       // Live read: sub-agents (ask_<slug>) attach to `orchestrator` post-activate,
@@ -925,12 +933,17 @@ export function buildOrchestratorForAgent(
       // sub-agents fail GRACEFULLY (dispatch returns an error result) until they
       // also run on the CLI (recursive Shape 3 — follow-up); tool-less ones work.
       domainToolsProvider: () => orchestrator.listDomainTools(),
+      // #1585 — kernel natives (ask_user_choice, …) dispatch to THIS build's
+      // instances, the ones `drainCliTurnCards` below reads.
+      kernelNativeHandler: (name) => orchestrator.kernelNativeHandler(name),
       // Issue #474 — this dispatcher bypasses `Orchestrator.dispatchTool`
       // entirely (the CLI reaches tools over the loopback MCP server), so
       // the readiness gate must be repeated here too.
       ...(deps.isPluginToolsReady
         ? { isPluginToolsReady: deps.isPluginToolsReady }
         : {}),
+      // #1598 — and the per-Agent plugin assignment, for the same reason.
+      isToolGranted: (name, agentId) => orchestrator.isToolGranted(name, agentId),
     });
     return {
       orchestrator,
@@ -941,6 +954,11 @@ export function buildOrchestratorForAgent(
           // kernel-native tool scheduled this turn on the `done` event, so the
           // subscription-CLI path renders them like the API-key path.
           drainTurnCards: () => orchestrator.drainCliTurnCards(),
+          // #1582 — the AI disclosure, resolved and folded like an API-key turn.
+          discloseAnswer: (answer, input) => orchestrator.discloseCliAnswer(answer, input),
+          // A refusal under OMADIA_PRIVACY_FORCE_GUARDED is worded in the
+          // turn's language, by the same rule as the in-process notices.
+          noticeLocale: (input) => orchestrator.noticeLocale(input),
           model: config.model.replace(/-cli$/, '') || 'sonnet',
           // #1391 — persist every successful CLI turn like an in-process one
           // (session log + graph nodes, facts, excerpt, auto-promotion,

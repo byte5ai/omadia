@@ -6,6 +6,12 @@ import type {
 } from './claimTypes.js';
 import { SOFT_ANCHOR_REF_FIELDS, hasOdooRecordAnchor } from './claimTypes.js';
 import { matchesRecord, type RecordHandle } from './entityHandle.js';
+import {
+  claimNamesPeriod,
+  nameClaimMatches,
+  turnRecordIdsByModel,
+  type TurnRecord,
+} from './turnRecords.js';
 
 /**
  * Deterministic verifier for HardClaims. Runs an INDEPENDENT read-only
@@ -29,6 +35,16 @@ import { matchesRecord, type RecordHandle } from './entityHandle.js';
  *    to `approved_with_disclaimer`; a failed check is never evidence.
  *  - Monetary tolerance is 0.01 € (one cent). Dates are compared as
  *    ISO strings, ids as exact matches.
+ *  - #1574 — a claim that names no record id is anchored on the records the
+ *    turn's own tools read (`CheckContext.turnRecords`): those are re-read
+ *    from Odoo here, and the claim is confirmed when one of them carries the
+ *    claimed value. Such a match only ever confirms; a miss stays
+ *    `unverified`, since the claim may be about another record.
+ *  - #1575 — an aggregate is only compared with the records it is about: one
+ *    employee / partner (from the claim, else from the turn's records), the
+ *    request states that count, and — for a claim that names a period — the
+ *    records the turn read. When the check cannot tell which records a total
+ *    covers, the claim is `unverified`, never `contradicted`.
  */
 
 /** Minimal read-only slice of `OdooClient` — narrowed so tests can stub it. */
@@ -52,6 +68,12 @@ export interface GraphReader {
   }): Promise<
     Array<{ id: string; props?: Readonly<Record<string, unknown>> }>
   >;
+}
+
+/** What a check may use beyond the claim itself. */
+export interface CheckContext {
+  /** #1574 — the Odoo records the checked turn's tools read. */
+  readonly turnRecords?: readonly TurnRecord[];
 }
 
 export interface DeterministicCheckerOptions {
@@ -81,13 +103,52 @@ const AMOUNT_FIELD_BY_MODEL: Readonly<Record<string, string>> = {
   'hr.expense': 'total_amount',
 };
 
-const DATE_FIELD_BY_MODEL: Readonly<Record<string, string>> = {
-  'account.move': 'invoice_date',
-  'sale.order': 'date_order',
-  'purchase.order': 'date_order',
-  'hr.leave': 'date_from',
-  'hr.expense': 'date',
+/** Date fields per model, in the order a claim is compared with them. A leave
+ *  has a first and a last day: `request_date_*` are plain dates, `date_*`
+ *  datetimes in UTC (whose day can be off by one), so the dates come first. */
+const DATE_FIELDS_BY_MODEL: Readonly<Record<string, readonly string[]>> = {
+  'account.move': ['invoice_date'],
+  'sale.order': ['date_order'],
+  'purchase.order': ['date_order'],
+  'hr.leave': ['request_date_from', 'request_date_to', 'date_from', 'date_to'],
+  'hr.expense': ['date'],
 };
+
+/**
+ * #1575 — the field that ties an aggregated record to the one employee or
+ * partner its total is about, and the model that field points to.
+ */
+const AGGREGATE_SCOPE_BY_MODEL: Readonly<Record<string, { field: string; model: string }>> = {
+  'hr.leave': { field: 'employee_id', model: 'hr.employee' },
+  'hr.expense': { field: 'employee_id', model: 'hr.employee' },
+  'account.move': { field: 'partner_id', model: 'res.partner' },
+  'sale.order': { field: 'partner_id', model: 'res.partner' },
+  'purchase.order': { field: 'partner_id', model: 'res.partner' },
+};
+
+/**
+ * #1575 — the request states a total may count, per model. A leave total
+ * means approved days (`validate`), or — when the answer counts open
+ * requests too — approved plus pending ones; refused and cancelled requests
+ * never count. Each set is one candidate total.
+ */
+const AGGREGATE_STATE_SETS: Readonly<Record<string, ReadonlyArray<readonly string[]>>> = {
+  'hr.leave': [['validate'], ['validate', 'validate1', 'confirm']],
+};
+
+/**
+ * #1579 — a total "of" a record whose model holds no amount is a total of
+ * the records that belong to it: an employee's leave days are `hr.leave`
+ * rows. The extractor pins the claim on the record it names (the employee),
+ * not on the rows it sums.
+ */
+const AGGREGATE_MODEL_FOR_OWNER: Readonly<Record<string, string>> = {
+  'hr.employee': 'hr.leave',
+};
+
+/** Models whose amount / date the turn-record anchor can compare. */
+const AMOUNT_MODELS: ReadonlySet<string> = new Set(Object.keys(AMOUNT_FIELD_BY_MODEL));
+const DATE_MODELS: ReadonlySet<string> = new Set(Object.keys(DATE_FIELDS_BY_MODEL));
 
 export class DeterministicChecker {
   private readonly tolerance: number;
@@ -107,10 +168,10 @@ export class DeterministicChecker {
   }
 
   /** Check one claim. Always resolves — never throws. */
-  async check(claim: HardClaim): Promise<ClaimVerdict> {
+  async check(claim: HardClaim, ctx: CheckContext = {}): Promise<ClaimVerdict> {
     try {
       if (claim.expectedSource === 'odoo') {
-        return await this.checkOdoo(claim);
+        return await this.checkOdoo(claim, ctx);
       }
       if (claim.expectedSource === 'graph') {
         return await this.checkGraph(claim);
@@ -124,8 +185,42 @@ export class DeterministicChecker {
   }
 
   /** Fan out one checker run per claim, preserving order. */
-  async checkAll(claims: HardClaim[]): Promise<ClaimVerdict[]> {
-    return Promise.all(claims.map((c) => this.check(c)));
+  async checkAll(claims: HardClaim[], ctx: CheckContext = {}): Promise<ClaimVerdict[]> {
+    return Promise.all(claims.map((c) => this.check(c, ctx)));
+  }
+
+  /**
+   * #1574 — a name claim with no record of its own, confirmed against the
+   * records the turn read: their `display_name` is re-read from Odoo, and the
+   * claim is `verified` when it says nothing beyond one of those names
+   * ({@link nameClaimMatches}). Anything else — no turn records, no match, a
+   * claim that carries more than the name — is `unverified`, and the caller
+   * hands the claim to the judge as before. Always resolves.
+   */
+  async checkNameAgainstTurnRecords(claim: Claim, ctx: CheckContext): Promise<ClaimVerdict> {
+    if (!this.odoo) return unverified(claim, 'no odoo reader configured');
+    const pinned = claim.odooRecord?.model;
+    const byModel = turnRecordIdsByModel(
+      ctx.turnRecords,
+      pinned !== undefined ? new Set([pinned]) : undefined,
+    );
+    if (byModel.size === 0) return unverified(claim, 'no turn record to match the name');
+    // The claim's TEXT decides: a name claim carries its assertion in the
+    // text ("Anna Müller wechselte in die IT"), its `value` only the name.
+    const needle = claim.text;
+    try {
+      for (const [model, ids] of byModel) {
+        const rows = await this.readRows(model, ids, ['display_name']);
+        if (rows.some((row) => typeof row['display_name'] === 'string' && nameClaimMatches(needle, row['display_name']))) {
+          return verified(claim, 'odoo');
+        }
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.log(`[verifier/deterministic] FAIL name claim=${claim.id} err=${msg}`);
+      return unverified(claim, 'turn-record name lookup failed');
+    }
+    return unverified(claim, 'no turn record carries this name');
   }
 
   /**
@@ -178,17 +273,17 @@ export class DeterministicChecker {
 
   // --- Odoo ---------------------------------------------------------------
 
-  private async checkOdoo(claim: HardClaim): Promise<ClaimVerdict> {
+  private async checkOdoo(claim: HardClaim, ctx: CheckContext): Promise<ClaimVerdict> {
     if (!this.odoo) return unverified(claim, 'no odoo reader configured');
     const ref = claim.odooRecord;
 
     switch (claim.type) {
       case 'amount':
-        return this.checkOdooAmount(claim, ref);
+        return this.checkOdooAmount(claim, ref, ctx);
       case 'aggregate':
-        return this.checkOdooAggregate(claim, ref);
+        return this.checkOdooAggregate(claim, ref, ctx);
       case 'date':
-        return this.checkOdooDate(claim, ref);
+        return this.checkOdooDate(claim, ref, ctx);
       case 'id':
         return this.checkOdooId(claim, ref);
     }
@@ -197,25 +292,24 @@ export class DeterministicChecker {
   private async checkOdooAmount(
     claim: HardClaim,
     ref: OdooRecordRef | undefined,
+    ctx: CheckContext,
   ): Promise<ClaimVerdict> {
     const claimed = coerceNumber(claim.value);
     if (claimed === undefined) {
       return unverified(claim, 'claim has no parseable numeric value');
     }
     if (!ref || typeof ref.id !== 'number') {
-      return unverified(claim, 'amount claim without odoo id');
+      // #1574 — no record named: one the turn read may carry the amount.
+      return this.matchTurnRecords(claim, ref?.model, AMOUNT_MODELS, ctx, (model, row) => {
+        const truth = coerceNumber(row[AMOUNT_FIELD_BY_MODEL[model]!]);
+        return truth !== undefined && Math.abs(truth - claimed) <= this.tolerance;
+      }, 'amount claim without odoo id');
     }
     const field = AMOUNT_FIELD_BY_MODEL[ref.model];
     if (!field) return unverified(claim, `no amount field for ${ref.model}`);
 
-    const rows = (await this.odoo!.execute({
-      model: ref.model,
-      method: 'read',
-      positionalArgs: [[ref.id], [field]],
-      kwargs: {},
-    })) as Array<Record<string, unknown>> | undefined;
-
-    const row = Array.isArray(rows) ? rows[0] : undefined;
+    const rows = await this.readRows(ref.model, [ref.id], [field]);
+    const row = rows[0];
     if (!row) return contradicted(claim, null, `record ${ref.model}:${String(ref.id)} not found`);
 
     const truth = coerceNumber(row[field]);
@@ -231,76 +325,196 @@ export class DeterministicChecker {
   /**
    * HR-Spezial: Aggregate claims MUST be re-computed in JS from the raw
    * rows. We never trust an LLM to have summed hr.leave.number_of_days
-   * correctly. When the claim carries enough metadata, we build the
-   * search_read call ourselves; otherwise we have to unverify.
+   * correctly.
+   *
+   * #1575 / #1579 — a total is compared only with the records it is about:
+   *  - the summed model: the claim's, or for a claim pinned on the owning
+   *    record (an employee) the model of that owner's rows (`hr.leave`);
+   *  - one scope (employee / partner): the pinned owner, a
+   *    `<model>:<id>` related entity, else the one owner of the turn's
+   *    records. No scope ⇒ `unverified` — a company-wide sum is no truth;
+   *  - each candidate total: per request-state set (approved; approved +
+   *    pending), over all of the owner's records and over the ones the turn
+   *    itself read (which carries the turn's period) — a refused request
+   *    counts on neither side. The claim is verified when one matches;
+   *  - contradicted only when none matches and the candidates cover what the
+   *    claim is about: the turn read the summed records, or the claim names
+   *    no period (there is no period filter of our own).
    */
   private async checkOdooAggregate(
     claim: HardClaim,
     ref: OdooRecordRef | undefined,
+    ctx: CheckContext,
   ): Promise<ClaimVerdict> {
     const claimed = coerceNumber(claim.value);
     if (claimed === undefined) {
       return unverified(claim, 'aggregate claim has no parseable numeric value');
     }
     if (!ref) return unverified(claim, 'aggregate claim without odoo model');
-    const field = AMOUNT_FIELD_BY_MODEL[ref.model];
+    const target = AGGREGATE_MODEL_FOR_OWNER[ref.model] ?? ref.model;
+    const field = AMOUNT_FIELD_BY_MODEL[target];
     if (!field) return unverified(claim, `no aggregate field for ${ref.model}`);
+    const scopeDef = AGGREGATE_SCOPE_BY_MODEL[target];
+    if (!scopeDef) return unverified(claim, `no aggregate scope for ${target}`);
 
-    // Domain must be supplied by a future claim enrichment; today we only
-    // aggregate per-record totals, which is the common case ("Urlaubstage
-    // dieses Mitarbeiters"). The related entity `hr.employee:<id>` gives us
-    // the filter.
-    const employeeId = extractRelatedId(claim.relatedEntities, 'hr.employee');
-    const domain: unknown[] = employeeId ? [['employee_id', '=', employeeId]] : [];
-
-    const rows = (await this.odoo!.execute({
-      model: ref.model,
-      method: 'search_read',
-      positionalArgs: [domain, [field]],
-      kwargs: { limit: 1000 },
-    })) as Array<Record<string, unknown>> | undefined;
-
-    if (!Array.isArray(rows)) {
-      return unverified(claim, 'search_read returned non-array');
+    const turnIds = turnRecordIdsByModel(ctx.turnRecords, new Set([target])).get(target) ?? [];
+    const scopeId = await this.aggregateScopeId(claim, ref, target, scopeDef, turnIds, ctx);
+    if (scopeId === undefined) {
+      return unverified(claim, `aggregate scope unknown (no single ${scopeDef.model})`);
     }
 
-    const truth = aggregate(rows, field, claim.aggregation ?? 'sum');
-    if (truth === undefined) {
+    const stateSets = AGGREGATE_STATE_SETS[target];
+    const rows = await this.searchRows(
+      target,
+      [[scopeDef.field, '=', scopeId]],
+      stateSets ? [field, 'state'] : [field],
+    );
+    const kind = claim.aggregation ?? 'sum';
+    const inState = (states: readonly string[]) => (row: Record<string, unknown>): boolean =>
+      typeof row['state'] !== 'string' || states.includes(row['state']);
+    const turnSet = new Set(turnIds);
+    const turnRows = rows.filter((row) => typeof row['id'] === 'number' && turnSet.has(row['id']));
+    // Every candidate set — all of the owner's records, and the ones the turn
+    // read — is counted per request-state set, so a refused request never
+    // counts on either side.
+    const totalsOver = (base: Array<Record<string, unknown>>): number[] =>
+      (stateSets ?? [undefined])
+        .map((states) => aggregate(states ? base.filter(inState(states)) : base, field, kind))
+        .filter((n): n is number => n !== undefined);
+    const allTotals = totalsOver(rows);
+    const turnTotals = turnRows.length > 0 ? totalsOver(turnRows) : [];
+    const candidates = [...allTotals, ...turnTotals];
+    if (candidates.length === 0) {
       return unverified(claim, 'aggregation produced no numeric result');
     }
-    if (Math.abs(truth - claimed) > this.tolerance) {
-      return contradicted(claim, truth, `aggregate ${claim.aggregation ?? 'sum'} Δ=${String(truth - claimed)}`);
+    if (candidates.some((truth) => Math.abs(truth - claimed) <= this.tolerance)) {
+      return verified(claim, 'odoo');
     }
-    return verified(claim, 'odoo');
+    if (turnTotals.length === 0 && claimNamesPeriod(claim)) {
+      return unverified(claim, 'aggregate names a period the check cannot filter');
+    }
+    const truth = turnTotals[0] ?? allTotals[0]!;
+    return contradicted(claim, truth, `aggregate ${kind} Δ=${String(truth - claimed)}`);
+  }
+
+  /**
+   * #1575 — the one employee / partner an aggregate claim is about: the
+   * pinned owner record, a related entity of the scope model, the one such
+   * record the turn read, else the one owner of the summed records the turn
+   * read (re-read from Odoo). Undefined when none of these names exactly one.
+   */
+  private async aggregateScopeId(
+    claim: HardClaim,
+    ref: OdooRecordRef,
+    target: string,
+    scope: { field: string; model: string },
+    turnIds: readonly number[],
+    ctx: CheckContext,
+  ): Promise<number | undefined> {
+    if (ref.model === scope.model && typeof ref.id === 'number') return ref.id;
+    const related = extractRelatedId(claim.relatedEntities, scope.model);
+    if (related !== undefined) return related;
+    const owners = turnRecordIdsByModel(ctx.turnRecords, new Set([scope.model])).get(scope.model) ?? [];
+    if (owners.length === 1) return owners[0];
+    if (owners.length > 1 || turnIds.length === 0) return undefined;
+    const rows = await this.readRows(target, turnIds, [scope.field]);
+    const found = new Set(rows.map((row) => many2oneId(row[scope.field])).filter((n) => n !== undefined));
+    return found.size === 1 ? [...found][0] : undefined;
   }
 
   private async checkOdooDate(
     claim: HardClaim,
     ref: OdooRecordRef | undefined,
+    ctx: CheckContext,
   ): Promise<ClaimVerdict> {
     const claimed = coerceDate(claim.value ?? claim.text);
     if (!claimed) return unverified(claim, 'claim has no ISO-parseable date');
     if (!ref || typeof ref.id !== 'number') {
-      return unverified(claim, 'date claim without odoo id');
+      // #1574 — no record named: one the turn read may carry the date.
+      return this.matchTurnRecords(claim, ref?.model, DATE_MODELS, ctx, (model, row) =>
+        DATE_FIELDS_BY_MODEL[model]!.some((f) => dateOf(row[f]) === claimed),
+      'date claim without odoo id');
     }
-    const field = DATE_FIELD_BY_MODEL[ref.model];
-    if (!field) return unverified(claim, `no date field for ${ref.model}`);
+    const fields = DATE_FIELDS_BY_MODEL[ref.model];
+    if (!fields) return unverified(claim, `no date field for ${ref.model}`);
 
-    const rows = (await this.odoo!.execute({
-      model: ref.model,
-      method: 'read',
-      positionalArgs: [[ref.id], [field]],
-      kwargs: {},
-    })) as Array<Record<string, unknown>> | undefined;
-
-    const row = Array.isArray(rows) ? rows[0] : undefined;
+    const rows = await this.readRows(ref.model, [ref.id], [...fields]);
+    const row = rows[0];
     if (!row) return contradicted(claim, null, `record ${ref.model}:${String(ref.id)} not found`);
 
-    const truthRaw = row[field];
-    const truth = typeof truthRaw === 'string' ? truthRaw.slice(0, 10) : null;
-    if (!truth) return unverified(claim, `field ${field} not a date string`);
-    if (truth !== claimed) return contradicted(claim, truth);
+    const truths = fields.map((f) => dateOf(row[f])).filter((d): d is string => d !== undefined);
+    if (truths.length === 0) return unverified(claim, `field ${fields.join('|')} not a date string`);
+    if (!truths.includes(claimed)) return contradicted(claim, truths[0]);
     return verified(claim, 'odoo');
+  }
+
+  /**
+   * #1574 — a claim that pins no record, matched against the records the
+   * turn read: per model (the claim's, else every model `models` covers),
+   * one `read` of those ids, and `verified` when one row `matches`. No turn
+   * record or no match ⇒ `unverified` with `fallback` as the reason — the
+   * claim may be about a record the turn did not read.
+   */
+  private async matchTurnRecords(
+    claim: HardClaim,
+    pinnedModel: string | undefined,
+    models: ReadonlySet<string>,
+    ctx: CheckContext,
+    matches: (model: string, row: Record<string, unknown>) => boolean,
+    fallback: string,
+  ): Promise<ClaimVerdict> {
+    const allowed =
+      pinnedModel !== undefined
+        ? new Set(models.has(pinnedModel) ? [pinnedModel] : [])
+        : models;
+    const byModel = turnRecordIdsByModel(ctx.turnRecords, allowed);
+    if (byModel.size === 0) return unverified(claim, fallback);
+    try {
+      for (const [model, ids] of byModel) {
+        const fields =
+          claim.type === 'date' ? DATE_FIELDS_BY_MODEL[model]! : [AMOUNT_FIELD_BY_MODEL[model]!];
+        const rows = await this.readRows(model, ids, fields);
+        if (rows.some((row) => matches(model, row))) return verified(claim, 'odoo');
+      }
+    } catch (err) {
+      // An extra lookup that failed is no failed check: without the turn's
+      // records the claim was `unverified` before, and it stays so.
+      const msg = err instanceof Error ? err.message : String(err);
+      this.log(`[verifier/deterministic] turn-record lookup failed claim=${claim.id} err=${msg}`);
+      return unverified(claim, `${fallback}; turn-record lookup failed`);
+    }
+    return unverified(claim, `${fallback}; no record the turn read matches`);
+  }
+
+  /** `read` of `ids` on `model`; a non-array reply reads as no rows. */
+  private async readRows(
+    model: string,
+    ids: readonly number[],
+    fields: readonly string[],
+  ): Promise<Array<Record<string, unknown>>> {
+    const rows = (await this.odoo!.execute({
+      model,
+      method: 'read',
+      positionalArgs: [[...ids], [...fields]],
+      kwargs: {},
+    })) as Array<Record<string, unknown>> | undefined;
+    return Array.isArray(rows) ? rows : [];
+  }
+
+  /** `search_read` on `model`; throws on a non-array reply (no evidence). */
+  private async searchRows(
+    model: string,
+    domain: unknown[],
+    fields: readonly string[],
+  ): Promise<Array<Record<string, unknown>>> {
+    const rows = (await this.odoo!.execute({
+      model,
+      method: 'search_read',
+      positionalArgs: [domain, [...fields]],
+      kwargs: { limit: 1000 },
+    })) as Array<Record<string, unknown>> | undefined;
+    if (!Array.isArray(rows)) throw new Error('search_read returned non-array');
+    return rows;
   }
 
   /** Record-existence check — shared by the `id` path and
@@ -455,6 +669,17 @@ function coerceDate(v: unknown): string | undefined {
   return undefined;
 }
 
+/** The calendar day of an Odoo date / datetime string (`YYYY-MM-DD…`). */
+function dateOf(v: unknown): string | undefined {
+  return typeof v === 'string' && /^\d{4}-\d{2}-\d{2}/.test(v) ? v.slice(0, 10) : undefined;
+}
+
+/** The id of a many2one value — `[id, "name"]` from Odoo, or a bare id. */
+function many2oneId(v: unknown): number | undefined {
+  const raw = Array.isArray(v) ? v[0] : v;
+  return typeof raw === 'number' && Number.isInteger(raw) && raw > 0 ? raw : undefined;
+}
+
 function asString(v: unknown): string | undefined {
   if (typeof v === 'string' && v.trim().length > 0) return v.trim();
   if (typeof v === 'number' && Number.isFinite(v)) return String(v);
@@ -484,6 +709,8 @@ function aggregate(
   kind: 'sum' | 'count' | 'avg' | 'max' | 'min',
 ): number | undefined {
   if (kind === 'count') return rows.length;
+  // No record in scope sums to zero; an average or extreme of nothing has none.
+  if (rows.length === 0) return kind === 'sum' ? 0 : undefined;
   const values: number[] = [];
   for (const row of rows) {
     const n = coerceNumber(row[field]);

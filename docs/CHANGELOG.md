@@ -67,6 +67,203 @@ changelog.
 `@omadia/plugin-privacy-guard` 0.11.0, `@omadia/plugin-api` 1.37.0
 (`countUnresolvedSurrogates` takes an optional `options`).
 
+### Fixed — Orchestrator and agent wiring (#1585, #1569, #1570, #1581, #1502)
+
+2026-10-29.
+
+- **Choice cards appear again (#1585).** The native-tool registry is shared
+  by every orchestrator build, and it kept the first build's `ask_user_choice`
+  handler for the life of the process. The card was parked on that instance
+  while the turn drained the current one, so no card was ever shown, and every
+  later call answered `choice_card_already_scheduled`. Each build now
+  dispatches the kernel natives (`ask_user_choice`, `suggest_follow_ups`,
+  `find_free_slots`, `book_meeting`, `query_knowledge_graph`) to its own
+  instances: `dispatchToolInner` skips a kernel-owned registration
+  (`isKernelNativeRegistration`), and the subscription-CLI dispatcher asks
+  `Orchestrator.kernelNativeHandler` first. The registry's own handler, which
+  sub-agent tool refs and plugin `tools.invoke` still read, now serves the
+  most recent build instead of the first. A plugin that registers one of
+  these names keeps its handler.
+- **Quality Guard resolves per agent (#1569).** The orchestrator now sends
+  the agent's slug and its own `quality` settings (`agent_identities.quality`,
+  joined into the registry's agent row) with every `getRules` call, so
+  `agent_overrides` takes effect. For each field the agent sets itself (level,
+  boundaries) the guard adds nothing, because the agent's prompt already
+  carries it; a turn no longer gets two anti-flattery blocks of different
+  strength. `@omadia/plugin-quality-guard` 0.2.1: help texts and README state
+  the order and that the override key is the agent slug.
+- **Prompt tab copy (#1570).** The hint no longer says the text opens the
+  system prompt. It says this is the agent's own part, and that the earlier
+  conversation context and the Quality Guard rules can come before it. The
+  order itself is deliberate and unchanged.
+- **Memory on the subscription CLI (#1581).** CLI 2.1.187 sent the first
+  model request without the loopback MCP tools whenever the handshake took
+  more than a few seconds (measured with a delayed loopback: `tools: []`,
+  server `pending`). The model then wrote a `memory` call as text and claimed
+  the file was saved. The image now pins 2.1.312, which waits for the
+  connection (its login prompt matches `cliAuthService`). Being newer than
+  2.1.248, it is also spawned with `--restricted` now, the third layer of the
+  CLI gate (OM-85). Version-independent
+  guards: the agent reads the CLI's `init` line and ends a turn whose CLI
+  loaded none of omadia's tools with an error instead of an answer
+  (`checkCliInit`); the spawn log lists the offered tool names; the gated env
+  sets `ENABLE_TOOL_SEARCH=false`, because newer CLIs defer large MCP tool
+  sets behind `ToolSearch`, which the gate denies; `PublishPlugin` (new in
+  2.1.312) joins the built-in deny list.
+- **Subscription CLI under `OMADIA_PRIVACY_FORCE_GUARDED`.** Still refused
+  (fail closed, #1539). The refusal now names the reason (the Privacy Shield
+  is required, the subscription CLI has none) and the fix (an API-key
+  provider under LLM access). It is written in the turn's language, by the
+  same rule as the other notices, and each refused turn logs a warning that
+  names the variable.
+- **Plan steps mapped at turn end (#1502, option C).** After a planned turn,
+  one Haiku call maps the turn's work calls to the plan steps and corrects
+  the stored plan that recall reads. The live card keeps the in-turn order
+  mapping, and `done` does not wait. A failed or unusable verdict keeps the
+  in-turn result. The call goes out through `ctx.llm` unmasked, so it gets
+  only the step goals, the tool names in call order and whether the turn
+  answered: no tool result and no answer text. A step changed by a later turn
+  while the call ran is left alone. New setup field `mapStepsAtTurnEnd`
+  (default `on`).
+  `calls_per_invocation` rises from 30 to 1000000: the counter runs since
+  activation, so 30 stopped planning silently after about 30 turns.
+  `@omadia/plugin-plan-runner` 0.2.0.
+
+### Security — plugin routes need a session, native tools follow plugin assignment (#1596, #1598, #1601)
+
+2026-10-29.
+
+- **`/p/<plugin>/…` routes were served without a login (#1596, critical).** A
+  plugin route registered with the default `auth: 'session'` used the `/api`
+  `requireAuth` as its gate, including the static public-path short-circuit,
+  and that list exempted `/p/*`. The Odoo HR agent's absences page (sick leave
+  included) and birthdays page answered anonymous requests. Plugin session
+  routes now use `createSessionGate`: the same session check, with no
+  public-path short-circuit. The `/p/` entry left `STATIC_PUBLIC_PATHS`. The
+  static UI bundle at `/p/<id>/ui/` stays public. A Teams-tab route that has to
+  work without an omadia session registers `auth: 'custom'` and declares an
+  operator-granted public path; `/p/<id>/…` declarations now validate.
+  **Behaviour change:** plugin pages under `/p/` (including Builder-generated
+  UI routes) now answer 401 inside a Teams tab, where there is no omadia
+  session, until the plugin moves to that model.
+- **Native plugin tools ignored per-orchestrator plugin assignment (#1598).**
+  `ctx.tools.register` tools of plugins not assigned to an orchestrator were
+  offered and callable, on both the API-key path and the subscription-CLI path.
+  They are now filtered from the tool list and the prompt docs and refused at
+  dispatch (`Orchestrator.isToolGranted`). Kernel tools and `memory` stay
+  available everywhere. With an orchestrator registry, web chat no longer
+  answers `agentSlug: "default"` with the grant-less legacy bundle. Still
+  open (#1598 stays open): routines and the channel reject-fallback run on that
+  legacy bundle. **Behaviour change:** an orchestrator now only gets
+  diagrams, office exports, web search, discussion and integration tools if
+  the plugin is assigned to it in its Plugins tab.
+- **The Builder reference plugin was attached to the standard orchestrator
+  (#1601).** First boot, "Reset standard to all plugins" and kernel installs
+  now skip `is_reference_only` plugins (`attachablePluginIds`). A row an
+  existing instance already has is dropped on the next save in the Plugins
+  tab, as before.
+
+### Fixed — receipt chain tamper evidence: truncation, retention, unsigned verdicts (#1565, #1566, #1567, #1568, #1584)
+
+2026-10-29. Server and offline verification of the receipt chain now apply
+the same rules and agree on every case in these issues.
+
+- **Newest receipts deleted with their checkpoints (#1565).** The external
+  anchor file (`AUDIT_ANCHOR_PATH`) was write-only. The server now reads it
+  on every verify and the offline verifier takes `--anchor`: an anchored
+  checkpoint missing from or changed in the database is a finding. With a
+  signing key, a chain no signed checkpoint certifies is not green
+  (`no_signed_checkpoint`, after a two-interval grace for a fresh install).
+  The checkpoint worker signs only a head that is a stored row and refuses
+  while the anchor or what its own process saw and signed disagrees with
+  the database, so the real key never certifies a rewound chain it can
+  tell apart. Worker and reaper count only signature-valid checkpoints.
+  Migration 0064 rejects deleting, updating or truncating checkpoints and
+  rolling back, truncating or re-hashing the stream head (defence in depth).
+- **Head rolled back, checkpoints kept (#1566).** A checkpoint above the
+  newest stored row is `orphaned`. Verify and export now read one database
+  snapshot and walk every row (the 50,000-row window and its `truncated`
+  flag are gone), and the export header carries the recorded head, so the
+  offline tool also reports a head beyond the newest entry.
+- **Retention with a key (#1567).** The offline verifier accepts a reaped
+  prefix when any signature-valid checkpoint certifies a surviving entry,
+  the server's documented rule, and now also applies the premature-deletion
+  rule. The reaper deletes only rows below the newest valid checkpoint, so
+  the certified row survives.
+- **Retention without a key (#1568).** Verification no longer turns red
+  after the first retention run. The verdict is `unsigned` (`ok: true`,
+  offline exit code 3) and the removed prefix is reported as "not
+  anchored: no signing key". A real break in the surviving rows stays
+  broken.
+- **Unsigned is never "verified" (#1584).** The verify response gains
+  `verdict: verified | unsigned | broken`; `checkpoints.verified` counts only
+  signature-checked checkpoints and `checkpoints.unchecked` the rest. The
+  offline tool exits 3, not 0, when only the export's own key was used. The
+  receipts page shows "unsigned" instead of "verified without signatures",
+  and lists anchor findings and the anchor comparison.
+
+### Fixed — Answer verifier verdicts, observability and the AI disclosure line (#1563, #1564, #1571, #1572, #1574, #1575, #1576, #1578, #1579, #1580, #1582, #1583)
+
+2026-10-29. The verifier confirms correct Odoo answers behind the Privacy
+Shield, compares totals with the right records, can be traced to its turn,
+and the AI disclosure line reaches every first answer.
+
+- **Turn records anchor the checks (#1574).** Behind the shield the model never
+  sees a record id, so the answer names none, and every amount, date and name
+  claim stayed `unverified`. The run trace now keeps the Odoo records the turn's
+  tools read (EntityRefBus, beside the payload like the knowledge-graph refs).
+  The deterministic checker re-reads those records from Odoo itself and
+  confirms a claim when one of them carries the claimed value. A name claim
+  that says nothing beyond a record's name is confirmed the same way before any
+  judge call. A match only ever confirms; a miss stays `unverified`.
+- **Totals against the right records (#1575, #1579).** An aggregate is compared
+  only with one employee's or partner's records (from the claim, else the one
+  owner of the turn's records), for `hr.leave` only approved — or approved plus
+  pending — requests, and over the records the turn read. Without a single
+  owner, or for a total over a named period the turn's records do not cover,
+  the claim stays `unverified` instead of being contradicted. A total the
+  extractor pins on `hr.employee` is checked as that employee's `hr.leave` sum,
+  so a wrong leave total is now contradicted, and the extractor is told to name
+  the summed model. Leave dates are compared with the first and the last day.
+- **Verdicts linked to their turn (#1571).** `verifier_verdicts.run_id` and
+  `verifier_contradictions.run_id` carry the request's turn id (the key of its
+  `turn_receipts` row), `agent` the answering agent, and the verifier's
+  `token_usage` rows the same `turn_id` (`runWithUsageContext` in
+  `@omadia/usage-telemetry`). Log lines name `run=<id> turn=<turnId>`.
+- **`shadow` logs its diagnosis (#1576).** One `[verifier/service] shadow
+  verdict` line per checked answer, with the per-claim results and causes
+  `enforce` logs and what `enforce` would have done
+  (`release` / `release_unconfirmed` / `withhold`).
+- **Badge next to a rendered table (#1580).** A "not checked" hint that speaks
+  of the whole answer ("contains no figures, dates or references") now says
+  that only the model's own text was screened and that the table's values come
+  unchanged from the source system.
+- **Verifier not assignable to the subscription CLI (#1583).** The verifier
+  cannot run on `claude-cli` (it needs an API key), but the assignment saved
+  and the verifier then silently stayed off. `POST /admin/providers/assignment`
+  refuses it (`providers.subscription_cli_unsupported`), the assignment row
+  disables the option with the reason, and the subscription hand-off skips the
+  verifier. **Operators:** an existing install whose verifier is already on
+  `claude-cli` stays off until you assign it a key-based provider under LLM
+  access → Per-agent assignment (the boot log now says so:
+  `the verifier cannot run on the subscription CLI`).
+- **AI disclosure on a verifier retry (#1578).** The first pass of a turn
+  consumed the conversation's first-turn slot, so a correction retry (or the
+  withheld notice built on it) went out without the disclosure line, in web chat
+  and on the Public API. The request now remembers that its first pass folded
+  the line, and every later pass of that request folds it too.
+- **AI disclosure on the subscription CLI (#1582).** `CliChatAgent` turns never
+  carried the line or the `aiDisclosure` field. They now get the same
+  resolution and first-turn fold as API-key turns
+  (`Orchestrator.discloseCliAnswer`).
+- **Setup help and docs (#1563, #1564, #1572).** "Verifier Mode" and
+  `docs/trust-and-privacy.md` describe what `enforce` does with a
+  Privacy-Shield-rendered answer since #1407 (delivered; prose verified, rows
+  are system data). "Amount Tolerance" is absolute, not relative; "Max Retries"
+  says that any value of 1 or more runs one retry. The verifier's own
+  "Anthropic API Key" field explains that the LLM-access key takes precedence
+  and that "not set yet" is normal.
+
 ### Added — Provenance backfill for legacy Privacy Shield content (#1540)
 
 2026-10-28. Closes the last path of #1540. Notes and processes written before

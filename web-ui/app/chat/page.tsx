@@ -1196,7 +1196,9 @@ export function MessageRow({
                 </span>
               )}
               {message.systemData && <SystemDataBadge />}
-              {message.verifier && <VerifierBadge summary={message.verifier} />}
+              {message.verifier && (
+                <VerifierBadge summary={message.verifier} systemData={message.systemData === true} />
+              )}
               {elapsed !== null && <span className="ml-3">⏱ {elapsed}s</span>}
               {message.streaming && (
                 <span className="ml-3">{t('streamingSuffix')}</span>

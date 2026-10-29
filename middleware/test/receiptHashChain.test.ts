@@ -11,6 +11,8 @@ import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
+
+import { checkpointPool } from './_helpers/receiptChainFixtures.js';
 import type { Pool } from 'pg';
 
 import {
@@ -211,29 +213,8 @@ describe('#758 checkpoint signing', () => {
     assert.throws(() => loadCheckpointSigner('not-a-key'), /AUDIT_SIGNING_KEY/);
   });
 
-  function checkpointFakePool(headSeq: number | undefined): { pool: Pool; inserted: unknown[][] } {
-    const inserted: unknown[][] = [];
-    let lastCheckpointSeq: number | undefined;
-    const pool = {
-      query: async (sql: string, params: unknown[] = []) => {
-        if (sql.includes('FROM audit_stream_heads')) {
-          return headSeq === undefined
-            ? { rows: [], rowCount: 0 }
-            : { rows: [{ head_seq: String(headSeq), head_hash: genesisHash('x') }], rowCount: 1 };
-        }
-        if (sql.includes('MAX(seq)')) {
-          return { rows: [{ seq: lastCheckpointSeq === undefined ? null : String(lastCheckpointSeq) }], rowCount: 1 };
-        }
-        if (sql.includes('INSERT INTO audit_checkpoints')) {
-          inserted.push(params);
-          lastCheckpointSeq = params[1] as number;
-          return { rows: [], rowCount: 1 };
-        }
-        throw new Error(`checkpointFakePool: unscripted SQL: ${sql.slice(0, 60)}`);
-      },
-    } as unknown as Pool;
-    return { pool, inserted };
-  }
+  const checkpointFakePool = (headSeq: number | undefined) =>
+    checkpointPool({ headSeq, headHash: genesisHash('x') });
 
   it('signs the head, is verifiable with the public key, anchors externally, and never duplicates', async () => {
     const signer = loadCheckpointSigner(makeKey());
@@ -274,16 +255,7 @@ describe('#758 checkpoint signing', () => {
   it('the LOSING replica of a checkpoint race neither anchors nor reports (review M1)', async () => {
     const signer = loadCheckpointSigner(makeKey());
     // Fake where the checkpoint INSERT loses the (stream, seq) conflict.
-    const pool = {
-      query: async (sql: string) => {
-        if (sql.includes('FROM audit_stream_heads')) {
-          return { rows: [{ head_seq: '7', head_hash: genesisHash('x') }], rowCount: 1 };
-        }
-        if (sql.includes('MAX(seq)')) return { rows: [{ seq: null }], rowCount: 1 };
-        if (sql.includes('INSERT INTO audit_checkpoints')) return { rows: [], rowCount: 0 };
-        throw new Error('unscripted');
-      },
-    } as unknown as Pool;
+    const { pool } = checkpointPool({ headSeq: 7, headHash: genesisHash('x'), insertLoses: true });
     const anchorPath = join(mkdtempSync(join(tmpdir(), 'anchor-loser-')), 'anchors.jsonl');
     const record = await runCheckpointPass(pool, signer, { anchorPath });
     assert.equal(record, undefined, 'the loser must not report a checkpoint');

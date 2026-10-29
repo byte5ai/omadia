@@ -189,10 +189,13 @@ becomes effective the moment one is installed on this path.
 The answer verifier is never installed on this path: `buildOrchestratorForAgent`
 returns the `CliChatAgent` bundle before the `VerifierService` wrap, so a
 subscription-CLI chat turn has no verifier egress at all, and the subscription
-page tells the operator so (#1391). The reverse case is covered by §6e — the
-verifier plugin's OWN model may be the `claude-cli` completion provider
-(Shape 2), and its requests are masked before `llm.complete` like on any other
-provider.
+page tells the operator so (#1391). The reverse case — the verifier plugin's
+OWN model on the `claude-cli` completion provider — is refused since #1583:
+the verifier resolves its provider without the catalog, needs an API key and
+would never publish `verifier@1` there, so `POST /admin/providers/assignment`
+answers `providers.subscription_cli_unsupported` and the subscription hand-off
+skips it. A verifier whose provider is any other one has its requests masked
+before `llm.complete` (§6e).
 
 ### Why the deny list is generated, not written (#1014)
 
@@ -1134,6 +1137,59 @@ from the descriptor.
   semantics exactly, because a wrong `<v>` under omadia's name is the defect
   this section closes.
 
+## 5b. Plugin routes: `auth: 'session'` means a session, on every prefix (#1596)
+
+A plugin route registered with `ctx.routes.register(prefix, router)` and no
+`auth` option is a `'session'` route. Until #1596 its gate was the kernel's
+`/api` `requireAuth`, including that middleware's static public-path
+short-circuit, and the static list exempted `/p/<pluginId>/…` "for Teams
+iframes, plugins validate the Teams token themselves". None did. The Odoo HR
+agent's `/p/agent-odoo-hr/absences` (employee, department, leave type such as
+sick leave) and `/birthdays` answered anonymous `curl` with 200, on the
+middleware and through the web-UI `/p/*` proxy.
+
+Now:
+
+- The registry's session gate is `createSessionGate` (`auth/requireAuth.ts`):
+  the same session evaluation as `requireAuth`, from the same deps object, but
+  with no public-path short-circuit. No prefix, `/p/…` or a static `/api` one,
+  opens a `'session'` route.
+- `STATIC_PUBLIC_PATHS` has no `/p/` entry any more. The static plugin UI bundle
+  at `/p/<id>/ui/` stays public: core mounts it outside every `requireAuth`.
+- A plugin route that has to work without an omadia session (a Teams tab that
+  only has a Teams SSO token) registers with `auth: 'custom'`, validates the
+  token itself, declares the prefix in `permissions.public_paths`, and is only
+  served once the operator grants it (§5). Because the static `/p/` entry is
+  gone, such a `/p/<id>/…` declaration now validates
+  (`validateDeclaredPublicPath` used to reject it as "already a static core
+  public path").
+
+Channel plugins' own routes (`ExpressRouteRegistry`, Bot Framework webhooks)
+are a separate mechanism and self-authenticate by contract.
+
+## 5c. Per-orchestrator plugin assignment covers native plugin tools (#1598)
+
+Since #983 an orchestrator refuses a domain tool whose plugin is not in its
+`agent_plugins` grants. Tools registered with `ctx.tools.register` live in one
+kernel-wide registry and had no such check: an orchestrator granted nothing
+was offered, and ran, `odoo_version` of an Odoo integration assigned to no
+orchestrator. `Orchestrator.isToolGranted` now gates them in all three places:
+the tool list, the prompt docs, and dispatch (refused by name, without naming
+the plugin). The subscription-CLI dispatcher (`ToolDispatchService`, loopback
+MCP) asks the same question. Kernel-registered tools (no owning plugin) stay
+ungated, and so does `memory`: its provider only backs the store, while the
+kernel scopes what each orchestrator reads and writes. An orchestrator without
+a grant set (legacy single-Agent boot) stays ungated, as for domain tools.
+
+**Open (#1598).** The legacy `default` bundle (`chatAgent@1`) has no grant set,
+so whatever runs on it sees every plugin's tools: routines (they store no
+Agent), the channel dispatcher's fallback when the resolver rejects, and
+Teams' fallback when the resolver throws. Web chat no longer reaches it via
+`agentSlug: "default"` once a registry exists. Also open: `native` tool grants
+on sub-agents are not checked against the parent's plugins, deferred
+sub-agent tools (`LONG_RUNNING_SUBAGENT_TOOLS`) register without an owner,
+and public MCP key bindings are not checked against the Agent's plugins.
+
 ## 6. Defence in depth for cached data
 
 The Odoo / external-system response cache and the in-memory conversation
@@ -1639,8 +1695,8 @@ answer they check:
 Callers: every `bundle.agent` caller goes through the wrapper — chat routes,
 channel adapters, the scheduler (`scheduleWorker.ts`) and conductor steps
 (`realStepEffects.ts`, `builderAgent.ts`). The subscription-CLI chat runtime
-is never wrapped (§3a); the verifier's own provider may be `claude-cli`, which
-receives the same masked text. Deliberately unchanged: `verifier_contradictions`
+is never wrapped (§3a); the verifier's own provider cannot be `claude-cli`
+(#1583). Deliberately unchanged: `verifier_contradictions`
 stores claim text, claimed and truth values restored to real values
 (server-side, same trust zone as the session log); prompt masking stays
 default-off, so the extraction request carries the raw prompt when the
@@ -1975,7 +2031,10 @@ These tool results skip the digest:
   guard can be repaired; only chat answers with the refusal until it is back.
   A turn on the subscription CLI (`claude-cli`), which has no shield, is
   refused the same way under the clamp, before the child is spawned
-  (`CliChatAgent`, `CLI_PRIVACY_SHIELD_REQUIRED_ANSWER`). A refused
+  (`CliChatAgent`, `cliPrivacyShieldRequiredAnswer`). Its answer names the
+  cause and the API-key provider as the fix, in the turn's language
+  (`Orchestrator.noticeLocale`, `en*` → English, else German), and every
+  refused turn logs `CLI_PRIVACY_SHIELD_REQUIRED_LOG` for the operator. A refused
   turn fires no turn hook and runs no parked MCP input replay; the canvas
   skeleton skips its model call (`composeSkeleton({ skipModel })`); and the
   memory jobs outside a turn refuse without a guard (`createJobPrivacy`).
@@ -2184,13 +2243,42 @@ checkpoint younger than the retention window, the verifier flags
 inverse — "a checkpoint covering the row bounds its age" — is deliberately
 NOT used: it only upper-bounds creation time and would flag legitimately
 old rows on installs that enabled signing late.) Two structural guards
-accompany it: the retention reaper deletes chained rows only up to the
-greatest checkpointed seq, so a surviving suffix always has a signed
-anchor; and the verifier consults the recorded stream head, so a wiped or
-tail-truncated table can never report green (`empty_chain_with_history`,
-`head_beyond_rows`). Verify surface: `GET /api/v1/operator/provenance/
-verify`, signed export + zero-dependency offline verifier — see
-`docs/provenance-verification.md`.
+accompany it: the retention reaper deletes chained rows only below the
+greatest checkpointed seq, so the certified row survives and the suffix
+always has a signed anchor; and the verifier consults the recorded stream
+head, so a wiped or tail-truncated table can never report green
+(`empty_chain_with_history`, `head_beyond_rows`). Verify surface: `GET
+/api/v1/operator/provenance/verify`, signed export + zero-dependency
+offline verifier — see `docs/provenance-verification.md`.
+
+Tail truncation with the checkpoints deleted too (#1565, #1566): a
+checkpoint above the newest stored row is orphaned; with
+`AUDIT_SIGNING_KEY` set, a chain no signature-valid checkpoint certifies is
+broken (`no_signed_checkpoint`) once its oldest row is older than two
+checkpoint intervals; the anchor file (`AUDIT_ANCHOR_PATH`) is read back and
+every anchored checkpoint must still be in `audit_checkpoints` unchanged
+(with signing on, a missing anchor file is a finding — the worker creates
+it at boot); and the process witness — the highest head this process read,
+the newest checkpoint it signed — must still hold. The checkpoint worker
+signs only a head that is a stored row, and refuses while the witness or
+the anchor disagrees with the database; it and the reaper count only
+signature-valid checkpoints at or below the head, so a junk row above the
+head cannot stop signing or widen retention (junk at the next seqs blocks
+signing at those seqs and shows as `bad_signature`). Verify and export read in one REPEATABLE READ snapshot and walk
+every row (no cap). Migration 0064 rejects deleting, updating or truncating
+checkpoints and rolling back, truncating or re-hashing the head — defence
+in depth: the table owner can drop the triggers. The documented limit:
+without an anchor, an admin who deletes checkpoints can delete or rewrite
+every row above the newest checkpoint left (the chain hash is unkeyed);
+only the witness of the process that signed the deleted checkpoints
+notices — not another replica, and not after a restart. Offline, the anchor
+must be fetched before the export: the export header is unsigned, so a
+record newer than its `exportedAt` is a finding. Without a
+key the verdict is `unsigned`, never `verified`, and a retention prefix is
+reported as unanchored information rather than a break (#1568);
+`checkpoints.verified` counts signature-checked checkpoints only (#1584).
+The server and the offline verifier apply the same rules; the witness is
+the only server-only signal.
 
 What the chain cannot show is a receipt that was never written. Appending is
 best-effort, because the user's answer outranks the audit row
@@ -4314,7 +4402,7 @@ has its own reason:
 | `/bot-api/v1/auth/*` | Sign-in, sign-out, OIDC callback, provider list. The middleware lists `/api/v1/auth` as public too (`auth/publicPaths.ts`). |
 | `/_next/*` | Framework assets and dev tooling. |
 | `/health`, `/favicon.ico` | Fly and Compose health checks must answer before anyone has signed in. Since #1382 `/health` also returns the build `version` (`OMADIA_VERSION`), as the middleware's `/health` already did. That exposes the running release to unauthenticated callers. We accept it: the release tags are public, the version is what an operator's script or the updater needs to tell which image serves, and hiding it would not hide a vulnerable build from anyone probing behaviour. |
-| `/p/*` | Plugin UI iframed by Teams Tabs, where only a Teams SSO token exists. The plugin handler runs its own auth. |
+| `/p/*` | Plugin UI iframed by Teams Tabs, where only a Teams SSO token exists. The web-ui only skips its login redirect here; the middleware enforces the session on every `auth: 'session'` plugin route (#1596, §5b), and only the static `/p/<id>/ui/` bundle and operator-granted `auth: 'custom'` routes answer without one. |
 | `/.well-known/omadia-ui`, `/pairing-discovery` | The pairing descriptor (#293), see below. |
 
 **Pairing discovery.** A desktop client that knows only the operator URL

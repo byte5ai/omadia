@@ -22,7 +22,7 @@ import {
   isGuardedControlFlowResult,
   withholdThrownToolError,
 } from './toolErrorRedaction.js';
-import type { WriteCapability } from '@omadia/plugin-api';
+import type { NativeToolHandler, WriteCapability } from '@omadia/plugin-api';
 import type { PrivacyTurnHandle } from './privacyHandle.js';
 import type { DomainTool } from './tools/domainQueryTool.js';
 import { isOfferedThisTurn, type NativeToolRegistry } from './nativeToolRegistry.js';
@@ -163,6 +163,17 @@ export interface ToolDispatchOptions {
   readonly validateResult?: (result: ToolDispatchResult) => void;
 }
 
+/** #1598 — refused by name, without naming the owning plugin (same wording as
+ *  `Orchestrator.dispatchTool`). */
+function notGranted(name: string): ToolDispatchResult {
+  console.warn(`[toolDispatchService] un-granted tool "${name}" — refused`);
+  return {
+    content: `Error: tool \`${name}\` is not available to this agent.`,
+    isError: true,
+    origin: 'dispatcher',
+  };
+}
+
 export class ToolDispatchService {
   constructor(
     private readonly deps: {
@@ -183,6 +194,14 @@ export class ToolDispatchService {
        * ungated. Absent ⇒ every plugin's tools are always available.
        */
       readonly isPluginToolsReady?: (agentId: string) => boolean;
+      /**
+       * #1598 — per-Agent plugin assignment, the twin of `isPluginToolsReady`:
+       * `Orchestrator.isToolGranted` of the Agent this dispatcher serves. A
+       * tool it denies is neither advertised nor run. Absent ⇒ ungated (the
+       * legacy single-Agent path, the public MCP endpoint whose key bindings
+       * name the exact tools, and the CLI sub-agent's own fixed tool set).
+       */
+      readonly isToolGranted?: (name: string, agentId: string | undefined) => boolean;
       /**
        * #542 prerequisite — the privacy data-plane boundary for this path.
        *
@@ -231,6 +250,14 @@ export class ToolDispatchService {
        * guarantee — it is NOT distributed idempotency.
        */
       readonly idempotency?: ToolIdempotencyStore;
+      /**
+       * #1585 — the handler the owning Orchestrator build dispatches a kernel
+       * native to (`Orchestrator.kernelNativeHandler`). Wins over the shared
+       * registry's handler, which belongs to whichever build registered first
+       * and would park a choice card on an instance this build never drains.
+       * Returns `undefined` for every name it does not own.
+       */
+      readonly kernelNativeHandler?: (name: string) => NativeToolHandler | undefined;
     },
   ) {}
 
@@ -243,6 +270,11 @@ export class ToolDispatchService {
     if (agentId === undefined) return true;
     if (!this.deps.isPluginToolsReady) return true;
     return this.deps.isPluginToolsReady(agentId);
+  }
+
+  /** #1598 — see `deps.isToolGranted`. */
+  private isGranted(name: string, agentId: string | undefined): boolean {
+    return this.deps.isToolGranted?.(name, agentId) ?? true;
   }
 
   /** Explicit dep wins; ambient turn handle is the fallback. */
@@ -333,9 +365,14 @@ export class ToolDispatchService {
     options?: ToolDispatchOptions,
   ): Promise<ToolDispatchResult> {
     const nativeRegistration = this.deps.nativeTools.get(name);
-    const nativeHandler = nativeRegistration?.handler;
+    const nativeHandler =
+      this.deps.kernelNativeHandler?.(name) ?? nativeRegistration?.handler;
     // Mirrors Orchestrator ordering: plugin/native handlers win first.
     if (nativeRegistration !== undefined && nativeHandler !== undefined) {
+      // #1598 — grant first: the readiness message names the plugin.
+      if (!this.isGranted(name, nativeRegistration.agentId)) {
+        return notGranted(name);
+      }
       if (!this.isToolAvailable(nativeRegistration.agentId)) {
         return {
           content: `Error: tool \`${name}\` is unavailable — plugin \`${nativeRegistration.agentId}\` has not completed its connection/auth setup.`,
@@ -351,6 +388,9 @@ export class ToolDispatchService {
       // Issue #474 follow-up — same gate as the native-handler branch above;
       // DomainTools carry an `agentId` too and were previously dispatchable
       // through this bridge regardless of the owning plugin's readiness.
+      if (!this.isGranted(name, domainTool.agentId)) {
+        return notGranted(name);
+      }
       if (!this.isToolAvailable(domainTool.agentId)) {
         return {
           content: `Error: tool \`${name}\` is unavailable — plugin \`${domainTool.agentId}\` has not completed its connection/auth setup.`,
@@ -620,6 +660,9 @@ export class ToolDispatchService {
       if (!this.isToolAvailable(registration.agentId)) {
         continue;
       }
+      if (!this.isGranted(registration.name, registration.agentId)) {
+        continue;
+      }
       // #1346 — per-turn availability, same gate as the orchestrator's own
       // tool list. The CLI lifecycle calls this inside the turn scope; a
       // caller outside any turn (public MCP `tools/list`) sees such tools
@@ -642,6 +685,9 @@ export class ToolDispatchService {
       }
       // Issue #474 follow-up — same gate as the native-tool loop above.
       if (!this.isToolAvailable(tool.agentId)) {
+        continue;
+      }
+      if (!this.isGranted(tool.name, tool.agentId)) {
         continue;
       }
       advertised.set(tool.name, {

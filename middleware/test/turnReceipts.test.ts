@@ -169,7 +169,7 @@ describe('#757 retention reaper', () => {
       // process-clock timestamp parameter (#709: anchor ≠ what a lagging
       // process controls).
       assert.match(q.sql, /NOW\(\) - make_interval/);
-      assert.deepEqual(q.params, [30]);
+      assert.deepEqual(q.params, [30, null]); // no key ⇒ no checkpoint bound
     } finally {
       reaper.stop();
     }

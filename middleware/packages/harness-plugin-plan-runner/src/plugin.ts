@@ -29,6 +29,7 @@ import {
   markLatestPlanVerifierBlocked,
   replanRemainder,
 } from './replanner.js';
+import { remapPlanSteps, TRACE_RESULT_HEAD, type TraceEntry } from './stepMapper.js';
 
 /**
  * `@omadia/plugin-plan-runner` — #133 (plan-as-data) slices E2–E4.
@@ -75,6 +76,9 @@ interface TurnRecord {
   readonly reusedProcessTitle?: string;
   /** Replan counter — namespaces recovery step ids. */
   generation: number;
+  /** #1502 option C — the turn's successful work calls, for the turn-end
+   *  mapping pass. */
+  readonly trace: TraceEntry[];
 }
 
 /** Default eviction bounds for the per-turn state map. A turn that errors
@@ -252,6 +256,12 @@ export async function activate(
   const gcDuplicatePlans =
     ctx.config.get<string>('gcDuplicatePlans') !== 'off';
 
+  // #1502 option C — one Haiku pass after the turn maps the whole tool trace
+  // to the steps and corrects the STORED plan (recall reads it). The live
+  // card keeps the in-turn heuristic. ON by default; `off` saves the call.
+  const mapStepsAtTurnEnd =
+    ctx.config.get<string>('mapStepsAtTurnEnd') !== 'off';
+
   // Reuse a learned process (ProcessMemory) instead of re-planning a matching
   // turn via Haiku — the core "stop re-thinking every turn" fix. ON by default
   // (set `reuseProcesses=off` to disarm). Inert when no processMemory@1
@@ -283,6 +293,9 @@ export async function activate(
   // entries (TTL + hard cap) on each onBeforeTurn via pruneTurns().
   const turns = new Map<string, TurnRecord>();
   const disposers: Array<() => void> = [];
+  // Turn-end mapping runs in flight; `close()` waits for them so none writes
+  // to the graph after deactivation.
+  const pendingMappings = new Set<Promise<void>>();
 
   // #1502 — a replan that throws after marking the step `failed` must not
   // leave the cursor on it, or the turn's end would rewrite that `failed`.
@@ -401,6 +414,7 @@ export async function activate(
           exitConditionByStep,
           ...(reusedProcessTitle ? { reusedProcessTitle } : {}),
           generation: 0,
+          trace: [],
         };
         turns.set(hookCtx.turnId, record);
         await startFirstStep(record.plan, kg);
@@ -460,13 +474,23 @@ export async function activate(
         // #1502 — memory reads, answer rendering and follow-up cards serve the
         // turn, not a plan step: they neither advance nor fail one.
         if (payload.toolIsBookkeeping === true) return;
+        const failed = payload.toolFailed ?? isToolFailure(payload.toolResult);
+        // #1502 option C — every successful work call, also past the last
+        // step: the turn-end mapping sees what the cursor could not.
+        if (!failed && payload.toolName) {
+          record.trace.push({
+            toolName: payload.toolName,
+            // Only the head is ever used; a full result can be megabytes.
+            result: (payload.toolResult ?? '').slice(0, TRACE_RESULT_HEAD),
+          });
+        }
         const currentId = record.plan.stepExternalIds[record.plan.cursor];
         if (currentId === undefined) return;
 
         // Trigger (a) — tool failure → replan the remainder of the DAG. The
         // orchestrator's `toolFailed` also covers a sub-agent whose inner calls
         // all failed; the `Error:` check is the fallback for older kernels.
-        if (payload.toolFailed ?? isToolFailure(payload.toolResult)) {
+        if (failed) {
           record.generation += 1;
           const { newStepExternalIds } = await replanOrAbandon(record, {
             planExternalId: record.planExternalId,
@@ -578,6 +602,39 @@ export async function activate(
         // before the turn's `done` event, then drop the per-turn state.
         const annotation = await planAnnotation(record.planExternalId, record.reusedProcessTitle);
         turns.delete(hookCtx.turnId);
+        // #1502 option C — correct the stored record after the snapshot, so
+        // the live card keeps the heuristic and `done` does not wait on Haiku.
+        // A plan whose turn ran no work call has nothing to map.
+        if (mapStepsAtTurnEnd && record.trace.length > 0) {
+          const run: Promise<void> = remapPlanSteps(
+            {
+              planExternalId: record.planExternalId,
+              stepExternalIds: record.plan.stepExternalIds,
+              trace: record.trace,
+              answered: (payload.assistantAnswer ?? '').trim().length > 0,
+            },
+            kg,
+            llm,
+          )
+            .then((changed) => {
+              ctx.log(
+                changed === undefined
+                  ? `[plan-runner] step mapping failed for ${record.planExternalId} — kept the in-turn mapping`
+                  : `[plan-runner] step mapping for ${record.planExternalId}: ${String(changed)} step(s) corrected`,
+              );
+            })
+            .catch((err: unknown) => {
+              ctx.log(
+                `[plan-runner] step mapping failed for ${record.planExternalId}: ${
+                  err instanceof Error ? err.message : String(err)
+                }`,
+              );
+            })
+            .finally(() => {
+              pendingMappings.delete(run);
+            });
+          pendingMappings.add(run);
+        }
         return annotation;
       },
     }),
@@ -614,6 +671,7 @@ export async function activate(
       ctx.log('[plan-runner] deactivating');
       for (const dispose of disposers) dispose();
       turns.clear();
+      await Promise.allSettled([...pendingMappings]);
     },
   };
 }

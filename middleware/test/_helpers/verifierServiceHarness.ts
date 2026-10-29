@@ -53,6 +53,12 @@ export interface PersistedRow {
   mode: 'shadow' | 'enforce';
 }
 
+/** #1571 — the `run_id` and `agent` a stored row carries. */
+export interface PersistedIds {
+  runId: string;
+  agent?: string;
+}
+
 export interface VerifierHarness {
   readonly service: VerifierService;
   /** The input of each `pipeline.verify` call. */
@@ -64,6 +70,7 @@ export interface VerifierHarness {
   /** Inputs passed to `markScreeningReentry`, by identity. */
   readonly reentries: ChatTurnInput[];
   readonly persisted: PersistedRow[];
+  readonly persistedIds: PersistedIds[];
   /** Turn-hook points the service fired. */
   readonly hookPoints: string[];
   /** Every line the service logged. */
@@ -91,6 +98,7 @@ export function createVerifierHarness(opts: VerifierHarnessOptions): VerifierHar
   const runTurnInputs: ChatTurnInput[] = [];
   const reentries: ChatTurnInput[] = [];
   const persisted: PersistedRow[] = [];
+  const persistedIds: PersistedIds[] = [];
   const hookPoints: string[] = [];
   const logs: string[] = [];
   const streams = opts.streams ?? [];
@@ -135,8 +143,17 @@ export function createVerifierHarness(opts: VerifierHarnessOptions): VerifierHar
   } as unknown as VerifierPipeline;
 
   const store = {
-    persist(row: { verdict: VerifierVerdict; retryCount: number; mode: 'shadow' | 'enforce' }) {
+    persist(row: {
+      input: { runId: string; agent?: string };
+      verdict: VerifierVerdict;
+      retryCount: number;
+      mode: 'shadow' | 'enforce';
+    }) {
       persisted.push({ status: row.verdict.status, retryCount: row.retryCount, mode: row.mode });
+      persistedIds.push({
+        runId: row.input.runId,
+        ...(row.input.agent !== undefined ? { agent: row.input.agent } : {}),
+      });
       return Promise.resolve();
     },
   } as unknown as VerifierStore;
@@ -170,6 +187,7 @@ export function createVerifierHarness(opts: VerifierHarnessOptions): VerifierHar
     runTurnInputs,
     reentries,
     persisted,
+    persistedIds,
     hookPoints,
     logs,
     async stream(input = USER_INPUT, observer) {

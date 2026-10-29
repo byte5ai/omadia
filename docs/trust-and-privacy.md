@@ -166,10 +166,21 @@ answer:
   off. With the OpenAI-compatible embedding adapter, stored turns and
   memories are embedded at that provider as stored, real values included, and
   masking them is still open. Through `ctx.llm`, the plan-runner's
-  planning check sends the user's message before the turn starts. Images the
+  planning check sends the user's message before the turn starts. After a
+  planned turn, its step-mapping call (`mapStepsAtTurnEnd`, on by default)
+  sends the plan's step goals, the names of the tools the turn called and
+  whether it answered. It sends no tool result and no answer text. Images the
   user attaches are not masked in any request, because the shield reads text
   only. Agents on the Claude subscription CLI (`claude-cli`) run without the
-  shield, and `agents.privacy_profile` is not a shield setting
+  shield. While `OMADIA_PRIVACY_FORCE_GUARDED` is set, every turn of such an
+  agent is refused before the CLI starts, so nothing reaches the model (fail
+  closed). The user gets an answer in the turn's language (English for an
+  `en*` locale, German otherwise, as for every notice) saying that the
+  organisation requires the shield, that the subscription CLI has none, and
+  that the operator can assign the agent an API-key provider under LLM
+  access. The operator gets a warning in the log for each refused turn that
+  names `OMADIA_PRIVACY_FORCE_GUARDED` and both ways out: that provider, or
+  unsetting the variable. `agents.privacy_profile` is not a shield setting
   ([`docs/security-architecture.md`](security-architecture.md) §3a, §6b,
   §6c, §6d, §6f, §7b).
   Spec: [`specs/001-privacy-shield-v4/`](../specs/001-privacy-shield-v4/).
@@ -218,11 +229,16 @@ answer:
   abandoned. Without that replay ledger, which `enforce` binds only when it
   may re-enter, the MCP client retries a call once after a transport failure,
   so an MCP write whose reply was lost can run twice. An answer the shield
-  rendered with real values is never sent to the verifier, so `enforce`
-  withholds it, unless the turn carries an input card: the card exemption runs
-  first, and a turn with an input card goes out unchecked, a rendered answer
-  included. Agents on the Claude subscription CLI and routines are not
-  verified ([`docs/security-architecture.md`](security-architecture.md)
+  rendered with real values is delivered in `enforce` too (#1407): the
+  verifier checks the prose the model wrote around the rows like any answer,
+  and a rendered answer without prose goes out as system data (verdict
+  `skipped` / `system_data`, chip "Original system data"). The rows themselves
+  are never sent to the verifier. `enforce` still withholds a rendered tool
+  error or sign-in prompt, a render whose provider reports no prose field, and
+  a Direct Line relay behind the shield. A turn with an input card goes out
+  unchecked, a rendered answer included: the card exemption runs first. Agents
+  on the Claude subscription CLI and routines are not verified, and the
+  verifier itself cannot be assigned to the subscription CLI (#1583) ([`docs/security-architecture.md`](security-architecture.md)
   §6e, §7c).
 - **Office files from real rows**: when a specialist agent returns a
   `datasetId`, `create_xlsx` resolves the rows server-side and writes them into

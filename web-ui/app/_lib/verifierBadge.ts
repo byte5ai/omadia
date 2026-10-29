@@ -38,7 +38,8 @@ export type VerifierBadgeHint =
   | 'noneConfirmed'
   | 'checkFailed'
   | 'partialUnchecked'
-  | 'partialCoverage';
+  | 'partialCoverage'
+  | 'systemDataProse';
 
 export interface VerifierBadgeView {
   state: VerifierBadgeState;
@@ -77,8 +78,37 @@ function unverified(reason: unknown): VerifierBadgeView {
   return { state: 'unverified', tone: 'neutral', hint: hint ?? 'unverified', count: 0 };
 }
 
-/** `null` when there is no summary to show; otherwise the badge to render. */
-export function verifierBadgeView(summary: unknown): VerifierBadgeView | null {
+/** Skip hints that speak of "the answer" as a whole. */
+const WHOLE_ANSWER_SKIP_HINTS: ReadonlySet<VerifierBadgeHint> = new Set([
+  'noTrigger',
+  'noClaims',
+  'noCheckableClaims',
+]);
+
+export interface VerifierBadgeOptions {
+  /** #1580 — the answer also carries rows Privacy Shield rendered from the
+   *  source system, which the verifier never sees. */
+  systemData?: boolean;
+}
+
+/**
+ * `null` when there is no summary to show; otherwise the badge to render.
+ * #1580 — next to rendered system data, a skip hint that speaks of the whole
+ * answer ("contains no figures, dates or references") would contradict the
+ * table on screen: it then says that only the model's text was screened.
+ */
+export function verifierBadgeView(
+  summary: unknown,
+  options: VerifierBadgeOptions = {},
+): VerifierBadgeView | null {
+  const view = baseView(summary);
+  if (view && options.systemData === true && WHOLE_ANSWER_SKIP_HINTS.has(view.hint)) {
+    return { ...view, hint: 'systemDataProse' };
+  }
+  return view;
+}
+
+function baseView(summary: unknown): VerifierBadgeView | null {
   if (typeof summary !== 'object' || summary === null) return null;
   const s = summary as Record<string, unknown>;
   // System data only: nothing the model wrote, so nothing to verify. The

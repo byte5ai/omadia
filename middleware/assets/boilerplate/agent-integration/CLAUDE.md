@@ -358,7 +358,7 @@ Plugins.
 
 | Wert | Bedeutung |
 |---|---|
-| `'session'` | Der Kernel prüft die Operator-Session — dieselbe `requireAuth`-Instanz, die Core an `/api` mountet. Unter `/api` ist das Defense-in-Depth, **außerhalb** von `/api` (z.B. `/diagrams`) ist es das einzige Session-Gate. CSRF-Haltung = die von Core: `SameSite=Lax`-Cookie, kein Token-Layer. |
+| `'session'` | Der Kernel prüft die Operator-Session — dieselbe Session-Prüfung wie Core an `/api`, aber **ohne** die statische Public-Path-Ausnahme (#1596): kein Prefix, auch nicht `/p/…`, öffnet eine `'session'`-Route. Eine Teams-Tab-Seite ohne omadia-Session braucht `'custom'` + freigegebenen `public_paths`-Eintrag. Unter `/api` ist das Defense-in-Depth, **außerhalb** von `/api` (z.B. `/diagrams`) ist es das einzige Session-Gate. CSRF-Haltung = die von Core: `SameSite=Lax`-Cookie, kein Token-Layer. |
 | `'public'` | Kein Kernel-Auth. **Registrierung wirft**, wenn das Prefix nicht unterhalb eines in `permissions.public_paths` deklarierten Pfads liegt. Die Route wird **ausschließlich** über den Public-Path-Mount ausgeliefert — also nur, solange die Zustimmung des Operators für dieses Prefix steht. |
 | `'custom'` | Wie `'public'` — gleiche Deklarationspflicht, gleiche Erreichbarkeitsregel —, aber du sagst damit zu, **jeden** Request selbst zu authentifizieren (HMAC, Bearer, mTLS-Header). |
 

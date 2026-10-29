@@ -159,11 +159,13 @@ import type {
   PrivacyReceipt,
   PrivacyRenderedAnswer,
   ProcessMemoryService,
+  ProfileQualityConfig,
   ResponseGuardService,
   SessionBriefingService,
   TurnMaskedView,
   TurnReceiptStore,
 } from '@omadia/plugin-api';
+import { responseGuardProfileFor } from './agentQuality.js';
 import {
   agentScopePrefix,
   isUnknownOutcomeToolErrorNotice,
@@ -200,7 +202,7 @@ import {
   type PrivacyEgressContinuation,
   type TurnWireView,
 } from './privacyEgress.js';
-import { RunTraceCollector, type InvocationHandle } from './runTraceCollector.js';
+import { RunTraceCollector, shareEntityRefs, type InvocationHandle } from './runTraceCollector.js';
 import {
   resolveDirectLineTarget,
   directLineLabel,
@@ -456,6 +458,31 @@ const KERNEL_NATIVE_SPECS: ReadonlySet<unknown> = new Set(
 );
 
 /**
+ * #1585 — true when `reg` is a full-form registration made by
+ * {@link registerKernelNativeTools}, not one a plugin contributed under the
+ * same name.
+ *
+ * The registry is one kernel service shared by every Orchestrator build, and
+ * `registerKernelNativeTools` keeps the FIRST build's handler for the life of
+ * the process. That handler's instance is not the one a later build drains
+ * (`drainPendingChoice`, `drainFollowUps`, …), so a kernel-owned registration
+ * must never be dispatched through: each build dispatches to its own instance.
+ */
+export function isKernelNativeRegistration(
+  reg: { readonly spec?: unknown } | undefined,
+): boolean {
+  return reg?.spec !== undefined && KERNEL_NATIVE_SPECS.has(reg.spec);
+}
+
+/** #1585 — the instance in `instances` that serves kernel native `name`. */
+function pickKernelNative(
+  instances: KernelNativeInstances,
+  name: string,
+): KernelNativeHandleable | undefined {
+  return KERNEL_NATIVE_FULL_FORM.find((f) => f.name === name)?.pick(instances);
+}
+
+/**
  * Register the kernel-native tools into `registry`, giving each of the wired
  * five (see {@link KERNEL_NATIVE_FULL_FORM}) a spec + handler so the loopback
  * MCP server actually advertises AND dispatches it on the subscription-CLI
@@ -464,11 +491,22 @@ const KERNEL_NATIVE_SPECS: ReadonlySet<unknown> = new Set(
  *
  * A name already present in `registry` (a plugin got there first) is left
  * untouched, matching the previous loop's `has()` guard.
+ *
+ * #1585 — the registry outlives every build, so the registered handler is
+ * late-bound: it serves the instances of the MOST RECENT build on `registry`,
+ * not the first build's, which no turn drains any more. The orchestrator's own
+ * loop and the subscription-CLI dispatcher do not go through it at all (they
+ * use the build's own instances, see {@link isKernelNativeRegistration}); this
+ * covers the remaining registry readers (sub-agent tool refs, plugin
+ * `tools.invoke`).
  */
+const latestKernelInstances = new WeakMap<NativeToolRegistry, KernelNativeInstances>();
+
 export function registerKernelNativeTools(
   registry: NativeToolRegistry,
   instances: KernelNativeInstances,
 ): void {
+  latestKernelInstances.set(registry, instances);
   const fullByName = new Map(KERNEL_NATIVE_FULL_FORM.map((f) => [f.name, f]));
   for (const name of KERNEL_NATIVE_TOOL_NAMES) {
     if (registry.has(name)) {
@@ -479,7 +517,12 @@ export function registerKernelNativeTools(
     if (full && instance) {
       registry.register(name, {
         spec: full.spec,
-        handler: (input: unknown) => instance.handle(input),
+        handler: (input: unknown) => {
+          const current = full.pick(latestKernelInstances.get(registry) ?? instances);
+          return current
+            ? current.handle(input)
+            : Promise.resolve(`Error: tool \`${name}\` is unavailable for this agent.`);
+        },
       });
     } else {
       registry.register(name);
@@ -823,6 +866,13 @@ export interface OrchestratorOptions {
    * runs `ctx.services.get(RESPONSE_GUARD_SERVICE_NAME)` per call.
    */
   responseGuard?: () => ResponseGuardService | undefined;
+  /**
+   * #1569 — this Agent's own response-quality settings
+   * (`agent_identities.quality`). Handed to the `responseGuard` provider so it
+   * resolves per agent; see `responseGuardProfileFor` for why a field the agent
+   * set itself yields no second block from the guard.
+   */
+  agentQuality?: ProfileQualityConfig;
   /**
    * Optional `privacy.redact@1` provider lookup — Privacy-Proxy Slice 2.1.
    * Late-bound for the same reason as `responseGuard`: the orchestrator
@@ -2134,6 +2184,28 @@ interface BoundPass {
   readonly pass: number;
 }
 
+/**
+ * #1578 — the disclosure seen-store as one verifier request sees it. The
+ * first pass that folds the line marks the conversation seen AND the request
+ * (`ToolReplayLedger.disclosureFolded`); every later pass of that request — a
+ * correction retry, a resample — then folds again, so the answer the user
+ * receives carries the line whichever pass it comes from. Unbound turns use
+ * the store as is.
+ */
+function requestDisclosureSeen(
+  seen: DisclosureSeenStore,
+  ledger: ToolReplayLedger | undefined,
+): DisclosureSeenStore {
+  if (ledger === undefined) return seen;
+  return {
+    hasSeen: (scope) => !ledger.disclosureFolded && seen.hasSeen(scope),
+    markSeen: (scope) => {
+      seen.markSeen(scope);
+      ledger.disclosureFolded = true;
+    },
+  };
+}
+
 /** The pass of `ledger` that starts now, or undefined for an unbound turn. */
 function boundPassOf(ledger: ToolReplayLedger | undefined): BoundPass | undefined {
   return ledger === undefined ? undefined : { ledger, pass: ledger.pass };
@@ -2783,6 +2855,7 @@ export class Orchestrator {
   private readonly findFreeSlotsTool: FindFreeSlotsTool | undefined;
   private readonly bookMeetingTool: BookMeetingTool | undefined;
   private readonly responseGuard: (() => ResponseGuardService | undefined) | undefined;
+  private readonly agentQuality: ProfileQualityConfig | undefined;
   private readonly privacyGuard: (() => PrivacyGuardService | undefined) | undefined;
   private readonly turnReceiptStore: (() => TurnReceiptStore | undefined) | undefined;
   /**
@@ -2952,6 +3025,7 @@ export class Orchestrator {
     this.findFreeSlotsTool = options.findFreeSlotsTool;
     this.bookMeetingTool = options.bookMeetingTool;
     this.responseGuard = options.responseGuard;
+    this.agentQuality = options.agentQuality;
     this.privacyGuard = options.privacyGuard;
     this.turnReceiptStore = options.turnReceiptStore;
     this.pluginConfigGet = options.pluginConfigGet;
@@ -2993,11 +3067,19 @@ export class Orchestrator {
     // #1102 — the wired five get a spec + handler so the loopback MCP server
     // advertises and dispatches them on the subscription-CLI path; memory and
     // get_chat_participants stay marker-only (see registerKernelNativeTools).
-    registerKernelNativeTools(this.nativeTools, {
-      // The registered handler knows no turn, and it is what the
-      // subscription-CLI path dispatches through. For an agent whose context
-      // memory restricts the graph tool per turn it would read every room of
-      // the tenant, so it sees nothing instead (`unrestrictedGraphToolAllowed`).
+    registerKernelNativeTools(this.nativeTools, this.kernelNativeInstances());
+  }
+
+  /**
+   * The instances this build's kernel natives dispatch to on a path that
+   * knows no turn (the subscription-CLI loopback, see
+   * {@link kernelNativeHandler}).
+   */
+  private kernelNativeInstances(): KernelNativeInstances {
+    return {
+      // This handler knows no turn. For an agent whose context memory
+      // restricts the graph tool per turn it would read every room of the
+      // tenant, so it sees nothing instead (`unrestrictedGraphToolAllowed`).
       knowledgeGraphTool:
         this.knowledgeGraphTool && !this.unrestrictedGraphToolAllowed()
           ? { handle: (input: unknown) => this.knowledgeGraphTool!.handle(input, NOTHING_VISIBLE) }
@@ -3006,7 +3088,23 @@ export class Orchestrator {
       suggestFollowUpsTool: this.suggestFollowUpsTool,
       findFreeSlotsTool: this.findFreeSlotsTool,
       bookMeetingTool: this.bookMeetingTool,
-    });
+    };
+  }
+
+  /**
+   * #1585 — the handler THIS build dispatches kernel native `name` to, for a
+   * dispatcher outside the in-process loop (the subscription-CLI
+   * `ToolDispatchService`). The shared registry holds the first build's
+   * handler, whose pending card no later build ever drains; this one writes
+   * to the instance {@link drainCliTurnCards} reads.
+   *
+   * `undefined` when a plugin owns the name (its registered handler wins, as
+   * before) or this build has no instance for it.
+   */
+  public kernelNativeHandler(name: string): ((input: unknown) => Promise<string>) | undefined {
+    if (!isKernelNativeRegistration(this.nativeTools.get(name))) return undefined;
+    const instance = pickKernelNative(this.kernelNativeInstances(), name);
+    return instance ? (input: unknown) => instance.handle(input) : undefined;
   }
 
   /** Fresh {@link LoopGuard} for one turn, wired to this Agent's thresholds. */
@@ -4464,6 +4562,7 @@ export class Orchestrator {
   private discloseDoneEvent(
     done: Extract<ChatStreamEvent, { type: 'done' }>,
     input: ChatTurnInput,
+    ledger?: ToolReplayLedger,
   ): Extract<ChatStreamEvent, { type: 'done' }> {
     // #1094 — expand a degraded turn's marker into the localized notice FIRST,
     // so the disclosure line below folds onto readable text (and so the fold's
@@ -4484,9 +4583,33 @@ export class Orchestrator {
       ...(input.sessionScope
         ? { scope: this.disclosureFoldScope(input.sessionScope) }
         : {}),
-      seen: this.disclosureSeen,
+      seen: requestDisclosureSeen(this.disclosureSeen, ledger),
     });
     return { ...delivered, answer: text, aiDisclosure };
+  }
+
+  /**
+   * #1582 — the AI disclosure for a subscription-CLI turn (`CliChatAgent`),
+   * which never passes through this class's output paths: the same per-turn
+   * resolution (operator level, per-channel override, locale, assistant name,
+   * note) and the same first-turn fold on the same seen-store as an
+   * API-key turn. Returns the answer unchanged and no carrier for an
+   * operator `'off'`.
+   */
+  discloseCliAnswer(
+    answer: string,
+    input: ChatTurnInput,
+  ): { readonly answer: string; readonly aiDisclosure?: AiDisclosure } {
+    const aiDisclosure = this.resolveTurnDisclosure(input);
+    if (!aiDisclosure) return { answer };
+    const { text } = applyAiDisclosure(answer, {
+      disclosure: aiDisclosure,
+      ...(input.sessionScope
+        ? { scope: this.disclosureFoldScope(input.sessionScope) }
+        : {}),
+      seen: this.disclosureSeen,
+    });
+    return { answer: text, aiDisclosure };
   }
 
   /**
@@ -4515,6 +4638,12 @@ export class Orchestrator {
    *  locale, else the operator's configured one (composers default to `de`). */
   private turnLocale(input: ChatTurnInput): string | undefined {
     return this.resolveTurnDisclosure(input)?.locale ?? this.aiDisclosure?.locale;
+  }
+
+  /** {@link turnLocale} for a runtime outside this loop: the subscription
+   *  CLI's refusal under `OMADIA_PRIVACY_FORCE_GUARDED` (#1535). */
+  public noticeLocale(input: ChatTurnInput): string | undefined {
+    return this.turnLocale(input);
   }
 
   private expandDegradedDoneEvent(
@@ -6594,7 +6723,7 @@ export class Orchestrator {
     // Open an EntityRef collection keyed to this turn. Tool handlers that
     // publish during the turn will be matched by turnId via AsyncLocalStorage.
     // Always drain — on success, iteration-overrun throw, or upstream error.
-    const entityCollection = this.entityRefBus?.beginCollection(turnId);
+    const entityCollection = shareEntityRefs(this.entityRefBus?.beginCollection(turnId));
 
     let toolCalls = 0;
     // Claude may emit natural-language text alongside tool_use in the same assistant
@@ -6608,6 +6737,8 @@ export class Orchestrator {
       ? new RunTraceCollector({
           scope: input.sessionScope,
           ...runTraceUserSpread(input),
+          turnId,
+          ...(entityCollection ? { entityRefs: entityCollection } : {}),
         })
       : undefined;
 
@@ -7329,6 +7460,7 @@ export class Orchestrator {
           iterations: 0,
         } as Extract<ChatStreamEvent, { type: 'done' }>,
         input,
+        boundLedger,
       );
       return;
     }
@@ -7642,7 +7774,7 @@ export class Orchestrator {
         yield* this.toAnnotationEvents(
           await this.afterTurn(turnId, input, doneEvent.answer, doneEvent.turnId),
         );
-        yield this.discloseDoneEvent(doneEvent, input);
+        yield this.discloseDoneEvent(doneEvent, input, bound?.ledger);
         return;
       }
       // #361 — failure-closed prompt masking (streaming path): the inner
@@ -7800,7 +7932,7 @@ export class Orchestrator {
               await this.afterTurn(turnId, input, doneEvent.answer, doneEvent.turnId),
             );
           }
-          yield this.discloseDoneEvent(doneEvent, input);
+          yield this.discloseDoneEvent(doneEvent, input, bound?.ledger);
           continue;
         }
         if (event.type === 'done') {
@@ -7814,7 +7946,7 @@ export class Orchestrator {
           // #644 — fold the disclosure at the boundary, AFTER the hook (which
           // records the raw answer, matching the non-streaming path where
           // `toSemanticAnswer` folds only after `runTurn` persisted the turn).
-          yield this.discloseDoneEvent(event, input);
+          yield this.discloseDoneEvent(event, input, bound?.ledger);
           continue;
         }
         yield event;
@@ -7933,7 +8065,7 @@ export class Orchestrator {
       },
     ];
 
-    const entityCollection = this.entityRefBus?.beginCollection(turnId);
+    const entityCollection = shareEntityRefs(this.entityRefBus?.beginCollection(turnId));
     let toolCalls = 0;
     // #1500 — see the buffered twin in runTurnCore.
     const answerText = new AnswerTextAccumulator();
@@ -7970,6 +8102,8 @@ export class Orchestrator {
       ? new RunTraceCollector({
           scope: input.sessionScope,
           ...runTraceUserSpread(input),
+          turnId,
+          ...(entityCollection ? { entityRefs: entityCollection } : {}),
         })
       : undefined;
 
@@ -9704,8 +9838,13 @@ export class Orchestrator {
     // legacy path for tools that have not yet been converted to
     // plugin-registration (memory, knowledge_graph, …). As each kernel tool
     // migrates, its hardcoded branch disappears.
+    //
+    // #1585 — a kernel-owned registration is skipped: it carries the handler
+    // of whichever build registered first, and its pending card would land on
+    // an instance this build never drains. The branches below dispatch to this
+    // build's own instances instead.
     const reg = this.nativeTools.get(name);
-    if (reg?.handler) {
+    if (reg?.handler && !isKernelNativeRegistration(reg)) {
       // Issue #474 — re-check readiness at invocation time, not just at
       // list-assembly time: a plugin's connection/auth state can complete
       // or expire between the two, so list-time filtering alone leaves a
@@ -9713,6 +9852,17 @@ export class Orchestrator {
       // matching the `unknown tool` fallback below — both the streaming and
       // non-streaming dispatch loops key `is_error` off that prefix, and
       // both also fold a thrown rejection into the same convention (#1095).
+      // #1598 — THE AUTHORISATION GATE for `ctx.tools.register` tools, the
+      // twin of the domain-tool gate below. Native tools live in ONE
+      // kernel-wide registry, so without this every Agent could call every
+      // plugin's tools, assigned or not. Refused by name, without the owner — and BEFORE the readiness
+      // check, whose message names the plugin.
+      if (!this.isToolGranted(name, reg.agentId)) {
+        console.warn(
+          `[orchestrator] agent "${this.agentId}" attempted un-granted plugin tool "${name}" — refused`,
+        );
+        return refuse(`Error: tool \`${name}\` is not available to this agent.`);
+      }
       if (!this.isToolAvailable(reg.agentId)) {
         return refuse(
           `Error: tool \`${name}\` is unavailable — plugin \`${reg.agentId}\` has not completed its connection/auth setup.`,
@@ -9825,7 +9975,13 @@ export class Orchestrator {
       .listWithHandler()
       // #1346 — and the same per-turn gate: a tool hidden from this turn's
       // tools[] must not be described to the model either.
-      .filter((e) => this.isToolAvailable(e.agentId) && isOfferedThisTurn(e))
+      // #1598 — nor described to an Agent its plugin is not granted to.
+      .filter(
+        (e) =>
+          this.isToolAvailable(e.agentId) &&
+          this.isToolGranted(e.name, e.agentId) &&
+          isOfferedThisTurn(e),
+      )
       .map((e) => e.promptDoc)
       .filter((doc): doc is string => typeof doc === 'string' && doc.length > 0);
     // Issue #474 (round 3) — same isToolAvailable gate as buildToolsList()'s
@@ -9878,9 +10034,14 @@ export class Orchestrator {
         role: m.role as 'user' | 'assistant',
         content: typeof m.content === 'string' ? m.content : '',
       }));
+      // #1569 — without the agent id and its own settings the provider can
+      // only ever answer with its install-wide default.
+      const profileQuality = responseGuardProfileFor(this.agentQuality);
       const result = await provider.getRules({
         systemPrompt: this.getSystemPrompt(),
         messages: flat,
+        agentId: this.agentId,
+        ...(profileQuality ? { profileQuality } : {}),
       });
       const rules = result.prependRules ?? '';
       return rules.trim().length > 0 ? rules : '';
@@ -9959,6 +10120,25 @@ export class Orchestrator {
     if (this.grantedPluginIds === undefined) return true;
     if (pluginId === undefined) return true;
     return this.grantedPluginIds.has(pluginId);
+  }
+
+  /**
+   * #1598 — the grant check for a native (`ctx.tools.register`) tool.
+   *
+   * Same rule as {@link isPluginGranted}: kernel-registered tools carry no
+   * `agentId` and stay ungated. The one exception is `memory`: the provider
+   * plugin only backs the store, while what an Agent reads and writes is
+   * scoped per Agent by the kernel (`memoryToolHandler` / the turn binder), so
+   * withholding it would take memory from every Agent the provider was never
+   * attached to rather than close a leak.
+   *
+   * Public because the subscription-CLI dispatcher (`ToolDispatchService`,
+   * wired in `buildOrchestrator.ts`) bypasses `dispatchTool` and must ask the
+   * same question.
+   */
+  isToolGranted(name: string, pluginId: string | undefined): boolean {
+    if (name === MEMORY_TOOL_NAME) return true;
+    return this.isPluginGranted(pluginId);
   }
 
   hasDomainTool(name: string): boolean {
@@ -10551,7 +10731,14 @@ export class Orchestrator {
       if (entry.spec && KERNEL_NATIVE_SPECS.has(entry.spec)) continue;
       // #1346 — a plugin may declare per turn that it cannot serve this
       // channel (e.g. a discussion needs a conversation the turn can name).
-      if (entry.spec && this.isToolAvailable(entry.agentId) && isOfferedThisTurn(entry)) {
+      // #1598 — and only when the owning plugin is granted to this Agent, the
+      // same per-orchestrator assignment domain tools already honour.
+      if (
+        entry.spec &&
+        this.isToolAvailable(entry.agentId) &&
+        this.isToolGranted(entry.name, entry.agentId) &&
+        isOfferedThisTurn(entry)
+      ) {
         nativeSpecs.push(entry.spec);
       }
     }
