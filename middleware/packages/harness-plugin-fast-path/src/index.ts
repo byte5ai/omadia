@@ -15,5 +15,6 @@ export * from './exampleMasking.js';
 export * from './storedTextPrivacy.js';
 export * from './triage.js';
 export * from './chatAnswer.js';
+export * from './fieldLabels.js';
 export * from './service.js';
 export { activate, type FastPathPluginHandle } from './plugin.js';
