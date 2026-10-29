@@ -98,10 +98,6 @@ const CORE_OWNED_EXEMPTIONS: ReadonlyArray<{
     why: 'MCP client-ID metadata document — an authorization server fetches it uncredentialed',
   },
   {
-    path: '/p/example-plugin/index.html',
-    why: 'plugin-served UI, iframed by Teams where only a Teams SSO token exists',
-  },
-  {
     path: '/api/public/v1/chat',
     why: 'public API channel ingress — requireApiKey is its authentication (#438)',
   },
@@ -148,6 +144,19 @@ describe('publicPaths — the static allowlist is a closed, core-owned set (#470
       CORE_OWNED_EXEMPTIONS.length,
       'one entry per documented exemption',
     );
+  });
+
+  it('does not exempt plugin routes under /p/ (#1596)', () => {
+    // The removed `/p/<pluginId>` entry let `auth: 'session'` plugin routes
+    // serve anonymous callers. Restoring it must fail here, not on a live
+    // instance.
+    for (const path of ['/p/agent-odoo-hr/absences', '/p/agent-odoo-hr', '/p/x?y=1']) {
+      assert.equal(
+        STATIC_PUBLIC_PATHS.some((re) => re.test(path)),
+        false,
+        `${path} must not be a static public path`,
+      );
+    }
   });
 
   it('is what the production accessor returns', () => {
