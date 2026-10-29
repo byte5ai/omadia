@@ -39,6 +39,7 @@ import { createFastPathService, FAST_PATH_SERVICE, type FastPathService } from '
 import { validatePlannedQuery, type PlannedQuery } from '../packages/harness-plugin-fast-path/src/triage.js';
 import { triageTurn } from '../packages/harness-plugin-fast-path/src/triageTurn.js';
 import { activate } from '../packages/omadia-ui-orchestrator/src/plugin.js';
+import { validateTree } from '../packages/omadia-ui-orchestrator/src/treeValidator.js';
 
 // ── fixtures ──────────────────────────────────────────────────────────────
 
@@ -456,10 +457,12 @@ describe('answer cache — canvas', () => {
   async function canvasHarness(): Promise<{
     ask: (q: string, session: string) => Promise<ChatStreamEvent[]>;
     forced: string[];
+    composer: string[];
     invokes: Array<{ name: string; input: unknown }>;
     logs: string[];
     fp: FastPathService;
   }> {
+    const composer: string[] = [];
     const reg = new Map<string, unknown>();
     const logs: string[] = [];
     const forced: string[] = [];
@@ -482,6 +485,7 @@ describe('answer cache — canvas', () => {
             forced.push(tool);
             return routerPlanner.llm.complete(req);
           }
+          composer.push('compose');
           return Promise.resolve({ text: COMPOSER });
         },
       },
@@ -521,7 +525,7 @@ describe('answer cache — canvas', () => {
       for await (const e of agent.chatStream({ userMessage: q, canvasSessionId: session } as ChatTurnInput)) out.push(e);
       return out;
     };
-    return { ask, forced, invokes, logs, fp };
+    return { ask, forced, composer, invokes, logs, fp };
   }
 
   it('a repeated shape skips router + planner on the canvas; the plan binds as before', async () => {
@@ -532,8 +536,16 @@ describe('answer cache — canvas', () => {
     assert.equal(h.fp.answerCache?.entries().length, 1);
 
     h.forced.length = 0;
+    h.composer.length = 0;
     const events = await h.ask('Offene Posten von Schmidt', 'cs-2');
     assert.equal(h.forced.length, 0, 'no router/planner call');
+    // live v431: the composer alone bounded the turn — a hit builds the
+    // skeleton from the cached plan (zero model calls on the whole turn)
+    assert.equal(h.composer.length, 0, 'no composer call');
+    assert.ok(h.logs.includes('[composition] skipped — answer-cache hit → plan skeleton'));
+    const snapshot = events.find((e) => e.type === 'surface_snapshot') as { tree?: unknown } | undefined;
+    assert.equal(validateTree(snapshot?.tree).ok, true);
+    assert.match(JSON.stringify(snapshot?.tree), /"content":"Offene Posten von Schmidt"/);
     assert.ok(h.logs.some((m) => m.startsWith('[fast-path] cache hit channel=canvas tool=odoo_query')));
     assert.ok(h.logs.some((m) => m.startsWith('[fast-path] hit channel=canvas')));
     const domain = (h.invokes.at(-1)?.input as { domain: unknown[] }).domain;

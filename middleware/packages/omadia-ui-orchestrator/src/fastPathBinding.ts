@@ -50,7 +50,7 @@ function findNode(node: unknown, id: string): Record<string, unknown> | undefine
 }
 
 export function bindPlanToSkeleton(skeleton: SkeletonResult, plan: PlannedQuery): PlanBinding {
-  if (skeleton.source !== 'model' || skeleton.dataRequirements.length === 0) return { ok: false, reason: 'no-plan' };
+  if (skeleton.source === 'fallback' || skeleton.dataRequirements.length === 0) return { ok: false, reason: 'no-plan' };
   if (skeleton.dataRequirements.length > 1) return { ok: false, reason: 'multi-container' };
   const req = skeleton.dataRequirements[0]!;
   if (findNode(skeleton.tree, req.containerId)?.['type'] !== 'table') return { ok: false, reason: 'not-a-table' };
