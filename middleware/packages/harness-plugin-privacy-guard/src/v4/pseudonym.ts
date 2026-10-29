@@ -455,25 +455,30 @@ export function createPromptPseudonymMap(
     ]);
     return takenValues;
   };
-  // #1554 security review — the pool names an e-mail or person surrogate
-  // carries, lower-cased, keyed by the surrogate. A pool address and a person
-  // surrogate that share a name part would read to the model as ONE person
-  // although they stand for two, and restore would then join the wrong
-  // address to the wrong name. Only the address minted FROM that person's
-  // surrogate (`personEmailCandidate`) may share its parts.
-  const namePartsOf = (surrogate: string): string[] => {
+  // #1554 security review — a pool address and a person surrogate that spell
+  // the same name ("lukas.becker@example.net" next to "Lukas Becker") read to
+  // the model as ONE person although they may stand for two, and restore
+  // would then join the wrong address to the wrong name. So an address may
+  // not spell a person surrogate's name and a person may not get the name an
+  // address spells — unless both stand for the same person
+  // (`linkedSurrogates`). Compared across the two types only, and by the full
+  // name: a numbered overflow address (`lukas.becker2@…`) spells no name, so
+  // the candidate streams always reach a free one.
+  const spelledName = (surrogate: string): { kind: 'person' | 'email'; name: string } | undefined => {
     const person = personSurrogateParts(surrogate);
-    if (person !== undefined) return [person.first.toLowerCase(), person.last.toLowerCase()];
+    if (person !== undefined) return { kind: 'person', name: `${person.first} ${person.last}`.toLowerCase() };
     const at = surrogate.indexOf('@');
-    const name = at > 0 ? nameFromLocalPart(surrogate.slice(0, at).replace(/\d+$/u, '')) : undefined;
-    return name === undefined ? [] : wordsOf(name);
+    const name = at > 0 ? nameFromLocalPart(surrogate.slice(0, at)) : undefined;
+    return name === undefined ? undefined : { kind: 'email', name: name.toLowerCase() };
   };
   const sharesNameWith = (candidate: string, allowed: ReadonlySet<string>): boolean => {
-    const parts = new Set(namePartsOf(candidate));
-    if (parts.size === 0) return false;
-    return [...reverse.keys()].some(
-      (taken) => !allowed.has(taken.toLowerCase()) && namePartsOf(taken).some((p) => parts.has(p)),
-    );
+    const own = spelledName(candidate);
+    if (own === undefined) return false;
+    return [...reverse.keys()].some((taken) => {
+      if (allowed.has(taken.toLowerCase())) return false;
+      const other = spelledName(taken);
+      return other !== undefined && other.kind !== own.kind && other.name === own.name;
+    });
   };
   const isFree = (candidate: string, type: string, value: string): boolean => {
     const lower = candidate.toLowerCase();
