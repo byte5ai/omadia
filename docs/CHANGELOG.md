@@ -122,6 +122,19 @@ model or the user (#1542–#1546, #1550, #1553–#1556, #1559–#1561, #1577).
 `@omadia/plugin-privacy-guard` 0.13.0, `@omadia/plugin-api` 1.47.0.
 
 
+
+### Fixed — Verifier no longer refutes a "reference" on a model without reference fields (#1574 follow-up)
+
+2026-10-29. Seen live after #1617: the claim extractor typed every leave period
+of a correct HR answer ("15.09.2025–26.09.2025 (10 Tage)") as an `id` claim on
+`hr.leave` with that period as its reference. The checker searched `hr.leave`
+by `name` (the request's free-text description), found nothing, and reported
+16 contradictions, so `enforce` withheld the answer. A reference that is not
+found is now a contradiction only on models whose reference fields are known
+(invoices, orders, payments, pickings; `SOFT_ANCHOR_REF_FIELDS`, searched
+field by field). On any other model a hit still confirms, and a miss stays
+`unverified`.
+
 ### Fixed — Verifier no longer withholds a leave total that counts every request (#1575 follow-up)
 
 2026-10-29. Seen live right after #1613: an HR answer stated "counting it

@@ -542,14 +542,27 @@ export class DeterministicChecker {
     }
 
     if (ref.ref) {
-      const ids = (await this.odoo!.execute({
-        model: ref.model,
-        method: 'search',
-        positionalArgs: [[['name', '=', ref.ref]]],
-        kwargs: { limit: 1 },
-      })) as number[] | undefined;
-      if (Array.isArray(ids) && ids.length > 0) return verified(claim, 'odoo');
-      return contradicted(claim, null, `no ${ref.model} with name="${ref.ref}"`);
+      // A miss refutes the reference only where the model's reference fields
+      // are known (invoice / order numbers, `SOFT_ANCHOR_REF_FIELDS`). On any
+      // other model `name` is free text — a leave's description, a person's
+      // name in whatever spelling — and the extractor also types periods
+      // ("15.09.2025–26.09.2025") as references there: seen live on
+      // `hr.leave`, where every period of a correct answer was "not found"
+      // and `enforce` withheld it. There a hit confirms, a miss stays
+      // `unverified`.
+      const known = SOFT_ANCHOR_REF_FIELDS[ref.model];
+      for (const field of known ?? ['name']) {
+        const ids = (await this.odoo!.execute({
+          model: ref.model,
+          method: 'search',
+          positionalArgs: [[[field, '=', ref.ref]]],
+          kwargs: { limit: 1 },
+        })) as number[] | undefined;
+        if (Array.isArray(ids) && ids.length > 0) return verified(claim, 'odoo');
+      }
+      return known
+        ? contradicted(claim, null, `no ${ref.model} with ${known.join('|')}="${ref.ref}"`)
+        : unverified(claim, `no ${ref.model} named "${ref.ref}"; ${ref.model} has no known reference field`);
     }
 
     return unverified(claim, 'id claim has neither id nor ref');
