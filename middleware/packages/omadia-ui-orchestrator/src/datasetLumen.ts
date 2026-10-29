@@ -1,3 +1,4 @@
+import { displayCell } from '@omadia/fast-path';
 /**
  * omadia-canvas-protocol/1.1 — build a data-bound Lumen from REAL rows.
  *
@@ -31,6 +32,12 @@ export interface DatasetLumenOptions {
   valueField?: string;
 }
 
+/** A row label: the display cell (many2one → name), blank → an em dash. */
+function lumenLabel(value: unknown): string {
+  const c = displayCell(value);
+  return (c === '' ? '—' : String(c)).slice(0, 48);
+}
+
 /** Construct a tappable list-chart Lumen from resolved rows. */
 export function buildDatasetLumen(rows: Row[], opts: DatasetLumenOptions = {}): Record<string, unknown> {
   const labelField =
@@ -39,7 +46,7 @@ export function buildDatasetLumen(rows: Row[], opts: DatasetLumenOptions = {}): 
     opts.valueField && rows.some((r) => opts.valueField! in r) ? opts.valueField : firstNumberField(rows);
 
   const data = rows.slice(0, MAX_ROWS).map((r) => ({
-    label: labelField ? String(r[labelField] ?? '—').slice(0, 48) : '—',
+    label: labelField ? lumenLabel(r[labelField]) : '—',
     value: valueField !== undefined ? Number(r[valueField]) || 0 : 0,
   }));
   const height = TOP + Math.max(1, data.length) * ROW_H + 12;
