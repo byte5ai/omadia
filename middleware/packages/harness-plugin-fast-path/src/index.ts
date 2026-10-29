@@ -14,6 +14,8 @@ export * from './learningCapture.js';
 export * from './exampleMasking.js';
 export * from './storedTextPrivacy.js';
 export * from './triage.js';
+export * from './router.js';
+export * from './planner.js';
 export * from './chatAnswer.js';
 export * from './fieldLabels.js';
 export * from './service.js';

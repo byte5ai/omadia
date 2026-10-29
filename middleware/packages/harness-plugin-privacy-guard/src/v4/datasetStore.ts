@@ -267,7 +267,7 @@ export function createDatasetStore(deps: DatasetStoreDeps): DatasetStore {
   }
 
   return {
-    internToolResult(toolName, rawResult): DigestEnvelope {
+    internToolResult(toolName, rawResult, toolInput): DigestEnvelope {
       const parsed = parseToolResult(rawResult, maxChars);
       const schema = deps.classify(parsed.rows, parsed.shape);
       const dataset: Dataset = {
@@ -279,6 +279,7 @@ export function createDatasetStore(deps: DatasetStoreDeps): DatasetStore {
           turnId: deps.turnId,
           truncated: parsed.truncated,
           createdAt: new Date().toISOString(),
+          ...(toolInput !== undefined ? { toolInput } : {}),
         },
       };
       interned += 1;

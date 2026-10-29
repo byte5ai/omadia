@@ -14,6 +14,7 @@
 
 import { strict as assert } from 'node:assert';
 import { afterEach, describe, it } from 'node:test';
+import { withRouterPlanner } from './_helpers/fastPathRouterPlanner.js';
 
 import {
   CHAT_AGENT_SERVICE,
@@ -131,6 +132,8 @@ async function harness(opts: {
   invoke?: ((name: string, input: unknown) => Promise<string>) | null;
   /** the base agent's own tool list (default: odoo_query); null = unknown */
   offeredTools?: string[] | null;
+  /** replaces the default fake (composer text + derived router/planner) */
+  llm?: CompositionLlm;
 }): Promise<Harness> {
   const reg = new Map<string, unknown>();
   const logs: string[] = [];
@@ -154,7 +157,7 @@ async function harness(opts: {
         return () => reg.delete(name);
       },
     },
-    llm: llmReturning(opts.composer ?? composerOutput()).llm,
+    llm: opts.llm ?? withRouterPlanner(llmReturning(opts.composer ?? composerOutput()).llm),
     config: { get: <T>(k: string): T | undefined => opts.config?.[k] as T | undefined },
     tools: { register: () => () => {}, ...(invoke ? { invoke } : {}) },
   } as unknown as PluginContext;
@@ -287,42 +290,15 @@ describe('refresh recipes — deterministic post-filter', () => {
 
 // ── composer fetch plans ─────────────────────────────────────────────────────
 
-describe('composeSkeleton — fetch plans for allow-listed tools', () => {
-  const FAST_TOOLS = [{ name: 'odoo_query', spec: 'odoo_query — SPEC-MARKER' }];
-
-  it('parses fetch + summary for an allowed tool and hands the spec to the composer', async () => {
+describe('composeSkeleton — a pure UI composer (the router + planner plan)', () => {
+  it('has no FAST PATH plan section and drops a fetch/summary the model emits anyway', async () => {
     const { llm, systems } = llmReturning(composerOutput());
-    const r = await composeSkeleton({ llm, model: 'm', userText: 'x', fastPathTools: FAST_TOOLS });
+    const r = await composeSkeleton({ llm, model: 'm', userText: 'x' });
     assert.equal(r.source, 'model');
-    assert.equal(r.dataRequirements[0]?.fetch?.tool, 'odoo_query');
-    assert.deepEqual(r.dataRequirements[0]?.fetch?.filter, [{ field: 'birthday', datePart: 'month', eq: 1 }]);
-    assert.equal(r.summary, SUMMARY);
-    assert.match(systems[0] ?? '', /SPEC-MARKER/);
-  });
-
-  it('drops a fetch for a tool outside the allow-list, and every fetch without tools', async () => {
-    const other = await composeSkeleton({
-      llm: llmReturning(composerOutput({ fetch: { ...BIRTHDAY_FETCH, tool: 'dynamics_fetchxml' } })).llm,
-      model: 'm',
-      userText: 'x',
-      fastPathTools: FAST_TOOLS,
-    });
-    assert.equal(other.dataRequirements[0]?.fetch, undefined);
-
-    const { llm, systems } = llmReturning(composerOutput());
-    const none = await composeSkeleton({ llm, model: 'm', userText: 'x' });
-    assert.equal(none.dataRequirements[0]?.fetch, undefined);
-    assert.doesNotMatch(systems[0] ?? '', /FAST PATH/);
-  });
-
-  it('drops a summary without the {count} placeholder', async () => {
-    const r = await composeSkeleton({
-      llm: llmReturning(composerOutput({ summary: 'Hier sind die Geburtstage.' })).llm,
-      model: 'm',
-      userText: 'x',
-      fastPathTools: FAST_TOOLS,
-    });
-    assert.equal(r.summary, undefined);
+    assert.equal(r.dataRequirements[0]?.fetch, undefined);
+    assert.equal('summary' in r, false);
+    assert.equal('locale' in r, false);
+    assert.doesNotMatch(systems[0] ?? '', /FAST PATH|"fetch"|VALIDATED EXAMPLES/);
   });
 });
 
@@ -443,14 +419,17 @@ describe('canvasChatAgent — deterministic fast path', () => {
     assert.doesNotMatch(h.baseInputs[0]?.userMessage ?? '', /"fetch"/);
   }
 
-  it('miss: a requirement without a fetch plan', () =>
-    assertMiss('no-plan', { composer: composerOutput({ fetch: null }) }));
+  it('miss: the router routes to the agent (no plan call)', () =>
+    assertMiss('agent:complex', { composer: composerOutput({ fetch: null }) }));
 
   it('no summary template: the valid plan still answers, with the default count sentence', async () => {
     const h = await harness({ composer: composerOutput({ summary: null }) });
     const events = await collect(h.agent.chatStream(turn()));
     assert.equal(h.baseInputs.length, 0, 'no agent turn');
-    assert.ok(h.logs.includes('[ui-orchestrator] fast-path summary missing — default count sentence'));
+    assert.ok(
+      h.logs.some((m) => /^\[fast-path\] planner channel=canvas tool=odoo_query ok ms=\d+ summary=default$/.test(m)),
+      h.logs.join(' | '),
+    );
     assert.deepEqual(
       events.filter((e) => e.type === 'text_delta').map((e) => field(e, 'text')),
       ['2 Einträge gefunden.'],
@@ -514,5 +493,90 @@ describe('canvasChatAgent — deterministic fast path', () => {
   it('miss: privacy force-guarded with no Privacy Shield running', async () => {
     process.env[PRIVACY_FORCE_GUARDED_ENV_VAR] = 'true';
     await assertMiss('privacy-forced', {});
+  });
+});
+
+describe('canvasChatAgent — router ∥ composer, then planner', () => {
+  /** A fake whose every call stays pending until released; records the
+   *  call kind (route_turn / plan_query / composer) in start order. */
+  const gatedLlm = (): { llm: CompositionLlm; started: string[]; release: () => void } => {
+    const started: string[] = [];
+    const pending: Array<() => void> = [];
+    const inner: CompositionLlm = {
+      complete: (req) => {
+        started.push(req.toolChoice?.name ?? 'composer');
+        return new Promise((resolve) => pending.push(() => resolve({ text: composerOutput() })));
+      },
+    };
+    return { llm: withRouterPlanner(inner), started, release: () => pending.splice(0).forEach((r) => r()) };
+  };
+  const until = async (cond: () => boolean): Promise<void> => {
+    for (let i = 0; i < 200 && !cond(); i += 1) await new Promise((r) => setImmediate(r));
+  };
+
+  it('router and composer are BOTH started before either resolves; the planner follows; hit', async () => {
+    const g = gatedLlm();
+    const h = await harness({ llm: g.llm });
+    const done = collect(h.agent.chatStream(turn()));
+    await until(() => g.started.length >= 2);
+    assert.deepEqual([...g.started].sort(), ['composer', 'route_turn'], 'both in flight, nothing resolved yet');
+    g.release();
+    await until(() => g.started.length >= 3);
+    assert.equal(g.started[2], 'plan_query');
+    g.release();
+    const events = await done;
+    assert.equal(h.baseInputs.length, 0, 'no agent turn');
+    assert.ok(events.some((e) => e.type === 'surface_patch'));
+    assert.ok(h.logs.some((m) => /^\[fast-path\] router channel=canvas decision=deterministic tool=odoo_query conf=0\.90 ms=\d+$/.test(m)));
+  });
+
+  it('kill switch, privacy force-guard and an agent without the tool: no router/planner call at all', async () => {
+    const cases: Array<[Parameters<typeof harness>[0], () => void]> = [
+      [{ config: { fast_path_tools: '' } }, () => {}],
+      [{ offeredTools: ['memory'] }, () => {}],
+      [{}, () => { process.env[PRIVACY_FORCE_GUARDED_ENV_VAR] = 'true'; }],
+    ];
+    for (const [opts, setup] of cases) {
+      setup();
+      const kinds: string[] = [];
+      const llm = withRouterPlanner({
+        complete: (req: { toolChoice?: { name: string } }) => {
+          kinds.push(req.toolChoice?.name ?? 'composer');
+          return Promise.resolve({ text: composerOutput() });
+        },
+      } as CompositionLlm);
+      const h = await harness({ ...opts, llm });
+      await collect(h.agent.chatStream(turn()));
+      assert.ok(!kinds.includes('route_turn') && !kinds.includes('plan_query'), JSON.stringify(opts));
+      assert.equal(h.baseInputs.length, 1, 'the agent answers');
+      delete process.env[PRIVACY_FORCE_GUARDED_ENV_VAR];
+    }
+  });
+
+  it('a skeleton with two data containers misses before any planner call (multi-container)', async () => {
+    const two = JSON.parse(composerOutput()) as { dataRequirements: Array<Record<string, unknown>>; tree: { children: unknown[] } };
+    two.dataRequirements.push({ ...two.dataRequirements[0], containerId: 'second' });
+    const kinds: string[] = [];
+    const llm = withRouterPlanner({
+      complete: (req: { toolChoice?: { name: string } }) => {
+        kinds.push(req.toolChoice?.name ?? 'composer');
+        return Promise.resolve({ text: JSON.stringify(two) });
+      },
+    } as CompositionLlm);
+    const h = await harness({ llm });
+    await collect(h.agent.chatStream(turn()));
+    assert.ok(!kinds.includes('plan_query'));
+    assert.ok(h.logs.includes('[fast-path] miss channel=canvas reason=multi-container'));
+  });
+
+  it('the planner gets the skeleton container and its fieldKeys; a plan off those keys misses (map-mismatch)', async () => {
+    const forced: Array<{ tool: string; system: string; user: string }> = [];
+    const off = composerOutput({ fetch: { ...BIRTHDAY_FETCH, map: { name: 'name' } } });
+    const h = await harness({ llm: withRouterPlanner(llmReturning(off).llm, { text: () => off, forced }) });
+    await collect(h.agent.chatStream(turn()));
+    const planner = forced.find((c) => c.tool === 'plan_query')?.user ?? '';
+    assert.match(planner, /DATA CONTAINERS:\n- birthdays \(.*\): fieldKeys name "Name", birthday "Geburtstag", department "Abteilung"/);
+    assert.ok(h.logs.includes('[fast-path] miss channel=canvas reason=planner-invalid:map-mismatch'));
+    assert.equal(h.baseInputs.length, 1);
   });
 });

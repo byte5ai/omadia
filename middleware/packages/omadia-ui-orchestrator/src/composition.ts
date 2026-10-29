@@ -1,14 +1,9 @@
 import {
-  containsPlaceholder,
   extractFirstJsonObject,
   FAST_MODEL_REASONING,
   type JsonOutputShape,
   OUTPUT_FORMAT_INSTRUCTION,
-  parseRefreshSource,
-  parseSummary,
-  supportedLocale,
   type FastLlm,
-  type FastPathToolSpec,
   type RefreshSource,
   type StoredTextPrivacyRun,
 } from '@omadia/fast-path';
@@ -20,6 +15,11 @@ import { validateTree } from './treeValidator.js';
  * and (b) the data requirements the delegated main turn must satisfy — so
  * Tier-3 sub-agents return payloads matching exactly the fields the skeleton
  * promised.
+ *
+ * A PURE UI composer: whether the turn is answered deterministically, and by
+ * which query, is decided by the fast-path router and planner
+ * (@omadia/fast-path router.ts / planner.ts), which run in parallel with this
+ * call. A `fetch`/`summary` the model emits anyway is dropped.
  */
 
 /** Narrow LLM port — structurally satisfied by `ctx.llm` (LlmAccessor). */
@@ -43,9 +43,9 @@ export interface DataRequirement {
   dataClass?: string;
   fields: Array<{ fieldKey: string; label: string; type?: string }>;
   /** Deterministic fast path: the ONE query (an allow-listed tool) that
-   *  fills this container, plus its fieldKey map and post-filter. Present
-   *  only when the composer planned it and it parsed as a valid recipe for
-   *  an allowed tool. Never forwarded to the agent's [canvas-context]. */
+   *  fills this container — set by the canvas plugin from the fast-path
+   *  planner's validated plan, never by the composer. Never forwarded to the
+   *  agent's [canvas-context]. */
   fetch?: RefreshSource;
 }
 
@@ -53,69 +53,7 @@ export interface SkeletonResult {
   tree: unknown;
   dataRequirements: DataRequirement[];
   source: 'model' | 'fallback';
-  /** fast-path prose template in the user's language; carries `{count}`
-   *  and/or `{sum:<fieldKey>}`. */
-  summary?: string;
-  /** BCP-47 tag the composer declared for number formatting (`{sum:…}`). */
-  locale?: string;
 }
-
-export type { FastPathToolSpec };
-
-
-/** A learned plan handed to the composer as a validated example: a past
- *  question (literal-stripped) and the fetch that answered it. */
-export interface LearnedExample {
-  question: string;
-  fetch: RefreshSource;
-}
-
-/** The validated-examples block: plans learned from answers the full agent
- *  gave in this workspace — the composer adapts them instead of inventing. */
-function learnedExamplesSection(examples: readonly LearnedExample[]): string {
-  if (examples.length === 0) return '';
-  return `
-VALIDATED EXAMPLES (learned from verified answers in this workspace — prefer adapting one when the request has the same intent): adapt values to the request (e.g. another month or year) and replace every {{text_N}}/{{email_N}}/{{id_N}} placeholder with the user's own value from the request — a fetch that still contains a placeholder is discarded. Keep the tool, the input structure and the map unchanged.
-${examples.map((e) => `- user asked "${e.question}" → "fetch": ${JSON.stringify(e.fetch)}`).join('\n')}`;
-}
-
-/** The FAST PATH section appended to the composer prompt when at least one
- *  tool is allow-listed — absent otherwise, so the prompt is unchanged. */
-export function fastPathPromptSection(
-  tools: readonly FastPathToolSpec[],
-  examples: readonly LearnedExample[] = [],
-): string {
-  return `
-
-FAST PATH (optional — same JSON object, two extra keys): when the request is answered by exactly ONE read query per data container with one of the tools below (plus at most a simple equality/date-part post-filter), add to that dataRequirements entry:
-  "fetch": { "tool", "input": <the EXACT tool input>, "map": { fieldKey: <record attribute> }, "rowKey"?: <attribute with a stable id>, "itemsPath"?: <dot-path to the record array>, "filter"?: [ { "field": <attribute>, "datePart": "year"|"month"|"day", "eq": <integer> } | { "field": <attribute>, "eq": <string|number|boolean> } ] }
-and a top-level "summary": ONE plain sentence in the user's language with placeholders computed from the rows of the FIRST dataRequirement after the filter — {count} (= number of rows) and/or {sum:<fieldKey>} (= total of that container's NUMERIC column, e.g. an open amount) — correct for any count including 0, e.g. "{count} Mitarbeitende haben im Januar Geburtstag." or "{count} offene Posten über insgesamt {sum:amount} {currency}.". With {sum:…} also add a top-level "locale" (BCP-47 of the user's language, e.g. "de-DE", "en-US") — the number is formatted for it; write the currency of a money total as the token {currency} (filled from the rows' one currency_id), never a symbol of your own. A {sum:…} over money also needs the record's "currency_id" in the query's fields: the total renders only when every row has ONE currency (otherwise the full agent answers). The summary states ONLY what the query guarantees; never invent figures.
-- "map" covers EVERY fieldKey of the container's columns. A map value may be a dot-path into the record (e.g. "department_id.1").
-- "filter" is for what the tool cannot filter itself (e.g. a birthday MONTH); put everything else into the tool's own query.
-- Express relative periods time-safely (a tool's relative-date syntax, e.g. "{today}" below) or omit fetch. OMIT fetch (and summary) whenever the request needs reasoning, joins, aggregation beyond {count}/{sum:…}, several steps, a tool not listed, or you are unsure of the field names — the full agent then handles it. A wrong fetch is worse than none.
-TOOLS:
-${tools.map((t) => `- ${t.spec}`).join('\n')}${learnedExamplesSection(examples)}`;
-}
-
-/** Whitelist the composer's `fetch` plans: kept only when it parses as a
- *  refresh recipe for an allowed tool; anything else is dropped (the
- *  requirement itself stays). */
-function withFetchPlans(
-  reqs: DataRequirement[],
-  allowed: ReadonlySet<string>,
-): DataRequirement[] {
-  return reqs.map((r) => {
-    const { fetch: raw, ...rest } = r as DataRequirement & { fetch?: unknown };
-    if (raw === undefined || allowed.size === 0) return rest;
-    const fetch = parseRefreshSource(raw);
-    // an unfilled learned-plan placeholder would query for "{{text_1}}"
-    return fetch && allowed.has(fetch.tool) && !containsPlaceholder(fetch)
-      ? { ...rest, fetch }
-      : rest;
-  });
-}
-
-export { parseSummary };
 
 export const FALLBACK_SKELETON = {
   type: 'container',
@@ -192,14 +130,12 @@ type ParsedResult =
  *  fences, a preface or a trailing remark — the FIRST balanced top-level
  *  object is the answer (`extractFirstJsonObject`); its validation is
  *  unchanged. */
-function parseResult(raw: string, allowedFetchTools: ReadonlySet<string>): ParsedResult {
+function parseResult(raw: string): ParsedResult {
   const extracted = extractFirstJsonObject(raw);
   if (!extracted.ok) return { ok: false, shape: extracted.shape };
-  const { tree, dataRequirements, summary, locale } = extracted.value as {
+  const { tree, dataRequirements } = extracted.value as {
     tree?: unknown;
     dataRequirements?: unknown;
-    summary?: unknown;
-    locale?: unknown;
   };
   if (tree === undefined) return { ok: false, shape: 'no-object' };
   const reqs = Array.isArray(dataRequirements)
@@ -211,18 +147,13 @@ function parseResult(raw: string, allowedFetchTools: ReadonlySet<string>): Parse
           Array.isArray((r as DataRequirement).fields),
       )
     : [];
-  const parsedSummary = allowedFetchTools.size > 0 ? parseSummary(summary) : undefined;
-  // kept without a summary too: the fast path then defaults the sentence
-  // in this locale instead of discarding a valid plan
-  const parsedLocale = allowedFetchTools.size > 0 ? supportedLocale(locale) : undefined;
   return {
     ok: true,
     shape: extracted.shape,
     result: {
       tree,
-      dataRequirements: withFetchPlans(reqs, allowedFetchTools),
-      ...(parsedSummary !== undefined ? { summary: parsedSummary } : {}),
-      ...(parsedLocale !== undefined ? { locale: parsedLocale } : {}),
+      // a plan the model emits anyway is never trusted: the planner plans
+      dataRequirements: reqs.map(({ fetch: _fetch, ...req }) => req),
     },
   };
 }
@@ -257,21 +188,8 @@ export async function composeSkeleton(opts: {
    *  this run, and the output is restored. A run that cannot mask skips the
    *  model call (fallback skeleton). Absent ⇒ the text goes out as written. */
   privacy?: StoredTextPrivacyRun;
-  /** Tools the composer may plan a deterministic `fetch` for (the plugin's
-   *  `fast_path_tools` with a known spec). Empty/absent: no FAST PATH prompt
-   *  section, and every `fetch`/`summary` the model emits anyway is dropped. */
-  fastPathTools?: readonly FastPathToolSpec[];
-  /** Learned fast path: the top-K active plans most similar to the request,
-   *  shown as validated examples (only with fastPathTools; their tools must
-   *  be among them to pass the fetch whitelist). */
-  learnedExamples?: readonly LearnedExample[];
 }): Promise<SkeletonResult> {
-  const fastPathTools = opts.fastPathTools ?? [];
-  const allowedFetchTools: ReadonlySet<string> = new Set(fastPathTools.map((t) => t.name));
-  const system =
-    fastPathTools.length > 0
-      ? SYSTEM_PROMPT + fastPathPromptSection(fastPathTools, opts.learnedExamples)
-      : SYSTEM_PROMPT;
+  const system = SYSTEM_PROMPT;
   const fallback: SkeletonResult = {
     tree: structuredClone(FALLBACK_SKELETON),
     dataRequirements: [{ containerId: 'root', description: opts.userText, fields: [] }],
@@ -319,7 +237,7 @@ export async function composeSkeleton(opts: {
       );
       return fallback;
     }
-    const outcome = parseResult(raw, allowedFetchTools);
+    const outcome = parseResult(raw);
     if (!outcome.ok) {
       // shape only (empty / unbalanced = cut at max tokens / no-object) —
       // never the output itself, it may carry the user's values

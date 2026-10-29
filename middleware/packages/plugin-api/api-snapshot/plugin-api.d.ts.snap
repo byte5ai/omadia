@@ -1871,6 +1871,19 @@ readonly outputFormat?: {
 readonly type: 'json_schema';
 readonly schema: Record<string, unknown>;
 };
+readonly tools?: ReadonlyArray<LlmToolDefinition>;
+readonly toolChoice?: {
+readonly name: string;
+};
+}
+export interface LlmToolDefinition {
+readonly name: string;
+readonly description: string;
+readonly inputSchema: Record<string, unknown>;
+}
+export interface LlmToolCall {
+readonly name: string;
+readonly input: unknown;
 }
 export interface McpAccessorToolDescriptor {
 readonly name: string;
@@ -1892,6 +1905,7 @@ readonly stopReason: 'end_turn' | 'max_tokens' | 'stop_sequence' | 'tool_use' | 
 readonly refusal?: {
 readonly category?: string;
 };
+readonly toolCalls?: ReadonlyArray<LlmToolCall>;
 }
 export declare class LlmServiceUnavailableError extends Error {
 constructor(callerAgentId: string);
@@ -2048,6 +2062,17 @@ readonly sessionId: string;
 readonly turnId: string;
 readonly toolName: string;
 readonly rawResult: string;
+readonly toolInput?: unknown;
+}
+export interface PrivacyDatasetVerbStep {
+readonly verb: string;
+readonly args: Readonly<Record<string, unknown>>;
+}
+export interface PrivacyDatasetProvenance {
+readonly tool: string;
+readonly input: unknown;
+readonly verbs: ReadonlyArray<PrivacyDatasetVerbStep>;
+readonly truncated: boolean;
 }
 export interface PrivacyToolResultV4Result {
 readonly digestText: string;
@@ -2193,6 +2218,7 @@ readonly resultText: string;
 }>;
 takeRenderedAnswerV4(turnId: string): Promise<PrivacyRenderedAnswer | undefined>;
 resolveDatasetForRender?(turnId: string, datasetId: string): PrivacyResolvedDataset | undefined;
+datasetProvenance?(turnId: string, datasetId: string): PrivacyDatasetProvenance | undefined;
 maskUserPrompt?(request: PrivacyPromptMaskRequest): Promise<PrivacyPromptMaskResult>;
 restorePromptPseudonyms?(turnId: string, text: string): Promise<string>;
 snapshotPromptRestorer?(turnId: string): ((text: string) => string) | undefined;

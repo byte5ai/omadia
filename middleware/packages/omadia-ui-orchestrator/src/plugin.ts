@@ -22,6 +22,7 @@ import {
   composeSkeleton,
   type CompositionLlm,
   type DataRequirement,
+  type SkeletonResult,
 } from './composition.js';
 import { mintDataRef } from './dataRef.js';
 import {
@@ -34,9 +35,11 @@ import {
   offeredTools,
   openSkeletonPrivacy,
   parseRefreshSource,
-  planToFetch,
+  planQuery,
   renderSummary,
+  routeTurn,
   type FastPathService,
+  type RouteOutcome,
   type RefreshSource,
   type TurnLearner,
 } from '@omadia/fast-path';
@@ -61,6 +64,16 @@ import {
   rowDetailsSource,
 } from './rowDetails.js';
 import { buildDatasetLumen } from './datasetLumen.js';
+import { createProvenanceStash, deriveDatasetRecipe, readDatasetPublish } from './datasetRecipe.js';
+import {
+  applyVariant,
+  createVariantRegistry,
+  headingContentPath,
+  monthVariantActions,
+  parseVariant,
+  variantActionRef,
+  type VariantAction,
+} from './recipeVariant.js';
 
 /**
  * @omadia/ui-orchestrator — Omadia UI Tier-2 orchestrator (PR-9b-2).
@@ -343,13 +356,20 @@ export async function handleCanvasPublishRows(
     )
     .filter((a) => typeof a['label'] === 'string' && (a['label'] as string).trim().length > 0)
     .slice(0, 4)
-    .map((a, i) => ({
-      id: typeof a['id'] === 'string' && a['id'].length > 0 ? a['id'] : `act-${i}`,
-      label: (a['label'] as string).trim(),
-      ...(typeof a['prompt'] === 'string' && a['prompt'].trim().length > 0
-        ? { prompt: a['prompt'].trim() }
-        : {}),
-    }));
+    .map((a, i) => {
+      // a declarative recipe variant rides along server-side only (the
+      // registry validates it again on the click); an invalid one is dropped
+      // and the action stays a plain prompt action
+      const variant = parseVariant(a['variant']);
+      return {
+        id: typeof a['id'] === 'string' && a['id'].length > 0 ? a['id'] : `act-${i}`,
+        label: (a['label'] as string).trim(),
+        ...(typeof a['prompt'] === 'string' && a['prompt'].trim().length > 0
+          ? { prompt: a['prompt'].trim() }
+          : {}),
+        ...(variant ? { variant } : {}),
+      };
+    });
   const prose =
     typeof args['prose'] === 'string' && args['prose'].trim().length > 0
       ? args['prose'].trim()
@@ -382,6 +402,9 @@ export async function handleCanvasPublishRows(
         // synthesis layer routes it through the fields branch, not the table one.
         ...(hasMappableFields ? { fields } : { rows }),
         ...(datasetColumns ? { datasetColumns } : {}),
+        // the opaque handle only (it is in the call input already) — the
+        // synthesis layer derives a refresh recipe from its provenance
+        ...(datasetId !== undefined ? { datasetId } : {}),
         ...(source ? { source } : {}),
         ...(actions.length > 0 ? { actions } : {}),
         ...(chartType ? { chartType } : {}),
@@ -602,6 +625,9 @@ export async function activate(
   // typed required but absent in narrow test contexts; without it the canvas
   // still renders skeleton + prose, only the data path is unavailable.
   const toolsAccessor = ctx.tools as PluginContext['tools'] | undefined;
+  // dataset provenance of datasetId publishes, read inside the turn by the
+  // publish handler and consumed by synthesis (derived recipes)
+  const publishProvenance = createProvenanceStash();
   const disposeTool: (() => void) | undefined = toolsAccessor?.register(
     {
       name: CANVAS_PUBLISH_TOOL,
@@ -705,6 +731,20 @@ export async function activate(
                   type: 'string',
                   description: 'beam text the click pre-fills (the row context is attached automatically)',
                 },
+                variant: {
+                  type: 'object',
+                  description:
+                    'OPTIONAL, only when this table has a refresh recipe (a datasetId publish or a ' +
+                    '`source`) and the action is the SAME query with a small change — the click then ' +
+                    'runs without you. { patch, heading? }: patch.filter = [{ field, datePart: ' +
+                    '"year"|"month"|"day", eq: <int> }] or [{ field, eq: <scalar> }] (replaces the ' +
+                    'clause on that field, or adds a datePart clause on a column the table shows); ' +
+                    'patch.domain = [{ field, op?, value }] (swaps the VALUE of a condition the query ' +
+                    'already has — never adds one); patch.limit = 1–100. heading = the new view title ' +
+                    '(plain text). Never a tool/model change. Example "Geburtstage im November": ' +
+                    '{ "patch": { "filter": [{ "field": "birthday", "datePart": "month", "eq": 11 }] }, ' +
+                    '"heading": "Geburtstage im November" }. Omit when the action needs a different query.',
+                },
               },
               required: ['label'],
             },
@@ -730,7 +770,13 @@ export async function activate(
         if (turnId === undefined || privacy?.resolveDatasetForRender === undefined) {
           return 'unavailable';
         }
-        return privacy.resolveDatasetForRender(turnId, datasetId);
+        const resolved = privacy.resolveDatasetForRender(turnId, datasetId);
+        // provenance is turn-scoped: read it NOW (inside the turn), the
+        // synthesis layer consumes it when the publish is composed
+        if (resolved !== undefined) {
+          publishProvenance.put(datasetId, privacy.datasetProvenance?.(turnId, datasetId));
+        }
+        return resolved;
       }),
   );
   const disposeChoiceTool: (() => void) | undefined = toolsAccessor?.register(
@@ -987,6 +1033,41 @@ export async function activate(
     return mintDataRef(canvasSessionId, containerId);
   };
 
+  /** Derived recipe for an agent datasetId publish without a declared
+   *  `source` (datasetRecipe.ts) — synthesis then captures it like a declared
+   *  one (persisted, dataRef minted) and the learner sees it as the map. */
+  // Recipe variants of suggested actions (recipeVariant.ts): registered at
+  // publish, looked up + validated against the CURRENT recipe on the click.
+  const variants = createVariantRegistry();
+  // Deterministic month variants on fast-path tables (previous/next month).
+  // Default OFF: omadia-ui clients up to #49 hide their "Details anzeigen"
+  // fallback as soon as a table carries ANY suggested action — enable once
+  // the client keeps it and sends `recipe_variant` clicks.
+  const derivedVariantsEnabled = [true, 'true', 'on', '1'].includes(
+    ctx.config?.get<string | boolean>('fast_path_variant_actions') ?? false,
+  );
+  const registerVariants =
+    (canvasSessionId: string) =>
+    (containerId: string, actions: readonly unknown[]): void => {
+      for (const a of actions) {
+        const o = (typeof a === 'object' && a !== null ? a : {}) as { id?: unknown; variant?: unknown };
+        const variant = parseVariant(o.variant);
+        if (typeof o.id === 'string' && variant) variants.set(canvasSessionId, containerId, o.id, variant);
+      }
+    };
+
+  const deriveSource = (data: unknown): RefreshSource | undefined => {
+    const pub = readDatasetPublish(data);
+    if (pub === undefined) return undefined;
+    const derived = deriveDatasetRecipe(publishProvenance.take(pub.datasetId), pub.paths);
+    if (!derived.ok) {
+      ctx.log(`[fast-path] recipe-skip container=${pub.containerId} reason=${derived.reason}`);
+      return undefined;
+    }
+    ctx.log(`[fast-path] recipe derived container=${pub.containerId} tool=${derived.source.tool}`);
+    return derived.source;
+  };
+
   /** The record an action turn targets, resolved against the recipe that
    *  filled its table in THIS canvas (fast path or an agent publish with a
    *  `source`). No recipe, or a recipe without a rowKey → undefined: the
@@ -1057,6 +1138,8 @@ export async function activate(
       containerId: string;
       rows: Array<Record<string, unknown>>;
       source?: RefreshSource;
+      /** suggested actions (deterministic recipe variants) for the table */
+      actions?: readonly VariantAction[];
     }>,
   ): AsyncGenerator<ChatStreamEvent> {
     for (const job of jobs) {
@@ -1066,10 +1149,15 @@ export async function activate(
         containerId: job.containerId,
         rows: job.rows,
         ...(job.source ? { source: job.source } : {}),
+        ...(job.actions && job.actions.length > 0 ? { actions: job.actions } : {}),
       });
       yield { type: 'tool_result', id, output, durationMs: 0 };
     }
   }
+
+  /** The skeleton with the fast-path planner's plan applied: the target
+   *  requirement carries the `fetch`, plus the prose template + locale. */
+  type PlannedSkeleton = SkeletonResult & { summary?: string; locale?: string };
 
   type FastPathOutcome =
     | {
@@ -1092,7 +1180,7 @@ export async function activate(
   async function runFastPath(
     input: ChatTurnInput,
     canvasSessionId: string,
-    skeleton: Awaited<ReturnType<typeof composeSkeleton>>,
+    skeleton: PlannedSkeleton,
     privacyForced: boolean,
     startSurfaceSeq: number,
     /** this turn's plannable tools (built-in + offered learned) and the
@@ -1133,7 +1221,12 @@ export async function activate(
     const invoke = toolsAccessor?.invoke?.bind(toolsAccessor);
     if (!invoke) return miss('no-invoker');
 
-    const jobs: Array<{ containerId: string; rows: Array<Record<string, unknown>>; source: RefreshSource }> = [];
+    const jobs: Array<{
+      containerId: string;
+      rows: Array<Record<string, unknown>>;
+      source: RefreshSource;
+      actions: VariantAction[];
+    }> = [];
     let firstRecords: Array<Record<string, unknown>> = [];
     for (const plan of plans) {
       const fetched = await fetchRecipeRows(invoke, plan.fetch, {
@@ -1147,7 +1240,13 @@ export async function activate(
         return { hit: false, reason: fetched.reason, failedFetch: plan.fetch };
       }
       if (jobs.length === 0) firstRecords = fetched.records;
-      jobs.push({ containerId: plan.containerId, rows: fetched.rows, source: plan.fetch });
+      jobs.push({
+        containerId: plan.containerId,
+        rows: fetched.rows,
+        source: plan.fetch,
+        // e.g. a birthday-month table offers previous/next month, LLM-free
+        actions: derivedVariantsEnabled ? monthVariantActions(plan.fetch, variantLang(skeleton.locale)) : [],
+      });
     }
     // `{count}` / `{sum:…}` = rows of the FIRST requirement (the composer
     // prompt's contract); rendered before anything is emitted, so a sum it
@@ -1181,6 +1280,7 @@ export async function activate(
         recipes.push({ containerId, source });
         return mintDataRef(canvasSessionId, containerId);
       },
+      onPublishedActions: registerVariants(canvasSessionId),
       log: (message) => ctx.log(message),
     })) {
       // only the surface events go out — the synthetic tool events carry rows
@@ -1201,6 +1301,101 @@ export async function activate(
       rows: first?.rows.length ?? 0,
       toolCalls: jobs.length,
     };
+  }
+
+  type VariantOutcome =
+    | { hit: true; events: ChatStreamEvent[]; prose: string; tool: string; rows: number; label: string }
+    | { hit: false; reason: string };
+
+  /** LLM-free suggested action (recipeVariant.ts): the clicked action's
+   *  registered variant, validated against the table's CURRENT recipe, runs
+   *  as ONE fetch that REPLACES the table's rows on the client's live tree
+   *  (refresh semantics); the variant becomes the table's recipe. Emits
+   *  nothing on a miss — the existing action path then runs unchanged. */
+  async function runRecipeVariant(
+    input: ChatTurnInput,
+    canvasSessionId: string,
+    fp: FastPathService | undefined,
+    privacyForced: boolean,
+    permitted: ReadonlySet<string>,
+  ): Promise<VariantOutcome> {
+    const miss = (reason: string): VariantOutcome => ({ hit: false, reason });
+    if (fp === undefined) return miss('disabled');
+    if (privacyForced) return miss('privacy-forced');
+    const ref = variantActionRef(input);
+    if (!ref) return miss('invalid-action');
+    const state = input.canvasState;
+    if (!state) return miss('no-canvas-state');
+    const variant = variants.get(canvasSessionId, ref.containerId, ref.actionId);
+    if (!variant) return miss('unknown-variant');
+    const base = refreshRecipes.get(canvasSessionId, ref.containerId);
+    if (!base) return miss('no-recipe');
+    const applied = applyVariant(base, variant);
+    if (!applied.ok) return miss(applied.reason);
+    const source = applied.source;
+    if (!fp.allowedFetchTools().has(source.tool)) return miss('tool-not-allowed');
+    if (!permitted.has(source.tool)) return miss('tool-not-permitted');
+    const invoke = toolsAccessor?.invoke?.bind(toolsAccessor);
+    if (!invoke) return miss('no-invoker');
+    const fetched = await fetchRecipeRows(invoke, source, { rejectTruncated: true, timeZone: fp.timeZone });
+    if (!fetched.ok) {
+      if (fetched.detail !== undefined) {
+        ctx.log(`[ui-orchestrator] action-variant ${source.tool} ${fetched.reason}: ${fetched.detail}`);
+      }
+      return miss(fetched.reason);
+    }
+    const lang = rowDetailsLanguage(input);
+    const events: ChatStreamEvent[] = [];
+    let captured = false;
+    const jobs = [
+      {
+        containerId: ref.containerId,
+        rows: fetched.rows,
+        source,
+        actions: derivedVariantsEnabled ? monthVariantActions(source, lang) : [],
+      },
+    ];
+    for await (const ev of synthesizeSurfaceEvents(publishRowsEvents(jobs), {
+      canvasSessionId,
+      authorizedToolNames: canvasOutputTools,
+      protocolVersion: CANVAS_PROTOCOL_VERSION,
+      opsCatalogVersion: OPS_CATALOG_VERSION,
+      startSurfaceSeq: 0,
+      baseRevision: state.basedOnRevision as RevisionId,
+      baseTree: state.currentTree,
+      dataRequirements: deriveDataRequirements(state.currentTree),
+      refreshContainers: new Set([ref.containerId]),
+      onPublishedSource: () => {
+        captured = true;
+        return mintDataRef(canvasSessionId, ref.containerId);
+      },
+      onPublishedActions: registerVariants(canvasSessionId),
+      log: (message) => ctx.log(message),
+    })) {
+      if (ev.type.startsWith('surface_')) events.push(ev);
+    }
+    const last = [...events].reverse().find((e) => e.type === 'surface_patch');
+    if (last?.type !== 'surface_patch' || !captured) return miss('unpublishable');
+    // the heading follows only when the variant names one and the table has one
+    const headingPath = variant.heading !== undefined ? headingContentPath(state.currentTree, ref.containerId) : undefined;
+    if (variant.heading !== undefined && headingPath !== undefined) {
+      const seqs = events.map((e) => ('surfaceSeq' in e && typeof e.surfaceSeq === 'number' ? e.surfaceSeq : -1));
+      events.push({
+        type: 'surface_patch',
+        canvasSessionId,
+        surfaceSeq: Math.max(...seqs) + 1,
+        basedOnRevision: last.producesRevision,
+        producesRevision: String(Number(last.producesRevision) + 1) as RevisionId,
+        patches: [{ op: 'replace', path: headingPath, value: variant.heading }],
+      });
+    }
+    // the table now SHOWS the variant: refresh and the next variant build on it
+    refreshRecipes.set(canvasSessionId, ref.containerId, source);
+    const rows = fetched.rows.length;
+    const prose =
+      (variant.heading !== undefined ? `${variant.heading}: ` : '') +
+      (lang === 'de' ? `${rows} ${rows === 1 ? 'Eintrag' : 'Einträge'}.` : `${rows} ${rows === 1 ? 'row' : 'rows'}.`);
+    return { hit: true, events, prose, tool: source.tool, rows, label: variant.heading ?? input.userMessage };
   }
 
   type RowDetailsOutcome =
@@ -1336,7 +1531,14 @@ export async function activate(
     if (!rendered.ok) return miss('summary-unresolvable');
     const recipes: RefreshSource[] = [];
     const events: ChatStreamEvent[] = [];
-    const jobs = [{ containerId: planned.containerId, rows: fetched.rows, source: planned.fetch }];
+    const jobs = [
+      {
+        containerId: planned.containerId,
+        rows: fetched.rows,
+        source: planned.fetch,
+        actions: derivedVariantsEnabled ? monthVariantActions(planned.fetch, variantLang(planned.locale)) : [],
+      },
+    ];
     for await (const ev of synthesizeSurfaceEvents(publishRowsEvents(jobs), {
       canvasSessionId,
       authorizedToolNames: canvasOutputTools,
@@ -1354,6 +1556,7 @@ export async function activate(
         recipes.push(source);
         return mintDataRef(canvasSessionId, containerId);
       },
+      onPublishedActions: registerVariants(canvasSessionId),
       log: (message) => ctx.log(message),
     })) {
       if (ev.type.startsWith('surface_')) events.push(ev);
@@ -1470,6 +1673,8 @@ export async function activate(
         baseTree,
         dataRequirements: baseTree ? deriveDataRequirements(baseTree) : [],
         onPublishedSource: captureSource(canvasSessionId),
+      deriveSource,
+      onPublishedActions: registerVariants(canvasSessionId),
         log: (message) => ctx.log(message),
       });
       return;
@@ -1536,6 +1741,8 @@ export async function activate(
         baseTree,
         dataRequirements: baseTree ? deriveDataRequirements(baseTree) : [],
         onPublishedSource: captureSource(canvasSessionId),
+      deriveSource,
+      onPublishedActions: registerVariants(canvasSessionId),
         log: (message) => ctx.log(message),
       });
       return;
@@ -1569,6 +1776,31 @@ export async function activate(
       fp = undefined;
     }
     const permittedTools: ReadonlySet<string> = permitted ?? new Set<string>();
+
+    // ── Suggested action as a recipe variant (LLM-free) ────────────────────
+    // `action: { type: 'recipe_variant', payload: { actionId, containerId } }`
+    // + the live tree: the table's registered variant runs as one fetch that
+    // replaces its rows (recipeVariant.ts). Any miss → the paths below.
+    if (variantActionRef(input) !== undefined) {
+      const v = await runRecipeVariant(input, canvasSessionId, fp, privacyForced, permittedTools);
+      if (v.hit) {
+        yield* v.events;
+        yield { type: 'text_delta', text: v.prose };
+        const turnId = await recordCanvasTurn(input, v.prose, 1, v.label);
+        yield {
+          type: 'done',
+          answer: v.prose,
+          toolCalls: 1,
+          iterations: 0,
+          ...(turnId !== undefined ? { turnId } : {}),
+        };
+        ctx.log(
+          `[fast-path] hit channel=canvas kind=action-variant tool=${v.tool} rows=${v.rows} ms=${Date.now() - turnStartedAt}`,
+        );
+        return;
+      }
+      ctx.log(`[fast-path] miss channel=canvas kind=action-variant reason=${v.reason}`);
+    }
 
     // ── Row details (LLM-free) ─────────────────────────────────────────────
     // "Details anzeigen" as a structured action: answered from the row's
@@ -1667,6 +1899,8 @@ export async function activate(
         baseTree: input.canvasState.currentTree,
         dataRequirements: requirements,
         onPublishedSource: captureSource(canvasSessionId),
+      deriveSource,
+      onPublishedActions: registerVariants(canvasSessionId),
         ...(inPlaceLearner ? { onPublishedPayload: (d: unknown) => inPlaceLearner.onPublishedPayload(d) } : {}),
         takeRawSentinel: tapCanvasSentinels((m) => ctx.log(m)),
         log: (message) => ctx.log(message),
@@ -1686,8 +1920,12 @@ export async function activate(
     //    guard's stored-text scope (skeletonPrivacy.ts). With the org policy
     //    on and no guard running, the base turn refuses, so the raw text must
     //    not reach this model either.
-    //    Learned fast path: the top-K active plans most similar to the ask
-    //    ride along as validated examples (their tools join the whitelist).
+    //    Fast path: the ROUTER (@omadia/fast-path router.ts) runs IN PARALLEL
+    //    with the composer — both start before either resolves. The composer
+    //    is a pure UI composer; a confident deterministic route then gets ONE
+    //    planner call against the skeleton's data container. Learned plans:
+    //    the top-K active plans most similar to the ask are the router's
+    //    intents and the planner's examples (their tools join the whitelist).
     const offered =
       fp !== undefined &&
       !privacyForced &&
@@ -1714,18 +1952,37 @@ export async function activate(
       fp !== undefined && !privacyForced && (input.action !== undefined || input.target !== undefined)
         ? resolveTargetRecord(input, canvasSessionId)
         : undefined;
+    const turnText =
+      (input.userMessage.trim().length > 0
+        ? input.userMessage
+        : `UI action: ${JSON.stringify(input.action ?? {})}`) +
+      (target !== undefined && turnTools.length > 0 ? targetRecordBlock(target) : '');
+    const fastPathKey = `canvas:${canvasSessionId}`;
+    const previousQuery = fp?.previousQuery(fastPathKey);
+    // router + planner share ONE privacy run (the planner restores the
+    // values the router's prompt masked); the composer has its own
+    const fastPrivacy = privacyGuard !== undefined ? openSkeletonPrivacy(privacyGuard) : undefined;
+    const fastLog = (m: string): void => ctx.log(m);
+    const routing: Promise<RouteOutcome> | undefined =
+      fp !== undefined && !privacyForced && turnTools.length > 0
+        ? routeTurn({
+            llm,
+            model,
+            channel: 'canvas',
+            question: turnText,
+            tools: turnTools,
+            intents: offered.map((p) => ({ question: p.examples[0] ?? '', tool: p.tool })),
+            ...(previousQuery ? { previous: previousQuery } : {}),
+            ...(fastPrivacy ? { privacy: fastPrivacy } : {}),
+            log: fastLog,
+          })
+        : undefined;
     const skeleton = await composeSkeleton({
       llm,
       model,
-      userText:
-        (input.userMessage.trim().length > 0
-          ? input.userMessage
-          : `UI action: ${JSON.stringify(input.action ?? {})}`) +
-        (target !== undefined && turnTools.length > 0 ? targetRecordBlock(target) : ''),
+      userText: turnText,
       log: (message) => ctx.log(message),
       skipModel: privacyForced,
-      fastPathTools: turnTools,
-      learnedExamples: offered.map((p) => ({ question: p.examples[0] ?? '', fetch: planToFetch(p) })),
       ...(privacyGuard !== undefined ? { privacy: openSkeletonPrivacy(privacyGuard) } : {}),
     });
     let surfaceSeq = 0;
@@ -1741,15 +1998,60 @@ export async function activate(
     };
     yield skeletonSnapshot;
 
-    // 2. Deterministic fast path — the composer planned the ONE query per
-    //    container: run it here, LLM-free, and finish the turn. Any miss →
-    //    the agent path below, exactly as before.
-    const fast = await runFastPath(input, canvasSessionId, skeleton, privacyForced, surfaceSeq, {
-      plannable: turnTools.length,
-      allowed: fp?.allowedFetchTools() ?? new Set<string>(),
-      permitted: permittedTools,
-    }, target);
-    const fetches = skeleton.dataRequirements.flatMap((r) => (r.fetch ? [r.fetch] : []));
+    // 2. Deterministic fast path — router said deterministic → the planner
+    //    plans the ONE query for the skeleton's data container → run it here,
+    //    LLM-free, and finish the turn. Any miss → the agent path below,
+    //    exactly as before.
+    const route = routing !== undefined ? await routing : undefined;
+    let planned: PlannedSkeleton = skeleton;
+    let planMiss: string | undefined;
+    if (route?.kind === 'agent') {
+      planMiss = route.reason;
+    } else if (route?.kind === 'plan' && fp !== undefined) {
+      const containers = skeleton.source === 'model' ? skeleton.dataRequirements : [];
+      const spec = turnTools.find((t) => t.name === route.tool);
+      if (containers.length !== 1 || spec === undefined) {
+        planMiss = spec === undefined ? 'router-tool-not-offered' : containers.length === 0 ? 'no-plan' : 'multi-container';
+      } else {
+        const plan = await planQuery({
+          llm,
+          model,
+          channel: 'canvas',
+          question: turnText,
+          tool: spec,
+          allowedTools: fp.allowedFetchTools(),
+          examples: offered,
+          containers,
+          ...(previousQuery ? { previous: previousQuery } : {}),
+          ...(fastPrivacy ? { privacy: fastPrivacy } : {}),
+          log: fastLog,
+        });
+        if (!plan.ok) {
+          planMiss = plan.reason;
+        } else {
+          planned = {
+            ...skeleton,
+            dataRequirements: skeleton.dataRequirements.map((r) =>
+              r.containerId === plan.containerId ? { ...r, fetch: plan.plan.fetch } : r,
+            ),
+            summary: plan.plan.summary,
+            ...(plan.plan.locale !== undefined ? { locale: plan.plan.locale } : {}),
+          };
+        }
+      }
+    }
+    const fast: FastPathOutcome =
+      planMiss !== undefined
+        ? { hit: false, reason: planMiss }
+        : await runFastPath(input, canvasSessionId, planned, privacyForced, surfaceSeq, {
+            plannable: turnTools.length,
+            allowed: fp?.allowedFetchTools() ?? new Set<string>(),
+            permitted: permittedTools,
+          }, target);
+    const fetches = planned.dataRequirements.flatMap((r) => (r.fetch ? [r.fetch] : []));
+    if (fast.hit && fetches[0] !== undefined) {
+      fp?.rememberQuery(fastPathKey, { question: turnText, fetch: fetches[0] });
+    }
     const learnedIds = fast.hit
       ? (fp?.recordFetchOutcome(fetches, true) ?? [])
       : (fp?.recordFetchOutcome(fast.failedFetch ? [fast.failedFetch] : [], false, fast.reason) ?? []);
@@ -1818,6 +2120,8 @@ export async function activate(
       baseTree: skeleton.tree,
       dataRequirements: skeleton.dataRequirements,
       onPublishedSource: captureSource(canvasSessionId),
+      deriveSource,
+      onPublishedActions: registerVariants(canvasSessionId),
       ...(learner ? { onPublishedPayload: (d: unknown) => learner.onPublishedPayload(d) } : {}),
       takeRawSentinel: tapCanvasSentinels((m) => ctx.log(m)),
       log: (message) => ctx.log(message),
@@ -1943,6 +2247,8 @@ export async function activate(
       // a fallback refresh that publishes WITH a source upgrades the next
       // refresh of this canvas to the deterministic path
       onPublishedSource: captureSource(canvasSessionId),
+      deriveSource,
+      onPublishedActions: registerVariants(canvasSessionId),
       log: (message) => ctx.log(message),
     });
   }
@@ -1993,6 +2299,11 @@ export async function activate(
       dispose();
     },
   };
+}
+
+/** Label language of deterministic variant actions (fast-path locale). */
+function variantLang(locale: string | undefined): 'de' | 'en' {
+  return locale?.toLowerCase().startsWith('en') === true ? 'en' : 'de';
 }
 
 /** Stream yielded when no base orchestrator is registered (graceful degrade). */

@@ -16,6 +16,7 @@
 
 import { strict as assert } from 'node:assert';
 import { afterEach, describe, it } from 'node:test';
+import { withRouterPlanner, type ForcedCall } from './_helpers/fastPathRouterPlanner.js';
 
 import {
   CHAT_AGENT_SERVICE,
@@ -214,6 +215,8 @@ interface Harness {
   baseInputs: ChatTurnInput[];
   composerSystems: string[];
   plannerUsers: string[];
+  /** router/planner calls (forced tool) */
+  forced: ForcedCall[];
   memory: ReturnType<typeof fakeMemory>;
   /** mutable script */
   s: { composer: string; planner: string; turns: ChatStreamEvent[][]; privacy: PrivacyMode };
@@ -233,6 +236,7 @@ async function harness(opts: {
   const baseInputs: ChatTurnInput[] = [];
   const composerSystems: string[] = [];
   const plannerUsers: string[] = [];
+  const forced: ForcedCall[] = [];
   const memory = opts.memory ?? fakeMemory();
   const s = {
     composer: composerOutput(),
@@ -250,7 +254,7 @@ async function harness(opts: {
         return () => reg.delete(name);
       },
     },
-    llm: {
+    llm: withRouterPlanner({
       complete: (req: { system?: string; messages: Array<{ content: string }> }) => {
         if (req.system?.includes('in-place fast-path planner')) {
           plannerUsers.push(req.messages[0]?.content ?? '');
@@ -259,7 +263,7 @@ async function harness(opts: {
         composerSystems.push(req.system ?? '');
         return Promise.resolve({ text: s.composer });
       },
-    },
+    }, { text: () => s.composer, forced }),
     config: { get: <T>(k: string): T | undefined => opts.config?.[k] as T | undefined },
     memory,
     tools: {
@@ -297,7 +301,7 @@ async function harness(opts: {
   );
   await activate(ctx);
   const agent = (reg.get('canvasChatAgent') as ChatAgentBundle).agent;
-  return { agent, logs, invokeCalls, baseInputs, composerSystems, plannerUsers, memory, s };
+  return { agent, logs, invokeCalls, baseInputs, composerSystems, plannerUsers, forced, memory, s };
 }
 
 async function collect(it: AsyncIterable<ChatStreamEvent>): Promise<ChatStreamEvent[]> {
@@ -633,15 +637,21 @@ describe('learned fast path — example questions are privacy-masked before stor
 // ── use ─────────────────────────────────────────────────────────────────────
 
 describe('learned fast path — use', () => {
-  it('the composer receives the active plan as a validated example and its adapted fetch is executed', async () => {
+  it('router + planner receive the active plan (intent / validated example) and its adapted fetch is executed', async () => {
     const h = await harness();
     const id = await learnInvoicePlan(h);
-    assert.doesNotMatch(h.composerSystems[0] ?? '', /VALIDATED EXAMPLES/, 'nothing offered before activation');
+    assert.ok(
+      h.forced.every((c) => !/LEARNED INTENTS|VALIDATED EXAMPLES/.test(c.user)),
+      'nothing offered before activation',
+    );
     h.s.composer = composerOutput(FEB_FETCH, '{count} offene Rechnungen.');
     const events = await collect(h.agent.chatStream(turn('Offene Rechnungen von Weber KG im Februar 2026')));
-    const system = h.composerSystems.at(-1) ?? '';
-    assert.match(system, /VALIDATED EXAMPLES/);
-    assert.match(system, /user asked "offene rechnungen von \{\{text_1\}\} im märz 2026"/);
+    const router = h.forced.filter((c) => c.tool === 'route_turn').at(-1)?.user ?? '';
+    const planner = h.forced.filter((c) => c.tool === 'plan_query').at(-1)?.user ?? '';
+    assert.match(router, /LEARNED INTENTS[\s\S]*"offene rechnungen von \{\{text_1\}\} im märz 2026" → odoo_query/);
+    assert.match(planner, /VALIDATED EXAMPLES/);
+    assert.match(planner, /user asked "offene rechnungen von \{\{text_1\}\} im märz 2026"/);
+    assert.doesNotMatch(h.composerSystems.at(-1) ?? '', /VALIDATED EXAMPLES/, 'the composer never plans');
     assert.equal(h.baseInputs.length, 2, 'no agent turn for the third ask');
     assert.deepEqual(h.invokeCalls.at(-1), { name: 'odoo_query', input: FEB_FETCH.input });
     assert.deepEqual(events.filter((e) => e.type === 'text_delta').map((e) => field(e, 'text')), ['2 offene Rechnungen.']);
@@ -654,7 +664,11 @@ describe('learned fast path — use', () => {
     h.s.composer = composerOutput(invoiceSource('{{text_1}}', '2026-02-01', '2026-03-01'), '{count} offene Rechnungen.');
     await collect(h.agent.chatStream(turn('Offene Rechnungen von Weber KG im Februar 2026')));
     assert.equal(h.baseInputs.length, 3);
-    assert.ok(h.logs.some((m) => m.startsWith('[ui-orchestrator] learned-plan miss reason=no-plan path=new-canvas')));
+    assert.ok(
+      h.logs.some((m) =>
+        m.startsWith('[ui-orchestrator] learned-plan miss reason=planner-invalid:unfilled-placeholder path=new-canvas'),
+      ),
+    );
   });
 
   it('a learned non-built-in read tool gets a spec, passes the whitelist and is executed', async () => {
@@ -678,7 +692,10 @@ describe('learned fast path — use', () => {
     assert.ok(h.logs.some((m) => m.includes('learned plan activated') && m.includes('tool=search_contracts')));
     h.s.composer = composerOutput(contractsSource('Initech'), '{count} aktive Verträge.');
     const events = await collect(h.agent.chatStream(turn('Aktive Verträge von Initech')));
-    assert.match(h.composerSystems.at(-1) ?? '', /search_contracts — learned read tool/);
+    assert.match(
+      h.forced.filter((c) => c.tool === 'plan_query').at(-1)?.user ?? '',
+      /search_contracts — learned read tool/,
+    );
     assert.deepEqual(h.invokeCalls.at(-1), { name: 'search_contracts', input: { query: 'Initech', status: 'active', limit: 50 } });
     assert.equal(h.baseInputs.length, 2);
     assert.deepEqual(events.filter((e) => e.type === 'text_delta').map((e) => field(e, 'text')), ['1 aktive Verträge.']);

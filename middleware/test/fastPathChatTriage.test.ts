@@ -31,7 +31,7 @@ import type { ChatAgent, ChatStreamEvent, ChatTurnInput } from '../packages/harn
 import { parseFastPathChannels, renderChatAnswer } from '../packages/harness-plugin-fast-path/src/chatAnswer.js';
 import { createLearnedPlanStore, type LearnedPlanStore } from '../packages/harness-plugin-fast-path/src/learnedPlanStore.js';
 import { createFastPathService, type ChatTriageOutcome } from '../packages/harness-plugin-fast-path/src/service.js';
-import { parseTriage } from '../packages/harness-plugin-fast-path/src/triage.js';
+import { parseTriage, withRouterPlanner } from './_helpers/fastPathRouterPlanner.js';
 import type { OrchestratorDeps } from '../packages/harness-orchestrator/src/buildOrchestrator.js';
 import {
   channelOfTurn,
@@ -110,12 +110,12 @@ function serviceHarness(opts: {
   const plans = opts.plans ?? createLearnedPlanStore({ log: (m) => logs.push(m) });
   const service = createFastPathService({
     config: { get: <T>(k: string): T | undefined => opts.config?.[k] as T | undefined },
-    llm: {
-      complete: (req) => {
+    llm: withRouterPlanner({
+      complete: (req: { system?: string; messages: ReadonlyArray<{ content: string }> }) => {
         prompts.push({ ...(req.system !== undefined ? { system: req.system } : {}), content: req.messages[0]?.content ?? '' });
         return Promise.resolve({ text: s.reply });
       },
-    },
+    }),
     model: 'class:fast',
     invoke: (name, input) => {
       invokes.push({ name, input });
@@ -164,7 +164,12 @@ describe('fast-path chat triage — service', () => {
         '| Peter Wagner | R&D | 1985-01-30 |',
       ].join('\n'),
     );
-    assert.ok(h.logs.some((m) => /^\[fast-path\] triage channel=web decision=deterministic ms=\d+$/.test(m)));
+    assert.ok(
+      h.logs.some((m) => /^\[fast-path\] router channel=web decision=deterministic tool=odoo_query conf=0\.90 ms=\d+$/.test(m)),
+      h.logs.join(' | '),
+    );
+    assert.ok(h.logs.some((m) => /^\[fast-path\] planner channel=web tool=odoo_query ok ms=\d+$/.test(m)));
+    assert.equal(h.prompts.length, 2, 'one router call + one planner call');
     assert.ok(h.logs.some((m) => /^\[fast-path\] hit channel=web tool=odoo_query rows=2 ms=\d+$/.test(m)));
     // the triage model got the message, never a row
     assert.ok(!h.prompts.some((p) => p.content.includes('1985-01-30')));
@@ -176,13 +181,16 @@ describe('fast-path chat triage — service', () => {
     const out = await h.triage('Analysiere die Umsatzentwicklung und schlage Maßnahmen vor');
     assert.deepEqual({ kind: out.kind, route: out.kind === 'agent' ? out.route : undefined }, { kind: 'agent', route: 'complex' });
     assert.equal(h.invokes.length, 0);
-    assert.ok(h.logs.some((m) => /decision=agent:complex ms=\d+/.test(m)));
+    assert.ok(h.logs.some((m) => /^\[fast-path\] router channel=web decision=agent_complex tool=- conf=0\.90 ms=\d+$/.test(m)));
+    assert.equal(h.prompts.length, 1, 'no planner call for an agent route');
   });
 
-  it('misses are reasoned and route-less: invalid plan, tool error, truncated, unknown tool', async () => {
+  it('misses are reasoned and route-less: router/planner invalid, tool error, truncated, unknown tool', async () => {
+    const wide = Object.fromEntries(Array.from({ length: 9 }, (_, i) => [`k${i}`, 'name']));
     const cases: Array<[string, Partial<Parameters<typeof serviceHarness>[0]>, string]> = [
-      [deterministic({ fetch: { ...BIRTHDAY_FETCH, tool: 'odoo_execute' } }), {}, 'invalid-plan:tool-not-allowed'],
-      ['nonsense', {}, 'invalid-plan:unparseable'],
+      [deterministic({ fetch: { ...BIRTHDAY_FETCH, tool: 'odoo_execute' } }), {}, 'router-tool-not-offered'],
+      ['nonsense', {}, 'router-invalid'],
+      [deterministic({ fetch: { ...BIRTHDAY_FETCH, map: wide } }), {}, 'planner-invalid:too-many-columns'],
       [deterministic(), { invoke: () => Promise.resolve('Error: odoo down') }, 'tool-error'],
       [deterministic(), { invoke: () => Promise.resolve(odooOutput(EMPLOYEES, true)) }, 'truncated'],
     ];
@@ -240,9 +248,11 @@ describe('fast-path chat triage — service', () => {
     await h.triage('Geburtstage im Januar', { sessionKey: 'sess-1' });
     await h.triage('und im Februar?', { sessionKey: 'sess-1' });
     await h.triage('und im März?', { sessionKey: 'other' });
+    // per hit: [router, planner]
     assert.ok(!h.prompts[0]?.content.includes('PREVIOUS QUERY'));
-    assert.ok(h.prompts[1]?.content.includes('PREVIOUS QUERY OF THIS CONVERSATION: user asked "Geburtstage im Januar"'));
-    assert.ok(!h.prompts[2]?.content.includes('PREVIOUS QUERY'), 'never across conversations');
+    assert.ok(h.prompts[2]?.content.includes('PREVIOUS QUERY: user asked "Geburtstage im Januar" → odoo_query (hr.employee'));
+    assert.ok(h.prompts[3]?.content.includes('PREVIOUS QUERY: user asked "Geburtstage im Januar"'), 'the planner gets it too');
+    assert.ok(!h.prompts[4]?.content.includes('PREVIOUS QUERY'), 'never across conversations');
   });
 
   it('shared store: active learned plans are offered and their executions booked', async () => {
@@ -261,7 +271,8 @@ describe('fast-path chat triage — service', () => {
     assert.equal(plan.active, true);
     const h = serviceHarness({ plans });
     await h.triage('Geburtstage im Januar');
-    assert.ok(h.prompts[0]?.content.includes('VALIDATED EXAMPLES'));
+    assert.ok(h.prompts[0]?.content.includes('LEARNED INTENTS'), 'the router sees the intent');
+    assert.ok(h.prompts[1]?.content.includes('VALIDATED EXAMPLES'), 'the planner sees the template');
     assert.ok(h.logs.some((m) => m.includes(`plan=${plan.id}`)), 'the hit is attributed to the learned plan');
     // a failing execution of the same plan counts against it
     const failing = serviceHarness({ plans, invoke: () => Promise.resolve('Error: down') });
@@ -288,7 +299,7 @@ describe('fast-path chat triage — service', () => {
     assert.equal(h.prompts.length, 1);
     assert.ok(!h.prompts[0]?.content.includes('odoo_query —'), 'odoo_query spec never offered');
     assert.ok(h.prompts[0]?.content.includes('search_contracts'));
-    assert.equal(out.kind === 'agent' ? out.reason : '', 'tool-not-permitted');
+    assert.equal(out.kind === 'agent' ? out.reason : '', 'router-tool-not-offered');
     assert.equal(h.invokes.length, 0, 'nothing ran');
     // no plannable tool of its own at all → not even a model call
     const bare = serviceHarness({ permitted: ['memory'] });

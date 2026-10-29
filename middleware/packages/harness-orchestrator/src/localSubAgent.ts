@@ -752,6 +752,7 @@ export class LocalSubAgent {
         const v4 = await privacy.internToolResultV4({
           toolName,
           rawResult: result,
+          toolInput: input,
         });
         // Privacy Shield v4 — record the interned datasetId so the parent
         // orchestrator can pass the REAL dataset up by reference instead of

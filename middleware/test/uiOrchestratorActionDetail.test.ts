@@ -9,6 +9,7 @@
 
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
+import { withRouterPlanner, type ForcedCall } from './_helpers/fastPathRouterPlanner.js';
 
 import {
   CHAT_AGENT_SERVICE,
@@ -66,6 +67,7 @@ async function harness(): Promise<{
   agent: ChatAgentBundle['agent'];
   logs: string[];
   composerUsers: string[];
+  forced: ForcedCall[];
   invokes: Array<{ name: string; input: unknown }>;
   baseInputs: ChatTurnInput[];
   s: { composer: string };
@@ -75,6 +77,7 @@ async function harness(): Promise<{
   const reg = new Map<string, unknown>();
   const logs: string[] = [];
   const composerUsers: string[] = [];
+  const forced: ForcedCall[] = [];
   const invokes: Array<{ name: string; input: unknown }> = [];
   const baseInputs: ChatTurnInput[] = [];
   const s = { composer: listComposer };
@@ -87,12 +90,12 @@ async function harness(): Promise<{
         return () => reg.delete(name);
       },
     },
-    llm: {
+    llm: withRouterPlanner({
       complete: (req: { messages: Array<{ content: string }> }) => {
         composerUsers.push(req.messages[0]?.content ?? '');
         return Promise.resolve({ text: s.composer });
       },
-    },
+    }, { text: () => s.composer, forced }),
     config: { get: <T>(): T | undefined => undefined },
     tools: {
       register: () => () => {},
@@ -129,7 +132,7 @@ async function harness(): Promise<{
     },
   } as unknown as ChatAgentBundle);
   await activate(ctx);
-  return { agent: (reg.get('canvasChatAgent') as ChatAgentBundle).agent, logs, composerUsers, invokes, baseInputs, s, logged };
+  return { agent: (reg.get('canvasChatAgent') as ChatAgentBundle).agent, logs, composerUsers, forced, invokes, baseInputs, s, logged };
 }
 
 async function collect(it: AsyncIterable<ChatStreamEvent>): Promise<ChatStreamEvent[]> {

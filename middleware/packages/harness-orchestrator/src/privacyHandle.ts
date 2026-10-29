@@ -42,6 +42,8 @@ export interface PrivacyTurnHandle {
   internToolResultV4(input: {
     readonly toolName: string;
     readonly rawResult: string;
+    /** the call input as dispatched — the dataset's provenance */
+    readonly toolInput?: unknown;
   }): Promise<{ readonly digestText: string; readonly datasetId: string }>;
   /**
    * Slice 2.5 — record that a tool's raw result was passed through
@@ -231,6 +233,7 @@ export function createPrivacyTurnHandle(deps: {
         turnId: deps.turnId,
         toolName: input.toolName,
         rawResult: input.rawResult,
+        ...(input.toolInput !== undefined ? { toolInput: input.toolInput } : {}),
       });
     },
 

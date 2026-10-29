@@ -2,7 +2,6 @@ import type { PrivacyGuardService } from '@omadia/plugin-api';
 
 import { parseFastPathChannels, renderChatAnswer } from './chatAnswer.js';
 import {
-  FAST_MODEL_REASONING,
   fetchRecipeRows,
   parseFastPathTools,
   plannableTools,
@@ -19,13 +18,16 @@ import {
   type PlanMemory,
 } from './learnedPlanStore.js';
 import { resolveTimeZone, type RefreshSource } from './refreshRecipes.js';
+import { planQuery } from './planner.js';
+import { routeTurn } from './router.js';
 import { openStoredTextPrivacy, TRIAGE_PRIVACY_JOB } from './storedTextPrivacy.js';
-import { buildTriagePrompt, parseTriage, TRIAGE_SYSTEM, type PreviousQuery, type TriageRoute } from './triage.js';
+import type { PreviousQuery, TriageRoute } from './triage.js';
 
 /** Bare service-registry key (`fastPath@1` in the manifest). */
 export const FAST_PATH_SERVICE = 'fastPath';
 
-/** Active learned plans offered to the chat triage per turn. */
+/** Active learned plans offered to the router (intents) and planner
+ *  (examples) per turn. */
 export const TRIAGE_TOP_K = 5;
 /** Conversations whose last fast-path query is remembered (follow-ups). */
 const MAX_SESSIONS = 500;
@@ -88,8 +90,12 @@ export interface FastPathService {
   /** Book a fast-path execution against the ACTIVE learned plans its fetches
    *  were adapted from; returns their ids. */
   recordFetchOutcome(fetches: readonly RefreshSource[], ok: boolean, reason?: string): string[];
-  /** ONE fast-model call + (on a deterministic decision) the query; never throws. */
+  /** Router call → (deterministic) planner call → the query; never throws. */
   triageChatTurn(req: ChatTriageRequest): Promise<ChatTriageOutcome>;
+  /** The last fast-path query answered in conversation `key` (follow-ups). */
+  previousQuery(key: string): PreviousQuery | undefined;
+  /** Remember a fast-path hit of conversation `key` (bounded LRU). */
+  rememberQuery(key: string, prev: PreviousQuery): void;
 }
 
 export interface FastPathServiceDeps {
@@ -175,54 +181,44 @@ export function createFastPathService(deps: FastPathServiceDeps): FastPathServic
     );
     if (specs.length === 0) return agent('no-tools');
     const previous = req.sessionKey !== undefined ? sessions.get(req.sessionKey) : undefined;
-    const prompt = buildTriagePrompt({ question, tools: specs, examples: offered, ...(previous ? { previous } : {}) });
 
     // #1540 — the turn has no privacy handle yet: with a shield running the
-    // whole prompt goes through its stored-text scope (failure-closed) — on
-    // the sidecar's interactive lane: the turn waits for this call.
+    // router and planner prompts go through ONE stored-text scope
+    // (failure-closed) on the sidecar's interactive lane — the turn waits.
     const guard = deps.privacyGuard();
     const privacy = guard !== undefined ? openStoredTextPrivacy(guard, TRIAGE_PRIVACY_JOB, 'interactive') : undefined;
-    let content = prompt;
-    if (privacy) {
-      const masked = await privacy.mask(prompt);
-      if (!masked.send) {
-        deps.log(`[fast-path] triage skipped channel=${channel} (privacy: ${masked.reason})`);
-        return agent('privacy-refused');
-      }
-      content = masked.text;
+    const llm = deps.llm;
+    const route = await routeTurn({
+      llm,
+      model: deps.model,
+      channel,
+      question,
+      tools: specs,
+      intents: offered.map((p) => ({ question: p.examples[0] ?? '', tool: p.tool })),
+      ...(previous ? { previous } : {}),
+      ...(privacy ? { privacy } : {}),
+      log: deps.log,
+    });
+    if (route.kind === 'agent') {
+      if (route.route === undefined) deps.log(`[fast-path] miss channel=${channel} reason=${route.reason}`);
+      return { kind: 'agent', reason: route.reason, ms: Date.now() - t0, ...(route.route ? { route: route.route } : {}) };
     }
-    let text: string;
-    try {
-      const res = await deps.llm.complete({
-        model: deps.model,
-        system: TRIAGE_SYSTEM,
-        messages: [{ role: 'user', content }],
-        maxTokens: 1024,
-        ...FAST_MODEL_REASONING,
-      });
-      text = privacy ? privacy.restore(res.text) : res.text;
-    } catch (err) {
-      deps.log(`[fast-path] triage failed channel=${channel}: ${err instanceof Error ? err.message : String(err)}`);
-      return agent('triage-error');
-    }
-    const decision = parseTriage(text, allowedFetchTools(), { question });
-    const triageMs = Date.now() - t0;
-    if (decision.decision === 'agent') {
-      deps.log(`[fast-path] triage channel=${channel} decision=agent:${decision.route ?? 'none'} ms=${triageMs}`);
-      return {
-        kind: 'agent',
-        reason: decision.route ? `agent:${decision.route}` : 'agent',
-        ms: triageMs,
-        ...(decision.route ? { route: decision.route } : {}),
-      };
-    }
-    deps.log(
-      `[fast-path] triage channel=${channel} decision=${decision.decision === 'deterministic' ? 'deterministic' : 'invalid'} ms=${triageMs}`,
-    );
-    if (decision.decision === 'invalid') return agent(`invalid-plan:${decision.reason}`);
-    if (decision.summaryDefaulted === true) {
-      deps.log(`[fast-path] triage channel=${channel} summary missing/unusable — default count sentence`);
-    }
+    const spec = specs.find((t) => t.name === route.tool);
+    if (spec === undefined) return agent('router-tool-not-offered');
+    const planned = await planQuery({
+      llm,
+      model: deps.model,
+      channel,
+      question,
+      tool: spec,
+      allowedTools: allowedFetchTools(),
+      examples: offered,
+      ...(previous ? { previous } : {}),
+      ...(privacy ? { privacy } : {}),
+      log: deps.log,
+    });
+    if (!planned.ok) return agent(planned.reason);
+    const decision = planned.plan;
     if (!permitted.has(decision.fetch.tool)) return agent('tool-not-permitted');
 
     const fetched = await fetchRecipeRows(deps.invoke, decision.fetch, { rejectTruncated: true, timeZone });
@@ -270,5 +266,7 @@ export function createFastPathService(deps: FastPathServiceDeps): FastPathServic
     allowedFetchTools,
     recordFetchOutcome,
     triageChatTurn,
+    previousQuery: (key) => sessions.get(key),
+    rememberQuery: (key, prev) => remember(key, prev),
   };
 }

@@ -104,6 +104,11 @@ export interface DatasetProvenance {
   readonly truncated: boolean;
   /** ISO-8601 creation timestamp. */
   readonly createdAt: string;
+  /** The tool call input as dispatched, for a tool-interned dataset whose
+   *  caller passed it. Turn-scoped like the rows; never LLM-bound. */
+  readonly toolInput?: unknown;
+  /** The verb arguments (dataset ids excluded), for a verb-derived dataset. */
+  readonly verbArgs?: Readonly<Record<string, unknown>>;
 }
 
 /**
@@ -138,7 +143,7 @@ export interface DigestEnvelope {
 export interface DatasetStore {
   /** Intern a raw tool result; store the real rows behind a `datasetId`,
    *  return the identity-free Digest. */
-  internToolResult(toolName: string, rawResult: unknown): DigestEnvelope;
+  internToolResult(toolName: string, rawResult: unknown, toolInput?: unknown): DigestEnvelope;
   /** Register a verb-produced dataset; return its `datasetId` + Digest. */
   put(dataset: Dataset): DigestEnvelope;
   /** Server-side resolution of the real rows. Trusted callers only (verbs,

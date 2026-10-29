@@ -2031,6 +2031,40 @@ export interface LlmCompleteRequest {
     readonly type: 'json_schema';
     readonly schema: Record<string, unknown>;
   };
+  /**
+   * Tools the model may call (1.44.0). Plugins use them for structured
+   * output: define ONE tool whose `inputSchema` is the wanted shape and force
+   * it with {@link LlmCompleteRequest.toolChoice}; the call's input comes back
+   * parsed in {@link LlmCompleteResult.toolCalls}. Unlike `outputFormat`, a
+   * tool `inputSchema` needs no `additionalProperties: false` — free-form
+   * objects are allowed. The host runs no tool loop: a call is returned, never
+   * executed.
+   */
+  readonly tools?: ReadonlyArray<LlmToolDefinition>;
+  /**
+   * Force a call of the named tool (1.44.0) — the answer is then that tool
+   * call, with no prose. A provider or model that cannot force a tool (on
+   * Anthropic e.g. `claude-opus-5-5`) degrades to "the model may call it",
+   * so a plugin must still accept a text-only answer. Forcing a tool is
+   * incompatible with extended thinking on Anthropic: pair it with
+   * `thinking: 'off'`.
+   */
+  readonly toolChoice?: { readonly name: string };
+}
+
+/** A tool definition for {@link LlmCompleteRequest.tools} (1.44.0). */
+export interface LlmToolDefinition {
+  readonly name: string;
+  readonly description: string;
+  /** JSON Schema of the tool input, forwarded to the provider untouched. */
+  readonly inputSchema: Record<string, unknown>;
+}
+
+/** One tool call of the model's answer (1.44.0). */
+export interface LlmToolCall {
+  readonly name: string;
+  /** the tool input as the provider parsed it (normally a JSON object) */
+  readonly input: unknown;
 }
 
 /** One discovered MCP tool, as the host's manager reports it (issue #458). */
@@ -2117,6 +2151,9 @@ export interface LlmCompleteResult {
    * other outcome.
    */
   readonly refusal?: { readonly category?: string };
+  /** The model's tool calls (1.44.0), present only when the request offered
+   *  {@link LlmCompleteRequest.tools} and the model called at least one. */
+  readonly toolCalls?: ReadonlyArray<LlmToolCall>;
 }
 
 export class LlmServiceUnavailableError extends Error {

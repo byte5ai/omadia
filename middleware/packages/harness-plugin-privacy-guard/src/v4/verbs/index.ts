@@ -191,7 +191,12 @@ export function createVerbEngine(deps: VerbEngineDeps): VerbEngine {
     }
   }
 
-  function derive(source: Dataset, verb: string, rows: DatasetRow[]): VerbResult {
+  function derive(
+    source: Dataset,
+    verb: string,
+    rows: DatasetRow[],
+    verbArgs: Readonly<Record<string, unknown>> = {},
+  ): VerbResult {
     return deps.store.put({
       datasetId: `ds_${randomUUID()}`,
       rows,
@@ -202,6 +207,7 @@ export function createVerbEngine(deps: VerbEngineDeps): VerbEngine {
         derivedFrom: source.datasetId,
         truncated: false,
         createdAt: new Date().toISOString(),
+        verbArgs,
       },
     });
   }
@@ -214,6 +220,7 @@ export function createVerbEngine(deps: VerbEngineDeps): VerbEngine {
         ds,
         'filter',
         ds.rows.filter((r) => evaluatePredicate(predicate, r)),
+        { predicate },
       );
     },
 
@@ -224,7 +231,7 @@ export function createVerbEngine(deps: VerbEngineDeps): VerbEngine {
       const rows = [...ds.rows].sort(
         (a, b) => compareUnknown(a[by], b[by]) * mul,
       );
-      return derive(ds, 'sort', rows);
+      return derive(ds, 'sort', rows, { by, direction });
     },
 
     topN(input, n, by, direction = 'desc'): VerbResult {
@@ -239,7 +246,7 @@ export function createVerbEngine(deps: VerbEngineDeps): VerbEngine {
       const rows = [...ds.rows]
         .sort((a, b) => compareUnknown(a[by], b[by]) * mul)
         .slice(0, n);
-      return derive(ds, 'top_n', rows);
+      return derive(ds, 'top_n', rows, { n, by, direction });
     },
 
     group(input, by): VerbResult {
@@ -254,7 +261,7 @@ export function createVerbEngine(deps: VerbEngineDeps): VerbEngine {
           rows.push(pick(r, by));
         }
       }
-      return derive(ds, 'group', rows);
+      return derive(ds, 'group', rows, { by });
     },
 
     aggregate(input, params): VerbResult {
@@ -289,7 +296,7 @@ export function createVerbEngine(deps: VerbEngineDeps): VerbEngine {
         for (const op of params.ops) out[op.alias] = applyAggregate(op, g.rows);
         rows.push(out);
       }
-      return derive(ds, 'aggregate', rows);
+      return derive(ds, 'aggregate', rows, { params });
     },
 
     select(input, columns): VerbResult {
@@ -299,6 +306,7 @@ export function createVerbEngine(deps: VerbEngineDeps): VerbEngine {
         ds,
         'select',
         ds.rows.map((r) => pick(r, columns)),
+        { columns },
       );
     },
 
@@ -325,7 +333,7 @@ export function createVerbEngine(deps: VerbEngineDeps): VerbEngine {
         if (matches === undefined) continue;
         for (const r of matches) rows.push({ ...r, ...l });
       }
-      return derive(leftDs, 'join', rows);
+      return derive(leftDs, 'join', rows, { on });
     },
 
     union(left, right, opts = {}): VerbResult {
@@ -359,7 +367,7 @@ export function createVerbEngine(deps: VerbEngineDeps): VerbEngine {
         ...leftDs.rows,
         ...rightDs.rows.map((r) => renameRow(r, rename)),
       ];
-      return derive(leftDs, 'union', rows);
+      return derive(leftDs, 'union', rows, { multiSource: true });
     },
 
     distinct(input, by, keep = 'first'): VerbResult {
@@ -383,7 +391,7 @@ export function createVerbEngine(deps: VerbEngineDeps): VerbEngine {
         seen.add(key);
         kept.push(r);
       }
-      return derive(ds, 'distinct', keep === 'last' ? kept.reverse() : kept);
+      return derive(ds, 'distinct', keep === 'last' ? kept.reverse() : kept, { by, keep });
     },
   };
 }

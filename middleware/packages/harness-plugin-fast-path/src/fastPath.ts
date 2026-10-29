@@ -4,6 +4,7 @@ import {
   resolveRecipeInput,
   type RefreshSource,
 } from './refreshRecipes.js';
+import { extractFirstJsonObject } from './jsonExtract.js';
 
 /**
  * Deterministic canvas fast path — the building blocks.
@@ -35,7 +36,35 @@ export interface FastLlm {
     maxTokens?: number;
     effort?: 'low' | 'medium' | 'high' | 'xhigh';
     thinking?: 'off';
-  }): Promise<{ text: string }>;
+    /** structured output by a forced tool call (router, planner) */
+    tools?: ReadonlyArray<FastLlmTool>;
+    toolChoice?: { name: string };
+  }): Promise<{ text: string; toolCalls?: ReadonlyArray<{ name: string; input: unknown }> }>;
+}
+
+/** A tool definition for a forced structured-output call (`ctx.llm`
+ *  `LlmToolDefinition`): no `additionalProperties:false` needed. */
+export interface FastLlmTool {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+}
+
+/** The input of the forced `tool` call, else (a model that cannot force a
+ *  tool answered in text) the first JSON object of the text; undefined when
+ *  neither is an object. */
+export function forcedToolInput(
+  res: { text: string; toolCalls?: ReadonlyArray<{ name: string; input: unknown }> },
+  tool: string,
+): { value: Record<string, unknown>; via: 'tool' | 'text' } | undefined {
+  const call = res.toolCalls?.find((c) => c.name === tool);
+  if (call !== undefined) {
+    return typeof call.input === 'object' && call.input !== null && !Array.isArray(call.input)
+      ? { value: call.input as Record<string, unknown>, via: 'tool' }
+      : undefined;
+  }
+  const extracted = extractFirstJsonObject(res.text);
+  return extracted.ok ? { value: extracted.value, via: 'text' } : undefined;
 }
 
 /**
@@ -100,6 +129,24 @@ export const FAST_PATH_TOOL_SPECS: Readonly<Record<string, string>> = {
     'DATES: a domain value "{today}" / "{today-30d}" / "{today+7d}" (whole string) resolves to the ' +
     'date at execution — never write the current date literally.',
 };
+
+/** One-line purposes of the built-in tools for the router's tool catalog
+ *  (the full spec is the planner's). A tool without one — a learned read
+ *  tool — gets the first sentence of its spec. */
+export const FAST_PATH_TOOL_PURPOSES: Readonly<Record<string, string>> = {
+  odoo_query:
+    'Odoo ERP read-only lookup: employees (names, departments, birthdays, contacts), partners/customers/suppliers, ' +
+    'invoices and open items (receivables/payables, due dates, open amounts).',
+};
+
+/** The router's one-line purpose of `spec`. */
+export function toolPurpose(spec: FastPathToolSpec): string {
+  const known = FAST_PATH_TOOL_PURPOSES[spec.name];
+  if (known !== undefined) return known;
+  const text = spec.spec.replace(/\s+/g, ' ').trim();
+  const end = text.search(/[.:]\s/);
+  return (end > 0 ? text.slice(0, end) : text).slice(0, 160);
+}
 
 /** Parse the `fast_path_tools` setup field: unset → the default allow-list;
  *  an explicit empty value disables the fast path. */

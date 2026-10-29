@@ -8,6 +8,33 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.44.0 — 2026-10-29
+
+Additive. Structured output by a forced tool call on `ctx.llm` (fast-path
+router/planner).
+
+### Added
+
+- **`LlmCompleteRequest.tools`** (`LlmToolDefinition[]`: `name`,
+  `description`, `inputSchema`) and **`LlmCompleteRequest.toolChoice`**
+  (`{ name }` — force that tool). A tool `inputSchema` needs no
+  `additionalProperties: false`. Models that cannot force a tool degrade to
+  an optional call, so a plugin must still accept a text answer.
+- **`LlmCompleteResult.toolCalls`** (`LlmToolCall[]`: `name`, parsed
+  `input`) — present only when the model called a tool. The host runs no
+  tool loop.
+
+Also additive (same release): dataset provenance, so a canvas can derive an
+LLM-free refresh recipe for a table the agent filled by privacy-shield
+`datasetId`.
+
+- **`PrivacyToolResultV4Request.toolInput?`** — the tool call input as
+  dispatched; the shield keeps it turn-scoped as the dataset's provenance.
+- **`PrivacyGuardService.datasetProvenance?(turnId, datasetId)`** →
+  **`PrivacyDatasetProvenance`** `{ tool, input, verbs, truncated }` — the ONE
+  tool call behind a dataset plus the verb chain applied since
+  (**`PrivacyDatasetVerbStep`** `{ verb, args }`). Server-side only.
+
 ## 1.40.0 — 2026-10-28
 
 Additive. Stored processes carry their provenance, so a Privacy Shield can

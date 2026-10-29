@@ -104,13 +104,15 @@ export function createTurnLearner(opts: TurnLearnerOptions): TurnLearner {
     const [callId, call] = only;
     if (failed.has(callId)) return { reason: 'tool-error' };
     const containerId = [...containers][0] as string;
-    const declared = publishes.find((p) => p.source !== undefined)?.source;
-    if (declared !== undefined) {
-      const recipe = parseRefreshSource(declared);
+    const declaring = publishes.find((p) => p.source !== undefined);
+    if (declaring !== undefined) {
+      const recipe = parseRefreshSource(declaring.source);
       if (!recipe) return { reason: 'invalid-source' };
       if (recipe.tool !== call.name) return { reason: 'source-tool-mismatch' };
+      // a dataset publish re-keys the table's columns BY path — the map then
+      // targets those paths, not the skeleton's field keys
       const fields = opts.requirements.find((r) => r.containerId === containerId)?.fields ?? [];
-      const keys = new Set(fields.map((f) => f.fieldKey));
+      const keys = new Set(declaring.datasetPaths ?? fields.map((f) => f.fieldKey));
       if (keys.size > 0 && Object.keys(recipe.map).some((k) => !keys.has(k))) {
         return { reason: 'map-mismatch' };
       }
