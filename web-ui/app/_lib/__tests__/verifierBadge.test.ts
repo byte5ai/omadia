@@ -255,3 +255,31 @@ describe('verifierBadgeView — counts must agree with each other', () => {
     expect(verifierBadgeView(summary())).toMatchObject({ state: 'verified', tone: 'success' });
   });
 });
+
+describe('verifierBadgeView — next to rendered system data (#1580)', () => {
+  const skipped = (reason: string): VerifierSummary =>
+    summary({
+      badge: 'unverified',
+      status: 'skipped',
+      reason,
+      claimCount: 0,
+    } as Partial<VerifierSummary>);
+
+  it('says only the model text was screened instead of "no figures" under a table', () => {
+    for (const reason of ['no_trigger', 'no_claims', 'no_checkable_claims']) {
+      expect(verifierBadgeView(skipped(reason), { systemData: true })?.hint).toBe('systemDataProse');
+    }
+  });
+
+  it('keeps the whole-answer hints for an answer without rendered rows', () => {
+    expect(verifierBadgeView(skipped('no_trigger'))?.hint).toBe('noTrigger');
+    expect(verifierBadgeView(skipped('no_trigger'), { systemData: false })?.hint).toBe('noTrigger');
+  });
+
+  it('leaves checked verdicts and the incomplete-coverage hint alone', () => {
+    expect(verifierBadgeView(summary(), { systemData: true })?.hint).toBe('verified');
+    expect(verifierBadgeView(skipped('incomplete_coverage'), { systemData: true })?.hint).toBe(
+      'incompleteCoverage',
+    );
+  });
+});

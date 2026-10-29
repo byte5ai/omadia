@@ -234,7 +234,7 @@ const toolSpec: ToolSpec = {
               },
               required: ['model'],
               description:
-                'If the claim references a specific Odoo record, set model (and id/ref when available).',
+                'If the claim references a specific Odoo record, set model (and id/ref when available). For type=aggregate set the model of the records being summed or counted (leave days: "hr.leave", invoices: "account.move"), not the model of their owner; put the owner (employee, partner) in related_entities.',
             },
             related_entities: {
               type: 'array',
@@ -339,6 +339,7 @@ Strict rules:
 - Do NOT invent claims that are "implied" but not stated.
 - When in doubt, skip the claim rather than invent one.
 - A record reference (invoice, order or document number, numeric record id) is ALWAYS its own claim of type "id" with odoo_record.model and odoo_record.ref/id set — in addition to any qualitative claim about the same record.
+- An aggregate (a total, sum or count over several records) names the model of the summed records in odoo_record.model ("hr.leave" for leave days) and the employee or partner it belongs to in related_entities when the answer names that record's id.
 - A qualitative claim must be a self-contained statement: include the subject it is about in the verbatim span ("Anna Müller wechselte in die IT-Abteilung"), never a bare fragment ("in die IT-Abteilung"). An independent reviewer will judge the claim WITHOUT seeing the answer.
 - List the claims in the order they appear in the answer. Return at most ${String(requestLimit)} claims via the ${TOOL_NAME} tool; if the answer makes more, return its first ${String(requestLimit)}.`;
 

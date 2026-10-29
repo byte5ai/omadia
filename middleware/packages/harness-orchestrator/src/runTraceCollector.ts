@@ -1,5 +1,7 @@
 import type { AskObserver } from './tools/domainQueryTool.js';
 import type {
+  EntityRef,
+  EntityRefCollection,
   RunAgentInvocation,
   RunStatus,
   RunToolCall,
@@ -40,6 +42,51 @@ export interface RunTraceCollectorOptions {
   userId?: string;
   /** ISO timestamp. Passed in so tests can pin it; production uses now(). */
   startedAt?: string;
+  /** #1571 — the turn's id (the turn context's), kept beside the payload for
+   *  the verifier ({@link turnEvidenceOf}). */
+  turnId?: string;
+  /** #1574 — the turn's EntityRef collection: the records its tools read,
+   *  kept beside the payload for the verifier ({@link turnEvidenceOf}). */
+  entityRefs?: SharedEntityRefs;
+}
+
+/**
+ * #1574 — one turn's EntityRef collection, read by two consumers: the run
+ * trace (for the verifier, at `finish()`) and the session-log row (at
+ * `drain()`). The first read drains the bus collection; both see the same
+ * refs. `drain()` keeps the bus semantics: the refs once, then `[]`. A ref
+ * published after the trace finished (no tool runs then) is not collected.
+ */
+export class SharedEntityRefs implements EntityRefCollection {
+  #refs: EntityRef[] | undefined;
+  #drained = false;
+
+  constructor(private readonly source: EntityRefCollection) {}
+
+  /** The refs collected so far, without consuming them. */
+  snapshot(): readonly EntityRef[] {
+    this.#refs ??= this.source.drain();
+    return this.#refs;
+  }
+
+  drain(): EntityRef[] {
+    if (this.#drained) return [];
+    this.#drained = true;
+    return [...this.snapshot()];
+  }
+}
+
+/** Shares a bus collection between the run trace and the session log. */
+export function shareEntityRefs(
+  source: EntityRefCollection | undefined,
+): SharedEntityRefs | undefined {
+  return source === undefined ? undefined : new SharedEntityRefs(source);
+}
+
+/** What the verifier reads about a finished turn beside its trace payload. */
+export interface TurnEvidence {
+  readonly turnId?: string;
+  readonly entityRefs: readonly EntityRef[];
 }
 
 /**
@@ -199,6 +246,10 @@ export class RunTraceCollector {
     if (this.knowledgeGraphOutputSeen) {
       KNOWLEDGE_GRAPH_REFS.set(payload, [...this.knowledgeGraphRefs].sort());
     }
+    TURN_EVIDENCE.set(payload, {
+      ...(this.opts.turnId !== undefined ? { turnId: this.opts.turnId } : {}),
+      entityRefs: this.opts.entityRefs?.snapshot() ?? [],
+    });
     return payload;
   }
 }
@@ -219,4 +270,18 @@ const KNOWLEDGE_GRAPH_REFS = new WeakMap<RunTracePayload, readonly string[]>();
  */
 export function knowledgeGraphRefsOf(trace: RunTracePayload): readonly string[] | undefined {
   return KNOWLEDGE_GRAPH_REFS.get(trace);
+}
+
+/**
+ * #1571 / #1574 — the turn id and the records the turn's tools read, per
+ * finished trace, held BESIDE the payload like the knowledge-graph refs: they
+ * are verifier input for this turn only and must not ride the stream's
+ * `done`, routine runs or `ingestRun`.
+ */
+const TURN_EVIDENCE = new WeakMap<RunTracePayload, TurnEvidence>();
+
+/** The turn id and read records of a trace built by a collector, else
+ *  undefined. */
+export function turnEvidenceOf(trace: RunTracePayload): TurnEvidence | undefined {
+  return TURN_EVIDENCE.get(trace);
 }

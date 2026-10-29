@@ -175,8 +175,9 @@ describe('verifier/deterministicChecker - aggregate (HR re-compute)', () => {
     }
   });
 
-  it('supports count aggregation', async () => {
-    const odoo = stubOdoo(() => [{}, {}, {}]);
+  it('supports count aggregation over one partner\'s records', async () => {
+    const calls: OdooCall[] = [];
+    const odoo = stubOdoo(() => [{}, {}, {}], calls);
     const checker = new DeterministicChecker({ odoo });
     const claim: HardClaim = {
       id: 'c_001',
@@ -185,11 +186,29 @@ describe('verifier/deterministicChecker - aggregate (HR re-compute)', () => {
       expectedSource: 'odoo',
       value: 3,
       odooRecord: { model: 'account.move' },
-      relatedEntities: [],
+      relatedEntities: ['res.partner:42'],
       aggregation: 'count',
     };
     const verdict = await checker.check(claim);
     assert.equal(verdict.status, 'verified');
+    assert.deepEqual(calls[0]!.positionalArgs[0], [['partner_id', '=', 42]]);
+  });
+
+  it('#1575 — leaves a count over no named partner unverified instead of counting every record', async () => {
+    const calls: OdooCall[] = [];
+    const checker = new DeterministicChecker({ odoo: stubOdoo(() => [{}, {}, {}], calls) });
+    const verdict = await checker.check({
+      id: 'c_001',
+      text: '3 offene Rechnungen',
+      type: 'aggregate',
+      expectedSource: 'odoo',
+      value: 3,
+      odooRecord: { model: 'account.move' },
+      relatedEntities: [],
+      aggregation: 'count',
+    });
+    assert.equal(verdict.status, 'unverified');
+    assert.equal(calls.length, 0, 'no unfiltered query');
   });
 });
 

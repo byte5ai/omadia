@@ -156,6 +156,24 @@ export function releasedUnconfirmedLogLine(runId: string, verdict: VerifierVerdi
   return `[verifier/service] answer released unconfirmed run=${runId} ${diagnosis(verdict)}`;
 }
 
+/** What `enforce` would have done with a verdict `shadow` only reported. */
+export type ShadowEnforceOutcome = 'release' | 'release_unconfirmed' | 'withhold';
+
+/**
+ * #1576 — the `shadow` diagnosis: the per-claim result and cause `enforce`
+ * logs for the same verdict, plus what `enforce` would have done with the
+ * answer. `shadow` exists to calibrate before switching to `enforce`, so it
+ * must show the same diagnosis — one line per verified answer, closed codes
+ * and claim ids only.
+ */
+export function shadowLogLine(
+  run: string,
+  verdict: VerifierVerdict,
+  enforce: ShadowEnforceOutcome,
+): string {
+  return `[verifier/service] shadow verdict run=${run} enforce=${enforce} ${diagnosis(verdict)}`;
+}
+
 /**
  * The correction-retry line: how many contradictions, and per claim what it
  * rests on — so a retry is attributable to an evidence refutation versus a

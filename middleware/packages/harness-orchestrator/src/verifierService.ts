@@ -49,9 +49,11 @@ import {
   mergeBorderlineVerdicts,
   releasedUnconfirmedLogLine,
   retryLogLine,
+  shadowLogLine,
   summarise,
   withVerifier,
   withheldLogLine,
+  type ShadowEnforceOutcome,
 } from './verifierVerdicts.js';
 
 // Re-exported: tests and callers import these from this module.
@@ -201,6 +203,7 @@ export class VerifierService implements ChatAgent {
       mode: this.mode,
       host: this.host,
       log: this.log,
+      agent: opts.orchestrator.agentId,
     });
     this.turnHookRegistry = opts.turnHookRegistry;
     this.locale = opts.locale;
@@ -210,6 +213,17 @@ export class VerifierService implements ChatAgent {
    *  holds content of its own (a canvas skeleton) until the verdict too. */
   get holdsContentUntilVerdict(): boolean {
     return this.enabled && this.mode === 'enforce';
+  }
+
+  /** #1576 — `shadow` logs the diagnosis `enforce` would log, and what
+   *  `enforce` would have done with the answer. */
+  private logShadow(runId: string, verdict: VerifierVerdict): void {
+    const enforce: ShadowEnforceOutcome = !verdictReleasesAnswer(verdict)
+      ? 'withhold'
+      : verdictLeavesUnconfirmed(verdict)
+        ? 'release_unconfirmed'
+        : 'release';
+    this.log(shadowLogLine(this.judge.runLabel(runId), verdict, enforce));
   }
 
   /** #133 (E6) — record a verifier block on this turn's plan (`verifierBlockedHook.ts`). */
@@ -287,6 +301,7 @@ export class VerifierService implements ChatAgent {
         verify: async (done) => {
           const verdict = await this.judge.verdictFor(runId, input, done, egress.take());
           if (verdict === undefined) return undefined;
+          this.logShadow(runId, verdict);
           void this.judge.persist(runId, input, verdict, 0);
           return summarise(verdict, 0, this.mode);
         },
@@ -296,6 +311,7 @@ export class VerifierService implements ChatAgent {
       // A client that leaves early, or a throw, must not strand the turn's
       // privacy state until restart.
       await passes.settleAll();
+      this.judge.release(runId);
     }
   }
 
@@ -321,6 +337,7 @@ export class VerifierService implements ChatAgent {
       await request?.ledger.turnRecord.commit(FIRST_PASS);
       await request?.ledger.receipts.commit();
       request?.release();
+      this.judge.release(runId);
     }
   }
 
@@ -352,6 +369,7 @@ export class VerifierService implements ChatAgent {
 
     // Shadow mode: persist + summarise, never retry / block.
     if (this.mode === 'shadow') {
+      this.logShadow(runId, firstVerdict);
       void this.judge.persist(runId, input, firstVerdict, 0);
       return toSemanticAnswer(
         withVerifier(
@@ -428,7 +446,7 @@ export class VerifierService implements ChatAgent {
     // No correction: shouldn't happen for status=blocked unless withheld.
     if (!correction) return deliverWithoutRetry();
 
-    this.log(retryLogLine(runId, effectiveVerdict));
+    this.log(retryLogLine(this.judge.runLabel(runId), effectiveVerdict));
     const retryInput: ChatTurnInput = {
       ...input,
       extraSystemHint: correction,
@@ -535,11 +553,11 @@ export class VerifierService implements ChatAgent {
     const delivered = await this.delivered(turn, ledger, egress);
     if (verdictReleasesAnswer(verdict)) {
       if (verdictLeavesUnconfirmed(verdict)) {
-        this.log(releasedUnconfirmedLogLine(runId, verdict));
+        this.log(releasedUnconfirmedLogLine(this.judge.runLabel(runId), verdict));
       }
       return toSemanticAnswer(withVerifier(delivered, summary));
     }
-    this.log(withheldLogLine(runId, verdict));
+    this.log(withheldLogLine(this.judge.runLabel(runId), verdict));
     return toSemanticAnswer(withheldTurnResult(delivered, summary, this.locale));
   }
 

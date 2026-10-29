@@ -17,6 +17,7 @@
  * in three different packages (orchestrator streaming, extras, verifier) that
  * must all write to one place without threading a pool through every seam.
  */
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Pool } from 'pg';
 import { computeCostUsd, type UsageTokens } from './pricing.js';
 
@@ -92,6 +93,19 @@ export function setUsageContextProvider(
   provider: (() => UsageContext | undefined) | undefined,
 ): void {
   contextProvider = provider;
+}
+
+/**
+ * #1571 — an explicit attribution scope for work that runs for a turn after
+ * that turn's own context has closed (the answer verifier). Inside
+ * {@link runWithUsageContext} it wins over the registered provider; ids passed
+ * on a `UsageRecord` still win over both.
+ */
+const explicitContext = new AsyncLocalStorage<UsageContext>();
+
+/** Runs `fn` with every `recordUsage()` in it attributed to `ctx`. */
+export function runWithUsageContext<T>(ctx: UsageContext, fn: () => T): T {
+  return explicitContext.run(ctx, fn);
 }
 
 /**
@@ -171,7 +185,7 @@ export function recordUsage(record: UsageRecord): void {
   // throwing provider must not break a telemetry write.
   let ctx: UsageContext | undefined;
   try {
-    ctx = contextProvider?.();
+    ctx = explicitContext.getStore() ?? contextProvider?.();
   } catch (err) {
     ctx = undefined;
     if (!warnedContextProviderError) {
