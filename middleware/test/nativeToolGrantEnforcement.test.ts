@@ -198,10 +198,13 @@ test('an orchestrator-scoped tool (deferred sub-agent twin) is only its owner\'s
 test('memory on a turn the binder denied memory is refused, never the unscoped provider handler', async () => {
   const { registry, deps } = setup();
   let providerRan = false;
-  registry.registerHandler('memory', async () => {
-    providerRan = true;
-    return 'ROOT STORE';
+  registry.registerHandler('memory', {
+    handler: async () => {
+      providerRan = true;
+      return 'ROOT STORE';
+    },
   });
+  assert.ok(registry.get('memory')?.handler, 'the provider handler is registered');
   const orch = probe(buildForAgent(agentRow('zweiter'), deps, RUNTIME, undefined, []));
   const result = await orch.dispatchTool('memory', { command: 'view', path: '/memories' }, undefined, {
     handler: undefined,
