@@ -81,7 +81,7 @@ ${examples.map((e) => `- user asked "${e.question}" → "fetch": ${JSON.stringif
 
 /** The FAST PATH section appended to the composer prompt when at least one
  *  tool is allow-listed — absent otherwise, so the prompt is unchanged. */
-function fastPathPromptSection(
+export function fastPathPromptSection(
   tools: readonly FastPathToolSpec[],
   examples: readonly LearnedExample[] = [],
 ): string {
@@ -89,7 +89,7 @@ function fastPathPromptSection(
 
 FAST PATH (optional — same JSON object, two extra keys): when the request is answered by exactly ONE read query per data container with one of the tools below (plus at most a simple equality/date-part post-filter), add to that dataRequirements entry:
   "fetch": { "tool", "input": <the EXACT tool input>, "map": { fieldKey: <record attribute> }, "rowKey"?: <attribute with a stable id>, "itemsPath"?: <dot-path to the record array>, "filter"?: [ { "field": <attribute>, "datePart": "year"|"month"|"day", "eq": <integer> } | { "field": <attribute>, "eq": <string|number|boolean> } ] }
-and a top-level "summary": ONE plain sentence in the user's language with placeholders computed from the rows of the FIRST dataRequirement after the filter — {count} (= number of rows) and/or {sum:<fieldKey>} (= total of that container's NUMERIC column, e.g. an open amount) — correct for any count including 0, e.g. "{count} Mitarbeitende haben im Januar Geburtstag." or "{count} offene Posten über insgesamt {sum:amount} €.". With {sum:…} also add a top-level "locale" (BCP-47 of the user's language, e.g. "de-DE", "en-US") — the number is formatted for it; put a currency only as plain text. A {sum:…} over money also needs the record's "currency_id" in the query's fields: the total renders only when every row has ONE currency (otherwise the full agent answers). The summary states ONLY what the query guarantees; never invent figures.
+and a top-level "summary": ONE plain sentence in the user's language with placeholders computed from the rows of the FIRST dataRequirement after the filter — {count} (= number of rows) and/or {sum:<fieldKey>} (= total of that container's NUMERIC column, e.g. an open amount) — correct for any count including 0, e.g. "{count} Mitarbeitende haben im Januar Geburtstag." or "{count} offene Posten über insgesamt {sum:amount} {currency}.". With {sum:…} also add a top-level "locale" (BCP-47 of the user's language, e.g. "de-DE", "en-US") — the number is formatted for it; write the currency of a money total as the token {currency} (filled from the rows' one currency_id), never a symbol of your own. A {sum:…} over money also needs the record's "currency_id" in the query's fields: the total renders only when every row has ONE currency (otherwise the full agent answers). The summary states ONLY what the query guarantees; never invent figures.
 - "map" covers EVERY fieldKey of the container's columns. A map value may be a dot-path into the record (e.g. "department_id.1").
 - "filter" is for what the tool cannot filter itself (e.g. a birthday MONTH); put everything else into the tool's own query.
 - Express relative periods time-safely (a tool's relative-date syntax, e.g. "{today}" below) or omit fetch. OMIT fetch (and summary) whenever the request needs reasoning, joins, aggregation beyond {count}/{sum:…}, several steps, a tool not listed, or you are unsure of the field names — the full agent then handles it. A wrong fetch is worse than none.

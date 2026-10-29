@@ -216,7 +216,9 @@ function sumColumn(key: string, rows: ReadonlyArray<Record<string, unknown>>): n
  * Fill the composer's prose template from the published rows of the FIRST
  * data requirement (after the filter): `{count}` = row count,
  * `{sum:<fieldKey>}` = the column total with two decimals in `locale`
- * (de: `51.230,00`; the currency stays in the template text). A sum is
+ * (de: `51.230,00`), `{currency}` = the display value of the ONE shared
+ * `currency_id` behind a money sum (dropped for zero rows; without a money
+ * sum in the template it cannot be resolved → `ok: false`). A sum is
  * printed only when it is exact — the key one of the container's fieldKeys
  * (`map`), every value a finite number, a valid locale and, for money, ONE
  * `currency_id` across the raw `records` — otherwise the result is
@@ -234,6 +236,7 @@ export function renderSummary(
   },
 ): RenderedSummary {
   const sums = new Map<string, string>();
+  let moneyChecked = false;
   for (const [, key] of template.matchAll(SUM_PLACEHOLDER)) {
     if (key === undefined || sums.has(key)) continue;
     const attr = opts.map[key];
@@ -244,16 +247,43 @@ export function renderSummary(
     if (typeof total === 'string') return { ok: false, detail: `{sum:${key}} over ${total}` };
     const mixed = mixedCurrency(attr, opts.rows.length, opts.records);
     if (mixed !== null) return { ok: false, detail: `{sum:${key}} (${attr}): ${mixed}` };
+    if (MONETARY_ATTR.test(attr)) moneyChecked = true;
     sums.set(
       key,
       new Intl.NumberFormat(locale, { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(total),
     );
   }
-  const text = template
+  let withCurrency = template;
+  if (template.includes(CURRENCY_PLACEHOLDER)) {
+    // only next to a money total whose ONE currency was just verified
+    if (!moneyChecked) return { ok: false, detail: `${CURRENCY_PLACEHOLDER} without a currency-checked money {sum:…}` };
+    const first = opts.records[0];
+    const name = first !== undefined ? currencyDisplay(first) : undefined;
+    if (first !== undefined && name === undefined) {
+      return { ok: false, detail: `${CURRENCY_PLACEHOLDER}: ${CURRENCY_ATTR} has no display value` };
+    }
+    // zero rows: no currency to state — drop the token with its leading space
+    withCurrency =
+      name === undefined
+        ? template.replace(/\s?\{currency\}/g, '')
+        : template.split(CURRENCY_PLACEHOLDER).join(name);
+  }
+  const text = withCurrency
     .replace(SUM_PLACEHOLDER, (_m, key: string) => sums.get(key) ?? '')
     .split('{count}')
     .join(String(opts.rows.length));
   return { ok: true, text };
+}
+
+/** `{currency}` — the shared currency of a currency-checked money `{sum:…}`. */
+export const CURRENCY_PLACEHOLDER = '{currency}';
+
+/** Display value of a record's currency: the many2one name (`[1, "EUR"]` →
+ *  `EUR`) or a plain string; undefined when absent/empty. */
+function currencyDisplay(rec: Record<string, unknown>): string | undefined {
+  const v = rec[CURRENCY_ATTR];
+  const name: unknown = Array.isArray(v) ? v[1] : v;
+  return typeof name === 'string' && name.length > 0 ? name : undefined;
 }
 
 /** Row cap of `odoo_query` (its `limit` maximum). */

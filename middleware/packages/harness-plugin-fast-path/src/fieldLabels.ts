@@ -66,3 +66,44 @@ export function catalogColumnLabel(opts: {
   const entry = opts.model !== undefined && base !== undefined ? CATALOG_LABELS[opts.model]?.[base] : undefined;
   return entry?.[opts.lang] ?? humanizeKey(opts.fieldKey);
 }
+
+/**
+ * Detail field set per catalog model — the fields an LLM-free "Details
+ * anzeigen" reads for ONE record (omadia-ui-orchestrator rowDetails.ts), in
+ * display order. Only catalog fields (readable through odoo_query, labelled
+ * above), none of the integration's HR red-line fields (wage, bank, private
+ * contact/identity data). A model outside the catalog has none — the caller
+ * then falls back to the fields of the table's own recipe.
+ */
+const CATALOG_DETAIL_FIELDS: Readonly<Record<string, readonly string[]>> = {
+  'hr.employee': ['name', 'job_title', 'department_id', 'parent_id', 'work_email', 'work_phone', 'birthday'],
+  'res.partner': ['name', 'is_company', 'email', 'phone', 'city', 'customer_rank', 'supplier_rank'],
+  'account.move': [
+    'name',
+    'partner_id',
+    'move_type',
+    'state',
+    'payment_state',
+    'invoice_date',
+    'invoice_date_due',
+    'amount_total',
+    'amount_residual',
+    'currency_id',
+  ],
+};
+
+/** Boolean catalog fields — Odoo sends `false` for "no" there, not for "empty". */
+const CATALOG_BOOLEAN_FIELDS: Readonly<Record<string, ReadonlySet<string>>> = {
+  'hr.employee': new Set(['active']),
+  'res.partner': new Set(['is_company']),
+};
+
+/** The detail field set of an Odoo catalog model, else undefined. */
+export function catalogDetailFields(model: string): readonly string[] | undefined {
+  return CATALOG_DETAIL_FIELDS[model];
+}
+
+/** True when `attr` of Odoo `model` is a boolean catalog field. */
+export function isCatalogBooleanField(model: string, attr: string): boolean {
+  return CATALOG_BOOLEAN_FIELDS[model]?.has(attr) === true;
+}
