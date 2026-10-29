@@ -9800,6 +9800,17 @@ export class Orchestrator {
       // matching the `unknown tool` fallback below — both the streaming and
       // non-streaming dispatch loops key `is_error` off that prefix, and
       // both also fold a thrown rejection into the same convention (#1095).
+      // #1598 — THE AUTHORISATION GATE for `ctx.tools.register` tools, the
+      // twin of the domain-tool gate below. Native tools live in ONE
+      // kernel-wide registry, so without this every Agent could call every
+      // plugin's tools, assigned or not. Refused by name, without the owner — and BEFORE the readiness
+      // check, whose message names the plugin.
+      if (!this.isToolGranted(name, reg.agentId)) {
+        console.warn(
+          `[orchestrator] agent "${this.agentId}" attempted un-granted plugin tool "${name}" — refused`,
+        );
+        return refuse(`Error: tool \`${name}\` is not available to this agent.`);
+      }
       if (!this.isToolAvailable(reg.agentId)) {
         return refuse(
           `Error: tool \`${name}\` is unavailable — plugin \`${reg.agentId}\` has not completed its connection/auth setup.`,
@@ -9912,7 +9923,13 @@ export class Orchestrator {
       .listWithHandler()
       // #1346 — and the same per-turn gate: a tool hidden from this turn's
       // tools[] must not be described to the model either.
-      .filter((e) => this.isToolAvailable(e.agentId) && isOfferedThisTurn(e))
+      // #1598 — nor described to an Agent its plugin is not granted to.
+      .filter(
+        (e) =>
+          this.isToolAvailable(e.agentId) &&
+          this.isToolGranted(e.name, e.agentId) &&
+          isOfferedThisTurn(e),
+      )
       .map((e) => e.promptDoc)
       .filter((doc): doc is string => typeof doc === 'string' && doc.length > 0);
     // Issue #474 (round 3) — same isToolAvailable gate as buildToolsList()'s
@@ -10046,6 +10063,25 @@ export class Orchestrator {
     if (this.grantedPluginIds === undefined) return true;
     if (pluginId === undefined) return true;
     return this.grantedPluginIds.has(pluginId);
+  }
+
+  /**
+   * #1598 — the grant check for a native (`ctx.tools.register`) tool.
+   *
+   * Same rule as {@link isPluginGranted}: kernel-registered tools carry no
+   * `agentId` and stay ungated. The one exception is `memory`: the provider
+   * plugin only backs the store, while what an Agent reads and writes is
+   * scoped per Agent by the kernel (`memoryToolHandler` / the turn binder), so
+   * withholding it would take memory from every Agent the provider was never
+   * attached to rather than close a leak.
+   *
+   * Public because the subscription-CLI dispatcher (`ToolDispatchService`,
+   * wired in `buildOrchestrator.ts`) bypasses `dispatchTool` and must ask the
+   * same question.
+   */
+  isToolGranted(name: string, pluginId: string | undefined): boolean {
+    if (name === MEMORY_TOOL_NAME) return true;
+    return this.isPluginGranted(pluginId);
   }
 
   hasDomainTool(name: string): boolean {
@@ -10638,7 +10674,14 @@ export class Orchestrator {
       if (entry.spec && KERNEL_NATIVE_SPECS.has(entry.spec)) continue;
       // #1346 — a plugin may declare per turn that it cannot serve this
       // channel (e.g. a discussion needs a conversation the turn can name).
-      if (entry.spec && this.isToolAvailable(entry.agentId) && isOfferedThisTurn(entry)) {
+      // #1598 — and only when the owning plugin is granted to this Agent, the
+      // same per-orchestrator assignment domain tools already honour.
+      if (
+        entry.spec &&
+        this.isToolAvailable(entry.agentId) &&
+        this.isToolGranted(entry.name, entry.agentId) &&
+        isOfferedThisTurn(entry)
+      ) {
         nativeSpecs.push(entry.spec);
       }
     }

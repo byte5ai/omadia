@@ -1,10 +1,10 @@
 /**
  * Static serving of a plugin's compiled SPA bundle (epic #470 C8 / G7).
  *
- * `/p/<pluginId>/ui/...` is reachable without an operator session — the
- * `publicPaths` allowlist has covered `/p/*` since plugin UI surfaces were
- * first iframed by Teams. That makes every property below load-bearing rather
- * than defence in depth: this handler is the boundary.
+ * `/p/<pluginId>/ui/...` is reachable without an operator session — core
+ * mounts this router outside every requireAuth so Teams can iframe plugin UI
+ * bundles. That makes every property below load-bearing rather than defence
+ * in depth: this handler is the boundary.
  *
  * Driven through `app.handle` (see `_helpers/httpInvoke.ts`) so routing,
  * params and headers run for real without holding a port.

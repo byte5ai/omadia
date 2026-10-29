@@ -7,7 +7,11 @@ import cookieParser from 'cookie-parser';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
-import { createRequireAuth, SESSION_COOKIE } from '../../src/auth/requireAuth.js';
+import {
+  createRequireAuth,
+  createSessionGate,
+  SESSION_COOKIE,
+} from '../../src/auth/requireAuth.js';
 import { signSession } from '../../src/auth/sessionJwt.js';
 import { EmailWhitelist } from '../../src/auth/whitelist.js';
 import { publicPaths } from '../../src/auth/publicPaths.js';
@@ -413,6 +417,89 @@ describe("#470 C6 / G2 — auth:'session'", () => {
       () => unwired.register(ADMIN_PREFIX, jsonRouter(), 'acme'),
       /no session middleware is available yet/,
     );
+  });
+});
+
+/**
+ * Issue #1596 — the registry's `auth: 'session'` gate is the kernel's
+ * `createSessionGate` (src/index.ts), NOT the `/api` `requireAuth` with its
+ * static public-path short-circuit. With the short-circuit, every
+ * `/p/<plugin>/…` "session" route served anonymous callers: the Odoo HR
+ * plugin's absences page leaked sick leave to `curl`.
+ */
+describe("#1596 — auth:'session' plugin routes ignore the static public-path list", () => {
+  function productionSessionGate(): RequestHandler {
+    return createSessionGate({
+      signingKey: SIGNING_KEY,
+      whitelist: new EmailWhitelist(OPERATOR),
+    }) as unknown as RequestHandler;
+  }
+
+  async function setup(prefix: string, gate: RequestHandler): Promise<Harness> {
+    const routes = newRegistry(gate);
+    routes.register(prefix, jsonRouter(), 'agent-odoo-hr');
+    return buildApp({
+      routes,
+      grants: new PublicPathGrantRegistry(),
+      sessionAuth: kernelRequireAuth(),
+    });
+  }
+
+  it('/p/<plugin> route without a session → 401', async () => {
+    const h = await setup('/p/agent-odoo-hr', productionSessionGate());
+    try {
+      const res = await fetch(`${h.baseUrl}/p/agent-odoo-hr/ping`);
+      assert.equal(res.status, 401);
+      assert.equal(((await res.json()) as { code: string }).code, 'auth.missing');
+    } finally {
+      h.server.close();
+    }
+  });
+
+  it('/p/<plugin> route with a valid operator session → 200', async () => {
+    const h = await setup('/p/agent-odoo-hr', productionSessionGate());
+    try {
+      const res = await fetch(`${h.baseUrl}/p/agent-odoo-hr/ping`, {
+        headers: { Cookie: await operatorCookie() },
+      });
+      assert.equal(res.status, 200);
+      assert.deepEqual(await res.json(), { ok: true });
+    } finally {
+      h.server.close();
+    }
+  });
+
+  it('/p/<plugin> route with a forged session cookie → 401', async () => {
+    const h = await setup('/p/agent-odoo-hr', productionSessionGate());
+    try {
+      const res = await fetch(`${h.baseUrl}/p/agent-odoo-hr/ping`, {
+        headers: { Cookie: `${SESSION_COOKIE}=not-a-jwt` },
+      });
+      assert.equal(res.status, 401);
+    } finally {
+      h.server.close();
+    }
+  });
+
+  it('a session route beneath a STATIC public path is still gated', async () => {
+    // `/api/v1/auth/*` is a static public path. A plugin route registered
+    // there with the default auth must not inherit that exemption.
+    const h = await setup('/api/v1/auth/acme', productionSessionGate());
+    try {
+      assert.equal((await fetch(`${h.baseUrl}/api/v1/auth/acme/ping`)).status, 401);
+    } finally {
+      h.server.close();
+    }
+  });
+
+  it('COUNTER-PROOF: the /api requireAuth as the route gate serves the same request anonymously', async () => {
+    // The pre-fix wiring. Pins that the test above fails for the right reason.
+    const h = await setup('/api/v1/auth/acme', kernelRequireAuth());
+    try {
+      assert.equal((await fetch(`${h.baseUrl}/api/v1/auth/acme/ping`)).status, 200);
+    } finally {
+      h.server.close();
+    }
   });
 });
 
