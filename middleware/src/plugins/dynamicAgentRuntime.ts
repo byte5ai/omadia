@@ -3,7 +3,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import type { AnthropicClient } from '@omadia/llm-adapter-anthropic';
-import type { LlmProviderPool } from '@omadia/llm-provider';
+import type { EffortLevel, LlmProviderPool } from '@omadia/llm-provider';
 import type { z } from 'zod';
 
 import { canvasOutputToolIds } from '../platform/canvasOutputRegistry.js';
@@ -26,6 +26,7 @@ import { resolveClaudeCliBin } from '../platform/cliBinary.js';
 import {
   createCliSubAgent,
   LocalSubAgent,
+  subAgentEffortFor,
   type Askable,
   type LocalSubAgentTool,
   type LocalSubAgentToolResult,
@@ -160,6 +161,8 @@ export interface DynamicAgentRuntimeDeps {
   subAgentModel: string;
   subAgentMaxTokens: number;
   subAgentMaxIterations: number;
+  /** `SUB_AGENT_EFFORT` — absent = no effort sent (the model's default). */
+  subAgentEffort?: EffortLevel;
   /** The host's configured LLM provider id for dynamic sub-agents (default
    *  `anthropic`). Late-bound so a post-boot provider switch is picked up. */
   hostProviderId?: () => string;
@@ -565,6 +568,7 @@ export class DynamicAgentRuntime {
     // requests). Run the sub-agent through its own CliChatAgent instead — the
     // `claude` CLI owns the loop, the sub-agent's tools reach it over a fresh
     // loopback MCP server. Every other provider keeps the in-process path.
+    const effortFor = subAgentEffortFor(this.deps.subAgentEffort);
     const subAgent: Askable =
       hostProviderId === 'claude-cli'
         ? createCliSubAgent({
@@ -583,6 +587,7 @@ export class DynamicAgentRuntime {
             maxIterations: this.deps.subAgentMaxIterations,
             systemPrompt,
             tools: subAgentTools,
+            ...(effortFor !== undefined ? { effortFor } : {}),
           });
 
     const description = buildDomainToolDescription(catalogEntry);
