@@ -378,6 +378,31 @@ describe('field-classification routes', () => {
     assert.equal(harness.updates.length, 1);
   });
 
+  it('a field seeded from the Odoo schema lists as not_seen_yet, and can be confirmed', async () => {
+    harness = await makeHarness();
+    await harness.store.seedField({ ...observation('job_id', 'hr.employee', 'odoo_execute'), seenCount: 0 });
+    const row = (await harness.store.list()).find((c) => c.fieldPath === 'job_id')!;
+    const fingerprint = candidateFingerprint({ scope: 'hr.employee', relationModels: ['hr.job'], valueShape: 'm2o' });
+    await harness.store.saveClassification(row.id, {
+      relationModels: ['hr.job'],
+      status: 'needs_clarification',
+      reasons: [],
+      fingerprint,
+      computedAt: '2026-10-30T10:00:00.000Z',
+    });
+    const body = (await (await fetch(harness.baseUrl)).json()) as {
+      items: Array<{ fieldPath: string; status: string; reasons: Array<{ code: string }> }>;
+    };
+    const job = body.items.find((i) => i.fieldPath === 'job_id')!;
+    assert.equal(job.status, 'needs_clarification');
+    assert.deepEqual(
+      job.reasons.map((r) => r.code),
+      ['known_non_personal', 'not_seen_yet'],
+    );
+    assert.equal((await decide(row.id, 'confirm', fingerprint)).status, 200);
+    assert.equal(npf(), 'odoo_execute:hr.employee/job_id');
+  });
+
   it('answers 409 on a stale fingerprint, and 404 on an unknown id', async () => {
     harness = await makeHarness();
     const { id } = await seed(harness.store, 'department_id', 'hr.department');
