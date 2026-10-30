@@ -1235,6 +1235,53 @@ durch `runTurn({ ..., viewer })`. Tests: `test/conductorBuilder.test.ts`
 (Digest-Sichtbarkeit inkl. pending/fremd-privat, Proposal-Vetting,
 Malformed-Blocks, No-Proposal-Regression).
 
+### Conductor — People-Directory, MCP-Actions, Builder-Capability-Signal (2026-10-30)
+
+Drei Seams, damit der konversationelle Builder keine Tool-IDs mehr erfindet und
+Personen nicht mehr als Freitext-Adresse abgefragt werden müssen:
+
+**People-Directory (Kernel + SDK).** `@omadia/channel-sdk` definiert
+`PeopleDirectoryProvider { channelType; search(q, {limit}) → resolved{people,partial} | unavailable{code} }`
+(`packages/harness-channel-sdk/src/peopleDirectory.ts`); Channel-Plugins
+registrieren feature-detected über `core.registerPeopleDirectoryProvider?.(channelId, provider)`.
+`src/channels/peopleDirectoryRegistry.ts` hält einen Provider pro `channelType`
+(First-Registrant-Owner, `unregisterChannel` bei Deaktivierung), vereinigt die
+Antworten, dedupliziert je `(channelType, principalRef)`, kappt auf ≤25, lässt
+einen hängenden Provider nach 4 s als `unavailable/source_error` laufen und
+verwirft Einträge ohne kanonisierbaren Ref. **`principalRef` MUSS der
+Channel-Binding-Key sein** (Teams: E-Mail/UPN, Slack: Member-ID) — sonst
+erreicht die Erinnerung niemanden. Route: `GET /api/v1/operator/conductors/people?q=&channel=&limit=`
+(`q` ≥ 2 Zeichen, `limit` ≤ 25, 60 Suchen/min pro Session-Sub, 200 mit
+`people: []` wenn kein Provider registriert ist; `channelUserId` bleibt
+serverseitig). Provider: `omadia-channel-teams` (Graph `/users?$search`, braucht
+`User.Read.All`), `omadia-channel-slack` (`users.list`, braucht `users:read`).
+
+**MCP-Tools als Conductor-Actions.** Action-IDs `mcp:<serverId>:<toolName>`
+(`src/conductor/mcpActionId.ts`) stehen im Action-Katalog (`listActions`, jetzt
+async) und werden in `src/conductor/mcpActionInvoker.ts` an
+`McpManager.callTool` dispatcht — **nur** `status = enabled` **und**
+`delegation = service` (ein Conductor-Run hat keinen acting user; Allowlist, kein
+Denylist), plus dasselbe `mcpDispatchDenial`-Gate wie der Orchestrator-Dispatch
+(Scan-Verdicts/Acks/disabled). Der Katalog wendet dasselbe Gate an, damit
+Signal und Laufzeit nie auseinanderlaufen. `"Error: …"`-Ergebnisse werfen.
+Trust-Klasse: Operator (wie die Control-Center-Test-Call-Route); ein
+per-Server-`allowConductor`-Flag ist Follow-up für den Tag, an dem
+Operator-Rollen von MCP-Admin abweichen.
+
+**Builder-Signal.** `builderAgent.ts` listet bekannte Action-IDs/Agent-Slugs
+(sanitisiert, ≤60) im Prompt und liefert additiv `missingCapabilities[]`
+(`builderCapabilities.ts` — berechnet **neben** `validate()`, dessen KnownRefs
+für Drafts bewusst nur `eventIds` enthalten: ein `unknown_action_ref` würde den
+Self-Correction-Retry den Platzhalter-Step löschen lassen) und
+`personSuggestions[]` (`builderPeople.ts` — Directory-Lookups **nach** dem
+LLM-Turn, nie im Prompt; ≤5 Namen × ≤5 Kandidaten; der Server schreibt
+`principal.ref` nie um). Die web-ui rendert daraus Karten
+(`web-ui/app/conductor/_components/ConductorChatCards.tsx`): „Connector fehlt" →
+`McpAddServerModal` (Registry/Manuell → Enable → Discover → OAuth inline →
+Delegation auf `service` → Tool wählen → lokaler `update_step`), Personen-Chips →
+Klick schreibt `ref` **und** `channel`. Karten gelten nur für den letzten Turn
+und sind während eines laufenden Turns inert.
+
 ### Conductor Webhooks — Inbound + Outbound (#437)
 
 Generischer Webhook-Mechanismus für Conductor, symmetrisch zum bisher

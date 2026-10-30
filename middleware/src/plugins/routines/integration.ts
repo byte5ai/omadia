@@ -30,7 +30,7 @@ export function createRoutinesIntegration(
   handle: RoutinesHandle,
   /** Optional per-turn observer — the kernel uses it to persist a Conductor channel binding for
    *  reminders, without coupling routines to Conductor. Best-effort: failures must not break a turn. */
-  onTurnCaptured?: (info: { userId: string; principalRef?: string; channel: string; conversationRef: unknown }) => void,
+  onTurnCaptured?: (info: { userId: string; principalRef?: string; channel: string; conversationRef: unknown; tenant?: string }) => void,
 ): RoutinesIntegration {
   /** The ALS value both turn-capture entry points install. */
   function contextFor(info: RoutineTurnInput): ManageRoutineContext {
@@ -46,7 +46,7 @@ export function createRoutinesIntegration(
   /** Conductor channel binding for reminders. Best-effort, never fatal. */
   function notifyTurnCaptured(info: RoutineTurnInput): void {
     try {
-      onTurnCaptured?.({ userId: info.userId, principalRef: info.principalRef, channel: info.channel, conversationRef: info.conversationRef });
+      onTurnCaptured?.({ userId: info.userId, principalRef: info.principalRef, channel: info.channel, conversationRef: info.conversationRef, tenant: info.tenant });
     } catch {
       // never let a binding-capture error break the inbound turn
     }

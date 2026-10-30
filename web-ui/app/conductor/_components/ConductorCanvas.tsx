@@ -44,6 +44,8 @@ import {
   type ConductorWorkflow,
 } from '@/app/_lib/api';
 import { KIND_BADGE_FG, KIND_COLOR } from './stepKindColors';
+import { describeActionId } from './actionIdLabel';
+import { PersonPicker } from './PersonPicker';
 
 // ── Node data model ────────────────────────────────────────────────────────
 // node.id is a stable internal id; data.stepId is the user-facing (renameable)
@@ -77,8 +79,10 @@ interface StepNodeData extends Record<string, unknown> {
 type StepNode = Node<StepNodeData>;
 
 function StepNodeView({ data, selected }: NodeProps<StepNode>): React.JSX.Element {
+  const t = useTranslations('conductor');
+  const action = data.kind === 'action' ? describeActionId(data.actionId) : null;
   const primary =
-    data.kind === 'agent' ? data.agentId || '—' : data.kind === 'action' ? data.actionId || '—' : data.human.principalRef || '—';
+    data.kind === 'agent' ? data.agentId || '—' : data.kind === 'action' ? action?.label || '—' : data.human.principalRef || '—';
   return (
     <div
       style={{ borderColor: selected ? 'var(--fg-strong)' : KIND_COLOR[data.kind] }}
@@ -99,7 +103,10 @@ function StepNodeView({ data, selected }: NodeProps<StepNode>): React.JSX.Elemen
         )}
       </div>
       <div className="mt-1 font-mono text-[13px] font-medium">{data.stepId}</div>
-      <div className="font-mono text-[11px] text-[color:var(--fg-muted)]">{primary}</div>
+      <div className="font-mono text-[11px] text-[color:var(--fg-muted)]">
+        {primary}
+        {action?.isMcp ? <span className="ml-1 rounded bg-black/20 px-1 text-[9px] font-semibold uppercase">{t('actionMcpBadge')}</span> : null}
+      </div>
       <Handle type="source" position={Position.Right} />
     </div>
   );
@@ -756,23 +763,39 @@ function CanvasInner({
                 <>
                   <div className={lbl}>
                     {t('principalLabel')}
-                    <div className="flex gap-2">
+                    {/* Stacked, not side-by-side: the inspector is narrow and the people picker
+                        needs the full width for its suggestion list (live check 2026-10-30). */}
+                    <div className="grid gap-2">
                       <select
-                        className={`${input} w-24`}
+                        className={input}
                         value={sel.data.human.principalKind}
                         onChange={(e) => patchNode(sel.id, { human: { ...sel.data.human, principalKind: e.target.value as 'user' | 'role' } })}
                       >
                         <option value="role">role</option>
                         <option value="user">user</option>
                       </select>
-                      <div className="flex-1">
-                        <RefPicker
-                          label=""
-                          value={sel.data.human.principalRef}
-                          onChange={(v) => patchNode(sel.id, { human: { ...sel.data.human, principalRef: v } })}
-                          options={sel.data.human.principalKind === 'role' ? roleCatalog : []}
-                          placeholder={sel.data.human.principalKind === 'role' ? 'approver.release' : 'name@firm.com'}
-                        />
+                      <div className="min-w-0">
+                        {sel.data.human.principalKind === 'role' ? (
+                          <RefPicker
+                            label=""
+                            value={sel.data.human.principalRef}
+                            onChange={(v) => patchNode(sel.id, { human: { ...sel.data.human, principalRef: v } })}
+                            options={roleCatalog}
+                            placeholder="approver.release"
+                          />
+                        ) : (
+                          // People directory (channel plugins) — picking a candidate also pins the
+                          // channel it is routable on; free text (an address) stays valid.
+                          <PersonPicker
+                            value={sel.data.human.principalRef}
+                            channel={sel.data.human.channel}
+                            onChange={(ref, candidate) =>
+                              patchNode(sel.id, {
+                                human: { ...sel.data.human, principalRef: ref, ...(candidate ? { channel: candidate.channelType } : {}) },
+                              })
+                            }
+                          />
+                        )}
                       </div>
                     </div>
                   </div>

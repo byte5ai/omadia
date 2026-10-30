@@ -36,6 +36,12 @@ changelog.
 
 ## [Unreleased]
 
+### Added
+- Conductor: people directory (`@omadia/channel-sdk` `PeopleDirectoryProvider`, kernel `PeopleDirectoryRegistry`, `GET /conductors/people`), MCP tools as action steps (`mcp:<serverId>:<tool>`, service delegation + scan-verdict gate), builder `missingCapabilities` / `personSuggestions` with inline MCP connect modal and person picker in the web-ui.
+
+### Fixed
+- Conductor builder invented action ids without any signal: the prompt now lists the live action catalog and the turn reports refs no invoker can run (computed beside `validate()` so the self-correction retry keeps the placeholder step).
+
 ### Fixed — Privacy Shield masking edge cases (#1525, #1528, #1529)
 
 2026-10-28. Three ways prompt masking got in its own way.

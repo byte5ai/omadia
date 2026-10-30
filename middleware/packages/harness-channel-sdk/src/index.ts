@@ -26,6 +26,14 @@ export {
   type ConversationRoster,
   type ConversationRosterProvider,
 } from './conversationRoster.js';
+// People directory — a channel plugin's searchable "who is <name>?" (Conductor
+// human-step principal resolution). Optional capability like the roster.
+export type {
+  PeopleDirectoryEntry,
+  PeopleDirectoryLookup,
+  PeopleDirectoryProvider,
+  PeopleDirectoryUnavailableCode,
+} from './peopleDirectory.js';
 export type {
   BotAddedEvent,
   ConversationMembershipEvent,

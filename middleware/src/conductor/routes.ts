@@ -74,8 +74,20 @@ export interface ConductorRouterDeps {
   eventCatalog?: { list(): string[]; byPluginId(): Record<string, string[]> };
   /** Live orchestrator slugs + names — powers the Designer's agent-step picker (dropdown). */
   agentCatalog?: () => Array<{ slug: string; name: string }>;
-  /** Registered deterministic-action / tool ids — powers the Designer's action-step picker (dropdown). */
-  actionCatalog?: () => string[];
+  /** Registered deterministic-action / tool ids (incl. `mcp:<serverId>:<tool>`) — powers the
+   *  Designer's action-step picker. May be async: the MCP part reads the server store. */
+  actionCatalog?: () => string[] | Promise<string[]>;
+  /** People-directory union over the channel plugins (Conductor human-step principal
+   *  resolution). Optional: absent on hosts without the kernel registry. */
+  searchPeople?: (
+    query: string,
+    opts: { limit: number; channelType?: string },
+  ) => Promise<{
+    people: readonly { principalRef: string; displayName: string; channelType: string; email?: string; hint?: string }[];
+    partial: boolean;
+  }>;
+  /** Channel types that currently contribute a people directory. */
+  peopleChannelTypes?: () => readonly string[];
   /** Conversational builder agent (US7) — co-design a draft graph by chat. Optional: absent on hosts without a registry. */
   builderAgent?: ConductorBuilderAgent;
   /** Composite workflow-template catalog (#429 bundled + #478 user/plugin) —
@@ -135,6 +147,28 @@ export interface ConductorRouterDeps {
 // a prompt sent to the LLM up to twice per request, so unbounded input is an authenticated
 // cost/latency amplification vector. Generous enough for real workflows, tight enough to bound cost.
 const MAX_BUILDER_MESSAGE_CHARS = 8_000;
+const MIN_PEOPLE_QUERY_CHARS = 2;
+const DEFAULT_PEOPLE_LIMIT = 10;
+const MAX_PEOPLE_LIMIT = 25;
+/** Directory enumeration guard: searches per caller per minute (q≥2 + limit≤25 bound each call). */
+const PEOPLE_SEARCHES_PER_MINUTE = 60;
+const PEOPLE_RATE_WINDOW_MS = 60_000;
+
+/** Minimal in-process sliding window keyed by the operator's session sub (ip fallback). */
+function createPeopleRateLimiter(now: () => number = Date.now): (key: string) => boolean {
+  const hits = new Map<string, number[]>();
+  return (key) => {
+    const t = now();
+    const recent = (hits.get(key) ?? []).filter((ts) => t - ts < PEOPLE_RATE_WINDOW_MS);
+    if (recent.length >= PEOPLE_SEARCHES_PER_MINUTE) {
+      hits.set(key, recent);
+      return false;
+    }
+    recent.push(t);
+    hits.set(key, recent);
+    return true;
+  };
+}
 const MAX_BUILDER_HISTORY_TURNS = 20;
 const MAX_BUILDER_GRAPH_BYTES = 200_000;
 
@@ -244,11 +278,52 @@ export function createConductorRouter(deps: ConductorRouterDeps): Router {
   });
 
   // Action catalog — registered deterministic-action / tool ids for the Designer's action-step dropdown.
-  router.get('/actions', (_req: Request, res: Response): void => {
+  router.get('/actions', async (_req: Request, res: Response): Promise<void> => {
     try {
-      res.json({ actions: deps.actionCatalog?.() ?? [] });
+      res.json({ actions: (await deps.actionCatalog?.()) ?? [] });
     } catch (err) {
       res.status(500).json({ code: 'conductor.action_catalog_failed', message: errMsg(err) });
+    }
+  });
+
+  // People directory (human-step principal resolution). Union over the channel plugins'
+  // providers; `partial` tells the UI that an absent name proves nothing. Before '/:slug'
+  // so the catch-all workflow route doesn't swallow it. No provider wired → a real empty
+  // answer (200), not an error: the picker then simply offers free text.
+  const peopleRateAllow = createPeopleRateLimiter();
+  router.get('/people', async (req: Request, res: Response): Promise<void> => {
+    if (!peopleRateAllow(req.session?.sub ?? req.ip ?? 'anonymous')) {
+      res.status(429).json({ code: 'conductor.rate_limited', message: 'too many directory searches — try again in a minute' });
+      return;
+    }
+    const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+    if (q.length < MIN_PEOPLE_QUERY_CHARS) {
+      res.status(400).json({ code: 'conductor.invalid_input', message: `q must be at least ${String(MIN_PEOPLE_QUERY_CHARS)} characters` });
+      return;
+    }
+    const rawLimit = typeof req.query.limit === 'string' ? Number.parseInt(req.query.limit, 10) : NaN;
+    const limit = Number.isFinite(rawLimit) ? Math.min(MAX_PEOPLE_LIMIT, Math.max(1, rawLimit)) : DEFAULT_PEOPLE_LIMIT;
+    const channelType = typeof req.query.channel === 'string' && req.query.channel.trim() ? req.query.channel.trim() : undefined;
+    const channelTypes = deps.peopleChannelTypes?.() ?? [];
+    if (!deps.searchPeople) {
+      res.json({ people: [], partial: false, channelTypes });
+      return;
+    }
+    try {
+      const result = await deps.searchPeople(q, { limit, ...(channelType ? { channelType } : {}) });
+      // Public candidate shape only — the channel-native id (`channelUserId`) stays server-side.
+      const people = result.people.map((p) => ({
+        principalRef: p.principalRef,
+        displayName: p.displayName,
+        channelType: p.channelType,
+        ...(p.email ? { email: p.email } : {}),
+        ...(p.hint ? { hint: p.hint } : {}),
+      }));
+      res.json({ people, partial: result.partial, channelTypes });
+    } catch (err) {
+      // Provider/registry details stay in the log — a directory error message may name hosts.
+      console.error('[conductor] people search failed:', err);
+      res.status(500).json({ code: 'conductor.people_search_failed', message: 'people search failed' });
     }
   });
 

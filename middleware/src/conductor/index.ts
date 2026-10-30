@@ -27,6 +27,7 @@ import { ConductorScheduleWorker } from './scheduleWorker.js';
 import { ConductorEventRouter } from './eventRouter.js';
 import { RealStepEffects } from './realStepEffects.js';
 import { ConductorBuilderAgent } from './builderAgent.js';
+import type { ConductorPeopleSearch } from './builderAgent.js';
 import { createCompositeTemplateCatalog, loadTemplateCatalog } from './templateCatalog.js';
 import type { CompositeTemplateCatalog } from './templateCatalog.js';
 import { loadPatternCatalog } from './patternCatalog.js';
@@ -228,8 +229,14 @@ export async function wireConductor(deps: {
   defaultChannelBotKey?: DefaultChannelBotKey;
   /** invokes a deterministic-action / connector tool by id for action steps. */
   invokeAction?: (toolId: string, input: unknown) => Promise<string | undefined>;
-  /** lists registered deterministic-action / tool ids for the Designer's action-step picker. */
-  listActions?: () => string[];
+  /** lists registered deterministic-action / tool ids (incl. `mcp:<serverId>:<tool>`) for the
+   *  Designer's action-step picker and the builder's capability check. May be async. */
+  listActions?: () => string[] | Promise<string[]>;
+  /** People-directory union (kernel `PeopleDirectoryRegistry.search`) — builder person
+   *  suggestions + `GET /people`. Omit on hosts without channel plugins. */
+  searchPeople?: ConductorPeopleSearch;
+  /** Channel types that currently contribute a people directory. */
+  peopleChannelTypes?: () => readonly string[];
   /** read model of the event-emit catalog (declared `event_emit` capabilities) for the Designer. */
   eventCatalog?: { list(): string[]; byPluginId(): Record<string, string[]> };
   /** resolves a proactive sender for a channel (US5 reminders) — from the routines senderRegistry. */
@@ -550,7 +557,7 @@ export async function wireConductor(deps: {
   // — one definition so the two gates can never drift apart.
   const templateKnownRefs = async (): Promise<KnownRefs> => ({
     agentIds: (deps.getRegistry()?.list() ?? []).map((a) => a.agent.slug),
-    actionIds: deps.listActions?.() ?? [],
+    actionIds: (await deps.listActions?.()) ?? [],
     roleKeys: (await roleStore.listRoles()).map((r) => r.key),
     eventIds: deps.eventCatalog?.list() ?? [],
   });
@@ -558,9 +565,15 @@ export async function wireConductor(deps: {
   // Conversational builder agent (US7) — drives draft co-design via a registry Agent turn. Known
   // refs are sourced live from the event catalog so the builder + validate can flag unknown events.
   // #478 B4: the viewer-scoped composite catalog feeds its prompt digest + proposal allowlist.
+  // Known actions/agents feed the PROMPT and the missing-capability signal, deliberately NOT
+  // validate(): an `unknown_action_ref` would make the self-correction retry delete the very
+  // placeholder step the operator needs to see ("connector missing → connect it inline").
   const builderAgent = new ConductorBuilderAgent({
     getRegistry: deps.getRegistry,
     knownRefs: () => ({ eventIds: deps.eventCatalog?.list() ?? [] }),
+    ...(deps.listActions ? { listActions: deps.listActions } : {}),
+    listAgents: () => (deps.getRegistry()?.list() ?? []).map((a) => a.agent.slug),
+    ...(deps.searchPeople ? { searchPeople: deps.searchPeople } : {}),
     templateCatalog,
     templateKnownRefs,
     log,
@@ -597,6 +610,8 @@ export async function wireConductor(deps: {
       // Live agent/action catalogs for the Designer's step pickers (dropdowns).
       agentCatalog: () => (deps.getRegistry()?.list() ?? []).map((a) => ({ slug: a.agent.slug, name: a.agent.name })),
       ...(deps.listActions ? { actionCatalog: deps.listActions } : {}),
+      ...(deps.searchPeople ? { searchPeople: deps.searchPeople } : {}),
+      ...(deps.peopleChannelTypes ? { peopleChannelTypes: deps.peopleChannelTypes } : {}),
       builderAgent,
       // Composite workflow-template catalog (#429 bundled + #478 user/plugin) + DB store.
       templateCatalog,

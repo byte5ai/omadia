@@ -5713,6 +5713,41 @@ export interface ConductorTemplateProposal {
   prefill: ConductorTemplateSlotMapping;
 }
 
+/** A step reference the builder draft uses that no registered invoker can run —
+ *  an action id outside the action catalog or an agent slug outside the registry.
+ *  Computed beside `validate()` (not as a validation error) so the draft stays
+ *  intact and the UI can offer to connect the missing capability inline. */
+export interface ConductorMissingCapability {
+  stepId: string;
+  kind: 'action' | 'agent';
+  /** the unresolved id as the agent wrote it, e.g. `pleo.list_missing_receipts`. */
+  ref: string;
+  /** registry search seed derived from the ref, e.g. `pleo`. */
+  suggestedQuery: string;
+}
+
+/** One directory hit for a person named in a human step. `principalRef` is the
+ *  channel's binding key (Teams: the user's email) — writing it into
+ *  `human.principal.ref` makes reminders/awaits routable. */
+export interface ConductorPersonCandidate {
+  principalRef: string;
+  displayName: string;
+  channelType: string;
+  email?: string;
+  /** disambiguation shown beside the name (job title, department). */
+  hint?: string;
+}
+
+/** Directory lookups for human steps whose `user` principal still carries a
+ *  display name instead of an address. `partial` means at least one directory
+ *  did not answer — absence of a candidate proves nothing then. */
+export interface ConductorPersonSuggestion {
+  stepId: string;
+  query: string;
+  candidates: ConductorPersonCandidate[];
+  partial: boolean;
+}
+
 export interface ConductorBuilderTurnResult {
   graph: unknown;
   patches: ConductorGraphPatch[];
@@ -5721,6 +5756,29 @@ export interface ConductorBuilderTurnResult {
   applyErrors: string[];
   /** ≤3 template suggestions for this turn (#478) — ADDITIVE: absent when none. */
   templateProposals?: ConductorTemplateProposal[];
+  /** refs no invoker can run — ADDITIVE: absent when the draft is fully backed. */
+  missingCapabilities?: ConductorMissingCapability[];
+  /** people-directory lookups for unresolved `user` principals — ADDITIVE: absent when none. */
+  personSuggestions?: ConductorPersonSuggestion[];
+}
+
+export interface ConductorPeopleSearchResult {
+  people: ConductorPersonCandidate[];
+  partial: boolean;
+  /** channel types that currently contribute a people directory. */
+  channelTypes: string[];
+}
+
+/** Search the channel-plugin people directories (`GET /conductors/people`).
+ *  `q` must be ≥2 chars (the route 400s otherwise). */
+export async function searchConductorPeople(
+  q: string,
+  opts?: { channel?: string; limit?: number; signal?: AbortSignal },
+): Promise<ConductorPeopleSearchResult> {
+  const params = new URLSearchParams({ q });
+  if (opts?.channel) params.set('channel', opts.channel);
+  if (opts?.limit !== undefined) params.set('limit', String(opts.limit));
+  return getJson(`${CONDUCTOR_BASE}/people?${params.toString()}`, opts?.signal ? { signal: opts.signal } : undefined);
 }
 
 export async function conductorBuilderTurn(body: {
