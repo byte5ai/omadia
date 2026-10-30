@@ -78,6 +78,7 @@ import {
 } from './knowledgeGraphTool.js';
 import type { MemoryToolHandler } from '@omadia/memory';
 import type { BoundTurnMemory, MemoryBinder } from './memoryBinder.js';
+import { memoryIndexHint, prefetchMemoryIndex } from './memoryIndexPrefetch.js';
 import type { ChatParticipantsTool } from './tools/chatParticipantsTool.js';
 import {
   CHAT_PARTICIPANTS_TOOL_NAME,
@@ -1927,6 +1928,9 @@ ${priorContext}`,
 async function wireExtraSystemHint(
   privacy: PrivacyTurnHandle | undefined,
   input: ChatTurnInput,
+  /** Prefetched `/memories` index block (`memoryIndexPrefetch.ts`) — kernel
+   *  prose around an intern-exempt tool result, so not masked. */
+  memoryIndexBlock?: string,
 ): Promise<string | undefined> {
   const callerHint = input.extraSystemHint;
   const wireHint =
@@ -1945,6 +1949,7 @@ async function wireExtraSystemHint(
     parseAnswerVerbosity(input.answerVerbosity),
     input.canvasSessionId !== undefined,
     fixedHint !== undefined && fixedHint.length > 0 ? fixedHint : undefined,
+    memoryIndexBlock,
   );
 }
 
@@ -1985,6 +1990,7 @@ function composeExtraSystemHint(
   turnVerbosity?: AnswerVerbosity,
   isCanvasTurn = false,
   fixedHint?: string,
+  memoryIndexBlock?: string,
 ): string | undefined {
   const parts: string[] = [];
   // Phase 3 — the user's per-turn answer-size pick. Same home as Fresh
@@ -2010,6 +2016,9 @@ Der Grund für diesen Modus: der User vermutet, dass dich ein früherer Memory-E
   }
   if (isCanvasTurn) {
     parts.push(CANVAS_TURN_MEMORY_HINT);
+  }
+  if (memoryIndexBlock !== undefined) {
+    parts.push(memoryIndexBlock);
   }
   if (fixedHint !== undefined) {
     parts.push(fixedHint);
@@ -5163,6 +5172,31 @@ export class Orchestrator {
     return this.bindTurnMemory(input, audience, members);
   }
 
+  /**
+   * The prefetched `/memories` index for this turn's hint, or undefined when
+   * the model keeps the ordinary read convention (`memoryIndexPrefetch.ts`).
+   * Not for a canvas turn (its hint suspends the read), a Fresh Check (the
+   * user asked to bypass memory) or a turn without memory access.
+   */
+  private async turnMemoryIndexBlock(
+    input: ChatTurnInput,
+    turnMemory: TurnMemoryBinding | undefined,
+  ): Promise<string | undefined> {
+    if (input.canvasSessionId !== undefined || input.freshCheck) return undefined;
+    if (turnMemory?.memoryDenied === true || turnMemory?.memoryPrompt === 'members-unknown') return undefined;
+    // The same readiness gate as offering and dispatching `memory` (#474): a
+    // registering plugin that is not ready means no memory read at all.
+    if (!this.isToolAvailable(this.nativeTools.get(MEMORY_TOOL_NAME)?.agentId)) return undefined;
+    const startedAt = Date.now();
+    const index = await prefetchMemoryIndex(turnMemory ? turnMemory.handler : this.memoryToolHandler);
+    if (!index.ok) {
+      if (index.reason !== 'no-handler') console.log(`[orchestrator] memory-index skipped reason=${index.reason}`);
+      return undefined;
+    }
+    console.log(`[orchestrator] memory-index prefetched chars=${String(index.listing.length)} ms=${String(Date.now() - startedAt)}`);
+    return memoryIndexHint(index.listing);
+  }
+
   private bindTurnMemory(
     input: ChatTurnInput,
     audience?: TurnAudience,
@@ -6780,7 +6814,11 @@ export class Orchestrator {
     );
     // The caller's hint (a verifier correction on a retry) is wire content:
     // masked through the turn's map like the prompt. Fails closed.
-    const effectiveExtraSystemHint = await wireExtraSystemHint(privacyForPrompt, input);
+    const effectiveExtraSystemHint = await wireExtraSystemHint(
+      privacyForPrompt,
+      input,
+      await this.turnMemoryIndexBlock(input, turnMemory),
+    );
     // Palaia Phase 8 (OB-77) — per-turn nudge counter (shared across all
     // tool-call iterations of this turn so NUDGE_MAX_PER_TURN is enforced).
     const nudgeCounter = createNudgeTurnCounter();
@@ -8152,7 +8190,11 @@ export class Orchestrator {
     );
     // The caller's hint (a verifier correction on a retry) is wire content:
     // masked through the turn's map like the prompt. Fails closed.
-    const effectiveExtraSystemHint = await wireExtraSystemHint(privacyForPrompt, input);
+    const effectiveExtraSystemHint = await wireExtraSystemHint(
+      privacyForPrompt,
+      input,
+      await this.turnMemoryIndexBlock(input, turnMemory),
+    );
     // Palaia Phase 8 (OB-77) — see chatInContextInner for rationale.
     const nudgeCounter = createNudgeTurnCounter();
     const nudgeTrace: Array<{
