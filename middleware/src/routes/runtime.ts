@@ -1062,6 +1062,22 @@ async function applySetupValues(
   const secretFieldKeys = resolveSecretFieldKeys(deps.catalog, id);
   const isSecret = (key: string): boolean =>
     secretFieldKeys === null ? true : secretFieldKeys.has(key);
+  // A `boolean` field edited after install arrives as the string 'true' /
+  // 'false' (the patch body is string-only). Store a real boolean, exactly like
+  // the install path does — plugins reading `config.get<boolean>()` would
+  // otherwise see a truthy "false". Anything else is not a boolean: refuse it
+  // before anything is written.
+  const booleanFieldKeys = resolveBooleanFieldKeys(deps.catalog, id);
+  for (const [k, v] of Object.entries(setEntries)) {
+    if (booleanFieldKeys.has(k) && v !== 'true' && v !== 'false') {
+      res.status(400).json({
+        code: 'runtime.setup_field_invalid',
+        message: `value for '${k}' must be 'true' or 'false'`,
+        field: k,
+      });
+      return;
+    }
+  }
 
   const vaultSet: Record<string, string> = {};
   const vaultDelete: string[] = [];
@@ -1069,7 +1085,7 @@ async function applySetupValues(
   const configDelete: string[] = [];
   for (const [k, v] of Object.entries(setEntries)) {
     if (isSecret(k)) vaultSet[k] = v;
-    else configSet[k] = v;
+    else configSet[k] = booleanFieldKeys.has(k) ? v === 'true' : v;
   }
 
   try {
@@ -1155,6 +1171,18 @@ function dependentRebuildFailure(err: ProviderDependentRebuildError): {
     dependentId: err.dependentId,
     primaryApplied: err.primaryApplied,
   };
+}
+
+/** Keys of the plugin's `boolean` setup fields; empty without a catalog entry. */
+function resolveBooleanFieldKeys(
+  catalog: PluginCatalog | undefined,
+  pluginId: string,
+): Set<string> {
+  const entry = catalog?.get(pluginId);
+  const schema = entry ? extractSetupSchema(entry) : null;
+  return new Set(
+    (schema?.fields ?? []).filter((f) => f.type === 'boolean').map((f) => f.key),
+  );
 }
 
 function resolveSecretFieldKeys(

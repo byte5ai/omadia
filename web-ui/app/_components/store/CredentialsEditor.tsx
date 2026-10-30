@@ -416,6 +416,33 @@ export function CredentialsEditor({
                     fieldKey={field.key}
                     connected={storedKeys?.has(`oauth.${field.key}`) ?? false}
                   />
+                ) : field.type === 'boolean' ? (
+                  <BooleanToggleField
+                    fieldKey={field.key}
+                    label={fieldLabel ?? field.key}
+                    value={
+                      state.pendingDelete
+                        ? undefined
+                        : state.dirty
+                          ? state.draft
+                          : storedValue
+                    }
+                    defaultValue={field.default}
+                    pendingDelete={state.pendingDelete}
+                    disabled={saving}
+                    onChange={(next) =>
+                      setFieldStates((prev) => ({
+                        ...prev,
+                        [field.key]: {
+                          // Picking the value that is already stored is a no-op,
+                          // not a pending change — keeps the save counter honest.
+                          draft: next,
+                          dirty: next !== storedValue,
+                          pendingDelete: false,
+                        },
+                      }))
+                    }
+                  />
                 ) : enumOptions ? (
                   (() => {
                     // The dropdown shows either the operator's pending
@@ -922,4 +949,88 @@ function resolveSecretsPatchHint(
     // Not a JSON body: nothing field-specific to prefer.
   }
   return undefined;
+}
+
+/** True for the boolean spellings the manifest and the server use. */
+function readBoolean(raw: unknown): boolean | undefined {
+  if (raw === true || raw === 'true') return true;
+  if (raw === false || raw === 'false') return false;
+  return undefined;
+}
+
+interface BooleanToggleFieldProps {
+  fieldKey: string;
+  /** Accessible name of the yes/no group (the field's localized label). */
+  label: string;
+  /** Pending draft or stored value (`'true'` / `'false'`); undefined = not set. */
+  value: string | undefined;
+  /** Manifest default — what the plugin uses while nothing is stored. */
+  defaultValue: PluginSetupField['default'];
+  pendingDelete: boolean;
+  disabled: boolean;
+  onChange: (next: 'true' | 'false') => void;
+}
+
+/**
+ * A boolean setup field as a Ja/Nein switch instead of a free-text box that
+ * only accepted the literal words `true` / `false`. While nothing is stored
+ * the manifest default is pre-selected and marked as the default, so the
+ * operator sees what the plugin actually does today. Resetting to the default
+ * stays the trashcan next to it (delete the stored value).
+ */
+function BooleanToggleField({
+  fieldKey,
+  label,
+  value,
+  defaultValue,
+  pendingDelete,
+  disabled,
+  onChange,
+}: BooleanToggleFieldProps): React.ReactElement {
+  const t = useTranslations('store.credentials');
+  const explicit = readBoolean(value);
+  const fallback = readBoolean(defaultValue);
+  const effective = explicit ?? fallback;
+  const showsDefault = explicit === undefined && fallback !== undefined;
+  const options: ReadonlyArray<{ value: 'true' | 'false'; on: boolean }> = [
+    { value: 'true', on: true },
+    { value: 'false', on: false },
+  ];
+  return (
+    <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+      <div
+        role="radiogroup"
+        aria-label={label}
+        data-boolean-field={fieldKey}
+        className="inline-flex overflow-hidden rounded-md border border-[color:var(--rule)]"
+      >
+        {options.map((opt) => {
+          const selected = effective === opt.on;
+          return (
+            // eslint-disable-next-line no-restricted-syntax -- segmented radio control, not an action button
+            <button
+              key={opt.value}
+              type="button"
+              role="radio"
+              aria-checked={selected}
+              disabled={disabled}
+              onClick={() => onChange(opt.value)}
+              className={`px-4 py-1.5 text-[12px] font-medium transition-colors disabled:opacity-50 ${
+                selected
+                  ? 'bg-[color:var(--accent)] text-[color:var(--bg)]'
+                  : 'bg-[color:var(--bg)] text-[color:var(--muted-ink)] hover:text-[color:var(--ink)]'
+              }`}
+            >
+              {opt.on ? t('booleanYes') : t('booleanNo')}
+            </button>
+          );
+        })}
+      </div>
+      {pendingDelete ? (
+        <span className="text-[11px] text-[color:var(--danger)]">{t('pendingDelete')}</span>
+      ) : showsDefault ? (
+        <span className="text-[11px] text-[color:var(--faint-ink)]">{t('booleanDefaultActive')}</span>
+      ) : null}
+    </div>
+  );
 }

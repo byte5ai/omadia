@@ -4393,6 +4393,9 @@
       "error": "Fehler: {message}"
     },
     "credentials": {
+      "booleanYes": "Ja",
+      "booleanNo": "Nein",
+      "booleanDefaultActive": "Standard · noch nicht gespeichert",
       "noFields": "Dieses Plugin deklariert keine Setup-Felder.",
       "intro": "Felder mit <secret>Secret · Vault</secret> (Passwörter, OAuth-Tokens) werden verschlüsselt im Vault gespeichert und nur als „gespeichert“ angezeigt — niemals der eigentliche Wert. Felder mit <config>Config</config> (Enum, URL, Flags) sind nicht-sensitiv und zeigen die aktuelle Auswahl. Tippe oder wähle einen neuen Wert um zu überschreiben, oder klicke auf <trashIcon></trashIcon> um den Wert zu löschen.",
       "secretBadgeTitle": "Secret — verschlüsselt im per-Agent-Vault",
