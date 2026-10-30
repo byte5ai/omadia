@@ -26,6 +26,7 @@
  * intermediate, not a coupling.
  */
 import type {
+  CacheHints,
   ChatMessage,
   ContentPart,
   EffortLevel,
@@ -242,6 +243,20 @@ function clampMaxTokens(
   return Math.min(requested, ceiling);
 }
 
+/** True when any breakpoint the loop stamped asks for the 1-hour TTL
+ *  (`cache_control: { type: 'ephemeral', ttl: '1h' }`). */
+function hasLongCacheTtl(params: AnthropicParams): boolean {
+  const isLong = (block: AnthropicBlock): boolean =>
+    (block['cache_control'] as { ttl?: unknown } | undefined)?.ttl === '1h';
+  const systemBlocks = Array.isArray(params.system) ? params.system : [];
+  return systemBlocks.some(isLong) || (params.tools ?? []).some(isLong);
+}
+
+function cacheHintsFor(tools: boolean, longTtl: boolean): { cacheHints?: CacheHints } {
+  if (!tools && !longTtl) return {};
+  return { cacheHints: { ...(tools ? { tools: true } : {}), ...(longTtl ? { ttl: '1h' as const } : {}) } };
+}
+
 /**
  * Translate the Anthropic-shaped params the orchestrator/sub-agent built into
  * a neutral `LlmRequest`. `betas` carries provider preview opt-ins (the
@@ -269,9 +284,7 @@ export function toLlmRequest(
     ...(system !== undefined ? { system } : {}),
     ...(tooling !== undefined ? { tools: tooling.tools } : {}),
     ...(toolChoice !== undefined ? { toolChoice } : {}),
-    ...(tooling?.cacheTools === true
-      ? { cacheHints: { tools: true } }
-      : {}),
+    ...cacheHintsFor(tooling?.cacheTools === true, hasLongCacheTtl(params)),
     ...(betas !== undefined && betas.length > 0 ? { betas } : {}),
     ...(params.effort !== undefined ? { effort: params.effort } : {}),
   };
