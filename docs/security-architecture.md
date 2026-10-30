@@ -2102,6 +2102,25 @@ pair field still sorts by its raw value, not by the person's name. Each cleared
 field is recorded on the receipt (`operatorClearedFields`, "In clear by admin
 rule" in the card).
 
+**Suggestions for that list (#1556 follow-up).** omadia proposes entries; it
+never writes one. The privacy guard records masked fields of `odoo_*` results
+schema-only (`fieldObservations.ts`: tool, path, value shape, source model)
+and keeps a bounded in-memory value sample per field (50 distinct values, 24 h,
+200 fields, never persisted or logged). The kernel
+(`src/privacy/fieldClassification/`) drains the observations on plugin
+activation, at boot, every 6 h and on demand (never per chat turn), resolves
+relation targets with Odoo `fields_get` only (`odooRelationResolver.ts`, the
+one method it may call through `odoo.client`, pinned by a test), and
+classifies (`engine.ts`): a person-model target (`modelCatalog.ts`) is
+`personal` and is never sent to a model; a C0/deny-list or C1 hit in the
+vetted sample (`fieldVetting.ts`, inside the plugin) is `personal`; a near-miss
+or conflicting targets is "needs clarification"; an unknown model goes to
+Haiku with its schema only (`v4/modelClassifier.ts`). What leaves the plugin
+is the verdict and a preview with every letter and digit replaced by `•`. An
+admin confirms on `/admin/privacy-fields`, which appends exactly `tool:field`
+under a per-plugin lock and writes an audit row; until then the field stays
+masked. The banner and nav badge are informational.
+
 These tool results skip the digest:
 
 - **Intern-exempt tools.** `INTERN_EXEMPT_TOOLS`

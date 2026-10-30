@@ -67,6 +67,43 @@ changelog.
 `@omadia/plugin-privacy-guard` 0.11.0, `@omadia/plugin-api` 1.37.0
 (`countUnresolvedSurrogates` takes an optional `options`).
 
+### Added — Suggestions and a review page for non-personal fields (#1556 follow-up)
+
+2026-10-30. `non_personal_fields` (#1629) needed an admin to know which fields
+to list. omadia now suggests them; an admin confirms every entry, nothing is
+added automatically, and every field stays masked until then.
+
+- **Observation (privacy guard 0.15.0).** Masked fields of `odoo_*` tool
+  results are recorded schema-only (tool, field, value shape, source model). A
+  bounded in-memory sample (≤ 50 values per field, 24 h, never persisted or
+  logged) is vetted with the C0 identity shapes, the deny-list and C1 (also at
+  a near-miss threshold); only the verdict and a fully masked preview
+  (`•••••••• & •••••••••••`) leave the plugin.
+- **Classification (kernel).** The relation target comes from Odoo `fields_get`
+  (the only call made). Person models (`res.partner`, `res.users`,
+  `hr.employee`, bank accounts, …) are never suggested and never sent to a
+  model; known non-personal models (`hr.department`, `hr.job`, `res.company`,
+  …) are suggested; unknown models are classified by Haiku from the schema
+  only. Any detector hit makes a field personal, a near-miss or conflicting
+  targets "needs clarification".
+- **Review page `/admin/privacy-fields`.** Grouped by tool with statuses
+  suggested / needs clarification / personal / confirmed / rejected / kept
+  masked, reasons, masked sample, and confirm / reject / keep masked / revert.
+  Confirm appends `tool:field` to the setting; every decision is an audit row
+  (`privacy.field_classification`). Manual edits of the setting are audited
+  too now (`plugin.privacy_change`).
+- **Notification.** The privacy posture reports `fields_needing_clarification`
+  and `fields_suggested_open`; a banner on the dashboard and `/admin` and a nav
+  badge point to the page. Informational only.
+- **Recompute** on plugin activation/deactivation, at boot, every 6 h and on
+  demand — never per chat turn.
+- **Migration `0065_privacy_field_classification`**: tables
+  `privacy_field_candidates`, `privacy_model_verdicts` (schema-model verdict
+  cache) and `privacy_field_classification_visits`.
+
+`@omadia/plugin-privacy-guard` 0.15.0, `@omadia/plugin-api` 1.49.0
+(`parseLlmJson` moved into plugin-api).
+
 ### Added — Non-personal fields an operator lets through the Privacy Shield (#1556)
 
 2026-10-30. Department names and similar Odoo labels were masked, so an

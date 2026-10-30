@@ -2045,6 +2045,22 @@ bekommt dafür einen `ClassifierContext` (`sourceTools`); Verben vererben
 Receipt: `operatorClearedFields`, Karte „Per Admin-Regel im Klartext". Test:
 `test/privacyNonPersonalFields1556.test.ts`.
 
+**Feldklassifizierung (#1556-Folge, privacy-guard 0.15.0, plugin-api
+1.49.0).** Guard: `fieldObservations.ts`, `fieldVetting.ts`,
+`v4/modelClassifier.ts`; Service-Methoden `takeFieldObservations`,
+`vetFieldSample`, `classifyModelsSchemaOnly`, `maskedFieldPreview`. Kernel:
+`src/privacy/fieldClassification/` (`modelCatalog`, `odooRelationResolver`
+— nur `fields_get` —, `engine`, `store`, `recompute`, `routes`, `guardConfig`),
+Migration `0065_privacy_field_classification`. Routen (requireAuth):
+`GET /api/v1/admin/privacy/field-classification`, `POST /:id/decision`
+(confirm/reject/keep_masked/revert, Fingerprint, 409), `GET /:id/preview`,
+`POST /recompute`. Posture: `fields_needing_clarification`,
+`fields_suggested_open`. Web-UI: `/admin/privacy-fields`,
+`FieldClassificationBanner`, Nav-Badge. `parseLlmJson` liegt jetzt in
+plugin-api. Offen (§13): Odoo-Plugin-Repo soll Relationen vorab liefern
+(`odoo_describe` mit `relation` oder `odoo.schema@1`), damit Vorschläge vor
+dem ersten Chat entstehen.
+
 ### Conductor-Cancel + Approval-Härtung (#759)
 
 Neu: **`POST /api/v1/operator/conductors/:slug/runs/:runId/cancel`** — `waiting`
