@@ -322,6 +322,31 @@ describe('#1502 — onAfterToolCall reports failure and bookkeeping', () => {
     assert.equal(tally.allFailed('p'), false);
     assert.equal(tally.allFailed('never-called'), false);
   });
+
+  it('a sub-agent call reports its successful inner calls; a plain tool reports none', () => {
+    const tally = new SubToolOutcomeTally();
+    tally.record('p', false);
+    tally.record('p', true);
+    tally.record('p', false);
+    assert.equal(tally.succeeded('p'), 2);
+    assert.equal(tally.succeeded('never-called'), 0);
+    const delegation = afterToolCallPayload({
+      toolName: 'query_odoo_accounting',
+      toolResult: 'ok',
+      isError: false,
+      innerCallsAllFailed: false,
+      innerCallsSucceeded: tally.succeeded('p'),
+    });
+    assert.equal(delegation.toolInnerCalls, 2);
+    const plain = afterToolCallPayload({
+      toolName: 'odoo_query',
+      toolResult: 'ok',
+      isError: false,
+      innerCallsAllFailed: false,
+      innerCallsSucceeded: 0,
+    });
+    assert.equal('toolInnerCalls' in plain, false);
+  });
 });
 
 describe('#1500 — the streamed preview retracts the preamble', () => {

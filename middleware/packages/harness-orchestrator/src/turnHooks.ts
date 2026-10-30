@@ -78,6 +78,14 @@ export interface TurnHookPayload {
    * not the user's task. Hooks that track task progress skip these calls.
    */
   readonly toolIsBookkeeping?: boolean;
+  /**
+   * Set on `onAfterToolCall` for a sub-agent (delegation) call: how many of its
+   * inner tool calls succeeded. A delegation is one top-level call that does
+   * several calls' worth of work; a hook that maps calls to task progress can
+   * count these instead of one. Absent for a plain tool and for a sub-agent
+   * that made no successful inner call.
+   */
+  readonly toolInnerCalls?: number;
   /** #133 (E6) — verifier block reason, set on `onVerifierBlocked`. */
   readonly blockReason?: string;
   /**
