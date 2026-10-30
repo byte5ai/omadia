@@ -16,6 +16,13 @@
 export const PRIVACY_REDACT_SERVICE_NAME = 'privacyRedact';
 export const PRIVACY_REDACT_CAPABILITY = 'privacy.redact@1';
 
+/** #1556 — one field a `non_personal_fields` rule sent to the model in clear. */
+export interface OperatorClearedFieldEntry {
+  readonly toolName: string;
+  /** The field path, e.g. `department_id`. */
+  readonly field: string;
+}
+
 /**
  * One tool whose raw result the orchestrator passed through UNINTERNED this
  * turn — i.e. the LLM saw real values, not a `[masked]` digest — because
@@ -165,6 +172,13 @@ export interface PrivacyReceipt {
    * count, never a raw value.
    */
   readonly bypassedTools?: readonly BypassedToolEntry[];
+  /**
+   * #1556 — fields the model received in clear because the operator listed
+   * them as non-personal (privacy-guard setting `non_personal_fields`), one
+   * entry per tool and field. Absent when no such rule applied this turn.
+   * PII-free: tool name and field path only, never a value.
+   */
+  readonly operatorClearedFields?: readonly OperatorClearedFieldEntry[];
   /**
    * #361 — PII spans substituted with pseudonyms in the user's OWN text of
    * this turn (the message, its ingested attachment text, live steering text)

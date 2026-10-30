@@ -8,6 +8,17 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.48.0 — 2026-10-30
+
+Additive. Operator-cleared non-personal fields (#1556).
+
+### Added
+
+- **`PrivacyReceipt.operatorClearedFields`** /
+  **`OperatorClearedFieldEntry`** (`{ toolName, field }`) — fields the model
+  received in clear because the operator listed them in the privacy guard's
+  `non_personal_fields` setting. PII-free: tool name and field path only.
+
 ## 1.47.0 — 2026-10-29
 
 Additive. Privacy Shield masking and rendering (S3-B: #1544, #1559, #1561, #1543,

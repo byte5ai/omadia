@@ -2019,6 +2019,10 @@ export declare function parseScopes(stored: unknown): readonly string[];
 // ===== privacyReceipt.d.ts =====
 export declare const PRIVACY_REDACT_SERVICE_NAME = "privacyRedact";
 export declare const PRIVACY_REDACT_CAPABILITY = "privacy.redact@1";
+export interface OperatorClearedFieldEntry {
+readonly toolName: string;
+readonly field: string;
+}
 export interface BypassedToolEntry {
 readonly toolName: string;
 readonly pluginId: string;
@@ -2048,6 +2052,7 @@ readonly verbsExecuted: readonly string[];
 readonly pseudonymProjectionUsed: boolean;
 readonly identityValuesOnWire?: number;
 readonly bypassedTools?: readonly BypassedToolEntry[];
+readonly operatorClearedFields?: readonly OperatorClearedFieldEntry[];
 readonly maskedPromptSpans?: readonly PromptMaskedSpanInfo[];
 readonly maskedContextSpans?: readonly PromptMaskedSpanInfo[];
 readonly nameDetector?: PrivacyNameDetectorTurnState;

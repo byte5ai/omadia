@@ -5,6 +5,8 @@
  * decided `safe-cleartext` or `sensitive-masked` from JSON shape + per-column
  * value statistics ALONE — no domain, tool, or schema knowledge (FR-005), so
  * the classifier is generic across every current and future tool (FR-025).
+ * The one exception is opt-in and the operator's: a field listed in
+ * `non_personal_fields` for its source tool may clear as a `label` (#1556).
  *
  * The allowlist (S1–S5) is the ONLY path to `safe-cleartext`; anything not
  * positively recognized is masked (FR-008). A PII detector, when supplied,
@@ -17,6 +19,7 @@
 import {
   type Classification,
   type Classifier,
+  type ClassifierContext,
   type DatasetRow,
   type DatasetSchema,
   type DatasetShape,
@@ -50,9 +53,17 @@ export const DEFAULT_THRESHOLDS: ClassifierThresholds = {
  */
 export type DetectorBooster = (value: string) => boolean;
 
+/**
+ * #1556 — the operator's `non_personal_fields` rule: does `path`, in rows that
+ * came from `sourceTools`, hold labels that are no personal data (a
+ * department, a job position)? See `nonPersonalFields.ts`.
+ */
+export type NonPersonalFieldRule = (sourceTools: readonly string[], path: string) => boolean;
+
 export interface ShapeClassifierOptions {
   readonly thresholds?: Partial<ClassifierThresholds>;
   readonly detector?: DetectorBooster;
+  readonly nonPersonal?: NonPersonalFieldRule;
 }
 
 // ---------------------------------------------------------------------------
@@ -135,7 +146,31 @@ const SAFE_TYPES: ReadonlySet<FieldType> = new Set<FieldType>([
   'date',
   'enum',
   'id',
+  'label',
 ]);
+
+/** An Odoo many2one pair `[id, "label"]`. */
+function isLabelPair(v: unknown): v is readonly [number, string] {
+  return Array.isArray(v) && v.length === 2 && typeof v[0] === 'number' && typeof v[1] === 'string';
+}
+
+/** The text a detector reads in a value: a string, or a pair's label. */
+function detectableText(v: unknown): string | undefined {
+  if (typeof v === 'string') return v;
+  return isLabelPair(v) ? v[1] : undefined;
+}
+
+/**
+ * #1556 — the `label` type, reached ONLY through an operator rule: every
+ * present value is a string or a many2one pair. The shape alone never gets
+ * here — a pair can hold a person (`partner_id: [12, "Jonas Weber"]`) as well
+ * as a department, so without the operator's word it stays `unknown`.
+ */
+function isOperatorLabel(present: ReadonlyArray<unknown>): boolean {
+  // Odoo sends `false` for an unset many2one: no value, not a reason to mask.
+  const values = present.filter((v) => v !== false);
+  return values.length > 0 && values.every((v) => typeof v === 'string' || isLabelPair(v));
+}
 
 function classifyField(
   path: string,
@@ -143,6 +178,7 @@ function classifyField(
   rowCount: number,
   thresholds: ClassifierThresholds,
   detector: DetectorBooster | undefined,
+  operatorCleared: boolean,
 ): FieldClassification {
   const present = column.filter((v) => v !== null && v !== undefined);
   const distinctCount = new Set(present.map(distinctKey)).size;
@@ -152,7 +188,8 @@ function classifyField(
   let detectorHit = false;
   if (detector !== undefined) {
     for (const v of present) {
-      if (typeof v === 'string' && v.length > 0 && detector(v)) {
+      const text = detectableText(v);
+      if (text !== undefined && text.length > 0 && detector(text)) {
         detectorHit = true;
         break;
       }
@@ -166,7 +203,14 @@ function classifyField(
     detectorHit,
   };
 
-  const type = resolveType(present, distinctCount, cardinalityRatio, thresholds);
+  // #1556 — an operator rule outranks the shape rules for its field, but not
+  // the detector below: a value the detector flags still masks the field.
+  // A detector hit makes it no label at all, so neither the receipt nor a
+  // later verb can treat the field as cleared.
+  const type =
+    operatorCleared && !detectorHit && isOperatorLabel(present)
+      ? 'label'
+      : resolveType(present, distinctCount, cardinalityRatio, thresholds);
 
   // Deny-by-default: a detector hit always masks; otherwise only the
   // allowlist clears a field.
@@ -200,8 +244,11 @@ function classify(
   shape: DatasetShape,
   thresholds: ClassifierThresholds,
   detector: DetectorBooster | undefined,
+  nonPersonal: NonPersonalFieldRule | undefined,
+  context: ClassifierContext | undefined,
 ): DatasetSchema {
   const paths = collectFieldPaths(rows);
+  const sourceTools = context?.sourceTools ?? [];
   const fields = paths.map((path) =>
     classifyField(
       path,
@@ -209,6 +256,10 @@ function classify(
       rows.length,
       thresholds,
       detector,
+      nonPersonal !== undefined &&
+        sourceTools.length > 0 &&
+        (context?.labelPaths === undefined || context.labelPaths.has(path)) &&
+        nonPersonal(sourceTools, path),
     ),
   );
   return { fields, rowCount: rows.length, shape };
@@ -226,5 +277,7 @@ export function createShapeClassifier(
     ...opts.thresholds,
   };
   const detector = opts.detector;
-  return (rows, shape) => classify(rows, shape, thresholds, detector);
+  const nonPersonal = opts.nonPersonal;
+  return (rows, shape, context) =>
+    classify(rows, shape, thresholds, detector, nonPersonal, context);
 }

@@ -59,6 +59,7 @@ export function PrivacyReceiptCard({
   const t = useTranslations('privacyReceipt');
   const verbs = receipt.verbsExecuted;
   const bypassed = receipt.bypassedTools ?? [];
+  const operatorCleared = receipt.operatorClearedFields ?? [];
   const promptSpans = receipt.maskedPromptSpans ?? [];
   const contextSpans = receipt.maskedContextSpans ?? [];
   const structured = receipt.structuredPayloads ?? [];
@@ -155,6 +156,13 @@ export function PrivacyReceiptCard({
                     })
                   : t('verifierRequests', { count: verifier.requests })
               }
+              labelClass={palette.label}
+            />
+          )}
+          {operatorCleared.length > 0 && (
+            <Fact
+              label={t('factOperatorCleared')}
+              value={operatorCleared.map((e) => `${e.toolName}: ${e.field}`).join(', ')}
               labelClass={palette.label}
             />
           )}
@@ -358,6 +366,10 @@ export function summarisePrivacyReceipt(r: PrivacyReceipt, t: TFn): string {
   const bypassed = r.bypassedTools ?? [];
   if (bypassed.length > 0) {
     parts.push(t('summaryBypassed', { count: bypassed.length }));
+  }
+  const operatorCleared = r.operatorClearedFields ?? [];
+  if (operatorCleared.length > 0) {
+    parts.push(t('summaryOperatorCleared', { count: operatorCleared.length }));
   }
   const promptSpans = r.maskedPromptSpans ?? [];
   if (promptSpans.length > 0) {

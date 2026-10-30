@@ -255,6 +255,11 @@ export interface PrivacyReceipt {
    */
   bypassedTools?: readonly BypassedToolEntry[];
   /**
+   * #1556 — fields the model received in clear because the operator listed
+   * them as non-personal (`non_personal_fields`). PII-free: tool + field.
+   */
+  operatorClearedFields?: readonly OperatorClearedFieldEntry[];
+  /**
    * #361 — PII spans detected in the user's own text of this turn and
    * substituted with pseudonyms before it crossed the LLM wire, one per
    * distinct value. Absent when prompt masking is off (the default) or
@@ -451,6 +456,12 @@ export interface DirectLineSessionState {
   label?: string;
   transition?: 'entered' | 'switched' | 'continued' | 'left' | 'unavailable' | 'refused';
   refusedReason?: 'no-scope' | 'shared-scope' | 'synthetic-scope';
+}
+
+/** #1556 — one entry in `PrivacyReceipt.operatorClearedFields`. */
+export interface OperatorClearedFieldEntry {
+  toolName: string;
+  field: string;
 }
 
 /** Slice 2.5 — one entry in `PrivacyReceipt.bypassedTools`. */

@@ -102,8 +102,27 @@ export function validatePredicate(
   }
 }
 
+/**
+ * #1556 — the display label of an Odoo many2one pair `[id, "label"]`; any
+ * other value as it is. A field an operator listed as non-personal holds such
+ * pairs, and filtering, sorting or grouping on it means its label: the model
+ * writes `department_id eq "Research & Development"`, not the pair.
+ */
+export function labelOf(v: unknown): unknown {
+  if (
+    Array.isArray(v) &&
+    v.length === 2 &&
+    typeof v[0] === 'number' &&
+    typeof v[1] === 'string'
+  ) {
+    return v[1];
+  }
+  return v;
+}
+
 /** Three-way compare for predicate operands. */
-function compare(a: unknown, b: PredicateScalar): number {
+function compare(raw: unknown, b: PredicateScalar): number {
+  const a = labelOf(raw);
   if (typeof a === 'number' && typeof b === 'number') return a - b;
   if (typeof a === 'boolean' && typeof b === 'boolean') {
     return a === b ? 0 : a ? 1 : -1;

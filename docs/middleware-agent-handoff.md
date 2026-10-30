@@ -2034,6 +2034,17 @@ Ack und als `<!-- orchestrator:rendered_table … -->` in der persistierten
 Antwort, Prompt-Regel e), `fileExportAvailable` für den Excel-Hinweis,
 Digest-Audience `public-api` für `/api/v1/mcp` (#1542, #1543, #1559, #1561).
 
+**Nicht personenbezogene Felder (#1556, privacy-guard 0.14.0, plugin-api
+1.48.0).** Setup-Feld `non_personal_fields` (leer = aus) →
+`nonPersonalFields.ts` (`parseNonPersonalFields`, `nonPersonalFieldRule`) →
+`createShapeClassifier({ nonPersonal })`: ein gelistetes Feld aus Text oder
+Odoo-Paaren `[id, "Label"]` wird Typ `label`, `safe-cleartext`. Der Classifier
+bekommt dafür einen `ClassifierContext` (`sourceTools`); Verben vererben
+`provenance.sourceTools` (Join/Union: alle Quellen müssen das Feld listen).
+`labelOf` lässt Filter/Sort auf dem Label arbeiten, der Digest zeigt Labels.
+Receipt: `operatorClearedFields`, Karte „Per Admin-Regel im Klartext". Test:
+`test/privacyNonPersonalFields1556.test.ts`.
+
 ### Conductor-Cancel + Approval-Härtung (#759)
 
 Neu: **`POST /api/v1/operator/conductors/:slug/runs/:runId/cancel`** — `waiting`
