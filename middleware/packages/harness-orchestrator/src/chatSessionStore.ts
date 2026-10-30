@@ -144,10 +144,52 @@ export interface ChatSessionSummary {
   messageCount: number;
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** The web client's id when `crypto.randomUUID` is unavailable (plain HTTP
+ *  on a LAN host): `id-<base36 time>-<base36 random>`. */
+const WEB_FALLBACK_ID_RE = /^id-[0-9a-z]+-[0-9a-z]+$/;
+const SERVER_MESSAGE_ID_PREFIX = 'srv-';
+
+/**
+ * A session document the SessionLogger mirror CREATED for a turn that never
+ * came from the web chat — a canvas (`@omadia/ui-channel::<user>::<id>`),
+ * routine (`routine:<id>`) or other channel scope that passed the id regex
+ * once sanitized. Before this check, `appendTurnFromServer` created such a
+ * document, and the WebUI listed it as a chat.
+ *
+ * Deliberately narrow — both halves must hold, so a WebUI chat can never
+ * match: the web client mints UUID ids (`newSessionId`, or its `id-…`
+ * fallback), and every message it writes carries its own id, whereas the
+ * mirror prefixes all of its with `srv-`. An empty document is a WebUI chat
+ * waiting for its first turn. Shared by the web client's hydration (same
+ * rule, same two halves).
+ */
+export function isServerMirroredSession(
+  session: Pick<ChatSession, 'id' | 'messages'>,
+): boolean {
+  if (UUID_RE.test(session.id) || WEB_FALLBACK_ID_RE.test(session.id)) return false;
+  if (!Array.isArray(session.messages) || session.messages.length === 0) return false;
+  return session.messages.every(
+    (m) => typeof m.id === 'string' && m.id.startsWith(SERVER_MESSAGE_ID_PREFIX),
+  );
+}
+
 export class InvalidSessionIdError extends Error {
   constructor(id: string) {
     super(`invalid chat session id: ${id}`);
     this.name = 'InvalidSessionIdError';
+  }
+}
+
+/**
+ * A client tried to CREATE a session that is a server-mirrored document by
+ * shape (`isServerMirroredSession`). Happens when a browser that cached a
+ * leaked session before the purge pushes it back on hydration.
+ */
+export class ServerMirroredSessionError extends Error {
+  constructor(id: string) {
+    super(`chat session ${id} is a server-mirrored transcript, not a web chat`);
+    this.name = 'ServerMirroredSessionError';
   }
 }
 
@@ -221,6 +263,10 @@ export class ChatSessionStore {
 
   /** Summary of all persisted sessions, newest `updatedAt` first. */
   async list(): Promise<ChatSessionSummary[]> {
+    // Before the existence check: the purge may remove the directory's last
+    // file (and with it the directory), and it must count as run even when
+    // there was nothing to sweep yet.
+    await this.purgeServerMirroredOnce();
     if (!(await this.store.directoryExists(DIR))) return [];
 
     const entries = await this.store.list(DIR);
@@ -251,6 +297,93 @@ export class ChatSessionStore {
 
     summaries.sort((a, b) => b.updatedAt - a.updatedAt);
     return summaries;
+  }
+
+  /**
+   * One-time cleanup of documents the mirror created for non-web turns
+   * before it stopped creating sessions (see `appendTurnFromServer`). Runs
+   * once per store instance, on the first `list()`, so the WebUI never shows
+   * them; a purge that fails is retried on the next `list()`. Returns the
+   * deleted ids. Idempotent: once the leaked documents are gone there is
+   * nothing left to match.
+   */
+  async purgeServerMirrored(): Promise<string[]> {
+    const { purged, failed } = await this.sweepServerMirrored();
+    if (failed > 0) {
+      throw new Error(
+        `${String(failed)} server-mirrored transcript(s) could not be purged`,
+      );
+    }
+    return purged;
+  }
+
+  private async sweepServerMirrored(): Promise<{ purged: string[]; failed: number }> {
+    if (!(await this.store.directoryExists(DIR))) return { purged: [], failed: 0 };
+    const purged: string[] = [];
+    let failed = 0;
+    for (const entry of await this.store.list(DIR)) {
+      if (entry.isDirectory || !entry.virtualPath.endsWith('.json')) continue;
+      // The file name is the id: a document whose `id` field disagrees is not
+      // deleted under either name.
+      const id = entry.virtualPath.slice(DIR.length + 1, -'.json'.length);
+      if (!ID_RE.test(id)) continue;
+      try {
+        if (await this.deleteIfServerMirrored(id)) purged.push(id);
+      } catch (err) {
+        failed += 1;
+        console.warn(
+          `[chat-sessions] purge of server-mirrored transcript ${id} failed:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+    if (purged.length > 0) {
+      console.warn(
+        `[chat-sessions] purged ${String(purged.length)} server-mirrored transcript(s) that were never web chats: ${purged.join(', ')}`,
+      );
+    }
+    return { purged, failed };
+  }
+
+  /** Read, decide and delete under the session lock, so a client PUT that
+   *  lands in between (a tab that still has the transcript open) is not
+   *  deleted with it. Unreadable files are left for `list()` to report. */
+  private deleteIfServerMirrored(id: string): Promise<boolean> {
+    const virtualPath = this.pathFor(id);
+    return this.withLock(id, async () => {
+      let parsed: ChatSession;
+      try {
+        parsed = JSON.parse(await this.store.readFile(virtualPath)) as ChatSession;
+      } catch (err) {
+        if (err instanceof SyntaxError) return false;
+        throw err;
+      }
+      if (parsed.id !== id || !isServerMirroredSession(parsed)) return false;
+      await this.store.delete(virtualPath);
+      return true;
+    });
+  }
+
+  private purgeOnce: Promise<string[]> | undefined;
+
+  /** The sweep, once per instance; a sweep with failures is re-run by the
+   *  next `list()`. The failures are already logged per document. */
+  private purgeServerMirroredOnce(): Promise<string[]> {
+    this.purgeOnce ??= this.sweepServerMirrored().then(
+      ({ purged, failed }) => {
+        if (failed > 0) this.purgeOnce = undefined;
+        return purged;
+      },
+      (err: unknown) => {
+        this.purgeOnce = undefined;
+        console.warn(
+          '[chat-sessions] purge of server-mirrored transcripts failed, will retry on next list:',
+          err instanceof Error ? err.message : err,
+        );
+        return [];
+      },
+    );
+    return this.purgeOnce;
   }
 
   async get(id: string): Promise<ChatSession | null> {
@@ -357,6 +490,11 @@ export class ChatSessionStore {
           err.message,
         );
       }
+      // Only the web client creates sessions — but a browser that cached a
+      // mirrored transcript before the purge would re-create it here.
+      if (!existing && isServerMirroredSession(session)) {
+        throw new ServerMirroredSessionError(session.id);
+      }
       const merged = mergeServerProactiveMessages(existing, session);
       await this.save(merged);
       return merged;
@@ -423,8 +561,11 @@ export class ChatSessionStore {
    * Server-side turn append. Called by the SessionLogger after a completed
    * turn so a mid-stream client reload still recovers the assistant answer.
    * Semantics:
-   * - If the session doesn't exist yet, create it with a title derived from
-   *   the first user message.
+   * - If the session doesn't exist, do nothing. Only the web client creates
+   *   sessions (its PUT on create / first turn); a turn whose scope passes
+   *   the id regex but was never a web chat — a canvas, routine or other
+   *   channel conversation — must not become one. Same rule as
+   *   `appendProactiveMessage`.
    * - If the last two messages already match this turn (user + assistant,
    *   identical content), skip — the client's own PUT has already landed.
    * - Otherwise append the user+assistant pair and bump updatedAt.
@@ -460,17 +601,7 @@ export class ChatSessionStore {
       ...(turn.telemetry ? { telemetry: turn.telemetry } : {}),
     };
 
-    if (!existing) {
-      const session: ChatSession = {
-        id,
-        title: deriveTitle(turn.userMessage),
-        createdAt: now,
-        updatedAt: now,
-        messages: [userMsg, assistantMsg],
-      };
-      await this.save(session);
-      return;
-    }
+    if (!existing) return;
 
     // Idempotency: if the client has already PUT this exact pair, don't dupe.
     // #1071 — routine deliveries are skipped: one that landed between the
@@ -500,14 +631,4 @@ export class ChatSessionStore {
 
 export function isValidSessionId(id: string): boolean {
   return ID_RE.test(id);
-}
-
-const TITLE_MAX = 60;
-
-function deriveTitle(firstUserMessage: string): string {
-  const single = firstUserMessage.replace(/\s+/g, ' ').trim();
-  if (single.length === 0) return 'Neuer Chat';
-  return single.length > TITLE_MAX
-    ? `${single.slice(0, TITLE_MAX - 1)}…`
-    : single;
 }
