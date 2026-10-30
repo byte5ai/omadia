@@ -1,11 +1,14 @@
 import {
+  PRIVACY_FIELD_SAMPLES_SERVICE_NAME,
   PRIVACY_REDACT_SERVICE_NAME,
   type PluginContext,
+  type PrivacyFieldSampleService,
   type PrivacyGuardService,
 } from '@omadia/plugin-api';
 
 import { createC1HttpDetector, probeC1Health } from './c1Detector.js';
-import { createPrivacyGuardService } from './service.js';
+import { C1_NEAR_MISS_THRESHOLD } from './fieldVetting.js';
+import { createPrivacyGuardServices } from './service.js';
 
 /**
  * @omadia/plugin-privacy-guard — plugin entry point (Privacy Shield v4).
@@ -14,6 +17,11 @@ import { createPrivacyGuardService } from './service.js';
  *   1. Build the v4 {@link PrivacyGuardService} via the pure factory.
  *   2. Publish it as `privacyRedact` (capability `privacy.redact@1`) for
  *      the orchestrator's tool-dispatch hook.
+ *   3. Publish the real-value field sample (`fieldSampleForAdmin`) as the
+ *      separate `privacyFieldSamples` service. The kernel's service gate
+ *      refuses that name to every plugin (`KERNEL_ONLY_SERVICE_NAMES`), so
+ *      only the kernel's audited admin preview reads it — a plugin granted
+ *      `privacyRedact` (e.g. `@omadia/plugin-office`) cannot.
  *
  * The v4 Data-Plane Boundary is generic over JSON shape and value
  * statistics — there is no per-tenant policy, allowlist, or detector
@@ -64,13 +72,20 @@ export async function activate(
   const resolveC1Url = (): string | undefined => resolveC1Source()?.url;
   const c1Detector = createC1HttpDetector({ resolveUrl: resolveC1Url });
   let probeCache: { url: string; at: number; reachable: Promise<boolean> } | undefined;
-  const service = createPrivacyGuardService({
+  const { service, fieldSamples } = createPrivacyGuardServices({
     ...(llm ? { llmComplete: llm.complete.bind(llm) } : {}),
     // #361 — live flag reader for default-off user-prompt masking. Routed
     // through the plugin's own ConfigAccessor so an operator toggle saved
     // via the install UI applies on the very next turn (no restart).
     readConfig: (key) => ctx.config.get(key),
     c1Detector,
+    // #1556 follow-up — field-sample vetting asks the sidecar for weaker
+    // name spans too (near-miss), off the interactive lane.
+    c1NearMissDetector: createC1HttpDetector({
+      resolveUrl: resolveC1Url,
+      threshold: C1_NEAR_MISS_THRESHOLD,
+      priority: 'background',
+    }),
     // The live sidecar URL scopes the process-wide C1 segment cache: a
     // reconfigured sidecar misses, an unconfigured one caches nothing.
     c1CacheScope: resolveC1Url,
@@ -92,6 +107,10 @@ export async function activate(
     PRIVACY_REDACT_SERVICE_NAME,
     service,
   );
+  const disposeFieldSamples = ctx.services.provide<PrivacyFieldSampleService>(
+    PRIVACY_FIELD_SAMPLES_SERVICE_NAME,
+    fieldSamples,
+  );
 
   ctx.log(
     `[privacy-guard] ready (schema PII classifier: ${llm ? 'on' : 'off'}, ` +
@@ -102,6 +121,7 @@ export async function activate(
   return {
     async close(): Promise<void> {
       ctx.log('[privacy-guard] deactivating');
+      disposeFieldSamples();
       disposeService();
     },
   };

@@ -5,9 +5,8 @@ import {
   type EntityRef,
   type FactIngest,
   type KnowledgeGraph,
+  parseLlmJson,
 } from '@omadia/plugin-api';
-
-import { parseLlmJson } from './llmJson.js';
 
 /**
  * Distills atomic subject-predicate-object facts out of a completed turn via

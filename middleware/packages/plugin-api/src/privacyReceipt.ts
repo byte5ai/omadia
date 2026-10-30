@@ -1,3 +1,10 @@
+import type {
+  FieldKey,
+  FieldObservation,
+  FieldSampleVerdict,
+  ModelClassificationRequest,
+  ModelClassificationResult,
+} from './privacyFieldClassification.js';
 /**
  * `privacy.redact@1` — capability contract for the Privacy Shield v4
  * Data-Plane Boundary.
@@ -21,6 +28,9 @@ export interface OperatorClearedFieldEntry {
   readonly toolName: string;
   /** The field path, e.g. `department_id`. */
   readonly field: string;
+  /** The scope the rows belonged to — an Odoo model, an uploaded dataset's
+   *  id, or `-` (contract v2). Absent on receipts written before it. */
+  readonly scope?: string;
 }
 
 /**
@@ -1035,4 +1045,34 @@ export interface PrivacyGuardService {
     turnId: string,
     turnInput?: string,
   ): Promise<PrivacyReceipt | undefined>;
+  /**
+   * #1556 follow-up — field-classification suggestions. Schema-only
+   * observations of masked fields since the last call, then cleared (the
+   * kernel persists them). Optional; a provider without it yields none.
+   */
+  takeFieldObservations?(): readonly FieldObservation[];
+  /**
+   * Vet the privacy guard's bounded in-memory value sample of a field with
+   * its own detectors (C0 identity shapes + the operator deny-list, C1 when
+   * configured, also at a lower "near-miss" threshold) and drop the sample.
+   * Only the verdict leaves the plugin.
+   */
+  vetFieldSample?(field: FieldKey): Promise<FieldSampleVerdict>;
+  /**
+   * Classify Odoo models as personal / non-personal from their schema only,
+   * with the plugin's own small model (Haiku). Never sends a value. Returns
+   * `uncertain` for every model when no LLM is available or the call fails.
+   */
+  classifyModelsSchemaOnly?(
+    requests: readonly ModelClassificationRequest[],
+  ): Promise<readonly ModelClassificationResult[]>;
+  /**
+   * A shape-masked preview of a field's buffered sample for the admin page —
+   * letters and digits replaced (`R••••••• & D••••••••••`), punctuation and
+   * spacing kept. At most `limit` entries; empty when nothing is buffered.
+   */
+  maskedFieldPreview?(field: FieldKey & { readonly limit?: number }): readonly string[];
+  // The REAL buffered values are NOT on this service: every plugin granted
+  // `privacyRedact` could read them. They live on the kernel-only
+  // `PrivacyFieldSampleService` (`PRIVACY_FIELD_SAMPLES_SERVICE_NAME`).
 }

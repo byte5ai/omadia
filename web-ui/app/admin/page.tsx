@@ -8,6 +8,7 @@ import { fetchMiddlewareHealth, platformNotice } from '../_lib/platformHealth';
 import { PlatformHealthBanner } from '../_components/PlatformHealthBanner';
 import { PrivacyShieldBanner } from '../_components/PrivacyShieldBanner';
 import { NameDetectorBanner } from '../_components/NameDetectorBanner';
+import { FieldClassificationBanner } from '../_components/FieldClassificationBanner';
 
 export const dynamic = 'force-dynamic';
 
@@ -91,6 +92,12 @@ const GROUPS: readonly GroupDef[] = [
     ],
   },
   {
+    key: 'privacy',
+    // #1556 follow-up — suggested entries for the Privacy Guard's
+    // `non_personal_fields`; nothing is cleared until an admin confirms.
+    cards: [{ href: '/admin/privacy-fields', key: 'privacyFields' }],
+  },
+  {
     key: 'system',
     // Rolling self-update (#432). Always shown: even without the opt-in
     // updater overlay the page is the honest answer to "what version am I
@@ -136,6 +143,7 @@ export default async function AdminIndexPage(): Promise<React.ReactElement> {
       <PlatformHealthBanner notice={platformNotice({ health, vault })} />
       <PrivacyShieldBanner posture={privacy} />
       <NameDetectorBanner posture={privacy} />
+      <FieldClassificationBanner posture={privacy} />
       <header className="mb-8">
         <h1 className="font-display text-[clamp(2rem,4vw,3rem)] leading-[1.1] text-[color:var(--fg-strong)]">
           {t('h1')}

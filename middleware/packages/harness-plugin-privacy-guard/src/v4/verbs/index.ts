@@ -23,6 +23,7 @@ import {
   type SortDirection,
   type VerbResult,
 } from '../types.js';
+import { NO_SCOPE, type FieldSource } from '../../nonPersonalFields.js';
 import { VerbError, evaluatePredicate, isLinkKeyField, labelOf, validatePredicate } from './predicate.js';
 
 export { VerbError } from './predicate.js';
@@ -200,13 +201,17 @@ export function createVerbEngine(deps: VerbEngineDeps): VerbEngine {
     }
   }
 
-  /** #1556 — the tools whose results `sources` hold, deduplicated. */
-  function sourceToolsOf(sources: readonly Dataset[]): readonly string[] {
-    return [
-      ...new Set(
-        sources.flatMap((d) => d.provenance.sourceTools ?? [d.provenance.toolName]),
-      ),
-    ];
+  /** #1556 — the union of the sources (tool + scope) `inputs` hold,
+   *  deduplicated. A dataset without `sources` counts as its own tool with
+   *  no scope (`-`). */
+  function sourcesOf(inputs: readonly Dataset[]): readonly FieldSource[] {
+    const byKey = new Map<string, FieldSource>();
+    for (const d of inputs) {
+      for (const source of d.provenance.sources ?? [{ tool: d.provenance.toolName, scope: NO_SCOPE }]) {
+        byKey.set(`${source.tool}\u0000${source.scope}`, source);
+      }
+    }
+    return [...byKey.values()];
   }
 
   function derive(
@@ -220,7 +225,7 @@ export function createVerbEngine(deps: VerbEngineDeps): VerbEngine {
     renamedTargets: ReadonlySet<string> = new Set(),
   ): VerbResult {
     const inputs = [source, ...others];
-    const sourceTools = sourceToolsOf(inputs);
+    const sources = sourcesOf(inputs);
     // #1556 — a derived field may stay a label only where every input that
     // has the path had it as a label, and no rename put values there.
     const labelPaths = new Set(
@@ -242,10 +247,10 @@ export function createVerbEngine(deps: VerbEngineDeps): VerbEngine {
     return deps.store.put({
       datasetId: `ds_${randomUUID()}`,
       rows,
-      schema: deps.classify(rows, 'rows', { sourceTools, labelPaths }),
+      schema: deps.classify(rows, 'rows', { sources, labelPaths }),
       provenance: {
         toolName: verb,
-        sourceTools,
+        sources,
         turnId: source.provenance.turnId,
         derivedFrom: source.datasetId,
         truncated: false,

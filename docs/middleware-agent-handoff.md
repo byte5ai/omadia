@@ -2039,11 +2039,85 @@ Digest-Audience `public-api` für `/api/v1/mcp` (#1542, #1543, #1559, #1561).
 `nonPersonalFields.ts` (`parseNonPersonalFields`, `nonPersonalFieldRule`) →
 `createShapeClassifier({ nonPersonal })`: ein gelistetes Feld aus Text oder
 Odoo-Paaren `[id, "Label"]` wird Typ `label`, `safe-cleartext`. Der Classifier
-bekommt dafür einen `ClassifierContext` (`sourceTools`); Verben vererben
-`provenance.sourceTools` (Join/Union: alle Quellen müssen das Feld listen).
+bekommt dafür einen `ClassifierContext` (`sources`: Tool + Scope); Verben vererben
+`provenance.sources` (Join/Union: alle Quellen müssen das Feld abdecken).
 `labelOf` lässt Filter/Sort auf dem Label arbeiten, der Digest zeigt Labels.
 Receipt: `operatorClearedFields`, Karte „Per Admin-Regel im Klartext". Test:
 `test/privacyNonPersonalFields1556.test.ts`.
+
+#### Feldklassifizierung (#1556-Folge, Contract v2 vom 2026-10-30)
+
+**Guard:** `fieldObservations.ts`, `fieldVetting.ts`, `v4/modelClassifier.ts`;
+Service-Methoden `takeFieldObservations`, `vetFieldSample`,
+`classifyModelsSchemaOnly`, `maskedFieldPreview`. Die echten Werte für die
+Admin-Vorschau liegen NICHT auf `privacyRedact`, sondern auf einem eigenen
+Service `privacyFieldSamples` (`PrivacyFieldSampleService.fieldSampleForAdmin`,
+`PRIVACY_FIELD_SAMPLES_SERVICE_NAME`; `createPrivacyGuardServices` liefert
+beide); `KERNEL_ONLY_SERVICE_NAMES` in `pluginServiceGrants.ts` verweigert ihn
+jedem Plugin (auch mit `requires:` und dem Provider selbst), nur der Kernel
+liest ihn über die Service-Registry. Für `query_dataset` liefert er nie
+Werte. Schlüssel ist `FieldKey`
+(`toolName`, `scope`, `fieldPath`); eine Beobachtung je Tool + Scope + Feld
+(`sourceModels` entfällt). Scope (`scopeOf` in `v4/datasetStore.ts`):
+`odoo_*`-Tools Input-`model`, sonst Envelope-`model`; andere Tools nur
+Envelope-`model` (ihr Input zählt nicht); Input und Envelope widersprechen
+sich → `!` (`CONFLICTING_SCOPE`, passt auf keinen scoped Eintrag, Alt-Einträge
+gelten weiter); Datensatz-ID bei `query_dataset`; sonst `-`. Kandidaten kommen
+aus allen internierten Tools außer `sub-agent`, Canvas-Produzenten und `v4_*`;
+nie `key`/`value`/`groups` eines gruppierten `query_dataset`-Ergebnisses, nie
+Pfade, die selbst Werte sind (C0-Identitätstreffer oder Personennamen-Form
+„Anna Müller", `valueLikeFieldName.ts` — derselbe Filter im Kernel vor jeder
+Haiku-Anfrage, auch für Labels). Achtung: auch CSV-Kopfzeilen aus zwei
+großgeschriebenen Wörtern („Cost Center") gelten als Name und bleiben
+maskiert (fail-safe).
+
+**Einträge:** scoped `<tool>:<scope>/<feld>` bzw. `dataset:<uuid>/<spalte>`
+(`formatScopedEntry`, `entryCovers`, `nonPersonalFieldRule(entries)(sources,
+path)` in `nonPersonalFields.ts`); Alt-Einträge `tool:feld`, `*:feld`, `feld`
+gelten weiter für alle Modelle. Ein Tool namens `dataset` ergibt nie einen
+Eintrag (`formatScopedEntry`/`configEntryOf`), `SCOPED_FIELD_GRAMMAR` lehnt
+`\p{Cf}` (Zero-Width, Bidi-Overrides) ab.
+
+**Kernel:** `src/privacy/fieldClassification/` (`modelCatalog`,
+`odooRelationResolver` — nur `fields_get` auf dem Scope-Modell —, `engine`,
+`store`, `recompute`, `routes`, `guardConfig`), Migration
+`0065_privacy_field_classification` (Kandidat eindeutig über `tool_name`,
+`scope`, `field_path`; `label`; Verdict-Cache mit `fields_hash`). Quellen ohne
+Relationsinformation (Textfelder, Datensätze, MCP-/Plugin-Tools) bekommen eine
+Schema-Anfrage an Haiku je Quelle `<tool>:<scope>` (Pfade + Labels), gecacht
+in `privacy_model_verdicts`, neu gefragt bei geänderter Feldmenge. Ohne C1
+(Namenserkennung) nie `suggested`, sondern `needs_clarification` mit
+`name_detector_unavailable`; Scope `-` ebenfalls höchstens
+`needs_clarification` mit `no_scope` (UI: „jeder Aufruf dieses Tools"). Fingerprint = Scope + Relationsmodelle + Form;
+Drift und `confirmed_conflict` je Tool + Scope + Feld.
+
+**Routen (requireAuth, jede Session ist Admin; jede Antwort
+`Cache-Control: no-store`):**
+`GET /api/v1/admin/privacy/field-classification`, `POST /:id/decision`
+(confirm/reject/keep_masked/revert, Fingerprint, 409), `GET /:id/preview`
+(`{ samples, maskedSamples, samplesWithheld }`: echte Werte aus
+`privacyFieldSamples`, max. 10, plus maskierter Fallback; Audit
+`privacy.field_preview` mit Ziel `privacy-field:<tool>:<scope>/<pfad>` und nur
+`{count}`, nur wenn echte Werte rausgehen; ohne Audit-Log keine echten Werte;
+`query_dataset` nur maskiert, `samplesWithheld: "owner_scoped_dataset"`),
+`GET /legacy` (Alt-Einträge + abgedeckte Felder mit `personal`),
+`POST /legacy/convert {entry}` (ersetzt genau diesen Alt-Eintrag durch scoped
+Einträge der gesehenen Felder — Felder mit Basis-Status `personal` nicht, die
+kommen als `skippedPersonal` zurück und sind danach maskiert; Plugin-Lock,
+Audit mit Setting vorher/nachher, 409 `legacy_entry_not_found`), `POST /recompute`. Confirm schreibt den scoped
+Eintrag (409 `invalid_field`, wenn er nicht genau einen Eintrag ergibt);
+`revert` entfernt ihn, bei Abdeckung durch einen Alt-Eintrag 409
+`covered_by_legacy`; nur über einen Alt-Eintrag abgedeckt → `confirmed` mit
+Grund `legacy_entry`. `revert` hebt auch „rejected"/„kept masked" auf.
+Posture: `fields_needing_clarification` (inkl. `confirmed_conflict`),
+`fields_suggested_open`, `fields_confirmed_conflict`. Web-UI:
+`/admin/privacy-fields` (Quelle + Scope je Feld, Vorschau mit Hinweis „nur
+für Admins, wird protokolliert"), `?view=legacy` (Alt-Einträge umwandeln),
+`FieldClassificationBanner`, Nav-Badge, Audit-Filter
+`privacy.field_preview`. `parseLlmJson` liegt in plugin-api. Offen (§13):
+Odoo-Plugin-Repo soll Relationen vorab liefern (`odoo_describe` mit
+`relation` oder `odoo.schema@1`), damit Vorschläge vor dem ersten Chat
+entstehen.
 
 ### Conductor-Cancel + Approval-Härtung (#759)
 
@@ -5230,6 +5304,12 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 ---
 
 ## 13. Offene Roadmap
+
+- **Feldklassifizierung vorab (#1556-Folge):** Das Odoo-Plugin-Repo
+  (`byte5ai/omadia-integration-odoo`) soll Relationsziele vorab liefern
+  (`odoo_describe` mit `relation` oder ein Service `odoo.schema@1`), damit
+  Vorschläge auf `/admin/privacy-fields` vor dem ersten Chat entstehen. Heute
+  entstehen sie erst, wenn ein Tool-Ergebnis das Feld maskiert hat.
 
 ### Plan-Schritt-Zuordnung und Canvas-Vorschau (#1502, #1500)
 

@@ -100,7 +100,8 @@ export function withC1Priority(
  */
 export const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_LABELS: readonly string[] = ['person', 'address'];
-const DEFAULT_THRESHOLD = 0.5;
+/** The sidecar score from which a span is masked. */
+export const C1_DEFAULT_THRESHOLD = 0.5;
 
 /** Detector id recorded (PII-free) on the receipt per masked span. */
 export const C1_DETECTOR_ID = 'c1-gliner';
@@ -138,7 +139,7 @@ export function createC1HttpDetector(
   const timeoutMs = opts.timeoutMs ?? resolveTimeoutFromEnv() ?? DEFAULT_TIMEOUT_MS;
   const fetchFn = opts.fetchFn ?? globalThis.fetch;
   const labels = opts.labels ?? DEFAULT_LABELS;
-  const threshold = opts.threshold ?? DEFAULT_THRESHOLD;
+  const threshold = opts.threshold ?? C1_DEFAULT_THRESHOLD;
   const priority = opts.priority ?? 'interactive';
 
   const detector: PromptPiiDetector = {

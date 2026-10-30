@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/plugin-privacy-guard"
   name: "Privacy Guard"
-  version: "0.14.0"
+  version: "0.15.0"
   kind: "tool"
   domain: "privacy.redact"
   description:
@@ -89,8 +89,8 @@ setup:
         en: "Non-personal fields (sent in clear)"
         de: "Nicht personenbezogene Felder (im Klartext)"
       help:
-        en: "Empty by default. Fields of tool results that hold no personal data and may reach the model in clear, so an answer can name them — for example a department, a job position or a product category. One entry per line: 'tool:field' for one tool (odoo_execute:department_id), '*:field' or just 'field' for every tool (*:job_id). A listed field clears only when every value is text or an Odoo pair [id, \"label\"]; the model then sees the label and can filter, sort and group on it. A value the identity detector flags (e-mail, IBAN, phone, address, ID number) keeps the field masked; person names are NOT detected here, so never list a field that can hold a person (partner_id, user_id, employee_id, a manager). A result built from several tools clears a field only when every one of them lists it. A bare 'field' or '*:field' applies to every tool that returns a column of that name, uploads and external MCP tools included — name the tool when you can. Link-key columns (__k_…) are refused. Each cleared field appears in the turn's privacy receipt as 'In clear by admin rule'."
-        de: "Standardmäßig leer. Felder von Tool-Ergebnissen, die keine personenbezogenen Daten enthalten und das Modell im Klartext erreichen dürfen, damit eine Antwort sie nennen kann — etwa eine Abteilung, eine Position oder eine Produktkategorie. Ein Eintrag pro Zeile: 'tool:feld' für ein Tool (odoo_execute:department_id), '*:feld' oder nur 'feld' für jedes Tool (*:job_id). Ein gelistetes Feld wird nur dann freigegeben, wenn jeder Wert Text oder ein Odoo-Paar [id, \"Label\"] ist; das Modell sieht dann das Label und kann danach filtern, sortieren und gruppieren. Ein Wert, den der Identitätsdetektor erkennt (E-Mail, IBAN, Telefon, Adresse, Ausweisnummer), hält das Feld maskiert; Personennamen werden hier NICHT erkannt, liste also nie ein Feld, das eine Person enthalten kann (partner_id, user_id, employee_id, eine Führungskraft). Ein Ergebnis aus mehreren Tools gibt ein Feld nur frei, wenn jedes davon es listet. Ein bloßes 'feld' oder '*:feld' gilt für jedes Tool, das eine Spalte dieses Namens liefert, auch Uploads und externe MCP-Tools — nenne das Tool, wo es geht. Link-Key-Spalten (__k_…) werden abgelehnt. Jedes freigegebene Feld steht in der Privacy-Receipt des Turns als 'Per Admin-Regel im Klartext'."
+        en: "Empty by default. Fields of tool results that hold no personal data and may reach the model in clear, so an answer can name them — a department, a job position, a product category. One entry per line. Preferred, scoped to one source and model: 'tool:model/field' (odoo_execute:hr.employee/department_id), 'dataset:<dataset id>/<column>' for one uploaded dataset, 'tool:-/field' for a tool whose results name no model. The page Admin › Field classification suggests entries and writes them for you. Older entries 'tool:field', '*:field' or just 'field' still work and apply to every model of the source; the page lists them as legacy and converts them. A listed field clears only when every value is text or an Odoo pair [id, \"label\"]; the model then sees the label and can filter, sort and group on it. A value the identity detector flags (e-mail, IBAN, phone, address, ID number) keeps the field masked; person names are NOT detected here, so never list a field that can hold a person (partner_id, user_id, employee_id, a manager). A result built from several sources clears a field only when every one of them is listed. Link-key columns (__k_…) are refused. Each cleared field appears in the turn's privacy receipt as 'In clear by admin rule'."
+        de: "Standardmäßig leer. Felder von Tool-Ergebnissen, die keine personenbezogenen Daten enthalten und das Modell im Klartext erreichen dürfen, damit eine Antwort sie nennen kann — eine Abteilung, eine Position, eine Produktkategorie. Ein Eintrag pro Zeile. Bevorzugt, auf eine Quelle und ein Modell beschränkt: 'tool:modell/feld' (odoo_execute:hr.employee/department_id), 'dataset:<Datensatz-ID>/<Spalte>' für einen hochgeladenen Datensatz, 'tool:-/feld' für ein Tool, dessen Ergebnisse kein Modell nennen. Die Seite Admin › Feldklassifizierung schlägt Einträge vor und schreibt sie für dich. Ältere Einträge 'tool:feld', '*:feld' oder nur 'feld' gelten weiter, und zwar für jedes Modell der Quelle; die Seite führt sie als Altbestand und wandelt sie um. Ein gelistetes Feld wird nur freigegeben, wenn jeder Wert Text oder ein Odoo-Paar [id, \"Label\"] ist; das Modell sieht dann das Label und kann danach filtern, sortieren und gruppieren. Ein Wert, den der Identitätsdetektor erkennt (E-Mail, IBAN, Telefon, Adresse, Ausweisnummer), hält das Feld maskiert; Personennamen werden hier NICHT erkannt, liste also nie ein Feld, das eine Person enthalten kann (partner_id, user_id, employee_id, eine Führungskraft). Ein Ergebnis aus mehreren Quellen gibt ein Feld nur frei, wenn jede davon gelistet ist. Link-Key-Spalten (__k_…) werden abgelehnt. Jedes freigegebene Feld steht in der Privacy-Receipt des Turns als 'Per Admin-Regel im Klartext'."
       required: false
       default: ""
     - key: "c1_detector_url"
@@ -199,6 +199,14 @@ playbook:
     (dieses Plugin ab 0.14.0, #1556): Felder, die `non_personal_fields`
     freigegeben hat. Ein älteres Plugin kennt die Einstellung nicht und maskiert
     sie weiter.
+    Ab @omadia/plugin-api 1.49.0 liefert dieses Plugin (ab 0.15.0) die
+    Grundlage für die Vorschläge auf /admin/privacy-fields:
+    `takeFieldObservations`, `vetFieldSample`, `classifyModelsSchemaOnly`,
+    `maskedFieldPreview`. Fehlen sie, bleibt die Seite leer; maskiert wird wie
+    zuvor. Umgekehrt braucht dieses Plugin ab 0.15.0 zur Laufzeit
+    @omadia/plugin-api ab 1.49.0 (es importiert `parseLlmJson` daraus): mit
+    einem älteren Kernel lädt es nicht. Das gebündelte Plugin kommt immer mit
+    dem passenden Kernel; relevant ist das nur für eine hochgeladene Kopie.
 
 # ---------------------------------------------------------------------------
 # Permissions. Server-side compute plus ONE deliberate network target
