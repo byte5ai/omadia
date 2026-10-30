@@ -8,6 +8,8 @@
  *
  * Order (first match wins for the base status):
  *   1. a relation target in PERSON_MODELS              → personal
+ *      no relation information and a source model in
+ *      PERSON_MODELS (`name` of res.partner)          → personal
  *   2. sample vetting: identity hit / C1 name hit      → personal
  *   3. several targets with mixed catalog verdicts     → needs_clarification
  *   4. targets all unknown → the schema-only verdict:
@@ -21,7 +23,10 @@
  * Overlays on the base status:
  *   - covered by the current `non_personal_fields` value → confirmed
  *     (`wildcard_entry` when only a `*:`/bare entry covers it); the base
- *     reasons stay so the page can still say WHY it would not suggest it;
+ *     reasons stay so the page can still say WHY it would not suggest it.
+ *     It is `confirmed_conflict` instead when the base status is personal
+ *     or the fingerprint changed since the admin's confirm — until the admin
+ *     confirms again (acknowledges) on the current fingerprint;
  *   - an admin's reject / keep_masked holds while the candidate's fingerprint
  *     is unchanged; after a change the field is back to needs_clarification
  *     (`changed_since_decision`) — or personal, when that is what it is now.
@@ -47,6 +52,7 @@ export const FIELD_STATUSES = [
   'needs_clarification',
   'personal',
   'confirmed',
+  'confirmed_conflict',
   'rejected',
   'kept_masked',
 ] as const;
@@ -73,6 +79,7 @@ export type FieldReason =
   | { readonly code: 'name_detector_unavailable' }
   | { readonly code: 'no_relation_info' }
   | { readonly code: 'changed_since_decision' }
+  | { readonly code: 'confirmed_conflict' }
   | { readonly code: 'wildcard_entry'; readonly entry: string }
   | { readonly code: 'sample_clean'; readonly sampleCount: number };
 
@@ -191,6 +198,15 @@ export function classifyBase(input: ClassifyInput): {
   if (personTargets.length > 0) {
     return { status: 'personal', reasons: [{ code: 'person_model', models: personTargets }] };
   }
+  // No relation information (a text field, or the schema could not be read):
+  // a field read from a person model is about that person — `name` of
+  // res.partner is the person's name.
+  if (targets.length === 0) {
+    const personSources = [...new Set(input.sourceModels)].filter(isPersonModel).sort();
+    if (personSources.length > 0) {
+      return { status: 'personal', reasons: [{ code: 'person_model', models: personSources }] };
+    }
+  }
 
   const sample = input.sample;
   if (sample?.identityHit === true) {
@@ -244,13 +260,17 @@ export function resolveStatus(
   decision: StoredDecision | null | undefined,
 ): { status: FieldStatus; reasons: readonly FieldReason[] } {
   if (coverage?.covered === true) {
-    return {
-      status: 'confirmed',
-      reasons:
-        coverage.wildcardEntry !== undefined && !coverage.exact
-          ? [...base.reasons, { code: 'wildcard_entry', entry: coverage.wildcardEntry }]
-          : base.reasons,
-    };
+    const reasons: readonly FieldReason[] =
+      coverage.wildcardEntry !== undefined && !coverage.exact
+        ? [...base.reasons, { code: 'wildcard_entry', entry: coverage.wildcardEntry }]
+        : base.reasons;
+    const confirm = decision?.action === 'confirm' ? decision : undefined;
+    const acknowledged = confirm !== undefined && confirm.fingerprint === fingerprint;
+    const drifted = confirm !== undefined && confirm.fingerprint !== fingerprint;
+    if (!acknowledged && (base.status === 'personal' || drifted)) {
+      return { status: 'confirmed_conflict', reasons: [{ code: 'confirmed_conflict' }, ...reasons] };
+    }
+    return { status: 'confirmed', reasons };
   }
   if (decision?.action === 'reject' || decision?.action === 'keep_masked') {
     if (decision.fingerprint === fingerprint) {
@@ -280,9 +300,53 @@ export function classifyCandidate(input: ClassifyInput): Classification {
 
 const ITEM_SEPARATOR = /[\n;,]/u;
 
-/** The `tool:field` entry a confirm writes. */
+/** Odoo field names — the only field paths that become candidates. */
+export const FIELD_PATH_GRAMMAR = /^[a-z_][a-z0-9_]*$/u;
+/** Tool names a candidate may carry. */
+export const TOOL_NAME_GRAMMAR = /^[a-z0-9_.-]+$/iu;
+
+/** A candidate whose tool or field cannot be written as exactly one entry. */
+export class InvalidFieldEntryError extends Error {
+  constructor() {
+    super('field is not a single valid non_personal_fields entry');
+    this.name = 'InvalidFieldEntryError';
+  }
+}
+
+/**
+ * The `tool:field` entry a confirm writes. Throws `InvalidFieldEntryError`
+ * unless tool and field follow the candidate grammar AND the entry parses
+ * back to exactly that one tool-specific entry — a field path holding a
+ * separator, a `:` or a wildcard must never add a second (or a `*:`) entry
+ * to the setting.
+ */
 export function configEntryOf(toolName: string, fieldPath: string): string {
-  return `${toolName}:${fieldPath}`;
+  const entry = `${toolName}:${fieldPath}`;
+  const parsed = parseNonPersonalFields(entry);
+  const only = parsed.entries[0];
+  if (
+    toolName === '*' ||
+    !TOOL_NAME_GRAMMAR.test(toolName) ||
+    !FIELD_PATH_GRAMMAR.test(fieldPath) ||
+    parsed.rejected.length > 0 ||
+    parsed.entries.length !== 1 ||
+    only?.tool !== toolName ||
+    only.path !== fieldPath
+  ) {
+    throw new InvalidFieldEntryError();
+  }
+  return entry;
+}
+
+/** Tool and field follow the candidate grammar and form exactly one entry
+ *  (see `configEntryOf`). */
+export function isValidFieldIdentity(toolName: string, fieldPath: string): boolean {
+  try {
+    configEntryOf(toolName, fieldPath);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function parseItem(text: string): NonPersonalFieldEntry | undefined {
@@ -315,9 +379,9 @@ export function configCoverage(
 
 /** The setting with `tool:field` appended on its own line (no duplicate). */
 export function appendConfigEntry(raw: string | undefined, toolName: string, fieldPath: string): string {
+  const entry = configEntryOf(toolName, fieldPath);
   const current = (raw ?? '').replace(/\s+$/u, '');
   if (configCoverage(current, toolName, fieldPath).exact) return current;
-  const entry = configEntryOf(toolName, fieldPath);
   return current.length === 0 ? entry : `${current}\n${entry}`;
 }
 

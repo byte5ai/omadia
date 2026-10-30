@@ -6501,6 +6501,7 @@
       "needs_clarification": "Klärung nötig",
       "personal": "Personenbezogen",
       "confirmed": "Bestätigt",
+      "confirmed_conflict": "Bestätigt — prüfen",
       "rejected": "Abgelehnt",
       "kept_masked": "Bleibt maskiert"
     },
@@ -6532,6 +6533,7 @@
       "name_detector_unavailable": "Die Namenserkennung war nicht verfügbar, Stichprobenwerte wurden daher nicht auf Namen geprüft.",
       "no_relation_info": "Keine Relationsinformation: ein Textfeld, oder die Odoo-Verbindung war nicht verfügbar.",
       "changed_since_decision": "Seit der letzten Entscheidung geändert (neue Quell- oder Relationsmodelle).",
+      "confirmed_conflict": "Dieses Feld steht in der Liste, verweist aber jetzt auf ein Personenmodell oder hat sich seit der Bestätigung geändert — bitte prüfen oder entfernen.",
       "wildcard_entry": "Bereits durch einen Platzhalter-Eintrag in non_personal_fields abgedeckt.",
       "sample_clean": "{count, plural, one {# Stichprobenwert zeigte} other {# Stichprobenwerte zeigten}} keine personenbezogenen Daten.",
       "unknown": "Anderer Grund ({code})."
@@ -6545,6 +6547,7 @@
     },
     "actions": {
       "confirm": "Bestätigen",
+      "acknowledge": "Erneut bestätigen",
       "reject": "Ablehnen",
       "keep_masked": "Maskiert lassen",
       "revert": "Zurücknehmen",
@@ -6560,6 +6563,7 @@
       "load": "Die Feldliste konnte nicht geladen werden.",
       "stale": "Dieses Feld hat sich seit dem Laden geändert. Die Liste wurde neu geladen — bitte erneut prüfen.",
       "wildcard": "Dieses Feld ist durch den Platzhalter-Eintrag {entry} abgedeckt. Zurücknehmen wirkt nicht, solange dieser Eintrag besteht; ändere ihn in den Einstellungen des Privacy Guard.",
+      "invalidField": "Dieser Feldname kann nicht als einzelner Eintrag in non_personal_fields aufgenommen werden und steht daher nicht zur Entscheidung.",
       "notFound": "Dieses Feld existiert nicht mehr. Die Liste wurde neu geladen.",
       "decision": "Die Entscheidung konnte nicht gespeichert werden.",
       "preview": "Die Stichprobe konnte nicht geladen werden.",

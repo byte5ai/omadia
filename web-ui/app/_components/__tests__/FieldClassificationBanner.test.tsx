@@ -5,6 +5,7 @@ import type { PrivacyPosture } from '../../_lib/api';
 import { renderWithIntl } from '../../_lib/test-utils';
 import {
   FieldClassificationBanner,
+  fieldClassificationHref,
   fieldsNeedingClarification,
 } from '../FieldClassificationBanner';
 
@@ -61,5 +62,32 @@ describe('open suggestions only', () => {
     expect(fieldsNeedingClarification(p)).toBe(2);
     renderWithIntl(<FieldClassificationBanner posture={p} />);
     expect(screen.getByRole('link')).toHaveAttribute('href', '/admin/privacy-fields?status=suggested');
+  });
+});
+
+describe('confirmed fields in conflict', () => {
+  it('count toward the banner and link to their tab when nothing else is open', () => {
+    const p = posture({ fields_needing_clarification: 2, fields_confirmed_conflict: 2 });
+    expect(fieldsNeedingClarification(p)).toBe(2);
+    expect(fieldClassificationHref(p)).toBe('/admin/privacy-fields?status=confirmed_conflict');
+    renderWithIntl(<FieldClassificationBanner posture={p} />);
+    expect(screen.getByRole('link')).toHaveAttribute(
+      'href',
+      '/admin/privacy-fields?status=confirmed_conflict',
+    );
+  });
+
+  it('open clarifications still come first', () => {
+    const p = posture({ fields_needing_clarification: 3, fields_confirmed_conflict: 1 });
+    expect(fieldClassificationHref(p)).toBe('/admin/privacy-fields?status=needs_clarification');
+  });
+
+  it('conflicts come before open suggestions', () => {
+    const p = posture({
+      fields_needing_clarification: 1,
+      fields_confirmed_conflict: 1,
+      fields_suggested_open: 4,
+    });
+    expect(fieldClassificationHref(p)).toBe('/admin/privacy-fields?status=confirmed_conflict');
   });
 });

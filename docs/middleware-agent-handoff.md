@@ -2054,8 +2054,12 @@ Receipt: `operatorClearedFields`, Karte „Per Admin-Regel im Klartext". Test:
 Migration `0065_privacy_field_classification`. Routen (requireAuth):
 `GET /api/v1/admin/privacy/field-classification`, `POST /:id/decision`
 (confirm/reject/keep_masked/revert, Fingerprint, 409), `GET /:id/preview`,
-`POST /recompute`. Posture: `fields_needing_clarification`,
-`fields_suggested_open`. Web-UI: `/admin/privacy-fields`,
+`POST /recompute`. Posture: `fields_needing_clarification` (inkl.
+`confirmed_conflict`), `fields_suggested_open`, `fields_confirmed_conflict`.
+Status `confirmed_conflict`: gelistetes Feld zeigt jetzt auf ein
+Personenmodell oder hat sich seit der Bestätigung geändert; `confirm` quittiert
+ohne Config-Änderung. Feldpfad-/Tool-/Modell-Grammatik in Guard und Kernel,
+409 `invalid_field`. Web-UI: `/admin/privacy-fields`,
 `FieldClassificationBanner`, Nav-Badge. `parseLlmJson` liegt jetzt in
 plugin-api. Offen (§13): Odoo-Plugin-Repo soll Relationen vorab liefern
 (`odoo_describe` mit `relation` oder `odoo.schema@1`), damit Vorschläge vor

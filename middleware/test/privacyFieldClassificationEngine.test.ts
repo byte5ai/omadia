@@ -21,11 +21,14 @@ import {
   candidateFingerprint,
   classifyCandidate,
   configCoverage,
+  configEntryOf,
+  InvalidFieldEntryError,
+  isValidFieldIdentity,
   removeConfigEntry,
   type ClassifyInput,
   type ModelVerdictSummary,
 } from '../src/privacy/fieldClassification/engine.js';
-import { PERSON_MODELS, catalogVerdictOf } from '../src/privacy/fieldClassification/modelCatalog.js';
+import { KNOWN_NON_PERSONAL_MODELS, PERSON_MODELS, catalogVerdictOf } from '../src/privacy/fieldClassification/modelCatalog.js';
 import {
   createFieldClassificationScheduler,
   isCandidateObservation,
@@ -60,6 +63,20 @@ describe('field classification — model catalog', () => {
       assert.equal(catalogVerdictOf(m), 'non-personal', m);
     }
     assert.equal(catalogVerdictOf('x_custom.region'), 'unknown');
+  });
+
+  it('chat channels and timesheet lines are person models', () => {
+    for (const m of ['discuss.channel', 'discuss.channel.member', 'mail.channel', 'account.analytic.line']) {
+      assert.equal(catalogVerdictOf(m), 'personal', m);
+    }
+  });
+
+  it('projects and analytic accounts (often named after a customer) are not known non-personal', () => {
+    for (const m of ['project.project', 'account.analytic.account']) {
+      assert.equal(KNOWN_NON_PERSONAL_MODELS.has(m), false, m);
+      assert.equal(catalogVerdictOf(m), 'unknown', m);
+    }
+    assert.equal(catalogVerdictOf('res.company'), 'non-personal');
   });
 });
 
@@ -154,7 +171,9 @@ describe('field classification — classifyCandidate', () => {
   });
 
   it('a field without relation information needs clarification', () => {
-    const r = classifyCandidate(input({ valueShape: 'text', fieldPath: 'job_title', relationModels: [] }));
+    const r = classifyCandidate(
+      input({ valueShape: 'text', fieldPath: 'job_title', sourceModels: ['sale.order'], relationModels: [] }),
+    );
     assert.equal(r.status, 'needs_clarification');
     assert.deepEqual(codes(r), ['no_relation_info']);
   });
@@ -351,6 +370,39 @@ describe('field classification — recompute', () => {
     assert.equal(isCandidateObservation(obs('x', [], { valueShape: 'mixed' })), false);
   });
 
+  it('drops field paths, tool names and source models outside the Odoo grammar', () => {
+    for (const path of ['x\n*:partner_id', 'x,partner_id', 'x;partner_id', 'a b', '*', 'a:b', 'Name', 'a.b', '1x', '']) {
+      assert.equal(isCandidateObservation(obs(path, ['hr.department'])), false, JSON.stringify(path));
+    }
+    for (const toolName of ['odoo_x\n*', 'odoo_x:y', 'odoo x', 'odoo_*']) {
+      assert.equal(isCandidateObservation(obs('department_id', [], { toolName })), false, toolName);
+    }
+    assert.equal(isCandidateObservation(obs('department_id', [], { toolName: 'odoo_Execute.v2-x' })), true);
+    for (const model of ["x'; drop", 'Bad Model', 'res.partner\n*:x', '']) {
+      assert.equal(isCandidateObservation(obs('department_id', ['hr.employee', model])), false, model);
+    }
+  });
+
+  it('one unreadable source model makes the relation unknown, not a partial answer (M1)', async () => {
+    const fields: Record<string, unknown> = {
+      'sale.order': { department_id: { type: 'many2one', relation: 'hr.department' } },
+      'x_custom.broken': 'not a schema',
+    };
+    const h = harness({ fields: fields as never });
+    h.queue([obs('department_id', ['sale.order', 'x_custom.broken'])]);
+    await h.run();
+    const [first] = await h.store.list();
+    assert.deepEqual(first?.relationModels, [], 'the partial answer is not taken');
+    assert.equal(first?.status, 'needs_clarification');
+    assert.deepEqual(codes(first!), ['no_relation_info']);
+
+    fields['x_custom.broken'] = {};
+    await h.run();
+    const [second] = await h.store.list();
+    assert.deepEqual(second?.relationModels, ['hr.department']);
+    assert.equal(second?.status, 'suggested');
+  });
+
   it('classifies, never sends a person model to the schema model, never writes config', async () => {
     const h = harness({
       fields: EMPLOYEE_FIELDS,
@@ -372,7 +424,9 @@ describe('field classification — recompute', () => {
     assert.equal(byPath.get('parent_id')?.status, 'personal');
     assert.equal(byPath.get('address_id')?.status, 'personal');
     assert.equal(byPath.get('region_id')?.status, 'suggested');
-    assert.equal(byPath.get('job_title')?.status, 'needs_clarification');
+    // A text field of a person model is about that person.
+    assert.equal(byPath.get('job_title')?.status, 'personal');
+    assert.deepEqual(byPath.get('job_title')?.reasons, [{ code: 'person_model', models: ['hr.employee'] }]);
     assert.deepEqual(byPath.get('department_id')?.relationModels, ['hr.department']);
     assert.deepEqual(byPath.get('department_id')?.maskedPreview, ['•••• & ••••']);
 
@@ -458,5 +512,106 @@ describe('field classification — scheduler', () => {
     await joined;
     assert.equal(runs, 2, 'a run requested mid-flight runs once more afterwards');
     scheduler.stop();
+  });
+});
+
+describe('field classification — security review fixes', () => {
+  it('M2: a field without relation info read from a person model is personal', () => {
+    const name = classifyCandidate(
+      input({ fieldPath: 'name', valueShape: 'text', sourceModels: ['res.partner'], relationModels: [] }),
+    );
+    assert.equal(name.status, 'personal');
+    assert.deepEqual(name.reasons, [{ code: 'person_model', models: ['res.partner'] }]);
+
+    const value = classifyCandidate(
+      input({
+        fieldPath: 'value',
+        valueShape: 'text',
+        sourceModels: ['sale.order', 'hr.employee'],
+        relationModels: [],
+      }),
+    );
+    assert.equal(value.status, 'personal');
+    assert.deepEqual(value.reasons, [{ code: 'person_model', models: ['hr.employee'] }]);
+
+    // A resolved non-person relation wins over the person SOURCE model.
+    const dept = classifyCandidate(input({ sourceModels: ['hr.employee'], relationModels: ['hr.department'] }));
+    assert.equal(dept.status, 'suggested');
+  });
+
+  describe('H1: confirmed_conflict', () => {
+    const covered = configCoverage('odoo_execute:x_id', 'odoo_execute', 'x_id');
+    const personal = { fieldPath: 'x_id', relationModels: ['res.partner'], coverage: covered };
+    const personalFp = candidateFingerprint({
+      sourceModels: ['hr.employee'],
+      relationModels: ['res.partner'],
+      valueShape: 'm2o',
+    });
+
+    it('a covered field whose base status is personal is a conflict', () => {
+      const r = classifyCandidate(input(personal));
+      assert.equal(r.status, 'confirmed_conflict');
+      assert.deepEqual(codes(r), ['confirmed_conflict', 'person_model']);
+    });
+
+    it('a covered field whose fingerprint changed since the confirm is a conflict', () => {
+      const r = classifyCandidate(
+        input({
+          coverage: configCoverage('odoo_execute:department_id', 'odoo_execute', 'department_id'),
+          decision: { action: 'confirm', fingerprint: 'an-older-fingerprint' },
+        }),
+      );
+      assert.equal(r.status, 'confirmed_conflict');
+      assert.equal(r.reasons[0]?.code, 'confirmed_conflict');
+    });
+
+    it('an acknowledged conflict (confirm on the current fingerprint) stays confirmed, reason kept', () => {
+      const r = classifyCandidate(
+        input({ ...personal, decision: { action: 'confirm', fingerprint: personalFp } }),
+      );
+      assert.equal(r.status, 'confirmed');
+      assert.deepEqual(r.reasons, [{ code: 'person_model', models: ['res.partner'] }]);
+    });
+
+    it('a wildcard entry covering a person field is a conflict too', () => {
+      const r = classifyCandidate(
+        input({ ...personal, coverage: configCoverage('*:x_id', 'odoo_execute', 'x_id') }),
+      );
+      assert.equal(r.status, 'confirmed_conflict');
+      assert.deepEqual(codes(r), ['confirmed_conflict', 'person_model', 'wildcard_entry']);
+    });
+
+    it('a covered non-personal field without a confirm decision stays confirmed', () => {
+      const r = classifyCandidate(
+        input({ coverage: configCoverage('odoo_execute:department_id', 'odoo_execute', 'department_id') }),
+      );
+      assert.equal(r.status, 'confirmed');
+    });
+  });
+
+  describe('H2: config entries are exactly one tool:field', () => {
+    const injected = ['x\n*:partner_id', 'x,partner_id', 'x;partner_id', 'a b', '*', 'a:b', ''];
+
+    it('configEntryOf and appendConfigEntry refuse paths that would add other entries', () => {
+      for (const path of injected) {
+        assert.throws(() => configEntryOf('odoo_execute', path), InvalidFieldEntryError, JSON.stringify(path));
+        assert.throws(
+          () => appendConfigEntry('odoo_execute:job_id', 'odoo_execute', path),
+          InvalidFieldEntryError,
+          JSON.stringify(path),
+        );
+        assert.equal(isValidFieldIdentity('odoo_execute', path), false, JSON.stringify(path));
+      }
+      assert.throws(() => configEntryOf('*', 'partner_id'), InvalidFieldEntryError);
+      assert.throws(() => configEntryOf('odoo:x', 'partner_id'), InvalidFieldEntryError);
+      assert.equal(configEntryOf('odoo_execute', 'job_id'), 'odoo_execute:job_id');
+      assert.equal(isValidFieldIdentity('odoo_execute', 'job_id'), true);
+    });
+
+    it('the grammar also refuses names the parser would accept', () => {
+      assert.equal(isValidFieldIdentity('odoo_execute', 'Name'), false);
+      assert.equal(isValidFieldIdentity('odoo_execute', 'a.b'), false);
+      assert.equal(isValidFieldIdentity('odoo_execute', '__k_name'), false, 'the parser refuses link keys');
+    });
   });
 });

@@ -24,12 +24,14 @@ CREATE TABLE IF NOT EXISTS privacy_field_candidates (
                            CHECK (value_shape IN ('m2o', 'text', 'mixed')),
   status                 TEXT NOT NULL DEFAULT 'needs_clarification'
                            CHECK (status IN ('suggested', 'needs_clarification', 'personal',
-                                             'confirmed', 'rejected', 'kept_masked')),
+                                             'confirmed', 'confirmed_conflict', 'rejected',
+                                             'kept_masked')),
   reasons                JSONB NOT NULL DEFAULT '[]'::jsonb,
   fingerprint            TEXT NOT NULL DEFAULT '',
   sample_verdict         JSONB,
-  -- Shape-masked preview strings from the guard (every letter and digit
-  -- replaced by `•`, punctuation and spacing kept). Taken BEFORE vetting,
+  -- Shape-masked preview strings from the guard (allowlist: whitespace and
+  -- `& - . , / ( ) ' : +` kept, every other code point replaced by `•`).
+  -- Taken BEFORE vetting,
   -- which drops the guard's sample. Carries no value.
   masked_preview         TEXT[] NOT NULL DEFAULT '{}',
   decision               TEXT
@@ -45,6 +47,15 @@ CREATE TABLE IF NOT EXISTS privacy_field_candidates (
   last_status_change_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE (tool_name, field_path)
 );
+
+-- A database that ran an earlier draft of this migration has the status
+-- CHECK without `confirmed_conflict`; re-create it (idempotent).
+ALTER TABLE privacy_field_candidates
+  DROP CONSTRAINT IF EXISTS privacy_field_candidates_status_check;
+ALTER TABLE privacy_field_candidates
+  ADD CONSTRAINT privacy_field_candidates_status_check
+  CHECK (status IN ('suggested', 'needs_clarification', 'personal',
+                    'confirmed', 'confirmed_conflict', 'rejected', 'kept_masked'));
 
 CREATE INDEX IF NOT EXISTS privacy_field_candidates_status
   ON privacy_field_candidates (status);

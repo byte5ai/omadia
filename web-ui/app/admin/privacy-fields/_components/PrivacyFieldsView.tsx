@@ -126,6 +126,8 @@ export function PrivacyFieldsView({
     } catch (err) {
       if (err instanceof ApiError && err.status === 409 && err.code === 'covered_by_wildcard') {
         setNotice({ itemId: item.id, notice: { kind: 'wildcard', entry: wildcardEntry(err) } });
+      } else if (err instanceof ApiError && err.status === 409 && err.code === 'invalid_field') {
+        setNotice({ itemId: item.id, notice: { kind: 'invalid' } });
       } else if (err instanceof ApiError && (err.status === 409 || err.status === 404)) {
         // Stale fingerprint, or the candidate is gone: show the current state.
         setNotice({ itemId: item.id, notice: { kind: err.status === 404 ? 'gone' : 'stale' } });
@@ -289,6 +291,8 @@ function OrphanNotice({ notice }: { notice: CardNotice }): React.ReactElement {
       return <ErrorLine message={t('errors.notFound')} detail={null} />;
     case 'wildcard':
       return <ErrorLine message={t('errors.wildcard', { entry: notice.entry })} detail={null} />;
+    case 'invalid':
+      return <ErrorLine message={t('errors.invalidField')} detail={null} />;
     case 'error':
       return <ErrorLine message={t('errors.decision')} detail={notice.detail} />;
   }

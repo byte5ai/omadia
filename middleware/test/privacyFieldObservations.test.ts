@@ -127,6 +127,42 @@ describe('#1556 follow-up — field observations', () => {
   });
 });
 
+describe('#1556 follow-up — observation grammar (security review H2)', () => {
+  const INVALID_PATHS = ['x\n*:partner_id', 'x,partner_id', 'x;partner_id', 'a b', '*', 'a:b', 'Name', '1x'];
+
+  it('records only Odoo field names — never a key that could become several entries', async () => {
+    const svc = createPrivacyGuardService();
+    const rows = NAMES.map((name, i) => {
+      const row: Record<string, unknown> = { id: i + 1, name };
+      for (const path of INVALID_PATHS) row[path] = name;
+      return row;
+    });
+    await intern(svc, 'odoo_execute', rows, { model: 'res.partner' });
+    const paths = svc.takeFieldObservations!().map((o) => o.fieldPath);
+    assert.ok(paths.includes('name'), 'a valid field is still observed');
+    for (const path of INVALID_PATHS) assert.ok(!paths.includes(path), JSON.stringify(path));
+    for (const path of INVALID_PATHS) {
+      assert.deepEqual(svc.maskedFieldPreview!({ toolName: 'odoo_execute', fieldPath: path }), []);
+    }
+  });
+
+  it('drops a source model outside the Odoo model grammar', async () => {
+    const svc = createPrivacyGuardService();
+    await intern(svc, 'odoo_execute', EMPLOYEES, { model: 'res.partner\n*:name' });
+    await intern(svc, 'odoo_execute', EMPLOYEES, { model: 'Bad Model' });
+    const name = svc.takeFieldObservations!().find((o) => o.fieldPath === 'name');
+    assert.ok(name !== undefined);
+    assert.deepEqual(name.sourceModels, []);
+  });
+
+  it('ignores tools whose name is outside the tool grammar', async () => {
+    const svc = createPrivacyGuardService();
+    await intern(svc, 'odoo_x:y', EMPLOYEES, { model: 'hr.employee' });
+    await intern(svc, 'odoo_x y', EMPLOYEES, { model: 'hr.employee' });
+    assert.deepEqual(svc.takeFieldObservations!(), []);
+  });
+});
+
 describe('#1556 follow-up — value sample buffer', () => {
   function dataset(rows: readonly Record<string, unknown>[], toolName = 'odoo_execute') {
     const store = createDatasetStore({ classify: createShapeClassifier({}), buildDigest, turnId: 't' });
@@ -337,6 +373,23 @@ describe('#1556 follow-up — maskedFieldPreview', () => {
     assert.equal(shapeMask('Büro 42-B, Köln'), '•••• ••-•, ••••');
     assert.deepEqual(maskedPreview(['a', 'b', 'c', 'd', 'e', 'f']).length, 5);
     assert.deepEqual(maskedPreview(['ab', 'c'], 1), ['••']);
+  });
+
+  it('is an allowlist: only whitespace and & - . , / ( ) \' : + survive, one • per code point', () => {
+    assert.equal(shapeMask("a&b-c.d,e/f(g)h'i:j+k"), "•&•-•.•,•/•(•)•'•:•+•");
+    assert.equal(shapeMask('a\tb\nc'), '•\t•\n•');
+    // Circled and full-width letters, CJK, symbols.
+    assert.equal(shapeMask('ⒶⓑⒸ'), '•••');
+    assert.equal(shapeMask('Ａｂ'), '••');
+    assert.equal(shapeMask('東京 支店'), '•• ••');
+    assert.equal(shapeMask('€5 % # @ _ ! ? * = ~'), '•• • • • • • • • • •');
+    // Astral code points: one • each, never a lone surrogate.
+    assert.equal(shapeMask('🇩🇪 GmbH'), '•• ••••');
+    assert.equal(shapeMask('👩‍💻'), '•••', 'a ZWJ sequence is three code points');
+    assert.equal(shapeMask('𝐀𝐁'), '••');
+    for (const out of ['🇩🇪', '👩‍💻', '𝐀', 'Ⓐ', '東']) {
+      assert.ok(/^[•\s&\-.,/()':+]*$/u.test(shapeMask(out)), out);
+    }
   });
 
   it('the service preview never contains a letter of the sample', async () => {

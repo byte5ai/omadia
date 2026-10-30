@@ -45,6 +45,8 @@ const PERSON_MODEL_LIST = [
   'hr.payslip.line',
   'hr.payslip.run',
   'hr.timesheet',
+  // Timesheet lines are one person's logged hours.
+  'account.analytic.line',
   'hr.appraisal',
   'hr.departure.wizard',
   'resource.resource',
@@ -56,8 +58,11 @@ const PERSON_MODEL_LIST = [
   'mail.mail',
   'mail.activity',
   'mail.notification',
+  'mail.channel',
   'mail.channel.member',
   'mail.channel.partner',
+  // A chat channel's display name is often a direct chat's participants.
+  'discuss.channel',
   'discuss.channel.member',
   'mail.guest',
   'bus.presence',
@@ -105,11 +110,12 @@ const KNOWN_NON_PERSONAL_MODEL_LIST = [
   'account.tax',
   'account.payment.term',
   'account.fiscal.position',
-  'account.analytic.account',
   'account.analytic.plan',
   'res.currency',
   // Projects (structure only — a task can name a person, a stage cannot).
-  'project.project',
+  // `project.project` and `account.analytic.account` are deliberately NOT
+  // here: they are often named after a customer, who may be an individual,
+  // so they go to the schema-only verdict / clarification.
   'project.task.type',
   'project.tags',
   'project.milestone',

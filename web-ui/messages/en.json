@@ -6501,6 +6501,7 @@
       "needs_clarification": "Needs clarification",
       "personal": "Personal",
       "confirmed": "Confirmed",
+      "confirmed_conflict": "Confirmed — needs review",
       "rejected": "Rejected",
       "kept_masked": "Kept masked"
     },
@@ -6532,6 +6533,7 @@
       "name_detector_unavailable": "The name detector was unavailable, so sampled values were not checked for names.",
       "no_relation_info": "No relation information: a text field, or the Odoo connection was unavailable.",
       "changed_since_decision": "Changed since the last decision (new source or relation models).",
+      "confirmed_conflict": "This field is in the list, but it now points to a person model or changed since it was confirmed — review it or remove it.",
       "wildcard_entry": "Already covered by a wildcard entry in non_personal_fields.",
       "sample_clean": "{count, plural, one {# sampled value} other {# sampled values}} showed no personal data.",
       "unknown": "Other reason ({code})."
@@ -6545,6 +6547,7 @@
     },
     "actions": {
       "confirm": "Confirm",
+      "acknowledge": "Confirm again",
       "reject": "Reject",
       "keep_masked": "Keep masked",
       "revert": "Revert",
@@ -6560,6 +6563,7 @@
       "load": "The field list could not be loaded.",
       "stale": "This field changed since the list was loaded. The list has been reloaded — please review it again.",
       "wildcard": "This field is covered by the wildcard entry {entry}. Revert has no effect while that entry exists; change it in the Privacy Guard settings.",
+      "invalidField": "This field name cannot be added to non_personal_fields as a single entry, so it is not offered for a decision.",
       "notFound": "This field no longer exists. The list has been reloaded.",
       "decision": "The decision could not be saved.",
       "preview": "The sample could not be loaded.",

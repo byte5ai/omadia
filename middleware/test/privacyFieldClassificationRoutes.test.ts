@@ -269,6 +269,67 @@ describe('field-classification routes', () => {
     assert.equal(npf(), undefined);
   });
 
+  it('a listed field that points to a person is confirmed_conflict; confirm acknowledges without writing', async () => {
+    harness = await makeHarness({ non_personal_fields: 'odoo_execute:partner_id' });
+    const { id, fingerprint } = await seed(harness.store, 'partner_id', 'res.partner');
+
+    const list = (await (await fetch(harness.baseUrl)).json()) as {
+      items: Array<{ status: string; reasons: Array<{ code: string }> }>;
+      counts: Record<string, number>;
+      newSinceLastVisit: number;
+    };
+    assert.equal(list.items[0]?.status, 'confirmed_conflict');
+    assert.deepEqual(list.items[0]?.reasons.map((r) => r.code), ['confirmed_conflict', 'person_model']);
+    assert.equal(list.counts['confirmed_conflict'], 1);
+    assert.equal(list.newSinceLastVisit, 1);
+
+    const keep = await decide(id, 'keep_masked', fingerprint);
+    assert.equal(keep.status, 409);
+    assert.deepEqual(await keep.json(), { error: 'action_not_allowed', status: 'confirmed_conflict' });
+
+    const ack = await decide(id, 'confirm', fingerprint);
+    assert.equal(ack.status, 200);
+    const { item } = (await ack.json()) as {
+      item: { status: string; reasons: Array<{ code: string }>; decision: { action: string } };
+    };
+    assert.equal(item.status, 'confirmed');
+    assert.deepEqual(item.reasons.map((r) => r.code), ['person_model'], 'the person reason stays visible');
+    assert.equal(item.decision.action, 'confirm');
+    assert.equal(npf(), 'odoo_execute:partner_id');
+    assert.equal(harness.updates.length, 0, 'acknowledging never writes config');
+    assert.equal(harness.audits.length, 1);
+    assert.equal((harness.audits[0]!['before'] as Record<string, unknown>)['status'], 'confirmed_conflict');
+    assert.equal(await harness.store.countOpen().then((c) => c.confirmedConflict), 0);
+  });
+
+  it('revert on confirmed_conflict removes the entry', async () => {
+    harness = await makeHarness({ non_personal_fields: 'odoo_execute:partner_id\nodoo_execute:job_id' });
+    const { id, fingerprint } = await seed(harness.store, 'partner_id', 'res.partner');
+    const res = await decide(id, 'revert', fingerprint);
+    assert.equal(res.status, 200);
+    assert.equal(((await res.json()) as { item: { status: string } }).item.status, 'personal');
+    assert.equal(npf(), 'odoo_execute:job_id');
+  });
+
+  it('refuses (409 invalid_field) and hides a field whose path is not one valid entry', async () => {
+    harness = await makeHarness();
+    for (const path of ['x\n*:partner_id', 'x,partner_id', 'a b', '*']) {
+      // The store itself does not validate: a row from before the check.
+      await harness.store.upsertObservation(observation(path));
+      const row = (await harness.store.list()).find((c) => c.fieldPath === path)!;
+      for (const action of ['confirm', 'reject']) {
+        const res = await decide(row.id, action, row.fingerprint || 'fp');
+        assert.equal(res.status, 409, JSON.stringify(path));
+        assert.deepEqual(await res.json(), { error: 'invalid_field' });
+      }
+    }
+    assert.equal(npf(), undefined);
+    assert.equal(harness.updates.length, 0);
+    assert.equal(harness.audits.length, 0);
+    const list = (await (await fetch(harness.baseUrl)).json()) as { items: unknown[] };
+    assert.deepEqual(list.items, []);
+  });
+
   it('serves the stored masked preview, and triggers a recompute', async () => {
     harness = await makeHarness();
     const { id } = await seed(harness.store, 'department_id', 'hr.department');

@@ -26,6 +26,7 @@ const KNOWN_REASON_CODES = new Set([
   'name_detector_unavailable',
   'no_relation_info',
   'changed_since_decision',
+  'confirmed_conflict',
   'wildcard_entry',
   'sample_clean',
 ]);

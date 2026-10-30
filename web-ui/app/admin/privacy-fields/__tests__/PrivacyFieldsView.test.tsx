@@ -47,6 +47,7 @@ function list(items: FieldClassificationItem[], over: Partial<FieldClassificatio
       needs_clarification: 2,
       personal: 3,
       confirmed: 4,
+      confirmed_conflict: 1,
       rejected: 0,
       kept_masked: 0,
     },
@@ -245,6 +246,63 @@ describe('<PrivacyFieldsView />', () => {
     expect(init?.method).toBe('POST');
   });
 
+  it('a confirmed field in conflict explains why and offers confirm again + revert', async () => {
+    const conflict = item({
+      fieldPath: 'partner_id',
+      relationModels: ['res.partner'],
+      status: 'confirmed_conflict',
+      reasons: [{ code: 'confirmed_conflict' }, { code: 'person_model', models: ['res.partner'] }],
+      configEntry: 'odoo_execute:partner_id',
+    });
+    fetchMock
+      .mockResolvedValueOnce(respond(list([conflict])))
+      .mockResolvedValueOnce(respond({ item: { ...conflict, status: 'confirmed' } }))
+      .mockResolvedValueOnce(respond(list([])));
+    renderWithIntl(<PrivacyFieldsView status="confirmed_conflict" tool={null} />);
+
+    expect(
+      await screen.findByText(
+        'This field is in the list, but it now points to a person model or changed since it was confirmed — review it or remove it.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId('tab-confirmed_conflict')).toHaveTextContent('Confirmed — needs review');
+    expect(screen.getByTestId('tab-confirmed_conflict').getAttribute('aria-current')).toBe('page');
+    const card = screen.getByTestId('field-f1');
+    expect(within(card).getByText('Confirmed — needs review')).toBeInTheDocument();
+    expect(within(card).getByRole('button', { name: 'Revert' })).toBeInTheDocument();
+    expect(within(card).queryByRole('button', { name: 'Keep masked' })).toBeNull();
+
+    fireEvent.click(within(card).getByRole('button', { name: 'Confirm again' }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    expect(JSON.parse(String(call(1).init?.body))).toEqual({ action: 'confirm', fingerprint: 'fp-1' });
+  });
+
+  it('renders the conflict status and reason in German', async () => {
+    fetchMock.mockResolvedValueOnce(
+      respond(list([item({ status: 'confirmed_conflict', reasons: [{ code: 'confirmed_conflict' }] })])),
+    );
+    renderWithIntl(<PrivacyFieldsView status="confirmed_conflict" tool={null} />, { locale: 'de' });
+    expect(
+      await screen.findByText(/verweist aber jetzt auf ein Personenmodell/),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId('tab-confirmed_conflict')).toHaveTextContent('Bestätigt — prüfen');
+    expect(screen.getByRole('button', { name: 'Erneut bestätigen' })).toBeInTheDocument();
+  });
+
+  it('a 409 invalid_field says the field cannot be listed and does not reload', async () => {
+    fetchMock
+      .mockResolvedValueOnce(respond(list([item()])))
+      .mockResolvedValueOnce(respond({ error: 'invalid_field' }, 409));
+    renderWithIntl(<PrivacyFieldsView status="suggested" tool={null} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirm' }));
+
+    expect(
+      await screen.findByText(/cannot be added to non_personal_fields as a single entry/),
+    ).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it('a failed load shows a localized error', async () => {
     fetchMock.mockResolvedValueOnce(respond({ code: 'boom', message: 'db down' }, 500));
     renderWithIntl(<PrivacyFieldsView status="suggested" tool={null} />);
@@ -258,5 +316,12 @@ describe('undoing a decision', () => {
     const { actionsFor } = await import('../_components/FieldCard');
     expect(actionsFor('rejected')).toEqual(['revert']);
     expect(actionsFor('kept_masked')).toEqual(['revert']);
+  });
+
+  it('offers acknowledge (confirm) and revert on a confirmed field in conflict', async () => {
+    const { actionsFor, actionLabelKey } = await import('../_components/FieldCard');
+    expect(actionsFor('confirmed_conflict')).toEqual(['confirm', 'revert']);
+    expect(actionLabelKey('confirmed_conflict', 'confirm')).toBe('actions.acknowledge');
+    expect(actionLabelKey('suggested', 'confirm')).toBe('actions.confirm');
   });
 });

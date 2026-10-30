@@ -88,7 +88,7 @@ describe('#1556 field classification store against a real Postgres', { skip: !pg
     const classified = await store.get(row.id);
     assert.deepEqual(classified?.maskedPreview, ['•••• & ••••']);
     assert.equal(classified?.sampleVerdict?.sampleCount, 3);
-    assert.deepEqual(await store.countOpen(), { needsClarification: 0, suggested: 1 });
+    assert.deepEqual(await store.countOpen(), { needsClarification: 0, suggested: 1, confirmedConflict: 0 });
     assert.equal(await store.lastComputedAt(), '2026-10-30T12:00:00.000Z');
 
     await store.saveDecision(
@@ -99,7 +99,18 @@ describe('#1556 field classification store against a real Postgres', { skip: !pg
     const decided = await store.get(row.id);
     assert.equal(decided?.status, 'rejected');
     assert.equal(decided?.decision?.byEmail, 'a@x');
-    assert.deepEqual(await store.countOpen(), { needsClarification: 0, suggested: 0 });
+    assert.deepEqual(await store.countOpen(), { needsClarification: 0, suggested: 0, confirmedConflict: 0 });
+
+    // The status CHECK admits confirmed_conflict, and it counts as open.
+    await store.saveClassification(row.id, {
+      relationModels: ['res.partner'],
+      status: 'confirmed_conflict',
+      reasons: [{ code: 'confirmed_conflict' }],
+      fingerprint: 'fp2',
+      maskedPreview: [],
+      computedAt: '2026-10-30T14:00:00.000Z',
+    });
+    assert.deepEqual(await store.countOpen(), { needsClarification: 0, suggested: 0, confirmedConflict: 1 });
   });
 
   it('caches model verdicts with a TTL, and remembers visits', async () => {

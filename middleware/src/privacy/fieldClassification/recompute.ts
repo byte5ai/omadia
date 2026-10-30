@@ -25,12 +25,14 @@ import {
   candidateFingerprint,
   classifyBase,
   configCoverage,
+  isValidFieldIdentity,
   resolveStatus,
   type ModelVerdictSummary,
   type SampleVerdictSummary,
 } from './engine.js';
 import { catalogVerdictOf, isPersonModel } from './modelCatalog.js';
 import {
+  MODEL_NAME,
   ODOO_CLIENT_SERVICE_NAME,
   createOdooRelationResolver,
   type FieldRelationInfo,
@@ -65,12 +67,19 @@ function hasLinkKeySegment(path: string): boolean {
   return path.split('.').some((segment) => segment.startsWith('__k_'));
 }
 
-/** Only `odoo_*` tools, no link keys, no `mixed` shapes are candidates. */
+/**
+ * Only `odoo_*` tools, no link keys, no `mixed` shapes are candidates. Tool
+ * names, field paths (Odoo field grammar) and source models (Odoo model
+ * grammar) are raw tool-result data: anything outside the grammar is dropped
+ * here, so the store, the audit log, log lines and — on confirm — the
+ * setting only ever see validated names.
+ */
 export function isCandidateObservation(obs: FieldObservation): boolean {
   return (
     obs.toolName.startsWith(CANDIDATE_TOOL_PREFIX) &&
-    obs.fieldPath.length > 0 &&
+    isValidFieldIdentity(obs.toolName, obs.fieldPath) &&
     !hasLinkKeySegment(obs.fieldPath) &&
+    obs.sourceModels.every((model) => MODEL_NAME.test(model)) &&
     obs.valueShape !== 'mixed'
   );
 }
@@ -100,8 +109,9 @@ async function resolveCandidate(
   log: (msg: string) => void,
 ): Promise<Resolved> {
   const info = await resolver.resolve(candidate.sourceModels, candidate.fieldPath);
-  // Odoo unreachable this pass: keep what the last pass resolved, so a flaky
-  // connection does not flip every decided field to "changed".
+  // Odoo unreachable (or one source model unreadable) this pass: keep what the
+  // last pass resolved, so a flaky connection does not flip every decided
+  // field to "changed".
   const relationModels = info.known ? info.relationModels : candidate.relationModels;
   const fingerprint = candidateFingerprint({
     sourceModels: candidate.sourceModels,
@@ -224,7 +234,10 @@ export async function recomputeFieldClassification(deps: RecomputeDeps): Promise
   const observations = (guard?.takeFieldObservations?.() ?? []).filter(isCandidateObservation);
   for (const obs of observations) await deps.store.upsertObservation(obs);
 
-  const candidates = await deps.store.list();
+  // Rows stored before the grammar check are never classified (or listed).
+  const candidates = (await deps.store.list()).filter((c) =>
+    isValidFieldIdentity(c.toolName, c.fieldPath),
+  );
   const resolver = createOdooRelationResolver(
     deps.serviceRegistry.get<OdooExecuteClient>(ODOO_CLIENT_SERVICE_NAME),
     { log },

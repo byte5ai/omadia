@@ -44,11 +44,14 @@ export interface PrivacyPosture {
   readonly force_guarded: boolean;
   readonly provider_ids: readonly string[];
   readonly name_detector?: NameDetectorPosture | null;
-  /** #1556 follow-up — undecided field-classification candidates an admin
-   *  still has to look at: `needs_clarification` and `suggested`. Both 0
-   *  without Postgres. */
+  /** #1556 follow-up — field-classification candidates an admin still has
+   *  to look at: `fields_needing_clarification` counts `needs_clarification`
+   *  AND `confirmed_conflict` (the latter also alone in
+   *  `fields_confirmed_conflict`), `fields_suggested_open` the open
+   *  suggestions. All 0 without Postgres. */
   readonly fields_needing_clarification?: number;
   readonly fields_suggested_open?: number;
+  readonly fields_confirmed_conflict?: number;
 }
 
 export interface NameDetectorPosture {
@@ -86,6 +89,7 @@ export async function readNameDetectorPosture(serviceRegistry: {
 export interface OpenFieldClassificationCounts {
   readonly needsClarification: number;
   readonly suggested: number;
+  readonly confirmedConflict: number;
 }
 
 /**
@@ -95,14 +99,23 @@ export interface OpenFieldClassificationCounts {
  */
 export async function readOpenFieldClassification(
   count: (() => Promise<OpenFieldClassificationCounts>) | undefined,
-): Promise<{ fields_needing_clarification: number; fields_suggested_open: number }> {
-  const zero = { fields_needing_clarification: 0, fields_suggested_open: 0 };
+): Promise<{
+  fields_needing_clarification: number;
+  fields_suggested_open: number;
+  fields_confirmed_conflict: number;
+}> {
+  const zero = {
+    fields_needing_clarification: 0,
+    fields_suggested_open: 0,
+    fields_confirmed_conflict: 0,
+  };
   if (count === undefined) return zero;
   try {
     const counts = await count();
     return {
-      fields_needing_clarification: counts.needsClarification,
+      fields_needing_clarification: counts.needsClarification + counts.confirmedConflict,
       fields_suggested_open: counts.suggested,
+      fields_confirmed_conflict: counts.confirmedConflict,
     };
   } catch (err) {
     console.warn(

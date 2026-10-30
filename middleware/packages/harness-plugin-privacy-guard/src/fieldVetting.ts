@@ -128,10 +128,25 @@ export async function vetSample(input: VetSampleInput): Promise<FieldSampleVerdi
   };
 }
 
-/** Every letter, digit and combining mark becomes `•`; spaces and
- *  punctuation stay, so the admin sees the value's shape, not the value. */
+/** The only characters a preview keeps besides whitespace. */
+const PREVIEW_KEPT_PUNCTUATION: ReadonlySet<string> = new Set([
+  '&', '-', '.', ',', '/', '(', ')', "'", ':', '+',
+]);
+const WHITESPACE = /^\s$/u;
+
+/**
+ * Allowlist mask: whitespace and the ASCII punctuation `& - . , / ( ) ' : +`
+ * stay; every other code point — letters, digits, symbols, emoji, regional
+ * indicators, circled or full-width letters — becomes one `•`. Iterates by
+ * code point, so a surrogate pair is one `•`. The admin sees the value's
+ * shape, not the value.
+ */
 export function shapeMask(value: string): string {
-  return value.replace(/[\p{L}\p{N}\p{M}]/gu, '•');
+  let out = '';
+  for (const ch of value) {
+    out += WHITESPACE.test(ch) || PREVIEW_KEPT_PUNCTUATION.has(ch) ? ch : '•';
+  }
+  return out;
 }
 
 /** The shape-masked preview of a sample, at most `limit` entries. */

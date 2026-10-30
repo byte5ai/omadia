@@ -40,6 +40,18 @@ export const MAX_SAMPLE_VALUE_CHARS = 500;
 
 const OBSERVED_TOOL_PREFIX = 'odoo_';
 
+/**
+ * Field paths are raw tool-result keys; they end up in the admin page, the
+ * audit log and — on an admin's confirm — in the `non_personal_fields`
+ * setting. Only Odoo field names are recorded (no separators, wildcards,
+ * whitespace or dots), so a key can never smuggle a second entry in.
+ */
+export const FIELD_PATH_GRAMMAR = /^[a-z_][a-z0-9_]*$/u;
+/** Tool names a recorded observation may carry. */
+export const TOOL_NAME_GRAMMAR = /^[a-z0-9_.-]+$/iu;
+/** Odoo model names: dotted lowercase identifiers (same as the kernel's). */
+export const MODEL_NAME_GRAMMAR = /^[a-z_][a-z0-9_]*(\.[a-z0-9_]+)*$/u;
+
 /** The kept candidate shapes — `mixed` is never one. */
 type CandidateShape = Exclude<FieldValueShape, 'mixed'>;
 
@@ -109,24 +121,31 @@ function displayOf(value: unknown): string | undefined {
   return trimmed.length > MAX_SAMPLE_VALUE_CHARS ? trimmed.slice(0, MAX_SAMPLE_VALUE_CHARS) : trimmed;
 }
 
+/** A valid Odoo model name, trimmed — anything else is dropped. */
+function validModel(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const model = value.trim();
+  return MODEL_NAME_GRAMMAR.test(model) ? model : undefined;
+}
+
 /** The Odoo model a dataset was read from: the tool input's `model`, else
- *  an envelope's `model` metadata value. */
+ *  an envelope's `model` metadata value. Invalid model names are dropped. */
 function sourceModelOf(dataset: Dataset): string | undefined {
   const input = dataset.provenance.toolInput;
   if (input !== null && typeof input === 'object' && !Array.isArray(input)) {
-    const model = (input as Record<string, unknown>)['model'];
-    if (typeof model === 'string' && model.trim().length > 0) return model.trim();
+    const model = validModel((input as Record<string, unknown>)['model']);
+    if (model !== undefined) return model;
   }
-  const fromEnvelope = dataset.envelope?.values['model'];
-  if (typeof fromEnvelope === 'string' && fromEnvelope.trim().length > 0) {
-    return fromEnvelope.trim();
-  }
-  return undefined;
+  return validModel(dataset.envelope?.values['model']);
 }
 
 /** True for a tool whose results are observed at all. */
 export function isObservedTool(toolName: string, excludedTools: ReadonlySet<string>): boolean {
-  return toolName.startsWith(OBSERVED_TOOL_PREFIX) && !excludedTools.has(toolName);
+  return (
+    toolName.startsWith(OBSERVED_TOOL_PREFIX) &&
+    TOOL_NAME_GRAMMAR.test(toolName) &&
+    !excludedTools.has(toolName)
+  );
 }
 
 export function createFieldObservationRecorder(opts?: {
@@ -204,7 +223,7 @@ export function createFieldObservationRecorder(opts?: {
       const sourceModel = sourceModelOf(dataset);
       for (const field of dataset.schema.fields) {
         if (field.classification !== 'sensitive-masked') continue;
-        if (isLinkKeyField(field.path)) continue;
+        if (!FIELD_PATH_GRAMMAR.test(field.path) || isLinkKeyField(field.path)) continue;
         const values = dataset.rows.map((row) => row[field.path]);
         const shape = valueShapeOf(values);
         if (shape === undefined || shape === 'mixed') continue;

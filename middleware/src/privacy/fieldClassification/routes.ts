@@ -13,7 +13,11 @@
  * Only `confirm` and `revert` write config: they append / remove exactly one
  * `tool:field` line of the privacy guard's `non_personal_fields`, through the
  * installed-registry update the `PATCH /admin/runtime/installed/:id/config`
- * route uses, serialized per plugin. Every decision writes an audit row
+ * route uses, serialized per plugin. A `confirm` on a field the setting
+ * already covers (`confirmed_conflict`) only acknowledges: it records the
+ * decision on the current fingerprint and leaves the setting untouched. A
+ * field that cannot be written as exactly one entry is refused (409
+ * `invalid_field`). Every decision writes an audit row
  * (`privacy.field_classification`). No response carries a field value.
  */
 
@@ -31,10 +35,12 @@ import type { PluginCatalog } from '../../plugins/manifestLoader.js';
 import {
   DECISION_ACTIONS,
   FIELD_STATUSES,
+  InvalidFieldEntryError,
   appendConfigEntry,
   classifyBase,
   configCoverage,
   configEntryOf,
+  isValidFieldIdentity,
   removeConfigEntry,
   resolveStatus,
   type DecisionAction,
@@ -82,6 +88,8 @@ const ALLOWED_ACTIONS: Readonly<Record<FieldStatus, readonly DecisionAction[]>> 
   needs_clarification: ['confirm', 'reject', 'keep_masked'],
   personal: ['keep_masked'],
   confirmed: ['revert'],
+  // `confirm` acknowledges the conflict without touching the setting.
+  confirmed_conflict: ['confirm', 'revert'],
   rejected: ['revert'],
   kept_masked: ['revert'],
 };
@@ -175,7 +183,21 @@ function visitorKey(req: Request): string {
   return actor.id ?? actor.email ?? req.session?.sub ?? 'admin';
 }
 
-/** Serializes the config read-modify-write per plugin id. */
+/** Statuses an admin still has to look at. */
+function isOpenStatus(status: FieldStatus): boolean {
+  return status === 'suggested' || status === 'needs_clarification' || status === 'confirmed_conflict';
+}
+
+/**
+ * Serializes the config read-modify-write per plugin id.
+ *
+ * Known race (L3, accepted): this lock only orders writes made through THIS
+ * router. A concurrent `PATCH /admin/runtime/installed/:id/config` (the
+ * generic plugin settings form) is not serialized against it, so one of the
+ * two writes can overwrite the other's `non_personal_fields`. Both outcomes
+ * fail safe — a lost append leaves the field masked, a lost removal is
+ * visible on the page as still confirmed — so it is left as is.
+ */
 function createKeyedMutex(): <T>(key: string, fn: () => Promise<T>) => Promise<T> {
   const tails = new Map<string, Promise<unknown>>();
   return async <T>(key: string, fn: () => Promise<T>): Promise<T> => {
@@ -222,10 +244,11 @@ export function createFieldClassificationRoutes(deps: FieldClassificationRouteDe
       let newSinceLastVisit = 0;
       const items: FieldClassificationItem[] = [];
       for (const candidate of candidates) {
+        // A row from before the grammar check is never shown or acted on.
+        if (!isValidFieldIdentity(candidate.toolName, candidate.fieldPath)) continue;
         const shown = liveStatus(candidate, config, verdicts);
         counts[shown.status] += 1;
-        const open = shown.status === 'suggested' || shown.status === 'needs_clarification';
-        if (open && (lastVisit === null || candidate.lastStatusChangeAt > lastVisit)) {
+        if (isOpenStatus(shown.status) && (lastVisit === null || candidate.lastStatusChangeAt > lastVisit)) {
           newSinceLastVisit += 1;
         }
         if (parsed.data.status === undefined || parsed.data.status === shown.status) {
@@ -341,6 +364,10 @@ export function createFieldClassificationRoutes(deps: FieldClassificationRouteDe
         res.status(404).json({ error: 'not_found' });
         return;
       }
+      if (!isValidFieldIdentity(candidate.toolName, candidate.fieldPath)) {
+        res.status(409).json({ error: 'invalid_field' });
+        return;
+      }
       if (candidate.fingerprint !== fingerprint) {
         res.status(409).json({ error: 'stale_fingerprint', fingerprint: candidate.fingerprint });
         return;
@@ -354,8 +381,12 @@ export function createFieldClassificationRoutes(deps: FieldClassificationRouteDe
 
       const actor = auditActorFromRequest(req);
       let configChange: { before: string; after: string; guardId: string } | undefined;
-      if (action === 'confirm') configChange = await writeConfigEntry(candidate, 'append');
-      if (action === 'revert' && shownBefore.status === 'confirmed') {
+      const covered = shownBefore.status === 'confirmed' || shownBefore.status === 'confirmed_conflict';
+      // On a covered field, confirm only acknowledges: decision row, no write.
+      if (action === 'confirm' && !covered) {
+        configChange = await writeConfigEntry(candidate, 'append');
+      }
+      if (action === 'revert' && covered) {
         configChange = await writeConfigEntry(candidate, 'remove');
       }
 
@@ -401,6 +432,10 @@ export function createFieldClassificationRoutes(deps: FieldClassificationRouteDe
     } catch (err) {
       if (err instanceof DecisionConflict) {
         res.status(409).json(err.body);
+        return;
+      }
+      if (err instanceof InvalidFieldEntryError) {
+        res.status(409).json({ error: 'invalid_field' });
         return;
       }
       console.error('[privacy-fields] decision failed:', err);

@@ -50,6 +50,7 @@ async function makeHarness(opts: {
   readonly countOpenFieldClassification?: () => Promise<{
     needsClarification: number;
     suggested: number;
+    confirmedConflict: number;
   }>;
 }): Promise<Harness> {
   const registry = new InMemoryInstalledRegistry();
@@ -172,6 +173,7 @@ describe('GET /privacy-posture (#1507, #1508)', () => {
       name_detector: null,
       fields_needing_clarification: 0,
       fields_suggested_open: 0,
+      fields_confirmed_conflict: 0,
     });
   });
 
@@ -179,11 +181,17 @@ describe('GET /privacy-posture (#1507, #1508)', () => {
     harness = await makeHarness({
       guardInstalled: true,
       servicePublished: true,
-      countOpenFieldClassification: async () => ({ needsClarification: 3, suggested: 2 }),
+      countOpenFieldClassification: async () => ({
+        needsClarification: 3,
+        suggested: 2,
+        confirmedConflict: 1,
+      }),
     });
     const body = await posture();
-    assert.equal(body.fields_needing_clarification, 3);
+    // A confirmed field that now points to a person needs a look too.
+    assert.equal(body.fields_needing_clarification, 4);
     assert.equal(body.fields_suggested_open, 2);
+    assert.equal(body.fields_confirmed_conflict, 1);
   });
 
   it('reports zero open fields when the count fails (table not migrated)', async () => {
@@ -197,6 +205,7 @@ describe('GET /privacy-posture (#1507, #1508)', () => {
     const body = await posture();
     assert.equal(body.fields_needing_clarification, 0);
     assert.equal(body.fields_suggested_open, 0);
+    assert.equal(body.fields_confirmed_conflict, 0);
   });
 
   it('reports the name detector state of the running shield (#1562)', async () => {

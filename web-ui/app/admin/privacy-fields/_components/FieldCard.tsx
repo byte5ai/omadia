@@ -17,13 +17,16 @@ import { formatWhen, modelList, reasonText } from './fieldText';
  * Which decisions the kernel accepts per status (see the field-classification
  * contract). `rejected` / `kept_masked` stay until the candidate changes, then
  * come back as `needs_clarification`; `revert` undoes them (and a
- * confirmation) by hand.
+ * confirmation) by hand. On `confirmed_conflict` (a listed field that now
+ * points to a person model or changed since) `confirm` acknowledges it —
+ * the setting stays as it is — and `revert` removes the entry.
  */
 const ACTIONS_BY_STATUS: Record<FieldClassificationStatus, readonly FieldClassificationAction[]> = {
   suggested: ['confirm', 'reject', 'keep_masked'],
   needs_clarification: ['confirm', 'reject', 'keep_masked'],
   personal: ['keep_masked'],
   confirmed: ['revert'],
+  confirmed_conflict: ['confirm', 'revert'],
   rejected: ['revert'],
   kept_masked: ['revert'],
 };
@@ -32,12 +35,23 @@ export function actionsFor(status: FieldClassificationStatus): readonly FieldCla
   return ACTIONS_BY_STATUS[status] ?? [];
 }
 
+/** The catalog key of an action's button label in a status. */
+export function actionLabelKey(
+  status: FieldClassificationStatus,
+  action: FieldClassificationAction,
+): string {
+  return status === 'confirmed_conflict' && action === 'confirm'
+    ? 'actions.acknowledge'
+    : `actions.${action}`;
+}
+
 /** A message shown on one card after a decision attempt. */
 export type CardNotice =
   | { kind: 'saved'; entry: string }
   | { kind: 'stale' }
   | { kind: 'gone' }
   | { kind: 'wildcard'; entry: string }
+  | { kind: 'invalid' }
   | { kind: 'error'; detail: string | null };
 
 type PreviewState =
@@ -152,7 +166,7 @@ export function FieldCard({
             busyLabel={t('actions.working')}
             onClick={() => onDecide(item, action)}
           >
-            {t(`actions.${action}`)}
+            {t(actionLabelKey(item.status, action))}
           </Button>
         ))}
         <Button
@@ -202,6 +216,8 @@ function NoticeLine({ notice }: { notice: CardNotice }): React.ReactElement {
       return <ErrorLine message={t('errors.notFound')} detail={null} />;
     case 'wildcard':
       return <ErrorLine message={t('errors.wildcard', { entry: notice.entry })} detail={null} />;
+    case 'invalid':
+      return <ErrorLine message={t('errors.invalidField')} detail={null} />;
     case 'error':
       return <ErrorLine message={t('errors.decision')} detail={notice.detail} />;
   }

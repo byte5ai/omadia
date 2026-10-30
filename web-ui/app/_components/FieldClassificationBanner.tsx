@@ -8,14 +8,15 @@ import type { PrivacyPosture } from '../_lib/api';
 export const FIELD_CLASSIFICATION_HREF = '/admin/privacy-fields';
 export const FIELD_CLASSIFICATION_CLARIFY_HREF = `${FIELD_CLASSIFICATION_HREF}?status=needs_clarification`;
 export const FIELD_CLASSIFICATION_SUGGESTED_HREF = `${FIELD_CLASSIFICATION_HREF}?status=suggested`;
+export const FIELD_CLASSIFICATION_CONFLICT_HREF = `${FIELD_CLASSIFICATION_HREF}?status=confirmed_conflict`;
 
 function countOf(value: number | undefined): number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
 }
 
 /**
- * Masked fields no admin has decided yet (needs clarification + open
- * suggestions), from the privacy posture. 0 when the posture is unknown or
+ * Fields an admin has to look at (needs clarification, confirmed fields in
+ * conflict, open suggestions), from the privacy posture. 0 when the posture is unknown or
  * the backend predates the fields — never a guess.
  */
 export function fieldsNeedingClarification(posture: PrivacyPosture | null): number {
@@ -24,12 +25,15 @@ export function fieldsNeedingClarification(posture: PrivacyPosture | null): numb
   );
 }
 
-/** Where the banner and the badge lead: the open clarifications first, the
- *  open suggestions when there are only those. */
+/** Where the banner and the badge lead: the open clarifications first, then
+ *  confirmed fields in conflict, the open suggestions when there are only
+ *  those. `fields_needing_clarification` includes the conflicts. */
 export function fieldClassificationHref(posture: PrivacyPosture | null): string {
-  return countOf(posture?.fields_needing_clarification) > 0
-    ? FIELD_CLASSIFICATION_CLARIFY_HREF
-    : FIELD_CLASSIFICATION_SUGGESTED_HREF;
+  const conflicts = countOf(posture?.fields_confirmed_conflict);
+  const clarify = countOf(posture?.fields_needing_clarification) - conflicts;
+  if (clarify > 0) return FIELD_CLASSIFICATION_CLARIFY_HREF;
+  if (conflicts > 0) return FIELD_CLASSIFICATION_CONFLICT_HREF;
+  return FIELD_CLASSIFICATION_SUGGESTED_HREF;
 }
 
 /**

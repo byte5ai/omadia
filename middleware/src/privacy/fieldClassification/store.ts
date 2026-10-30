@@ -77,6 +77,8 @@ export interface StoredModelVerdict {
 export interface OpenFieldCounts {
   readonly needsClarification: number;
   readonly suggested: number;
+  /** Confirmed fields that now point to a person model or changed since. */
+  readonly confirmedConflict: number;
 }
 
 export interface FieldClassificationStore {
@@ -89,8 +91,8 @@ export interface FieldClassificationStore {
   saveDecision(id: string, decision: CandidateDecision | null, status: FieldStatus): Promise<void>;
   modelVerdicts(models: readonly string[], notBefore: Date): Promise<StoredModelVerdict[]>;
   saveModelVerdicts(verdicts: readonly Omit<StoredModelVerdict, 'decidedAt'>[]): Promise<void>;
-  /** Fields an admin still has to look at, per open status (undecided by
-   *  construction: a decision moves the status away from both). */
+  /** Fields an admin still has to look at, per open status (a decision
+   *  moves the status away from each of them). */
   countOpen(): Promise<OpenFieldCounts>;
   lastComputedAt(): Promise<string | null>;
   lastVisit(actor: string): Promise<string | null>;
@@ -305,12 +307,16 @@ export class PgFieldClassificationStore implements FieldClassificationStore {
   async countOpen(): Promise<OpenFieldCounts> {
     const result = await this.pool.query<{ status: string; n: string }>(
       `SELECT status, COUNT(*)::text AS n FROM privacy_field_candidates
-        WHERE status IN ('needs_clarification', 'suggested')
+        WHERE status IN ('needs_clarification', 'suggested', 'confirmed_conflict')
         GROUP BY status`,
     );
     const of = (status: string): number =>
       Number(result.rows.find((r) => r.status === status)?.n ?? 0);
-    return { needsClarification: of('needs_clarification'), suggested: of('suggested') };
+    return {
+      needsClarification: of('needs_clarification'),
+      suggested: of('suggested'),
+      confirmedConflict: of('confirmed_conflict'),
+    };
   }
 
   async lastComputedAt(): Promise<string | null> {
@@ -452,6 +458,7 @@ export class InMemoryFieldClassificationStore implements FieldClassificationStor
     return {
       needsClarification: rows.filter((r) => r.status === 'needs_clarification').length,
       suggested: rows.filter((r) => r.status === 'suggested').length,
+      confirmedConflict: rows.filter((r) => r.status === 'confirmed_conflict').length,
     };
   }
 

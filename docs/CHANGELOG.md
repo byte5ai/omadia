@@ -87,13 +87,18 @@ added automatically, and every field stays masked until then.
   only. Any detector hit makes a field personal, a near-miss or conflicting
   targets "needs clarification".
 - **Review page `/admin/privacy-fields`.** Grouped by tool with statuses
-  suggested / needs clarification / personal / confirmed / rejected / kept
-  masked, reasons, masked sample, and confirm / reject / keep masked / revert.
+  suggested / needs clarification / personal / confirmed / confirmed — needs
+  review (a listed field that now points to a person model or changed since)
+  / rejected / kept masked, reasons, masked sample, and confirm / reject /
+  keep masked / revert. Only Odoo field, tool and model names become
+  candidates; an entry that would not parse back to exactly one
+  `tool:field` is refused.
   Confirm appends `tool:field` to the setting; every decision is an audit row
   (`privacy.field_classification`). Manual edits of the setting are audited
   too now (`plugin.privacy_change`).
 - **Notification.** The privacy posture reports `fields_needing_clarification`
-  and `fields_suggested_open`; a banner on the dashboard and `/admin` and a nav
+  (including confirmed fields in conflict), `fields_suggested_open` and
+  `fields_confirmed_conflict`; a banner on the dashboard and `/admin` and a nav
   badge point to the page. Informational only.
 - **Recompute** on plugin activation/deactivation, at boot, every 6 h and on
   demand — never per chat turn.

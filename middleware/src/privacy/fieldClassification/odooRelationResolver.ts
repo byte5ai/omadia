@@ -42,7 +42,7 @@ export interface OdooFieldMeta {
 
 /** What one field resolves to across all its source models. */
 export interface FieldRelationInfo {
-  /** True when at least one source model's schema was read. */
+  /** True only when EVERY source model's schema was read. */
   readonly known: boolean;
   /** Distinct relation targets, sorted. Empty for a non-relational field. */
   readonly relationModels: readonly string[];
@@ -59,10 +59,12 @@ export interface OdooRelationResolver {
   resolve(sourceModels: readonly string[], fieldPath: string): Promise<FieldRelationInfo>;
 }
 
+const UNKNOWN_RELATION: FieldRelationInfo = { known: false, relationModels: [], fieldDocs: [] };
+
 const RELATIONAL_TYPES: ReadonlySet<string> = new Set(['many2one', 'one2many', 'many2many']);
 
 /** Odoo model names: dotted lowercase identifiers. Anything else is not sent. */
-const MODEL_NAME = /^[a-z_][a-z0-9_]*(\.[a-z0-9_]+)*$/u;
+export const MODEL_NAME = /^[a-z_][a-z0-9_]*(\.[a-z0-9_]+)*$/u;
 
 function asString(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
@@ -127,13 +129,13 @@ export function createOdooRelationResolver(
     sourceModels: readonly string[],
     fieldPath: string,
   ): Promise<FieldRelationInfo> {
-    let known = false;
     const relations = new Set<string>();
     const fieldDocs: { relation: string; label?: string; help?: string }[] = [];
     for (const model of sourceModels) {
       const fields = await fieldsOf(model);
-      if (fields === undefined) continue;
-      known = true;
+      // One unreadable source model makes the whole field unknown: a partial
+      // answer could miss the one source whose field points to a person.
+      if (fields === undefined) return UNKNOWN_RELATION;
       const meta = fields.get(fieldPath);
       if (meta?.relation === undefined) continue;
       if (meta.type !== undefined && !RELATIONAL_TYPES.has(meta.type)) continue;
@@ -144,7 +146,8 @@ export function createOdooRelationResolver(
         ...(meta.help !== undefined ? { help: meta.help } : {}),
       });
     }
-    return { known, relationModels: [...relations].sort(), fieldDocs };
+    if (sourceModels.length === 0) return UNKNOWN_RELATION;
+    return { known: true, relationModels: [...relations].sort(), fieldDocs };
   }
 
   return { fieldsOf, resolve };

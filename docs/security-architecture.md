@@ -2112,14 +2112,26 @@ activation, at boot, every 6 h and on demand (never per chat turn), resolves
 relation targets with Odoo `fields_get` only (`odooRelationResolver.ts`, the
 one method it may call through `odoo.client`, pinned by a test), and
 classifies (`engine.ts`): a person-model target (`modelCatalog.ts`) is
-`personal` and is never sent to a model; a C0/deny-list or C1 hit in the
+`personal` and is never sent to a model, and so is a field without relation
+information read from a person model (`name` of `res.partner`); one
+unreadable source model makes the whole relation unknown, never a partial
+answer; a C0/deny-list or C1 hit in the
 vetted sample (`fieldVetting.ts`, inside the plugin) is `personal`; a near-miss
 or conflicting targets is "needs clarification"; an unknown model goes to
 Haiku with its schema only (`v4/modelClassifier.ts`). What leaves the plugin
-is the verdict and a preview with every letter and digit replaced by `•`. An
-admin confirms on `/admin/privacy-fields`, which appends exactly `tool:field`
-under a per-plugin lock and writes an audit row; until then the field stays
-masked. The banner and nav badge are informational.
+is the verdict and an allowlist-masked preview: only whitespace and
+`& - . , / ( ) ' : +` survive, every other code point (letters, digits,
+symbols, emoji, flags) becomes one `•`. Field paths are raw result keys, so
+only Odoo field names (`^[a-z_][a-z0-9_]*$`), tool names
+(`^[a-z0-9_.-]+$`) and Odoo model names are recorded (guard and kernel), and
+`configEntryOf` refuses anything that does not parse back to exactly one
+tool-specific entry (409 `invalid_field`) — a key like `x\n*:partner_id`
+can never add a wildcard entry. An admin confirms on `/admin/privacy-fields`,
+which appends exactly `tool:field` under a per-plugin lock and writes an
+audit row; until then the field stays masked. A listed field that now points
+to a person model, or whose source/relation models changed since the confirm,
+is `confirmed_conflict` and counts as open until the admin removes it or
+confirms again (which records the decision and leaves the setting as is). The banner and nav badge are informational.
 
 These tool results skip the digest:
 

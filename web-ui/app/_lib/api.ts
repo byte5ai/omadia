@@ -926,12 +926,16 @@ export interface PrivacyPosture {
    */
   name_detector?: PrivacyNameDetector | null;
   /**
-   * #1556 follow-up — undecided `needs_clarification` fields. Optional: an
-   * older backend omits it, and the UI then shows no banner and no nav badge.
+   * #1556 follow-up — fields an admin has to look at: `needs_clarification`
+   * plus `confirmed_conflict` (a listed field that now points to a person
+   * model or changed since it was confirmed). Optional: an older backend
+   * omits it, and the UI then shows no banner and no nav badge.
    */
   fields_needing_clarification?: number;
   /** Undecided `suggested` fields (same optionality). */
   fields_suggested_open?: number;
+  /** The `confirmed_conflict` part of `fields_needing_clarification`. */
+  fields_confirmed_conflict?: number;
 }
 
 /** #1562 — the Privacy Guard's C1 (GLiNER sidecar) name detector. */
@@ -964,6 +968,7 @@ export const FIELD_CLASSIFICATION_STATUSES = [
   'needs_clarification',
   'personal',
   'confirmed',
+  'confirmed_conflict',
   'rejected',
   'kept_masked',
 ] as const;
