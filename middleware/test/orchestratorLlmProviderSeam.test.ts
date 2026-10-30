@@ -559,3 +559,28 @@ test('toLlmRequest does not clamp a class ref without a provider hint', () => {
     dispose();
   }
 });
+
+test('toLlmRequest carries a 1-hour breakpoint TTL into cacheHints.ttl', () => {
+  const long = { type: 'ephemeral', ttl: '1h' };
+  const params: AnthropicParams = {
+    model: 'claude-opus-5-5',
+    max_tokens: 64,
+    system: [
+      { type: 'text', text: 'stable', cache_control: long },
+      { type: 'text', text: 'date' },
+    ],
+    tools: [{ name: 't', description: 'T', input_schema: { type: 'object' }, cache_control: long }],
+    messages: [{ role: 'user', content: 'Hi' }],
+  };
+  assert.deepEqual(toLlmRequest(params).cacheHints, { tools: true, ttl: '1h' });
+
+  const shortOnly: AnthropicParams = {
+    ...params,
+    system: [{ type: 'text', text: 'stable', cache_control: { type: 'ephemeral' } }],
+    tools: [{ name: 't', description: 'T', input_schema: { type: 'object' }, cache_control: { type: 'ephemeral' } }],
+  };
+  assert.deepEqual(toLlmRequest(shortOnly).cacheHints, { tools: true }, 'the 5-minute default stays unchanged');
+
+  const systemOnlyLong: AnthropicParams = { ...params, tools: [] };
+  assert.deepEqual(toLlmRequest(systemOnlyLong).cacheHints, { ttl: '1h' });
+});
