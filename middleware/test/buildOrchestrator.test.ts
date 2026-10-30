@@ -432,6 +432,15 @@ test('a claude-cli agent records its turns like an in-process turn (#1391)', asy
 
   const { recordTurn } = installedRecordHooks(built.bundle.agent);
   assert.ok(recordTurn, 'the claude-cli branch must install a turn recorder');
+  // The web client creates the chat (its PUT on create) before the first turn;
+  // the mirror only appends to it, never creates one (#1637).
+  await built.bundle.chatSessionStore.save({
+    id: 'sess-1391',
+    title: 'Neuer Chat',
+    createdAt: 0,
+    updatedAt: 0,
+    messages: [],
+  });
   const record = await recordTurn(
     { userMessage: 'Merk dir: Release-Freeze ab Freitag.', sessionScope: 'sess-1391', userId: 'u-1' },
     {
@@ -479,7 +488,8 @@ test('a claude-cli agent records its turns like an in-process turn (#1391)', asy
     await memoryStore.readFile(transcripts[0]!.virtualPath),
     /Release-Freeze ab Freitag/,
   );
-  // The chat-session mirror is the other half of the session log.
+  // The chat-session mirror is the other half of the session log — appended to
+  // the chat the client created above.
   const mirrored = await built.bundle.chatSessionStore.get('sess-1391');
   assert.deepEqual(
     mirrored?.messages.map((m) => [m.role, m.content]),
