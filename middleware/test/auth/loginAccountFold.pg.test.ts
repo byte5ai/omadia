@@ -46,7 +46,6 @@ import { createAuthRouter } from '../../src/routes/auth.js';
 import { invoke, type InvokeResult } from '../_helpers/httpInvoke.js';
 import { probePgTest } from '../_helpers/pgTestDb.js';
 import { accountSpellings } from './accountSpellings.js';
-import { until } from './loginHarness.js';
 
 const { url: PG_URL, reachable: pgAvailable } = await probePgTest({
   label: 'loginAccountFold',
@@ -253,23 +252,44 @@ describe('sign-in account identities against a real Postgres', { skip: !pgAvaila
     const app = authApp();
 
     // Hold the provider's users-table read until the reset has committed.
+    // The test waits on the hold itself, not on event-loop turns: the read is
+    // a real Postgres round trip, which no fixed number of turns outlasts.
     const read = store.findByEmailWithHash.bind(store);
     let held = false;
     let resume: () => void = () => undefined;
+    let signalHeld: () => void = () => undefined;
+    const holding = new Promise<void>((r) => {
+      signalHeld = r;
+    });
     store.findByEmailWithHash = async (provider: string, email: string) => {
       const row = await read(provider, email);
       if (!held) {
         held = true;
-        await new Promise<void>((r) => {
+        const released = new Promise<void>((r) => {
           resume = r;
         });
+        signalHeld();
+        await released;
       }
       return row;
     };
     let raced: InvokeResult;
     try {
       const racing = login(app, ADMIN, oldPassword);
-      await until(() => held);
+      // A sign-in that settles without ever reading the row fails here
+      // instead of hanging on `holding`; once held, `await racing` below
+      // is what surfaces its outcome.
+      await Promise.race([
+        holding,
+        racing.then(
+          (res) => {
+            if (!held) assert.fail(`the sign-in settled (${String(res.status)}) before its read was held`);
+          },
+          (err: unknown) => {
+            if (!held) throw err;
+          },
+        ),
+      ]);
       await store.update(id, { passwordHash: await hashPassword(newPassword) });
       resume();
       raced = await racing;
