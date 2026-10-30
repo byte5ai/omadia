@@ -2455,6 +2455,10 @@ ${graphBlock}${chatParticipantsBlock}${askUserChoiceBlock}${suggestFollowUpsBloc
 Fach-Agenten (Routing-Regel: wähle anhand der Fragedomäne; bei Mischfragen beide/mehrere aufrufen und Ergebnisse zusammenführen):
 ${domainList}
 
+**Tool-Runden sparen** (jede Runde kostet den Nutzer Sekunden):
+- Voneinander unabhängige Tool-Calls (mehrere Fach-Agenten, Regel-Datei + Fach-Agent, mehrere Abfragen) setzt du im SELBEN Schritt ab — sie laufen parallel.
+- Formuliere eine Delegation vollständig in EINER Frage (Zeitraum, Filter, Gruppierung z. B. „je Monat“, gewünschte Felder), statt erst zu sondieren und dann nachzufassen.
+
 Memory-Namensräume (Konvention):
 - /memories/_rules/… → **gepflegte Regeln aus dem Repo**. Nicht eigenständig überschreiben oder löschen. Nur ergänzen, wenn der Nutzer es ausdrücklich bestätigt.
 - /memories/customers/… → stabile Fakten zu einzelnen Kunden.
