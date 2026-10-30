@@ -32,6 +32,7 @@ import type {
   PrivacyPromptOrigin,
   PrivacyStructuredPayloadRequest,
   StructuredPayloadEntry,
+  PrivacyFieldSampleService,
   PrivacyGuardService,
   PrivacyPromptMaskRequest,
   PrivacyPromptMaskResult,
@@ -398,7 +399,21 @@ function datasetProvenanceOf(
   };
 }
 
-export function createPrivacyGuardService(deps?: {
+/** What `createPrivacyGuardServices` builds over ONE shared state. */
+export interface PrivacyGuardServices {
+  /** The plugin-facing `privacyRedact` service. */
+  readonly service: PrivacyGuardService;
+  /** The kernel-only `privacyFieldSamples` service: real buffered values of
+   *  masked fields, for the audited admin preview. */
+  readonly fieldSamples: PrivacyFieldSampleService;
+}
+
+/** The plugin-facing service alone (tests, hosts that wire it by hand). */
+export function createPrivacyGuardService(deps?: PrivacyGuardServiceDeps): PrivacyGuardService {
+  return createPrivacyGuardServices(deps).service;
+}
+
+export interface PrivacyGuardServiceDeps {
   /**
    * Host-LLM accessor (`ctx.llm.complete`) for Slice-2 schema-level PII
    * classification. Absent ⇒ no classifier runs and intern behaves
@@ -447,7 +462,9 @@ export function createPrivacyGuardService(deps?: {
    * configured (`c1CacheScope`).
    */
   readonly c1NearMissDetector?: PromptPiiDetector;
-}): PrivacyGuardService {
+}
+
+export function createPrivacyGuardServices(deps?: PrivacyGuardServiceDeps): PrivacyGuardServices {
   // One turn-scoped Dataset Store per turn, minted lazily on the first
   // `internToolResultV4` and dropped by `finalizeTurn`.
   const stores = new Map<string, DatasetStore>();
@@ -991,7 +1008,7 @@ export function createPrivacyGuardService(deps?: {
     };
   }
 
-  return {
+  const service: PrivacyGuardService = {
     async internToolResultV4(
       request: PrivacyToolResultV4Request,
     ): Promise<PrivacyToolResultV4Result> {
@@ -1653,4 +1670,5 @@ export function createPrivacyGuardService(deps?: {
       };
     },
   };
+  return { service, fieldSamples: fieldClassification.fieldSamples };
 }

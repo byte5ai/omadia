@@ -43,6 +43,13 @@ export const DATASET_SOURCE = 'dataset';
 export const DATASET_TOOL = 'query_dataset';
 /** The scope of a source whose results name no model. */
 export const NO_SCOPE = '-';
+/**
+ * The scope of a result whose model is contradictory (the tool's input names
+ * one model, the result envelope another). The SCOPE grammar never accepts
+ * it, so no scoped entry can match such rows and nothing is recorded for
+ * them; legacy entries still apply as before.
+ */
+export const CONFLICTING_SCOPE = '!';
 
 /**
  * Where a dataset's rows came from: the tool, and the model / dataset its
@@ -80,8 +87,10 @@ const NAME = /^[^\s:;,/]+$/u;
 /** A model (`hr.employee`, `x_custom.region`), a dataset uuid, or `-`. */
 export const SCOPE_GRAMMAR = /^(?:-|[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)*|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/iu;
 /** A scoped field: an Odoo field, a JSON key or a CSV header. Inner spaces
- *  are fine ("Abteilung Name"), separators and line breaks are not. */
-export const SCOPED_FIELD_GRAMMAR = /^[^\s:;,/](?:[^\n\r:;,/]{0,198}[^\s:;,/])?$/u;
+ *  are fine ("Abteilung Name"), separators and line breaks are not, nor are
+ *  invisible format characters (`\p{Cf}`: zero-width spaces, bidi overrides)
+ *  — an entry must read as what it matches. */
+export const SCOPED_FIELD_GRAMMAR = /^(?!.*\p{Cf})[^\s:;,/](?:[^\n\r:;,/]{0,198}[^\s:;,/])?$/u;
 
 function parseItem(text: string): NonPersonalFieldEntry | undefined {
   const at = text.indexOf(':');
@@ -122,6 +131,8 @@ export function parseNonPersonalFields(raw: string | undefined): ParsedNonPerson
 /** The scoped entry text for a source + field; `undefined` when the parts
  *  cannot form one entry that parses back to exactly them. */
 export function formatScopedEntry(source: FieldSource, path: string): string | undefined {
+  // A tool literally named `dataset` would write an entry for uploads.
+  if (source.tool === DATASET_SOURCE) return undefined;
   const head = source.tool === DATASET_TOOL ? DATASET_SOURCE : source.tool;
   const text = `${head}:${source.scope}/${path}`;
   const parsed = parseNonPersonalFields(text);

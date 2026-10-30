@@ -21,13 +21,18 @@
  * tools, uploads read via `query_dataset`. Never a candidate: `sub-agent`
  * narration, canvas producers (the caller's `excludedTools`), `v4_*` verbs,
  * `__k_` link keys, envelope metadata, fields an operator rule already
- * cleared (they are not masked), mixed-shape fields, and any (tool, scope,
- * path) that cannot form exactly one scoped `non_personal_fields` entry.
+ * cleared (they are not masked), mixed-shape fields, any (tool, scope, path)
+ * that cannot form exactly one scoped `non_personal_fields` entry, a path
+ * that is itself a value (an e-mail-keyed map, a person as a CSV header —
+ * `valueLikeFieldName.ts`), and the `key` / `value` / `groups` fields of a
+ * grouped `query_dataset` result (`{ groups: [{ key, value }] }` — the keys
+ * are the grouped column's VALUES, not a column).
  */
 
 import type { FieldKey, FieldObservation, FieldValueShape } from '@omadia/plugin-api';
 
-import { formatScopedEntry } from './nonPersonalFields.js';
+import { DATASET_TOOL, formatScopedEntry } from './nonPersonalFields.js';
+import { isValueLikeFieldName } from './valueLikeFieldName.js';
 import { isLinkKeyField } from './v4/verbs/predicate.js';
 import { scopeOf } from './v4/datasetStore.js';
 import type { Dataset } from './v4/types.js';
@@ -47,6 +52,9 @@ export const MAX_SAMPLE_VALUE_CHARS = 500;
 
 /** The Privacy Shield's own verbs — their rows come from observed sources. */
 const VERB_TOOL_PREFIX = 'v4_';
+
+/** The fields of a grouped `query_dataset` result: never a dataset column. */
+const DATASET_GROUP_FIELDS: ReadonlySet<string> = new Set(['key', 'value', 'groups']);
 
 /** Tool names a recorded observation may carry. */
 export const TOOL_NAME_GRAMMAR = /^[a-z0-9_.-]+$/iu;
@@ -124,12 +132,16 @@ export function isObservedTool(toolName: string, excludedTools: ReadonlySet<stri
   );
 }
 
-/** True when (tool, scope, path) may be recorded: not a link key, and it
- *  forms exactly one scoped entry (the scoped-field grammar: a CSV header
+/** True when (tool, scope, path) may be recorded: not a link key, not a
+ *  grouped dataset result's `key`/`value`/`groups`, not a value used as a
+ *  key, and it forms exactly one scoped entry (the scoped-field grammar: a CSV header
  *  with inner spaces is fine; no line break, `:`, `;`, `,`, `/`, no `__k_`),
  *  so a key can never smuggle a second entry into the setting. */
 export function isRecordableField(field: FieldKey): boolean {
   if (field.fieldPath.startsWith('__k_') || isLinkKeyField(field.fieldPath)) return false;
+  if (field.toolName === DATASET_TOOL && DATASET_GROUP_FIELDS.has(field.fieldPath)) return false;
+  // A key that is a value (an e-mail, a person's name) is never observed.
+  if (isValueLikeFieldName(field.fieldPath)) return false;
   return formatScopedEntry({ tool: field.toolName, scope: field.scope }, field.fieldPath) !== undefined;
 }
 

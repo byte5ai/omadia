@@ -6531,6 +6531,7 @@
       "name_near_miss": "Die Namenserkennung hat Beinahe-Treffer für Namen in Stichprobenwerten gefunden.",
       "name_detector_unavailable": "Die Namenserkennung war nicht verfügbar (oder es gab keine Stichprobe), daher wird das Feld erst vorgeschlagen, wenn seine Werte auf Namen geprüft sind.",
       "no_relation_info": "Keine Relationsinformation (ein Textfeld, eine Quelle ohne Relations-Metadaten, oder Odoo war nicht erreichbar) und noch keine Schema-Prüfung dieser Quelle.",
+      "no_scope": "Diese Quelle nennt kein Modell, ein Eintrag gälte also für jeden Aufruf dieses Tools — egal, was er liefert. Das Feld wird nie vorgeschlagen; entscheide selbst.",
       "changed_since_decision": "Seit der letzten Entscheidung geändert (neue Relationsmodelle oder Werteform).",
       "confirmed_conflict": "Dieses Feld steht in der Liste, verweist aber jetzt auf ein Personenmodell oder hat sich seit der Bestätigung geändert — bitte prüfen oder entfernen.",
       "sample_clean": "{count, plural, one {# Stichprobenwert zeigte} other {# Stichprobenwerte zeigten}} keine personenbezogenen Daten.",
@@ -6574,11 +6575,12 @@
     "scope": {
       "model": "Modell {model}",
       "dataset": "Datensatz {id}",
-      "none": "Kein Modell"
+      "none": "Jeder Aufruf dieses Tools"
     },
     "legacyNote": "Freigegeben durch den Alt-Eintrag {entry}, der für alle Modelle dieser Quelle gilt.",
     "sampleMaskedHeading": "Maskierte Stichprobe (keine aktuellen Werte gepuffert)",
     "sampleAdminNote": "Nur für Admins sichtbar. Das Öffnen dieser Ansicht wird protokolliert.",
+    "sampleDatasetNote": "Hochgeladene Datensätze zeigen nur maskierte Stichproben — die Zeilen gehören der Person, die sie hochgeladen hat.",
     "legacy": {
       "tab": "Alt-Einträge",
       "open": "Alt-Einträge prüfen",
@@ -6589,9 +6591,11 @@
       "appliesToAll": "Alt-Eintrag — gilt für alle Modelle",
       "coversHeading": "{count, plural, one {Deckt # gesehenes Feld ab} other {Deckt # gesehene Felder ab}}",
       "coversNone": "Deckt bisher kein gesehenes Feld ab. Umwandeln entfernt den Eintrag.",
+      "personalCover": "wirkt personenbezogen — nicht umgewandelt, danach maskiert",
       "convert": "In modellbezogene Einträge umwandeln",
       "converted": "{entry} umgewandelt: {count, plural, =0 {kein modellbezogener Eintrag hinzugefügt} one {# modellbezogener Eintrag hinzugefügt} other {# modellbezogene Einträge hinzugefügt}}.",
       "skipped": "{count, plural, one {# Feld konnte} other {# Felder konnten}} nicht als modellbezogener Eintrag geschrieben werden und {count, plural, one {bleibt} other {bleiben}} maskiert.",
+      "skippedPersonal": "{count, plural, one {# Feld wirkt} other {# Felder wirken}} personenbezogen und {count, plural, one {wurde} other {wurden}} nicht umgewandelt. {count, plural, one {Es ist} other {Sie sind}} jetzt maskiert — entscheide auf der Feldklassifizierungs-Seite:",
       "conflicts": "{count, plural, one {# Feld muss} other {# Felder müssen}} noch geprüft werden: Es verweist auf ein Personenmodell oder hat sich seit der Bestätigung geändert.",
       "errors": {
         "load": "Die Alt-Einträge konnten nicht geladen werden.",

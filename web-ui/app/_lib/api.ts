@@ -1069,6 +1069,9 @@ export interface FieldClassificationPreview {
   samples: string[];
   /** Shape-masked strings (no letter or digit), the fallback. */
   maskedSamples: string[];
+  /** Why no real value is shown at all: an uploaded dataset's rows belong
+   *  to the uploading user (`owner_scoped_dataset`). `null` otherwise. */
+  samplesWithheld: 'owner_scoped_dataset' | null;
 }
 
 /** The field's sample: real values (audited) plus the masked fallback. */
@@ -1078,6 +1081,7 @@ export async function previewFieldClassification(id: string): Promise<FieldClass
   return {
     samples: expectArray<string>(body.samples ?? [], path, 'samples'),
     maskedSamples: expectArray<string>(body.maskedSamples ?? [], path, 'maskedSamples'),
+    samplesWithheld: body.samplesWithheld === 'owner_scoped_dataset' ? 'owner_scoped_dataset' : null,
   };
 }
 
@@ -1088,6 +1092,9 @@ export interface LegacyCoveredField {
   scope: string;
   fieldPath: string;
   configEntry: string;
+  /** The classifier rates the field personal: a conversion does not write
+   *  its scoped entry — it is masked afterwards. */
+  personal: boolean;
 }
 
 /** A legacy `non_personal_fields` entry — it applies to every model. */
@@ -1102,7 +1109,7 @@ export async function listLegacyFieldEntries(): Promise<{ entries: LegacyFieldEn
   return {
     entries: expectArray<LegacyFieldEntry>(body.entries, path, 'entries').map((e) => ({
       ...e,
-      covers: Array.isArray(e.covers) ? e.covers : [],
+      covers: (Array.isArray(e.covers) ? e.covers : []).map((c) => ({ ...c, personal: c.personal === true })),
     })),
   };
 }
@@ -1113,6 +1120,8 @@ export interface LegacyConversionResult {
   added: string[];
   /** Covered fields that could not be written as one scoped entry. */
   skipped: { toolName: string; scope: string; fieldPath: string }[];
+  /** Covered fields rated personal: not converted, masked from now on. */
+  skippedPersonal: LegacyCoveredField[];
   /** Ids of covered fields that stay `confirmed_conflict` (not acknowledged). */
   conflicts: string[];
 }
@@ -1130,6 +1139,7 @@ export async function convertLegacyFieldEntry(entry: string): Promise<LegacyConv
     entry: body.entry ?? entry,
     added: Array.isArray(body.added) ? body.added : [],
     skipped: Array.isArray(body.skipped) ? body.skipped : [],
+    skippedPersonal: Array.isArray(body.skippedPersonal) ? body.skippedPersonal : [],
     conflicts: Array.isArray(body.conflicts) ? body.conflicts : [],
   };
 }

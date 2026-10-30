@@ -200,7 +200,11 @@ export function FieldCard({
       </div>
 
       {preview.kind === 'shown' ? (
-        <SamplePanel samples={preview.samples} maskedSamples={preview.maskedSamples} />
+        <SamplePanel
+          samples={preview.samples}
+          maskedSamples={preview.maskedSamples}
+          samplesWithheld={preview.samplesWithheld}
+        />
       ) : preview.kind === 'error' ? (
         <ErrorLine message={t('errors.preview')} detail={preview.detail} />
       ) : null}
@@ -251,13 +255,18 @@ export function ErrorLine({
   );
 }
 
-/** Real values (admins only, the view is audited) with the masked fallback. */
-function SamplePanel({ samples, maskedSamples }: FieldClassificationPreview): React.ReactElement {
+/** Real values (admins only, the view is audited) with the masked fallback;
+ *  masked only for an uploaded dataset (its rows belong to the uploader). */
+function SamplePanel({
+  samples,
+  maskedSamples,
+  samplesWithheld,
+}: FieldClassificationPreview): React.ReactElement {
   const t = useTranslations('adminPrivacyFields');
   return (
     <div className="mt-3" data-testid="field-sample">
       <p className="text-xs font-semibold text-[color:var(--fg-muted)]" data-testid="field-sample-note">
-        {t('sampleAdminNote')}
+        {samplesWithheld === 'owner_scoped_dataset' ? t('sampleDatasetNote') : t('sampleAdminNote')}
       </p>
       {samples.length > 0 ? (
         <>

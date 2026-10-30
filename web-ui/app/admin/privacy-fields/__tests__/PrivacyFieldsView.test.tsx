@@ -285,7 +285,7 @@ describe('<PrivacyFieldsView />', () => {
     expect(within(dataset).getByTestId('field-source')).toHaveTextContent(`query_dataset · Dataset ${DATASET}`);
     expect(within(dataset).getByText(`dataset:${DATASET}/Abteilung`)).toBeInTheDocument();
     const mcp = screen.getByTestId('field-f3');
-    expect(within(mcp).getByTestId('field-source')).toHaveTextContent('mcp_shop · No model');
+    expect(within(mcp).getByTestId('field-source')).toHaveTextContent('mcp_shop · Every call of this tool');
     expect(within(mcp).getByText('Product category')).toBeInTheDocument();
     expect(
       within(mcp).getByText('Cleared by the legacy entry *:category — it applies to all models.'),
@@ -293,6 +293,49 @@ describe('<PrivacyFieldsView />', () => {
     const link = within(mcp).getByRole('link', { name: 'Review legacy entries' });
     expect(link.getAttribute('href')).toBe('/admin/privacy-fields?view=legacy');
     expect(screen.getByTestId('tab-legacy').getAttribute('href')).toBe('/admin/privacy-fields?view=legacy');
+  });
+
+  it('a dataset preview shows masked samples only, with the owner note (en + de)', async () => {
+    for (const [locale, button, note] of [
+      ['en', 'Show sample', 'Uploaded datasets show masked samples only — the rows belong to the uploading user.'],
+      ['de', 'Stichprobe zeigen', 'Hochgeladene Datensätze zeigen nur maskierte Stichproben'],
+    ] as const) {
+      fetchMock.mockReset();
+      fetchMock
+        .mockResolvedValueOnce(
+          respond(list([item({ toolName: 'query_dataset', scope: DATASET, fieldPath: 'Abteilung' })])),
+        )
+        .mockResolvedValueOnce(
+          respond({ samples: [], maskedSamples: ['R••••••• & D••••••••••'], samplesWithheld: 'owner_scoped_dataset' }),
+        );
+      const view = renderWithIntl(<PrivacyFieldsView status="suggested" tool={null} />, { locale });
+      fireEvent.click(await screen.findByRole('button', { name: button }));
+      expect(await screen.findByTestId('field-sample-masked')).toBeInTheDocument();
+      expect(screen.queryByTestId('field-sample-real')).toBeNull();
+      expect(screen.getByTestId('field-sample-note')).toHaveTextContent(note);
+      view.unmount();
+    }
+  });
+
+  it('renders no_scope and the "every call of this tool" scope (en + de)', async () => {
+    const noScope = item({
+      toolName: 'mcp_shop',
+      scope: '-',
+      fieldPath: 'category',
+      configEntry: 'mcp_shop:-/category',
+      status: 'needs_clarification',
+      reasons: [{ code: 'no_scope' }],
+    });
+    fetchMock.mockResolvedValueOnce(respond(list([noScope])));
+    const en = renderWithIntl(<PrivacyFieldsView status="needs_clarification" tool={null} />);
+    expect(await screen.findByText(/an entry would apply to every call of this tool/)).toBeInTheDocument();
+    expect(screen.getByTestId('field-source')).toHaveTextContent('mcp_shop · Every call of this tool');
+    en.unmount();
+
+    fetchMock.mockResolvedValueOnce(respond(list([noScope])));
+    renderWithIntl(<PrivacyFieldsView status="needs_clarification" tool={null} />, { locale: 'de' });
+    expect(await screen.findByText(/ein Eintrag gälte also für jeden Aufruf dieses Tools/)).toBeInTheDocument();
+    expect(screen.getByTestId('field-source')).toHaveTextContent('mcp_shop · Jeder Aufruf dieses Tools');
   });
 
   it('renders name_detector_unavailable in German', async () => {

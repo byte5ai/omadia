@@ -35,6 +35,7 @@ import { KNOWN_NON_PERSONAL_MODELS, PERSON_MODELS, catalogVerdictOf } from '../s
 import {
   createFieldClassificationScheduler,
   isCandidateObservation,
+  modelsNeedingVerdict,
   recomputeFieldClassification,
   type RecomputeDeps,
 } from '../src/privacy/fieldClassification/recompute.js';
@@ -450,8 +451,13 @@ describe('field classification — recompute', () => {
   it('every tool is a candidate source except sub-agent and v4 verbs; no link keys, no mixed shapes', () => {
     assert.equal(isCandidateObservation(obs('department_id', 'hr.employee')), true);
     assert.equal(
-      isCandidateObservation(obs('Abteilung Name', DATASET, { toolName: 'query_dataset', valueShape: 'text' })),
+      isCandidateObservation(obs('Abteilung name', DATASET, { toolName: 'query_dataset', valueShape: 'text' })),
       true,
+    );
+    // Two capitalized words read as a person's name: not a candidate (fail-safe).
+    assert.equal(
+      isCandidateObservation(obs('Abteilung Name', DATASET, { toolName: 'query_dataset', valueShape: 'text' })),
+      false,
     );
     assert.equal(isCandidateObservation(obs('category', '-', { toolName: 'mcp_shop.list' })), true);
     assert.equal(isCandidateObservation(obs('partner_id', 'sale.order', { toolName: 'sub-agent' })), false);
@@ -594,14 +600,15 @@ describe('field classification — recompute', () => {
         reason: '',
       }),
     });
-    h.queue([obs('category', '-', { toolName: 'mcp_shop', valueShape: 'text' })]);
+    const upload = { toolName: 'query_dataset', valueShape: 'text' } as const;
+    h.queue([obs('category', DATASET, upload)]);
     await h.run();
-    assert.equal((await statusOf(h.store, '-', 'category'))?.status, 'suggested');
+    assert.equal((await statusOf(h.store, DATASET, 'category'))?.status, 'suggested');
     answer = false;
-    h.queue([obs('buyer', '-', { toolName: 'mcp_shop', valueShape: 'text' })]);
+    h.queue([obs('buyer', DATASET, upload)]);
     await h.run();
-    assert.equal((await statusOf(h.store, '-', 'buyer'))?.status, 'needs_clarification');
-    assert.equal((await statusOf(h.store, '-', 'category'))?.status, 'needs_clarification');
+    assert.equal((await statusOf(h.store, DATASET, 'buyer'))?.status, 'needs_clarification');
+    assert.equal((await statusOf(h.store, DATASET, 'category'))?.status, 'needs_clarification');
   });
 
   it('a scoped entry confirms only its model; a legacy entry confirms every model', async () => {
@@ -802,5 +809,66 @@ describe('field classification — security review fixes', () => {
     it('link keys are never an entry', () => {
       assert.equal(isValidFieldIdentity(key({ fieldPath: '__k_name' })), false);
     });
+  });
+});
+
+describe('field classification — security review 2', () => {
+  it('a model-less source (scope -) is never suggested: no_scope caps it', () => {
+    const verdicts = new Map([['mcp_shop:-', { verdict: 'non-personal', confidence: 0.95 } as const]]);
+    const noScope = classifyCandidate(
+      input({ toolName: 'mcp_shop', scope: '-', fieldPath: 'category', valueShape: 'text', relationModels: [], modelVerdicts: verdicts }),
+    );
+    assert.equal(noScope.status, 'needs_clarification');
+    assert.deepEqual(codes(noScope), ['haiku_non_personal', 'sample_clean', 'no_scope']);
+    // Known non-personal relation target, clean sample: still capped.
+    const m2o = classifyCandidate(input({ toolName: 'mcp_shop', scope: '-' }));
+    assert.equal(m2o.status, 'needs_clarification');
+    assert.ok(codes(m2o).includes('no_scope'));
+    // Personal stays personal (no no_scope noise); a model scope is unaffected.
+    const personal = classifyCandidate(input({ scope: '-', relationModels: ['res.partner'] }));
+    assert.equal(personal.status, 'personal');
+    assert.ok(!codes(personal).includes('no_scope'));
+    assert.equal(classifyCandidate(input({})).status, 'suggested');
+  });
+
+  it('configEntryOf refuses a tool literally named dataset', () => {
+    assert.throws(() => configEntryOf(key({ toolName: 'dataset', scope: DATASET })), InvalidFieldEntryError);
+    assert.throws(() => configEntryOf(key({ toolName: 'dataset', scope: '-' })), InvalidFieldEntryError);
+    assert.equal(isValidFieldIdentity(key({ toolName: 'dataset' })), false);
+    assert.equal(
+      configEntryOf(key({ toolName: 'query_dataset', scope: DATASET, fieldPath: 'Abteilung' })),
+      `dataset:${DATASET}/Abteilung`,
+    );
+  });
+
+  it('configEntryOf refuses invisible format characters in a field', () => {
+    for (const path of ['name​', 'a‮b', '⁦x', '﻿name']) {
+      assert.throws(() => configEntryOf(key({ fieldPath: path })), InvalidFieldEntryError, JSON.stringify(path));
+    }
+  });
+
+  it('value-like paths are no candidates and never reach the schema model', async () => {
+    for (const path of ['anna.mueller@example.com', 'Anna Müller']) {
+      assert.equal(isCandidateObservation(obs(path, '-', { toolName: 'mcp_dir', valueShape: 'text' })), false, path);
+    }
+    for (const path of ['Abteilung', 'department_id']) {
+      assert.equal(isCandidateObservation(obs(path, '-', { toolName: 'mcp_dir', valueShape: 'text' })), true, path);
+    }
+    const resolved = (path: string, label?: string) => ({
+      candidate: { toolName: 'mcp_dir', scope: '-', fieldPath: path } as never,
+      relationModels: [],
+      fieldDocs: [],
+      fingerprint: 'f',
+      ...(label !== undefined ? { label } : {}),
+    });
+    const requests = modelsNeedingVerdict([
+      resolved('anna.mueller@example.com'),
+      resolved('Anna Müller'),
+      resolved('Abteilung', 'Jonas Weber'),
+      resolved('department_id', 'Department'),
+    ]);
+    assert.deepEqual(requests.map((r) => r.fields), [
+      [{ path: 'Abteilung' }, { path: 'department_id', label: 'Department' }],
+    ]);
   });
 });

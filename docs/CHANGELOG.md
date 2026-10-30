@@ -79,10 +79,16 @@ added automatically, and every field stays masked until then.
   no model — so the same field name in another model (a person model, say)
   stays masked. Legacy entries (`tool:field`, `*:field`, `field`) still work
   and apply to every model; the page lists them under "Legacy entries" and
-  converts one into scoped entries for the fields seen so far.
+  converts one into scoped entries for the fields seen so far — except fields
+  that look personal, which are left out (masked afterwards) and listed for
+  the admin to decide. Only an `odoo_*` tool's input `model` sets the scope;
+  any other tool is scoped by its result envelope's `model` (else `-`), and an
+  input that contradicts the envelope matches no scoped entry.
 - **Observation (privacy guard 0.15.0).** Masked fields of every interned tool
   result (Odoo, plugin and MCP tools, uploads read via `query_dataset`; not
-  sub-agent narration, canvas producers or `v4_*` verbs) are recorded
+  sub-agent narration, canvas producers, `v4_*` verbs, a grouped dataset
+  result's `key` / `value`, or a field name that is itself a value — an
+  e-mail address or a person's name like "Anna Müller") are recorded
   schema-only per tool, scope (Odoo model, dataset id or `-`) and field. A
   bounded in-memory sample (≤ 50 values per field, 24 h, never persisted or
   logged) is vetted with the C0 identity shapes, the deny-list and C1 (also at
@@ -98,14 +104,19 @@ added automatically, and every field stays masked until then.
   schema-only Haiku review per source; unsure means "needs clarification". Any
   detector hit makes a field personal, a near-miss or conflicting targets
   "needs clarification", and without the name detector nothing is suggested.
+  A source that names no model is never suggested: its entry would apply to
+  every call of the tool (reason "applies to every call of this tool").
 - **Review page `/admin/privacy-fields`.** Grouped by tool, each field with its
-  source and model / dataset / "no model", statuses suggested / needs
+  source and model / dataset / "every call of this tool", statuses suggested / needs
   clarification / personal / confirmed / confirmed — needs review (a listed
   field that now points to a person model or changed since) / rejected / kept
   masked, reasons, and confirm / reject / keep masked / revert. The sample
   shows an admin the real values ("Visible to admins only. Opening this view
   is audited.", audit action `privacy.field_preview`, count only), with the
-  masked sample as fallback. An entry that would not parse back to exactly
+  masked sample as fallback; an uploaded dataset shows masked samples only
+  (its rows belong to the uploading user). The real values come from a
+  separate kernel-only service (`privacyFieldSamples`) that no plugin can
+  resolve, and every response of the page's API is `Cache-Control: no-store`. An entry that would not parse back to exactly
   one scoped entry is refused. Every decision and conversion is an audit row
   (`privacy.field_classification`). Manual edits of the setting are audited
   too now (`plugin.privacy_change`).
@@ -121,7 +132,8 @@ added automatically, and every field stays masked until then.
   and `privacy_field_classification_visits`.
 
 `@omadia/plugin-privacy-guard` 0.15.0, `@omadia/plugin-api` 1.49.0
-(`parseLlmJson` moved into plugin-api).
+(`parseLlmJson` moved into plugin-api; `PrivacyFieldSampleService` /
+`PRIVACY_FIELD_SAMPLES_SERVICE_NAME` added).
 
 ### Added — Non-personal fields an operator lets through the Privacy Shield (#1556)
 

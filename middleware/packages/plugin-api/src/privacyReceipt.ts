@@ -1072,11 +1072,7 @@ export interface PrivacyGuardService {
    * spacing kept. At most `limit` entries; empty when nothing is buffered.
    */
   maskedFieldPreview?(field: FieldKey & { readonly limit?: number }): readonly string[];
-  /**
-   * The REAL buffered values of a field, for an admin deciding about it on
-   * the field-classification page (decision Marcel, 2026-10-30). The caller
-   * must restrict it to admins and audit every call; the plugin never logs,
-   * persists or sends these values anywhere. Empty when nothing is buffered.
-   */
-  fieldSampleForAdmin?(field: FieldKey & { readonly limit?: number }): readonly string[];
+  // The REAL buffered values are NOT on this service: every plugin granted
+  // `privacyRedact` could read them. They live on the kernel-only
+  // `PrivacyFieldSampleService` (`PRIVACY_FIELD_SAMPLES_SERVICE_NAME`).
 }

@@ -2043,6 +2043,12 @@ readonly verdict: ModelPersonalVerdict;
 readonly confidence: number;
 readonly reason: string;
 }
+export declare const PRIVACY_FIELD_SAMPLES_SERVICE_NAME = "privacyFieldSamples";
+export interface PrivacyFieldSampleService {
+fieldSampleForAdmin(field: FieldKey & {
+readonly limit?: number;
+}): readonly string[];
+}
 
 // ===== privacyMode.d.ts =====
 export declare const PRIVACY_MODE_CONFIG_KEY = "_privacy_mode";
@@ -2302,9 +2308,6 @@ takeFieldObservations?(): readonly FieldObservation[];
 vetFieldSample?(field: FieldKey): Promise<FieldSampleVerdict>;
 classifyModelsSchemaOnly?(requests: readonly ModelClassificationRequest[]): Promise<readonly ModelClassificationResult[]>;
 maskedFieldPreview?(field: FieldKey & {
-readonly limit?: number;
-}): readonly string[];
-fieldSampleForAdmin?(field: FieldKey & {
 readonly limit?: number;
 }): readonly string[];
 }

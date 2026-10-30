@@ -85,3 +85,28 @@ export interface ModelClassificationResult {
   /** One short sentence, schema-based, no values. */
   readonly reason: string;
 }
+
+/**
+ * Service-registry key of the {@link PrivacyFieldSampleService}. KERNEL-ONLY:
+ * the kernel's service gate refuses it to every plugin, whatever its
+ * manifest declares — the provider publishes it, only the kernel reads it.
+ */
+export const PRIVACY_FIELD_SAMPLES_SERVICE_NAME = 'privacyFieldSamples';
+
+/**
+ * The REAL buffered values of a masked field, for an admin deciding about it
+ * on the field-classification page (decision Marcel, 2026-10-30). Published
+ * by the privacy guard as a service of its own — separate from the
+ * plugin-facing `PrivacyGuardService` — so no plugin that may call the guard
+ * can read values through it. The kernel restricts it to admins and audits
+ * every call that returns values; the provider never logs, persists or sends
+ * these values anywhere.
+ */
+export interface PrivacyFieldSampleService {
+  /**
+   * At most `limit` distinct buffered values of the field (display strings);
+   * empty when nothing is buffered. Empty for an uploaded dataset
+   * (`query_dataset`): its rows belong to the uploading user.
+   */
+  fieldSampleForAdmin(field: FieldKey & { readonly limit?: number }): readonly string[];
+}

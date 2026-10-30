@@ -23,9 +23,15 @@ follow-up).
   — an Odoo model, an uploaded dataset's id, or `-`. Observations, sample
   verdicts and previews are keyed by it.
 - **`PrivacyGuardService`** optional methods `takeFieldObservations`,
-  `vetFieldSample`, `classifyModelsSchemaOnly`, `maskedFieldPreview`, and
-  `fieldSampleForAdmin` — the real buffered values for an admin on the review
-  page; the caller restricts it to admins and audits every call.
+  `vetFieldSample`, `classifyModelsSchemaOnly` and `maskedFieldPreview`.
+- **`PrivacyFieldSampleService`** (`fieldSampleForAdmin`) and
+  **`PRIVACY_FIELD_SAMPLES_SERVICE_NAME`** (`'privacyFieldSamples'`) — the
+  real buffered values for an admin on the review page, published by the
+  privacy guard as a service of its own. Kept OFF `PrivacyGuardService`
+  (security review): every plugin granted `privacyRedact` could have read
+  them. The kernel's service gate refuses the name to every plugin; the
+  kernel restricts it to admins and audits every call that returns values.
+  Empty for an uploaded dataset (`query_dataset`).
 - **`OperatorClearedFieldEntry.scope`** (optional): the model or dataset a
   scoped `non_personal_fields` entry cleared the field for.
 - **`parseLlmJson`** moved here from `@omadia/orchestrator-extras` (which

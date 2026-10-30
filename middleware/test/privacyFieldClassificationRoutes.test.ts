@@ -13,7 +13,11 @@ import type { AddressInfo } from 'node:net';
 
 import express from 'express';
 
-import { PRIVACY_REDACT_SERVICE_NAME, type FieldObservation } from '@omadia/plugin-api';
+import {
+  PRIVACY_FIELD_SAMPLES_SERVICE_NAME,
+  PRIVACY_REDACT_SERVICE_NAME,
+  type FieldObservation,
+} from '@omadia/plugin-api';
 
 import { InMemoryInstalledRegistry } from '../src/plugins/installedRegistry.js';
 import type { PluginCatalog } from '../src/plugins/manifestLoader.js';
@@ -87,7 +91,10 @@ async function seed(
   return { id: row.id, fingerprint };
 }
 
-async function makeHarness(config: Record<string, unknown> = {}): Promise<Harness> {
+async function makeHarness(
+  config: Record<string, unknown> = {},
+  sampleValues: readonly string[] = ['Research & Development', 'Sales'],
+): Promise<Harness> {
   const registry = new InMemoryInstalledRegistry();
   await registry.register({
     id: GUARD_ID,
@@ -129,12 +136,20 @@ async function makeHarness(config: Record<string, unknown> = {}): Promise<Harnes
           (name === PRIVACY_REDACT_SERVICE_NAME
             ? {
                 maskedFieldPreview: () => ['live'],
-                fieldSampleForAdmin: (field: { limit?: number }) => {
-                  sampleCalls.push(field);
-                  return ['Research & Development', 'Sales'];
+                // The plugin-facing service is never asked for real values.
+                fieldSampleForAdmin: () => {
+                  sampleCalls.push('privacyRedact');
+                  return ['WRONG SERVICE'];
                 },
               }
-            : undefined) as T | undefined,
+            : name === PRIVACY_FIELD_SAMPLES_SERVICE_NAME
+              ? {
+                  fieldSampleForAdmin: (field: { limit?: number }) => {
+                    sampleCalls.push(field);
+                    return sampleValues;
+                  },
+                }
+              : undefined) as T | undefined,
       },
       audit: {
         record: async (entry) => {
@@ -295,6 +310,14 @@ describe('field-classification routes', () => {
         ['*:job_id', []],
       ],
     );
+    assert.deepEqual(
+      legacy.entries[0]!.covers.map((c) => [c.configEntry, (c as { personal?: boolean }).personal]),
+      [
+        ['odoo_execute:crm.lead/department_id', true],
+        ['odoo_execute:hr.employee/department_id', false],
+        ['odoo_execute:sale.order/department_id', false],
+      ],
+    );
 
     const res = await fetch(`${harness.baseUrl}/legacy/convert`, {
       method: 'POST',
@@ -302,13 +325,27 @@ describe('field-classification routes', () => {
       body: JSON.stringify({ entry: 'odoo_execute:department_id' }),
     });
     assert.equal(res.status, 200);
-    const body = (await res.json()) as { added: string[]; skipped: unknown[]; conflicts: string[] };
-    assert.equal(body.added.length, 3);
+    const body = (await res.json()) as {
+      added: string[];
+      skipped: unknown[];
+      skippedPersonal: Array<{ id: string; configEntry: string; personal: boolean }>;
+      conflicts: string[];
+    };
+    assert.deepEqual(body.added, [
+      'odoo_execute:hr.employee/department_id',
+      'odoo_execute:sale.order/department_id',
+    ]);
     assert.deepEqual(body.skipped, []);
-    assert.deepEqual(body.conflicts, [person.id], 'a person field stays a visible conflict');
+    // A field whose base status is personal is NOT converted: it is masked
+    // afterwards and listed for the admin to decide.
+    assert.deepEqual(
+      body.skippedPersonal.map((f) => [f.id, f.configEntry, f.personal]),
+      [[person.id, 'odoo_execute:crm.lead/department_id', true]],
+    );
+    assert.deepEqual(body.conflicts, []);
     assert.equal(
       npf(),
-      'odoo_execute:crm.lead/department_id\nodoo_execute:hr.employee/department_id\nodoo_execute:sale.order/department_id\n*:job_id',
+      'odoo_execute:hr.employee/department_id\nodoo_execute:sale.order/department_id\n*:job_id',
     );
     assert.equal(harness.updates.length, 1);
     assert.equal(harness.audits.length, 1);
@@ -319,14 +356,17 @@ describe('field-classification routes', () => {
 
     assert.equal((await harness.store.get(emp.id))?.decision?.action, 'confirm');
     assert.equal((await harness.store.get(sale.id))?.decision?.action, 'confirm');
-    assert.equal((await harness.store.get(person.id))?.decision, null, 'a conflict is not acknowledged');
+    assert.equal((await harness.store.get(person.id))?.decision, null, 'a skipped field gets no decision');
     const list = (await (await fetch(harness.baseUrl)).json()) as {
       items: Array<{ id: string; status: string; reasons: Array<{ code: string }> }>;
     };
     const empItem = list.items.find((i) => i.id === emp.id)!;
     assert.equal(empItem.status, 'confirmed');
     assert.equal(empItem.reasons.some((r) => r.code === 'legacy_entry'), false);
-    assert.equal(list.items.find((i) => i.id === person.id)?.status, 'confirmed_conflict');
+    assert.equal(list.items.find((i) => i.id === person.id)?.status, 'personal', 'masked now');
+    assert.deepEqual((audit['after'] as Record<string, unknown>)['skippedPersonal'], [
+      'odoo_execute:crm.lead/department_id',
+    ]);
 
     const again = await fetch(`${harness.baseUrl}/legacy/convert`, {
       method: 'POST',
@@ -449,9 +489,11 @@ describe('field-classification routes', () => {
     const { id } = await seed(harness.store, 'department_id', 'hr.department');
     const preview = await fetch(`${harness.baseUrl}/${id}/preview`);
     assert.equal(preview.status, 200);
+    assert.equal(preview.headers.get('cache-control'), 'no-store');
     assert.deepEqual(await preview.json(), {
       samples: ['Research & Development', 'Sales'],
       maskedSamples: ['•••••••• & •••••••••••'],
+      samplesWithheld: null,
     });
     assert.deepEqual(harness.sampleCalls, [
       { toolName: 'odoo_execute', scope: 'hr.employee', fieldPath: 'department_id', limit: 10 },
@@ -467,6 +509,51 @@ describe('field-classification routes', () => {
 
     assert.equal((await fetch(`${harness.baseUrl}/not-a-uuid/preview`)).status, 400);
     assert.equal((await fetch(`${harness.baseUrl}/${DATASET}/preview`)).status, 404);
+  });
+
+  it('an uploaded dataset shows masked samples only — no real value, no audit row', async () => {
+    harness = await makeHarness();
+    const { id } = await seed(harness.store, 'Abteilung', undefined, DATASET, 'query_dataset');
+    const preview = await fetch(`${harness.baseUrl}/${id}/preview`);
+    assert.equal(preview.status, 200);
+    assert.deepEqual(await preview.json(), {
+      samples: [],
+      maskedSamples: ['•••••••• & •••••••••••'],
+      samplesWithheld: 'owner_scoped_dataset',
+    });
+    assert.deepEqual(harness.sampleCalls, [], 'the sample service is not even asked');
+    assert.deepEqual(harness.audits, []);
+  });
+
+  it('no real values returned → no audit row', async () => {
+    harness = await makeHarness({}, []);
+    const { id } = await seed(harness.store, 'department_id', 'hr.department');
+    const body = (await (await fetch(`${harness.baseUrl}/${id}/preview`)).json()) as { samples: string[] };
+    assert.deepEqual(body.samples, []);
+    assert.equal(harness.sampleCalls.length, 1);
+    assert.deepEqual(harness.audits, []);
+  });
+
+  it('every response is Cache-Control: no-store, errors included', async () => {
+    harness = await makeHarness();
+    const { id, fingerprint } = await seed(harness.store, 'department_id', 'hr.department');
+    const responses = [
+      await fetch(harness.baseUrl),
+      await fetch(`${harness.baseUrl}?status=bogus`),
+      await fetch(`${harness.baseUrl}/legacy`),
+      await fetch(`${harness.baseUrl}/${id}/preview`),
+      await fetch(`${harness.baseUrl}/not-a-uuid/preview`),
+      await decide(id, 'reject', fingerprint),
+      await fetch(`${harness.baseUrl}/recompute`, { method: 'POST' }),
+      await fetch(`${harness.baseUrl}/legacy/convert`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ entry: 'nope' }),
+      }),
+    ];
+    for (const res of responses) {
+      assert.equal(res.headers.get('cache-control'), 'no-store', `${res.url} ${String(res.status)}`);
+    }
   });
 
   it('triggers a recompute', async () => {

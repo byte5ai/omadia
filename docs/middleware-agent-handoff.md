@@ -2049,18 +2049,34 @@ Receipt: `operatorClearedFields`, Karte „Per Admin-Regel im Klartext". Test:
 
 **Guard:** `fieldObservations.ts`, `fieldVetting.ts`, `v4/modelClassifier.ts`;
 Service-Methoden `takeFieldObservations`, `vetFieldSample`,
-`classifyModelsSchemaOnly`, `maskedFieldPreview`, neu `fieldSampleForAdmin`
-(echte Werte, nur für die Admin-Vorschau). Schlüssel ist `FieldKey`
+`classifyModelsSchemaOnly`, `maskedFieldPreview`. Die echten Werte für die
+Admin-Vorschau liegen NICHT auf `privacyRedact`, sondern auf einem eigenen
+Service `privacyFieldSamples` (`PrivacyFieldSampleService.fieldSampleForAdmin`,
+`PRIVACY_FIELD_SAMPLES_SERVICE_NAME`; `createPrivacyGuardServices` liefert
+beide); `KERNEL_ONLY_SERVICE_NAMES` in `pluginServiceGrants.ts` verweigert ihn
+jedem Plugin (auch mit `requires:` und dem Provider selbst), nur der Kernel
+liest ihn über die Service-Registry. Für `query_dataset` liefert er nie
+Werte. Schlüssel ist `FieldKey`
 (`toolName`, `scope`, `fieldPath`); eine Beobachtung je Tool + Scope + Feld
-(`sourceModels` entfällt). Scope: Odoo-Modell (Tool-Input/Envelope `model`),
-Datensatz-ID bei `query_dataset`, sonst `-` (`scopeOf` in
-`v4/datasetStore.ts`). Kandidaten kommen aus allen internierten Tools außer
-`sub-agent`, Canvas-Produzenten und `v4_*`.
+(`sourceModels` entfällt). Scope (`scopeOf` in `v4/datasetStore.ts`):
+`odoo_*`-Tools Input-`model`, sonst Envelope-`model`; andere Tools nur
+Envelope-`model` (ihr Input zählt nicht); Input und Envelope widersprechen
+sich → `!` (`CONFLICTING_SCOPE`, passt auf keinen scoped Eintrag, Alt-Einträge
+gelten weiter); Datensatz-ID bei `query_dataset`; sonst `-`. Kandidaten kommen
+aus allen internierten Tools außer `sub-agent`, Canvas-Produzenten und `v4_*`;
+nie `key`/`value`/`groups` eines gruppierten `query_dataset`-Ergebnisses, nie
+Pfade, die selbst Werte sind (C0-Identitätstreffer oder Personennamen-Form
+„Anna Müller", `valueLikeFieldName.ts` — derselbe Filter im Kernel vor jeder
+Haiku-Anfrage, auch für Labels). Achtung: auch CSV-Kopfzeilen aus zwei
+großgeschriebenen Wörtern („Cost Center") gelten als Name und bleiben
+maskiert (fail-safe).
 
 **Einträge:** scoped `<tool>:<scope>/<feld>` bzw. `dataset:<uuid>/<spalte>`
 (`formatScopedEntry`, `entryCovers`, `nonPersonalFieldRule(entries)(sources,
 path)` in `nonPersonalFields.ts`); Alt-Einträge `tool:feld`, `*:feld`, `feld`
-gelten weiter für alle Modelle.
+gelten weiter für alle Modelle. Ein Tool namens `dataset` ergibt nie einen
+Eintrag (`formatScopedEntry`/`configEntryOf`), `SCOPED_FIELD_GRAMMAR` lehnt
+`\p{Cf}` (Zero-Width, Bidi-Overrides) ab.
 
 **Kernel:** `src/privacy/fieldClassification/` (`modelCatalog`,
 `odooRelationResolver` — nur `fields_get` auf dem Scope-Modell —, `engine`,
@@ -2071,19 +2087,24 @@ Relationsinformation (Textfelder, Datensätze, MCP-/Plugin-Tools) bekommen eine
 Schema-Anfrage an Haiku je Quelle `<tool>:<scope>` (Pfade + Labels), gecacht
 in `privacy_model_verdicts`, neu gefragt bei geänderter Feldmenge. Ohne C1
 (Namenserkennung) nie `suggested`, sondern `needs_clarification` mit
-`name_detector_unavailable`. Fingerprint = Scope + Relationsmodelle + Form;
+`name_detector_unavailable`; Scope `-` ebenfalls höchstens
+`needs_clarification` mit `no_scope` (UI: „jeder Aufruf dieses Tools"). Fingerprint = Scope + Relationsmodelle + Form;
 Drift und `confirmed_conflict` je Tool + Scope + Feld.
 
-**Routen (requireAuth, jede Session ist Admin):**
+**Routen (requireAuth, jede Session ist Admin; jede Antwort
+`Cache-Control: no-store`):**
 `GET /api/v1/admin/privacy/field-classification`, `POST /:id/decision`
 (confirm/reject/keep_masked/revert, Fingerprint, 409), `GET /:id/preview`
-(`{ samples, maskedSamples }`: echte Werte aus `fieldSampleForAdmin`, max. 10,
-plus maskierter Fallback; schreibt Audit `privacy.field_preview` mit Ziel
-`privacy-field:<tool>:<scope>/<pfad>` und nur `{count}`; ohne Audit-Log keine
-echten Werte), `GET /legacy` (Alt-Einträge + abgedeckte Felder),
+(`{ samples, maskedSamples, samplesWithheld }`: echte Werte aus
+`privacyFieldSamples`, max. 10, plus maskierter Fallback; Audit
+`privacy.field_preview` mit Ziel `privacy-field:<tool>:<scope>/<pfad>` und nur
+`{count}`, nur wenn echte Werte rausgehen; ohne Audit-Log keine echten Werte;
+`query_dataset` nur maskiert, `samplesWithheld: "owner_scoped_dataset"`),
+`GET /legacy` (Alt-Einträge + abgedeckte Felder mit `personal`),
 `POST /legacy/convert {entry}` (ersetzt genau diesen Alt-Eintrag durch scoped
-Einträge der gesehenen Felder, Plugin-Lock, Audit mit Setting vorher/nachher,
-409 `legacy_entry_not_found`), `POST /recompute`. Confirm schreibt den scoped
+Einträge der gesehenen Felder — Felder mit Basis-Status `personal` nicht, die
+kommen als `skippedPersonal` zurück und sind danach maskiert; Plugin-Lock,
+Audit mit Setting vorher/nachher, 409 `legacy_entry_not_found`), `POST /recompute`. Confirm schreibt den scoped
 Eintrag (409 `invalid_field`, wenn er nicht genau einen Eintrag ergibt);
 `revert` entfernt ihn, bei Abdeckung durch einen Alt-Eintrag 409
 `covered_by_legacy`; nur über einen Alt-Eintrag abgedeckt → `confirmed` mit

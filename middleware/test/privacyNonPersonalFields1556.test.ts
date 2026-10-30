@@ -245,8 +245,16 @@ describe('contract v2 — scoped entries', () => {
   ];
   const rowsOf = (datasetId: string) => ({ query: 'query_rows', dataset_id: datasetId });
 
-  it('scopeOf: tool input model, envelope model, dataset id, else -', () => {
+  it('scopeOf: Odoo input model, envelope model, dataset id, else -', () => {
     assert.equal(scopeOf('odoo_execute', { model: 'HR.Employee' }), 'hr.employee');
+    // A non-Odoo tool's input model is not trusted; its envelope model is.
+    assert.equal(scopeOf('mcp_lookup', { model: 'res.country' }), '-');
+    assert.equal(scopeOf('mcp_lookup', {}, { model: 'res.country' }), 'res.country');
+    // Input and envelope disagree (after normalization): `!`, matched by no
+    // scoped entry.
+    assert.equal(scopeOf('odoo_execute', { model: 'res.country' }, { model: 'res.partner' }), '!');
+    assert.equal(scopeOf('mcp_lookup', { model: 'res.country' }, { model: 'res.partner' }), '!');
+    assert.equal(scopeOf('odoo_execute', { model: 'Res.Partner' }, { model: 'res.partner ' }), 'res.partner');
     assert.equal(scopeOf('odoo_query', {}, { model: 'res.partner' }), 'res.partner');
     assert.equal(scopeOf('odoo_execute', { model: 'hr employee; x' }), '-');
     assert.equal(scopeOf('mcp_tool', { query: 'x' }), '-');
@@ -297,8 +305,34 @@ describe('contract v2 — scoped entries', () => {
     const { store } = harness('hr_export:-/department_id');
     const plain = store.internToolResult('hr_export', EMPLOYEES);
     assert.equal(field(store, plain.datasetId, 'department_id').classification, 'safe-cleartext');
-    const scoped = store.internToolResult('hr_export', EMPLOYEES, EMPLOYEE_INPUT);
+    const scoped = store.internToolResult('hr_export', { model: 'hr.employee', records: EMPLOYEES });
     assert.equal(field(store, scoped.datasetId, 'department_id').classification, 'sensitive-masked');
+  });
+
+  it('a generic tool cannot borrow a confirmed scope through its input model', () => {
+    const { store } = harness('mcp_lookup:res.country/name');
+    // Person rows, asked for with `model: "res.country"`: the input is not
+    // trusted, the scope is `-`, the country entry does not apply.
+    const people = store.internToolResult('mcp_lookup', EMPLOYEES, { model: 'res.country' });
+    assert.deepEqual(store.get(people.datasetId)!.provenance.sources, [{ tool: 'mcp_lookup', scope: '-' }]);
+    assert.equal(field(store, people.datasetId, 'name').classification, 'sensitive-masked');
+    // Its envelope saying res.country is what scopes it.
+    const countries = [{ name: 'Germany' }, { name: 'France' }, { name: 'Spain' }];
+    const env = store.internToolResult('mcp_lookup', { model: 'res.country', records: countries });
+    assert.equal(field(store, env.datasetId, 'name').classification, 'safe-cleartext');
+  });
+
+  it('contradicting input and envelope models clear no scoped entry; legacy still applies', () => {
+    const env = { model: 'res.partner', count: 4, records: EMPLOYEES };
+    for (const config of ['odoo_query:res.country/name', 'odoo_query:res.partner/name', 'odoo_query:!/name']) {
+      const { store } = harness(config);
+      const { datasetId } = store.internToolResult('odoo_query', env, { model: 'res.country' });
+      assert.deepEqual(store.get(datasetId)!.provenance.sources, [{ tool: 'odoo_query', scope: '!' }]);
+      assert.equal(field(store, datasetId, 'name').classification, 'sensitive-masked', config);
+    }
+    const legacy = harness('odoo_query:department_id');
+    const { datasetId } = legacy.store.internToolResult('odoo_query', env, { model: 'res.country' });
+    assert.equal(field(legacy.store, datasetId, 'department_id').classification, 'safe-cleartext');
   });
 
   it('legacy tool:field and *:field still clear every model', () => {
@@ -356,6 +390,18 @@ describe('contract v2 — scoped entries', () => {
     assert.equal(formatScopedEntry({ tool: 'x', scope: '-' }, 'x;y'), undefined);
     assert.equal(formatScopedEntry({ tool: 'x', scope: '-' }, '__k_Name'), undefined);
     assert.equal(formatScopedEntry({ tool: '*', scope: 'm' }, 'f'), undefined);
+    // A tool literally named `dataset` would write an entry for uploads.
+    assert.equal(formatScopedEntry({ tool: 'dataset', scope: DS }, 'f'), undefined);
+    assert.equal(formatScopedEntry({ tool: 'x', scope: '!' }, 'f'), undefined);
+    // Invisible format characters (zero-width, bidi overrides) are refused.
+    for (const path of ['name\u200b', 'a\u202eb', '\u2066x', 'x\u200d y', '\ufeffname']) {
+      assert.equal(formatScopedEntry({ tool: 'x', scope: '-' }, path), undefined, JSON.stringify(path));
+    }
+    // (A leading/trailing U+FEFF is whitespace to `trim()`: the parser reads
+    // `x:-/\ufeffname` as `name`, which is what it shows.)
+    for (const path of ['name\u200bx', 'a\u202eb', '\u2066x', 'x\u200d y']) {
+      assert.deepEqual(parseNonPersonalFields(`x:-/${path}`).entries, [], JSON.stringify(path));
+    }
     assert.deepEqual(parseNonPersonalFields('*:m/f'), { entries: [], rejected: ['*:m/f'] });
   });
 

@@ -6531,6 +6531,7 @@
       "name_near_miss": "The name detector found near-matches for names in sampled values.",
       "name_detector_unavailable": "The name detector was unavailable (or no values were sampled), so the field is not suggested until its values are checked for names.",
       "no_relation_info": "No relation information (a text field, a source without relation metadata, or Odoo was unavailable) and no schema review of this source yet.",
+      "no_scope": "This source names no model, so an entry would apply to every call of this tool — whatever it returns. It is never suggested; decide yourself.",
       "changed_since_decision": "Changed since the last decision (new relation models or value shape).",
       "confirmed_conflict": "This field is in the list, but it now points to a person model or changed since it was confirmed — review it or remove it.",
       "sample_clean": "{count, plural, one {# sampled value} other {# sampled values}} showed no personal data.",
@@ -6574,11 +6575,12 @@
     "scope": {
       "model": "Model {model}",
       "dataset": "Dataset {id}",
-      "none": "No model"
+      "none": "Every call of this tool"
     },
     "legacyNote": "Cleared by the legacy entry {entry}, which applies to all models of this source.",
     "sampleMaskedHeading": "Masked sample (no current values buffered)",
     "sampleAdminNote": "Visible to admins only. Opening this view is audited.",
+    "sampleDatasetNote": "Uploaded datasets show masked samples only — the rows belong to the uploading user.",
     "legacy": {
       "tab": "Legacy entries",
       "open": "Review legacy entries",
@@ -6589,9 +6591,11 @@
       "appliesToAll": "Legacy — applies to all models",
       "coversHeading": "{count, plural, one {Covers # seen field} other {Covers # seen fields}}",
       "coversNone": "Covers no field seen so far. Converting removes the entry.",
+      "personalCover": "looks personal — not converted, masked afterwards",
       "convert": "Convert to model-scoped entries",
       "converted": "{entry} converted: {count, plural, =0 {no scoped entry added} one {# scoped entry added} other {# scoped entries added}}.",
       "skipped": "{count, plural, one {# field} other {# fields}} could not be written as a scoped entry and stay masked.",
+      "skippedPersonal": "{count, plural, one {# field looks} other {# fields look}} personal and {count, plural, one {was} other {were}} not converted. {count, plural, one {It is} other {They are}} masked now — decide on the field classification page:",
       "conflicts": "{count, plural, one {# field still needs} other {# fields still need}} review: it points to a person model or changed since it was confirmed.",
       "errors": {
         "load": "The legacy entries could not be loaded.",

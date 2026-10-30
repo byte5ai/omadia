@@ -2097,8 +2097,13 @@ model, a person model included, stays masked. Legacy entries (`tool:field`,
 field clears as type `label` (`nonPersonalFields.ts`, `shapeClassifier.ts`),
 and its display texts reach the model in clear, when every value is text or an
 Odoo pair `[id, "label"]`. The scope of a result is fixed at intern time
-(`scopeOf` in `v4/datasetStore.ts`: the tool input's or envelope's `model`,
-the dataset id of a `query_dataset` row read, else `-`). A dataset derived by
+(`scopeOf` in `v4/datasetStore.ts`: for an `odoo_*` tool the input's `model`,
+else the result envelope's `model`; the dataset id of a `query_dataset` row
+read; else `-`). A non-Odoo tool's input `model` is not trusted — a generic
+tool taking `model: "res.country"` and returning people must not borrow a
+confirmed `tool:res.country/name` — and an input `model` that contradicts the
+envelope's gives the scope `!`, which the scope grammar never accepts, so no
+scoped entry matches (legacy entries still do). A dataset derived by
 a verb clears it only when the rule covers every source its rows came from
 (`provenance.sources`, tool + scope), so a join or union with an unlisted
 source masks it again. The C0 identity booster still wins (e-mail, IBAN,
@@ -2115,7 +2120,11 @@ the card).
 entries; it never writes one. The privacy guard records masked fields of every
 interned tool result schema-only, one observation per tool + scope + field
 (`fieldObservations.ts`; never `sub-agent`, canvas producers or `v4_*` verbs,
-and only paths that form one scoped entry), and keeps a bounded in-memory value
+never the `key` / `value` / `groups` fields of a grouped `query_dataset`
+result, never a path that is itself a value — the C0 identity check or a
+person-name shape like "Anna Müller", `valueLikeFieldName.ts`; the kernel
+applies the same filter before any Haiku request — and only paths that form
+one scoped entry), and keeps a bounded in-memory value
 sample per field (50 distinct values, 24 h, 200 fields, never persisted or
 logged). The kernel (`src/privacy/fieldClassification/`) drains the
 observations on plugin activation, at boot, every 6 h and on demand (never per
@@ -2136,32 +2145,52 @@ MCP or plugin tool) is judged per SOURCE: one schema-only Haiku request per
 non-personal at ≥ 0.8 confidence is suggested, personal is personal, anything
 else (or no LLM) needs clarification. A field is only ever `suggested` on a
 clean C1 vet: without the name detector (or without a sample) it needs
-clarification (`name_detector_unavailable`). What leaves the plugin for the
+clarification (`name_detector_unavailable`). A field of a source that names no
+model (scope `-`) is never suggested either (`no_scope`): its entry would apply
+to every call of the tool, so the page labels that scope "every call of this
+tool" and leaves the decision to the admin. What leaves the plugin for the
 classification is the verdict and an allowlist-masked preview: only whitespace
 and `& - . , / ( ) ' : +` survive, every other code point (letters, digits,
 symbols, emoji, flags) becomes one `•`. Tool, scope and field are raw result
 data, so only names that `formatScopedEntry` round-trips into exactly one
-scoped entry (and tool names `^[a-z0-9_.-]+$`) are recorded (guard and
-kernel); `configEntryOf` refuses anything else (409 `invalid_field`) — a key
-like `x\n*:partner_id` can never add a second entry. An admin confirms on
+scoped entry (and tool names `^[a-z0-9_.-]+$`, never a tool literally named
+`dataset`, the uploads' source token; field names without invisible format
+characters, `\p{Cf}`) are recorded (guard and kernel); `configEntryOf` refuses
+anything else (409 `invalid_field`) — a key like `x\n*:partner_id` can never
+add a second entry. An admin confirms on
 `/admin/privacy-fields`, which appends exactly the scoped entry under a
 per-plugin lock and writes an audit row; until then the field stays masked.
 A field covered only by a legacy entry shows as confirmed with the note
 "legacy, applies to all models"; revert refuses it (409 `covered_by_legacy`)
 and the page offers `POST …/legacy/convert`, which replaces that one legacy
 line by scoped entries for the fields seen so far (fields it covered that were
-never seen are masked afterwards), under the same lock and with an audit row
+never seen are masked afterwards, and so are fields whose base status is
+`personal`: the response lists them as `skippedPersonal` and the page shows
+them, so the admin decides), under the same lock and with an audit row
 holding the setting before and after. A listed field that now points to a
 person model, or whose relation models changed since the confirm (per tool +
 scope + field), is `confirmed_conflict` and counts as open until the admin
 removes it or confirms again (which records the decision and leaves the
 setting as is). The page's preview shows an admin the field's REAL buffered
-values (`fieldSampleForAdmin`, at most 10) so the decision is about the data,
-not its shape: the route is behind `requireAuth` (every session is an admin
-session), the values are never logged, persisted or sent to an LLM, and each
-open writes an audit row `privacy.field_preview` naming the field and only the
-number of values shown; without an audit log the route returns no real value.
-The banner and nav badge are informational.
+values (at most 10) so the decision is about the data, not its shape. They
+come from a service of their own, `privacyFieldSamples`
+(`PrivacyFieldSampleService.fieldSampleForAdmin`), NOT from the plugin-facing
+`privacyRedact`: the kernel's service gate lists it in
+`KERNEL_ONLY_SERVICE_NAMES` (`pluginServiceGrants.ts`), so no plugin resolves
+or replaces it whatever its manifest declares — the provider included — and
+only the kernel route reads it through the service registry. The route is
+behind `requireAuth` (every session is an admin session); every response of
+the router is `Cache-Control: no-store`; the values are never logged,
+persisted or sent to an LLM; an open that returns real values writes an audit
+row `privacy.field_preview` naming the field and only the number of values
+shown; without an audit log the route returns no real value. An uploaded
+dataset (`query_dataset`) shows masked samples only — its rows are
+owner-scoped and encrypted per owner, so another admin never sees them
+(`samplesWithheld: "owner_scoped_dataset"`, no audit row since nothing real is
+shown). Residual: `provide` is ungated, so a plugin that activates first could
+register `privacyFieldSamples` itself; it would receive field keys (schema)
+and could show fabricated samples, never read real ones. The banner and nav
+badge are informational.
 
 These tool results skip the digest:
 

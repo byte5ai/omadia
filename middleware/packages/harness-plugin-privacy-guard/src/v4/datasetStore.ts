@@ -21,6 +21,7 @@ import { randomUUID } from 'node:crypto';
 import { normalizeDatasetUuid } from '@omadia/plugin-api';
 
 import {
+  CONFLICTING_SCOPE,
   DATASET_TOOL,
   NO_SCOPE,
   SCOPE_GRAMMAR,
@@ -308,6 +309,9 @@ export function parseToolResult(
 // Scope (#1556 follow-up, contract v2)
 // ---------------------------------------------------------------------------
 
+/** Tools whose input `model` names the model their rows belong to. */
+const ODOO_TOOL_PREFIX = 'odoo_';
+
 /** The `query_dataset` operation that returns a dataset's rows. */
 const DATASET_ROWS_QUERY = 'query_rows';
 
@@ -330,8 +334,15 @@ function modelScope(value: unknown): string | undefined {
  *
  *  - `query_dataset` reading rows (`query: "query_rows"`): the input's
  *    `dataset_id`, normalized to the lower-case uuid; else `-`.
- *  - any other tool: the input's string `model`, else the envelope's `model`
- *    metadata value — lower-cased, and only when it matches the scope grammar.
+ *  - an Odoo tool (`odoo_*`): the input's string `model`, else the envelope's
+ *    `model` metadata value — lower-cased, and only when it matches the scope
+ *    grammar.
+ *  - any other tool: the envelope's `model` only. Its INPUT is not trusted —
+ *    a generic tool taking a `model` argument says nothing about what it
+ *    returns, and a confirmed `tool:res.country/name` must not clear person
+ *    rows that tool returned for `model: "res.country"`.
+ *  - an input `model` and an envelope `model` that differ: `!`
+ *    (`CONFLICTING_SCOPE`) — no scoped entry matches, nothing is recorded.
  *  - everything else: `-`.
  */
 export function scopeOf(
@@ -345,7 +356,13 @@ export function scopeOf(
     if (input?.['query'] !== DATASET_ROWS_QUERY || typeof datasetId !== 'string') return NO_SCOPE;
     return normalizeDatasetUuid(datasetId) ?? NO_SCOPE;
   }
-  return modelScope(input?.['model']) ?? modelScope(envelopeValues?.['model']) ?? NO_SCOPE;
+  const fromEnvelope = modelScope(envelopeValues?.['model']);
+  const fromInput = modelScope(input?.['model']);
+  if (fromInput !== undefined && fromEnvelope !== undefined && fromInput !== fromEnvelope) {
+    return CONFLICTING_SCOPE;
+  }
+  const trusted = toolName.startsWith(ODOO_TOOL_PREFIX) ? fromInput : undefined;
+  return trusted ?? fromEnvelope ?? NO_SCOPE;
 }
 
 // ---------------------------------------------------------------------------

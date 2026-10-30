@@ -38,6 +38,8 @@ import {
   type ModelVerdictSummary,
   type SampleVerdictSummary,
 } from './engine.js';
+import { isValueLikeFieldName } from '@omadia/plugin-privacy-guard/dist/valueLikeFieldName.js';
+
 import { catalogVerdictOf, isPersonModel } from './modelCatalog.js';
 import {
   MODEL_NAME,
@@ -94,7 +96,8 @@ function isUsableLabel(label: string | undefined): label is string {
 
 /**
  * Every interned tool's fields are candidates (decision Marcel, 2026-10-30)
- * except a sub-agent's narration, v4 verbs, link keys and `mixed` shapes.
+ * except a sub-agent's narration, v4 verbs, link keys, paths that are values
+ * (`isValueLikeFieldName`) and `mixed` shapes.
  * Tool names, scopes and field paths are raw tool-result data: anything that
  * cannot form exactly one scoped `non_personal_fields` entry is dropped here,
  * so the store, the audit log, log lines and — on confirm — the setting only
@@ -106,6 +109,9 @@ export function isCandidateObservation(obs: FieldObservation): boolean {
     !obs.toolName.startsWith(EXCLUDED_CANDIDATE_TOOL_PREFIX) &&
     isValidFieldIdentity(obs) &&
     !hasLinkKeySegment(obs.fieldPath) &&
+    // A key that is a value (e-mail-keyed map, a person as a CSV header):
+    // the guard does not record it either — defense in depth.
+    !isValueLikeFieldName(obs.fieldPath) &&
     obs.valueShape !== 'mixed'
   );
 }
@@ -221,7 +227,15 @@ function vetoed(r: Resolved): boolean {
 
 type RequestField = ModelClassificationRequest['fields'][number];
 
+/** The label as sent to the schema model: dropped when it is a value. */
+function requestLabel(label: string | undefined): { label: string } | Record<string, never> {
+  return label !== undefined && !isValueLikeFieldName(label) ? { label } : {};
+}
+
 function addField(byKey: Map<string, RequestField[]>, key: string, field: RequestField): void {
+  // Defense in depth: a path that is a value (an e-mail, a person's name)
+  // never reaches the schema model.
+  if (isValueLikeFieldName(field.path)) return;
   const fields = byKey.get(key) ?? [];
   if (!fields.some((f) => f.path === field.path)) fields.push(field);
   byKey.set(key, fields);
@@ -233,7 +247,8 @@ function addField(byKey: Map<string, RequestField[]>, key: string, field: Reques
  *   - unknown relation targets (every target unknown to the catalog);
  *   - sources without relation information — ONE request per source
  *     `<tool>:<scope>` with all its such fields (path + label).
- * Person models are never in the result, and no value ever is.
+ * Person models are never in the result, and no value ever is: a path or
+ * label that is itself a value (`isValueLikeFieldName`) is left out.
  */
 export function modelsNeedingVerdict(resolved: readonly Resolved[]): VerdictRequest[] {
   const byModel = new Map<string, RequestField[]>();
@@ -244,10 +259,7 @@ export function modelsNeedingVerdict(resolved: readonly Resolved[]): VerdictRequ
     const path = r.candidate.fieldPath;
     if (targets.length === 0) {
       if (isPersonModel(r.candidate.scope)) continue;
-      addField(bySource, sourceKeyOf(r.candidate), {
-        path,
-        ...(r.label !== undefined ? { label: r.label } : {}),
-      });
+      addField(bySource, sourceKeyOf(r.candidate), { path, ...requestLabel(r.label) });
       continue;
     }
     if (targets.some(isPersonModel)) continue;
@@ -256,7 +268,7 @@ export function modelsNeedingVerdict(resolved: readonly Resolved[]): VerdictRequ
       const doc = r.fieldDocs.find((d) => d.relation === model);
       addField(byModel, model, {
         path,
-        ...(doc?.label !== undefined ? { label: doc.label } : {}),
+        ...requestLabel(doc?.label),
         ...(doc?.help !== undefined ? { help: doc.help } : {}),
       });
     }

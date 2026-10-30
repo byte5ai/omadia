@@ -12,13 +12,18 @@
  *                        recompute), counts per status, how many changed
  *                        since this admin's last visit
  * POST /:id/decision     confirm | reject | keep_masked | revert
- * GET  /:id/preview      the REAL buffered values (admin only, audited as
- *                        `privacy.field_preview`, never logged) plus the
- *                        stored shape-masked strings as a fallback
+ * GET  /:id/preview      the REAL buffered values (admin only, read from the
+ *                        kernel-only `privacyFieldSamples` service, audited
+ *                        as `privacy.field_preview`, never logged) plus the
+ *                        stored shape-masked strings as a fallback; for an
+ *                        uploaded dataset (`query_dataset`) masked only —
+ *                        its rows belong to the uploading user
  * GET  /legacy           legacy entries (`tool:field`, `*:field`, `field` —
  *                        they apply to every model) and the fields each covers
  * POST /legacy/convert   replace one legacy entry by scoped entries for the
- *                        fields it covers
+ *                        fields it covers — except fields whose base status
+ *                        is personal (`skippedPersonal`): they are masked
+ *                        afterwards and the admin decides about them
  * POST /recompute        run a recompute pass now
  *
  * Only `confirm`, `revert` and `legacy/convert` write config: confirm
@@ -31,16 +36,21 @@
  * be written as exactly one scoped entry is refused (409 `invalid_field`).
  * Every decision and conversion writes an audit row
  * (`privacy.field_classification`). Only the preview response carries field
- * values, and nothing here logs them.
+ * values, and nothing here logs them. Every response is `Cache-Control:
+ * no-store` — the preview's real values must not land in a browser or proxy
+ * cache, and the lists change with every decision.
  */
 
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
 
 import {
+  PRIVACY_FIELD_SAMPLES_SERVICE_NAME,
   PRIVACY_REDACT_SERVICE_NAME,
+  type PrivacyFieldSampleService,
   type PrivacyGuardService,
 } from '@omadia/plugin-api';
+import { DATASET_TOOL } from '@omadia/plugin-privacy-guard/dist/nonPersonalFields.js';
 
 import { auditActorFromRequest, type AdminAuditLog } from '../../auth/adminAuditLog.js';
 import type { InstalledRegistry } from '../../plugins/installedRegistry.js';
@@ -146,6 +156,23 @@ export interface LegacyCoveredField extends CandidateKey {
   readonly id: string;
   /** The scoped entry a conversion writes for this field. */
   readonly configEntry: string;
+  /** The classifier rates the field personal: a conversion does NOT write
+   *  its scoped entry (it is masked afterwards; the admin decides). */
+  readonly personal: boolean;
+}
+
+function coveredField(
+  c: FieldCandidate,
+  verdicts: ReadonlyMap<string, ModelVerdictSummary>,
+): LegacyCoveredField {
+  return {
+    id: c.id,
+    toolName: c.toolName,
+    scope: c.scope,
+    fieldPath: c.fieldPath,
+    configEntry: configEntryOf(c),
+    personal: baseOf(c, verdicts).status === 'personal',
+  };
 }
 
 /** Cached schema verdicts for every relation target and source of
@@ -163,6 +190,21 @@ async function cachedVerdicts(
   return new Map(rows.map((r) => [r.model, { verdict: r.verdict, confidence: r.confidence }]));
 }
 
+/** What the classifier itself says about a stored candidate (no config,
+ *  no decision). */
+function baseOf(
+  candidate: FieldCandidate,
+  verdicts: ReadonlyMap<string, ModelVerdictSummary>,
+): ReturnType<typeof classifyBase> {
+  return classifyBase({
+    ...fieldKeyOf(candidate),
+    valueShape: candidate.valueShape,
+    relationModels: candidate.relationModels,
+    ...(candidate.sampleVerdict !== null ? { sample: candidate.sampleVerdict } : {}),
+    modelVerdicts: verdicts,
+  });
+}
+
 /** The status of a stored candidate under the CURRENT config and decision. */
 export function liveStatus(
   candidate: FieldCandidate,
@@ -170,13 +212,7 @@ export function liveStatus(
   verdicts: ReadonlyMap<string, ModelVerdictSummary>,
   decision: CandidateDecision | null = candidate.decision,
 ): { status: FieldStatus; reasons: readonly FieldReason[] } {
-  const base = classifyBase({
-    ...fieldKeyOf(candidate),
-    valueShape: candidate.valueShape,
-    relationModels: candidate.relationModels,
-    ...(candidate.sampleVerdict !== null ? { sample: candidate.sampleVerdict } : {}),
-    modelVerdicts: verdicts,
-  });
+  const base = baseOf(candidate, verdicts);
   return resolveStatus(base, candidate.fingerprint, configCoverage(rawConfig, candidate), decision);
 }
 
@@ -278,6 +314,14 @@ export function createFieldClassificationRoutes(deps: FieldClassificationRouteDe
     readNonPersonalFieldsConfig(deps.installedRegistry, deps.catalog);
   const guard = (): PrivacyGuardService | undefined =>
     deps.serviceRegistry.get<PrivacyGuardService>(PRIVACY_REDACT_SERVICE_NAME);
+  /** Real values: the kernel-only service no plugin can resolve. */
+  const fieldSamples = (): PrivacyFieldSampleService | undefined =>
+    deps.serviceRegistry.get<PrivacyFieldSampleService>(PRIVACY_FIELD_SAMPLES_SERVICE_NAME);
+
+  router.use((_req: Request, res: Response, next) => {
+    res.set('Cache-Control', 'no-store');
+    next();
+  });
   /** Candidates that form one scoped entry — the only ones ever shown. */
   const listable = async (filter: { toolName?: string } = {}): Promise<FieldCandidate[]> =>
     (await deps.store.list(filter)).filter((c) => isValidFieldIdentity(c));
@@ -385,19 +429,12 @@ export function createFieldClassificationRoutes(deps: FieldClassificationRouteDe
   router.get('/legacy', async (_req: Request, res: Response) => {
     try {
       const candidates = await listable();
+      const verdicts = await cachedVerdicts(deps.store, candidates);
       const entries = legacyEntries(rawConfig()).map((legacy) => ({
         entry: legacy.entry,
         covers: candidates
           .filter((c) => legacyEntryCovers(legacy, c))
-          .map(
-            (c): LegacyCoveredField => ({
-              id: c.id,
-              toolName: c.toolName,
-              scope: c.scope,
-              fieldPath: c.fieldPath,
-              configEntry: configEntryOf(c),
-            }),
-          ),
+          .map((c) => coveredField(c, verdicts)),
       }));
       res.json({ entries });
     } catch (err) {
@@ -409,7 +446,10 @@ export function createFieldClassificationRoutes(deps: FieldClassificationRouteDe
   /**
    * Replace ONE legacy entry by the scoped entries of every field it covers
    * that the page has seen. Fields it covers that were never seen are masked
-   * afterwards (fail safe). A covered field the admin had confirmed records a
+   * afterwards (fail safe), and so are covered fields whose BASE status is
+   * personal: the response lists them as `skippedPersonal` and the page shows
+   * them, so the admin decides instead of a conversion carrying a person's
+   * field into a scoped entry. A covered field the admin had confirmed records a
    * `confirm` decision on its current fingerprint; a `confirmed_conflict`
    * field keeps its entry and stays a conflict until acknowledged.
    */
@@ -426,11 +466,16 @@ export function createFieldClassificationRoutes(deps: FieldClassificationRouteDe
       const configBefore = rawConfig();
       const added: string[] = [];
       const skipped: CandidateKey[] = [];
+      const skippedPersonal: LegacyCoveredField[] = [];
       const converted: FieldCandidate[] = [];
       const change = await editConfig((before) => {
         const legacy = legacyEntries(before).find((l) => l.entry === entry);
         if (legacy === undefined) throw new DecisionConflict({ error: 'legacy_entry_not_found', entry });
         for (const c of candidates.filter((x) => legacyEntryCovers(legacy, x))) {
+          if (baseOf(c, verdicts).status === 'personal') {
+            skippedPersonal.push(coveredField(c, verdicts));
+            continue;
+          }
           try {
             added.push(configEntryOf(c));
             converted.push(c);
@@ -481,9 +526,10 @@ export function createFieldClassificationRoutes(deps: FieldClassificationRouteDe
           [NON_PERSONAL_FIELDS_KEY]: change.after,
           added,
           skipped: skipped.length,
+          skippedPersonal: skippedPersonal.map((f) => f.configEntry),
         },
       });
-      res.json({ entry, added, skipped, conflicts });
+      res.json({ entry, added, skipped, skippedPersonal, conflicts });
     } catch (err) {
       if (err instanceof DecisionConflict) {
         res.status(409).json(err.body);
@@ -516,23 +562,32 @@ export function createFieldClassificationRoutes(deps: FieldClassificationRouteDe
       if (maskedSamples.length === 0) {
         maskedSamples = service?.maskedFieldPreview?.({ ...key, limit: PREVIEW_LIMIT }) ?? [];
       }
+      // An uploaded dataset's rows are owner-scoped (encrypted per owner):
+      // its real values are never shown, only the masked fallback.
+      const withheld = candidate.toolName === DATASET_TOOL ? 'owner_scoped_dataset' : null;
       // Real values only with an audit trail to record the view in.
       let samples: readonly string[] = [];
-      if (deps.audit !== undefined) {
-        samples = (service?.fieldSampleForAdmin?.({ ...key, limit: ADMIN_SAMPLE_LIMIT }) ?? []).slice(
+      if (deps.audit !== undefined && withheld === null) {
+        samples = (fieldSamples()?.fieldSampleForAdmin({ ...key, limit: ADMIN_SAMPLE_LIMIT }) ?? []).slice(
           0,
           ADMIN_SAMPLE_LIMIT,
         );
-        // Fail closed: no audit row, no values. The row carries the count
-        // only — never a value.
-        await deps.audit.record({
-          actor: auditActorFromRequest(req),
-          action: FIELD_PREVIEW_AUDIT_ACTION,
-          target: fieldAuditTarget(candidate),
-          after: { count: samples.length },
-        });
+        // Audited only when real values go out. Fail closed: no audit row,
+        // no values. The row carries the count only — never a value.
+        if (samples.length > 0) {
+          await deps.audit.record({
+            actor: auditActorFromRequest(req),
+            action: FIELD_PREVIEW_AUDIT_ACTION,
+            target: fieldAuditTarget(candidate),
+            after: { count: samples.length },
+          });
+        }
       }
-      res.json({ samples, maskedSamples: maskedSamples.slice(0, PREVIEW_LIMIT) });
+      res.json({
+        samples,
+        maskedSamples: maskedSamples.slice(0, PREVIEW_LIMIT),
+        samplesWithheld: withheld,
+      });
     } catch (err) {
       // Only the error text — the values are never part of it.
       console.error('[privacy-fields] preview failed:', errorText(err));

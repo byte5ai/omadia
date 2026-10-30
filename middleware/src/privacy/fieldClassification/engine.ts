@@ -27,7 +27,9 @@
  *   A `suggested` field is only suggested on a CLEAN name-detector vet:
  *   without one (detector unavailable, nothing sampled) it needs
  *   clarification (`name_detector_unavailable`); a near-miss downgrades it
- *   too (`name_near_miss`).
+ *   too (`name_near_miss`). A field of a source that names no model (scope
+ *   `-`) is never suggested either: its entry would apply to every call of
+ *   the tool, whatever the call returns (`no_scope`).
  *
  * Overlays on the base status:
  *   - covered by the current `non_personal_fields` value → confirmed
@@ -50,6 +52,8 @@ import type {
   ModelPersonalVerdict,
 } from '@omadia/plugin-api';
 import {
+  DATASET_SOURCE,
+  NO_SCOPE,
   entryCovers,
   formatScopedEntry,
   parseNonPersonalFields,
@@ -91,6 +95,9 @@ export type FieldReason =
   | { readonly code: 'name_near_miss' }
   | { readonly code: 'name_detector_unavailable' }
   | { readonly code: 'no_relation_info' }
+  /** The source names no model (scope `-`): an entry applies to every call
+   *  of the tool, so it is never suggested. */
+  | { readonly code: 'no_scope' }
   | { readonly code: 'changed_since_decision' }
   | { readonly code: 'confirmed_conflict' }
   | { readonly code: 'legacy_entry'; readonly entry: string }
@@ -279,10 +286,17 @@ export function classifyBase(input: ClassifyInput): {
     }
   }
 
+  return capNoScope(input.scope, capUnvetted(outcome, sample));
+}
+
+/** Never suggested without a clean name-detector vet (decision Marcel,
+ *  2026-10-30): the schema can say "department", the values can still be
+ *  people's names. */
+function capUnvetted(
+  outcome: { status: BaseStatus; reasons: FieldReason[] },
+  sample: SampleVerdictSummary | undefined,
+): { status: BaseStatus; reasons: FieldReason[] } {
   if (outcome.status !== 'suggested') return outcome;
-  // Never suggested without a clean name-detector vet (decision Marcel,
-  // 2026-10-30): the schema can say "department", the values can still be
-  // people's names.
   if (sample?.c1 === 'near-miss') {
     return { status: 'needs_clarification', reasons: [...outcome.reasons, { code: 'name_near_miss' }] };
   }
@@ -296,6 +310,16 @@ export function classifyBase(input: ClassifyInput): {
     status: 'suggested',
     reasons: [...outcome.reasons, { code: 'sample_clean', sampleCount: sample.sampleCount }],
   };
+}
+
+/** A source that names no model (`-`): its entry would clear the field in
+ *  EVERY call of the tool, so at most needs_clarification (`no_scope`). */
+function capNoScope(
+  scope: string,
+  outcome: { status: BaseStatus; reasons: FieldReason[] },
+): { status: BaseStatus; reasons: FieldReason[] } {
+  if (scope !== NO_SCOPE || outcome.status === 'personal') return outcome;
+  return { status: 'needs_clarification', reasons: [...outcome.reasons, { code: 'no_scope' }] };
 }
 
 /**
@@ -371,6 +395,9 @@ export class InvalidFieldEntryError extends Error {
 export function configEntryOf(key: CandidateKey): string {
   if (
     key.toolName === '*' ||
+    // `dataset:` is the uploaded-dataset source token (`query_dataset`): a
+    // tool literally named `dataset` would write an entry for uploads.
+    key.toolName === DATASET_SOURCE ||
     key.toolName.length > MAX_NAME_LENGTH ||
     !TOOL_NAME_GRAMMAR.test(key.toolName)
   ) {

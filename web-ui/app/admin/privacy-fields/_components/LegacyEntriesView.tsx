@@ -129,9 +129,13 @@ export function LegacyEntriesView(): React.ReactElement {
                   </div>
                   <ul className="mt-1 flex flex-col gap-1 text-[13px]">
                     {legacy.covers.map((field) => (
-                      <li key={field.id} className="font-mono">
+                      <li key={field.id} className="font-mono" data-testid={`legacy-cover-${field.id}`}>
                         {field.toolName} · {scopeText(field, t)} · {field.fieldPath}
-                        <span className="text-[color:var(--fg-muted)]"> → {field.configEntry}</span>
+                        {field.personal ? (
+                          <span className="font-sans text-[color:var(--danger)]"> — {t('legacy.personalCover')}</span>
+                        ) : (
+                          <span className="text-[color:var(--fg-muted)]"> → {field.configEntry}</span>
+                        )}
                       </li>
                     ))}
                   </ul>
@@ -170,6 +174,18 @@ function ConvertNoticeLine({ notice }: { notice: ConvertNotice }): React.ReactEl
           </p>
           {notice.result.skipped.length > 0 ? (
             <p>{t('legacy.skipped', { count: notice.result.skipped.length })}</p>
+          ) : null}
+          {notice.result.skippedPersonal.length > 0 ? (
+            <div className="mt-1 text-[color:var(--fg)]" data-testid="legacy-skipped-personal">
+              <p>{t('legacy.skippedPersonal', { count: notice.result.skippedPersonal.length })}</p>
+              <ul className="mt-1 list-disc pl-5 font-mono">
+                {notice.result.skippedPersonal.map((field) => (
+                  <li key={field.id}>
+                    {field.toolName} · {scopeText(field, t)} · {field.fieldPath}
+                  </li>
+                ))}
+              </ul>
+            </div>
           ) : null}
           {notice.result.conflicts.length > 0 ? (
             <p>{t('legacy.conflicts', { count: notice.result.conflicts.length })}</p>

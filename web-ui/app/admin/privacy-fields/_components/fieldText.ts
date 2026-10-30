@@ -30,6 +30,7 @@ const KNOWN_REASON_CODES = new Set([
   'name_near_miss',
   'name_detector_unavailable',
   'no_relation_info',
+  'no_scope',
   'changed_since_decision',
   'confirmed_conflict',
   'legacy_entry',
@@ -42,7 +43,9 @@ export function modelList(models: readonly string[] | undefined, t: FieldsT, for
   return clean.length > 0 ? format.list(clean, { type: 'conjunction' }) : t('none');
 }
 
-/** "Model hr.employee" / "Dataset <id>" / "No model" for a field's scope. */
+/** "Model hr.employee" / "Dataset <id>" / "Every call of this tool" for a
+ *  field's scope — an entry for a model-less source clears the field in every
+ *  call of the tool. */
 export function scopeText(
   source: { readonly toolName: string; readonly scope: string },
   t: FieldsT,

@@ -4,14 +4,19 @@
  * interned tool, a bounded value sample per field vetted by the guard's own
  * detectors, schema-only model classification, the shape-masked preview and
  * the admin-only real sample (contract v2). No value may ever leave except
- * as a detector verdict, a shape-masked preview, or `fieldSampleForAdmin`.
+ * as a detector verdict, a shape-masked preview, or `fieldSampleForAdmin` on
+ * the separate kernel-only `privacyFieldSamples` service (never for an
+ * uploaded dataset).
  */
 
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
 import type { PromptPiiDetector, PromptPiiSpan } from '@omadia/plugin-api';
-import { createPrivacyGuardService } from '@omadia/plugin-privacy-guard/dist/index.js';
+import {
+  createPrivacyGuardService,
+  createPrivacyGuardServices,
+} from '@omadia/plugin-privacy-guard/dist/index.js';
 import {
   MAX_SAMPLE_VALUES,
   SAMPLE_TTL_MS,
@@ -105,9 +110,9 @@ describe('#1556 follow-up — field observations', () => {
   });
 
   it('records every tool: plugin, MCP-like and query_dataset with its dataset id', async () => {
-    const svc = createPrivacyGuardService();
+    const { service: svc, fieldSamples } = createPrivacyGuardServices();
     const DS = '0f8e2c1a-7b3d-4e5f-9a1b-2c3d4e5f6a7b';
-    const upload = EMPLOYEES.map((e) => ({ id: e.id, 'Mitarbeiter Name': e.name }));
+    const upload = EMPLOYEES.map((e) => ({ id: e.id, 'Mitarbeiter name': e.name }));
     await intern(svc, 'hr_export', EMPLOYEES);
     await intern(svc, 'mcp__crm__list_contacts', EMPLOYEES, { query: 'all' });
     await intern(svc, 'query_dataset', upload, { query: 'query_rows', dataset_id: DS.toUpperCase() });
@@ -119,15 +124,14 @@ describe('#1556 follow-up — field observations', () => {
       'hr_export|-|name',
       'mcp__crm__list_contacts|-|department_id',
       'mcp__crm__list_contacts|-|name',
-      'query_dataset|-|Mitarbeiter Name',
-      `query_dataset|${DS}|Mitarbeiter Name`,
+      'query_dataset|-|Mitarbeiter name',
+      `query_dataset|${DS}|Mitarbeiter name`,
     ]);
-    const sample = svc.fieldSampleForAdmin!({
-      toolName: 'query_dataset',
-      scope: DS,
-      fieldPath: 'Mitarbeiter Name',
-    });
-    assert.deepEqual([...sample].sort(), [...NAMES].sort());
+    const key = { toolName: 'query_dataset', scope: DS, fieldPath: 'Mitarbeiter name' };
+    // An uploaded dataset's rows belong to the uploading user: no real value
+    // leaves, the masked preview still does.
+    assert.deepEqual(fieldSamples.fieldSampleForAdmin(key), []);
+    assert.equal(svc.maskedFieldPreview!({ ...key, limit: 10 }).length, NAMES.length);
   });
 
   it('one observation per scope: the same field of two models stays two candidates', async () => {
@@ -191,10 +195,10 @@ describe('#1556 follow-up — observation grammar (security review H2)', () => {
     'x\ry',
     '__k_x',
   ];
-  const VALID_PATHS = ['Abteilung Name', 'Name', '1x'];
+  const VALID_PATHS = ['Abteilung name', 'Name', '1x'];
 
   it('records only scoped-field names — never a key that could become several entries', async () => {
-    const svc = createPrivacyGuardService();
+    const { service: svc, fieldSamples } = createPrivacyGuardServices();
     const rows = NAMES.map((name, i) => {
       const row: Record<string, unknown> = { id: i + 1, name };
       for (const path of [...INVALID_PATHS, ...VALID_PATHS]) row[path] = name;
@@ -208,7 +212,7 @@ describe('#1556 follow-up — observation grammar (security review H2)', () => {
     for (const path of INVALID_PATHS) {
       const key = { toolName: 'odoo_execute', scope: 'res.partner', fieldPath: path };
       assert.deepEqual(svc.maskedFieldPreview!(key), []);
-      assert.deepEqual(svc.fieldSampleForAdmin!(key), []);
+      assert.deepEqual(fieldSamples.fieldSampleForAdmin(key), []);
     }
   });
 
@@ -489,21 +493,26 @@ describe('contract v2 — fieldSampleForAdmin', () => {
     };
   }
 
+  it('is not part of the plugin-facing privacyRedact service', () => {
+    const svc = createPrivacyGuardService() as unknown as Record<string, unknown>;
+    assert.ok(!('fieldSampleForAdmin' in svc));
+  });
+
   it('returns the real buffered values, logs nothing and keeps the sample', async () => {
-    const svc = createPrivacyGuardService();
+    const { service: svc, fieldSamples } = createPrivacyGuardServices();
     await intern(svc, 'odoo_execute', EMPLOYEES, { model: 'hr.employee' });
     const key = { toolName: 'odoo_execute', scope: 'hr.employee', fieldPath: 'name' };
     const spy = spyConsole();
     let sample: readonly string[];
     try {
-      sample = svc.fieldSampleForAdmin!(key);
+      sample = fieldSamples.fieldSampleForAdmin(key);
     } finally {
       spy.restore();
     }
     assert.deepEqual([...sample].sort(), [...NAMES].sort());
     assert.deepEqual(spy.lines, [], 'fieldSampleForAdmin logged');
     // Not drained: the preview and the vetting still see it.
-    assert.equal(svc.fieldSampleForAdmin!(key).length, 4);
+    assert.equal(fieldSamples.fieldSampleForAdmin(key).length, 4);
     const preview = svc.maskedFieldPreview!(key);
     assert.equal(preview.length, 4);
     for (const p of preview) assert.ok(!/[\p{L}\p{N}]/u.test(p), p);
@@ -511,15 +520,79 @@ describe('contract v2 — fieldSampleForAdmin', () => {
   });
 
   it('is keyed by scope and bounded: default 10, max 50', async () => {
-    const svc = createPrivacyGuardService();
+    const { service: svc, fieldSamples } = createPrivacyGuardServices();
     const rows = Array.from({ length: 80 }, (_, i) => ({ id: i, name: `Person Number ${String(i)}` }));
     await intern(svc, 'odoo_execute', rows, { model: 'res.partner' });
     const key = { toolName: 'odoo_execute', scope: 'res.partner', fieldPath: 'name' };
-    assert.equal(svc.fieldSampleForAdmin!(key).length, 10);
-    assert.equal(svc.fieldSampleForAdmin!({ ...key, limit: 3 }).length, 3);
-    assert.equal(svc.fieldSampleForAdmin!({ ...key, limit: 500 }).length, MAX_SAMPLE_VALUES);
-    assert.equal(svc.fieldSampleForAdmin!({ ...key, limit: -1 }).length, 0);
-    assert.deepEqual(svc.fieldSampleForAdmin!({ ...key, scope: 'hr.employee' }), []);
-    assert.deepEqual(svc.fieldSampleForAdmin!({ ...key, scope: '-' }), []);
+    assert.equal(fieldSamples.fieldSampleForAdmin(key).length, 10);
+    assert.equal(fieldSamples.fieldSampleForAdmin({ ...key, limit: 3 }).length, 3);
+    assert.equal(fieldSamples.fieldSampleForAdmin({ ...key, limit: 500 }).length, MAX_SAMPLE_VALUES);
+    assert.equal(fieldSamples.fieldSampleForAdmin({ ...key, limit: -1 }).length, 0);
+    assert.deepEqual(fieldSamples.fieldSampleForAdmin({ ...key, scope: 'hr.employee' }), []);
+    assert.deepEqual(fieldSamples.fieldSampleForAdmin({ ...key, scope: '-' }), []);
+  });
+});
+
+describe('security review — recorder refuses non-columns and value-like keys', () => {
+  const DS = '0f8e2c1a-7b3d-4e5f-9a1b-2c3d4e5f6a7b';
+
+  it('skips key / value / groups of a grouped query_dataset result', async () => {
+    const svc = createPrivacyGuardService();
+    const grouped = {
+      groups: [
+        { key: 'Paul Williams', value: 'Research & Development' },
+        { key: 'Beth Evans', value: 'Sales Team' },
+        { key: 'Anna Rüsche', value: 'Management' },
+      ],
+    };
+    await intern(svc, 'query_dataset', grouped, { query: 'group_by', dataset_id: DS });
+    await intern(svc, 'query_dataset', grouped.groups, { query: 'query_rows', dataset_id: DS });
+    const paths = svc.takeFieldObservations!().map((o) => o.fieldPath);
+    for (const p of ['key', 'value', 'groups']) assert.ok(!paths.includes(p), p);
+    // The same names from any other tool are still observed.
+    await intern(svc, 'mcp__crm__groups', grouped.groups);
+    const other = svc.takeFieldObservations!().map((o) => o.fieldPath).sort();
+    assert.deepEqual(other, ['key', 'value']);
+  });
+
+  it('drops keys that are values: e-mail-keyed maps and person-name headers', async () => {
+    const { service: svc, fieldSamples } = createPrivacyGuardServices();
+    const byMail = [
+      { 'anna.mueller@example.com': 'Sales', 'bob@example.de': 'HR', Abteilung: 'Sales' },
+      { 'anna.mueller@example.com': 'HR', 'bob@example.de': 'Sales', Abteilung: 'HR' },
+    ];
+    await intern(svc, 'mcp__dir__members', byMail);
+    const sheet = NAMES.map((name, i) => ({
+      'Anna Müller': name,
+      'Jean-Luc Picard': name,
+      Abteilung: i % 2 === 0 ? 'Sales Team' : 'Management',
+      department_id: [i + 1, i % 2 === 0 ? 'Sales Team' : 'Management'],
+    }));
+    await intern(svc, 'odoo_execute', sheet, { model: 'hr.employee' });
+    const paths = svc.takeFieldObservations!().map((o) => o.fieldPath);
+    for (const dropped of ['anna.mueller@example.com', 'bob@example.de', 'Anna Müller', 'Jean-Luc Picard']) {
+      assert.ok(!paths.includes(dropped), dropped);
+      const key = { toolName: 'odoo_execute', scope: 'hr.employee', fieldPath: dropped };
+      assert.deepEqual(fieldSamples.fieldSampleForAdmin(key), [], 'no sample either');
+    }
+    assert.ok(paths.includes('Abteilung'), 'Abteilung is kept');
+    assert.ok(paths.includes('department_id'), 'department_id is kept');
+  });
+
+  it('refuses invisible format characters and a tool literally named dataset', async () => {
+    const svc = createPrivacyGuardService();
+    const rows = NAMES.map((name) => ({
+      'name​': name,
+      'ab‮teilung': name,
+      'dept⁦x': name,
+      name,
+    }));
+    await intern(svc, 'odoo_execute', rows, { model: 'res.partner' });
+    await intern(svc, 'dataset', EMPLOYEES);
+    const obs = svc.takeFieldObservations!();
+    assert.deepEqual(
+      obs.map((o) => `${o.toolName}|${o.fieldPath}`),
+      ['odoo_execute|name'],
+    );
   });
 });

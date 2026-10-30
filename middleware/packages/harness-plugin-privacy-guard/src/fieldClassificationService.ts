@@ -5,8 +5,9 @@
  * Schema-only observations of masked fields per (tool, scope, path) plus a
  * bounded, TTL'd value sample per field (`fieldObservations.ts`). The sample
  * leaves the plugin only as detector verdicts (`fieldVetting.ts`), a fully
- * masked preview, and the admin-only `fieldSampleForAdmin` (real values, the
- * kernel restricts and audits it). Nothing here logs a value.
+ * masked preview, and the admin-only `fieldSampleForAdmin` on the separate,
+ * kernel-only `privacyFieldSamples` service (real values, the kernel restricts
+ * and audits it; never for an uploaded dataset). Nothing here logs a value.
  */
 
 import type {
@@ -15,11 +16,13 @@ import type {
   FieldSampleVerdict,
   ModelClassificationRequest,
   ModelClassificationResult,
+  PrivacyFieldSampleService,
   PromptPiiDetector,
 } from '@omadia/plugin-api';
 
 import { withC1Priority } from './c1Detector.js';
 import { createFieldObservationRecorder } from './fieldObservations.js';
+import { DATASET_TOOL } from './nonPersonalFields.js';
 import { adminSample, maskedPreview, vetSample } from './fieldVetting.js';
 import { classifyModelsSchemaOnly } from './v4/modelClassifier.js';
 import type { LlmComplete } from './v4/piiClassifier.js';
@@ -46,9 +49,6 @@ export interface FieldClassificationMethods {
     requests: readonly ModelClassificationRequest[],
   ): Promise<readonly ModelClassificationResult[]>;
   maskedFieldPreview(field: FieldKey & { readonly limit?: number }): readonly string[];
-  /** The REAL buffered values, for the admin preview. Never logged; does not
-   *  clear the sample. The caller restricts it to admins and audits it. */
-  fieldSampleForAdmin(field: FieldKey & { readonly limit?: number }): readonly string[];
 }
 
 export function createFieldClassificationService(deps: FieldClassificationDeps): {
@@ -56,6 +56,10 @@ export function createFieldClassificationService(deps: FieldClassificationDeps):
    *  carries no value. */
   readonly record: (turnId: string, toolName: string, datasetId: string) => void;
   readonly methods: FieldClassificationMethods;
+  /** The REAL buffered values, published as the kernel-only
+   *  `privacyFieldSamples` service — never part of the plugin-facing
+   *  `PrivacyGuardService`. */
+  readonly fieldSamples: PrivacyFieldSampleService;
 } {
   const observations = createFieldObservationRecorder();
 
@@ -112,11 +116,17 @@ export function createFieldClassificationService(deps: FieldClassificationDeps):
     maskedFieldPreview(field) {
       return maskedPreview(observations.sample(field), field.limit);
     },
+  };
 
+  const fieldSamples: PrivacyFieldSampleService = {
+    // Never logged; does not clear the sample. An uploaded dataset's rows
+    // belong to the user who uploaded it (owner-scoped, encrypted per owner):
+    // no real value of one is ever shown, only the masked preview.
     fieldSampleForAdmin(field) {
+      if (field.toolName === DATASET_TOOL) return [];
       return adminSample(observations.sample(field), field.limit);
     },
   };
 
-  return { record, methods };
+  return { record, methods, fieldSamples };
 }
