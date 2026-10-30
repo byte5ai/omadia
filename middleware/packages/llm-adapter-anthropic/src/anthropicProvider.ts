@@ -582,9 +582,46 @@ function buildParams(req: LlmRequest): Record<string, unknown> {
  * with document citations; nothing in this adapter sends citations today, so
  * there is no guard here — add one if citation support lands.
  */
+/**
+ * Model-id fragments without an effort ladder — `output_config.effort` is a
+ * 400 there: Haiku 4.5, Sonnet 4.5 and the generations before them (effort is
+ * GA from the 4.6 generation; Opus 4.5 takes it behind {@link EFFORT_BETA}).
+ * The `LlmRequest` contract: an adapter IGNORES an effort the model cannot
+ * take, with a one-time warning — a caller's `effort: 'low'` (fast-path,
+ * extras, verifier calls on a fast model) must never break a turn on an
+ * install whose fast class is still Haiku 4.5.
+ */
+const EFFORT_UNSUPPORTED = [
+  'claude-haiku-4-5',
+  'claude-sonnet-4-5',
+  'claude-opus-4-1',
+  'claude-opus-4-2025',
+  'claude-sonnet-4-2025',
+  'claude-3',
+];
+const warnedNoEffort = new Set<string>();
+
+/** Whether `output_config.effort` may be sent to this model. Exported for the test. */
+export function acceptsEffort(model: string): boolean {
+  return !EFFORT_UNSUPPORTED.some((m) => model.includes(m));
+}
+
+/** The effort this request may send — dropped (warned once per model) where
+ *  the model has no ladder. */
+function sendableEffort(req: LlmRequest): LlmRequest['effort'] {
+  if (req.effort === undefined) return undefined;
+  if (acceptsEffort(req.model)) return req.effort;
+  if (!warnedNoEffort.has(req.model)) {
+    warnedNoEffort.add(req.model);
+    console.warn(`[llm-adapter-anthropic] effort '${req.effort}' ignored — model '${req.model}' has no effort ladder`);
+  }
+  return undefined;
+}
+
 function toOutputConfig(req: LlmRequest): Record<string, unknown> | undefined {
+  const effort = sendableEffort(req);
   const cfg: Record<string, unknown> = {
-    ...(req.effort !== undefined ? { effort: req.effort } : {}),
+    ...(effort !== undefined ? { effort } : {}),
     ...(req.outputFormat !== undefined
       ? {
           // Exactly `type` + `schema`: the API rejects unknown nested body
@@ -633,7 +670,7 @@ function toRequestOptions(
 ): { headers: Record<string, string> } | undefined {
   const betas = [
     ...(req.betas ?? []),
-    ...(req.effort !== undefined &&
+    ...(sendableEffort(req) !== undefined &&
     requiresEffortBeta(req.model) &&
     !(req.betas ?? []).includes(EFFORT_BETA)
       ? [EFFORT_BETA]
