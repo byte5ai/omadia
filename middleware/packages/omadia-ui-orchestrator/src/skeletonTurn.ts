@@ -6,6 +6,7 @@ import {
 } from '@omadia/channel-sdk';
 import {
   CACHE_DOUBT_REASON,
+  EMPTY_RESULT_REASON,
   isCacheDoubt,
   offeredTools,
   openSkeletonPrivacy,
@@ -247,6 +248,11 @@ async function settleFastPath(
   // path); the plan's execution — not a skeleton binding miss — is booked
   if (triaged?.kind === 'plan' && fast.hit && isCacheDoubt(triaged, fast.rows)) {
     fast = { hit: false, reason: CACHE_DOUBT_REASON };
+  }
+  // an empty table from a planned fetch is far more often a wrong filter than
+  // a true zero: the agent takes the turn, nothing is cached or learned
+  if (fast.hit && fast.rows === 0) {
+    fast = { hit: false, reason: EMPTY_RESULT_REASON };
   }
   if (triaged !== undefined && planMiss === undefined) {
     fp?.settleTriage(triaged, fast.hit ? { ok: true } : { ok: false, reason: fast.reason });

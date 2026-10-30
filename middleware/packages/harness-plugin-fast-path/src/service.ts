@@ -4,6 +4,7 @@ import {
   ANSWER_CACHE_PRIVACY_JOB,
   answerCacheEnabled,
   CACHE_DOUBT_REASON,
+  EMPTY_RESULT_REASON,
   createAnswerCache,
   isCacheDoubt,
   settleAnswerCache,
@@ -283,6 +284,10 @@ export function createFastPathService(deps: FastPathServiceDeps): FastPathServic
         settleTriage(triage, { ok: false, reason: CACHE_DOUBT_REASON });
         deps.log(`[fast-path] cache miss channel=${channel} reason=${CACHE_DOUBT_REASON}`);
         return undefined;
+      }
+      if (fetched.rows.length === 0) {
+        deps.log(`[fast-path] miss channel=${channel} reason=${EMPTY_RESULT_REASON}`);
+        return miss(EMPTY_RESULT_REASON);
       }
       const rendered = renderSummary(decision.summary, {
         rows: fetched.rows,
