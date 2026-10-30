@@ -2079,7 +2079,8 @@ Eintrag (`formatScopedEntry`/`configEntryOf`), `SCOPED_FIELD_GRAMMAR` lehnt
 `\p{Cf}` (Zero-Width, Bidi-Overrides) ab.
 
 **Kernel:** `src/privacy/fieldClassification/` (`modelCatalog`,
-`odooRelationResolver` — nur `fields_get` auf dem Scope-Modell —, `engine`,
+`odooRelationResolver` — nur `fields_get` auf dem Scope-Modell; Modelle, die
+`odoo.schema@1` (Odoo-Plugin ≥ 0.5.0) listet, über diesen Service —, `engine`,
 `store`, `recompute`, `routes`, `guardConfig`), Migration
 `0065_privacy_field_classification` (Kandidat eindeutig über `tool_name`,
 `scope`, `field_path`; `label`; Verdict-Cache mit `fields_hash`). Quellen ohne
@@ -2090,6 +2091,12 @@ in `privacy_model_verdicts`, neu gefragt bei geänderter Feldmenge. Ohne C1
 `name_detector_unavailable`; Scope `-` ebenfalls höchstens
 `needs_clarification` mit `no_scope` (UI: „jeder Aufruf dieses Tools"). Fingerprint = Scope + Relationsmodelle + Form;
 Drift und `confirmed_conflict` je Tool + Scope + Feld.
+**Vorab aus dem Odoo-Schema (#1630-Folge):** Jeder Recompute legt die
+`many2one`-Felder aller Modelle aus `odoo.schema.listModels()` je lesendem Tool
+(`odoo_execute`, ggf. `odoo_query`) als Kandidaten mit `seenCount` 0 an
+(`seedFromOdooSchema`, Store `seedField`: nur Insert, bestehende Zeilen
+bleiben). Ohne geprüfte Werte höchstens `needs_clarification` mit
+`not_seen_yet`; die erste echte Sichtung setzt `firstSeenAt`.
 
 **Routen (requireAuth, jede Session ist Admin; jede Antwort
 `Cache-Control: no-store`):**
@@ -5305,11 +5312,12 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 
 ## 13. Offene Roadmap
 
-- **Feldklassifizierung vorab (#1556-Folge):** Das Odoo-Plugin-Repo
-  (`byte5ai/omadia-integration-odoo`) soll Relationsziele vorab liefern
-  (`odoo_describe` mit `relation` oder ein Service `odoo.schema@1`), damit
-  Vorschläge auf `/admin/privacy-fields` vor dem ersten Chat entstehen. Heute
-  entstehen sie erst, wenn ein Tool-Ergebnis das Feld maskiert hat.
+- **Feldklassifizierung vorab (#1556-Folge): erledigt.** Odoo-Plugin 0.5.0
+  liefert `odoo.schema@1`; der Recompute legt die `many2one`-Felder direkt nach
+  der Aktivierung als Kandidaten an (siehe Abschnitt Feldklassifizierung).
+  Offen: andere Quellen (MCP, Uploads) haben kein Schema vorab; geseedete
+  Zeilen (`seenCount` 0, ohne Entscheidung) bleiben stehen, wenn ein Modell
+  die Whitelist verlässt oder `odoo_query` abgeschaltet wird (kein Prune).
 
 ### Plan-Schritt-Zuordnung und Canvas-Vorschau (#1502, #1500)
 

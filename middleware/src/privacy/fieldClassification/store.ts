@@ -94,6 +94,10 @@ export interface FieldClassificationStore {
   /** Insert or merge one observation per tool + scope + field (counts add
    *  up, the latest label wins). */
   upsertObservation(obs: FieldObservation): Promise<void>;
+  /** Insert a field read from a source's schema (`seenCount` 0) unless the
+   *  tool + scope + field already exists; an existing row is left as is.
+   *  The first real observation then sets its first-seen time. */
+  seedField(obs: FieldObservation): Promise<void>;
   saveClassification(id: string, update: CandidateClassificationUpdate): Promise<void>;
   /** Set (or with `null` clear) the admin decision and the shown status. */
   saveDecision(id: string, decision: CandidateDecision | null, status: FieldStatus): Promise<void>;
@@ -218,7 +222,11 @@ export class PgFieldClassificationStore implements FieldClassificationStore {
          value_shape   = EXCLUDED.value_shape,
          label         = COALESCE(EXCLUDED.label, privacy_field_candidates.label),
          seen_count    = privacy_field_candidates.seen_count + EXCLUDED.seen_count,
-         first_seen_at = LEAST(privacy_field_candidates.first_seen_at, EXCLUDED.first_seen_at),
+         -- A row seeded from the schema (seen 0 times) was never seen: its
+         -- first real sighting is this one.
+         first_seen_at = CASE WHEN privacy_field_candidates.seen_count = 0
+                           THEN EXCLUDED.first_seen_at
+                           ELSE LEAST(privacy_field_candidates.first_seen_at, EXCLUDED.first_seen_at) END,
          last_seen_at  = GREATEST(privacy_field_candidates.last_seen_at, EXCLUDED.last_seen_at)`,
       [
         obs.toolName,
@@ -230,6 +238,16 @@ export class PgFieldClassificationStore implements FieldClassificationStore {
         obs.firstSeenAt,
         obs.lastSeenAt,
       ],
+    );
+  }
+
+  async seedField(obs: FieldObservation): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO privacy_field_candidates
+         (tool_name, scope, field_path, label, value_shape, seen_count, first_seen_at, last_seen_at)
+       VALUES ($1, $2, $3, $4, $5, 0, $6, $7)
+       ON CONFLICT (tool_name, scope, field_path) DO NOTHING`,
+      [obs.toolName, obs.scope, obs.fieldPath, obs.label ?? null, obs.valueShape, obs.firstSeenAt, obs.lastSeenAt],
     );
   }
 
@@ -431,9 +449,19 @@ export class InMemoryFieldClassificationStore implements FieldClassificationStor
       valueShape: obs.valueShape,
       label: obs.label ?? existing.label,
       seenCount: existing.seenCount + obs.seenCount,
-      firstSeenAt: obs.firstSeenAt < existing.firstSeenAt ? obs.firstSeenAt : existing.firstSeenAt,
+      firstSeenAt:
+        existing.seenCount === 0 || obs.firstSeenAt < existing.firstSeenAt
+          ? obs.firstSeenAt
+          : existing.firstSeenAt,
       lastSeenAt: obs.lastSeenAt > existing.lastSeenAt ? obs.lastSeenAt : existing.lastSeenAt,
     });
+  }
+
+  async seedField(obs: FieldObservation): Promise<void> {
+    const exists = [...this.rows.values()].some(
+      (r) => r.toolName === obs.toolName && r.scope === obs.scope && r.fieldPath === obs.fieldPath,
+    );
+    if (!exists) await this.upsertObservation({ ...obs, seenCount: 0 });
   }
 
   async saveClassification(id: string, update: CandidateClassificationUpdate): Promise<void> {

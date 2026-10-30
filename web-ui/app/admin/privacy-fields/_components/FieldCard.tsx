@@ -158,7 +158,9 @@ export function FieldCard({
 
       {lastSeen !== null ? (
         <p className="mt-2 text-xs text-[color:var(--fg-muted)]">
-          {t('seen', { count: item.seenCount, when: lastSeen })}
+          {item.seenCount > 0
+            ? t('seen', { count: item.seenCount, when: lastSeen })
+            : t('notSeenYet', { when: lastSeen })}
         </p>
       ) : null}
 

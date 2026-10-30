@@ -114,6 +114,41 @@ describe('#1556 field classification store against a real Postgres', { skip: !pg
     assert.deepEqual(await store.countOpen(), { needsClarification: 1, suggested: 0, confirmedConflict: 1 });
   });
 
+  it('seeds a schema field once, never over an existing row, and its first sighting starts the count', async () => {
+    const seed = {
+      toolName: 'odoo_query',
+      scope: 'hr.employee',
+      fieldPath: 'job_id',
+      valueShape: 'm2o' as const,
+      label: 'Job Position',
+      seenCount: 7,
+      firstSeenAt: '2026-10-30T06:00:00.000Z',
+      lastSeenAt: '2026-10-30T06:00:00.000Z',
+    };
+    await store.seedField(seed);
+    await store.seedField({ ...seed, label: 'Other', firstSeenAt: '2026-10-30T07:00:00.000Z' });
+    let row = (await store.list({ toolName: 'odoo_query' })).find((r) => r.fieldPath === 'job_id');
+    assert.ok(row);
+    assert.equal(row.seenCount, 0, 'a seed is never a sighting, whatever the input says');
+    assert.equal(row.label, 'Job Position', 'a second seed leaves the row alone');
+
+    await store.upsertObservation({
+      ...seed,
+      seenCount: 2,
+      firstSeenAt: '2026-10-30T11:00:00.000Z',
+      lastSeenAt: '2026-10-30T11:30:00.000Z',
+    });
+    row = await store.get(row.id);
+    assert.equal(row?.seenCount, 2);
+    assert.equal(row?.firstSeenAt, '2026-10-30T11:00:00.000Z', 'not the seed time');
+    assert.equal(row?.lastSeenAt, '2026-10-30T11:30:00.000Z');
+
+    // Seeding an observed field changes nothing.
+    await store.seedField({ ...seed, label: 'Changed' });
+    assert.equal((await store.get(row!.id))?.label, 'Job Position');
+    assert.equal((await store.get(row!.id))?.seenCount, 2);
+  });
+
   it('caches model verdicts with a TTL, and remembers visits', async () => {
     await store.saveModelVerdicts([
       { model: 'x_custom.region', verdict: 'non-personal', source: 'haiku', confidence: 0.9, reason: 'r', fieldsHash: 'abc' },
