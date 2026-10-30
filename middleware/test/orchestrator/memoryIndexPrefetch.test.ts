@@ -16,6 +16,7 @@ import type { MemoryToolHandler } from '@omadia/memory';
 import { NativeToolRegistry, Orchestrator } from '@omadia/orchestrator';
 
 import {
+  EMPTY_MEMORY_INDEX,
   MEMORY_INDEX_MAX_CHARS,
   memoryIndexHint,
   prefetchMemoryIndex,
@@ -45,9 +46,16 @@ describe('prefetchMemoryIndex', () => {
     assert.deepEqual(calls, [{ command: 'view', path: '/memories' }]);
   });
 
+  it('a tree without /memories yet is an empty index, not a skip', async () => {
+    assert.deepEqual(
+      await prefetchMemoryIndex(fakeHandler('The path /memories does not exist. Please provide a valid path.')),
+      { ok: true, listing: EMPTY_MEMORY_INDEX },
+    );
+  });
+
   it('skips without a handler, on a non-listing answer, an oversized listing or a throw', async () => {
     assert.deepEqual(await prefetchMemoryIndex(undefined), { ok: false, reason: 'no-handler' });
-    assert.deepEqual(await prefetchMemoryIndex(fakeHandler('The path /memories does not exist.')), {
+    assert.deepEqual(await prefetchMemoryIndex(fakeHandler('Error: memory store unavailable')), {
       ok: false,
       reason: 'not-a-listing',
     });
@@ -144,8 +152,13 @@ for (const path of ['stream', 'runTurn'] as const) {
     });
 
     it('no block when the handler answers with something other than a listing', async () => {
-      const system = await firstSystemPrompt(path, chat, 'The path /memories does not exist.');
+      const system = await firstSystemPrompt(path, chat, 'Error: memory store unavailable');
       assert.ok(!system.includes('MEMORY-INDEX'));
+    });
+
+    it('an empty tree still spares the opening read: the block says /memories is empty', async () => {
+      const system = await firstSystemPrompt(path, chat, 'The path /memories does not exist. Please provide a valid path.');
+      assert.ok(system.includes(memoryIndexHint(EMPTY_MEMORY_INDEX)));
     });
   });
 }
