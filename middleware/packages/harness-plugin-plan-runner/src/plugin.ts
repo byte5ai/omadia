@@ -570,6 +570,18 @@ export async function activate(
         await advanceStep(record.plan, kg, {
           resultSummary: summary || payload.toolName || 'tool call',
         });
+        // A delegation did several calls' worth of work behind ONE top-level
+        // call (live: 6 odoo calls inside query_odoo_accounting, the plan's
+        // other steps then ended `skipped` on the card). One step per further
+        // successful inner call — the same "one tool ≈ one step" heuristic,
+        // through the sub-agent — short of the last step, which stays for the
+        // answer (`finishPlan`). Every advanced step still has a call behind it.
+        const lastIndex = record.plan.stepExternalIds.length - 1;
+        for (let extra = (payload.toolInnerCalls ?? 1) - 1; extra > 0 && record.plan.cursor < lastIndex; extra--) {
+          await advanceStep(record.plan, kg, {
+            resultSummary: summary || payload.toolName || 'tool call',
+          });
+        }
         // E9 — emit the refreshed plan snapshot so the UI advances the step live.
         return await planAnnotation(record.planExternalId, record.reusedProcessTitle);
       },
