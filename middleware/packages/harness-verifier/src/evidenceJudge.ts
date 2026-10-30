@@ -1,5 +1,6 @@
 import type { LlmProvider, LlmResponse, ToolSpec } from '@omadia/llm-provider';
 import { textMessage, toolCalls } from '@omadia/llm-provider';
+import { VERIFIER_REASONING } from './verifierReasoning.js';
 import type { ClaimVerdict, SoftClaim, VerifierPrivacy } from './claimTypes.js';
 import { MAX_CONTEXT_CHARS } from './claimContext.js';
 import { citesOtherRecord } from './entityHandle.js';
@@ -331,6 +332,7 @@ ${evidenceBlock}`;
         tools: [toolSpec],
         toolChoice: { type: 'tool', name: TOOL_NAME },
         messages: [textMessage('user', user)],
+        ...VERIFIER_REASONING,
       });
     } catch (err) {
       this.log(`[verifier/judge] API FAIL: ${errMsg(err)}`);
