@@ -14,6 +14,7 @@ import {
   classifyAnthropicError,
   createAnthropicProvider,
   requiresEffortBeta,
+  acceptsEffort,
   supportsForcedToolChoice,
   supportsStrictTools,
   supportsThinkingReplay,
@@ -1737,4 +1738,34 @@ test('cacheHints.ttl 1h stamps the 1-hour TTL on every breakpoint (system blocks
   const tools = params['tools'] as Array<Record<string, unknown>>;
   assert.equal(tools[0]?.['cache_control'], undefined);
   assert.deepEqual(tools[1]?.['cache_control'], long);
+});
+
+test('acceptsEffort: no effort ladder on Haiku 4.5 / Sonnet 4.5 / older; 4.6+ and 5.x take it', () => {
+  for (const model of ['claude-haiku-4-5-20251001', 'claude-haiku-4-5', 'claude-sonnet-4-5-20250929', 'claude-opus-4-1-20250805', 'claude-3-5-haiku-20241022']) {
+    assert.equal(acceptsEffort(model), false, `${model} must not get an effort`);
+  }
+  for (const model of ['claude-haiku-5-5', 'claude-opus-5-5', 'claude-sonnet-4-6', 'claude-opus-4-5-20251101', 'claude-fable-5-1']) {
+    assert.equal(acceptsEffort(model), true, `${model} takes an effort`);
+  }
+});
+
+test('an effort on a model without a ladder is dropped, never sent (no 400)', async () => {
+  const captured: Captured = {};
+  const provider = createAnthropicProvider({ client: mockClient(captured, textResponse()) });
+  await provider.complete({
+    model: 'claude-haiku-4-5-20251001',
+    maxTokens: 64,
+    effort: 'low',
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+  });
+  assert.equal((captured.params as Record<string, unknown>)['output_config'], undefined);
+
+  const kept: Captured = {};
+  await createAnthropicProvider({ client: mockClient(kept, textResponse()) }).complete({
+    model: 'claude-haiku-5-5',
+    maxTokens: 64,
+    effort: 'low',
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+  });
+  assert.deepEqual((kept.params as Record<string, unknown>)['output_config'], { effort: 'low' });
 });

@@ -12,6 +12,7 @@ export {
   createAnthropicProvider,
   classifyAnthropicError,
   requiresEffortBeta,
+  acceptsEffort,
   supportsForcedToolChoice,
   supportsStrictTools,
   supportsTemperature,
