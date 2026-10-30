@@ -7399,6 +7399,7 @@ export class Orchestrator {
                 typeof resultBlock.content === 'string' ? resultBlock.content : undefined,
               isError: resultBlock.is_error === true,
               innerCallsAllFailed: subToolTally.allFailed(use.id),
+              innerCallsSucceeded: subToolTally.succeeded(use.id),
             }),
             2000,
           );
@@ -8089,6 +8090,7 @@ export class Orchestrator {
                 toolResult: event.output,
                 isError: event.isError === true,
                 innerCallsAllFailed: subToolTally.allFailed(event.id),
+                innerCallsSucceeded: subToolTally.succeeded(event.id),
               }),
               2000,
             ),

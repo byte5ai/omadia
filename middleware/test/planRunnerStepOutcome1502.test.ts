@@ -179,4 +179,40 @@ describe('#1502 — plan steps are done only when a call did them', () => {
     );
     assert.deepEqual(statuses, ['failed', 'skipped', 'skipped']);
   });
+
+  // Live (v437): one query_odoo_accounting delegation ran 6 odoo calls, and
+  // the card showed the plan's other steps ÜBERSPRUNGEN.
+  it('a delegation advances one step per successful inner call, short of the answer step', async () => {
+    const statuses = await runTurn(
+      ['PLAN', THREE_STEPS],
+      [
+        memory,
+        {
+          toolName: 'query_odoo_accounting',
+          toolResult: '36 offene Rechnungen …',
+          toolFailed: false,
+          toolIsBookkeeping: false,
+          toolInnerCalls: 6,
+        },
+        render,
+      ],
+    );
+    assert.deepEqual(statuses, ['done', 'done', 'done']);
+  });
+
+  it('a delegation with one inner call advances one step, as before', async () => {
+    const statuses = await runTurn(
+      ['PLAN', THREE_STEPS],
+      [
+        {
+          toolName: 'query_odoo_accounting',
+          toolResult: 'ok',
+          toolFailed: false,
+          toolIsBookkeeping: false,
+          toolInnerCalls: 1,
+        },
+      ],
+    );
+    assert.deepEqual(statuses, ['done', 'skipped', 'skipped']);
+  });
 });

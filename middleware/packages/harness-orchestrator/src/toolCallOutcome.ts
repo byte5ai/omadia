@@ -47,6 +47,12 @@ export class SubToolOutcomeTally {
     });
   }
 
+  /** How many of `parentId`'s inner tool calls succeeded (0 when none ran). */
+  succeeded(parentId: string): number {
+    const entry = this.byParent.get(parentId);
+    return entry === undefined ? 0 : entry.calls - entry.failed;
+  }
+
   /** True when the call made inner tool calls and none of them succeeded. */
   allFailed(parentId: string): boolean {
     const entry = this.byParent.get(parentId);
@@ -77,11 +83,16 @@ export function afterToolCallPayload(input: {
   toolResult: string | undefined;
   isError: boolean;
   innerCallsAllFailed: boolean;
+  /** Successful inner calls of a sub-agent call (see `TurnHookPayload.toolInnerCalls`). */
+  innerCallsSucceeded?: number;
 }): TurnHookPayload {
   return {
     ...(input.toolName !== undefined ? { toolName: input.toolName } : {}),
     ...(input.toolResult !== undefined ? { toolResult: input.toolResult } : {}),
     toolFailed: input.isError || input.innerCallsAllFailed,
     toolIsBookkeeping: input.toolName !== undefined && isBookkeepingTool(input.toolName),
+    ...(input.innerCallsSucceeded !== undefined && input.innerCallsSucceeded > 0
+      ? { toolInnerCalls: input.innerCallsSucceeded }
+      : {}),
   };
 }
