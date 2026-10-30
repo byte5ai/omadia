@@ -338,7 +338,7 @@ describe('answer cache — chat triage', () => {
     assert.ok(h.logs.includes('[fast-path] cache evicted tool=odoo_query reason=tool-error'));
   });
 
-  it('a slot-filled cached plan with no rows is a doubt: re-planned, entry kept', async () => {
+  it('a slot-filled cached plan with no rows is a doubt: re-planned, entry kept; still empty → agent', async () => {
     const h = harness();
     await h.ask('Offene Posten von Müller');
     await settled(h);
@@ -346,8 +346,9 @@ describe('answer cache — chat triage', () => {
     h.reply.records = [];
     const r = await h.ask('Offene Posten von Niemand');
     assert.equal(h.calls.length, 2, 'router + planner ran after the doubt');
-    assert.equal(r.kind, 'answer');
+    assert.equal(r.kind, 'agent', 'an empty result is never answered on the fast path');
     assert.ok(h.logs.includes('[fast-path] cache miss channel=web reason=cache-empty-result'));
+    assert.ok(h.logs.includes('[fast-path] miss channel=web reason=empty-result'));
     await settled(h);
     assert.equal(h.service.answerCache?.entries().length, 1);
   });
