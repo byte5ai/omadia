@@ -8555,3 +8555,40 @@ Entschieden (Marcel, 2026-10-16): sichtbarer Manifest-Text wird als
 - Admin-Mutationen schreiben `registry.create` / `registry.update` /
   `registry.delete` nach `admin_audit` (Actor via `auditActorFromRequest`, `url` und
   `has_token` vorher/nachher, nie das Token). Best-effort wie bei `install.ts`.
+
+## Chat-Turn-Start: Recall parallel zu `onBeforeTurn`, Plan-Gate-Skip per `routeHint`, leerer Memory-Index (2026-10-30)
+
+Live gemessen (Turn `b57516c9`, „Was geht morgen in Frankfurt ab?", opus-5-5):
+~25 s, davon vor dem ersten Hauptmodell-Aufruf rund 10 s rein serieller
+Vorlauf — Plan-Runner-Gate + Materialisierung (~2,8 s, alle Schritte danach
+übersprungen), Recall + C1-Scan des Session-Tails (~3 s kalt), und der
+einleitende `memory`-View des Modells auf ein `/memories`, das es nicht gab
+(~4 s, eine ganze Iteration). Drei Änderungen am Kernel:
+
+- **`startPriorContextRecall` (`orchestrator.ts`)** startet Recall +
+  `maskRecalledForWire` VOR `onBeforeTurn` und wartet erst danach — auf beiden
+  Pfaden. Die Promise ist vor-gehandelt (`recall.catch`), ein `blocked` der
+  Recall-Maske fliegt weiterhin dort, wo der sequenzielle Code warf (#1547).
+  Streaming: `bindTurnMemoryForTurn` steht jetzt vor der Direct-Line-
+  Entscheidung, und die Direct-Line-Entscheidung vor Hook + Recall — wie
+  `runTurnCore` im gepufferten Pfad; ein Direct-Line-Turn bekommt damit weder
+  Plan noch Recall-Scan auf seinem Receipt. Im `finally` eines früh beendeten
+  Streams wird ein noch laufender Recall abgewartet, BEVOR `closeUndeliveredPass`
+  die Prompt-Map des Turns verwirft — sonst legte dessen Maske die Map mit
+  Realwerten neu an, und nichts löschte sie mehr.
+- **`TurnHookPayload.routeHint`** (Host-Hook-Vertrag, kein plugin-api-Bump):
+  das Fast-Path-Urteil (`ChatTurnInput.routeHint`) reist mit `onBeforeTurn`.
+  Der Plan-Runner überspringt bei `simple` Gate und Materialisierung
+  (`[plan-runner] skipped (fast-path routed simple)`); Prozess-Reuse läuft davor
+  weiter, denn ein gelernter Prozess ist per Konstruktion mehrschrittig.
+- **`memoryIndexPrefetch.ts`:** „The path /memories does not exist" ist seit
+  #1635 ein leerer Index (`EMPTY_MEMORY_INDEX`), kein Skip — genau der live
+  häufigste Fall (noch nie geschriebener Baum) blieb vorher beim Modell-eigenen
+  View hängen. `turnStartOverlap.test.ts` pinnt, dass der Hint ihn trägt.
+- **`streaming.ts`** loggt pro Iteration `[<label>] iteration N ok model=… in=…
+  out=… cached=… stop=… ms=…`, damit die Hauptmodell-Runden im Fly-Log stehen
+  wie `[llm] complete ok … ms=` für die Hilfsmodelle.
+
+Tests: `test/orchestrator/turnStartOverlap.test.ts` (Overlap via Hook-Gate,
+`routeHint` im Payload, leerer Index im Hint, beide Pfade),
+`test/planRunnerRouteHint.test.ts`, `memoryIndexPrefetch.test.ts` ergänzt.

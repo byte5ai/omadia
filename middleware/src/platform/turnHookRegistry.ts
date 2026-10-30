@@ -39,6 +39,8 @@ export interface TurnHookContext {
 
 export interface TurnHookPayload {
   readonly userMessage?: string;
+  /** `onBeforeTurn`: the fast-path triage's verdict (see `@omadia/orchestrator`). */
+  readonly routeHint?: 'simple' | 'complex';
   readonly assistantAnswer?: string;
   readonly toolName?: string;
   readonly toolResult?: string;

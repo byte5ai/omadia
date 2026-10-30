@@ -385,6 +385,14 @@ export async function activate(
 
         // No reusable process → the original gate → LLM-materialise path.
         if (!result) {
+          // The fast-path triage already classified the turn as one direct
+          // answer or a single tool call: the gate would only re-decide that
+          // (and, for an open question, say PLAN for steps the orchestrator
+          // then skips wholesale). Two model calls saved on the critical path.
+          if (payload.routeHint === 'simple') {
+            ctx.log('[plan-runner] skipped (fast-path routed simple)');
+            return;
+          }
           if (!(await shouldPlan(userMessage, llm))) return;
           result = await materializePlan({
             planId: hookCtx.turnId,
