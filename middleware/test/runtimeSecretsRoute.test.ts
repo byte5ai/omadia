@@ -481,3 +481,58 @@ describe('runtime secrets route — schema-driven secret/config split', () => {
     assert.deepEqual(vaultKeys.sort(), ['app_password', 'tenant_id']);
   });
 });
+
+describe('runtime secrets route — boolean setup fields edited after install', () => {
+  let h: Harness;
+  afterEach(async () => {
+    if (h) await h.close();
+  });
+
+  const url = (): string =>
+    `${h.baseUrl}/api/v1/admin/runtime/installed/de.byte5.agent.test/secrets`;
+
+  it("stores 'true' / 'false' as real booleans, like the install path does", async () => {
+    h = await makeHarness({
+      setupFields: [
+        { key: 'card_trace', type: 'boolean' },
+        { key: 'card_follow_ups', type: 'boolean' },
+        { key: 'label', type: 'string' },
+      ],
+    });
+    const res = await fetch(url(), {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        set: { card_trace: 'false', card_follow_ups: 'true', label: 'false' },
+      }),
+    });
+    assert.equal(res.status, 200);
+    const config = h.registry.get('de.byte5.agent.test')?.config ?? {};
+    assert.equal(config['card_trace'], false);
+    assert.equal(config['card_follow_ups'], true);
+    // A string field that happens to say "false" stays a string.
+    assert.equal(config['label'], 'false');
+    const body = (await res.json()) as { config_values: Record<string, string> };
+    assert.equal(body.config_values['card_trace'], 'false');
+  });
+
+  it('refuses a boolean field value that is not true/false and writes nothing', async () => {
+    h = await makeHarness({
+      setupFields: [
+        { key: 'card_trace', type: 'boolean' },
+        { key: 'label', type: 'string' },
+      ],
+    });
+    const res = await fetch(url(), {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ set: { card_trace: 'ja', label: 'x' } }),
+    });
+    assert.equal(res.status, 400);
+    const body = (await res.json()) as { code: string; field: string };
+    assert.equal(body.code, 'runtime.setup_field_invalid');
+    assert.equal(body.field, 'card_trace');
+    const config = h.registry.get('de.byte5.agent.test')?.config ?? {};
+    assert.equal(config['label'], undefined);
+  });
+});
