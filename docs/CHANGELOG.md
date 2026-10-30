@@ -94,6 +94,9 @@ HR red-line fields left out).
 - The first real sighting sets the row's first-seen time.
 - The page shows such a field as "read from the Odoo schema, not seen in a chat
   yet" (en/de).
+  The list route re-classifies stored rows with the same input, so it also
+  shows `not_seen_yet` (it showed `name_detector_unavailable` in the first
+  deploy; the status was already the same).
 - A seeded field is not vetted (there is no sample to vet). An unknown
   relation target still gets one schema-only Haiku verdict (cached 30 days),
   so a person target turns `personal` before any chat.
