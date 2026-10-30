@@ -55,6 +55,12 @@ function invoiceRegistry(): { registry: NativeToolRegistry; invoice: ReturnType<
 /** One run of the scripted model: call the write tool, then answer. */
 const run = (input: unknown = INVOICE) => [toolCalls(['create_invoice', input]), text(ANSWER)];
 
+/** The memory calls the MODEL made — without the kernel's per-pass `/memories`
+ *  index prefetch (`memoryIndexPrefetch.ts`), which is not a tool call. */
+function modelReads(reads: unknown[]): unknown[] {
+  return reads.filter((r) => (r as { path?: unknown }).path !== '/memories');
+}
+
 describe('VerifierService.chat — a re-entry replays the first run, it never re-runs a write', () => {
   it('MUTATION CHECK: a borderline resample runs a declared write handler exactly once', async () => {
     const { registry, invoice } = invoiceRegistry();
@@ -176,7 +182,7 @@ describe('VerifierService.chat — a re-entry replays the first run, it never re
     const sa = await t.service.chat(REQUEST);
 
     assert.deepEqual(invoice.inputs, [INVOICE], 'the write replayed');
-    assert.deepEqual(memoryReads, [VIEW], 'the new read ran in the retry');
+    assert.deepEqual(modelReads(memoryReads), [VIEW], 'the new read ran in the retry');
     assert.deepEqual(sa.verifier, { status: 'corrected' }, 'the retry completed');
   });
 
@@ -199,7 +205,7 @@ describe('VerifierService.chat — a re-entry replays the first run, it never re
 
     const sa = await t.service.chat(REQUEST);
 
-    assert.deepEqual(memoryReads, [VIEW], 'the memory was read once');
+    assert.deepEqual(modelReads(memoryReads), [VIEW], 'the memory was read once');
     assert.deepEqual(sa.verifier, { status: 'corrected' }, 'the retry was delivered');
     assert.equal(sa.memoryUsed, true, 'the delivered answer still says memory fed it');
   });
