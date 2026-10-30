@@ -498,3 +498,15 @@ describe('extractFirstJsonObject — fenced / prefaced model output', () => {
     assert.ok(plan.ok);
   });
 });
+
+// 2026-10-30, v436: "Wie hoch sind die offenen Posten bei Kunden …?" → the
+// planner filtered partner_id.name ilike "Kunden" (the word, not a name) and
+// found nothing while 36 invoices were open (#1636 now hands empty results
+// to the agent; this keeps the planner from producing them).
+describe('live finding: role words are not name filters', () => {
+  it('the planner prompt tells the model generic role words are no names', async () => {
+    const { PLANNER_SYSTEM } = await import('../packages/harness-plugin-fast-path/src/planner.js');
+    assert.match(PLANNER_SYSTEM, /Generic role words — Kunden, Lieferanten, Mitarbeitende/);
+    assert.match(PLANNER_SYSTEM, /never as a name\/ilike filter/);
+  });
+});
