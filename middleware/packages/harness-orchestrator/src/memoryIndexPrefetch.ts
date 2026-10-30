@@ -21,6 +21,13 @@ const MEMORY_ROOT = '/memories';
  *  error or file read takes a different shape. */
 const LISTING_PREFIX = "Here're the files and directories";
 
+/** What the handler answers for a tree that has no `/memories` yet — the
+ *  common case for a fresh chat context. An index all the same: an empty one. */
+const MISSING_ROOT_PREFIX = `The path ${MEMORY_ROOT} does not exist`;
+
+/** The listing an empty tree is handed over as. */
+export const EMPTY_MEMORY_INDEX = `${MEMORY_ROOT} ist leer — in diesem Kontext gibt es noch keine Notizen.`;
+
 /** A listing longer than this is not inlined — the model then keeps the
  *  ordinary read convention for the turn (no partial index). */
 export const MEMORY_INDEX_MAX_CHARS = 6000;
@@ -38,6 +45,7 @@ export async function prefetchMemoryIndex(
   if (handler === undefined) return { ok: false, reason: 'no-handler' };
   try {
     const listing = await handler.handle({ command: 'view', path: MEMORY_ROOT });
+    if (listing.startsWith(MISSING_ROOT_PREFIX)) return { ok: true, listing: EMPTY_MEMORY_INDEX };
     if (!listing.startsWith(LISTING_PREFIX)) return { ok: false, reason: 'not-a-listing' };
     if (listing.length > MEMORY_INDEX_MAX_CHARS) return { ok: false, reason: 'too-large' };
     return { ok: true, listing };
