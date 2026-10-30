@@ -32,7 +32,7 @@ describe('<FieldClassificationBanner />', () => {
       <FieldClassificationBanner posture={posture({ fields_needing_clarification: 3 })} />,
     );
     const banner = screen.getByTestId('field-classification-banner');
-    expect(banner).toHaveTextContent('3 new fields need clarification');
+    expect(banner).toHaveTextContent('3 fields waiting for a decision');
     expect(banner.getAttribute('role')).toBe('status');
     expect(screen.getByRole('link', { name: /review fields/i }).getAttribute('href')).toBe(
       '/admin/privacy-fields?status=needs_clarification',
@@ -45,7 +45,7 @@ describe('<FieldClassificationBanner />', () => {
       { locale: 'de' },
     );
     expect(screen.getByTestId('field-classification-banner')).toHaveTextContent(
-      '1 neues Feld muss geklärt werden',
+      '1 Feld wartet auf eine Entscheidung',
     );
   });
 

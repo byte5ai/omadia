@@ -23,6 +23,7 @@ import type {
   FieldStatus,
   SampleVerdictSummary,
 } from './engine.js';
+import { isValidFieldIdentity } from './engine.js';
 
 export interface CandidateDecision {
   readonly action: DecisionAction;
@@ -308,6 +309,9 @@ export class PgFieldClassificationStore implements FieldClassificationStore {
     const result = await this.pool.query<{ status: string; n: string }>(
       `SELECT status, COUNT(*)::text AS n FROM privacy_field_candidates
         WHERE status IN ('needs_clarification', 'suggested', 'confirmed_conflict')
+          -- the page hides rows recorded before the grammar check; so does the count
+          AND field_path ~ '^[a-z_][a-z0-9_]*$'
+          AND tool_name ~* '^[a-z0-9_.-]+$'
         GROUP BY status`,
     );
     const of = (status: string): number =>
@@ -454,7 +458,7 @@ export class InMemoryFieldClassificationStore implements FieldClassificationStor
   }
 
   async countOpen(): Promise<OpenFieldCounts> {
-    const rows = [...this.rows.values()];
+    const rows = [...this.rows.values()].filter((r) => isValidFieldIdentity(r.toolName, r.fieldPath));
     return {
       needsClarification: rows.filter((r) => r.status === 'needs_clarification').length,
       suggested: rows.filter((r) => r.status === 'suggested').length,

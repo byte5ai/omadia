@@ -2045,8 +2045,9 @@ bekommt dafür einen `ClassifierContext` (`sourceTools`); Verben vererben
 Receipt: `operatorClearedFields`, Karte „Per Admin-Regel im Klartext". Test:
 `test/privacyNonPersonalFields1556.test.ts`.
 
-**Feldklassifizierung (#1556-Folge, privacy-guard 0.15.0, plugin-api
-1.49.0).** Guard: `fieldObservations.ts`, `fieldVetting.ts`,
+#### Feldklassifizierung (#1556-Folge)
+
+**Privacy-guard 0.15.0, plugin-api 1.49.0.** Guard: `fieldObservations.ts`, `fieldVetting.ts`,
 `v4/modelClassifier.ts`; Service-Methoden `takeFieldObservations`,
 `vetFieldSample`, `classifyModelsSchemaOnly`, `maskedFieldPreview`. Kernel:
 `src/privacy/fieldClassification/` (`modelCatalog`, `odooRelationResolver`
@@ -2054,7 +2055,9 @@ Receipt: `operatorClearedFields`, Karte „Per Admin-Regel im Klartext". Test:
 Migration `0065_privacy_field_classification`. Routen (requireAuth):
 `GET /api/v1/admin/privacy/field-classification`, `POST /:id/decision`
 (confirm/reject/keep_masked/revert, Fingerprint, 409), `GET /:id/preview`,
-`POST /recompute`. Posture: `fields_needing_clarification` (inkl.
+`POST /recompute`. `revert` hebt auch ein „rejected"/„kept masked" auf
+(Entscheidung gelöscht, Konfiguration unberührt) und entfernt bei
+„confirmed" genau die `tool:feld`-Zeile. Posture: `fields_needing_clarification` (inkl.
 `confirmed_conflict`), `fields_suggested_open`, `fields_confirmed_conflict`.
 Status `confirmed_conflict`: gelistetes Feld zeigt jetzt auf ein
 Personenmodell oder hat sich seit der Bestätigung geändert; `confirm` quittiert
@@ -5250,6 +5253,12 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 ---
 
 ## 13. Offene Roadmap
+
+- **Feldklassifizierung vorab (#1556-Folge):** Das Odoo-Plugin-Repo
+  (`byte5ai/omadia-integration-odoo`) soll Relationsziele vorab liefern
+  (`odoo_describe` mit `relation` oder ein Service `odoo.schema@1`), damit
+  Vorschläge auf `/admin/privacy-fields` vor dem ersten Chat entstehen. Heute
+  entstehen sie erst, wenn ein Tool-Ergebnis das Feld maskiert hat.
 
 ### Plan-Schritt-Zuordnung und Canvas-Vorschau (#1502, #1500)
 

@@ -203,7 +203,10 @@ playbook:
     Grundlage für die Vorschläge auf /admin/privacy-fields:
     `takeFieldObservations`, `vetFieldSample`, `classifyModelsSchemaOnly`,
     `maskedFieldPreview`. Fehlen sie, bleibt die Seite leer; maskiert wird wie
-    zuvor.
+    zuvor. Umgekehrt braucht dieses Plugin ab 0.15.0 zur Laufzeit
+    @omadia/plugin-api ab 1.49.0 (es importiert `parseLlmJson` daraus): mit
+    einem älteren Kernel lädt es nicht. Das gebündelte Plugin kommt immer mit
+    dem passenden Kernel; relevant ist das nur für eine hochgeladene Kopie.
 
 # ---------------------------------------------------------------------------
 # Permissions. Server-side compute plus ONE deliberate network target

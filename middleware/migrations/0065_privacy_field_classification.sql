@@ -48,15 +48,6 @@ CREATE TABLE IF NOT EXISTS privacy_field_candidates (
   UNIQUE (tool_name, field_path)
 );
 
--- A database that ran an earlier draft of this migration has the status
--- CHECK without `confirmed_conflict`; re-create it (idempotent).
-ALTER TABLE privacy_field_candidates
-  DROP CONSTRAINT IF EXISTS privacy_field_candidates_status_check;
-ALTER TABLE privacy_field_candidates
-  ADD CONSTRAINT privacy_field_candidates_status_check
-  CHECK (status IN ('suggested', 'needs_clarification', 'personal',
-                    'confirmed', 'confirmed_conflict', 'rejected', 'kept_masked'));
-
 CREATE INDEX IF NOT EXISTS privacy_field_candidates_status
   ON privacy_field_candidates (status);
 

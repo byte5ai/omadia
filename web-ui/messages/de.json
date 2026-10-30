@@ -6478,7 +6478,7 @@
     "detail": "Technisches Detail: {message}"
   },
   "privacyFieldBanner": {
-    "title": "{count, plural, one {# neues Feld muss geklärt werden} other {# neue Felder müssen geklärt werden}}",
+    "title": "{count, plural, one {# Feld wartet auf eine Entscheidung} other {# Felder warten auf eine Entscheidung}}",
     "body": "Tool-Ergebnisse enthielten maskierte Felder, die womöglich keine personenbezogenen Daten sind. Sie bleiben maskiert, bis ein Admin entscheidet.",
     "cta": "Felder prüfen"
   },

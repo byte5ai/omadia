@@ -6478,7 +6478,7 @@
     "detail": "Technical detail: {message}"
   },
   "privacyFieldBanner": {
-    "title": "{count, plural, one {# new field needs clarification} other {# new fields need clarification}}",
+    "title": "{count, plural, one {# field waiting for a decision} other {# fields waiting for a decision}}",
     "body": "Tool results contained masked fields that may not be personal data. They stay masked until an admin decides.",
     "cta": "Review fields"
   },

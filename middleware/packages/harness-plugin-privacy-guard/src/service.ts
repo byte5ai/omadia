@@ -112,10 +112,7 @@ import {
 } from './verifierProjection.js';
 import { createStoredTextScope } from './storedTextScope.js';
 import { createTurnSerialQueue } from './turnSerialQueue.js';
-import { withC1Priority } from './c1Detector.js';
-import { createFieldObservationRecorder } from './fieldObservations.js';
-import { maskedPreview, vetSample } from './fieldVetting.js';
-import { classifyModelsSchemaOnly } from './v4/modelClassifier.js';
+import { createFieldClassificationService } from './fieldClassificationService.js';
 
 /**
  * Collect the identity-bearing string(s) of a single field VALUE into `out`
@@ -718,10 +715,16 @@ export function createPrivacyGuardService(deps?: {
 
   // #760 — per-service fingerprint cache for the operator deny-list detector.
   const resolveCustomDetector = makeCustomDetectorResolver();
-  // #1556 follow-up — schema-only observations of masked Odoo fields plus a
-  // bounded, TTL'd value sample per field (never logged or persisted; only
-  // detector verdicts and a shape-masked preview leave the plugin).
-  const fieldObservations = createFieldObservationRecorder();
+  // #1556 follow-up — field-classification suggestions: schema-only
+  // observations and a bounded value sample (`fieldClassificationService.ts`).
+  const fieldClassification = createFieldClassificationService({
+    datasetOf: (turnId, datasetId) => stores.get(turnId)?.get(datasetId),
+    excludedTools: OBSERVATION_EXCLUDED_TOOLS,
+    customDetector: () => resolveCustomDetector(deps?.readConfig),
+    c1Detector: () =>
+      c1Configured() ? (deps?.c1NearMissDetector ?? deps?.c1Detector) : undefined,
+    ...(deps?.llmComplete !== undefined ? { llmComplete: deps.llmComplete } : {}),
+  });
   // Slice 2 — cached, Haiku-backed schema PII classifier. Process-scoped
   // (its cache spans turns — schema verdicts are tool-shape-stable). Absent
   // when no host LLM is wired.
@@ -943,21 +946,6 @@ export function createPrivacyGuardService(deps?: {
     );
   }
 
-  /** #1556 follow-up — observe the dataset's masked Odoo fields. Never
-   *  fails the intern; the log line carries no value. */
-  function recordFieldObservations(turnId: string, toolName: string, datasetId: string): void {
-    const dataset = stores.get(turnId)?.get(datasetId);
-    if (dataset === undefined) return;
-    try {
-      fieldObservations.record(toolName, dataset, OBSERVATION_EXCLUDED_TOOLS);
-    } catch (err) {
-      console.warn(
-        `[privacy-guard v4] fieldObservation failed turn=${turnId} tool=${toolName}: ` +
-          `${err instanceof Error ? err.name : 'error'}`,
-      );
-    }
-  }
-
   /** Intern a raw tool result, update the turn receipt, return the digest
    *  text + datasetId. Shared by `internToolResultV4` and the
    *  `subAgentResultV4` fallback so the receipt accounting lives in one
@@ -979,7 +967,7 @@ export function createPrivacyGuardService(deps?: {
       (f) => f.classification === 'sensitive-masked',
     ).length;
     recordOperatorCleared(turnId, toolName, digest.datasetId);
-    recordFieldObservations(turnId, toolName, digest.datasetId);
+    fieldClassification.record(turnId, toolName, digest.datasetId);
     const receipt = receiptFor(turnId);
     receipt.datasetsInterned += 1;
     receipt.fieldsMasked += maskedFields;
@@ -1518,44 +1506,7 @@ export function createPrivacyGuardService(deps?: {
       };
     },
 
-    takeFieldObservations() {
-      return fieldObservations.take();
-    },
-
-    async vetFieldSample(field) {
-      const key = { toolName: field.toolName, fieldPath: field.fieldPath };
-      const values = fieldObservations.sample(key);
-      fieldObservations.clearSample(key);
-      const customDetector = resolveCustomDetector(deps?.readConfig);
-      const c1Base = deps?.c1NearMissDetector ?? deps?.c1Detector;
-      const c1 =
-        c1Configured() && c1Base !== undefined ? withC1Priority(c1Base, 'background') : undefined;
-      const verdict = await vetSample({
-        ...key,
-        values,
-        ...(customDetector !== undefined ? { customDetector } : {}),
-        ...(c1 !== undefined ? { c1Detector: c1 } : {}),
-      });
-      console.log(
-        `[privacy-guard v4] fieldVetted tool=${verdict.toolName} field=${verdict.fieldPath} ` +
-          `samples=${String(verdict.sampleCount)} identityHit=${String(verdict.identityHit)} ` +
-          `c1=${verdict.c1} types=${JSON.stringify(verdict.hitTypes)}`,
-      );
-      return verdict;
-    },
-
-    async classifyModelsSchemaOnly(requests) {
-      return classifyModelsSchemaOnly(requests, deps?.llmComplete, (msg) => {
-        console.log(msg);
-      });
-    },
-
-    maskedFieldPreview(field) {
-      return maskedPreview(
-        fieldObservations.sample({ toolName: field.toolName, fieldPath: field.fieldPath }),
-        field.limit,
-      );
-    },
+    ...fieldClassification.methods,
 
     datasetProvenance(turnId, datasetId) {
       return datasetProvenanceOf(stores.get(turnId), datasetId);

@@ -398,7 +398,23 @@ export function createFieldClassificationRoutes(deps: FieldClassificationRouteDe
         at: now().toISOString(),
       };
       const shownAfter = liveStatus(candidate, rawConfig(), verdicts, decision);
-      await deps.store.saveDecision(id, decision, shownAfter.status);
+      try {
+        await deps.store.saveDecision(id, decision, shownAfter.status);
+      } catch (err) {
+        // No setting change without its decision row: undo the write, so a
+        // field never reaches the model in clear on a decision nobody can see.
+        if (configChange !== undefined) {
+          await writeConfigEntry(candidate, action === 'confirm' ? 'remove' : 'append').catch(
+            (undoErr: unknown) => {
+              console.error(
+                '[privacy-fields] undoing the setting change after a failed decision write failed:',
+                undoErr instanceof Error ? undoErr.message : undoErr,
+              );
+            },
+          );
+        }
+        throw err;
+      }
 
       if (deps.audit !== undefined) {
         try {
