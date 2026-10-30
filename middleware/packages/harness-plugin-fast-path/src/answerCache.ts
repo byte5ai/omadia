@@ -436,6 +436,16 @@ export function isCacheDoubt(outcome: { kind: string; cache?: CacheTicket }, row
 }
 
 /**
+ * A planned fetch that returned no rows is never answered on the fast path:
+ * the agent takes the turn. Measured live, the planner's query for "offene
+ * Posten" found nothing while 36 invoices (363k €) were open — the fast path
+ * answered "0 … 0,00" in 3 s and the answer cache kept it. An empty result is
+ * far more often a wrong filter than a true zero, and a true zero costs only
+ * the agent's latency; the plan is neither cached nor learned.
+ */
+export const EMPTY_RESULT_REASON = 'empty-result';
+
+/**
  * Book one executed triage plan: a cache-sourced plan that answered is kept
  * (hits, recency); one that missed is evicted — except a doubt, which says
  * nothing about the entry. An LLM-planned hit of a self-contained turn is

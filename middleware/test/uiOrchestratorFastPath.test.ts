@@ -362,14 +362,15 @@ describe('canvasChatAgent — deterministic fast path', () => {
     assert.ok(h.logs.some((m) => /\[ui-orchestrator\] fast-path hit tool=odoo_query rows=2 ms=\d+/.test(m)));
   });
 
-  it('hit with an empty result still says a correct sentence', async () => {
+  it('an empty result hands the turn to the agent — a wrong filter is likelier than a true zero', async () => {
     const h = await harness({ invoke: () => Promise.resolve(odooOutput([EMPLOYEES[1]])) });
     const events = await collect(h.agent.chatStream(turn()));
-    assert.equal(h.baseInputs.length, 0);
-    assert.deepEqual(
-      events.filter((e) => e.type === 'text_delta').map((e) => field(e, 'text')),
-      ['0 Mitarbeitende haben im Januar Geburtstag.'],
+    assert.equal(h.baseInputs.length, 1, 'the agent took the turn');
+    assert.ok(
+      !events.some((e) => e.type === 'text_delta' && String(field(e, 'text')).startsWith('0 Mitarbeitende')),
+      'no templated zero sentence',
     );
+    assert.ok(h.logs.some((m) => m.includes('fast-path miss reason=empty-result')));
   });
 
   it('saves the recipe (with its filter) — the next refresh is LLM-free and filtered too', async () => {
