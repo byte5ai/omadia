@@ -1,7 +1,7 @@
 /**
- * #1556 follow-up — field classification: the pure classifier, the config
- * helpers, and the recompute pass end to end against an in-memory store, a
- * stub privacy guard and a stub Odoo client.
+ * #1556 follow-up (contract v2) — field classification: the pure classifier,
+ * the scoped config helpers, and the recompute pass end to end against an
+ * in-memory store, a stub privacy guard and a stub Odoo client.
  */
 
 import { strict as assert } from 'node:assert';
@@ -24,7 +24,10 @@ import {
   configEntryOf,
   InvalidFieldEntryError,
   isValidFieldIdentity,
+  legacyEntries,
   removeConfigEntry,
+  replaceLegacyEntry,
+  type CandidateKey,
   type ClassifyInput,
   type ModelVerdictSummary,
 } from '../src/privacy/fieldClassification/engine.js';
@@ -38,18 +41,26 @@ import {
 import { InMemoryFieldClassificationStore } from '../src/privacy/fieldClassification/store.js';
 
 const CLEAN = { sampleCount: 12, identityHit: false, c1: 'clean', hitTypes: [] } as const;
+const DATASET = '0f5c1c3a-1111-4222-8333-444455556666';
 
 function input(over: Partial<ClassifyInput>): ClassifyInput {
   return {
     toolName: 'odoo_execute',
+    scope: 'hr.employee',
     fieldPath: 'department_id',
     valueShape: 'm2o',
-    sourceModels: ['hr.employee'],
     relationModels: ['hr.department'],
     sample: CLEAN,
     ...over,
   };
 }
+
+const key = (over: Partial<CandidateKey> = {}): CandidateKey => ({
+  toolName: 'odoo_execute',
+  scope: 'hr.employee',
+  fieldPath: 'department_id',
+  ...over,
+});
 
 const codes = (r: { reasons: readonly { code: string }[] }): string[] => r.reasons.map((x) => x.code);
 
@@ -130,10 +141,19 @@ describe('field classification — classifyCandidate', () => {
     ]);
   });
 
-  it('says so when the name detector could not vet the sample', () => {
-    const r = classifyCandidate(input({ sample: { ...CLEAN, c1: 'unavailable' } }));
-    assert.equal(r.status, 'suggested');
-    assert.deepEqual(codes(r), ['known_non_personal', 'name_detector_unavailable']);
+  it('without the name detector (or without a sample) it is never suggested', () => {
+    const unavailable = classifyCandidate(input({ sample: { ...CLEAN, c1: 'unavailable' } }));
+    assert.equal(unavailable.status, 'needs_clarification');
+    assert.deepEqual(codes(unavailable), ['known_non_personal', 'name_detector_unavailable']);
+
+    const empty = classifyCandidate(input({ sample: { ...CLEAN, sampleCount: 0 } }));
+    assert.equal(empty.status, 'needs_clarification');
+    assert.deepEqual(codes(empty), ['known_non_personal', 'name_detector_unavailable']);
+
+    const { sample: _none, ...noSample } = input({});
+    const none = classifyCandidate(noSample);
+    assert.equal(none.status, 'needs_clarification');
+    assert.ok(codes(none).includes('name_detector_unavailable'));
   });
 
   it('targets with mixed catalog verdicts need clarification', () => {
@@ -170,38 +190,60 @@ describe('field classification — classifyCandidate', () => {
     assert.deepEqual(noLlm.reasons, [{ code: 'unknown_model', models: ['x_custom.region'] }]);
   });
 
-  it('a field without relation information needs clarification', () => {
-    const r = classifyCandidate(
-      input({ valueShape: 'text', fieldPath: 'job_title', sourceModels: ['sale.order'], relationModels: [] }),
-    );
-    assert.equal(r.status, 'needs_clarification');
-    assert.deepEqual(codes(r), ['no_relation_info']);
+  it('a field without relation information follows its SOURCE verdict', () => {
+    const text = input({ valueShape: 'text', fieldPath: 'job_title', scope: 'sale.order', relationModels: [] });
+    const none = classifyCandidate(text);
+    assert.equal(none.status, 'needs_clarification');
+    assert.deepEqual(codes(none), ['no_relation_info']);
+
+    const withVerdict = (verdict: ModelVerdictSummary) =>
+      classifyCandidate({ ...text, modelVerdicts: new Map([['odoo_execute:sale.order', verdict]]) });
+    const yes = withVerdict({ verdict: 'non-personal', confidence: 0.85 });
+    assert.equal(yes.status, 'suggested');
+    assert.deepEqual(yes.reasons[0], { code: 'haiku_non_personal', model: 'odoo_execute:sale.order', confidence: 0.85 });
+    assert.equal(withVerdict({ verdict: 'personal', confidence: 0.9 }).status, 'personal');
+    assert.equal(withVerdict({ verdict: 'non-personal', confidence: 0.5 }).status, 'needs_clarification');
   });
 
-  it('is confirmed when the setting covers it, with wildcard_entry for a * entry only', () => {
+  it('a dataset column is judged by its source verdict, the detectors veto first', () => {
+    const column = input({
+      toolName: 'query_dataset',
+      scope: DATASET,
+      fieldPath: 'Abteilung',
+      valueShape: 'text',
+      relationModels: [],
+      modelVerdicts: new Map([[`query_dataset:${DATASET}`, { verdict: 'non-personal', confidence: 0.9 }]]),
+    });
+    assert.equal(classifyCandidate(column).status, 'suggested');
+    const vetoed = classifyCandidate({ ...column, sample: { ...CLEAN, c1: 'hit' } });
+    assert.equal(vetoed.status, 'personal');
+    assert.deepEqual(codes(vetoed), ['name_hit']);
+  });
+
+  it('confirmed by a scoped entry; a legacy entry adds legacy_entry', () => {
     const exact = classifyCandidate(
-      input({ coverage: configCoverage('odoo_execute:department_id', 'odoo_execute', 'department_id') }),
+      input({ coverage: configCoverage('odoo_execute:hr.employee/department_id', key()) }),
     );
     assert.equal(exact.status, 'confirmed');
-    assert.equal(codes(exact).includes('wildcard_entry'), false);
+    assert.equal(codes(exact).includes('legacy_entry'), false);
 
-    const bare = classifyCandidate(
-      input({ coverage: configCoverage('department_id', 'odoo_execute', 'department_id') }),
-    );
-    assert.equal(bare.status, 'confirmed');
-    assert.deepEqual(bare.reasons.at(-1), { code: 'wildcard_entry', entry: 'department_id' });
-
-    const star = configCoverage('a_id\n*:department_id', 'odoo_execute', 'department_id');
-    assert.deepEqual(star, { covered: true, exact: false, wildcardEntry: '*:department_id' });
-    assert.equal(configCoverage('odoo_other:department_id', 'odoo_execute', 'department_id').covered, false);
+    for (const entry of ['department_id', '*:department_id', 'odoo_execute:department_id']) {
+      const legacy = classifyCandidate(input({ coverage: configCoverage(`a_id\n${entry}`, key()) }));
+      assert.equal(legacy.status, 'confirmed', entry);
+      assert.deepEqual(legacy.reasons.at(-1), { code: 'legacy_entry', entry }, entry);
+    }
+    // The scoped entry of another model does not cover it.
+    assert.equal(configCoverage('odoo_execute:sale.order/department_id', key()).covered, false);
+    assert.equal(configCoverage('odoo_other:department_id', key()).covered, false);
+    assert.deepEqual(configCoverage('odoo_execute:hr.employee/department_id\n*:department_id', key()), {
+      covered: true,
+      exact: true,
+      legacyEntry: '*:department_id',
+    });
   });
 
   it('a decision holds until the fingerprint changes, then the field needs clarification again', () => {
-    const fp = candidateFingerprint({
-      sourceModels: ['hr.employee'],
-      relationModels: ['hr.department'],
-      valueShape: 'm2o',
-    });
+    const fp = candidateFingerprint({ scope: 'hr.employee', relationModels: ['hr.department'], valueShape: 'm2o' });
     const kept = classifyCandidate(input({ decision: { action: 'keep_masked', fingerprint: fp } }));
     assert.equal(kept.status, 'kept_masked');
     assert.equal(kept.fingerprint, fp);
@@ -210,7 +252,7 @@ describe('field classification — classifyCandidate', () => {
 
     const changed = classifyCandidate(
       input({
-        sourceModels: ['hr.employee', 'hr.applicant.public'],
+        relationModels: ['hr.department', 'hr.job'],
         decision: { action: 'reject', fingerprint: fp },
       }),
     );
@@ -218,31 +260,64 @@ describe('field classification — classifyCandidate', () => {
     assert.equal(changed.reasons[0]?.code, 'changed_since_decision');
   });
 
-  it('the fingerprint ignores order and duplicates', () => {
-    const a = candidateFingerprint({ sourceModels: ['b', 'a'], relationModels: ['x'], valueShape: 'm2o' });
-    const b = candidateFingerprint({ sourceModels: ['a', 'b', 'a'], relationModels: ['x'], valueShape: 'm2o' });
+  it('the fingerprint covers scope, relations and shape; ignores order and duplicates', () => {
+    const a = candidateFingerprint({ scope: 's', relationModels: ['y', 'x'], valueShape: 'm2o' });
+    const b = candidateFingerprint({ scope: 's', relationModels: ['x', 'y', 'x'], valueShape: 'm2o' });
     assert.equal(a, b);
-    assert.notEqual(a, candidateFingerprint({ sourceModels: ['a', 'b'], relationModels: ['x'], valueShape: 'text' }));
+    assert.notEqual(a, candidateFingerprint({ scope: 's', relationModels: ['x', 'y'], valueShape: 'text' }));
+    assert.notEqual(a, candidateFingerprint({ scope: 't', relationModels: ['x', 'y'], valueShape: 'm2o' }));
   });
 });
 
 describe('field classification — config entry edits', () => {
-  it('appends one tool:field line, without duplicates', () => {
-    assert.equal(appendConfigEntry(undefined, 'odoo_execute', 'job_id'), 'odoo_execute:job_id');
-    assert.equal(appendConfigEntry('*:a\n', 'odoo_execute', 'job_id'), '*:a\nodoo_execute:job_id');
-    assert.equal(appendConfigEntry('odoo_execute:job_id', 'odoo_execute', 'job_id'), 'odoo_execute:job_id');
+  it('appends one scoped line, without duplicates; datasets use the dataset form', () => {
+    assert.equal(appendConfigEntry(undefined, key({ fieldPath: 'job_id' })), 'odoo_execute:hr.employee/job_id');
+    assert.equal(
+      appendConfigEntry('*:a\n', key({ fieldPath: 'job_id' })),
+      '*:a\nodoo_execute:hr.employee/job_id',
+    );
+    assert.equal(
+      appendConfigEntry('odoo_execute:hr.employee/job_id', key({ fieldPath: 'job_id' })),
+      'odoo_execute:hr.employee/job_id',
+    );
+    assert.equal(
+      configEntryOf({ toolName: 'query_dataset', scope: DATASET, fieldPath: 'Abteilung Name' }),
+      `dataset:${DATASET}/Abteilung Name`,
+    );
+    assert.equal(configEntryOf({ toolName: 'mcp_tool', scope: '-', fieldPath: 'category' }), 'mcp_tool:-/category');
   });
 
-  it('removes exactly that entry and keeps everything else as written', () => {
+  it('removes exactly that scoped entry and keeps everything else as written', () => {
+    const k = key({ fieldPath: 'job_id' });
     assert.equal(
-      removeConfigEntry('*:job_id\nodoo_execute:job_id\nbad entry', 'odoo_execute', 'job_id'),
+      removeConfigEntry('*:job_id\nodoo_execute:hr.employee/job_id\nbad entry', k),
       '*:job_id\nbad entry',
     );
     assert.equal(
-      removeConfigEntry('odoo_execute:job_id, odoo_execute:company_id', 'odoo_execute', 'job_id'),
-      'odoo_execute:company_id',
+      removeConfigEntry('odoo_execute:hr.employee/job_id, odoo_execute:hr.employee/company_id', k),
+      'odoo_execute:hr.employee/company_id',
     );
-    assert.equal(removeConfigEntry('odoo_execute:job_id', 'odoo_execute', 'job_id'), '');
+    assert.equal(removeConfigEntry('odoo_execute:sale.order/job_id', k), 'odoo_execute:sale.order/job_id');
+    assert.equal(removeConfigEntry('odoo_execute:hr.employee/job_id', k), '');
+  });
+
+  it('lists legacy entries and replaces one by scoped entries, in place', () => {
+    const raw = 'a_id\nodoo_execute:hr.employee/x_id\n*:job_id, b_id\na_id';
+    assert.deepEqual(
+      legacyEntries(raw).map((l) => l.entry),
+      ['a_id', '*:job_id', 'b_id'],
+    );
+    assert.equal(
+      replaceLegacyEntry(raw, '*:job_id', ['odoo_execute:hr.employee/job_id', 'odoo_execute:hr.job/job_id']),
+      'a_id\nodoo_execute:hr.employee/x_id\nb_id\nodoo_execute:hr.employee/job_id\nodoo_execute:hr.job/job_id\na_id',
+    );
+    // Every occurrence goes, the replacement lands once; existing entries are not duplicated.
+    assert.equal(
+      replaceLegacyEntry(raw, 'a_id', ['odoo_execute:hr.employee/x_id', 'odoo_execute:sale.order/a_id']),
+      'odoo_execute:sale.order/a_id\nodoo_execute:hr.employee/x_id\n*:job_id, b_id',
+    );
+    assert.equal(replaceLegacyEntry(raw, 'odoo_execute:hr.employee/x_id', []), undefined, 'not legacy');
+    assert.equal(replaceLegacyEntry(raw, 'missing', []), undefined);
   });
 });
 
@@ -250,12 +325,12 @@ describe('field classification — config entry edits', () => {
 // Recompute
 // ---------------------------------------------------------------------------
 
-function obs(fieldPath: string, sourceModels: string[], over: Partial<FieldObservation> = {}): FieldObservation {
+function obs(fieldPath: string, scope: string, over: Partial<FieldObservation> = {}): FieldObservation {
   return {
     toolName: 'odoo_execute',
+    scope,
     fieldPath,
     valueShape: 'm2o',
-    sourceModels,
     seenCount: 3,
     firstSeenAt: '2026-10-30T08:00:00.000Z',
     lastSeenAt: '2026-10-30T09:00:00.000Z',
@@ -267,6 +342,7 @@ interface Harness {
   readonly store: InMemoryFieldClassificationStore;
   readonly haikuCalls: ModelClassificationRequest[][];
   readonly vetCalls: string[];
+  readonly odooCalls: string[];
   readonly configWrites: unknown[];
   run(config?: string): ReturnType<typeof recomputeFieldClassification>;
   queue(observations: FieldObservation[]): void;
@@ -280,6 +356,7 @@ function harness(opts: {
   const store = new InMemoryFieldClassificationStore();
   const haikuCalls: ModelClassificationRequest[][] = [];
   const vetCalls: string[] = [];
+  const odooCalls: string[] = [];
   const configWrites: unknown[] = [];
   let pending: FieldObservation[] = [];
   const guard: Partial<PrivacyGuardService> = {
@@ -288,10 +365,11 @@ function harness(opts: {
       pending = [];
       return out;
     },
-    vetFieldSample: async ({ toolName, fieldPath }) => {
-      vetCalls.push(fieldPath);
+    vetFieldSample: async ({ toolName, scope, fieldPath }) => {
+      vetCalls.push(`${scope}/${fieldPath}`);
       return {
         toolName,
+        scope,
         fieldPath,
         sampleCount: 5,
         identityHit: false,
@@ -313,6 +391,7 @@ function harness(opts: {
   const odoo = {
     execute: async (req: { model: string; method: string }) => {
       assert.equal(req.method, 'fields_get');
+      odooCalls.push(req.model);
       return opts.fields[req.model] ?? {};
     },
   };
@@ -331,13 +410,12 @@ function harness(opts: {
     store,
     haikuCalls,
     vetCalls,
+    odooCalls,
     configWrites,
     queue(observations) {
       pending = [...pending, ...observations];
     },
     run(config) {
-      // The deps carry a writer-capable registry (also as a service) on
-      // purpose: the pass must leave it untouched.
       return recomputeFieldClassification({
         store,
         serviceRegistry: {
@@ -359,62 +437,80 @@ const EMPLOYEE_FIELDS = {
     region_id: { type: 'many2one', relation: 'x_custom.region', string: 'Region' },
     job_title: { type: 'char', string: 'Job title' },
   },
+  'sale.order': {
+    department_id: { type: 'many2one', relation: 'hr.department', string: 'Department' },
+    note: { type: 'text', string: 'Terms' },
+  },
 };
 
+const statusOf = async (store: InMemoryFieldClassificationStore, scope: string, path: string) =>
+  (await store.list()).find((c) => c.scope === scope && c.fieldPath === path);
+
 describe('field classification — recompute', () => {
-  it('only odoo_* tools, no link keys and no mixed shapes become candidates', () => {
-    assert.equal(isCandidateObservation(obs('department_id', [])), true);
-    assert.equal(isCandidateObservation(obs('department_id', [], { toolName: 'query_dataset' })), false);
-    assert.equal(isCandidateObservation(obs('__k_Name', [])), false);
-    assert.equal(isCandidateObservation(obs('rows.__k_Name', [])), false);
-    assert.equal(isCandidateObservation(obs('x', [], { valueShape: 'mixed' })), false);
+  it('every tool is a candidate source except sub-agent and v4 verbs; no link keys, no mixed shapes', () => {
+    assert.equal(isCandidateObservation(obs('department_id', 'hr.employee')), true);
+    assert.equal(
+      isCandidateObservation(obs('Abteilung Name', DATASET, { toolName: 'query_dataset', valueShape: 'text' })),
+      true,
+    );
+    assert.equal(isCandidateObservation(obs('category', '-', { toolName: 'mcp_shop.list' })), true);
+    assert.equal(isCandidateObservation(obs('partner_id', 'sale.order', { toolName: 'sub-agent' })), false);
+    assert.equal(isCandidateObservation(obs('partner_id', '-', { toolName: 'v4_filter' })), false);
+    assert.equal(isCandidateObservation(obs('__k_Name', '-')), false);
+    assert.equal(isCandidateObservation(obs('rows.__k_Name', '-')), false);
+    assert.equal(isCandidateObservation(obs('x', '-', { valueShape: 'mixed' })), false);
   });
 
-  it('drops field paths, tool names and source models outside the Odoo grammar', () => {
-    for (const path of ['x\n*:partner_id', 'x,partner_id', 'x;partner_id', 'a b', '*', 'a:b', 'Name', 'a.b', '1x', '']) {
-      assert.equal(isCandidateObservation(obs(path, ['hr.department'])), false, JSON.stringify(path));
+  it('drops field paths, tool names and scopes that cannot form one scoped entry', () => {
+    for (const path of ['x\n*:partner_id', 'x,partner_id', 'x;partner_id', 'a:b', 'a/b', ' x', '']) {
+      assert.equal(isCandidateObservation(obs(path, 'hr.employee')), false, JSON.stringify(path));
     }
-    for (const toolName of ['odoo_x\n*', 'odoo_x:y', 'odoo x', 'odoo_*']) {
-      assert.equal(isCandidateObservation(obs('department_id', [], { toolName })), false, toolName);
+    for (const toolName of ['odoo_x\n*', 'odoo_x:y', 'odoo x', 'odoo_*', '*']) {
+      assert.equal(isCandidateObservation(obs('department_id', '-', { toolName })), false, toolName);
     }
-    assert.equal(isCandidateObservation(obs('department_id', [], { toolName: 'odoo_Execute.v2-x' })), true);
-    for (const model of ["x'; drop", 'Bad Model', 'res.partner\n*:x', '']) {
-      assert.equal(isCandidateObservation(obs('department_id', ['hr.employee', model])), false, model);
+    for (const scope of ["x'; drop", 'Bad Model', 'res.partner\n*:x', '', 'a/b']) {
+      assert.equal(isCandidateObservation(obs('department_id', scope)), false, scope);
     }
+    assert.equal(isValidFieldIdentity(key({ toolName: 'odoo_Execute.v2-x' })), true);
   });
 
-  it('one unreadable source model makes the relation unknown, not a partial answer (M1)', async () => {
-    const fields: Record<string, unknown> = {
-      'sale.order': { department_id: { type: 'many2one', relation: 'hr.department' } },
-      'x_custom.broken': 'not a schema',
-    };
-    const h = harness({ fields: fields as never });
-    h.queue([obs('department_id', ['sale.order', 'x_custom.broken'])]);
+  it('resolves the relation with fields_get on the scope model only', async () => {
+    const h = harness({ fields: EMPLOYEE_FIELDS });
+    h.queue([obs('department_id', 'hr.employee'), obs('category', '-', { toolName: 'mcp_shop', valueShape: 'text' })]);
     await h.run();
-    const [first] = await h.store.list();
-    assert.deepEqual(first?.relationModels, [], 'the partial answer is not taken');
+    assert.deepEqual(h.odooCalls, ['hr.employee']);
+    assert.deepEqual((await statusOf(h.store, 'hr.employee', 'department_id'))?.relationModels, ['hr.department']);
+  });
+
+  it('an unreadable scope model keeps the last relation; without one the field needs clarification', async () => {
+    const fields: Record<string, unknown> = { 'x_custom.broken': 'not a schema' };
+    const h = harness({ fields: fields as never });
+    h.queue([obs('department_id', 'x_custom.broken')]);
+    await h.run();
+    const first = await statusOf(h.store, 'x_custom.broken', 'department_id');
+    assert.deepEqual(first?.relationModels, []);
     assert.equal(first?.status, 'needs_clarification');
     assert.deepEqual(codes(first!), ['no_relation_info']);
 
-    fields['x_custom.broken'] = {};
+    fields['x_custom.broken'] = { department_id: { type: 'many2one', relation: 'hr.department' } };
     await h.run();
-    const [second] = await h.store.list();
+    const second = await statusOf(h.store, 'x_custom.broken', 'department_id');
     assert.deepEqual(second?.relationModels, ['hr.department']);
     assert.equal(second?.status, 'suggested');
   });
 
-  it('classifies, never sends a person model to the schema model, never writes config', async () => {
+  it('classifies Odoo fields, never sends a person model to the schema model, never writes config', async () => {
     const h = harness({
       fields: EMPLOYEE_FIELDS,
       haiku: (req) => ({ model: req.model, verdict: 'non-personal', confidence: 0.92, reason: 'regions' }),
     });
     h.queue([
-      obs('department_id', ['hr.employee']),
-      obs('parent_id', ['hr.employee']),
-      obs('address_id', ['hr.employee']),
-      obs('region_id', ['hr.employee']),
-      obs('job_title', ['hr.employee'], { valueShape: 'text' }),
-      obs('partner_id', ['sale.order'], { toolName: 'sub-agent' }),
+      obs('department_id', 'hr.employee'),
+      obs('parent_id', 'hr.employee'),
+      obs('address_id', 'hr.employee'),
+      obs('region_id', 'hr.employee'),
+      obs('job_title', 'hr.employee', { valueShape: 'text' }),
+      obs('partner_id', 'sale.order', { toolName: 'sub-agent' }),
     ]);
     const result = await h.run();
     assert.equal(result.candidates, 5);
@@ -424,10 +520,9 @@ describe('field classification — recompute', () => {
     assert.equal(byPath.get('parent_id')?.status, 'personal');
     assert.equal(byPath.get('address_id')?.status, 'personal');
     assert.equal(byPath.get('region_id')?.status, 'suggested');
-    // A text field of a person model is about that person.
+    // A text field of a person model is about that person — never asked.
     assert.equal(byPath.get('job_title')?.status, 'personal');
     assert.deepEqual(byPath.get('job_title')?.reasons, [{ code: 'person_model', models: ['hr.employee'] }]);
-    assert.deepEqual(byPath.get('department_id')?.relationModels, ['hr.department']);
     assert.deepEqual(byPath.get('department_id')?.maskedPreview, ['•••• & ••••']);
 
     const asked = h.haikuCalls.flat().map((r) => r.model);
@@ -444,14 +539,108 @@ describe('field classification — recompute', () => {
     assert.deepEqual(h.configWrites, []);
   });
 
-  it('marks a field confirmed only from the existing setting, never by itself', async () => {
+  it('a generic source goes to the schema model once per source, schema only', async () => {
+    const h = harness({
+      fields: EMPLOYEE_FIELDS,
+      haiku: (req) =>
+        req.model === `query_dataset:${DATASET}`
+          ? { model: req.model, verdict: 'non-personal', confidence: 0.9, reason: 'org data' }
+          : { model: req.model, verdict: 'personal', confidence: 0.9, reason: 'customers' },
+    });
+    h.queue([
+      obs('Abteilung', DATASET, { toolName: 'query_dataset', valueShape: 'text', label: 'Abteilung' }),
+      obs('Standort', DATASET, { toolName: 'query_dataset', valueShape: 'text' }),
+      obs('customer', '-', { toolName: 'mcp_shop', valueShape: 'text' }),
+      obs('note', 'sale.order', { valueShape: 'text' }),
+    ]);
+    await h.run();
+    const requests = h.haikuCalls.flat();
+    assert.equal(h.haikuCalls.length, 1, 'one call for all requests');
+    assert.deepEqual(
+      requests.map((r) => r.model).sort(),
+      ['mcp_shop:-', 'odoo_execute:sale.order', `query_dataset:${DATASET}`],
+    );
+    assert.deepEqual(requests.find((r) => r.model === `query_dataset:${DATASET}`)?.fields, [
+      { path: 'Abteilung', label: 'Abteilung' },
+      { path: 'Standort' },
+    ]);
+    assert.deepEqual(requests.find((r) => r.model === 'odoo_execute:sale.order')?.fields, [
+      { path: 'note', label: 'Terms' },
+    ]);
+    // Schema only: no request carries a sampled value.
+    assert.equal(JSON.stringify(requests).includes('••'), false);
+
+    assert.equal((await statusOf(h.store, DATASET, 'Abteilung'))?.status, 'suggested');
+    assert.equal((await statusOf(h.store, DATASET, 'Standort'))?.status, 'suggested');
+    assert.equal((await statusOf(h.store, '-', 'customer'))?.status, 'personal');
+
+    // Cached per source; a new field of the source re-asks only that source.
+    await h.run();
+    assert.equal(h.haikuCalls.length, 1);
+    h.queue([obs('Kostenstelle', DATASET, { toolName: 'query_dataset', valueShape: 'text' })]);
+    await h.run();
+    assert.equal(h.haikuCalls.length, 2);
+    assert.deepEqual(h.haikuCalls[1]?.map((r) => r.model), [`query_dataset:${DATASET}`]);
+  });
+
+  it('a source whose field set changed and gets no fresh answer does not keep its old verdict', async () => {
+    let answer = true;
+    const h = harness({
+      fields: {},
+      haiku: (req) => ({
+        model: answer ? req.model : 'something-else',
+        verdict: 'non-personal',
+        confidence: 0.9,
+        reason: '',
+      }),
+    });
+    h.queue([obs('category', '-', { toolName: 'mcp_shop', valueShape: 'text' })]);
+    await h.run();
+    assert.equal((await statusOf(h.store, '-', 'category'))?.status, 'suggested');
+    answer = false;
+    h.queue([obs('buyer', '-', { toolName: 'mcp_shop', valueShape: 'text' })]);
+    await h.run();
+    assert.equal((await statusOf(h.store, '-', 'buyer'))?.status, 'needs_clarification');
+    assert.equal((await statusOf(h.store, '-', 'category'))?.status, 'needs_clarification');
+  });
+
+  it('a scoped entry confirms only its model; a legacy entry confirms every model', async () => {
     const h = harness({ fields: EMPLOYEE_FIELDS });
-    h.queue([obs('department_id', ['hr.employee'])]);
+    h.queue([obs('department_id', 'hr.employee'), obs('department_id', 'sale.order')]);
+    await h.run('odoo_execute:hr.employee/department_id');
+    assert.equal((await statusOf(h.store, 'hr.employee', 'department_id'))?.status, 'confirmed');
+    assert.equal((await statusOf(h.store, 'sale.order', 'department_id'))?.status, 'suggested');
+
     await h.run('odoo_execute:department_id');
-    assert.equal((await h.store.list())[0]?.status, 'confirmed');
+    for (const scope of ['hr.employee', 'sale.order']) {
+      const c = await statusOf(h.store, scope, 'department_id');
+      assert.equal(c?.status, 'confirmed', scope);
+      assert.deepEqual(c?.reasons.at(-1), { code: 'legacy_entry', entry: 'odoo_execute:department_id' });
+    }
     await h.run(undefined);
-    assert.equal((await h.store.list())[0]?.status, 'suggested');
+    assert.equal((await statusOf(h.store, 'hr.employee', 'department_id'))?.status, 'suggested');
     assert.deepEqual(h.configWrites, []);
+  });
+
+  it('drift is per scope: a changed relation flags only that scope as a conflict', async () => {
+    const fields = structuredClone(EMPLOYEE_FIELDS) as Record<string, Record<string, { type: string; relation?: string }>>;
+    const h = harness({ fields });
+    h.queue([obs('department_id', 'hr.employee'), obs('department_id', 'sale.order')]);
+    const config = 'odoo_execute:hr.employee/department_id\nodoo_execute:sale.order/department_id';
+    await h.run(config);
+    for (const c of await h.store.list()) {
+      await h.store.saveDecision(
+        c.id,
+        { action: 'confirm', fingerprint: c.fingerprint, byId: null, byEmail: 'a@x', at: '2026-10-30T10:00:00.000Z' },
+        'confirmed',
+      );
+    }
+    fields['sale.order']!['department_id'] = { type: 'many2one', relation: 'x_custom.team' };
+    await h.run(config);
+    assert.equal((await statusOf(h.store, 'hr.employee', 'department_id'))?.status, 'confirmed');
+    const drifted = await statusOf(h.store, 'sale.order', 'department_id');
+    assert.equal(drifted?.status, 'confirmed_conflict');
+    assert.equal(drifted?.reasons[0]?.code, 'confirmed_conflict');
   });
 
   it('a detector hit makes a known non-personal field personal', async () => {
@@ -459,14 +648,23 @@ describe('field classification — recompute', () => {
       fields: EMPLOYEE_FIELDS,
       samples: { department_id: { c1: 'hit', hitTypes: ['person'] } },
     });
-    h.queue([obs('department_id', ['hr.employee'])]);
+    h.queue([obs('department_id', 'hr.employee')]);
     await h.run();
     assert.equal((await h.store.list())[0]?.status, 'personal');
   });
 
+  it('without the name detector a known non-personal field needs clarification', async () => {
+    const h = harness({ fields: EMPLOYEE_FIELDS, samples: { department_id: { c1: 'unavailable' } } });
+    h.queue([obs('department_id', 'hr.employee')]);
+    await h.run();
+    const [c] = await h.store.list();
+    assert.equal(c?.status, 'needs_clarification');
+    assert.deepEqual(codes(c!), ['known_non_personal', 'name_detector_unavailable']);
+  });
+
   it('without the schema model an unknown target needs clarification', async () => {
     const h = harness({ fields: EMPLOYEE_FIELDS });
-    h.queue([obs('region_id', ['hr.employee'])]);
+    h.queue([obs('region_id', 'hr.employee')]);
     await h.run();
     const [c] = await h.store.list();
     assert.equal(c?.status, 'needs_clarification');
@@ -478,7 +676,7 @@ describe('field classification — recompute', () => {
       fields: EMPLOYEE_FIELDS,
       haiku: (req) => ({ model: req.model, verdict: 'uncertain', confidence: 0, reason: '' }),
     });
-    h.queue([obs('region_id', ['hr.employee'])]);
+    h.queue([obs('region_id', 'hr.employee')]);
     await h.run();
     assert.equal((await h.store.list())[0]?.status, 'needs_clarification');
     await h.run();
@@ -518,35 +716,31 @@ describe('field classification — scheduler', () => {
 describe('field classification — security review fixes', () => {
   it('M2: a field without relation info read from a person model is personal', () => {
     const name = classifyCandidate(
-      input({ fieldPath: 'name', valueShape: 'text', sourceModels: ['res.partner'], relationModels: [] }),
+      input({ fieldPath: 'name', valueShape: 'text', scope: 'res.partner', relationModels: [] }),
     );
     assert.equal(name.status, 'personal');
     assert.deepEqual(name.reasons, [{ code: 'person_model', models: ['res.partner'] }]);
 
-    const value = classifyCandidate(
+    // Even a confident source verdict does not clear a person model's text.
+    const confident = classifyCandidate(
       input({
-        fieldPath: 'value',
+        fieldPath: 'name',
         valueShape: 'text',
-        sourceModels: ['sale.order', 'hr.employee'],
+        scope: 'res.partner',
         relationModels: [],
+        modelVerdicts: new Map([['odoo_execute:res.partner', { verdict: 'non-personal', confidence: 0.99 }]]),
       }),
     );
-    assert.equal(value.status, 'personal');
-    assert.deepEqual(value.reasons, [{ code: 'person_model', models: ['hr.employee'] }]);
+    assert.equal(confident.status, 'personal');
 
-    // A resolved non-person relation wins over the person SOURCE model.
-    const dept = classifyCandidate(input({ sourceModels: ['hr.employee'], relationModels: ['hr.department'] }));
-    assert.equal(dept.status, 'suggested');
+    // A resolved non-person relation wins over the person SCOPE model.
+    assert.equal(classifyCandidate(input({})).status, 'suggested');
   });
 
   describe('H1: confirmed_conflict', () => {
-    const covered = configCoverage('odoo_execute:x_id', 'odoo_execute', 'x_id');
+    const covered = configCoverage('odoo_execute:hr.employee/x_id', key({ fieldPath: 'x_id' }));
     const personal = { fieldPath: 'x_id', relationModels: ['res.partner'], coverage: covered };
-    const personalFp = candidateFingerprint({
-      sourceModels: ['hr.employee'],
-      relationModels: ['res.partner'],
-      valueShape: 'm2o',
-    });
+    const personalFp = candidateFingerprint({ scope: 'hr.employee', relationModels: ['res.partner'], valueShape: 'm2o' });
 
     it('a covered field whose base status is personal is a conflict', () => {
       const r = classifyCandidate(input(personal));
@@ -557,7 +751,7 @@ describe('field classification — security review fixes', () => {
     it('a covered field whose fingerprint changed since the confirm is a conflict', () => {
       const r = classifyCandidate(
         input({
-          coverage: configCoverage('odoo_execute:department_id', 'odoo_execute', 'department_id'),
+          coverage: configCoverage('odoo_execute:hr.employee/department_id', key()),
           decision: { action: 'confirm', fingerprint: 'an-older-fingerprint' },
         }),
       );
@@ -566,52 +760,47 @@ describe('field classification — security review fixes', () => {
     });
 
     it('an acknowledged conflict (confirm on the current fingerprint) stays confirmed, reason kept', () => {
-      const r = classifyCandidate(
-        input({ ...personal, decision: { action: 'confirm', fingerprint: personalFp } }),
-      );
+      const r = classifyCandidate(input({ ...personal, decision: { action: 'confirm', fingerprint: personalFp } }));
       assert.equal(r.status, 'confirmed');
       assert.deepEqual(r.reasons, [{ code: 'person_model', models: ['res.partner'] }]);
     });
 
-    it('a wildcard entry covering a person field is a conflict too', () => {
+    it('a legacy entry covering a person field is a conflict too', () => {
       const r = classifyCandidate(
-        input({ ...personal, coverage: configCoverage('*:x_id', 'odoo_execute', 'x_id') }),
+        input({ ...personal, coverage: configCoverage('*:x_id', key({ fieldPath: 'x_id' })) }),
       );
       assert.equal(r.status, 'confirmed_conflict');
-      assert.deepEqual(codes(r), ['confirmed_conflict', 'person_model', 'wildcard_entry']);
+      assert.deepEqual(codes(r), ['confirmed_conflict', 'person_model', 'legacy_entry']);
     });
 
     it('a covered non-personal field without a confirm decision stays confirmed', () => {
-      const r = classifyCandidate(
-        input({ coverage: configCoverage('odoo_execute:department_id', 'odoo_execute', 'department_id') }),
-      );
+      const r = classifyCandidate(input({ coverage: configCoverage('odoo_execute:hr.employee/department_id', key()) }));
       assert.equal(r.status, 'confirmed');
     });
   });
 
-  describe('H2: config entries are exactly one tool:field', () => {
-    const injected = ['x\n*:partner_id', 'x,partner_id', 'x;partner_id', 'a b', '*', 'a:b', ''];
+  describe('H2: config entries are exactly one scoped entry', () => {
+    const injected = ['x\n*:partner_id', 'x,partner_id', 'x;partner_id', 'a:b', 'a/b', ' a', ''];
 
     it('configEntryOf and appendConfigEntry refuse paths that would add other entries', () => {
       for (const path of injected) {
-        assert.throws(() => configEntryOf('odoo_execute', path), InvalidFieldEntryError, JSON.stringify(path));
+        const k = key({ fieldPath: path });
+        assert.throws(() => configEntryOf(k), InvalidFieldEntryError, JSON.stringify(path));
         assert.throws(
-          () => appendConfigEntry('odoo_execute:job_id', 'odoo_execute', path),
+          () => appendConfigEntry('odoo_execute:hr.employee/job_id', k),
           InvalidFieldEntryError,
           JSON.stringify(path),
         );
-        assert.equal(isValidFieldIdentity('odoo_execute', path), false, JSON.stringify(path));
+        assert.equal(isValidFieldIdentity(k), false, JSON.stringify(path));
       }
-      assert.throws(() => configEntryOf('*', 'partner_id'), InvalidFieldEntryError);
-      assert.throws(() => configEntryOf('odoo:x', 'partner_id'), InvalidFieldEntryError);
-      assert.equal(configEntryOf('odoo_execute', 'job_id'), 'odoo_execute:job_id');
-      assert.equal(isValidFieldIdentity('odoo_execute', 'job_id'), true);
+      assert.throws(() => configEntryOf(key({ toolName: '*' })), InvalidFieldEntryError);
+      assert.throws(() => configEntryOf(key({ toolName: 'odoo:x' })), InvalidFieldEntryError);
+      assert.throws(() => configEntryOf(key({ scope: 'Bad Scope' })), InvalidFieldEntryError);
+      assert.equal(configEntryOf(key({ fieldPath: 'job_id' })), 'odoo_execute:hr.employee/job_id');
     });
 
-    it('the grammar also refuses names the parser would accept', () => {
-      assert.equal(isValidFieldIdentity('odoo_execute', 'Name'), false);
-      assert.equal(isValidFieldIdentity('odoo_execute', 'a.b'), false);
-      assert.equal(isValidFieldIdentity('odoo_execute', '__k_name'), false, 'the parser refuses link keys');
+    it('link keys are never an entry', () => {
+      assert.equal(isValidFieldIdentity(key({ fieldPath: '__k_name' })), false);
     });
   });
 });

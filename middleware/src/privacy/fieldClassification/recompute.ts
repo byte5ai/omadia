@@ -2,20 +2,27 @@
  * Field classification (#1556 follow-up) — the recompute pass and its
  * scheduler.
  *
- * One pass: drain the privacy guard's field observations, upsert them as
- * candidates, resolve what each field points to (Odoo `fields_get` only),
- * take the shape-masked preview and THEN vet the value sample (vetting drops
- * the sample) for new/changed candidates or ones without a verdict, ask the
- * guard's small model about unknown non-person relation targets (cached 30
- * days), classify and persist.
+ * One pass: drain the privacy guard's field observations (one per tool +
+ * scope + field), upsert them as candidates, resolve what each field points
+ * to — Odoo `fields_get` on the scope model only, when the scope is an Odoo
+ * model and the Odoo client is there — take the shape-masked preview and
+ * THEN vet the value sample (vetting drops the sample) for new/changed
+ * candidates or ones without a verdict, ask the guard's small model about
+ * unknown non-person relation targets and about sources without relation
+ * information (ONE schema-only request per source `<tool>:<scope>`; cached
+ * 30 days, re-asked when the source's field set changes), classify and
+ * persist.
  *
  * It NEVER writes the guard's config — it has no writer to call. It runs on
  * lifecycle events (plugin activation/deactivation), every 6 hours and on
  * `POST /recompute`; never per chat turn. Debounced and single-flight.
  */
 
+import { createHash } from 'node:crypto';
+
 import {
   PRIVACY_REDACT_SERVICE_NAME,
+  type FieldKey,
   type FieldObservation,
   type ModelClassificationRequest,
   type PrivacyGuardService,
@@ -27,6 +34,7 @@ import {
   configCoverage,
   isValidFieldIdentity,
   resolveStatus,
+  sourceKeyOf,
   type ModelVerdictSummary,
   type SampleVerdictSummary,
 } from './engine.js';
@@ -38,14 +46,20 @@ import {
   type FieldRelationInfo,
   type OdooExecuteClient,
 } from './odooRelationResolver.js';
-import type { FieldCandidate, FieldClassificationStore } from './store.js';
+import type { FieldCandidate, FieldClassificationStore, StoredModelVerdict } from './store.js';
 
-/** v1 scope: Odoo tools only. */
-export const CANDIDATE_TOOL_PREFIX = 'odoo_';
+/** Never candidates: a sub-agent's prose narration (its keys are whatever
+ *  that model wrote). The guard does not observe them either. */
+export const EXCLUDED_CANDIDATE_TOOLS: ReadonlySet<string> = new Set(['sub-agent']);
+/** v4 verbs work on datasets the guard already observed at their source. */
+export const EXCLUDED_CANDIDATE_TOOL_PREFIX = 'v4_';
 export const MODEL_VERDICT_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const RECOMPUTE_DEBOUNCE_MS = 5_000;
 export const RECOMPUTE_INTERVAL_MS = 6 * 60 * 60 * 1000;
+/** Shape-masked preview strings stored per candidate. */
 export const PREVIEW_LIMIT = 5;
+/** Longest field label sent to the schema model / shown on the page. */
+const MAX_LABEL_LENGTH = 200;
 
 export interface RecomputeDeps {
   readonly store: FieldClassificationStore;
@@ -67,27 +81,54 @@ function hasLinkKeySegment(path: string): boolean {
   return path.split('.').some((segment) => segment.startsWith('__k_'));
 }
 
+/** A label is schema text: one line, bounded, no control characters. */
+function isUsableLabel(label: string | undefined): label is string {
+  return (
+    label !== undefined &&
+    label.length > 0 &&
+    label.length <= MAX_LABEL_LENGTH &&
+    // eslint-disable-next-line no-control-regex
+    !/[\u0000-\u001f\u007f]/u.test(label)
+  );
+}
+
 /**
- * Only `odoo_*` tools, no link keys, no `mixed` shapes are candidates. Tool
- * names, field paths (Odoo field grammar) and source models (Odoo model
- * grammar) are raw tool-result data: anything outside the grammar is dropped
- * here, so the store, the audit log, log lines and — on confirm — the
- * setting only ever see validated names.
+ * Every interned tool's fields are candidates (decision Marcel, 2026-10-30)
+ * except a sub-agent's narration, v4 verbs, link keys and `mixed` shapes.
+ * Tool names, scopes and field paths are raw tool-result data: anything that
+ * cannot form exactly one scoped `non_personal_fields` entry is dropped here,
+ * so the store, the audit log, log lines and — on confirm — the setting only
+ * ever see validated names.
  */
 export function isCandidateObservation(obs: FieldObservation): boolean {
   return (
-    obs.toolName.startsWith(CANDIDATE_TOOL_PREFIX) &&
-    isValidFieldIdentity(obs.toolName, obs.fieldPath) &&
+    !EXCLUDED_CANDIDATE_TOOLS.has(obs.toolName) &&
+    !obs.toolName.startsWith(EXCLUDED_CANDIDATE_TOOL_PREFIX) &&
+    isValidFieldIdentity(obs) &&
     !hasLinkKeySegment(obs.fieldPath) &&
-    obs.sourceModels.every((model) => MODEL_NAME.test(model)) &&
     obs.valueShape !== 'mixed'
   );
 }
+
+/** The observation as stored: an unusable label is dropped, not the field. */
+function storableObservation(obs: FieldObservation): FieldObservation {
+  if (obs.label === undefined || isUsableLabel(obs.label)) return obs;
+  const { label: _dropped, ...rest } = obs;
+  return rest;
+}
+
+/** Is the scope an Odoo model name (not `-`, not a dataset id)? */
+export function isModelScope(scope: string): boolean {
+  return MODEL_NAME.test(scope);
+}
+
+const NO_RELATION_INFO: FieldRelationInfo = { known: false, relationModels: [], fieldDocs: [] };
 
 interface Resolved {
   readonly candidate: FieldCandidate;
   readonly relationModels: readonly string[];
   readonly fieldDocs: FieldRelationInfo['fieldDocs'];
+  readonly label?: string;
   readonly fingerprint: string;
   readonly sample?: SampleVerdictSummary;
   readonly freshSample?: SampleVerdictSummary;
@@ -102,23 +143,31 @@ function needsVetting(candidate: FieldCandidate, fingerprint: string): boolean {
   );
 }
 
+export function fieldKeyOf(candidate: FieldCandidate): FieldKey {
+  return { toolName: candidate.toolName, scope: candidate.scope, fieldPath: candidate.fieldPath };
+}
+
 async function resolveCandidate(
   candidate: FieldCandidate,
   resolver: ReturnType<typeof createOdooRelationResolver>,
   guard: PrivacyGuardService | undefined,
   log: (msg: string) => void,
 ): Promise<Resolved> {
-  const info = await resolver.resolve(candidate.sourceModels, candidate.fieldPath);
-  // Odoo unreachable (or one source model unreadable) this pass: keep what the
+  // Odoo resolution on the scope model only; any other source has no
+  // relation metadata and goes to the source verdict.
+  const info = isModelScope(candidate.scope)
+    ? await resolver.resolve([candidate.scope], candidate.fieldPath)
+    : NO_RELATION_INFO;
+  // Odoo unreachable (or the scope model unreadable) this pass: keep what the
   // last pass resolved, so a flaky connection does not flip every decided
   // field to "changed".
   const relationModels = info.known ? info.relationModels : candidate.relationModels;
   const fingerprint = candidateFingerprint({
-    sourceModels: candidate.sourceModels,
+    scope: candidate.scope,
     relationModels,
     valueShape: candidate.valueShape,
   });
-  const field = { toolName: candidate.toolName, fieldPath: candidate.fieldPath };
+  const field = fieldKeyOf(candidate);
   // Preview BEFORE vetting: vetting drops the guard's sample.
   const maskedPreview = guard?.maskedFieldPreview?.({ ...field, limit: PREVIEW_LIMIT });
   let freshSample: SampleVerdictSummary | undefined;
@@ -140,10 +189,12 @@ async function resolveCandidate(
     freshSample !== undefined && (freshSample.sampleCount > 0 || candidate.sampleVerdict === null)
       ? freshSample
       : (candidate.sampleVerdict ?? undefined);
+  const label = [info.fieldLabel, candidate.label ?? undefined].find(isUsableLabel);
   return {
     candidate,
     relationModels,
     fieldDocs: info.fieldDocs,
+    ...(label !== undefined ? { label } : {}),
     fingerprint,
     ...(sample !== undefined ? { sample } : {}),
     ...(freshSample !== undefined && sample === freshSample ? { freshSample } : {}),
@@ -151,77 +202,171 @@ async function resolveCandidate(
   };
 }
 
+/** A schema-only request, with the field-set hash of a source request. */
+export interface VerdictRequest extends ModelClassificationRequest {
+  /** Set for a source (`<tool>:<scope>`) request; empty for a relation target. */
+  readonly fieldsHash: string;
+}
+
+/** The hash of a source's field paths: a new field re-asks the verdict. */
+export function sourceFieldsHash(paths: readonly string[]): string {
+  return createHash('sha1')
+    .update(JSON.stringify([...new Set(paths)].sort()))
+    .digest('hex');
+}
+
+function vetoed(r: Resolved): boolean {
+  return r.sample?.identityHit === true || r.sample?.c1 === 'hit';
+}
+
+type RequestField = ModelClassificationRequest['fields'][number];
+
+function addField(byKey: Map<string, RequestField[]>, key: string, field: RequestField): void {
+  const fields = byKey.get(key) ?? [];
+  if (!fields.some((f) => f.path === field.path)) fields.push(field);
+  byKey.set(key, fields);
+}
+
 /**
- * Unknown relation targets the schema model must judge: only of candidates
- * that reach that step (no person target, no detector veto, every target
- * unknown). Person models are never in the result.
+ * What the schema model must judge, only for candidates that reach that
+ * step (no person target or person scope, no detector veto):
+ *   - unknown relation targets (every target unknown to the catalog);
+ *   - sources without relation information — ONE request per source
+ *     `<tool>:<scope>` with all its such fields (path + label).
+ * Person models are never in the result, and no value ever is.
  */
-export function modelsNeedingVerdict(resolved: readonly Resolved[]): ModelClassificationRequest[] {
-  const byModel = new Map<string, { path: string; label?: string; help?: string }[]>();
+export function modelsNeedingVerdict(resolved: readonly Resolved[]): VerdictRequest[] {
+  const byModel = new Map<string, RequestField[]>();
+  const bySource = new Map<string, RequestField[]>();
   for (const r of resolved) {
+    if (vetoed(r)) continue;
     const targets = r.relationModels;
-    if (targets.length === 0 || targets.some(isPersonModel)) continue;
-    if (r.sample?.identityHit === true || r.sample?.c1 === 'hit') continue;
+    const path = r.candidate.fieldPath;
+    if (targets.length === 0) {
+      if (isPersonModel(r.candidate.scope)) continue;
+      addField(bySource, sourceKeyOf(r.candidate), {
+        path,
+        ...(r.label !== undefined ? { label: r.label } : {}),
+      });
+      continue;
+    }
+    if (targets.some(isPersonModel)) continue;
     if (!targets.every((m) => catalogVerdictOf(m) === 'unknown')) continue;
     for (const model of targets) {
-      const fields = byModel.get(model) ?? [];
       const doc = r.fieldDocs.find((d) => d.relation === model);
-      if (!fields.some((f) => f.path === r.candidate.fieldPath)) {
-        fields.push({
-          path: r.candidate.fieldPath,
-          ...(doc?.label !== undefined ? { label: doc.label } : {}),
-          ...(doc?.help !== undefined ? { help: doc.help } : {}),
-        });
-      }
-      byModel.set(model, fields);
+      addField(byModel, model, {
+        path,
+        ...(doc?.label !== undefined ? { label: doc.label } : {}),
+        ...(doc?.help !== undefined ? { help: doc.help } : {}),
+      });
     }
   }
-  return [...byModel.entries()]
+  const models: VerdictRequest[] = [...byModel.entries()]
     .filter(([model]) => !isPersonModel(model))
-    .map(([model, fields]) => ({ model, fields }));
+    .map(([model, fields]) => ({ model, fields, fieldsHash: '' }));
+  const sources: VerdictRequest[] = [...bySource.entries()].map(([model, fields]) => ({
+    model,
+    fields,
+    fieldsHash: sourceFieldsHash(fields.map((f) => f.path)),
+  }));
+  return [...models, ...sources];
+}
+
+function isFirm(v: StoredModelVerdict | undefined): boolean {
+  return v?.verdict === 'personal' || v?.verdict === 'non-personal';
+}
+
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+async function askSchemaModel(
+  guard: PrivacyGuardService | undefined,
+  missing: readonly VerdictRequest[],
+  log: (msg: string) => void,
+): Promise<Map<string, ModelVerdictSummary & { reason: string }>> {
+  const answers = new Map<string, ModelVerdictSummary & { reason: string }>();
+  if (missing.length === 0 || guard?.classifyModelsSchemaOnly === undefined) return answers;
+  try {
+    const results = await guard.classifyModelsSchemaOnly(
+      missing.map(({ fieldsHash: _hash, ...request }) => request),
+    );
+    const asked = new Set(missing.map((r) => r.model));
+    for (const r of results) {
+      if (asked.has(r.model)) {
+        answers.set(r.model, { verdict: r.verdict, confidence: r.confidence, reason: r.reason });
+      }
+    }
+  } catch (err) {
+    log(`[privacy-fields] classifyModelsSchemaOnly failed: ${errorText(err)}`);
+  }
+  return answers;
 }
 
 async function loadModelVerdicts(
-  requests: readonly ModelClassificationRequest[],
+  requests: readonly VerdictRequest[],
   deps: RecomputeDeps,
   guard: PrivacyGuardService | undefined,
   now: Date,
 ): Promise<Map<string, ModelVerdictSummary>> {
   const verdicts = new Map<string, ModelVerdictSummary>();
   if (requests.length === 0) return verdicts;
-  const cached = await deps.store.modelVerdicts(
-    requests.map((r) => r.model),
-    new Date(now.getTime() - MODEL_VERDICT_TTL_MS),
+  const cached = new Map(
+    (
+      await deps.store.modelVerdicts(
+        requests.map((r) => r.model),
+        new Date(now.getTime() - MODEL_VERDICT_TTL_MS),
+      )
+    ).map((v) => [v.model, v]),
   );
-  for (const v of cached) verdicts.set(v.model, { verdict: v.verdict, confidence: v.confidence });
+  // A source verdict asked about another field set is stale: re-asked, and
+  // never applied to fields it did not see.
+  const stale = new Set(
+    requests
+      .filter((r) => cached.has(r.model) && cached.get(r.model)!.fieldsHash !== r.fieldsHash)
+      .map((r) => r.model),
+  );
+  for (const [model, v] of cached) {
+    if (!stale.has(model)) verdicts.set(model, { verdict: v.verdict, confidence: v.confidence });
+  }
   // A cached `uncertain` (also what "no LLM / call failed" looks like) is
   // asked again every pass; firm verdicts hold for the TTL.
   const missing = requests.filter(
-    (r) => verdicts.get(r.model)?.verdict !== 'personal' &&
-      verdicts.get(r.model)?.verdict !== 'non-personal' &&
-      !isPersonModel(r.model),
+    (r) => (stale.has(r.model) || !isFirm(cached.get(r.model))) && !isPersonModel(r.model),
   );
-  if (missing.length === 0 || guard?.classifyModelsSchemaOnly === undefined) return verdicts;
-  try {
-    const results = await guard.classifyModelsSchemaOnly(missing);
-    const asked = new Set(missing.map((r) => r.model));
-    const fresh = results.filter((r) => asked.has(r.model));
-    for (const r of fresh) verdicts.set(r.model, { verdict: r.verdict, confidence: r.confidence });
+  const answers = await askSchemaModel(guard, missing, deps.log ?? (() => undefined));
+  const toSave: Omit<StoredModelVerdict, 'decidedAt'>[] = [];
+  for (const r of missing) {
+    const answer = answers.get(r.model);
+    if (answer !== undefined) {
+      verdicts.set(r.model, { verdict: answer.verdict, confidence: answer.confidence });
+      toSave.push({
+        model: r.model,
+        verdict: answer.verdict,
+        source: 'haiku',
+        confidence: answer.confidence,
+        reason: answer.reason.slice(0, 500),
+        fieldsHash: r.fieldsHash,
+      });
+    } else if (stale.has(r.model)) {
+      // No fresh answer for a changed source: replace the stale verdict with
+      // `uncertain`, so the page (which reads the cache) does not apply it
+      // to fields it never saw either.
+      verdicts.set(r.model, { verdict: 'uncertain', confidence: 0 });
+      toSave.push({
+        model: r.model,
+        verdict: 'uncertain',
+        source: 'haiku',
+        confidence: 0,
+        reason: '',
+        fieldsHash: r.fieldsHash,
+      });
+    }
+  }
+  if (toSave.length > 0) {
     // Cached as well (the page reads verdicts from the cache), but see above:
     // an `uncertain` one is re-asked next pass.
-    await deps.store.saveModelVerdicts(
-      fresh.map((r) => ({
-          model: r.model,
-          verdict: r.verdict,
-          source: 'haiku' as const,
-          confidence: r.confidence,
-          reason: r.reason.slice(0, 500),
-        })),
-    );
-  } catch (err) {
-    deps.log?.(
-      `[privacy-fields] classifyModelsSchemaOnly failed: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    await deps.store.saveModelVerdicts(toSave);
   }
   return verdicts;
 }
@@ -232,12 +377,10 @@ export async function recomputeFieldClassification(deps: RecomputeDeps): Promise
   const guard = deps.serviceRegistry.get<PrivacyGuardService>(PRIVACY_REDACT_SERVICE_NAME);
 
   const observations = (guard?.takeFieldObservations?.() ?? []).filter(isCandidateObservation);
-  for (const obs of observations) await deps.store.upsertObservation(obs);
+  for (const obs of observations) await deps.store.upsertObservation(storableObservation(obs));
 
-  // Rows stored before the grammar check are never classified (or listed).
-  const candidates = (await deps.store.list()).filter((c) =>
-    isValidFieldIdentity(c.toolName, c.fieldPath),
-  );
+  // Rows that cannot form one scoped entry are never classified (or listed).
+  const candidates = (await deps.store.list()).filter((c) => isValidFieldIdentity(c));
   const resolver = createOdooRelationResolver(
     deps.serviceRegistry.get<OdooExecuteClient>(ODOO_CLIENT_SERVICE_NAME),
     { log },
@@ -254,10 +397,8 @@ export async function recomputeFieldClassification(deps: RecomputeDeps): Promise
   for (const r of resolved) {
     const { candidate } = r;
     const base = classifyBase({
-      toolName: candidate.toolName,
-      fieldPath: candidate.fieldPath,
+      ...fieldKeyOf(candidate),
       valueShape: candidate.valueShape,
-      sourceModels: candidate.sourceModels,
       relationModels: r.relationModels,
       ...(r.sample !== undefined ? { sample: r.sample } : {}),
       modelVerdicts,
@@ -265,7 +406,7 @@ export async function recomputeFieldClassification(deps: RecomputeDeps): Promise
     const shown = resolveStatus(
       base,
       r.fingerprint,
-      configCoverage(rawConfig, candidate.toolName, candidate.fieldPath),
+      configCoverage(rawConfig, candidate),
       candidate.decision,
     );
     await deps.store.saveClassification(candidate.id, {

@@ -71,7 +71,14 @@ export type AuditAction =
   // (confirm / reject / keep_masked / revert). Confirm and revert also change
   // the privacy guard's `non_personal_fields`; `before`/`after` carry the
   // shown status and, for those two, that setting. Never a field value.
+  // Also a legacy-entry conversion (`legacy/convert`): `before`/`after`
+  // carry the setting.
   | 'privacy.field_classification'
+  // Contract v2 (2026-10-30) — an admin opened a field's REAL value preview
+  // on the field-classification page. `target` names the field
+  // (`privacy-field:<tool>:<scope>/<path>`), `after` only the number of
+  // values shown. Never a value.
+  | 'privacy.field_preview'
   // #1490 — an uploaded (or Hub-fetched), not installed package was removed.
   | 'plugin.package_remove'
   // #1342 — a stdio MCP server was saved (manual or catalog import). It runs

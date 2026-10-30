@@ -988,6 +988,8 @@ export interface FieldClassificationReason {
   confidence?: number;
   hitTypes?: string[];
   sampleCount?: number;
+  /** `legacy_entry`: the legacy entry (as written) that covers the field. */
+  entry?: string;
 }
 
 export interface FieldClassificationDecision {
@@ -999,13 +1001,21 @@ export interface FieldClassificationDecision {
 export interface FieldClassificationItem {
   id: string;
   toolName: string;
+  /**
+   * What the field's rows belong to: an Odoo model (`hr.employee`), an
+   * uploaded dataset's id (tool `query_dataset`), or `-` when the source
+   * names no model. One item per tool + scope + field.
+   */
+  scope: string;
   fieldPath: string;
+  /** The field's schema label where the source has one. */
+  label: string | null;
   valueShape: 'm2o' | 'text' | 'mixed';
-  sourceModels: string[];
   relationModels: string[];
   status: FieldClassificationStatus;
   reasons: FieldClassificationReason[];
-  /** The `tool:field` line confirm adds to `non_personal_fields`. */
+  /** The scoped entry confirm adds to `non_personal_fields`
+   *  (`<tool>:<scope>/<field>`, `dataset:<id>/<column>`). */
   configEntry: string;
   /** Sent back with a decision; a changed candidate answers 409. */
   fingerprint: string;
@@ -1038,9 +1048,9 @@ export async function listFieldClassifications(
 
 /**
  * Record an admin decision. Throws `ApiError` 409 with code
- * `stale_fingerprint` when the candidate changed since it was loaded, or
- * `covered_by_wildcard` (body carries `entry`) when a revert targets a field
- * that a `*:` / bare entry covers.
+ * `stale_fingerprint` when the candidate changed since it was loaded,
+ * `covered_by_legacy` (body carries `entry`) when a revert targets a field a
+ * legacy entry (`tool:field`, `*:field`, `field`) covers, or `invalid_field`.
  */
 export async function decideFieldClassification(
   id: string,
@@ -1053,14 +1063,77 @@ export async function decideFieldClassification(
   );
 }
 
-/** Shape-masked sample values (never the values themselves). */
-export async function previewFieldClassification(
-  id: string,
-): Promise<{ samples: string[] }> {
-  const path = `${FIELD_CLASSIFICATION_BASE}/${encodeURIComponent(id)}/preview`;
-  const body = await getJson<{ samples: string[] }>(path);
-  return { samples: expectArray<string>(body.samples, path, 'samples') };
+export interface FieldClassificationPreview {
+  /** REAL buffered values — admins only; every call writes an audit row
+   *  (`privacy.field_preview`). Empty when nothing is buffered. */
+  samples: string[];
+  /** Shape-masked strings (no letter or digit), the fallback. */
+  maskedSamples: string[];
 }
+
+/** The field's sample: real values (audited) plus the masked fallback. */
+export async function previewFieldClassification(id: string): Promise<FieldClassificationPreview> {
+  const path = `${FIELD_CLASSIFICATION_BASE}/${encodeURIComponent(id)}/preview`;
+  const body = await getJson<Partial<FieldClassificationPreview>>(path);
+  return {
+    samples: expectArray<string>(body.samples ?? [], path, 'samples'),
+    maskedSamples: expectArray<string>(body.maskedSamples ?? [], path, 'maskedSamples'),
+  };
+}
+
+/** A field a legacy entry covers, with the scoped entry a conversion writes. */
+export interface LegacyCoveredField {
+  id: string;
+  toolName: string;
+  scope: string;
+  fieldPath: string;
+  configEntry: string;
+}
+
+/** A legacy `non_personal_fields` entry — it applies to every model. */
+export interface LegacyFieldEntry {
+  entry: string;
+  covers: LegacyCoveredField[];
+}
+
+export async function listLegacyFieldEntries(): Promise<{ entries: LegacyFieldEntry[] }> {
+  const path = `${FIELD_CLASSIFICATION_BASE}/legacy`;
+  const body = await getJson<{ entries: LegacyFieldEntry[] }>(path);
+  return {
+    entries: expectArray<LegacyFieldEntry>(body.entries, path, 'entries').map((e) => ({
+      ...e,
+      covers: Array.isArray(e.covers) ? e.covers : [],
+    })),
+  };
+}
+
+export interface LegacyConversionResult {
+  entry: string;
+  /** Scoped entries written in place of the legacy one. */
+  added: string[];
+  /** Covered fields that could not be written as one scoped entry. */
+  skipped: { toolName: string; scope: string; fieldPath: string }[];
+  /** Ids of covered fields that stay `confirmed_conflict` (not acknowledged). */
+  conflicts: string[];
+}
+
+/**
+ * Replace one legacy entry by scoped entries for every field it covers.
+ * Throws `ApiError` 409 `legacy_entry_not_found` when the entry is gone.
+ */
+export async function convertLegacyFieldEntry(entry: string): Promise<LegacyConversionResult> {
+  const body = await postJson<Partial<LegacyConversionResult>>(
+    `${FIELD_CLASSIFICATION_BASE}/legacy/convert`,
+    { entry },
+  );
+  return {
+    entry: body.entry ?? entry,
+    added: Array.isArray(body.added) ? body.added : [],
+    skipped: Array.isArray(body.skipped) ? body.skipped : [],
+    conflicts: Array.isArray(body.conflicts) ? body.conflicts : [],
+  };
+}
+
 
 export async function recomputeFieldClassifications(): Promise<{ computedAt: string | null }> {
   return postJson<{ computedAt: string | null }>(

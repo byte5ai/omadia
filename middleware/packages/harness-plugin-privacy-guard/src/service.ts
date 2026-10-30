@@ -153,8 +153,9 @@ const CANVAS_PRODUCER_TOOLS: ReadonlySet<string> = new Set([
 ]);
 
 /** #1556 follow-up — tools whose results are never field-classification
- *  candidates, on top of the `odoo_` scope: sub-agent narration and the
- *  canvas producers (their rows come from an already-observed source). */
+ *  candidates: sub-agent narration and the canvas producers (their rows come
+ *  from an already-observed source). `v4_*` verbs are excluded by the
+ *  recorder itself; intern-exempt tools never reach intern. */
 const OBSERVATION_EXCLUDED_TOOLS: ReadonlySet<string> = new Set([
   'sub-agent',
   ...CANVAS_PRODUCER_TOOLS,
@@ -753,7 +754,7 @@ export function createPrivacyGuardService(deps?: {
         console.log(
           `[privacy-guard v4] nonPersonalFields entries=${String(parsed.entries.length)}` +
             (parsed.rejected.length > 0
-              ? ` rejected=${JSON.stringify(parsed.rejected)} — use tool:field, *:field or field; __k_ link keys are never allowed`
+              ? ` rejected=${JSON.stringify(parsed.rejected)} — use tool:model/field, dataset:<uuid>/column, tool:-/field, or legacy tool:field / *:field / field; __k_ link keys are never allowed`
               : ''),
         );
       }
@@ -937,11 +938,16 @@ export function createPrivacyGuardService(deps?: {
       entries = new Map();
       operatorClearedFields.set(turnId, entries);
     }
+    const scope = dataset?.provenance.sources?.[0]?.scope;
     for (const f of cleared) {
-      entries.set(`${toolName}\u0000${f.path}`, { toolName, field: f.path });
+      entries.set(`${toolName}\u0000${scope ?? ''}\u0000${f.path}`, {
+        toolName,
+        field: f.path,
+        ...(scope !== undefined ? { scope } : {}),
+      });
     }
     console.log(
-      `[privacy-guard v4] nonPersonalCleared turn=${turnId} tool=${toolName} ` +
+      `[privacy-guard v4] nonPersonalCleared turn=${turnId} tool=${toolName} scope=${scope ?? '-'} ` +
         `fields=${JSON.stringify([...new Set(cleared.map((f) => f.path))])}`,
     );
   }

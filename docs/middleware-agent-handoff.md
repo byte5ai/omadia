@@ -2039,34 +2039,64 @@ Digest-Audience `public-api` für `/api/v1/mcp` (#1542, #1543, #1559, #1561).
 `nonPersonalFields.ts` (`parseNonPersonalFields`, `nonPersonalFieldRule`) →
 `createShapeClassifier({ nonPersonal })`: ein gelistetes Feld aus Text oder
 Odoo-Paaren `[id, "Label"]` wird Typ `label`, `safe-cleartext`. Der Classifier
-bekommt dafür einen `ClassifierContext` (`sourceTools`); Verben vererben
-`provenance.sourceTools` (Join/Union: alle Quellen müssen das Feld listen).
+bekommt dafür einen `ClassifierContext` (`sources`: Tool + Scope); Verben vererben
+`provenance.sources` (Join/Union: alle Quellen müssen das Feld abdecken).
 `labelOf` lässt Filter/Sort auf dem Label arbeiten, der Digest zeigt Labels.
 Receipt: `operatorClearedFields`, Karte „Per Admin-Regel im Klartext". Test:
 `test/privacyNonPersonalFields1556.test.ts`.
 
-#### Feldklassifizierung (#1556-Folge)
+#### Feldklassifizierung (#1556-Folge, Contract v2 vom 2026-10-30)
 
-**Privacy-guard 0.15.0, plugin-api 1.49.0.** Guard: `fieldObservations.ts`, `fieldVetting.ts`,
-`v4/modelClassifier.ts`; Service-Methoden `takeFieldObservations`,
-`vetFieldSample`, `classifyModelsSchemaOnly`, `maskedFieldPreview`. Kernel:
-`src/privacy/fieldClassification/` (`modelCatalog`, `odooRelationResolver`
-— nur `fields_get` —, `engine`, `store`, `recompute`, `routes`, `guardConfig`),
-Migration `0065_privacy_field_classification`. Routen (requireAuth):
+**Guard:** `fieldObservations.ts`, `fieldVetting.ts`, `v4/modelClassifier.ts`;
+Service-Methoden `takeFieldObservations`, `vetFieldSample`,
+`classifyModelsSchemaOnly`, `maskedFieldPreview`, neu `fieldSampleForAdmin`
+(echte Werte, nur für die Admin-Vorschau). Schlüssel ist `FieldKey`
+(`toolName`, `scope`, `fieldPath`); eine Beobachtung je Tool + Scope + Feld
+(`sourceModels` entfällt). Scope: Odoo-Modell (Tool-Input/Envelope `model`),
+Datensatz-ID bei `query_dataset`, sonst `-` (`scopeOf` in
+`v4/datasetStore.ts`). Kandidaten kommen aus allen internierten Tools außer
+`sub-agent`, Canvas-Produzenten und `v4_*`.
+
+**Einträge:** scoped `<tool>:<scope>/<feld>` bzw. `dataset:<uuid>/<spalte>`
+(`formatScopedEntry`, `entryCovers`, `nonPersonalFieldRule(entries)(sources,
+path)` in `nonPersonalFields.ts`); Alt-Einträge `tool:feld`, `*:feld`, `feld`
+gelten weiter für alle Modelle.
+
+**Kernel:** `src/privacy/fieldClassification/` (`modelCatalog`,
+`odooRelationResolver` — nur `fields_get` auf dem Scope-Modell —, `engine`,
+`store`, `recompute`, `routes`, `guardConfig`), Migration
+`0065_privacy_field_classification` (Kandidat eindeutig über `tool_name`,
+`scope`, `field_path`; `label`; Verdict-Cache mit `fields_hash`). Quellen ohne
+Relationsinformation (Textfelder, Datensätze, MCP-/Plugin-Tools) bekommen eine
+Schema-Anfrage an Haiku je Quelle `<tool>:<scope>` (Pfade + Labels), gecacht
+in `privacy_model_verdicts`, neu gefragt bei geänderter Feldmenge. Ohne C1
+(Namenserkennung) nie `suggested`, sondern `needs_clarification` mit
+`name_detector_unavailable`. Fingerprint = Scope + Relationsmodelle + Form;
+Drift und `confirmed_conflict` je Tool + Scope + Feld.
+
+**Routen (requireAuth, jede Session ist Admin):**
 `GET /api/v1/admin/privacy/field-classification`, `POST /:id/decision`
-(confirm/reject/keep_masked/revert, Fingerprint, 409), `GET /:id/preview`,
-`POST /recompute`. `revert` hebt auch ein „rejected"/„kept masked" auf
-(Entscheidung gelöscht, Konfiguration unberührt) und entfernt bei
-„confirmed" genau die `tool:feld`-Zeile. Posture: `fields_needing_clarification` (inkl.
-`confirmed_conflict`), `fields_suggested_open`, `fields_confirmed_conflict`.
-Status `confirmed_conflict`: gelistetes Feld zeigt jetzt auf ein
-Personenmodell oder hat sich seit der Bestätigung geändert; `confirm` quittiert
-ohne Config-Änderung. Feldpfad-/Tool-/Modell-Grammatik in Guard und Kernel,
-409 `invalid_field`. Web-UI: `/admin/privacy-fields`,
-`FieldClassificationBanner`, Nav-Badge. `parseLlmJson` liegt jetzt in
-plugin-api. Offen (§13): Odoo-Plugin-Repo soll Relationen vorab liefern
-(`odoo_describe` mit `relation` oder `odoo.schema@1`), damit Vorschläge vor
-dem ersten Chat entstehen.
+(confirm/reject/keep_masked/revert, Fingerprint, 409), `GET /:id/preview`
+(`{ samples, maskedSamples }`: echte Werte aus `fieldSampleForAdmin`, max. 10,
+plus maskierter Fallback; schreibt Audit `privacy.field_preview` mit Ziel
+`privacy-field:<tool>:<scope>/<pfad>` und nur `{count}`; ohne Audit-Log keine
+echten Werte), `GET /legacy` (Alt-Einträge + abgedeckte Felder),
+`POST /legacy/convert {entry}` (ersetzt genau diesen Alt-Eintrag durch scoped
+Einträge der gesehenen Felder, Plugin-Lock, Audit mit Setting vorher/nachher,
+409 `legacy_entry_not_found`), `POST /recompute`. Confirm schreibt den scoped
+Eintrag (409 `invalid_field`, wenn er nicht genau einen Eintrag ergibt);
+`revert` entfernt ihn, bei Abdeckung durch einen Alt-Eintrag 409
+`covered_by_legacy`; nur über einen Alt-Eintrag abgedeckt → `confirmed` mit
+Grund `legacy_entry`. `revert` hebt auch „rejected"/„kept masked" auf.
+Posture: `fields_needing_clarification` (inkl. `confirmed_conflict`),
+`fields_suggested_open`, `fields_confirmed_conflict`. Web-UI:
+`/admin/privacy-fields` (Quelle + Scope je Feld, Vorschau mit Hinweis „nur
+für Admins, wird protokolliert"), `?view=legacy` (Alt-Einträge umwandeln),
+`FieldClassificationBanner`, Nav-Badge, Audit-Filter
+`privacy.field_preview`. `parseLlmJson` liegt in plugin-api. Offen (§13):
+Odoo-Plugin-Repo soll Relationen vorab liefern (`odoo_describe` mit
+`relation` oder `odoo.schema@1`), damit Vorschläge vor dem ersten Chat
+entstehen.
 
 ### Conductor-Cancel + Approval-Härtung (#759)
 

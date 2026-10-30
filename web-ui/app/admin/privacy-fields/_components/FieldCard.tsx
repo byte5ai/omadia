@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useState } from 'react';
 import { useFormatter, useTranslations } from 'next-intl';
 
@@ -7,11 +8,15 @@ import { Button } from '@/app/_components/ui/Button';
 import {
   type FieldClassificationAction,
   type FieldClassificationItem,
+  type FieldClassificationPreview,
   type FieldClassificationStatus,
   previewFieldClassification,
 } from '../../../_lib/api';
 import { serverErrorMessage } from '../../../_lib/apiErrorMessage';
-import { formatWhen, modelList, reasonText } from './fieldText';
+import { formatWhen, modelList, reasonText, scopeText } from './fieldText';
+
+/** The legacy-entries view of the page (`?view=legacy`). */
+export const LEGACY_VIEW_HREF = '/admin/privacy-fields?view=legacy';
 
 /**
  * Which decisions the kernel accepts per status (see the field-classification
@@ -50,14 +55,14 @@ export type CardNotice =
   | { kind: 'saved'; entry: string }
   | { kind: 'stale' }
   | { kind: 'gone' }
-  | { kind: 'wildcard'; entry: string }
+  | { kind: 'legacy'; entry: string }
   | { kind: 'invalid' }
   | { kind: 'error'; detail: string | null };
 
 type PreviewState =
   | { kind: 'hidden' }
   | { kind: 'loading' }
-  | { kind: 'shown'; samples: string[] }
+  | ({ kind: 'shown' } & FieldClassificationPreview)
   | { kind: 'error'; detail: string | null };
 
 export function FieldCard({
@@ -83,8 +88,8 @@ export function FieldCard({
     }
     setPreview({ kind: 'loading' });
     try {
-      const { samples } = await previewFieldClassification(item.id);
-      setPreview({ kind: 'shown', samples });
+      const sample = await previewFieldClassification(item.id);
+      setPreview({ kind: 'shown', ...sample });
     } catch (err) {
       setPreview({ kind: 'error', detail: serverErrorMessage(err) });
     }
@@ -93,6 +98,7 @@ export function FieldCard({
   const decidedAt = formatWhen(item.decision?.at, format);
   const lastSeen = formatWhen(item.lastSeenAt, format);
   const actions = actionsFor(item.status);
+  const legacyEntry = item.reasons.find((r) => r.code === 'legacy_entry')?.entry;
 
   return (
     <li
@@ -111,19 +117,31 @@ export function FieldCard({
       <dl className="mt-3 grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-[13px]">
         <dt className="text-[color:var(--fg-muted)]">{t('valueShape')}</dt>
         <dd>{t(`shape.${item.valueShape}`)}</dd>
-        <dt className="text-[color:var(--fg-muted)]">{t('sourceModels')}</dt>
-        <dd className="font-mono">{modelList(item.sourceModels, t, format)}</dd>
+        <dt className="text-[color:var(--fg-muted)]">{t('source')}</dt>
+        <dd className="font-mono" data-testid="field-source">
+          {item.toolName} · {scopeText(item, t)}
+        </dd>
+        {item.label !== null && item.label !== item.fieldPath ? (
+          <>
+            <dt className="text-[color:var(--fg-muted)]">{t('label')}</dt>
+            <dd>{item.label}</dd>
+          </>
+        ) : null}
         <dt className="text-[color:var(--fg-muted)]">{t('relationModels')}</dt>
         <dd className="font-mono">{modelList(item.relationModels, t, format)}</dd>
         <dt className="text-[color:var(--fg-muted)]">{t('configEntry')}</dt>
         <dd className="font-mono">{item.configEntry}</dd>
       </dl>
 
-      {item.sourceModels.length > 1 ? (
-        <p className="mt-2 text-[13px] text-[color:var(--fg-muted)]">
-          {t('appliesToAll', { models: modelList(item.sourceModels, t, format) })}
+      {legacyEntry !== undefined ? (
+        <p className="mt-2 text-[13px] text-[color:var(--fg-muted)]" data-testid="field-legacy">
+          {t('legacyNote', { entry: legacyEntry })}{' '}
+          <Link href={LEGACY_VIEW_HREF} className="text-[color:var(--accent)] hover:underline">
+            {t('legacy.open')}
+          </Link>
         </p>
       ) : null}
+
 
       {item.reasons.length > 0 ? (
         <div className="mt-3">
@@ -182,18 +200,7 @@ export function FieldCard({
       </div>
 
       {preview.kind === 'shown' ? (
-        <div className="mt-3" data-testid="field-sample">
-          <div className="text-xs text-[color:var(--fg-muted)]">{t('sampleHeading')}</div>
-          {preview.samples.length === 0 ? (
-            <p className="mt-1 text-[13px]">{t('sampleEmpty')}</p>
-          ) : (
-            <ul className="mt-1 flex flex-col gap-1 font-mono text-[13px]">
-              {preview.samples.map((sample, i) => (
-                <li key={`${String(i)}-${sample}`}>{sample}</li>
-              ))}
-            </ul>
-          )}
-        </div>
+        <SamplePanel samples={preview.samples} maskedSamples={preview.maskedSamples} />
       ) : preview.kind === 'error' ? (
         <ErrorLine message={t('errors.preview')} detail={preview.detail} />
       ) : null}
@@ -214,8 +221,8 @@ function NoticeLine({ notice }: { notice: CardNotice }): React.ReactElement {
       return <ErrorLine message={t('errors.stale')} detail={null} />;
     case 'gone':
       return <ErrorLine message={t('errors.notFound')} detail={null} />;
-    case 'wildcard':
-      return <ErrorLine message={t('errors.wildcard', { entry: notice.entry })} detail={null} />;
+    case 'legacy':
+      return <ErrorLine message={t('errors.coveredByLegacy', { entry: notice.entry })} detail={null} />;
     case 'invalid':
       return <ErrorLine message={t('errors.invalidField')} detail={null} />;
     case 'error':
@@ -240,6 +247,39 @@ export function ErrorLine({
       {detail !== null ? (
         <p className="mt-1 text-xs opacity-80">{t('errors.detail', { message: detail })}</p>
       ) : null}
+    </div>
+  );
+}
+
+/** Real values (admins only, the view is audited) with the masked fallback. */
+function SamplePanel({ samples, maskedSamples }: FieldClassificationPreview): React.ReactElement {
+  const t = useTranslations('adminPrivacyFields');
+  return (
+    <div className="mt-3" data-testid="field-sample">
+      <p className="text-xs font-semibold text-[color:var(--fg-muted)]" data-testid="field-sample-note">
+        {t('sampleAdminNote')}
+      </p>
+      {samples.length > 0 ? (
+        <>
+          <div className="mt-2 text-xs text-[color:var(--fg-muted)]">{t('sampleHeading')}</div>
+          <ul className="mt-1 flex flex-col gap-1 font-mono text-[13px]" data-testid="field-sample-real">
+            {samples.map((sample, i) => (
+              <li key={`${String(i)}-${sample}`}>{sample}</li>
+            ))}
+          </ul>
+        </>
+      ) : maskedSamples.length > 0 ? (
+        <>
+          <div className="mt-2 text-xs text-[color:var(--fg-muted)]">{t('sampleMaskedHeading')}</div>
+          <ul className="mt-1 flex flex-col gap-1 font-mono text-[13px]" data-testid="field-sample-masked">
+            {maskedSamples.map((sample, i) => (
+              <li key={`${String(i)}-${sample}`}>{sample}</li>
+            ))}
+          </ul>
+        </>
+      ) : (
+        <p className="mt-1 text-[13px]">{t('sampleEmpty')}</p>
+      )}
     </div>
   );
 }

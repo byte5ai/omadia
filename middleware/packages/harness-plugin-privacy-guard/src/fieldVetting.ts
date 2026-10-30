@@ -15,7 +15,12 @@
  *     configured, or failing ⇒ `unavailable`.
  */
 
-import type { FieldSampleC1Verdict, FieldSampleVerdict, PromptPiiDetector } from '@omadia/plugin-api';
+import type {
+  FieldKey,
+  FieldSampleC1Verdict,
+  FieldSampleVerdict,
+  PromptPiiDetector,
+} from '@omadia/plugin-api';
 
 import { C1_DEFAULT_THRESHOLD } from './c1Detector.js';
 import { baselineHasIdentityPii, detectIdentityBaselineSync } from './promptMask.js';
@@ -35,9 +40,7 @@ const DENY_LIST_ERROR_TYPE = 'custom-error';
 export const DEFAULT_PREVIEW_LIMIT = 5;
 const MAX_PREVIEW_LIMIT = 50;
 
-export interface VetSampleInput {
-  readonly toolName: string;
-  readonly fieldPath: string;
+export interface VetSampleInput extends FieldKey {
   readonly values: readonly string[];
   /** The operator's deny-list detector, when any is configured. */
   readonly customDetector?: PromptPiiDetector;
@@ -120,6 +123,7 @@ export async function vetSample(input: VetSampleInput): Promise<FieldSampleVerdi
   );
   return {
     toolName: input.toolName,
+    scope: input.scope,
     fieldPath: input.fieldPath,
     sampleCount: input.values.length,
     identityHit: identity.size > 0,
@@ -149,9 +153,22 @@ export function shapeMask(value: string): string {
   return out;
 }
 
+/** `limit` clamped to `0..MAX_PREVIEW_LIMIT`; `fallback` when absent. */
+function previewCount(limit: number | undefined, fallback: number): number {
+  const requested = limit !== undefined && Number.isFinite(limit) ? Math.floor(limit) : fallback;
+  return Math.min(Math.max(requested, 0), MAX_PREVIEW_LIMIT);
+}
+
 /** The shape-masked preview of a sample, at most `limit` entries. */
 export function maskedPreview(values: readonly string[], limit?: number): string[] {
-  const requested = limit !== undefined && Number.isFinite(limit) ? Math.floor(limit) : DEFAULT_PREVIEW_LIMIT;
-  const n = Math.min(Math.max(requested, 0), MAX_PREVIEW_LIMIT);
-  return values.slice(0, n).map(shapeMask);
+  return values.slice(0, previewCount(limit, DEFAULT_PREVIEW_LIMIT)).map(shapeMask);
+}
+
+/** Default number of real values `fieldSampleForAdmin` returns. */
+export const DEFAULT_ADMIN_SAMPLE_LIMIT = 10;
+
+/** The admin's view of a sample: the REAL values, at most `limit` (default
+ *  10, max 50). The caller restricts and audits it; nothing here logs. */
+export function adminSample(values: readonly string[], limit?: number): string[] {
+  return values.slice(0, previewCount(limit, DEFAULT_ADMIN_SAMPLE_LIMIT));
 }

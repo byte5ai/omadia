@@ -5209,7 +5209,8 @@
         "profileSnapshot": "Profile snapshots",
         "registry": "Plugin registries",
         "channel": "Channels",
-        "privacyFieldClassification": "Privacy field decisions"
+        "privacyFieldClassification": "Privacy field decisions",
+        "privacyFieldPreview": "Privacy field value previews"
       }
     },
     "table": {
@@ -6485,7 +6486,7 @@
   "adminPrivacyFields": {
     "metaTitle": "Field classification · omadia",
     "title": "Field classification",
-    "intro": "The Privacy Guard masks every field in tool results that it cannot prove to be non-personal. This page suggests fields that are probably safe to show in clear text. Nothing is cleared until an admin confirms: confirming adds the entry to the Privacy Guard's non_personal_fields setting, and revert removes it again.",
+    "intro": "The Privacy Guard masks every field in tool results that it cannot prove to be non-personal. This page suggests fields that are probably safe to show in clear text — per source and model, so the same field name in another model stays masked. Nothing is cleared until an admin confirms: confirming adds a model-scoped entry to the Privacy Guard's non_personal_fields setting, and revert removes it again.",
     "loading": "Loading fields…",
     "lastComputed": "Last computed: {when}",
     "neverComputed": "Not computed yet.",
@@ -6512,31 +6513,29 @@
       "text": "Text",
       "mixed": "Mixed"
     },
-    "sourceModels": "Source models",
     "relationModels": "Relation models",
     "none": "none",
     "configEntry": "Entry",
-    "appliesToAll": "Applies to every model with this field: {models}",
     "seen": "{count, plural, one {Seen once} other {Seen # times}}, last {when}",
     "reasonsHeading": "Why",
     "reasons": {
       "person_model": "Points to a person model: {models}.",
       "known_non_personal": "Points to a known non-personal model: {models}.",
       "haiku_non_personal": "A schema-only review rated {model} as non-personal ({confidence} confidence).",
-      "haiku_personal": "A schema-only review rated the target model as personal.",
-      "haiku_uncertain": "A schema-only review could not decide whether the target model is personal.",
+      "haiku_personal": "A schema-only review rated {model} as personal.",
+      "haiku_uncertain": "A schema-only review could not decide whether {model} is personal.",
       "unknown_model": "The target model is unknown and was not reviewed.",
       "conflicting_targets": "The field points to different models: {models}.",
       "identity_hit": "Sampled values matched identity patterns: {types}.",
       "name_hit": "The name detector found names in sampled values.",
       "name_near_miss": "The name detector found near-matches for names in sampled values.",
-      "name_detector_unavailable": "The name detector was unavailable, so sampled values were not checked for names.",
-      "no_relation_info": "No relation information: a text field, or the Odoo connection was unavailable.",
-      "changed_since_decision": "Changed since the last decision (new source or relation models).",
+      "name_detector_unavailable": "The name detector was unavailable (or no values were sampled), so the field is not suggested until its values are checked for names.",
+      "no_relation_info": "No relation information (a text field, a source without relation metadata, or Odoo was unavailable) and no schema review of this source yet.",
+      "changed_since_decision": "Changed since the last decision (new relation models or value shape).",
       "confirmed_conflict": "This field is in the list, but it now points to a person model or changed since it was confirmed — review it or remove it.",
-      "wildcard_entry": "Already covered by a wildcard entry in non_personal_fields.",
       "sample_clean": "{count, plural, one {# sampled value} other {# sampled values}} showed no personal data.",
-      "unknown": "Other reason ({code})."
+      "unknown": "Other reason ({code}).",
+      "legacy_entry": "Cleared by the legacy entry {entry} — it applies to all models."
     },
     "decision": {
       "confirm": "Confirmed by {by} on {when}",
@@ -6556,19 +6555,49 @@
       "hideSample": "Hide sample",
       "loadingSample": "Loading sample"
     },
-    "sampleHeading": "Masked sample (values are never shown)",
+    "sampleHeading": "Sampled values",
     "sampleEmpty": "No sample available yet.",
     "saved": "Saved: {entry}",
     "errors": {
       "load": "The field list could not be loaded.",
       "stale": "This field changed since the list was loaded. The list has been reloaded — please review it again.",
-      "wildcard": "This field is covered by the wildcard entry {entry}. Revert has no effect while that entry exists; change it in the Privacy Guard settings.",
       "invalidField": "This field name cannot be added to non_personal_fields as a single entry, so it is not offered for a decision.",
       "notFound": "This field no longer exists. The list has been reloaded.",
       "decision": "The decision could not be saved.",
       "preview": "The sample could not be loaded.",
       "recompute": "Recompute failed.",
-      "detail": "Technical detail: {message}"
+      "detail": "Technical detail: {message}",
+      "coveredByLegacy": "This field is cleared by the legacy entry {entry}, which applies to all models. Revert has no effect while it exists — convert it to model-scoped entries first."
+    },
+    "source": "Source",
+    "label": "Label",
+    "scope": {
+      "model": "Model {model}",
+      "dataset": "Dataset {id}",
+      "none": "No model"
+    },
+    "legacyNote": "Cleared by the legacy entry {entry}, which applies to all models of this source.",
+    "sampleMaskedHeading": "Masked sample (no current values buffered)",
+    "sampleAdminNote": "Visible to admins only. Opening this view is audited.",
+    "legacy": {
+      "tab": "Legacy entries",
+      "open": "Review legacy entries",
+      "back": "← Back to field classification",
+      "title": "Legacy entries",
+      "intro": "These non_personal_fields entries name no model, so they clear the field in every model of the source — including person models. Convert an entry to model-scoped entries for the fields seen so far; fields it covers that were never seen stay masked afterwards.",
+      "empty": "No legacy entries. Every entry is model-scoped.",
+      "appliesToAll": "Legacy — applies to all models",
+      "coversHeading": "{count, plural, one {Covers # seen field} other {Covers # seen fields}}",
+      "coversNone": "Covers no field seen so far. Converting removes the entry.",
+      "convert": "Convert to model-scoped entries",
+      "converted": "{entry} converted: {count, plural, =0 {no scoped entry added} one {# scoped entry added} other {# scoped entries added}}.",
+      "skipped": "{count, plural, one {# field} other {# fields}} could not be written as a scoped entry and stay masked.",
+      "conflicts": "{count, plural, one {# field still needs} other {# fields still need}} review: it points to a person model or changed since it was confirmed.",
+      "errors": {
+        "load": "The legacy entries could not be loaded.",
+        "notFound": "The entry {entry} is no longer in the setting. The list has been reloaded.",
+        "convert": "The entry {entry} could not be converted."
+      }
     }
   }
 }

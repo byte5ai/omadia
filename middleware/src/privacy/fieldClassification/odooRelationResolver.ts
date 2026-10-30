@@ -46,6 +46,8 @@ export interface FieldRelationInfo {
   readonly known: boolean;
   /** Distinct relation targets, sorted. Empty for a non-relational field. */
   readonly relationModels: readonly string[];
+  /** The field's own label (`string`), from the first model that has one. */
+  readonly fieldLabel?: string;
   /** Label/help per relation target, for the schema-only model verdict. */
   readonly fieldDocs: readonly {
     readonly relation: string;
@@ -131,12 +133,14 @@ export function createOdooRelationResolver(
   ): Promise<FieldRelationInfo> {
     const relations = new Set<string>();
     const fieldDocs: { relation: string; label?: string; help?: string }[] = [];
+    let fieldLabel: string | undefined;
     for (const model of sourceModels) {
       const fields = await fieldsOf(model);
       // One unreadable source model makes the whole field unknown: a partial
       // answer could miss the one source whose field points to a person.
       if (fields === undefined) return UNKNOWN_RELATION;
       const meta = fields.get(fieldPath);
+      fieldLabel ??= meta?.label;
       if (meta?.relation === undefined) continue;
       if (meta.type !== undefined && !RELATIONAL_TYPES.has(meta.type)) continue;
       relations.add(meta.relation);
@@ -147,7 +151,12 @@ export function createOdooRelationResolver(
       });
     }
     if (sourceModels.length === 0) return UNKNOWN_RELATION;
-    return { known: true, relationModels: [...relations].sort(), fieldDocs };
+    return {
+      known: true,
+      relationModels: [...relations].sort(),
+      ...(fieldLabel !== undefined ? { fieldLabel } : {}),
+      fieldDocs,
+    };
   }
 
   return { fieldsOf, resolve };

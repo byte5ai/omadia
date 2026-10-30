@@ -1,4 +1,5 @@
 import type {
+  FieldKey,
   FieldObservation,
   FieldSampleVerdict,
   ModelClassificationRequest,
@@ -27,6 +28,9 @@ export interface OperatorClearedFieldEntry {
   readonly toolName: string;
   /** The field path, e.g. `department_id`. */
   readonly field: string;
+  /** The scope the rows belonged to — an Odoo model, an uploaded dataset's
+   *  id, or `-` (contract v2). Absent on receipts written before it. */
+  readonly scope?: string;
 }
 
 /**
@@ -1053,10 +1057,7 @@ export interface PrivacyGuardService {
    * configured, also at a lower "near-miss" threshold) and drop the sample.
    * Only the verdict leaves the plugin.
    */
-  vetFieldSample?(field: {
-    readonly toolName: string;
-    readonly fieldPath: string;
-  }): Promise<FieldSampleVerdict>;
+  vetFieldSample?(field: FieldKey): Promise<FieldSampleVerdict>;
   /**
    * Classify Odoo models as personal / non-personal from their schema only,
    * with the plugin's own small model (Haiku). Never sends a value. Returns
@@ -1070,9 +1071,12 @@ export interface PrivacyGuardService {
    * letters and digits replaced (`R••••••• & D••••••••••`), punctuation and
    * spacing kept. At most `limit` entries; empty when nothing is buffered.
    */
-  maskedFieldPreview?(field: {
-    readonly toolName: string;
-    readonly fieldPath: string;
-    readonly limit?: number;
-  }): readonly string[];
+  maskedFieldPreview?(field: FieldKey & { readonly limit?: number }): readonly string[];
+  /**
+   * The REAL buffered values of a field, for an admin deciding about it on
+   * the field-classification page (decision Marcel, 2026-10-30). The caller
+   * must restrict it to admins and audit every call; the plugin never logs,
+   * persists or sends these values anywhere. Empty when nothing is buffered.
+   */
+  fieldSampleForAdmin?(field: FieldKey & { readonly limit?: number }): readonly string[];
 }

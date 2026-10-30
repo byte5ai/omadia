@@ -73,27 +73,40 @@ changelog.
 to list. omadia now suggests them; an admin confirms every entry, nothing is
 added automatically, and every field stays masked until then.
 
-- **Observation (privacy guard 0.15.0).** Masked fields of `odoo_*` tool
-  results are recorded schema-only (tool, field, value shape, source model). A
+- **Entries per source and model.** Confirm writes a scoped entry —
+  `odoo_execute:hr.employee/department_id`, `dataset:<dataset id>/Abteilung`
+  for an uploaded dataset, `some_mcp_tool:-/category` for a source that names
+  no model — so the same field name in another model (a person model, say)
+  stays masked. Legacy entries (`tool:field`, `*:field`, `field`) still work
+  and apply to every model; the page lists them under "Legacy entries" and
+  converts one into scoped entries for the fields seen so far.
+- **Observation (privacy guard 0.15.0).** Masked fields of every interned tool
+  result (Odoo, plugin and MCP tools, uploads read via `query_dataset`; not
+  sub-agent narration, canvas producers or `v4_*` verbs) are recorded
+  schema-only per tool, scope (Odoo model, dataset id or `-`) and field. A
   bounded in-memory sample (≤ 50 values per field, 24 h, never persisted or
   logged) is vetted with the C0 identity shapes, the deny-list and C1 (also at
   a near-miss threshold); only the verdict and a fully masked preview
-  (`•••••••• & •••••••••••`) leave the plugin.
-- **Classification (kernel).** The relation target comes from Odoo `fields_get`
-  (the only call made). Person models (`res.partner`, `res.users`,
-  `hr.employee`, bank accounts, …) are never suggested and never sent to a
-  model; known non-personal models (`hr.department`, `hr.job`, `res.company`,
-  …) are suggested; unknown models are classified by Haiku from the schema
-  only. Any detector hit makes a field personal, a near-miss or conflicting
-  targets "needs clarification".
-- **Review page `/admin/privacy-fields`.** Grouped by tool with statuses
-  suggested / needs clarification / personal / confirmed / confirmed — needs
-  review (a listed field that now points to a person model or changed since)
-  / rejected / kept masked, reasons, masked sample, and confirm / reject /
-  keep masked / revert. Only Odoo field, tool and model names become
-  candidates; an entry that would not parse back to exactly one
-  `tool:field` is refused.
-  Confirm appends `tool:field` to the setting; every decision is an audit row
+  (`•••••••• & •••••••••••`) leave the plugin for the classification.
+- **Classification (kernel).** For an Odoo model the relation target comes
+  from `fields_get` on that model (the only call made). Person models
+  (`res.partner`, `res.users`, `hr.employee`, bank accounts, …) are never
+  suggested and never sent to a model; known non-personal models
+  (`hr.department`, `hr.job`, `res.company`, …) are suggested; unknown models
+  are classified by Haiku from the schema only. Sources without relation
+  information (text fields, datasets, MCP and plugin tools) get one
+  schema-only Haiku review per source; unsure means "needs clarification". Any
+  detector hit makes a field personal, a near-miss or conflicting targets
+  "needs clarification", and without the name detector nothing is suggested.
+- **Review page `/admin/privacy-fields`.** Grouped by tool, each field with its
+  source and model / dataset / "no model", statuses suggested / needs
+  clarification / personal / confirmed / confirmed — needs review (a listed
+  field that now points to a person model or changed since) / rejected / kept
+  masked, reasons, and confirm / reject / keep masked / revert. The sample
+  shows an admin the real values ("Visible to admins only. Opening this view
+  is audited.", audit action `privacy.field_preview`, count only), with the
+  masked sample as fallback. An entry that would not parse back to exactly
+  one scoped entry is refused. Every decision and conversion is an audit row
   (`privacy.field_classification`). Manual edits of the setting are audited
   too now (`plugin.privacy_change`).
 - **Notification.** The privacy posture reports `fields_needing_clarification`
@@ -103,8 +116,9 @@ added automatically, and every field stays masked until then.
 - **Recompute** on plugin activation/deactivation, at boot, every 6 h and on
   demand — never per chat turn.
 - **Migration `0065_privacy_field_classification`**: tables
-  `privacy_field_candidates`, `privacy_model_verdicts` (schema-model verdict
-  cache) and `privacy_field_classification_visits`.
+  `privacy_field_candidates` (one row per tool + scope + field),
+  `privacy_model_verdicts` (schema-model verdict cache, per model or source)
+  and `privacy_field_classification_visits`.
 
 `@omadia/plugin-privacy-guard` 0.15.0, `@omadia/plugin-api` 1.49.0
 (`parseLlmJson` moved into plugin-api).

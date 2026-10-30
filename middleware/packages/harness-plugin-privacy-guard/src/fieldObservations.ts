@@ -1,35 +1,42 @@
 /**
  * #1556 follow-up — field-classification suggestions, the privacy guard's
- * half: which MASKED fields its Odoo tools return, and a small sample of
- * their values to vet with the guard's own detectors.
+ * half: which MASKED fields its tools return, per source (tool + scope, see
+ * `scopeOf`), and a small sample of their values to vet with the guard's own
+ * detectors.
  *
  * Two structures, both in the service closure (never module scope), both
  * bounded:
  *
- *   - Observations — schema only (tool, field path, value shape, source
- *     models, counts, timestamps). Drained by `takeFieldObservations`; the
- *     kernel persists them.
+ *   - Observations — schema only (tool, scope, field path, value shape,
+ *     counts, timestamps), one per (tool, scope, path). Drained by
+ *     `takeFieldObservations`; the kernel persists them.
  *   - Value samples — up to `MAX_SAMPLE_VALUES` distinct display strings per
- *     field (a many2one pair's label, or the string), each kept at most
- *     `SAMPLE_TTL_MS`. They are REAL values: never logged, never persisted,
- *     never handed to an LLM. Only the detector verdict (`fieldVetting.ts`)
- *     and the shape-masked preview leave the plugin.
+ *     (tool, scope, path) (a many2one pair's label, or the string), each kept
+ *     at most `SAMPLE_TTL_MS`. They are REAL values: never logged, never
+ *     persisted, never handed to an LLM. Only the detector verdict
+ *     (`fieldVetting.ts`), the shape-masked preview and the admin-only
+ *     `fieldSampleForAdmin` leave the plugin.
  *
- * v1 scope: Odoo tools (`odoo_*`). Never a candidate: `sub-agent` narration,
- * canvas producers, `__k_` link keys, envelope metadata, fields an operator
- * rule already cleared (they are not masked), and mixed-shape fields.
+ * Scope (contract v2): every interned tool result — plugin tools, Odoo, MCP
+ * tools, uploads read via `query_dataset`. Never a candidate: `sub-agent`
+ * narration, canvas producers (the caller's `excludedTools`), `v4_*` verbs,
+ * `__k_` link keys, envelope metadata, fields an operator rule already
+ * cleared (they are not masked), mixed-shape fields, and any (tool, scope,
+ * path) that cannot form exactly one scoped `non_personal_fields` entry.
  */
 
-import type { FieldObservation, FieldValueShape } from '@omadia/plugin-api';
+import type { FieldKey, FieldObservation, FieldValueShape } from '@omadia/plugin-api';
 
+import { formatScopedEntry } from './nonPersonalFields.js';
 import { isLinkKeyField } from './v4/verbs/predicate.js';
+import { scopeOf } from './v4/datasetStore.js';
 import type { Dataset } from './v4/types.js';
 
-/** Distinct (tool, field) observations held between two drains. */
+/** Distinct (tool, scope, field) observations held between two drains. */
 export const MAX_OBSERVATIONS = 500;
-/** Distinct values kept per (tool, field) sample. */
+/** Distinct values kept per (tool, scope, field) sample. */
 export const MAX_SAMPLE_VALUES = 50;
-/** (tool, field) samples kept at once — bounds the buffer at
+/** (tool, scope, field) samples kept at once — bounds the buffer at
  *  `MAX_SAMPLE_FIELDS * MAX_SAMPLE_VALUES` values. The least recently fed
  *  field is dropped first. */
 export const MAX_SAMPLE_FIELDS = 200;
@@ -38,33 +45,20 @@ export const SAMPLE_TTL_MS = 24 * 60 * 60 * 1000;
 /** A longer value is cut to this many characters in the sample. */
 export const MAX_SAMPLE_VALUE_CHARS = 500;
 
-const OBSERVED_TOOL_PREFIX = 'odoo_';
+/** The Privacy Shield's own verbs — their rows come from observed sources. */
+const VERB_TOOL_PREFIX = 'v4_';
 
-/**
- * Field paths are raw tool-result keys; they end up in the admin page, the
- * audit log and — on an admin's confirm — in the `non_personal_fields`
- * setting. Only Odoo field names are recorded (no separators, wildcards,
- * whitespace or dots), so a key can never smuggle a second entry in.
- */
-export const FIELD_PATH_GRAMMAR = /^[a-z_][a-z0-9_]*$/u;
 /** Tool names a recorded observation may carry. */
 export const TOOL_NAME_GRAMMAR = /^[a-z0-9_.-]+$/iu;
-/** Odoo model names: dotted lowercase identifiers (same as the kernel's). */
-export const MODEL_NAME_GRAMMAR = /^[a-z_][a-z0-9_]*(\.[a-z0-9_]+)*$/u;
 
 /** The kept candidate shapes — `mixed` is never one. */
 type CandidateShape = Exclude<FieldValueShape, 'mixed'>;
 
-export interface FieldKey {
-  readonly toolName: string;
-  readonly fieldPath: string;
-}
-
 interface ObservationEntry {
   readonly toolName: string;
+  readonly scope: string;
   readonly fieldPath: string;
   valueShape: CandidateShape;
-  readonly sourceModels: Set<string>;
   seenCount: number;
   readonly firstSeenAt: string;
   lastSeenAt: string;
@@ -81,8 +75,8 @@ export interface FieldObservationRecorder {
   clearSample(field: FieldKey): void;
 }
 
-function keyOf(toolName: string, fieldPath: string): string {
-  return `${toolName}\u0000${fieldPath}`;
+function keyOf(field: FieldKey): string {
+  return `${field.toolName}\u0000${field.scope}\u0000${field.fieldPath}`;
 }
 
 function isM2oPair(value: unknown): value is readonly [number, string] {
@@ -121,31 +115,22 @@ function displayOf(value: unknown): string | undefined {
   return trimmed.length > MAX_SAMPLE_VALUE_CHARS ? trimmed.slice(0, MAX_SAMPLE_VALUE_CHARS) : trimmed;
 }
 
-/** A valid Odoo model name, trimmed — anything else is dropped. */
-function validModel(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const model = value.trim();
-  return MODEL_NAME_GRAMMAR.test(model) ? model : undefined;
-}
-
-/** The Odoo model a dataset was read from: the tool input's `model`, else
- *  an envelope's `model` metadata value. Invalid model names are dropped. */
-function sourceModelOf(dataset: Dataset): string | undefined {
-  const input = dataset.provenance.toolInput;
-  if (input !== null && typeof input === 'object' && !Array.isArray(input)) {
-    const model = validModel((input as Record<string, unknown>)['model']);
-    if (model !== undefined) return model;
-  }
-  return validModel(dataset.envelope?.values['model']);
-}
-
 /** True for a tool whose results are observed at all. */
 export function isObservedTool(toolName: string, excludedTools: ReadonlySet<string>): boolean {
   return (
-    toolName.startsWith(OBSERVED_TOOL_PREFIX) &&
     TOOL_NAME_GRAMMAR.test(toolName) &&
+    !toolName.startsWith(VERB_TOOL_PREFIX) &&
     !excludedTools.has(toolName)
   );
+}
+
+/** True when (tool, scope, path) may be recorded: not a link key, and it
+ *  forms exactly one scoped entry (the scoped-field grammar: a CSV header
+ *  with inner spaces is fine; no line break, `:`, `;`, `,`, `/`, no `__k_`),
+ *  so a key can never smuggle a second entry into the setting. */
+export function isRecordableField(field: FieldKey): boolean {
+  if (field.fieldPath.startsWith('__k_') || isLinkKeyField(field.fieldPath)) return false;
+  return formatScopedEntry({ tool: field.toolName, scope: field.scope }, field.fieldPath) !== undefined;
 }
 
 export function createFieldObservationRecorder(opts?: {
@@ -187,13 +172,8 @@ export function createFieldObservationRecorder(opts?: {
     }
   }
 
-  function observe(
-    toolName: string,
-    fieldPath: string,
-    shape: CandidateShape,
-    sourceModel: string | undefined,
-  ): void {
-    const key = keyOf(toolName, fieldPath);
+  function observe(field: FieldKey, shape: CandidateShape): void {
+    const key = keyOf(field);
     const at = new Date(now()).toISOString();
     const existing = observations.get(key);
     if (existing !== undefined) {
@@ -202,15 +182,14 @@ export function createFieldObservationRecorder(opts?: {
       // One field, two shapes across results: the latest wins (the kernel
       // resolves relation info from the schema, not from this).
       existing.valueShape = shape;
-      if (sourceModel !== undefined) existing.sourceModels.add(sourceModel);
       return;
     }
     if (observations.size >= MAX_OBSERVATIONS) return;
     observations.set(key, {
-      toolName,
-      fieldPath,
+      toolName: field.toolName,
+      scope: field.scope,
+      fieldPath: field.fieldPath,
       valueShape: shape,
-      sourceModels: new Set(sourceModel === undefined ? [] : [sourceModel]),
       seenCount: 1,
       firstSeenAt: at,
       lastSeenAt: at,
@@ -220,29 +199,32 @@ export function createFieldObservationRecorder(opts?: {
   return {
     record(toolName, dataset, excludedTools) {
       if (!isObservedTool(toolName, excludedTools)) return;
-      const sourceModel = sourceModelOf(dataset);
+      const scope =
+        dataset.provenance.sources?.find((s) => s.tool === toolName)?.scope ??
+        scopeOf(toolName, dataset.provenance.toolInput, dataset.envelope?.values);
       for (const field of dataset.schema.fields) {
         if (field.classification !== 'sensitive-masked') continue;
-        if (!FIELD_PATH_GRAMMAR.test(field.path) || isLinkKeyField(field.path)) continue;
+        const key: FieldKey = { toolName, scope, fieldPath: field.path };
+        if (!isRecordableField(key)) continue;
         const values = dataset.rows.map((row) => row[field.path]);
         const shape = valueShapeOf(values);
         if (shape === undefined || shape === 'mixed') continue;
-        observe(toolName, field.path, shape, sourceModel);
+        observe(key, shape);
         const displays: string[] = [];
         for (const v of values) {
           const display = displayOf(v);
           if (display !== undefined) displays.push(display);
         }
-        feedSample(keyOf(toolName, field.path), displays);
+        feedSample(keyOf(key), displays);
       }
     },
 
     take() {
       const out: FieldObservation[] = [...observations.values()].map((o) => ({
         toolName: o.toolName,
+        scope: o.scope,
         fieldPath: o.fieldPath,
         valueShape: o.valueShape,
-        sourceModels: [...o.sourceModels].sort(),
         seenCount: o.seenCount,
         firstSeenAt: o.firstSeenAt,
         lastSeenAt: o.lastSeenAt,
@@ -252,11 +234,11 @@ export function createFieldObservationRecorder(opts?: {
     },
 
     sample(field) {
-      return [...(liveSample(keyOf(field.toolName, field.fieldPath))?.keys() ?? [])];
+      return [...(liveSample(keyOf(field))?.keys() ?? [])];
     },
 
     clearSample(field) {
-      samples.delete(keyOf(field.toolName, field.fieldPath));
+      samples.delete(keyOf(field));
     },
   };
 }

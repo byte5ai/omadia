@@ -16,16 +16,25 @@
  *  `mixed`: anything else (never a candidate). */
 export type FieldValueShape = 'm2o' | 'text' | 'mixed';
 
-/** One masked field the privacy guard saw in a tool result. Schema only. */
-export interface FieldObservation {
-  /** The tool whose result held the field, e.g. `odoo_execute`. */
+/**
+ * A field within one source: the tool, the scope its rows belong to — an Odoo
+ * model (`hr.employee`), an uploaded dataset's id for `query_dataset`, or `-`
+ * when the result names none — and the field path. The unit a scoped
+ * `non_personal_fields` entry clears (decision Marcel, 2026-10-30).
+ */
+export interface FieldKey {
   readonly toolName: string;
-  /** The field path, e.g. `department_id`. */
+  readonly scope: string;
   readonly fieldPath: string;
+}
+
+/** One masked field the privacy guard saw in a tool result, per scope.
+ *  Schema only. */
+export interface FieldObservation extends FieldKey {
   readonly valueShape: FieldValueShape;
-  /** The Odoo model the result was read from, when known (tool input
-   *  `model`, or an envelope's `model` key), e.g. `hr.employee`. */
-  readonly sourceModels: readonly string[];
+  /** The field's label where the source has one (an Odoo field string, a
+   *  CSV header is the path itself); schema, never a value. */
+  readonly label?: string;
   /** How many interned results carried the field since the last drain. */
   readonly seenCount: number;
   /** ISO-8601 of the first and last sighting since the last drain. */
@@ -38,9 +47,7 @@ export type FieldSampleC1Verdict = 'hit' | 'near-miss' | 'clean' | 'unavailable'
 
 /** The verdict of vetting a field's buffered value sample. Values never leave
  *  the privacy guard; this is all the kernel learns. */
-export interface FieldSampleVerdict {
-  readonly toolName: string;
-  readonly fieldPath: string;
+export interface FieldSampleVerdict extends FieldKey {
   /** Distinct values vetted (0 when the buffer held none). */
   readonly sampleCount: number;
   /** A C0 identity shape (e-mail, IBAN, phone, address, ID number) or an
@@ -51,9 +58,12 @@ export interface FieldSampleVerdict {
   readonly hitTypes: readonly string[];
 }
 
-/** An Odoo model to classify from its SCHEMA only (never a value). */
+/** A model or source to classify from its SCHEMA only (never a value): an
+ *  Odoo relation target, or — for a source without relation metadata (an
+ *  uploaded dataset, an MCP tool) — the source itself, named
+ *  `<tool>:<scope>` with its fields. */
 export interface ModelClassificationRequest {
-  /** The relation target, e.g. `x_custom.region`. */
+  /** The relation target (`x_custom.region`) or the source name. */
   readonly model: string;
   /** The model's display name when known (`ir.model` name). */
   readonly modelLabel?: string;

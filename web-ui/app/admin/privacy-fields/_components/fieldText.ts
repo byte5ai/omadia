@@ -2,6 +2,11 @@ import type { useFormatter, useTranslations } from 'next-intl';
 
 import type { FieldClassificationReason } from '../../../_lib/api';
 
+/** The tool an uploaded dataset is read through; its scope is the dataset id. */
+export const DATASET_TOOL = 'query_dataset';
+/** The scope of a source whose results name no model. */
+export const NO_SCOPE = '-';
+
 /**
  * Localized text for the field-classification page. The API sends reason
  * CODES plus schema-only detail (model names, counts, detector types); the
@@ -27,7 +32,7 @@ const KNOWN_REASON_CODES = new Set([
   'no_relation_info',
   'changed_since_decision',
   'confirmed_conflict',
-  'wildcard_entry',
+  'legacy_entry',
   'sample_clean',
 ]);
 
@@ -35,6 +40,16 @@ const KNOWN_REASON_CODES = new Set([
 export function modelList(models: readonly string[] | undefined, t: FieldsT, format: Formatter): string {
   const clean = (models ?? []).filter((m) => typeof m === 'string' && m.length > 0);
   return clean.length > 0 ? format.list(clean, { type: 'conjunction' }) : t('none');
+}
+
+/** "Model hr.employee" / "Dataset <id>" / "No model" for a field's scope. */
+export function scopeText(
+  source: { readonly toolName: string; readonly scope: string },
+  t: FieldsT,
+): string {
+  if (source.scope === NO_SCOPE) return t('scope.none');
+  if (source.toolName === DATASET_TOOL) return t('scope.dataset', { id: source.scope });
+  return t('scope.model', { model: source.scope });
 }
 
 export function formatWhen(iso: string | null | undefined, format: Formatter): string | null {
@@ -55,6 +70,11 @@ export function reasonText(
     case 'known_non_personal':
     case 'conflicting_targets':
       return t(`reasons.${reason.code}`, { models });
+    case 'haiku_personal':
+    case 'haiku_uncertain':
+      return t(`reasons.${reason.code}`, { model: reason.model ?? models });
+    case 'legacy_entry':
+      return t('reasons.legacy_entry', { entry: reason.entry ?? t('none') });
     case 'haiku_non_personal': {
       const confidence =
         typeof reason.confidence === 'number' && Number.isFinite(reason.confidence)

@@ -2,13 +2,15 @@
  * #1556 follow-up — the privacy guard's side of the `non_personal_fields`
  * suggestions, wired into the service by `createPrivacyGuardService`.
  *
- * Schema-only observations of masked Odoo fields plus a bounded, TTL'd value
- * sample per field (`fieldObservations.ts`). The sample never leaves the
- * plugin: only detector verdicts (`fieldVetting.ts`) and a fully masked
- * preview do, and nothing here logs a value.
+ * Schema-only observations of masked fields per (tool, scope, path) plus a
+ * bounded, TTL'd value sample per field (`fieldObservations.ts`). The sample
+ * leaves the plugin only as detector verdicts (`fieldVetting.ts`), a fully
+ * masked preview, and the admin-only `fieldSampleForAdmin` (real values, the
+ * kernel restricts and audits it). Nothing here logs a value.
  */
 
 import type {
+  FieldKey,
   FieldObservation,
   FieldSampleVerdict,
   ModelClassificationRequest,
@@ -18,7 +20,7 @@ import type {
 
 import { withC1Priority } from './c1Detector.js';
 import { createFieldObservationRecorder } from './fieldObservations.js';
-import { maskedPreview, vetSample } from './fieldVetting.js';
+import { adminSample, maskedPreview, vetSample } from './fieldVetting.js';
 import { classifyModelsSchemaOnly } from './v4/modelClassifier.js';
 import type { LlmComplete } from './v4/piiClassifier.js';
 import type { Dataset } from './v4/types.js';
@@ -27,7 +29,7 @@ export interface FieldClassificationDeps {
   /** The turn's interned dataset, or `undefined`. */
   readonly datasetOf: (turnId: string, datasetId: string) => Dataset | undefined;
   /** Tools whose results are never candidates (sub-agent narration, canvas
-   *  producers); the `odoo_` scope is the recorder's own. */
+   *  producers); `v4_*` verbs are excluded by the recorder itself. */
   readonly excludedTools: ReadonlySet<string>;
   /** The operator deny-list detector, resolved per call. */
   readonly customDetector: () => PromptPiiDetector | undefined;
@@ -39,18 +41,14 @@ export interface FieldClassificationDeps {
 
 export interface FieldClassificationMethods {
   takeFieldObservations(): readonly FieldObservation[];
-  vetFieldSample(field: {
-    readonly toolName: string;
-    readonly fieldPath: string;
-  }): Promise<FieldSampleVerdict>;
+  vetFieldSample(field: FieldKey): Promise<FieldSampleVerdict>;
   classifyModelsSchemaOnly(
     requests: readonly ModelClassificationRequest[],
   ): Promise<readonly ModelClassificationResult[]>;
-  maskedFieldPreview(field: {
-    readonly toolName: string;
-    readonly fieldPath: string;
-    readonly limit?: number;
-  }): readonly string[];
+  maskedFieldPreview(field: FieldKey & { readonly limit?: number }): readonly string[];
+  /** The REAL buffered values, for the admin preview. Never logged; does not
+   *  clear the sample. The caller restricts it to admins and audits it. */
+  fieldSampleForAdmin(field: FieldKey & { readonly limit?: number }): readonly string[];
 }
 
 export function createFieldClassificationService(deps: FieldClassificationDeps): {
@@ -80,7 +78,11 @@ export function createFieldClassificationService(deps: FieldClassificationDeps):
     },
 
     async vetFieldSample(field) {
-      const key = { toolName: field.toolName, fieldPath: field.fieldPath };
+      const key: FieldKey = {
+        toolName: field.toolName,
+        scope: field.scope,
+        fieldPath: field.fieldPath,
+      };
       const values = observations.sample(key);
       observations.clearSample(key);
       const customDetector = deps.customDetector();
@@ -93,7 +95,8 @@ export function createFieldClassificationService(deps: FieldClassificationDeps):
         ...(c1 !== undefined ? { c1Detector: c1 } : {}),
       });
       console.log(
-        `[privacy-guard v4] fieldVetted tool=${verdict.toolName} field=${verdict.fieldPath} ` +
+        `[privacy-guard v4] fieldVetted tool=${verdict.toolName} scope=${verdict.scope} ` +
+          `field=${JSON.stringify(verdict.fieldPath)} ` +
           `samples=${String(verdict.sampleCount)} identityHit=${String(verdict.identityHit)} ` +
           `c1=${verdict.c1} types=${JSON.stringify(verdict.hitTypes)}`,
       );
@@ -107,10 +110,11 @@ export function createFieldClassificationService(deps: FieldClassificationDeps):
     },
 
     maskedFieldPreview(field) {
-      return maskedPreview(
-        observations.sample({ toolName: field.toolName, fieldPath: field.fieldPath }),
-        field.limit,
-      );
+      return maskedPreview(observations.sample(field), field.limit);
+    },
+
+    fieldSampleForAdmin(field) {
+      return adminSample(observations.sample(field), field.limit);
     },
   };
 

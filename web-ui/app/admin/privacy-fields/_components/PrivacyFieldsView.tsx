@@ -17,7 +17,7 @@ import {
   recomputeFieldClassifications,
 } from '../../../_lib/api';
 import { serverErrorMessage } from '../../../_lib/apiErrorMessage';
-import { type CardNotice, ErrorLine, FieldCard } from './FieldCard';
+import { type CardNotice, ErrorLine, FieldCard, LEGACY_VIEW_HREF } from './FieldCard';
 import { formatWhen } from './fieldText';
 
 /**
@@ -46,8 +46,8 @@ interface ItemNotice {
   notice: CardNotice;
 }
 
-/** `entry` from a 409 `covered_by_wildcard` body, when present. */
-function wildcardEntry(err: ApiError): string {
+/** `entry` from a 409 body (`covered_by_legacy`, `legacy_entry_not_found`). */
+export function conflictEntry(err: ApiError): string {
   try {
     const body = JSON.parse(err.body) as { entry?: unknown } | null;
     return typeof body?.entry === 'string' ? body.entry : '';
@@ -124,8 +124,8 @@ export function PrivacyFieldsView({
       setNotice({ itemId: item.id, notice: { kind: 'saved', entry: item.configEntry } });
       await load();
     } catch (err) {
-      if (err instanceof ApiError && err.status === 409 && err.code === 'covered_by_wildcard') {
-        setNotice({ itemId: item.id, notice: { kind: 'wildcard', entry: wildcardEntry(err) } });
+      if (err instanceof ApiError && err.status === 409 && err.code === 'covered_by_legacy') {
+        setNotice({ itemId: item.id, notice: { kind: 'legacy', entry: conflictEntry(err) } });
       } else if (err instanceof ApiError && err.status === 409 && err.code === 'invalid_field') {
         setNotice({ itemId: item.id, notice: { kind: 'invalid' } });
       } else if (err instanceof ApiError && (err.status === 409 || err.status === 404)) {
@@ -217,6 +217,13 @@ export function PrivacyFieldsView({
             </Link>
           );
         })}
+        <Link
+          href={LEGACY_VIEW_HREF}
+          data-testid="tab-legacy"
+          className="rounded-full border border-dashed border-[color:var(--border)] px-3 py-1 text-[13px] text-[color:var(--fg-muted)] transition-colors hover:border-[color:var(--accent)]"
+        >
+          {t('legacy.tab')}
+        </Link>
       </nav>
 
       {tool ? (
@@ -289,8 +296,8 @@ function OrphanNotice({ notice }: { notice: CardNotice }): React.ReactElement {
       return <ErrorLine message={t('errors.stale')} detail={null} />;
     case 'gone':
       return <ErrorLine message={t('errors.notFound')} detail={null} />;
-    case 'wildcard':
-      return <ErrorLine message={t('errors.wildcard', { entry: notice.entry })} detail={null} />;
+    case 'legacy':
+      return <ErrorLine message={t('errors.coveredByLegacy', { entry: notice.entry })} detail={null} />;
     case 'invalid':
       return <ErrorLine message={t('errors.invalidField')} detail={null} />;
     case 'error':

@@ -1,7 +1,7 @@
 /**
  * Field classification (#1556 follow-up) — persistence.
  *
- * `privacy_field_candidates` (one row per tool + field path),
+ * `privacy_field_candidates` (one row per tool + scope + field path),
  * `privacy_model_verdicts` (cached schema-only verdicts) and
  * `privacy_field_classification_visits` (per-admin last visit), created by
  * `migrations/0065_privacy_field_classification.sql`. Every statement is
@@ -36,9 +36,12 @@ export interface CandidateDecision {
 export interface FieldCandidate {
   readonly id: string;
   readonly toolName: string;
+  /** An Odoo model, a dataset id, or `-`. */
+  readonly scope: string;
   readonly fieldPath: string;
+  /** The field's schema label where the source has one; never a value. */
+  readonly label: string | null;
   readonly valueShape: FieldValueShape;
-  readonly sourceModels: readonly string[];
   readonly relationModels: readonly string[];
   readonly status: FieldStatus;
   readonly reasons: readonly FieldReason[];
@@ -72,6 +75,9 @@ export interface StoredModelVerdict {
   readonly source: 'builtin' | 'haiku';
   readonly confidence: number;
   readonly reason: string;
+  /** A source verdict's field-set hash (`sourceFieldsHash`); empty for a
+   *  relation target. */
+  readonly fieldsHash: string;
   readonly decidedAt: string;
 }
 
@@ -85,7 +91,8 @@ export interface OpenFieldCounts {
 export interface FieldClassificationStore {
   list(filter?: { readonly toolName?: string }): Promise<FieldCandidate[]>;
   get(id: string): Promise<FieldCandidate | undefined>;
-  /** Insert or merge one observation (source models union, counts add up). */
+  /** Insert or merge one observation per tool + scope + field (counts add
+   *  up, the latest label wins). */
   upsertObservation(obs: FieldObservation): Promise<void>;
   saveClassification(id: string, update: CandidateClassificationUpdate): Promise<void>;
   /** Set (or with `null` clear) the admin decision and the shown status. */
@@ -107,9 +114,10 @@ export interface FieldClassificationStore {
 interface CandidateRow {
   id: string;
   tool_name: string;
+  scope: string;
   field_path: string;
+  label: string | null;
   value_shape: FieldValueShape;
-  source_models: string[];
   relation_models: string[];
   status: FieldStatus;
   reasons: FieldReason[] | null;
@@ -128,7 +136,7 @@ interface CandidateRow {
   last_status_change_at: Date;
 }
 
-const CANDIDATE_COLS = `id, tool_name, field_path, value_shape, source_models, relation_models,
+const CANDIDATE_COLS = `id, tool_name, scope, field_path, label, value_shape, relation_models,
   status, reasons, fingerprint, sample_verdict, masked_preview, decision, decision_fingerprint, decided_by_id,
   decided_by_email, decided_at, first_seen_at, last_seen_at, seen_count, computed_at,
   last_status_change_at`;
@@ -137,9 +145,10 @@ function toCandidate(row: CandidateRow): FieldCandidate {
   return {
     id: row.id,
     toolName: row.tool_name,
+    scope: row.scope,
     fieldPath: row.field_path,
+    label: row.label,
     valueShape: row.value_shape,
-    sourceModels: row.source_models,
     relationModels: row.relation_models,
     status: row.status,
     reasons: row.reasons ?? [],
@@ -164,6 +173,16 @@ function toCandidate(row: CandidateRow): FieldCandidate {
   };
 }
 
+/** Open counts from the statuses of the listable rows. */
+function countOpenOf(statuses: readonly FieldStatus[]): OpenFieldCounts {
+  const of = (status: FieldStatus): number => statuses.filter((s) => s === status).length;
+  return {
+    needsClarification: of('needs_clarification'),
+    suggested: of('suggested'),
+    confirmedConflict: of('confirmed_conflict'),
+  };
+}
+
 export class PgFieldClassificationStore implements FieldClassificationStore {
   constructor(private readonly pool: Pick<Pool, 'query'>) {}
 
@@ -172,11 +191,11 @@ export class PgFieldClassificationStore implements FieldClassificationStore {
       filter.toolName !== undefined
         ? await this.pool.query<CandidateRow>(
             `SELECT ${CANDIDATE_COLS} FROM privacy_field_candidates
-              WHERE tool_name = $1 ORDER BY tool_name, field_path`,
+              WHERE tool_name = $1 ORDER BY tool_name, scope, field_path`,
             [filter.toolName],
           )
         : await this.pool.query<CandidateRow>(
-            `SELECT ${CANDIDATE_COLS} FROM privacy_field_candidates ORDER BY tool_name, field_path`,
+            `SELECT ${CANDIDATE_COLS} FROM privacy_field_candidates ORDER BY tool_name, scope, field_path`,
           );
     return result.rows.map(toCandidate);
   }
@@ -193,21 +212,20 @@ export class PgFieldClassificationStore implements FieldClassificationStore {
   async upsertObservation(obs: FieldObservation): Promise<void> {
     await this.pool.query(
       `INSERT INTO privacy_field_candidates
-         (tool_name, field_path, value_shape, source_models, seen_count, first_seen_at, last_seen_at)
-       VALUES ($1, $2, $3, $4::text[], $5, $6, $7)
-       ON CONFLICT (tool_name, field_path) DO UPDATE SET
+         (tool_name, scope, field_path, label, value_shape, seen_count, first_seen_at, last_seen_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       ON CONFLICT (tool_name, scope, field_path) DO UPDATE SET
          value_shape   = EXCLUDED.value_shape,
-         source_models = ARRAY(
-           SELECT DISTINCT m FROM unnest(privacy_field_candidates.source_models || EXCLUDED.source_models) AS m
-            ORDER BY m),
+         label         = COALESCE(EXCLUDED.label, privacy_field_candidates.label),
          seen_count    = privacy_field_candidates.seen_count + EXCLUDED.seen_count,
          first_seen_at = LEAST(privacy_field_candidates.first_seen_at, EXCLUDED.first_seen_at),
          last_seen_at  = GREATEST(privacy_field_candidates.last_seen_at, EXCLUDED.last_seen_at)`,
       [
         obs.toolName,
+        obs.scope,
         obs.fieldPath,
+        obs.label ?? null,
         obs.valueShape,
-        [...new Set(obs.sourceModels)].sort(),
         obs.seenCount,
         obs.firstSeenAt,
         obs.lastSeenAt,
@@ -272,9 +290,10 @@ export class PgFieldClassificationStore implements FieldClassificationStore {
       source: 'builtin' | 'haiku';
       confidence: number;
       reason: string;
+      fields_hash: string;
       decided_at: Date;
     }>(
-      `SELECT model, verdict, source, confidence, reason, decided_at
+      `SELECT model, verdict, source, confidence, reason, fields_hash, decided_at
          FROM privacy_model_verdicts
         WHERE model = ANY($1::text[]) AND decided_at >= $2`,
       [[...models], notBefore.toISOString()],
@@ -285,6 +304,7 @@ export class PgFieldClassificationStore implements FieldClassificationStore {
       source: r.source,
       confidence: Number(r.confidence),
       reason: r.reason,
+      fieldsHash: r.fields_hash,
       decidedAt: r.decided_at.toISOString(),
     }));
   }
@@ -294,33 +314,38 @@ export class PgFieldClassificationStore implements FieldClassificationStore {
   ): Promise<void> {
     for (const v of verdicts) {
       await this.pool.query(
-        `INSERT INTO privacy_model_verdicts (model, verdict, source, confidence, reason, decided_at)
-         VALUES ($1, $2, $3, $4, $5, NOW())
+        `INSERT INTO privacy_model_verdicts
+           (model, verdict, source, confidence, reason, fields_hash, decided_at)
+         VALUES ($1, $2, $3, $4, $5, $6, NOW())
          ON CONFLICT (model) DO UPDATE SET
            verdict = EXCLUDED.verdict, source = EXCLUDED.source,
            confidence = EXCLUDED.confidence, reason = EXCLUDED.reason,
+           fields_hash = EXCLUDED.fields_hash,
            decided_at = EXCLUDED.decided_at`,
-        [v.model, v.verdict, v.source, v.confidence, v.reason],
+        [v.model, v.verdict, v.source, v.confidence, v.reason, v.fieldsHash],
       );
     }
   }
 
   async countOpen(): Promise<OpenFieldCounts> {
-    const result = await this.pool.query<{ status: string; n: string }>(
-      `SELECT status, COUNT(*)::text AS n FROM privacy_field_candidates
-        WHERE status IN ('needs_clarification', 'suggested', 'confirmed_conflict')
-          -- the page hides rows recorded before the grammar check; so does the count
-          AND field_path ~ '^[a-z_][a-z0-9_]*$'
-          AND tool_name ~* '^[a-z0-9_.-]+$'
-        GROUP BY status`,
+    const result = await this.pool.query<{
+      tool_name: string;
+      scope: string;
+      field_path: string;
+      status: FieldStatus;
+    }>(
+      `SELECT tool_name, scope, field_path, status FROM privacy_field_candidates
+        WHERE status IN ('needs_clarification', 'suggested', 'confirmed_conflict')`,
     );
-    const of = (status: string): number =>
-      Number(result.rows.find((r) => r.status === status)?.n ?? 0);
-    return {
-      needsClarification: of('needs_clarification'),
-      suggested: of('suggested'),
-      confirmedConflict: of('confirmed_conflict'),
-    };
+    // The page hides rows that cannot form one scoped entry (the grammar
+    // lives in the guard's parser, not in SQL); so does the count.
+    return countOpenOf(
+      result.rows
+        .filter((r) =>
+          isValidFieldIdentity({ toolName: r.tool_name, scope: r.scope, fieldPath: r.field_path }),
+        )
+        .map((r) => r.status),
+    );
   }
 
   async lastComputedAt(): Promise<string | null> {
@@ -361,10 +386,11 @@ export class InMemoryFieldClassificationStore implements FieldClassificationStor
   async list(filter: { readonly toolName?: string } = {}): Promise<FieldCandidate[]> {
     return [...this.rows.values()]
       .filter((r) => filter.toolName === undefined || r.toolName === filter.toolName)
-      .sort((a, b) =>
-        a.toolName === b.toolName
-          ? a.fieldPath.localeCompare(b.fieldPath)
-          : a.toolName.localeCompare(b.toolName),
+      .sort(
+        (a, b) =>
+          a.toolName.localeCompare(b.toolName) ||
+          a.scope.localeCompare(b.scope) ||
+          a.fieldPath.localeCompare(b.fieldPath),
       );
   }
 
@@ -374,16 +400,17 @@ export class InMemoryFieldClassificationStore implements FieldClassificationStor
 
   async upsertObservation(obs: FieldObservation): Promise<void> {
     const existing = [...this.rows.values()].find(
-      (r) => r.toolName === obs.toolName && r.fieldPath === obs.fieldPath,
+      (r) => r.toolName === obs.toolName && r.scope === obs.scope && r.fieldPath === obs.fieldPath,
     );
     if (existing === undefined) {
       const id = randomUUID();
       this.rows.set(id, {
         id,
         toolName: obs.toolName,
+        scope: obs.scope,
         fieldPath: obs.fieldPath,
+        label: obs.label ?? null,
         valueShape: obs.valueShape,
-        sourceModels: [...new Set(obs.sourceModels)].sort(),
         relationModels: [],
         status: 'needs_clarification',
         reasons: [],
@@ -402,7 +429,7 @@ export class InMemoryFieldClassificationStore implements FieldClassificationStor
     this.rows.set(existing.id, {
       ...existing,
       valueShape: obs.valueShape,
-      sourceModels: [...new Set([...existing.sourceModels, ...obs.sourceModels])].sort(),
+      label: obs.label ?? existing.label,
       seenCount: existing.seenCount + obs.seenCount,
       firstSeenAt: obs.firstSeenAt < existing.firstSeenAt ? obs.firstSeenAt : existing.firstSeenAt,
       lastSeenAt: obs.lastSeenAt > existing.lastSeenAt ? obs.lastSeenAt : existing.lastSeenAt,
@@ -458,12 +485,9 @@ export class InMemoryFieldClassificationStore implements FieldClassificationStor
   }
 
   async countOpen(): Promise<OpenFieldCounts> {
-    const rows = [...this.rows.values()].filter((r) => isValidFieldIdentity(r.toolName, r.fieldPath));
-    return {
-      needsClarification: rows.filter((r) => r.status === 'needs_clarification').length,
-      suggested: rows.filter((r) => r.status === 'suggested').length,
-      confirmedConflict: rows.filter((r) => r.status === 'confirmed_conflict').length,
-    };
+    return countOpenOf(
+      [...this.rows.values()].filter((r) => isValidFieldIdentity(r)).map((r) => r.status),
+    );
   }
 
   async lastComputedAt(): Promise<string | null> {

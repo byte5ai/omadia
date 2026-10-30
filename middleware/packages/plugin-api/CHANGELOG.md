@@ -15,12 +15,19 @@ follow-up).
 
 ### Added
 
-- **`privacyFieldClassification.ts`**: `FieldObservation`, `FieldValueShape`,
+- **`privacyFieldClassification.ts`**: `FieldKey`, `FieldObservation`, `FieldValueShape`,
   `FieldSampleVerdict`, `FieldSampleC1Verdict`, `ModelClassificationRequest`,
   `ModelClassificationResult`, `ModelPersonalVerdict`. Schema-only: no type
   carries a field value.
+- **`FieldKey`** (`toolName`, `scope`, `fieldPath`): a field within one source
+  — an Odoo model, an uploaded dataset's id, or `-`. Observations, sample
+  verdicts and previews are keyed by it.
 - **`PrivacyGuardService`** optional methods `takeFieldObservations`,
-  `vetFieldSample`, `classifyModelsSchemaOnly`, `maskedFieldPreview`.
+  `vetFieldSample`, `classifyModelsSchemaOnly`, `maskedFieldPreview`, and
+  `fieldSampleForAdmin` — the real buffered values for an admin on the review
+  page; the caller restricts it to admins and audits every call.
+- **`OperatorClearedFieldEntry.scope`** (optional): the model or dataset a
+  scoped `non_personal_fields` entry cleared the field for.
 - **`parseLlmJson`** moved here from `@omadia/orchestrator-extras` (which
   re-exports it), so plugins can parse model JSON without the kernel package.
 

@@ -2008,19 +2008,20 @@ export {};
 
 // ===== privacyFieldClassification.d.ts =====
 export type FieldValueShape = 'm2o' | 'text' | 'mixed';
-export interface FieldObservation {
+export interface FieldKey {
 readonly toolName: string;
+readonly scope: string;
 readonly fieldPath: string;
+}
+export interface FieldObservation extends FieldKey {
 readonly valueShape: FieldValueShape;
-readonly sourceModels: readonly string[];
+readonly label?: string;
 readonly seenCount: number;
 readonly firstSeenAt: string;
 readonly lastSeenAt: string;
 }
 export type FieldSampleC1Verdict = 'hit' | 'near-miss' | 'clean' | 'unavailable';
-export interface FieldSampleVerdict {
-readonly toolName: string;
-readonly fieldPath: string;
+export interface FieldSampleVerdict extends FieldKey {
 readonly sampleCount: number;
 readonly identityHit: boolean;
 readonly c1: FieldSampleC1Verdict;
@@ -2059,12 +2060,13 @@ readonly env: NodeJS.ProcessEnv;
 export declare function parseScopes(stored: unknown): readonly string[];
 
 // ===== privacyReceipt.d.ts =====
-import type { FieldObservation, FieldSampleVerdict, ModelClassificationRequest, ModelClassificationResult } from './privacyFieldClassification.js';
+import type { FieldKey, FieldObservation, FieldSampleVerdict, ModelClassificationRequest, ModelClassificationResult } from './privacyFieldClassification.js';
 export declare const PRIVACY_REDACT_SERVICE_NAME = "privacyRedact";
 export declare const PRIVACY_REDACT_CAPABILITY = "privacy.redact@1";
 export interface OperatorClearedFieldEntry {
 readonly toolName: string;
 readonly field: string;
+readonly scope?: string;
 }
 export interface BypassedToolEntry {
 readonly toolName: string;
@@ -2297,14 +2299,12 @@ nameDetectorStatus?(): Promise<PrivacyNameDetectorStatus>;
 v4ToolSpecs(): ReadonlyArray<PrivacyV4ToolSpec>;
 finalizeTurn(turnId: string, turnInput?: string): Promise<PrivacyReceipt | undefined>;
 takeFieldObservations?(): readonly FieldObservation[];
-vetFieldSample?(field: {
-readonly toolName: string;
-readonly fieldPath: string;
-}): Promise<FieldSampleVerdict>;
+vetFieldSample?(field: FieldKey): Promise<FieldSampleVerdict>;
 classifyModelsSchemaOnly?(requests: readonly ModelClassificationRequest[]): Promise<readonly ModelClassificationResult[]>;
-maskedFieldPreview?(field: {
-readonly toolName: string;
-readonly fieldPath: string;
+maskedFieldPreview?(field: FieldKey & {
+readonly limit?: number;
+}): readonly string[];
+fieldSampleForAdmin?(field: FieldKey & {
 readonly limit?: number;
 }): readonly string[];
 }

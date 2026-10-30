@@ -36,6 +36,8 @@ const ACTION_FILTERS = [
   { key: 'channel', prefix: 'channel.' },
   // Exact action name, not a prefix: one action covers every decision.
   { key: 'privacyFieldClassification', prefix: 'privacy.field_classification' },
+  // An admin opened a field's real-value preview (count only, never values).
+  { key: 'privacyFieldPreview', prefix: 'privacy.field_preview' },
 ] as const;
 
 type Formatter = ReturnType<typeof useFormatter>;

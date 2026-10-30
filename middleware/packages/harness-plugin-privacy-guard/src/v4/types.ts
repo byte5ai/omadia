@@ -12,6 +12,8 @@
  *   specs/001-privacy-shield-v4/data-model.md
  */
 
+import type { FieldSource } from '../nonPersonalFields.js';
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -98,10 +100,11 @@ export type DatasetRow = Readonly<Record<string, unknown>>;
 export interface DatasetProvenance {
   /** Originating tool name, or the verb name for a verb-derived dataset. */
   readonly toolName: string;
-  /** #1556 — the tools whose results this dataset holds: the tool itself for
-   *  an interned result, every source of the inputs for a verb-derived one.
-   *  What an operator's `non_personal_fields` rule is matched against. */
-  readonly sourceTools?: readonly string[];
+  /** #1556 — the sources whose rows this dataset holds (tool + scope, see
+   *  `scopeOf`): the tool itself for an interned result, the union of the
+   *  inputs' sources for a verb-derived one. What an operator's
+   *  `non_personal_fields` rule is matched against. */
+  readonly sources?: readonly FieldSource[];
   readonly turnId: string;
   /** `datasetId` of the input dataset, when produced by a verb. */
   readonly derivedFrom?: string;
@@ -165,8 +168,8 @@ export type Classifier = (
 
 /** #1556 — what the classifier may know about where the rows came from. */
 export interface ClassifierContext {
-  /** The tools whose results the rows hold (see `DatasetProvenance`). */
-  readonly sourceTools: readonly string[];
+  /** The sources (tool + scope) the rows came from (see `DatasetProvenance`). */
+  readonly sources: readonly FieldSource[];
   /**
    * For a verb-derived dataset: the only paths an operator rule may clear —
    * those that were already a `label` in every input holding them, under the

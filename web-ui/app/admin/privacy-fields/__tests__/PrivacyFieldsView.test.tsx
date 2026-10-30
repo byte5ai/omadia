@@ -9,11 +9,12 @@ import { PrivacyFieldsView } from '../_components/PrivacyFieldsView';
  * #1556 follow-up — /admin/privacy-fields. Rows come from
  * GET …/field-classification?status=, reasons render localized from their
  * codes, decisions POST the item's fingerprint, and a 409 is handled
- * (stale → reload + message, covered_by_wildcard → message naming the entry).
+ * (stale → reload + message, covered_by_legacy → message naming the entry).
  */
 
 const fetchMock = vi.fn();
 
+const DATASET = '0f5c1c3a-1111-4222-8333-444455556666';
 const BASE = '/bot-api/v1/admin/privacy/field-classification';
 
 function item(over: Partial<FieldClassificationItem> = {}): FieldClassificationItem {
@@ -22,14 +23,15 @@ function item(over: Partial<FieldClassificationItem> = {}): FieldClassificationI
     toolName: 'odoo_execute',
     fieldPath: 'department_id',
     valueShape: 'm2o',
-    sourceModels: ['hr.employee'],
+    scope: 'hr.employee',
+    label: 'Department',
     relationModels: ['hr.department'],
     status: 'suggested',
     reasons: [
       { code: 'known_non_personal', models: ['hr.department'] },
       { code: 'sample_clean', sampleCount: 42 },
     ],
-    configEntry: 'odoo_execute:department_id',
+    configEntry: 'odoo_execute:hr.employee/department_id',
     fingerprint: 'fp-1',
     decision: null,
     firstSeenAt: '2026-10-29T08:00:00.000Z',
@@ -83,7 +85,7 @@ describe('<PrivacyFieldsView />', () => {
     fetchMock.mockResolvedValueOnce(
       respond(
         list([
-          item({ sourceModels: ['hr.employee', 'res.partner'] }),
+          item(),
           item({ id: 'f2', toolName: 'odoo_search_read', fieldPath: 'country_id', fingerprint: 'fp-2' }),
           item({
             id: 'f3',
@@ -109,9 +111,6 @@ describe('<PrivacyFieldsView />', () => {
     ).toHaveLength(2);
     expect(screen.getAllByText('42 sampled values showed no personal data.')).toHaveLength(2);
     expect(screen.getByText('Other reason (some_future_code).')).toBeInTheDocument();
-    expect(
-      screen.getByText('Applies to every model with this field: hr.employee and res.partner'),
-    ).toBeInTheDocument();
     // Tabs carry the server counts and keep the tool filter.
     const tab = screen.getByTestId('tab-needs_clarification');
     expect(tab).toHaveTextContent('Needs clarification2');
@@ -170,7 +169,7 @@ describe('<PrivacyFieldsView />', () => {
     expect(init?.method).toBe('POST');
     expect(JSON.parse(String(init?.body))).toEqual({ action: 'confirm', fingerprint: 'fp-1' });
     expect(call(2).url.pathname).toBe(BASE);
-    expect(await screen.findByText('Saved: odoo_execute:department_id')).toBeInTheDocument();
+    expect(await screen.findByText('Saved: odoo_execute:hr.employee/department_id')).toBeInTheDocument();
   });
 
   it('reject and keep masked send their own action', async () => {
@@ -204,31 +203,104 @@ describe('<PrivacyFieldsView />', () => {
     expect(call(2).url.pathname).toBe(BASE);
   });
 
-  it('a 409 covered_by_wildcard names the entry and does not reload', async () => {
+  it('a 409 covered_by_legacy names the entry and does not reload', async () => {
     fetchMock
       .mockResolvedValueOnce(respond(list([item({ status: 'confirmed' })])))
-      .mockResolvedValueOnce(respond({ error: 'covered_by_wildcard', entry: '*:department_id' }, 409));
+      .mockResolvedValueOnce(respond({ error: 'covered_by_legacy', entry: '*:department_id' }, 409));
     renderWithIntl(<PrivacyFieldsView status="confirmed" tool={null} />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Revert' }));
 
     expect(
-      await screen.findByText(/covered by the wildcard entry \*:department_id/),
+      await screen.findByText(/cleared by the legacy entry \*:department_id, which applies to all models/),
     ).toBeInTheDocument();
     expect(JSON.parse(String(call(1).init?.body))).toEqual({ action: 'revert', fingerprint: 'fp-1' });
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it('show sample loads the masked preview on demand', async () => {
+  it('show sample shows the real values with the admin/audit note', async () => {
     fetchMock
       .mockResolvedValueOnce(respond(list([item()])))
-      .mockResolvedValueOnce(respond({ samples: ['R••••••• & D••••••••••'] }));
+      .mockResolvedValueOnce(
+        respond({ samples: ['Research & Development', 'Sales'], maskedSamples: ['R••••••• & D••••••••••'] }),
+      );
     renderWithIntl(<PrivacyFieldsView status="suggested" tool={null} />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Show sample' }));
 
-    expect(await screen.findByText('R••••••• & D••••••••••')).toBeInTheDocument();
+    expect(await screen.findByText('Research & Development')).toBeInTheDocument();
+    expect(screen.getByText('Sales')).toBeInTheDocument();
+    expect(screen.getByTestId('field-sample-note')).toHaveTextContent(
+      'Visible to admins only. Opening this view is audited.',
+    );
+    expect(screen.queryByText('R••••••• & D••••••••••')).toBeNull();
     expect(call(1).url.pathname).toBe(`${BASE}/f1/preview`);
+  });
+
+  it('show sample falls back to the masked sample when no real value is buffered', async () => {
+    fetchMock
+      .mockResolvedValueOnce(respond(list([item()])))
+      .mockResolvedValueOnce(respond({ samples: [], maskedSamples: ['R••••••• & D••••••••••'] }));
+    renderWithIntl(<PrivacyFieldsView status="suggested" tool={null} />, { locale: 'de' });
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Stichprobe zeigen' }));
+
+    expect(await screen.findByText('R••••••• & D••••••••••')).toBeInTheDocument();
+    expect(screen.getByTestId('field-sample-masked')).toBeInTheDocument();
+    expect(screen.getByTestId('field-sample-note')).toHaveTextContent('Nur für Admins sichtbar.');
+  });
+
+  it('shows source and scope (model / dataset / no model), the entry and a legacy note', async () => {
+    fetchMock.mockResolvedValueOnce(
+      respond(
+        list([
+          item(),
+          item({
+            id: 'f2',
+            toolName: 'query_dataset',
+            scope: DATASET,
+            fieldPath: 'Abteilung',
+            label: 'Abteilung',
+            configEntry: `dataset:${DATASET}/Abteilung`,
+          }),
+          item({
+            id: 'f3',
+            toolName: 'mcp_shop',
+            scope: '-',
+            fieldPath: 'category',
+            label: 'Product category',
+            configEntry: 'mcp_shop:-/category',
+            status: 'confirmed',
+            reasons: [{ code: 'legacy_entry', entry: '*:category' }],
+          }),
+        ]),
+      ),
+    );
+    renderWithIntl(<PrivacyFieldsView status="suggested" tool={null} />);
+
+    const emp = await screen.findByTestId('field-f1');
+    expect(within(emp).getByTestId('field-source')).toHaveTextContent('odoo_execute · Model hr.employee');
+    expect(within(emp).getByText('odoo_execute:hr.employee/department_id')).toBeInTheDocument();
+    const dataset = screen.getByTestId('field-f2');
+    expect(within(dataset).getByTestId('field-source')).toHaveTextContent(`query_dataset · Dataset ${DATASET}`);
+    expect(within(dataset).getByText(`dataset:${DATASET}/Abteilung`)).toBeInTheDocument();
+    const mcp = screen.getByTestId('field-f3');
+    expect(within(mcp).getByTestId('field-source')).toHaveTextContent('mcp_shop · No model');
+    expect(within(mcp).getByText('Product category')).toBeInTheDocument();
+    expect(
+      within(mcp).getByText('Cleared by the legacy entry *:category — it applies to all models.'),
+    ).toBeInTheDocument();
+    const link = within(mcp).getByRole('link', { name: 'Review legacy entries' });
+    expect(link.getAttribute('href')).toBe('/admin/privacy-fields?view=legacy');
+    expect(screen.getByTestId('tab-legacy').getAttribute('href')).toBe('/admin/privacy-fields?view=legacy');
+  });
+
+  it('renders name_detector_unavailable in German', async () => {
+    fetchMock.mockResolvedValueOnce(
+      respond(list([item({ status: 'needs_clarification', reasons: [{ code: 'name_detector_unavailable' }] })])),
+    );
+    renderWithIntl(<PrivacyFieldsView status="needs_clarification" tool={null} />, { locale: 'de' });
+    expect(await screen.findByText(/Die Namenserkennung war nicht verfügbar/)).toBeInTheDocument();
   });
 
   it('recompute posts and reloads', async () => {
