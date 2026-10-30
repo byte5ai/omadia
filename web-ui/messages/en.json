@@ -4418,6 +4418,9 @@
       "error": "Error: {message}"
     },
     "credentials": {
+      "booleanYes": "Yes",
+      "booleanNo": "No",
+      "booleanDefaultActive": "default · not saved yet",
       "noFields": "This plugin declares no setup fields.",
       "intro": "Fields marked <secret>Secret · Vault</secret> (passwords, OAuth tokens) are stored encrypted in the vault and only shown as “stored” — never the actual value. Fields marked <config>Config</config> (enum, URL, flags) are non-sensitive and show the current selection. Type or pick a new value to overwrite, or click <trashIcon></trashIcon> to delete the value.",
       "secretBadgeTitle": "Secret — encrypted in the per-agent vault",

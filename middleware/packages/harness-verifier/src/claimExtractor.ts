@@ -1,5 +1,6 @@
 import type { LlmProvider, LlmResponse, ToolSpec } from '@omadia/llm-provider';
 import { textMessage } from '@omadia/llm-provider';
+import { VERIFIER_REASONING } from './verifierReasoning.js';
 import { claimContext, claimLocation } from './claimContext.js';
 import { isRecordHandle, isSystemRecordHandle, parseEntityHandle } from './entityHandle.js';
 import {
@@ -489,6 +490,7 @@ ${truncate(answer, EXTRACTION_WINDOW_CHARS)}`;
         tools: [toolSpec],
         toolChoice: { type: 'tool', name: TOOL_NAME },
         messages: [textMessage('user', prompt.user)],
+        ...VERIFIER_REASONING,
       });
       // `usage` is optional-chained: a test double answers without one.
       this.opts.log(
