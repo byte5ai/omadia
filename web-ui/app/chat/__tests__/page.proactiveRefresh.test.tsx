@@ -14,7 +14,8 @@ import ChatPage from '../page';
 const { mockRefreshProactive, mockMutateById, mockStartTurn, ctx } = vi.hoisted(() => ({
   mockRefreshProactive: vi.fn(),
   mockMutateById: vi.fn(),
-  mockStartTurn: vi.fn(),
+  // The real store answers `true` for a turn it takes (`StreamStore.startTurn`).
+  mockStartTurn: vi.fn(() => true),
   ctx: { hydrating: false, activeId: 's1', messages: [] as unknown[] },
 }));
 

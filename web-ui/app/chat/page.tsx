@@ -322,6 +322,33 @@ export default function ChatPage(): React.ReactElement {
         streaming: true,
       };
 
+      // Hand the stream off to <StreamRunner /> via the store BEFORE the
+      // bubbles land. The runner owns the fetch + NDJSON-parse loop and writes
+      // deltas back into ChatSessions via context, so a menu-switch or
+      // ChatTabs switch no longer kills the stream. `startTurn` refuses while
+      // the session already has a live stream: a second send in the same tick
+      // (Enter + click, a double click — `sending` is still false in this
+      // closure) used to append its user bubble and a `streaming` placeholder
+      // first and then get refused, leaving a question that was never sent
+      // and a "Stream live" counter that never stopped — persisted with the
+      // session. Refused ⇒ nothing is appended.
+      // Phase A — only the FIRST turn ships agentSlug; subsequent turns
+      // use the session-pinned snapshot on the server side.
+      // #1071 — a cleared chat holding only routine deliveries counts as empty.
+      const isFirstTurn = activeHasNoTurns;
+      const started = streamStore.startTurn({
+        sessionId: targetSessionId,
+        pendingMessageId: pendingId,
+        message: trimmed,
+        ...(isFirstTurn && selectedAgentSlug
+          ? { agentSlug: selectedAgentSlug }
+          : {}),
+        // Phase 3 — a "Kürzer" / "Mehr Details" re-ask carries its level for
+        // this one turn; a normal send carries nothing.
+        ...(opts?.answerVerbosity ? { answerVerbosity: opts.answerVerbosity } : {}),
+      });
+      if (!started) return;
+
       mutateById(targetSessionId, (session) => {
         const isFirst = hasNoTurns(session.messages);
         // Strip pendingUserChoice, pendingMcpInput AND followUpOptions from
@@ -341,26 +368,6 @@ export default function ChatPage(): React.ReactElement {
       // A sent message always lands at the bottom, even if the user had
       // scrolled up to read earlier messages before sending.
       scrollToBottom();
-
-      // Hand the stream off to <StreamRunner /> via the store. The runner
-      // owns the fetch + NDJSON-parse loop and writes deltas back into
-      // ChatSessions via context, so a menu-switch or ChatTabs switch no
-      // longer kills the stream.
-      // Phase A — only the FIRST turn ships agentSlug; subsequent turns
-      // use the session-pinned snapshot on the server side.
-      // #1071 — a cleared chat holding only routine deliveries counts as empty.
-      const isFirstTurn = activeHasNoTurns;
-      streamStore.startTurn({
-        sessionId: targetSessionId,
-        pendingMessageId: pendingId,
-        message: trimmed,
-        ...(isFirstTurn && selectedAgentSlug
-          ? { agentSlug: selectedAgentSlug }
-          : {}),
-        // Phase 3 — a "Kürzer" / "Mehr Details" re-ask carries its level for
-        // this one turn; a normal send carries nothing.
-        ...(opts?.answerVerbosity ? { answerVerbosity: opts.answerVerbosity } : {}),
-      });
       inputRef.current?.focus();
     },
     [

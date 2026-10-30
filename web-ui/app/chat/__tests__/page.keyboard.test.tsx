@@ -92,6 +92,7 @@ describe('chat composer keyboard handling', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockIsActive.mockReturnValue(false);
+    mockStartTurn.mockReturnValue(true);
     mockSteerActiveTurn.mockResolvedValue({ accepted: true });
   });
 
@@ -148,6 +149,37 @@ describe('chat composer keyboard handling', () => {
     fireEvent.keyDown(textarea, { key: 'Enter', isComposing: true });
 
     expect(mockStartTurn).not.toHaveBeenCalled();
+  });
+
+  it('appends the user bubble and the pending answer once the store took the turn', async () => {
+    renderWithIntl(<ChatPage />);
+    const textarea = composer();
+
+    fireEvent.change(textarea, { target: { value: 'hello' } });
+    fireEvent.keyDown(textarea, { key: 'Enter' });
+
+    await waitFor(() => {
+      expect(mockStartTurn).toHaveBeenCalledTimes(1);
+    });
+    expect(mockMutateById).toHaveBeenCalledTimes(1);
+    expect(textarea.value).toBe('');
+  });
+
+  it('appends nothing when the store refuses the turn — no ghost "Stream live" bubble', () => {
+    // A second send in the same tick (Enter + click, a double click): the
+    // session already has a live stream, `startTurn` refuses. Before the fix
+    // the user bubble and a `streaming` placeholder were appended first and
+    // never resolved — a question that was never sent, persisted.
+    mockStartTurn.mockReturnValue(false);
+    renderWithIntl(<ChatPage />);
+    const textarea = composer();
+
+    fireEvent.change(textarea, { target: { value: 'hello' } });
+    fireEvent.keyDown(textarea, { key: 'Enter' });
+
+    expect(mockStartTurn).toHaveBeenCalledTimes(1);
+    expect(mockMutateById).not.toHaveBeenCalled();
+    expect(textarea.value).toBe('hello');
   });
 
   it('keeps Cmd+Enter working as the legacy alias', async () => {
