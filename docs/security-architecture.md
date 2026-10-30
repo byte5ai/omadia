@@ -2130,7 +2130,14 @@ logged). The kernel (`src/privacy/fieldClassification/`) drains the
 observations on plugin activation, at boot, every 6 h and on demand (never per
 chat turn). For a scope that is an Odoo model it resolves the field's relation
 target with Odoo `fields_get` on that model only (`odooRelationResolver.ts`,
-the one method it may call through `odoo.client`, pinned by a test), and
+the one method it may call through `odoo.client`, pinned by a test; a model
+the Odoo plugin's schema-only service `odoo.schema@1` lists is read through
+that service instead, which applies the plugin's whitelist and leaves HR
+red-line fields out). Each pass also seeds the `many2one` fields of every
+model `odoo.schema` lists as candidates seen 0 times (insert only, schema
+only, no record read), so the page has candidates right after the integration
+is activated; with no value ever vetted, such a field is at most "needs
+clarification" (`not_seen_yet`) until a chat reads it. It
 classifies (`engine.ts`): a person-model target (`modelCatalog.ts`) is
 `personal` and is never sent to a model, and so is a field without relation
 information whose scope is a person model (`name` of `res.partner`); an

@@ -6517,6 +6517,7 @@
     "none": "none",
     "configEntry": "Entry",
     "seen": "{count, plural, one {Seen once} other {Seen # times}}, last {when}",
+    "notSeenYet": "Read from the Odoo schema on {when}; not seen in a chat yet",
     "reasonsHeading": "Why",
     "reasons": {
       "person_model": "Points to a person model: {models}.",
@@ -6530,6 +6531,7 @@
       "name_hit": "The name detector found names in sampled values.",
       "name_near_miss": "The name detector found near-matches for names in sampled values.",
       "name_detector_unavailable": "The name detector was unavailable (or no values were sampled), so the field is not suggested until its values are checked for names.",
+      "not_seen_yet": "Known from the Odoo schema only: no chat has read this field yet, so its values were not checked for names. You can decide now; otherwise it is suggested once a chat has read it and its values are clean.",
       "no_relation_info": "No relation information (a text field, a source without relation metadata, or Odoo was unavailable) and no schema review of this source yet.",
       "no_scope": "This source names no model, so an entry would apply to every call of this tool — whatever it returns. It is never suggested; decide yourself.",
       "changed_since_decision": "Changed since the last decision (new relation models or value shape).",
