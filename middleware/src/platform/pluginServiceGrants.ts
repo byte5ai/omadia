@@ -107,6 +107,7 @@
  */
 
 import {
+  PRIVACY_FIELD_SAMPLES_SERVICE_NAME,
   ServiceNotDeclaredError,
   parseCapabilityRef,
 } from '@omadia/plugin-api';
@@ -332,12 +333,30 @@ export function legacyServiceGrantsFor(
   return standaloneRow ?? [];
 }
 
+/**
+ * Service names NO plugin may resolve or replace, whatever its manifest
+ * declares (`requires:`, `optional_requires:`, `provides:`) and whatever the
+ * legacy ramp lists. The kernel reads them through `serviceRegistry.get`
+ * directly; this gate sits in front of plugin consumers only.
+ *
+ *  - `privacyFieldSamples` — the privacy guard's REAL buffered values of
+ *    masked fields, for the audited admin preview of the field-classification
+ *    page. A `requires:` line costs an uploaded plugin nothing, so a
+ *    declaration cannot be the bar for reading other users' data. The
+ *    provider registers it (`provide` is ungated) but cannot read it back
+ *    either — it holds the values anyway.
+ */
+export const KERNEL_ONLY_SERVICE_NAMES: ReadonlySet<string> = new Set([
+  PRIVACY_FIELD_SAMPLES_SERVICE_NAME,
+]);
+
 /** Why a `services.get` call was allowed — or wasn't. */
 export type ServiceGrantOutcome =
   | 'declared'
   | 'self-provided'
   | 'legacy-allowlist'
   | 'provides-not-registered'
+  | 'kernel-only'
   | 'undeclared';
 
 /**
@@ -410,6 +429,8 @@ export function classifyServiceGrant(
   catalog: PluginCatalog,
   isRegisteredByPlugin: (name: string) => boolean,
 ): ServiceGrantOutcome {
+  // Checked before any declaration: no manifest line grants these.
+  if (KERNEL_ONLY_SERVICE_NAMES.has(name)) return 'kernel-only';
   if (declared.has(name)) {
     const plugin = catalog.get(agentId)?.plugin;
     // A dependency declaration grants the name outright — it was paid for at
@@ -487,7 +508,10 @@ export function createServiceGrantGate(
       catalog,
       isRegisteredByPlugin,
     );
-    if (outcome === 'undeclared') {
+    // A kernel-only name reads as undeclared to the plugin: there is no
+    // manifest line that would grant it, and the refusal must not tell an
+    // uploaded plugin more than "not yours".
+    if (outcome === 'undeclared' || outcome === 'kernel-only') {
       throw new ServiceNotDeclaredError(agentId, name, 'undeclared', operation);
     }
     // #788 — a distinct reason, because it has a distinct fixer. 'undeclared'

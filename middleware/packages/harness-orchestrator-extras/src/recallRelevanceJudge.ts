@@ -33,9 +33,10 @@
 
 import type { LlmProvider } from '@omadia/llm-provider';
 import { collectText, textMessage } from '@omadia/llm-provider';
+import { parseLlmJson } from '@omadia/plugin-api';
 
 import type { OpenJobPrivacy } from './jobPrivacy.js';
-import { parseLlmJson } from './llmJson.js';
+import { TURN_PATH_REASONING } from './turnPathReasoning.js';
 
 export type RecallCandidateKind = 'plan' | 'process' | 'insight';
 
@@ -188,6 +189,7 @@ export function createRecallRelevanceJudge(
           maxTokens,
           system: SYSTEM_PROMPT,
           messages: [textMessage('user', masked.text)],
+          ...TURN_PATH_REASONING,
         });
         const replyText = collectText(response.content);
         if (!replyText) {

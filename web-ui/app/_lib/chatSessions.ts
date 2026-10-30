@@ -900,6 +900,29 @@ export function newSessionId(): string {
   return `id-${ts}-${suffix}`;
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** `newSessionId`'s shape when `crypto.randomUUID` is unavailable. */
+const WEB_FALLBACK_ID_RE = /^id-[0-9a-z]+-[0-9a-z]+$/;
+const SERVER_MESSAGE_ID_PREFIX = 'srv-';
+
+/**
+ * A session the SERVER created by mirroring a non-web turn (a canvas, routine
+ * or other channel conversation whose scope passed the id regex) — never a
+ * chat made in this UI. Mirrors the backend's `isServerMirroredSession`
+ * (`@omadia/orchestrator`) rule for rule: the id is not one of ours (a UUID
+ * or the `id-…` fallback) AND every message carries the mirror's `srv-` id —
+ * every message written here has its own id, and an empty chat is one of
+ * ours awaiting its first turn. Used by hydration to drop such a cached copy
+ * instead of pushing it back to a server that has purged it.
+ */
+export function isServerMirroredSession(
+  session: Pick<ChatSession, 'id' | 'messages'>,
+): boolean {
+  if (UUID_RE.test(session.id) || WEB_FALLBACK_ID_RE.test(session.id)) return false;
+  if (session.messages.length === 0) return false;
+  return session.messages.every((m) => m.id.startsWith(SERVER_MESSAGE_ID_PREFIX));
+}
+
 export function deriveTitle(firstUserMessage: string | undefined): string {
   if (!firstUserMessage) return 'Neuer Chat';
   const single = firstUserMessage.replace(/\s+/g, ' ').trim();
@@ -1346,6 +1369,11 @@ export function useChatSessions(): UseChatSessionsResult {
             );
           }
         } else if (l) {
+          // A server-mirrored transcript (canvas / routine turns the server
+          // once wrote into the chat store) that this browser cached before
+          // the server purged it: it was never a chat made here — drop it
+          // instead of pushing it back.
+          if (isServerMirroredSession(l)) continue;
           merged.push(l);
           putRemoteSession(l).catch((err: unknown) => {
             console.warn(

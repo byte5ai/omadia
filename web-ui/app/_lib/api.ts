@@ -925,6 +925,17 @@ export interface PrivacyPosture {
    * and the UI then renders nothing about name detection.
    */
   name_detector?: PrivacyNameDetector | null;
+  /**
+   * #1556 follow-up — fields an admin has to look at: `needs_clarification`
+   * plus `confirmed_conflict` (a listed field that now points to a person
+   * model or changed since it was confirmed). Optional: an older backend
+   * omits it, and the UI then shows no banner and no nav badge.
+   */
+  fields_needing_clarification?: number;
+  /** Undecided `suggested` fields (same optionality). */
+  fields_suggested_open?: number;
+  /** The `confirmed_conflict` part of `fields_needing_clarification`. */
+  fields_confirmed_conflict?: number;
 }
 
 /** #1562 — the Privacy Guard's C1 (GLiNER sidecar) name detector. */
@@ -943,6 +954,202 @@ export interface PrivacyNameDetector {
 
 export async function getPrivacyPosture(): Promise<PrivacyPosture> {
   return getJson<PrivacyPosture>('/v1/admin/runtime/privacy-posture');
+}
+
+// -----------------------------------------------------------------------------
+// Privacy field classification (#1556 follow-up) — suggestions for the Privacy
+// Guard's `non_personal_fields` setting. Suggest only: nothing is cleared until
+// an admin confirms. The API never returns a field value; the preview is
+// shape-masked (`R••••••• & D••••••••••`).
+// -----------------------------------------------------------------------------
+
+export const FIELD_CLASSIFICATION_STATUSES = [
+  'suggested',
+  'needs_clarification',
+  'personal',
+  'confirmed',
+  'confirmed_conflict',
+  'rejected',
+  'kept_masked',
+] as const;
+
+export type FieldClassificationStatus = (typeof FIELD_CLASSIFICATION_STATUSES)[number];
+
+export type FieldClassificationAction = 'confirm' | 'reject' | 'keep_masked' | 'revert';
+
+/**
+ * Why a field got its status. The UI renders localized text from `code` and
+ * the detail fields; unknown codes fall back to a generic label.
+ */
+export interface FieldClassificationReason {
+  code: string;
+  models?: string[];
+  model?: string;
+  confidence?: number;
+  hitTypes?: string[];
+  sampleCount?: number;
+  /** `legacy_entry`: the legacy entry (as written) that covers the field. */
+  entry?: string;
+}
+
+export interface FieldClassificationDecision {
+  action: FieldClassificationAction;
+  by: string | null;
+  at: string;
+}
+
+export interface FieldClassificationItem {
+  id: string;
+  toolName: string;
+  /**
+   * What the field's rows belong to: an Odoo model (`hr.employee`), an
+   * uploaded dataset's id (tool `query_dataset`), or `-` when the source
+   * names no model. One item per tool + scope + field.
+   */
+  scope: string;
+  fieldPath: string;
+  /** The field's schema label where the source has one. */
+  label: string | null;
+  valueShape: 'm2o' | 'text' | 'mixed';
+  relationModels: string[];
+  status: FieldClassificationStatus;
+  reasons: FieldClassificationReason[];
+  /** The scoped entry confirm adds to `non_personal_fields`
+   *  (`<tool>:<scope>/<field>`, `dataset:<id>/<column>`). */
+  configEntry: string;
+  /** Sent back with a decision; a changed candidate answers 409. */
+  fingerprint: string;
+  decision: FieldClassificationDecision | null;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  seenCount: number;
+}
+
+export interface FieldClassificationList {
+  items: FieldClassificationItem[];
+  counts: Record<FieldClassificationStatus, number>;
+  newSinceLastVisit: number;
+  computedAt: string | null;
+}
+
+const FIELD_CLASSIFICATION_BASE = '/v1/admin/privacy/field-classification';
+
+export async function listFieldClassifications(
+  filter: { status?: FieldClassificationStatus; tool?: string } = {},
+): Promise<FieldClassificationList> {
+  const params = new URLSearchParams();
+  if (filter.status) params.set('status', filter.status);
+  if (filter.tool) params.set('tool', filter.tool);
+  const qs = params.toString();
+  const path = qs.length > 0 ? `${FIELD_CLASSIFICATION_BASE}?${qs}` : FIELD_CLASSIFICATION_BASE;
+  const body = await getJson<FieldClassificationList>(path);
+  return { ...body, items: expectArray<FieldClassificationItem>(body.items, path, 'items') };
+}
+
+/**
+ * Record an admin decision. Throws `ApiError` 409 with code
+ * `stale_fingerprint` when the candidate changed since it was loaded,
+ * `covered_by_legacy` (body carries `entry`) when a revert targets a field a
+ * legacy entry (`tool:field`, `*:field`, `field`) covers, or `invalid_field`.
+ */
+export async function decideFieldClassification(
+  id: string,
+  action: FieldClassificationAction,
+  fingerprint: string,
+): Promise<{ item: FieldClassificationItem }> {
+  return postJson<{ item: FieldClassificationItem }>(
+    `${FIELD_CLASSIFICATION_BASE}/${encodeURIComponent(id)}/decision`,
+    { action, fingerprint },
+  );
+}
+
+export interface FieldClassificationPreview {
+  /** REAL buffered values — admins only; every call writes an audit row
+   *  (`privacy.field_preview`). Empty when nothing is buffered. */
+  samples: string[];
+  /** Shape-masked strings (no letter or digit), the fallback. */
+  maskedSamples: string[];
+  /** Why no real value is shown at all: an uploaded dataset's rows belong
+   *  to the uploading user (`owner_scoped_dataset`). `null` otherwise. */
+  samplesWithheld: 'owner_scoped_dataset' | null;
+}
+
+/** The field's sample: real values (audited) plus the masked fallback. */
+export async function previewFieldClassification(id: string): Promise<FieldClassificationPreview> {
+  const path = `${FIELD_CLASSIFICATION_BASE}/${encodeURIComponent(id)}/preview`;
+  const body = await getJson<Partial<FieldClassificationPreview>>(path);
+  return {
+    samples: expectArray<string>(body.samples ?? [], path, 'samples'),
+    maskedSamples: expectArray<string>(body.maskedSamples ?? [], path, 'maskedSamples'),
+    samplesWithheld: body.samplesWithheld === 'owner_scoped_dataset' ? 'owner_scoped_dataset' : null,
+  };
+}
+
+/** A field a legacy entry covers, with the scoped entry a conversion writes. */
+export interface LegacyCoveredField {
+  id: string;
+  toolName: string;
+  scope: string;
+  fieldPath: string;
+  configEntry: string;
+  /** The classifier rates the field personal: a conversion does not write
+   *  its scoped entry — it is masked afterwards. */
+  personal: boolean;
+}
+
+/** A legacy `non_personal_fields` entry — it applies to every model. */
+export interface LegacyFieldEntry {
+  entry: string;
+  covers: LegacyCoveredField[];
+}
+
+export async function listLegacyFieldEntries(): Promise<{ entries: LegacyFieldEntry[] }> {
+  const path = `${FIELD_CLASSIFICATION_BASE}/legacy`;
+  const body = await getJson<{ entries: LegacyFieldEntry[] }>(path);
+  return {
+    entries: expectArray<LegacyFieldEntry>(body.entries, path, 'entries').map((e) => ({
+      ...e,
+      covers: (Array.isArray(e.covers) ? e.covers : []).map((c) => ({ ...c, personal: c.personal === true })),
+    })),
+  };
+}
+
+export interface LegacyConversionResult {
+  entry: string;
+  /** Scoped entries written in place of the legacy one. */
+  added: string[];
+  /** Covered fields that could not be written as one scoped entry. */
+  skipped: { toolName: string; scope: string; fieldPath: string }[];
+  /** Covered fields rated personal: not converted, masked from now on. */
+  skippedPersonal: LegacyCoveredField[];
+  /** Ids of covered fields that stay `confirmed_conflict` (not acknowledged). */
+  conflicts: string[];
+}
+
+/**
+ * Replace one legacy entry by scoped entries for every field it covers.
+ * Throws `ApiError` 409 `legacy_entry_not_found` when the entry is gone.
+ */
+export async function convertLegacyFieldEntry(entry: string): Promise<LegacyConversionResult> {
+  const body = await postJson<Partial<LegacyConversionResult>>(
+    `${FIELD_CLASSIFICATION_BASE}/legacy/convert`,
+    { entry },
+  );
+  return {
+    entry: body.entry ?? entry,
+    added: Array.isArray(body.added) ? body.added : [],
+    skipped: Array.isArray(body.skipped) ? body.skipped : [],
+    skippedPersonal: Array.isArray(body.skippedPersonal) ? body.skippedPersonal : [],
+    conflicts: Array.isArray(body.conflicts) ? body.conflicts : [],
+  };
+}
+
+
+export async function recomputeFieldClassifications(): Promise<{ computedAt: string | null }> {
+  return postJson<{ computedAt: string | null }>(
+    `${FIELD_CLASSIFICATION_BASE}/recompute`,
+    undefined,
+  );
 }
 
 /**

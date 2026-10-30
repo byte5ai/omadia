@@ -73,6 +73,98 @@ changelog.
 `@omadia/plugin-privacy-guard` 0.11.0, `@omadia/plugin-api` 1.37.0
 (`countUnresolvedSurrogates` takes an optional `options`).
 
+### Fixed — The web UI lists only chats created there (#1637)
+
+2026-10-30. Canvas (`@omadia/ui-channel`), routine and Discord conversations
+showed up in the web UI's chat list. The `SessionLogger` mirrors each completed
+turn into the chat-session store and used to **create** a document when none
+existed, gated on the *sanitized* scope: `@omadia/ui-channel::<user>::<id>`
+became `omadia-ui-channel-<user>-<id>`, `routine:<id>` became `routine-<id>`,
+and only `http-`/`teams-` were excluded. On our Fly store 7 of 25 sessions were
+such transcripts.
+
+- The mirror now appends only to a session the web client created (its PUT on
+  create / first turn) — the same rule `appendProactiveMessage` already follows
+  — and is gated on the raw scope. Only the web UI creates chat sessions.
+- `isServerMirroredSession` (id neither a UUID nor the client's `id-…` fallback,
+  and every message id `srv-*`) recognises the documents the old mirror left.
+  `ChatSessionStore.list()` purges them once per store instance (decision
+  re-read under the session lock, per-file retry, `WARN` with the ids), so the
+  leaked transcripts disappear on the first chat-list request after deploy.
+  A PUT that would re-create one answers `409 server_mirrored_session`, and the
+  web UI's hydration drops a cached copy instead of pushing it back.
+- Trade-off: mid-stream-reload recovery now requires the client's create-PUT to
+  have landed. If it failed *and* the user reloads mid-answer, the answer is not
+  recovered server-side.
+
+### Added — Suggestions and a review page for non-personal fields (#1556 follow-up)
+
+2026-10-30. `non_personal_fields` (#1629) needed an admin to know which fields
+to list. omadia now suggests them; an admin confirms every entry, nothing is
+added automatically, and every field stays masked until then.
+
+- **Entries per source and model.** Confirm writes a scoped entry —
+  `odoo_execute:hr.employee/department_id`, `dataset:<dataset id>/Abteilung`
+  for an uploaded dataset, `some_mcp_tool:-/category` for a source that names
+  no model — so the same field name in another model (a person model, say)
+  stays masked. Legacy entries (`tool:field`, `*:field`, `field`) still work
+  and apply to every model; the page lists them under "Legacy entries" and
+  converts one into scoped entries for the fields seen so far — except fields
+  that look personal, which are left out (masked afterwards) and listed for
+  the admin to decide. Only an `odoo_*` tool's input `model` sets the scope;
+  any other tool is scoped by its result envelope's `model` (else `-`), and an
+  input that contradicts the envelope matches no scoped entry.
+- **Observation (privacy guard 0.15.0).** Masked fields of every interned tool
+  result (Odoo, plugin and MCP tools, uploads read via `query_dataset`; not
+  sub-agent narration, canvas producers, `v4_*` verbs, a grouped dataset
+  result's `key` / `value`, or a field name that is itself a value — an
+  e-mail address or a person's name like "Anna Müller") are recorded
+  schema-only per tool, scope (Odoo model, dataset id or `-`) and field. A
+  bounded in-memory sample (≤ 50 values per field, 24 h, never persisted or
+  logged) is vetted with the C0 identity shapes, the deny-list and C1 (also at
+  a near-miss threshold); only the verdict and a fully masked preview
+  (`•••••••• & •••••••••••`) leave the plugin for the classification.
+- **Classification (kernel).** For an Odoo model the relation target comes
+  from `fields_get` on that model (the only call made). Person models
+  (`res.partner`, `res.users`, `hr.employee`, bank accounts, …) are never
+  suggested and never sent to a model; known non-personal models
+  (`hr.department`, `hr.job`, `res.company`, …) are suggested; unknown models
+  are classified by Haiku from the schema only. Sources without relation
+  information (text fields, datasets, MCP and plugin tools) get one
+  schema-only Haiku review per source; unsure means "needs clarification". Any
+  detector hit makes a field personal, a near-miss or conflicting targets
+  "needs clarification", and without the name detector nothing is suggested.
+  A source that names no model is never suggested: its entry would apply to
+  every call of the tool (reason "applies to every call of this tool").
+- **Review page `/admin/privacy-fields`.** Grouped by tool, each field with its
+  source and model / dataset / "every call of this tool", statuses suggested / needs
+  clarification / personal / confirmed / confirmed — needs review (a listed
+  field that now points to a person model or changed since) / rejected / kept
+  masked, reasons, and confirm / reject / keep masked / revert. The sample
+  shows an admin the real values ("Visible to admins only. Opening this view
+  is audited.", audit action `privacy.field_preview`, count only), with the
+  masked sample as fallback; an uploaded dataset shows masked samples only
+  (its rows belong to the uploading user). The real values come from a
+  separate kernel-only service (`privacyFieldSamples`) that no plugin can
+  resolve, and every response of the page's API is `Cache-Control: no-store`. An entry that would not parse back to exactly
+  one scoped entry is refused. Every decision and conversion is an audit row
+  (`privacy.field_classification`). Manual edits of the setting are audited
+  too now (`plugin.privacy_change`).
+- **Notification.** The privacy posture reports `fields_needing_clarification`
+  (including confirmed fields in conflict), `fields_suggested_open` and
+  `fields_confirmed_conflict`; a banner on the dashboard and `/admin` and a nav
+  badge point to the page. Informational only.
+- **Recompute** on plugin activation/deactivation, at boot, every 6 h and on
+  demand — never per chat turn.
+- **Migration `0065_privacy_field_classification`**: tables
+  `privacy_field_candidates` (one row per tool + scope + field),
+  `privacy_model_verdicts` (schema-model verdict cache, per model or source)
+  and `privacy_field_classification_visits`.
+
+`@omadia/plugin-privacy-guard` 0.15.0, `@omadia/plugin-api` 1.49.0
+(`parseLlmJson` moved into plugin-api; `PrivacyFieldSampleService` /
+`PRIVACY_FIELD_SAMPLES_SERVICE_NAME` added).
+
 ### Added — Non-personal fields an operator lets through the Privacy Shield (#1556)
 
 2026-10-30. Department names and similar Odoo labels were masked, so an

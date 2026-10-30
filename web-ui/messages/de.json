@@ -220,6 +220,9 @@
         },
         "danger": {
           "heading": "Gefahrenzone"
+        },
+        "privacy": {
+          "heading": "Datenschutz"
         }
       },
       "cards": {
@@ -314,6 +317,10 @@
         "platformHealth": {
           "title": "Plattform-Zustand",
           "description": "Datenbank, Master-Keys von Vault und Keychain, Off-Site-Backup. Zeigt, ob diese Instanz mit Entwicklungs-Keys läuft."
+        },
+        "privacyFields": {
+          "title": "Feldklassifizierung",
+          "description": "Maskierte Felder prüfen, die der Privacy Guard im Klartext zeigen könnte. Nichts wird demaskiert, bevor du es bestätigst."
         }
       }
     },
@@ -508,7 +515,9 @@
     "adminCluster": "Admin",
     "help": "Hilfe",
     "teamsSignIn": "Teams-Anmeldung",
-    "llmAccess": "LLM-Zugang"
+    "llmAccess": "LLM-Zugang",
+    "privacyFields": "Feldklassifizierung",
+    "badgeLabel": "{count, plural, one {# Feld braucht eine Entscheidung} other {# Felder brauchen eine Entscheidung}}"
   },
   "conductor": {
     "title": "Conductor",
@@ -5295,7 +5304,9 @@
         "conductor": "Conductor-Änderungen",
         "profileSnapshot": "Profil-Snapshots",
         "registry": "Plugin-Registries",
-        "channel": "Kanäle"
+        "channel": "Kanäle",
+        "privacyFieldClassification": "Entscheidungen zur Feldklassifizierung",
+        "privacyFieldPreview": "Einsichten in Feldwerte (Klassifizierung)"
       }
     },
     "table": {
@@ -6562,5 +6573,131 @@
       "unknown": "Sie konnte nicht gelesen werden."
     },
     "detail": "Technisches Detail: {message}"
+  },
+  "privacyFieldBanner": {
+    "title": "{count, plural, one {# Feld wartet auf eine Entscheidung} other {# Felder warten auf eine Entscheidung}}",
+    "body": "Tool-Ergebnisse enthielten maskierte Felder, die womöglich keine personenbezogenen Daten sind. Sie bleiben maskiert, bis ein Admin entscheidet.",
+    "cta": "Felder prüfen"
+  },
+  "adminPrivacyFields": {
+    "metaTitle": "Feldklassifizierung · omadia",
+    "title": "Feldklassifizierung",
+    "intro": "Der Privacy Guard maskiert jedes Feld in Tool-Ergebnissen, das er nicht als nicht-personenbezogen belegen kann. Diese Seite schlägt Felder vor, die vermutlich im Klartext angezeigt werden dürfen — je Quelle und Modell, sodass derselbe Feldname in einem anderen Modell maskiert bleibt. Nichts wird freigegeben, bevor ein Admin bestätigt: Bestätigen fügt einen modellbezogenen Eintrag zur Einstellung non_personal_fields des Privacy Guard hinzu, Zurücknehmen entfernt ihn wieder.",
+    "loading": "Felder werden geladen …",
+    "lastComputed": "Zuletzt berechnet: {when}",
+    "neverComputed": "Noch nicht berechnet.",
+    "recompute": "Neu berechnen",
+    "recomputing": "Wird berechnet",
+    "recomputeDone": "Neu berechnet. Die Liste ist aktuell.",
+    "tabsLabel": "Status",
+    "toolFilter": "Gefiltert nach Tool: {tool}",
+    "clearToolFilter": "Alle Tools anzeigen",
+    "empty": "Keine Felder mit diesem Status.",
+    "status": {
+      "suggested": "Vorgeschlagen",
+      "needs_clarification": "Klärung nötig",
+      "personal": "Personenbezogen",
+      "confirmed": "Bestätigt",
+      "confirmed_conflict": "Bestätigt — prüfen",
+      "rejected": "Abgelehnt",
+      "kept_masked": "Bleibt maskiert"
+    },
+    "fieldCount": "{count, plural, one {# Feld} other {# Felder}}",
+    "valueShape": "Wertform",
+    "shape": {
+      "m2o": "Verknüpfung (many2one)",
+      "text": "Text",
+      "mixed": "Gemischt"
+    },
+    "relationModels": "Relationsmodelle",
+    "none": "keine",
+    "configEntry": "Eintrag",
+    "seen": "{count, plural, one {Einmal gesehen} other {# Mal gesehen}}, zuletzt {when}",
+    "reasonsHeading": "Begründung",
+    "reasons": {
+      "person_model": "Verweist auf ein Personenmodell: {models}.",
+      "known_non_personal": "Verweist auf ein bekanntes nicht-personenbezogenes Modell: {models}.",
+      "haiku_non_personal": "Eine reine Schema-Prüfung stuft {model} als nicht personenbezogen ein (Konfidenz {confidence}).",
+      "haiku_personal": "Eine reine Schema-Prüfung stuft {model} als personenbezogen ein.",
+      "haiku_uncertain": "Eine reine Schema-Prüfung konnte nicht entscheiden, ob {model} personenbezogen ist.",
+      "unknown_model": "Das Zielmodell ist unbekannt und wurde nicht geprüft.",
+      "conflicting_targets": "Das Feld verweist auf unterschiedliche Modelle: {models}.",
+      "identity_hit": "Stichprobenwerte passten auf Identitätsmuster: {types}.",
+      "name_hit": "Die Namenserkennung hat Namen in Stichprobenwerten gefunden.",
+      "name_near_miss": "Die Namenserkennung hat Beinahe-Treffer für Namen in Stichprobenwerten gefunden.",
+      "name_detector_unavailable": "Die Namenserkennung war nicht verfügbar (oder es gab keine Stichprobe), daher wird das Feld erst vorgeschlagen, wenn seine Werte auf Namen geprüft sind.",
+      "no_relation_info": "Keine Relationsinformation (ein Textfeld, eine Quelle ohne Relations-Metadaten, oder Odoo war nicht erreichbar) und noch keine Schema-Prüfung dieser Quelle.",
+      "no_scope": "Diese Quelle nennt kein Modell, ein Eintrag gälte also für jeden Aufruf dieses Tools — egal, was er liefert. Das Feld wird nie vorgeschlagen; entscheide selbst.",
+      "changed_since_decision": "Seit der letzten Entscheidung geändert (neue Relationsmodelle oder Werteform).",
+      "confirmed_conflict": "Dieses Feld steht in der Liste, verweist aber jetzt auf ein Personenmodell oder hat sich seit der Bestätigung geändert — bitte prüfen oder entfernen.",
+      "sample_clean": "{count, plural, one {# Stichprobenwert zeigte} other {# Stichprobenwerte zeigten}} keine personenbezogenen Daten.",
+      "unknown": "Anderer Grund ({code}).",
+      "legacy_entry": "Freigegeben durch den Alt-Eintrag {entry} — er gilt für alle Modelle."
+    },
+    "decision": {
+      "confirm": "Bestätigt von {by} am {when}",
+      "reject": "Abgelehnt von {by} am {when}",
+      "keep_masked": "Maskiert belassen von {by} am {when}",
+      "revert": "Zurückgenommen von {by} am {when}",
+      "unknownActor": "einem Admin"
+    },
+    "actions": {
+      "confirm": "Bestätigen",
+      "acknowledge": "Erneut bestätigen",
+      "reject": "Ablehnen",
+      "keep_masked": "Maskiert lassen",
+      "revert": "Zurücknehmen",
+      "working": "Wird gespeichert",
+      "showSample": "Stichprobe zeigen",
+      "hideSample": "Stichprobe ausblenden",
+      "loadingSample": "Stichprobe wird geladen"
+    },
+    "sampleHeading": "Stichprobenwerte",
+    "sampleEmpty": "Noch keine Stichprobe verfügbar.",
+    "saved": "Gespeichert: {entry}",
+    "errors": {
+      "load": "Die Feldliste konnte nicht geladen werden.",
+      "stale": "Dieses Feld hat sich seit dem Laden geändert. Die Liste wurde neu geladen — bitte erneut prüfen.",
+      "invalidField": "Dieser Feldname kann nicht als einzelner Eintrag in non_personal_fields aufgenommen werden und steht daher nicht zur Entscheidung.",
+      "notFound": "Dieses Feld existiert nicht mehr. Die Liste wurde neu geladen.",
+      "decision": "Die Entscheidung konnte nicht gespeichert werden.",
+      "preview": "Die Stichprobe konnte nicht geladen werden.",
+      "recompute": "Neuberechnung fehlgeschlagen.",
+      "detail": "Technisches Detail: {message}",
+      "coveredByLegacy": "Dieses Feld ist durch den Alt-Eintrag {entry} freigegeben, der für alle Modelle gilt. Zurücknehmen wirkt nicht, solange er besteht — wandle ihn zuerst in modellbezogene Einträge um."
+    },
+    "source": "Quelle",
+    "label": "Bezeichnung",
+    "scope": {
+      "model": "Modell {model}",
+      "dataset": "Datensatz {id}",
+      "none": "Jeder Aufruf dieses Tools"
+    },
+    "legacyNote": "Freigegeben durch den Alt-Eintrag {entry}, der für alle Modelle dieser Quelle gilt.",
+    "sampleMaskedHeading": "Maskierte Stichprobe (keine aktuellen Werte gepuffert)",
+    "sampleAdminNote": "Nur für Admins sichtbar. Das Öffnen dieser Ansicht wird protokolliert.",
+    "sampleDatasetNote": "Hochgeladene Datensätze zeigen nur maskierte Stichproben — die Zeilen gehören der Person, die sie hochgeladen hat.",
+    "legacy": {
+      "tab": "Alt-Einträge",
+      "open": "Alt-Einträge prüfen",
+      "back": "← Zurück zur Feldklassifizierung",
+      "title": "Alt-Einträge",
+      "intro": "Diese Einträge in non_personal_fields nennen kein Modell und geben das Feld daher in jedem Modell der Quelle frei — auch in Personenmodellen. Wandle einen Eintrag in modellbezogene Einträge für die bisher gesehenen Felder um; abgedeckte Felder, die nie gesehen wurden, bleiben danach maskiert.",
+      "empty": "Keine Alt-Einträge. Jeder Eintrag ist modellbezogen.",
+      "appliesToAll": "Alt-Eintrag — gilt für alle Modelle",
+      "coversHeading": "{count, plural, one {Deckt # gesehenes Feld ab} other {Deckt # gesehene Felder ab}}",
+      "coversNone": "Deckt bisher kein gesehenes Feld ab. Umwandeln entfernt den Eintrag.",
+      "personalCover": "wirkt personenbezogen — nicht umgewandelt, danach maskiert",
+      "convert": "In modellbezogene Einträge umwandeln",
+      "converted": "{entry} umgewandelt: {count, plural, =0 {kein modellbezogener Eintrag hinzugefügt} one {# modellbezogener Eintrag hinzugefügt} other {# modellbezogene Einträge hinzugefügt}}.",
+      "skipped": "{count, plural, one {# Feld konnte} other {# Felder konnten}} nicht als modellbezogener Eintrag geschrieben werden und {count, plural, one {bleibt} other {bleiben}} maskiert.",
+      "skippedPersonal": "{count, plural, one {# Feld wirkt} other {# Felder wirken}} personenbezogen und {count, plural, one {wurde} other {wurden}} nicht umgewandelt. {count, plural, one {Es ist} other {Sie sind}} jetzt maskiert — entscheide auf der Feldklassifizierungs-Seite:",
+      "conflicts": "{count, plural, one {# Feld muss} other {# Felder müssen}} noch geprüft werden: Es verweist auf ein Personenmodell oder hat sich seit der Bestätigung geändert.",
+      "errors": {
+        "load": "Die Alt-Einträge konnten nicht geladen werden.",
+        "notFound": "Der Eintrag {entry} steht nicht mehr in der Einstellung. Die Liste wurde neu geladen.",
+        "convert": "Der Eintrag {entry} konnte nicht umgewandelt werden."
+      }
+    }
   }
 }

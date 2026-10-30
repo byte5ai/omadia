@@ -181,12 +181,15 @@ export class SessionLogger {
     }
 
     // Server-side chat-session mirror. Silently skipped for non-chat scopes
-    // (http-*, teams-*) or if no chat store is wired. This is the recovery
-    // path for mid-stream reloads — the client's own PUT idempotency dedupes
-    // when both paths land.
-    if (this.chatSessionStore && isChatSessionScope(scope)) {
+    // (http-*, teams-*, and anything that is not a web session id as the
+    // client sent it — `routine:<id>`, `@omadia/ui-channel::<user>::<id>`;
+    // the RAW scope is checked, since sanitizing would turn those into valid
+    // ids) or if no chat store is wired. This is the recovery path for
+    // mid-stream reloads — the client's own PUT idempotency dedupes when both
+    // paths land; the store appends only to a session the client created.
+    if (this.chatSessionStore && isChatSessionScope(entry.scope)) {
       try {
-        await this.chatSessionStore.appendTurnFromServer(scope, {
+        await this.chatSessionStore.appendTurnFromServer(entry.scope, {
           userMessage: entry.userMessage,
           assistantMessage: entry.assistantAnswer,
           ...(entry.toolCalls !== undefined && entry.iterations !== undefined

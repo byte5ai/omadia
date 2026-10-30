@@ -17,6 +17,16 @@
  */
 
 import { randomUUID } from 'node:crypto';
+
+import { normalizeDatasetUuid } from '@omadia/plugin-api';
+
+import {
+  CONFLICTING_SCOPE,
+  DATASET_TOOL,
+  NO_SCOPE,
+  SCOPE_GRAMMAR,
+  type FieldSource,
+} from '../nonPersonalFields.js';
 import {
   MAX_INTERN_CHARS,
   type Classifier,
@@ -296,6 +306,66 @@ export function parseToolResult(
 }
 
 // ---------------------------------------------------------------------------
+// Scope (#1556 follow-up, contract v2)
+// ---------------------------------------------------------------------------
+
+/** Tools whose input `model` names the model their rows belong to. */
+const ODOO_TOOL_PREFIX = 'odoo_';
+
+/** The `query_dataset` operation that returns a dataset's rows. */
+const DATASET_ROWS_QUERY = 'query_rows';
+
+function asRecord(value: unknown): Readonly<Record<string, unknown>> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+/** A model name, lower-cased, when it is a valid scope; else `undefined`. */
+function modelScope(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const model = value.trim().toLowerCase();
+  return model.length > 0 && SCOPE_GRAMMAR.test(model) ? model : undefined;
+}
+
+/**
+ * The scope of a tool result's rows — what a scoped `non_personal_fields`
+ * entry names after the tool:
+ *
+ *  - `query_dataset` reading rows (`query: "query_rows"`): the input's
+ *    `dataset_id`, normalized to the lower-case uuid; else `-`.
+ *  - an Odoo tool (`odoo_*`): the input's string `model`, else the envelope's
+ *    `model` metadata value — lower-cased, and only when it matches the scope
+ *    grammar.
+ *  - any other tool: the envelope's `model` only. Its INPUT is not trusted —
+ *    a generic tool taking a `model` argument says nothing about what it
+ *    returns, and a confirmed `tool:res.country/name` must not clear person
+ *    rows that tool returned for `model: "res.country"`.
+ *  - an input `model` and an envelope `model` that differ: `!`
+ *    (`CONFLICTING_SCOPE`) — no scoped entry matches, nothing is recorded.
+ *  - everything else: `-`.
+ */
+export function scopeOf(
+  toolName: string,
+  toolInput: unknown,
+  envelopeValues?: DatasetRow,
+): string {
+  const input = asRecord(toolInput);
+  if (toolName === DATASET_TOOL) {
+    const datasetId = input?.['dataset_id'];
+    if (input?.['query'] !== DATASET_ROWS_QUERY || typeof datasetId !== 'string') return NO_SCOPE;
+    return normalizeDatasetUuid(datasetId) ?? NO_SCOPE;
+  }
+  const fromEnvelope = modelScope(envelopeValues?.['model']);
+  const fromInput = modelScope(input?.['model']);
+  if (fromInput !== undefined && fromEnvelope !== undefined && fromInput !== fromEnvelope) {
+    return CONFLICTING_SCOPE;
+  }
+  const trusted = toolName.startsWith(ODOO_TOOL_PREFIX) ? fromInput : undefined;
+  return trusted ?? fromEnvelope ?? NO_SCOPE;
+}
+
+// ---------------------------------------------------------------------------
 // Store
 // ---------------------------------------------------------------------------
 
@@ -317,7 +387,10 @@ export function createDatasetStore(deps: DatasetStoreDeps): DatasetStore {
   return {
     internToolResult(toolName, rawResult, toolInput): DigestEnvelope {
       const parsed = parseToolResult(rawResult, maxChars);
-      const context = { sourceTools: [toolName] };
+      const sources: readonly FieldSource[] = [
+        { tool: toolName, scope: scopeOf(toolName, toolInput, parsed.envelope?.values) },
+      ];
+      const context = { sources };
       const schema = deps.classify(parsed.rows, parsed.shape, context);
       const envelope = parsed.envelope;
       const dataset: Dataset = {
@@ -326,7 +399,7 @@ export function createDatasetStore(deps: DatasetStoreDeps): DatasetStore {
         schema,
         provenance: {
           toolName,
-          sourceTools: [toolName],
+          sources,
           turnId: deps.turnId,
           truncated: parsed.truncated,
           createdAt: new Date().toISOString(),

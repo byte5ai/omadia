@@ -2086,11 +2086,85 @@ Digest-Audience `public-api` für `/api/v1/mcp` (#1542, #1543, #1559, #1561).
 `nonPersonalFields.ts` (`parseNonPersonalFields`, `nonPersonalFieldRule`) →
 `createShapeClassifier({ nonPersonal })`: ein gelistetes Feld aus Text oder
 Odoo-Paaren `[id, "Label"]` wird Typ `label`, `safe-cleartext`. Der Classifier
-bekommt dafür einen `ClassifierContext` (`sourceTools`); Verben vererben
-`provenance.sourceTools` (Join/Union: alle Quellen müssen das Feld listen).
+bekommt dafür einen `ClassifierContext` (`sources`: Tool + Scope); Verben vererben
+`provenance.sources` (Join/Union: alle Quellen müssen das Feld abdecken).
 `labelOf` lässt Filter/Sort auf dem Label arbeiten, der Digest zeigt Labels.
 Receipt: `operatorClearedFields`, Karte „Per Admin-Regel im Klartext". Test:
 `test/privacyNonPersonalFields1556.test.ts`.
+
+#### Feldklassifizierung (#1556-Folge, Contract v2 vom 2026-10-30)
+
+**Guard:** `fieldObservations.ts`, `fieldVetting.ts`, `v4/modelClassifier.ts`;
+Service-Methoden `takeFieldObservations`, `vetFieldSample`,
+`classifyModelsSchemaOnly`, `maskedFieldPreview`. Die echten Werte für die
+Admin-Vorschau liegen NICHT auf `privacyRedact`, sondern auf einem eigenen
+Service `privacyFieldSamples` (`PrivacyFieldSampleService.fieldSampleForAdmin`,
+`PRIVACY_FIELD_SAMPLES_SERVICE_NAME`; `createPrivacyGuardServices` liefert
+beide); `KERNEL_ONLY_SERVICE_NAMES` in `pluginServiceGrants.ts` verweigert ihn
+jedem Plugin (auch mit `requires:` und dem Provider selbst), nur der Kernel
+liest ihn über die Service-Registry. Für `query_dataset` liefert er nie
+Werte. Schlüssel ist `FieldKey`
+(`toolName`, `scope`, `fieldPath`); eine Beobachtung je Tool + Scope + Feld
+(`sourceModels` entfällt). Scope (`scopeOf` in `v4/datasetStore.ts`):
+`odoo_*`-Tools Input-`model`, sonst Envelope-`model`; andere Tools nur
+Envelope-`model` (ihr Input zählt nicht); Input und Envelope widersprechen
+sich → `!` (`CONFLICTING_SCOPE`, passt auf keinen scoped Eintrag, Alt-Einträge
+gelten weiter); Datensatz-ID bei `query_dataset`; sonst `-`. Kandidaten kommen
+aus allen internierten Tools außer `sub-agent`, Canvas-Produzenten und `v4_*`;
+nie `key`/`value`/`groups` eines gruppierten `query_dataset`-Ergebnisses, nie
+Pfade, die selbst Werte sind (C0-Identitätstreffer oder Personennamen-Form
+„Anna Müller", `valueLikeFieldName.ts` — derselbe Filter im Kernel vor jeder
+Haiku-Anfrage, auch für Labels). Achtung: auch CSV-Kopfzeilen aus zwei
+großgeschriebenen Wörtern („Cost Center") gelten als Name und bleiben
+maskiert (fail-safe).
+
+**Einträge:** scoped `<tool>:<scope>/<feld>` bzw. `dataset:<uuid>/<spalte>`
+(`formatScopedEntry`, `entryCovers`, `nonPersonalFieldRule(entries)(sources,
+path)` in `nonPersonalFields.ts`); Alt-Einträge `tool:feld`, `*:feld`, `feld`
+gelten weiter für alle Modelle. Ein Tool namens `dataset` ergibt nie einen
+Eintrag (`formatScopedEntry`/`configEntryOf`), `SCOPED_FIELD_GRAMMAR` lehnt
+`\p{Cf}` (Zero-Width, Bidi-Overrides) ab.
+
+**Kernel:** `src/privacy/fieldClassification/` (`modelCatalog`,
+`odooRelationResolver` — nur `fields_get` auf dem Scope-Modell —, `engine`,
+`store`, `recompute`, `routes`, `guardConfig`), Migration
+`0065_privacy_field_classification` (Kandidat eindeutig über `tool_name`,
+`scope`, `field_path`; `label`; Verdict-Cache mit `fields_hash`). Quellen ohne
+Relationsinformation (Textfelder, Datensätze, MCP-/Plugin-Tools) bekommen eine
+Schema-Anfrage an Haiku je Quelle `<tool>:<scope>` (Pfade + Labels), gecacht
+in `privacy_model_verdicts`, neu gefragt bei geänderter Feldmenge. Ohne C1
+(Namenserkennung) nie `suggested`, sondern `needs_clarification` mit
+`name_detector_unavailable`; Scope `-` ebenfalls höchstens
+`needs_clarification` mit `no_scope` (UI: „jeder Aufruf dieses Tools"). Fingerprint = Scope + Relationsmodelle + Form;
+Drift und `confirmed_conflict` je Tool + Scope + Feld.
+
+**Routen (requireAuth, jede Session ist Admin; jede Antwort
+`Cache-Control: no-store`):**
+`GET /api/v1/admin/privacy/field-classification`, `POST /:id/decision`
+(confirm/reject/keep_masked/revert, Fingerprint, 409), `GET /:id/preview`
+(`{ samples, maskedSamples, samplesWithheld }`: echte Werte aus
+`privacyFieldSamples`, max. 10, plus maskierter Fallback; Audit
+`privacy.field_preview` mit Ziel `privacy-field:<tool>:<scope>/<pfad>` und nur
+`{count}`, nur wenn echte Werte rausgehen; ohne Audit-Log keine echten Werte;
+`query_dataset` nur maskiert, `samplesWithheld: "owner_scoped_dataset"`),
+`GET /legacy` (Alt-Einträge + abgedeckte Felder mit `personal`),
+`POST /legacy/convert {entry}` (ersetzt genau diesen Alt-Eintrag durch scoped
+Einträge der gesehenen Felder — Felder mit Basis-Status `personal` nicht, die
+kommen als `skippedPersonal` zurück und sind danach maskiert; Plugin-Lock,
+Audit mit Setting vorher/nachher, 409 `legacy_entry_not_found`), `POST /recompute`. Confirm schreibt den scoped
+Eintrag (409 `invalid_field`, wenn er nicht genau einen Eintrag ergibt);
+`revert` entfernt ihn, bei Abdeckung durch einen Alt-Eintrag 409
+`covered_by_legacy`; nur über einen Alt-Eintrag abgedeckt → `confirmed` mit
+Grund `legacy_entry`. `revert` hebt auch „rejected"/„kept masked" auf.
+Posture: `fields_needing_clarification` (inkl. `confirmed_conflict`),
+`fields_suggested_open`, `fields_confirmed_conflict`. Web-UI:
+`/admin/privacy-fields` (Quelle + Scope je Feld, Vorschau mit Hinweis „nur
+für Admins, wird protokolliert"), `?view=legacy` (Alt-Einträge umwandeln),
+`FieldClassificationBanner`, Nav-Badge, Audit-Filter
+`privacy.field_preview`. `parseLlmJson` liegt in plugin-api. Offen (§13):
+Odoo-Plugin-Repo soll Relationen vorab liefern (`odoo_describe` mit
+`relation` oder `odoo.schema@1`), damit Vorschläge vor dem ersten Chat
+entstehen.
 
 ### Conductor-Cancel + Approval-Härtung (#759)
 
@@ -5278,6 +5352,12 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 
 ## 13. Offene Roadmap
 
+- **Feldklassifizierung vorab (#1556-Folge):** Das Odoo-Plugin-Repo
+  (`byte5ai/omadia-integration-odoo`) soll Relationsziele vorab liefern
+  (`odoo_describe` mit `relation` oder ein Service `odoo.schema@1`), damit
+  Vorschläge auf `/admin/privacy-fields` vor dem ersten Chat entstehen. Heute
+  entstehen sie erst, wenn ein Tool-Ergebnis das Feld maskiert hat.
+
 ### Plan-Schritt-Zuordnung und Canvas-Vorschau (#1502, #1500)
 
 - **Schritt-Zuordnung: live Heuristik, gespeichert Haiku (Option C, erledigt).**
@@ -8123,6 +8203,28 @@ durch den Web-Sender unten.
   gespeicherte Datei korrupt (JSON nicht parsebar, `SyntaxError`), überschreibt der PUT
   sie wie vor #1071 (repariert sie, `WARN`-Log); jeder andere Lesefehler lässt den PUT
   scheitern, statt ungesehene Zustellungen samt Marker endgültig zu verwerfen.
+- **Nur die Web-UI legt Sessions an (#1637).** `appendTurnFromServer` hängt nur an eine
+  **vorhandene** Session an und legt keine mehr an — dieselbe Regel wie
+  `appendProactiveMessage`. Vorher entstand für jeden Turn, dessen *sanitisierter* Scope
+  `ID_RE` passierte, ein Dokument: `@omadia/ui-channel::<user>::<id>` →
+  `omadia-ui-channel-<user>-<id>`, `routine:<id>` → `routine-<id>`; nur `http-`/`teams-`
+  waren ausgenommen, und die Web-UI listete Canvas-, Routinen- und Discord-Unterhaltungen
+  als Chats. Der SessionLogger prüft `isChatSessionScope` jetzt auf dem **rohen**
+  `entry.scope` (Web-Turns tragen die Session-UUID unverändert, `routes/chat.ts`
+  `resolveScope`). Altlasten erkennt `isServerMirroredSession` (Id weder UUID noch das
+  `id-<t>-<r>`-Fallback des Clients **und** jede Nachricht mit `srv-`-Id; ein leeres
+  Dokument ist ein Web-Chat vor seinem ersten Turn) — dieselbe Regel steht dupliziert in
+  `web-ui/app/_lib/chatSessions.ts`, weil die Web-UI das Paket nicht importieren kann.
+  `list()` räumt sie **einmal pro Store-Instanz** ab (`purgeServerMirrored`: Entscheidung
+  unter dem Session-Lock erneut gelesen, Löschung über den Dateinamen und nur bei
+  gleicher `id`, Fehler pro Datei mit Retry beim nächsten `list()`, `WARN` mit den Ids) —
+  vor dem Directory-Check, weil der letzte gelöschte Eintrag das Verzeichnis mitnehmen
+  kann. `saveFromClient` wirft `ServerMirroredSessionError`, wenn ein Client so ein
+  Dokument **neu** anlegen will (Browser mit gecachter Kopie von vor dem Purge) →
+  `PUT /api/chat/sessions/:id` antwortet `409 server_mirrored_session`; Updates eines
+  vorhandenen Dokuments bleiben erlaubt. Die Hydration der Web-UI verwirft eine solche
+  nur-lokale Kopie, statt sie zu pushen. Preis: die Wiederherstellung nach einem Reload
+  mitten im Stream setzt voraus, dass der Create-PUT des Clients angekommen ist.
 - **Per-Session-Lock, modulweit, nur in-process.** Append, Merge-Save,
   `appendTurnFromServer`, `captureSnapshot`, `clearSnapshot`, `resetMessages` und `delete`
   laufen unter einem Lock pro Session-Id, den **alle** `ChatSessionStore`-Instanzen teilen
@@ -8500,3 +8602,40 @@ Entschieden (Marcel, 2026-10-16): sichtbarer Manifest-Text wird als
 - Admin-Mutationen schreiben `registry.create` / `registry.update` /
   `registry.delete` nach `admin_audit` (Actor via `auditActorFromRequest`, `url` und
   `has_token` vorher/nachher, nie das Token). Best-effort wie bei `install.ts`.
+
+## Chat-Turn-Start: Recall parallel zu `onBeforeTurn`, Plan-Gate-Skip per `routeHint`, leerer Memory-Index (2026-10-30)
+
+Live gemessen (Turn `b57516c9`, „Was geht morgen in Frankfurt ab?", opus-5-5):
+~25 s, davon vor dem ersten Hauptmodell-Aufruf rund 10 s rein serieller
+Vorlauf — Plan-Runner-Gate + Materialisierung (~2,8 s, alle Schritte danach
+übersprungen), Recall + C1-Scan des Session-Tails (~3 s kalt), und der
+einleitende `memory`-View des Modells auf ein `/memories`, das es nicht gab
+(~4 s, eine ganze Iteration). Drei Änderungen am Kernel:
+
+- **`startPriorContextRecall` (`orchestrator.ts`)** startet Recall +
+  `maskRecalledForWire` VOR `onBeforeTurn` und wartet erst danach — auf beiden
+  Pfaden. Die Promise ist vor-gehandelt (`recall.catch`), ein `blocked` der
+  Recall-Maske fliegt weiterhin dort, wo der sequenzielle Code warf (#1547).
+  Streaming: `bindTurnMemoryForTurn` steht jetzt vor der Direct-Line-
+  Entscheidung, und die Direct-Line-Entscheidung vor Hook + Recall — wie
+  `runTurnCore` im gepufferten Pfad; ein Direct-Line-Turn bekommt damit weder
+  Plan noch Recall-Scan auf seinem Receipt. Im `finally` eines früh beendeten
+  Streams wird ein noch laufender Recall abgewartet, BEVOR `closeUndeliveredPass`
+  die Prompt-Map des Turns verwirft — sonst legte dessen Maske die Map mit
+  Realwerten neu an, und nichts löschte sie mehr.
+- **`TurnHookPayload.routeHint`** (Host-Hook-Vertrag, kein plugin-api-Bump):
+  das Fast-Path-Urteil (`ChatTurnInput.routeHint`) reist mit `onBeforeTurn`.
+  Der Plan-Runner überspringt bei `simple` Gate und Materialisierung
+  (`[plan-runner] skipped (fast-path routed simple)`); Prozess-Reuse läuft davor
+  weiter, denn ein gelernter Prozess ist per Konstruktion mehrschrittig.
+- **`memoryIndexPrefetch.ts`:** „The path /memories does not exist" ist seit
+  #1635 ein leerer Index (`EMPTY_MEMORY_INDEX`), kein Skip — genau der live
+  häufigste Fall (noch nie geschriebener Baum) blieb vorher beim Modell-eigenen
+  View hängen. `turnStartOverlap.test.ts` pinnt, dass der Hint ihn trägt.
+- **`streaming.ts`** loggt pro Iteration `[<label>] iteration N ok model=… in=…
+  out=… cached=… stop=… ms=…`, damit die Hauptmodell-Runden im Fly-Log stehen
+  wie `[llm] complete ok … ms=` für die Hilfsmodelle.
+
+Tests: `test/orchestrator/turnStartOverlap.test.ts` (Overlap via Hook-Gate,
+`routeHint` im Payload, leerer Index im Hint, beide Pfade),
+`test/planRunnerRouteHint.test.ts`, `memoryIndexPrefetch.test.ts` ergänzt.

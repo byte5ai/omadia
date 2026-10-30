@@ -448,6 +448,7 @@ export { VerifierService } from './verifierService.js';
 
 // Sub-agent runtime
 export { LocalSubAgent } from './localSubAgent.js';
+export { subAgentEffortFor, type SubAgentEffortFor } from './subAgentEffort.js';
 // #1219 — a declined sub-agent run, and the parent-facing notice for it.
 export { SubAgentRefusalError, subAgentRefusalNotice } from './subAgentRefusal.js';
 export type {
@@ -624,7 +625,7 @@ export {
 export type { AnswerVerbosity } from './answerVerbosity.js';
 
 // Session logger + chat-session store
-export { SessionLogger, graphScopeFor } from './sessionLogger.js';
+export { SessionLogger, graphScopeFor, isChatSessionScope } from './sessionLogger.js';
 export type { SessionLogEntry } from './sessionLogger.js';
 
 // #684 — run-trace outcome tallies. Exported so an operator surface can read
@@ -643,6 +644,8 @@ export type {
 export {
   ChatSessionStore,
   InvalidSessionIdError,
+  ServerMirroredSessionError,
+  isServerMirroredSession,
   isValidSessionId,
 } from './chatSessionStore.js';
 export type {

@@ -12,7 +12,8 @@
 export { activate } from './plugin.js';
 export type { PrivacyGuardPluginHandle } from './plugin.js';
 
-export { createPrivacyGuardService } from './service.js';
+export { createPrivacyGuardService, createPrivacyGuardServices } from './service.js';
+export type { PrivacyGuardServices, PrivacyGuardServiceDeps } from './service.js';
 
 // #361 — C1 transformer detector (GLiNER sidecar client), re-exported for
 // tests and for hosts that wire the seam manually.

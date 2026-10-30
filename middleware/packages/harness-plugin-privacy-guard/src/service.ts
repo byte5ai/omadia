@@ -32,6 +32,7 @@ import type {
   PrivacyPromptOrigin,
   PrivacyStructuredPayloadRequest,
   StructuredPayloadEntry,
+  PrivacyFieldSampleService,
   PrivacyGuardService,
   PrivacyPromptMaskRequest,
   PrivacyPromptMaskResult,
@@ -112,6 +113,7 @@ import {
 } from './verifierProjection.js';
 import { createStoredTextScope } from './storedTextScope.js';
 import { createTurnSerialQueue } from './turnSerialQueue.js';
+import { createFieldClassificationService } from './fieldClassificationService.js';
 
 /**
  * Collect the identity-bearing string(s) of a single field VALUE into `out`
@@ -149,6 +151,15 @@ const CANVAS_PRODUCER_TOOLS: ReadonlySet<string> = new Set([
   'canvas_publish_rows',
   'canvas_publish_choice',
   'canvas_publish_lumen',
+]);
+
+/** #1556 follow-up — tools whose results are never field-classification
+ *  candidates: sub-agent narration and the canvas producers (their rows come
+ *  from an already-observed source). `v4_*` verbs are excluded by the
+ *  recorder itself; intern-exempt tools never reach intern. */
+const OBSERVATION_EXCLUDED_TOOLS: ReadonlySet<string> = new Set([
+  'sub-agent',
+  ...CANVAS_PRODUCER_TOOLS,
 ]);
 
 /** Per-turn counters drained into the user-facing `PrivacyReceipt`. */
@@ -388,7 +399,21 @@ function datasetProvenanceOf(
   };
 }
 
-export function createPrivacyGuardService(deps?: {
+/** What `createPrivacyGuardServices` builds over ONE shared state. */
+export interface PrivacyGuardServices {
+  /** The plugin-facing `privacyRedact` service. */
+  readonly service: PrivacyGuardService;
+  /** The kernel-only `privacyFieldSamples` service: real buffered values of
+   *  masked fields, for the audited admin preview. */
+  readonly fieldSamples: PrivacyFieldSampleService;
+}
+
+/** The plugin-facing service alone (tests, hosts that wire it by hand). */
+export function createPrivacyGuardService(deps?: PrivacyGuardServiceDeps): PrivacyGuardService {
+  return createPrivacyGuardServices(deps).service;
+}
+
+export interface PrivacyGuardServiceDeps {
   /**
    * Host-LLM accessor (`ctx.llm.complete`) for Slice-2 schema-level PII
    * classification. Absent ⇒ no classifier runs and intern behaves
@@ -429,7 +454,17 @@ export function createPrivacyGuardService(deps?: {
     readonly source: 'setup' | 'env' | null;
     readonly reachable: boolean;
   }>;
-}): PrivacyGuardService {
+  /**
+   * #1556 follow-up — the C1 detector at the lower near-miss threshold
+   * (`C1_NEAR_MISS_THRESHOLD`), on the background lane, for vetting a masked
+   * field's value sample. Absent ⇒ `vetFieldSample` uses `c1Detector` and
+   * can report `hit` but never `near-miss`. Only used while C1 is
+   * configured (`c1CacheScope`).
+   */
+  readonly c1NearMissDetector?: PromptPiiDetector;
+}
+
+export function createPrivacyGuardServices(deps?: PrivacyGuardServiceDeps): PrivacyGuardServices {
   // One turn-scoped Dataset Store per turn, minted lazily on the first
   // `internToolResultV4` and dropped by `finalizeTurn`.
   const stores = new Map<string, DatasetStore>();
@@ -698,6 +733,16 @@ export function createPrivacyGuardService(deps?: {
 
   // #760 — per-service fingerprint cache for the operator deny-list detector.
   const resolveCustomDetector = makeCustomDetectorResolver();
+  // #1556 follow-up — field-classification suggestions: schema-only
+  // observations and a bounded value sample (`fieldClassificationService.ts`).
+  const fieldClassification = createFieldClassificationService({
+    datasetOf: (turnId, datasetId) => stores.get(turnId)?.get(datasetId),
+    excludedTools: OBSERVATION_EXCLUDED_TOOLS,
+    customDetector: () => resolveCustomDetector(deps?.readConfig),
+    c1Detector: () =>
+      c1Configured() ? (deps?.c1NearMissDetector ?? deps?.c1Detector) : undefined,
+    ...(deps?.llmComplete !== undefined ? { llmComplete: deps.llmComplete } : {}),
+  });
   // Slice 2 — cached, Haiku-backed schema PII classifier. Process-scoped
   // (its cache spans turns — schema verdicts are tool-shape-stable). Absent
   // when no host LLM is wired.
@@ -726,7 +771,7 @@ export function createPrivacyGuardService(deps?: {
         console.log(
           `[privacy-guard v4] nonPersonalFields entries=${String(parsed.entries.length)}` +
             (parsed.rejected.length > 0
-              ? ` rejected=${JSON.stringify(parsed.rejected)} — use tool:field, *:field or field; __k_ link keys are never allowed`
+              ? ` rejected=${JSON.stringify(parsed.rejected)} — use tool:model/field, dataset:<uuid>/column, tool:-/field, or legacy tool:field / *:field / field; __k_ link keys are never allowed`
               : ''),
         );
       }
@@ -910,11 +955,16 @@ export function createPrivacyGuardService(deps?: {
       entries = new Map();
       operatorClearedFields.set(turnId, entries);
     }
+    const scope = dataset?.provenance.sources?.[0]?.scope;
     for (const f of cleared) {
-      entries.set(`${toolName}\u0000${f.path}`, { toolName, field: f.path });
+      entries.set(`${toolName}\u0000${scope ?? ''}\u0000${f.path}`, {
+        toolName,
+        field: f.path,
+        ...(scope !== undefined ? { scope } : {}),
+      });
     }
     console.log(
-      `[privacy-guard v4] nonPersonalCleared turn=${turnId} tool=${toolName} ` +
+      `[privacy-guard v4] nonPersonalCleared turn=${turnId} tool=${toolName} scope=${scope ?? '-'} ` +
         `fields=${JSON.stringify([...new Set(cleared.map((f) => f.path))])}`,
     );
   }
@@ -940,6 +990,7 @@ export function createPrivacyGuardService(deps?: {
       (f) => f.classification === 'sensitive-masked',
     ).length;
     recordOperatorCleared(turnId, toolName, digest.datasetId);
+    fieldClassification.record(turnId, toolName, digest.datasetId);
     const receipt = receiptFor(turnId);
     receipt.datasetsInterned += 1;
     receipt.fieldsMasked += maskedFields;
@@ -957,7 +1008,7 @@ export function createPrivacyGuardService(deps?: {
     };
   }
 
-  return {
+  const service: PrivacyGuardService = {
     async internToolResultV4(
       request: PrivacyToolResultV4Request,
     ): Promise<PrivacyToolResultV4Result> {
@@ -1478,6 +1529,8 @@ export function createPrivacyGuardService(deps?: {
       };
     },
 
+    ...fieldClassification.methods,
+
     datasetProvenance(turnId, datasetId) {
       return datasetProvenanceOf(stores.get(turnId), datasetId);
     },
@@ -1617,4 +1670,5 @@ export function createPrivacyGuardService(deps?: {
       };
     },
   };
+  return { service, fieldSamples: fieldClassification.fieldSamples };
 }

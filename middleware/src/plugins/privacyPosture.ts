@@ -44,6 +44,14 @@ export interface PrivacyPosture {
   readonly force_guarded: boolean;
   readonly provider_ids: readonly string[];
   readonly name_detector?: NameDetectorPosture | null;
+  /** #1556 follow-up — field-classification candidates an admin still has
+   *  to look at: `fields_needing_clarification` counts `needs_clarification`
+   *  AND `confirmed_conflict` (the latter also alone in
+   *  `fields_confirmed_conflict`), `fields_suggested_open` the open
+   *  suggestions. All 0 without Postgres. */
+  readonly fields_needing_clarification?: number;
+  readonly fields_suggested_open?: number;
+  readonly fields_confirmed_conflict?: number;
 }
 
 export interface NameDetectorPosture {
@@ -75,6 +83,46 @@ export async function readNameDetectorPosture(serviceRegistry: {
   } catch (err) {
     console.warn('[privacy-posture] nameDetectorStatus failed:', err);
     return null;
+  }
+}
+
+export interface OpenFieldClassificationCounts {
+  readonly needsClarification: number;
+  readonly suggested: number;
+  readonly confirmedConflict: number;
+}
+
+/**
+ * #1556 follow-up — the open field-classification counts for the posture.
+ * Informational only: zeros when no counter is wired (in-memory backend) and
+ * on any failure (table not migrated yet), never an error for the banner.
+ */
+export async function readOpenFieldClassification(
+  count: (() => Promise<OpenFieldClassificationCounts>) | undefined,
+): Promise<{
+  fields_needing_clarification: number;
+  fields_suggested_open: number;
+  fields_confirmed_conflict: number;
+}> {
+  const zero = {
+    fields_needing_clarification: 0,
+    fields_suggested_open: 0,
+    fields_confirmed_conflict: 0,
+  };
+  if (count === undefined) return zero;
+  try {
+    const counts = await count();
+    return {
+      fields_needing_clarification: counts.needsClarification + counts.confirmedConflict,
+      fields_suggested_open: counts.suggested,
+      fields_confirmed_conflict: counts.confirmedConflict,
+    };
+  } catch (err) {
+    console.warn(
+      '[privacy-posture] field-classification count failed:',
+      err instanceof Error ? err.message : err,
+    );
+    return zero;
   }
 }
 
@@ -148,14 +196,27 @@ export function isPrivacyConfigKey(key: string): boolean {
   );
 }
 
-/** Just the privacy keys of a plugin config, for the audit trail. */
+/** The privacy guard's list of fields that reach the model in clear (#1556). */
+export const NON_PERSONAL_FIELDS_CONFIG_KEY = 'non_personal_fields';
+
+/**
+ * Just the privacy keys of a plugin config, for the audit trail. The privacy
+ * guard's `non_personal_fields` is one of them (#1556 follow-up): a listed
+ * field reaches the model in clear, so a manual edit through the PATCH route
+ * is audited like a confirm on the field-classification page. It is included
+ * only when set, so plugins without it keep their two-key audit shape.
+ */
 export function privacySettingsOf(
   config: Readonly<Record<string, unknown>>,
 ): Record<string, unknown> {
+  const nonPersonal = config[NON_PERSONAL_FIELDS_CONFIG_KEY];
   return {
     [PRIVACY_MODE_CONFIG_KEY]: config[PRIVACY_MODE_CONFIG_KEY] ?? null,
     [PRIVACY_BYPASS_SCOPES_CONFIG_KEY]:
       config[PRIVACY_BYPASS_SCOPES_CONFIG_KEY] ?? null,
+    ...(nonPersonal !== undefined && nonPersonal !== null
+      ? { [NON_PERSONAL_FIELDS_CONFIG_KEY]: nonPersonal }
+      : {}),
   };
 }
 
