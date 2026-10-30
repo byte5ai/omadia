@@ -29,6 +29,7 @@ const KNOWN_REASON_CODES = new Set([
   'name_hit',
   'name_near_miss',
   'name_detector_unavailable',
+  'not_seen_yet',
   'no_relation_info',
   'no_scope',
   'changed_since_decision',

@@ -80,4 +80,31 @@ describe('odooRelationResolver', () => {
       ['hr.employee'],
     );
   });
+
+  it('reads a model odoo.schema lists through it, any other model through odoo.client', async () => {
+    const calls: Call[] = [];
+    const described: string[] = [];
+    const resolver = createOdooRelationResolver(
+      client({ 'sale.order': { partner_id: { type: 'many2one', relation: 'res.partner' } } }, calls),
+      {
+        schema: {
+          listModels: () => [{ model: 'hr.employee', tools: ['odoo_execute'] }],
+          describeModel: async (model) => {
+            described.push(model);
+            return [{ name: 'department_id', type: 'many2one', relation: 'hr.department', label: 'Department' }];
+          },
+        },
+      },
+    );
+    const viaSchema = await resolver.resolve(['hr.employee'], 'department_id');
+    assert.deepEqual(viaSchema.relationModels, ['hr.department']);
+    assert.equal(viaSchema.fieldLabel, 'Department');
+    const viaClient = await resolver.resolve(['sale.order'], 'partner_id');
+    assert.deepEqual(viaClient.relationModels, ['res.partner']);
+    assert.deepEqual(described, ['hr.employee']);
+    assert.deepEqual(
+      calls.map((c) => c.model),
+      ['sale.order'],
+    );
+  });
 });

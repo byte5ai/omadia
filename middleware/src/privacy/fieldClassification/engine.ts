@@ -94,6 +94,7 @@ export type FieldReason =
   | { readonly code: 'name_hit' }
   | { readonly code: 'name_near_miss' }
   | { readonly code: 'name_detector_unavailable' }
+  | { readonly code: 'not_seen_yet' }
   | { readonly code: 'no_relation_info' }
   /** The source names no model (scope `-`): an entry applies to every call
    *  of the tool, so it is never suggested. */
@@ -145,6 +146,9 @@ export interface ClassifyInput extends CandidateKey {
   /** Resolved relation targets; empty when non-relational or unknown. */
   readonly relationModels: readonly string[];
   readonly sample?: SampleVerdictSummary;
+  /** False for a field only read from a source's schema (seeded, never seen
+   *  in a tool result yet): it has no values to vet. Default true. */
+  readonly seenInChat?: boolean;
   /** Schema-only verdicts for unknown relation targets and for sources
    *  (`sourceKeyOf`), cached or fresh. */
   readonly modelVerdicts?: ReadonlyMap<string, ModelVerdictSummary>;
@@ -286,7 +290,7 @@ export function classifyBase(input: ClassifyInput): {
     }
   }
 
-  return capNoScope(input.scope, capUnvetted(outcome, sample));
+  return capNoScope(input.scope, capUnvetted(outcome, sample, input.seenInChat ?? true));
 }
 
 /** Never suggested without a clean name-detector vet (decision Marcel,
@@ -295,8 +299,13 @@ export function classifyBase(input: ClassifyInput): {
 function capUnvetted(
   outcome: { status: BaseStatus; reasons: FieldReason[] },
   sample: SampleVerdictSummary | undefined,
+  seenInChat: boolean,
 ): { status: BaseStatus; reasons: FieldReason[] } {
   if (outcome.status !== 'suggested') return outcome;
+  // Read from the schema only: no value was ever seen, so none was vetted.
+  if (!seenInChat && !isCleanVet(sample)) {
+    return { status: 'needs_clarification', reasons: [...outcome.reasons, { code: 'not_seen_yet' }] };
+  }
   if (sample?.c1 === 'near-miss') {
     return { status: 'needs_clarification', reasons: [...outcome.reasons, { code: 'name_near_miss' }] };
   }

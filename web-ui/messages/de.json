@@ -6613,6 +6613,7 @@
     "none": "keine",
     "configEntry": "Eintrag",
     "seen": "{count, plural, one {Einmal gesehen} other {# Mal gesehen}}, zuletzt {when}",
+    "notSeenYet": "Am {when} aus dem Odoo-Schema gelesen; noch in keinem Chat gesehen",
     "reasonsHeading": "Begründung",
     "reasons": {
       "person_model": "Verweist auf ein Personenmodell: {models}.",
@@ -6626,6 +6627,7 @@
       "name_hit": "Die Namenserkennung hat Namen in Stichprobenwerten gefunden.",
       "name_near_miss": "Die Namenserkennung hat Beinahe-Treffer für Namen in Stichprobenwerten gefunden.",
       "name_detector_unavailable": "Die Namenserkennung war nicht verfügbar (oder es gab keine Stichprobe), daher wird das Feld erst vorgeschlagen, wenn seine Werte auf Namen geprüft sind.",
+      "not_seen_yet": "Nur aus dem Odoo-Schema bekannt: Noch kein Chat hat dieses Feld gelesen, seine Werte sind also nicht auf Namen geprüft. Du kannst jetzt entscheiden, sonst wird es vorgeschlagen, sobald ein Chat es gelesen hat und die Werte unauffällig sind.",
       "no_relation_info": "Keine Relationsinformation (ein Textfeld, eine Quelle ohne Relations-Metadaten, oder Odoo war nicht erreichbar) und noch keine Schema-Prüfung dieser Quelle.",
       "no_scope": "Diese Quelle nennt kein Modell, ein Eintrag gälte also für jeden Aufruf dieses Tools — egal, was er liefert. Das Feld wird nie vorgeschlagen; entscheide selbst.",
       "changed_since_decision": "Seit der letzten Entscheidung geändert (neue Relationsmodelle oder Werteform).",

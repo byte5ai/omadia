@@ -73,6 +73,65 @@ changelog.
 `@omadia/plugin-privacy-guard` 0.11.0, `@omadia/plugin-api` 1.37.0
 (`countUnresolvedSurrogates` takes an optional `options`).
 
+### Added — Field suggestions right after an Odoo integration is activated; a safe Fly deploy script; #1622 deflaked
+
+2026-10-30.
+
+**Odoo relation pre-fetch (#1630 follow-up).** Until now `/admin/privacy-fields`
+only listed a field after a chat had read it. The Odoo integration 0.5.0
+(byte5ai/omadia-integration-odoo#8) publishes the schema-only service
+`odoo.schema@1`: its read whitelist, the tools that read each model, and
+`fields_get` with `relation`, run through its own guard (whitelist, cache,
+HR red-line fields left out).
+- Every recompute (activation, boot, every 6 h, on demand) seeds the `many2one`
+  fields of every listed model, once per reading tool, as candidates seen 0
+  times (`seedFromOdooSchema` in `recompute.ts`, `seedField` in the store:
+  insert only, an existing row is never touched).
+- one2many and many2many are not seeded: their values are id lists, which the
+  guard never sees as a masked label.
+- The relation resolver reads a listed model through `odoo.schema`, and any
+  other model through `odoo.client` as before. No record is read either way.
+- Nothing is masked differently and nothing is written to `non_personal_fields`:
+  - a person target is `personal` at once;
+  - any other target stays `needs_clarification` with the new reason
+    `not_seen_yet`, because no value was vetted for names;
+  - the admin can decide right away, or wait until a chat reads the field and
+    its clean sample makes it `suggested`.
+- The first real sighting sets the row's first-seen time.
+- The page shows such a field as "read from the Odoo schema, not seen in a chat
+  yet" (en/de).
+- A seeded field is not vetted (there is no sample to vet). An unknown
+  relation target still gets one schema-only Haiku verdict (cached 30 days),
+  so a person target turns `personal` before any chat.
+- Without plugin 0.5.0 nothing changes.
+
+**`scripts/fly-deploy.sh` (byte5's own Fly instance).** Several deploys went out
+without `OMADIA_VERSION` and without the shared lock, so `/health` said
+`"unknown"`. The script is now the only documented way to deploy
+(`docs/fly-deploy.md`, `AGENTS.md`). It:
+- refuses a dirty checkout and the main checkout;
+- takes `/tmp/omadia-fly-deploy.lock` and always releases it (trap);
+- skips a sha that is already live;
+- refuses when `middleware/sidecars`, `fly/` or `middleware/.env.example`
+  changed since the live sha (`--allow-config-diff` after checking);
+- deploys a fresh detached worktree with the local `fly.toml` files,
+  `OMADIA_VERSION=sha-<8>`, and `INSTALL_SUBSCRIPTION_CLIS=true` for the
+  middleware, middleware first, then the web-ui;
+- verifies `/health` = sha, `wss://` in `/.well-known/omadia-ui` and `Secure`
+  on the Entra login cookie on both apps, exiting non-zero on any mismatch.
+
+Both Dockerfiles print a loud warning (not a failure) when `OMADIA_VERSION` is
+empty, so local compose builds keep working.
+
+**#1622.** `loginAccountFold.pg.test.ts` ("a sign-in verified against the old
+hash while a reset lands") waited for the held read with `until()`. That gives
+up after 200 event-loop turns (~40 ms), and a Postgres read on a busy runner
+can take longer. The test now awaits a promise that the wrapped read resolves
+when it parks the sign-in, and fails at once if the sign-in finishes without
+being held. The assertions are unchanged. It passed 50/50 locally against
+Postgres. The old version failed 10/10 behind a 30 ms latency proxy; the new
+one passed 10/10.
+
 ### Fixed — The web UI lists only chats created there (#1637)
 
 2026-10-30. Canvas (`@omadia/ui-channel`), routine and Discord conversations
