@@ -1235,6 +1235,53 @@ durch `runTurn({ ..., viewer })`. Tests: `test/conductorBuilder.test.ts`
 (Digest-Sichtbarkeit inkl. pending/fremd-privat, Proposal-Vetting,
 Malformed-Blocks, No-Proposal-Regression).
 
+### Conductor — People-Directory, MCP-Actions, Builder-Capability-Signal (2026-10-30)
+
+Drei Seams, damit der konversationelle Builder keine Tool-IDs mehr erfindet und
+Personen nicht mehr als Freitext-Adresse abgefragt werden müssen:
+
+**People-Directory (Kernel + SDK).** `@omadia/channel-sdk` definiert
+`PeopleDirectoryProvider { channelType; search(q, {limit}) → resolved{people,partial} | unavailable{code} }`
+(`packages/harness-channel-sdk/src/peopleDirectory.ts`); Channel-Plugins
+registrieren feature-detected über `core.registerPeopleDirectoryProvider?.(channelId, provider)`.
+`src/channels/peopleDirectoryRegistry.ts` hält einen Provider pro `channelType`
+(First-Registrant-Owner, `unregisterChannel` bei Deaktivierung), vereinigt die
+Antworten, dedupliziert je `(channelType, principalRef)`, kappt auf ≤25, lässt
+einen hängenden Provider nach 4 s als `unavailable/source_error` laufen und
+verwirft Einträge ohne kanonisierbaren Ref. **`principalRef` MUSS der
+Channel-Binding-Key sein** (Teams: E-Mail/UPN, Slack: Member-ID) — sonst
+erreicht die Erinnerung niemanden. Route: `GET /api/v1/operator/conductors/people?q=&channel=&limit=`
+(`q` ≥ 2 Zeichen, `limit` ≤ 25, 60 Suchen/min pro Session-Sub, 200 mit
+`people: []` wenn kein Provider registriert ist; `channelUserId` bleibt
+serverseitig). Provider: `omadia-channel-teams` (Graph `/users?$search`, braucht
+`User.Read.All`), `omadia-channel-slack` (`users.list`, braucht `users:read`).
+
+**MCP-Tools als Conductor-Actions.** Action-IDs `mcp:<serverId>:<toolName>`
+(`src/conductor/mcpActionId.ts`) stehen im Action-Katalog (`listActions`, jetzt
+async) und werden in `src/conductor/mcpActionInvoker.ts` an
+`McpManager.callTool` dispatcht — **nur** `status = enabled` **und**
+`delegation = service` (ein Conductor-Run hat keinen acting user; Allowlist, kein
+Denylist), plus dasselbe `mcpDispatchDenial`-Gate wie der Orchestrator-Dispatch
+(Scan-Verdicts/Acks/disabled). Der Katalog wendet dasselbe Gate an, damit
+Signal und Laufzeit nie auseinanderlaufen. `"Error: …"`-Ergebnisse werfen.
+Trust-Klasse: Operator (wie die Control-Center-Test-Call-Route); ein
+per-Server-`allowConductor`-Flag ist Follow-up für den Tag, an dem
+Operator-Rollen von MCP-Admin abweichen.
+
+**Builder-Signal.** `builderAgent.ts` listet bekannte Action-IDs/Agent-Slugs
+(sanitisiert, ≤60) im Prompt und liefert additiv `missingCapabilities[]`
+(`builderCapabilities.ts` — berechnet **neben** `validate()`, dessen KnownRefs
+für Drafts bewusst nur `eventIds` enthalten: ein `unknown_action_ref` würde den
+Self-Correction-Retry den Platzhalter-Step löschen lassen) und
+`personSuggestions[]` (`builderPeople.ts` — Directory-Lookups **nach** dem
+LLM-Turn, nie im Prompt; ≤5 Namen × ≤5 Kandidaten; der Server schreibt
+`principal.ref` nie um). Die web-ui rendert daraus Karten
+(`web-ui/app/conductor/_components/ConductorChatCards.tsx`): „Connector fehlt" →
+`McpAddServerModal` (Registry/Manuell → Enable → Discover → OAuth inline →
+Delegation auf `service` → Tool wählen → lokaler `update_step`), Personen-Chips →
+Klick schreibt `ref` **und** `channel`. Karten gelten nur für den letzten Turn
+und sind während eines laufenden Turns inert.
+
 ### Conductor Webhooks — Inbound + Outbound (#437)
 
 Generischer Webhook-Mechanismus für Conductor, symmetrisch zum bisher
@@ -2079,7 +2126,8 @@ Eintrag (`formatScopedEntry`/`configEntryOf`), `SCOPED_FIELD_GRAMMAR` lehnt
 `\p{Cf}` (Zero-Width, Bidi-Overrides) ab.
 
 **Kernel:** `src/privacy/fieldClassification/` (`modelCatalog`,
-`odooRelationResolver` — nur `fields_get` auf dem Scope-Modell —, `engine`,
+`odooRelationResolver` — nur `fields_get` auf dem Scope-Modell; Modelle, die
+`odoo.schema@1` (Odoo-Plugin ≥ 0.5.0) listet, über diesen Service —, `engine`,
 `store`, `recompute`, `routes`, `guardConfig`), Migration
 `0065_privacy_field_classification` (Kandidat eindeutig über `tool_name`,
 `scope`, `field_path`; `label`; Verdict-Cache mit `fields_hash`). Quellen ohne
@@ -2090,6 +2138,12 @@ in `privacy_model_verdicts`, neu gefragt bei geänderter Feldmenge. Ohne C1
 `name_detector_unavailable`; Scope `-` ebenfalls höchstens
 `needs_clarification` mit `no_scope` (UI: „jeder Aufruf dieses Tools"). Fingerprint = Scope + Relationsmodelle + Form;
 Drift und `confirmed_conflict` je Tool + Scope + Feld.
+**Vorab aus dem Odoo-Schema (#1630-Folge):** Jeder Recompute legt die
+`many2one`-Felder aller Modelle aus `odoo.schema.listModels()` je lesendem Tool
+(`odoo_execute`, ggf. `odoo_query`) als Kandidaten mit `seenCount` 0 an
+(`seedFromOdooSchema`, Store `seedField`: nur Insert, bestehende Zeilen
+bleiben). Ohne geprüfte Werte höchstens `needs_clarification` mit
+`not_seen_yet`; die erste echte Sichtung setzt `firstSeenAt`.
 
 **Routen (requireAuth, jede Session ist Admin; jede Antwort
 `Cache-Control: no-store`):**
@@ -5305,11 +5359,12 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 
 ## 13. Offene Roadmap
 
-- **Feldklassifizierung vorab (#1556-Folge):** Das Odoo-Plugin-Repo
-  (`byte5ai/omadia-integration-odoo`) soll Relationsziele vorab liefern
-  (`odoo_describe` mit `relation` oder ein Service `odoo.schema@1`), damit
-  Vorschläge auf `/admin/privacy-fields` vor dem ersten Chat entstehen. Heute
-  entstehen sie erst, wenn ein Tool-Ergebnis das Feld maskiert hat.
+- **Feldklassifizierung vorab (#1556-Folge): erledigt.** Odoo-Plugin 0.5.0
+  liefert `odoo.schema@1`; der Recompute legt die `many2one`-Felder direkt nach
+  der Aktivierung als Kandidaten an (siehe Abschnitt Feldklassifizierung).
+  Offen: andere Quellen (MCP, Uploads) haben kein Schema vorab; geseedete
+  Zeilen (`seenCount` 0, ohne Entscheidung) bleiben stehen, wenn ein Modell
+  die Whitelist verlässt oder `odoo_query` abgeschaltet wird (kein Prune).
 
 ### Plan-Schritt-Zuordnung und Canvas-Vorschau (#1502, #1500)
 

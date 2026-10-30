@@ -3,7 +3,10 @@
  * scheduler.
  *
  * One pass: drain the privacy guard's field observations (one per tool +
- * scope + field), upsert them as candidates, resolve what each field points
+ * scope + field), upsert them as candidates, seed the many2one fields of
+ * every model the Odoo plugin's `odoo.schema` lists (schema only, seen 0
+ * times — so suggestions exist right after the integration is activated,
+ * before any chat read the model), resolve what each field points
  * to — Odoo `fields_get` on the scope model only, when the scope is an Odoo
  * model and the Odoo client is there — take the shape-masked preview and
  * THEN vet the value sample (vetting drops the sample) for new/changed
@@ -44,9 +47,14 @@ import { catalogVerdictOf, isPersonModel } from './modelCatalog.js';
 import {
   MODEL_NAME,
   ODOO_CLIENT_SERVICE_NAME,
+  ODOO_PLUGIN_ID,
+  ODOO_SCHEMA_SERVICE_NAME,
   createOdooRelationResolver,
+  schemaModelsOf,
   type FieldRelationInfo,
   type OdooExecuteClient,
+  type OdooRelationResolver,
+  type OdooSchemaSource,
 } from './odooRelationResolver.js';
 import type { FieldCandidate, FieldClassificationStore, StoredModelVerdict } from './store.js';
 
@@ -65,7 +73,12 @@ const MAX_LABEL_LENGTH = 200;
 
 export interface RecomputeDeps {
   readonly store: FieldClassificationStore;
-  readonly serviceRegistry: { get<T>(name: string): T | undefined };
+  /** `providedBy` (the kernel's ServiceRegistry) proves who registered a
+   *  name; an Odoo service registered by any other plugin is ignored. */
+  readonly serviceRegistry: {
+    get<T>(name: string): T | undefined;
+    providedBy(owner: string, name: string): boolean;
+  };
   /** The guard's current `non_personal_fields` value. Read-only. */
   readonly readNonPersonalFields: () => string | undefined;
   readonly now?: () => Date;
@@ -128,6 +141,55 @@ export function isModelScope(scope: string): boolean {
   return MODEL_NAME.test(scope);
 }
 
+/** The Odoo field type whose values the guard sees as `[id, "label"]`
+ *  pairs (`m2o`) — the only one seeded from the schema. one2many/many2many
+ *  values are id lists, never a masked label. */
+const SEEDED_FIELD_TYPE = 'many2one';
+
+/**
+ * Seed every many2one field of every model the Odoo plugin's `odoo.schema`
+ * lists, once per tool that reads the model, as a candidate seen 0 times.
+ * Schema only (field name, label, relation via the shared resolver); an
+ * existing row is never touched. The same validation as an observation
+ * applies, so a name that cannot form one scoped entry or reads as a value
+ * is not seeded. Returns how many fields the schema offered.
+ */
+export async function seedFromOdooSchema(
+  schema: OdooSchemaSource | undefined,
+  resolver: OdooRelationResolver,
+  store: FieldClassificationStore,
+  now: Date,
+  log: (msg: string) => void,
+): Promise<number> {
+  const at = now.toISOString();
+  let offered = 0;
+  for (const { model, tools } of schemaModelsOf(schema, log)) {
+    if (!isModelScope(model) || !Array.isArray(tools)) continue;
+    const fields = await resolver.fieldsOf(model);
+    if (fields === undefined) continue;
+    for (const [fieldPath, meta] of fields) {
+      if (meta.type !== SEEDED_FIELD_TYPE || meta.relation === undefined) continue;
+      for (const toolName of tools) {
+        if (typeof toolName !== 'string') continue;
+        const obs: FieldObservation = {
+          toolName,
+          scope: model,
+          fieldPath,
+          valueShape: 'm2o',
+          seenCount: 0,
+          firstSeenAt: at,
+          lastSeenAt: at,
+          ...(meta.label !== undefined ? { label: meta.label } : {}),
+        };
+        if (!isCandidateObservation(obs)) continue;
+        offered += 1;
+        await store.seedField(storableObservation(obs));
+      }
+    }
+  }
+  return offered;
+}
+
 const NO_RELATION_INFO: FieldRelationInfo = { known: false, relationModels: [], fieldDocs: [] };
 
 interface Resolved {
@@ -142,6 +204,9 @@ interface Resolved {
 }
 
 function needsVetting(candidate: FieldCandidate, fingerprint: string): boolean {
+  // Seeded from the schema and never seen in a tool result: the guard holds
+  // no value of it, so a vet would only log an empty verdict every pass.
+  if (candidate.seenCount === 0) return false;
   return (
     candidate.fingerprint !== fingerprint ||
     candidate.sampleVerdict === null ||
@@ -383,6 +448,19 @@ async function loadModelVerdicts(
   return verdicts;
 }
 
+/** An Odoo service, only when the Odoo integration plugin registered it:
+ *  service names are first-come, so a squatter could otherwise feed the
+ *  classification false relations. */
+function odooService<T>(deps: RecomputeDeps, name: string, log: (msg: string) => void): T | undefined {
+  const service = deps.serviceRegistry.get<T>(name);
+  if (service === undefined) return undefined;
+  if (!deps.serviceRegistry.providedBy(ODOO_PLUGIN_ID, name)) {
+    log(`[privacy-fields] ignoring '${name}': not registered by ${ODOO_PLUGIN_ID}`);
+    return undefined;
+  }
+  return service;
+}
+
 export async function recomputeFieldClassification(deps: RecomputeDeps): Promise<RecomputeResult> {
   const now = deps.now?.() ?? new Date();
   const log = deps.log ?? (() => undefined);
@@ -391,12 +469,15 @@ export async function recomputeFieldClassification(deps: RecomputeDeps): Promise
   const observations = (guard?.takeFieldObservations?.() ?? []).filter(isCandidateObservation);
   for (const obs of observations) await deps.store.upsertObservation(storableObservation(obs));
 
+  const schema = odooService<OdooSchemaSource>(deps, ODOO_SCHEMA_SERVICE_NAME, log);
+  const resolver = createOdooRelationResolver(
+    odooService<OdooExecuteClient>(deps, ODOO_CLIENT_SERVICE_NAME, log),
+    { log, ...(schema !== undefined ? { schema } : {}) },
+  );
+  const schemaFields = await seedFromOdooSchema(schema, resolver, deps.store, now, log);
+
   // Rows that cannot form one scoped entry are never classified (or listed).
   const candidates = (await deps.store.list()).filter((c) => isValidFieldIdentity(c));
-  const resolver = createOdooRelationResolver(
-    deps.serviceRegistry.get<OdooExecuteClient>(ODOO_CLIENT_SERVICE_NAME),
-    { log },
-  );
   const resolved: Resolved[] = [];
   for (const candidate of candidates) {
     resolved.push(await resolveCandidate(candidate, resolver, guard, log));
@@ -413,6 +494,7 @@ export async function recomputeFieldClassification(deps: RecomputeDeps): Promise
       valueShape: candidate.valueShape,
       relationModels: r.relationModels,
       ...(r.sample !== undefined ? { sample: r.sample } : {}),
+      seenInChat: candidate.seenCount > 0,
       modelVerdicts,
     });
     const shown = resolveStatus(
@@ -432,7 +514,7 @@ export async function recomputeFieldClassification(deps: RecomputeDeps): Promise
     });
   }
   log(
-    `[privacy-fields] recompute: ${String(observations.length)} observation(s), ${String(candidates.length)} candidate(s)`,
+    `[privacy-fields] recompute: ${String(observations.length)} observation(s), ${String(schemaFields)} Odoo schema field(s), ${String(candidates.length)} candidate(s)`,
   );
   return { computedAt, candidates: candidates.length, observations: observations.length };
 }

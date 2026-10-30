@@ -346,6 +346,17 @@ describe('<PrivacyFieldsView />', () => {
     expect(await screen.findByText(/Die Namenserkennung war nicht verfügbar/)).toBeInTheDocument();
   });
 
+  it('renders a field seeded from the Odoo schema as not seen yet, in German', async () => {
+    fetchMock.mockResolvedValueOnce(
+      respond(
+        list([item({ status: 'needs_clarification', seenCount: 0, reasons: [{ code: 'not_seen_yet' }] })]),
+      ),
+    );
+    renderWithIntl(<PrivacyFieldsView status="needs_clarification" tool={null} />, { locale: 'de' });
+    expect(await screen.findByText(/Nur aus dem Odoo-Schema bekannt/)).toBeInTheDocument();
+    expect(screen.getByText(/noch in keinem Chat gesehen/)).toBeInTheDocument();
+  });
+
   it('recompute posts and reloads', async () => {
     fetchMock
       .mockResolvedValueOnce(respond(list([])))

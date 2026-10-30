@@ -69,6 +69,19 @@ ENV PORT=8080
 # than repeating package.json's long-stale 0.2.0.
 ARG OMADIA_VERSION=
 ENV OMADIA_VERSION=${OMADIA_VERSION}
+# Loud but non-fatal: a local `docker compose build` legitimately has no stamp,
+# but a Fly deploy without it ships `/health` version "unknown" (happened
+# 2026-10, see docs/fly-deploy.md). Placed right after the ARG so it adds no
+# cache invalidation beyond what the ENV line already causes.
+RUN if [ -z "$OMADIA_VERSION" ]; then \
+      printf '%s\n' \
+        '==============================================================' \
+        'WARNING: OMADIA_VERSION build arg is EMPTY (middleware image).' \
+        '/health will report version "unknown".' \
+        'Fine for a local build. For byte5 Fly use scripts/fly-deploy.sh,' \
+        'otherwise pass --build-arg OMADIA_VERSION=sha-<8>.' \
+        '==============================================================' >&2; \
+    fi
 # Optional skills directory. Per-domain SKILL.md bundles ship here when a
 # deployment carries domain-specific runtime prompts. Empty by default.
 ENV SKILLS_DIR=/app/skills

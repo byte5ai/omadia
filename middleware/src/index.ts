@@ -317,6 +317,9 @@ import {
   type ConductorWebhookInboundDeps,
 } from './routes/conductorWebhooksInbound.js';
 import { WEBHOOK_POST_ACTION_ID, invokeWebhookPostAction } from './conductor/webhookPostAction.js';
+import { parseMcpActionId } from './conductor/mcpActionId.js';
+import { mcpRowToConfig } from './agents/subAgentToolHydration.js';
+import { createMcpActionInvoker, mcpActionIds } from './conductor/mcpActionInvoker.js';
 import { OAuthClient } from './auth/oauthClient.js';
 import { RefreshStore } from './auth/refreshStore.js';
 import { EmailWhitelist } from './auth/whitelist.js';
@@ -538,6 +541,7 @@ import { createCoreApi } from './channels/coreApi.js';
 import { createCoreRoutineTurnScope } from './plugins/routines/coreRoutineTurnScope.js';
 import { ChannelDirectoryRegistry } from './channels/channelDirectoryRegistry.js';
 import { ConversationRosterRegistry } from './channels/rosterRegistry.js';
+import { PeopleDirectoryRegistry } from './channels/peopleDirectoryRegistry.js';
 import { ConversationEventHub } from './channels/conversationEventHub.js';
 import { TargetedSendRegistry } from './channels/targetedSendRegistry.js';
 import { createTargetedDeliveryService } from './channels/targetedDeliveryService.js';
@@ -782,6 +786,8 @@ async function main(): Promise<void> {
   // both the conductor block below and the channel runtime at the bottom can
   // reference them; wired into createCoreApi + the channel registry there.
   const conversationRosterRegistry = new ConversationRosterRegistry(registryLog);
+  // People directory — channel plugins' searchable "who is <name>?" for Conductor human steps.
+  const peopleDirectoryRegistry = new PeopleDirectoryRegistry(registryLog);
   const targetedSendRegistry = new TargetedSendRegistry(registryLog);
   const conversationSendRegistry = new ConversationSendRegistry(registryLog);
   const conversationEventHub = new ConversationEventHub(registryLog);
@@ -3395,7 +3401,7 @@ async function main(): Promise<void> {
       // US5: persist a Conductor channel binding per inbound turn so awaits can be reminded.
       // Lazy-resolve the store (Conductor wires later in boot); fire-and-forget — a turn must
       // never be blocked or broken by it.
-      const bindings = serviceRegistry.get<{ upsert(u: string, c: string, r: unknown): Promise<void> }>(
+      const bindings = serviceRegistry.get<{ upsert(u: string, c: string, r: unknown, scope?: string): Promise<void> }>(
         'conductorChannelBindings',
       );
       // Key the binding by the operator-addressable principalRef (Teams: the user's email) when the
@@ -3403,7 +3409,9 @@ async function main(): Promise<void> {
       // to the channel-native userId (e.g. AAD object id). The store canonicalizes the key on write.
       if (bindings) {
         void bindings
-          .upsert(bindingKeyForTurn(info), String(info.channel), info.conversationRef)
+          // The channel's tenant/workspace (Teams: AAD tenant) rides along so a scope-aware
+          // resolver can tell two tenants' bindings of the same email apart (migration 0012).
+          .upsert(bindingKeyForTurn(info), String(info.channel), info.conversationRef, info.tenant)
           .catch(() => undefined);
       }
     });
@@ -4737,6 +4745,17 @@ async function main(): Promise<void> {
         peerGate,
       }),
     );
+    // MCP tools as Conductor actions — own store handle on the same pool (the
+    // McpManager's `mcpAuditStore` lives in the orchestrator block above).
+    const conductorMcpServerStore = new AgentGraphStore(graphPool);
+    const invokeMcpAction = createMcpActionInvoker({
+      listServers: () => conductorMcpServerStore.listMcpServers(),
+      getMcp: () => runtimeMcpManager,
+      toConfig: mcpRowToConfig,
+      // Same policy the orchestrator dispatch enforces (scan verdicts, acks, disabled servers).
+      dispatchDenial: mcpDispatchDenial,
+      log: (m) => console.log(m),
+    });
     const conductorWiring = await wireConductor({
       pool: graphPool,
       onEphemeralReaped,
@@ -4757,6 +4776,9 @@ async function main(): Promise<void> {
       },
       // #330 round 4 — participants column of the facilitation admin lens.
       getRoster: (channelType, conversationId) => conversationRosterRegistry.getRoster(channelType, conversationId),
+      // People directory union for the builder's person suggestions + `GET /people`.
+      searchPeople: (query, opts) => peopleDirectoryRegistry.search(query, opts),
+      peopleChannelTypes: () => peopleDirectoryRegistry.types(),
       // Agent dialogue: a `say` step publishes an agent's turn into the chat.
       // The SAME registry the plugin-facing conversationSend uses — one owner
       // per channel type, so a discussion cannot be posted by a hijacked provider.
@@ -4780,9 +4802,20 @@ async function main(): Promise<void> {
       // `webhook.post` (issue #437) is a built-in action, not a plugin tool — special-cased
       // ahead of the dynamicAgentRuntime dispatch so a Designer action step can fire an
       // ad-hoc outbound webhook without an installed connector.
+      // `mcp:<serverId>:<tool>` ids are connected MCP servers' tools — dispatched to the
+      // McpManager in the operator trust class (same as the Control Center test-call),
+      // service delegation only; see mcpActionInvoker.ts.
       invokeAction: (toolId, input) =>
-        toolId === WEBHOOK_POST_ACTION_ID ? invokeWebhookPostAction(input) : dynamicAgentRuntime.invokeAgentTool(toolId, input),
-      listActions: () => [WEBHOOK_POST_ACTION_ID, ...deterministicActionRegistry.list()],
+        toolId === WEBHOOK_POST_ACTION_ID
+          ? invokeWebhookPostAction(input)
+          : parseMcpActionId(toolId)
+            ? invokeMcpAction(toolId, input)
+            : dynamicAgentRuntime.invokeAgentTool(toolId, input),
+      listActions: async () => [
+        WEBHOOK_POST_ACTION_ID,
+        ...deterministicActionRegistry.list(),
+        ...mcpActionIds(await conductorMcpServerStore.listMcpServers(), mcpDispatchDenial),
+      ],
       eventCatalog: eventCatalogRegistry,
       // US5 reminders: resolve a channel's proactive sender from the routines senderRegistry. Adapt
       // ProactiveSender → the worker's minimal shape ({ text } is a valid SemanticAnswer).
@@ -6862,6 +6895,7 @@ async function main(): Promise<void> {
     routes: routeRegistry,
     webSockets: webSocketRegistry,
     rosterRegistry: conversationRosterRegistry,
+    peopleDirectories: peopleDirectoryRegistry,
     targetedSends: targetedSendRegistry,
     conversationEvents: conversationEventHub,
     conversationSends: conversationSendRegistry,
@@ -6920,6 +6954,7 @@ async function main(): Promise<void> {
     routes: routeRegistry,
     webSockets: webSocketRegistry,
     rosterRegistry: conversationRosterRegistry,
+    peopleDirectories: peopleDirectoryRegistry,
     targetedSends: targetedSendRegistry,
     conversationSends: conversationSendRegistry,
   });

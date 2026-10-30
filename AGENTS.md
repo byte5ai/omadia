@@ -85,9 +85,21 @@ Build artefacts (`target/`, `node_modules/`, etc.) live per worktree — first b
 
 ## Parallele Arbeit — Kollisionen vermeiden
 
-- **Fly-Deploys sind nicht atomar.** Wenn ein anderer Agent gerade deployt, abwarten (30-60s), sonst trittst du ihm auf den Zeh.
+- **Fly-Deploys sind nicht atomar.** Wenn ein anderer Agent gerade deployt, abwarten, sonst trittst du ihm auf den Zeh. Der gemeinsame Lock `/tmp/omadia-fly-deploy.lock` regelt das (siehe unten).
 - **Secrets-Rotation synchronisieren.** Nicht unangekündigt Secrets überschreiben — ein Agent deployt einen Proxy-Token-Rename, ein anderer Agent hält noch den alten im Skill. Kommuniziere solche Änderungen im CHANGELOG, bevor du die `fly secrets set`-Kommandos tippst.
 - **Git-Workflow ernst nehmen.** Das Repo liegt seit `2026-05` öffentlich auf `github.com/byte5ai/omadia`. Keine direkten Pushes auf `main` (lokal vom `.hooks/pre-push`-Guard blockiert, serverseitig von Branch Protection). Alle Änderungen über Feature-Branch + PR. Conventional-Commits-Konvention gilt (siehe unten). Niemals zwei große Änderungen in einem Commit mischen — kleine, verifizierbare Schritte sind weiterhin Pflicht.
+
+### Deploy unserer Fly-Instanz
+
+**Einziger Weg:** `scripts/fly-deploy.sh` aus einem sauberen, verlinkten Worktree, nie aus `~/sources/odoo-bot`. Doku: [`docs/fly-deploy.md`](docs/fly-deploy.md). Das Skript nimmt den Lock, baut aus einem frischen detached Worktree am Ziel-Commit, stempelt `OMADIA_VERSION=sha-<8>`, verweigert bei Config-Diff (`middleware/sidecars`, `fly/`, `middleware/.env.example`) seit dem Live-Sha und verifiziert `/health`-Version, `wss://` und `Secure`-Cookies auf beiden Apps.
+
+```bash
+scripts/fly-deploy.sh --dry-run      # erst ansehen
+scripts/fly-deploy.sh                # origin/main deployen + verifizieren
+scripts/fly-deploy.sh --only-verify  # nur Live-Checks
+```
+
+Handgetippte `fly deploy`-Aufrufe für `odoo-bot-middleware` / `odoo-bot-harness` sind nicht mehr vorgesehen: ohne Build-Arg meldet `/health` `version: "unknown"` (Oktober 2026 mehrfach passiert), und der Build-Log zeigt dann einen `WARNING: OMADIA_VERSION build arg is EMPTY`-Banner.
 
 ## Anti-Pattern, die wir schon bezahlt haben
 
