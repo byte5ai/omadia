@@ -5,6 +5,7 @@ import type {
   ChatSessionStore} from '@omadia/orchestrator';
 import {
   InvalidSessionIdError,
+  ServerMirroredSessionError,
   isValidSessionId,
 } from '@omadia/orchestrator';
 
@@ -230,6 +231,12 @@ export function createChatSessionsRouter(deps: ChatSessionDeps): Router {
     } catch (err) {
       if (err instanceof InvalidSessionIdError) {
         res.status(400).json({ error: 'invalid_id' });
+        return;
+      }
+      // A browser pushing back a purged server-mirrored transcript (canvas /
+      // routine turns that were never a web chat) — refused, not re-created.
+      if (err instanceof ServerMirroredSessionError) {
+        res.status(409).json({ error: 'server_mirrored_session' });
         return;
       }
       failure(res, err, '[chat-sessions] save');

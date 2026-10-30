@@ -625,7 +625,7 @@ export {
 export type { AnswerVerbosity } from './answerVerbosity.js';
 
 // Session logger + chat-session store
-export { SessionLogger, graphScopeFor } from './sessionLogger.js';
+export { SessionLogger, graphScopeFor, isChatSessionScope } from './sessionLogger.js';
 export type { SessionLogEntry } from './sessionLogger.js';
 
 // #684 — run-trace outcome tallies. Exported so an operator surface can read
@@ -644,6 +644,8 @@ export type {
 export {
   ChatSessionStore,
   InvalidSessionIdError,
+  ServerMirroredSessionError,
+  isServerMirroredSession,
   isValidSessionId,
 } from './chatSessionStore.js';
 export type {
