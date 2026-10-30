@@ -317,7 +317,8 @@ export function createDatasetStore(deps: DatasetStoreDeps): DatasetStore {
   return {
     internToolResult(toolName, rawResult, toolInput): DigestEnvelope {
       const parsed = parseToolResult(rawResult, maxChars);
-      const schema = deps.classify(parsed.rows, parsed.shape);
+      const context = { sourceTools: [toolName] };
+      const schema = deps.classify(parsed.rows, parsed.shape, context);
       const envelope = parsed.envelope;
       const dataset: Dataset = {
         datasetId: `ds_${randomUUID()}`,
@@ -325,6 +326,7 @@ export function createDatasetStore(deps: DatasetStoreDeps): DatasetStore {
         schema,
         provenance: {
           toolName,
+          sourceTools: [toolName],
           turnId: deps.turnId,
           truncated: parsed.truncated,
           createdAt: new Date().toISOString(),
@@ -337,7 +339,7 @@ export function createDatasetStore(deps: DatasetStoreDeps): DatasetStore {
               envelope: {
                 itemsPath: envelope.itemsPath,
                 values: envelope.values,
-                schema: deps.classify([envelope.values], 'object'),
+                schema: deps.classify([envelope.values], 'object', context),
               },
             }
           : {}),

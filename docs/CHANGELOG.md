@@ -67,6 +67,24 @@ changelog.
 `@omadia/plugin-privacy-guard` 0.11.0, `@omadia/plugin-api` 1.37.0
 (`countUnresolvedSurrogates` takes an optional `options`).
 
+### Added — Non-personal fields an operator lets through the Privacy Shield (#1556)
+
+2026-10-30. Department names and similar Odoo labels were masked, so an
+answer could not name the department it was about: a many2one pair
+`[4, "Research & Development"]` has the same shape as a person
+(`partner_id: [12, "Jonas Weber"]`). The privacy guard's new setting
+`non_personal_fields` (empty by default) lists fields that hold no personal
+data: `odoo_execute:department_id`, `*:job_id` or just `job_id`. A listed field
+clears as a `label` when every value is text or an `[id, "label"]` pair; the
+model sees the label and can filter, sort and group on it. A verb result clears
+it only when every source tool lists it, the identity detector still masks a
+flagged value, link keys cannot be listed, and the receipt names each cleared
+field ("In clear by admin rule"). Person names are not detected in a listed
+field — the help text warns against listing `partner_id`, `user_id` and the like.
+
+`@omadia/plugin-privacy-guard` 0.14.0, `@omadia/plugin-api` 1.48.0
+(`PrivacyReceipt.operatorClearedFields`).
+
 ### Fixed — Privacy Shield masking correctness and data rendering (S3-B)
 
 2026-10-29. Fourteen ways prompt masking and server-rendered answers misled the

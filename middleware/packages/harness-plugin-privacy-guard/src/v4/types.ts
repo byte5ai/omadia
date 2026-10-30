@@ -43,11 +43,12 @@ export type FieldType =
   | 'date'
   | 'enum'
   | 'id'
+  | 'label'
   | 'string'
   | 'unknown';
 
 /** The subset of `FieldType` that may ever be `safe-cleartext`. */
-export type SafeType = 'number' | 'boolean' | 'date' | 'enum' | 'id';
+export type SafeType = 'number' | 'boolean' | 'date' | 'enum' | 'id' | 'label';
 
 /** The deny-by-default classification verdict for a field. */
 export type Classification = 'safe-cleartext' | 'sensitive-masked';
@@ -97,6 +98,10 @@ export type DatasetRow = Readonly<Record<string, unknown>>;
 export interface DatasetProvenance {
   /** Originating tool name, or the verb name for a verb-derived dataset. */
   readonly toolName: string;
+  /** #1556 — the tools whose results this dataset holds: the tool itself for
+   *  an interned result, every source of the inputs for a verb-derived one.
+   *  What an operator's `non_personal_fields` rule is matched against. */
+  readonly sourceTools?: readonly string[];
   readonly turnId: string;
   /** `datasetId` of the input dataset, when produced by a verb. */
   readonly derivedFrom?: string;
@@ -155,7 +160,22 @@ export interface Dataset {
 export type Classifier = (
   rows: ReadonlyArray<DatasetRow>,
   shape: DatasetShape,
+  context?: ClassifierContext,
 ) => DatasetSchema;
+
+/** #1556 — what the classifier may know about where the rows came from. */
+export interface ClassifierContext {
+  /** The tools whose results the rows hold (see `DatasetProvenance`). */
+  readonly sourceTools: readonly string[];
+  /**
+   * For a verb-derived dataset: the only paths an operator rule may clear —
+   * those that were already a `label` in every input holding them, under the
+   * same name. A rename (`v4_union` `renameRight`) is never among them, so a
+   * masked column cannot be renamed onto a listed path and clear. Absent for
+   * a tool result (the rule decides alone).
+   */
+  readonly labelPaths?: ReadonlySet<string>;
+}
 
 /** Return shape of `internToolResult` and of every verb. */
 export interface DigestEnvelope {

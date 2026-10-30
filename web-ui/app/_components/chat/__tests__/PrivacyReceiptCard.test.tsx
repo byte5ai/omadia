@@ -578,3 +578,23 @@ describe('<PrivacyReceiptCard /> — turn id and link (#1573)', () => {
     expect(screen.queryByRole('link', { name: 'View on the Receipts page' })).not.toBeInTheDocument();
   });
 });
+
+describe('#1556 — fields cleared by an admin rule', () => {
+  const CLEARED: PrivacyReceipt = {
+    ...PLAIN,
+    operatorClearedFields: [{ toolName: 'odoo_execute', field: 'department_id' }],
+  };
+
+  it('counts them in the summary', () => {
+    const t = (k: string, v?: Record<string, string | number>): string =>
+      v === undefined ? k : `${k}:${Object.values(v).join(',')}`;
+    expect(summarisePrivacyReceipt(CLEARED, t)).toBe(
+      'summaryDatasets:1 · summaryOperatorCleared:1',
+    );
+  });
+
+  it('names tool and field in the card', () => {
+    renderWithIntl(<PrivacyReceiptCard receipt={CLEARED} />);
+    expect(screen.getByText('odoo_execute: department_id')).toBeInTheDocument();
+  });
+});

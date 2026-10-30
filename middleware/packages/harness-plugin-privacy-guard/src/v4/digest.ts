@@ -23,6 +23,7 @@ import {
   type SafeType,
 } from './types.js';
 import { FILE_EXPORT_EXCEPTION, RENDER_CONTRACT } from './promptText.js';
+import { labelOf } from './verbs/predicate.js';
 
 /** Below this row count, `safe-cleartext` values are inlined row-aligned in
  *  the Digest; at or above it, a summary is used instead (Digest invariant
@@ -82,13 +83,14 @@ function buildFieldDigest(
   const column = rows.map((r) => r[fc.path]);
   const present = column.filter((v) => v !== null && v !== undefined);
 
-  // Small dataset — inline the actual safe values, row-aligned.
+  // Small dataset — inline the actual safe values, row-aligned (a label as
+  // its display text, #1556).
   if (rows.length <= INLINE_VALUES_MAX_ROWS) {
     return {
       path: fc.path,
       type,
       classification: 'safe-cleartext',
-      values: column,
+      values: type === 'label' ? column.map(labelOf) : column,
     };
   }
 
@@ -105,17 +107,36 @@ function buildFieldDigest(
       };
     }
   }
-  if (type === 'enum') {
+  if (type === 'enum' || type === 'label') {
     return {
       path: fc.path,
       type,
       classification: 'safe-cleartext',
       summary: {
-        distinctValues: [...new Set(present.map((v) => String(v)))],
+        // #1556 — a label lists its display texts, not the `[id, "label"]`
+        // pairs, so the model can name them and filter on them.
+        distinctValues: distinctLabels(present, type),
       },
     };
   }
   return { path: fc.path, type, classification: 'safe-cleartext', summary };
+}
+
+/** #1556 — at most this many distinct labels are listed for a `label`
+ *  field; an `enum` is already bounded by the classifier (12). */
+const MAX_LISTED_LABELS = 50;
+
+/** The distinct display values of a safe field. A label lists its texts —
+ *  without Odoo's `false` for an unset value — up to `MAX_LISTED_LABELS`,
+ *  then a marker with how many more there are. */
+function distinctLabels(present: ReadonlyArray<unknown>, type: SafeType): unknown[] {
+  if (type !== 'label') return [...new Set(present.map((v) => String(v)))];
+  const labels = [...new Set(present.filter((v) => v !== false).map((v) => String(labelOf(v))))];
+  if (labels.length <= MAX_LISTED_LABELS) return labels;
+  return [
+    ...labels.slice(0, MAX_LISTED_LABELS),
+    `… ${String(labels.length - MAX_LISTED_LABELS)} more`,
+  ];
 }
 
 /** Build the identity-free Digest for a stored Dataset. */

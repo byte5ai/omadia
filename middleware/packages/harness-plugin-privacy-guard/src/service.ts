@@ -21,6 +21,7 @@
 
 import type {
   BypassedToolEntry,
+  OperatorClearedFieldEntry,
   PrivacyBypassedToolRequest,
   PrivacyDatasetProvenance,
   PrivacyDigestAudience,
@@ -59,8 +60,13 @@ import { isControlFlowToolResult } from '@omadia/plugin-api';
 
 import { createDatasetStore } from './v4/datasetStore.js';
 import { createShapeClassifier } from './v4/shapeClassifier.js';
+import {
+  NON_PERSONAL_FIELDS_CONFIG_KEY,
+  nonPersonalFieldRule,
+  parseNonPersonalFields,
+} from './nonPersonalFields.js';
 import { buildDigest, digestToToolResultText } from './v4/digest.js';
-import type { Dataset, DatasetStore } from './v4/types.js';
+import type { Classifier, Dataset, DatasetStore } from './v4/types.js';
 import { createVerbEngine } from './v4/verbs/index.js';
 import {
   RENDER_TOOL_SPEC,
@@ -442,6 +448,7 @@ export function createPrivacyGuardService(deps?: {
   // plugin). Drained into the receipt by `finalizeTurn`. Entries carry
   // only tool/plugin names + a byte count (no values).
   const bypassedTools = new Map<string, BypassedToolEntry[]>();
+  const operatorClearedFields = new Map<string, Map<string, OperatorClearedFieldEntry>>();
   // #547 / #569 — per-turn list of external MCP tools that returned
   // `structuredContent`. Recorded by the boot-wired `structuredSink` so the
   // receipt accounts for the sidecar that otherwise fires beneath every
@@ -704,17 +711,44 @@ export function createPrivacyGuardService(deps?: {
         })
       : undefined;
 
+  // #1556 — the operator's non-personal fields, re-read whenever a classifier
+  // is built (once per turn store, once per verb call), so a saved setting
+  // applies from the next turn without a restart. Rejected entries are logged
+  // once per distinct config value.
+  let loggedNonPersonalConfig: string | undefined;
+  function shapeClassifier(): Classifier {
+    const value: unknown = deps?.readConfig?.(NON_PERSONAL_FIELDS_CONFIG_KEY);
+    const raw = typeof value === 'string' ? value : undefined;
+    const parsed = parseNonPersonalFields(raw);
+    if ((raw ?? '') !== (loggedNonPersonalConfig ?? '')) {
+      loggedNonPersonalConfig = raw ?? '';
+      if (parsed.entries.length > 0 || parsed.rejected.length > 0) {
+        console.log(
+          `[privacy-guard v4] nonPersonalFields entries=${String(parsed.entries.length)}` +
+            (parsed.rejected.length > 0
+              ? ` rejected=${JSON.stringify(parsed.rejected)} — use tool:field, *:field or field; __k_ link keys are never allowed`
+              : ''),
+        );
+      }
+    }
+    return createShapeClassifier({
+      // The C0 baseline's IDENTITY types as one-way booster: a column of
+      // bare phone numbers or IBANs is all digits/letters and would clear as
+      // an `id` handle — and a small dataset's digest inlines every value of
+      // a safe column. Uploaded tables now deliver real values into this
+      // store, so that column must be masked. Dates and amounts are NOT in
+      // the booster: they must stay filterable. A miss never promotes (D4).
+      // It also outranks an operator's non-personal rule.
+      detector: baselineHasIdentityPii,
+      ...(parsed.entries.length > 0 ? { nonPersonal: nonPersonalFieldRule(parsed.entries) } : {}),
+    });
+  }
+
   function storeFor(turnId: string): DatasetStore {
     let s = stores.get(turnId);
     if (s === undefined) {
       s = createDatasetStore({
-        // The C0 baseline's IDENTITY types as one-way booster: a column of
-        // bare phone numbers or IBANs is all digits/letters and would clear as
-        // an `id` handle — and a small dataset's digest inlines every value of
-        // a safe column. Uploaded tables now deliver real values into this
-        // store, so that column must be masked. Dates and amounts are NOT in
-        // the booster: they must stay filterable. A miss never promotes (D4).
-        classify: createShapeClassifier({ detector: baselineHasIdentityPii }),
+        classify: shapeClassifier(),
         buildDigest,
         turnId,
       });
@@ -861,6 +895,30 @@ export function createPrivacyGuardService(deps?: {
     return r;
   }
 
+  // #1556 — the receipt names every field an operator rule cleared, record
+  // columns and envelope metadata alike. Here, not in `internToolResultV4`,
+  // so every intern path is covered.
+  function recordOperatorCleared(turnId: string, toolName: string, datasetId: string): void {
+    const dataset = stores.get(turnId)?.get(datasetId);
+    const cleared = [
+      ...(dataset?.schema.fields ?? []),
+      ...(dataset?.envelope?.schema.fields ?? []),
+    ].filter((f) => f.type === 'label' && f.classification === 'safe-cleartext');
+    if (cleared.length === 0) return;
+    let entries = operatorClearedFields.get(turnId);
+    if (entries === undefined) {
+      entries = new Map();
+      operatorClearedFields.set(turnId, entries);
+    }
+    for (const f of cleared) {
+      entries.set(`${toolName}\u0000${f.path}`, { toolName, field: f.path });
+    }
+    console.log(
+      `[privacy-guard v4] nonPersonalCleared turn=${turnId} tool=${toolName} ` +
+        `fields=${JSON.stringify([...new Set(cleared.map((f) => f.path))])}`,
+    );
+  }
+
   /** Intern a raw tool result, update the turn receipt, return the digest
    *  text + datasetId. Shared by `internToolResultV4` and the
    *  `subAgentResultV4` fallback so the receipt accounting lives in one
@@ -881,6 +939,7 @@ export function createPrivacyGuardService(deps?: {
     const maskedFields = exposed.filter(
       (f) => f.classification === 'sensitive-masked',
     ).length;
+    recordOperatorCleared(turnId, toolName, digest.datasetId);
     const receipt = receiptFor(turnId);
     receipt.datasetsInterned += 1;
     receipt.fieldsMasked += maskedFields;
@@ -1069,7 +1128,7 @@ export function createPrivacyGuardService(deps?: {
         }
         const engine = createVerbEngine({
           store,
-          classify: createShapeClassifier({ detector: baselineHasIdentityPii }),
+          classify: shapeClassifier(),
         });
         const result = dispatchVerbCall(engine, request.toolName, request.input);
         receiptFor(request.turnId).verbsExecuted.push(
@@ -1470,6 +1529,8 @@ export function createPrivacyGuardService(deps?: {
       turnPiiValues.delete(turnId);
       const bypassed = bypassedTools.get(turnId);
       bypassedTools.delete(turnId);
+      const clearedByRule = [...(operatorClearedFields.get(turnId)?.values() ?? [])];
+      operatorClearedFields.delete(turnId);
       const structured = structuredPayloads.get(turnId);
       structuredPayloads.delete(turnId);
       const errors = toolErrors.get(turnId);
@@ -1539,6 +1600,7 @@ export function createPrivacyGuardService(deps?: {
         pseudonymProjectionUsed: accum?.pseudonymProjectionUsed ?? false,
         identityValuesOnWire,
         ...(hasBypassed ? { bypassedTools: [...bypassed] } : {}),
+        ...(clearedByRule.length > 0 ? { operatorClearedFields: clearedByRule } : {}),
         ...(hasStructured ? { structuredPayloads: [...structured] } : {}),
         ...(hasMaskedPrompt ? { maskedPromptSpans: promptSpans } : {}),
         ...(hasMaskedContext ? { maskedContextSpans: contextSpans } : {}),

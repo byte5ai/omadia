@@ -2084,6 +2084,24 @@ per call, so a cached binding follows the provider. Earlier conversations
 reach the model through recall, which masks and skips `unprotected` turns.
 Without a shield the transcripts stay readable: nothing is masked then anyway.
 
+**Operator-cleared labels (#1556).** One field-level exception sits inside the
+digest itself. The privacy guard's `non_personal_fields` setting (empty by
+default; `tool:field`, `*:field` or `field`) lets an operator declare fields
+that hold no personal data, such as `department_id` or `job_id`. Such a field
+clears as type `label` (`nonPersonalFields.ts`, `shapeClassifier.ts`), and its
+display texts reach the model in clear, when every value is text or an Odoo
+pair `[id, "label"]`. A dataset derived by a verb clears it only when the rule
+covers every tool its rows came from (`provenance.sourceTools`), so a join or
+union with an unlisted tool masks it again. The C0 identity booster still
+wins (e-mail, IBAN, phone, address, ID number): a flagged value makes the
+field no label at all, so no later verb clears it. Person names are NOT
+detected there, so a listed field that holds names sends them to the model,
+and the setting's help text says so. `__k_` link keys cannot be listed, and a
+`*` entry never covers a sub-agent's prose narration (`sub-agent`). A masked
+pair field still sorts by its raw value, not by the person's name. Each cleared
+field is recorded on the receipt (`operatorClearedFields`, "In clear by admin
+rule" in the card).
+
 These tool results skip the digest:
 
 - **Intern-exempt tools.** `INTERN_EXEMPT_TOOLS`
