@@ -60,6 +60,7 @@ export const PLANNER_SYSTEM = `You are the Omadia fast-path planner. Plan the ON
 - Relative periods: a whole-string "{today}" / "{today-30d}" / "{today+7d}" — never the current date literally. A {sum:…} over money needs "currency_id" in the query's fields; write its currency as the token {currency} right after the total — never a symbol or code of your own.
 - "labels": {fieldKey: column header in the user's language}. "summary": ONE plain sentence in the user's language with {count} (= number of rows) and/or {sum:<fieldKey>} (= total of a NUMERIC column); it states ONLY what the query guarantees, never invented figures. "locale": BCP-47 of the user's language (e.g. "de-DE").
 - A follow-up may adapt the PREVIOUS QUERY: keep tool, input structure and map, change only values. Prefer adapting a VALIDATED EXAMPLE with the same intent; replace every {{text_N}}/{{email_N}}/{{id_N}} placeholder with the user's own value — a plan that still contains one is discarded.
+- Filter on a name ONLY for a concrete name the user wrote ("bei Müller GmbH"). Generic role words — Kunden, Lieferanten, Mitarbeitende, Partner, customers, vendors, employees — are NOT names: express them through the model/domain (e.g. customer invoices = move_type "out_invoice"), never as a name/ilike filter.
 - "tool": the ONE tool of the TOOLS below that answers the turn.
 EXAMPLE ${PLANNER_TOOL} input for "offene Posten" (the SHAPE — plan the user's own query): ${JSON.stringify(PLAN_EXAMPLE)}`;
 
