@@ -470,6 +470,11 @@ ${truncate(answer, EXTRACTION_WINDOW_CHARS)}`;
     repairOf: ExtractionProblemCode | undefined,
   ): Promise<AttemptResult> {
     let response: LlmResponse;
+    // The verifier's provider logs no `[llm] complete ok … ms=` line (it is
+    // the pool's provider, not the platform's), so the call is timed here —
+    // on a slow turn this is the leg between the model's last token and the
+    // verdict.
+    const startedAt = Date.now();
     try {
       response = await this.opts.llm.complete({
         model: this.opts.model,
@@ -485,6 +490,12 @@ ${truncate(answer, EXTRACTION_WINDOW_CHARS)}`;
         toolChoice: { type: 'tool', name: TOOL_NAME },
         messages: [textMessage('user', prompt.user)],
       });
+      // `usage` is optional-chained: a test double answers without one.
+      this.opts.log(
+        `[claim-extractor] call ok attempt=${repairOf ? '2' : '1'} model=${response.model} ` +
+          `in=${String(response.usage?.inputTokens ?? 0)} out=${String(response.usage?.outputTokens ?? 0)} ` +
+          `cached=${String(response.usage?.cacheReadTokens ?? 0)} ms=${String(Date.now() - startedAt)}`,
+      );
     } catch (err) {
       this.opts.log(
         `[claim-extractor] API FAIL: ${err instanceof Error ? err.message : String(err)}`,
