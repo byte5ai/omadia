@@ -586,6 +586,20 @@
     "chatApplyIssues": "Einige Änderungen konnten nicht angewendet werden:",
     "chatDraftInvalid": "Entwurf hat Validierungsprobleme.",
     "chatProposalsHeading": "Vorlagen-Vorschläge",
+    "chatMissingHeading": "Fehlende Connectoren",
+    "chatMissingAction": "Kein verbundener Connector stellt bereit:",
+    "chatMissingAgent": "Kein Agent mit diesem Slug existiert:",
+    "chatMissingConnect": "MCP-Server verbinden",
+    "chatMissingConnected": "Step {stepId} verwendet jetzt",
+    "chatPeopleHeading": "Personen",
+    "chatPersonQuery": "Wer ist „{query}“ (Step {stepId})?",
+    "chatPersonNone": "Nicht im Verzeichnis gefunden — Adresse im Designer eintragen.",
+    "chatPersonPartial": "Verzeichnis unvollständig — ein fehlender Name beweist nichts.",
+    "chatPersonApplied": "Übernommen: {name}",
+    "chatPersonChange": "Ändern",
+    "chatDraftMissing": "{count} Connector(en) fehlen",
+    "chatConnectedNote": "{actionId} für Step {stepId} verbunden.",
+    "actionMcpBadge": "MCP",
     "chatProposalCoverage": "{filled} von {total} Slots vorausgefüllt",
     "triggerLabel": "Trigger",
     "eventIdLabel": "Event-ID",
@@ -834,7 +848,18 @@
     "facilitationResultsNote": "Aktueller Stand",
     "facilitationStatusDone": "erledigt",
     "facilitationStatusPartial": "teilweise",
-    "facilitationStatusOpen": "offen"
+    "facilitationStatusOpen": "offen",
+    "personPicker": {
+      "placeholder": "Person suchen oder Principal-Referenz eingeben",
+      "partialHint": "Einige Verzeichnisse waren nicht erreichbar. Die Ergebnisse sind möglicherweise unvollständig.",
+      "searching": "Personen werden gesucht …",
+      "noResults": "Keine passenden Personen gefunden.",
+      "searchFailed": "Personensuche fehlgeschlagen. Bitte erneut versuchen."
+    },
+    "chatMissingChange": "Tool ändern",
+    "chatMissingReset": "Zurücksetzen",
+    "chatNewDraft": "Neuer Entwurf",
+    "chatDraftSaved": "Entwurf ist in diesem Browser gespeichert – ein Reload behält ihn."
   },
   "operatorPrivacyReports": {
     "metaTitle": "Privacy-Reports · omadia",
@@ -4854,6 +4879,77 @@
     "guard": {
       "blockedHost": "Diese Adresse ist aus Sicherheitsgründen gesperrt. Ein MCP-Server oder eine Registry darf nicht auf eine Link-local- oder Cloud-Metadaten-Adresse wie 169.254.169.254 oder metadata.google.internal zeigen; private und Intranet-Adressen sind erlaubt. Ändere die URL. Grund: {detail}",
       "stdioDisabled": "stdio-MCP-Server sind auf dieser Installation deaktiviert (MCP_STDIO_ENABLED=false). Nutze stattdessen einen Remote-Server (http) oder setze MCP_STDIO_ENABLED=true für die Middleware und starte sie neu. Grund: {detail}"
+    },
+    "addModal": {
+      "title": "MCP-Server verbinden",
+      "missingRef": "Fehlendes Tool: {ref}",
+      "close": "Schließen",
+      "back": "Zurück",
+      "steps": {
+        "find": "Finden",
+        "connect": "Verbinden",
+        "pick": "Auswählen"
+      },
+      "find": {
+        "tabList": "Serverquelle",
+        "registryTab": "Registry",
+        "manualTab": "Manuell",
+        "loadingRegistries": "Registries werden geladen…",
+        "noRegistries": "Es sind keine Registries konfiguriert. Fügen Sie den Server stattdessen manuell hinzu.",
+        "useManual": "Manuell einrichten",
+        "registryLabel": "Registry",
+        "searchLabel": "Registry durchsuchen",
+        "searchPlaceholder": "Nach einem Server suchen",
+        "searching": "Suche läuft…",
+        "noEntries": "Keine passenden Server gefunden.",
+        "deprecated": "veraltet",
+        "noDescription": "Keine Beschreibung verfügbar.",
+        "browseOnly": "Nur zur Ansicht: Dieser Eintrag kann nicht importiert werden.",
+        "transport": "Transportart: {transport}",
+        "existingTab": "Verbunden ({count})",
+        "loadingExisting": "Server werden geladen…",
+        "noExisting": "Noch keine MCP-Server konfiguriert.",
+        "statusEnabled": "aktiv",
+        "statusDisabled": "deaktiviert",
+        "serviceBadge": "Service",
+        "toolCount": "{count} Tool(s)"
+      },
+      "manual": {
+        "nameLabel": "Servername",
+        "transportLabel": "Transport",
+        "transportHttp": "HTTP",
+        "transportSse": "SSE",
+        "transportStdio": "Standardein- und -ausgabe",
+        "sseDeprecated": "SSE ist für neue Server veraltet. Verwenden Sie nach Möglichkeit HTTP.",
+        "endpointLabel": "Endpunkt",
+        "endpointPlaceholder": "https://beispiel.de/mcp",
+        "create": "Server erstellen",
+        "creating": "Wird erstellt",
+        "endpointInvalid": "Bitte eine absolute http(s)-URL als Endpunkt angeben, z. B. https://beispiel.de/mcp – oder einen Konfigurations-Platzhalter, der später gefüllt wird.",
+        "existingHint": "Ein Server namens „{name}“ existiert bereits ({endpoint}). Mit diesem fortfahren statt ein Duplikat anzulegen.",
+        "useExisting": "Vorhandenen Server weiterverwenden"
+      },
+      "connect": {
+        "server": "{name} wird verbunden",
+        "busy": "Der Server wird aktiviert und seine Tools werden ermittelt…",
+        "needsAuth": "Melden Sie sich beim Anbieter an und starten Sie die Ermittlung danach erneut.",
+        "retry": "Ermittlung wiederholen",
+        "retrying": "Wird wiederholt",
+        "detailsUnknown": "Details nicht verfügbar",
+        "configRequired": "Für folgende Felder ist eine Konfiguration erforderlich: {fields}.",
+        "endpointPlaceholder": "Ersetzen Sie diese Platzhalter im Endpunkt: {placeholders}.",
+        "configure": "Im Control Center konfigurieren",
+        "slow": "Die Ermittlung dauert länger als erwartet. Der Server ist möglicherweise nicht erreichbar – Endpunkt prüfen ({endpoint}) oder zurückgehen und korrigieren.",
+        "authorizedButRefused": "Du bist autorisiert, aber der Server lehnt die Ermittlung weiterhin ab (HTTP 403). Meist stimmt der Endpunkt-Pfad nicht – viele Server bieten MCP unter /mcp an, nicht an der Wurzel ({endpoint}). Endpunkt im Control Center korrigieren und erneut versuchen."
+      },
+      "pick": {
+        "empty": "Dieser Server hat keine Tools gemeldet.",
+        "match": "Treffer",
+        "noDescription": "Keine Beschreibung verfügbar.",
+        "delegationNotice": "Conductor-Läufe haben keinen angemeldeten Benutzer – dieser Server muss unter seiner Service-Identität handeln, bevor ein Workflow seine Tools aufrufen kann. Service-Delegation aktivieren, um fortzufahren.",
+        "delegationButton": "Service-Delegation aktivieren"
+      },
+      "initialServerMissing": "Der verbundene Server ist nicht mehr verfügbar – wähle oder erstelle einen."
     }
   },
   "adminRegistries": {

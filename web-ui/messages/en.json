@@ -586,6 +586,20 @@
     "chatApplyIssues": "Some edits couldn't be applied:",
     "chatDraftInvalid": "Draft has validation issues.",
     "chatProposalsHeading": "Template suggestions",
+    "chatMissingHeading": "Missing connectors",
+    "chatMissingAction": "No connected connector provides",
+    "chatMissingAgent": "No Agent with this slug exists:",
+    "chatMissingConnect": "Connect MCP server",
+    "chatMissingConnected": "Step {stepId} now uses",
+    "chatPeopleHeading": "People",
+    "chatPersonQuery": "Who is “{query}” (step {stepId})?",
+    "chatPersonNone": "Not found in the directory — enter the address in the designer.",
+    "chatPersonPartial": "Directory incomplete — a missing name proves nothing.",
+    "chatPersonApplied": "Applied: {name}",
+    "chatPersonChange": "Change",
+    "chatDraftMissing": "{count} connector(s) missing",
+    "chatConnectedNote": "Connected {actionId} for step {stepId}.",
+    "actionMcpBadge": "MCP",
     "chatProposalCoverage": "{filled} of {total} slots prefilled",
     "triggerLabel": "Trigger",
     "eventIdLabel": "Event id",
@@ -834,7 +848,18 @@
     "facilitationResultsNote": "Current state",
     "facilitationStatusDone": "done",
     "facilitationStatusPartial": "partial",
-    "facilitationStatusOpen": "open"
+    "facilitationStatusOpen": "open",
+    "personPicker": {
+      "placeholder": "Search for a person or enter a principal reference",
+      "partialHint": "Some directories could not be reached. Results may be incomplete.",
+      "searching": "Searching for people…",
+      "noResults": "No matching people found.",
+      "searchFailed": "People search failed. Try again."
+    },
+    "chatMissingChange": "Change tool",
+    "chatMissingReset": "Reset",
+    "chatNewDraft": "New draft",
+    "chatDraftSaved": "Draft is saved in this browser — a reload keeps it."
   },
   "operatorPrivacyReports": {
     "metaTitle": "Privacy reports · omadia",
@@ -4854,6 +4879,77 @@
     "guard": {
       "blockedHost": "This address is blocked for security reasons. An MCP server or registry must not point at a link-local or cloud-metadata address such as 169.254.169.254 or metadata.google.internal; private and intranet addresses are allowed. Change the URL. Details: {detail}",
       "stdioDisabled": "stdio MCP servers are disabled on this installation (MCP_STDIO_ENABLED=false). Use a remote (http) server instead, or set MCP_STDIO_ENABLED=true for the middleware and restart it. Details: {detail}"
+    },
+    "addModal": {
+      "title": "Connect an MCP server",
+      "missingRef": "Missing tool: {ref}",
+      "close": "Close",
+      "back": "Back",
+      "steps": {
+        "find": "Find",
+        "connect": "Connect",
+        "pick": "Pick"
+      },
+      "find": {
+        "tabList": "Server source",
+        "registryTab": "Registry",
+        "manualTab": "Manual",
+        "loadingRegistries": "Loading registries…",
+        "noRegistries": "No registries are configured. Add the server manually instead.",
+        "useManual": "Use manual setup",
+        "registryLabel": "Registry",
+        "searchLabel": "Search registry",
+        "searchPlaceholder": "Search for a server",
+        "searching": "Searching…",
+        "noEntries": "No matching servers found.",
+        "deprecated": "deprecated",
+        "noDescription": "No description available.",
+        "browseOnly": "Browse only: this entry cannot be imported.",
+        "transport": "Transport: {transport}",
+        "existingTab": "Connected ({count})",
+        "loadingExisting": "Loading servers…",
+        "noExisting": "No MCP servers configured yet.",
+        "statusEnabled": "enabled",
+        "statusDisabled": "disabled",
+        "serviceBadge": "service",
+        "toolCount": "{count} tool(s)"
+      },
+      "manual": {
+        "nameLabel": "Server name",
+        "transportLabel": "Transport",
+        "transportHttp": "HTTP",
+        "transportSse": "SSE",
+        "transportStdio": "Standard input/output",
+        "sseDeprecated": "SSE is deprecated for new servers. Prefer HTTP when possible.",
+        "endpointLabel": "Endpoint",
+        "endpointPlaceholder": "https://example.com/mcp",
+        "create": "Create server",
+        "creating": "Creating",
+        "endpointInvalid": "Enter an absolute http(s) URL for the endpoint, e.g. https://example.com/mcp — or a configuration placeholder that is filled in later.",
+        "existingHint": "A server named “{name}” already exists ({endpoint}). Continue with that one instead of creating a duplicate.",
+        "useExisting": "Use the existing server"
+      },
+      "connect": {
+        "server": "Connecting {name}",
+        "busy": "Enabling the server and discovering its tools…",
+        "needsAuth": "Sign in to the provider, then retry discovery.",
+        "retry": "Retry discovery",
+        "retrying": "Retrying",
+        "detailsUnknown": "details unavailable",
+        "configRequired": "Configuration is required for: {fields}.",
+        "endpointPlaceholder": "Replace these endpoint placeholders: {placeholders}.",
+        "configure": "Configure in Control Center",
+        "slow": "Discovery is taking longer than expected. The server may be unreachable — check the endpoint ({endpoint}) or go back and correct it.",
+        "authorizedButRefused": "You are authorized, but the server still refuses discovery (HTTP 403). This usually means the endpoint path is wrong — many servers expose MCP under /mcp, not at the root ({endpoint}). Fix the endpoint in the Control Center and retry."
+      },
+      "pick": {
+        "empty": "This server did not report any tools.",
+        "match": "match",
+        "noDescription": "No description available.",
+        "delegationNotice": "Conductor runs have no signed-in user, so this server must act under its service identity before a workflow can call its tools. Enable service delegation to continue.",
+        "delegationButton": "Enable service delegation"
+      },
+      "initialServerMissing": "The connected server is no longer available — pick or create one."
     }
   },
   "adminRegistries": {
