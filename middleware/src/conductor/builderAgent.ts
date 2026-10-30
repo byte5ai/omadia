@@ -33,6 +33,15 @@ import type {
 
 import { applyGraphPatches, emptyGraph, type GraphPatch } from './graphPatch.js';
 import type { TemplateSummary } from './templateCatalog.js';
+import {
+  collectMissingCapabilities,
+  renderKnownIdsBlock,
+  type MissingCapability,
+} from './builderCapabilities.js';
+import { collectPersonSuggestions, type ConductorPeopleSearch, type PersonSuggestion } from './builderPeople.js';
+
+export type { MissingCapability } from './builderCapabilities.js';
+export type { ConductorPeopleSearch, PersonCandidate, PersonSuggestion } from './builderPeople.js';
 
 // Bound the builder's LLM turn so a hung orchestrator can't hang the HTTP request (the retry would
 // otherwise be two un-timed sequential calls). Mirrors realStepEffects' withTimeout — a 6th copy;
@@ -95,6 +104,14 @@ export interface ConductorBuilderTurnResult {
    *  prefill filtered. ADDITIVE: absent (not empty) when there are none, so the
    *  v1 wire shape of `POST /builder/turn` is byte-identical without proposals. */
   templateProposals?: TemplateProposal[];
+  /** action/agent refs in the draft that no registered invoker can run — the
+   *  "connector missing → connect it inline" signal. Computed BESIDE validate()
+   *  so the draft keeps its placeholder step. ADDITIVE: absent when none. */
+  missingCapabilities?: MissingCapability[];
+  /** people-directory lookups for `user` principals still carrying a display
+   *  name. Proposals only — the server never rewrites `principal.ref`.
+   *  ADDITIVE: absent when none. */
+  personSuggestions?: PersonSuggestion[];
 }
 
 /** Thrown when no Agent (orchestrator) is available to drive the builder — surfaced as 503. */
@@ -121,6 +138,15 @@ export interface ConductorBuilderAgentDeps {
   templateKnownRefs?: () => KnownRefs | Promise<KnownRefs>;
   /** per-turn LLM call budget in ms (each of the ≤2 attempts). 0 disables. Default 180_000. */
   chatTimeoutMs?: number;
+  /** live action ids (incl. `mcp:<serverId>:<tool>`) — listed in the prompt and the set
+   *  the missing-capability signal is computed against. Absent ⇒ no actions are reported
+   *  missing (unknown set ≡ accept, parity with validate()'s KnownRefs rule). */
+  listActions?: () => string[] | Promise<string[]>;
+  /** live Agent (orchestrator) slugs — same two roles as `listActions`. */
+  listAgents?: () => string[];
+  /** people-directory search for human steps whose `user` principal is a name, not an
+   *  address. Absent ⇒ no suggestions. Never fed to the LLM. */
+  searchPeople?: ConductorPeopleSearch;
   log?: (msg: string) => void;
 }
 
@@ -171,13 +197,17 @@ export class ConductorBuilderAgent {
     }
     const digest = templateDigest(catalog);
 
+    // Capability awareness — best-effort reads. A failing action/agent list degrades to
+    // "no capability check this turn" (never a failed turn, never everything-is-missing).
+    const known = await this.readKnownIds();
+
     // Up to two attempts; the second is a self-correction. We keep the BEST attempt, not the latest:
     // a parseable-but-invalid graph (inspectable, useful) must outrank an unparseable retry that left
     // the base unchanged (which would otherwise "validate" vacuously). parse > validity > clean-apply.
     let best: { result: ConductorBuilderTurnResult; score: number } | null = null;
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const correction = attempt === 0 ? null : (best?.result ?? null);
-      const prompt = buildPrompt(baseGraph, input.message, input.history ?? [], knownRefs, correction, digest);
+      const prompt = buildPrompt(baseGraph, input.message, input.history ?? [], knownRefs, correction, digest, known);
 
       this.deps.log?.(`[conductor] builder turn → Agent '${this.slug}' (attempt ${String(attempt + 1)})`);
       // Unique per-turn session scope: the orchestrator qualifies sessionScope into its recall/memory
@@ -199,6 +229,8 @@ export class ConductorBuilderAgent {
       // Defensive server-side gate (#478 B4): unknown/invisible template ids dropped,
       // prefill vetted against declared slots + live KnownRefs, ≤3 survive.
       const proposals = filterTemplateProposals(parsed.templateProposals, catalog, templateRefs);
+      const missing = collectMissingCapabilities(applyRes.graph, known);
+      const people = await this.suggestPeople(applyRes.graph);
 
       const result: ConductorBuilderTurnResult = {
         graph: applyRes.graph,
@@ -207,6 +239,8 @@ export class ConductorBuilderAgent {
         validation,
         applyErrors: applyRes.errors,
         ...(proposals.length > 0 ? { templateProposals: proposals } : {}),
+        ...(missing.length > 0 ? { missingCapabilities: missing } : {}),
+        ...(people.length > 0 ? { personSuggestions: people } : {}),
       };
       const score = (parsed.ok ? 4 : 0) + (validation.ok ? 2 : 0) + (applyRes.errors.length === 0 ? 1 : 0);
       if (!best || score > best.score) best = { result, score };
@@ -216,6 +250,36 @@ export class ConductorBuilderAgent {
 
     // The loop always runs attempt 0 and sets `best`, so this is non-null on exit.
     return (best as { result: ConductorBuilderTurnResult }).result;
+  }
+
+  /** Known action ids / agent slugs, or `undefined` per set when unavailable (read failed or
+   *  not wired) — an undefined set means "accept everything" downstream. */
+  private async readKnownIds(): Promise<{ actionIds?: readonly string[]; agentIds?: readonly string[] }> {
+    const out: { actionIds?: readonly string[]; agentIds?: readonly string[] } = {};
+    try {
+      const ids = await this.deps.listActions?.();
+      if (ids) out.actionIds = ids;
+    } catch (err) {
+      this.deps.log?.(`[conductor] builder: action catalog unavailable — no capability check this turn (${err instanceof Error ? err.message : String(err)})`);
+    }
+    try {
+      const slugs = this.deps.listAgents?.();
+      if (slugs) out.agentIds = slugs;
+    } catch (err) {
+      this.deps.log?.(`[conductor] builder: agent list unavailable — no agent check this turn (${err instanceof Error ? err.message : String(err)})`);
+    }
+    return out;
+  }
+
+  /** Person suggestions for unresolved `user` principals; a failing directory yields none. */
+  private async suggestPeople(graph: WorkflowGraph): Promise<PersonSuggestion[]> {
+    if (!this.deps.searchPeople) return [];
+    try {
+      return await collectPersonSuggestions(graph, this.deps.searchPeople);
+    } catch (err) {
+      this.deps.log?.(`[conductor] builder: people directory unavailable — no person suggestions this turn (${err instanceof Error ? err.message : String(err)})`);
+      return [];
+    }
   }
 }
 
@@ -403,6 +467,7 @@ function buildPrompt(
   knownRefs: KnownRefs,
   correction: ConductorBuilderTurnResult | null,
   templateDigestBlock: string,
+  known: { actionIds?: readonly string[]; agentIds?: readonly string[] } = {},
 ): string {
   const historyBlock =
     history.length > 0
@@ -454,7 +519,11 @@ function buildPrompt(
     '  { "op":"set_entry", "stepId": stepId }',
     '',
     `KNOWN EVENT IDS (for event triggers): ${eventIds}`,
+    renderKnownIdsBlock('KNOWN ACTION IDS (for action steps; `mcp:<serverId>:<tool>` ids are connected MCP tools)', known.actionIds),
+    renderKnownIdsBlock('KNOWN AGENT SLUGS (for agent steps)', known.agentIds),
     "If unsure of an Agent slug, use 'fallback' (the standard orchestrator).",
+    'If the user needs a capability that is NOT in KNOWN ACTION IDS (e.g. a system like Pleo, Jira, Odoo), STILL add the action step with a short descriptive actionId of the form <system>.<verb> (e.g. pleo.list_missing_receipts) and say in your reply that this connector is not connected yet — the operator can connect it inline. Never ask the user for connector details.',
+    "For a human step with principal kind 'user' whose address you do not know, put the person's NAME exactly as the user wrote it into ref (e.g. 'Teresita Biel'); the system resolves names against the company directory. Never ask the user for a Teams or email address.",
     '',
     ...templateBlock,
     'CURRENT DRAFT GRAPH:',

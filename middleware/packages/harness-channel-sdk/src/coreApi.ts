@@ -3,6 +3,7 @@ import type { RequestHandler, Router } from 'express';
 import type { IncomingTurn, ChannelUserRef, PlatformIdentity } from './incoming.js';
 import type { ChatStreamEvent } from './streamEvent.js';
 import type { ConversationRosterProvider } from './conversationRoster.js';
+import type { PeopleDirectoryProvider } from './peopleDirectory.js';
 import type { ConversationMembershipEvent } from './membershipEvent.js';
 import type { TargetedSendProvider } from './targetedSend.js';
 import type { ConversationSendProvider } from './conversationSend.js';
@@ -187,6 +188,16 @@ export interface CoreApi {
    * the channel deactivates.
    */
   registerRosterProvider?(channelId: string, provider: ConversationRosterProvider): void;
+
+  /**
+   * Register the channel's people-directory capability (Conductor human-step
+   * principal resolution: "Eskalation an Teresita Biel" → her routing key).
+   * Optional — same feature-detect
+   * (`typeof core.registerPeopleDirectoryProvider === 'function'`) and
+   * deactivate lifecycle as {@link registerRosterProvider}. One provider per
+   * channel type; the first registrant owns it.
+   */
+  registerPeopleDirectoryProvider?(channelId: string, provider: PeopleDirectoryProvider): void;
 
   /**
    * Register the channel's targeted-send (DM one participant) capability
