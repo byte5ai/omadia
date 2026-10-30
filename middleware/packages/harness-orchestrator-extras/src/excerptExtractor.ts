@@ -23,6 +23,8 @@
 import type { LlmProvider, LlmResponse } from '@omadia/llm-provider';
 import { collectText, textMessage } from '@omadia/llm-provider';
 import { parseLlmJson } from '@omadia/plugin-api';
+
+import { TURN_PATH_REASONING } from './turnPathReasoning.js';
 import type {
   EntryType,
   MemorableKind,
@@ -137,6 +139,7 @@ export function createHaikuPalaiaExcerptExtractor(
           maxTokens,
           system: SYSTEM_PROMPT,
           messages: [textMessage('user', turnPayload)],
+          ...TURN_PATH_REASONING,
         });
       } catch (err) {
         log(
