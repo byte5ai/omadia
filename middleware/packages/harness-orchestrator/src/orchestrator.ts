@@ -1508,6 +1508,20 @@ async function maskIngestedForWire(
  *  `segments` — the block's partition into whole stored turns (from
  *  `retrievePriorContext`), so the C1 detector scans each stored turn once
  *  and serves it from its process-wide cache on every later turn. */
+/**
+ * Await `main`, but settle only once `side` has settled too — `main`'s result
+ * or error, after `side`. Used to overlap the turn's `onBeforeTurn` hook (which
+ * never rejects: `runTurnHook` catches) with recall, so a hook is never left
+ * running detached when recall throws.
+ */
+async function alongside<T>(side: Promise<unknown> | undefined, main: Promise<T>): Promise<T> {
+  try {
+    return await main;
+  } finally {
+    await side;
+  }
+}
+
 async function maskRecalledForWire(
   privacy: PrivacyTurnHandle | undefined,
   recalledText: string | undefined,
@@ -4206,6 +4220,32 @@ export class Orchestrator {
    * to every `buildSystemBlocks` call inside the tool loop so the content is
    * byte-identical across iterations and hits the prompt cache on iteration 2+.
    */
+  /**
+   * The turn's prior context as it crosses the wire: recall, then — #361 —
+   * the recalled TEXT masked through the SAME turn map (it carries real values
+   * persisted from earlier turns; answer-side restore covers these spans). The
+   * structured `recalled` payload stays raw — it goes to the UI, not the
+   * model. Its stored-turn segments let C1 skip turns already scanned.
+   */
+  private async recallForWire(
+    input: ChatTurnInput,
+    wireUserMessage: string,
+    turnMemory: TurnMemoryBinding | undefined,
+    privacy: PrivacyTurnHandle | undefined,
+  ): Promise<{
+    recalled: RecalledContext | undefined;
+    recallUsed: boolean | undefined;
+    priorContext: string | undefined;
+  }> {
+    const { text, recalled, recallUsed, segments } = await this.retrievePriorContext(
+      input,
+      wireUserMessage,
+      turnMemory?.isolation,
+    );
+    const priorContext = await maskRecalledForWire(privacy, text, segments);
+    return { recalled, recallUsed, priorContext };
+  }
+
   private async retrievePriorContext(
     input: ChatTurnInput,
     // #361 — the wire-bound (possibly masked) message variant. The recalled
@@ -6769,10 +6809,14 @@ export class Orchestrator {
       privacyForPrompt,
       input.userMessage,
     );
-    // A canvas turn skips `onBeforeTurn` (see `chatStream`'s mirror).
+    // A canvas turn skips `onBeforeTurn` (see `chatStream`'s mirror). Fired
+    // here — after the wire mask (#1547) — but awaited alongside recall: the
+    // plan-runner's Haiku gate + materialiser and the recall + its C1 mask
+    // are independent, and both settle before the first model call.
+    let beforeTurn: Promise<TurnAnnotation[]> | undefined;
     if (input.canvasSessionId === undefined) {
       progress.beforeTurnFired = this.turnHookRegistry !== undefined;
-      await this.fireTurnHook('onBeforeTurn', turnId, input, {
+      beforeTurn = this.fireTurnHook('onBeforeTurn', turnId, input, {
         userMessage: input.userMessage,
       });
     }
@@ -6780,21 +6824,9 @@ export class Orchestrator {
     // structured `recalled` payload rides out on the ChatTurnResult so
     // non-streaming channels (Teams) can render a recall card (the streaming
     // path emits it as a `kg_recall` annotation instead).
-    const {
-      text: rawPriorContext,
-      recalled,
-      recallUsed,
-      segments: priorContextSegments,
-    } = await this.retrievePriorContext(input, wireUserMessage, turnMemory?.isolation);
-    // #361 — the recalled TEXT is LLM-bound wire content: it carries real
-    // values persisted from earlier turns, so it is masked through the SAME
-    // turn map before injection (answer-side restore covers these spans).
-    // The structured `recalled` payload stays raw — it goes to the UI, not
-    // the model. Its stored-turn segments let C1 skip turns already scanned.
-    const priorContext = await maskRecalledForWire(
-      privacyForPrompt,
-      rawPriorContext,
-      priorContextSegments,
+    const { recalled, recallUsed, priorContext } = await alongside(
+      beforeTurn,
+      this.recallForWire(input, wireUserMessage, turnMemory, privacyForPrompt),
     );
     // #268 — pre-fetch + extract any uploaded document text for this turn.
     // #504/#505 — the same pass also resolves image attachments (Teams
@@ -7784,6 +7816,8 @@ export class Orchestrator {
     // pre-hook mask below was blocked.
     let screeningBlocked = args.screeningBlocked;
     let beforeTurnFired = false;
+    // The plan-runner's `onBeforeTurn`, fired but not yet awaited (see below).
+    let beforeTurn: Promise<TurnAnnotation[]> | undefined;
     // Set once the turn's privacy state was finalized or handed over. A
     // stream that ends otherwise (thrown, abandoned by the client) drops the
     // state in `finally` — real values must not outlive the turn.
@@ -7853,11 +7887,12 @@ export class Orchestrator {
         // replayed turns) refuses with the notice that does not claim the
         // message stayed unsent.
         beforeTurnFired = this.turnHookRegistry !== undefined;
-        yield* this.toAnnotationEvents(
-          await this.fireTurnHook('onBeforeTurn', turnId, input, {
-            userMessage: input.userMessage,
-          }),
-        );
+        // Fired now, awaited before the first model call (`chatStreamInner`,
+        // alongside recall) — the plan still precedes every answer token and
+        // every tool call.
+        beforeTurn = this.fireTurnHook('onBeforeTurn', turnId, input, {
+          userMessage: input.userMessage,
+        });
       }
       // Mid-turn steering — register this turn as live so `/chat/steer` can
       // inject extra user messages keyed by the same session scope. The inner
@@ -7892,6 +7927,7 @@ export class Orchestrator {
         return;
       }
       if (direct) {
+        if (beforeTurn) yield* this.toAnnotationEvents(await beforeTurn);
         const directAgentsConsulted = deriveAgentsConsulted(direct.runTrace);
         let doneEvent: Extract<ChatStreamEvent, { type: 'done' }> = {
           type: 'done',
@@ -7960,7 +7996,7 @@ export class Orchestrator {
       // A blocked screening mask takes the same exit before the model runs.
       const inner = screeningBlocked
         ? undefined
-        : this.chatStreamInner(input, turnId, observer, turnMemory);
+        : this.chatStreamInner(input, turnId, observer, turnMemory, beforeTurn);
       const guardedInner = (async function* () {
         try {
           if (inner === undefined) throw screeningBlocked;
@@ -8145,6 +8181,9 @@ export class Orchestrator {
     turnId: string,
     observer: AskObserver | undefined,
     turnMemory: TurnMemoryBinding | undefined,
+    /** The fired, not yet awaited `onBeforeTurn` — settled alongside recall,
+     *  its plan annotation streamed before anything else. */
+    beforeTurn?: Promise<TurnAnnotation[]>,
   ): AsyncGenerator<ChatStreamEvent> {
     // #361 — wire-bound prompt masking; see chatInContextInner for the full
     // rationale. Same seam, streaming path.
@@ -8153,22 +8192,16 @@ export class Orchestrator {
       privacyForPrompt,
       input.userMessage,
     );
-    // `recallUsed` is deliberately not destructured here: the streaming path
-    // builds no `memoryUsed`, and its only consumer is the non-streaming Teams
-    // card (`toSemanticAnswer`). Wire it through with the flag if a streaming
+    // `recallUsed` is deliberately not used here: the streaming path builds no
+    // `memoryUsed`, and its only consumer is the non-streaming Teams card
+    // (`toSemanticAnswer`). Wire it through with the flag if a streaming
     // channel ever grows a Fresh-Check affordance.
-    const {
-      text: rawPriorContext,
-      recalled,
-      segments: priorContextSegments,
-    } = await this.retrievePriorContext(input, wireUserMessage, turnMemory?.isolation);
-    // #361 — the recalled TEXT is LLM-bound wire content; mask through the
-    // same turn map before injection (see chatInContextInner).
-    const priorContext = await maskRecalledForWire(
-      privacyForPrompt,
-      rawPriorContext,
-      priorContextSegments,
+    const { recalled, priorContext } = await alongside(
+      beforeTurn,
+      this.recallForWire(input, wireUserMessage, turnMemory, privacyForPrompt),
     );
+    // #133 (E9) — the plan snapshot is the FIRST stream event (settled above).
+    if (beforeTurn) yield* this.toAnnotationEvents(await beforeTurn);
     // Cross-session recall probe — surface plans/processes/insights pulled
     // from prior sessions as a visible `kg_recall` card before the answer
     // streams in. No-op when every recall leg was empty.
