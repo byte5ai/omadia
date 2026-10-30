@@ -8,6 +8,35 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.49.0 — 2026-10-30
+
+Additive. Field-classification suggestions for `non_personal_fields` (#1556
+follow-up).
+
+### Added
+
+- **`privacyFieldClassification.ts`**: `FieldKey`, `FieldObservation`, `FieldValueShape`,
+  `FieldSampleVerdict`, `FieldSampleC1Verdict`, `ModelClassificationRequest`,
+  `ModelClassificationResult`, `ModelPersonalVerdict`. Schema-only: no type
+  carries a field value.
+- **`FieldKey`** (`toolName`, `scope`, `fieldPath`): a field within one source
+  — an Odoo model, an uploaded dataset's id, or `-`. Observations, sample
+  verdicts and previews are keyed by it.
+- **`PrivacyGuardService`** optional methods `takeFieldObservations`,
+  `vetFieldSample`, `classifyModelsSchemaOnly` and `maskedFieldPreview`.
+- **`PrivacyFieldSampleService`** (`fieldSampleForAdmin`) and
+  **`PRIVACY_FIELD_SAMPLES_SERVICE_NAME`** (`'privacyFieldSamples'`) — the
+  real buffered values for an admin on the review page, published by the
+  privacy guard as a service of its own. Kept OFF `PrivacyGuardService`
+  (security review): every plugin granted `privacyRedact` could have read
+  them. The kernel's service gate refuses the name to every plugin; the
+  kernel restricts it to admins and audits every call that returns values.
+  Empty for an uploaded dataset (`query_dataset`).
+- **`OperatorClearedFieldEntry.scope`** (optional): the model or dataset a
+  scoped `non_personal_fields` entry cleared the field for.
+- **`parseLlmJson`** moved here from `@omadia/orchestrator-extras` (which
+  re-exports it), so plugins can parse model JSON without the kernel package.
+
 ## 1.48.0 — 2026-10-30
 
 Additive. Operator-cleared non-personal fields (#1556).

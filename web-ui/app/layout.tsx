@@ -24,6 +24,11 @@ import { fontVariables } from './_fonts';
 import { ChatSessionsProvider } from './_lib/chatSessionsContext';
 import { StreamStoreProvider } from './_lib/streamStore';
 import { fetchNavEntries } from './_lib/navigation';
+import { getPrivacyPosture } from './_lib/api';
+import {
+  FIELD_CLASSIFICATION_HREF,
+  fieldsNeedingClarification,
+} from './_components/FieldClassificationBanner';
 import { UI_PREFS_COOKIE, parseUiPrefsCookie } from './_lib/uiPrefs';
 import './globals.css';
 
@@ -74,7 +79,17 @@ export default async function RootLayout({
   // the nav is correct on first paint and stays on next-intl's single i18n
   // clock. Never throws — an unauthenticated visitor or an unreachable
   // middleware yields an empty list and the static nav renders alone.
-  const navEntries = await fetchNavEntries(locale);
+  //
+  // The privacy posture feeds the field-classification nav badge (#1556
+  // follow-up). Every session is an admin; a failed read (signed out, older
+  // backend, middleware down) just means no badge.
+  const [navEntries, privacyPosture] = await Promise.all([
+    fetchNavEntries(locale),
+    getPrivacyPosture().catch(() => null),
+  ]);
+  const navBadges = {
+    [FIELD_CLASSIFICATION_HREF]: fieldsNeedingClarification(privacyPosture),
+  };
   const { palette, theme } = parseUiPrefsCookie(jar.get(UI_PREFS_COOKIE)?.value);
   return (
     <html
@@ -112,7 +127,7 @@ export default async function RootLayout({
                       nav cannot shrink, so it would spill over the controls
                       instead of overflowing at the edge. */}
                   <div className="ml-auto flex items-center gap-2 2xl:gap-4">
-                    <Nav entries={navEntries} />
+                    <Nav entries={navEntries} badges={navBadges} />
                     <span
                       className="hidden h-5 w-px bg-[color:var(--border)] sm:block"
                       aria-hidden

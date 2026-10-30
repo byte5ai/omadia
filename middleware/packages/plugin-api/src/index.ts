@@ -65,6 +65,10 @@ export * from './agentPriorities.js';
 // Digest crosses the LLM wire — no external NER sidecar. The Web + Teams
 // renderers build against the fixtures here.
 export * from './privacyReceipt.js';
+export * from './privacyFieldClassification.js';
+// #1527 — tolerant parser for the JSON a Haiku helper call returns; shared
+// by orchestrator-extras and the privacy guard.
+export * from './llmJson.js';
 export * from './privacyReceiptFixtures.js';
 // #757 — persistent per-turn audit receipts (kernel-provided store the
 // orchestrator resolves late-bound; receipts stay ephemeral when absent).

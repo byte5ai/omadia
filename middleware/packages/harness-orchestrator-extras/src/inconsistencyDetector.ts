@@ -30,9 +30,9 @@ import type {
   KnowledgeGraph,
   MemorableKnowledgeHit,
 } from '@omadia/plugin-api';
+import { parseLlmJson } from '@omadia/plugin-api';
 
 import type { OpenJobPrivacy } from './jobPrivacy.js';
-import { parseLlmJson } from './llmJson.js';
 
 export interface InconsistencyDetectorDeps {
   graph: KnowledgeGraph;

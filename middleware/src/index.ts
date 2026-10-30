@@ -80,6 +80,13 @@ import { createBotPresenceStore } from './conductor/botPresenceStore.js';
 import { createChatPeerAgentsProvider, createPeerGate } from './conductor/peerPolicy.js';
 import { wireConductor, AwaitNotPendingError, AwaitResponderNotHolderError, ConductorRoleStore, ConductorEphemeralAttachmentsStore, ambientTurnFrom, createDiscussionsCapability, bindEphemeralRunsToCaller } from './conductor/index.js';
 import { createMissReportRoutes } from './privacy/missReportRoutes.js';
+import { readNonPersonalFieldsConfig } from './privacy/fieldClassification/guardConfig.js';
+import {
+  createFieldClassificationScheduler,
+  recomputeFieldClassification,
+} from './privacy/fieldClassification/recompute.js';
+import { createFieldClassificationRoutes } from './privacy/fieldClassification/routes.js';
+import { PgFieldClassificationStore } from './privacy/fieldClassification/store.js';
 import { TURN_RECEIPT_STORE_SERVICE_NAME, perCallerService } from '@omadia/plugin-api';
 import { TRANSCRIPTION_SERVICE_NAME } from '@omadia/plugin-api';
 import type { TranscriptionService } from '@omadia/plugin-api';
@@ -1539,6 +1546,11 @@ async function main(): Promise<void> {
   // eslint-disable-next-line prefer-const -- assigned further below; closures read it first
   let refreshSharedAnthropicClientRef: (() => Promise<void>) | undefined;
 
+  // #1556 follow-up — field-classification recompute trigger. Assigned once
+  // Postgres is known (far below); plugin activations/deactivations before
+  // that (the boot pass) stay no-ops — the wiring schedules its own first pass.
+  let fieldClassificationTriggerRef: ((reason: string) => void) | undefined;
+
   const toolPluginRuntime = new ToolPluginRuntime({
     catalog: pluginCatalog,
     registry: installedRegistry,
@@ -1582,6 +1594,9 @@ async function main(): Promise<void> {
     // it resolved.
     onActivating: (agentId) => classDefaultRebuilder.noteActivated(agentId),
     onActivated: async (entry, packagePath) => {
+      // Debounced; never per chat turn. Covers the privacy guard itself and
+      // every tool plugin whose fields it may observe.
+      fieldClassificationTriggerRef?.(`activated ${entry.plugin.id}`);
       if (entry.plugin.id === '@omadia/orchestrator') {
         try {
           await refreshSharedAnthropicClientRef?.();
@@ -1630,6 +1645,7 @@ async function main(): Promise<void> {
       );
     },
     onDeactivated: (agentId) => {
+      fieldClassificationTriggerRef?.(`deactivated ${agentId}`);
       const names = registeredServiceTypesByPlugin.get(agentId);
       if (!names) return;
       for (const service of names) unregisterServiceType(service);
@@ -5645,6 +5661,47 @@ async function main(): Promise<void> {
   );
   console.log('[middleware] vault-status endpoint ready at /api/v1/admin/vault-status (auth: required)');
 
+  // #1556 follow-up — field classification for the privacy guard's
+  // `non_personal_fields`: candidates from the guard's field observations,
+  // classified (Odoo schema + detector verdicts + schema-only model verdict)
+  // and shown to admins, who confirm every entry. Recompute runs on plugin
+  // (de)activation, every 6 h and on POST /recompute — never per chat turn —
+  // and never writes config. Postgres-only (migration 0065).
+  const fieldClassificationStore = graphPool
+    ? new PgFieldClassificationStore(graphPool)
+    : undefined;
+  if (fieldClassificationStore) {
+    const fieldClassificationScheduler = createFieldClassificationScheduler({
+      run: () =>
+        recomputeFieldClassification({
+          store: fieldClassificationStore,
+          serviceRegistry,
+          readNonPersonalFields: () =>
+            readNonPersonalFieldsConfig(installedRegistry, pluginCatalog),
+          log: (msg) => console.log(msg),
+        }),
+      log: (msg) => console.warn(msg),
+    });
+    fieldClassificationTriggerRef = (reason) => fieldClassificationScheduler.trigger(reason);
+    fieldClassificationScheduler.start();
+    fieldClassificationScheduler.trigger('boot');
+    app.use(
+      '/api/v1/admin/privacy/field-classification',
+      requireAuth,
+      createFieldClassificationRoutes({
+        store: fieldClassificationStore,
+        installedRegistry,
+        catalog: pluginCatalog,
+        serviceRegistry,
+        ...(adminAudit ? { audit: adminAudit } : {}),
+        recompute: () => fieldClassificationScheduler.runNow(),
+      }),
+    );
+    console.log(
+      '[middleware] privacy field classification wired at /api/v1/admin/privacy/field-classification (auth-gated)',
+    );
+  }
+
   app.use(
     '/api/v1/admin/runtime',
     requireAuth,
@@ -5679,6 +5736,12 @@ async function main(): Promise<void> {
       sqlGrantStore,
       // #1347 — who opened or closed which path lands in admin_audit.
       ...(adminAudit ? { audit: adminAudit } : {}),
+      // #1556 follow-up — the posture banner's open field count.
+      ...(fieldClassificationStore
+        ? {
+            countOpenFieldClassification: () => fieldClassificationStore.countOpen(),
+          }
+        : {}),
     }),
   );
   console.log('[middleware] runtime introspection endpoint ready at /api/v1/admin/runtime (auth: required)');

@@ -425,6 +425,8 @@ export * from './responseGuard.js';
 export * from './boundaryPresets.js';
 export * from './agentPriorities.js';
 export * from './privacyReceipt.js';
+export * from './privacyFieldClassification.js';
+export * from './llmJson.js';
 export * from './privacyReceiptFixtures.js';
 export * from './turnReceiptStore.js';
 export * from './privacyMode.js';
@@ -1227,6 +1229,9 @@ hint?: string;
 export declare function formatLimitSignalNote(signal: LimitSignal | undefined): string;
 export declare function appendLimitSignalNote(output: string, signal: LimitSignal | undefined): string;
 
+// ===== llmJson.d.ts =====
+export declare function parseLlmJson(raw: string): unknown;
+
 // ===== localSubAgentTool.d.ts =====
 import type { LimitSignal } from './limitSignal.js';
 import type { ToolPIIField } from './piiAnnotation.js';
@@ -2001,6 +2006,50 @@ constructor(pluginId: string, ledger: string, why: string);
 }
 export {};
 
+// ===== privacyFieldClassification.d.ts =====
+export type FieldValueShape = 'm2o' | 'text' | 'mixed';
+export interface FieldKey {
+readonly toolName: string;
+readonly scope: string;
+readonly fieldPath: string;
+}
+export interface FieldObservation extends FieldKey {
+readonly valueShape: FieldValueShape;
+readonly label?: string;
+readonly seenCount: number;
+readonly firstSeenAt: string;
+readonly lastSeenAt: string;
+}
+export type FieldSampleC1Verdict = 'hit' | 'near-miss' | 'clean' | 'unavailable';
+export interface FieldSampleVerdict extends FieldKey {
+readonly sampleCount: number;
+readonly identityHit: boolean;
+readonly c1: FieldSampleC1Verdict;
+readonly hitTypes: readonly string[];
+}
+export interface ModelClassificationRequest {
+readonly model: string;
+readonly modelLabel?: string;
+readonly fields: readonly {
+readonly path: string;
+readonly label?: string;
+readonly help?: string;
+}[];
+}
+export type ModelPersonalVerdict = 'personal' | 'non-personal' | 'uncertain';
+export interface ModelClassificationResult {
+readonly model: string;
+readonly verdict: ModelPersonalVerdict;
+readonly confidence: number;
+readonly reason: string;
+}
+export declare const PRIVACY_FIELD_SAMPLES_SERVICE_NAME = "privacyFieldSamples";
+export interface PrivacyFieldSampleService {
+fieldSampleForAdmin(field: FieldKey & {
+readonly limit?: number;
+}): readonly string[];
+}
+
 // ===== privacyMode.d.ts =====
 export declare const PRIVACY_MODE_CONFIG_KEY = "_privacy_mode";
 export declare const PRIVACY_BYPASS_SCOPES_CONFIG_KEY = "_privacy_bypass_scopes";
@@ -2017,11 +2066,13 @@ readonly env: NodeJS.ProcessEnv;
 export declare function parseScopes(stored: unknown): readonly string[];
 
 // ===== privacyReceipt.d.ts =====
+import type { FieldKey, FieldObservation, FieldSampleVerdict, ModelClassificationRequest, ModelClassificationResult } from './privacyFieldClassification.js';
 export declare const PRIVACY_REDACT_SERVICE_NAME = "privacyRedact";
 export declare const PRIVACY_REDACT_CAPABILITY = "privacy.redact@1";
 export interface OperatorClearedFieldEntry {
 readonly toolName: string;
 readonly field: string;
+readonly scope?: string;
 }
 export interface BypassedToolEntry {
 readonly toolName: string;
@@ -2253,6 +2304,12 @@ countUnresolvedSurrogates?(turnId: string, text: string, options?: UnresolvedSur
 nameDetectorStatus?(): Promise<PrivacyNameDetectorStatus>;
 v4ToolSpecs(): ReadonlyArray<PrivacyV4ToolSpec>;
 finalizeTurn(turnId: string, turnInput?: string): Promise<PrivacyReceipt | undefined>;
+takeFieldObservations?(): readonly FieldObservation[];
+vetFieldSample?(field: FieldKey): Promise<FieldSampleVerdict>;
+classifyModelsSchemaOnly?(requests: readonly ModelClassificationRequest[]): Promise<readonly ModelClassificationResult[]>;
+maskedFieldPreview?(field: FieldKey & {
+readonly limit?: number;
+}): readonly string[];
 }
 
 // ===== privacyReceiptFixtures.d.ts =====

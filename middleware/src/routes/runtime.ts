@@ -27,10 +27,12 @@ import type { InstalledRegistry } from '../plugins/installedRegistry.js';
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
 import {
   buildPrivacyPosture,
+  readOpenFieldClassification,
   readNameDetectorPosture,
   checkPrivacyConfigValue,
   isPrivacyConfigKey,
   privacySettingsOf,
+  type OpenFieldClassificationCounts,
 } from '../plugins/privacyPosture.js';
 import { checkSetupFieldPattern } from '../plugins/setupFieldPattern.js';
 import type { PatternViolation } from '../plugins/setupFieldPattern.js';
@@ -130,6 +132,9 @@ interface RuntimeDeps {
   verifyConnection: (
     agentId: string,
   ) => Promise<ConnectionProbeOutcome | undefined>;
+  /** #1556 follow-up — open field-classification candidates for the posture
+   *  banner. Absent on the in-memory backend: the posture reports zeros. */
+  countOpenFieldClassification?: () => Promise<OpenFieldClassificationCounts>;
 }
 
 export function createRuntimeRouter(deps: RuntimeDeps): Router {
@@ -169,7 +174,8 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
     const nameDetector = posture.shield_active
       ? await readNameDetectorPosture(deps.serviceRegistry)
       : null;
-    res.json({ ...posture, name_detector: nameDetector });
+    const openFields = await readOpenFieldClassification(deps.countOpenFieldClassification);
+    res.json({ ...posture, name_detector: nameDetector, ...openFields });
   });
 
   // GET /installed/:id — full entry for ONE installed plugin including

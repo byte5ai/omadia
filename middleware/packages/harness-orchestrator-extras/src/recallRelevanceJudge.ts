@@ -33,9 +33,9 @@
 
 import type { LlmProvider } from '@omadia/llm-provider';
 import { collectText, textMessage } from '@omadia/llm-provider';
+import { parseLlmJson } from '@omadia/plugin-api';
 
 import type { OpenJobPrivacy } from './jobPrivacy.js';
-import { parseLlmJson } from './llmJson.js';
 
 export type RecallCandidateKind = 'plan' | 'process' | 'insight';
 

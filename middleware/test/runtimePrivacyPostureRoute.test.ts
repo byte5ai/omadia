@@ -46,6 +46,12 @@ async function makeHarness(opts: {
   readonly servicePublished: boolean;
   /** #1562 — the published shield's `nameDetectorStatus`, if any. */
   readonly nameDetectorStatus?: () => Promise<PrivacyNameDetectorStatus>;
+  /** #1556 follow-up — the field-classification counter, if wired. */
+  readonly countOpenFieldClassification?: () => Promise<{
+    needsClarification: number;
+    suggested: number;
+    confirmedConflict: number;
+  }>;
 }): Promise<Harness> {
   const registry = new InMemoryInstalledRegistry();
   const installedAt = '2026-10-28T08:00:00.000Z';
@@ -108,6 +114,9 @@ async function makeHarness(opts: {
         },
       },
       verifyConnection: async () => undefined,
+      ...(opts.countOpenFieldClassification
+        ? { countOpenFieldClassification: opts.countOpenFieldClassification }
+        : {}),
     }),
   );
   const server: Server = await new Promise((resolve) => {
@@ -162,7 +171,41 @@ describe('GET /privacy-posture (#1507, #1508)', () => {
       force_guarded: false,
       provider_ids: [GUARD_ID],
       name_detector: null,
+      fields_needing_clarification: 0,
+      fields_suggested_open: 0,
+      fields_confirmed_conflict: 0,
     });
+  });
+
+  it('reports the open field-classification counts (#1556 follow-up)', async () => {
+    harness = await makeHarness({
+      guardInstalled: true,
+      servicePublished: true,
+      countOpenFieldClassification: async () => ({
+        needsClarification: 3,
+        suggested: 2,
+        confirmedConflict: 1,
+      }),
+    });
+    const body = await posture();
+    // A confirmed field that now points to a person needs a look too.
+    assert.equal(body.fields_needing_clarification, 4);
+    assert.equal(body.fields_suggested_open, 2);
+    assert.equal(body.fields_confirmed_conflict, 1);
+  });
+
+  it('reports zero open fields when the count fails (table not migrated)', async () => {
+    harness = await makeHarness({
+      guardInstalled: true,
+      servicePublished: true,
+      countOpenFieldClassification: async () => {
+        throw new Error('relation "privacy_field_candidates" does not exist');
+      },
+    });
+    const body = await posture();
+    assert.equal(body.fields_needing_clarification, 0);
+    assert.equal(body.fields_suggested_open, 0);
+    assert.equal(body.fields_confirmed_conflict, 0);
   });
 
   it('reports the name detector state of the running shield (#1562)', async () => {
@@ -276,5 +319,30 @@ describe('PATCH /installed/:id/config — privacy keys (#1510)', () => {
 
     assert.equal((await patchConfig({ some_setting: 'x' })).status, 200);
     assert.equal(harness.audits.length, 1);
+  });
+
+  it('records a manual non_personal_fields edit in the audit trail (#1556 follow-up)', async () => {
+    harness = await makeHarness({ guardInstalled: true, servicePublished: true });
+    const res = await fetch(
+      `${harness.baseUrl}/installed/${encodeURIComponent(GUARD_ID)}/config`,
+      {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ non_personal_fields: 'odoo_execute:department_id' }),
+      },
+    );
+    assert.equal(res.status, 200);
+    assert.equal(harness.audits.length, 1);
+    assert.equal(harness.audits[0]?.action, 'plugin.privacy_change');
+    assert.equal(harness.audits[0]?.target, `plugin:${GUARD_ID}`);
+    assert.deepEqual(harness.audits[0]?.before, {
+      _privacy_mode: null,
+      _privacy_bypass_scopes: null,
+    });
+    assert.deepEqual(harness.audits[0]?.after, {
+      _privacy_mode: null,
+      _privacy_bypass_scopes: null,
+      non_personal_fields: 'odoo_execute:department_id',
+    });
   });
 });

@@ -85,6 +85,9 @@ const NAV: readonly NavItem[] = [
       { kind: 'link', href: '/operator/receipts', key: 'receipts' },
       // #760 — miss-report review queue, same operator audience.
       { kind: 'link', href: '/operator/privacy-reports', key: 'privacyReports' },
+      // #1556 follow-up — field classification for the Privacy Guard's
+      // non_personal_fields; carries a count badge (see `badges`).
+      { kind: 'link', href: '/admin/privacy-fields', key: 'privacyFields' },
       // An optional feature's entry used to be hardcoded here. Plugin
       // surfaces are now contributed at runtime, so the entry appears only
       // while that plugin is installed and active — see mergeNav below.
@@ -221,11 +224,17 @@ export function bestPrefixMatch(
   }, '');
 }
 
+/** Count badges keyed by leaf href; a count of 0 (or absent) shows nothing. */
+export type NavBadges = Readonly<Record<string, number>>;
+
 export function Nav({
   entries = [],
+  badges = {},
 }: {
   /** Plugin-contributed entries, fetched server-side in the root layout. */
   readonly entries?: readonly NavEntryDto[];
+  /** Server-fetched counts, e.g. fields waiting for an admin decision. */
+  readonly badges?: NavBadges;
 }): React.ReactElement {
   const pathname = usePathname();
   const t = useTranslations('nav');
@@ -250,12 +259,14 @@ export function Nav({
             href={item.href}
             label={item.label}
             active={activeHref === item.href}
+            badge={badges[item.href] ?? 0}
           />
         ) : (
           <ClusterDropdown
             key={item.key}
             cluster={item}
             activeHref={activeHref}
+            badges={badges}
           />
         ),
       )}
@@ -263,14 +274,31 @@ export function Nav({
   );
 }
 
+/** A small count pill; the visible number is backed by a localized label. */
+function CountBadge({ count }: { readonly count: number }): React.ReactElement | null {
+  const t = useTranslations('nav');
+  if (count <= 0) return null;
+  return (
+    <span
+      data-testid="nav-count-badge"
+      aria-label={t('badgeLabel', { count })}
+      className="ml-1.5 inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-[color:var(--accent)] px-1.5 text-[10px] font-semibold leading-[1.25rem] tracking-normal text-[color:var(--accent-fg)]"
+    >
+      {count}
+    </span>
+  );
+}
+
 function LeafLink({
   href,
   label,
   active,
+  badge,
 }: {
   readonly href: string;
   readonly label: string;
   readonly active: boolean;
+  readonly badge: number;
 }): React.ReactElement {
   return (
     <Link
@@ -283,6 +311,7 @@ function LeafLink({
       ].join(' ')}
     >
       {label}
+      <CountBadge count={badge} />
       {active ? (
         <span className="absolute -bottom-1 left-0 h-0.5 w-full rounded-full bg-[color:var(--accent)]" />
       ) : null}
@@ -312,9 +341,11 @@ const HOVER_CLOSE_GRACE_MS = 150;
 function ClusterDropdown({
   cluster,
   activeHref,
+  badges,
 }: {
   readonly cluster: Extract<ResolvedNavItem, { kind: 'cluster' }>;
   readonly activeHref: string;
+  readonly badges: NavBadges;
 }): React.ReactElement {
   const label = cluster.label;
   const [mode, setMode] = useState<DropdownMode>('closed');
@@ -324,6 +355,12 @@ function ClusterDropdown({
   const menuId = useId();
   const containsActive = cluster.children.some(
     (child) => child.href === activeHref,
+  );
+  // The header repeats its children's total so a count is visible while the
+  // menu is closed.
+  const clusterBadge = cluster.children.reduce(
+    (sum, child) => sum + Math.max(0, badges[child.href] ?? 0),
+    0,
   );
 
   const cancelClose = useCallback((): void => {
@@ -399,6 +436,7 @@ function ClusterDropdown({
         ].join(' ')}
       >
         {label}
+        <CountBadge count={clusterBadge} />
         <span aria-hidden="true" className="text-[15px] leading-none">
           ▾
         </span>
@@ -434,6 +472,7 @@ function ClusterDropdown({
                   ].join(' ')}
                 >
                   {child.label}
+                  <CountBadge count={badges[child.href] ?? 0} />
                 </Link>
               );
             })}

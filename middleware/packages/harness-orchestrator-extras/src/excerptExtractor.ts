@@ -22,7 +22,7 @@
 
 import type { LlmProvider, LlmResponse } from '@omadia/llm-provider';
 import { collectText, textMessage } from '@omadia/llm-provider';
-import { parseLlmJson } from './llmJson.js';
+import { parseLlmJson } from '@omadia/plugin-api';
 import type {
   EntryType,
   MemorableKind,

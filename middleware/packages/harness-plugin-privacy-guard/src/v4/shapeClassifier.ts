@@ -27,6 +27,7 @@ import {
   type FieldStats,
   type FieldType,
 } from './types.js';
+import type { FieldSource } from '../nonPersonalFields.js';
 
 // ---------------------------------------------------------------------------
 // Tunable thresholds (contract §5; T014 tunes the defaults empirically)
@@ -55,10 +56,11 @@ export type DetectorBooster = (value: string) => boolean;
 
 /**
  * #1556 — the operator's `non_personal_fields` rule: does `path`, in rows that
- * came from `sourceTools`, hold labels that are no personal data (a
- * department, a job position)? See `nonPersonalFields.ts`.
+ * came from `sources` (tool + scope), hold labels that are no personal data (a
+ * department, a job position)? True only when every source is covered. See
+ * `nonPersonalFields.ts`.
  */
-export type NonPersonalFieldRule = (sourceTools: readonly string[], path: string) => boolean;
+export type NonPersonalFieldRule = (sources: readonly FieldSource[], path: string) => boolean;
 
 export interface ShapeClassifierOptions {
   readonly thresholds?: Partial<ClassifierThresholds>;
@@ -248,7 +250,7 @@ function classify(
   context: ClassifierContext | undefined,
 ): DatasetSchema {
   const paths = collectFieldPaths(rows);
-  const sourceTools = context?.sourceTools ?? [];
+  const sources = context?.sources ?? [];
   const fields = paths.map((path) =>
     classifyField(
       path,
@@ -257,9 +259,9 @@ function classify(
       thresholds,
       detector,
       nonPersonal !== undefined &&
-        sourceTools.length > 0 &&
+        sources.length > 0 &&
         (context?.labelPaths === undefined || context.labelPaths.has(path)) &&
-        nonPersonal(sourceTools, path),
+        nonPersonal(sources, path),
     ),
   );
   return { fields, rowCount: rows.length, shape };
