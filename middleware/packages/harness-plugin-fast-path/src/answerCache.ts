@@ -158,14 +158,30 @@ function unclean(r: PrivacyPromptMaskResult, text: string): string | undefined {
   // that left the text as it was cannot be attributed to a sentinel
   const sentinels = text.split(SENTINEL_SPLIT).length - 1;
   const onlySlots = r.spans.length <= sentinels && r.maskedText !== text && onlySentinelsMasked(text, r.maskedText);
-  return onlySlots ? undefined : 'personal-data';
+  if (onlySlots) return undefined;
+  // span TYPES only (PII-free) — why an entry was refused, for tuning
+  const types = [...new Set(r.spans.map((sp) => sp.type))].sort().join('+');
+  return `personal-data types=${types}`;
 }
 
 /** A stored text with its plan placeholders (`{{text_1}}`) as sentinels —
  *  the same "slot, not personal data" proof as the question's slot spans. */
 function placeholdersAsSentinels(text: string): string {
   let n = 0;
-  return text.replace(/\{\{[a-z]+_\d+\}\}/g, () => sentinel(++n));
+  return neutralFormatTokens(text).replace(/\{\{[a-z]+_\d+\}\}/g, () => sentinel(++n));
+}
+
+/** The summary's format tokens as plain example values: `{count}` is
+ *  filled with the row count at render time and carries no user data, but
+ *  the detector read the braced token in "{count} Mitarbeitende haben im
+ *  März Geburtstag." as a value (live v433: the same words without it
+ *  passed). Checked as the sentence a user will actually read. */
+export function neutralFormatTokens(text: string): string {
+  return text
+    .replace(/\{count\}/g, '12')
+    .replace(/\{sum:[^{}]+\}/g, '1234')
+    .replace(/\{currency\}/g, 'EUR')
+    .replace(/\{today(?:[+-]\d+[dwmy])?\}/g, 'heute');
 }
 
 const SENTINEL_SPLIT = /zzslot\d+zz/;
