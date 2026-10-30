@@ -201,6 +201,8 @@ function baseOf(
     valueShape: candidate.valueShape,
     relationModels: candidate.relationModels,
     ...(candidate.sampleVerdict !== null ? { sample: candidate.sampleVerdict } : {}),
+    // Same input as the recompute: a field only read from the schema says so.
+    seenInChat: candidate.seenCount > 0,
     modelVerdicts: verdicts,
   });
 }
