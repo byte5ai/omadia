@@ -137,6 +137,12 @@ export function withheldCauseOf(verdict: VerifierVerdict): VerifierWithheldCause
   return 'insufficient_evidence';
 }
 
+/** The pipeline's wall time — the verifier leg of a slow turn, next to the
+ *  extractor's and judge's own `call ok … ms=` lines. */
+function latencySuffix(verdict: VerifierVerdict): string {
+  return ` ms=${String(verdict.latencyMs)}`;
+}
+
 /**
  * The support diagnosis for a withheld answer: the cause the user was told,
  * and per claim the id and what it rests on. Claim ids, bases and closed
@@ -144,7 +150,7 @@ export function withheldCauseOf(verdict: VerifierVerdict): VerifierWithheldCause
  * the withheld answer's data.
  */
 export function withheldLogLine(runId: string, verdict: VerifierVerdict): string {
-  return `[verifier/service] answer withheld run=${runId} ${diagnosis(verdict)}`;
+  return `[verifier/service] answer withheld run=${runId} ${diagnosis(verdict)}${latencySuffix(verdict)}`;
 }
 
 /**
@@ -153,7 +159,7 @@ export function withheldLogLine(runId: string, verdict: VerifierVerdict): string
  * withhold, so a released-but-unconfirmed answer is just as traceable.
  */
 export function releasedUnconfirmedLogLine(runId: string, verdict: VerifierVerdict): string {
-  return `[verifier/service] answer released unconfirmed run=${runId} ${diagnosis(verdict)}`;
+  return `[verifier/service] answer released unconfirmed run=${runId} ${diagnosis(verdict)}${latencySuffix(verdict)}`;
 }
 
 /** What `enforce` would have done with a verdict `shadow` only reported. */

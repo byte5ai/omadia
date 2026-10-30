@@ -324,6 +324,9 @@ EVIDENCE:
 ${evidenceBlock}`;
 
     let response: LlmResponse;
+    // Timed here like the extractor's call: the pool's provider logs no
+    // `[llm] complete ok … ms=` line of its own.
+    const startedAt = Date.now();
     try {
       response = await this.llm.complete({
         model: this.model,
@@ -334,6 +337,12 @@ ${evidenceBlock}`;
         messages: [textMessage('user', user)],
         ...VERIFIER_REASONING,
       });
+      // `usage` is optional-chained: a test double answers without one.
+      this.log(
+        `[verifier/judge] call ok claim=${claim.id} model=${response.model} ` +
+          `in=${String(response.usage?.inputTokens ?? 0)} out=${String(response.usage?.outputTokens ?? 0)} ` +
+          `cached=${String(response.usage?.cacheReadTokens ?? 0)} ms=${String(Date.now() - startedAt)}`,
+      );
     } catch (err) {
       this.log(`[verifier/judge] API FAIL: ${errMsg(err)}`);
       return null;

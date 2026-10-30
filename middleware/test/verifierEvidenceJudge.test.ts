@@ -651,16 +651,20 @@ describe('verifier/evidenceJudge - cited evidence id must be in the evidence set
       if (verdict.status === 'unverified') {
         assert.equal(verdict.reason, 'evidence_node_id not in evidence set');
       }
-      assert.equal(logs.length, 1);
-      const line = logs[0]!;
-      for (const ch of LOG_BREAKERS) {
-        const code = ch.codePointAt(0)!.toString(16).padStart(4, '0');
-        assert.ok(!line.includes(ch), `U+${code} from the cited id reached the log line`);
+      // Two lines: the call's timing (`call ok … ms=`) and the rejection.
+      // Neither may carry the cited id or the claim text.
+      assert.equal(logs.length, 2);
+      for (const line of logs) {
+        for (const ch of LOG_BREAKERS) {
+          const code = ch.codePointAt(0)!.toString(16).padStart(4, '0');
+          assert.ok(!line.includes(ch), `U+${code} from the cited id reached the log line`);
+        }
+        assert.ok(!line.includes(cited), 'the cited id must not be logged');
+        assert.ok(!line.includes(claim.text), 'the claim text must not be logged');
       }
-      assert.ok(!line.includes(cited), 'the cited id must not be logged');
-      assert.ok(!line.includes(claim.text), 'the claim text must not be logged');
+      assert.ok(logs[0]!.startsWith('[verifier/judge] call ok claim=c_001 '), 'the timing line');
       assert.equal(
-        line,
+        logs[1],
         `[verifier/judge] evidence_node_id not in evidence set, downgrading to unverified claim=c_001 cited_len=${String(cited.length)}`,
       );
     });
