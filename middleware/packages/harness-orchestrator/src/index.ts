@@ -448,6 +448,7 @@ export { VerifierService } from './verifierService.js';
 
 // Sub-agent runtime
 export { LocalSubAgent } from './localSubAgent.js';
+export { subAgentEffortFor, type SubAgentEffortFor } from './subAgentEffort.js';
 // #1219 — a declined sub-agent run, and the parent-facing notice for it.
 export { SubAgentRefusalError, subAgentRefusalNotice } from './subAgentRefusal.js';
 export type {

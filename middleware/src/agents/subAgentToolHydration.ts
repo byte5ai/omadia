@@ -16,6 +16,7 @@ import {
   createAnthropicProvider,
   type AnthropicClient,
 } from '@omadia/llm-adapter-anthropic';
+import type { EffortLevel } from '@omadia/llm-provider';
 import type { LocalSubAgentTool } from '@omadia/plugin-api';
 import { resolveClaudeCliBin } from '../platform/cliBinary.js';
 import {
@@ -72,6 +73,8 @@ export interface HydrateDeps {
   readonly defaultModel: string;
   readonly defaultMaxTokens?: number;
   readonly defaultMaxIterations?: number;
+  /** `SUB_AGENT_EFFORT` — absent = no effort sent. */
+  readonly defaultEffort?: EffortLevel;
   readonly hostIsCliProvider?: boolean;
   readonly cliModelAlias?: (model: string) => string;
   /** Scan-verdict policy gate (issue #454) — see `mcpGrantPolicy.ts`. Applied
@@ -352,6 +355,7 @@ export function registerDbSubAgentTools(
           // in step with it — see #1210 for why the number is this size.
           defaultMaxTokens: deps.defaultMaxTokens ?? 16_000,
           defaultMaxIterations: deps.defaultMaxIterations ?? 8,
+          ...(deps.defaultEffort !== undefined ? { defaultEffort: deps.defaultEffort } : {}),
           mcpManager: deps.mcpManager,
           mcpServersById,
           nativeTool: (ref) => {

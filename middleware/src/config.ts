@@ -111,6 +111,10 @@ export const ConfigSchema = z.object({
   // always-thinking class by default, so 4096 bought thinking and nothing else.
   SUB_AGENT_MAX_TOKENS: z.coerce.number().int().positive().default(16_000),
   SUB_AGENT_MAX_ITERATIONS: z.coerce.number().int().positive().default(16),
+  // Reasoning effort for sub-agent model calls. Bounds the thinking only —
+  // results and answers keep SUB_AGENT_MAX_TOKENS. Unset = no effort sent (the
+  // model's default); sent only to models whose catalogue declares the level.
+  SUB_AGENT_EFFORT: z.enum(['low', 'medium', 'high', 'xhigh']).optional(),
 
   // BuilderAgent runtime — its own knob because fill_slot generates whole TS
   // slot bodies (5–15k output tokens for a realistic plugin slot is normal),
