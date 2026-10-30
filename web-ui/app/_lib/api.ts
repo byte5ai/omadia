@@ -925,6 +925,13 @@ export interface PrivacyPosture {
    * and the UI then renders nothing about name detection.
    */
   name_detector?: PrivacyNameDetector | null;
+  /**
+   * #1556 follow-up — undecided `needs_clarification` fields. Optional: an
+   * older backend omits it, and the UI then shows no banner and no nav badge.
+   */
+  fields_needing_clarification?: number;
+  /** Undecided `suggested` fields (same optionality). */
+  fields_suggested_open?: number;
 }
 
 /** #1562 — the Privacy Guard's C1 (GLiNER sidecar) name detector. */
@@ -943,6 +950,118 @@ export interface PrivacyNameDetector {
 
 export async function getPrivacyPosture(): Promise<PrivacyPosture> {
   return getJson<PrivacyPosture>('/v1/admin/runtime/privacy-posture');
+}
+
+// -----------------------------------------------------------------------------
+// Privacy field classification (#1556 follow-up) — suggestions for the Privacy
+// Guard's `non_personal_fields` setting. Suggest only: nothing is cleared until
+// an admin confirms. The API never returns a field value; the preview is
+// shape-masked (`R••••••• & D••••••••••`).
+// -----------------------------------------------------------------------------
+
+export const FIELD_CLASSIFICATION_STATUSES = [
+  'suggested',
+  'needs_clarification',
+  'personal',
+  'confirmed',
+  'rejected',
+  'kept_masked',
+] as const;
+
+export type FieldClassificationStatus = (typeof FIELD_CLASSIFICATION_STATUSES)[number];
+
+export type FieldClassificationAction = 'confirm' | 'reject' | 'keep_masked' | 'revert';
+
+/**
+ * Why a field got its status. The UI renders localized text from `code` and
+ * the detail fields; unknown codes fall back to a generic label.
+ */
+export interface FieldClassificationReason {
+  code: string;
+  models?: string[];
+  model?: string;
+  confidence?: number;
+  hitTypes?: string[];
+  sampleCount?: number;
+}
+
+export interface FieldClassificationDecision {
+  action: FieldClassificationAction;
+  by: string | null;
+  at: string;
+}
+
+export interface FieldClassificationItem {
+  id: string;
+  toolName: string;
+  fieldPath: string;
+  valueShape: 'm2o' | 'text' | 'mixed';
+  sourceModels: string[];
+  relationModels: string[];
+  status: FieldClassificationStatus;
+  reasons: FieldClassificationReason[];
+  /** The `tool:field` line confirm adds to `non_personal_fields`. */
+  configEntry: string;
+  /** Sent back with a decision; a changed candidate answers 409. */
+  fingerprint: string;
+  decision: FieldClassificationDecision | null;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  seenCount: number;
+}
+
+export interface FieldClassificationList {
+  items: FieldClassificationItem[];
+  counts: Record<FieldClassificationStatus, number>;
+  newSinceLastVisit: number;
+  computedAt: string | null;
+}
+
+const FIELD_CLASSIFICATION_BASE = '/v1/admin/privacy/field-classification';
+
+export async function listFieldClassifications(
+  filter: { status?: FieldClassificationStatus; tool?: string } = {},
+): Promise<FieldClassificationList> {
+  const params = new URLSearchParams();
+  if (filter.status) params.set('status', filter.status);
+  if (filter.tool) params.set('tool', filter.tool);
+  const qs = params.toString();
+  const path = qs.length > 0 ? `${FIELD_CLASSIFICATION_BASE}?${qs}` : FIELD_CLASSIFICATION_BASE;
+  const body = await getJson<FieldClassificationList>(path);
+  return { ...body, items: expectArray<FieldClassificationItem>(body.items, path, 'items') };
+}
+
+/**
+ * Record an admin decision. Throws `ApiError` 409 with code
+ * `stale_fingerprint` when the candidate changed since it was loaded, or
+ * `covered_by_wildcard` (body carries `entry`) when a revert targets a field
+ * that a `*:` / bare entry covers.
+ */
+export async function decideFieldClassification(
+  id: string,
+  action: FieldClassificationAction,
+  fingerprint: string,
+): Promise<{ item: FieldClassificationItem }> {
+  return postJson<{ item: FieldClassificationItem }>(
+    `${FIELD_CLASSIFICATION_BASE}/${encodeURIComponent(id)}/decision`,
+    { action, fingerprint },
+  );
+}
+
+/** Shape-masked sample values (never the values themselves). */
+export async function previewFieldClassification(
+  id: string,
+): Promise<{ samples: string[] }> {
+  const path = `${FIELD_CLASSIFICATION_BASE}/${encodeURIComponent(id)}/preview`;
+  const body = await getJson<{ samples: string[] }>(path);
+  return { samples: expectArray<string>(body.samples, path, 'samples') };
+}
+
+export async function recomputeFieldClassifications(): Promise<{ computedAt: string | null }> {
+  return postJson<{ computedAt: string | null }>(
+    `${FIELD_CLASSIFICATION_BASE}/recompute`,
+    undefined,
+  );
 }
 
 /**

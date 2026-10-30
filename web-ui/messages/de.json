@@ -220,6 +220,9 @@
         },
         "danger": {
           "heading": "Gefahrenzone"
+        },
+        "privacy": {
+          "heading": "Datenschutz"
         }
       },
       "cards": {
@@ -314,6 +317,10 @@
         "platformHealth": {
           "title": "Plattform-Zustand",
           "description": "Datenbank, Master-Keys von Vault und Keychain, Off-Site-Backup. Zeigt, ob diese Instanz mit Entwicklungs-Keys läuft."
+        },
+        "privacyFields": {
+          "title": "Feldklassifizierung",
+          "description": "Maskierte Felder prüfen, die der Privacy Guard im Klartext zeigen könnte. Nichts wird demaskiert, bevor du es bestätigst."
         }
       }
     },
@@ -508,7 +515,9 @@
     "adminCluster": "Admin",
     "help": "Hilfe",
     "teamsSignIn": "Teams-Anmeldung",
-    "llmAccess": "LLM-Zugang"
+    "llmAccess": "LLM-Zugang",
+    "privacyFields": "Feldklassifizierung",
+    "badgeLabel": "{count, plural, one {# Feld braucht eine Entscheidung} other {# Felder brauchen eine Entscheidung}}"
   },
   "conductor": {
     "title": "Conductor",
@@ -5199,7 +5208,8 @@
         "conductor": "Conductor-Änderungen",
         "profileSnapshot": "Profil-Snapshots",
         "registry": "Plugin-Registries",
-        "channel": "Kanäle"
+        "channel": "Kanäle",
+        "privacyFieldClassification": "Entscheidungen zur Feldklassifizierung"
       }
     },
     "table": {
@@ -6466,5 +6476,95 @@
       "unknown": "Sie konnte nicht gelesen werden."
     },
     "detail": "Technisches Detail: {message}"
+  },
+  "privacyFieldBanner": {
+    "title": "{count, plural, one {# neues Feld muss geklärt werden} other {# neue Felder müssen geklärt werden}}",
+    "body": "Tool-Ergebnisse enthielten maskierte Felder, die womöglich keine personenbezogenen Daten sind. Sie bleiben maskiert, bis ein Admin entscheidet.",
+    "cta": "Felder prüfen"
+  },
+  "adminPrivacyFields": {
+    "metaTitle": "Feldklassifizierung · omadia",
+    "title": "Feldklassifizierung",
+    "intro": "Der Privacy Guard maskiert jedes Feld in Tool-Ergebnissen, das er nicht als nicht-personenbezogen belegen kann. Diese Seite schlägt Felder vor, die vermutlich im Klartext angezeigt werden dürfen. Nichts wird freigegeben, bevor ein Admin bestätigt: Bestätigen fügt den Eintrag zur Einstellung non_personal_fields des Privacy Guard hinzu, Zurücknehmen entfernt ihn wieder.",
+    "loading": "Felder werden geladen …",
+    "lastComputed": "Zuletzt berechnet: {when}",
+    "neverComputed": "Noch nicht berechnet.",
+    "recompute": "Neu berechnen",
+    "recomputing": "Wird berechnet",
+    "recomputeDone": "Neu berechnet. Die Liste ist aktuell.",
+    "tabsLabel": "Status",
+    "toolFilter": "Gefiltert nach Tool: {tool}",
+    "clearToolFilter": "Alle Tools anzeigen",
+    "empty": "Keine Felder mit diesem Status.",
+    "status": {
+      "suggested": "Vorgeschlagen",
+      "needs_clarification": "Klärung nötig",
+      "personal": "Personenbezogen",
+      "confirmed": "Bestätigt",
+      "rejected": "Abgelehnt",
+      "kept_masked": "Bleibt maskiert"
+    },
+    "fieldCount": "{count, plural, one {# Feld} other {# Felder}}",
+    "valueShape": "Wertform",
+    "shape": {
+      "m2o": "Verknüpfung (many2one)",
+      "text": "Text",
+      "mixed": "Gemischt"
+    },
+    "sourceModels": "Quellmodelle",
+    "relationModels": "Relationsmodelle",
+    "none": "keine",
+    "configEntry": "Eintrag",
+    "appliesToAll": "Gilt für jedes Modell mit diesem Feld: {models}",
+    "seen": "{count, plural, one {Einmal gesehen} other {# Mal gesehen}}, zuletzt {when}",
+    "reasonsHeading": "Begründung",
+    "reasons": {
+      "person_model": "Verweist auf ein Personenmodell: {models}.",
+      "known_non_personal": "Verweist auf ein bekanntes nicht-personenbezogenes Modell: {models}.",
+      "haiku_non_personal": "Eine reine Schema-Prüfung stuft {model} als nicht personenbezogen ein (Konfidenz {confidence}).",
+      "haiku_personal": "Eine reine Schema-Prüfung stuft das Zielmodell als personenbezogen ein.",
+      "haiku_uncertain": "Eine reine Schema-Prüfung konnte nicht entscheiden, ob das Zielmodell personenbezogen ist.",
+      "unknown_model": "Das Zielmodell ist unbekannt und wurde nicht geprüft.",
+      "conflicting_targets": "Das Feld verweist auf unterschiedliche Modelle: {models}.",
+      "identity_hit": "Stichprobenwerte passten auf Identitätsmuster: {types}.",
+      "name_hit": "Die Namenserkennung hat Namen in Stichprobenwerten gefunden.",
+      "name_near_miss": "Die Namenserkennung hat Beinahe-Treffer für Namen in Stichprobenwerten gefunden.",
+      "name_detector_unavailable": "Die Namenserkennung war nicht verfügbar, Stichprobenwerte wurden daher nicht auf Namen geprüft.",
+      "no_relation_info": "Keine Relationsinformation: ein Textfeld, oder die Odoo-Verbindung war nicht verfügbar.",
+      "changed_since_decision": "Seit der letzten Entscheidung geändert (neue Quell- oder Relationsmodelle).",
+      "wildcard_entry": "Bereits durch einen Platzhalter-Eintrag in non_personal_fields abgedeckt.",
+      "sample_clean": "{count, plural, one {# Stichprobenwert zeigte} other {# Stichprobenwerte zeigten}} keine personenbezogenen Daten.",
+      "unknown": "Anderer Grund ({code})."
+    },
+    "decision": {
+      "confirm": "Bestätigt von {by} am {when}",
+      "reject": "Abgelehnt von {by} am {when}",
+      "keep_masked": "Maskiert belassen von {by} am {when}",
+      "revert": "Zurückgenommen von {by} am {when}",
+      "unknownActor": "einem Admin"
+    },
+    "actions": {
+      "confirm": "Bestätigen",
+      "reject": "Ablehnen",
+      "keep_masked": "Maskiert lassen",
+      "revert": "Zurücknehmen",
+      "working": "Wird gespeichert",
+      "showSample": "Stichprobe zeigen",
+      "hideSample": "Stichprobe ausblenden",
+      "loadingSample": "Stichprobe wird geladen"
+    },
+    "sampleHeading": "Maskierte Stichprobe (Werte werden nie angezeigt)",
+    "sampleEmpty": "Noch keine Stichprobe verfügbar.",
+    "saved": "Gespeichert: {entry}",
+    "errors": {
+      "load": "Die Feldliste konnte nicht geladen werden.",
+      "stale": "Dieses Feld hat sich seit dem Laden geändert. Die Liste wurde neu geladen — bitte erneut prüfen.",
+      "wildcard": "Dieses Feld ist durch den Platzhalter-Eintrag {entry} abgedeckt. Zurücknehmen wirkt nicht, solange dieser Eintrag besteht; ändere ihn in den Einstellungen des Privacy Guard.",
+      "notFound": "Dieses Feld existiert nicht mehr. Die Liste wurde neu geladen.",
+      "decision": "Die Entscheidung konnte nicht gespeichert werden.",
+      "preview": "Die Stichprobe konnte nicht geladen werden.",
+      "recompute": "Neuberechnung fehlgeschlagen.",
+      "detail": "Technisches Detail: {message}"
+    }
   }
 }

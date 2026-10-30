@@ -1,3 +1,9 @@
+import type {
+  FieldObservation,
+  FieldSampleVerdict,
+  ModelClassificationRequest,
+  ModelClassificationResult,
+} from './privacyFieldClassification.js';
 /**
  * `privacy.redact@1` — capability contract for the Privacy Shield v4
  * Data-Plane Boundary.
@@ -1035,4 +1041,38 @@ export interface PrivacyGuardService {
     turnId: string,
     turnInput?: string,
   ): Promise<PrivacyReceipt | undefined>;
+  /**
+   * #1556 follow-up — field-classification suggestions. Schema-only
+   * observations of masked fields since the last call, then cleared (the
+   * kernel persists them). Optional; a provider without it yields none.
+   */
+  takeFieldObservations?(): readonly FieldObservation[];
+  /**
+   * Vet the privacy guard's bounded in-memory value sample of a field with
+   * its own detectors (C0 identity shapes + the operator deny-list, C1 when
+   * configured, also at a lower "near-miss" threshold) and drop the sample.
+   * Only the verdict leaves the plugin.
+   */
+  vetFieldSample?(field: {
+    readonly toolName: string;
+    readonly fieldPath: string;
+  }): Promise<FieldSampleVerdict>;
+  /**
+   * Classify Odoo models as personal / non-personal from their schema only,
+   * with the plugin's own small model (Haiku). Never sends a value. Returns
+   * `uncertain` for every model when no LLM is available or the call fails.
+   */
+  classifyModelsSchemaOnly?(
+    requests: readonly ModelClassificationRequest[],
+  ): Promise<readonly ModelClassificationResult[]>;
+  /**
+   * A shape-masked preview of a field's buffered sample for the admin page —
+   * letters and digits replaced (`R••••••• & D••••••••••`), punctuation and
+   * spacing kept. At most `limit` entries; empty when nothing is buffered.
+   */
+  maskedFieldPreview?(field: {
+    readonly toolName: string;
+    readonly fieldPath: string;
+    readonly limit?: number;
+  }): readonly string[];
 }

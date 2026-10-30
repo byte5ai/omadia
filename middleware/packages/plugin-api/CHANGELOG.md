@@ -8,6 +8,22 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.49.0 — 2026-10-30
+
+Additive. Field-classification suggestions for `non_personal_fields` (#1556
+follow-up).
+
+### Added
+
+- **`privacyFieldClassification.ts`**: `FieldObservation`, `FieldValueShape`,
+  `FieldSampleVerdict`, `FieldSampleC1Verdict`, `ModelClassificationRequest`,
+  `ModelClassificationResult`, `ModelPersonalVerdict`. Schema-only: no type
+  carries a field value.
+- **`PrivacyGuardService`** optional methods `takeFieldObservations`,
+  `vetFieldSample`, `classifyModelsSchemaOnly`, `maskedFieldPreview`.
+- **`parseLlmJson`** moved here from `@omadia/orchestrator-extras` (which
+  re-exports it), so plugins can parse model JSON without the kernel package.
+
 ## 1.48.0 — 2026-10-30
 
 Additive. Operator-cleared non-personal fields (#1556).

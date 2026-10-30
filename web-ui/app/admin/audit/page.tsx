@@ -34,6 +34,8 @@ const ACTION_FILTERS = [
   { key: 'profileSnapshot', prefix: 'profile_snapshot.' },
   { key: 'registry', prefix: 'registry.' },
   { key: 'channel', prefix: 'channel.' },
+  // Exact action name, not a prefix: one action covers every decision.
+  { key: 'privacyFieldClassification', prefix: 'privacy.field_classification' },
 ] as const;
 
 type Formatter = ReturnType<typeof useFormatter>;

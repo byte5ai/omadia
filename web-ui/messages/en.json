@@ -220,6 +220,9 @@
         },
         "danger": {
           "heading": "Danger Zone"
+        },
+        "privacy": {
+          "heading": "Privacy"
         }
       },
       "cards": {
@@ -314,6 +317,10 @@
         "platformHealth": {
           "title": "Platform health",
           "description": "Database, vault and keychain master keys, off-site backup. Shows whether this instance runs on development keys."
+        },
+        "privacyFields": {
+          "title": "Field classification",
+          "description": "Review masked fields the Privacy Guard could show in clear text. Nothing is unmasked until you confirm it."
         }
       }
     },
@@ -508,7 +515,9 @@
     "adminCluster": "Admin",
     "help": "Help",
     "teamsSignIn": "Teams sign-in",
-    "llmAccess": "LLM access"
+    "llmAccess": "LLM access",
+    "privacyFields": "Field classification",
+    "badgeLabel": "{count, plural, one {# field needs a decision} other {# fields need a decision}}"
   },
   "conductor": {
     "title": "Conductor",
@@ -5199,7 +5208,8 @@
         "conductor": "Conductor changes",
         "profileSnapshot": "Profile snapshots",
         "registry": "Plugin registries",
-        "channel": "Channels"
+        "channel": "Channels",
+        "privacyFieldClassification": "Privacy field decisions"
       }
     },
     "table": {
@@ -6466,5 +6476,95 @@
       "unknown": "It could not be read."
     },
     "detail": "Technical detail: {message}"
+  },
+  "privacyFieldBanner": {
+    "title": "{count, plural, one {# new field needs clarification} other {# new fields need clarification}}",
+    "body": "Tool results contained masked fields that may not be personal data. They stay masked until an admin decides.",
+    "cta": "Review fields"
+  },
+  "adminPrivacyFields": {
+    "metaTitle": "Field classification · omadia",
+    "title": "Field classification",
+    "intro": "The Privacy Guard masks every field in tool results that it cannot prove to be non-personal. This page suggests fields that are probably safe to show in clear text. Nothing is cleared until an admin confirms: confirming adds the entry to the Privacy Guard's non_personal_fields setting, and revert removes it again.",
+    "loading": "Loading fields…",
+    "lastComputed": "Last computed: {when}",
+    "neverComputed": "Not computed yet.",
+    "recompute": "Recompute",
+    "recomputing": "Recomputing",
+    "recomputeDone": "Recomputed. The list is up to date.",
+    "tabsLabel": "Status",
+    "toolFilter": "Tool: {tool}",
+    "clearToolFilter": "Show all tools",
+    "empty": "No fields with this status.",
+    "status": {
+      "suggested": "Suggested",
+      "needs_clarification": "Needs clarification",
+      "personal": "Personal",
+      "confirmed": "Confirmed",
+      "rejected": "Rejected",
+      "kept_masked": "Kept masked"
+    },
+    "fieldCount": "{count, plural, one {# field} other {# fields}}",
+    "valueShape": "Value shape",
+    "shape": {
+      "m2o": "Relation (many2one)",
+      "text": "Text",
+      "mixed": "Mixed"
+    },
+    "sourceModels": "Source models",
+    "relationModels": "Relation models",
+    "none": "none",
+    "configEntry": "Entry",
+    "appliesToAll": "Applies to every model with this field: {models}",
+    "seen": "{count, plural, one {Seen once} other {Seen # times}}, last {when}",
+    "reasonsHeading": "Why",
+    "reasons": {
+      "person_model": "Points to a person model: {models}.",
+      "known_non_personal": "Points to a known non-personal model: {models}.",
+      "haiku_non_personal": "A schema-only review rated {model} as non-personal ({confidence} confidence).",
+      "haiku_personal": "A schema-only review rated the target model as personal.",
+      "haiku_uncertain": "A schema-only review could not decide whether the target model is personal.",
+      "unknown_model": "The target model is unknown and was not reviewed.",
+      "conflicting_targets": "The field points to different models: {models}.",
+      "identity_hit": "Sampled values matched identity patterns: {types}.",
+      "name_hit": "The name detector found names in sampled values.",
+      "name_near_miss": "The name detector found near-matches for names in sampled values.",
+      "name_detector_unavailable": "The name detector was unavailable, so sampled values were not checked for names.",
+      "no_relation_info": "No relation information: a text field, or the Odoo connection was unavailable.",
+      "changed_since_decision": "Changed since the last decision (new source or relation models).",
+      "wildcard_entry": "Already covered by a wildcard entry in non_personal_fields.",
+      "sample_clean": "{count, plural, one {# sampled value} other {# sampled values}} showed no personal data.",
+      "unknown": "Other reason ({code})."
+    },
+    "decision": {
+      "confirm": "Confirmed by {by} on {when}",
+      "reject": "Rejected by {by} on {when}",
+      "keep_masked": "Kept masked by {by} on {when}",
+      "revert": "Reverted by {by} on {when}",
+      "unknownActor": "an admin"
+    },
+    "actions": {
+      "confirm": "Confirm",
+      "reject": "Reject",
+      "keep_masked": "Keep masked",
+      "revert": "Revert",
+      "working": "Saving",
+      "showSample": "Show sample",
+      "hideSample": "Hide sample",
+      "loadingSample": "Loading sample"
+    },
+    "sampleHeading": "Masked sample (values are never shown)",
+    "sampleEmpty": "No sample available yet.",
+    "saved": "Saved: {entry}",
+    "errors": {
+      "load": "The field list could not be loaded.",
+      "stale": "This field changed since the list was loaded. The list has been reloaded — please review it again.",
+      "wildcard": "This field is covered by the wildcard entry {entry}. Revert has no effect while that entry exists; change it in the Privacy Guard settings.",
+      "notFound": "This field no longer exists. The list has been reloaded.",
+      "decision": "The decision could not be saved.",
+      "preview": "The sample could not be loaded.",
+      "recompute": "Recompute failed.",
+      "detail": "Technical detail: {message}"
+    }
   }
 }

@@ -1,0 +1,229 @@
+'use client';
+
+import { useState } from 'react';
+import { useFormatter, useTranslations } from 'next-intl';
+
+import { Button } from '@/app/_components/ui/Button';
+import {
+  type FieldClassificationAction,
+  type FieldClassificationItem,
+  type FieldClassificationStatus,
+  previewFieldClassification,
+} from '../../../_lib/api';
+import { serverErrorMessage } from '../../../_lib/apiErrorMessage';
+import { formatWhen, modelList, reasonText } from './fieldText';
+
+/**
+ * Which decisions the kernel accepts per status (see the field-classification
+ * contract). `rejected` / `kept_masked` stay until the candidate changes, then
+ * come back as `needs_clarification`; `revert` undoes them (and a
+ * confirmation) by hand.
+ */
+const ACTIONS_BY_STATUS: Record<FieldClassificationStatus, readonly FieldClassificationAction[]> = {
+  suggested: ['confirm', 'reject', 'keep_masked'],
+  needs_clarification: ['confirm', 'reject', 'keep_masked'],
+  personal: ['keep_masked'],
+  confirmed: ['revert'],
+  rejected: ['revert'],
+  kept_masked: ['revert'],
+};
+
+export function actionsFor(status: FieldClassificationStatus): readonly FieldClassificationAction[] {
+  return ACTIONS_BY_STATUS[status] ?? [];
+}
+
+/** A message shown on one card after a decision attempt. */
+export type CardNotice =
+  | { kind: 'saved'; entry: string }
+  | { kind: 'stale' }
+  | { kind: 'gone' }
+  | { kind: 'wildcard'; entry: string }
+  | { kind: 'error'; detail: string | null };
+
+type PreviewState =
+  | { kind: 'hidden' }
+  | { kind: 'loading' }
+  | { kind: 'shown'; samples: string[] }
+  | { kind: 'error'; detail: string | null };
+
+export function FieldCard({
+  item,
+  busyAction,
+  notice,
+  onDecide,
+}: {
+  item: FieldClassificationItem;
+  /** The action in flight for this item, if any. */
+  busyAction: FieldClassificationAction | null;
+  notice: CardNotice | null;
+  onDecide: (item: FieldClassificationItem, action: FieldClassificationAction) => void;
+}): React.ReactElement {
+  const t = useTranslations('adminPrivacyFields');
+  const format = useFormatter();
+  const [preview, setPreview] = useState<PreviewState>({ kind: 'hidden' });
+
+  const togglePreview = async (): Promise<void> => {
+    if (preview.kind === 'shown') {
+      setPreview({ kind: 'hidden' });
+      return;
+    }
+    setPreview({ kind: 'loading' });
+    try {
+      const { samples } = await previewFieldClassification(item.id);
+      setPreview({ kind: 'shown', samples });
+    } catch (err) {
+      setPreview({ kind: 'error', detail: serverErrorMessage(err) });
+    }
+  };
+
+  const decidedAt = formatWhen(item.decision?.at, format);
+  const lastSeen = formatWhen(item.lastSeenAt, format);
+  const actions = actionsFor(item.status);
+
+  return (
+    <li
+      data-testid={`field-${item.id}`}
+      className="rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4"
+    >
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <code className="font-mono text-[14px] font-semibold text-[color:var(--fg-strong)]">
+          {item.fieldPath}
+        </code>
+        <span className="text-xs text-[color:var(--fg-muted)]">
+          {t(`status.${item.status}`)}
+        </span>
+      </div>
+
+      <dl className="mt-3 grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-[13px]">
+        <dt className="text-[color:var(--fg-muted)]">{t('valueShape')}</dt>
+        <dd>{t(`shape.${item.valueShape}`)}</dd>
+        <dt className="text-[color:var(--fg-muted)]">{t('sourceModels')}</dt>
+        <dd className="font-mono">{modelList(item.sourceModels, t, format)}</dd>
+        <dt className="text-[color:var(--fg-muted)]">{t('relationModels')}</dt>
+        <dd className="font-mono">{modelList(item.relationModels, t, format)}</dd>
+        <dt className="text-[color:var(--fg-muted)]">{t('configEntry')}</dt>
+        <dd className="font-mono">{item.configEntry}</dd>
+      </dl>
+
+      {item.sourceModels.length > 1 ? (
+        <p className="mt-2 text-[13px] text-[color:var(--fg-muted)]">
+          {t('appliesToAll', { models: modelList(item.sourceModels, t, format) })}
+        </p>
+      ) : null}
+
+      {item.reasons.length > 0 ? (
+        <div className="mt-3">
+          <div className="text-xs font-semibold uppercase tracking-wider text-[color:var(--fg-muted)]">
+            {t('reasonsHeading')}
+          </div>
+          <ul className="mt-1 list-disc pl-5 text-[13px]">
+            {item.reasons.map((reason, i) => (
+              <li key={`${reason.code}-${String(i)}`}>{reasonText(reason, t, format)}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {lastSeen !== null ? (
+        <p className="mt-2 text-xs text-[color:var(--fg-muted)]">
+          {t('seen', { count: item.seenCount, when: lastSeen })}
+        </p>
+      ) : null}
+
+      {item.decision !== null && decidedAt !== null ? (
+        <p className="mt-1 text-xs text-[color:var(--fg-muted)]" data-testid="field-decision">
+          {t(`decision.${item.decision.action}`, {
+            by: item.decision.by ?? t('decision.unknownActor'),
+            when: decidedAt,
+          })}
+        </p>
+      ) : null}
+
+      {notice !== null ? <NoticeLine notice={notice} /> : null}
+
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        {actions.map((action) => (
+          <Button
+            key={action}
+            size="sm"
+            variant={action === 'confirm' ? 'primary' : 'secondary'}
+            disabled={busyAction !== null}
+            busy={busyAction === action}
+            busyLabel={t('actions.working')}
+            onClick={() => onDecide(item, action)}
+          >
+            {t(`actions.${action}`)}
+          </Button>
+        ))}
+        <Button
+          size="sm"
+          variant="ghost"
+          busy={preview.kind === 'loading'}
+          busyLabel={t('actions.loadingSample')}
+          aria-expanded={preview.kind === 'shown'}
+          onClick={() => void togglePreview()}
+        >
+          {preview.kind === 'shown' ? t('actions.hideSample') : t('actions.showSample')}
+        </Button>
+      </div>
+
+      {preview.kind === 'shown' ? (
+        <div className="mt-3" data-testid="field-sample">
+          <div className="text-xs text-[color:var(--fg-muted)]">{t('sampleHeading')}</div>
+          {preview.samples.length === 0 ? (
+            <p className="mt-1 text-[13px]">{t('sampleEmpty')}</p>
+          ) : (
+            <ul className="mt-1 flex flex-col gap-1 font-mono text-[13px]">
+              {preview.samples.map((sample, i) => (
+                <li key={`${String(i)}-${sample}`}>{sample}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ) : preview.kind === 'error' ? (
+        <ErrorLine message={t('errors.preview')} detail={preview.detail} />
+      ) : null}
+    </li>
+  );
+}
+
+function NoticeLine({ notice }: { notice: CardNotice }): React.ReactElement {
+  const t = useTranslations('adminPrivacyFields');
+  switch (notice.kind) {
+    case 'saved':
+      return (
+        <p role="status" className="mt-3 text-[13px] text-[color:var(--accent)]">
+          {t('saved', { entry: notice.entry })}
+        </p>
+      );
+    case 'stale':
+      return <ErrorLine message={t('errors.stale')} detail={null} />;
+    case 'gone':
+      return <ErrorLine message={t('errors.notFound')} detail={null} />;
+    case 'wildcard':
+      return <ErrorLine message={t('errors.wildcard', { entry: notice.entry })} detail={null} />;
+    case 'error':
+      return <ErrorLine message={t('errors.decision')} detail={notice.detail} />;
+  }
+}
+
+export function ErrorLine({
+  message,
+  detail,
+}: {
+  message: string;
+  detail: string | null;
+}): React.ReactElement {
+  const t = useTranslations('adminPrivacyFields');
+  return (
+    <div
+      role="alert"
+      className="mt-3 rounded-md border border-[color:var(--danger-edge)]/40 bg-[color:var(--danger)]/5 px-3 py-2 text-[13px] text-[color:var(--danger)]"
+    >
+      <p>{message}</p>
+      {detail !== null ? (
+        <p className="mt-1 text-xs opacity-80">{t('errors.detail', { message: detail })}</p>
+      ) : null}
+    </div>
+  );
+}

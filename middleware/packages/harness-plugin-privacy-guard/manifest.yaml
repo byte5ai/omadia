@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/plugin-privacy-guard"
   name: "Privacy Guard"
-  version: "0.14.0"
+  version: "0.15.0"
   kind: "tool"
   domain: "privacy.redact"
   description:
@@ -199,6 +199,11 @@ playbook:
     (dieses Plugin ab 0.14.0, #1556): Felder, die `non_personal_fields`
     freigegeben hat. Ein älteres Plugin kennt die Einstellung nicht und maskiert
     sie weiter.
+    Ab @omadia/plugin-api 1.49.0 liefert dieses Plugin (ab 0.15.0) die
+    Grundlage für die Vorschläge auf /admin/privacy-fields:
+    `takeFieldObservations`, `vetFieldSample`, `classifyModelsSchemaOnly`,
+    `maskedFieldPreview`. Fehlen sie, bleibt die Seite leer; maskiert wird wie
+    zuvor.
 
 # ---------------------------------------------------------------------------
 # Permissions. Server-side compute plus ONE deliberate network target

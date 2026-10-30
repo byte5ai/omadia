@@ -5,6 +5,7 @@ import {
 } from '@omadia/plugin-api';
 
 import { createC1HttpDetector, probeC1Health } from './c1Detector.js';
+import { C1_NEAR_MISS_THRESHOLD } from './fieldVetting.js';
 import { createPrivacyGuardService } from './service.js';
 
 /**
@@ -71,6 +72,13 @@ export async function activate(
     // via the install UI applies on the very next turn (no restart).
     readConfig: (key) => ctx.config.get(key),
     c1Detector,
+    // #1556 follow-up — field-sample vetting asks the sidecar for weaker
+    // name spans too (near-miss), off the interactive lane.
+    c1NearMissDetector: createC1HttpDetector({
+      resolveUrl: resolveC1Url,
+      threshold: C1_NEAR_MISS_THRESHOLD,
+      priority: 'background',
+    }),
     // The live sidecar URL scopes the process-wide C1 segment cache: a
     // reconfigured sidecar misses, an unconfigured one caches nothing.
     c1CacheScope: resolveC1Url,

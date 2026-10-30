@@ -67,6 +67,11 @@ export type AuditAction =
   // plugin's raw results to the LLM, so who flipped it belongs in the trail.
   // `before`/`after` carry only those two keys.
   | 'plugin.privacy_change'
+  // #1556 follow-up — an admin decided on a field-classification candidate
+  // (confirm / reject / keep_masked / revert). Confirm and revert also change
+  // the privacy guard's `non_personal_fields`; `before`/`after` carry the
+  // shown status and, for those two, that setting. Never a field value.
+  | 'privacy.field_classification'
   // #1490 — an uploaded (or Hub-fetched), not installed package was removed.
   | 'plugin.package_remove'
   // #1342 — a stdio MCP server was saved (manual or catalog import). It runs

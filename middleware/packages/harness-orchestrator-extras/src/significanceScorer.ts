@@ -13,10 +13,10 @@
 import type { LlmProvider } from '@omadia/llm-provider';
 import { collectText, textMessage } from '@omadia/llm-provider';
 import type { EntryType } from '@omadia/plugin-api';
+import { parseLlmJson } from '@omadia/plugin-api';
 
 import type { SignificanceScorer } from './captureFilter.js';
 import type { OpenJobPrivacy } from './jobPrivacy.js';
-import { parseLlmJson } from './llmJson.js';
 
 export interface HaikuSignificanceScorerOptions {
   /** Provider-agnostic LLM (Anthropic adapter today). Was `anthropic` pre-phase-2. */

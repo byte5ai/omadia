@@ -147,3 +147,18 @@ describe('/admin — Privacy Shield off (#1507)', () => {
     expect(screen.getByTestId('privacy-shield-banner')).toBeTruthy();
   });
 });
+
+describe('/admin — field classification card (#1556 follow-up)', () => {
+  it('links to /admin/privacy-fields from the Privacy group', async () => {
+    mockFetchHealth.mockResolvedValue({
+      reachable: true,
+      body: { checks: { database: 'ok' } },
+    });
+    mockGetVaultStatus.mockResolvedValue(vaultWith('env', 'env'));
+    render(await AdminIndexPage());
+
+    expect(screen.getByText('Privacy')).toBeTruthy();
+    const link = screen.getByText('Field classification').closest('a');
+    expect(link?.getAttribute('href')).toBe('/admin/privacy-fields');
+  });
+});
