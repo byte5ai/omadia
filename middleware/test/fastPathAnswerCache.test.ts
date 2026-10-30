@@ -21,6 +21,7 @@ import {
 import {
   ANSWER_CACHE_PATH,
   createAnswerCache,
+  neutralFormatTokens,
   onlySentinelsMasked,
   type AnswerCache,
 } from '../packages/harness-plugin-fast-path/src/answerCache.js';
@@ -294,7 +295,7 @@ describe('answer cache — chat triage', () => {
     await withName.ask('Anna Schmidt fragt: Offene Posten von Müller');
     await settled(withName);
     assert.equal(withName.service.answerCache?.entries().length, 0);
-    assert.ok(withName.logs.includes('[fast-path] cache skip reason=privacy:personal-data'));
+    assert.ok(withName.logs.some((m) => m.startsWith('[fast-path] cache skip reason=privacy:personal-data types=person')));
 
     const noShield = harness({ guard: undefined });
     await noShield.ask('Offene Posten von Müller');
@@ -666,5 +667,41 @@ describe('canvas — peeking at the cache verdict never delays a normal turn', (
     const t0 = Date.now();
     assert.equal(await peekCacheHit(never, undefined, 5_000), undefined);
     assert.ok(Date.now() - t0 < 50);
+  });
+});
+
+describe('answer cache — format tokens are checked as the sentence the user reads', () => {
+  it('neutralFormatTokens replaces {count}, {sum:…}, {currency}, {today…}', () => {
+    assert.equal(
+      neutralFormatTokens('{count} Posten, gesamt {sum:open_amount} {currency}, Stand {today-7d}.'),
+      '12 Posten, gesamt 1234 EUR, Stand heute.',
+    );
+  });
+
+  it('a detector that flags the braced {count} token no longer blocks the entry', async () => {
+    const braceGuard = {
+      openStoredTextScope: () => ({
+        maskStoredText: (text: string): Promise<PrivacyPromptMaskResult> => {
+          const flagged = text === PERSON_CANARY || text.includes('{count}');
+          return Promise.resolve({
+            outcome: 'masked',
+            maskedText: flagged ? text.replace('{count}', '{{x}}') : text,
+            spans: flagged ? [{ type: text === PERSON_CANARY ? 'person' : 'id', detector: 'c1-test' }] : [],
+            degraded: false,
+          });
+        },
+        restoreStoredText: (x: string) => x,
+      }),
+    } as unknown as PrivacyGuardService;
+    const cache = createAnswerCache({ log: () => {} });
+    const q = 'Offene Posten von Müller';
+    const plan = planned(q);
+    const r = await cache.remember({
+      question: q,
+      plan: { ...plan, summary: '{count} offene Posten.' },
+      previous: false,
+      openScope: () => braceGuard.openStoredTextScope!({ job: 'test' }),
+    });
+    assert.ok(r.stored, r.reason ?? 'stored');
   });
 });
