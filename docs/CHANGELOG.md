@@ -67,6 +67,30 @@ changelog.
 `@omadia/plugin-privacy-guard` 0.11.0, `@omadia/plugin-api` 1.37.0
 (`countUnresolvedSurrogates` takes an optional `options`).
 
+### Fixed — The web UI lists only chats created there (#1637)
+
+2026-10-30. Canvas (`@omadia/ui-channel`), routine and Discord conversations
+showed up in the web UI's chat list. The `SessionLogger` mirrors each completed
+turn into the chat-session store and used to **create** a document when none
+existed, gated on the *sanitized* scope: `@omadia/ui-channel::<user>::<id>`
+became `omadia-ui-channel-<user>-<id>`, `routine:<id>` became `routine-<id>`,
+and only `http-`/`teams-` were excluded. On our Fly store 7 of 25 sessions were
+such transcripts.
+
+- The mirror now appends only to a session the web client created (its PUT on
+  create / first turn) — the same rule `appendProactiveMessage` already follows
+  — and is gated on the raw scope. Only the web UI creates chat sessions.
+- `isServerMirroredSession` (id neither a UUID nor the client's `id-…` fallback,
+  and every message id `srv-*`) recognises the documents the old mirror left.
+  `ChatSessionStore.list()` purges them once per store instance (decision
+  re-read under the session lock, per-file retry, `WARN` with the ids), so the
+  leaked transcripts disappear on the first chat-list request after deploy.
+  A PUT that would re-create one answers `409 server_mirrored_session`, and the
+  web UI's hydration drops a cached copy instead of pushing it back.
+- Trade-off: mid-stream-reload recovery now requires the client's create-PUT to
+  have landed. If it failed *and* the user reloads mid-answer, the answer is not
+  recovered server-side.
+
 ### Added — Suggestions and a review page for non-personal fields (#1556 follow-up)
 
 2026-10-30. `non_personal_fields` (#1629) needed an admin to know which fields

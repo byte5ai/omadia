@@ -8156,6 +8156,28 @@ durch den Web-Sender unten.
   gespeicherte Datei korrupt (JSON nicht parsebar, `SyntaxError`), überschreibt der PUT
   sie wie vor #1071 (repariert sie, `WARN`-Log); jeder andere Lesefehler lässt den PUT
   scheitern, statt ungesehene Zustellungen samt Marker endgültig zu verwerfen.
+- **Nur die Web-UI legt Sessions an (#1637).** `appendTurnFromServer` hängt nur an eine
+  **vorhandene** Session an und legt keine mehr an — dieselbe Regel wie
+  `appendProactiveMessage`. Vorher entstand für jeden Turn, dessen *sanitisierter* Scope
+  `ID_RE` passierte, ein Dokument: `@omadia/ui-channel::<user>::<id>` →
+  `omadia-ui-channel-<user>-<id>`, `routine:<id>` → `routine-<id>`; nur `http-`/`teams-`
+  waren ausgenommen, und die Web-UI listete Canvas-, Routinen- und Discord-Unterhaltungen
+  als Chats. Der SessionLogger prüft `isChatSessionScope` jetzt auf dem **rohen**
+  `entry.scope` (Web-Turns tragen die Session-UUID unverändert, `routes/chat.ts`
+  `resolveScope`). Altlasten erkennt `isServerMirroredSession` (Id weder UUID noch das
+  `id-<t>-<r>`-Fallback des Clients **und** jede Nachricht mit `srv-`-Id; ein leeres
+  Dokument ist ein Web-Chat vor seinem ersten Turn) — dieselbe Regel steht dupliziert in
+  `web-ui/app/_lib/chatSessions.ts`, weil die Web-UI das Paket nicht importieren kann.
+  `list()` räumt sie **einmal pro Store-Instanz** ab (`purgeServerMirrored`: Entscheidung
+  unter dem Session-Lock erneut gelesen, Löschung über den Dateinamen und nur bei
+  gleicher `id`, Fehler pro Datei mit Retry beim nächsten `list()`, `WARN` mit den Ids) —
+  vor dem Directory-Check, weil der letzte gelöschte Eintrag das Verzeichnis mitnehmen
+  kann. `saveFromClient` wirft `ServerMirroredSessionError`, wenn ein Client so ein
+  Dokument **neu** anlegen will (Browser mit gecachter Kopie von vor dem Purge) →
+  `PUT /api/chat/sessions/:id` antwortet `409 server_mirrored_session`; Updates eines
+  vorhandenen Dokuments bleiben erlaubt. Die Hydration der Web-UI verwirft eine solche
+  nur-lokale Kopie, statt sie zu pushen. Preis: die Wiederherstellung nach einem Reload
+  mitten im Stream setzt voraus, dass der Create-PUT des Clients angekommen ist.
 - **Per-Session-Lock, modulweit, nur in-process.** Append, Merge-Save,
   `appendTurnFromServer`, `captureSnapshot`, `clearSnapshot`, `resetMessages` und `delete`
   laufen unter einem Lock pro Session-Id, den **alle** `ChatSessionStore`-Instanzen teilen
