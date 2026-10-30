@@ -56,6 +56,13 @@ export interface TurnAnnotation {
 
 export interface TurnHookPayload {
   readonly userMessage?: string;
+  /**
+   * Set on `onBeforeTurn` when the fast-path triage already classified the
+   * message (`ChatTurnInput.routeHint`): `simple` = one direct answer or a
+   * single tool call. A hook that would spend a model call deciding the same
+   * thing (the plan-runner's gate) can skip it. Absent when no triage ran.
+   */
+  readonly routeHint?: 'simple' | 'complex';
   readonly assistantAnswer?: string;
   readonly toolName?: string;
   readonly toolResult?: string;

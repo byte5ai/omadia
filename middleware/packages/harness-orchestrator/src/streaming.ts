@@ -233,6 +233,11 @@ export async function* streamMessageEvents(args: {
     // before producing any forwarded text — exactly how a start-of-stream
     // `overloaded_error` behaves.
     let forwardedText = false;
+    // Wall time of this attempt — logged with the final usage so a turn's
+    // main-model rounds show up in the log like `[llm] complete ok … ms=`
+    // does for the helper models (before this the Opus legs of a slow turn
+    // had to be reconstructed from neighbouring timestamps).
+    const attemptStartedAt = Date.now();
     try {
       safe(
         () => observer?.onIterationPhase?.({ iteration, phase: 'thinking' }),
@@ -321,6 +326,12 @@ export async function* streamMessageEvents(args: {
           // fallback hop `provider` is the fallback, so the ledger shows
           // which provider generated the cost.
           recordResponseUsage(ev.response, provider.id, streamLabel);
+          console.log(
+            `[${streamLabel}] iteration ${String(iteration)} ok model=${ev.response.model} ` +
+              `in=${String(ev.response.usage.inputTokens)} out=${String(ev.response.usage.outputTokens)} ` +
+              `cached=${String(ev.response.usage.cacheReadTokens ?? 0)} stop=${ev.response.finishReason} ` +
+              `ms=${String(Date.now() - attemptStartedAt)}`,
+          );
 
           yield { type: 'final', message };
           return;
