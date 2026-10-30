@@ -1416,6 +1416,7 @@ async function main(): Promise<void> {
     subAgentModel: config.SUB_AGENT_MODEL,
     subAgentMaxTokens: config.SUB_AGENT_MAX_TOKENS,
     subAgentMaxIterations: config.SUB_AGENT_MAX_ITERATIONS,
+    ...(config.SUB_AGENT_EFFORT !== undefined ? { subAgentEffort: config.SUB_AGENT_EFFORT } : {}),
     // Dynamic sub-agents inherit the orchestrator's configured provider so the
     // stack runs on any provider (incl. OpenAI-only, no Anthropic key). Both are
     // late-bound: a post-boot provider/key change is picked up on next build.
@@ -3231,6 +3232,7 @@ async function main(): Promise<void> {
           personaSkills,
           skillToolBindings: snapshot?.skillToolBindings ?? [],
           defaultModel: SUBAGENT_DEFAULT_MODEL,
+          ...(config.SUB_AGENT_EFFORT !== undefined ? { defaultEffort: config.SUB_AGENT_EFFORT } : {}),
           hostIsCliProvider: providerId === 'claude-cli',
           cliModelAlias: (model: string): string =>
             model.replace(/-cli$/, '') || 'sonnet',

@@ -1,4 +1,4 @@
-import type { LlmProvider } from '@omadia/llm-provider';
+import type { EffortLevel, LlmProvider } from '@omadia/llm-provider';
 import type {
   LocalSubAgentTool,
   LocalSubAgentToolResult,
@@ -18,6 +18,7 @@ import {
   orchestratorFallbackFor,
   type SubAgentExecution,
 } from './subAgentModelFallback.js';
+import { type SubAgentEffortFor } from './subAgentEffort.js';
 import { SubAgentRefusalError } from './subAgentRefusal.js';
 import {
   UnknownOutcomeCalls,
@@ -58,6 +59,8 @@ interface LocalSubAgentOptions {
   maxIterations: number;
   systemPrompt: string;
   tools: LocalSubAgentTool[];
+  /** Effort per executing model (`subAgentEffort.ts`); absent = none sent. */
+  effortFor?: SubAgentEffortFor;
 }
 
 // #1072 — `AskOptions` moved next to `Askable` in `tools/domainQueryTool.ts`
@@ -91,6 +94,7 @@ export class LocalSubAgent {
   private readonly maxTokens: number;
   private readonly maxIterations: number;
   private readonly systemPrompt: string;
+  private readonly effortFor: SubAgentEffortFor | undefined;
   private readonly toolsByName: Map<string, LocalSubAgentTool>;
   private readonly toolSpecs: LocalSubAgentToolSpec[];
   /** Skips a primary model that failed for a configuration reason. */
@@ -103,6 +107,7 @@ export class LocalSubAgent {
     this.maxTokens = options.maxTokens;
     this.maxIterations = options.maxIterations;
     this.systemPrompt = options.systemPrompt;
+    this.effortFor = options.effortFor;
     this.toolsByName = new Map(options.tools.map((t) => [t.spec.name, t]));
     // Prompt-cache the tool-spec list. Marking the FINAL spec with
     // `cache_control: ephemeral` tells Anthropic to cache everything up to
@@ -121,6 +126,13 @@ export class LocalSubAgent {
       }
     }
     this.toolSpecs = baseSpecs;
+  }
+
+  /** The `effort` key for one model call — checked per executing model, so a
+   *  fallback hop to a model without the knob sends none. */
+  private effortParam(exec: SubAgentExecution): { effort?: EffortLevel } {
+    const effort = this.effortFor?.(exec.provider.id, exec.model);
+    return effort !== undefined ? { effort } : {};
   }
 
   async ask(
@@ -277,7 +289,7 @@ export class LocalSubAgent {
             : undefined;
         const response: Message = await streamMessageWithObserver(
           exec.provider,
-          { ...params, model: exec.model },
+          { ...params, model: exec.model, ...this.effortParam(exec) },
           observer,
           iteration,
           `sub-agent ${this.name}`,
@@ -285,7 +297,7 @@ export class LocalSubAgent {
             ? {
                 fallback: {
                   provider: fb.provider,
-                  params: { ...params, model: fb.model },
+                  params: { ...params, model: fb.model, ...this.effortParam(fb) },
                   // On the same provider a broken key or endpoint fails the
                   // second model too; only an unknown model is worth the hop.
                   ...(fb.provider.id === exec.provider.id

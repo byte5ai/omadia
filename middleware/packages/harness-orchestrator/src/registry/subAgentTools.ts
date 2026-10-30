@@ -1,8 +1,9 @@
-import { isClassRef, type LlmProvider } from '@omadia/llm-provider';
+import { isClassRef, type EffortLevel, type LlmProvider } from '@omadia/llm-provider';
 import type { LocalSubAgentTool } from '@omadia/plugin-api';
 
 import { createCliSubAgent } from '../cliSubAgent.js';
 import { LocalSubAgent } from '../localSubAgent.js';
+import { subAgentEffortFor } from '../subAgentEffort.js';
 import { resolveConfiguredModel, resolveModelIdForProvider } from './agentRuntime.js';
 import { sortBySpecName } from '../toolOrdering.js';
 import type {
@@ -49,6 +50,8 @@ export interface SubAgentToolDeps {
   readonly defaultModel: string;
   readonly defaultMaxTokens: number;
   readonly defaultMaxIterations: number;
+  /** `SUB_AGENT_EFFORT` — absent = no effort sent (`subAgentEffort.ts`). */
+  readonly defaultEffort?: EffortLevel;
   /** #309 recursive Shape 3 — when the host provider is the subscription CLI,
    *  run each DB-defined sub-agent through its own CliChatAgent instead of the
    *  in-process LocalSubAgent. Default false → byte-identical legacy path. */
@@ -90,6 +93,7 @@ export function buildSubAgentDomainTools(
   }
 
   const tools: DomainTool[] = [];
+  const effortFor = subAgentEffortFor(deps.defaultEffort);
   for (const sub of graph.subAgents) {
     if (sub.status !== 'enabled') continue;
 
@@ -144,6 +148,7 @@ export function buildSubAgentDomainTools(
           maxIterations: sub.maxIterations ?? deps.defaultMaxIterations,
           systemPrompt,
           tools: subTools,
+          ...(effortFor !== undefined ? { effortFor } : {}),
         });
 
     tools.push(
