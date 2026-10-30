@@ -1838,28 +1838,42 @@ async function restoreFollowUpsForUser(
 const MEMORY_TOOL_TYPE = 'memory_20250818';
 const MEMORY_BETA_HEADER = 'context-management-2025-06-27';
 
+/** The orchestrator's cache breakpoints: 1-hour TTL, so the ~50k-token
+ *  tools + stable-prompt prefix survives the 5–60 minute gaps between a
+ *  user's turns (measured: with the 5-minute default nearly every turn's
+ *  first call re-wrote the whole prefix). One TTL for every breakpoint —
+ *  Anthropic requires longer-lived entries before shorter ones. */
+const ORCHESTRATOR_CACHE_CONTROL = { type: 'ephemeral', ttl: '1h' } as const;
+
 /**
  * Build the `system` argument for Anthropic as an array of text blocks:
- *   [0] stable domain prompt — marked cache-eligible
- *   [1] per-turn date header — read from the turn context so every
+ *   [0] stable domain prompt — cache breakpoint (byte-identical across turns)
+ *   [1] prior-context block, when present — cache breakpoint (this turn's
+ *       tool-loop iterations read it)
+ *   [2] per-turn date header — read from the turn context so every
  *       `messages.create` site in a single turn speaks the same "today"
+ *   [3] per-turn hint, when present — uncached
  *
- * Splitting these lets the stable block stay in the prompt cache across
- * turns while the volatile date block invalidates independently (at most
- * once per day). The SDK accepts both string and array forms for `system`.
+ * The prompt cache is a prefix match (tools → system → messages): the stable
+ * prompt must come BEFORE anything that changes per turn, or every turn
+ * re-writes it. The prior-context block used to come first (so the model met
+ * the verbatim tail before the `_rules` memory-read convention); it now
+ * follows the stable prompt and states its precedence over the rules above
+ * explicitly, and chat turns no longer open with a memory read at all (the
+ * kernel prefetches the index, `memoryIndexPrefetch.ts`).
  */
 function buildSystemBlocks(
   stableSystemPrompt: string,
   priorContext?: string,
   extraSystemHint?: string,
 ): ContentBlock[] {
-  // Ordering matters: the prior-context block comes FIRST when present, so
-  // the model sees it before wading through the longer stable prompt + the
-  // `_rules` memory-read convention. Previously it landed last and the bot
-  // reliably read memory rules before noticing the verbatim tail, then
-  // answered by those rules instead of the prior turn (hallucinated a
-  // different time range on follow-ups like "das Gleiche ohne Gutschriften").
-  const blocks: ContentBlock[] = [];
+  const blocks: ContentBlock[] = [
+    {
+      type: 'text',
+      text: stableSystemPrompt,
+      cache_control: ORCHESTRATOR_CACHE_CONTROL,
+    },
+  ];
 
   if (priorContext && priorContext.trim().length > 0) {
     // Trust tiers (important — get this wrong and the bot re-fetches data
@@ -1875,24 +1889,19 @@ function buildSystemBlocks(
     //     re-verify via the domain agent.
     blocks.push({
       type: 'text',
-      text: `# Vorheriger Gesprächskontext — ZUERST lesen
+      text: `# Vorheriger Gesprächskontext — VORRANG vor den allgemeinen Regeln oben
 
-Dieser Block enthält die letzten Turns dieses Chats und relevante Rückbezüge aus früheren Chats des Users. Er hat **Vorrang** vor der allgemeinen Memory-Lese-Konvention weiter unten: wenn die aktuelle Nutzerfrage eine Follow-up auf einen der hier gelisteten Turns ist, brauchst du KEINEN Memory-Read, keine neue Fach-Agent-Query für Basis-Daten, und keinen anderen Zeitraum zu erfinden.
+Dieser Block enthält die letzten Turns dieses Chats und relevante Rückbezüge aus früheren Chats des Users. Er hat **Vorrang** vor der allgemeinen Memory-Lese-Konvention im System-Prompt oben: wenn die aktuelle Nutzerfrage eine Follow-up auf einen der hier gelisteten Turns ist, brauchst du KEINEN Memory-Read, keine neue Fach-Agent-Query für Basis-Daten, und keinen anderen Zeitraum zu erfinden.
 
 **Vertrauensregeln:**
 - \`## Letzte Turns in diesem Chat\` — das sind deine eigenen letzten Antworten in diesem Chat. Vertraue diesen Daten vollständig. Follow-ups wie "das gleiche nochmal als Line", "ohne Gutschriften", "und für Q4?", "zeig das als Chart" beziehen sich DIREKT auf diese Turns. Hole die Basis-Daten NICHT erneut über einen Fach-Agenten. Bereinigungen/Varianten gehen entweder per \`render_diagram\` (Chart-Variante mit angepassten Werten) oder per direkter Neu-Formulierung.
 - \`## Früher besprochene Entitäten\` und \`## Inhaltlich ähnliche Turns\` — aus anderen Chats des gleichen Users. Arbeitshypothese; bei konkreten Zahlen via Fach-Agent verifizieren.
 
 ${priorContext}`,
-      cache_control: { type: 'ephemeral' },
+      cache_control: ORCHESTRATOR_CACHE_CONTROL,
     });
   }
 
-  blocks.push({
-    type: 'text',
-    text: stableSystemPrompt,
-    cache_control: { type: 'ephemeral' },
-  });
   blocks.push({
     type: 'text',
     text: buildDateHeader(turnContext.currentTurnDate()),
@@ -2445,6 +2454,10 @@ Werkzeuge:
 ${graphBlock}${chatParticipantsBlock}${askUserChoiceBlock}${suggestFollowUpsBlock}${calendarBlock}${extraToolDocs.length > 0 ? '\n' + extraToolDocs.map((doc) => `- ${doc.trim()}`).join('\n') + '\n' : ''}
 Fach-Agenten (Routing-Regel: wähle anhand der Fragedomäne; bei Mischfragen beide/mehrere aufrufen und Ergebnisse zusammenführen):
 ${domainList}
+
+**Tool-Runden sparen** (jede Runde kostet den Nutzer Sekunden):
+- Voneinander unabhängige Tool-Calls (mehrere Fach-Agenten, Regel-Datei + Fach-Agent, mehrere Abfragen) setzt du im SELBEN Schritt ab — sie laufen parallel.
+- Formuliere eine Delegation vollständig in EINER Frage (Zeitraum, Filter, Gruppierung z. B. „je Monat“, gewünschte Felder), statt erst zu sondieren und dann nachzufassen.
 
 Memory-Namensräume (Konvention):
 - /memories/_rules/… → **gepflegte Regeln aus dem Repo**. Nicht eigenständig überschreiben oder löschen. Nur ergänzen, wenn der Nutzer es ausdrücklich bestätigt.
@@ -10999,7 +11012,7 @@ export class Orchestrator {
     // `toolOrdering.ts`; a reordered block is a silent, signal-free cache miss.
     const last = unique[unique.length - 1];
     return last
-      ? [...unique.slice(0, -1), { ...last, cache_control: { type: 'ephemeral' } }]
+      ? [...unique.slice(0, -1), { ...last, cache_control: ORCHESTRATOR_CACHE_CONTROL }]
       : unique;
   }
 

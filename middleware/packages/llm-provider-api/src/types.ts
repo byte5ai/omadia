@@ -135,6 +135,12 @@ export interface CacheHints {
   /** Cache everything up to and including the tool specs (Anthropic:
    *  `cache_control` on the last tool — stable across loop iterations). */
   readonly tools?: boolean;
+  /** Lifetime of EVERY cache breakpoint in the request; absent = the
+   *  provider's default (Anthropic: 5 minutes). `'1h'` keeps a stable prefix
+   *  warm across the 5–60 minute gaps between a user's turns (Anthropic
+   *  `ttl: "1h"`, writes at 2× instead of 1.25×). One value per request:
+   *  Anthropic requires longer-lived entries before shorter ones. */
+  readonly ttl?: '1h';
 }
 
 /** One block of a structured system prompt. The structured form exists so a
