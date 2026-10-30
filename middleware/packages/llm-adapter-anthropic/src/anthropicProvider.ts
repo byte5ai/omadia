@@ -39,6 +39,13 @@ type AnthropicMessageParam = {
 };
 
 const CACHE_EPHEMERAL = { type: 'ephemeral' } as const;
+const CACHE_EPHEMERAL_1H = { type: 'ephemeral', ttl: '1h' } as const;
+
+/** The `cache_control` for every breakpoint of a request — one TTL per
+ *  request (`CacheHints.ttl`), so no 5-minute entry can precede a 1-hour one. */
+function cacheControl(hints: CacheHints | undefined): typeof CACHE_EPHEMERAL | typeof CACHE_EPHEMERAL_1H {
+  return hints?.ttl === '1h' ? CACHE_EPHEMERAL_1H : CACHE_EPHEMERAL;
+}
 
 /** Narrow mapper for nested tool_result content — the type signature
  *  enforces Anthropic's constraint that tool results may only nest
@@ -126,7 +133,7 @@ function toAnthropicTools(
     // stable prefix across tool-loop iterations (localSubAgent convention).
     const cache =
       cacheHints?.tools === true && i === tools.length - 1
-        ? { cache_control: CACHE_EPHEMERAL }
+        ? { cache_control: cacheControl(cacheHints) }
         : {};
     // Provider-native server tool (memory, web_search, …): typed, schema
     // owned server side. Emit the `{ type, name }` shape — a custom-tool
@@ -300,13 +307,13 @@ function buildSystem(req: LlmRequest): unknown {
   if (system === undefined) return undefined;
   if (typeof system === 'string') {
     return req.cacheHints?.system === true
-      ? [{ type: 'text', text: system, cache_control: CACHE_EPHEMERAL }]
+      ? [{ type: 'text', text: system, cache_control: cacheControl(req.cacheHints) }]
       : system;
   }
   return system.map((b) => ({
     type: 'text',
     text: b.text,
-    ...(b.cache === true ? { cache_control: CACHE_EPHEMERAL } : {}),
+    ...(b.cache === true ? { cache_control: cacheControl(req.cacheHints) } : {}),
   }));
 }
 

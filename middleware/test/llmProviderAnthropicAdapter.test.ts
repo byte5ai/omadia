@@ -1706,3 +1706,35 @@ test('#1210 — a streamed complete() failure is classified like a buffered one'
     kind: 'overloaded',
   });
 });
+
+test('cacheHints.ttl 1h stamps the 1-hour TTL on every breakpoint (system blocks + last tool)', async () => {
+  const captured: Captured = {};
+  const provider = createAnthropicProvider({
+    client: mockClient(captured, textResponse()),
+  });
+  await provider.complete({
+    model: 'claude-opus-5-5',
+    maxTokens: 64,
+    system: [
+      { text: 'stable domain prompt', cache: true },
+      { text: 'prior context', cache: true },
+      { text: 'per-turn date header' },
+    ],
+    tools: [
+      { name: 'a', description: 'A', inputSchema: { type: 'object', properties: {} } },
+      { name: 'b', description: 'B', inputSchema: { type: 'object', properties: {} } },
+    ],
+    cacheHints: { tools: true, ttl: '1h' },
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+  });
+  const params = captured.params as Record<string, unknown>;
+  const long = { type: 'ephemeral', ttl: '1h' };
+  assert.deepEqual(params['system'], [
+    { type: 'text', text: 'stable domain prompt', cache_control: long },
+    { type: 'text', text: 'prior context', cache_control: long },
+    { type: 'text', text: 'per-turn date header' },
+  ]);
+  const tools = params['tools'] as Array<Record<string, unknown>>;
+  assert.equal(tools[0]?.['cache_control'], undefined);
+  assert.deepEqual(tools[1]?.['cache_control'], long);
+});
