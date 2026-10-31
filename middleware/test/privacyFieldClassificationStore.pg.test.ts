@@ -1,6 +1,6 @@
 /**
- * #1556 follow-up — `PgFieldClassificationStore` on the real 0065 migration
- * (applied twice: idempotent). Runs in its own schema; skips cleanly when no
+ * #1556 follow-up — `PgFieldClassificationStore` on the real 0065 + 0066
+ * migrations (each applied twice: idempotent). Runs in its own schema; skips cleanly when no
  * test Postgres is reachable.
  */
 
@@ -35,9 +35,11 @@ describe('#1556 field classification store against a real Postgres', { skip: !pg
     await bootstrap.query(`CREATE SCHEMA ${SCHEMA}`);
     await bootstrap.end();
     pool = new Pool({ connectionString: PG_URL, max: 2, options: `-c search_path=${SCHEMA},public` });
-    const sql = await readFile(resolve(MIGRATIONS_DIR, '0065_privacy_field_classification.sql'), 'utf8');
-    await pool.query(sql);
-    await pool.query(sql);
+    for (const file of ['0065_privacy_field_classification.sql', '0066_privacy_field_auto_approve.sql']) {
+      const sql = await readFile(resolve(MIGRATIONS_DIR, file), 'utf8');
+      await pool.query(sql);
+      await pool.query(sql);
+    }
     store = new PgFieldClassificationStore(pool);
   });
 
@@ -89,7 +91,7 @@ describe('#1556 field classification store against a real Postgres', { skip: !pg
     const classified = await store.get(row.id);
     assert.deepEqual(classified?.maskedPreview, ['•••• & ••••']);
     assert.equal(classified?.sampleVerdict?.sampleCount, 3);
-    assert.deepEqual(await store.countOpen(), { needsClarification: 1, suggested: 1, confirmedConflict: 0 });
+    assert.deepEqual(await store.countOpen(), { needsClarification: 1, suggested: 1, confirmedConflict: 0, autoRevoked: 0, autoApprovedNew: 0 });
     assert.equal(await store.lastComputedAt(), '2026-10-30T12:00:00.000Z');
 
     await store.saveDecision(
@@ -100,7 +102,7 @@ describe('#1556 field classification store against a real Postgres', { skip: !pg
     const decided = await store.get(row.id);
     assert.equal(decided?.status, 'rejected');
     assert.equal(decided?.decision?.byEmail, 'a@x');
-    assert.deepEqual(await store.countOpen(), { needsClarification: 1, suggested: 0, confirmedConflict: 0 });
+    assert.deepEqual(await store.countOpen(), { needsClarification: 1, suggested: 0, confirmedConflict: 0, autoRevoked: 0, autoApprovedNew: 0 });
 
     // The status CHECK admits confirmed_conflict, and it counts as open.
     await store.saveClassification(row.id, {
@@ -111,7 +113,7 @@ describe('#1556 field classification store against a real Postgres', { skip: !pg
       maskedPreview: [],
       computedAt: '2026-10-30T14:00:00.000Z',
     });
-    assert.deepEqual(await store.countOpen(), { needsClarification: 1, suggested: 0, confirmedConflict: 1 });
+    assert.deepEqual(await store.countOpen(), { needsClarification: 1, suggested: 0, confirmedConflict: 1, autoRevoked: 0, autoApprovedNew: 0 });
   });
 
   it('seeds a schema field once, never over an existing row, and its first sighting starts the count', async () => {
@@ -161,5 +163,73 @@ describe('#1556 field classification store against a real Postgres', { skip: !pg
     assert.equal(await store.lastVisit('admin'), null);
     await store.markVisit('admin', new Date('2026-10-30T14:00:00.000Z'));
     assert.equal(await store.lastVisit('admin'), '2026-10-30T14:00:00.000Z');
+  });
+
+  it('0066: auto decisions, batch ids, auto statuses in the counts, bulk batches', async () => {
+    await store.upsertObservation({
+      toolName: 'odoo_execute',
+      scope: 'sale.order',
+      fieldPath: 'team_id',
+      valueShape: 'm2o',
+      seenCount: 1,
+      firstSeenAt: '2026-10-31T08:00:00.000Z',
+      lastSeenAt: '2026-10-31T08:00:00.000Z',
+    });
+    const row = (await store.list()).find((r) => r.scope === 'sale.order' && r.fieldPath === 'team_id')!;
+    await store.markVisit('visitor', new Date('2026-10-31T09:00:00.000Z'));
+    await store.saveDecision(
+      row.id,
+      {
+        action: 'auto_approve',
+        fingerprint: 'fp',
+        byId: null,
+        byEmail: 'system:auto-classifier',
+        at: '2026-10-31T10:00:00.000Z',
+      },
+      'auto_approved',
+    );
+    const approved = await store.get(row.id);
+    assert.equal(approved?.status, 'auto_approved');
+    assert.equal(approved?.decision?.action, 'auto_approve');
+    assert.equal(approved?.decision?.batchId, null);
+    assert.equal((await store.countOpen('visitor')).autoApprovedNew, 1);
+    assert.equal((await store.countOpen('nobody')).autoApprovedNew, 0);
+    assert.equal((await store.countOpen()).autoApprovedNew, 0);
+
+    await store.saveDecision(
+      row.id,
+      { action: 'auto_revoke', fingerprint: 'fp', byId: null, byEmail: 'system:auto-classifier', at: '2026-10-31T11:00:00.000Z' },
+      'auto_revoked',
+    );
+    assert.equal((await store.countOpen('visitor')).autoRevoked, 1);
+
+    const batchId = await store.createBulkBatch({
+      actorId: '7b1f4a52-1111-4222-8333-444455556666',
+      actorEmail: 'admin@example.com',
+      entries: [{ candidateId: row.id, entry: 'odoo_execute:sale.order/team_id' }],
+    });
+    await store.saveDecision(
+      row.id,
+      { action: 'confirm', fingerprint: 'fp', byId: null, byEmail: 'admin@example.com', at: '2026-10-31T12:00:00.000Z', batchId },
+      'confirmed',
+    );
+    assert.equal((await store.get(row.id))?.decision?.batchId, batchId);
+    const latest = await store.latestOpenBulkBatch();
+    assert.equal(latest?.id, batchId);
+    assert.deepEqual(latest?.entries, [{ candidateId: row.id, entry: 'odoo_execute:sale.order/team_id' }]);
+    const second = await store.createBulkBatch({ actorId: null, actorEmail: 'b@x', entries: [] });
+    assert.equal((await store.latestOpenBulkBatch())?.id, second);
+    assert.equal(await store.markBulkBatchUndone(second, 'b@x', new Date()), true);
+    assert.equal(await store.markBulkBatchUndone(second, 'b@x', new Date()), false, 'once');
+    assert.equal((await store.latestOpenBulkBatch())?.id, batchId);
+    assert.equal((await store.getBulkBatch(second))?.undoneBy, 'b@x');
+
+    // The CHECKs still refuse anything else.
+    await assert.rejects(
+      pool.query(`UPDATE privacy_field_candidates SET status = 'bogus' WHERE id = $1`, [row.id]),
+    );
+    await assert.rejects(
+      pool.query(`UPDATE privacy_field_candidates SET decision = 'bulk' WHERE id = $1`, [row.id]),
+    );
   });
 });

@@ -517,7 +517,7 @@
     "teamsSignIn": "Teams sign-in",
     "llmAccess": "LLM access",
     "privacyFields": "Field classification",
-    "badgeLabel": "{count, plural, one {# field needs a decision} other {# fields need a decision}}"
+    "badgeLabel": "{count, plural, one {# field to review} other {# fields to review}}"
   },
   "conductor": {
     "title": "Conductor",
@@ -5309,7 +5309,9 @@
         "registry": "Plugin registries",
         "channel": "Channels",
         "privacyFieldClassification": "Privacy field decisions",
-        "privacyFieldPreview": "Privacy field value previews"
+        "privacyFieldPreview": "Privacy field value previews",
+        "privacyFieldAutoApprove": "Privacy field auto-approvals",
+        "privacyFieldAutoRevoke": "Privacy field auto-approvals revoked"
       }
     },
     "table": {
@@ -6580,12 +6582,16 @@
   "privacyFieldBanner": {
     "title": "{count, plural, one {# field waiting for a decision} other {# fields waiting for a decision}}",
     "body": "Tool results contained masked fields that may not be personal data. They stay masked until an admin decides.",
-    "cta": "Review fields"
+    "cta": "Review fields",
+    "autoRevoked": "{count, plural, one {# auto-approval revoked — needs review} other {# auto-approvals revoked — need review}}",
+    "autoApprovedNew": "{count, plural, one {# field auto-approved since your last visit} other {# fields auto-approved since your last visit}}",
+    "ctaAutoRevoked": "Review revoked",
+    "ctaAutoApproved": "See auto-approvals"
   },
   "adminPrivacyFields": {
     "metaTitle": "Field classification · omadia",
     "title": "Field classification",
-    "intro": "The Privacy Guard masks every field in tool results that it cannot prove to be non-personal. This page suggests fields that are probably safe to show in clear text — per source and model, so the same field name in another model stays masked. Nothing is cleared until an admin confirms: confirming adds a model-scoped entry to the Privacy Guard's non_personal_fields setting, and revert removes it again.",
+    "intro": "The Privacy Guard masks every field in tool results that it cannot prove to be non-personal. Fields it can prove non-personal (every relation target a known non-personal model, or a confident schema review with clean name checks) are auto-approved — model-scoped, never as a wildcard, and revertible. Every other field is suggested here and stays masked until an admin confirms it: confirming adds a model-scoped entry to the Privacy Guard's non_personal_fields setting, and revert removes it again.",
     "loading": "Loading fields…",
     "lastComputed": "Last computed: {when}",
     "neverComputed": "Not computed yet.",
@@ -6603,7 +6609,9 @@
       "confirmed": "Confirmed",
       "confirmed_conflict": "Confirmed — needs review",
       "rejected": "Rejected",
-      "kept_masked": "Kept masked"
+      "kept_masked": "Kept masked",
+      "auto_approved": "Auto-approved",
+      "auto_revoked": "Auto-approval revoked"
     },
     "fieldCount": "{count, plural, one {# field} other {# fields}}",
     "valueShape": "Value shape",
@@ -6637,14 +6645,21 @@
       "confirmed_conflict": "This field is in the list, but it now points to a person model or changed since it was confirmed — review it or remove it.",
       "sample_clean": "{count, plural, one {# sampled value} other {# sampled values}} showed no personal data.",
       "unknown": "Other reason ({code}).",
-      "legacy_entry": "Cleared by the legacy entry {entry} — it applies to all models."
+      "legacy_entry": "Cleared by the legacy entry {entry} — it applies to all models.",
+      "auto_approved": "Auto-approved by the auto-classifier.",
+      "auto_approved_known": "Auto-approved by the auto-classifier: every relation target is a known non-personal model.",
+      "auto_approved_haiku": "Auto-approved by the auto-classifier: a schema-only review rated the target non-personal ({confidence} confidence) and the name check of sampled values was clean.",
+      "auto_revoked": "The auto-approval was revoked because the field changed (person model, detector hit, or conflicting targets). Its entry was removed — it is masked again until you decide."
     },
     "decision": {
       "confirm": "Confirmed by {by} on {when}",
       "reject": "Rejected by {by} on {when}",
       "keep_masked": "Kept masked by {by} on {when}",
       "revert": "Reverted by {by} on {when}",
-      "unknownActor": "an admin"
+      "unknownActor": "an admin",
+      "auto_approve": "Auto-approved by {by} on {when}",
+      "auto_revoke": "Auto-approval revoked by {by} on {when}",
+      "systemActor": "the system (auto-classifier)"
     },
     "actions": {
       "confirm": "Confirm",
@@ -6655,7 +6670,8 @@
       "working": "Saving",
       "showSample": "Show sample",
       "hideSample": "Hide sample",
-      "loadingSample": "Loading sample"
+      "loadingSample": "Loading sample",
+      "takeOwnership": "Confirm as admin decision"
     },
     "sampleHeading": "Sampled values",
     "sampleEmpty": "No sample available yet.",
@@ -6669,7 +6685,12 @@
       "preview": "The sample could not be loaded.",
       "recompute": "Recompute failed.",
       "detail": "Technical detail: {message}",
-      "coveredByLegacy": "This field is cleared by the legacy entry {entry}, which applies to all models. Revert has no effect while it exists — convert it to model-scoped entries first."
+      "coveredByLegacy": "This field is cleared by the legacy entry {entry}, which applies to all models. Revert has no effect while it exists — convert it to model-scoped entries first.",
+      "bulkPreview": "The suggestions to accept could not be loaded.",
+      "bulkConfirm": "The suggestions could not be accepted.",
+      "undo": "The bulk action could not be undone.",
+      "undoNotLatest": "Only the latest bulk action can be undone, and this one is no longer the latest — reload the page.",
+      "undoAlreadyUndone": "This bulk action was already undone."
     },
     "source": "Source",
     "label": "Label",
@@ -6703,6 +6724,53 @@
         "notFound": "The entry {entry} is no longer in the setting. The list has been reloaded.",
         "convert": "The entry {entry} could not be converted."
       }
+    },
+    "bulk": {
+      "acceptSuggestions": "Accept suggestions",
+      "acceptGroup": "Accept all in this group",
+      "acceptGroupLabel": "Accept all suggestions of {tool}",
+      "dialogTitle": "Accept suggestions",
+      "dialogTitleTool": "Accept suggestions of {tool}",
+      "dialogBody": "Each field gets its model-scoped entry in non_personal_fields and is shown in clear text from then on. The server checks every field again; fields that changed are skipped. You can undo this as the latest bulk action.",
+      "loadingPreview": "Loading suggestions…",
+      "nothingEligible": "No suggestion can be accepted right now.",
+      "count": "{count, plural, one {# field will be accepted} other {# fields will be accepted}}",
+      "byReason": "By reason",
+      "byTool": "By tool / source",
+      "fieldsHeading": "Fields",
+      "moreNotListed": "{count, plural, one {# more field is} other {# more fields are}} not listed.",
+      "confirm": "{count, plural, one {Accept # field} other {Accept # fields}}",
+      "confirmPending": "Accept",
+      "cancel": "Cancel",
+      "applying": "Accepting",
+      "basis": {
+        "known_non_personal": "Known non-personal model",
+        "haiku": "Schema review (Haiku)",
+        "unknown": "Other ({code})"
+      },
+      "applied": "{count, plural, =0 {No field accepted.} one {# field accepted.} other {# fields accepted.}}",
+      "skippedHeading": "{count, plural, one {# field skipped:} other {# fields skipped:}}",
+      "remaining": "{count, plural, one {# more field can be accepted} other {# more fields can be accepted}} — run the action again.",
+      "skip": {
+        "not_suggested": "no longer suggested",
+        "person_model": "points to a person model",
+        "detector_hit": "the detector found personal data",
+        "conflict": "points to conflicting models",
+        "no_scope": "the source names no model",
+        "invalid_field": "cannot be written as a single entry",
+        "already_covered": "already in the setting",
+        "stale": "changed since the preview",
+        "not_present": "the entry is no longer in the setting",
+        "not_owned": "the entry now belongs to another decision",
+        "unknown": "other reason ({code})"
+      },
+      "undo": "Undo last bulk action",
+      "undoTitle": "Undo the last bulk action?",
+      "undoBody": "{count, plural, one {The # entry} other {The # entries}} accepted on {when} will be removed from non_personal_fields; the fields are masked again.",
+      "undoBodyNoDate": "{count, plural, one {The # entry} other {The # entries}} of the last bulk action will be removed from non_personal_fields; the fields are masked again.",
+      "undoConfirm": "Undo",
+      "undoing": "Undoing",
+      "undone": "{count, plural, =0 {No entry removed.} one {# entry removed — the field is masked again.} other {# entries removed — the fields are masked again.}}"
     }
   }
 }

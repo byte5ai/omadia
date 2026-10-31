@@ -8,22 +8,31 @@ import { Button } from '@/app/_components/ui/Button';
 import {
   ApiError,
   FIELD_CLASSIFICATION_STATUSES,
+  type FieldBulkBatch,
+  type FieldBulkFilter,
+  type FieldBulkItem,
+  type FieldBulkResult,
+  type FieldBulkUndoResult,
   type FieldClassificationAction,
   type FieldClassificationItem,
   type FieldClassificationList,
   type FieldClassificationStatus,
   decideFieldClassification,
+  getLatestFieldBulk,
   listFieldClassifications,
   recomputeFieldClassifications,
 } from '../../../_lib/api';
 import { serverErrorMessage } from '../../../_lib/apiErrorMessage';
+import { BulkAcceptDialog, BulkResultSummary, UndoBulk, UndoResultSummary } from './BulkAccept';
 import { type CardNotice, ErrorLine, FieldCard, LEGACY_VIEW_HREF } from './FieldCard';
 import { formatWhen } from './fieldText';
 
 /**
  * `/admin/privacy-fields` (#1556 follow-up) — suggestions for the Privacy
- * Guard's `non_personal_fields`. Suggest only: every field stays masked until
- * an admin confirms it, and confirm is the only action that changes config.
+ * Guard's `non_personal_fields`. Fields the guard can prove non-personal are
+ * auto-approved (`auto_approved`, revertible); every other field stays masked
+ * until an admin confirms it — one by one or in bulk ("Accept suggestions",
+ * undoable as the latest bulk action).
  * The filter lives in the URL (`?status=`, `?tool=`) so the banner and nav
  * badge can deep-link into it.
  */
@@ -91,6 +100,12 @@ export function PrivacyFieldsView({
     null,
   );
   const [notice, setNotice] = useState<ItemNotice | null>(null);
+  const [bulkFilter, setBulkFilter] = useState<FieldBulkFilter | null>(null);
+  const [bulkResult, setBulkResult] = useState<
+    { result: FieldBulkResult; items: readonly FieldBulkItem[] } | null
+  >(null);
+  const [undoResult, setUndoResult] = useState<FieldBulkUndoResult | null>(null);
+  const [latestBatch, setLatestBatch] = useState<FieldBulkBatch | null>(null);
   const [recompute, setRecompute] = useState<
     { kind: 'idle' } | { kind: 'running' } | { kind: 'done' } | { kind: 'error'; detail: string | null }
   >({ kind: 'idle' });
@@ -100,13 +115,23 @@ export function PrivacyFieldsView({
     [status, tool],
   );
 
+  // The undo offer is optional: a failed read just hides it.
+  const loadLatest = useCallback(async (): Promise<void> => {
+    setLatestBatch(await getLatestFieldBulk().catch(() => null));
+  }, []);
+
   // The page remounts this view (keyed on the filter) when the URL changes.
   useEffect(() => {
     let cancelled = false;
     // Fetch-on-mount: state is touched only after the awaited round-trip.
     void (async () => {
-      const next = await fetchList(status, tool);
-      if (!cancelled) setState(next);
+      const [next, latest] = await Promise.all([
+        fetchList(status, tool),
+        getLatestFieldBulk().catch(() => null),
+      ]);
+      if (cancelled) return;
+      setState(next);
+      setLatestBatch(latest);
     })();
     return () => {
       cancelled = true;
@@ -143,6 +168,24 @@ export function PrivacyFieldsView({
     }
   };
 
+  const openBulk = (filter: FieldBulkFilter): void => {
+    setBulkResult(null);
+    setUndoResult(null);
+    setBulkFilter(filter);
+  };
+
+  const bulkDone = async (result: FieldBulkResult, items: readonly FieldBulkItem[]): Promise<void> => {
+    setBulkFilter(null);
+    setBulkResult({ result, items });
+    await Promise.all([load(), loadLatest()]);
+  };
+
+  const undone = async (result: FieldBulkUndoResult): Promise<void> => {
+    setBulkResult(null);
+    setUndoResult(result);
+    await Promise.all([load(), loadLatest()]);
+  };
+
   const runRecompute = async (): Promise<void> => {
     setRecompute({ kind: 'running' });
     try {
@@ -157,6 +200,7 @@ export function PrivacyFieldsView({
   const data = state.kind === 'ready' ? state.data : null;
   const groups = useMemo(() => groupByTool(data?.items ?? []), [data]);
   const lastComputed = formatWhen(data?.computedAt, format);
+  const suggestedCount = data?.counts.suggested ?? 0;
   // A notice whose item left this tab (e.g. confirmed → `confirmed`) shows on top.
   const orphanNotice =
     notice !== null && !(data?.items ?? []).some((i) => i.id === notice.itemId) ? notice : null;
@@ -176,16 +220,39 @@ export function PrivacyFieldsView({
         <p className="text-[13px] text-[color:var(--fg-muted)]" data-testid="last-computed">
           {lastComputed !== null ? t('lastComputed', { when: lastComputed }) : t('neverComputed')}
         </p>
-        <Button
-          size="sm"
-          variant="secondary"
-          busy={recompute.kind === 'running'}
-          busyLabel={t('recomputing')}
-          onClick={() => void runRecompute()}
-        >
-          {t('recompute')}
-        </Button>
+        <div className="flex flex-wrap items-center gap-3">
+          {latestBatch !== null ? (
+            <UndoBulk batch={latestBatch} onUndone={(r) => void undone(r)} />
+          ) : null}
+          <Button
+            size="sm"
+            variant="primary"
+            data-testid="bulk-accept"
+            disabled={suggestedCount === 0}
+            onClick={() => openBulk({ status: 'suggested', ...(tool ? { tool } : {}) })}
+          >
+            {t('bulk.acceptSuggestions')}
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            busy={recompute.kind === 'running'}
+            busyLabel={t('recomputing')}
+            onClick={() => void runRecompute()}
+          >
+            {t('recompute')}
+          </Button>
+        </div>
       </div>
+      {bulkResult !== null ? <BulkResultSummary result={bulkResult.result} items={bulkResult.items} /> : null}
+      {undoResult !== null ? <UndoResultSummary result={undoResult} /> : null}
+      {bulkFilter !== null ? (
+        <BulkAcceptDialog
+          filter={bulkFilter}
+          onCancel={() => setBulkFilter(null)}
+          onDone={(r, items) => void bulkDone(r, items)}
+        />
+      ) : null}
       {recompute.kind === 'done' ? (
         <p role="status" className="mb-4 text-[13px] text-[color:var(--accent)]">
           {t('recomputeDone')}
@@ -263,6 +330,18 @@ export function PrivacyFieldsView({
                 <span className="text-xs text-[color:var(--fg-muted)]">
                   {t('fieldCount', { count: items.length })}
                 </span>
+                {status === 'suggested' ? (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="ml-auto"
+                    data-testid={`bulk-accept-group-${toolName}`}
+                    aria-label={t('bulk.acceptGroupLabel', { tool: toolName })}
+                    onClick={() => openBulk({ status: 'suggested', tool: toolName })}
+                  >
+                    {t('bulk.acceptGroup')}
+                  </Button>
+                ) : null}
               </h2>
               <ul className="flex flex-col gap-3">
                 {items.map((item) => (

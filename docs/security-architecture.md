@@ -2117,7 +2117,7 @@ receipt (`operatorClearedFields` with its `scope`, "In clear by admin rule" in
 the card).
 
 **Suggestions for that list (#1556 follow-up, contract v2).** omadia proposes
-entries; it never writes one. The privacy guard records masked fields of every
+entries; it writes one itself only through the auto-approval below. The privacy guard records masked fields of every
 interned tool result schema-only, one observation per tool + scope + field
 (`fieldObservations.ts`; never `sub-agent`, canvas producers or `v4_*` verbs,
 never the `key` / `value` / `groups` fields of a grouped `query_dataset`
@@ -2198,6 +2198,64 @@ shown). Residual: `provide` is ungated, so a plugin that activates first could
 register `privacyFieldSamples` itself; it would receive field keys (schema)
 and could show fabricated samples, never read real ones. The banner and nav
 badge are informational.
+
+**Auto-approval — the one exception to "an admin confirms every entry"
+(2026-10-31).** With the privacy guard's `auto_approve_non_personal` (boolean,
+default ON) the recompute pass writes the scoped entry itself for a narrow set
+of fields (`autoApprove.ts`, `autoApprovePass.ts`); off, the pass is exactly
+the suggest-only behaviour above. Eligible is either (a) every relation target
+is in the built-in known-non-personal catalog — deterministic, so neither a C1
+vet nor a chat sighting is required (a field seeded from `odoo.schema`
+qualifies) — or (b) the schema-only verdict (of every unknown target, or of
+the source for a field without relation information) is `non-personal` with a
+confidence strictly above `auto_approve_confidence` (string setting, 0.5–0.99,
+default 0.85, `0,9` accepted, anything else falls back to the default) AND a
+clean C1 vet of a non-empty sample; without C1 a (b) field stays "needs
+clarification". The safeguards override both: never for a person-model
+relation target, never for a field OF a person model unless every relation
+target is known non-personal (so `hr.employee/department_id` → `hr.department`
+is auto-approved: its value is a department name, while text fields of a
+person model are personal anyway), never
+on conflicting targets, an identity hit, a C1 hit or near-miss, scope `-`, a
+value shape other than text / m2o or a name that is not exactly one scoped
+entry; never for a field that already carries ANY decision (an admin's
+confirm / reject / keep masked / revert, an earlier auto-revoke — stricter than
+"the current fingerprint": a reverted or revoked field is never auto-approved
+again) and never for a field the setting already covers. The entry is always
+`configEntryOf` — model-scoped, never a wildcard. The pass runs only on
+lifecycle events, at boot, every 6 h and on demand (never per chat turn),
+writes the setting ONCE per pass through the same per-plugin editor as the
+admin routes (`configEditor.ts`), approves at most 1000 fields per pass, and
+records per field the decision `auto_approve` (actor `system:auto-classifier`,
+`systemAuditActor` puts the label into the free-text actor column) and an
+audit row `privacy.field_auto_approve` (`after`: basis, confidence, entry). A
+decision row that cannot be written takes its entry out again. Its log line
+carries counts only. Drift: every pass re-checks auto-approved fields — one
+that now has a person target, a detector hit or near-miss, or conflicting
+targets loses exactly its scoped entry, gets decision `auto_revoke`, status
+`auto_revoked` ("needs review", counted in `fields_needing_clarification`
+and `fields_auto_revoked`) and an audit row `privacy.field_auto_revoke` with
+the reason; this runs with the switch off too. Turning the switch off does NOT
+remove entries already auto-approved (no mass revoke) — it only stops new
+ones; an admin reverts them on the page (`revert` removes the entry for good)
+or takes ownership (`confirm`). The posture adds `fields_auto_approved_new`
+(auto-approvals since the requesting admin's last visit of the page) so the
+banner tells admins what changed without them. `POST …/recompute?dryRun=1`
+reports what the pass WOULD approve (counts per basis / tool / source and
+field names, no value, no write). Residual: an auto-approved (b) field rests
+on a schema verdict plus C1's vet of a bounded sample; names C1 misses in
+values it has not seen reach the model until the drift check or an admin
+catches them — the same residual as an admin's confirm on the same evidence.
+
+**Bulk accept.** An admin can confirm every open suggestion at once
+(`bulk.ts`): the server re-validates each candidate against the live
+classification (status exactly `suggested`, so no personal, detector-hit,
+conflicting, `-`-scoped or already covered field), writes all entries in ONE
+config write under the plugin lock (at most 500 per call), records decision
+`confirm` with a batch id, one audit row per field with the admin as actor,
+and a `privacy_field_bulk_batches` row listing exactly the entries written.
+Only the latest batch can be undone, and the undo removes only entries that
+are still listed and still owned by that batch's decision.
 
 These tool results skip the digest:
 

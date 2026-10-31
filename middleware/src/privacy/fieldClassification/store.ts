@@ -4,8 +4,10 @@
  * `privacy_field_candidates` (one row per tool + scope + field path),
  * `privacy_model_verdicts` (cached schema-only verdicts) and
  * `privacy_field_classification_visits` (per-admin last visit), created by
- * `migrations/0065_privacy_field_classification.sql`. Every statement is
- * parameterized. No column holds a field value.
+ * `migrations/0065_privacy_field_classification.sql`;
+ * `privacy_field_bulk_batches` (bulk accepts, for undo) and
+ * `decision_batch_id` from `0066_privacy_field_auto_approve.sql`. Every
+ * statement is parameterized. No column holds a field value.
  *
  * `InMemoryFieldClassificationStore` is the same contract without Postgres,
  * for tests and for the in-memory backend's absence of a pool.
@@ -31,6 +33,24 @@ export interface CandidateDecision {
   readonly byId: string | null;
   readonly byEmail: string | null;
   readonly at: string;
+  /** The bulk batch the decision belongs to; null / absent for one field. */
+  readonly batchId?: string | null;
+}
+
+/** One entry a bulk accept wrote. */
+export interface BulkBatchEntry {
+  readonly candidateId: string;
+  readonly entry: string;
+}
+
+export interface BulkBatch {
+  readonly id: string;
+  readonly actorId: string | null;
+  readonly actorEmail: string | null;
+  readonly createdAt: string;
+  readonly undoneAt: string | null;
+  readonly undoneBy: string | null;
+  readonly entries: readonly BulkBatchEntry[];
 }
 
 export interface FieldCandidate {
@@ -86,6 +106,11 @@ export interface OpenFieldCounts {
   readonly suggested: number;
   /** Confirmed fields that now point to a person model or changed since. */
   readonly confirmedConflict: number;
+  /** Auto-approvals the recompute took back; they need review. */
+  readonly autoRevoked: number;
+  /** Fields auto-approved after the visitor's last visit of the page; 0
+   *  without a visitor or a recorded visit. */
+  readonly autoApprovedNew: number;
 }
 
 export interface FieldClassificationStore {
@@ -105,10 +130,21 @@ export interface FieldClassificationStore {
   saveModelVerdicts(verdicts: readonly Omit<StoredModelVerdict, 'decidedAt'>[]): Promise<void>;
   /** Fields an admin still has to look at, per open status (a decision
    *  moves the status away from each of them). */
-  countOpen(): Promise<OpenFieldCounts>;
+  countOpen(visitor?: string): Promise<OpenFieldCounts>;
   lastComputedAt(): Promise<string | null>;
   lastVisit(actor: string): Promise<string | null>;
   markVisit(actor: string, at: Date): Promise<void>;
+  /** Record a bulk accept; returns its id. */
+  createBulkBatch(batch: {
+    readonly actorId: string | null;
+    readonly actorEmail: string | null;
+    readonly entries: readonly BulkBatchEntry[];
+  }): Promise<string>;
+  getBulkBatch(id: string): Promise<BulkBatch | undefined>;
+  /** The most recent batch not undone yet. */
+  latestOpenBulkBatch(): Promise<BulkBatch | undefined>;
+  /** Mark a batch undone; false when it already was (or does not exist). */
+  markBulkBatchUndone(id: string, by: string, at: Date): Promise<boolean>;
 }
 
 // ---------------------------------------------------------------------------
@@ -133,6 +169,7 @@ interface CandidateRow {
   decided_by_id: string | null;
   decided_by_email: string | null;
   decided_at: Date | null;
+  decision_batch_id: string | null;
   first_seen_at: Date;
   last_seen_at: Date;
   seen_count: number;
@@ -142,7 +179,7 @@ interface CandidateRow {
 
 const CANDIDATE_COLS = `id, tool_name, scope, field_path, label, value_shape, relation_models,
   status, reasons, fingerprint, sample_verdict, masked_preview, decision, decision_fingerprint, decided_by_id,
-  decided_by_email, decided_at, first_seen_at, last_seen_at, seen_count, computed_at,
+  decided_by_email, decided_at, decision_batch_id, first_seen_at, last_seen_at, seen_count, computed_at,
   last_status_change_at`;
 
 function toCandidate(row: CandidateRow): FieldCandidate {
@@ -167,6 +204,7 @@ function toCandidate(row: CandidateRow): FieldCandidate {
             byId: row.decided_by_id,
             byEmail: row.decided_by_email,
             at: row.decided_at.toISOString(),
+            batchId: row.decision_batch_id,
           }
         : null,
     firstSeenAt: row.first_seen_at.toISOString(),
@@ -177,13 +215,47 @@ function toCandidate(row: CandidateRow): FieldCandidate {
   };
 }
 
-/** Open counts from the statuses of the listable rows. */
-function countOpenOf(statuses: readonly FieldStatus[]): OpenFieldCounts {
-  const of = (status: FieldStatus): number => statuses.filter((s) => s === status).length;
+/** Open counts from the listable rows: their status and, for
+ *  `auto_approved`, when they were decided. */
+function countOpenOf(
+  rows: readonly { readonly status: FieldStatus; readonly decidedAt: string | null }[],
+  lastVisit: string | null,
+): OpenFieldCounts {
+  const of = (status: FieldStatus): number => rows.filter((r) => r.status === status).length;
   return {
     needsClarification: of('needs_clarification'),
     suggested: of('suggested'),
     confirmedConflict: of('confirmed_conflict'),
+    autoRevoked: of('auto_revoked'),
+    autoApprovedNew:
+      lastVisit === null
+        ? 0
+        : rows.filter((r) => r.status === 'auto_approved' && r.decidedAt !== null && r.decidedAt > lastVisit)
+            .length,
+  };
+}
+
+interface BulkBatchRow {
+  id: string;
+  actor_id: string | null;
+  actor_email: string | null;
+  created_at: Date;
+  undone_at: Date | null;
+  undone_by: string | null;
+  entries: BulkBatchEntry[];
+}
+
+const BULK_COLS = 'id, actor_id, actor_email, created_at, undone_at, undone_by, entries';
+
+function toBulkBatch(row: BulkBatchRow): BulkBatch {
+  return {
+    id: row.id,
+    actorId: row.actor_id,
+    actorEmail: row.actor_email,
+    createdAt: row.created_at.toISOString(),
+    undoneAt: row.undone_at?.toISOString() ?? null,
+    undoneBy: row.undone_by,
+    entries: Array.isArray(row.entries) ? row.entries : [],
   };
 }
 
@@ -284,7 +356,7 @@ export class PgFieldClassificationStore implements FieldClassificationStore {
     await this.pool.query(
       `UPDATE privacy_field_candidates SET
          decision = $2, decision_fingerprint = $3, decided_by_id = $4,
-         decided_by_email = $5, decided_at = $6,
+         decided_by_email = $5, decided_at = $6, decision_batch_id = $8,
          last_status_change_at = CASE WHEN status IS DISTINCT FROM $7 THEN NOW() ELSE last_status_change_at END,
          status = $7
        WHERE id = $1`,
@@ -296,6 +368,7 @@ export class PgFieldClassificationStore implements FieldClassificationStore {
         decision?.byEmail ?? null,
         decision?.at ?? null,
         status,
+        decision?.batchId ?? null,
       ],
     );
   }
@@ -345,16 +418,19 @@ export class PgFieldClassificationStore implements FieldClassificationStore {
     }
   }
 
-  async countOpen(): Promise<OpenFieldCounts> {
+  async countOpen(visitor?: string): Promise<OpenFieldCounts> {
     const result = await this.pool.query<{
       tool_name: string;
       scope: string;
       field_path: string;
       status: FieldStatus;
+      decided_at: Date | null;
     }>(
-      `SELECT tool_name, scope, field_path, status FROM privacy_field_candidates
-        WHERE status IN ('needs_clarification', 'suggested', 'confirmed_conflict')`,
+      `SELECT tool_name, scope, field_path, status, decided_at FROM privacy_field_candidates
+        WHERE status IN ('needs_clarification', 'suggested', 'confirmed_conflict',
+                         'auto_revoked', 'auto_approved')`,
     );
+    const lastVisit = visitor !== undefined ? await this.lastVisit(visitor) : null;
     // The page hides rows that cannot form one scoped entry (the grammar
     // lives in the guard's parser, not in SQL); so does the count.
     return countOpenOf(
@@ -362,7 +438,8 @@ export class PgFieldClassificationStore implements FieldClassificationStore {
         .filter((r) =>
           isValidFieldIdentity({ toolName: r.tool_name, scope: r.scope, fieldPath: r.field_path }),
         )
-        .map((r) => r.status),
+        .map((r) => ({ status: r.status, decidedAt: r.decided_at?.toISOString() ?? null })),
+      lastVisit,
     );
   }
 
@@ -388,6 +465,48 @@ export class PgFieldClassificationStore implements FieldClassificationStore {
       [actor, at.toISOString()],
     );
   }
+
+  async createBulkBatch(batch: {
+    readonly actorId: string | null;
+    readonly actorEmail: string | null;
+    readonly entries: readonly BulkBatchEntry[];
+  }): Promise<string> {
+    const result = await this.pool.query<{ id: string }>(
+      `INSERT INTO privacy_field_bulk_batches (actor_id, actor_email, entries)
+       VALUES ($1, $2, $3::jsonb) RETURNING id`,
+      [batch.actorId, batch.actorEmail, JSON.stringify(batch.entries)],
+    );
+    const id = result.rows[0]?.id;
+    if (id === undefined) throw new Error('bulk batch insert returned no id');
+    return id;
+  }
+
+  async getBulkBatch(id: string): Promise<BulkBatch | undefined> {
+    const result = await this.pool.query<BulkBatchRow>(
+      `SELECT ${BULK_COLS} FROM privacy_field_bulk_batches WHERE id = $1`,
+      [id],
+    );
+    const row = result.rows[0];
+    return row ? toBulkBatch(row) : undefined;
+  }
+
+  async latestOpenBulkBatch(): Promise<BulkBatch | undefined> {
+    const result = await this.pool.query<BulkBatchRow>(
+      `SELECT ${BULK_COLS} FROM privacy_field_bulk_batches
+        WHERE undone_at IS NULL ORDER BY created_at DESC, id DESC LIMIT 1`,
+    );
+    const row = result.rows[0];
+    return row ? toBulkBatch(row) : undefined;
+  }
+
+  async markBulkBatchUndone(id: string, by: string, at: Date): Promise<boolean> {
+    const result = await this.pool.query(
+      `UPDATE privacy_field_bulk_batches SET undone_at = $2, undone_by = $3
+        WHERE id = $1 AND undone_at IS NULL`,
+      [id, at.toISOString(), by],
+    );
+    return (result.rowCount ?? 0) > 0;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -398,6 +517,8 @@ export class InMemoryFieldClassificationStore implements FieldClassificationStor
   private readonly rows = new Map<string, FieldCandidate>();
   private readonly verdicts = new Map<string, StoredModelVerdict>();
   private readonly visits = new Map<string, string>();
+  private readonly batches = new Map<string, BulkBatch>();
+  private batchSeq = 0;
 
   constructor(private readonly now: () => Date = () => new Date()) {}
 
@@ -512,9 +633,12 @@ export class InMemoryFieldClassificationStore implements FieldClassificationStor
     for (const v of verdicts) this.verdicts.set(v.model, { ...v, decidedAt: at });
   }
 
-  async countOpen(): Promise<OpenFieldCounts> {
+  async countOpen(visitor?: string): Promise<OpenFieldCounts> {
     return countOpenOf(
-      [...this.rows.values()].filter((r) => isValidFieldIdentity(r)).map((r) => r.status),
+      [...this.rows.values()]
+        .filter((r) => isValidFieldIdentity(r))
+        .map((r) => ({ status: r.status, decidedAt: r.decision?.at ?? null })),
+      visitor !== undefined ? await this.lastVisit(visitor) : null,
     );
   }
 
@@ -532,5 +656,43 @@ export class InMemoryFieldClassificationStore implements FieldClassificationStor
 
   async markVisit(actor: string, at: Date): Promise<void> {
     this.visits.set(actor, at.toISOString());
+  }
+
+  async createBulkBatch(batch: {
+    readonly actorId: string | null;
+    readonly actorEmail: string | null;
+    readonly entries: readonly BulkBatchEntry[];
+  }): Promise<string> {
+    const id = randomUUID();
+    // A sequence keeps `latestOpenBulkBatch` exact within one millisecond.
+    this.batchSeq += 1;
+    const createdAt = new Date(this.now().getTime() + this.batchSeq).toISOString();
+    this.batches.set(id, {
+      id,
+      actorId: batch.actorId,
+      actorEmail: batch.actorEmail,
+      createdAt,
+      undoneAt: null,
+      undoneBy: null,
+      entries: [...batch.entries],
+    });
+    return id;
+  }
+
+  async getBulkBatch(id: string): Promise<BulkBatch | undefined> {
+    return this.batches.get(id);
+  }
+
+  async latestOpenBulkBatch(): Promise<BulkBatch | undefined> {
+    return [...this.batches.values()]
+      .filter((b) => b.undoneAt === null)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+  }
+
+  async markBulkBatchUndone(id: string, by: string, at: Date): Promise<boolean> {
+    const batch = this.batches.get(id);
+    if (batch === undefined || batch.undoneAt !== null) return false;
+    this.batches.set(id, { ...batch, undoneAt: at.toISOString(), undoneBy: by });
+    return true;
   }
 }

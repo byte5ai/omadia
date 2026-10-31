@@ -39,6 +39,41 @@ changelog.
 ### Added
 - Conductor: people directory (`@omadia/channel-sdk` `PeopleDirectoryProvider`, kernel `PeopleDirectoryRegistry`, `GET /conductors/people`), MCP tools as action steps (`mcp:<serverId>:<tool>`, service delegation + scan-verdict gate), builder `missingCapabilities` / `personSuggestions` with inline MCP connect modal and person picker in the web-ui.
 
+### Added — Non-personal fields approved automatically, bulk accept on the field classification page
+
+2026-10-31. The field classification no longer waits for an admin on fields
+that are safe by construction.
+
+- **Auto-approval (privacy guard setting `auto_approve_non_personal`, default
+  on).** The classification pass writes the scoped `non_personal_fields`
+  entry itself when every relation target is a known non-personal model
+  (department, company, stage, tag …), or when the schema-only verdict is
+  non-personal above `auto_approve_confidence` (default 0.85) and the name
+  detector vetted the values clean. Never for a field pointing to or read
+  from a person model, conflicting targets, any detector hit or near-miss, a
+  tool whose results name no model, a field an admin already decided on, or
+  one already listed. One config write per pass (never per chat turn), one
+  audit row per field (`privacy.field_auto_approve`, actor
+  `system:auto-classifier`). A field that later drifts to a person model, a
+  detector hit or conflicting targets is taken out again
+  (`privacy.field_auto_revoke`, status "auto-approval revoked — needs
+  review"). Off: suggestions only, as before; switching it off keeps the
+  entries already approved. `POST …/recompute?dryRun=1` reports what a pass
+  would approve, without writing.
+- **New statuses** `auto_approved` (admin can take it over or revert it — a
+  reverted field is never auto-approved again) and `auto_revoked`; the posture
+  adds `fields_auto_approved_new` (since your last visit) and
+  `fields_auto_revoked` (also counted as needing clarification).
+- **Bulk accept.** `bulk/preview`, `bulk/confirm`, `bulk/latest`,
+  `bulk/:batchId/undo`: every open suggestion (or a tool / source / id
+  selection) re-validated server-side and confirmed in one config write, at
+  most 500 per call, audited per field with a batch id; the latest batch can
+  be undone entry by entry.
+- **Migration `0066_privacy_field_auto_approve`**: decision / status CHECKs
+  extended, `decision_batch_id`, table `privacy_field_bulk_batches`.
+
+`@omadia/plugin-privacy-guard` 0.16.0 (setup fields only).
+
 ### Fixed
 - Conductor builder invented action ids without any signal: the prompt now lists the live action catalog and the turn reports refs no invoker can run (computed beside `validate()` so the self-correction retry keeps the placeholder step).
 

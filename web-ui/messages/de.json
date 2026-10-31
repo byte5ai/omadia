@@ -517,7 +517,7 @@
     "teamsSignIn": "Teams-Anmeldung",
     "llmAccess": "LLM-Zugang",
     "privacyFields": "Feldklassifizierung",
-    "badgeLabel": "{count, plural, one {# Feld braucht eine Entscheidung} other {# Felder brauchen eine Entscheidung}}"
+    "badgeLabel": "{count, plural, one {# Feld zu prüfen} other {# Felder zu prüfen}}"
   },
   "conductor": {
     "title": "Conductor",
@@ -5309,7 +5309,9 @@
         "registry": "Plugin-Registries",
         "channel": "Kanäle",
         "privacyFieldClassification": "Entscheidungen zur Feldklassifizierung",
-        "privacyFieldPreview": "Einsichten in Feldwerte (Klassifizierung)"
+        "privacyFieldPreview": "Einsichten in Feldwerte (Klassifizierung)",
+        "privacyFieldAutoApprove": "Automatische Feldfreigaben",
+        "privacyFieldAutoRevoke": "Zurückgenommene automatische Feldfreigaben"
       }
     },
     "table": {
@@ -6580,12 +6582,16 @@
   "privacyFieldBanner": {
     "title": "{count, plural, one {# Feld wartet auf eine Entscheidung} other {# Felder warten auf eine Entscheidung}}",
     "body": "Tool-Ergebnisse enthielten maskierte Felder, die womöglich keine personenbezogenen Daten sind. Sie bleiben maskiert, bis ein Admin entscheidet.",
-    "cta": "Felder prüfen"
+    "cta": "Felder prüfen",
+    "autoRevoked": "{count, plural, one {# automatische Freigabe zurückgenommen — bitte prüfen} other {# automatische Freigaben zurückgenommen — bitte prüfen}}",
+    "autoApprovedNew": "{count, plural, one {# Feld seit deinem letzten Besuch automatisch freigegeben} other {# Felder seit deinem letzten Besuch automatisch freigegeben}}",
+    "ctaAutoRevoked": "Zurückgenommene prüfen",
+    "ctaAutoApproved": "Automatische Freigaben ansehen"
   },
   "adminPrivacyFields": {
     "metaTitle": "Feldklassifizierung · omadia",
     "title": "Feldklassifizierung",
-    "intro": "Der Privacy Guard maskiert jedes Feld in Tool-Ergebnissen, das er nicht als nicht-personenbezogen belegen kann. Diese Seite schlägt Felder vor, die vermutlich im Klartext angezeigt werden dürfen — je Quelle und Modell, sodass derselbe Feldname in einem anderen Modell maskiert bleibt. Nichts wird freigegeben, bevor ein Admin bestätigt: Bestätigen fügt einen modellbezogenen Eintrag zur Einstellung non_personal_fields des Privacy Guard hinzu, Zurücknehmen entfernt ihn wieder.",
+    "intro": "Der Privacy Guard maskiert jedes Feld in Tool-Ergebnissen, das er nicht als nicht-personenbezogen belegen kann. Felder, die er als nicht-personenbezogen belegen kann (jedes Relationsziel ist ein bekanntes nicht-personenbezogenes Modell, oder eine sichere Schema-Prüfung mit unauffälliger Namensprüfung), werden automatisch freigegeben — modellbezogen, nie als Platzhalter, und zurücknehmbar. Alle anderen Felder werden hier vorgeschlagen und bleiben maskiert, bis ein Admin bestätigt: Bestätigen fügt einen modellbezogenen Eintrag zur Einstellung non_personal_fields des Privacy Guard hinzu, Zurücknehmen entfernt ihn wieder.",
     "loading": "Felder werden geladen …",
     "lastComputed": "Zuletzt berechnet: {when}",
     "neverComputed": "Noch nicht berechnet.",
@@ -6603,7 +6609,9 @@
       "confirmed": "Bestätigt",
       "confirmed_conflict": "Bestätigt — prüfen",
       "rejected": "Abgelehnt",
-      "kept_masked": "Bleibt maskiert"
+      "kept_masked": "Bleibt maskiert",
+      "auto_approved": "Automatisch freigegeben",
+      "auto_revoked": "Automatik zurückgenommen"
     },
     "fieldCount": "{count, plural, one {# Feld} other {# Felder}}",
     "valueShape": "Wertform",
@@ -6637,14 +6645,21 @@
       "confirmed_conflict": "Dieses Feld steht in der Liste, verweist aber jetzt auf ein Personenmodell oder hat sich seit der Bestätigung geändert — bitte prüfen oder entfernen.",
       "sample_clean": "{count, plural, one {# Stichprobenwert zeigte} other {# Stichprobenwerte zeigten}} keine personenbezogenen Daten.",
       "unknown": "Anderer Grund ({code}).",
-      "legacy_entry": "Freigegeben durch den Alt-Eintrag {entry} — er gilt für alle Modelle."
+      "legacy_entry": "Freigegeben durch den Alt-Eintrag {entry} — er gilt für alle Modelle.",
+      "auto_approved": "Automatisch freigegeben durch den Auto-Klassifizierer.",
+      "auto_approved_known": "Automatisch freigegeben durch den Auto-Klassifizierer: Jedes Relationsziel ist ein bekanntes nicht-personenbezogenes Modell.",
+      "auto_approved_haiku": "Automatisch freigegeben durch den Auto-Klassifizierer: Eine reine Schema-Prüfung stuft das Ziel als nicht personenbezogen ein (Konfidenz {confidence}), und die Namensprüfung der Stichprobenwerte war unauffällig.",
+      "auto_revoked": "Die automatische Freigabe wurde zurückgenommen, weil sich das Feld geändert hat (Personenmodell, Treffer der Erkennung oder widersprüchliche Ziele). Der Eintrag wurde entfernt — das Feld ist wieder maskiert, bis du entscheidest."
     },
     "decision": {
       "confirm": "Bestätigt von {by} am {when}",
       "reject": "Abgelehnt von {by} am {when}",
       "keep_masked": "Maskiert belassen von {by} am {when}",
       "revert": "Zurückgenommen von {by} am {when}",
-      "unknownActor": "einem Admin"
+      "unknownActor": "einem Admin",
+      "auto_approve": "Automatisch freigegeben von {by} am {when}",
+      "auto_revoke": "Automatische Freigabe zurückgenommen von {by} am {when}",
+      "systemActor": "dem System (Auto-Klassifizierer)"
     },
     "actions": {
       "confirm": "Bestätigen",
@@ -6655,7 +6670,8 @@
       "working": "Wird gespeichert",
       "showSample": "Stichprobe zeigen",
       "hideSample": "Stichprobe ausblenden",
-      "loadingSample": "Stichprobe wird geladen"
+      "loadingSample": "Stichprobe wird geladen",
+      "takeOwnership": "Als Admin-Entscheidung bestätigen"
     },
     "sampleHeading": "Stichprobenwerte",
     "sampleEmpty": "Noch keine Stichprobe verfügbar.",
@@ -6669,7 +6685,12 @@
       "preview": "Die Stichprobe konnte nicht geladen werden.",
       "recompute": "Neuberechnung fehlgeschlagen.",
       "detail": "Technisches Detail: {message}",
-      "coveredByLegacy": "Dieses Feld ist durch den Alt-Eintrag {entry} freigegeben, der für alle Modelle gilt. Zurücknehmen wirkt nicht, solange er besteht — wandle ihn zuerst in modellbezogene Einträge um."
+      "coveredByLegacy": "Dieses Feld ist durch den Alt-Eintrag {entry} freigegeben, der für alle Modelle gilt. Zurücknehmen wirkt nicht, solange er besteht — wandle ihn zuerst in modellbezogene Einträge um.",
+      "bulkPreview": "Die zu übernehmenden Vorschläge konnten nicht geladen werden.",
+      "bulkConfirm": "Die Vorschläge konnten nicht übernommen werden.",
+      "undo": "Die Sammelaktion konnte nicht rückgängig gemacht werden.",
+      "undoNotLatest": "Nur die letzte Sammelaktion kann rückgängig gemacht werden, und diese ist nicht mehr die letzte — lade die Seite neu.",
+      "undoAlreadyUndone": "Diese Sammelaktion wurde bereits rückgängig gemacht."
     },
     "source": "Quelle",
     "label": "Bezeichnung",
@@ -6703,6 +6724,53 @@
         "notFound": "Der Eintrag {entry} steht nicht mehr in der Einstellung. Die Liste wurde neu geladen.",
         "convert": "Der Eintrag {entry} konnte nicht umgewandelt werden."
       }
+    },
+    "bulk": {
+      "acceptSuggestions": "Vorschläge übernehmen",
+      "acceptGroup": "Alle in dieser Gruppe übernehmen",
+      "acceptGroupLabel": "Alle Vorschläge von {tool} übernehmen",
+      "dialogTitle": "Vorschläge übernehmen",
+      "dialogTitleTool": "Vorschläge von {tool} übernehmen",
+      "dialogBody": "Jedes Feld erhält seinen modellbezogenen Eintrag in non_personal_fields und wird ab dann im Klartext angezeigt. Der Server prüft jedes Feld erneut; geänderte Felder werden übersprungen. Du kannst dies als letzte Sammelaktion rückgängig machen.",
+      "loadingPreview": "Vorschläge werden geladen…",
+      "nothingEligible": "Derzeit kann kein Vorschlag übernommen werden.",
+      "count": "{count, plural, one {# Feld wird übernommen} other {# Felder werden übernommen}}",
+      "byReason": "Nach Grund",
+      "byTool": "Nach Tool / Quelle",
+      "fieldsHeading": "Felder",
+      "moreNotListed": "{count, plural, one {# weiteres Feld ist} other {# weitere Felder sind}} nicht aufgeführt.",
+      "confirm": "{count, plural, one {# Feld übernehmen} other {# Felder übernehmen}}",
+      "confirmPending": "Übernehmen",
+      "cancel": "Abbrechen",
+      "applying": "Wird übernommen",
+      "basis": {
+        "known_non_personal": "Bekanntes nicht-personenbezogenes Modell",
+        "haiku": "Schema-Prüfung (Haiku)",
+        "unknown": "Sonstiges ({code})"
+      },
+      "applied": "{count, plural, =0 {Kein Feld übernommen.} one {# Feld übernommen.} other {# Felder übernommen.}}",
+      "skippedHeading": "{count, plural, one {# Feld übersprungen:} other {# Felder übersprungen:}}",
+      "remaining": "{count, plural, one {# weiteres Feld kann} other {# weitere Felder können}} übernommen werden — führe die Aktion erneut aus.",
+      "skip": {
+        "not_suggested": "nicht mehr vorgeschlagen",
+        "person_model": "verweist auf ein Personenmodell",
+        "detector_hit": "die Erkennung hat personenbezogene Daten gefunden",
+        "conflict": "verweist auf widersprüchliche Modelle",
+        "no_scope": "die Quelle nennt kein Modell",
+        "invalid_field": "kann nicht als einzelner Eintrag geschrieben werden",
+        "already_covered": "bereits in der Einstellung",
+        "stale": "seit der Vorschau geändert",
+        "not_present": "der Eintrag ist nicht mehr in der Einstellung",
+        "not_owned": "der Eintrag gehört inzwischen zu einer anderen Entscheidung",
+        "unknown": "anderer Grund ({code})"
+      },
+      "undo": "Letzte Sammelaktion rückgängig",
+      "undoTitle": "Letzte Sammelaktion rückgängig machen?",
+      "undoBody": "{count, plural, one {Der # Eintrag} other {Die # Einträge}} vom {when} {count, plural, one {wird} other {werden}} aus non_personal_fields entfernt; die Felder sind wieder maskiert.",
+      "undoBodyNoDate": "{count, plural, one {Der # Eintrag} other {Die # Einträge}} der letzten Sammelaktion {count, plural, one {wird} other {werden}} aus non_personal_fields entfernt; die Felder sind wieder maskiert.",
+      "undoConfirm": "Rückgängig machen",
+      "undoing": "Wird rückgängig gemacht",
+      "undone": "{count, plural, =0 {Kein Eintrag entfernt.} one {# Eintrag entfernt — das Feld ist wieder maskiert.} other {# Einträge entfernt — die Felder sind wieder maskiert.}}"
     }
   }
 }

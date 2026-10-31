@@ -16,7 +16,11 @@
  * 30 days, re-asked when the source's field set changes), classify and
  * persist.
  *
- * It NEVER writes the guard's config — it has no writer to call. It runs on
+ * Without `deps.autoApprove` it never writes the guard's config — it has no
+ * writer to call. With it (wired in `index.ts`), the auto-approval step
+ * (`autoApprovePass.ts`) appends the scoped entries of eligible fields
+ * while the guard's `auto_approve_non_personal` switch is on, and revokes
+ * auto-approvals whose field drifted — one config write per pass. It runs on
  * lifecycle events (plugin activation/deactivation), every 6 hours and on
  * `POST /recompute`; never per chat turn. Debounced and single-flight.
  */
@@ -43,6 +47,14 @@ import {
 } from './engine.js';
 import { isValueLikeFieldName } from '@omadia/plugin-privacy-guard/dist/valueLikeFieldName.js';
 
+import type { AdminAuditLog } from '../../auth/adminAuditLog.js';
+import {
+  applyAutoApprovePlan,
+  planAutoApprove,
+  type AutoApprovePassResult,
+  type AutoApproveSubject,
+} from './autoApprovePass.js';
+import type { NonPersonalFieldsEditor } from './configEditor.js';
 import { catalogVerdictOf, isPersonModel } from './modelCatalog.js';
 import {
   MODEL_NAME,
@@ -81,6 +93,13 @@ export interface RecomputeDeps {
   };
   /** The guard's current `non_personal_fields` value. Read-only. */
   readonly readNonPersonalFields: () => string | undefined;
+  /** The auto-approval step: the shared config editor (its settings say
+   *  whether the switch is on) and the audit log for its rows. Absent → the
+   *  pass only classifies (suggest-only). */
+  readonly autoApprove?: {
+    readonly editor: Pick<NonPersonalFieldsEditor, 'edit' | 'autoApproveSettings'>;
+    readonly audit?: Pick<AdminAuditLog, 'record'>;
+  };
   readonly now?: () => Date;
   readonly log?: (msg: string) => void;
 }
@@ -89,6 +108,8 @@ export interface RecomputeResult {
   readonly computedAt: string;
   readonly candidates: number;
   readonly observations: number;
+  /** The auto-approval step's counts; absent when it is not wired. */
+  readonly autoApprove?: AutoApprovePassResult;
 }
 
 /** Is any segment of the path a `__k_` link key? */
@@ -487,16 +508,18 @@ export async function recomputeFieldClassification(deps: RecomputeDeps): Promise
   const rawConfig = deps.readNonPersonalFields();
   const computedAt = now.toISOString();
 
+  const subjects: AutoApproveSubject[] = [];
   for (const r of resolved) {
     const { candidate } = r;
-    const base = classifyBase({
+    const input = {
       ...fieldKeyOf(candidate),
       valueShape: candidate.valueShape,
       relationModels: r.relationModels,
       ...(r.sample !== undefined ? { sample: r.sample } : {}),
-      seenInChat: candidate.seenCount > 0,
       modelVerdicts,
-    });
+    };
+    const base = classifyBase({ ...input, seenInChat: candidate.seenCount > 0 });
+    subjects.push({ candidate, input, fingerprint: r.fingerprint, base });
     const shown = resolveStatus(
       base,
       r.fingerprint,
@@ -516,7 +539,38 @@ export async function recomputeFieldClassification(deps: RecomputeDeps): Promise
   log(
     `[privacy-fields] recompute: ${String(observations.length)} observation(s), ${String(schemaFields)} Odoo schema field(s), ${String(candidates.length)} candidate(s)`,
   );
-  return { computedAt, candidates: candidates.length, observations: observations.length };
+  const autoApprove = await runAutoApprove(deps, subjects, rawConfig, now, log);
+  return {
+    computedAt,
+    candidates: candidates.length,
+    observations: observations.length,
+    ...(autoApprove !== undefined ? { autoApprove } : {}),
+  };
+}
+
+/** The auto-approval step, after every candidate's classification is saved. */
+async function runAutoApprove(
+  deps: RecomputeDeps,
+  subjects: readonly AutoApproveSubject[],
+  rawConfig: string | undefined,
+  now: Date,
+  log: (msg: string) => void,
+): Promise<AutoApprovePassResult | undefined> {
+  if (deps.autoApprove === undefined) return undefined;
+  const settings = deps.autoApprove.editor.autoApproveSettings();
+  const plan = planAutoApprove(subjects, rawConfig, settings);
+  const result = await applyAutoApprovePlan(plan, {
+    store: deps.store,
+    editor: deps.autoApprove.editor,
+    ...(deps.autoApprove.audit !== undefined ? { audit: deps.autoApprove.audit } : {}),
+    now,
+    log,
+  });
+  // Counts only — never a field name list or a value.
+  log(
+    `[privacy-fields] auto-approve (${settings.enabled ? 'on' : 'off'}, > ${String(settings.confidence)}): ${String(result.approved)} approved, ${String(result.revoked)} revoked, ${String(result.refreshed)} refreshed, ${String(result.remaining)} over the cap`,
+  );
+  return result;
 }
 
 // ---------------------------------------------------------------------------

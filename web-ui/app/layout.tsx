@@ -27,7 +27,7 @@ import { fetchNavEntries } from './_lib/navigation';
 import { getPrivacyPosture } from './_lib/api';
 import {
   FIELD_CLASSIFICATION_HREF,
-  fieldsNeedingClarification,
+  fieldClassificationBadgeCount,
 } from './_components/FieldClassificationBanner';
 import { UI_PREFS_COOKIE, parseUiPrefsCookie } from './_lib/uiPrefs';
 import './globals.css';
@@ -88,7 +88,7 @@ export default async function RootLayout({
     getPrivacyPosture().catch(() => null),
   ]);
   const navBadges = {
-    [FIELD_CLASSIFICATION_HREF]: fieldsNeedingClarification(privacyPosture),
+    [FIELD_CLASSIFICATION_HREF]: fieldClassificationBadgeCount(privacyPosture),
   };
   const { palette, theme } = parseUiPrefsCookie(jar.get(UI_PREFS_COOKIE)?.value);
   return (

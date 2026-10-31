@@ -232,6 +232,7 @@ describe('field-classification routes', () => {
       action: 'confirm',
       by: 'admin@example.com',
       at: (item['decision'] as { at: string }).at,
+      batchId: null,
     });
     assert.equal(npf(), '*:job_id\nodoo_execute:hr.employee/department_id');
     assert.equal(harness.audits.length, 1);

@@ -24,9 +24,17 @@
  *                        fields it covers — except fields whose base status
  *                        is personal (`skippedPersonal`): they are masked
  *                        afterwards and the admin decides about them
- * POST /recompute        run a recompute pass now
+ * POST /recompute        run a recompute pass now; `?dryRun=1` runs nothing
+ *                        and writes nothing — it reports what the
+ *                        auto-approval WOULD approve on the stored
+ *                        candidates (counts per basis / tool / source and a
+ *                        sample of field names, never a value)
+ * GET  /bulk/preview, POST /bulk/confirm, GET /bulk/latest,
+ * POST /bulk/:batchId/undo   bulk accept of the open suggestions (`bulk.ts`)
  *
- * Only `confirm`, `revert` and `legacy/convert` write config: confirm
+ * Only `confirm`, `revert`, `legacy/convert` and the bulk routes write
+ * config (the recompute's auto-approval writes too, `autoApprovePass.ts`),
+ * all through the one shared editor (`configEditor.ts`): confirm
  * appends exactly one scoped entry (`<tool>:<scope>/<field>`,
  * `dataset:<id>/<column>`), revert removes it, through the installed-registry
  * update the `PATCH /admin/runtime/installed/:id/config` route uses,
@@ -34,6 +42,10 @@
  * (`confirmed_conflict`) only acknowledges: it records the decision on the
  * current fingerprint and leaves the setting untouched. A field that cannot
  * be written as exactly one scoped entry is refused (409 `invalid_field`).
+ * An `auto_approved` field takes `confirm` (the admin owns it from then on;
+ * no write) or `revert` (removes the entry; the field is never auto-approved
+ * again); an `auto_revoked` one `confirm` (unless the field is personal now),
+ * `reject` or `keep_masked`.
  * Every decision and conversion writes an audit row
  * (`privacy.field_classification`). Only the preview response carries field
  * values, and nothing here logs them. Every response is `Cache-Control:
@@ -55,34 +67,40 @@ import { DATASET_TOOL } from '@omadia/plugin-privacy-guard/dist/nonPersonalField
 import { auditActorFromRequest, type AdminAuditLog } from '../../auth/adminAuditLog.js';
 import type { InstalledRegistry } from '../../plugins/installedRegistry.js';
 import type { PluginCatalog } from '../../plugins/manifestLoader.js';
+import { autoApproveDryRun } from './autoApprovePass.js';
+import { registerBulkRoutes } from './bulk.js';
+import {
+  ConfigEditConflict,
+  createNonPersonalFieldsEditor,
+  type ConfigChange,
+  type NonPersonalFieldsEditor,
+} from './configEditor.js';
 import {
   DECISION_ACTIONS,
   FIELD_STATUSES,
   InvalidFieldEntryError,
   appendConfigEntry,
-  classifyBase,
   configCoverage,
   configEntryOf,
+  fieldAuditTarget,
   isValidFieldIdentity,
   legacyEntries,
   legacyEntryCovers,
   removeConfigEntry,
   replaceLegacyEntry,
-  resolveStatus,
-  sourceKeyOf,
+  type AdminDecisionAction,
   type CandidateKey,
   type DecisionAction,
   type FieldReason,
   type FieldStatus,
   type ModelVerdictSummary,
 } from './engine.js';
-import {
-  NON_PERSONAL_FIELDS_KEY,
-  privacyGuardInstalledId,
-  readNonPersonalFieldsConfig,
-} from './guardConfig.js';
+import { NON_PERSONAL_FIELDS_KEY, readNonPersonalFieldsConfig } from './guardConfig.js';
+import { baseOf, cachedVerdicts, fieldVisitorKey, liveStatus, subjectOf } from './live.js';
 import { PREVIEW_LIMIT, fieldKeyOf, type RecomputeResult } from './recompute.js';
 import type { CandidateDecision, FieldCandidate, FieldClassificationStore } from './store.js';
+
+export { fieldAuditTarget, liveStatus };
 
 export const FIELD_CLASSIFICATION_AUDIT_ACTION = 'privacy.field_classification';
 export const FIELD_PREVIEW_AUDIT_ACTION = 'privacy.field_preview';
@@ -100,6 +118,10 @@ export interface FieldClassificationRouteDeps {
    *  audited) — only the masked fallback. */
   readonly audit?: Pick<AdminAuditLog, 'record'>;
   readonly recompute: () => Promise<RecomputeResult | undefined>;
+  /** The shared `non_personal_fields` writer (`index.ts` passes the one the
+   *  recompute's auto-approval uses, so their writes share the plugin lock).
+   *  Absent → one of its own. */
+  readonly editor?: NonPersonalFieldsEditor;
   readonly now?: () => Date;
 }
 
@@ -120,7 +142,7 @@ const convertSchema = z.object({
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Which action an admin may take on a field in which shown status. */
-const ALLOWED_ACTIONS: Readonly<Record<FieldStatus, readonly DecisionAction[]>> = {
+const ALLOWED_ACTIONS: Readonly<Record<FieldStatus, readonly AdminDecisionAction[]>> = {
   suggested: ['confirm', 'reject', 'keep_masked'],
   needs_clarification: ['confirm', 'reject', 'keep_masked'],
   personal: ['keep_masked'],
@@ -129,7 +151,18 @@ const ALLOWED_ACTIONS: Readonly<Record<FieldStatus, readonly DecisionAction[]>> 
   confirmed_conflict: ['confirm', 'revert'],
   rejected: ['revert'],
   kept_masked: ['revert'],
+  // `confirm` takes ownership (no write); `revert` removes the entry.
+  auto_approved: ['confirm', 'revert'],
+  // `confirm` writes the entry again — refused while the field is personal.
+  auto_revoked: ['confirm', 'reject', 'keep_masked'],
 };
+
+/** Statuses whose field the setting already covers. */
+const COVERED_STATUSES: ReadonlySet<FieldStatus> = new Set([
+  'confirmed',
+  'confirmed_conflict',
+  'auto_approved',
+]);
 
 export interface FieldClassificationItem {
   readonly id: string;
@@ -146,7 +179,14 @@ export interface FieldClassificationItem {
   /** The scoped entry a confirm writes. */
   readonly configEntry: string;
   readonly fingerprint: string;
-  readonly decision: { action: DecisionAction; by: string | null; at: string } | null;
+  /** `by` is the admin's e-mail (or users.id), or `system:auto-classifier`;
+   *  `batchId` the bulk accept the decision belongs to. */
+  readonly decision: {
+    action: DecisionAction;
+    by: string | null;
+    at: string;
+    batchId: string | null;
+  } | null;
   readonly firstSeenAt: string;
   readonly lastSeenAt: string;
   readonly seenCount: number;
@@ -175,50 +215,7 @@ function coveredField(
   };
 }
 
-/** Cached schema verdicts for every relation target and source of
- *  `candidates`. */
-async function cachedVerdicts(
-  store: FieldClassificationStore,
-  candidates: readonly FieldCandidate[],
-): Promise<Map<string, ModelVerdictSummary>> {
-  const keys = [
-    ...new Set(
-      candidates.flatMap((c) => (c.relationModels.length > 0 ? c.relationModels : [sourceKeyOf(c)])),
-    ),
-  ];
-  const rows = await store.modelVerdicts(keys, new Date(0));
-  return new Map(rows.map((r) => [r.model, { verdict: r.verdict, confidence: r.confidence }]));
-}
-
-/** What the classifier itself says about a stored candidate (no config,
- *  no decision). */
-function baseOf(
-  candidate: FieldCandidate,
-  verdicts: ReadonlyMap<string, ModelVerdictSummary>,
-): ReturnType<typeof classifyBase> {
-  return classifyBase({
-    ...fieldKeyOf(candidate),
-    valueShape: candidate.valueShape,
-    relationModels: candidate.relationModels,
-    ...(candidate.sampleVerdict !== null ? { sample: candidate.sampleVerdict } : {}),
-    // Same input as the recompute: a field only read from the schema says so.
-    seenInChat: candidate.seenCount > 0,
-    modelVerdicts: verdicts,
-  });
-}
-
-/** The status of a stored candidate under the CURRENT config and decision. */
-export function liveStatus(
-  candidate: FieldCandidate,
-  rawConfig: string | undefined,
-  verdicts: ReadonlyMap<string, ModelVerdictSummary>,
-  decision: CandidateDecision | null = candidate.decision,
-): { status: FieldStatus; reasons: readonly FieldReason[] } {
-  const base = baseOf(candidate, verdicts);
-  return resolveStatus(base, candidate.fingerprint, configCoverage(rawConfig, candidate), decision);
-}
-
-function toItem(
+export function toItem(
   candidate: FieldCandidate,
   shown: { status: FieldStatus; reasons: readonly FieldReason[] },
 ): FieldClassificationItem {
@@ -240,6 +237,7 @@ function toItem(
             action: candidate.decision.action,
             by: candidate.decision.byEmail ?? candidate.decision.byId,
             at: candidate.decision.at,
+            batchId: candidate.decision.batchId ?? null,
           }
         : null,
     firstSeenAt: candidate.firstSeenAt,
@@ -248,69 +246,32 @@ function toItem(
   };
 }
 
-/** The audit target of a field: `privacy-field:<tool>:<scope>/<path>`. */
-export function fieldAuditTarget(candidate: CandidateKey): string {
-  return `privacy-field:${candidate.toolName}:${candidate.scope}/${candidate.fieldPath}`;
-}
-
 function emptyCounts(): Record<FieldStatus, number> {
   return Object.fromEntries(FIELD_STATUSES.map((s) => [s, 0])) as Record<FieldStatus, number>;
 }
 
-function visitorKey(req: Request): string {
-  const actor = auditActorFromRequest(req);
-  return actor.id ?? actor.email ?? req.session?.sub ?? 'admin';
-}
-
 /** Statuses an admin still has to look at. */
 function isOpenStatus(status: FieldStatus): boolean {
-  return status === 'suggested' || status === 'needs_clarification' || status === 'confirmed_conflict';
+  return (
+    status === 'suggested' ||
+    status === 'needs_clarification' ||
+    status === 'confirmed_conflict' ||
+    status === 'auto_revoked'
+  );
 }
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/**
- * Serializes the config read-modify-write per plugin id.
- *
- * Known race (L3, accepted): this lock only orders writes made through THIS
- * router. A concurrent `PATCH /admin/runtime/installed/:id/config` (the
- * generic plugin settings form) is not serialized against it, so one of the
- * two writes can overwrite the other's `non_personal_fields`. Both outcomes
- * fail safe — a lost append leaves the field masked, a lost removal is
- * visible on the page as still confirmed — so it is left as is.
- */
-function createKeyedMutex(): <T>(key: string, fn: () => Promise<T>) => Promise<T> {
-  const tails = new Map<string, Promise<unknown>>();
-  return async <T>(key: string, fn: () => Promise<T>): Promise<T> => {
-    const previous = tails.get(key) ?? Promise.resolve();
-    const run = previous.then(fn, fn);
-    const tail = run.catch(() => undefined);
-    tails.set(key, tail);
-    try {
-      return await run;
-    } finally {
-      if (tails.get(key) === tail) tails.delete(key);
-    }
-  };
-}
-
-class DecisionConflict extends Error {
-  constructor(readonly body: Record<string, unknown>) {
-    super(String(body['error']));
-  }
-}
-
-interface ConfigChange {
-  readonly before: string;
-  readonly after: string;
-  readonly guardId: string;
-}
-
 export function createFieldClassificationRoutes(deps: FieldClassificationRouteDeps): Router {
   const router = Router();
-  const withPluginLock = createKeyedMutex();
+  const editor =
+    deps.editor ??
+    createNonPersonalFieldsEditor({
+      installedRegistry: deps.installedRegistry,
+      ...(deps.catalog !== undefined ? { catalog: deps.catalog } : {}),
+    });
   const now = deps.now ?? (() => new Date());
   const rawConfig = (): string | undefined =>
     readNonPersonalFieldsConfig(deps.installedRegistry, deps.catalog);
@@ -328,35 +289,15 @@ export function createFieldClassificationRoutes(deps: FieldClassificationRouteDe
   const listable = async (filter: { toolName?: string } = {}): Promise<FieldCandidate[]> =>
     (await deps.store.list(filter)).filter((c) => isValidFieldIdentity(c));
 
-  /** Read-modify-write of `non_personal_fields` under the plugin lock. */
-  async function editConfig(edit: (before: string) => string): Promise<ConfigChange> {
-    const guardId = privacyGuardInstalledId(deps.installedRegistry, deps.catalog);
-    if (guardId === undefined) throw new DecisionConflict({ error: 'privacy_guard_not_installed' });
-    return withPluginLock(guardId, async () => {
-      const entry = deps.installedRegistry.get(guardId);
-      if (entry === undefined) throw new DecisionConflict({ error: 'privacy_guard_not_installed' });
-      const current = entry.config[NON_PERSONAL_FIELDS_KEY];
-      const before = typeof current === 'string' ? current : '';
-      const after = edit(before);
-      if (after !== before) {
-        const nextConfig: Record<string, unknown> = { ...entry.config };
-        if (after.length === 0) delete nextConfig[NON_PERSONAL_FIELDS_KEY];
-        else nextConfig[NON_PERSONAL_FIELDS_KEY] = after;
-        await deps.installedRegistry.updateConfig(guardId, nextConfig);
-      }
-      return { before, after, guardId };
-    });
-  }
-
   /** Append or remove the field's scoped entry. */
   function writeConfigEntry(candidate: FieldCandidate, mode: 'append' | 'remove'): Promise<ConfigChange> {
-    return editConfig((before) => {
+    return editor.edit((before) => {
       if (mode === 'append') return appendConfigEntry(before, candidate);
       // A legacy entry applies to every model: removing the scoped entry
       // would leave the field in clear text. The page offers to convert it.
       const coverage = configCoverage(before, candidate);
       if (coverage.legacyEntry !== undefined) {
-        throw new DecisionConflict({ error: 'covered_by_legacy', entry: coverage.legacyEntry });
+        throw new ConfigEditConflict({ error: 'covered_by_legacy', entry: coverage.legacyEntry });
       }
       return removeConfigEntry(before, candidate);
     });
@@ -383,7 +324,7 @@ export function createFieldClassificationRoutes(deps: FieldClassificationRouteDe
       );
       const verdicts = await cachedVerdicts(deps.store, candidates);
       const config = rawConfig();
-      const actor = visitorKey(req);
+      const actor = fieldVisitorKey(req);
       const lastVisit = await deps.store.lastVisit(actor);
       const counts = emptyCounts();
       let newSinceLastVisit = 0;
@@ -411,7 +352,24 @@ export function createFieldClassificationRoutes(deps: FieldClassificationRouteDe
     }
   });
 
-  router.post('/recompute', async (_req: Request, res: Response) => {
+  router.post('/recompute', async (req: Request, res: Response) => {
+    if (req.query['dryRun'] === '1' || req.query['dryRun'] === 'true') {
+      try {
+        const candidates = await listable();
+        const verdicts = await cachedVerdicts(deps.store, candidates);
+        res.json(
+          autoApproveDryRun(
+            candidates.map((c) => subjectOf(c, verdicts)),
+            rawConfig(),
+            editor.autoApproveSettings(),
+          ),
+        );
+      } catch (err) {
+        console.error('[privacy-fields] auto-approve dry run failed:', errorText(err));
+        res.status(500).json({ error: 'field_classification_dry_run_failed' });
+      }
+      return;
+    }
     try {
       const result = await Promise.race([
         deps.recompute(),
@@ -470,9 +428,9 @@ export function createFieldClassificationRoutes(deps: FieldClassificationRouteDe
       const skipped: CandidateKey[] = [];
       const skippedPersonal: LegacyCoveredField[] = [];
       const converted: FieldCandidate[] = [];
-      const change = await editConfig((before) => {
+      const change = await editor.edit((before) => {
         const legacy = legacyEntries(before).find((l) => l.entry === entry);
-        if (legacy === undefined) throw new DecisionConflict({ error: 'legacy_entry_not_found', entry });
+        if (legacy === undefined) throw new ConfigEditConflict({ error: 'legacy_entry_not_found', entry });
         for (const c of candidates.filter((x) => legacyEntryCovers(legacy, x))) {
           if (baseOf(c, verdicts).status === 'personal') {
             skippedPersonal.push(coveredField(c, verdicts));
@@ -487,7 +445,7 @@ export function createFieldClassificationRoutes(deps: FieldClassificationRouteDe
           }
         }
         const after = replaceLegacyEntry(before, entry, added);
-        if (after === undefined) throw new DecisionConflict({ error: 'legacy_entry_not_found', entry });
+        if (after === undefined) throw new ConfigEditConflict({ error: 'legacy_entry_not_found', entry });
         return after;
       });
 
@@ -533,13 +491,23 @@ export function createFieldClassificationRoutes(deps: FieldClassificationRouteDe
       });
       res.json({ entry, added, skipped, skippedPersonal, conflicts });
     } catch (err) {
-      if (err instanceof DecisionConflict) {
+      if (err instanceof ConfigEditConflict) {
         res.status(409).json(err.body);
         return;
       }
       console.error('[privacy-fields] legacy convert failed:', errorText(err));
       res.status(500).json({ error: 'field_classification_convert_failed' });
     }
+  });
+
+  // Before the `/:id/…` routes: `/bulk/preview` would match `/:id/preview`.
+  registerBulkRoutes(router, {
+    store: deps.store,
+    editor,
+    rawConfig,
+    listable,
+    recordAudit,
+    now,
   });
 
   router.get('/:id/preview', async (req: Request, res: Response) => {
@@ -625,14 +593,21 @@ export function createFieldClassificationRoutes(deps: FieldClassificationRouteDe
       }
       const verdicts = await cachedVerdicts(deps.store, [candidate]);
       const shownBefore = liveStatus(candidate, rawConfig(), verdicts);
-      if (!ALLOWED_ACTIONS[shownBefore.status].includes(action)) {
+      if (
+        !ALLOWED_ACTIONS[shownBefore.status].includes(action) ||
+        // A revoked auto-approval of a field that is personal now: only
+        // reject / keep masked, like any personal field.
+        (shownBefore.status === 'auto_revoked' &&
+          action === 'confirm' &&
+          baseOf(candidate, verdicts).status === 'personal')
+      ) {
         res.status(409).json({ error: 'action_not_allowed', status: shownBefore.status });
         return;
       }
 
       const actor = auditActorFromRequest(req);
       let configChange: ConfigChange | undefined;
-      const covered = shownBefore.status === 'confirmed' || shownBefore.status === 'confirmed_conflict';
+      const covered = COVERED_STATUSES.has(shownBefore.status);
       // On a covered field, confirm only acknowledges: decision row, no write.
       if (action === 'confirm' && !covered) {
         configChange = await writeConfigEntry(candidate, 'append');
@@ -688,7 +663,7 @@ export function createFieldClassificationRoutes(deps: FieldClassificationRouteDe
       const updated = (await deps.store.get(id)) ?? candidate;
       res.json({ item: toItem(updated, shownAfter) });
     } catch (err) {
-      if (err instanceof DecisionConflict) {
+      if (err instanceof ConfigEditConflict) {
         res.status(409).json(err.body);
         return;
       }

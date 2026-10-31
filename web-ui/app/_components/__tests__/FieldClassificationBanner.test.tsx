@@ -5,6 +5,7 @@ import type { PrivacyPosture } from '../../_lib/api';
 import { renderWithIntl } from '../../_lib/test-utils';
 import {
   FieldClassificationBanner,
+  fieldClassificationBadgeCount,
   fieldClassificationHref,
   fieldsNeedingClarification,
 } from '../FieldClassificationBanner';
@@ -89,5 +90,58 @@ describe('confirmed fields in conflict', () => {
       fields_suggested_open: 4,
     });
     expect(fieldClassificationHref(p)).toBe('/admin/privacy-fields?status=confirmed_conflict');
+  });
+});
+
+describe('auto-approvals', () => {
+  it('shows revoked and new auto-approvals with their own links, without double-counting', () => {
+    const p = posture({
+      fields_needing_clarification: 3,
+      fields_auto_revoked: 2,
+      fields_auto_approved_new: 4,
+    });
+    renderWithIntl(<FieldClassificationBanner posture={p} />);
+    const banner = screen.getByTestId('field-classification-banner');
+    expect(banner).toHaveTextContent('1 field waiting for a decision');
+    expect(screen.getByTestId('field-banner-revoked')).toHaveTextContent(
+      '2 auto-approvals revoked — need review',
+    );
+    expect(screen.getByTestId('field-banner-auto-approved')).toHaveTextContent(
+      '4 fields auto-approved since your last visit',
+    );
+    expect(screen.getByRole('link', { name: /review fields/i })).toHaveAttribute(
+      'href',
+      '/admin/privacy-fields?status=needs_clarification',
+    );
+    expect(screen.getByRole('link', { name: /review revoked/i })).toHaveAttribute(
+      'href',
+      '/admin/privacy-fields?status=auto_revoked',
+    );
+    expect(screen.getByRole('link', { name: /see auto-approvals/i })).toHaveAttribute(
+      'href',
+      '/admin/privacy-fields?status=auto_approved',
+    );
+    // The nav badge: everything to review plus the new auto-approvals.
+    expect(fieldClassificationBadgeCount(p)).toBe(7);
+  });
+
+  it('shows only the auto-approval line when nothing else is open (German, singular)', () => {
+    const p = posture({ fields_needing_clarification: 0, fields_auto_approved_new: 1 });
+    renderWithIntl(<FieldClassificationBanner posture={p} />, { locale: 'de' });
+    const banner = screen.getByTestId('field-classification-banner');
+    expect(banner).toHaveTextContent('1 Feld seit deinem letzten Besuch automatisch freigegeben');
+    expect(banner).not.toHaveTextContent('wartet auf eine Entscheidung');
+    expect(screen.getAllByRole('link')).toHaveLength(1);
+  });
+
+  it('a revoked-only posture links the revoked tab, not needs_clarification', () => {
+    const p = posture({ fields_needing_clarification: 1, fields_auto_revoked: 1 });
+    renderWithIntl(<FieldClassificationBanner posture={p} />, { locale: 'de' });
+    expect(screen.getByTestId('field-banner-revoked')).toHaveTextContent(
+      '1 automatische Freigabe zurückgenommen — bitte prüfen',
+    );
+    expect(screen.getAllByRole('link')).toHaveLength(1);
+    expect(screen.getByRole('link')).toHaveAttribute('href', '/admin/privacy-fields?status=auto_revoked');
+    expect(fieldClassificationBadgeCount(p)).toBe(1);
   });
 });
