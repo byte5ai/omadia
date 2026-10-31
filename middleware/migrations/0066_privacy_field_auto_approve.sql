@@ -44,6 +44,12 @@ ALTER TABLE privacy_field_candidates
 ALTER TABLE privacy_field_candidates
   ADD COLUMN IF NOT EXISTS decision_batch_id UUID;
 
+-- The scope model's Odoo schema was read at least once: `relation_models` is
+-- a resolution, not "unknown". Auto-approval on a schema verdict (basis b)
+-- requires it for an Odoo model scope.
+ALTER TABLE privacy_field_candidates
+  ADD COLUMN IF NOT EXISTS relation_info_known BOOLEAN NOT NULL DEFAULT FALSE;
+
 -- "N fields auto-approved since your last visit".
 CREATE INDEX IF NOT EXISTS privacy_field_candidates_auto_decided
   ON privacy_field_candidates (decided_at)

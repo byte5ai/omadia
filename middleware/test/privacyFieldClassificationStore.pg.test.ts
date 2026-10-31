@@ -68,10 +68,12 @@ describe('#1556 field classification store against a real Postgres', { skip: !pg
     assert.ok(row);
     assert.equal(row.label, 'Department', 'a later observation without a label keeps it');
     assert.equal(row.seenCount, 4);
+    assert.equal(row.relationInfoKnown, false, 'not resolved before a classification');
     assert.equal(row.lastSeenAt, '2026-10-30T10:00:00.000Z');
 
     await store.saveClassification(row.id, {
       relationModels: ['hr.department'],
+      relationInfoKnown: true,
       status: 'suggested',
       reasons: [{ code: 'known_non_personal', models: ['hr.department'] }],
       fingerprint: 'fp1',
@@ -82,6 +84,7 @@ describe('#1556 field classification store against a real Postgres', { skip: !pg
     // An empty preview and no verdict keep what is stored.
     await store.saveClassification(row.id, {
       relationModels: ['hr.department'],
+      relationInfoKnown: true,
       status: 'suggested',
       reasons: [],
       fingerprint: 'fp1',
@@ -91,6 +94,7 @@ describe('#1556 field classification store against a real Postgres', { skip: !pg
     const classified = await store.get(row.id);
     assert.deepEqual(classified?.maskedPreview, ['•••• & ••••']);
     assert.equal(classified?.sampleVerdict?.sampleCount, 3);
+    assert.equal(classified?.relationInfoKnown, true);
     assert.deepEqual(await store.countOpen(), { needsClarification: 1, suggested: 1, confirmedConflict: 0, autoRevoked: 0, autoApprovedNew: 0 });
     assert.equal(await store.lastComputedAt(), '2026-10-30T12:00:00.000Z');
 
@@ -107,6 +111,7 @@ describe('#1556 field classification store against a real Postgres', { skip: !pg
     // The status CHECK admits confirmed_conflict, and it counts as open.
     await store.saveClassification(row.id, {
       relationModels: ['res.partner'],
+      relationInfoKnown: true,
       status: 'confirmed_conflict',
       reasons: [{ code: 'confirmed_conflict' }],
       fingerprint: 'fp2',
@@ -246,6 +251,7 @@ describe('#1556 field classification store against a real Postgres', { skip: !pg
     const row = (await store.list()).find((r) => r.fieldPath === 'stage_id')!;
     await store.saveClassification(row.id, {
       relationModels: ['crm.stage'],
+      relationInfoKnown: true,
       status: 'suggested',
       reasons: [],
       fingerprint: 'fp1',

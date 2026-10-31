@@ -38,6 +38,9 @@ const PERSON_MODEL_LIST = [
   'hr.version',
   'hr.leave',
   'hr.leave.allocation',
+  // Leave analysis rows are one employee's leaves.
+  'hr.leave.report',
+  'hr.leave.employee.type.report',
   'hr.attendance',
   'hr.expense',
   'hr.expense.sheet',
@@ -155,4 +158,21 @@ export function catalogVerdictOf(model: string): CatalogVerdict {
 
 export function isPersonModel(model: string): boolean {
   return PERSON_MODELS.has(model);
+}
+
+/** Words that make a `*.report` model a report about people. */
+const PERSON_REPORT_WORDS = ['employee', 'leave', 'attendance', 'payslip', 'applicant', 'expense'] as const;
+
+/**
+ * Is a field OF this model (its scope) a fact about a person? Broader than
+ * `PERSON_MODELS`, which cannot list every HR / partner / user projection:
+ * a person model, any `hr.*` model, any `res.partner*` / `res.users*` model,
+ * and a `*.report` model whose name says it reports on employees, leaves,
+ * attendances, payslips, applicants or expenses. Only the auto-approval's
+ * person-scope allow-list reads it.
+ */
+export function isPersonScope(model: string): boolean {
+  if (isPersonModel(model) || model.startsWith('hr.')) return true;
+  if (model.startsWith('res.partner') || model.startsWith('res.users')) return true;
+  return model.endsWith('.report') && PERSON_REPORT_WORDS.some((w) => model.includes(w));
 }

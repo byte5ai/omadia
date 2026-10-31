@@ -22,6 +22,7 @@ import type { PluginCatalog } from '../src/plugins/manifestLoader.js';
 import {
   AUTO_APPROVE_DEFAULT_CONFIDENCE,
   autoApprovalOf,
+  keepsStoredVet,
   autoApproveSettingsOf,
   parseAutoApproveConfidence,
   parseAutoApproveEnabled,
@@ -29,6 +30,7 @@ import {
 } from '../src/privacy/fieldClassification/autoApprove.js';
 import {
   applyAutoApprovePlan,
+  autoApproveDryRun,
   planAutoApprove,
   type AutoApproveSubject,
 } from '../src/privacy/fieldClassification/autoApprovePass.js';
@@ -40,6 +42,7 @@ import {
   sourceKeyOf,
 } from '../src/privacy/fieldClassification/engine.js';
 import { cachedVerdicts, liveStatus } from '../src/privacy/fieldClassification/live.js';
+import { isPersonScope } from '../src/privacy/fieldClassification/modelCatalog.js';
 import { recomputeFieldClassification } from '../src/privacy/fieldClassification/recompute.js';
 import { InMemoryFieldClassificationStore } from '../src/privacy/fieldClassification/store.js';
 
@@ -53,6 +56,7 @@ function input(over: Partial<AutoApprovalInput> = {}): AutoApprovalInput {
     fieldPath: 'team_id',
     valueShape: 'm2o',
     relationModels: ['crm.team'],
+    relationInfoKnown: true,
     ...over,
   };
 }
@@ -237,6 +241,10 @@ interface Harness {
   queue(observations: FieldObservation[]): void;
   /** Field paths vetted, in order. */
   readonly vetted: string[];
+  /** The pass's log lines. */
+  readonly logs: string[];
+  /** Odoo unreachable: every `fields_get` throws. */
+  odooDown: boolean;
   run(): ReturnType<typeof recomputeFieldClassification>;
   npf(): unknown;
 }
@@ -290,6 +298,8 @@ async function makeHarness(opts: {
     fields: opts.fields,
     samples: {},
     vetted: [],
+    logs: [],
+    odooDown: false,
     queue(observations) {
       pending = [...pending, ...observations];
     },
@@ -324,10 +334,16 @@ async function makeHarness(opts: {
       };
       const services: Record<string, unknown> = {
         [PRIVACY_REDACT_SERVICE_NAME]: guard,
-        'odoo.client': { execute: async (req: { model: string }) => h.fields[req.model] ?? {} },
+        'odoo.client': {
+          execute: async (req: { model: string }) => {
+            if (h.odooDown) throw new Error('odoo down');
+            return h.fields[req.model] ?? {};
+          },
+        },
       };
       return recomputeFieldClassification({
         store,
+        log: (msg) => void h.logs.push(msg),
         ...(opts.now !== undefined ? { now: opts.now } : {}),
         serviceRegistry: {
           get: <T,>(name: string) => services[name] as T | undefined,
@@ -498,6 +514,7 @@ describe('auto-approval — recompute', () => {
     // A fresh vet (the stored one is dropped) now reports a near-miss.
     await h.store.saveClassification(team!.id, {
       relationModels: team!.relationModels,
+      relationInfoKnown: team!.relationInfoKnown,
       status: team!.status,
       reasons: team!.reasons,
       fingerprint: 'stale',
@@ -841,5 +858,213 @@ describe('auto-approval — security review', () => {
     const result = await h.run();
     const team = (await byPath(h.store, 'sale.order', 'team_id'))!;
     assert.ok(team.decision!.at > result.computedAt, `${team.decision!.at} > ${result.computedAt}`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Re-review (2026-10-31): one regression test per finding.
+// ---------------------------------------------------------------------------
+
+const revokeReason = (h: Harness): string | undefined =>
+  (h.audits.find((a) => a['action'] === 'privacy.field_auto_revoke')?.['after'] as { reason?: string } | undefined)
+    ?.reason;
+
+describe('auto-approval — re-review', () => {
+  it('P1: keepsStoredVet — only an inconclusive re-vet over a full stored clean vet keeps it', () => {
+    const full = CLEAN;
+    // Inconclusive: too few clean values, or C1 unavailable.
+    assert.equal(keepsStoredVet({ ...CLEAN, sampleCount: 4 }, full), true);
+    assert.equal(keepsStoredVet({ ...CLEAN, c1: 'unavailable' }, full), true);
+    // A hit or near-miss revokes at ANY sample size.
+    assert.equal(keepsStoredVet({ ...CLEAN, sampleCount: 1, identityHit: true, hitTypes: ['email'] }, full), false);
+    assert.equal(keepsStoredVet({ ...CLEAN, sampleCount: 1, c1: 'hit' }, full), false);
+    assert.equal(keepsStoredVet({ ...CLEAN, sampleCount: 1, c1: 'near-miss' }, full), false);
+    assert.equal(keepsStoredVet({ ...CLEAN, sampleCount: 2, c1: 'unavailable', identityHit: true }, full), false);
+    // A full fresh clean vet replaces the stored one.
+    assert.equal(keepsStoredVet(CLEAN, full), false);
+    // No full stored clean vet: the fresh one decides.
+    assert.equal(keepsStoredVet({ ...CLEAN, sampleCount: 4 }, { ...CLEAN, sampleCount: 9 }), false);
+    assert.equal(keepsStoredVet({ ...CLEAN, c1: 'unavailable' }, null), false);
+  });
+
+  it('P1: an auto-approval survives a small clean re-vet and a C1 outage; a hit at any size revokes', async () => {
+    const h = await makeHarness({ fields: SALE_FIELDS, haiku: HAIKU_09 });
+    h.queue([obs('region_id', 'sale.order')]);
+    await h.run();
+    assert.equal((await byPath(h.store, 'sale.order', 'region_id'))?.status, 'auto_approved');
+
+    h.samples['region_id'] = { sampleCount: 4 };
+    let result = await h.run();
+    let region = await byPath(h.store, 'sale.order', 'region_id');
+    assert.equal(result.autoApprove?.revoked, 0);
+    assert.equal(region?.status, 'auto_approved');
+    assert.equal(region?.sampleVerdict?.sampleCount, 12, 'the stored full clean vet stands');
+    assert.ok(h.logs.some((l) => /1 inconclusive re-vet/.test(l) && !l.includes('region_id')), 'count-only log line');
+
+    h.samples['region_id'] = { c1: 'unavailable' };
+    result = await h.run();
+    region = await byPath(h.store, 'sale.order', 'region_id');
+    assert.equal(result.autoApprove?.revoked, 0);
+    assert.equal(region?.status, 'auto_approved');
+
+    h.samples['region_id'] = { sampleCount: 2, c1: 'near-miss' };
+    result = await h.run();
+    assert.equal(result.autoApprove?.revoked, 1);
+    assert.equal((await byPath(h.store, 'sale.order', 'region_id'))?.status, 'auto_revoked');
+    assert.equal(revokeReason(h), 'near_miss');
+    assert.equal(h.npf(), undefined);
+  });
+
+  it('P1: an identity or C1 hit on a 1-value re-vet revokes', async () => {
+    for (const sample of [
+      { sampleCount: 1, identityHit: true, hitTypes: ['email'] },
+      { sampleCount: 1, c1: 'hit' as const, hitTypes: ['person'] },
+    ]) {
+      const h = await makeHarness({ fields: SALE_FIELDS, haiku: HAIKU_09 });
+      h.queue([obs('region_id', 'sale.order')]);
+      await h.run();
+      h.samples['region_id'] = sample;
+      await h.run();
+      assert.equal((await byPath(h.store, 'sale.order', 'region_id'))?.status, 'auto_revoked');
+      assert.equal(revokeReason(h), 'detector_hit');
+    }
+  });
+
+  it('P1: without a full stored clean vet an inconclusive re-vet fails basis (b)', async () => {
+    const h = await makeHarness({ fields: SALE_FIELDS, haiku: HAIKU_09 });
+    h.queue([obs('region_id', 'sale.order')]);
+    await h.run();
+    const region = (await byPath(h.store, 'sale.order', 'region_id'))!;
+    // A stored vet below the minimum (e.g. written before the minimum existed).
+    await h.store.saveClassification(region.id, {
+      relationModels: region.relationModels,
+      relationInfoKnown: region.relationInfoKnown,
+      status: region.status,
+      reasons: region.reasons,
+      fingerprint: region.fingerprint,
+      sampleVerdict: { ...CLEAN, sampleCount: 9 },
+      computedAt: '2026-10-31T00:00:00.000Z',
+    });
+    h.samples['region_id'] = { c1: 'unavailable' };
+    await h.run();
+    assert.equal((await byPath(h.store, 'sale.order', 'region_id'))?.status, 'auto_revoked');
+    assert.equal(revokeReason(h), 'no_name_vet');
+  });
+
+  it('P1: a NEW approval still needs a clean vet over at least 10 values', async () => {
+    const h = await makeHarness({ fields: SALE_FIELDS, haiku: HAIKU_09 });
+    h.samples['region_id'] = { sampleCount: 9 };
+    h.queue([obs('region_id', 'sale.order')]);
+    const result = await h.run();
+    assert.equal(result.autoApprove?.approved, 0);
+    assert.notEqual((await byPath(h.store, 'sale.order', 'region_id'))?.status, 'auto_approved');
+  });
+
+  it('P3: the person-scope allow-list covers hr.*, res.partner*, res.users* and HR reports', () => {
+    for (const scope of [
+      'hr.leave.report',
+      'hr.leave.employee.type.report',
+      'hr.some.custom',
+      'res.partner.title',
+      'res.users.role',
+      'x.employee.report',
+      'account.expense.report',
+      'x_attendance.report',
+    ]) {
+      assert.equal(isPersonScope(scope), true, scope);
+    }
+    for (const scope of ['sale.order', 'sale.report', 'account.invoice.report', 'crm.lead.report.x']) {
+      assert.equal(isPersonScope(scope), false, scope);
+    }
+    assert.deepEqual(
+      autoApprovalOf(
+        input({ scope: 'hr.leave.report', fieldPath: 'holiday_status_id', relationModels: ['hr.leave.type'] }),
+        SETTINGS,
+      ),
+      { eligible: false, reason: 'person_scope' },
+    );
+    // Not in the person-model catalog, still a person scope.
+    for (const scope of ['hr.attendance.report', 'res.partner.x_custom', 'x.employee.report']) {
+      assert.deepEqual(
+        autoApprovalOf(input({ scope, fieldPath: 'type_id', relationModels: ['hr.leave.type'] }), SETTINGS),
+        { eligible: false, reason: 'person_scope' },
+        scope,
+      );
+    }
+    assert.equal(
+      autoApprovalOf(
+        input({ scope: 'hr.leave.report', fieldPath: 'department_id', relationModels: ['hr.department'] }),
+        SETTINGS,
+      ).eligible,
+      true,
+    );
+  });
+
+  it('P4: basis (b) on an Odoo model scope needs its schema read; datasets keep the source verdict', () => {
+    const note = input({ relationModels: [], valueShape: 'text', fieldPath: 'note', sample: CLEAN });
+    const verdicts = haiku(sourceKeyOf(note), 0.95);
+    assert.equal(autoApprovalOf({ ...note, modelVerdicts: verdicts }, SETTINGS).eligible, true);
+    assert.deepEqual(autoApprovalOf({ ...note, modelVerdicts: verdicts, relationInfoKnown: false }, SETTINGS), {
+      eligible: false,
+      reason: 'no_relation_info',
+    });
+    const region = input({ relationModels: ['x_custom.region'], modelVerdicts: haiku('x_custom.region', 0.9), sample: CLEAN });
+    assert.deepEqual(autoApprovalOf({ ...region, relationInfoKnown: undefined }, SETTINGS), {
+      eligible: false,
+      reason: 'no_relation_info',
+    });
+    // Basis (a) is deterministic and unaffected.
+    assert.equal(autoApprovalOf(input({ relationInfoKnown: false }), SETTINGS).eligible, true);
+    // A dataset has no schema to read: its source verdict stands.
+    const dataset = {
+      ...note,
+      toolName: 'query_dataset',
+      scope: '3f0c7a52-1111-4222-8333-444455556666',
+      relationInfoKnown: false,
+    };
+    assert.equal(
+      autoApprovalOf({ ...dataset, modelVerdicts: haiku(sourceKeyOf(dataset), 0.95) }, SETTINGS).eligible,
+      true,
+    );
+  });
+
+  it('P4: a text field of an unreadable Odoo model is not approved until its schema was read once', async () => {
+    const h = await makeHarness({ fields: SALE_FIELDS, haiku: HAIKU_09 });
+    h.odooDown = true;
+    h.queue([obs('note', 'sale.order', { valueShape: 'text' })]);
+    let result = await h.run();
+    assert.equal(result.autoApprove?.approved, 0);
+    assert.equal((await byPath(h.store, 'sale.order', 'note'))?.relationInfoKnown, false);
+    h.odooDown = false;
+    result = await h.run();
+    assert.equal(result.autoApprove?.approved, 1);
+    assert.equal((await byPath(h.store, 'sale.order', 'note'))?.status, 'auto_approved');
+    // Odoo flaky afterwards: the stored resolution stands, no revoke.
+    h.odooDown = true;
+    result = await h.run();
+    assert.equal(result.autoApprove?.revoked, 0);
+    assert.equal((await byPath(h.store, 'sale.order', 'note'))?.status, 'auto_approved');
+  });
+
+  it('minor: the dry run does not count no_fresh_vet (it vets nothing) as a revoke', () => {
+    const subject: AutoApproveSubject = {
+      candidate: {
+        id: 'region_id',
+        toolName: 'odoo_execute',
+        scope: 'sale.order',
+        fieldPath: 'region_id',
+        decision: AUTO_DECISION,
+      } as never,
+      input: input({ fieldPath: 'region_id', relationModels: ['x_custom.region'], modelVerdicts: haiku('x_custom.region', 0.9), sample: CLEAN }),
+      fingerprint: 'new',
+      base: { status: 'suggested', reasons: [] },
+    };
+    const config = 'odoo_execute:sale.order/region_id';
+    const settings = { enabled: true, confidence: 0.85 };
+    assert.deepEqual(planAutoApprove([subject], config, settings).revoke.map((r) => r.reason), ['no_fresh_vet']);
+    assert.equal(autoApproveDryRun([subject], config, settings).wouldRevoke, 0);
+    // A real reason still counts.
+    const personal = { ...subject, input: { ...subject.input, modelVerdicts: haiku('x_custom.region', 0.9, 'personal') } };
+    assert.equal(autoApproveDryRun([personal], config, settings).wouldRevoke, 1);
   });
 });

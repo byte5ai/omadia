@@ -50,6 +50,7 @@ import {
 import { isValueLikeFieldName } from '@omadia/plugin-privacy-guard/dist/valueLikeFieldName.js';
 
 import type { AdminAuditLog } from '../../auth/adminAuditLog.js';
+import { keepsStoredVet } from './autoApprove.js';
 import {
   applyAutoApprovePlan,
   planAutoApprove,
@@ -218,6 +219,10 @@ const NO_RELATION_INFO: FieldRelationInfo = { known: false, relationModels: [], 
 interface Resolved {
   readonly candidate: FieldCandidate;
   readonly relationModels: readonly string[];
+  /** The scope model's schema was read, this pass or an earlier one. */
+  readonly relationInfoKnown: boolean;
+  /** An auto-approval's re-vet was inconclusive; its stored vet stands. */
+  readonly keptStoredVet: boolean;
   readonly fieldDocs: FieldRelationInfo['fieldDocs'];
   readonly label?: string;
   readonly fingerprint: string;
@@ -260,6 +265,9 @@ async function resolveCandidate(
   // last pass resolved, so a flaky connection does not flip every decided
   // field to "changed".
   const relationModels = info.known ? info.relationModels : candidate.relationModels;
+  // Same fallback: once read, the scope's schema stays "known" while Odoo is
+  // unreachable (the stored relation models are that resolution).
+  const relationInfoKnown = isModelScope(candidate.scope) && (info.known || candidate.relationInfoKnown);
   const fingerprint = candidateFingerprint({
     scope: candidate.scope,
     relationModels,
@@ -282,15 +290,26 @@ async function resolveCandidate(
       log(`[privacy-fields] vetFieldSample failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
+  // An inconclusive re-vet of an auto-approval (too few values, C1 down)
+  // does not erase the full clean vet it was approved on; a hit always does.
+  const keptStoredVet =
+    freshSample !== undefined &&
+    freshSample.sampleCount > 0 &&
+    candidate.decision?.action === 'auto_approve' &&
+    keepsStoredVet(freshSample, candidate.sampleVerdict);
   // An empty fresh vet does not erase what an earlier vet saw.
   const sample =
-    freshSample !== undefined && (freshSample.sampleCount > 0 || candidate.sampleVerdict === null)
+    freshSample !== undefined &&
+    !keptStoredVet &&
+    (freshSample.sampleCount > 0 || candidate.sampleVerdict === null)
       ? freshSample
       : (candidate.sampleVerdict ?? undefined);
   const label = [info.fieldLabel, candidate.label ?? undefined].find(isUsableLabel);
   return {
     candidate,
     relationModels,
+    relationInfoKnown,
+    keptStoredVet,
     fieldDocs: info.fieldDocs,
     ...(label !== undefined ? { label } : {}),
     fingerprint,
@@ -313,7 +332,10 @@ export function sourceFieldsHash(paths: readonly string[]): string {
     .digest('hex');
 }
 
-function vetoed(r: Resolved): boolean {
+/** What the verdict step reads of a resolved candidate. */
+type VerdictInput = Pick<Resolved, 'candidate' | 'relationModels' | 'fieldDocs' | 'label' | 'sample'>;
+
+function vetoed(r: VerdictInput): boolean {
   return r.sample?.identityHit === true || r.sample?.c1 === 'hit';
 }
 
@@ -342,7 +364,7 @@ function addField(byKey: Map<string, RequestField[]>, key: string, field: Reques
  * Person models are never in the result, and no value ever is: a path or
  * label that is itself a value (`isValueLikeFieldName`) is left out.
  */
-export function modelsNeedingVerdict(resolved: readonly Resolved[]): VerdictRequest[] {
+export function modelsNeedingVerdict(resolved: readonly VerdictInput[]): VerdictRequest[] {
   const byModel = new Map<string, RequestField[]>();
   const bySource = new Map<string, RequestField[]>();
   for (const r of resolved) {
@@ -542,6 +564,7 @@ export async function recomputeFieldClassification(deps: RecomputeDeps): Promise
       ...fieldKeyOf(candidate),
       valueShape: candidate.valueShape,
       relationModels: r.relationModels,
+      relationInfoKnown: r.relationInfoKnown,
       ...(r.sample !== undefined ? { sample: r.sample } : {}),
       modelVerdicts,
     };
@@ -561,6 +584,7 @@ export async function recomputeFieldClassification(deps: RecomputeDeps): Promise
     );
     await deps.store.saveClassification(candidate.id, {
       relationModels: r.relationModels,
+      relationInfoKnown: r.relationInfoKnown,
       status: shown.status,
       reasons: shown.reasons,
       fingerprint: r.fingerprint,
@@ -572,6 +596,11 @@ export async function recomputeFieldClassification(deps: RecomputeDeps): Promise
   log(
     `[privacy-fields] recompute: ${String(observations.length)} observation(s), ${String(schemaFields)} Odoo schema field(s), ${String(candidates.length)} candidate(s)`,
   );
+  const keptVets = resolved.filter((r) => r.keptStoredVet).length;
+  if (keptVets > 0) {
+    // Counts only — never a field name or a value.
+    log(`[privacy-fields] auto-approve: ${String(keptVets)} inconclusive re-vet(s) (too few values or C1 unavailable), stored clean vet kept`);
+  }
   const autoApprove = await runAutoApprove(deps, subjects, rawConfig, clock, log);
   return {
     computedAt,

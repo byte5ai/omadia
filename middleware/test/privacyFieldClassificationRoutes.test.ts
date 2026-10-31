@@ -81,6 +81,7 @@ async function seed(
   });
   await store.saveClassification(row.id, {
     relationModels,
+    relationInfoKnown: true,
     status: 'suggested',
     reasons: [],
     fingerprint,
@@ -386,6 +387,7 @@ describe('field-classification routes', () => {
     const fingerprint = candidateFingerprint({ scope: 'hr.employee', relationModels: ['hr.job'], valueShape: 'm2o' });
     await harness.store.saveClassification(row.id, {
       relationModels: ['hr.job'],
+      relationInfoKnown: true,
       status: 'needs_clarification',
       reasons: [],
       fingerprint,

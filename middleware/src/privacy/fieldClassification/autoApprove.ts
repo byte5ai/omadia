@@ -13,13 +13,16 @@
  *       no relation information — never for a many2one field, which must
  *       name its targets) is `non-personal` with a confidence ABOVE
  *       max(`auto_approve_confidence`, 0.8), AND the name detector vetted a
- *       sample of at least `AUTO_APPROVE_MIN_SAMPLE` values clean.
+ *       sample of at least `AUTO_APPROVE_MIN_SAMPLE` values clean; on an
+ *       Odoo model scope only once that model's schema was read
+ *       (`relationInfoKnown`, else `no_relation_info`).
  * The safeguards override both and are checked first:
  *   1. a relation target is a person model, the targets have conflicting
- *      catalog verdicts, or the scope model is a person model and a target is
- *      not on `PERSON_SCOPE_TARGET_ALLOWLIST` (an employee's department, job,
- *      company, work location, country, state, currency — never e.g. an
- *      employee's tags or a leave's type);
+ *      catalog verdicts, or the scope is a person scope (`isPersonScope`: a
+ *      person model, `hr.*`, `res.partner*`, `res.users*`, an HR
+ *      `*.report`) and a target is not on `PERSON_SCOPE_TARGET_ALLOWLIST`
+ *      (an employee's department, job, company, work location, country,
+ *      state, currency — never e.g. an employee's tags or a leave's type);
  *   2. an identity hit, a C1 name hit or a near-miss on the sample;
  *   3. scope `-` (the entry would clear the field in every call of the tool);
  *   4. a value shape other than text / m2o, or a field that is not exactly
@@ -48,7 +51,8 @@ import {
   type SampleVerdictSummary,
   type StoredDecision,
 } from './engine.js';
-import { catalogVerdictOf, isPersonModel } from './modelCatalog.js';
+import { catalogVerdictOf, isPersonModel, isPersonScope } from './modelCatalog.js';
+import { MODEL_NAME } from './odooRelationResolver.js';
 
 /** Default of `auto_approve_confidence`. */
 export const AUTO_APPROVE_DEFAULT_CONFIDENCE = 0.85;
@@ -59,9 +63,9 @@ export const AUTO_APPROVE_MIN_CONFIDENCE = HAIKU_SUGGEST_MIN_CONFIDENCE;
 export const AUTO_APPROVE_MAX_CONFIDENCE = 0.99;
 /** Basis (b) needs a clean name-detector vet over at least this many values. */
 export const AUTO_APPROVE_MIN_SAMPLE = 10;
-/** Relation targets a field OF a person model (`hr.employee`, `res.partner`,
- *  `hr.leave` …) may be auto-approved for: organisational / geographic
- *  reference data, never a classification of the person. Anything else from
+/** Relation targets a field OF a person scope (`isPersonScope`:
+ *  `hr.employee`, `res.partner`, `hr.leave`, `hr.leave.report` …) may be
+ *  auto-approved for: organisational / geographic reference data, never a classification of the person. Anything else from
  *  a person scope stays for the admin (`person_scope`). */
 export const PERSON_SCOPE_TARGET_ALLOWLIST: ReadonlySet<string> = new Set([
   'hr.department',
@@ -108,6 +112,7 @@ export type AutoApprovalBlock =
   | 'decided'
   | 'covered'
   | 'no_relation_target'
+  | 'no_relation_info'
   | 'not_suggested'
   | 'no_verdict'
   | 'not_non_personal'
@@ -131,6 +136,10 @@ export interface AutoApprovalInput extends CandidateKey {
   readonly modelVerdicts?: ReadonlyMap<string, ModelVerdictSummary>;
   readonly coverage?: ConfigCoverage;
   readonly decision?: StoredDecision | null;
+  /** The scope model's Odoo schema was read (this pass, or the stored
+   *  resolution an unreachable Odoo falls back to). Basis (b) on an Odoo
+   *  model scope requires it. */
+  readonly relationInfoKnown?: boolean;
 }
 
 const SAFETY = new Set<string>(AUTO_APPROVAL_SAFETY_BLOCKS);
@@ -181,6 +190,36 @@ export function entryOf(key: CandidateKey): string | undefined {
   }
 }
 
+/** A clean vet over at least `AUTO_APPROVE_MIN_SAMPLE` values. */
+export function isFullCleanVet(sample: SampleVerdictSummary | null | undefined): boolean {
+  return (
+    sample !== undefined &&
+    sample !== null &&
+    !sample.identityHit &&
+    sample.c1 === 'clean' &&
+    sample.sampleCount >= AUTO_APPROVE_MIN_SAMPLE
+  );
+}
+
+/**
+ * Re-vetting an EXISTING auto-approval: does this pass's vet leave the
+ * stored one standing? Only when it is inconclusive — clean over fewer than
+ * `AUTO_APPROVE_MIN_SAMPLE` values (the guard buffered few) or C1
+ * `unavailable` (an outage) — AND the stored vet is a full clean one. An
+ * identity hit, a C1 hit or a near-miss is never inconclusive: it revokes at
+ * any sample size. Without a full stored vet the fresh one decides (and
+ * basis (b) fails on it). New approvals never take this path.
+ */
+export function keepsStoredVet(
+  fresh: SampleVerdictSummary,
+  stored: SampleVerdictSummary | null | undefined,
+): boolean {
+  if (fresh.identityHit || fresh.c1 === 'hit' || fresh.c1 === 'near-miss') return false;
+  const inconclusive =
+    fresh.c1 === 'unavailable' || (fresh.c1 === 'clean' && fresh.sampleCount < AUTO_APPROVE_MIN_SAMPLE);
+  return inconclusive && isFullCleanVet(stored);
+}
+
 /** Safeguards 1–4: the field itself, before any decision or config. */
 function safetyBlockOf(input: AutoApprovalInput, targets: readonly string[]): AutoApprovalSafetyBlock | undefined {
   if (entryOf(input) === undefined) return 'invalid_field';
@@ -194,8 +233,11 @@ function safetyBlockOf(input: AutoApprovalInput, targets: readonly string[]): Au
   // a leave's type, a partner's title), so the catalog verdict alone is not
   // enough here. Text fields of a person model are personal already
   // (engine), and any detector hit still blocks below.
+  // `isPersonScope` is broader than the person-model catalog: any `hr.*`,
+  // `res.partner*` / `res.users*` model and the HR `*.report` models
+  // (`hr.leave.report/holiday_status_id` is a leave's type).
   if (
-    isPersonModel(input.scope) &&
+    isPersonScope(input.scope) &&
     !(targets.length > 0 && targets.every((t) => PERSON_SCOPE_TARGET_ALLOWLIST.has(t)))
   ) {
     return 'person_scope';
@@ -221,10 +263,7 @@ function haikuApproval(
   if (known.some((v) => v.verdict !== 'non-personal')) return { reason: 'not_non_personal' };
   const confidence = Math.min(...known.map((v) => v.confidence));
   if (!(confidence > Math.max(threshold, HAIKU_SUGGEST_MIN_CONFIDENCE))) return { reason: 'below_threshold' };
-  const sample = input.sample;
-  if (sample === undefined || sample.sampleCount < AUTO_APPROVE_MIN_SAMPLE || sample.c1 !== 'clean') {
-    return { reason: 'no_name_vet' };
-  }
+  if (!isFullCleanVet(input.sample)) return { reason: 'no_name_vet' };
   // Last, as the catch-all: whatever else keeps the classifier from
   // suggesting the field keeps it from being auto-approved on a verdict.
   if (classifyBase(input).status !== 'suggested') return { reason: 'not_suggested' };
@@ -252,6 +291,13 @@ export function autoApprovalOf(
   // and the SOURCE's verdict says nothing about a relation's values.
   if (input.valueShape === 'm2o' && targets.length === 0) {
     return { eligible: false, reason: 'no_relation_target' };
+  }
+  // A field of an Odoo model whose schema was never read: its relation
+  // targets (or that it has none) are a guess, so no verdict decides it.
+  // Datasets and other sources have no schema to read — their source verdict
+  // stands.
+  if (MODEL_NAME.test(input.scope) && input.relationInfoKnown !== true) {
+    return { eligible: false, reason: 'no_relation_info' };
   }
   const keys = targets.length > 0 ? targets : [sourceKeyOf(input)];
   const haiku = haikuApproval(input, keys, settings.confidence);

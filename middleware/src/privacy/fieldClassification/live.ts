@@ -49,6 +49,7 @@ function inputOf(
     ...fieldKeyOf(candidate),
     valueShape: candidate.valueShape,
     relationModels: candidate.relationModels,
+    relationInfoKnown: candidate.relationInfoKnown,
     ...(candidate.sampleVerdict !== null ? { sample: candidate.sampleVerdict } : {}),
     modelVerdicts: verdicts,
   };

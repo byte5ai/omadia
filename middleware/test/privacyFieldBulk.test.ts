@@ -139,6 +139,7 @@ async function seed(
   const fingerprint = candidateFingerprint({ scope, relationModels, valueShape: 'm2o' });
   await h.store.saveClassification(row.id, {
     relationModels,
+    relationInfoKnown: true,
     status: 'suggested',
     reasons: [],
     fingerprint,
@@ -416,6 +417,42 @@ describe('admin actions on auto-approved and auto-revoked fields', () => {
     assert.equal(row?.decision?.action, 'revert');
     assert.equal(row?.status, 'suggested');
     assert.equal(h.audits.length, 1);
+  });
+
+  it('re-review C1: a revert that loses to an auto-revoke never re-adds the entry (fail closed)', async () => {
+    h = await makeHarness();
+    const field = await autoApproved();
+    const store = h.store;
+    const save = store.saveDecision.bind(store);
+    let raced = false;
+    store.saveDecision = async (id, decision, status, expected) => {
+      if (!raced) {
+        raced = true;
+        // The recompute revokes the auto-approval between the admin's
+        // config write and the admin's decision write.
+        await save(
+          id,
+          {
+            action: 'auto_revoke',
+            fingerprint: field.fingerprint,
+            byId: null,
+            byEmail: 'system:auto-classifier',
+            at: '2026-10-31T09:00:00.000Z',
+          },
+          'auto_revoked',
+        );
+      }
+      return save(id, decision, status, expected);
+    };
+    const res = await post(`/${field.id}/decision`, { action: 'revert', fingerprint: field.fingerprint });
+    assert.equal(raced, true);
+    assert.equal(res.status, 409);
+    assert.equal((await json(res))['error'], 'stale_decision');
+    assert.equal(npf(), undefined, 'the removed entry stays removed');
+    const row = await h.store.get(field.id);
+    assert.equal(row?.decision?.action, 'auto_revoke');
+    assert.equal(row?.status, 'auto_revoked');
+    assert.deepEqual(h.audits, []);
   });
 
   it('confirm takes ownership without a write', async () => {

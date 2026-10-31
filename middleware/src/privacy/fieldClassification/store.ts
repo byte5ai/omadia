@@ -6,7 +6,8 @@
  * `privacy_field_classification_visits` (per-admin last visit), created by
  * `migrations/0065_privacy_field_classification.sql`;
  * `privacy_field_bulk_batches` (bulk accepts, for undo) and
- * `decision_batch_id` from `0066_privacy_field_auto_approve.sql`. Every
+ * `decision_batch_id` / `relation_info_known` from
+ * `0066_privacy_field_auto_approve.sql`. Every
  * statement is parameterized. No column holds a field value.
  *
  * `InMemoryFieldClassificationStore` is the same contract without Postgres,
@@ -87,6 +88,9 @@ export interface FieldCandidate {
   readonly label: string | null;
   readonly valueShape: FieldValueShape;
   readonly relationModels: readonly string[];
+  /** The scope model's Odoo schema was read at least once (`relationModels`
+   *  is a resolution, not "unknown"). Never set for a non-model scope. */
+  readonly relationInfoKnown: boolean;
   readonly status: FieldStatus;
   readonly reasons: readonly FieldReason[];
   readonly fingerprint: string;
@@ -103,6 +107,7 @@ export interface FieldCandidate {
 
 export interface CandidateClassificationUpdate {
   readonly relationModels: readonly string[];
+  readonly relationInfoKnown: boolean;
   readonly status: FieldStatus;
   readonly reasons: readonly FieldReason[];
   readonly fingerprint: string;
@@ -190,6 +195,7 @@ interface CandidateRow {
   label: string | null;
   value_shape: FieldValueShape;
   relation_models: string[];
+  relation_info_known: boolean;
   status: FieldStatus;
   reasons: FieldReason[] | null;
   fingerprint: string;
@@ -209,7 +215,7 @@ interface CandidateRow {
 }
 
 const CANDIDATE_COLS = `id, tool_name, scope, field_path, label, value_shape, relation_models,
-  status, reasons, fingerprint, sample_verdict, masked_preview, decision, decision_fingerprint, decided_by_id,
+  relation_info_known, status, reasons, fingerprint, sample_verdict, masked_preview, decision, decision_fingerprint, decided_by_id,
   decided_by_email, decided_at, decision_batch_id, first_seen_at, last_seen_at, seen_count, computed_at,
   last_status_change_at`;
 
@@ -222,6 +228,7 @@ function toCandidate(row: CandidateRow): FieldCandidate {
     label: row.label,
     valueShape: row.value_shape,
     relationModels: row.relation_models,
+    relationInfoKnown: row.relation_info_known,
     status: row.status,
     reasons: row.reasons ?? [],
     fingerprint: row.fingerprint,
@@ -358,6 +365,7 @@ export class PgFieldClassificationStore implements FieldClassificationStore {
     await this.pool.query(
       `UPDATE privacy_field_candidates SET
          relation_models = $2::text[],
+         relation_info_known = $9,
          last_status_change_at = CASE WHEN status IS DISTINCT FROM $3 THEN NOW() ELSE last_status_change_at END,
          status = $3,
          reasons = $4::jsonb,
@@ -375,6 +383,7 @@ export class PgFieldClassificationStore implements FieldClassificationStore {
         update.sampleVerdict !== undefined ? JSON.stringify(update.sampleVerdict) : null,
         update.computedAt,
         [...(update.maskedPreview ?? [])],
+        update.relationInfoKnown,
       ],
     );
   }
@@ -600,6 +609,7 @@ export class InMemoryFieldClassificationStore implements FieldClassificationStor
         label: obs.label ?? null,
         valueShape: obs.valueShape,
         relationModels: [],
+        relationInfoKnown: false,
         status: 'needs_clarification',
         reasons: [],
         fingerprint: '',
@@ -640,6 +650,7 @@ export class InMemoryFieldClassificationStore implements FieldClassificationStor
     this.rows.set(id, {
       ...row,
       relationModels: [...update.relationModels],
+      relationInfoKnown: update.relationInfoKnown,
       status: update.status,
       reasons: update.reasons,
       fingerprint: update.fingerprint,

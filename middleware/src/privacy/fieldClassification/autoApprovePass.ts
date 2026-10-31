@@ -34,10 +34,10 @@
 import { systemAuditActor, type AdminAuditLog } from '../../auth/adminAuditLog.js';
 import {
   AUTO_APPROVE_MAX_PER_PASS,
-  AUTO_APPROVE_MIN_SAMPLE,
   AUTO_CLASSIFIER_ACTOR,
   autoApprovalOf,
   entryOf,
+  isFullCleanVet,
   type AutoApprovalBasis,
   type AutoApprovalBlock,
   type AutoApprovalInput,
@@ -104,13 +104,7 @@ function isAutoApproved(c: FieldCandidate): boolean {
 
 /** A clean vet of this pass over enough values. */
 function hasFreshCleanVet(subject: AutoApproveSubject): boolean {
-  const fresh = subject.freshSample;
-  return (
-    fresh !== undefined &&
-    !fresh.identityHit &&
-    fresh.c1 === 'clean' &&
-    fresh.sampleCount >= AUTO_APPROVE_MIN_SAMPLE
-  );
+  return isFullCleanVet(subject.freshSample);
 }
 
 type PlanStep =
@@ -445,7 +439,8 @@ export interface AutoApproveDryRunReport {
   /** Per source, `<tool>:<scope>`. */
   readonly byScope: Readonly<Record<string, number>>;
   readonly blocked: Readonly<Record<string, number>>;
-  /** Auto-approved fields a pass would revoke now. */
+  /** Auto-approved fields a pass would revoke now (on the stored vets;
+   *  `no_fresh_vet` is not counted — a dry run makes no fresh vet). */
   readonly wouldRevoke: number;
   readonly sample: readonly {
     readonly id: string;
@@ -489,7 +484,9 @@ export function autoApproveDryRun(
     byTool,
     byScope,
     blocked: plan.blocked,
-    wouldRevoke: plan.revoke.length,
+    // A dry run vets nothing, so "no fresh vet" is its own absence, not a
+    // reason a pass would revoke for.
+    wouldRevoke: plan.revoke.filter((r) => r.reason !== 'no_fresh_vet').length,
     sample: plan.approve.slice(0, sampleLimit).map((p) => ({
       id: p.subject.candidate.id,
       toolName: p.subject.candidate.toolName,

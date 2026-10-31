@@ -2213,14 +2213,24 @@ unknown target, or of the source for a field without relation information —
 never for a many2one field, which must have resolved targets) is
 `non-personal` with a confidence strictly above max(`auto_approve_confidence`,
 0.8) AND C1 vetted a sample of at least 10 values clean; without C1 a (b)
-field stays "needs clarification". `auto_approve_confidence` is a string
+field stays "needs clarification". On an Odoo model scope (b) further needs
+that model's schema to have been read (`fields_get` succeeded once —
+`relation_info_known`; afterwards an unreachable Odoo falls back to that stored
+resolution, like the relation targets); without it the field is not eligible
+(`no_relation_info`). Datasets and other non-model sources have no schema to
+read and keep the source-verdict path. `auto_approve_confidence` is a string
 setting clamped to 0.8–0.99 (below 0.8 counts as 0.8, the suggestion floor;
 above 0.99 as 0.99; `0,9` accepted; not a number → 0.85). The safeguards
 override both: never for a person-model relation target; never for a field OF
-a person model unless every relation target is on an explicit allow-list
+a person scope — a person model, any `hr.*` model, any `res.partner*` /
+`res.users*` model, and a `*.report` model whose name contains `employee`,
+`leave`, `attendance`, `payslip`, `applicant` or `expense` (`isPersonScope`;
+`hr.leave.report` and `hr.leave.employee.type.report` are also person models)
+— unless every relation target is on an explicit allow-list
 (`hr.department`, `hr.job`, `res.company`, `hr.work.location`, `res.country`,
-`res.country.state`, `res.currency` — so `hr.employee/department_id` is
-auto-approved, while an employee's tags, a leave's type or a partner's title
+`res.country.state`, `res.currency` — so `hr.employee/department_id` and
+`hr.leave.report/department_id` are auto-approved, while an employee's tags, a
+leave's type (also `hr.leave.report/holiday_status_id`) or a partner's title
 stay for the admin even though their targets are catalogued non-personal);
 never on conflicting targets, an identity hit, a C1 hit or near-miss, scope
 `-`, a value shape other than text / m2o or a name that is not exactly one
@@ -2240,13 +2250,20 @@ admins: inside the plugin lock the pass re-reads each field's decision and
 skips one that changed since it planned; every decision write — the pass,
 `POST /:id/decision` (409 `stale_decision`), bulk confirm / undo (skip
 `stale`) — is compare-and-set over the decision and fingerprint it read, and
-the losing side takes its config change out again. A decision row that cannot
+the losing side takes an entry it ADDED out again — an undo never adds one
+back: a `revert` that loses (e.g. to an auto-revoke) or fails leaves its
+entry removed, so the field stays masked (fail closed). A decision row that cannot
 be written takes its entry out again; one failing field never stops the pass.
 Its log line carries counts only. Re-vetting: the guard keeps sampling fields
 an operator rule CLEARED (type `label`) exactly like masked ones (same caps
 and 24 h TTL, in memory, never logged) and reports them as `cleared`
 observations; every pass vets the buffered values of each auto-approved field
-again and the new verdict replaces the stored one. Revoke: every pass judges
+again. An identity hit, a C1 hit or a near-miss revokes at ANY sample size; a
+clean re-vet of fewer than 10 values or a C1 outage (`unavailable`) is
+inconclusive and keeps the stored full clean vet (no revoke; the pass logs a
+count-only line) — only without a stored clean vet of at least 10 values does
+basis (b) fail on it. Otherwise the new verdict replaces the stored one; new
+approvals always need 10 clean values. Revoke: every pass judges
 each auto-approved field as if it were undecided and its own entry absent —
 when it is no longer eligible for ANY reason (person target or scope, a
 detector hit or near-miss, conflicting or new unknown targets, a verdict that
@@ -2264,7 +2281,8 @@ ownership (`confirm`). The posture adds `fields_auto_approved_new`
 (auto-approvals since the requesting admin's last visit of the page) so the
 banner tells admins what changed without them. `POST …/recompute?dryRun=1`
 reports what the pass WOULD approve (counts per basis / tool / source and
-field names, no value, no write). The page, bulk accept and the dry run read
+field names, no value, no write) and `wouldRevoke` on the stored vets — it
+vets nothing, so `no_fresh_vet` is not counted. The page, bulk accept and the dry run read
 schema verdicts with the same 30-day TTL as the recompute. Residual: an
 auto-approved (b) field rests on a schema verdict plus C1's vet of a bounded
 sample; names C1 misses reach the model until a re-vet or an admin catches

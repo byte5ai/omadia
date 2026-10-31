@@ -617,9 +617,13 @@ export function createFieldClassificationRoutes(deps: FieldClassificationRouteDe
       }
       // Only a write that changed the setting is this decision's to undo.
       if (configChange !== undefined && configChange.before === configChange.after) configChange = undefined;
+      // Fail closed: an undo only ever REMOVES an entry this request added.
+      // A revert whose decision write lost (an auto-revoke, another admin)
+      // or failed leaves the entry out — the field stays masked; re-adding
+      // it could clear a field the winning decision just took out.
       const undoConfigChange = async (): Promise<void> => {
-        if (configChange === undefined) return;
-        await writeConfigEntry(candidate, action === 'confirm' ? 'remove' : 'append').catch(
+        if (configChange === undefined || action !== 'confirm') return;
+        await writeConfigEntry(candidate, 'remove').catch(
           (undoErr: unknown) => {
             console.error(
               '[privacy-fields] undoing the setting change after a failed decision write failed:',
