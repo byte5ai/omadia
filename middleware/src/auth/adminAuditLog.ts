@@ -82,9 +82,11 @@ export type AuditAction =
   // Field classification auto-approval — the recompute (actor
   // `system:auto-classifier`, `systemAuditActor`) wrote one field's scoped
   // `non_personal_fields` entry itself (`field_auto_approve`, `after`:
-  // basis, confidence, entry), or took it out again after the field drifted
-  // to a person model / a detector hit / conflicting targets
-  // (`field_auto_revoke`, `after`: reason, entry). One row per field;
+  // basis, confidence, entry), or took it out again because the field lost
+  // its eligibility for any reason — a person target, a detector hit or
+  // near-miss, conflicting or unknown targets, a changed verdict, a raised
+  // threshold, a legacy entry now covering it (`field_auto_revoke`, `after`:
+  // reason, entry, removed, legacyStillCovers?). One row per field;
   // `target` is `privacy-field:<tool>:<scope>/<path>`. Never a value.
   | 'privacy.field_auto_approve'
   | 'privacy.field_auto_revoke'

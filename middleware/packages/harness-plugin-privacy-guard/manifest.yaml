@@ -231,6 +231,15 @@ playbook:
     @omadia/plugin-api ab 1.49.0 (es importiert `parseLlmJson` daraus): mit
     einem älteren Kernel lädt es nicht. Das gebündelte Plugin kommt immer mit
     dem passenden Kernel; relevant ist das nur für eine hochgeladene Kopie.
+    Ab @omadia/plugin-api 1.50.0 sammelt dieses Plugin (ab 0.16.0) auch Werte
+    von Feldern, die `non_personal_fields` freigegeben hat
+    (`FieldObservation.cleared`), damit jede Neuberechnung ein automatisch
+    freigegebenes Feld erneut prüfen kann. Mit einem älteren Plugin bekommt
+    der Kernel keine Stichproben freigegebener Felder: Er behält die
+    gespeicherte saubere Prüfung, sieht aber keinen neuen Detektor-Treffer und
+    kann deshalb darauf gestützt keine Freigabe zurücknehmen.
+    `auto_approve_non_personal` und `auto_approve_confidence` liest der
+    Kernel, nicht das Plugin: ein älterer Kernel ignoriert sie (nur Vorschläge).
 
 # ---------------------------------------------------------------------------
 # Permissions. Server-side compute plus ONE deliberate network target
