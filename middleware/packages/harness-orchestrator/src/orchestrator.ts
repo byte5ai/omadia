@@ -1768,29 +1768,26 @@ function choiceCardLogLine(answer: string, question: string): string {
  * persisted (auto-promotion) or shown in the save-as-memory modal. The
  * excerpt came out of an LLM pass over masked wire text, so its copies may
  * carry surrogates; stored memories must carry real values.
+ *
+ * `restore` is the turn's `snapshotPromptRestorer()`, taken when the excerpt
+ * call started: the call may finish after the pass's privacy handle was
+ * finalized (it overlaps the verifier, see `startPalaiaExcerpt`), and the
+ * snapshot keeps working once `finalize` dropped the live map. Absent ⇒
+ * nothing was masked this turn, the excerpt is already in real values.
  */
-async function restoreExcerptForPersistence(
-  privacy: PrivacyTurnHandle | undefined,
+function restoreExcerptForPersistence(
+  restore: ((text: string) => string) | undefined,
   excerpt: PalaiaExcerpt | undefined,
-): Promise<PalaiaExcerpt | undefined> {
-  if (privacy === undefined || excerpt === undefined) return excerpt;
-  const restored = { ...excerpt };
-  restored.suggestedSummary = await restorePromptForPersistence(
-    privacy,
-    excerpt.suggestedSummary,
-  );
-  if (excerpt.suggestedRationale !== undefined) {
-    restored.suggestedRationale = await restorePromptForPersistence(
-      privacy,
-      excerpt.suggestedRationale,
-    );
-  }
-  const excerpts: string[] = [];
-  for (const span of excerpt.excerpts) {
-    excerpts.push(await restorePromptForPersistence(privacy, span));
-  }
-  restored.excerpts = excerpts;
-  return restored;
+): PalaiaExcerpt | undefined {
+  if (restore === undefined || excerpt === undefined) return excerpt;
+  return {
+    ...excerpt,
+    suggestedSummary: restore(excerpt.suggestedSummary),
+    ...(excerpt.suggestedRationale !== undefined
+      ? { suggestedRationale: restore(excerpt.suggestedRationale) }
+      : {}),
+    excerpts: excerpt.excerpts.map(restore),
+  };
 }
 
 /** #361 — an `ask_user_choice` card (LLM tool call or card-router pass over
@@ -3314,6 +3311,44 @@ export class Orchestrator {
       );
       return undefined;
     }
+  }
+
+  /**
+   * Starts the save-as-memory excerpt of a streamed answer and returns it as
+   * a promise — restored to real values, never rejecting (a miss is
+   * `undefined`). Started as soon as the answer is known, so its Haiku call
+   * overlaps the row write; under a verifier that may re-enter the request
+   * (`deferringLedger`) nobody awaits it before `done` at all: it runs
+   * alongside the verifier and lands on the `done` that goes out through the
+   * request's commit (`finishRequestDone`). Measured live, awaiting it before
+   * `done` held the verifier back by ~2–5 s on a plain chat turn.
+   *
+   * The restorer is snapshotted synchronously, before the first await: the
+   * call may outlive the pass's privacy handle (finalized after the
+   * verifier), and the snapshot stays valid after `finalize` dropped the map.
+   */
+  private startPalaiaExcerpt(
+    privacy: PrivacyTurnHandle | undefined,
+    wireUserMessage: string,
+    wireAnswer: string,
+  ): Promise<PalaiaExcerpt | undefined> {
+    if (!this.excerptExtractor) return Promise.resolve(undefined);
+    const restore = privacy?.snapshotPromptRestorer();
+    const startedAt = Date.now();
+    return this.maybeExtractExcerpt(wireUserMessage, wireAnswer)
+      .then((excerpt) => {
+        console.log(
+          `[orchestrator] palaia-excerpt ${excerpt ? 'ok' : 'none'} ms=${String(Date.now() - startedAt)}`,
+        );
+        return restoreExcerptForPersistence(restore, excerpt);
+      })
+      .catch((err: unknown) => {
+        console.error(
+          '[orchestrator] palaia-excerpt restore failed (continuing without enrichment):',
+          err instanceof Error ? err.message : err,
+        );
+        return undefined;
+      });
   }
 
   /**
@@ -8658,6 +8693,17 @@ export class Orchestrator {
             iterations,
             status: 'success',
           });
+          // Slice 4a — the save-as-memory excerpt (a Haiku call), started
+          // now so it overlaps the row write; see `startPalaiaExcerpt` for
+          // why a verifier-wrapped turn does not wait for it before `done`.
+          // #361 — it gets the wire variants in; it restores its output.
+          // Skipped on a canvas turn: the canvas has no save-as-memory modal,
+          // so the Haiku call only delayed `done`. Auto-promotion then skips
+          // with `no-excerpt` (#1527), as it does on any excerpt miss.
+          const excerptPending =
+            input.canvasSessionId === undefined
+              ? this.startPalaiaExcerpt(privacyForPrompt, wireUserMessage, answer)
+              : Promise.resolve(undefined);
           // #361 — restore prompt surrogates → real values BEFORE anything
           // is persisted (session log, auto-promotion). `answer` (the wire
           // variant) stays in scope for the LLM-bound extra passes below
@@ -8724,37 +8770,30 @@ export class Orchestrator {
           const pendingSlotCard = this.drainPendingSlotCard();
           const pendingRoutineList = this.drainPendingRoutineList();
           const pendingOAuthConsent = this.drainConsentRequired();
-          // Slice 4a — Haiku-backed enrichment for the save-as-memory
-          // modal. Inline because the `done` event is the natural
-          // carrier and the chat UI wants the suggestion immediately;
-          // accept the 300-800ms latency cost. Failure → undefined,
-          // modal falls back to its 240-char prefill.
-          // #361 — the excerpt pass is a Haiku (LLM) call, so it gets the
-          // wire variants in; its OUTPUT is persisted (auto-promotion) and
-          // user-facing (modal prefill), so surrogates are restored to real
-          // values before either consumer sees it.
-          // Skipped on a canvas turn: the canvas has no save-as-memory modal,
-          // so the Haiku call only delayed `done`. Auto-promotion then skips
-          // with `no-excerpt` (#1527), as it does on any excerpt miss.
+          // Slice 4a — the excerpt rides the `done` event (the save-as-memory
+          // modal prefill; a miss → the modal's 240-char prefill). Without a
+          // re-entering verifier it is awaited here, as before. Under one
+          // (`deferring`) the row and its promotion wait for it in the
+          // request's commit instead, and the commit hands it to the `done`
+          // that goes out — so the verifier, which starts at this `done`,
+          // no longer waits for the Haiku call. No row to offer (no session
+          // logger) ⇒ no commit to carry it: awaited here as well.
           const palaiaExcerpt =
-            input.canvasSessionId === undefined
-              ? await restoreExcerptForPersistence(
-                  privacyForPrompt,
-                  await this.maybeExtractExcerpt(wireUserMessage, answer),
-                )
-              : undefined;
+            deferring === undefined || row === undefined ? await excerptPending : undefined;
           if (deferring !== undefined && row !== undefined) {
             // Promotion follows the row, so it is the delivered pass's too.
             this.turnRecords.offerRow(deferring, row, 'answer', async (turnId) => {
+              const committedExcerpt = await excerptPending;
               const mkId = await this.maybePromoteTurn({
                 turnId,
                 userId: input.userId,
                 ...turnOwnersField(turnMemory),
-                palaiaExcerpt,
+                palaiaExcerpt: committedExcerpt,
                 fallbackAssistantAnswer: restoredAnswer,
               });
               return {
                 ...(mkId ? { autoPromotedMkId: mkId } : {}),
+                ...(committedExcerpt ? { palaiaExcerpt: committedExcerpt } : {}),
                 events: await this.toKgInsertAnnotationEvents(mkId),
               };
             });
