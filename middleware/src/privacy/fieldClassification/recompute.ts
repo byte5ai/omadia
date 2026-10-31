@@ -16,7 +16,13 @@
  * 30 days, re-asked when the source's field set changes), classify and
  * persist.
  *
- * It NEVER writes the guard's config — it has no writer to call. It runs on
+ * Without `deps.autoApprove` it never writes the guard's config — it has no
+ * writer to call. With it (wired in `index.ts`), the auto-approval step
+ * (`autoApprovePass.ts`) appends the scoped entries of eligible fields
+ * while the guard's `auto_approve_non_personal` switch is on, and revokes
+ * auto-approvals that are no longer eligible — one config write per pass.
+ * An auto-approved field is re-vetted every pass (the guard samples cleared
+ * fields too; a `cleared` observation only counts for a listed field). It runs on
  * lifecycle events (plugin activation/deactivation), every 6 hours and on
  * `POST /recompute`; never per chat turn. Debounced and single-flight.
  */
@@ -43,6 +49,15 @@ import {
 } from './engine.js';
 import { isValueLikeFieldName } from '@omadia/plugin-privacy-guard/dist/valueLikeFieldName.js';
 
+import type { AdminAuditLog } from '../../auth/adminAuditLog.js';
+import { keepsStoredVet } from './autoApprove.js';
+import {
+  applyAutoApprovePlan,
+  planAutoApprove,
+  type AutoApprovePassResult,
+  type AutoApproveSubject,
+} from './autoApprovePass.js';
+import type { NonPersonalFieldsEditor } from './configEditor.js';
 import { catalogVerdictOf, isPersonModel } from './modelCatalog.js';
 import {
   MODEL_NAME,
@@ -81,6 +96,13 @@ export interface RecomputeDeps {
   };
   /** The guard's current `non_personal_fields` value. Read-only. */
   readonly readNonPersonalFields: () => string | undefined;
+  /** The auto-approval step: the shared config editor (its settings say
+   *  whether the switch is on) and the audit log for its rows. Absent → the
+   *  pass only classifies (suggest-only). */
+  readonly autoApprove?: {
+    readonly editor: Pick<NonPersonalFieldsEditor, 'edit' | 'autoApproveSettings'>;
+    readonly audit?: Pick<AdminAuditLog, 'record'>;
+  };
   readonly now?: () => Date;
   readonly log?: (msg: string) => void;
 }
@@ -89,6 +111,8 @@ export interface RecomputeResult {
   readonly computedAt: string;
   readonly candidates: number;
   readonly observations: number;
+  /** The auto-approval step's counts; absent when it is not wired. */
+  readonly autoApprove?: AutoApprovePassResult;
 }
 
 /** Is any segment of the path a `__k_` link key? */
@@ -195,6 +219,10 @@ const NO_RELATION_INFO: FieldRelationInfo = { known: false, relationModels: [], 
 interface Resolved {
   readonly candidate: FieldCandidate;
   readonly relationModels: readonly string[];
+  /** The scope model's schema was read, this pass or an earlier one. */
+  readonly relationInfoKnown: boolean;
+  /** An auto-approval's re-vet was inconclusive; its stored vet stands. */
+  readonly keptStoredVet: boolean;
   readonly fieldDocs: FieldRelationInfo['fieldDocs'];
   readonly label?: string;
   readonly fingerprint: string;
@@ -208,6 +236,10 @@ function needsVetting(candidate: FieldCandidate, fingerprint: string): boolean {
   // no value of it, so a vet would only log an empty verdict every pass.
   if (candidate.seenCount === 0) return false;
   return (
+    // Auto-approved: in clear now, so re-vetted every pass on what the guard
+    // still buffers of it (it samples cleared fields too) — a name or an
+    // identity among the values revokes it in this same pass.
+    candidate.decision?.action === 'auto_approve' ||
     candidate.fingerprint !== fingerprint ||
     candidate.sampleVerdict === null ||
     candidate.sampleVerdict.sampleCount === 0
@@ -233,6 +265,9 @@ async function resolveCandidate(
   // last pass resolved, so a flaky connection does not flip every decided
   // field to "changed".
   const relationModels = info.known ? info.relationModels : candidate.relationModels;
+  // Same fallback: once read, the scope's schema stays "known" while Odoo is
+  // unreachable (the stored relation models are that resolution).
+  const relationInfoKnown = isModelScope(candidate.scope) && (info.known || candidate.relationInfoKnown);
   const fingerprint = candidateFingerprint({
     scope: candidate.scope,
     relationModels,
@@ -255,15 +290,26 @@ async function resolveCandidate(
       log(`[privacy-fields] vetFieldSample failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
+  // An inconclusive re-vet of an auto-approval (too few values, C1 down)
+  // does not erase the full clean vet it was approved on; a hit always does.
+  const keptStoredVet =
+    freshSample !== undefined &&
+    freshSample.sampleCount > 0 &&
+    candidate.decision?.action === 'auto_approve' &&
+    keepsStoredVet(freshSample, candidate.sampleVerdict);
   // An empty fresh vet does not erase what an earlier vet saw.
   const sample =
-    freshSample !== undefined && (freshSample.sampleCount > 0 || candidate.sampleVerdict === null)
+    freshSample !== undefined &&
+    !keptStoredVet &&
+    (freshSample.sampleCount > 0 || candidate.sampleVerdict === null)
       ? freshSample
       : (candidate.sampleVerdict ?? undefined);
   const label = [info.fieldLabel, candidate.label ?? undefined].find(isUsableLabel);
   return {
     candidate,
     relationModels,
+    relationInfoKnown,
+    keptStoredVet,
     fieldDocs: info.fieldDocs,
     ...(label !== undefined ? { label } : {}),
     fingerprint,
@@ -286,7 +332,10 @@ export function sourceFieldsHash(paths: readonly string[]): string {
     .digest('hex');
 }
 
-function vetoed(r: Resolved): boolean {
+/** What the verdict step reads of a resolved candidate. */
+type VerdictInput = Pick<Resolved, 'candidate' | 'relationModels' | 'fieldDocs' | 'label' | 'sample'>;
+
+function vetoed(r: VerdictInput): boolean {
   return r.sample?.identityHit === true || r.sample?.c1 === 'hit';
 }
 
@@ -315,7 +364,7 @@ function addField(byKey: Map<string, RequestField[]>, key: string, field: Reques
  * Person models are never in the result, and no value ever is: a path or
  * label that is itself a value (`isValueLikeFieldName`) is left out.
  */
-export function modelsNeedingVerdict(resolved: readonly Resolved[]): VerdictRequest[] {
+export function modelsNeedingVerdict(resolved: readonly VerdictInput[]): VerdictRequest[] {
   const byModel = new Map<string, RequestField[]>();
   const bySource = new Map<string, RequestField[]>();
   for (const r of resolved) {
@@ -461,12 +510,33 @@ function odooService<T>(deps: RecomputeDeps, name: string, log: (msg: string) =>
   return service;
 }
 
+function observationKey(field: FieldKey): string {
+  return `${field.toolName}\u0000${field.scope}\u0000${field.fieldPath}`;
+}
+
+/**
+ * The drained observations to persist. A `cleared` one (an operator rule
+ * let the field through in clear) only counts a sighting of a field the page
+ * already lists — the guard reports it so an auto-approved field keeps being
+ * re-vetted; it never creates a candidate of its own.
+ */
+async function observationsToStore(
+  drained: readonly FieldObservation[],
+  store: FieldClassificationStore,
+): Promise<FieldObservation[]> {
+  const candidates = drained.filter(isCandidateObservation);
+  if (!candidates.some((o) => o.cleared === true)) return candidates;
+  const known = new Set((await store.list()).map(observationKey));
+  return candidates.filter((o) => o.cleared !== true || known.has(observationKey(o)));
+}
+
 export async function recomputeFieldClassification(deps: RecomputeDeps): Promise<RecomputeResult> {
-  const now = deps.now?.() ?? new Date();
+  const clock = deps.now ?? ((): Date => new Date());
+  const now = clock();
   const log = deps.log ?? (() => undefined);
   const guard = deps.serviceRegistry.get<PrivacyGuardService>(PRIVACY_REDACT_SERVICE_NAME);
 
-  const observations = (guard?.takeFieldObservations?.() ?? []).filter(isCandidateObservation);
+  const observations = await observationsToStore(guard?.takeFieldObservations?.() ?? [], deps.store);
   for (const obs of observations) await deps.store.upsertObservation(storableObservation(obs));
 
   const schema = odooService<OdooSchemaSource>(deps, ODOO_SCHEMA_SERVICE_NAME, log);
@@ -487,15 +557,24 @@ export async function recomputeFieldClassification(deps: RecomputeDeps): Promise
   const rawConfig = deps.readNonPersonalFields();
   const computedAt = now.toISOString();
 
+  const subjects: AutoApproveSubject[] = [];
   for (const r of resolved) {
     const { candidate } = r;
-    const base = classifyBase({
+    const input = {
       ...fieldKeyOf(candidate),
       valueShape: candidate.valueShape,
       relationModels: r.relationModels,
+      relationInfoKnown: r.relationInfoKnown,
       ...(r.sample !== undefined ? { sample: r.sample } : {}),
-      seenInChat: candidate.seenCount > 0,
       modelVerdicts,
+    };
+    const base = classifyBase({ ...input, seenInChat: candidate.seenCount > 0 });
+    subjects.push({
+      candidate,
+      input,
+      fingerprint: r.fingerprint,
+      base,
+      ...(r.freshSample !== undefined ? { freshSample: r.freshSample } : {}),
     });
     const shown = resolveStatus(
       base,
@@ -505,6 +584,7 @@ export async function recomputeFieldClassification(deps: RecomputeDeps): Promise
     );
     await deps.store.saveClassification(candidate.id, {
       relationModels: r.relationModels,
+      relationInfoKnown: r.relationInfoKnown,
       status: shown.status,
       reasons: shown.reasons,
       fingerprint: r.fingerprint,
@@ -516,7 +596,43 @@ export async function recomputeFieldClassification(deps: RecomputeDeps): Promise
   log(
     `[privacy-fields] recompute: ${String(observations.length)} observation(s), ${String(schemaFields)} Odoo schema field(s), ${String(candidates.length)} candidate(s)`,
   );
-  return { computedAt, candidates: candidates.length, observations: observations.length };
+  const keptVets = resolved.filter((r) => r.keptStoredVet).length;
+  if (keptVets > 0) {
+    // Counts only — never a field name or a value.
+    log(`[privacy-fields] auto-approve: ${String(keptVets)} inconclusive re-vet(s) (too few values or C1 unavailable), stored clean vet kept`);
+  }
+  const autoApprove = await runAutoApprove(deps, subjects, rawConfig, clock, log);
+  return {
+    computedAt,
+    candidates: candidates.length,
+    observations: observations.length,
+    ...(autoApprove !== undefined ? { autoApprove } : {}),
+  };
+}
+
+/** The auto-approval step, after every candidate's classification is saved. */
+async function runAutoApprove(
+  deps: RecomputeDeps,
+  subjects: readonly AutoApproveSubject[],
+  rawConfig: string | undefined,
+  now: () => Date,
+  log: (msg: string) => void,
+): Promise<AutoApprovePassResult | undefined> {
+  if (deps.autoApprove === undefined) return undefined;
+  const settings = deps.autoApprove.editor.autoApproveSettings();
+  const plan = planAutoApprove(subjects, rawConfig, settings);
+  const result = await applyAutoApprovePlan(plan, {
+    store: deps.store,
+    editor: deps.autoApprove.editor,
+    ...(deps.autoApprove.audit !== undefined ? { audit: deps.autoApprove.audit } : {}),
+    now,
+    log,
+  });
+  // Counts only — never a field name list or a value.
+  log(
+    `[privacy-fields] auto-approve (${settings.enabled ? 'on' : 'off'}, > ${String(settings.confidence)}): ${String(result.approved)} approved, ${String(result.revoked)} revoked, ${String(result.refreshed)} refreshed, ${String(result.stale)} changed meanwhile, ${String(result.remaining)} over the cap`,
+  );
+  return result;
 }
 
 // ---------------------------------------------------------------------------

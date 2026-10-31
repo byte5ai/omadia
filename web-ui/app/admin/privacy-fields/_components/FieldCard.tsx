@@ -6,6 +6,7 @@ import { useFormatter, useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
 import {
+  AUTO_CLASSIFIER_ACTOR,
   type FieldClassificationAction,
   type FieldClassificationItem,
   type FieldClassificationPreview,
@@ -25,11 +26,16 @@ export const LEGACY_VIEW_HREF = '/admin/privacy-fields?view=legacy';
  * confirmation) by hand. On `confirmed_conflict` (a listed field that now
  * points to a person model or changed since) `confirm` acknowledges it —
  * the setting stays as it is — and `revert` removes the entry.
+ * `auto_approved` (written by the auto-classifier): `revert` removes the
+ * entry for good (never auto-approved again for that fingerprint), `confirm`
+ * takes ownership. `auto_revoked` is decided like `needs_clarification`.
  */
 const ACTIONS_BY_STATUS: Record<FieldClassificationStatus, readonly FieldClassificationAction[]> = {
   suggested: ['confirm', 'reject', 'keep_masked'],
   needs_clarification: ['confirm', 'reject', 'keep_masked'],
+  auto_revoked: ['confirm', 'keep_masked', 'reject'],
   personal: ['keep_masked'],
+  auto_approved: ['revert', 'confirm'],
   confirmed: ['revert'],
   confirmed_conflict: ['confirm', 'revert'],
   rejected: ['revert'],
@@ -45,9 +51,28 @@ export function actionLabelKey(
   status: FieldClassificationStatus,
   action: FieldClassificationAction,
 ): string {
-  return status === 'confirmed_conflict' && action === 'confirm'
-    ? 'actions.acknowledge'
-    : `actions.${action}`;
+  if (action === 'confirm' && status === 'confirmed_conflict') return 'actions.acknowledge';
+  if (action === 'confirm' && status === 'auto_approved') return 'actions.takeOwnership';
+  return `actions.${action}`;
+}
+
+/** Pill styling per status: auto states stand out from the rest. */
+function statusBadgeClass(status: FieldClassificationStatus): string {
+  switch (status) {
+    case 'auto_approved':
+      return 'border-[color:var(--accent)]/50 bg-[color:var(--accent)]/10 text-[color:var(--accent)]';
+    case 'auto_revoked':
+    case 'confirmed_conflict':
+      return 'border-[color:var(--danger-edge)]/50 bg-[color:var(--danger)]/10 text-[color:var(--danger)]';
+    default:
+      return 'border-[color:var(--border)] text-[color:var(--fg-muted)]';
+  }
+}
+
+/** Who decided, localized; the auto-classifier is not a person. */
+export function decisionActor(by: string | null, t: ReturnType<typeof useTranslations>): string {
+  if (by === AUTO_CLASSIFIER_ACTOR) return t('decision.systemActor');
+  return by ?? t('decision.unknownActor');
 }
 
 /** A message shown on one card after a decision attempt. */
@@ -109,7 +134,10 @@ export function FieldCard({
         <code className="font-mono text-[14px] font-semibold text-[color:var(--fg-strong)]">
           {item.fieldPath}
         </code>
-        <span className="text-xs text-[color:var(--fg-muted)]">
+        <span
+          data-testid="field-status"
+          className={`rounded-full border px-2 py-0.5 text-xs ${statusBadgeClass(item.status)}`}
+        >
           {t(`status.${item.status}`)}
         </span>
       </div>
@@ -167,7 +195,7 @@ export function FieldCard({
       {item.decision !== null && decidedAt !== null ? (
         <p className="mt-1 text-xs text-[color:var(--fg-muted)]" data-testid="field-decision">
           {t(`decision.${item.decision.action}`, {
-            by: item.decision.by ?? t('decision.unknownActor'),
+            by: decisionActor(item.decision.by, t),
             when: decidedAt,
           })}
         </p>

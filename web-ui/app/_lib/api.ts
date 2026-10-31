@@ -936,6 +936,15 @@ export interface PrivacyPosture {
   fields_suggested_open?: number;
   /** The `confirmed_conflict` part of `fields_needing_clarification`. */
   fields_confirmed_conflict?: number;
+  /**
+   * Fields the auto-classifier approved since the requesting admin last
+   * opened the field-classification page (0 when unknown). Optional for an
+   * older backend.
+   */
+  fields_auto_approved_new?: number;
+  /** Open `auto_revoked` fields — also counted in
+   *  `fields_needing_clarification`. Optional for an older backend. */
+  fields_auto_revoked?: number;
 }
 
 /** #1562 — the Privacy Guard's C1 (GLiNER sidecar) name detector. */
@@ -958,15 +967,18 @@ export async function getPrivacyPosture(): Promise<PrivacyPosture> {
 
 // -----------------------------------------------------------------------------
 // Privacy field classification (#1556 follow-up) — suggestions for the Privacy
-// Guard's `non_personal_fields` setting. Suggest only: nothing is cleared until
-// an admin confirms. The API never returns a field value; the preview is
-// shape-masked (`R••••••• & D••••••••••`).
+// Guard's `non_personal_fields` setting. Fields the guard can prove to be
+// non-personal are auto-approved (`auto_approved`, master switch on the
+// guard); everything else waits for an admin. The API never returns a field
+// value in the list; the preview is audited.
 // -----------------------------------------------------------------------------
 
 export const FIELD_CLASSIFICATION_STATUSES = [
   'suggested',
   'needs_clarification',
+  'auto_revoked',
   'personal',
+  'auto_approved',
   'confirmed',
   'confirmed_conflict',
   'rejected',
@@ -976,6 +988,16 @@ export const FIELD_CLASSIFICATION_STATUSES = [
 export type FieldClassificationStatus = (typeof FIELD_CLASSIFICATION_STATUSES)[number];
 
 export type FieldClassificationAction = 'confirm' | 'reject' | 'keep_masked' | 'revert';
+
+/** Decisions the kernel records itself (`by` is {@link AUTO_CLASSIFIER_ACTOR}). */
+export type FieldClassificationSystemAction = 'auto_approve' | 'auto_revoke';
+
+/** The decision actor of an auto-approval / auto-revocation. */
+export const AUTO_CLASSIFIER_ACTOR = 'system:auto-classifier';
+
+/** Why an auto-approval was allowed: every relation target is a known
+ *  non-personal model, or a schema review (Haiku) above the threshold. */
+export type FieldAutoApprovalBasis = 'known_non_personal' | 'haiku';
 
 /**
  * Why a field got its status. The UI renders localized text from `code` and
@@ -990,10 +1012,13 @@ export interface FieldClassificationReason {
   sampleCount?: number;
   /** `legacy_entry`: the legacy entry (as written) that covers the field. */
   entry?: string;
+  /** `auto_approved`: what the auto-approval rests on (`confidence` is set
+   *  for `haiku`, 0..1). */
+  basis?: FieldAutoApprovalBasis;
 }
 
 export interface FieldClassificationDecision {
-  action: FieldClassificationAction;
+  action: FieldClassificationAction | FieldClassificationSystemAction;
   by: string | null;
   at: string;
 }
@@ -1049,6 +1074,8 @@ export async function listFieldClassifications(
 /**
  * Record an admin decision. Throws `ApiError` 409 with code
  * `stale_fingerprint` when the candidate changed since it was loaded,
+ * `stale_decision` when another decision (an admin, the auto-classifier)
+ * landed meanwhile — both shown as "changed, reloaded",
  * `covered_by_legacy` (body carries `entry`) when a revert targets a field a
  * legacy entry (`tool:field`, `*:field`, `field`) covers, or `invalid_field`.
  */
@@ -1141,6 +1168,154 @@ export async function convertLegacyFieldEntry(entry: string): Promise<LegacyConv
     skipped: Array.isArray(body.skipped) ? body.skipped : [],
     skippedPersonal: Array.isArray(body.skippedPersonal) ? body.skippedPersonal : [],
     conflicts: Array.isArray(body.conflicts) ? body.conflicts : [],
+  };
+}
+
+
+// --- Bulk accept (admin) -----------------------------------------------------
+
+/** Which suggestions a bulk accept covers; omitted ⇒ every `suggested` field. */
+export interface FieldBulkFilter {
+  status?: 'suggested';
+  tool?: string;
+  scope?: string;
+}
+
+export interface FieldBulkItem {
+  id: string;
+  toolName: string;
+  scope: string;
+  fieldPath: string;
+  /** The scoped `non_personal_fields` entry the accept writes. */
+  entry: string;
+}
+
+export interface FieldBulkPreviewItem extends FieldBulkItem {
+  /** `known_non_personal` | `haiku` (unknown codes render generically). */
+  reasonCode: string;
+}
+
+export interface FieldBulkPreview {
+  count: number;
+  byReason: Record<string, number>;
+  byTool: Record<string, number>;
+  items: FieldBulkPreviewItem[];
+}
+
+export interface FieldBulkSkip {
+  id: string;
+  /** not_suggested | person_model | detector_hit | conflict | no_scope |
+   *  invalid_field | already_covered | stale (undo: its own codes). */
+  reason: string;
+}
+
+export interface FieldBulkResult {
+  batchId: string | null;
+  applied: FieldBulkItem[];
+  skipped: FieldBulkSkip[];
+  /** Eligible fields left over by the per-call cap. */
+  remaining: number;
+}
+
+export interface FieldBulkBatch {
+  id: string;
+  createdAt: string | null;
+  actorEmail: string | null;
+  count: number;
+}
+
+export interface FieldBulkUndoResult {
+  batchId: string;
+  reverted: FieldBulkItem[];
+  skipped: FieldBulkSkip[];
+}
+
+function bulkQuery(filter: FieldBulkFilter): string {
+  const params = new URLSearchParams({ status: filter.status ?? 'suggested' });
+  if (filter.tool) params.set('tool', filter.tool);
+  if (filter.scope) params.set('scope', filter.scope);
+  return params.toString();
+}
+
+function countRecord(value: unknown): Record<string, number> {
+  if (typeof value !== 'object' || value === null) return {};
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).filter(
+      (e): e is [string, number] => typeof e[1] === 'number' && Number.isFinite(e[1]),
+    ),
+  );
+}
+
+/** What a bulk accept with this filter would apply (same eligibility as confirm). */
+export async function previewFieldBulkConfirm(filter: FieldBulkFilter): Promise<FieldBulkPreview> {
+  const path = `${FIELD_CLASSIFICATION_BASE}/bulk/preview?${bulkQuery(filter)}`;
+  const body = await getJson<Partial<FieldBulkPreview>>(path);
+  const items = expectArray<FieldBulkPreviewItem>(body.items ?? [], path, 'items');
+  return {
+    count: typeof body.count === 'number' ? body.count : items.length,
+    byReason: countRecord(body.byReason),
+    byTool: countRecord(body.byTool),
+    items,
+  };
+}
+
+/**
+ * Accept suggestions in one config write. Exactly one of `ids` / `filter`
+ * (neither ⇒ every `suggested` field); the server re-validates each one.
+ */
+export async function confirmFieldBulk(
+  target: { ids: string[] } | { filter: FieldBulkFilter },
+): Promise<FieldBulkResult> {
+  const body = await postJson<Partial<FieldBulkResult>>(
+    `${FIELD_CLASSIFICATION_BASE}/bulk/confirm`,
+    target,
+  );
+  return {
+    batchId: typeof body.batchId === 'string' ? body.batchId : null,
+    applied: Array.isArray(body.applied) ? body.applied : [],
+    skipped: Array.isArray(body.skipped) ? body.skipped : [],
+    remaining: typeof body.remaining === 'number' ? body.remaining : 0,
+  };
+}
+
+function parseBatch(raw: unknown): FieldBulkBatch | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const b = raw as Record<string, unknown>;
+  const id = typeof b['id'] === 'string' ? b['id'] : typeof b['batchId'] === 'string' ? b['batchId'] : null;
+  if (id === null) return null;
+  const str = (v: unknown): string | null => (typeof v === 'string' ? v : null);
+  const entries = Array.isArray(b['entries']) ? b['entries'].length : 0;
+  return {
+    id,
+    createdAt: str(b['createdAt']) ?? str(b['created_at']),
+    actorEmail: str(b['actorEmail']) ?? str(b['actor_email']),
+    count: typeof b['count'] === 'number' ? b['count'] : entries,
+  };
+}
+
+/** The latest bulk accept that was not undone, or null. */
+export async function getLatestFieldBulk(): Promise<FieldBulkBatch | null> {
+  const body = await getJson<unknown>(`${FIELD_CLASSIFICATION_BASE}/bulk/latest`);
+  if (typeof body === 'object' && body !== null && 'batch' in body) {
+    return parseBatch((body as { batch: unknown }).batch);
+  }
+  return parseBatch(body);
+}
+
+/**
+ * Undo a bulk accept: removes exactly the entries it applied that are still
+ * present. Throws `ApiError` 409 `not_latest_batch` / `already_undone`.
+ */
+export async function undoFieldBulk(batchId: string): Promise<FieldBulkUndoResult> {
+  const body = await postJson<Partial<FieldBulkUndoResult> & { removed?: FieldBulkItem[] }>(
+    `${FIELD_CLASSIFICATION_BASE}/bulk/${encodeURIComponent(batchId)}/undo`,
+    undefined,
+  );
+  const reverted = body.reverted ?? body.removed;
+  return {
+    batchId: typeof body.batchId === 'string' ? body.batchId : batchId,
+    reverted: Array.isArray(reverted) ? reverted : [],
+    skipped: Array.isArray(body.skipped) ? body.skipped : [],
   };
 }
 

@@ -38,6 +38,9 @@ const ACTION_FILTERS = [
   { key: 'privacyFieldClassification', prefix: 'privacy.field_classification' },
   // An admin opened a field's real-value preview (count only, never values).
   { key: 'privacyFieldPreview', prefix: 'privacy.field_preview' },
+  // The auto-classifier's approvals and revocations (actor system:auto-classifier).
+  { key: 'privacyFieldAutoApprove', prefix: 'privacy.field_auto_approve' },
+  { key: 'privacyFieldAutoRevoke', prefix: 'privacy.field_auto_revoke' },
 ] as const;
 
 type Formatter = ReturnType<typeof useFormatter>;

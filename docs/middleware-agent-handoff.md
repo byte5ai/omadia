@@ -2173,6 +2173,70 @@ Odoo-Plugin-Repo soll Relationen vorab liefern (`odoo_describe` mit
 `relation` oder `odoo.schema@1`), damit Vorschläge vor dem ersten Chat
 entstehen.
 
+**Auto-Freigabe + Sammelübernahme (2026-10-31, Privacy Guard 0.16.0,
+Migration `0066_privacy_field_auto_approve`).** Settings am Privacy Guard
+(liest der KERNEL, nicht das Plugin): `auto_approve_non_personal` (boolean,
+Default `"true"`; aus = genau das alte Nur-Vorschlagen) und
+`auto_approve_confidence` (string, auf 0.8–0.99 geklemmt, Default `0.85`,
+`0,9` geht, keine Zahl → 0.85; der Schalter ist nur bei leer/true/on/1/yes/ja
+an, alles andere aus). Module: `autoApprove.ts` (reine Regel
+`autoApprovalOf`, Settings-Parser), `autoApprovePass.ts` (Plan/Apply im
+Recompute + Dry-Run), `configEditor.ts` (EIN Schreiber für
+`non_personal_fields` mit Plugin-Lock, geteilt von Routen und Recompute,
+`index.ts` verdrahtet ihn), `live.ts` (Live-Status gespeicherter Kandidaten),
+`bulk.ts` (Sammelrouten). Recompute: geeignet = (a) alle Relationsziele im
+Known-Non-Personal-Katalog (ohne C1, auch ungesehen) oder (b) Haiku
+`non-personal` > max(Schwelle, 0.8), Basisstatus `suggested`, sauberer
+C1-Vet über ≥ 10 Werte, m2o nur mit aufgelösten Zielen; nie bei
+Personen-Ziel, aus einem Personen-Scope nur auf hr.department/hr.job/
+res.company/hr.work.location/res.country/res.country.state/res.currency,
+Konflikt, Detektor-Treffer/Near-Miss, Scope `-`, anderer Form
+als text/m2o, irgendeiner früheren Entscheidung, schon abgedeckt. Ein
+Config-Write pro Lauf, max. 1000; Entscheidung `auto_approve` (Akteur
+`system:auto-classifier`, Audit-Helper `systemAuditActor`), Audit
+`privacy.field_auto_approve` je Feld (`after: { basis, confidence?, entry,
+plugin }`). Jeder Lauf prüft auto-freigegebene Felder neu (der Guard
+sammelt auch per Regel freigegebene Felder, `FieldObservation.cleared`,
+plugin-api 1.50.0; Re-Vet jedes Laufs): nicht mehr geeignet aus IRGENDEINEM
+Grund (eigene Entscheidung + eigener Eintrag ignoriert; nach
+Fingerprint-Wechsel braucht (b) einen frischen sauberen Vet) → genau der
+Eintrag raus, `auto_revoke`, Status `auto_revoked`, Audit
+`privacy.field_auto_revoke` (`after: { reason, entry?, removed,
+legacyStillCovers?, plugin }`) — auch bei ausgeschaltetem Schalter;
+Ausschalten nimmt nichts zurück. Entscheidungen werden per
+Compare-and-Set geschrieben (`saveDecision(…, expected)`): der Lauf liest
+jede Entscheidung im Config-Lock neu, `POST /:id/decision` → 409
+`stale_decision`, Bulk-Confirm/-Undo → skip `stale`. `decided_at` = Zeit
+des Writes; Page/Bulk lesen Schema-Urteile mit 30-Tage-TTL.
+Neue Status `auto_approved` (Aktionen `confirm` = übernehmen ohne Write,
+`revert` = Eintrag raus, nie wieder automatisch), `auto_revoked`
+(`confirm` außer Feld ist jetzt personal → 409 `action_not_allowed`,
+`reject`, `keep_masked`). Gründe: `{code:'auto_approved', basis,
+confidence?}` bzw. `{code:'auto_revoked'}` vor den Basisgründen;
+`decision` im Item hat jetzt `batchId`.
+**Routen zusätzlich:** `POST /recompute?dryRun=1` (keine Writes, kein Lauf:
+`{ dryRun, enabled, threshold, candidates, eligible, cap, byBasis, byTool,
+byScope, blocked, wouldRevoke, sample[≤50]: { id, toolName, scope,
+fieldPath, relationModels, basis, confidence?, entry } }`),
+`GET /bulk/preview?status=suggested&tool=&scope=&ids=a,b` (`{ count, limit,
+byReason: { known_non_personal, haiku }, byTool, items: [{ id, toolName,
+scope, fieldPath, entry, reasonCode }] }`), `POST /bulk/confirm`
+(`{ ids }` | `{ filter: { status?, tool?, scope? } }` | `{}` = alle offenen;
+beides → 400; max. 500, Rest als `remaining`; Antwort `{ batchId,
+applied: [{ id, toolName, scope, fieldPath, entry }], skipped: [{ id, reason
+}], remaining }`, reason ∈ not_suggested, person_model, detector_hit,
+conflict, no_scope, invalid_field, already_covered, stale; nichts übernommen →
+`batchId: null`, kein Write), `GET /bulk/latest` (`{ batch: { id, createdAt,
+actorEmail, count } | null }`), `POST /bulk/:batchId/undo` (nur die jüngste
+offene Charge: 409 `not_latest_batch` / `already_undone`, 404 `not_found`;
+`{ batchId, reverted: [{ id, entry }], skipped: [{ id, reason: not_present |
+not_owned }] }`, Entscheidung `revert` mit `batchId`). Tabelle
+`privacy_field_bulk_batches`, Spalte `decision_batch_id`, CHECKs um
+`auto_approve`/`auto_revoke` bzw. `auto_approved`/`auto_revoked` erweitert.
+Posture zusätzlich `fields_auto_revoked` und `fields_auto_approved_new`
+(Auto-Freigaben seit dem letzten Seitenbesuch des anfragenden Admins, 0 ohne
+Besuch/Session); `fields_needing_clarification` zählt `auto_revoked` mit.
+
 ### Conductor-Cancel + Approval-Härtung (#759)
 
 Neu: **`POST /api/v1/operator/conductors/:slug/runs/:runId/cancel`** — `waiting`

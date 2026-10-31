@@ -48,6 +48,7 @@ import {
   registerGrantRoutes,
 } from './runtimeGrants.js';
 import { activationResultOf } from '../plugins/activationFailure.js';
+import { fieldVisitorKey } from '../privacy/fieldClassification/live.js';
 
 /** Per-call budget for invoking a plugin's dynamic options provider. */
 const SETUP_OPTIONS_TIMEOUT_MS = 8_000;
@@ -133,8 +134,10 @@ interface RuntimeDeps {
     agentId: string,
   ) => Promise<ConnectionProbeOutcome | undefined>;
   /** #1556 follow-up — open field-classification candidates for the posture
-   *  banner. Absent on the in-memory backend: the posture reports zeros. */
-  countOpenFieldClassification?: () => Promise<OpenFieldClassificationCounts>;
+   *  banner; `visitor` (the requesting admin, `fieldVisitorKey`) scopes the
+   *  "auto-approved since your last visit" count. Absent on the in-memory
+   *  backend: the posture reports zeros. */
+  countOpenFieldClassification?: (visitor?: string) => Promise<OpenFieldClassificationCounts>;
 }
 
 export function createRuntimeRouter(deps: RuntimeDeps): Router {
@@ -163,7 +166,7 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
   // does the org-wide `OMADIA_PRIVACY_FORCE_GUARDED` clamp apply? Read by the
   // dashboard/admin banner and the per-plugin privacy picker. Behind
   // requireAuth with the rest of this router, never on /health.
-  router.get('/privacy-posture', async (_req: Request, res: Response) => {
+  router.get('/privacy-posture', async (req: Request, res: Response) => {
     const posture = buildPrivacyPosture({
       serviceRegistry: deps.serviceRegistry,
       installedRegistry: deps.installedRegistry,
@@ -174,7 +177,10 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
     const nameDetector = posture.shield_active
       ? await readNameDetectorPosture(deps.serviceRegistry)
       : null;
-    const openFields = await readOpenFieldClassification(deps.countOpenFieldClassification);
+    const openFields = await readOpenFieldClassification(
+      deps.countOpenFieldClassification,
+      req.session ? fieldVisitorKey(req) : undefined,
+    );
     res.json({ ...posture, name_detector: nameDetector, ...openFields });
   });
 

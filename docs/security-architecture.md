@@ -2117,7 +2117,7 @@ receipt (`operatorClearedFields` with its `scope`, "In clear by admin rule" in
 the card).
 
 **Suggestions for that list (#1556 follow-up, contract v2).** omadia proposes
-entries; it never writes one. The privacy guard records masked fields of every
+entries; it writes one itself only through the auto-approval below. The privacy guard records masked fields of every
 interned tool result schema-only, one observation per tool + scope + field
 (`fieldObservations.ts`; never `sub-agent`, canvas producers or `v4_*` verbs,
 never the `key` / `value` / `groups` fields of a grouped `query_dataset`
@@ -2198,6 +2198,107 @@ shown). Residual: `provide` is ungated, so a plugin that activates first could
 register `privacyFieldSamples` itself; it would receive field keys (schema)
 and could show fabricated samples, never read real ones. The banner and nav
 badge are informational.
+
+**Auto-approval — the one exception to "an admin confirms every entry"
+(2026-10-31).** With the privacy guard's `auto_approve_non_personal` (boolean,
+default ON; parsed strictly — only unset, `true`, `"true"`, `"on"`, `"1"`,
+`"yes"`, `"ja"` mean on, any other value means off) the recompute pass writes
+the scoped entry itself for a narrow set of fields (`autoApprove.ts`,
+`autoApprovePass.ts`); off, the pass is exactly the suggest-only behaviour
+above. Eligible is either (a) every relation target is in the built-in
+known-non-personal catalog — deterministic, so neither a C1 vet nor a chat
+sighting is required (a field seeded from `odoo.schema` qualifies) — or (b)
+the classifier's base status is `suggested`, the schema-only verdict (of every
+unknown target, or of the source for a field without relation information —
+never for a many2one field, which must have resolved targets) is
+`non-personal` with a confidence strictly above max(`auto_approve_confidence`,
+0.8) AND C1 vetted a sample of at least 10 values clean; without C1 a (b)
+field stays "needs clarification". On an Odoo model scope (b) further needs
+that model's schema to have been read (`fields_get` succeeded once —
+`relation_info_known`; afterwards an unreachable Odoo falls back to that stored
+resolution, like the relation targets); without it the field is not eligible
+(`no_relation_info`). Datasets and other non-model sources have no schema to
+read and keep the source-verdict path. `auto_approve_confidence` is a string
+setting clamped to 0.8–0.99 (below 0.8 counts as 0.8, the suggestion floor;
+above 0.99 as 0.99; `0,9` accepted; not a number → 0.85). The safeguards
+override both: never for a person-model relation target; never for a field OF
+a person scope — a person model, any `hr.*` model, any `res.partner*` /
+`res.users*` model, and a `*.report` model whose name contains `employee`,
+`leave`, `attendance`, `payslip`, `applicant` or `expense` (`isPersonScope`;
+`hr.leave.report` and `hr.leave.employee.type.report` are also person models)
+— unless every relation target is on an explicit allow-list
+(`hr.department`, `hr.job`, `res.company`, `hr.work.location`, `res.country`,
+`res.country.state`, `res.currency` — so `hr.employee/department_id` and
+`hr.leave.report/department_id` are auto-approved, while an employee's tags, a
+leave's type (also `hr.leave.report/holiday_status_id`) or a partner's title
+stay for the admin even though their targets are catalogued non-personal);
+never on conflicting targets, an identity hit, a C1 hit or near-miss, scope
+`-`, a value shape other than text / m2o or a name that is not exactly one
+scoped entry; never for a field that already carries ANY decision (an admin's
+confirm / reject / keep masked / revert, an earlier auto-revoke — stricter
+than "the current fingerprint": a reverted or revoked field is never
+auto-approved again) and never for a field the setting already covers. The
+entry is always `configEntryOf` — model-scoped, never a wildcard. The pass
+runs only on lifecycle events, at boot, every 6 h and on demand (never per
+chat turn), writes the setting ONCE per pass through the same per-plugin
+editor as the admin routes (`configEditor.ts`), approves at most 1000 fields
+per pass, and records per field the decision `auto_approve` (actor
+`system:auto-classifier`, `systemAuditActor` puts the label into the free-text
+actor column; decided at the time of that write) and an audit row
+`privacy.field_auto_approve` (`after`: basis, confidence, entry). Races with
+admins: inside the plugin lock the pass re-reads each field's decision and
+skips one that changed since it planned; every decision write — the pass,
+`POST /:id/decision` (409 `stale_decision`), bulk confirm / undo (skip
+`stale`) — is compare-and-set over the decision and fingerprint it read, and
+the losing side takes an entry it ADDED out again — an undo never adds one
+back: a `revert` that loses (e.g. to an auto-revoke) or fails leaves its
+entry removed, so the field stays masked (fail closed). A decision row that cannot
+be written takes its entry out again; one failing field never stops the pass.
+Its log line carries counts only. Re-vetting: the guard keeps sampling fields
+an operator rule CLEARED (type `label`) exactly like masked ones (same caps
+and 24 h TTL, in memory, never logged) and reports them as `cleared`
+observations; every pass vets the buffered values of each auto-approved field
+again. An identity hit, a C1 hit or a near-miss revokes at ANY sample size; a
+clean re-vet of fewer than 10 values or a C1 outage (`unavailable`) is
+inconclusive and keeps the stored full clean vet (no revoke; the pass logs a
+count-only line) — only without a stored clean vet of at least 10 values does
+basis (b) fail on it. Otherwise the new verdict replaces the stored one; new
+approvals always need 10 clean values. Revoke: every pass judges
+each auto-approved field as if it were undecided and its own entry absent —
+when it is no longer eligible for ANY reason (person target or scope, a
+detector hit or near-miss, conflicting or new unknown targets, a verdict that
+flipped or fell below a raised threshold, a legacy entry now covering it …),
+or its fingerprint changed and basis (b) has no fresh clean vet of this pass,
+it loses exactly its scoped entry, gets decision `auto_revoke`, status
+`auto_revoked` ("needs review", counted in `fields_needing_clarification` and
+`fields_auto_revoked`) and an audit row `privacy.field_auto_revoke` with the
+reason — and `legacyStillCovers: <entry>` when a legacy / wildcard entry still
+clears the field (the page then shows `legacy_entry` on the revoked field);
+this runs with the switch off too. Turning the switch off does NOT remove
+entries already auto-approved (no mass revoke) — it only stops new ones; an
+admin reverts them on the page (`revert` removes the entry for good) or takes
+ownership (`confirm`). The posture adds `fields_auto_approved_new`
+(auto-approvals since the requesting admin's last visit of the page) so the
+banner tells admins what changed without them. `POST …/recompute?dryRun=1`
+reports what the pass WOULD approve (counts per basis / tool / source and
+field names, no value, no write) and `wouldRevoke` on the stored vets — it
+vets nothing, so `no_fresh_vet` is not counted. The page, bulk accept and the dry run read
+schema verdicts with the same 30-day TTL as the recompute. Residual: an
+auto-approved (b) field rests on a schema verdict plus C1's vet of a bounded
+sample; names C1 misses reach the model until a re-vet or an admin catches
+them — the same residual as an admin's confirm on the same evidence; and a
+field the guard has not seen for 24 h has no buffered values, so it keeps its
+last verdict until it is seen again.
+
+**Bulk accept.** An admin can confirm every open suggestion at once
+(`bulk.ts`): the server re-validates each candidate against the live
+classification (status exactly `suggested`, so no personal, detector-hit,
+conflicting, `-`-scoped or already covered field), writes all entries in ONE
+config write under the plugin lock (at most 500 per call), records decision
+`confirm` with a batch id, one audit row per field with the admin as actor,
+and a `privacy_field_bulk_batches` row listing exactly the entries written.
+Only the latest batch can be undone, and the undo removes only entries that
+are still listed and still owned by that batch's decision.
 
 These tool results skip the digest:
 

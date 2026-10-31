@@ -45,13 +45,18 @@ export interface PrivacyPosture {
   readonly provider_ids: readonly string[];
   readonly name_detector?: NameDetectorPosture | null;
   /** #1556 follow-up — field-classification candidates an admin still has
-   *  to look at: `fields_needing_clarification` counts `needs_clarification`
-   *  AND `confirmed_conflict` (the latter also alone in
-   *  `fields_confirmed_conflict`), `fields_suggested_open` the open
-   *  suggestions. All 0 without Postgres. */
+   *  to look at: `fields_needing_clarification` counts `needs_clarification`,
+   *  `confirmed_conflict` AND `auto_revoked` (the latter two also alone in
+   *  `fields_confirmed_conflict` / `fields_auto_revoked`),
+   *  `fields_suggested_open` the open suggestions,
+   *  `fields_auto_approved_new` the fields auto-approved since the requesting
+   *  admin last opened the page (0 without a recorded visit). All 0 without
+   *  Postgres. */
   readonly fields_needing_clarification?: number;
   readonly fields_suggested_open?: number;
   readonly fields_confirmed_conflict?: number;
+  readonly fields_auto_revoked?: number;
+  readonly fields_auto_approved_new?: number;
 }
 
 export interface NameDetectorPosture {
@@ -90,6 +95,8 @@ export interface OpenFieldClassificationCounts {
   readonly needsClarification: number;
   readonly suggested: number;
   readonly confirmedConflict: number;
+  readonly autoRevoked?: number;
+  readonly autoApprovedNew?: number;
 }
 
 /**
@@ -98,24 +105,33 @@ export interface OpenFieldClassificationCounts {
  * on any failure (table not migrated yet), never an error for the banner.
  */
 export async function readOpenFieldClassification(
-  count: (() => Promise<OpenFieldClassificationCounts>) | undefined,
+  count: ((visitor?: string) => Promise<OpenFieldClassificationCounts>) | undefined,
+  visitor?: string,
 ): Promise<{
   fields_needing_clarification: number;
   fields_suggested_open: number;
   fields_confirmed_conflict: number;
+  fields_auto_revoked: number;
+  fields_auto_approved_new: number;
 }> {
   const zero = {
     fields_needing_clarification: 0,
     fields_suggested_open: 0,
     fields_confirmed_conflict: 0,
+    fields_auto_revoked: 0,
+    fields_auto_approved_new: 0,
   };
   if (count === undefined) return zero;
   try {
-    const counts = await count();
+    const counts = await count(visitor);
+    const autoRevoked = counts.autoRevoked ?? 0;
     return {
-      fields_needing_clarification: counts.needsClarification + counts.confirmedConflict,
+      fields_needing_clarification:
+        counts.needsClarification + counts.confirmedConflict + autoRevoked,
       fields_suggested_open: counts.suggested,
       fields_confirmed_conflict: counts.confirmedConflict,
+      fields_auto_revoked: autoRevoked,
+      fields_auto_approved_new: counts.autoApprovedNew ?? 0,
     };
   } catch (err) {
     console.warn(

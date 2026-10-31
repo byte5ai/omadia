@@ -81,6 +81,7 @@ async function seed(
   });
   await store.saveClassification(row.id, {
     relationModels,
+    relationInfoKnown: true,
     status: 'suggested',
     reasons: [],
     fingerprint,
@@ -232,6 +233,7 @@ describe('field-classification routes', () => {
       action: 'confirm',
       by: 'admin@example.com',
       at: (item['decision'] as { at: string }).at,
+      batchId: null,
     });
     assert.equal(npf(), '*:job_id\nodoo_execute:hr.employee/department_id');
     assert.equal(harness.audits.length, 1);
@@ -385,6 +387,7 @@ describe('field-classification routes', () => {
     const fingerprint = candidateFingerprint({ scope: 'hr.employee', relationModels: ['hr.job'], valueShape: 'm2o' });
     await harness.store.saveClassification(row.id, {
       relationModels: ['hr.job'],
+      relationInfoKnown: true,
       status: 'needs_clarification',
       reasons: [],
       fingerprint,

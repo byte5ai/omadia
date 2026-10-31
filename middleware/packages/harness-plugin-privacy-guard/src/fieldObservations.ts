@@ -4,6 +4,12 @@
  * `scopeOf`), and a small sample of their values to vet with the guard's own
  * detectors.
  *
+ * Also recorded: fields an operator rule CLEARED (type `label`,
+ * `safe-cleartext` — an entry of `non_personal_fields`), flagged `cleared`.
+ * They are in clear, so the kernel must be able to re-vet an approval
+ * (above all the recompute's own auto-approvals): their values are sampled
+ * exactly like a masked field's — same caps, same TTL, never logged.
+ *
  * Two structures, both in the service closure (never module scope), both
  * bounded:
  *
@@ -20,8 +26,8 @@
  * Scope (contract v2): every interned tool result — plugin tools, Odoo, MCP
  * tools, uploads read via `query_dataset`. Never a candidate: `sub-agent`
  * narration, canvas producers (the caller's `excludedTools`), `v4_*` verbs,
- * `__k_` link keys, envelope metadata, fields an operator rule already
- * cleared (they are not masked), mixed-shape fields, any (tool, scope, path)
+ * `__k_` link keys, envelope metadata, fields cleared by anything other than
+ * an operator rule (number, date, enum … shapes), mixed-shape fields, any (tool, scope, path)
  * that cannot form exactly one scoped `non_personal_fields` entry, a path
  * that is itself a value (an e-mail-keyed map, a person as a CSV header —
  * `valueLikeFieldName.ts`), and the `key` / `value` / `groups` fields of a
@@ -35,7 +41,7 @@ import { DATASET_TOOL, formatScopedEntry } from './nonPersonalFields.js';
 import { isValueLikeFieldName } from './valueLikeFieldName.js';
 import { isLinkKeyField } from './v4/verbs/predicate.js';
 import { scopeOf } from './v4/datasetStore.js';
-import type { Dataset } from './v4/types.js';
+import type { Dataset, FieldClassification } from './v4/types.js';
 
 /** Distinct (tool, scope, field) observations held between two drains. */
 export const MAX_OBSERVATIONS = 500;
@@ -70,10 +76,13 @@ interface ObservationEntry {
   seenCount: number;
   readonly firstSeenAt: string;
   lastSeenAt: string;
+  /** Every sighting since the last drain was cleared by an operator rule. */
+  cleared: boolean;
 }
 
 export interface FieldObservationRecorder {
-  /** Record the masked, in-scope fields of a freshly interned dataset. */
+  /** Record the masked — and the operator-cleared — in-scope fields of a
+   *  freshly interned dataset. */
   record(toolName: string, dataset: Dataset, excludedTools: ReadonlySet<string>): void;
   /** The observations since the last call, then cleared. Schema only. */
   take(): FieldObservation[];
@@ -121,6 +130,12 @@ function displayOf(value: unknown): string | undefined {
   const trimmed = text.trim();
   if (trimmed.length === 0) return undefined;
   return trimmed.length > MAX_SAMPLE_VALUE_CHARS ? trimmed.slice(0, MAX_SAMPLE_VALUE_CHARS) : trimmed;
+}
+
+/** A field an operator rule let through in clear (`non_personal_fields`):
+ *  only that path yields type `label` as `safe-cleartext`. */
+export function isOperatorCleared(field: Pick<FieldClassification, 'type' | 'classification'>): boolean {
+  return field.type === 'label' && field.classification === 'safe-cleartext';
 }
 
 /** True for a tool whose results are observed at all. */
@@ -184,7 +199,7 @@ export function createFieldObservationRecorder(opts?: {
     }
   }
 
-  function observe(field: FieldKey, shape: CandidateShape): void {
+  function observe(field: FieldKey, shape: CandidateShape, cleared: boolean): void {
     const key = keyOf(field);
     const at = new Date(now()).toISOString();
     const existing = observations.get(key);
@@ -194,6 +209,8 @@ export function createFieldObservationRecorder(opts?: {
       // One field, two shapes across results: the latest wins (the kernel
       // resolves relation info from the schema, not from this).
       existing.valueShape = shape;
+      // A single masked sighting makes it a masked observation (a candidate).
+      existing.cleared = existing.cleared && cleared;
       return;
     }
     if (observations.size >= MAX_OBSERVATIONS) return;
@@ -205,6 +222,7 @@ export function createFieldObservationRecorder(opts?: {
       seenCount: 1,
       firstSeenAt: at,
       lastSeenAt: at,
+      cleared,
     });
   }
 
@@ -215,13 +233,14 @@ export function createFieldObservationRecorder(opts?: {
         dataset.provenance.sources?.find((s) => s.tool === toolName)?.scope ??
         scopeOf(toolName, dataset.provenance.toolInput, dataset.envelope?.values);
       for (const field of dataset.schema.fields) {
-        if (field.classification !== 'sensitive-masked') continue;
+        const cleared = isOperatorCleared(field);
+        if (field.classification !== 'sensitive-masked' && !cleared) continue;
         const key: FieldKey = { toolName, scope, fieldPath: field.path };
         if (!isRecordableField(key)) continue;
         const values = dataset.rows.map((row) => row[field.path]);
         const shape = valueShapeOf(values);
         if (shape === undefined || shape === 'mixed') continue;
-        observe(key, shape);
+        observe(key, shape, cleared);
         const displays: string[] = [];
         for (const v of values) {
           const display = displayOf(v);
@@ -240,6 +259,7 @@ export function createFieldObservationRecorder(opts?: {
         seenCount: o.seenCount,
         firstSeenAt: o.firstSeenAt,
         lastSeenAt: o.lastSeenAt,
+        ...(o.cleared ? { cleared: true } : {}),
       }));
       observations.clear();
       return out;

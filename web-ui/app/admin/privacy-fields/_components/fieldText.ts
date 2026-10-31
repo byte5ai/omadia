@@ -36,7 +36,15 @@ const KNOWN_REASON_CODES = new Set([
   'confirmed_conflict',
   'legacy_entry',
   'sample_clean',
+  'auto_revoked',
 ]);
+
+/** A 0..1 confidence as a locale percent, or "none". */
+export function percentText(value: number | undefined, t: FieldsT, format: Formatter): string {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? format.number(value, { style: 'percent', maximumFractionDigits: 0 })
+    : t('none');
+}
 
 /** A locale-aware "a, b and c"; an empty list reads as "none". */
 export function modelList(models: readonly string[] | undefined, t: FieldsT, format: Formatter): string {
@@ -79,16 +87,17 @@ export function reasonText(
       return t(`reasons.${reason.code}`, { model: reason.model ?? models });
     case 'legacy_entry':
       return t('reasons.legacy_entry', { entry: reason.entry ?? t('none') });
-    case 'haiku_non_personal': {
-      const confidence =
-        typeof reason.confidence === 'number' && Number.isFinite(reason.confidence)
-          ? format.number(reason.confidence, { style: 'percent', maximumFractionDigits: 0 })
-          : t('none');
+    case 'haiku_non_personal':
       return t('reasons.haiku_non_personal', {
-        model: reason.model ?? modelList(reason.models, t, format),
-        confidence,
+        model: reason.model ?? models,
+        confidence: percentText(reason.confidence, t, format),
       });
-    }
+    case 'auto_approved':
+      return reason.basis === 'haiku'
+        ? t('reasons.auto_approved_haiku', { confidence: percentText(reason.confidence, t, format) })
+        : reason.basis === 'known_non_personal'
+          ? t('reasons.auto_approved_known')
+          : t('reasons.auto_approved');
     case 'identity_hit':
       return t('reasons.identity_hit', { types: modelList(reason.hitTypes, t, format) });
     case 'sample_clean':

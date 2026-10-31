@@ -2019,6 +2019,7 @@ readonly label?: string;
 readonly seenCount: number;
 readonly firstSeenAt: string;
 readonly lastSeenAt: string;
+readonly cleared?: boolean;
 }
 export type FieldSampleC1Verdict = 'hit' | 'near-miss' | 'clean' | 'unavailable';
 export interface FieldSampleVerdict extends FieldKey {

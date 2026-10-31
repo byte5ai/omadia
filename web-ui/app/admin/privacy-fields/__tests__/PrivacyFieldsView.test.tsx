@@ -52,6 +52,8 @@ function list(items: FieldClassificationItem[], over: Partial<FieldClassificatio
       confirmed_conflict: 1,
       rejected: 0,
       kept_masked: 0,
+      auto_approved: 0,
+      auto_revoked: 0,
     },
     newSinceLastVisit: 0,
     computedAt: '2026-10-30T09:15:00.000Z',
@@ -72,7 +74,11 @@ function call(n: number): { url: URL; init: RequestInit | undefined } {
 }
 
 beforeEach(() => {
-  vi.stubGlobal('fetch', fetchMock);
+  // The latest bulk action (undo offer) is read on mount; answered here so
+  // `fetchMock` only sees the calls these tests are about.
+  vi.stubGlobal('fetch', (url: string, init?: RequestInit) =>
+    String(url).includes('/bulk/latest') ? Promise.resolve(respond(null)) : fetchMock(url, init),
+  );
 });
 
 afterEach(() => {
@@ -119,7 +125,7 @@ describe('<PrivacyFieldsView />', () => {
     );
     expect(screen.getByTestId('tab-suggested').getAttribute('aria-current')).toBe('page');
     expect(screen.getByTestId('last-computed')).toHaveTextContent('Last computed:');
-    expect(screen.getByText(/nothing is cleared until an admin confirms/i)).toBeInTheDocument();
+    expect(screen.getByText(/stays masked until an admin confirms it/i)).toBeInTheDocument();
   });
 
   it('renders German reasons, the decision line and only revert for a confirmed field', async () => {

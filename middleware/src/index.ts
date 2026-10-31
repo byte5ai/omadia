@@ -86,6 +86,7 @@ import {
   recomputeFieldClassification,
 } from './privacy/fieldClassification/recompute.js';
 import { createFieldClassificationRoutes } from './privacy/fieldClassification/routes.js';
+import { createNonPersonalFieldsEditor } from './privacy/fieldClassification/configEditor.js';
 import { PgFieldClassificationStore } from './privacy/fieldClassification/store.js';
 import { TURN_RECEIPT_STORE_SERVICE_NAME, perCallerService } from '@omadia/plugin-api';
 import { TRANSCRIPTION_SERVICE_NAME } from '@omadia/plugin-api';
@@ -5699,11 +5700,20 @@ async function main(): Promise<void> {
   // classified (Odoo schema + detector verdicts + schema-only model verdict)
   // and shown to admins, who confirm every entry. Recompute runs on plugin
   // (de)activation, every 6 h and on POST /recompute — never per chat turn —
-  // and never writes config. Postgres-only (migration 0065).
+  // and writes config only through the auto-approval step (privacy guard
+  // setting `auto_approve_non_personal`, default on; migration 0066): the
+  // narrow set of fields `autoApprove.ts` defines, audited per field as
+  // `system:auto-classifier`. Postgres-only (migrations 0065/0066).
   const fieldClassificationStore = graphPool
     ? new PgFieldClassificationStore(graphPool)
     : undefined;
   if (fieldClassificationStore) {
+    // ONE writer of `non_personal_fields` for the routes and the recompute,
+    // so their read-modify-writes share the plugin lock.
+    const nonPersonalFieldsEditor = createNonPersonalFieldsEditor({
+      installedRegistry,
+      catalog: pluginCatalog,
+    });
     const fieldClassificationScheduler = createFieldClassificationScheduler({
       run: () =>
         recomputeFieldClassification({
@@ -5711,6 +5721,10 @@ async function main(): Promise<void> {
           serviceRegistry,
           readNonPersonalFields: () =>
             readNonPersonalFieldsConfig(installedRegistry, pluginCatalog),
+          autoApprove: {
+            editor: nonPersonalFieldsEditor,
+            ...(adminAudit ? { audit: adminAudit } : {}),
+          },
           log: (msg) => console.log(msg),
         }),
       log: (msg) => console.warn(msg),
@@ -5728,6 +5742,7 @@ async function main(): Promise<void> {
         serviceRegistry,
         ...(adminAudit ? { audit: adminAudit } : {}),
         recompute: () => fieldClassificationScheduler.runNow(),
+        editor: nonPersonalFieldsEditor,
       }),
     );
     console.log(
@@ -5772,7 +5787,7 @@ async function main(): Promise<void> {
       // #1556 follow-up — the posture banner's open field count.
       ...(fieldClassificationStore
         ? {
-            countOpenFieldClassification: () => fieldClassificationStore.countOpen(),
+            countOpenFieldClassification: (visitor) => fieldClassificationStore.countOpen(visitor),
           }
         : {}),
     }),

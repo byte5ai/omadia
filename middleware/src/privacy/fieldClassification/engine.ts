@@ -5,7 +5,8 @@
  * belong to (an Odoo model, an uploaded dataset's id, or `-`) — whether the
  * admin page SUGGESTS listing it in the privacy guard's `non_personal_fields`,
  * asks the admin to clarify, or marks it personal. Nothing here writes
- * config: a suggestion is only ever applied by an admin's confirm.
+ * config: a suggestion is applied by an admin's confirm, or — for the narrow
+ * set `autoApprove.ts` defines — by the recompute's auto-approval.
  *
  * Order (first match wins for the base status):
  *   1. a relation target in PERSON_MODELS              → personal
@@ -39,6 +40,11 @@
  *     it. It is `confirmed_conflict` instead when the base status is
  *     personal or the fingerprint changed since the admin's confirm — until
  *     the admin confirms again (acknowledges) on the current fingerprint;
+ *   - an `auto_approve` decision on the current fingerprint with the exact
+ *     scoped entry present → auto_approved (a drift is a conflict, like a
+ *     confirm's); an `auto_revoke` decision → auto_revoked while the
+ *     fingerprint is unchanged — also while a legacy entry still clears the
+ *     field (then with `legacy_entry`);
  *   - an admin's reject / keep_masked holds while the candidate's fingerprint
  *     is unchanged; after a change the field is back to needs_clarification
  *     (`changed_since_decision`) — or personal, when that is what it is now.
@@ -71,11 +77,21 @@ export const FIELD_STATUSES = [
   'confirmed_conflict',
   'rejected',
   'kept_masked',
+  /** Covered by an entry the recompute wrote itself (`autoApprove.ts`). */
+  'auto_approved',
+  /** An auto-approval taken back after the field drifted; needs review. */
+  'auto_revoked',
 ] as const;
 export type FieldStatus = (typeof FIELD_STATUSES)[number];
 
+/** What an admin may post (`POST /:id/decision`). */
 export const DECISION_ACTIONS = ['confirm', 'reject', 'keep_masked', 'revert'] as const;
-export type DecisionAction = (typeof DECISION_ACTIONS)[number];
+export type AdminDecisionAction = (typeof DECISION_ACTIONS)[number];
+/** What only the recompute records (actor `system:auto-classifier`). */
+export const SYSTEM_DECISION_ACTIONS = ['auto_approve', 'auto_revoke'] as const;
+export type SystemDecisionAction = (typeof SYSTEM_DECISION_ACTIONS)[number];
+/** Every decision a candidate can carry. */
+export type DecisionAction = AdminDecisionAction | SystemDecisionAction;
 
 /** Minimum schema-verdict confidence for a suggestion. */
 export const HAIKU_SUGGEST_MIN_CONFIDENCE = 0.8;
@@ -102,7 +118,16 @@ export type FieldReason =
   | { readonly code: 'changed_since_decision' }
   | { readonly code: 'confirmed_conflict' }
   | { readonly code: 'legacy_entry'; readonly entry: string }
-  | { readonly code: 'sample_clean'; readonly sampleCount: number };
+  | { readonly code: 'sample_clean'; readonly sampleCount: number }
+  /** Auto-approved by the recompute: on a known non-personal target, or on a
+   *  non-personal schema verdict with this confidence. */
+  | {
+      readonly code: 'auto_approved';
+      readonly basis: 'known_non_personal' | 'haiku';
+      readonly confidence?: number;
+    }
+  /** The recompute took its auto-approval back; the reasons after it say why. */
+  | { readonly code: 'auto_revoked' };
 
 /** What the privacy guard's vetting said about the field's sample. */
 export interface SampleVerdictSummary {
@@ -164,6 +189,11 @@ export interface Classification {
 
 /** Base statuses — what the classifier itself can say. */
 export type BaseStatus = 'suggested' | 'needs_clarification' | 'personal';
+
+/** The audit target of a field: `privacy-field:<tool>:<scope>/<path>`. */
+export function fieldAuditTarget(candidate: CandidateKey): string {
+  return `privacy-field:${candidate.toolName}:${candidate.scope}/${candidate.fieldPath}`;
+}
 
 /** The source a candidate's rows came from, in the grammar's terms. */
 export function fieldSourceOf(key: Pick<CandidateKey, 'toolName' | 'scope'>): FieldSource {
@@ -346,13 +376,36 @@ export function resolveStatus(
       coverage.legacyEntry !== undefined && !coverage.exact
         ? [...base.reasons, { code: 'legacy_entry', entry: coverage.legacyEntry }]
         : base.reasons;
-    const confirm = decision?.action === 'confirm' ? decision : undefined;
-    const acknowledged = confirm !== undefined && confirm.fingerprint === fingerprint;
-    const drifted = confirm !== undefined && confirm.fingerprint !== fingerprint;
+    // An auto-approval counts like a confirm for drift: a changed fingerprint
+    // or a personal base status is a conflict (the recompute revokes it).
+    const owner =
+      decision?.action === 'confirm' || decision?.action === 'auto_approve' ? decision : undefined;
+    const acknowledged = owner !== undefined && owner.fingerprint === fingerprint;
+    const drifted = owner !== undefined && owner.fingerprint !== fingerprint;
     if (!acknowledged && (base.status === 'personal' || drifted)) {
       return { status: 'confirmed_conflict', reasons: [{ code: 'confirmed_conflict' }, ...reasons] };
     }
+    // A revoked auto-approval a legacy / wildcard entry still clears: it
+    // needs review, and `legacy_entry` says why it is still in clear.
+    if (decision?.action === 'auto_revoke' && decision.fingerprint === fingerprint && !coverage.exact) {
+      return { status: 'auto_revoked', reasons: [{ code: 'auto_revoked' }, ...reasons] };
+    }
+    if (owner?.action === 'auto_approve' && coverage.exact) {
+      if (base.status === 'personal') {
+        return { status: 'confirmed_conflict', reasons: [{ code: 'confirmed_conflict' }, ...reasons] };
+      }
+      return { status: 'auto_approved', reasons: [autoApprovedReason(base.reasons), ...reasons] };
+    }
     return { status: 'confirmed', reasons };
+  }
+  if (decision?.action === 'auto_revoke') {
+    if (decision.fingerprint === fingerprint) {
+      return { status: 'auto_revoked', reasons: [{ code: 'auto_revoked' }, ...base.reasons] };
+    }
+    return {
+      status: base.status === 'personal' ? 'personal' : 'needs_clarification',
+      reasons: [{ code: 'changed_since_decision' }, ...base.reasons],
+    };
   }
   if (decision?.action === 'reject' || decision?.action === 'keep_masked') {
     if (decision.fingerprint === fingerprint) {
@@ -367,6 +420,17 @@ export function resolveStatus(
     };
   }
   return base;
+}
+
+/** The `auto_approved` reason, from the base reasons of the field. */
+function autoApprovedReason(reasons: readonly FieldReason[]): FieldReason {
+  const haiku = reasons.filter(
+    (r): r is Extract<FieldReason, { code: 'haiku_non_personal' }> => r.code === 'haiku_non_personal',
+  );
+  if (haiku.length > 0 && !reasons.some((r) => r.code === 'known_non_personal')) {
+    return { code: 'auto_approved', basis: 'haiku', confidence: Math.min(...haiku.map((r) => r.confidence)) };
+  }
+  return { code: 'auto_approved', basis: 'known_non_personal' };
 }
 
 export function classifyCandidate(input: ClassifyInput): Classification {

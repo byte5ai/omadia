@@ -47,11 +47,15 @@ async function makeHarness(opts: {
   /** #1562 — the published shield's `nameDetectorStatus`, if any. */
   readonly nameDetectorStatus?: () => Promise<PrivacyNameDetectorStatus>;
   /** #1556 follow-up — the field-classification counter, if wired. */
-  readonly countOpenFieldClassification?: () => Promise<{
+  readonly countOpenFieldClassification?: (visitor?: string) => Promise<{
     needsClarification: number;
     suggested: number;
     confirmedConflict: number;
+    autoRevoked?: number;
+    autoApprovedNew?: number;
   }>;
+  /** A signed-in admin's session on every request. */
+  readonly session?: { readonly uid: string; readonly email: string };
 }): Promise<Harness> {
   const registry = new InMemoryInstalledRegistry();
   const installedAt = '2026-10-28T08:00:00.000Z';
@@ -98,6 +102,13 @@ async function makeHarness(opts: {
   const audits: Array<Record<string, unknown>> = [];
   const app: Express = express();
   app.use(express.json());
+  if (opts.session) {
+    const session = { sub: opts.session.email, ...opts.session };
+    app.use((req, _res, next) => {
+      (req as express.Request & { session?: unknown }).session = session as never;
+      next();
+    });
+  }
   app.use(
     '/api/v1/admin/runtime',
     createRuntimeRouter({
@@ -174,7 +185,45 @@ describe('GET /privacy-posture (#1507, #1508)', () => {
       fields_needing_clarification: 0,
       fields_suggested_open: 0,
       fields_confirmed_conflict: 0,
+      fields_auto_revoked: 0,
+      fields_auto_approved_new: 0,
     });
+  });
+
+  it('reports auto-revoked fields (also as needing clarification) and auto-approvals since the visit', async () => {
+    const uid = '7b1f4a52-1111-4222-8333-444455556666';
+    const visitors: Array<string | undefined> = [];
+    harness = await makeHarness({
+      guardInstalled: true,
+      servicePublished: true,
+      session: { uid, email: 'admin@example.com' },
+      countOpenFieldClassification: async (visitor) => {
+        visitors.push(visitor);
+        return { needsClarification: 3, suggested: 2, confirmedConflict: 1, autoRevoked: 2, autoApprovedNew: 5 };
+      },
+    });
+    const body = await posture();
+    assert.equal(body.fields_needing_clarification, 6);
+    assert.equal(body.fields_auto_revoked, 2);
+    assert.equal(body.fields_auto_approved_new, 5);
+    // The requesting admin's users.id — the key the page's visits are stored under.
+    assert.deepEqual(visitors, [uid]);
+  });
+
+  it('asks without a visitor when there is no session', async () => {
+    const visitors: Array<string | undefined> = [];
+    harness = await makeHarness({
+      guardInstalled: true,
+      servicePublished: true,
+      countOpenFieldClassification: async (visitor) => {
+        visitors.push(visitor);
+        return { needsClarification: 0, suggested: 0, confirmedConflict: 0 };
+      },
+    });
+    const body = await posture();
+    assert.equal(body.fields_auto_approved_new, 0);
+    assert.equal(body.fields_auto_revoked, 0);
+    assert.deepEqual(visitors, [undefined]);
   });
 
   it('reports the open field-classification counts (#1556 follow-up)', async () => {

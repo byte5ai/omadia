@@ -23,7 +23,7 @@ describe('<Nav /> count badge', () => {
     renderWithIntl(<Nav badges={{ '/admin/privacy-fields': 5 }} />);
     const headerBadge = screen.getByTestId('nav-count-badge');
     expect(headerBadge).toHaveTextContent('5');
-    expect(headerBadge.getAttribute('aria-label')).toBe('5 fields need a decision');
+    expect(headerBadge.getAttribute('aria-label')).toBe('5 fields to review');
 
     const opener = screen.getByRole('button', { name: /admin/i });
     fireEvent.click(opener);

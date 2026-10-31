@@ -79,6 +79,17 @@ export type AuditAction =
   // (`privacy-field:<tool>:<scope>/<path>`), `after` only the number of
   // values shown. Never a value.
   | 'privacy.field_preview'
+  // Field classification auto-approval — the recompute (actor
+  // `system:auto-classifier`, `systemAuditActor`) wrote one field's scoped
+  // `non_personal_fields` entry itself (`field_auto_approve`, `after`:
+  // basis, confidence, entry), or took it out again because the field lost
+  // its eligibility for any reason — a person target, a detector hit or
+  // near-miss, conflicting or unknown targets, a changed verdict, a raised
+  // threshold, a legacy entry now covering it (`field_auto_revoke`, `after`:
+  // reason, entry, removed, legacyStillCovers?). One row per field;
+  // `target` is `privacy-field:<tool>:<scope>/<path>`. Never a value.
+  | 'privacy.field_auto_approve'
+  | 'privacy.field_auto_revoke'
   // #1490 — an uploaded (or Hub-fetched), not installed package was removed.
   | 'plugin.package_remove'
   // #1342 — a stdio MCP server was saved (manual or catalog import). It runs
@@ -132,6 +143,20 @@ export function isPluginAuditAllowed(pluginId: string, action: string, target: s
 export interface AuditActor {
   id?: string;
   email?: string;
+}
+
+/** The label of a kernel job that acts without a user: `system:<name>`. */
+export type SystemActorLabel = `system:${string}`;
+
+/**
+ * The actor of a row a kernel job writes on its own (no request, no user),
+ * e.g. `system:auto-classifier`. `actor_id` is a uuid column (#775), so the
+ * label goes to `email`, the free-text column — like `auditActorFromLabel`
+ * does for any non-uuid label — and stays distinguishable from a person by
+ * its `system:` prefix.
+ */
+export function systemAuditActor(label: SystemActorLabel): AuditActor {
+  return { email: label };
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

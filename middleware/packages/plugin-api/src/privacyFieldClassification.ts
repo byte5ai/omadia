@@ -40,6 +40,11 @@ export interface FieldObservation extends FieldKey {
   /** ISO-8601 of the first and last sighting since the last drain. */
   readonly firstSeenAt: string;
   readonly lastSeenAt: string;
+  /** True when every sighting since the last drain was CLEARED by an
+   *  operator rule (`non_personal_fields`) instead of masked. The guard keeps sampling
+   *  such a field so the kernel can re-vet an approval; the kernel only
+   *  counts it for a field it already lists. Absent = masked. */
+  readonly cleared?: boolean;
 }
 
 /** What the name detector (C1) said about a field's sampled values. */
