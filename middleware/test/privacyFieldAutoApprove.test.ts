@@ -27,7 +27,11 @@ import {
   parseAutoApproveEnabled,
   type AutoApprovalInput,
 } from '../src/privacy/fieldClassification/autoApprove.js';
-import { planAutoApprove, type AutoApproveSubject } from '../src/privacy/fieldClassification/autoApprovePass.js';
+import {
+  applyAutoApprovePlan,
+  planAutoApprove,
+  type AutoApproveSubject,
+} from '../src/privacy/fieldClassification/autoApprovePass.js';
 import { createNonPersonalFieldsEditor } from '../src/privacy/fieldClassification/configEditor.js';
 import {
   candidateFingerprint,
@@ -136,27 +140,28 @@ describe('auto-approval — autoApprovalOf', () => {
 });
 
 describe('auto-approval — settings', () => {
-  it('the switch defaults to on; false / "false" turn it off', () => {
-    assert.equal(parseAutoApproveEnabled(undefined), true);
-    assert.equal(parseAutoApproveEnabled(true), true);
-    assert.equal(parseAutoApproveEnabled('true'), true);
-    assert.equal(parseAutoApproveEnabled(false), false);
-    assert.equal(parseAutoApproveEnabled('false'), false);
-    assert.equal(parseAutoApproveEnabled('garbage'), true);
+  it('L1: the switch is ON only unset or for an explicit yes; anything else is OFF', () => {
+    for (const on of [undefined, true, 'true', 'TRUE', ' on ', '1', 'yes', 'Ja']) {
+      assert.equal(parseAutoApproveEnabled(on), true, JSON.stringify(on));
+    }
+    for (const off of [false, 0, 1, '0', 'false', 'off', 'no', 'nein', 'disabled', 'garbage', '', null, {}]) {
+      assert.equal(parseAutoApproveEnabled(off), false, JSON.stringify(off));
+    }
   });
 
-  it('the threshold parses leniently and falls back to 0.85 outside 0.5–0.99', () => {
+  it('M3: the threshold parses leniently and is clamped to 0.8–0.99', () => {
     assert.equal(parseAutoApproveConfidence('0,9'), 0.9);
     assert.equal(parseAutoApproveConfidence(' 0.95 '), 0.95);
-    assert.equal(parseAutoApproveConfidence(0.7), 0.7);
-    assert.equal(parseAutoApproveConfidence(0.5), 0.5);
+    assert.equal(parseAutoApproveConfidence(0.8), 0.8);
     assert.equal(parseAutoApproveConfidence(0.99), 0.99);
-    for (const bad of [0.3, 1, '1.5', 'abc', '', undefined, null, Number.NaN]) {
+    for (const low of [0.7, 0.5, 0.3, -1, '0,6']) assert.equal(parseAutoApproveConfidence(low), 0.8, String(low));
+    for (const high of [1, '1.5', 5]) assert.equal(parseAutoApproveConfidence(high), 0.99, String(high));
+    for (const bad of ['abc', '', undefined, null, Number.NaN]) {
       assert.equal(parseAutoApproveConfidence(bad), AUTO_APPROVE_DEFAULT_CONFIDENCE, String(bad));
     }
     assert.deepEqual(autoApproveSettingsOf({ auto_approve_non_personal: false, auto_approve_confidence: '0,6' }), {
       enabled: false,
-      confidence: 0.6,
+      confidence: 0.8,
     });
     assert.deepEqual(autoApproveSettingsOf(undefined), { enabled: true, confidence: 0.85 });
   });
@@ -226,9 +231,12 @@ interface Harness {
   readonly registry: InMemoryInstalledRegistry;
   readonly audits: Array<Record<string, unknown>>;
   readonly writes: unknown[];
+  readonly editor: ReturnType<typeof createNonPersonalFieldsEditor>;
   fields: Fields;
   samples: Record<string, Partial<FieldSampleVerdict>>;
   queue(observations: FieldObservation[]): void;
+  /** Field paths vetted, in order. */
+  readonly vetted: string[];
   run(): ReturnType<typeof recomputeFieldClassification>;
   npf(): unknown;
 }
@@ -250,6 +258,7 @@ async function makeHarness(opts: {
   readonly config?: Record<string, unknown>;
   readonly fields: Fields;
   readonly haiku?: (req: ModelClassificationRequest) => ModelClassificationResult;
+  readonly now?: () => Date;
 }): Promise<Harness> {
   const store = new InMemoryFieldClassificationStore();
   const registry = new InMemoryInstalledRegistry();
@@ -277,8 +286,10 @@ async function makeHarness(opts: {
     registry,
     audits,
     writes,
+    editor,
     fields: opts.fields,
     samples: {},
+    vetted: [],
     queue(observations) {
       pending = [...pending, ...observations];
     },
@@ -290,16 +301,19 @@ async function makeHarness(opts: {
           pending = [];
           return out;
         },
-        vetFieldSample: async ({ toolName, scope, fieldPath }) => ({
-          toolName,
-          scope,
-          fieldPath,
-          sampleCount: 5,
-          identityHit: false,
-          c1: 'clean',
-          hitTypes: [],
-          ...h.samples[fieldPath],
-        }),
+        vetFieldSample: async ({ toolName, scope, fieldPath }) => {
+          h.vetted.push(fieldPath);
+          return {
+            toolName,
+            scope,
+            fieldPath,
+            sampleCount: 12,
+            identityHit: false,
+            c1: 'clean',
+            hitTypes: [],
+            ...h.samples[fieldPath],
+          };
+        },
         maskedFieldPreview: () => ['••••'],
         ...(opts.haiku
           ? {
@@ -314,6 +328,7 @@ async function makeHarness(opts: {
       };
       return recomputeFieldClassification({
         store,
+        ...(opts.now !== undefined ? { now: opts.now } : {}),
         serviceRegistry: {
           get: <T,>(name: string) => services[name] as T | undefined,
           providedBy: (owner: string, name: string) => owner === '@omadia/integration-odoo' && name in services,
@@ -540,5 +555,291 @@ describe('auto-approval — recompute', () => {
     assert.equal((await h.store.countOpen('never-visited')).autoApprovedNew, 0, 'no visit → 0');
     await h.store.markVisit('admin', new Date(Date.now() + 60_000));
     assert.equal((await h.store.countOpen('admin')).autoApprovedNew, 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Security review (2026-10-31): one regression test per finding.
+// ---------------------------------------------------------------------------
+
+const HAIKU_09 = (req: ModelClassificationRequest): ModelClassificationResult => ({
+  model: req.model,
+  verdict: 'non-personal',
+  confidence: 0.9,
+  reason: 'regions',
+});
+
+const AUTO_DECISION = {
+  action: 'auto_approve',
+  fingerprint: 'old',
+  byId: null,
+  byEmail: 'system:auto-classifier',
+  at: '2026-10-30T00:00:00.000Z',
+  batchId: null,
+} as const;
+
+describe('auto-approval — security review', () => {
+  it('H1: an auto-approved field is re-vetted every pass; a name hit revokes it in that same pass', async () => {
+    const h = await makeHarness({ fields: SALE_FIELDS });
+    h.queue([obs('team_id', 'sale.order')]);
+    await h.run();
+    assert.equal((await byPath(h.store, 'sale.order', 'team_id'))?.status, 'auto_approved');
+    h.vetted.splice(0);
+    // The guard reports the cleared field's sightings (and sampled its values).
+    h.queue([obs('team_id', 'sale.order', { cleared: true }), obs('ghost_id', 'sale.order', { cleared: true })]);
+    h.samples['team_id'] = { c1: 'hit', hitTypes: ['person'] };
+    const result = await h.run();
+    assert.deepEqual(h.vetted, ['team_id'], 'vetted although its fingerprint is unchanged');
+    assert.equal(result.autoApprove?.revoked, 1);
+    const team = await byPath(h.store, 'sale.order', 'team_id');
+    assert.equal(team?.status, 'auto_revoked');
+    assert.equal(team?.sampleVerdict?.c1, 'hit', 'the new verdict replaces the stored one');
+    assert.equal(team?.seenCount, 6, 'a cleared sighting of a listed field counts');
+    assert.equal(h.npf(), undefined);
+    const revoke = h.audits.find((a) => a['action'] === 'privacy.field_auto_revoke');
+    assert.equal((revoke?.['after'] as { reason: string }).reason, 'detector_hit');
+    assert.equal(await byPath(h.store, 'sale.order', 'ghost_id'), undefined, 'a cleared sighting creates no candidate');
+  });
+
+  it('H1: after a fingerprint change, basis haiku is refreshed only on a fresh clean vet', () => {
+    const subject = (over: Partial<AutoApproveSubject> & { readonly path?: string }): AutoApproveSubject => {
+      const fieldPath = over.path ?? 'region_id';
+      return {
+        candidate: { id: fieldPath, toolName: 'odoo_execute', scope: 'sale.order', fieldPath, decision: AUTO_DECISION } as never,
+        input: input({
+          fieldPath,
+          relationModels: ['x_custom.region'],
+          modelVerdicts: haiku('x_custom.region', 0.9),
+          sample: CLEAN,
+        }),
+        fingerprint: 'new',
+        base: { status: 'suggested', reasons: [] },
+        ...over,
+      };
+    };
+    const config = 'odoo_execute:sale.order/region_id\nodoo_execute:sale.order/team_id';
+    const on = { enabled: true, confidence: 0.85 };
+    const stale = planAutoApprove([subject({})], config, on);
+    assert.deepEqual(stale.revoke.map((r) => r.reason), ['no_fresh_vet']);
+    assert.equal(stale.refresh.length, 0);
+    const fresh = planAutoApprove([subject({ freshSample: CLEAN })], config, on);
+    assert.equal(fresh.revoke.length, 0);
+    assert.equal(fresh.refresh.length, 1);
+    const dirty = planAutoApprove([subject({ freshSample: { ...CLEAN, sampleCount: 3 } })], config, on);
+    assert.deepEqual(dirty.revoke.map((r) => r.reason), ['no_fresh_vet']);
+    // Basis (a) is deterministic: no fresh vet needed.
+    const known = planAutoApprove([subject({ path: 'team_id', input: input() })], config, on);
+    assert.equal(known.refresh.length, 1);
+  });
+
+  it('H2: a many2one field without resolved targets is never approved on the source verdict', () => {
+    const m2o = input({ relationModels: [], fieldPath: 'x_id' });
+    const verdicts = haiku(sourceKeyOf(m2o), 0.95);
+    assert.deepEqual(autoApprovalOf({ ...m2o, modelVerdicts: verdicts, sample: CLEAN }, SETTINGS), {
+      eligible: false,
+      reason: 'no_relation_target',
+    });
+    const text = { ...m2o, valueShape: 'text' as const };
+    assert.equal(autoApprovalOf({ ...text, modelVerdicts: verdicts, sample: CLEAN }, SETTINGS).eligible, true);
+  });
+
+  it('M1: a decision made before the pass takes the lock is re-read there and never overwritten', async () => {
+    const h = await makeHarness({ fields: SALE_FIELDS });
+    const original = h.store.get.bind(h.store);
+    let raced = false;
+    h.store.get = async (id) => {
+      const row = await original(id);
+      if (!raced && row?.fieldPath === 'team_id') {
+        raced = true;
+        await h.store.saveDecision(
+          id,
+          { action: 'reject', fingerprint: row.fingerprint, byId: null, byEmail: 'admin@example.com', at: '2026-10-31T00:00:00.000Z' },
+          'rejected',
+        );
+        return original(id);
+      }
+      return row;
+    };
+    h.queue([obs('team_id', 'sale.order')]);
+    const result = await h.run();
+    assert.equal(raced, true);
+    assert.equal(result.autoApprove?.approved, 0);
+    assert.equal(result.autoApprove?.stale, 1);
+    assert.equal(h.npf(), undefined);
+    assert.equal((await byPath(h.store, 'sale.order', 'team_id'))?.decision?.action, 'reject');
+    assert.deepEqual(h.audits, []);
+  });
+
+  it('M1: a decision made after the lock check wins the compare-and-set; the entry is rolled back', async () => {
+    const h = await makeHarness({ fields: SALE_FIELDS });
+    const write = h.registry.updateConfig.bind(h.registry);
+    let raced = false;
+    h.registry.updateConfig = async (id, next) => {
+      await write(id, next);
+      if (raced) return;
+      raced = true;
+      const team = (await byPath(h.store, 'sale.order', 'team_id'))!;
+      await h.store.saveDecision(
+        team.id,
+        { action: 'keep_masked', fingerprint: team.fingerprint, byId: null, byEmail: 'admin@example.com', at: '2026-10-31T00:00:00.000Z' },
+        'kept_masked',
+      );
+    };
+    h.queue([obs('team_id', 'sale.order')]);
+    const result = await h.run();
+    assert.equal(result.autoApprove?.approved, 0);
+    assert.equal(h.npf(), undefined, 'rolled back');
+    assert.equal((await byPath(h.store, 'sale.order', 'team_id'))?.decision?.action, 'keep_masked');
+  });
+
+  it('M2: a threshold raised above the approval revokes it (not only the safeguards do)', async () => {
+    const h = await makeHarness({ fields: SALE_FIELDS, haiku: HAIKU_09 });
+    h.queue([obs('region_id', 'sale.order')]);
+    await h.run();
+    assert.equal((await byPath(h.store, 'sale.order', 'region_id'))?.status, 'auto_approved');
+    await h.registry.updateConfig(GUARD_ID, { ...h.registry.get(GUARD_ID)!.config, auto_approve_confidence: '0.95' });
+    await h.run();
+    assert.equal((await byPath(h.store, 'sale.order', 'region_id'))?.status, 'auto_revoked');
+    assert.equal(h.npf(), undefined);
+    const revoke = h.audits.find((a) => a['action'] === 'privacy.field_auto_revoke');
+    assert.equal((revoke?.['after'] as { reason: string }).reason, 'below_threshold');
+  });
+
+  it('M2: a verdict that flipped to personal revokes', async () => {
+    const h = await makeHarness({ fields: SALE_FIELDS, haiku: HAIKU_09 });
+    h.queue([obs('region_id', 'sale.order')]);
+    await h.run();
+    await h.store.saveModelVerdicts([
+      { model: 'x_custom.region', verdict: 'personal', source: 'haiku', confidence: 0.9, reason: '', fieldsHash: '' },
+    ]);
+    await h.run();
+    assert.equal(h.npf(), undefined);
+    const revoke = h.audits.find((a) => a['action'] === 'privacy.field_auto_revoke');
+    assert.equal((revoke?.['after'] as { reason: string }).reason, 'not_non_personal');
+  });
+
+  it('M2: a new relation target without a verdict revokes', async () => {
+    const h = await makeHarness({ fields: structuredClone(SALE_FIELDS) });
+    h.queue([obs('team_id', 'sale.order')]);
+    await h.run();
+    h.fields['sale.order']!['team_id'] = { type: 'many2one', relation: 'x_custom.thing' };
+    await h.run();
+    assert.equal(h.npf(), undefined);
+    const revoke = h.audits.find((a) => a['action'] === 'privacy.field_auto_revoke');
+    assert.equal((revoke?.['after'] as { reason: string }).reason, 'no_verdict');
+  });
+
+  it('L3: a revoked field a legacy entry still clears says so in the audit row and the status reasons', async () => {
+    const h = await makeHarness({ fields: SALE_FIELDS });
+    h.queue([obs('team_id', 'sale.order')]);
+    await h.run();
+    await h.registry.updateConfig(GUARD_ID, {
+      ...h.registry.get(GUARD_ID)!.config,
+      non_personal_fields: 'odoo_execute:sale.order/team_id\nodoo_execute:team_id',
+    });
+    await h.run();
+    assert.equal(h.npf(), 'odoo_execute:team_id', 'exactly its own entry is removed');
+    const revoke = h.audits.find((a) => a['action'] === 'privacy.field_auto_revoke');
+    assert.deepEqual(revoke?.['after'], {
+      reason: 'covered',
+      entry: 'odoo_execute:sale.order/team_id',
+      removed: true,
+      legacyStillCovers: 'odoo_execute:team_id',
+      plugin: GUARD_ID,
+    });
+    const team = (await byPath(h.store, 'sale.order', 'team_id'))!;
+    assert.equal(team.status, 'auto_revoked');
+    const shown = liveStatus(team, h.npf() as string, await cachedVerdicts(h.store, [team]));
+    assert.equal(shown.status, 'auto_revoked');
+    assert.ok(shown.reasons.some((r) => r.code === 'legacy_entry' && r.entry === 'odoo_execute:team_id'));
+  });
+
+  it('M3: basis (b) needs a confidence above max(threshold, 0.8)', () => {
+    const region = input({ relationModels: ['x_custom.region'], sample: CLEAN });
+    const low = { confidence: 0.5 };
+    assert.deepEqual(autoApprovalOf({ ...region, modelVerdicts: haiku('x_custom.region', 0.8) }, low), {
+      eligible: false,
+      reason: 'below_threshold',
+    });
+    assert.equal(autoApprovalOf({ ...region, modelVerdicts: haiku('x_custom.region', 0.81) }, low).eligible, true);
+  });
+
+  it('M4: from a person scope only allow-listed targets are auto-approved', () => {
+    const blocked: Array<[string, string, string]> = [
+      ['hr.leave', 'holiday_status_id', 'hr.leave.type'],
+      ['hr.employee', 'category_ids', 'hr.employee.category'],
+      ['res.partner', 'title', 'res.partner.title'],
+    ];
+    for (const [scope, fieldPath, target] of blocked) {
+      assert.deepEqual(
+        autoApprovalOf(input({ scope, fieldPath, relationModels: [target], sample: CLEAN }), SETTINGS),
+        { eligible: false, reason: 'person_scope' },
+        `${scope}/${fieldPath}`,
+      );
+    }
+    for (const [scope, fieldPath, target] of [
+      ['hr.employee', 'department_id', 'hr.department'],
+      ['res.partner', 'country_id', 'res.country'],
+    ] as const) {
+      assert.equal(
+        autoApprovalOf(input({ scope, fieldPath, relationModels: [target] }), SETTINGS).eligible,
+        true,
+        `${scope}/${fieldPath}`,
+      );
+    }
+  });
+
+  it('M5: basis (b) needs a clean vet over at least 10 values', () => {
+    const region = input({ relationModels: ['x_custom.region'], modelVerdicts: haiku('x_custom.region', 0.9) });
+    assert.deepEqual(autoApprovalOf({ ...region, sample: { ...CLEAN, sampleCount: 9 } }, SETTINGS), {
+      eligible: false,
+      reason: 'no_name_vet',
+    });
+    assert.equal(autoApprovalOf({ ...region, sample: { ...CLEAN, sampleCount: 10 } }, SETTINGS).eligible, true);
+  });
+
+  it('L2: one failing field neither stops the pass nor leaves its entry without a decision row', async () => {
+    const fields = structuredClone(SALE_FIELDS);
+    fields['sale.order']!['stage_id'] = { type: 'many2one', relation: 'crm.stage' };
+    const h = await makeHarness({ fields });
+    const save = h.store.saveDecision.bind(h.store);
+    h.store.saveDecision = async (id, decision, status, expected) => {
+      if ((await h.store.get(id))?.fieldPath === 'stage_id') throw new Error('db down');
+      return save(id, decision, status, expected);
+    };
+    h.queue([obs('stage_id', 'sale.order'), obs('team_id', 'sale.order')]);
+    const result = await h.run();
+    assert.equal(result.autoApprove?.approved, 1);
+    assert.equal(h.npf(), 'odoo_execute:sale.order/team_id');
+    assert.equal((await byPath(h.store, 'sale.order', 'stage_id'))?.decision, null);
+  });
+
+  it('L2: a revoke of a field that cannot form an entry does not throw mid-pass', async () => {
+    const h = await makeHarness({ fields: SALE_FIELDS });
+    await h.store.upsertObservation(obs('team_id', 'sale.order', { toolName: '*' }));
+    const row = (await h.store.list())[0]!;
+    await h.store.saveDecision(row.id, { ...AUTO_DECISION, fingerprint: row.fingerprint }, 'auto_approved');
+    const stored = (await h.store.get(row.id))!;
+    const subject: AutoApproveSubject = {
+      candidate: stored,
+      input: input({ toolName: '*' }),
+      fingerprint: stored.fingerprint,
+      base: { status: 'suggested', reasons: [] },
+    };
+    const result = await applyAutoApprovePlan(
+      { approve: [], refresh: [], revoke: [{ subject, reason: 'invalid_field' }], remaining: 0, blocked: {} },
+      { store: h.store, editor: h.editor, audit: { record: async (e) => void h.audits.push(e as never) }, now: () => new Date(), log: () => undefined },
+    );
+    assert.equal(result.revoked, 1);
+    assert.deepEqual(h.audits[0]?.['after'], { reason: 'invalid_field', removed: false, plugin: GUARD_ID });
+  });
+
+  it('L4: an auto-approval is decided at the time of the write, not at the start of the pass', async () => {
+    let t = Date.parse('2026-10-31T10:00:00.000Z');
+    const h = await makeHarness({ fields: SALE_FIELDS, now: () => new Date((t += 1000)) });
+    h.queue([obs('team_id', 'sale.order')]);
+    const result = await h.run();
+    const team = (await byPath(h.store, 'sale.order', 'team_id'))!;
+    assert.ok(team.decision!.at > result.computedAt, `${team.decision!.at} > ${result.computedAt}`);
   });
 });

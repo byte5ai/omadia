@@ -232,4 +232,53 @@ describe('#1556 field classification store against a real Postgres', { skip: !pg
       pool.query(`UPDATE privacy_field_candidates SET decision = 'bulk' WHERE id = $1`, [row.id]),
     );
   });
+
+  it('M1: saveDecision with an expectation is compare-and-set', async () => {
+    await store.upsertObservation({
+      toolName: 'odoo_execute',
+      scope: 'sale.order',
+      fieldPath: 'stage_id',
+      valueShape: 'm2o',
+      seenCount: 1,
+      firstSeenAt: '2026-10-31T08:00:00.000Z',
+      lastSeenAt: '2026-10-31T08:00:00.000Z',
+    });
+    const row = (await store.list()).find((r) => r.fieldPath === 'stage_id')!;
+    await store.saveClassification(row.id, {
+      relationModels: ['crm.stage'],
+      status: 'suggested',
+      reasons: [],
+      fingerprint: 'fp1',
+      computedAt: '2026-10-31T08:00:00.000Z',
+    });
+    const approve = {
+      action: 'auto_approve' as const,
+      fingerprint: 'fp1',
+      byId: null,
+      byEmail: 'system:auto-classifier',
+      at: '2026-10-31T10:00:00.123Z',
+    };
+    // Expected "no decision", but on another fingerprint: refused.
+    assert.equal(await store.saveDecision(row.id, approve, 'auto_approved', { decision: null, fingerprint: 'fp0' }), false);
+    assert.equal(await store.saveDecision(row.id, approve, 'auto_approved', { decision: null, fingerprint: 'fp1' }), true);
+    // The same expectation again: the decision is no longer "none".
+    assert.equal(await store.saveDecision(row.id, approve, 'auto_approved', { decision: null, fingerprint: 'fp1' }), false);
+    const reject = { ...approve, action: 'reject' as const, byEmail: 'admin@example.com', at: '2026-10-31T11:00:00.000Z' };
+    // Expected the approval but at another time: refused; with the stored one: written.
+    assert.equal(
+      await store.saveDecision(row.id, reject, 'rejected', {
+        decision: { ...approve, at: '2026-10-31T10:00:00.000Z' },
+        fingerprint: 'fp1',
+      }),
+      false,
+    );
+    const stored = (await store.get(row.id))!;
+    assert.equal(
+      await store.saveDecision(row.id, reject, 'rejected', { decision: stored.decision, fingerprint: 'fp1' }),
+      true,
+    );
+    assert.equal((await store.get(row.id))?.decision?.action, 'reject');
+    // Without an expectation: unconditional, as before.
+    assert.equal(await store.saveDecision(row.id, null, 'suggested'), true);
+  });
 });

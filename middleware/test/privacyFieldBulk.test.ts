@@ -22,7 +22,7 @@ import { InMemoryFieldClassificationStore } from '../src/privacy/fieldClassifica
 
 const GUARD_ID = '@omadia/plugin-privacy-guard';
 const USER_ID = '7b1f4a52-1111-4222-8333-444455556666';
-const CLEAN = { sampleCount: 4, identityHit: false, c1: 'clean', hitTypes: [] } as const;
+const CLEAN = { sampleCount: 12, identityHit: false, c1: 'clean', hitTypes: [] } as const;
 
 interface Harness {
   readonly base: string;
@@ -40,7 +40,10 @@ afterEach(async () => {
   h = undefined;
 });
 
-async function makeHarness(config: Record<string, unknown> = {}): Promise<Harness> {
+async function makeHarness(
+  config: Record<string, unknown> = {},
+  opts: { readonly now?: () => Date } = {},
+): Promise<Harness> {
   const registry = new InMemoryInstalledRegistry();
   await registry.register({
     id: GUARD_ID,
@@ -85,6 +88,7 @@ async function makeHarness(config: Record<string, unknown> = {}): Promise<Harnes
           audits.push(entry as unknown as Record<string, unknown>);
         },
       },
+      ...(opts.now !== undefined ? { now: opts.now } : {}),
       recompute: async () => {
         harness.recomputes += 1;
         return { computedAt: '2026-10-31T00:00:00.000Z', candidates: 0, observations: 0 };
@@ -489,5 +493,69 @@ describe('POST /recompute?dryRun=1', () => {
     assert.equal(h.recomputes, 0);
     assert.deepEqual(h.writes, []);
     assert.deepEqual(h.audits, []);
+  });
+});
+
+describe('security review — compare-and-set decisions and the verdict TTL', () => {
+  /** Make the next decision write race: another decision lands just before it. */
+  function raceNextDecision(action: 'reject' | 'keep_masked'): () => boolean {
+    assert.ok(h);
+    const store = h.store;
+    const save = store.saveDecision.bind(store);
+    let raced = false;
+    store.saveDecision = async (id, decision, status, expected) => {
+      if (!raced) {
+        raced = true;
+        const row = (await store.get(id))!;
+        await save(
+          id,
+          { action, fingerprint: row.fingerprint, byId: null, byEmail: 'other@example.com', at: '2026-10-31T09:00:00.000Z' },
+          action === 'reject' ? 'rejected' : 'kept_masked',
+        );
+      }
+      return save(id, decision, status, expected);
+    };
+    return () => raced;
+  }
+
+  it('M1: the decision route answers 409 stale_decision and undoes its write when a decision landed meanwhile', async () => {
+    h = await makeHarness();
+    const team = await seed('team_id', 'crm.team');
+    const raced = raceNextDecision('reject');
+    const res = await post(`/${team.id}/decision`, { action: 'confirm', fingerprint: team.fingerprint });
+    assert.equal(raced(), true);
+    assert.equal(res.status, 409);
+    assert.equal((await json(res))['error'], 'stale_decision');
+    assert.equal(npf(), undefined, 'the appended entry is taken out again');
+    assert.equal((await h.store.get(team.id))?.decision?.action, 'reject');
+    assert.deepEqual(h.audits, []);
+  });
+
+  it('M1: bulk confirm skips a field decided meanwhile as stale and rolls its entry back', async () => {
+    h = await makeHarness();
+    const team = await seed('team_id', 'crm.team');
+    const stage = await seed('stage_id', 'crm.stage');
+    raceNextDecision('keep_masked');
+    const body = await json<{ applied: Array<{ id: string }>; skipped: Array<{ id: string; reason: string }> }>(
+      await post('/bulk/confirm', { ids: [team.id, stage.id] }),
+    );
+    assert.deepEqual(body.applied.map((a) => a.id), [stage.id]);
+    assert.deepEqual(body.skipped, [{ id: team.id, reason: 'stale' }]);
+    assert.equal(npf(), 'odoo_execute:sale.order/stage_id');
+    assert.equal((await h.store.get(team.id))?.decision?.action, 'keep_masked');
+  });
+
+  it('L5: bulk preview and the page ignore a schema verdict older than 30 days', async () => {
+    h = await makeHarness({}, { now: () => new Date(Date.now() + 31 * 24 * 60 * 60 * 1000) });
+    await saveRegionVerdict(0.95);
+    await seed('team_id', 'crm.team');
+    const region = await seed('region_id', 'x_custom.region');
+    const preview = await json<{ count: number; byReason: Record<string, number> }>(
+      await fetch(`${h.base}/bulk/preview`),
+    );
+    assert.equal(preview.count, 1);
+    assert.deepEqual(preview.byReason, { known_non_personal: 1, haiku: 0 });
+    const list = await json<{ items: Array<{ id: string; status: string }> }>(await fetch(`${h.base}/`));
+    assert.equal(list.items.find((i) => i.id === region.id)?.status, 'needs_clarification');
   });
 });

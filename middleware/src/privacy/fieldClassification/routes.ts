@@ -322,7 +322,7 @@ export function createFieldClassificationRoutes(deps: FieldClassificationRouteDe
       const candidates = await listable(
         parsed.data.tool !== undefined ? { toolName: parsed.data.tool } : {},
       );
-      const verdicts = await cachedVerdicts(deps.store, candidates);
+      const verdicts = await cachedVerdicts(deps.store, candidates, now());
       const config = rawConfig();
       const actor = fieldVisitorKey(req);
       const lastVisit = await deps.store.lastVisit(actor);
@@ -356,7 +356,7 @@ export function createFieldClassificationRoutes(deps: FieldClassificationRouteDe
     if (req.query['dryRun'] === '1' || req.query['dryRun'] === 'true') {
       try {
         const candidates = await listable();
-        const verdicts = await cachedVerdicts(deps.store, candidates);
+        const verdicts = await cachedVerdicts(deps.store, candidates, now());
         res.json(
           autoApproveDryRun(
             candidates.map((c) => subjectOf(c, verdicts)),
@@ -389,7 +389,7 @@ export function createFieldClassificationRoutes(deps: FieldClassificationRouteDe
   router.get('/legacy', async (_req: Request, res: Response) => {
     try {
       const candidates = await listable();
-      const verdicts = await cachedVerdicts(deps.store, candidates);
+      const verdicts = await cachedVerdicts(deps.store, candidates, now());
       const entries = legacyEntries(rawConfig()).map((legacy) => ({
         entry: legacy.entry,
         covers: candidates
@@ -422,7 +422,7 @@ export function createFieldClassificationRoutes(deps: FieldClassificationRouteDe
     const { entry } = parsed.data;
     try {
       const candidates = await listable();
-      const verdicts = await cachedVerdicts(deps.store, candidates);
+      const verdicts = await cachedVerdicts(deps.store, candidates, now());
       const configBefore = rawConfig();
       const added: string[] = [];
       const skipped: CandidateKey[] = [];
@@ -591,7 +591,7 @@ export function createFieldClassificationRoutes(deps: FieldClassificationRouteDe
         res.status(409).json({ error: 'stale_fingerprint', fingerprint: candidate.fingerprint });
         return;
       }
-      const verdicts = await cachedVerdicts(deps.store, [candidate]);
+      const verdicts = await cachedVerdicts(deps.store, [candidate], now());
       const shownBefore = liveStatus(candidate, rawConfig(), verdicts);
       if (
         !ALLOWED_ACTIONS[shownBefore.status].includes(action) ||
@@ -615,6 +615,19 @@ export function createFieldClassificationRoutes(deps: FieldClassificationRouteDe
       if (action === 'revert' && covered) {
         configChange = await writeConfigEntry(candidate, 'remove');
       }
+      // Only a write that changed the setting is this decision's to undo.
+      if (configChange !== undefined && configChange.before === configChange.after) configChange = undefined;
+      const undoConfigChange = async (): Promise<void> => {
+        if (configChange === undefined) return;
+        await writeConfigEntry(candidate, action === 'confirm' ? 'remove' : 'append').catch(
+          (undoErr: unknown) => {
+            console.error(
+              '[privacy-fields] undoing the setting change after a failed decision write failed:',
+              errorText(undoErr),
+            );
+          },
+        );
+      };
 
       const decision: CandidateDecision = {
         action,
@@ -624,22 +637,29 @@ export function createFieldClassificationRoutes(deps: FieldClassificationRouteDe
         at: now().toISOString(),
       };
       const shownAfter = liveStatus(candidate, rawConfig(), verdicts, decision);
+      let saved: boolean;
       try {
-        await deps.store.saveDecision(id, decision, shownAfter.status);
+        // Compare-and-set: only over the decision this request was made on —
+        // a recompute's auto-approval or another admin may have decided
+        // since.
+        saved = await deps.store.saveDecision(id, decision, shownAfter.status, {
+          decision: candidate.decision,
+          fingerprint: candidate.fingerprint,
+        });
       } catch (err) {
         // No setting change without its decision row: undo the write, so a
         // field never reaches the model in clear on a decision nobody can see.
-        if (configChange !== undefined) {
-          await writeConfigEntry(candidate, action === 'confirm' ? 'remove' : 'append').catch(
-            (undoErr: unknown) => {
-              console.error(
-                '[privacy-fields] undoing the setting change after a failed decision write failed:',
-                errorText(undoErr),
-              );
-            },
-          );
-        }
+        await undoConfigChange();
         throw err;
+      }
+      if (!saved) {
+        await undoConfigChange();
+        const current = await deps.store.get(id);
+        res.status(409).json({
+          error: 'stale_decision',
+          ...(current !== undefined ? { fingerprint: current.fingerprint } : {}),
+        });
+        return;
       }
 
       await recordAudit({

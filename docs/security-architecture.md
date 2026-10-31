@@ -2201,51 +2201,76 @@ badge are informational.
 
 **Auto-approval — the one exception to "an admin confirms every entry"
 (2026-10-31).** With the privacy guard's `auto_approve_non_personal` (boolean,
-default ON) the recompute pass writes the scoped entry itself for a narrow set
-of fields (`autoApprove.ts`, `autoApprovePass.ts`); off, the pass is exactly
-the suggest-only behaviour above. Eligible is either (a) every relation target
-is in the built-in known-non-personal catalog — deterministic, so neither a C1
-vet nor a chat sighting is required (a field seeded from `odoo.schema`
-qualifies) — or (b) the schema-only verdict (of every unknown target, or of
-the source for a field without relation information) is `non-personal` with a
-confidence strictly above `auto_approve_confidence` (string setting, 0.5–0.99,
-default 0.85, `0,9` accepted, anything else falls back to the default) AND a
-clean C1 vet of a non-empty sample; without C1 a (b) field stays "needs
-clarification". The safeguards override both: never for a person-model
-relation target, never for a field OF a person model unless every relation
-target is known non-personal (so `hr.employee/department_id` → `hr.department`
-is auto-approved: its value is a department name, while text fields of a
-person model are personal anyway), never
-on conflicting targets, an identity hit, a C1 hit or near-miss, scope `-`, a
-value shape other than text / m2o or a name that is not exactly one scoped
-entry; never for a field that already carries ANY decision (an admin's
-confirm / reject / keep masked / revert, an earlier auto-revoke — stricter than
-"the current fingerprint": a reverted or revoked field is never auto-approved
-again) and never for a field the setting already covers. The entry is always
-`configEntryOf` — model-scoped, never a wildcard. The pass runs only on
-lifecycle events, at boot, every 6 h and on demand (never per chat turn),
-writes the setting ONCE per pass through the same per-plugin editor as the
-admin routes (`configEditor.ts`), approves at most 1000 fields per pass, and
-records per field the decision `auto_approve` (actor `system:auto-classifier`,
-`systemAuditActor` puts the label into the free-text actor column) and an
-audit row `privacy.field_auto_approve` (`after`: basis, confidence, entry). A
-decision row that cannot be written takes its entry out again. Its log line
-carries counts only. Drift: every pass re-checks auto-approved fields — one
-that now has a person target, a detector hit or near-miss, or conflicting
-targets loses exactly its scoped entry, gets decision `auto_revoke`, status
-`auto_revoked` ("needs review", counted in `fields_needing_clarification`
-and `fields_auto_revoked`) and an audit row `privacy.field_auto_revoke` with
-the reason; this runs with the switch off too. Turning the switch off does NOT
-remove entries already auto-approved (no mass revoke) — it only stops new
-ones; an admin reverts them on the page (`revert` removes the entry for good)
-or takes ownership (`confirm`). The posture adds `fields_auto_approved_new`
+default ON; parsed strictly — only unset, `true`, `"true"`, `"on"`, `"1"`,
+`"yes"`, `"ja"` mean on, any other value means off) the recompute pass writes
+the scoped entry itself for a narrow set of fields (`autoApprove.ts`,
+`autoApprovePass.ts`); off, the pass is exactly the suggest-only behaviour
+above. Eligible is either (a) every relation target is in the built-in
+known-non-personal catalog — deterministic, so neither a C1 vet nor a chat
+sighting is required (a field seeded from `odoo.schema` qualifies) — or (b)
+the classifier's base status is `suggested`, the schema-only verdict (of every
+unknown target, or of the source for a field without relation information —
+never for a many2one field, which must have resolved targets) is
+`non-personal` with a confidence strictly above max(`auto_approve_confidence`,
+0.8) AND C1 vetted a sample of at least 10 values clean; without C1 a (b)
+field stays "needs clarification". `auto_approve_confidence` is a string
+setting clamped to 0.8–0.99 (below 0.8 counts as 0.8, the suggestion floor;
+above 0.99 as 0.99; `0,9` accepted; not a number → 0.85). The safeguards
+override both: never for a person-model relation target; never for a field OF
+a person model unless every relation target is on an explicit allow-list
+(`hr.department`, `hr.job`, `res.company`, `hr.work.location`, `res.country`,
+`res.country.state`, `res.currency` — so `hr.employee/department_id` is
+auto-approved, while an employee's tags, a leave's type or a partner's title
+stay for the admin even though their targets are catalogued non-personal);
+never on conflicting targets, an identity hit, a C1 hit or near-miss, scope
+`-`, a value shape other than text / m2o or a name that is not exactly one
+scoped entry; never for a field that already carries ANY decision (an admin's
+confirm / reject / keep masked / revert, an earlier auto-revoke — stricter
+than "the current fingerprint": a reverted or revoked field is never
+auto-approved again) and never for a field the setting already covers. The
+entry is always `configEntryOf` — model-scoped, never a wildcard. The pass
+runs only on lifecycle events, at boot, every 6 h and on demand (never per
+chat turn), writes the setting ONCE per pass through the same per-plugin
+editor as the admin routes (`configEditor.ts`), approves at most 1000 fields
+per pass, and records per field the decision `auto_approve` (actor
+`system:auto-classifier`, `systemAuditActor` puts the label into the free-text
+actor column; decided at the time of that write) and an audit row
+`privacy.field_auto_approve` (`after`: basis, confidence, entry). Races with
+admins: inside the plugin lock the pass re-reads each field's decision and
+skips one that changed since it planned; every decision write — the pass,
+`POST /:id/decision` (409 `stale_decision`), bulk confirm / undo (skip
+`stale`) — is compare-and-set over the decision and fingerprint it read, and
+the losing side takes its config change out again. A decision row that cannot
+be written takes its entry out again; one failing field never stops the pass.
+Its log line carries counts only. Re-vetting: the guard keeps sampling fields
+an operator rule CLEARED (type `label`) exactly like masked ones (same caps
+and 24 h TTL, in memory, never logged) and reports them as `cleared`
+observations; every pass vets the buffered values of each auto-approved field
+again and the new verdict replaces the stored one. Revoke: every pass judges
+each auto-approved field as if it were undecided and its own entry absent —
+when it is no longer eligible for ANY reason (person target or scope, a
+detector hit or near-miss, conflicting or new unknown targets, a verdict that
+flipped or fell below a raised threshold, a legacy entry now covering it …),
+or its fingerprint changed and basis (b) has no fresh clean vet of this pass,
+it loses exactly its scoped entry, gets decision `auto_revoke`, status
+`auto_revoked` ("needs review", counted in `fields_needing_clarification` and
+`fields_auto_revoked`) and an audit row `privacy.field_auto_revoke` with the
+reason — and `legacyStillCovers: <entry>` when a legacy / wildcard entry still
+clears the field (the page then shows `legacy_entry` on the revoked field);
+this runs with the switch off too. Turning the switch off does NOT remove
+entries already auto-approved (no mass revoke) — it only stops new ones; an
+admin reverts them on the page (`revert` removes the entry for good) or takes
+ownership (`confirm`). The posture adds `fields_auto_approved_new`
 (auto-approvals since the requesting admin's last visit of the page) so the
 banner tells admins what changed without them. `POST …/recompute?dryRun=1`
 reports what the pass WOULD approve (counts per basis / tool / source and
-field names, no value, no write). Residual: an auto-approved (b) field rests
-on a schema verdict plus C1's vet of a bounded sample; names C1 misses in
-values it has not seen reach the model until the drift check or an admin
-catches them — the same residual as an admin's confirm on the same evidence.
+field names, no value, no write). The page, bulk accept and the dry run read
+schema verdicts with the same 30-day TTL as the recompute. Residual: an
+auto-approved (b) field rests on a schema verdict plus C1's vet of a bounded
+sample; names C1 misses reach the model until a re-vet or an admin catches
+them — the same residual as an admin's confirm on the same evidence; and a
+field the guard has not seen for 24 h has no buffered values, so it keeps its
+last verdict until it is seen again.
 
 **Bulk accept.** An admin can confirm every open suggestion at once
 (`bulk.ts`): the server re-validates each candidate against the live

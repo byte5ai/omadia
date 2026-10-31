@@ -169,17 +169,58 @@ describe('#1556 follow-up — field observations', () => {
     assert.equal(isObservedTool('mcp__x__y', new Set()), true);
   });
 
-  it('skips a field an operator rule already cleared as a label', async () => {
-    const svc = createPrivacyGuardService({
-      readConfig: (key) =>
-        key === 'non_personal_fields' ? 'odoo_execute:hr.employee/department_id' : undefined,
-    });
-    await intern(svc, 'odoo_execute', EMPLOYEES, { model: 'hr.employee' });
-    await intern(svc, 'odoo_execute', EMPLOYEES, { model: 'res.partner' });
-    const keys = svc.takeFieldObservations!().map((o) => `${o.scope}|${o.fieldPath}`);
-    assert.ok(!keys.includes('hr.employee|department_id'));
-    assert.ok(keys.includes('res.partner|department_id'), 'another model is still a candidate');
-    assert.ok(keys.includes('hr.employee|name'));
+  it('H1: keeps sampling a field an operator rule cleared — observed as `cleared`, values buffered for a re-vet', async () => {
+    const logs: string[] = [];
+    const original = console.log;
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map(String).join(' '));
+    };
+    try {
+      const svc = createPrivacyGuardService({
+        readConfig: (key) =>
+          key === 'non_personal_fields' ? 'odoo_execute:hr.employee/department_id' : undefined,
+      });
+      await intern(svc, 'odoo_execute', EMPLOYEES, { model: 'hr.employee' });
+      await intern(svc, 'odoo_execute', EMPLOYEES, { model: 'res.partner' });
+      const observations = svc.takeFieldObservations!();
+      const find = (scope: string, path: string) =>
+        observations.find((o) => o.scope === scope && o.fieldPath === path);
+      assert.equal(find('hr.employee', 'department_id')?.cleared, true);
+      assert.equal(find('hr.employee', 'department_id')?.valueShape, 'm2o');
+      assert.equal(find('res.partner', 'department_id')?.cleared, undefined, 'another model is masked');
+      assert.equal(find('hr.employee', 'name')?.cleared, undefined);
+      // The cleared field's values are sampled like a masked field's.
+      const verdict = await svc.vetFieldSample!({
+        toolName: 'odoo_execute',
+        scope: 'hr.employee',
+        fieldPath: 'department_id',
+      });
+      assert.equal(verdict.sampleCount, 3);
+      // Never logged.
+      for (const value of [RND, 'Sales Team', 'Management']) {
+        assert.ok(!logs.some((l) => l.includes(value)), value);
+      }
+    } finally {
+      console.log = original;
+    }
+  });
+
+  it('H1: a single masked sighting makes the observation a masked one', () => {
+    const recorder = createFieldObservationRecorder();
+    const dataset = (classification: 'safe-cleartext' | 'sensitive-masked', type: 'label' | 'unknown') =>
+      ({
+        provenance: { sources: [{ tool: 'odoo_execute', scope: 'hr.employee' }] },
+        schema: { fields: [{ path: 'department_id', type, classification }] },
+        rows: [{ department_id: [4, RND] }],
+      }) as never;
+    recorder.record('odoo_execute', dataset('safe-cleartext', 'label'), new Set());
+    assert.equal(recorder.take()[0]?.cleared, true);
+    recorder.record('odoo_execute', dataset('safe-cleartext', 'label'), new Set());
+    recorder.record('odoo_execute', dataset('sensitive-masked', 'unknown'), new Set());
+    const [obs] = recorder.take();
+    assert.equal(obs?.cleared, undefined);
+    assert.equal(obs?.seenCount, 2);
+    assert.deepEqual(recorder.sample({ toolName: 'odoo_execute', scope: 'hr.employee', fieldPath: 'department_id' }), [RND]);
   });
 });
 

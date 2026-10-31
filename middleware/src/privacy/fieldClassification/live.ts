@@ -19,21 +19,24 @@ import {
   type FieldStatus,
   type ModelVerdictSummary,
 } from './engine.js';
-import { fieldKeyOf } from './recompute.js';
+import { MODEL_VERDICT_TTL_MS, fieldKeyOf } from './recompute.js';
 import type { CandidateDecision, FieldCandidate, FieldClassificationStore } from './store.js';
 
 /** Cached schema verdicts for every relation target and source of
- *  `candidates`. */
+ *  `candidates` — only those younger than the recompute's TTL
+ *  (`MODEL_VERDICT_TTL_MS`): an expired verdict never decides a status here
+ *  either (the next recompute asks again). */
 export async function cachedVerdicts(
   store: FieldClassificationStore,
   candidates: readonly FieldCandidate[],
+  now: Date = new Date(),
 ): Promise<Map<string, ModelVerdictSummary>> {
   const keys = [
     ...new Set(
       candidates.flatMap((c) => (c.relationModels.length > 0 ? c.relationModels : [sourceKeyOf(c)])),
     ),
   ];
-  const rows = await store.modelVerdicts(keys, new Date(0));
+  const rows = await store.modelVerdicts(keys, new Date(now.getTime() - MODEL_VERDICT_TTL_MS));
   return new Map(rows.map((r) => [r.model, { verdict: r.verdict, confidence: r.confidence }]));
 }
 

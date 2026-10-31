@@ -20,7 +20,9 @@
  * writer to call. With it (wired in `index.ts`), the auto-approval step
  * (`autoApprovePass.ts`) appends the scoped entries of eligible fields
  * while the guard's `auto_approve_non_personal` switch is on, and revokes
- * auto-approvals whose field drifted — one config write per pass. It runs on
+ * auto-approvals that are no longer eligible — one config write per pass.
+ * An auto-approved field is re-vetted every pass (the guard samples cleared
+ * fields too; a `cleared` observation only counts for a listed field). It runs on
  * lifecycle events (plugin activation/deactivation), every 6 hours and on
  * `POST /recompute`; never per chat turn. Debounced and single-flight.
  */
@@ -229,6 +231,10 @@ function needsVetting(candidate: FieldCandidate, fingerprint: string): boolean {
   // no value of it, so a vet would only log an empty verdict every pass.
   if (candidate.seenCount === 0) return false;
   return (
+    // Auto-approved: in clear now, so re-vetted every pass on what the guard
+    // still buffers of it (it samples cleared fields too) — a name or an
+    // identity among the values revokes it in this same pass.
+    candidate.decision?.action === 'auto_approve' ||
     candidate.fingerprint !== fingerprint ||
     candidate.sampleVerdict === null ||
     candidate.sampleVerdict.sampleCount === 0
@@ -482,12 +488,33 @@ function odooService<T>(deps: RecomputeDeps, name: string, log: (msg: string) =>
   return service;
 }
 
+function observationKey(field: FieldKey): string {
+  return `${field.toolName}\u0000${field.scope}\u0000${field.fieldPath}`;
+}
+
+/**
+ * The drained observations to persist. A `cleared` one (an operator rule
+ * let the field through in clear) only counts a sighting of a field the page
+ * already lists — the guard reports it so an auto-approved field keeps being
+ * re-vetted; it never creates a candidate of its own.
+ */
+async function observationsToStore(
+  drained: readonly FieldObservation[],
+  store: FieldClassificationStore,
+): Promise<FieldObservation[]> {
+  const candidates = drained.filter(isCandidateObservation);
+  if (!candidates.some((o) => o.cleared === true)) return candidates;
+  const known = new Set((await store.list()).map(observationKey));
+  return candidates.filter((o) => o.cleared !== true || known.has(observationKey(o)));
+}
+
 export async function recomputeFieldClassification(deps: RecomputeDeps): Promise<RecomputeResult> {
-  const now = deps.now?.() ?? new Date();
+  const clock = deps.now ?? ((): Date => new Date());
+  const now = clock();
   const log = deps.log ?? (() => undefined);
   const guard = deps.serviceRegistry.get<PrivacyGuardService>(PRIVACY_REDACT_SERVICE_NAME);
 
-  const observations = (guard?.takeFieldObservations?.() ?? []).filter(isCandidateObservation);
+  const observations = await observationsToStore(guard?.takeFieldObservations?.() ?? [], deps.store);
   for (const obs of observations) await deps.store.upsertObservation(storableObservation(obs));
 
   const schema = odooService<OdooSchemaSource>(deps, ODOO_SCHEMA_SERVICE_NAME, log);
@@ -519,7 +546,13 @@ export async function recomputeFieldClassification(deps: RecomputeDeps): Promise
       modelVerdicts,
     };
     const base = classifyBase({ ...input, seenInChat: candidate.seenCount > 0 });
-    subjects.push({ candidate, input, fingerprint: r.fingerprint, base });
+    subjects.push({
+      candidate,
+      input,
+      fingerprint: r.fingerprint,
+      base,
+      ...(r.freshSample !== undefined ? { freshSample: r.freshSample } : {}),
+    });
     const shown = resolveStatus(
       base,
       r.fingerprint,
@@ -539,7 +572,7 @@ export async function recomputeFieldClassification(deps: RecomputeDeps): Promise
   log(
     `[privacy-fields] recompute: ${String(observations.length)} observation(s), ${String(schemaFields)} Odoo schema field(s), ${String(candidates.length)} candidate(s)`,
   );
-  const autoApprove = await runAutoApprove(deps, subjects, rawConfig, now, log);
+  const autoApprove = await runAutoApprove(deps, subjects, rawConfig, clock, log);
   return {
     computedAt,
     candidates: candidates.length,
@@ -553,7 +586,7 @@ async function runAutoApprove(
   deps: RecomputeDeps,
   subjects: readonly AutoApproveSubject[],
   rawConfig: string | undefined,
-  now: Date,
+  now: () => Date,
   log: (msg: string) => void,
 ): Promise<AutoApprovePassResult | undefined> {
   if (deps.autoApprove === undefined) return undefined;
@@ -568,7 +601,7 @@ async function runAutoApprove(
   });
   // Counts only — never a field name list or a value.
   log(
-    `[privacy-fields] auto-approve (${settings.enabled ? 'on' : 'off'}, > ${String(settings.confidence)}): ${String(result.approved)} approved, ${String(result.revoked)} revoked, ${String(result.refreshed)} refreshed, ${String(result.remaining)} over the cap`,
+    `[privacy-fields] auto-approve (${settings.enabled ? 'on' : 'off'}, > ${String(settings.confidence)}): ${String(result.approved)} approved, ${String(result.revoked)} revoked, ${String(result.refreshed)} refreshed, ${String(result.stale)} changed meanwhile, ${String(result.remaining)} over the cap`,
   );
   return result;
 }

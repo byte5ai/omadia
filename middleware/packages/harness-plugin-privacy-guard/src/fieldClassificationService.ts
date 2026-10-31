@@ -2,8 +2,10 @@
  * #1556 follow-up — the privacy guard's side of the `non_personal_fields`
  * suggestions, wired into the service by `createPrivacyGuardService`.
  *
- * Schema-only observations of masked fields per (tool, scope, path) plus a
- * bounded, TTL'd value sample per field (`fieldObservations.ts`). The sample
+ * Schema-only observations of masked fields — and of fields an operator rule
+ * cleared, flagged `cleared`, so the kernel can re-vet an approval — per
+ * (tool, scope, path) plus a bounded, TTL'd value sample per field
+ * (`fieldObservations.ts`). The sample
  * leaves the plugin only as detector verdicts (`fieldVetting.ts`), a fully
  * masked preview, and the admin-only `fieldSampleForAdmin` on the separate,
  * kernel-only `privacyFieldSamples` service (real values, the kernel restricts

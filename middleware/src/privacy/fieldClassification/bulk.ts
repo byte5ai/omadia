@@ -18,7 +18,9 @@
  * POST /bulk/:batchId/undo   only the latest batch not undone yet (409
  *        `not_latest_batch` / `already_undone`): removes exactly the entries
  *        it wrote that are still listed and still owned by its decision
- *        (others skipped `not_present` / `not_owned`), decision `revert`.
+ *        (others skipped `not_present` / `not_owned`; `stale` when its decision
+ *        changed between the removal and the decision write), decision `revert`.
+ *        Every decision write here is compare-and-set over the decision read.
  *        → `{ batchId, reverted: [{ id, entry }], skipped: [{ id, reason }] }`
  */
 
@@ -131,7 +133,7 @@ function reasonCodeOf(reasons: readonly FieldReason[]): BulkReasonCode {
 /** Re-validate the selected candidates against the live classification. */
 async function validate(ctx: BulkRouteContext, selection: Selection): Promise<Validation> {
   const all = await ctx.listable(selection.tool !== undefined ? { toolName: selection.tool } : {});
-  const verdicts: Map<string, ModelVerdictSummary> = await cachedVerdicts(ctx.store, all);
+  const verdicts: Map<string, ModelVerdictSummary> = await cachedVerdicts(ctx.store, all, ctx.now());
   const config = ctx.rawConfig();
   const skipped: { id: string; reason: BulkSkipReason }[] = [];
   let candidates: FieldCandidate[];
@@ -284,10 +286,18 @@ export function registerBulkRoutes(router: Router, ctx: BulkRouteContext): void 
           at,
           batchId,
         };
+        let saved = false;
         try {
-          await ctx.store.saveDecision(e.candidate.id, decision, 'confirmed');
+          // Compare-and-set over the decision the validation read: a
+          // recompute or another admin deciding meanwhile wins.
+          saved = await ctx.store.saveDecision(e.candidate.id, decision, 'confirmed', {
+            decision: e.candidate.decision,
+            fingerprint: e.candidate.fingerprint,
+          });
         } catch (err) {
           console.error('[privacy-fields] bulk decision write failed:', errorText(err));
+        }
+        if (!saved) {
           failed.push(e);
           skipped.push({ id: e.candidate.id, reason: 'stale' });
           continue;
@@ -368,31 +378,28 @@ async function undoBatch(
   batchId: string,
   entries: readonly { candidateId: string; entry: string }[],
 ): Promise<void> {
-  const skipped: { id: string; reason: 'not_present' | 'not_owned' }[] = [];
-  const owned: { candidate: FieldCandidate; entry: string }[] = [];
-  for (const e of entries) {
-    const candidate = await ctx.store.get(e.candidateId);
-    // Still this batch's: its confirm, not a later decision.
-    if (
-      candidate === undefined ||
-      candidate.decision?.action !== 'confirm' ||
-      candidate.decision.batchId !== batchId
-    ) {
-      skipped.push({ id: e.candidateId, reason: 'not_owned' });
-      continue;
-    }
-    owned.push({ candidate, entry: e.entry });
-  }
+  const skipped: { id: string; reason: 'not_present' | 'not_owned' | 'stale' }[] = [];
   const removed: { candidate: FieldCandidate; entry: string }[] = [];
-  const change = await ctx.editor.edit((before) => {
+  // Ownership is read inside the plugin lock, right before the removal.
+  const change = await ctx.editor.edit(async (before) => {
     let next = before;
-    for (const o of owned) {
-      if (!configCoverage(next, o.candidate).exact) {
-        skipped.push({ id: o.candidate.id, reason: 'not_present' });
+    for (const e of entries) {
+      const candidate = await ctx.store.get(e.candidateId);
+      // Still this batch's: its confirm, not a later decision.
+      if (
+        candidate === undefined ||
+        candidate.decision?.action !== 'confirm' ||
+        candidate.decision.batchId !== batchId
+      ) {
+        skipped.push({ id: e.candidateId, reason: 'not_owned' });
         continue;
       }
-      next = removeConfigEntry(next, o.candidate);
-      removed.push(o);
+      if (!configCoverage(next, candidate).exact) {
+        skipped.push({ id: candidate.id, reason: 'not_present' });
+        continue;
+      }
+      next = removeConfigEntry(next, candidate);
+      removed.push({ candidate, entry: e.entry });
     }
     return next;
   });
@@ -406,6 +413,7 @@ async function undoBatch(
   const verdicts = await cachedVerdicts(
     ctx.store,
     removed.map((r) => r.candidate),
+    ctx.now(),
   );
   const reverted: { id: string; entry: string }[] = [];
   for (const { candidate, entry } of removed) {
@@ -418,11 +426,21 @@ async function undoBatch(
       batchId,
     };
     const shown = liveStatus(candidate, change.after, verdicts, decision);
+    let saved = false;
     try {
-      await ctx.store.saveDecision(candidate.id, decision, shown.status);
+      saved = await ctx.store.saveDecision(candidate.id, decision, shown.status, {
+        decision: candidate.decision,
+        fingerprint: candidate.fingerprint,
+      });
     } catch (err) {
       // The entry is gone (fail safe: masked); only the decision row is missing.
       console.error('[privacy-fields] bulk undo decision write failed:', errorText(err));
+    }
+    if (!saved) {
+      // Decided anew meanwhile: that decision stands (the entry is out —
+      // fail safe, masked).
+      skipped.push({ id: candidate.id, reason: 'stale' });
+      continue;
     }
     reverted.push({ id: candidate.id, entry });
     await ctx.recordAudit({

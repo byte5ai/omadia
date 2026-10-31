@@ -60,6 +60,24 @@ that are safe by construction.
   review"). Off: suggestions only, as before; switching it off keeps the
   entries already approved. `POST …/recompute?dryRun=1` reports what a pass
   would approve, without writing.
+- **Hardening after the security review.** The guard keeps sampling fields
+  an operator rule cleared (in memory, never logged; `FieldObservation.cleared`,
+  `@omadia/plugin-api` 1.50.0), and every pass re-vets each auto-approved
+  field: a detector hit, a person or new unknown target, a flipped verdict, a
+  raised threshold or a legacy entry now covering it — any reason it would no
+  longer be approved — revokes it (the audit row names a legacy entry that
+  still clears it, `legacyStillCovers`). Basis (b) now needs a `suggested`
+  field, a confidence above max(threshold, 0.8), a clean vet of at least 10
+  values and, for a many2one field, resolved targets; after a fingerprint
+  change it needs a fresh clean vet. From a person model (employee, partner,
+  leave …) only department, job, company, work location, country, state and
+  currency targets are auto-approved. `auto_approve_confidence` is clamped to
+  0.8–0.99; `auto_approve_non_personal` is on only for unset / true / on / 1 /
+  yes / ja. Decision writes are compare-and-set: the pass re-reads each
+  decision inside the config lock and never overwrites an admin's,
+  `POST /:id/decision` answers 409 `stale_decision`, bulk confirm / undo skip
+  `stale`. Auto-approvals carry the time they were written; the page and bulk
+  accept ignore schema verdicts older than 30 days, like the recompute.
 - **New statuses** `auto_approved` (admin can take it over or revert it — a
   reverted field is never auto-approved again) and `auto_revoked`; the posture
   adds `fields_auto_approved_new` (since your last visit) and
@@ -72,7 +90,7 @@ that are safe by construction.
 - **Migration `0066_privacy_field_auto_approve`**: decision / status CHECKs
   extended, `decision_batch_id`, table `privacy_field_bulk_batches`.
 
-`@omadia/plugin-privacy-guard` 0.16.0 (setup fields only).
+`@omadia/plugin-privacy-guard` 0.16.0 (setup fields, sampling of cleared fields).
 
 ### Fixed
 - Conductor builder invented action ids without any signal: the prompt now lists the live action catalog and the turn reports refs no invoker can run (computed beside `validate()` so the self-correction retry keeps the placeholder step).

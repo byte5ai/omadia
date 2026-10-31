@@ -2177,24 +2177,37 @@ entstehen.
 Migration `0066_privacy_field_auto_approve`).** Settings am Privacy Guard
 (liest der KERNEL, nicht das Plugin): `auto_approve_non_personal` (boolean,
 Default `"true"`; aus = genau das alte Nur-Vorschlagen) und
-`auto_approve_confidence` (string, 0.5–0.99, Default `0.85`, `0,9` geht,
-alles andere → 0.85). Module: `autoApprove.ts` (reine Regel
+`auto_approve_confidence` (string, auf 0.8–0.99 geklemmt, Default `0.85`,
+`0,9` geht, keine Zahl → 0.85; der Schalter ist nur bei leer/true/on/1/yes/ja
+an, alles andere aus). Module: `autoApprove.ts` (reine Regel
 `autoApprovalOf`, Settings-Parser), `autoApprovePass.ts` (Plan/Apply im
 Recompute + Dry-Run), `configEditor.ts` (EIN Schreiber für
 `non_personal_fields` mit Plugin-Lock, geteilt von Routen und Recompute,
 `index.ts` verdrahtet ihn), `live.ts` (Live-Status gespeicherter Kandidaten),
 `bulk.ts` (Sammelrouten). Recompute: geeignet = (a) alle Relationsziele im
 Known-Non-Personal-Katalog (ohne C1, auch ungesehen) oder (b) Haiku
-`non-personal` > Schwelle UND sauberer C1-Vet; nie bei Personen-Ziel oder
--Scope-Modell, Konflikt, Detektor-Treffer/Near-Miss, Scope `-`, anderer Form
+`non-personal` > max(Schwelle, 0.8), Basisstatus `suggested`, sauberer
+C1-Vet über ≥ 10 Werte, m2o nur mit aufgelösten Zielen; nie bei
+Personen-Ziel, aus einem Personen-Scope nur auf hr.department/hr.job/
+res.company/hr.work.location/res.country/res.country.state/res.currency,
+Konflikt, Detektor-Treffer/Near-Miss, Scope `-`, anderer Form
 als text/m2o, irgendeiner früheren Entscheidung, schon abgedeckt. Ein
 Config-Write pro Lauf, max. 1000; Entscheidung `auto_approve` (Akteur
 `system:auto-classifier`, Audit-Helper `systemAuditActor`), Audit
 `privacy.field_auto_approve` je Feld (`after: { basis, confidence?, entry,
-plugin }`). Drift (Personen-Ziel, Treffer/Near-Miss, Konflikt) →
-genau der Eintrag raus, `auto_revoke`, Status `auto_revoked`, Audit
-`privacy.field_auto_revoke` (`after: { reason, entry, removed, plugin }`) —
-auch bei ausgeschaltetem Schalter; Ausschalten nimmt nichts zurück.
+plugin }`). Jeder Lauf prüft auto-freigegebene Felder neu (der Guard
+sammelt auch per Regel freigegebene Felder, `FieldObservation.cleared`,
+plugin-api 1.50.0; Re-Vet jedes Laufs): nicht mehr geeignet aus IRGENDEINEM
+Grund (eigene Entscheidung + eigener Eintrag ignoriert; nach
+Fingerprint-Wechsel braucht (b) einen frischen sauberen Vet) → genau der
+Eintrag raus, `auto_revoke`, Status `auto_revoked`, Audit
+`privacy.field_auto_revoke` (`after: { reason, entry?, removed,
+legacyStillCovers?, plugin }`) — auch bei ausgeschaltetem Schalter;
+Ausschalten nimmt nichts zurück. Entscheidungen werden per
+Compare-and-Set geschrieben (`saveDecision(…, expected)`): der Lauf liest
+jede Entscheidung im Config-Lock neu, `POST /:id/decision` → 409
+`stale_decision`, Bulk-Confirm/-Undo → skip `stale`. `decided_at` = Zeit
+des Writes; Page/Bulk lesen Schema-Urteile mit 30-Tage-TTL.
 Neue Status `auto_approved` (Aktionen `confirm` = übernehmen ohne Write,
 `revert` = Eintrag raus, nie wieder automatisch), `auto_revoked`
 (`confirm` außer Feld ist jetzt personal → 409 `action_not_allowed`,

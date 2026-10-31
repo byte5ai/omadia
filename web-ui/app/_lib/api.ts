@@ -1074,6 +1074,8 @@ export async function listFieldClassifications(
 /**
  * Record an admin decision. Throws `ApiError` 409 with code
  * `stale_fingerprint` when the candidate changed since it was loaded,
+ * `stale_decision` when another decision (an admin, the auto-classifier)
+ * landed meanwhile — both shown as "changed, reloaded",
  * `covered_by_legacy` (body carries `entry`) when a revert targets a field a
  * legacy entry (`tool:field`, `*:field`, `field`) covers, or `invalid_field`.
  */

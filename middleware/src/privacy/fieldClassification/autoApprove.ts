@@ -8,13 +8,18 @@
  *   (a) every relation target is a known non-personal model (built-in
  *       catalog) — deterministic, so no name-detector vet is needed and a
  *       field seeded from the Odoo schema (never seen in chat) qualifies; OR
- *   (b) the schema-only verdict (every unknown relation target's, or the
- *       source's when the field has no relation information) is
- *       `non-personal` with a confidence ABOVE `auto_approve_confidence`, AND
- *       the name detector vetted a non-empty sample clean.
+ *   (b) the classifier's base status is `suggested`, the schema-only verdict
+ *       (every unknown relation target's, or the source's when the field has
+ *       no relation information — never for a many2one field, which must
+ *       name its targets) is `non-personal` with a confidence ABOVE
+ *       max(`auto_approve_confidence`, 0.8), AND the name detector vetted a
+ *       sample of at least `AUTO_APPROVE_MIN_SAMPLE` values clean.
  * The safeguards override both and are checked first:
- *   1. a relation target or the scope model is a person model, or the
- *      targets have conflicting catalog verdicts;
+ *   1. a relation target is a person model, the targets have conflicting
+ *      catalog verdicts, or the scope model is a person model and a target is
+ *      not on `PERSON_SCOPE_TARGET_ALLOWLIST` (an employee's department, job,
+ *      company, work location, country, state, currency — never e.g. an
+ *      employee's tags or a leave's type);
  *   2. an identity hit, a C1 name hit or a near-miss on the sample;
  *   3. scope `-` (the entry would clear the field in every call of the tool);
  *   4. a value shape other than text / m2o, or a field that is not exactly
@@ -23,6 +28,8 @@
  *      keep_masked / revert, an auto-revoke) — the admin's word wins, and a
  *      reverted or revoked field is never auto-approved again;
  *   6. already covered by the setting.
+ * The switch is parsed strictly (only an explicit yes turns it on once set);
+ * the threshold is clamped to 0.8–0.99.
  * The entry written is always `configEntryOf` — model-scoped, never a
  * wildcard.
  */
@@ -31,6 +38,8 @@ import type { FieldValueShape } from '@omadia/plugin-api';
 import { NO_SCOPE } from '@omadia/plugin-privacy-guard/dist/nonPersonalFields.js';
 
 import {
+  HAIKU_SUGGEST_MIN_CONFIDENCE,
+  classifyBase,
   configEntryOf,
   sourceKeyOf,
   type CandidateKey,
@@ -43,9 +52,26 @@ import { catalogVerdictOf, isPersonModel } from './modelCatalog.js';
 
 /** Default of `auto_approve_confidence`. */
 export const AUTO_APPROVE_DEFAULT_CONFIDENCE = 0.85;
-/** The valid range of `auto_approve_confidence`; outside it the default applies. */
-export const AUTO_APPROVE_MIN_CONFIDENCE = 0.5;
+/** The accepted range of `auto_approve_confidence`: a value outside it is
+ *  clamped to it (an unparseable one is the default). Never below the
+ *  suggestion floor (`HAIKU_SUGGEST_MIN_CONFIDENCE`, 0.8). */
+export const AUTO_APPROVE_MIN_CONFIDENCE = HAIKU_SUGGEST_MIN_CONFIDENCE;
 export const AUTO_APPROVE_MAX_CONFIDENCE = 0.99;
+/** Basis (b) needs a clean name-detector vet over at least this many values. */
+export const AUTO_APPROVE_MIN_SAMPLE = 10;
+/** Relation targets a field OF a person model (`hr.employee`, `res.partner`,
+ *  `hr.leave` …) may be auto-approved for: organisational / geographic
+ *  reference data, never a classification of the person. Anything else from
+ *  a person scope stays for the admin (`person_scope`). */
+export const PERSON_SCOPE_TARGET_ALLOWLIST: ReadonlySet<string> = new Set([
+  'hr.department',
+  'hr.job',
+  'res.company',
+  'hr.work.location',
+  'res.country',
+  'res.country.state',
+  'res.currency',
+]);
 /** The privacy guard's setup keys. */
 export const AUTO_APPROVE_ENABLED_KEY = 'auto_approve_non_personal';
 export const AUTO_APPROVE_CONFIDENCE_KEY = 'auto_approve_confidence';
@@ -62,8 +88,10 @@ export interface AutoApproveSettings {
 
 export type AutoApprovalBasis = 'known_non_personal' | 'haiku';
 
-/** Why a field is not auto-approved. The first group are the safeguards: a
- *  field auto-approved earlier that now hits one of them is revoked. */
+/** Why a field is not auto-approved. The first group are the safeguards
+ *  (checked before decision and config). A field auto-approved earlier that
+ *  now fails ANY check — judged without its own decision and entry — is
+ *  revoked (`autoApprovePass.ts`). */
 export const AUTO_APPROVAL_SAFETY_BLOCKS = [
   'invalid_field',
   'invalid_shape',
@@ -79,6 +107,8 @@ export type AutoApprovalBlock =
   | AutoApprovalSafetyBlock
   | 'decided'
   | 'covered'
+  | 'no_relation_target'
+  | 'not_suggested'
   | 'no_verdict'
   | 'not_non_personal'
   | 'below_threshold'
@@ -109,19 +139,20 @@ export function isSafetyBlock(reason: AutoApprovalBlock): reason is AutoApproval
   return SAFETY.has(reason);
 }
 
-/** `auto_approve_non_personal`: a boolean, or the strings true/false (a
- *  PATCH before #1644 stored strings); anything else is the default, on. */
+/** The spellings of `auto_approve_non_personal` that mean ON (a PATCH
+ *  before #1644 stored strings). */
+const ENABLED_SPELLINGS: ReadonlySet<string> = new Set(['true', 'on', '1', 'yes', 'ja']);
+
+/** `auto_approve_non_personal`: ON when unset (the default) or exactly
+ *  true / "true" / "on" / "1" / "yes" / "ja" (any case); anything else —
+ *  false, 0, "0", "false", "nein", "disabled", garbage — is OFF. */
 export function parseAutoApproveEnabled(raw: unknown): boolean {
-  if (typeof raw === 'boolean') return raw;
-  if (typeof raw === 'string') {
-    const text = raw.trim().toLowerCase();
-    if (text === 'false' || text === 'off' || text === '0' || text === 'no') return false;
-  }
-  return true;
+  if (raw === undefined || raw === true) return true;
+  return typeof raw === 'string' && ENABLED_SPELLINGS.has(raw.trim().toLowerCase());
 }
 
 /** `auto_approve_confidence`: a number or a string, `0,9` reads as 0.9;
- *  outside 0.5–0.99 (or unparseable) the default 0.85. */
+ *  clamped to 0.8–0.99; unparseable → the default 0.85. */
 export function parseAutoApproveConfidence(raw: unknown): number {
   const n =
     typeof raw === 'number'
@@ -129,10 +160,8 @@ export function parseAutoApproveConfidence(raw: unknown): number {
       : typeof raw === 'string' && raw.trim().length > 0
         ? Number(raw.trim().replace(',', '.'))
         : Number.NaN;
-  if (!Number.isFinite(n) || n < AUTO_APPROVE_MIN_CONFIDENCE || n > AUTO_APPROVE_MAX_CONFIDENCE) {
-    return AUTO_APPROVE_DEFAULT_CONFIDENCE;
-  }
-  return n;
+  if (!Number.isFinite(n)) return AUTO_APPROVE_DEFAULT_CONFIDENCE;
+  return Math.min(AUTO_APPROVE_MAX_CONFIDENCE, Math.max(AUTO_APPROVE_MIN_CONFIDENCE, n));
 }
 
 /** The settings from the privacy guard's config record. */
@@ -143,7 +172,8 @@ export function autoApproveSettingsOf(config: Readonly<Record<string, unknown>> 
   };
 }
 
-function entryOf(key: CandidateKey): string | undefined {
+/** The field's scoped entry, or `undefined` when it cannot form one. */
+export function entryOf(key: CandidateKey): string | undefined {
   try {
     return configEntryOf(key);
   } catch {
@@ -157,16 +187,16 @@ function safetyBlockOf(input: AutoApprovalInput, targets: readonly string[]): Au
   if (input.valueShape !== 'text' && input.valueShape !== 'm2o') return 'invalid_shape';
   if (input.scope === NO_SCOPE) return 'no_scope';
   if (targets.some(isPersonModel)) return 'person_model';
-  // A field OF a person model (hr.employee) is blocked unless it is a
-  // relation whose every target is a known non-personal model: the value of
-  // `hr.employee/department_id` is a department name, not a person — that is
-  // the case auto-approval exists for (decision Marcel, 2026-10-31: "never a
-  // person model" means never a field that points to or IS person data).
-  // Text fields of a person model are personal already (engine), and any
-  // detector hit still blocks below.
+  // A field OF a person model (hr.employee) is blocked unless every target is
+  // on the explicit allow-list: the value of `hr.employee/department_id` is a
+  // department name, not a person — the case auto-approval exists for. A
+  // "non-personal" target can still classify the person (an employee's tags,
+  // a leave's type, a partner's title), so the catalog verdict alone is not
+  // enough here. Text fields of a person model are personal already
+  // (engine), and any detector hit still blocks below.
   if (
     isPersonModel(input.scope) &&
-    !(targets.length > 0 && targets.every((t) => catalogVerdictOf(t) === 'non-personal'))
+    !(targets.length > 0 && targets.every((t) => PERSON_SCOPE_TARGET_ALLOWLIST.has(t)))
   ) {
     return 'person_scope';
   }
@@ -177,7 +207,9 @@ function safetyBlockOf(input: AutoApprovalInput, targets: readonly string[]): Au
   return undefined;
 }
 
-/** Basis (b): every verdict non-personal above the threshold, and a clean vet. */
+/** Basis (b): a `suggested` base status, every verdict non-personal above
+ *  the threshold (never below the suggestion floor), and a clean vet over at
+ *  least `AUTO_APPROVE_MIN_SAMPLE` values. */
 function haikuApproval(
   input: AutoApprovalInput,
   keys: readonly string[],
@@ -188,11 +220,14 @@ function haikuApproval(
   const known = verdicts as ModelVerdictSummary[];
   if (known.some((v) => v.verdict !== 'non-personal')) return { reason: 'not_non_personal' };
   const confidence = Math.min(...known.map((v) => v.confidence));
-  if (!(confidence > threshold)) return { reason: 'below_threshold' };
+  if (!(confidence > Math.max(threshold, HAIKU_SUGGEST_MIN_CONFIDENCE))) return { reason: 'below_threshold' };
   const sample = input.sample;
-  if (sample === undefined || sample.sampleCount <= 0 || sample.c1 !== 'clean') {
+  if (sample === undefined || sample.sampleCount < AUTO_APPROVE_MIN_SAMPLE || sample.c1 !== 'clean') {
     return { reason: 'no_name_vet' };
   }
+  // Last, as the catch-all: whatever else keeps the classifier from
+  // suggesting the field keeps it from being auto-approved on a verdict.
+  if (classifyBase(input).status !== 'suggested') return { reason: 'not_suggested' };
   return { basis: 'haiku', confidence };
 }
 
@@ -212,6 +247,11 @@ export function autoApprovalOf(
   const entry = configEntryOf(input);
   if (targets.length > 0 && targets.every((m) => catalogVerdictOf(m) === 'non-personal')) {
     return { eligible: true, basis: 'known_non_personal', entry };
+  }
+  // A many2one field without resolved targets: what it points to is unknown,
+  // and the SOURCE's verdict says nothing about a relation's values.
+  if (input.valueShape === 'm2o' && targets.length === 0) {
+    return { eligible: false, reason: 'no_relation_target' };
   }
   const keys = targets.length > 0 ? targets : [sourceKeyOf(input)];
   const haiku = haikuApproval(input, keys, settings.confidence);

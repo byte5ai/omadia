@@ -37,6 +37,30 @@ export interface CandidateDecision {
   readonly batchId?: string | null;
 }
 
+/**
+ * What a decision write expects to replace (compare-and-set): the decision
+ * the caller read (`null` = none) and the candidate's fingerprint then. A
+ * write whose expectation no longer holds — an admin or a recompute decided
+ * meanwhile, or the field changed — is not made.
+ */
+export interface DecisionExpectation {
+  readonly decision: Pick<CandidateDecision, 'action' | 'fingerprint' | 'at'> | null;
+  readonly fingerprint: string;
+}
+
+/** The same decision (action, fingerprint decided on, time)? */
+export function sameDecision(
+  a: Pick<CandidateDecision, 'action' | 'fingerprint' | 'at'> | null,
+  b: Pick<CandidateDecision, 'action' | 'fingerprint' | 'at'> | null,
+): boolean {
+  if (a === null || b === null) return a === b;
+  return (
+    a.action === b.action &&
+    a.fingerprint === b.fingerprint &&
+    new Date(a.at).getTime() === new Date(b.at).getTime()
+  );
+}
+
 /** One entry a bulk accept wrote. */
 export interface BulkBatchEntry {
   readonly candidateId: string;
@@ -124,8 +148,15 @@ export interface FieldClassificationStore {
    *  The first real observation then sets its first-seen time. */
   seedField(obs: FieldObservation): Promise<void>;
   saveClassification(id: string, update: CandidateClassificationUpdate): Promise<void>;
-  /** Set (or with `null` clear) the admin decision and the shown status. */
-  saveDecision(id: string, decision: CandidateDecision | null, status: FieldStatus): Promise<void>;
+  /** Set (or with `null` clear) the decision and the shown status. With
+   *  `expected`, compare-and-set: written only while the stored decision and
+   *  fingerprint still match it. True when the row was written. */
+  saveDecision(
+    id: string,
+    decision: CandidateDecision | null,
+    status: FieldStatus,
+    expected?: DecisionExpectation,
+  ): Promise<boolean>;
   modelVerdicts(models: readonly string[], notBefore: Date): Promise<StoredModelVerdict[]>;
   saveModelVerdicts(verdicts: readonly Omit<StoredModelVerdict, 'decidedAt'>[]): Promise<void>;
   /** Fields an admin still has to look at, per open status (a decision
@@ -352,25 +383,43 @@ export class PgFieldClassificationStore implements FieldClassificationStore {
     id: string,
     decision: CandidateDecision | null,
     status: FieldStatus,
-  ): Promise<void> {
-    await this.pool.query(
+    expected?: DecisionExpectation,
+  ): Promise<boolean> {
+    const params: unknown[] = [
+      id,
+      decision?.action ?? null,
+      decision?.fingerprint ?? null,
+      decision?.byId ?? null,
+      decision?.byEmail ?? null,
+      decision?.at ?? null,
+      status,
+      decision?.batchId ?? null,
+    ];
+    let guard = '';
+    if (expected !== undefined) {
+      params.push(expected.fingerprint);
+      guard = ` AND fingerprint = $${String(params.length)}`;
+      if (expected.decision === null) {
+        // `toCandidate` reads a row without a decision time as undecided.
+        guard += ' AND (decision IS NULL OR decided_at IS NULL)';
+      } else {
+        params.push(expected.decision.action, expected.decision.fingerprint, expected.decision.at);
+        const n = params.length;
+        guard +=
+          ` AND decision = $${String(n - 2)} AND COALESCE(decision_fingerprint, '') = $${String(n - 1)}` +
+          ` AND decided_at = $${String(n)}::timestamptz`;
+      }
+    }
+    const result = await this.pool.query(
       `UPDATE privacy_field_candidates SET
          decision = $2, decision_fingerprint = $3, decided_by_id = $4,
          decided_by_email = $5, decided_at = $6, decision_batch_id = $8,
          last_status_change_at = CASE WHEN status IS DISTINCT FROM $7 THEN NOW() ELSE last_status_change_at END,
          status = $7
-       WHERE id = $1`,
-      [
-        id,
-        decision?.action ?? null,
-        decision?.fingerprint ?? null,
-        decision?.byId ?? null,
-        decision?.byEmail ?? null,
-        decision?.at ?? null,
-        status,
-        decision?.batchId ?? null,
-      ],
+       WHERE id = $1${guard}`,
+      params,
     );
+    return (result.rowCount ?? 0) > 0;
   }
 
   async modelVerdicts(models: readonly string[], notBefore: Date): Promise<StoredModelVerdict[]> {
@@ -609,15 +658,23 @@ export class InMemoryFieldClassificationStore implements FieldClassificationStor
     id: string,
     decision: CandidateDecision | null,
     status: FieldStatus,
-  ): Promise<void> {
+    expected?: DecisionExpectation,
+  ): Promise<boolean> {
     const row = this.rows.get(id);
-    if (row === undefined) return;
+    if (row === undefined) return false;
+    if (
+      expected !== undefined &&
+      (row.fingerprint !== expected.fingerprint || !sameDecision(row.decision, expected.decision))
+    ) {
+      return false;
+    }
     this.rows.set(id, {
       ...row,
       decision,
       status,
       lastStatusChangeAt: row.status !== status ? this.now().toISOString() : row.lastStatusChangeAt,
     });
+    return true;
   }
 
   async modelVerdicts(models: readonly string[], notBefore: Date): Promise<StoredModelVerdict[]> {

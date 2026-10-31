@@ -43,7 +43,8 @@
  *   - an `auto_approve` decision on the current fingerprint with the exact
  *     scoped entry present → auto_approved (a drift is a conflict, like a
  *     confirm's); an `auto_revoke` decision → auto_revoked while the
- *     fingerprint is unchanged;
+ *     fingerprint is unchanged — also while a legacy entry still clears the
+ *     field (then with `legacy_entry`);
  *   - an admin's reject / keep_masked holds while the candidate's fingerprint
  *     is unchanged; after a change the field is back to needs_clarification
  *     (`changed_since_decision`) — or personal, when that is what it is now.
@@ -383,6 +384,11 @@ export function resolveStatus(
     const drifted = owner !== undefined && owner.fingerprint !== fingerprint;
     if (!acknowledged && (base.status === 'personal' || drifted)) {
       return { status: 'confirmed_conflict', reasons: [{ code: 'confirmed_conflict' }, ...reasons] };
+    }
+    // A revoked auto-approval a legacy / wildcard entry still clears: it
+    // needs review, and `legacy_entry` says why it is still in clear.
+    if (decision?.action === 'auto_revoke' && decision.fingerprint === fingerprint && !coverage.exact) {
+      return { status: 'auto_revoked', reasons: [{ code: 'auto_revoked' }, ...reasons] };
     }
     if (owner?.action === 'auto_approve' && coverage.exact) {
       if (base.status === 'personal') {

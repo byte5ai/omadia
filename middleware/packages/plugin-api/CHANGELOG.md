@@ -8,6 +8,18 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.50.0 — 2026-10-31
+
+Additive. Field-classification auto-approval: approved fields are re-vetted.
+
+### Added
+
+- **`FieldObservation.cleared?: boolean`** — set when every sighting since
+  the last drain was cleared by an operator rule (`non_personal_fields`)
+  instead of masked. The privacy guard keeps sampling such fields (same caps
+  and TTL as masked ones, never logged) so the kernel can re-vet an approval
+  with `vetFieldSample`; absent means masked.
+
 ## 1.49.0 — 2026-10-30
 
 Additive. Field-classification suggestions for `non_personal_fields` (#1556

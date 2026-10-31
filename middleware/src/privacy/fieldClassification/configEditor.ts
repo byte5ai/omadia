@@ -35,10 +35,11 @@ export interface ConfigChange {
 
 export interface NonPersonalFieldsEditor {
   /** Run `edit` on the current value under the plugin lock and store the
-   *  result when it differs. `edit` may throw to refuse (nothing is written).
+   *  result when it differs. `edit` may throw to refuse (nothing is written);
+   *  it may be async — e.g. to re-read a decision inside the lock.
    *  Throws `ConfigEditConflict({ error: 'privacy_guard_not_installed' })`
    *  without a guard. */
-  edit(edit: (before: string) => string): Promise<ConfigChange>;
+  edit(edit: (before: string) => string | Promise<string>): Promise<ConfigChange>;
   /** The guard's auto-approval settings, read now. */
   autoApproveSettings(): AutoApproveSettings;
 }
@@ -74,7 +75,7 @@ export function createNonPersonalFieldsEditor(deps: {
         if (entry === undefined) throw notInstalled();
         const current = entry.config[NON_PERSONAL_FIELDS_KEY];
         const before = typeof current === 'string' ? current : '';
-        const after = edit(before);
+        const after = await edit(before);
         if (after !== before) {
           const nextConfig: Record<string, unknown> = { ...entry.config };
           if (after.length === 0) delete nextConfig[NON_PERSONAL_FIELDS_KEY];
