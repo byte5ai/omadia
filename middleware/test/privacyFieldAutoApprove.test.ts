@@ -357,7 +357,7 @@ describe('auto-approval — recompute', () => {
     const result = await h.run();
     assert.equal(result.autoApprove?.approved, 2);
     assert.equal(h.writes.length, 1, 'one config write per pass');
-    const written = h.npf().split('\n');
+    const written = String(h.npf()).split('\n');
     assert.deepEqual(written.slice(0, 1), ['odoo_execute:x.y/keep_me']);
     assert.deepEqual(
       written.slice(1).sort(),
@@ -376,7 +376,9 @@ describe('auto-approval — recompute', () => {
     assert.equal((await byPath(h.store, 'hr.employee', 'department_id'))?.status, 'auto_approved');
 
     assert.deepEqual(
-      [...h.audits].sort((a, b) => String(a.target).localeCompare(String(b.target))),
+      [...h.audits].sort((a, b) =>
+        String((a as { target?: unknown }).target).localeCompare(String((b as { target?: unknown }).target)),
+      ),
       [
         {
           actor: { email: 'system:auto-classifier' },
