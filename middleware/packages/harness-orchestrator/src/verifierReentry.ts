@@ -193,6 +193,10 @@ export async function finishRequestDone(
       ...(committed.autoPromotedMkId !== undefined
         ? { autoPromotedMkId: committed.autoPromotedMkId }
         : {}),
+      // The pass's excerpt (save-as-memory prefill) comes with its commit:
+      // its model call overlapped the verifier (see the orchestrator's
+      // `startPalaiaExcerpt`). Present only when the committed pass made one.
+      ...(committed.palaiaExcerpt !== undefined ? { palaiaExcerpt: committed.palaiaExcerpt } : {}),
     },
     events: committed.events,
   };
