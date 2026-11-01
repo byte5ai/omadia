@@ -667,6 +667,7 @@ describe('#1620 — the generated routes/teamsTabRouter.ts, executed', () => {
       assert.ok(html.includes('getAuthToken'));
       assert.ok(html.includes('"/p/agent-x/teams/_data/dashboard"'));
       assert.ok(html.includes("credentials: 'omit'"));
+      assert.match(html, /s\.integrity = "sha384-[A-Za-z0-9+/=]+"/);
       assert.ok(!html.includes('Dashboard <script>'), 'title is escaped');
 
       const data = await fetch(`${base}/p/agent-x/teams/_data/dashboard`);

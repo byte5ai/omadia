@@ -938,9 +938,9 @@ export interface ToolRegistrationOptions {
  *    `microsoftTeams.authentication.getAuthToken()`): RS256 signature against
  *    Entra's keys, the tenant and app id of a bot of the installed
  *    `@omadia/channel-teams`, issued to a Teams / Microsoft 365 client, a
- *    delegated user token, within its lifetime. The handler finds the user on
- *    `req.teamsSsoUser` ({@link TeamsSsoUser}). Any failure is the same 401
- *    with no reason. PURE: an omadia session cookie does NOT open it — a
+ *    delegated token of a tenant member (no guest), within its lifetime.
+ *    The handler finds the user on `req.teamsSsoUser`
+ *    ({@link TeamsSsoUser}). Any failure is the same 401 with no reason. PURE: an omadia session cookie does NOT open it — a
  *    route that also wants operator access registers a second `'session'`
  *    router on another prefix. A Teams tab's own page load carries no
  *    bearer, so the HTML shell lives on a `'public'` route and stays
@@ -960,8 +960,8 @@ export type RouteAuthMode = 'session' | 'public' | 'custom' | 'teams-sso';
 export interface TeamsSsoUser {
   /** Entra object id of the signed-in user (`oid`). */
   readonly oid: string;
-  /** Entra tenant id (`tid`), lower-cased. One of the bots' tenants. B2B
-   *  guests carry the resource tenant here too. */
+  /** Entra tenant id (`tid`), lower-cased. One of the bots' tenants; guest
+   *  accounts are refused, so this is the user's own tenant. */
   readonly tenantId: string;
   /** App id of the bot the token was issued for. */
   readonly appId: string;

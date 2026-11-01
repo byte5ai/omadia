@@ -1208,10 +1208,14 @@ generated plugin cannot validate a Teams SSO token by itself. Marcel's decision
   (`auth/teamsSsoVerifier.ts`, ported from channel-teams 0.31.0
   `teamsTabAuth.ts`) accepts a token only with: `alg` RS256 and a valid
   signature against the tenant's Entra JWKS; `tid` the tenant of a configured
-  bot and `iss` that tenant's v1/v2 issuer; `aud` that bot's app id (bare or
-  `api://<host>/<appId>`); `azp`/`appid` one of Microsoft's Teams/M365 clients;
-  `scp` + `oid` (delegated user — an app-only token is refused); `exp`/`nbf`
-  within 5 min skew; at most 16 KB.
+  bot and `iss` that tenant's v1/v2 issuer; `aud` that bot's app id — bare
+  (v2), or `api://<host>/<appId>` (v1) only for the deployment's own host
+  (`TEAMS_PUBLIC_BASE_URL`/`PUBLIC_BASE_URL`, the host the app package names
+  in `webApplicationInfo.resource`), because another app in the tenant may
+  claim `api://<tenantId>/<botAppId>`; `azp`/`appid` one of Microsoft's
+  Teams/M365 clients; `scp` + `oid` (delegated user — an app-only token is
+  refused); no foreign `idp` (guests and personal accounts are refused);
+  `exp`/`nbf` within 5 min skew; at most 16 KB.
 - **Audiences** (`platform/teamsSsoAudiences.ts`) are the bots of the
   installed, *active* `@omadia/channel-teams`: every `teams_bots[]` entry plus
   the legacy scalar bot (`microsoft_app_id`/`microsoft_tenant_id` along its
@@ -1219,10 +1223,13 @@ generated plugin cannot validate a Teams SSO token by itself. Marcel's decision
   refused, and no key fetch happens.
 - **JWKS**: only a configured tenant reaches key discovery (an attacker-chosen
   `tid` fetches nothing); keys cached 1 h per tenant; an unknown `kid` refetches
-  at most every 5 min; a failed fetch backs off 60 s; concurrent fetches share
-  one request; 5 s timeout. One verifier per process, so the cache is shared.
+  at most every 5 min; a failed fetch backs off 60 s and keeps serving the keys
+  already cached (one Entra blip does not log everyone out); concurrent
+  fetches share one request; 5 s timeout. One verifier per process, so the
+  cache is shared.
 - **Failure**: one fixed 401 (`auth.teams_sso_required`, `WWW-Authenticate:
-  Bearer`), reason only in the server log, never the token. A verifier crash is
+  Bearer`), reason only in the server log (not for a missing bearer, which is
+  every anonymous scan), never the token. A verifier crash is
   a refusal. `Cache-Control: no-store`, `Vary: Authorization`.
 - **Pure**: an omadia session cookie neither opens nor is consulted by a
   `'teams-sso'` route. A route that also wants operator access registers a
@@ -1230,11 +1237,16 @@ generated plugin cannot validate a Teams SSO token by itself. Marcel's decision
 - **Identity** reaches the handler as `req.teamsSsoUser = { oid, tenantId,
   appId, upn? }`; the gate deletes any pre-set value first.
 
-Accepted risk: anyone signed in to a bot's tenant passes, B2B guests included
-(their tokens carry the resource tenant's `tid`). Handlers that must restrict
-further authorise on `oid`. A legacy scalar bot whose password channel-teams
-could not resolve still counts as an audience; it is an app registration of the
-same tenant.
+Accepted risk (Marcel's decision: "our tenant, a delegated signed-in user"):
+every **member** of a bot's tenant passes. A generated Builder page renders
+the same tool data for each of them — for an HR dashboard that is the whole
+tenant, where before #1596 it was anonymous and since then operators only.
+The operator grant of `/p/<slug>/teams` is the consent to that reach. To
+narrow it without code, set "Assignment required" on the bot's enterprise app
+in Entra: unassigned users then get no token at all. Hand-written handlers can
+authorise on `req.teamsSsoUser.oid`. A legacy scalar bot whose password
+channel-teams could not resolve still counts as an audience; it is an app
+registration of the same tenant.
 
 **Builder codegen** keeps the browser page `'session'` at `/p/<slug><path>` and
 adds the Teams surface under `/p/<slug>/teams` (declared by codegen in the

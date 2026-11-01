@@ -48,7 +48,8 @@ changelog.
   verifies a Teams tab SSO token (`Authorization: Bearer`) — RS256 against
   Entra's JWKS (cached per tenant, refetch throttled, failure backoff), tenant
   + app id of a bot of the installed, active `@omadia/channel-teams`, issued
-  to a Teams/M365 client, delegated user token, lifetime. The handler gets
+  to a Teams/M365 client, delegated user token, no guest account, lifetime.
+  The handler gets
   `req.teamsSsoUser` (`oid`, `tenantId`, `appId`, `upn`). Every failure is the
   same 401 without a reason. Like `'custom'`, it needs a
   `permissions.public_paths` declaration and the operator grant. Pure: an
@@ -67,6 +68,12 @@ changelog.
   takes `RouteRegisterOptions`.
 - Docs: `docs/security-architecture.md` §5b-1, boilerplate CLAUDE.md, builder
   prompt.
+- **Migration**: an installed Builder plugin gets the Teams surface only after
+  it is regenerated and reinstalled, and the operator grants `/p/<slug>/teams`.
+  Tabs pinned before keep the old session URL (401 in Teams) — re-pin them via
+  the hub or tab config. Members of the bot's tenant see what the page shows;
+  guests are refused. Narrow it with "Assignment required" on the bot's
+  enterprise app. ui_route paths under `/teams` are now rejected (reserved).
 
 ### Added — Non-personal fields approved automatically, bulk accept on the field classification page
 

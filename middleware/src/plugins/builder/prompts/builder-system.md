@@ -454,7 +454,10 @@ Codegen deklariert `/p/<slug>/teams` selbst in
 freigeben, vorher bleibt der Tab bei 401. **Nie** eine UI-Route auf
 `'public'`/`'custom'` stellen, um einen 401 im Teams-Tab zu „reparieren“.
 Interaktive `react-ssr`-Seiten (`interactive: true`) werden im Teams-Tab
-gerendert, aber nicht hydratisiert.
+gerendert, aber nicht hydratisiert. `ui_routes[].path` darf nicht mit
+`/teams` beginnen (reserviert). Im Teams-Tab sieht jedes Mitglied des
+Bot-Tenants dieselbe Seite — keine personenbezogenen Daten in eine UI-Route
+legen, die nicht jeder im Tenant sehen darf.
 
 Ohne Session erreichbar sein müssen nur Routen, die sich **selbst**
 authentifizieren — Webhooks (HMAC über `req.rawBody`), OAuth-Callbacks

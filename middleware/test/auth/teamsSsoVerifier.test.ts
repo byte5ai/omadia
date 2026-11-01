@@ -26,6 +26,8 @@ const AUDIENCES: readonly TeamsSsoAudience[] = [
   { appId: BOT_APP_ID, tenantId: TENANT },
 ];
 
+const DEPLOYMENT_HOST = 'odoo-bot-middleware.fly.dev';
+
 function verifier(opts: {
   audiences?: readonly TeamsSsoAudience[];
   fetchJwks?: (tenantId: string) => Promise<unknown>;
@@ -34,6 +36,7 @@ function verifier(opts: {
   const fetches: string[] = [];
   const v = createTeamsSsoVerifier({
     audiences: () => opts.audiences ?? AUDIENCES,
+    identifierUriHosts: () => [DEPLOYMENT_HOST],
     fetchJwks:
       opts.fetchJwks ??
       (async (tenantId) => {
@@ -73,7 +76,7 @@ describe('#1620 — Teams SSO verifier', () => {
       mintTeamsToken({
         claims: {
           iss: `https://sts.windows.net/${TENANT}/`,
-          aud: `api://omadia.example.com/${BOT_APP_ID}`,
+          aud: `api://${DEPLOYMENT_HOST}/${BOT_APP_ID}`,
           azp: undefined,
           appid: '1fec8e78-bce4-4aaf-ab1b-5451cc387264',
           preferred_username: undefined,
@@ -141,6 +144,46 @@ describe('#1620 — Teams SSO verifier', () => {
         ),
       ),
       'token audience is not a bot app',
+    );
+  });
+
+  it('refuses an api:// audience on a host that is not this deployment', async () => {
+    const { v } = verifier();
+    for (const aud of [`api://${TENANT}/${BOT_APP_ID}`, `api://evil.example.com/${BOT_APP_ID}`]) {
+      assert.equal(
+        await refusal(v.verify(mintTeamsToken({ claims: { aud } }))),
+        'token audience is not a bot app',
+      );
+    }
+  });
+
+  it('accepts only the bare app id when no deployment host is configured', async () => {
+    const v = createTeamsSsoVerifier({
+      audiences: () => AUDIENCES,
+      fetchJwks: async () => jwksDocument(),
+    });
+    await v.verify(mintTeamsToken());
+    assert.equal(
+      await refusal(
+        v.verify(mintTeamsToken({ claims: { aud: `api://${DEPLOYMENT_HOST}/${BOT_APP_ID}` } })),
+      ),
+      'token audience is not a bot app',
+    );
+  });
+
+  it('refuses a guest account (foreign idp), accepts idp = issuer', async () => {
+    const { v } = verifier();
+    for (const idp of [
+      'https://sts.windows.net/99999999-8888-7777-6666-555555555555/',
+      'live.com',
+    ]) {
+      assert.equal(
+        await refusal(v.verify(mintTeamsToken({ claims: { idp } }))),
+        'token belongs to a guest account',
+      );
+    }
+    await v.verify(
+      mintTeamsToken({ claims: { idp: `https://login.microsoftonline.com/${TENANT}/v2.0` } }),
     );
   });
 
@@ -274,6 +317,28 @@ describe('#1620 — Teams SSO verifier', () => {
       clock += 61 * 1000;
       await refusal(v.verify(mintTeamsToken()));
       assert.equal(calls, 2);
+    });
+
+    it('a failed refresh keeps serving the keys it already had', async () => {
+      let clock = Date.now();
+      let up = true;
+      const v = createTeamsSsoVerifier({
+        audiences: () => AUDIENCES,
+        now: () => clock,
+        fetchJwks: async () => {
+          if (!up) throw new Error('entra blip');
+          return jwksDocument();
+        },
+      });
+      await v.verify(mintTeamsToken());
+      up = false;
+      clock += 61 * 60 * 1000; // past the 1 h TTL → refresh attempt fails
+      await v.verify(mintTeamsToken());
+      // An unknown kid during the backoff is refused without a fetch.
+      assert.equal(
+        await refusal(v.verify(mintTeamsToken({ header: { kid: 'other' } }))),
+        'key discovery unavailable',
+      );
     });
   });
 });

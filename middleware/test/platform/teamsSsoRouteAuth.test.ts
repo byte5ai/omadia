@@ -195,8 +195,9 @@ describe("#1620 — auth:'teams-sso' plugin route", () => {
   });
 
   const past = Math.floor(Date.now() / 1000) - 3600;
-  const refused: ReadonlyArray<readonly [string, () => string, string]> = [
-    ['no token at all', () => '', 'no bearer token'],
+  const refused: ReadonlyArray<readonly [string, () => string, string | null]> = [
+    // Not logged: every anonymous scan looks like this.
+    ['no token at all', () => '', null],
     [
       'an expired token',
       () => mintTeamsToken({ claims: { exp: past, nbf: past - 600 } }),
@@ -237,7 +238,7 @@ describe("#1620 — auth:'teams-sso' plugin route", () => {
         const text = await res.text();
         assert.deepEqual(JSON.parse(text), UNAUTHORIZED_BODY);
         assert.ok(!text.includes(SECRET_ROW));
-        assert.deepEqual(h.refusals, [reason]);
+        assert.deepEqual(h.refusals, reason === null ? [] : [reason]);
       } finally {
         h.server.close();
       }

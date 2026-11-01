@@ -19,19 +19,21 @@ type JsonWebKey = webcrypto.JsonWebKey;
  *     per tenant, refetch throttled — see the constants below);
  *   - `tid` is the tenant of a configured bot, and `iss` is that tenant's v1
  *     or v2 issuer;
- *   - `aud` is that bot's app id (bare, or the `api://<host>/<appId>` form);
+ *   - `aud` is that bot's app id (bare, or `api://<host>/<appId>` for a
+ *     host of this deployment);
  *   - issued to a Microsoft Teams / M365 client (`azp` / `appid`);
  *   - a delegated user token (`scp` + `oid`) — an app-only token has `roles`
  *     and no `scp`, and must not open a user-facing surface;
+ *   - a member of the tenant: a guest's token carries a foreign `idp`;
  *   - within its lifetime (`exp`, `nbf`, 5 min skew).
  *
  * Claims are decoded before the signature check only to pick the tenant, and
  * only a configured tenant ever reaches key discovery — an attacker-chosen
  * `tid` cannot make the kernel fetch anything.
  *
- * Anyone signed in to a configured tenant passes, B2B guests included (their
- * tokens carry the resource tenant's `tid`). The route handler receives the
- * principal and decides what that user may see.
+ * Every member of a configured tenant passes. To narrow that down, set
+ * "Assignment required" on the bot's enterprise app in Entra — then only
+ * assigned users get a token at all — or authorise on `oid` in the handler.
  *
  * The Teams tab context (`app.getContext()`) is never used for
  * authentication: it is client-side data any page can fabricate.
@@ -57,6 +59,14 @@ export interface TeamsSsoPrincipal {
 export interface TeamsSsoVerifierOptions {
   /** Read on every verification. Empty → every token is refused. */
   readonly audiences: () => readonly TeamsSsoAudience[];
+  /**
+   * Hosts allowed in the `api://<host>/<appId>` audience form (v1 tokens) —
+   * the deployment's public host(s), lower-case. Pinned because the host is
+   * not unique per app: another app registration in the tenant may claim
+   * `api://<tenantId>/<botAppId>`, and its tokens would otherwise pass. Empty
+   * → only the bare app-id audience (v2 tokens) is accepted.
+   */
+  readonly identifierUriHosts?: () => readonly string[];
   /** HTTP client for key discovery; defaults to the global `fetch`. */
   readonly fetchImpl?: (url: string, init?: RequestInit) => Promise<Response>;
   /** Fetch the JWKS document for a tenant. Injected for tests; overrides
@@ -155,20 +165,29 @@ function numberClaim(
 }
 
 /** Audience forms Entra issues for a Teams SSO resource: the bare app id
- *  (v2 tokens) or the `api://<host>/<appId>` identifier URI (v1 tokens). */
-function audienceMatches(aud: string, appId: string): boolean {
+ *  (v2 tokens) or the `api://<host>/<appId>` identifier URI (v1 tokens),
+ *  the latter only for a host of this deployment. */
+function audienceMatches(
+  aud: string,
+  appId: string,
+  hosts: readonly string[],
+): boolean {
   const want = appId.toLowerCase();
   const got = aud.toLowerCase();
   if (got === want) return true;
-  const match = /^api:\/\/[^/]+\/([^/]+)$/.exec(got);
-  return match?.[1] === want;
+  const match = /^api:\/\/([^/]+)\/([^/]+)$/.exec(got);
+  return (
+    match !== null && match[2] === want && hosts.includes(match[1] as string)
+  );
 }
 
 interface CachedKeys {
   readonly keys: ReadonlyMap<string, JsonWebKey>;
+  /** Time of the last SUCCESSFUL fetch (0: never succeeded). */
   readonly fetchedAt: number;
-  /** Set when the fetch failed; `keys` is empty then. */
-  readonly failed?: boolean;
+  /** Set when the latest fetch failed. `keys` then still holds the keys of
+   *  the last successful fetch, so one Entra blip does not log everyone out. */
+  readonly failedAt?: number;
 }
 
 function parseJwks(doc: unknown): ReadonlyMap<string, JsonWebKey> {
@@ -221,7 +240,12 @@ export function createTeamsSsoVerifier(
       try {
         entry = { keys: parseJwks(await fetchJwks(tenantId)), fetchedAt: now() };
       } catch {
-        entry = { keys: new Map(), fetchedAt: now(), failed: true };
+        const previous = keyCache.get(tenantId);
+        entry = {
+          keys: previous?.keys ?? new Map(),
+          fetchedAt: previous?.fetchedAt ?? 0,
+          failedAt: now(),
+        };
       }
       keyCache.set(tenantId, entry);
       return entry;
@@ -232,20 +256,28 @@ export function createTeamsSsoVerifier(
 
   async function keyFor(tenantId: string, kid: string): Promise<JsonWebKey> {
     const cached = keyCache.get(tenantId);
+    const hit = cached?.keys.get(kid);
     const age = cached ? now() - cached.fetchedAt : Infinity;
-    if (cached?.failed && age < JWKS_FAILURE_BACKOFF_MS) {
+    if (hit && age < JWKS_TTL_MS) return hit;
+    const inBackoff =
+      cached?.failedAt !== undefined &&
+      now() - cached.failedAt < JWKS_FAILURE_BACKOFF_MS;
+    if (inBackoff) {
+      // Serve a known key stale rather than refuse; never refetch here.
+      if (hit) return hit;
       throw new TeamsSsoError('key discovery unavailable');
     }
-    const hit = cached?.keys.get(kid);
-    if (hit && age < JWKS_TTL_MS) return hit;
-    if (cached && !cached.failed && !hit && age < JWKS_REFETCH_FLOOR_MS) {
+    if (cached && cached.failedAt === undefined && !hit && age < JWKS_REFETCH_FLOOR_MS) {
       throw new TeamsSsoError('unknown signing key');
     }
     const fresh = await refresh(tenantId);
-    if (fresh.failed) throw new TeamsSsoError('key discovery unavailable');
     const key = fresh.keys.get(kid);
-    if (!key) throw new TeamsSsoError('unknown signing key');
-    return key;
+    if (key) return key;
+    throw new TeamsSsoError(
+      fresh.failedAt !== undefined
+        ? 'key discovery unavailable'
+        : 'unknown signing key',
+    );
   }
 
   return {
@@ -300,8 +332,11 @@ export function createTeamsSsoVerifier(
       }
 
       const aud = stringClaim(claims, 'aud');
+      const hosts = (opts.identifierUriHosts?.() ?? []).map((h) =>
+        h.toLowerCase(),
+      );
       const appId = aud
-        ? allowedAppIds.find((id) => audienceMatches(aud, id))
+        ? allowedAppIds.find((id) => audienceMatches(aud, id, hosts))
         : undefined;
       if (!appId) throw new TeamsSsoError('token audience is not a bot app');
 
@@ -325,6 +360,15 @@ export function createTeamsSsoVerifier(
       const objectId = stringClaim(claims, 'oid');
       if (!stringClaim(claims, 'scp') || !objectId) {
         throw new TeamsSsoError('token is not a delegated user token');
+      }
+
+      // A guest (B2B, personal Microsoft account) is authenticated by another
+      // identity provider, and Entra then sets `idp` to it; for a member it is
+      // absent or the issuer itself. Guests are refused: the routes serve the
+      // tenant's own data to the tenant's own people.
+      const idp = stringClaim(claims, 'idp')?.toLowerCase();
+      if (idp !== undefined && !issuers.includes(idp)) {
+        throw new TeamsSsoError('token belongs to a guest account');
       }
 
       const upn =

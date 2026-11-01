@@ -17,6 +17,11 @@ declare module 'express-serve-static-core' {
   }
 }
 
+const UNAUTHORIZED_BODY = {
+  code: 'auth.teams_sso_required',
+  message: 'Microsoft Teams sign-in required',
+} as const;
+
 export interface TeamsSsoGateOptions {
   readonly verifier: TeamsSsoVerifier;
   /** Server-side diagnostics for a refusal: the reason and the route source.
@@ -59,15 +64,14 @@ export function createTeamsSsoGate(
     const refuse = (reason: string): void => {
       refuseLog(reason, source);
       res.setHeader('WWW-Authenticate', 'Bearer');
-      res.status(401).json({
-        code: 'auth.teams_sso_required',
-        message: 'Microsoft Teams sign-in required',
-      });
+      res.status(401).json(UNAUTHORIZED_BODY);
     };
 
     const token = bearerToken(req.headers.authorization);
     if (!token) {
-      refuse('no bearer token');
+      // Not logged: that is every anonymous scan, and it says nothing.
+      res.setHeader('WWW-Authenticate', 'Bearer');
+      res.status(401).json(UNAUTHORIZED_BODY);
       return;
     }
     opts.verifier.verify(token).then(

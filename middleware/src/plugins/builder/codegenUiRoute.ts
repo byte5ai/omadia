@@ -597,6 +597,10 @@ import { renderRoute, htmlDoc, html, safe } from '@omadia/plugin-ui-helpers';
 
 const TEAMS_JS_URL =
   'https://res.cdn.office.net/teams-js/2.34.0/js/MicrosoftTeams.min.js';
+/** Subresource integrity of exactly that file — the script runs in the
+ *  plugin's origin, so a swapped CDN file must not load. */
+const TEAMS_JS_INTEGRITY =
+  'sha384-brW9AazbKR2dYw2DucGgWCCcmrm2oBFV4HQidyuyZRI/TnAkmOOnTARSTdps3Hwt';
 
 export interface TeamsTabPage {
   readonly path: string;
@@ -621,6 +625,8 @@ function shellScript(dataUrl: string): string {
       var sdk = new Promise(function (resolve, reject) {
         var s = document.createElement('script');
         s.src = \${JSON.stringify(TEAMS_JS_URL)};
+        s.integrity = \${JSON.stringify(TEAMS_JS_INTEGRITY)};
+        s.crossOrigin = 'anonymous';
         s.onload = function () { resolve(window.microsoftTeams); };
         s.onerror = function () { reject(new Error('Teams SDK failed to load.')); };
         document.head.appendChild(s);

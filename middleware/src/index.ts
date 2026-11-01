@@ -1103,6 +1103,17 @@ async function main(): Promise<void> {
       registry: () => installedRegistry,
       configChain: (pluginId) => buildResolutionChain(pluginId, pluginCatalog),
     }),
+    // The host the Teams app package names in `webApplicationInfo.resource`
+    // (`api://<host>/<appId>`, teamsAppPackageAssets.ts) — v1 tokens carry it.
+    identifierUriHosts: () =>
+      [config.TEAMS_PUBLIC_BASE_URL, config.PUBLIC_BASE_URL].flatMap((url) => {
+        if (!url) return [];
+        try {
+          return [new URL(url).host];
+        } catch {
+          return [];
+        }
+      }),
   });
   teamsSsoGateRef.current = (source) =>
     createTeamsSsoGate(source, { verifier: teamsSsoVerifier });
