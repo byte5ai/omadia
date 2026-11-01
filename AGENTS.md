@@ -2,7 +2,7 @@
 
 Du bist ein Agent, der an diesem Repo arbeitet. Dieses Dokument ist **nicht optional**. Lies es vollständig, bevor du Code, Config, Secrets, Skills oder Docs änderst.
 
-Das Projekt wird von **mehreren parallelen Agents** weiterentwickelt (Claude Code in verschiedenen Chats, manchmal mehrere gleichzeitig). Ohne disziplinierte Dokumentation verlieren wir innerhalb von Stunden den Überblick, welcher Zustand produktionswirksam ist. Das ist bereits passiert — siehe `docs/CHANGELOG.md` Eintrag `2026-04-19 — crashloop durch verpasste Schema-Sync`.
+Das Projekt wird von **mehreren parallelen Agents** weiterentwickelt (Claude Code in verschiedenen Chats, manchmal mehrere gleichzeitig). Ohne disziplinierte Dokumentation verlieren wir innerhalb von Stunden den Überblick, welcher Zustand produktionswirksam ist.
 
 ## Kernregel: Dokumentieren ist Teil der Aufgabe, nicht ein Nice-to-have
 
@@ -52,7 +52,7 @@ Alle Skripte in `scripts/*.workflow.mjs` laufen über das `Workflow`-Tool (`Work
 - Plugin-Contract (PluginContext, 10-Punkte-Package-Checklist): `middleware/assets/boilerplate/{agent-integration,agent-pure-llm}/CLAUDE.md` — das ist die kanonische Quelle; `docs/harness-platform/` ist nur lokales, gitignored Scratch und darf nicht als Referenz zitiert werden.
 - i18n-Regeln für Frontend-Komponenten: `web-ui/CLAUDE.md`.
 
-**Bekannte offene Baustelle beim Testen:** `middleware/test/builder/builderPreviewRoutes.test.ts:735` — dokumentierte Cross-File-Test-Pollution (Test ist isoliert grün, im vollen `npm run test`-Lauf liefert er 404 statt 401 wegen State-Leak aus einer anderen Testdatei). Bevor Build-/Test-Caching (z. B. Turborepo) für die 28 `middleware/packages/@omadia/*`-Packages eingeführt wird, sollte diese Bug-Klasse behoben werden — sonst wird nur unzuverlässiges Grün schneller ausgeliefert.
+**Bekannte offene Baustelle beim Testen:** In der Middleware-Suite gibt es Cross-File-Test-Pollution (ein Test ist isoliert grün und scheitert im vollen `npm run test`-Lauf wegen State-Leak aus einer anderen Testdatei). Bevor Build-/Test-Caching (z. B. Turborepo) für die `middleware/packages/*`-Packages eingeführt wird, sollte diese Bug-Klasse behoben werden — sonst wird nur unzuverlässiges Grün schneller ausgeliefert.
 
 ## Working in a multi-session repo
 
@@ -137,7 +137,7 @@ ALLOW_PUSH_TO_MAIN=1 git push origin main
 
 - PR-Titel < 70 Zeichen, Conventional-Prefix.
 - Eine logische Änderung pro PR — kein "While I'm at it…"-Stacking.
-- CI muss grün sein vor Merge. Status-Checks (`middleware`, `web-ui`, `schema`, `audit`) sind Required.
+- CI muss grün sein vor Merge. Required sind die Status-Checks `middleware`, `web-ui`, `schema`, `desktop` und die drei `audit`-Jobs (middleware, web-ui, desktop).
 - Squash-Merge ist Default; der PR-Titel wird zur Commit-Subject-Zeile.
 
 ## Meta

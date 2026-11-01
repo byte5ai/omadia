@@ -8079,6 +8079,18 @@ auf UTC zurück; `bucket=hour` verlangt `since`. Die Zeitreihe ist lückenlos (L
 `sub-agent builder-*` zu einer Zeile (`group: 'builder'`, `members`) und kappt
 nach `BY_SOURCE_LIMIT` (10) auf eine `other`-Zeile.
 
+„Preis unbekannt" (#1389) wird beim Lesen aufgelöst, ohne Schema-Änderung
+(`priceResolution.ts`): Eine metered Zeile mit Tokens und `cost_usd = 0` hatte
+beim Schreiben keinen Preis. Hat ihr Modell weiterhin keinen Eintrag
+(`hasKnownPrice`), zählt sie in `totals.unpricedCalls` / `totals.unpricedModels`
+und im `unpricedCalls` ihrer `byModel`/`bySource`-Zeile (auch in `other`
+gefaltet) und steht in keiner Kostenzahl. Hat ihr Modell inzwischen einen
+Preis > 0, wird sie zur Lesezeit aus ihren Tokens bepreist (pro Call, wegen
+Long-Context-Tier) — Totals, Zeilen und Zeitreihe sind dann höher als
+`SUM(cost_usd)`; das Ledger bleibt append-only, kein Backfill. Abo-Zeilen
+(OM-103) sind nie „Preis unbekannt". Ein lokales Modell verliert den Hinweis
+durch einen expliziten $0-Eintrag in der Preistabelle.
+
 Noch offen: der Verifier läuft nach dem Turn-Scope (Zeilen ohne Turn-ID,
 siehe #1098); `ctx.llm` liefert keine Cache-Zahlen (Plugin-Vertrag hat keine);
 ein `ctx.llm`-Call innerhalb verschachtelter Scopes ohne `sessionScope`
