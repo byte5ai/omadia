@@ -3840,6 +3840,21 @@ doppelt präfixiert.
   `storeErrorText` (`packageErrorText.ts`): erst Ingest-Code + `params`, dann
   der Error-Help-Katalog (`install.*`), dann die Server-Message.
 
+### Plugin-Routen: `auth: 'teams-sso'` (#1620)
+
+`ctx.routes.register(prefix, router, { auth: 'teams-sso' })` lässt den Kernel
+ein Teams-Tab-SSO-Token (`Authorization: Bearer`) prüfen — Signatur gegen
+Entras JWKS (pro Tenant gecacht, Refetch gedrosselt), Tenant + App-ID eines
+Bots der installierten, aktiven `@omadia/channel-teams`, Teams-/M365-Client,
+delegiertes User-Token. Der Handler bekommt `req.teamsSsoUser`
+(`{ oid, tenantId, appId, upn? }`). Wie `'public'`/`'custom'` braucht die Route
+eine `permissions.public_paths`-Deklaration und die Operator-Freigabe; ein
+Session-Cookie öffnet sie nicht. Dateien: `auth/teamsSsoVerifier.ts`,
+`auth/teamsSsoGate.ts`, `platform/teamsSsoAudiences.ts`, Verdrahtung in
+`index.ts` (`teamsSsoGateRef`). Builder-Codegen nutzt das für die Teams-Tabs
+der `ui_routes` (`/p/<slug>/teams`, siehe `docs/security-architecture.md`
+§5b-1).
+
 ## 4. Migration Managed Agents → Lokal
 
 ### Warum migriert
@@ -5422,6 +5437,13 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 ---
 
 ## 13. Offene Roadmap
+
+- **Teams-SSO für Plugin-Routen (#1620): Kernel-Modus erledigt.** Offen:
+  channel-teams auf den Kernel-Verifier umstellen (eigene Kopie in
+  `teamsTabAuth.ts`); Hydration interaktiver `react-ssr`-Seiten im Teams-Tab
+  (die Komponente liegt hinter der Session-Route); Entra „Expose an API“
+  (`access_as_user`, Teams-Clients vorautorisiert) muss pro Bot-App gesetzt
+  sein, sonst schlägt `getAuthToken()` fehl.
 
 - **Feldklassifizierung vorab (#1556-Folge): erledigt.** Odoo-Plugin 0.5.0
   liefert `odoo.schema@1`; der Recompute legt die `many2one`-Felder direkt nach

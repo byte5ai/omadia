@@ -358,9 +358,10 @@ Plugins.
 
 | Wert | Bedeutung |
 |---|---|
-| `'session'` | Der Kernel prüft die Operator-Session — dieselbe Session-Prüfung wie Core an `/api`, aber **ohne** die statische Public-Path-Ausnahme (#1596): kein Prefix, auch nicht `/p/…`, öffnet eine `'session'`-Route. Eine Teams-Tab-Seite ohne omadia-Session braucht `'custom'` + freigegebenen `public_paths`-Eintrag. Unter `/api` ist das Defense-in-Depth, **außerhalb** von `/api` (z.B. `/diagrams`) ist es das einzige Session-Gate. CSRF-Haltung = die von Core: `SameSite=Lax`-Cookie, kein Token-Layer. |
+| `'session'` | Der Kernel prüft die Operator-Session — dieselbe Session-Prüfung wie Core an `/api`, aber **ohne** die statische Public-Path-Ausnahme (#1596): kein Prefix, auch nicht `/p/…`, öffnet eine `'session'`-Route. Eine Teams-Tab-Seite ohne omadia-Session braucht `'teams-sso'` (Daten) + `'public'` (datenfreie Shell) unter einem freigegebenen `public_paths`-Eintrag. Unter `/api` ist das Defense-in-Depth, **außerhalb** von `/api` (z.B. `/diagrams`) ist es das einzige Session-Gate. CSRF-Haltung = die von Core: `SameSite=Lax`-Cookie, kein Token-Layer. |
 | `'public'` | Kein Kernel-Auth. **Registrierung wirft**, wenn das Prefix nicht unterhalb eines in `permissions.public_paths` deklarierten Pfads liegt. Die Route wird **ausschließlich** über den Public-Path-Mount ausgeliefert — also nur, solange die Zustimmung des Operators für dieses Prefix steht. |
 | `'custom'` | Wie `'public'` — gleiche Deklarationspflicht, gleiche Erreichbarkeitsregel —, aber du sagst damit zu, **jeden** Request selbst zu authentifizieren (HMAC, Bearer, mTLS-Header). |
+| `'teams-sso'` | (#1620) Gleiche Deklarationspflicht und gleiche Operator-Freigabe wie `'public'`, aber der **Kernel** authentifiziert: `Authorization: Bearer <Teams-SSO-Token>` (aus `microsoftTeams.authentication.getAuthToken()`), RS256-Signatur gegen Entras Schlüssel, Tenant + App-ID eines Bots der installierten `@omadia/channel-teams`, ausgestellt an einen Teams-/M365-Client, delegiertes User-Token, nicht abgelaufen. Der Handler bekommt den User als `req.teamsSsoUser` (`{ oid, tenantId, appId, upn? }`, Typ `TeamsSsoUser` in `types.ts`). Jeder Fehler ist derselbe 401 ohne Begründung. **Rein:** ein omadia-Session-Cookie öffnet die Route **nicht**. Gast-Konten (B2B, private Microsoft-Konten) werden abgewiesen; jedes **Mitglied** des Tenants kommt durch — autorisiere im Handler auf `oid`, wenn nicht jeder Tenant-User alles sehen darf (oder der Operator setzt in Entra „Zuweisung erforderlich“ an der Bot-App). |
 
 Es gibt kein `'none'`. Ein Plugin kann sich nicht selbst aus der
 Authentifizierung herausdeklarieren — es kann ein Prefix nur **beantragen**
@@ -374,11 +375,31 @@ Builder deklarierst du den Pfad in `spec.permissions.public_paths`; Codegen
 schreibt ihn nach `manifest.permissions.public_paths`. Der Operator muss ihn
 nach dem Install freigeben, vorher antwortet der Pfad 401.
 
-**UI-Routen bleiben `'session'`.** Codegen mountet `spec.ui_routes` unter
-`/p/<slug>` ausdrücklich mit `{ auth: 'session' }`: Sie zeigen Tool-Daten. Ein
-401 im Teams-Tab ohne omadia-Session ist dort das richtige Verhalten (#1596)
-und kein Grund, die Route auf `'custom'` zu stellen. `'custom'` ohne eigene
-Prüfung in jedem Handler macht Daten öffentlich.
+**UI-Routen: Browser per Session, Teams per Teams-SSO (#1620).** Codegen
+mountet jede `spec.ui_routes[i]` zweimal:
+
+| Pfad | Auth | Inhalt |
+|---|---|---|
+| `/p/<slug><path>` | `'session'` | die Seite für Operatoren im Browser |
+| `/p/<slug>/teams<path>` | `'public'` | **datenfreie** Shell: holt per `getAuthToken()` ein Teams-SSO-Token und lädt damit die Seite nach |
+| `/p/<slug>/teams/_data<path>` | `'teams-sso'` | dieselbe Seite, nur mit gültigem Teams-Token |
+
+Ein Teams-Tab lädt seine URL als nackten GET ohne Bearer, deshalb braucht es
+die Shell; die Daten verlassen den Server nur über den `'teams-sso'`-Mount.
+Codegen schreibt `/p/<slug>/teams` selbst nach
+`manifest.permissions.public_paths`, und der `ctx.uiRoutes`-Eintrag zeigt auf
+die Shell. Bis der Operator den Pfad freigibt, antwortet die Shell 401 (sie
+fällt auf die Session-Route zurück). **Nie** eine Daten-Route auf `'public'`
+oder `'custom'` stellen, um einen 401 im Teams-Tab zu „reparieren“ — dafür
+gibt es `'teams-sso'`. `'custom'` ohne eigene Prüfung in jedem Handler macht
+Daten öffentlich.
+
+Handgeschrieben gilt dasselbe Muster: die Shell auf `'public'` darf nur HTML
+ohne Daten ausliefern, jeder Datenpfad liegt unter `'teams-sso'`, beide
+unterhalb **einer** deklarierten und freigegebenen `public_paths`-Zeile. Ein
+Prefix pro Router: der Kernel löst einen freigegebenen Pfad auf **einen**
+Routen-Eintrag auf, mehrere Router unter demselben Prefix also zu einem
+zusammenfassen.
 
 > **Richtung der Prüfung:** Das **registrierte Prefix** muss **innerhalb** eines
 > deklarierten Pfads liegen — nicht umgekehrt. `public_paths:

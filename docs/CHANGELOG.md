@@ -75,6 +75,42 @@ changelog.
   and the "~860 violations" sentence. The required status checks listed under
   PR rules now match branch protection. The files stay in the repo.
 
+### Added — Kernel `auth: 'teams-sso'` for plugin routes; Builder UI routes work in Teams tabs (#1620)
+
+2026-11-01. Builder-generated `/p/` pages answered 401 inside Teams since
+#1596, because Teams sends no omadia session cookie.
+
+- **`RouteAuthMode` `'teams-sso'`** (`@omadia/plugin-api` 1.51.0): the kernel
+  verifies a Teams tab SSO token (`Authorization: Bearer`) — RS256 against
+  Entra's JWKS (cached per tenant, refetch throttled, failure backoff), tenant
+  + app id of a bot of the installed, active `@omadia/channel-teams`, issued
+  to a Teams/M365 client, delegated user token, no guest account, lifetime.
+  The handler gets
+  `req.teamsSsoUser` (`oid`, `tenantId`, `appId`, `upn`). Every failure is the
+  same 401 without a reason. Like `'custom'`, it needs a
+  `permissions.public_paths` declaration and the operator grant. Pure: an
+  omadia session cookie does not open it. Verifier ported from channel-teams
+  0.31.0.
+- **Builder codegen**: each ui_route keeps its session-gated browser page and
+  gets a Teams surface under `/p/<slug>/teams` — a data-free shell
+  (`'public'`) that fetches the page with `getAuthToken()` from
+  `/p/<slug>/teams/_data/…` (`'teams-sso'`). Codegen declares
+  `/p/<slug>/teams` in the manifest; the `ctx.uiRoutes` descriptor points at
+  the shell. The operator grants it after install. New lint
+  `ui_route_public_paths_full` when the spec leaves no room for that entry.
+- **Fix**: the boilerplate `types.ts` declared `routes.register(prefix,
+  router)` with two parameters, so every generated plugin with ui_routes
+  failed `tsc` (`TS2554`) since #1608 passed `{ auth: 'session' }`. It now
+  takes `RouteRegisterOptions`.
+- Docs: `docs/security-architecture.md` §5b-1, boilerplate CLAUDE.md, builder
+  prompt.
+- **Migration**: an installed Builder plugin gets the Teams surface only after
+  it is regenerated and reinstalled, and the operator grants `/p/<slug>/teams`.
+  Tabs pinned before keep the old session URL (401 in Teams) — re-pin them via
+  the hub or tab config. Members of the bot's tenant see what the page shows;
+  guests are refused. Narrow it with "Assignment required" on the bot's
+  enterprise app. ui_route paths under `/teams` are now rejected (reserved).
+
 ### Added — Non-personal fields approved automatically, bulk accept on the field classification page
 
 2026-10-31. The field classification no longer waits for an admin on fields

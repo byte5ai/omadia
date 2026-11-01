@@ -1086,6 +1086,40 @@ describe('codegen.generate', () => {
     assert.match(permsMatch[1]!, /public_paths:\s*\n\s*- \/api\/plugins\/hooky\/webhook/);
   });
 
+  it('#1620 — ui_routes add the Teams-tab declaration after the spec entries', async () => {
+    const { slots } = loadFixture();
+    const spec = parseAgentSpec({
+      id: '@omadia/agent-hr-dash',
+      name: 'HR Dash',
+      description: 'absences tab',
+      category: 'other',
+      depends_on: [],
+      tools: [{ id: 'list_absences', description: 'x', input: { type: 'object' } }],
+      skill: { role: 'x' },
+      playbook: { when_to_use: 'x', not_for: ['x'], example_prompts: ['x', 'y'] },
+      network: { outbound: [] },
+      permissions: { public_paths: ['/api/plugins/agent-hr-dash/webhook'] },
+      ui_routes: [
+        {
+          id: 'absences',
+          path: '/absences',
+          tab_label: 'Absences',
+          page_title: 'Absences',
+          render_mode: 'library',
+          ui_template: 'kpi-tiles',
+          data_binding: { source: 'tool', tool_id: 'list_absences' },
+        },
+      ],
+    });
+    const text = (await generate({ spec, slots })).get('manifest.yaml')!.toString('utf-8');
+    const permsMatch = text.match(/\npermissions:\n([\s\S]*?)(?=\n\S)/);
+    assert.ok(permsMatch, 'permissions block present');
+    assert.match(
+      permsMatch[1]!,
+      /public_paths:\s*\n\s*- \/api\/plugins\/agent-hr-dash\/webhook\s*\n\s*- \/p\/agent-hr-dash\/teams/,
+    );
+  });
+
   it('#1596 — no public_paths key without a declaration', async () => {
     const { spec, slots } = loadFixture();
     const text = (await generate({ spec, slots })).get('manifest.yaml')!.toString('utf-8');

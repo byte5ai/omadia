@@ -450,6 +450,10 @@ import { PublicPathGrantRegistry } from './platform/publicPathGrants.js';
 import { createLazyPublicPathGrantStore } from './platform/publicPathGrantStore.js';
 import { createPluginRawBodyMount } from './platform/pluginRawBodyMount.js';
 import { createPublicPathMount } from './platform/publicPathMount.js';
+import { buildResolutionChain } from './platform/pluginContext.js';
+import { createTeamsSsoAudienceSource } from './platform/teamsSsoAudiences.js';
+import { createTeamsSsoGate } from './auth/teamsSsoGate.js';
+import { createTeamsSsoVerifier } from './auth/teamsSsoVerifier.js';
 import { NotificationRouter } from './platform/notificationRouter.js';
 import { PluginStatusRegistry } from './platform/pluginStatusRegistry.js';
 import { OAuthReadinessTracker } from './plugins/oauth/oauthReadinessTracker.js';
@@ -745,8 +749,14 @@ async function main(): Promise<void> {
   // ordering is ever broken, `register()` throws rather than quietly serving a
   // route with no gate.
   const kernelRequireAuthRef: { current?: RequestHandler } = {};
+  // #1620 — same forward-reference pattern for `auth: 'teams-sso'`: the
+  // audiences come from the installed registry, which is built further down.
+  const teamsSsoGateRef: {
+    current?: (source: string) => RequestHandler;
+  } = {};
   const pluginRouteRegistry = new PluginRouteRegistry({
     sessionAuth: () => kernelRequireAuthRef.current,
+    teamsSsoAuth: (source) => teamsSsoGateRef.current?.(source),
   });
   // Epic #470 C4 / H1 — who owns which unauthenticated URL prefix, and which of
   // those the operator has consented to. The registry decides routing; the
@@ -1085,6 +1095,28 @@ async function main(): Promise<void> {
     INSTALLED_REGISTRY_PATH,
   );
   await installedRegistry.load();
+  // #1620 — Teams SSO for `auth: 'teams-sso'` plugin routes. One verifier for
+  // the process, so the per-tenant JWKS cache and its refetch throttle are
+  // shared by every route; audiences = the bots of the active channel-teams.
+  const teamsSsoVerifier = createTeamsSsoVerifier({
+    audiences: createTeamsSsoAudienceSource({
+      registry: () => installedRegistry,
+      configChain: (pluginId) => buildResolutionChain(pluginId, pluginCatalog),
+    }),
+    // The host the Teams app package names in `webApplicationInfo.resource`
+    // (`api://<host>/<appId>`, teamsAppPackageAssets.ts) — v1 tokens carry it.
+    identifierUriHosts: () =>
+      [config.TEAMS_PUBLIC_BASE_URL, config.PUBLIC_BASE_URL].flatMap((url) => {
+        if (!url) return [];
+        try {
+          return [new URL(url).host];
+        } catch {
+          return [];
+        }
+      }),
+  });
+  teamsSsoGateRef.current = (source) =>
+    createTeamsSsoGate(source, { verifier: teamsSsoVerifier });
   // #1481 — built-ins the operator uninstalled; the boot seeders skip them.
   const builtInOptOuts = new FileBuiltInOptOutStore(
     builtInOptOutsPathFor(INSTALLED_REGISTRY_PATH),
