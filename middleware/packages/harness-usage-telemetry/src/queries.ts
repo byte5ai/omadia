@@ -15,6 +15,13 @@
  */
 import type { Pool } from 'pg';
 
+import {
+  modelsToReprice,
+  resolvePrices,
+  type ZeroCostCall,
+  type ZeroCostGroup,
+} from './priceResolution.js';
+
 export interface UsageWindow {
   readonly since?: string | undefined;
   readonly until?: string | undefined;
@@ -41,6 +48,13 @@ export interface UsageTotals {
   readonly subscriptionCalls: number;
   /** cacheRead / (cacheRead + input), 0..1 — how much input was served warm. */
   readonly cacheHitRatio: number;
+  /**
+   * #1389 — metered calls whose model has no price entry. They are not in
+   * {@link costUsd}; the dashboard says so instead of showing $0 as a price.
+   */
+  readonly unpricedCalls: number;
+  /** #1389 — the model ids behind {@link unpricedCalls}, sorted. */
+  readonly unpricedModels: readonly string[];
 }
 
 export interface UsageByKey {
@@ -65,6 +79,11 @@ export interface UsageByKey {
   readonly group?: UsageKeyGroup | undefined;
   /** #1393 — how many raw keys a grouped row folds; absent when ungrouped. */
   readonly members?: number | undefined;
+  /**
+   * #1389 — how many of {@link calls} have no known price; absent when none.
+   * Their cost is not in {@link costUsd}.
+   */
+  readonly unpricedCalls?: number | undefined;
 }
 
 export type UsageKeyGroup = 'builder' | 'other';
@@ -145,6 +164,21 @@ function windowClause(w: UsageWindow, params: unknown[], bucketing?: Bucketing):
   return clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
 }
 
+/** #1393 — every builder draft is its own `source`; this folds them into one
+ *  key. The prefix is a module constant without LIKE wildcards, so
+ *  interpolating it is safe. */
+const SOURCE_KEY_EXPR = `CASE WHEN source LIKE '${BUILDER_SOURCE_PREFIX}%' THEN '${BUILDER_SOURCE_KEY}' ELSE source END`;
+
+/** #1389 — a metered row recorded at $0 although it has tokens: its model had
+ *  no price when it was written. */
+const METERED_ZERO_COST = `cost_usd = 0
+       AND source NOT IN (${SUBSCRIPTION_SOURCE_LIST})
+       AND input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens > 0`;
+
+function andWhere(where: string, condition: string): string {
+  return where ? `${where} AND ${condition}` : `WHERE ${condition}`;
+}
+
 const num = (v: unknown): number => {
   const n = typeof v === 'string' ? Number(v) : (v as number);
   return Number.isFinite(n) ? n : 0;
@@ -180,6 +214,8 @@ async function fetchTotals(pool: Pool, w: UsageWindow, b: Bucketing): Promise<Us
     referenceCostUsd: num(r.reference_cost_usd),
     subscriptionCalls: num(r.subscription_calls),
     cacheHitRatio: warmDenom > 0 ? cacheReadTokens / warmDenom : 0,
+    unpricedCalls: 0,
+    unpricedModels: [],
   };
 }
 
@@ -204,13 +240,8 @@ async function fetchByKey(
 ): Promise<UsageByKey[]> {
   const params: unknown[] = [];
   const where = windowClause(w, params, b);
-  // #1393 — every builder draft is its own `source`; fold them into one key.
-  // The prefix is a module constant without LIKE wildcards, so interpolating
-  // it is safe; `members` counts the distinct raw sources a row folds.
-  const keyExpr =
-    column === 'source'
-      ? `CASE WHEN source LIKE '${BUILDER_SOURCE_PREFIX}%' THEN '${BUILDER_SOURCE_KEY}' ELSE source END`
-      : 'model';
+  // `members` counts the distinct raw sources a row folds.
+  const keyExpr = column === 'source' ? SOURCE_KEY_EXPR : 'model';
   const membersExpr = column === 'source' ? 'COUNT(DISTINCT source)' : '1';
   const { rows } = await pool.query(
     `SELECT
@@ -258,7 +289,8 @@ export function capByKey(rows: readonly UsageByKey[], limit: number = BY_SOURCE_
     cacheReadTokens: sum((r) => r.cacheReadTokens),
     cacheCreationTokens: sum((r) => r.cacheCreationTokens),
   };
-  return [...rows.slice(0, limit), other];
+  const unpricedCalls = sum((r) => r.unpricedCalls ?? 0);
+  return [...rows.slice(0, limit), unpricedCalls > 0 ? { ...other, unpricedCalls } : other];
 }
 
 /**
@@ -315,6 +347,67 @@ async function fetchTimeSeries(
   }));
 }
 
+/** #1389 — metered $0 rows with tokens, per model and By-source key. */
+async function fetchZeroCostGroups(
+  pool: Pool,
+  w: UsageWindow,
+  b: Bucketing,
+): Promise<ZeroCostGroup[]> {
+  const params: unknown[] = [];
+  const where = andWhere(windowClause(w, params, b), METERED_ZERO_COST);
+  const { rows } = await pool.query(
+    `SELECT model, ${SOURCE_KEY_EXPR} AS source_key, COUNT(*) AS calls
+     FROM token_usage ${where}
+     GROUP BY 1, 2`,
+    params,
+  );
+  return rows.map((r: Record<string, unknown>) => ({
+    model: String(r.model ?? 'unknown'),
+    sourceKey: String(r.source_key ?? 'unknown'),
+    calls: num(r.calls),
+  }));
+}
+
+/**
+ * #1389 — the $0 rows of models that have a price now, one by one: the price
+ * can depend on a single call's prompt size (long-context tier), so they
+ * cannot be priced from sums. Only rows written before their model got a
+ * non-zero price match; a model that ran unpriced for long brings its whole
+ * unpriced history, bounded by the window.
+ */
+async function fetchZeroCostCalls(
+  pool: Pool,
+  w: UsageWindow,
+  b: Bucketing,
+  models: readonly string[],
+): Promise<ZeroCostCall[]> {
+  if (models.length === 0) return [];
+  const params: unknown[] = [];
+  let where = andWhere(windowClause(w, params, b), METERED_ZERO_COST);
+  params.push(models);
+  where = andWhere(where, `model = ANY($${params.length}::text[])`);
+  params.push(b.timeZone);
+  const tz = `$${params.length}::text`;
+  const { rows } = await pool.query(
+    `SELECT
+       model,
+       ${SOURCE_KEY_EXPR} AS source_key,
+       date_trunc('${b.bucket}', created_at AT TIME ZONE ${tz}) AT TIME ZONE ${tz} AS bucket,
+       input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens
+     FROM token_usage ${where}`,
+    params,
+  );
+  return rows.map((r: Record<string, unknown>) => ({
+    model: String(r.model),
+    sourceKey: String(r.source_key ?? 'unknown'),
+    bucket: r.bucket instanceof Date ? r.bucket.toISOString() : String(r.bucket),
+    inputTokens: num(r.input_tokens),
+    outputTokens: num(r.output_tokens),
+    cacheReadTokens: num(r.cache_read_tokens),
+    cacheCreationTokens: num(r.cache_creation_tokens),
+  }));
+}
+
 /**
  * Builds the full dashboard payload in one pass: totals, per-model and
  * per-source breakdowns, and a cost time series. `bucket` controls time-series
@@ -329,11 +422,29 @@ export async function getUsageDashboard(
   timeZone = 'UTC',
 ): Promise<UsageDashboard> {
   const b: Bucketing = { bucket, timeZone };
-  const [totals, byModel, bySource, timeSeries] = await Promise.all([
+  const [totals, byModel, bySource, timeSeries, zeroCost] = await Promise.all([
     fetchTotals(pool, w, b),
     fetchByKey(pool, 'model', w, b),
     fetchByKey(pool, 'source', w, b),
     fetchTimeSeries(pool, w, b),
+    fetchZeroCostGroups(pool, w, b),
   ]);
-  return { totals, byModel, bySource: capByKey(bySource), timeSeries };
+  const repriceable = await fetchZeroCostCalls(pool, w, b, modelsToReprice(zeroCost));
+  // #1389 — before capByKey, so a priced row can move into the top ten.
+  const resolved = resolvePrices(
+    { totalsCostUsd: totals.costUsd, byModel, bySource, timeSeries },
+    zeroCost,
+    repriceable,
+  );
+  return {
+    totals: {
+      ...totals,
+      costUsd: resolved.totalsCostUsd,
+      unpricedCalls: resolved.unpricedCalls,
+      unpricedModels: resolved.unpricedModels,
+    },
+    byModel: resolved.byModel,
+    bySource: capByKey(resolved.bySource),
+    timeSeries: resolved.timeSeries,
+  };
 }

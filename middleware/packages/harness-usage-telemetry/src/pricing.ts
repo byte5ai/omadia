@@ -152,18 +152,34 @@ const UNKNOWN_PRICE: ModelPrice = { inputPerMTok: 0, outputPerMTok: 0 };
 
 const warnedUnknownModels = new Set<string>();
 
+/** Exact match wins; otherwise the first matching family keyword. */
+function lookupPrice(id: string): ModelPrice | undefined {
+  const exact = EXACT_PRICES[id];
+  if (exact) return exact;
+  for (const [keyword, price] of FAMILY_PRICES) {
+    if (id.includes(keyword)) return price;
+  }
+  return undefined;
+}
+
+/**
+ * #1389 — whether a model id has a price entry (exact or family). The
+ * dashboard asks this at read time, so a row recorded at $0 for an unpriced
+ * model shows "price unknown" until a price is added, and is priced from then
+ * on. Logs nothing, unlike {@link priceForModel}.
+ */
+export function hasKnownPrice(model: string): boolean {
+  return lookupPrice(model.trim().toLowerCase()) !== undefined;
+}
+
 /**
  * Resolves the price for a model id. Exact match wins; otherwise the first
  * matching family keyword. Unknown models return a zero price (logged once).
  */
 export function priceForModel(model: string): ModelPrice {
   const id = model.trim().toLowerCase();
-  const exact = EXACT_PRICES[id];
-  if (exact) return exact;
-
-  for (const [keyword, price] of FAMILY_PRICES) {
-    if (id.includes(keyword)) return price;
-  }
+  const known = lookupPrice(id);
+  if (known) return known;
 
   if (!warnedUnknownModels.has(id)) {
     warnedUnknownModels.add(id);

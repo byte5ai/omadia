@@ -101,7 +101,7 @@ Pflicht (per `patch_spec`):
 - **`spec.description_en`** — dieselbe Zeile auf **Englisch**. Nicht
   optional und keine Kopie des deutschen Texts: `identity.description` im
   Manifest ist eine Locale-Map, und deutscher Text im `en:`-Slot erscheint
-  im Hub als englische Beschreibung (#885, vier Beta-Runden lang gemeldet).
+  im Hub als englische Beschreibung.
   Du kannst den englischen Text selbst formulieren — frag den User nicht
   danach, wenn die deutsche Beschreibung schon klar ist.
 - **`spec.category`** — productivity | crm | documents | communication | analysis | other.
@@ -171,11 +171,13 @@ Pflicht (per `patch_spec`):
 Wenn der zu bauende Agent **Daten aus einer anderen Integration**
 konsumieren soll (Beispiele: Mitarbeiterliste aus Odoo HR, Confluence-
 Pages, Outlook-Kalender), gilt ein verbindlicher 3-Schritt-Workflow.
-Überspringen führt zu **silent-wrong**-Bugs (heute live beobachtet:
-Builder schrieb `odoo.execute_kw(...)`, eine Method die nicht existiert,
-weil das Trainings-Wissen vom Public Odoo XML-RPC kam und nicht zur
-internen `OdooClient`-Surface passt — Plugin baute, lief an, lieferte
-leere Listen).
+Überspringen führt zu **silent-wrong**-Bugs: aus dem Trainings-Wissen
+rekonstruierte Method-Signaturen weichen von der echten Client-Surface
+ab, und der Fehler bleibt stumm — das Plugin baut, läuft an und liefert
+leere Ergebnisse. Beispiel: `odoo.execute_kw(...)` stammt aus dem
+Public-Odoo-XML-RPC und existiert auf der internen `OdooClient`-Surface
+nicht; die echte API ist `odoo.execute({ model, method, positionalArgs,
+kwargs })`.
 
 **Schritt 0 — Bevorzugt: deklarative `spec.external_reads` (Theme A).**
 Für simple Reads (Liste-X-aus-Service-Y, ein Method-Call pro Tool) den
@@ -233,8 +235,8 @@ read_reference({
   - Konkrete Code-Snippets pro Top-Use-Case
   - Ein "Was NICHT geht"-Block mit den häufigsten Anti-Patterns
 
-**Wenn `INTEGRATION.md` für eine Integration NICHT existiert** (rare —
-sollte heute überall vorhanden sein), erst `read_reference` auf die
+**Wenn `INTEGRATION.md` für eine Integration NICHT existiert** (selten —
+die Integrationen im Katalog liefern eines mit), erst `read_reference` auf die
 Source-Files (`client.ts`, `plugin.ts`) und nur die dort GESEHENEN
 Methods/Signaturen verwenden. Niemals aus Trainings-Wissen ergänzen.
 
@@ -294,8 +296,8 @@ icon-only, error-Container mit `role="alert"`.
 
 **Wenn das CLAUDE.md und das Trainings-Wissen sich widersprechen, gilt
 das CLAUDE.md. Immer.** Tipp aus dem Doc, dann Code aus dem Trainings-
-Wissen ist eine sichere Falle (UniFi-Tracker-0.6.0-Lehre: hardcoded
-Tailwind-grün `#22c55e` ist genau dieser Fall).
+Wissen ist eine sichere Falle (Beispiel: ein hardcoded Tailwind-Grün
+`#22c55e` statt des im Doc vorgeschriebenen Theme-Tokens).
 
 Falls der Spec **kein** `admin_ui_path` setzt, ist dieser Workflow
 übersprungen — der Slot bleibt mit der Default-„noch nicht angepasst"-
@@ -762,8 +764,9 @@ Frontend (im `admin-ui-body`-Slot):
 ```
 
 **Response-Schema PFLICHT** — `{ ok: true, ...payload }` bei Success,
-`{ ok: false, error: '...' }` bei Failure. Sonst zerlegt sich der
-Frontend-Roundtrip silent (Lessons-learned aus UniFi-Tracker v0.4.0).
+`{ ok: false, error: '...' }` bei Failure. Frontend und Backend müssen
+denselben Vertrag fahren — sonst zerlegt sich der Roundtrip silent, und
+jede Seite hält die andere für kaputt.
 
 ## Self-Correction-Loop (B.7)
 
