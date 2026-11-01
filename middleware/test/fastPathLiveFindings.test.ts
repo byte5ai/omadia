@@ -14,8 +14,11 @@
  *      masking stay background;
  *   4. canvas refresh recipes persist per canvas session in plugin memory,
  *      bounded, lazily loaded, corrupt-tolerant;
- *   5. the composer / planners take the first balanced JSON object from a
- *      fenced or prefaced answer instead of discarding it.
+ *   5. the planners take the first balanced JSON object from a fenced or
+ *      prefaced answer instead of discarding it.
+ *
+ * The canvas side (composer, in-place planner) is tested in the
+ * @omadia/ui-orchestrator plugin repo.
  */
 
 import { strict as assert } from 'node:assert';
@@ -45,8 +48,6 @@ import { parseTriage, withRouterPlanner } from './_helpers/fastPathRouterPlanner
 import { createC1HttpDetector } from '../packages/harness-plugin-privacy-guard/src/c1Detector.js';
 import { createPrivacyGuardService } from '../packages/harness-plugin-privacy-guard/src/service.js';
 import { createStoredTextScope } from '../packages/harness-plugin-privacy-guard/src/storedTextScope.js';
-import { composeSkeleton } from '../packages/omadia-ui-orchestrator/src/composition.js';
-import { parseInPlacePlan, type CanvasTable } from '../packages/omadia-ui-orchestrator/src/learnedFastPath.js';
 
 // ── fixtures ──────────────────────────────────────────────────────────────
 
@@ -230,19 +231,6 @@ describe('fast-path — a missing summary defaults instead of discarding the pla
     assert.ok(out.kind === 'answer');
     assert.match(out.text, /^2 Einträge gefunden\./);
     assert.ok(logs.some((l) => /\[fast-path\] planner channel=web tool=odoo_query ok ms=\d+ summary=default/.test(l)));
-  });
-
-  it('in-place planner: a summary-less plan for a visible table is kept', () => {
-    const tables: CanvasTable[] = [{ containerId: 't1', fieldKeys: ['name', 'birthday'] }];
-    const plan = parseInPlacePlan(
-      JSON.stringify({ containerId: 't1', fetch: FETCH }),
-      tables,
-      ALLOWED,
-      { question: 'und im Februar?' },
-    );
-    assert.ok(plan.ok);
-    assert.equal(plan.summary, '{count} Einträge gefunden.');
-    assert.equal(plan.summaryDefaulted, true);
   });
 
   it('planner: locale is kept without a summary (the fast path defaults the sentence)', () => {
@@ -461,41 +449,12 @@ describe('extractFirstJsonObject — fenced / prefaced model output', () => {
     assert.deepEqual(extractFirstJsonObject('[1,2]'), { ok: false, shape: 'no-object' });
   });
 
-  it('composer: a fenced answer is recovered and logged; garbage still falls back', async () => {
-    const tree = { type: 'container', id: 'root', layout: 'stack', children: [] };
-    const logs: string[] = [];
-    const fenced = await composeSkeleton({
-      llm: { complete: async () => ({ text: `Sure!\n\`\`\`json\n${JSON.stringify({ tree, dataRequirements: [] })}\n\`\`\`\nDone.` }) },
-      model: 'class:fast',
-      userText: 'x',
-      log: (m) => logs.push(m),
-    });
-    assert.equal(fenced.source, 'model');
-    assert.ok(logs.includes('[composition] attempt 1: recovered JSON from fenced output'), logs.join('\n'));
-
-    const garbageLogs: string[] = [];
-    const garbage = await composeSkeleton({
-      llm: { complete: async () => ({ text: 'I cannot do that.' }) },
-      model: 'class:fast',
-      userText: 'x',
-      log: (m) => garbageLogs.push(m),
-    });
-    assert.equal(garbage.source, 'fallback');
-    assert.ok(garbageLogs.some((l) => l.includes('not parseable as raw JSON (shape=no-object')));
-  });
-
-  it('triage and in-place planner accept a fenced answer', () => {
+  it('triage accepts a fenced answer', () => {
     const triage = parseTriage(
       `\`\`\`json\n${JSON.stringify({ decision: 'agent', route: 'simple' })}\n\`\`\` trailing {x}`,
       ALLOWED,
     );
     assert.deepEqual(triage, { decision: 'agent', route: 'simple' });
-    const plan = parseInPlacePlan(
-      `Plan:\n\`\`\`json\n${JSON.stringify({ containerId: 't1', fetch: FETCH, summary: '{count} x' })}\n\`\`\`\n{"none":true}`,
-      [{ containerId: 't1', fieldKeys: ['name', 'birthday'] }],
-      ALLOWED,
-    );
-    assert.ok(plan.ok);
   });
 });
 

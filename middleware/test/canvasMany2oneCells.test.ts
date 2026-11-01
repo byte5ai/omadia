@@ -3,12 +3,13 @@
  * Partner column as `[51,"Europemobile GmbH"]` — the dataset column is keyed
  * by path (`partner_id`), so the cell held the raw Odoo many2one pair, and
  * the refresh path JSON-stringified it. Cells now show the display name.
+ * (`canvas_publish_rows` is tested in the @omadia/ui-orchestrator plugin
+ * repo.)
  */
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
 import { displayCell, mapRefreshRecords } from '../packages/harness-plugin-fast-path/src/refreshRecipes.js';
-import { handleCanvasPublishRows } from '../packages/omadia-ui-orchestrator/src/plugin.js';
 
 describe('displayCell', () => {
   it('many2one pair → its name', () => {
@@ -55,34 +56,3 @@ describe('refresh rows', () => {
   });
 });
 
-describe('canvas_publish_rows', () => {
-  const payloadRows = (out: string): Array<Record<string, unknown>> =>
-    (JSON.parse(out) as { _pendingStructuredPayload: { data: { rows: Array<Record<string, unknown>> } } })
-      ._pendingStructuredPayload.data.rows;
-
-  it('dataset rows: many2one cells become names, numbers stay numbers', async () => {
-    const out = await handleCanvasPublishRows(
-      { containerId: 'open_items', datasetId: 'ds_1' },
-      () => ({
-        rows: [{ id: 709, name: 'EBINV/2023/00010', partner_id: [51, 'Europemobile GmbH'], amount_residual: 72401.39 }],
-        columns: [
-          { path: 'name', type: 'string' },
-          { path: 'partner_id', type: 'string' },
-          { path: 'amount_residual', type: 'number' },
-        ],
-      }) as never,
-    );
-    const [row] = payloadRows(out);
-    assert.equal(row?.['partner_id'], 'Europemobile GmbH');
-    assert.equal(row?.['amount_residual'], 72401.39);
-    assert.equal(row?.['id'], 709);
-  });
-
-  it('inline rows get the same treatment', async () => {
-    const out = await handleCanvasPublishRows({
-      containerId: 'open_items',
-      rows: [{ partner: [30, 'Carrera Toys GmbH'], amount: 2500 }],
-    });
-    assert.deepEqual(payloadRows(out)[0], { partner: 'Carrera Toys GmbH', amount: 2500 });
-  });
-});

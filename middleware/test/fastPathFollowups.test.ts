@@ -5,21 +5,18 @@
  *   2. learned plans carry `sort` / `take` — a ranking is learned instead of
  *      skipped (`reason=sorted-recipe`); old plans.json entries still load
  *      with their ids unchanged;
- *   3. `fast_path_variant_actions` is a declared setup field, default ON,
- *      false/off still turns it off;
+ *   3. `fast_path_variant_actions` — moved with the canvas runtime to the
+ *      @omadia/ui-orchestrator plugin repo;
  *   4. `fast_path_generic_tools` — the operator opt-out for #1607's generic
  *      plugin read tools (default on).
  */
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
-import { parse as parseYaml } from 'yaml';
-
 import type { ChatStreamEvent } from '../packages/harness-channel-sdk/src/index.js';
-import type { PluginContext, PrivacyStoredTextScope } from '../packages/plugin-api/src/index.js';
+import type { PrivacyStoredTextScope } from '../packages/plugin-api/src/index.js';
 import { catalogColumnLabel } from '../packages/harness-plugin-fast-path/src/fieldLabels.js';
 import {
   FAST_PATH_TOOL_SPECS,
@@ -39,8 +36,6 @@ import { createTurnLearner } from '../packages/harness-plugin-fast-path/src/lear
 import { templateShape } from '../packages/harness-plugin-fast-path/src/literalStripping.js';
 import { buildPlannerSystem } from '../packages/harness-plugin-fast-path/src/planner.js';
 import { createFastPathService } from '../packages/harness-plugin-fast-path/src/service.js';
-import { createCanvasRuntime } from '../packages/omadia-ui-orchestrator/src/canvasRuntime.js';
-import { createProvenanceStash } from '../packages/omadia-ui-orchestrator/src/datasetRecipe.js';
 import { loadManifestFromPath } from '../src/plugins/manifestLoader.js';
 
 // ── 1. catalog labels ─────────────────────────────────────────────────────
@@ -312,48 +307,6 @@ describe('learning capture — a ranking is learned with sort / take', () => {
     assert.equal((c.inputTemplate as { order: unknown }).order, 'credit desc');
     assert.ok(c.example?.includes('{{text_1}}'), c.example ?? 'no example stored');
     assert.ok(c.example?.includes('5'), 'the N stays in the example');
-  });
-});
-
-// ── 3. fast_path_variant_actions ──────────────────────────────────────────
-
-function runtimeWith(value: unknown): boolean {
-  const ctx = {
-    log: () => undefined,
-    services: { get: () => undefined },
-    config: { get: <T>(key: string): T | undefined => (key === 'fast_path_variant_actions' ? (value as T) : undefined) },
-  } as unknown as PluginContext;
-  const none = { has: () => false };
-  return createCanvasRuntime(ctx, {
-    model: 'class:fast',
-    toolsAccessor: undefined,
-    canvasOutputTools: none,
-    deterministicActionTools: none,
-    publishProvenance: createProvenanceStash(),
-  }).derivedVariantsEnabled;
-}
-
-describe('fast_path_variant_actions — declared, default on', () => {
-  it('is on when unset; false/off/"0" turn it off; true/on keep it on', () => {
-    assert.equal(runtimeWith(undefined), true);
-    assert.equal(runtimeWith(''), true);
-    for (const off of [false, 'false', 'off', '0', 'OFF']) assert.equal(runtimeWith(off), false, String(off));
-    for (const on of [true, 'true', 'on', '1']) assert.equal(runtimeWith(on), true, String(on));
-  });
-
-  it('the ui-orchestrator manifest declares it as a boolean, default true, en+de', async () => {
-    const entry = await loadManifestFromPath(
-      fileURLToPath(new URL('../packages/omadia-ui-orchestrator/manifest.yaml', import.meta.url)),
-    );
-    const field = entry?.plugin.setup_fields.find((f) => f.key === 'fast_path_variant_actions');
-    assert.equal(field?.type, 'boolean');
-    assert.equal(field?.default, true);
-    const raw = parseYaml(
-      readFileSync(new URL('../packages/omadia-ui-orchestrator/manifest.yaml', import.meta.url), 'utf8'),
-    ) as { setup: { fields: Array<{ key: string; label: Record<string, string>; help: Record<string, string> }> } };
-    const yamlField = raw.setup.fields.find((f) => f.key === 'fast_path_variant_actions');
-    assert.ok(yamlField?.label['en'] && yamlField.label['de']);
-    assert.ok(yamlField?.help['en'] && yamlField.help['de']);
   });
 });
 

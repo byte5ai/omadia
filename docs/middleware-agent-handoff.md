@@ -667,6 +667,23 @@ Canvas-Orchestrator (PR-9, erster Consumer).
 
 ### omadia-ui-orchestrator (Tier-2, Skeleton, PR-9a)
 
+> **Stand 2026-11: nicht mehr im Core.** Das Package ist in ein eigenes Repo
+> ausgelagert (`byte5ai/omadia-ui-orchestrator`, gleiche Plugin-ID
+> `@omadia/ui-orchestrator`, ab `0.2.0`) und wird wie jedes Standalone-Plugin
+> über den Hub oder ZIP-Upload installiert — es wird **nicht** mehr vom
+> `builtInPackageStore` entdeckt und nicht mehr im Image gebaut. Bestehende
+> Installationen behalten ihren Registry-Eintrag, Config und Vault-Scope (gleiche
+> ID); bis das Paket hochgeladen ist, wird es beim Boot nicht aktiviert und
+> `canvasChatAgent` fehlt — Canvas-Turns der `omadia-ui-channel` laufen dann ins
+> Leere. Peers vom Host: `@omadia/{plugin-api,channel-sdk,orchestrator,fast-path,
+> canvas-core}`; `ajv` wird gebundelt; die Canvas-Schemas liest es zur Laufzeit
+> aus dem Host-`@omadia/canvas-core` (`./schema/*`-Export). Der Core kennt die ID
+> nur noch im Provider-Key-Mirror (`bootstrap.ts`, nur wenn installiert —
+> `security-architecture.md` §10u). Die Pfadangaben unten
+> (`packages/omadia-ui-orchestrator/…`) beziehen sich jetzt auf `src/` im
+> Plugin-Repo; die Tests (u. a. `uiOrchestrator*.test.ts` und die Canvas-Hälften
+> der Fast-Path-/Privacy-Tests) liegen dort unter `test/`.
+
 Neues Plugin-Package `packages/omadia-ui-orchestrator/` (`@omadia/ui-orchestrator`,
 `kind: extension`) — wird vom `builtInPackageStore` automatisch entdeckt (jeder
 `packages/*`-Ordner mit gültiger `manifest.yaml`), **kein Boot-Edit nötig**. Es

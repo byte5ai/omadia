@@ -6506,6 +6506,28 @@ granted) and refuses without an attributable caller (`mcpUserKey` in the
 turn scope). The McpManager policy guard and audit row still apply. Rows go
 to the user only, never to a model.
 
+## 10u. Provider keys for the standalone canvas plugin
+
+`@omadia/ui-orchestrator` (the canvas Tier-2 orchestrator) makes its own
+`ctx.llm` calls but has no provider-key setup field, so the boot copies the
+orchestrator's provider keys into its vault scope
+(`mirrorProviderKeysToUiOrchestrator`, `src/plugins/bootstrap.ts`) — a
+vault-to-vault copy, no plaintext leaves the kernel.
+
+While the plugin was bundled under `middleware/packages/`, an upload claiming
+its id was refused at ingest (`packageUploadService.ts`, bundled-id collision),
+so the scope the keys went into could only ever belong to the shipped code. The
+plugin now lives in its own repository (`byte5ai/omadia-ui-orchestrator`) and
+is installed from the Hub or as a ZIP, so nothing reserves the id any more. The
+mirror therefore runs only when the installed registry holds the id: keys are
+never pre-seeded into the scope of a plugin the operator has not installed.
+The built-in `@omadia/fast-path` target is unchanged.
+
+Residual: the mirror runs at boot, so a freshly installed canvas plugin gets its
+keys on the next restart, and whoever the operator installs under that id
+receives them — the same trust any installed plugin gets for its own scope.
+Pinned by `middleware/test/uiOrchestratorKeyMirror.test.ts`.
+
 ## 11. Reviewer checklist
 
 Before merging a PR that touches credentials, prompts, or proxy routes:

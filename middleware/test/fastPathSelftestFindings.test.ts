@@ -1,7 +1,7 @@
 /**
- * Live self-test findings on the fast path (v411):
- *   1. the canvas composer's FIRST request already carries the output-format
- *      instruction (attempt 1 returned prose, only the retry asked for JSON);
+ * Live self-test findings on the fast path (v411). Finding 1 (the canvas
+ * composer's output-format instruction) is tested in the
+ * @omadia/ui-orchestrator plugin repo.
  *   2. an odoo_query plan with `limit: 1` (single-record "Details anzeigen")
  *      is executed with limit 100 — `truncated` (1 of 1) no longer misses;
  *   3. a triage plan without labels gets human column headers (catalog field
@@ -14,12 +14,7 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
 import {
-  composeSkeleton,
-  type CompositionLlm,
-} from '../packages/omadia-ui-orchestrator/src/composition.js';
-import {
   FAST_PATH_TOOL_SPECS,
-  OUTPUT_FORMAT_INSTRUCTION,
   fetchRecipeRows,
 } from '../packages/harness-plugin-fast-path/src/fastPath.js';
 import { buildPlannerSystem, parsePlan, PLAN_EXAMPLE, PLANNER_SYSTEM, plannerTool } from '../packages/harness-plugin-fast-path/src/planner.js';
@@ -28,22 +23,6 @@ import { parseTriage } from './_helpers/fastPathRouterPlanner.js';
 import type { RefreshSource } from '../packages/harness-plugin-fast-path/src/refreshRecipes.js';
 
 const ODOO = new Set(['odoo_query']);
-
-describe('finding 1 — composer output-format instruction on the first attempt', () => {
-  it('the first request already says "Output ONLY the JSON object"', async () => {
-    const calls: string[] = [];
-    const llm: CompositionLlm = {
-      complete: ({ messages }) => {
-        calls.push(messages[0]?.content ?? '');
-        return Promise.resolve({ text: 'Here is your dashboard: …' });
-      },
-    };
-    await composeSkeleton({ llm, model: 'm', userText: 'Geburtstage im Januar' });
-    assert.ok(calls.length >= 1);
-    assert.ok(calls[0]?.includes('User request: Geburtstage im Januar'));
-    assert.ok(calls[0]?.includes(OUTPUT_FORMAT_INSTRUCTION), calls[0] ?? '(no call)');
-  });
-});
 
 describe('finding 2 — odoo_query limit normalised to 100 on the fast path', () => {
   const detail: RefreshSource = {

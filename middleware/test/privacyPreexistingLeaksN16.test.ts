@@ -1,8 +1,8 @@
 /**
  * S2-N16 (#1540) — Privacy Shield leak paths that predate the shield's guards.
  *
- * 1. The canvas skeleton is composed before the turn has a privacy handle:
- *    with a guard running, the text goes through its stored-text scope.
+ * 1. The canvas skeleton under a guard — tested in the @omadia/ui-orchestrator
+ *    plugin repo.
  * 2. The significance scorer (live capture, bulk promotion, scratch reaper)
  *    masks the stored text it scores.
  * 3. A note written in an unprotected turn is marked, and refused to a turn
@@ -32,8 +32,6 @@ import type {
   WriteProcessResult,
 } from '@omadia/plugin-api';
 
-import { composeSkeleton } from '../packages/omadia-ui-orchestrator/src/composition.js';
-import { openSkeletonPrivacy } from '../packages/harness-plugin-fast-path/src/storedTextPrivacy.js';
 import { createJobPrivacy } from '../packages/harness-orchestrator-extras/src/jobPrivacy.js';
 import { createHaikuSignificanceScorer } from '../packages/harness-orchestrator-extras/src/significanceScorer.js';
 import { createScratchPromotionReaper } from '../packages/harness-orchestrator-extras/src/scratchPromotionReaper.js';
@@ -102,60 +100,6 @@ const PROTECTED = { hasBypassed: () => false };
 const BYPASSED = { hasBypassed: () => true };
 
 // --- 1. canvas skeleton -------------------------------------------------------
-
-describe('#1540 · canvas skeleton under a privacy guard', () => {
-  it('sends the masked text and restores the skeleton', async () => {
-    const seen: string[] = [];
-    const tree = {
-      type: 'container',
-      id: 'root',
-      children: [{ type: 'heading', id: 'h', content: `Kontakt ${SURROGATE}`, level: 2 }],
-    };
-    const skeleton = await composeSkeleton({
-      llm: {
-        complete: async (req: { messages: Array<{ content: string }> }) => {
-          seen.push(req.messages.map((m) => m.content).join('\n'));
-          return { text: JSON.stringify({ tree, dataRequirements: [] }) };
-        },
-      } as never,
-      model: 'm',
-      userText: `Zeig mir ${REAL}`,
-      privacy: openSkeletonPrivacy(fakeGuard()),
-    });
-    assert.ok(seen.length > 0);
-    for (const prompt of seen) assert.ok(!prompt.includes(REAL), 'real value reached the model');
-    assert.equal(skeleton.source, 'model');
-    assert.ok(JSON.stringify(skeleton.tree).includes(REAL), 'skeleton not restored');
-    assert.ok(!JSON.stringify(skeleton.tree).includes(SURROGATE));
-  });
-
-  it('falls back without a model call when the guard cannot mask', async () => {
-    for (const guard of [
-      fakeGuard({ outcome: 'blocked' }),
-      {} as PrivacyGuardService, // a guard that predates openStoredTextScope
-      {
-        openStoredTextScope: () => {
-          throw new Error('scope down');
-        },
-      } as unknown as PrivacyGuardService,
-    ]) {
-      let calls = 0;
-      const skeleton = await composeSkeleton({
-        llm: {
-          complete: async () => {
-            calls += 1;
-            return { text: '{}' };
-          },
-        } as never,
-        model: 'm',
-        userText: `Zeig mir ${REAL}`,
-        privacy: openSkeletonPrivacy(guard),
-      });
-      assert.equal(calls, 0);
-      assert.equal(skeleton.source, 'fallback');
-    }
-  });
-});
 
 // --- 2. significance scorer ---------------------------------------------------
 
