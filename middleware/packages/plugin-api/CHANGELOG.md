@@ -8,6 +8,21 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.51.0 — 2026-11-01
+
+Additive. Kernel-verified Teams SSO for plugin routes (#1620).
+
+### Added
+
+- **`RouteAuthMode` `'teams-sso'`** — the kernel authenticates every request
+  with a Microsoft Teams tab SSO token (`Authorization: Bearer`): signature
+  against Entra's keys, tenant and app id of a bot of the installed
+  `@omadia/channel-teams`, issued to a Teams/M365 client, delegated user,
+  lifetime. Same registration constraint and operator grant as `'public'`.
+  An omadia session does not open it. Every failure is the same 401.
+- **`TeamsSsoUser`** (`oid`, `tenantId`, `appId`, `upn?`) — what a
+  `'teams-sso'` handler finds on `req.teamsSsoUser`.
+
 ## 1.50.0 — 2026-10-31
 
 Additive. Field-classification auto-approval: approved fields are re-vetted.

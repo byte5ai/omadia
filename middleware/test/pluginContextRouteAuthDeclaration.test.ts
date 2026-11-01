@@ -209,4 +209,19 @@ describe("#470 C6 / G2+G3 — auth:'public' | 'custom' and body:'raw' need a dec
     ctx.routes.register(`${DECLARED}/github`, Router(), { auth: 'custom' });
     assert.equal(seen.length, 1);
   });
+
+  it("#1620 — auth:'teams-sso' needs a declaration too", () => {
+    const { ctx, seen } = makeCtx([]);
+    assert.throws(
+      () => ctx.routes.register('/p/acme/teams/_data', Router(), { auth: 'teams-sso' }),
+      /auth:'teams-sso'.*not covered by any permissions\.public_paths declaration/,
+    );
+    assert.equal(seen.length, 0);
+  });
+
+  it("#1620 — auth:'teams-sso' beneath a declared prefix registers", () => {
+    const { ctx, seen } = makeCtx(['/p/acme/teams']);
+    ctx.routes.register('/p/acme/teams/_data', Router(), { auth: 'teams-sso' });
+    assert.deepEqual(seen[0]?.options, { auth: 'teams-sso' });
+  });
 });

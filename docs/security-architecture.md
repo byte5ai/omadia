@@ -1181,13 +1181,73 @@ Follow-ups (S3-G):
   against Entra keys, configured bot tenant, bot app id as audience, delegated
   user token).
 - Builder codegen mounts `spec.ui_routes` with an explicit
-  `{ auth: 'session' }`. These pages render tool data, so in a Teams tab with no
-  omadia session they correctly answer 401. Routes a generated plugin really
+  `{ auth: 'session' }` for the browser. These pages render tool data, so in a
+  Teams tab with no omadia session they answer 401; since #1620 the Teams tab
+  goes through the `'teams-sso'` surface instead (§5b-1). Routes a generated plugin really
   needs without a session (webhooks, OAuth callbacks) are declared in
   `spec.permissions.public_paths` (same syntax gate as the kernel, written to
   `manifest.permissions.public_paths`) and registered with `auth: 'custom'` in
   `activate-body`. The spec refuses `/p/…` there, so a grant can never cover the
   `ui_routes` mount.
+
+## 5b-1. `auth: 'teams-sso'` — the kernel verifies Teams tab tokens (#1620)
+
+Builder-generated `/p/` UI pages answered 401 inside Teams after #1596, and a
+generated plugin cannot validate a Teams SSO token by itself. Marcel's decision
+(2026-11-01): the kernel does it, as a fourth `RouteAuthMode`.
+
+`ctx.routes.register(prefix, router, { auth: 'teams-sso' })`:
+
+- **Same consent as `'public'`/`'custom'`.** The prefix must lie beneath a
+  `permissions.public_paths` declaration (else `register()` throws), the entry
+  is never mounted ambiently, and it is reached only through the C4 public-path
+  mount while the operator grant stands. No grant: 404, or the 401 of a
+  session-gated sibling at a shorter prefix.
+- **The gate** (`auth/teamsSsoGate.ts`, bound once per entry inside the
+  disposed guard) reads `Authorization: Bearer` and nothing else. The verifier
+  (`auth/teamsSsoVerifier.ts`, ported from channel-teams 0.31.0
+  `teamsTabAuth.ts`) accepts a token only with: `alg` RS256 and a valid
+  signature against the tenant's Entra JWKS; `tid` the tenant of a configured
+  bot and `iss` that tenant's v1/v2 issuer; `aud` that bot's app id (bare or
+  `api://<host>/<appId>`); `azp`/`appid` one of Microsoft's Teams/M365 clients;
+  `scp` + `oid` (delegated user — an app-only token is refused); `exp`/`nbf`
+  within 5 min skew; at most 16 KB.
+- **Audiences** (`platform/teamsSsoAudiences.ts`) are the bots of the
+  installed, *active* `@omadia/channel-teams`: every `teams_bots[]` entry plus
+  the legacy scalar bot (`microsoft_app_id`/`microsoft_tenant_id` along its
+  config chain), read per request. No active channel-teams → every token is
+  refused, and no key fetch happens.
+- **JWKS**: only a configured tenant reaches key discovery (an attacker-chosen
+  `tid` fetches nothing); keys cached 1 h per tenant; an unknown `kid` refetches
+  at most every 5 min; a failed fetch backs off 60 s; concurrent fetches share
+  one request; 5 s timeout. One verifier per process, so the cache is shared.
+- **Failure**: one fixed 401 (`auth.teams_sso_required`, `WWW-Authenticate:
+  Bearer`), reason only in the server log, never the token. A verifier crash is
+  a refusal. `Cache-Control: no-store`, `Vary: Authorization`.
+- **Pure**: an omadia session cookie neither opens nor is consulted by a
+  `'teams-sso'` route. A route that also wants operator access registers a
+  separate `'session'` router on another prefix.
+- **Identity** reaches the handler as `req.teamsSsoUser = { oid, tenantId,
+  appId, upn? }`; the gate deletes any pre-set value first.
+
+Accepted risk: anyone signed in to a bot's tenant passes, B2B guests included
+(their tokens carry the resource tenant's `tid`). Handlers that must restrict
+further authorise on `oid`. A legacy scalar bot whose password channel-teams
+could not resolve still counts as an audience; it is an app registration of the
+same tenant.
+
+**Builder codegen** keeps the browser page `'session'` at `/p/<slug><path>` and
+adds the Teams surface under `/p/<slug>/teams` (declared by codegen in the
+manifest, granted by the operator): a data-free shell (`'public'`) per route
+that asks Teams for an SSO token and fetches the page from
+`/p/<slug>/teams/_data<path>` (`'teams-sso'`, all ui_route routers merged into
+one, because a granted path dispatches to a single route entry). The
+`ctx.uiRoutes` descriptor points at the shell.
+
+Not part of this change: channel-teams still uses its own copy of the verifier
+(follow-up: consume the kernel's); a real Teams-tab login also needs the Entra
+"Expose an API" setup (`access_as_user` scope, Teams client pre-authorization)
+on the bot's app registration.
 
 ## 5c. Per-orchestrator plugin assignment covers native plugin tools (#1598)
 
@@ -4735,7 +4795,7 @@ has its own reason:
 | `/bot-api/v1/auth/*` | Sign-in, sign-out, OIDC callback, provider list. The middleware lists `/api/v1/auth` as public too (`auth/publicPaths.ts`). |
 | `/_next/*` | Framework assets and dev tooling. |
 | `/health`, `/favicon.ico` | Fly and Compose health checks must answer before anyone has signed in. Since #1382 `/health` also returns the build `version` (`OMADIA_VERSION`), as the middleware's `/health` already did. That exposes the running release to unauthenticated callers. We accept it: the release tags are public, the version is what an operator's script or the updater needs to tell which image serves, and hiding it would not hide a vulnerable build from anyone probing behaviour. |
-| `/p/*` | Plugin UI iframed by Teams Tabs, where only a Teams SSO token exists. The web-ui only skips its login redirect here; the middleware enforces the session on every `auth: 'session'` plugin route (#1596, §5b), and only the static `/p/<id>/ui/` bundle and operator-granted `auth: 'custom'` routes answer without one. |
+| `/p/*` | Plugin UI iframed by Teams Tabs, where only a Teams SSO token exists. The web-ui only skips its login redirect here; the middleware enforces the session on every `auth: 'session'` plugin route (#1596, §5b), and only the static `/p/<id>/ui/` bundle and operator-granted `auth: 'public'`/`'custom'`/`'teams-sso'` routes answer without one (`'teams-sso'` only to a verified Teams SSO token, §5b-1). |
 | `/.well-known/omadia-ui`, `/pairing-discovery` | The pairing descriptor (#293), see below. |
 
 **Pairing discovery.** A desktop client that knows only the operator URL

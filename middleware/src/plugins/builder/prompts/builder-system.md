@@ -432,13 +432,29 @@ erwarteten dynamischen ui-route-Slots als separate Sektion „Dynamic
 ui_routes Slots" — solange dort ✗ missing steht, wirft codegen einen
 `spec_validation`-Error.
 
-### Auth: UI-Routes brauchen eine omadia-Session (#1596)
+### Auth: UI-Routes — Browser per Session, Teams per Teams-SSO (#1596, #1620)
 
-Codegen mountet jede `ui_routes[i]` mit `{ auth: 'session' }`. Die Seiten
-zeigen Tool-Daten (z.B. Mitarbeiter, Abwesenheiten) und antworten ohne
-Login mit **401** — auch im Teams-Tab, wenn dort keine omadia-Session
-besteht. Das ist Absicht: **nie** eine UI-Route öffentlich machen, um
-einen 401 im Teams-Tab zu „reparieren“.
+Codegen erledigt die Auth der `ui_routes` komplett, du schreibst dafür
+keinen Code und keine `public_paths`:
+
+- `/p/<slug><path>` — `{ auth: 'session' }`, die Seite für Operatoren im
+  Browser. Ohne Login **401**.
+- `/p/<slug>/teams<path>` — `{ auth: 'public' }`, eine **datenfreie** Shell
+  für den Teams-Tab. Sie holt per `microsoftTeams.authentication.getAuthToken()`
+  ein Teams-SSO-Token und lädt damit die Seite nach.
+- `/p/<slug>/teams/_data<path>` — `{ auth: 'teams-sso' }`: dieselbe Seite,
+  nur mit gültigem Teams-SSO-Token (der Kernel prüft Signatur, Tenant,
+  Bot-App-ID, Teams-Client, delegierten User). Ein Session-Cookie öffnet sie
+  nicht.
+
+Codegen deklariert `/p/<slug>/teams` selbst in
+`manifest.permissions.public_paths` (deshalb höchstens 15 eigene Einträge in
+`spec.permissions.public_paths`, sonst meldet `lint_spec`
+`ui_route_public_paths_full`). Der Operator muss den Pfad nach dem Install
+freigeben, vorher bleibt der Tab bei 401. **Nie** eine UI-Route auf
+`'public'`/`'custom'` stellen, um einen 401 im Teams-Tab zu „reparieren“.
+Interaktive `react-ssr`-Seiten (`interactive: true`) werden im Teams-Tab
+gerendert, aber nicht hydratisiert.
 
 Ohne Session erreichbar sein müssen nur Routen, die sich **selbst**
 authentifizieren — Webhooks (HMAC über `req.rawBody`), OAuth-Callbacks

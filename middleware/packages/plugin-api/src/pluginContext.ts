@@ -932,11 +932,43 @@ export interface ToolRegistrationOptions {
  *  - `'custom'` — same registration constraint as `'public'`; the plugin
  *    asserts it authenticates every request itself. A webhook verifying an
  *    HMAC over `req.rawBody` is the canonical case.
+ *  - `'teams-sso'` (#1620) — same registration constraint and the same
+ *    operator grant as `'public'`; the KERNEL authenticates every request
+ *    with a Microsoft Teams tab SSO token (`Authorization: Bearer`, from
+ *    `microsoftTeams.authentication.getAuthToken()`): RS256 signature against
+ *    Entra's keys, the tenant and app id of a bot of the installed
+ *    `@omadia/channel-teams`, issued to a Teams / Microsoft 365 client, a
+ *    delegated user token, within its lifetime. The handler finds the user on
+ *    `req.teamsSsoUser` ({@link TeamsSsoUser}). Any failure is the same 401
+ *    with no reason. PURE: an omadia session cookie does NOT open it — a
+ *    route that also wants operator access registers a second `'session'`
+ *    router on another prefix. A Teams tab's own page load carries no
+ *    bearer, so the HTML shell lives on a `'public'` route and stays
+ *    data-free; it fetches the data from the `'teams-sso'` route.
  *
  * There is deliberately no `'none'`: a plugin cannot self-declare its way out
  * of authentication, only ask the operator for a prefix and be granted it.
  */
-export type RouteAuthMode = 'session' | 'public' | 'custom';
+export type RouteAuthMode = 'session' | 'public' | 'custom' | 'teams-sso';
+
+/**
+ * #1620 — the Teams user an `auth: 'teams-sso'` route is serving. The kernel
+ * sets it as `req.teamsSsoUser` after the token verified; it is absent on every
+ * other route. Read it as
+ * `(req as { teamsSsoUser?: TeamsSsoUser }).teamsSsoUser`.
+ */
+export interface TeamsSsoUser {
+  /** Entra object id of the signed-in user (`oid`). */
+  readonly oid: string;
+  /** Entra tenant id (`tid`), lower-cased. One of the bots' tenants. B2B
+   *  guests carry the resource tenant here too. */
+  readonly tenantId: string;
+  /** App id of the bot the token was issued for. */
+  readonly appId: string;
+  /** `preferred_username` / `upn`, when the token carries one. Display and
+   *  logs only — authorise on `oid`, not on this. */
+  readonly upn?: string;
+}
 
 /**
  * Epic #470 C6 / G3 — how the request body reaches the contributed router.

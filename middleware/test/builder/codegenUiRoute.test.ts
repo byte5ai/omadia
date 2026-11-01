@@ -1,7 +1,19 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 
-import { buildUiRouteArtifacts } from '../../src/plugins/builder/codegenUiRoute.js';
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import type { AddressInfo } from 'node:net';
+
+import express, { Router } from 'express';
+
+import {
+  buildUiRouteArtifacts,
+  teamsTabPublicPath,
+} from '../../src/plugins/builder/codegenUiRoute.js';
+import { listenLoopback } from '../_helpers/listenLoopback.js';
 import {
   parseAgentSpec,
   type AgentSpec,
@@ -120,15 +132,44 @@ describe('buildUiRouteArtifacts — library mode', () => {
     assert.ok(artifacts.init.includes("title: \"Inbox\""));
   });
 
-  it('#1596 — mounts ui_routes with an explicit session gate, never public', () => {
+  it('#1596 — mounts the browser page with an explicit session gate', () => {
     const spec = specWithRoutes([libraryRoute]);
     const artifacts = buildUiRouteArtifacts(spec, spec.slots);
     const register = artifacts.init
       .split('\n')
       .find((l) => l.includes('ctx.routes.register('));
     assert.ok(register, 'routes.register line emitted');
-    assert.match(register, /\{ auth: 'session' \}\)/);
-    assert.doesNotMatch(artifacts.init, /auth: '(custom|public)'/);
+    assert.match(register, /__uiRoute_inbox, \{ auth: 'session' \}\)/);
+    assert.doesNotMatch(artifacts.init, /auth: 'custom'/);
+  });
+
+  it("#1620 — Teams tabs: data-free shell 'public', data 'teams-sso', nothing else opened", () => {
+    const spec = specWithRoutes([libraryRoute]);
+    const artifacts = buildUiRouteArtifacts(spec, spec.slots);
+    const registers = artifacts.init
+      .split('\n')
+      .filter((l) => l.includes('ctx.routes.register('));
+    assert.deepEqual(registers, [
+      "  ctx.routes.register(__uiMountPath, __uiRoute_inbox, { auth: 'session' }),",
+      `  ctx.routes.register(__uiMountPath + "/teams", __teamsTab.shell, { auth: 'public' }),`,
+      `  ctx.routes.register(__uiMountPath + "/teams/_data", __teamsTab.data, { auth: 'teams-sso' }),`,
+    ]);
+    // The only router on the 'public' mount is the shell; tool routers only
+    // ever reach the teams-sso mount through `dataRouters`.
+    assert.match(artifacts.init, /dataRouters: \[\n    __uiRoute_inbox,\n  \]/);
+    // The tab channel-teams pins points at the shell.
+    assert.ok(artifacts.init.includes('path: "/teams/dashboard"'));
+    assert.ok(
+      artifacts.imports.includes(
+        "import { createTeamsTabRouters } from './routes/teamsTabRouter.js';",
+      ),
+    );
+    assert.ok(artifacts.files.has('routes/teamsTabRouter.ts'));
+  });
+
+  it('#1620 — teamsTabPublicPath strips the npm scope like the /p/ mount', () => {
+    assert.equal(teamsTabPublicPath('@omadia/agent-hr'), '/p/agent-hr/teams');
+    assert.equal(teamsTabPublicPath('agent-hr'), '/p/agent-hr/teams');
   });
 
   it('B.12-fix — library router file references opts so noUnusedParameters passes', () => {
@@ -173,9 +214,16 @@ describe('buildUiRouteArtifacts — library mode', () => {
       },
     ]);
     const artifacts = buildUiRouteArtifacts(spec, spec.slots);
-    assert.equal(artifacts.files.size, 2);
+    // + the shared Teams-tab router (#1620).
+    assert.equal(artifacts.files.size, 3);
     assert.ok(artifacts.files.has('routes/inboxUiRouter.ts'));
     assert.ok(artifacts.files.has('routes/secondUiRouter.ts'));
+    assert.ok(artifacts.files.has('routes/teamsTabRouter.ts'));
+    // ONE data router merges both — a granted path dispatches to one entry.
+    assert.equal(
+      artifacts.init.split('\n').filter((l) => l.includes("auth: 'teams-sso'")).length,
+      1,
+    );
   });
 });
 
@@ -558,3 +606,78 @@ function minimalSlots(): Record<string, string> {
     'skill-prompt': '# Test Skill\nTest prompt body.',
   };
 }
+
+describe('#1620 — the generated routes/teamsTabRouter.ts, executed', () => {
+  const SECRET = 'payroll-row-4711';
+
+  async function loadGenerated(): Promise<{
+    createTeamsTabRouters: (opts: {
+      mountPath: string;
+      dataSegment: string;
+      pages: { path: string; title: string }[];
+      dataRouters: Router[];
+    }) => { shell: Router; data: Router };
+    cleanup: () => void;
+  }> {
+    const spec = specWithRoutes([libraryRoute]);
+    const source = buildUiRouteArtifacts(spec, spec.slots)
+      .files.get('routes/teamsTabRouter.ts')!
+      .toString('utf-8');
+    // A throwaway package next to middleware's node_modules, so the
+    // generated imports (express, @omadia/plugin-ui-helpers) resolve.
+    const dir = mkdtempSync(path.join(tmpdir(), 'teams-tab-'));
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    symlinkSync(path.resolve(here, '../../node_modules'), path.join(dir, 'node_modules'));
+    writeFileSync(path.join(dir, 'package.json'), '{"type":"module"}');
+    const file = path.join(dir, 'teamsTabRouter.ts');
+    writeFileSync(file, source);
+    const mod = (await import(pathToFileURL(file).href)) as Awaited<
+      ReturnType<typeof loadGenerated>
+    >;
+    return {
+      createTeamsTabRouters: mod.createTeamsTabRouters,
+      cleanup: () => rmSync(dir, { recursive: true, force: true }),
+    };
+  }
+
+  it('serves a data-free shell and the page only on the data mount', async () => {
+    const { createTeamsTabRouters, cleanup } = await loadGenerated();
+    const page = Router();
+    page.get('/dashboard', (_req, res) => {
+      res.type('html').send(`<html><body>${SECRET}</body></html>`);
+    });
+    const tab = createTeamsTabRouters({
+      mountPath: '/p/agent-x/teams',
+      dataSegment: '/_data',
+      pages: [{ path: '/dashboard', title: 'Dashboard <script>' }],
+      dataRouters: [page],
+    });
+    const app = express();
+    app.use('/p/agent-x/teams/_data', tab.data);
+    app.use('/p/agent-x/teams', tab.shell);
+    const server = await listenLoopback(app);
+    const { port } = server.address() as AddressInfo;
+    const base = `http://127.0.0.1:${String(port)}`;
+    try {
+      const shell = await fetch(`${base}/p/agent-x/teams/dashboard`);
+      assert.equal(shell.status, 200);
+      assert.match(shell.headers.get('content-security-policy') ?? '', /frame-ancestors/);
+      const html = await shell.text();
+      assert.ok(!html.includes(SECRET), 'the shell must not carry data');
+      assert.ok(html.includes('getAuthToken'));
+      assert.ok(html.includes('"/p/agent-x/teams/_data/dashboard"'));
+      assert.ok(html.includes("credentials: 'omit'"));
+      assert.ok(!html.includes('Dashboard <script>'), 'title is escaped');
+
+      const data = await fetch(`${base}/p/agent-x/teams/_data/dashboard`);
+      assert.ok((await data.text()).includes(SECRET));
+
+      const unknown = await fetch(`${base}/p/agent-x/teams/other`);
+      assert.equal(unknown.status, 404);
+    } finally {
+      server.close();
+      cleanup();
+    }
+  });
+});
+

@@ -1627,7 +1627,13 @@ readonly attachmentSink?: NativeToolAttachmentSink;
 readonly writeCapabilities?: readonly WriteCapability[];
 readonly isAvailable?: () => boolean;
 }
-export type RouteAuthMode = 'session' | 'public' | 'custom';
+export type RouteAuthMode = 'session' | 'public' | 'custom' | 'teams-sso';
+export interface TeamsSsoUser {
+readonly oid: string;
+readonly tenantId: string;
+readonly appId: string;
+readonly upn?: string;
+}
 export type RouteBodyMode = 'json' | 'raw' | 'none';
 export interface RouteRegisterOptions {
 readonly auth?: RouteAuthMode;

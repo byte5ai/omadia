@@ -243,7 +243,7 @@ export interface CreatePluginContextOptions {
  * may contain ids that aren't installed — that's fine, their vault/registry
  * lookups just return undefined.
  */
-function buildResolutionChain(
+export function buildResolutionChain(
   agentId: string,
   catalog: PluginCatalog,
 ): string[] {
@@ -705,7 +705,8 @@ export function createPluginContext(
   // after all plugins have activated.
   //
   // Epic #470 C6 / G2+G3 — this layer, and only this layer, decides whether a
-  // plugin is ALLOWED to ask for `auth: 'public' | 'custom'` OR `body:'raw'`.
+  // plugin is ALLOWED to ask for `auth: 'public' | 'custom' | 'teams-sso'` OR
+  // `body:'raw'`.
   // The route registry is a generic Express concern that must not know about
   // manifests; the grant registry cannot answer yet (claims happen AFTER
   // activate(), by design — see toolPluginRuntime.activate). What exists at
