@@ -39,6 +39,42 @@ changelog.
 ### Added
 - Conductor: people directory (`@omadia/channel-sdk` `PeopleDirectoryProvider`, kernel `PeopleDirectoryRegistry`, `GET /conductors/people`), MCP tools as action steps (`mcp:<serverId>:<tool>`, service delegation + scan-verdict gate), builder `missingCapabilities` / `personSuggestions` with inline MCP connect modal and person picker in the web-ui.
 
+### Fixed — "Price unknown" on the usage dashboard, prompt hygiene
+
+2026-11-01. One PR for four prompt/usage issues (S4-A).
+
+- **"Price unknown" on `/admin/usage` (#1389).** A metered call of a model
+  with no pricing entry is still recorded at `cost_usd = 0`, but the dashboard
+  no longer reads that zero as "free". It is resolved when the ledger is read,
+  with no schema change: `GET /api/usage/dashboard` returns
+  `totals.unpricedCalls` / `totals.unpricedModels` and `unpricedCalls` per
+  By model / By source row (folded into "Other" too). The page shows a
+  "price unknown" badge on those rows (no `$0.00` for a model with no priced
+  call), keeps them out of every cost, and puts a note above the totals
+  ("N calls of M models without a known price", en + de). Once a price is
+  added to `@omadia/usage-telemetry`'s table, the same rows are priced from
+  their tokens at read time (long-context tier per call), so the badge goes
+  away and the cost appears without a backfill; the ledger stays append-only.
+  Subscription rows bill $0 by design and are not marked. New export
+  `hasKnownPrice(model)`.
+- **JSON-only prompts state their contract plainly (#1236).** The Claude CLI
+  adapter's forced-tool suffix and the reference agent's entity-extractor
+  prompt drop the stacked `MUST` / `ONLY` / `AUSSCHLIESSLICH` / `KEIN … NUR`
+  emphasis. Tool name, description, exact schema, the Person/Topic vocabulary,
+  the empty-result case and "one JSON object, no prose, no fences" stay. A live
+  spot-check against Haiku 4.5 (old vs new, the production parsers) is in the
+  PR. `@omadia/agent-reference-maximum` 0.3.3.
+- **Builder prompt and the shipped agent-integration boilerplate carry no
+  incident history (#1235).** The incident references (ticket numbers,
+  product versions, dates, "heute live beobachtet", "ab sofort") are gone;
+  every rule keeps its reason in the present tense. References that point at
+  a current contract (e.g. #1596 for route auth) stay. The `activate-body` rule now states the current
+  contract: the slot declares the toolkit, the boilerplate returns.
+- **`AGENTS.md` / `web-ui/CLAUDE.md` stale passages removed (#1237).** The
+  CHANGELOG history pointer, the pinned test line number and package count,
+  and the "~860 violations" sentence. The required status checks listed under
+  PR rules now match branch protection. The files stay in the repo.
+
 ### Added — Non-personal fields approved automatically, bulk accept on the field classification page
 
 2026-10-31. The field classification no longer waits for an admin on fields

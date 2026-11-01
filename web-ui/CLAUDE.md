@@ -25,7 +25,6 @@ for the full key-naming convention, ICU placeholders, and `t.rich` usage.
 
 ## String-handling checklist (read before touching any component)
 
-This rule was violated ~860 times before PR #447 swept the codebase clean.
 Keep it clean:
 
 1. **No user-facing literals in `.ts`/`.tsx` — in any language.** Everything a

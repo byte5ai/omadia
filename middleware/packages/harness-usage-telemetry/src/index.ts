@@ -13,6 +13,7 @@ export {
   CACHE_READ_MULTIPLIER,
   CACHE_WRITE_MULTIPLIER,
   priceForModel,
+  hasKnownPrice,
   computeCostUsd,
   normalizeUsage,
 } from './pricing.js';

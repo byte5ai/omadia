@@ -463,10 +463,10 @@ ctx.routes.register('/api/<slug>/hooks', hooks, {
 > eine bewusste Entscheidung.
 
 > **KRITISCH — Response-Schema: Frontend prüft IMMER `data.ok`.** Backend
-> und Frontend müssen denselben Vertrag fahren — der Builder hatte in
-> einem Turn (UniFi-Tracker v0.4.0) `res.json({ devices: [...] })` ohne
-> `ok` geschrieben, das Frontend tat `if (!data.ok) throw 'devices-Fehler'`,
-> und beide Slots dachten der jeweils andere sei kaputt.
+> und Frontend müssen denselben Vertrag fahren. Schreibt der Endpoint
+> `res.json({ devices: [...] })` ohne `ok`, wertet das Frontend mit
+> `if (!data.ok) throw ...` jeden Erfolg als Fehler — und jede Seite hält
+> die andere für kaputt.
 >
 > Pflicht-Pattern in jedem Endpoint:
 > ```js
@@ -530,17 +530,20 @@ davon. Stattdessen über die Service-Registry konsumieren.
 >    Method-Signaturen und Code-Snippets.
 > 3. **`fill_slot` `activate-body`**: Code schreiben — Method-Signaturen
 >    1:1 aus `INTEGRATION.md` übernehmen. **NICHT** aus deinem Trainings-
->    Wissen rekonstruieren — Drift garantiert (heute live beobachtet:
+>    Wissen rekonstruieren: rekonstruierte Signaturen driften von der
+>    echten Client-Surface ab, und der Fehler bleibt stumm — das Plugin
+>    baut, läuft an und liefert leere Ergebnisse. Beispiel:
 >    `odoo.execute_kw(...)` existiert nicht, die echte API ist
->    `odoo.execute({ model, method, positionalArgs, kwargs })` — stand
->    nur in `INTEGRATION.md`, nie in dieser CLAUDE.md).
+>    `odoo.execute({ model, method, positionalArgs, kwargs })` — und die
+>    steht nur in `INTEGRATION.md`, nicht in dieser CLAUDE.md.
 >
-> **WICHTIG bei klassischem `activate-body`-Slot**: `return { ... }` lebt
-> AUSSERHALB der activate-body-Marker-Region (Boilerplate-Restructure 2026-05-04).
-> Der Slot deklariert `const toolkit = createToolkit(...)`; das `return`
-> läuft danach automatisch im Boilerplate. NICHT mehr `return` im Slot
-> schreiben — sonst ist der nachfolgende `external-reads-init`-Block
-> unreachable.
+> **WICHTIG bei klassischem `activate-body`-Slot**: Der Slot deklariert
+> nur `const toolkit = createToolkit(...)`. Das `return { ... }` steht
+> AUSSERHALB der activate-body-Marker-Region und gehört dem Boilerplate:
+> Nach dem Slot laufen die Codegen-Blöcke `external-reads-init` und
+> `ui-routes-init`, danach gibt das Boilerplate `{ toolkit, close }` zurück.
+> Schreib im Slot kein eigenes `return` — sonst ist alles danach
+> unreachable, auch der `external-reads-init`-Block.
 
 Skelett (mit dem konkreten Pattern aus `INTEGRATION.md` füllen):
 
@@ -643,11 +646,11 @@ Abgucken.
   gegen den UniFi-Client geht nirgendwohin. Fremde Daten = Service-Registry
   + `depends_on` (siehe "Daten aus anderen Plugins ziehen" oben).
 - **API-Signaturen für fremde Integrationen aus dem Trainings-Wissen
-  rekonstruieren**: das CLAUDE.md hier dokumentiert KEINE konkreten
-  Method-Signaturen für `OdooClient`, `ConfluenceClient`, etc. mehr —
-  driftet bei jedem Integration-Patch. Stattdessen `read_reference` auf
-  `INTEGRATION.md` des Dependency-Plugins. Hardcoded Beispiele in DIESER
-  Datei sind ab sofort verboten (Lessons-learned 2026-05-04).
+  oder aus dieser Datei übernehmen**: dieses CLAUDE.md dokumentiert
+  bewusst keine konkreten Method-Signaturen für `OdooClient`,
+  `ConfluenceClient` etc., denn hier hart kodierte Signaturen driften bei
+  jedem Integration-Patch. Die Signaturen stehen im `INTEGRATION.md` des
+  Dependency-Plugins — lies es per `read_reference`.
 - **Separate `app.js`/`styles.css`-Dateien**: codegen kann nur Marker-
   Regions in vordefinierten Files füllen, keine neuen Files erzeugen.
   Inline `<script>` und `<style>` im `admin-ui-body`-Slot sind die
@@ -703,10 +706,10 @@ User sagt: "Bau mir einen Agent `de.byte5.agent.sharepoint` für Dokument-Suche.
    | `{{CAPABILITY_ID}}` | `search_documents` |
    | `{{ROLE_DESCRIPTION_DE}}` | "ein pragmatischer SharePoint-Recherche-Assistent" |
 
-   > **`identity.description` ist eine Locale-Map, kein einzelner String** (#885).
+   > **`identity.description` ist eine Locale-Map, kein einzelner String.**
    > Ein blanker String wird als Englisch gelesen — deutscher Text darin
    > erscheint im Hub als englische Beschreibung. Die beiden Platzhalter
-   > kommen aus **zwei getrennten Spec-Feldern** (#1022): `spec.description`
+   > kommen aus **zwei getrennten Spec-Feldern**: `spec.description`
    > ist der deutsche Text, `spec.description_en` der englische. Der Builder
    > setzt beide selbst — den englischen formuliert er aus dem deutschen,
    > ohne dafür nachzufragen. Von Hand zu übersetzen ist also nichts. Fehlt

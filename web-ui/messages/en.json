@@ -5229,6 +5229,13 @@
     "subscription": {
       "headline": "{count, plural, one {# subscription turn} other {# subscription turns}} in this window",
       "explainer": "Subscription turns run on the Claude plan, not on per-token billing. They count as calls but cost nothing here. On the metered API they would have cost {reference}."
+    },
+    "unpriced": {
+      "headline": "{calls, plural, one {# call} other {# calls}} of {models, plural, one {# model} other {# models}} without a known price",
+      "explainer": "These calls are not in the total cost. Once a price is added for {models}, they are priced automatically.",
+      "badge": "price unknown",
+      "badgePartial": "{count, plural, one {# call} other {# calls}} without price",
+      "noCost": "—"
     }
   },
   "adminUsers": {

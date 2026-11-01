@@ -23,6 +23,11 @@ interface UsageTotals {
   /** OM-103 — how many of `calls` ran on the subscription CLI. */
   subscriptionCalls: number;
   cacheHitRatio: number;
+  /** #1389 — metered calls of models without a known price; not in `costUsd`.
+   *  Optional: a middleware from before #1389 does not send it. */
+  unpricedCalls?: number;
+  /** #1389 — the model ids behind `unpricedCalls`. */
+  unpricedModels?: string[];
 }
 interface UsageByKey {
   key: string;
@@ -38,6 +43,8 @@ interface UsageByKey {
   group?: 'builder' | 'other';
   /** #1393 — how many raw sources a grouped row folds. */
   members?: number;
+  /** #1389 — how many of `calls` have no known price; absent when none. */
+  unpricedCalls?: number;
 }
 interface UsageBucket {
   bucket: string;
@@ -260,6 +267,29 @@ export default function UsageDashboardPage(): React.ReactElement {
         <p className="text-[color:var(--fg-muted)]">{t('loading')}</p>
       ) : data ? (
         <>
+          {/*
+            #1389 — a model without a price entry is recorded at $0. Summed
+            silently, that reads as "free"; the note says which calls the
+            total leaves out. Resolved at read time, so it disappears and the
+            calls are priced once the model gets a price.
+          */}
+          {(data.totals.unpricedCalls ?? 0) > 0 && (
+            <section
+              className="mb-6 rounded-lg border border-[color:var(--warning)]/50 bg-[color:var(--warning)]/10 px-4 py-3 text-sm text-[color:var(--fg-muted)]"
+              data-testid="unpriced-note"
+            >
+              <p className="text-[color:var(--fg-strong)]">
+                {t('unpriced.headline', {
+                  calls: data.totals.unpricedCalls ?? 0,
+                  models: data.totals.unpricedModels?.length ?? 0,
+                })}
+              </p>
+              <p className="mt-1">
+                {t('unpriced.explainer', { models: (data.totals.unpricedModels ?? []).join(', ') })}
+              </p>
+            </section>
+          )}
+
           <section className="mb-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <Kpi label={t('kpi.totalCost')} value={usd(data.totals.costUsd)} />
             <Kpi label={t('kpi.calls')} value={compact(data.totals.calls)} />
@@ -421,7 +451,23 @@ function BreakdownTable({ rows, max }: { rows: UsageByKey[]; max: number }): Rea
             <span className="truncate font-medium text-[color:var(--fg-strong)]" title={r.key}>
               {rowLabel(r)}
             </span>
-            <span className="shrink-0 tabular-nums text-[color:var(--fg-strong)]">{usd(r.costUsd)}</span>
+            <span className="flex shrink-0 items-baseline gap-2">
+              {(r.unpricedCalls ?? 0) > 0 && (
+                <span
+                  className="rounded-full border border-[color:var(--warning)] px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-[color:var(--warning)]"
+                  data-testid="unpriced-badge"
+                >
+                  {(r.unpricedCalls ?? 0) >= r.calls
+                    ? t('unpriced.badge')
+                    : t('unpriced.badgePartial', { count: r.unpricedCalls ?? 0 })}
+                </span>
+              )}
+              {/* #1389 — a row with no priced call has no cost to show; $0.00
+                  would be a price. */}
+              <span className="tabular-nums text-[color:var(--fg-strong)]">
+                {(r.unpricedCalls ?? 0) >= r.calls ? t('unpriced.noCost') : usd(r.costUsd)}
+              </span>
+            </span>
           </div>
           <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-[color:var(--border)]">
             <div

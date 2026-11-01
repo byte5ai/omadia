@@ -19,6 +19,27 @@ function makeStubLlm(text: string): {
 }
 
 describe('agent-reference / extractWithLlm (OB-29-3)', () => {
+  it('states the output contract plainly: shape, Person/Topic vocabulary, empty case (#1236)', async () => {
+    let system = '';
+    const llm = {
+      async complete(req: { system?: string }) {
+        system = req.system ?? '';
+        return { text: '{"entities":[]}' };
+      },
+    };
+    await extractWithLlm({ body: 'x', llm });
+    assert.ok(
+      system.includes('{"entities":[{"type":"Person|Topic","name":"<display name>"}]}'),
+      'the exact output shape is in the prompt',
+    );
+    assert.match(system, /Personen/);
+    assert.match(system, /Topics/);
+    assert.ok(system.includes('{"entities":[]}'), 'the empty-result case is in the prompt');
+    assert.match(system, /genau einem JSON-Objekt/);
+    assert.match(system, /keine Markdown-Fences/);
+    assert.doesNotMatch(system, /AUSSCHLIESSLICH|KEIN |NUR /, 'no stacked emphasis carries the contract');
+  });
+
   it('parses clean JSON output', async () => {
     const llm = makeStubLlm(
       '{"entities":[{"type":"Person","name":"John"},{"type":"Topic","name":"ThemeF"}]}',

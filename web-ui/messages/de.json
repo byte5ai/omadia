@@ -5229,6 +5229,13 @@
     "subscription": {
       "headline": "{count, plural, one {# Abo-Turn} other {# Abo-Turns}} in diesem Zeitraum",
       "explainer": "Abo-Turns laufen über das Claude-Abo, nicht über Token-Abrechnung. Sie zählen als Calls, kosten hier aber nichts. Auf der API hätten sie {reference} gekostet."
+    },
+    "unpriced": {
+      "headline": "{calls, plural, one {# Call} other {# Calls}} von {models, plural, one {# Modell} other {# Modellen}} ohne bekannten Preis",
+      "explainer": "Diese Calls sind nicht in den Gesamtkosten enthalten. Sobald für {models} ein Preis hinterlegt ist, werden sie automatisch berechnet.",
+      "badge": "Preis unbekannt",
+      "badgePartial": "{count, plural, one {# Call} other {# Calls}} ohne Preis",
+      "noCost": "—"
     }
   },
   "adminUsers": {

@@ -19,6 +19,8 @@ interface Totals {
   costUsd: number;
   referenceCostUsd: number;
   subscriptionCalls: number;
+  unpricedCalls?: number;
+  unpricedModels?: string[];
 }
 
 function dashboard(totals: Totals, rest: Record<string, unknown> = {}): unknown {
@@ -218,6 +220,58 @@ describe('ADMIN → Usage & cost page', () => {
     expect(screen.getByText('Builder (3 drafts)')).toBeInTheDocument();
     expect(screen.getByText('Other (4 sources)')).toBeInTheDocument();
     expect(screen.queryByText('sub-agent builder')).not.toBeInTheDocument();
+  });
+
+  it('#1389 — marks unpriced models, leaves them out of the total, and says so above it', async () => {
+    respondWith(
+      dashboard(
+        { ...METERED, unpricedCalls: 7, unpricedModels: ['llama3.3:70b', 'mystery-model'] },
+        {
+          byModel: [
+            byKey('claude-opus-5', { costUsd: 2.5 }),
+            byKey('llama3.3:70b', { costUsd: 0, calls: 5, unpricedCalls: 5 }),
+          ],
+          bySource: [byKey('orchestrator', { costUsd: 2.5, calls: 8, unpricedCalls: 4 })],
+        },
+      ),
+    );
+    renderWithIntl(<UsageDashboardPage />);
+
+    const note = await screen.findByTestId('unpriced-note');
+    expect(within(note).getByText('7 calls of 2 models without a known price')).toBeInTheDocument();
+    expect(
+      within(note).getByText(/not in the total cost\. Once a price is added for llama3\.3:70b, mystery-model/),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Total cost').nextSibling).toHaveTextContent('$2.50');
+
+    // A model with no priced call shows the badge and no $0.00 "price".
+    const llama = screen.getByText('llama3.3:70b').closest('li')!;
+    expect(within(llama).getByTestId('unpriced-badge')).toHaveTextContent('price unknown');
+    expect(within(llama).queryByText('$0.00')).not.toBeInTheDocument();
+    // A source that mixes priced and unpriced calls keeps its cost and counts the rest.
+    const orchestrator = screen.getByText('orchestrator').closest('li')!;
+    expect(within(orchestrator).getByTestId('unpriced-badge')).toHaveTextContent('4 calls without price');
+    expect(within(orchestrator).getByText('$2.50')).toBeInTheDocument();
+    const opus = screen.getByText('claude-opus-5').closest('li')!;
+    expect(within(opus).queryByTestId('unpriced-badge')).not.toBeInTheDocument();
+  });
+
+  it('#1389 — shows no note when every call has a price (or the middleware predates it)', async () => {
+    respondWith(dashboard(METERED));
+    renderWithIntl(<UsageDashboardPage />);
+    await screen.findByText('Total cost');
+    expect(screen.queryByTestId('unpriced-note')).not.toBeInTheDocument();
+  });
+
+  it('#1389 — the note and badge exist in German', async () => {
+    respondWith(
+      dashboard({ ...METERED, unpricedCalls: 1, unpricedModels: ['llama3.3:70b'] }, {
+        byModel: [byKey('llama3.3:70b', { costUsd: 0, calls: 1, unpricedCalls: 1 })],
+      }),
+    );
+    renderWithIntl(<UsageDashboardPage />, { locale: 'de' });
+    expect(await screen.findByText('1 Call von 1 Modell ohne bekannten Preis')).toBeInTheDocument();
+    expect(screen.getByTestId('unpriced-badge')).toHaveTextContent('Preis unbekannt');
   });
 
   it('renders the German catalog too', async () => {
