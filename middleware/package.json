@@ -65,7 +65,7 @@
     "@modelcontextprotocol/sdk": "^1.31.0",
     "@types/better-sqlite3": "^9.6.0",
     "@types/cookie-parser": "^1.4.10",
-    "@types/multer": "^2.1.0",
+    "@types/multer": "^2.3.0",
     "@types/yauzl": "^3.4.0",
     "argon2": "^0.45.1",
     "better-sqlite3": "^13.0.3",
