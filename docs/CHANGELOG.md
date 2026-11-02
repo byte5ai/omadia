@@ -1654,11 +1654,11 @@ serve now fails to activate (plugin status `errored`, message names
 that turned every audit leg red: `next` 16.4.2 (three critical/high),
 `dompurify` 3.4.17 via the web-ui override (monaco-editor pins 3.4.15),
 `@azure/msal-node` 7.1.2 (also forced under `@azure/identity`, whose latest
-release still asks for ^6), `undici` 8.12.2, `express` 5.3.0 with the patched
-`body-parser`/`multer`, `follow-redirects`, `vite` ≥ 8.1.6 and `electron`
+release still asks for ^6), `undici` 8.12.3, `express` 5.3.0 with the patched
+`body-parser`/`multer`, `follow-redirects`, `vite` 8.3.5 and `electron`
 44.10.0 with `electron-updater`/`electron-builder` patches; node images move
-to 22.23.4. Electron 45 is left for its own PR, because a major needs the
-dispatch builds §4a asks for.
+to 22.23.4. Electron 45 followed on its own in #1665
+(2026-11-02), after the §4a build and upgrade smoke.
 
 The audit gate gains `"production": true` exceptions (30 days at most, every
 route named in `via`) for an advisory no release fixes in the major a
