@@ -39,6 +39,21 @@ changelog.
 ### Added
 - Conductor: people directory (`@omadia/channel-sdk` `PeopleDirectoryProvider`, kernel `PeopleDirectoryRegistry`, `GET /conductors/people`), MCP tools as action steps (`mcp:<serverId>:<tool>`, service delegation + scan-verdict gate), builder `missingCapabilities` / `personSuggestions` with inline MCP connect modal and person picker in the web-ui.
 
+### Fixed — Web chat could not create routines
+
+2026-11-02. Found in the desktop v0.195.1 functional test.
+
+- **`manage_routine` refused every `create` from the web chat.** Since the
+  #1598 scoping (`requiresAgentSlug`, #1621), `create` needs the slug of the
+  orchestrator that will run the routine whenever an orchestrator registry is
+  wired, which is every real deployment. The web chat's routines principal
+  (`httpRoutineContext` in `routes/chat.ts`) never carried one, and the turn
+  context did not supply it at dispatch either. So "remind me every Monday at
+  9" ended with "the orchestrator that would run it is unknown". Both
+  `/chat` and `/chat/stream` now pass the turn's resolved slug (pinned
+  session snapshot, then request slug, then platform default). Channel turns
+  that rely on the turn-context slug alone are not changed here.
+
 ### Fixed — "Price unknown" on the usage dashboard, prompt hygiene
 
 2026-11-01. One PR for four prompt/usage issues (S4-A).

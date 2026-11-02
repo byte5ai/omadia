@@ -202,10 +202,16 @@ function chatTurnContext(req: Request, sessionScope: string): TurnContextValue {
  * routines feature when Postgres is configured): a routine created here
  * delivers its output into the chat it was created in. Without Postgres the
  * routines feature — and so `manage_routine` — is not wired at all.
+ *
+ * #1598 — `agentSlug` is the orchestrator the turn resolved to (pinned
+ * snapshot, request slug or platform fallback). `manage_routine` refuses
+ * `create` without it whenever an orchestrator registry is wired, which is
+ * every real deployment — so omitting it made web-chat routines impossible.
  */
 function httpRoutineContext(
   req: Request,
   body: z.infer<typeof ChatRequestSchema>,
+  agentSlug: string,
 ): ManageRoutineContext | undefined {
   const userId = req.session?.omadia_user_id;
   if (!userId || !USER_ID_RE.test(userId)) return undefined;
@@ -225,6 +231,7 @@ function httpRoutineContext(
     // Cold-start outreach to OTHER people is a channel-governance decision; the
     // web chat has no such governance source, so it stays closed.
     canTargetOthers: false,
+    agentSlug,
   };
 }
 
@@ -392,7 +399,7 @@ export function createChatRouter(
       // OM-82: the routines principal wraps it on the OUTSIDE, so the CLI
       // bridge's `AsyncLocalStorage.snapshot()` captures both.
       const result = await withRoutinePrincipal(
-        httpRoutineContext(req, parsed.data),
+        httpRoutineContext(req, parsed.data, effectiveSlug),
         () =>
           turnContext.run(chatTurnContext(req, sessionScope), () =>
             chat.chat({
@@ -618,7 +625,7 @@ export function createChatRouter(
       // still exits cleanly. `enterWith` would leave the principal on this
       // request's async chain with no scope exit — a leak the in-process
       // runtime has no owner guard to catch (#1016 guards the CLI agent only).
-      const routinePrincipal = httpRoutineContext(req, parsed.data);
+      const routinePrincipal = httpRoutineContext(req, parsed.data, effectiveSlug);
       // OM-100b: an error EVENT ends the stream normally — neither runtime
       // throws for a failed turn — so the outcome has to be read off the wire.
       let streamError: string | undefined;

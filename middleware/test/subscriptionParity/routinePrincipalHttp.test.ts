@@ -40,6 +40,8 @@ import type { ManageRoutineContext } from '../../src/plugins/routines/manageRout
 import { listenLoopback } from '../_helpers/listenLoopback.js';
 
 const SLUG = 'general';
+/** A second active orchestrator, for the explicit-slug case. */
+const OTHER_SLUG = 'sales';
 const USER_ID = 'user-om82';
 
 /** What `manage_routine`'s resolver saw during the most recent dispatch. */
@@ -123,7 +125,8 @@ describe('OM-82 — routines principal on the HTTP chat path', () => {
     app.use(
       '/api',
       createChatRouter({
-        resolveChatAgent: (slug) => (slug === SLUG ? bridgeLikeChatAgent() : undefined),
+        resolveChatAgent: (slug) =>
+          slug === SLUG || slug === OTHER_SLUG ? bridgeLikeChatAgent() : undefined,
         getDefaultSlug: () => SLUG,
       }),
     );
@@ -151,6 +154,17 @@ describe('OM-82 — routines principal on the HTTP chat path', () => {
       // Cold-start outreach to other people needs a channel governance source
       // the web chat does not have, so it stays closed.
       assert.equal(seen.canTargetOthers, false);
+      // #1598 — without the orchestrator's slug `manage_routine` refuses
+      // `create` whenever an orchestrator registry is wired.
+      assert.equal(seen.agentSlug, SLUG);
+    });
+
+    it(`${route}: the principal names the orchestrator the request picked`, async () => {
+      toolSawContext = undefined;
+      sessionUser = USER_ID;
+
+      assert.equal(await post(`${baseUrl}${route}`, {}, { agentSlug: OTHER_SLUG }), 200);
+      assert.equal(seenContext()?.agentSlug, OTHER_SLUG);
     });
 
     // #1071 — the web sender delivers into the chat named by `sessionId`, so
