@@ -398,6 +398,22 @@ const UNAVAILABLE = /unknown or handler-less/;
  * (normalizeFastPathInput); a recipe with a `filter`, `sort` or `take` refuses it either way
  * (requiresCompleteResult).
  */
+/** The top-level SHAPE of a tool output for a miss log — keys and value
+ *  kinds, never a value (`{ok:boolean,items:array[30]}`, `array[12]`). */
+export function outputShape(raw: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return 'not-json';
+  }
+  const kind = (v: unknown): string =>
+    Array.isArray(v) ? `array[${String(v.length)}]` : v === null ? 'null' : typeof v;
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return kind(parsed);
+  const keys = Object.entries(parsed).slice(0, 8).map(([k, v]) => `${k.slice(0, 40)}:${kind(v)}`);
+  return `{${keys.join(',')}}`;
+}
+
 export async function fetchRecipeRows(
   invoke: ToolInvoke,
   recipe: RefreshSource,
@@ -418,7 +434,13 @@ export async function fetchRecipeRows(
   if (opts.rejectTruncated === true && isTruncatedOutput(raw)) return { ok: false, reason: 'truncated' };
   const mapped = mapRefreshRecords(raw, recipe);
   if (mapped === null) {
-    return { ok: false, reason: requiresCompleteResult(recipe) && isTruncatedOutput(raw) ? 'truncated' : 'unmappable' };
+    if (requiresCompleteResult(recipe) && isTruncatedOutput(raw)) return { ok: false, reason: 'truncated' };
+    // shape only — never a value of the output
+    return {
+      ok: false,
+      reason: 'unmappable',
+      detail: `itemsPath=${recipe.itemsPath ?? '-'} map=${Object.keys(recipe.map).join(',')} output=${outputShape(raw)}`,
+    };
   }
   return { ok: true, rows: mapped.rows, records: mapped.records, ms: Date.now() - t0 };
 }
