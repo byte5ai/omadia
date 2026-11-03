@@ -1838,7 +1838,8 @@
         "direct": "Gelernte Abfrage",
         "slot": "Wert",
         "layout": "Darstellung",
-        "other": "Entscheidung"
+        "other": "Entscheidung",
+        "detail": "Detail-Abfrage"
       },
       "choice": {
         "yes": "ja",
