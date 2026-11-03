@@ -397,7 +397,7 @@ describe('canvas — the decision model picks the layout of planned rows', () =>
     const events = await collect(h.agent.chatStream(turn('Verlauf der offenen Beträge')));
     assert.equal(snapshots(events).length, 1, 'only the table skeleton');
     assert.ok(events.some((e) => e.type === 'surface_patch'));
-    assert.deepEqual(decisionOf(events)?.ui, { skeleton: 'plan' });
+    assert.deepEqual(decisionOf(events)?.ui, { skeleton: 'plan', layout: 'table' }, 'the table is what is shown');
     assert.ok(h.logs.some((l) => /decision layout line not applicable/.test(l)));
   });
 

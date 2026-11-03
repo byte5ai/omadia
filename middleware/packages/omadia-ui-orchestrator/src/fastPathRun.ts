@@ -156,7 +156,9 @@ export async function runFastPath(
   if (chosen !== undefined && chosen !== 'table' && chart === undefined) {
     ctx.log(`[ui-orchestrator] decision layout ${chosen} not applicable to the rows — table`);
   }
-  const shownLayout: CanvasLayout | undefined = chart !== undefined ? chosen : chosen === 'table' ? 'table' : undefined;
+  // what the user sees: the chart, else the table — also when a chart was
+  // chosen but the rows do not fit one (the client says why)
+  const shownLayout: CanvasLayout | undefined = chart !== undefined ? chosen : chosen !== undefined ? 'table' : undefined;
   const publishJobs = chart !== undefined ? [chart.job] : jobs;
   const events: ChatStreamEvent[] = [];
   let seq = startSurfaceSeq;

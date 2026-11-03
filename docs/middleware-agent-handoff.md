@@ -8889,4 +8889,9 @@ Vergleich EINER Spalte über die Zeilen braucht dort kein Modell, Summen je
 Gruppe weiterhin schon. `canvasDecision` liest beim Fallback auch
 `fast-path.turn-gate.data` (ja/nein). Web-Chat: Der `DecisionBadge` zeigt beim
 Hovern bzw. Fokus alle `steps` (i18n `chat.decision.task.*` / `choice.*`).
+Live (sha-5b755fdb): „Zeige die 10 größten offenen Rechnungen als
+Balkendiagramm“ → Batch-Gate data 0,88, `canvas.layout` chart_bar 0,96 →
+Balkendiagramm ohne LLM in 3,7 s (vorher als komplex gegated: Agent, ~28 s).
+Passt ein gewähltes Diagramm nicht zu den Zeilen (z. B. 69 > 50), meldet
+`ui.layout` jetzt `table` (was gezeigt wird), und der Client nennt den Grund.
 
