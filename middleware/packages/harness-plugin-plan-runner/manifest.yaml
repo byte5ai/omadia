@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/plugin-plan-runner"
   name: "Plan Runner"
-  version: "0.2.0"
+  version: "0.2.1"
   kind: "extension"
   domain: "orchestrator.plan-runner"
   description:

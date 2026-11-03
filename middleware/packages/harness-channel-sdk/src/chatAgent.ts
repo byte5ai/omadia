@@ -622,6 +622,13 @@ export interface ChatTurnInput {
    */
   routeHint?: 'simple' | 'complex';
   /**
+   * Precomputed plan-runner verdict from the same TRUSTED wrapper — its
+   * decision model answered whether the turn needs an explicit multi-step
+   * plan. The plan-runner takes it instead of its own gate call. Never set
+   * it from channel input.
+   */
+  planHint?: 'plan' | 'direct';
+  /**
    * Structured UI action from an Omadia UI canvas client (button click,
    * choice pick, row action) — the typed field promised in protocol 1.0 §5.1
    * (until now the action rode `IncomingTurn.metadata.action` and was dropped

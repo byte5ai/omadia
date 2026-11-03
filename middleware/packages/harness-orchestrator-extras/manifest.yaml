@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/orchestrator-extras"
   name: "Orchestrator Extras"
-  version: "0.1.0"
+  version: "0.1.1"
   kind: "extension"
   domain: "core.orchestrator-extras"
   description:
@@ -55,6 +55,10 @@ optional_requires:
   # back: without a privacy guard the jobs send what they sent before.
   - "turnContext@1"
   - "privacyRedact@1"
+  # The recall relevance judge and the significance scorer ask a typed
+  # decision model (e.g. TypeSafe Jev) first when one runs, resolved per call;
+  # without it, or on any failure, they ask the LLM as before.
+  - "decisionModel@1"
 
 # ---------------------------------------------------------------------------
 # S+9.2 Sub-Commit 2b: Capability lifetime flipped.
@@ -135,6 +139,26 @@ setup:
       help:
         en: "How many of the most recent turns of the running session go into the context verbatim — the model's only memory within a session. Default 10 (until #1096 fixed at 3, with no way to change it). Higher values cost room in the token budget (context_default_budget_tokens) that is otherwise available for cross-session recall; values outside 1–50 are clamped to that range. On Neon the daily GC keeps at most graph_gc_hot_max_entries turns per session (default 50) — a longer tail would have nothing left to read after that."
         de: "Wie viele der letzten Turns der laufenden Sitzung wortwörtlich in den Kontext gehen — das einzige Gedächtnis des Modells innerhalb einer Sitzung. Default 10 (bis #1096 fest auf 3, ohne Einstellmöglichkeit). Höhere Werte kosten Platz im Token-Budget (context_default_budget_tokens), der sonst der sitzungsübergreifenden Recall zur Verfügung steht; Werte ausserhalb von 1–50 werden auf diesen Bereich geklemmt. Auf Neon behält der tägliche GC pro Sitzung höchstens graph_gc_hot_max_entries Turns (Default 50) — ein längerer Tail hätte danach nichts mehr zu lesen."
+    - key: "recall_decision_model"
+      label:
+        en: "Recall relevance: use the decision model"
+        de: "Recall-Relevanz: Entscheidungsmodell nutzen"
+      type: "boolean"
+      required: false
+      default: "true"
+      help:
+        en: "When a decision-model plugin is installed (e.g. TypeSafe Jev), it decides which recalled plans, processes and notes are relevant to the current message — one quick request instead of a model call on every turn with recall. It sees the same masked text the model would. Any failure falls back to the model. Without such a plugin this switch does nothing. Default: on."
+        de: "Ist ein Entscheidungsmodell-Plugin installiert (z. B. TypeSafe Jev), entscheidet es, welche abgerufenen Pläne, Prozesse und Notizen zur aktuellen Nachricht passen — eine schnelle Anfrage statt eines Modellaufrufs in jedem Turn mit Recall. Es sieht denselben maskierten Text wie das Modell. Bei jedem Fehler übernimmt das Modell. Ohne ein solches Plugin wirkt der Schalter nicht. Standard: an."
+    - key: "significance_decision_model"
+      label:
+        en: "Significance scoring: use the decision model"
+        de: "Significance-Scoring: Entscheidungsmodell nutzen"
+      type: "boolean"
+      required: false
+      default: "true"
+      help:
+        en: "When a decision-model plugin is installed (e.g. TypeSafe Jev), it scores how worth remembering a captured turn is and what kind of entry it is, instead of a model call per turn. It sees the same masked text the model would. Any failure falls back to the model. Without such a plugin this switch does nothing. Default: on."
+        de: "Ist ein Entscheidungsmodell-Plugin installiert (z. B. TypeSafe Jev), bewertet es, wie merkenswert ein gespeicherter Turn ist und welche Art Eintrag er ist, statt eines Modellaufrufs pro Turn. Es sieht denselben maskierten Text wie das Modell. Bei jedem Fehler übernimmt das Modell. Ohne ein solches Plugin wirkt der Schalter nicht. Standard: an."
 
 playbook:
   when_to_use: |

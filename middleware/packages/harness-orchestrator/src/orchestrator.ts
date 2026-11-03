@@ -6872,6 +6872,7 @@ export class Orchestrator {
       await this.fireTurnHook('onBeforeTurn', turnId, input, {
         userMessage: input.userMessage,
         ...(input.routeHint !== undefined ? { routeHint: input.routeHint } : {}),
+        ...(input.planHint !== undefined ? { planHint: input.planHint } : {}),
       });
     }
     const { recalled, recallUsed, priorContext } = await recall;
@@ -8051,6 +8052,7 @@ export class Orchestrator {
           await this.fireTurnHook('onBeforeTurn', turnId, input, {
             userMessage: input.userMessage,
             ...(input.routeHint !== undefined ? { routeHint: input.routeHint } : {}),
+            ...(input.planHint !== undefined ? { planHint: input.planHint } : {}),
           }),
         );
       }

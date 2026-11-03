@@ -123,4 +123,22 @@ describe('plan-runner onBeforeTurn × fast-path routeHint', () => {
       await w.close();
     }
   });
+
+  it('the decision model\'s planHint: `direct` skips the gate, `plan` skips only the gate', async () => {
+    const direct = await buildWorld();
+    try {
+      await direct.beforeTurn(hookCtx, payload({ routeHint: 'complex', planHint: 'direct' }));
+      assert.equal(direct.llmCalls, 0, 'no gate, no materialiser');
+      assert.ok(direct.logs.includes('[plan-runner] skipped (decision model: direct)'));
+    } finally {
+      await direct.close();
+    }
+    const plan = await buildWorld();
+    try {
+      await plan.beforeTurn(hookCtx, payload({ routeHint: 'complex', planHint: 'plan' }));
+      assert.equal(plan.llmCalls, 1, 'the materialiser only — the gate was the decision model');
+    } finally {
+      await plan.close();
+    }
+  });
 });

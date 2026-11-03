@@ -285,9 +285,37 @@ readonly confidence: number;
 readonly probabilities?: Readonly<Record<string, number>>;
 readonly model?: string;
 }
+export type DecisionQuestion = {
+readonly kind: 'choice';
+readonly instruction: string;
+readonly options: readonly DecisionOption[];
+} | {
+readonly kind: 'yesno';
+readonly instruction: string;
+};
+export interface DecisionBatchRequest {
+readonly task: string;
+readonly input: string;
+readonly questions: Readonly<Record<string, DecisionQuestion>>;
+readonly signal?: AbortSignal;
+}
+export type DecisionAnswer = {
+readonly kind: 'choice';
+readonly choice: string;
+readonly confidence: number;
+readonly probabilities?: Readonly<Record<string, number>>;
+} | {
+readonly kind: 'yesno';
+readonly probability: number;
+};
+export interface DecisionBatchResult {
+readonly answers: Readonly<Record<string, DecisionAnswer>>;
+readonly model?: string;
+}
 export interface DecisionModelService {
 readonly provider: string;
 choose(req: DecisionChoiceRequest): Promise<DecisionChoiceResult>;
+decideAll?(req: DecisionBatchRequest): Promise<DecisionBatchResult>;
 }
 export declare function normalizeDecisionChoice(req: Pick<DecisionChoiceRequest, 'options'>, raw: {
 choice?: unknown;
@@ -295,6 +323,10 @@ confidence?: unknown;
 probabilities?: unknown;
 model?: unknown;
 }): DecisionChoiceResult | undefined;
+export declare function normalizeDecisionBatch(req: Pick<DecisionBatchRequest, 'questions'>, raw: {
+answers?: unknown;
+model?: unknown;
+}): DecisionBatchResult;
 
 // ===== embeddingClient.d.ts =====
 export interface EmbeddingClient {

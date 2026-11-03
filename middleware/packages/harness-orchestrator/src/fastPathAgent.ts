@@ -100,7 +100,8 @@ export function passThroughReason(input: ChatTurnInput): string | undefined {
     input.expectedDomainTool !== undefined ||
     input.freshCheck === true ||
     input.answerVerbosity !== undefined ||
-    input.routeHint !== undefined
+    input.routeHint !== undefined ||
+    input.planHint !== undefined
   ) {
     return 'system';
   }
@@ -207,7 +208,15 @@ export function wrapChatAgentWithFastPath(inner: ChatAgent, deps: FastPathAgentD
     if (outcome.kind === 'agent') {
       return {
         kind: 'agent',
-        input: outcome.route ? { ...input, routeHint: outcome.route } : input,
+        // a miss without any hint passes the very same input object on
+        input:
+          outcome.route || outcome.planHint
+            ? {
+                ...input,
+                ...(outcome.route ? { routeHint: outcome.route } : {}),
+                ...(outcome.planHint ? { planHint: outcome.planHint } : {}),
+              }
+            : input,
         ...(outcome.decision ? { decision: toFastPathDecision(outcome.decision, false) } : {}),
       };
     }

@@ -5,6 +5,8 @@ import type { ClaimVerdict, SoftClaim, VerifierPrivacy } from './claimTypes.js';
 import { MAX_CONTEXT_CHARS } from './claimContext.js';
 import { citesOtherRecord } from './entityHandle.js';
 import { citedNodeId, judgeRequestParts, projectRequestParts } from './judgeRequest.js';
+import type { DecisionModelService } from '@omadia/plugin-api';
+import { decideClaims, type DecidedClaim } from './evidenceDecision.js';
 
 /**
  * LLM-as-Judge for SoftClaims (names, qualitative statements) that can't
@@ -76,7 +78,19 @@ export interface EvidenceJudgeOptions {
   model?: string;
   maxTokens?: number;
   log?: (msg: string) => void;
+  /**
+   * `decisionModel@1` — resolved LAZILY per `checkAll` (a provider plugin may
+   * come up after this one). With a batch-capable service every claim of the
+   * turn is judged in ONE batch; a verdict below {@link DECISION_MIN_CONFIDENCE}
+   * is `unverified`, a confident contradiction still needs the LLM recheck,
+   * and any failure or missing answer goes to the LLM judge unchanged.
+   */
+  decide?: () => DecisionModelService | undefined;
 }
+
+/** A decision-model `verified` / `contradicted` below this confidence is
+ *  reported as `unverified` — the decision model never blocks on a guess. */
+export const DECISION_MIN_CONFIDENCE = 0.8;
 
 const DEFAULTS = {
   model: 'claude-haiku-4-5-20251001',
@@ -148,8 +162,10 @@ export class EvidenceJudge {
   private readonly model: string;
   private readonly maxTokens: number;
   private readonly log: (msg: string) => void;
+  private readonly decide: (() => DecisionModelService | undefined) | undefined;
 
   constructor(opts: EvidenceJudgeOptions) {
+    this.decide = opts.decide;
     this.llm = opts.llm;
     this.fetcher = opts.fetcher;
     this.model = opts.model ?? DEFAULTS.model;
@@ -171,6 +187,13 @@ export class EvidenceJudge {
    * `unverified`.
    */
   async check(claim: SoftClaim, privacy?: VerifierPrivacy): Promise<ClaimVerdict> {
+    const fetched = await this.fetchEvidence(claim);
+    if (!Array.isArray(fetched)) return fetched;
+    return this.judgeWithEvidence(claim, fetched, privacy);
+  }
+
+  /** The claim's evidence, or the verdict when there is none to judge. */
+  private async fetchEvidence(claim: SoftClaim): Promise<EvidenceSnippet[] | ClaimVerdict> {
     let evidence: EvidenceSnippet[];
     try {
       evidence = await this.fetcher.fetch(claim);
@@ -180,7 +203,15 @@ export class EvidenceJudge {
     if (evidence.length === 0) {
       return unverified(claim, 'no evidence available');
     }
+    return evidence;
+  }
 
+  /** The LLM judge over already-fetched evidence (see {@link check}). */
+  private async judgeWithEvidence(
+    claim: SoftClaim,
+    evidence: EvidenceSnippet[],
+    privacy: VerifierPrivacy | undefined,
+  ): Promise<ClaimVerdict> {
     const first = await this.judgeOnce(claim, evidence, privacy);
     if (first === null) {
       // The call failed, came back without a readable verdict, or was never
@@ -233,6 +264,22 @@ export class EvidenceJudge {
         'contradiction judged on placeholder values — not confirmable behind the privacy shield',
       );
     }
+    return this.confirmContradiction(claim, evidence, privacy, sourceSnippet, () => first.rationale);
+  }
+
+  /**
+   * The LLM recheck a contradiction needs before it counts: a fresh judge call
+   * on the same inputs must say `contradicted` again. `rationaleOf` picks the
+   * rationale that becomes truth / detail (the first LLM call's, or — after a
+   * decision-model contradiction, which has none — the recheck's).
+   */
+  private async confirmContradiction(
+    claim: SoftClaim,
+    evidence: EvidenceSnippet[],
+    privacy: VerifierPrivacy | undefined,
+    sourceSnippet: EvidenceSnippet,
+    rationaleOf: (second: JudgeVerdict) => string | undefined,
+  ): Promise<ClaimVerdict> {
     const second = await this.judgeOnce(claim, evidence, privacy);
     if (second === null) {
       // The recheck never ran to a verdict: the contradiction was not tested
@@ -248,12 +295,13 @@ export class EvidenceJudge {
       );
       return unconfirmedContradiction(claim, 'judge contradiction not reproduced on recheck');
     }
+    const rationale = rationaleOf(second);
     return {
       status: 'contradicted',
       claim,
-      truth: first.rationale ?? sourceSnippet.content,
-      source,
-      ...(first.rationale ? { detail: first.rationale } : {}),
+      truth: rationale ?? sourceSnippet.content,
+      source: sourceKind(sourceSnippet.source),
+      ...(rationale ? { detail: rationale } : {}),
     };
   }
 
@@ -261,7 +309,106 @@ export class EvidenceJudge {
     claims: SoftClaim[],
     privacy?: VerifierPrivacy,
   ): Promise<ClaimVerdict[]> {
-    return Promise.all(claims.map((c) => this.check(c, privacy)));
+    const service = this.batchDecisionModel();
+    if (!service || claims.length === 0) {
+      return Promise.all(claims.map((c) => this.check(c, privacy)));
+    }
+    const fetched = await Promise.all(claims.map((c) => this.fetchEvidence(c)));
+    const pending: Array<{ index: number; claim: SoftClaim; evidence: EvidenceSnippet[] }> = [];
+    fetched.forEach((f, index) => {
+      const claim = claims[index];
+      if (claim && Array.isArray(f)) pending.push({ index, claim, evidence: f });
+    });
+    const result =
+      pending.length === 0 ? undefined : await decideClaims(service, pending, privacy);
+    const counts = { verified: 0, contradicted: 0, unverifiable: 0, lowConfidence: 0, llm: 0 };
+    const verdicts = await Promise.all(
+      fetched.map(async (f, index): Promise<ClaimVerdict> => {
+        if (!Array.isArray(f)) return f;
+        const at = pending.findIndex((p) => p.index === index);
+        const p = pending[at];
+        if (!p) return this.check(claims[index] as SoftClaim, privacy);
+        const decided = result?.decided[at];
+        if (!decided) {
+          counts.llm += 1;
+          return this.judgeWithEvidence(p.claim, p.evidence, privacy);
+        }
+        if (decided.verdict !== 'unverifiable' && decided.confidence < DECISION_MIN_CONFIDENCE) {
+          counts.lowConfidence += 1;
+        } else {
+          counts[decided.verdict] += 1;
+        }
+        return this.fromDecision(p.claim, p.evidence, decided, privacy);
+      }),
+    );
+    if (pending.length > 0) {
+      this.log(
+        `[verifier/judge] decision model provider=${service.provider} ` +
+          (result
+            ? `ms=${String(result.ms)} claims=${String(pending.length)} verified=${String(counts.verified)} ` +
+              `contradicted=${String(counts.contradicted)} unverifiable=${String(counts.unverifiable)} ` +
+              `low_confidence=${String(counts.lowConfidence)} llm_fallback=${String(counts.llm)}`
+            : `failed — LLM judge for claims=${String(pending.length)}`),
+      );
+    }
+    return verdicts;
+  }
+
+  /** The decision model when one with `decideAll` runs, else undefined. */
+  private batchDecisionModel():
+    | (DecisionModelService & Required<Pick<DecisionModelService, 'decideAll'>>)
+    | undefined {
+    let service: DecisionModelService | undefined;
+    try {
+      service = this.decide?.();
+    } catch {
+      return undefined;
+    }
+    if (!service?.decideAll) return undefined;
+    return service as DecisionModelService & Required<Pick<DecisionModelService, 'decideAll'>>;
+  }
+
+  /**
+   * Maps a decision-model answer onto a verdict, as conservatively as the LLM
+   * path: below {@link DECISION_MIN_CONFIDENCE} nothing is verified or
+   * contradicted; a citation must name a snippet the request printed and the
+   * record the claim pins; a contradiction judged on placeholders is never
+   * confirmed, and any other contradiction must be reproduced by the LLM.
+   */
+  private async fromDecision(
+    claim: SoftClaim,
+    evidence: EvidenceSnippet[],
+    decided: DecidedClaim,
+    privacy: VerifierPrivacy | undefined,
+  ): Promise<ClaimVerdict> {
+    if (decided.verdict === 'unverifiable') {
+      return unverified(claim, 'decision model: evidence does not settle the claim');
+    }
+    if (decided.confidence < DECISION_MIN_CONFIDENCE) {
+      return unverified(claim, `decision model: ${decided.verdict} below confidence threshold`);
+    }
+    const isContradiction = decided.verdict === 'contradicted';
+    const demote = (reason: string): ClaimVerdict =>
+      isContradiction ? unconfirmedContradiction(claim, reason) : unverified(claim, reason);
+    const snippet =
+      decided.citedNodeId === undefined
+        ? undefined
+        : evidence.find((s) => s.nodeId === decided.citedNodeId);
+    if (!snippet) return demote('missing evidence_node_id');
+    if (citesOtherRecord(claim.relatedEntities, snippet.nodeId)) {
+      this.log(`[verifier/judge] ${OTHER_RECORD_REASON}, demoting claim=${claim.id}`);
+      return demote(OTHER_RECORD_REASON);
+    }
+    if (!isContradiction) {
+      return { status: 'verified', claim, source: sourceKind(snippet.source) };
+    }
+    if (decided.projected) {
+      return unconfirmedContradiction(
+        claim,
+        'contradiction judged on placeholder values — not confirmable behind the privacy shield',
+      );
+    }
+    return this.confirmContradiction(claim, evidence, privacy, snippet, (second) => second.rationale);
   }
 
   // ------------------------------------------------------------------

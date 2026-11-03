@@ -16,6 +16,7 @@ import type { PluginContext } from '@omadia/plugin-api';
 import type { EmbeddingClient } from '@omadia/embeddings';
 import type {
   AgentPrioritiesStore,
+  DecisionModelService,
   KnowledgeGraph,
   NudgeProvider,
   PrivacyGuardService,
@@ -27,6 +28,7 @@ import {
   BULK_INCONSISTENCY_SERVICE_NAME,
   BULK_MERGE_DETECT_SERVICE_NAME,
   BULK_PROMOTION_SERVICE_NAME,
+  DECISION_MODEL_SERVICE_NAME,
   INCONSISTENCY_DETECTOR_SERVICE_NAME,
   MERGE_CANDIDATE_DETECTOR_SERVICE_NAME,
   NUDGE_PROVIDERS_SERVICE_NAME,
@@ -550,6 +552,17 @@ export async function activate(
     resolveModelRef('class:fast', {
       defaultProvider: providerId as ProviderId,
     })?.modelId;
+  // `decisionModel@1` (optional) — resolved per call, never at activation: a
+  // decision-model plugin may activate after this one or go away later. Each
+  // site has its own kill switch (setup fields, default on); off ⇒ LLM only.
+  const decisionModel = (): DecisionModelService | undefined =>
+    ctx.services.getOptional<DecisionModelService>(DECISION_MODEL_SERVICE_NAME);
+  const recallDecisionEnabled = parseBoolDefaultTrue(
+    ctx.config.get<unknown>('recall_decision_model'),
+  );
+  const significanceDecisionEnabled = parseBoolDefaultTrue(
+    ctx.config.get<unknown>('significance_decision_model'),
+  );
   const relevanceJudge =
     llm && !recallRelevanceJudgeDisabled && recallJudgeModel
       ? createRecallRelevanceJudge({
@@ -557,6 +570,7 @@ export async function activate(
           model: recallJudgeModel,
           log: ctx.log,
           privacy: inTurnPrivacy,
+          ...(recallDecisionEnabled ? { decide: decisionModel } : {}),
         })
       : undefined;
 
@@ -602,8 +616,13 @@ export async function activate(
         // #1540 — the live filter, bulk promotion and the scratch reaper all
         // score outside the turn's map (fire-and-forget or a batch job).
         privacy: outsideTurnPrivacy,
+        ...(significanceDecisionEnabled ? { decide: decisionModel } : {}),
       })
     : undefined;
+  ctx.log(
+    `[harness-orchestrator-extras] decision model: recall=${recallDecisionEnabled ? 'on' : 'off'}, ` +
+      `significance=${significanceDecisionEnabled ? 'on' : 'off'} (used when a decisionModel@1 provider runs)`,
+  );
 
   const captureFilter = new CaptureFilter({
     captureLevel,
