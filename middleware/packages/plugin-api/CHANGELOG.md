@@ -8,6 +8,22 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.53.0 — 2026-11-03
+
+Additive. Decision batches: several questions in one provider round trip.
+
+### Added
+
+- **`DecisionModelService.decideAll?`** — optional batch call:
+  `DecisionBatchRequest` (`task`, one masked `input`, `questions` keyed by id,
+  each a `choice` over options or a `yesno`) → `DecisionBatchResult`
+  (`answers` keyed by question id: `{kind:'choice', choice, confidence}` or
+  `{kind:'yesno', probability}`; invalid answers absent). A provider that
+  evaluates questions in parallel (Jev) answers a batch about as fast as one
+  question. Absent → consumers ask question by question via `choose`.
+- **`normalizeDecisionBatch`** — validates a provider's batch answers against
+  the request; drops, never guesses.
+
 ## 1.52.0 — 2026-11-03
 
 Additive. Provider-swappable typed decision model for the fast path.

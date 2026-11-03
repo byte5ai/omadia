@@ -393,7 +393,14 @@ export async function activate(
             ctx.log('[plan-runner] skipped (fast-path routed simple)');
             return;
           }
-          if (!(await shouldPlan(userMessage, llm))) return;
+          // The fast path's decision model (Jev) already answered "does
+          // this turn need a multi-step plan?" in its turn gate — take it
+          // instead of a gate call of our own.
+          if (payload.planHint === 'direct') {
+            ctx.log('[plan-runner] skipped (decision model: direct)');
+            return;
+          }
+          if (payload.planHint !== 'plan' && !(await shouldPlan(userMessage, llm))) return;
           result = await materializePlan({
             planId: hookCtx.turnId,
             scope,

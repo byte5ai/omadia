@@ -37,6 +37,7 @@ changelog.
 ## [Unreleased]
 
 ### Added
+- Fast path: the Jev **turn gate** — every decision of a turn in ONE decision-model request (`decideAll`, plugin-api 1.53.0): model yes/no, simple/complex, plan needed (the plan-runner takes it instead of its own Haiku gate), data source, and a learned plan with its `{{text_n}}` slots filled from the (masked) turn — data questions with names run without the planner. `@omadia/fast-path` 0.3.0, `@omadia/plugin-plan-runner` 0.2.1, `@omadia/decision-jev` 0.2.0.
 - Fast path: `decisionModel@1` (plugin-api 1.52.0) — a typed decision model (first provider: TypeSafe Jev, own repo `omadia-decision-jev`) gates every turn BEFORE any triage model call: model yes/no, then the data source over every offered tool (plugin, API, MCP), then a learned placeholder-free plan runs without the planner. Any failure falls back to the LLM router. `@omadia/fast-path` 0.2.0, setup `fast_path_decision_model` / `fast_path_decision_direct_plans`.
 - Web chat: a `DecisionBadge` shows when the decision model (Jev) decided a turn — answered without LLM, data source, or model needed (with route, confidence, ms); carried as `done.fastPathDecision` for fast-path answers and agent turns alike, persisted with the session.
 - Fast path: MCP tools whose server declares `readOnlyHint` and whose name reads (read verb, no write verb, camelCase-aware, uncut) are plannable on the web/HTTP chat, executed through the agent's gated `invokeFastPathMcpTool`.

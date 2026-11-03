@@ -63,6 +63,13 @@ export interface TurnHookPayload {
    * thing (the plan-runner's gate) can skip it. Absent when no triage ran.
    */
   readonly routeHint?: 'simple' | 'complex';
+  /**
+   * Set on `onBeforeTurn` when the fast path's decision model answered
+   * whether the turn needs an explicit multi-step plan
+   * (`ChatTurnInput.planHint`). The plan-runner takes it instead of its own
+   * gate call. Absent when none decided.
+   */
+  readonly planHint?: 'plan' | 'direct';
   readonly assistantAnswer?: string;
   readonly toolName?: string;
   readonly toolResult?: string;

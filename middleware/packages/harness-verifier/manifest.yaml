@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/verifier"
   name: "Answer Verifier"
-  version: "0.1.0"
+  version: "0.1.1"
   kind: "extension"
   domain: "core.verifier"
   description:
@@ -65,6 +65,12 @@ provides:
 
 requires:
   - "knowledgeGraph@^1"
+
+# The evidence judge asks a typed decision model (e.g. TypeSafe Jev) first
+# when one runs — resolved per check, no activation edge; without it, or on
+# any failure, the LLM judges as before.
+optional_requires:
+  - "decisionModel@1"
 
 setup:
   fields:
@@ -140,6 +146,16 @@ setup:
       help:
         en: "'false' turns off the second sample for borderline answers in enforce mode (the check confirmed some statements but could not confirm another); any other value leaves it on. The sample costs a second model run and does not run any tool again. Taken over from VERIFIER_RESAMPLE_ON_BORDERLINE on first start. Default: 'true'."
         de: "'false' schaltet im enforce-Mode die zweite Stichprobe für Grenzfall-Antworten ab (die Prüfung bestätigte Angaben, konnte eine andere aber nicht bestätigen); jeder andere Wert lässt sie an. Die Stichprobe kostet einen zweiten Modell-Durchlauf und führt kein Tool erneut aus. Wird beim ersten Start aus VERIFIER_RESAMPLE_ON_BORDERLINE übernommen. Default: 'true'."
+    - key: "verifier_decision_model"
+      label:
+        en: "Use the decision model"
+        de: "Entscheidungsmodell nutzen"
+      type: "boolean"
+      required: false
+      default: "true"
+      help:
+        en: "When a decision-model plugin is installed (e.g. TypeSafe Jev), it judges all statements of an answer against their evidence in one quick request instead of one model call per statement. Only a confident answer counts; anything less stays 'not confirmed', and a contradiction still has to be confirmed by the model before it counts. It sees the same masked text the model would. Any failure falls back to the model. Without such a plugin this switch does nothing. Default: on."
+        de: "Ist ein Entscheidungsmodell-Plugin installiert (z. B. TypeSafe Jev), prüft es alle Aussagen einer Antwort gegen ihre Belege in einer schnellen Anfrage statt eines Modellaufrufs pro Aussage. Es zählt nur eine sichere Antwort; alles darunter bleibt 'nicht bestätigt', und ein Widerspruch muss weiterhin vom Modell bestätigt werden, bevor er zählt. Es sieht denselben maskierten Text wie das Modell. Bei jedem Fehler übernimmt das Modell. Ohne ein solches Plugin wirkt der Schalter nicht. Standard: an."
     - key: "graph_tenant_id"
       label:
         en: "Graph Tenant ID"

@@ -12,8 +12,8 @@
 
 import type { LlmProvider } from '@omadia/llm-provider';
 import { collectText, textMessage } from '@omadia/llm-provider';
-import type { EntryType } from '@omadia/plugin-api';
-import { parseLlmJson } from '@omadia/plugin-api';
+import type { DecisionModelService, DecisionQuestion, EntryType } from '@omadia/plugin-api';
+import { normalizeDecisionBatch, parseLlmJson } from '@omadia/plugin-api';
 
 import type { SignificanceScorer } from './captureFilter.js';
 import type { OpenJobPrivacy } from './jobPrivacy.js';
@@ -37,7 +37,42 @@ export interface HaikuSignificanceScorerOptions {
    * stored.
    */
   privacy?: OpenJobPrivacy;
+  /**
+   * `decisionModel@1` — resolved LAZILY per call. With a batch-capable
+   * service the masked text is scored in ONE batch (`significant` yes/no →
+   * score, `entry_type` choice) instead of the LLM; any error or missing
+   * answer falls back to the LLM call unchanged.
+   */
+  decide?: () => DecisionModelService | undefined;
 }
+
+const DECISION_TASK = 'memory.significance';
+const DECISION_QUESTIONS: Readonly<Record<string, DecisionQuestion>> = {
+  significant: {
+    kind: 'yesno',
+    instruction:
+      'Is this conversation turn worth remembering for future sessions? Yes for a decision, deadline, ' +
+      'name, customer-specific quirk, recurring pattern, or learned data-model / schema / domain ' +
+      'conventions. No for chit-chat, thanks, greetings, or a one-off answer with no new fact.',
+  },
+  entry_type: {
+    kind: 'choice',
+    instruction: 'What kind of memory entry is this turn?',
+    options: [
+      { id: 'memory', description: 'A general fact, preference, or note.' },
+      {
+        id: 'process',
+        description:
+          'A repeatable how-to / SOP / workflow, or a stable data-model / schema / convention.',
+      },
+      {
+        id: 'task',
+        description:
+          'Something the user explicitly asked to be done or tracked (remind me, add to my list, follow up).',
+      },
+    ],
+  },
+};
 
 const DEFAULT_MODEL = 'claude-haiku-4-5-20251001';
 const DEFAULT_MAX_TOKENS = 256;
@@ -99,6 +134,9 @@ export function createHaikuSignificanceScorer(
         throw new Error(`privacy: ${masked.reason} — score skipped`);
       }
 
+      const decided = await decideSignificance(opts.decide, masked.text, log);
+      if (decided) return decided;
+
       const response = await opts.llm.complete({
         model,
         maxTokens,
@@ -134,6 +172,48 @@ export function createHaikuSignificanceScorer(
       return { score, suggestedEntryType };
     },
   };
+}
+
+/**
+ * The decision-model score: one batch over the already-masked turn. Returns
+ * undefined — never throws — without a batch-capable decision model, on a
+ * failed call, or when either answer is missing; the caller then asks the
+ * LLM. Logs timing and the outcome only, never text.
+ */
+async function decideSignificance(
+  decide: (() => DecisionModelService | undefined) | undefined,
+  maskedText: string,
+  log: (msg: string) => void,
+): Promise<{ score: number; suggestedEntryType: EntryType } | undefined> {
+  let service: DecisionModelService | undefined;
+  try {
+    service = decide?.();
+  } catch {
+    return undefined;
+  }
+  if (!service?.decideAll) return undefined;
+  const startedAt = Date.now();
+  const prefix = (): string =>
+    `[significance-scorer] decision model provider=${service.provider} ms=${String(Date.now() - startedAt)}`;
+  try {
+    const result = normalizeDecisionBatch(
+      { questions: DECISION_QUESTIONS },
+      await service.decideAll({ task: DECISION_TASK, input: maskedText, questions: DECISION_QUESTIONS }),
+    );
+    const significant = result.answers['significant'];
+    const entryType = result.answers['entry_type'];
+    if (significant?.kind !== 'yesno' || entryType?.kind !== 'choice') {
+      log(`${prefix()} missing answers — LLM scorer`);
+      return undefined;
+    }
+    const type = entryType.choice as EntryType;
+    const score = clamp01(significant.probability);
+    log(`${prefix()} score=${score.toFixed(2)} entry_type=${type}`);
+    return { score, suggestedEntryType: type };
+  } catch (err) {
+    log(`${prefix()} failed (${err instanceof Error ? err.name : 'error'}) — LLM scorer`);
+    return undefined;
+  }
 }
 
 function clamp01(n: number): number {

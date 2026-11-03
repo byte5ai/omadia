@@ -4,8 +4,9 @@ import {
   resolveModelRefStrict,
   UnresolvedModelRefError,
 } from '@omadia/llm-provider';
-import type { KnowledgeGraph } from '@omadia/plugin-api';
+import type { DecisionModelService, KnowledgeGraph } from '@omadia/plugin-api';
 import type { PluginContext } from '@omadia/plugin-api';
+import { DECISION_MODEL_SERVICE_NAME } from '@omadia/plugin-api';
 import {
   initUsageRecorder,
   withProviderUsageTracking,
@@ -224,10 +225,22 @@ export async function activate(
     graph: knowledgeGraph,
   });
   const fetcher = new GraphEvidenceFetcher({ graph: knowledgeGraph });
+  // `decisionModel@1` (optional): resolved per checkAll, never here — a
+  // decision-model plugin may activate after the verifier. Kill switch:
+  // off only for an explicit false.
+  const decisionModelEnabled = parseBoolDefaultTrue(
+    ctx.config.get<unknown>('verifier_decision_model'),
+  );
   const judge = new EvidenceJudge({
     llm,
     fetcher,
     model,
+    ...(decisionModelEnabled
+      ? {
+          decide: () =>
+            ctx.services.getOptional?.<DecisionModelService>(DECISION_MODEL_SERVICE_NAME),
+        }
+      : {}),
   });
   // One cap for both stages. The pipeline checks at most `maxClaims` and keeps
   // any further claim in the verdict as not checked. The extractor asks the
@@ -256,7 +269,7 @@ export async function activate(
 
   ctx.services.provide(VERIFIER_SERVICE, bundle);
   ctx.log(
-    `[harness-verifier] verifier@1 published (mode=${mode}, model=${model}, store=${store ? 'on' : 'off'}, odoo=${odooClient ? 'on' : 'off'}, maxRetries=${String(maxRetries)}, resampleOnBorderline=${String(resampleOnBorderline)})`,
+    `[harness-verifier] verifier@1 published (mode=${mode}, model=${model}, store=${store ? 'on' : 'off'}, odoo=${odooClient ? 'on' : 'off'}, maxRetries=${String(maxRetries)}, resampleOnBorderline=${String(resampleOnBorderline)}, decisionModel=${decisionModelEnabled ? 'on' : 'off'})`,
   );
 
   return {
@@ -273,6 +286,12 @@ function parseNumberOrDefault(raw: unknown, fallback: number): number {
     if (Number.isFinite(parsed)) return parsed;
   }
   return fallback;
+}
+
+function parseBoolDefaultTrue(value: unknown): boolean {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') return value.trim().toLowerCase() !== 'false';
+  return true;
 }
 
 function clampMaxRetries(n: number): number {

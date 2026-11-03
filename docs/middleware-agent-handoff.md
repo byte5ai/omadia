@@ -8806,3 +8806,35 @@ Tests: `test/fastPathDecisionModel.test.ts`,
 `test/chatSessionsMirrorVerifier.test.ts` (Persistenz),
 `web-ui/app/_components/chat/__tests__/DecisionBadge.test.tsx`.
 
+## Jev Turn-Gate: alle Entscheidungen eines Turns in EINER Anfrage (2026-11-03)
+
+Live gemessen (sha-6dfd7876): Jev beantwortet eine Frage in ~280 ms, der
+Haiku-Router brauchte 0,8–1,7 s, der Planner ~1,6–2,5 s. Jev wertet alle
+Fragen eines Requests parallel aus — deshalb kein Kettenaufruf, sondern ein
+Batch. Und: eine 3-Wege-Choice kam live mit Konfidenz 0,46 zurück (unter der
+0,6-Schwelle); Ja/Nein-Fragen (Jev „Noul“) liefern kalibrierte
+Wahrscheinlichkeiten und trennen schärfer.
+
+- **Vertrag:** `DecisionModelService.decideAll?` (plugin-api 1.53.0) —
+  `questions: {id: {kind:'choice'|'yesno', …}}` → `answers`; optional,
+  ohne ihn bleibt der sequenzielle Pfad (`decisionRouter.ts`).
+- **`turnGate.ts`** (fast-path 0.3.0): EIN Request mit `data` (yes/no),
+  `complex` (yes/no), `plan` (yes/no), `source` (Choice über alle angebotenen
+  Tools), spekulativ `direct` (Choice über gelernte Pläne) und `slot_i_j`
+  (Choice über Kandidaten-Spans der maskierten Nachricht je Platzhalter).
+  Schwellen: data ≥ 0,6 → Daten, ≤ 0,4 → Modell (route = complex ≥ 0,5),
+  dazwischen → LLM-Router; plan ≥ 0,6 / ≤ 0,4 → `planHint`.
+- **P2 Slot-Filling (`slotCandidates.ts`):** gelernte Pläne mit bis zu zwei
+  `{{text_n}}`/`{{email_n}}`-Platzhaltern (keine `id`-Slots, kein Top-N)
+  laufen ohne Planner: Kandidaten = Zitate, E-Mails, Großschreibungs-Runs
+  (inkl. GmbH/AG), ohne Fragewörter und ohne das Vokabular der gelernten
+  Frage; der gewählte Span (Konfidenz ≥ 0,85) wird über den Privacy-Run
+  restauriert, `%…%`-Wildcards bleiben. Nur mit laufendem Privacy Shield,
+  ohne Ziffer in der Frage, ohne Follow-up.
+- **`planHint`** (`ChatTurnInput`, `TurnHookPayload`): `direct` → der
+  Plan-Runner überspringt Gate und Materialisierung, `plan` → nur sein Gate.
+- Jev-Plugin 0.2.0: `decideAll` = ein System-One-Request (yes/no → Noul,
+  choice → Choice); Task `fast-path.turn-gate`.
+
+Tests: `test/fastPathTurnGate.test.ts`, `test/planRunnerRouteHint.test.ts`.
+

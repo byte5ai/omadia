@@ -3,9 +3,11 @@ import type { DecisionModelService } from '@omadia/plugin-api';
 import type { AnswerCache, CacheTicket } from './answerCache.js';
 import { directPlanByDecision, routeByDecision } from './decisionRouter.js';
 import type { FastLlm, FastPathToolSpec } from './fastPath.js';
-import type { LearnedPlan } from './learnedPlanStore.js';
 import { planQuery } from './planner.js';
-import { routeTurn, type DecisionTrace } from './router.js';
+import { planToFetch, type LearnedPlan } from './learnedPlanStore.js';
+import { routeTurn, type DecisionTrace, type RouteOutcome, type RouterIntent } from './router.js';
+import { planSlots } from './slotCandidates.js';
+import { turnGateByDecision } from './turnGate.js';
 import type { StoredTextPrivacyRun } from './storedTextPrivacy.js';
 import type { PlannedQuery, PreviousQuery, TriageRoute } from './triage.js';
 
@@ -42,7 +44,15 @@ import type { PlannedQuery, PreviousQuery, TriageRoute } from './triage.js';
 
 export type TriageOutcome =
   | { kind: 'plan'; plan: PlannedQuery; ms: number; cache?: CacheTicket; decision?: DecisionTrace }
-  | { kind: 'agent'; route?: TriageRoute; reason: string; ms: number; decision?: DecisionTrace };
+  | {
+      kind: 'agent';
+      route?: TriageRoute;
+      reason: string;
+      ms: number;
+      decision?: DecisionTrace;
+      /** the decision model's plan-runner hint (turnGate.ts) */
+      planHint?: 'plan' | 'direct';
+    };
 
 /** The user message router and planner share: user-derived text only. */
 export function buildTurnMessage(opts: { question: string; previous?: PreviousQuery }): string {
@@ -106,37 +116,18 @@ export async function triageTurn(opts: {
   const base = { llm: opts.llm, model: opts.model, channel: opts.channel, message, tools: opts.tools, log: opts.log };
   const intents = opts.offered.map((p) => ({ question: p.examples[0] ?? '', tool: p.tool }));
   if (opts.decide) {
-    const routed = await routeByDecision({ ...base, decide: opts.decide, intents });
+    const decided = await decideTurn({ ...opts, decide: opts.decide, message, unmasked, previous, intents });
+    const routed = decided?.outcome;
     const decision = routed?.decision;
     const traced = (out: TriageOutcome): TriageOutcome => (decision ? { ...out, decision } : out);
-    if (routed?.kind === 'agent') return traced(agent(routed.reason, routed.route));
+    if (routed?.kind === 'agent') {
+      const out = traced(agent(routed.reason, routed.route));
+      return decided?.planHint && out.kind === 'agent' ? { ...out, planHint: decided.planHint } : out;
+    }
     if (routed?.kind === 'plan') {
       if (!opts.tools.some((t) => t.name === routed.tool)) return traced(agent('router-tool-not-offered'));
       const ticket = opts.answerCache ? { cache: { source: 'llm' as const, question: opts.question, previous } } : {};
-      // a stored plan runs only for a self-contained turn a RUNNING Privacy
-      // Shield left unchanged — a masked span is a value the plan lacks, and
-      // without a shield nothing proves there is none (fail closed)
-      if (opts.directPlans === true && !previous && privacy !== undefined && message === unmasked) {
-        const direct = await directPlanByDecision({
-          decide: opts.decide,
-          channel: opts.channel,
-          message,
-          question: opts.question,
-          tool: routed.tool,
-          plans: opts.offered,
-          allowedTools: opts.allowedTools,
-          log: opts.log,
-        });
-        if (direct) {
-          return {
-            kind: 'plan',
-            plan: direct,
-            ms: Date.now() - t0,
-            ...ticket,
-            ...(decision ? { decision: { ...decision, direct: true as const } } : {}),
-          };
-        }
-      }
+      if (decided?.direct) return traced({ kind: 'plan', plan: decided.direct, ms: Date.now() - t0, ...ticket });
       const planned = await planQuery({
         ...base,
         tools: opts.tools.filter((t) => t.name === routed.tool),
@@ -207,4 +198,72 @@ async function lookupAnswerCache(
     opts.log(`[fast-path] cache miss channel=${opts.channel} reason=error: ${err instanceof Error ? err.message : 'error'}`);
     return undefined;
   }
+}
+
+/**
+ * The decision model's verdict for a turn: with batch support (`decideAll`)
+ * ONE turn-gate request (turnGate.ts — gate, route, plan hint, source and a
+ * speculative direct plan with filled slots); without it the sequential
+ * gate → source → direct-plan calls (decisionRouter.ts). undefined → the LLM
+ * router.
+ *
+ * A learned plan may run without the planner only for a self-contained turn
+ * (no previous query, no digit) while a Privacy Shield RUNS: a plan without
+ * placeholders additionally needs a message the shield left unchanged (a
+ * masked span is a value the plan lacks); a plan WITH placeholders takes its
+ * values from the turn and restores them through the same run.
+ */
+async function decideTurn(opts: {
+  decide: DecisionModelService;
+  llm: FastLlm;
+  model: string;
+  channel: string;
+  question: string;
+  message: string;
+  unmasked: string;
+  previous: boolean;
+  tools: readonly FastPathToolSpec[];
+  offered: readonly LearnedPlan[];
+  allowedTools: ReadonlySet<string>;
+  intents: readonly RouterIntent[];
+  privacy?: StoredTextPrivacyRun;
+  directPlans?: boolean;
+  log: (message: string) => void;
+}): Promise<{ outcome: RouteOutcome; direct?: PlannedQuery; planHint?: 'plan' | 'direct' } | undefined> {
+  const privacy = opts.privacy;
+  const eligible = opts.directPlans === true && !opts.previous && privacy !== undefined && !/\d/.test(opts.question);
+  if (opts.decide.decideAll) {
+    const candidates = eligible
+      ? opts.offered.filter((p) => planSlots(planToFetch(p)).length > 0 || opts.message === opts.unmasked)
+      : [];
+    return turnGateByDecision({
+      decide: opts.decide,
+      channel: opts.channel,
+      message: opts.message,
+      question: opts.question,
+      tools: opts.tools,
+      intents: opts.intents,
+      candidates,
+      allowedTools: opts.allowedTools,
+      restore: privacy ? (text) => privacy.restore(text) : (text) => text,
+      log: opts.log,
+    });
+  }
+  const routed = await routeByDecision({ ...opts, decide: opts.decide });
+  if (routed?.kind !== 'plan' || !eligible || opts.message !== opts.unmasked) return routed ? { outcome: routed } : undefined;
+  const direct = await directPlanByDecision({
+    decide: opts.decide,
+    channel: opts.channel,
+    message: opts.message,
+    question: opts.question,
+    tool: routed.tool,
+    plans: opts.offered,
+    allowedTools: opts.allowedTools,
+    log: opts.log,
+  });
+  if (!direct) return { outcome: routed };
+  return {
+    outcome: routed.decision ? { ...routed, decision: { ...routed.decision, direct: true } } : routed,
+    direct,
+  };
 }

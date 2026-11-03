@@ -33,7 +33,8 @@
 
 import type { LlmProvider } from '@omadia/llm-provider';
 import { collectText, textMessage } from '@omadia/llm-provider';
-import { parseLlmJson } from '@omadia/plugin-api';
+import type { DecisionModelService } from '@omadia/plugin-api';
+import { normalizeDecisionBatch, parseLlmJson } from '@omadia/plugin-api';
 
 import type { OpenJobPrivacy } from './jobPrivacy.js';
 import { TURN_PATH_REASONING } from './turnPathReasoning.js';
@@ -83,7 +84,23 @@ export interface RecallRelevanceJudgeOptions {
    * goes out as built.
    */
   privacy?: OpenJobPrivacy;
+  /**
+   * `decisionModel@1` — resolved LAZILY per call (a provider plugin may come
+   * up after this one). When it returns a service with `decideAll`, the judge
+   * asks ONE batch (one yes/no per candidate) over the same masked request
+   * instead of the LLM; any error or missing answer falls back to the LLM
+   * path unchanged. Absent / undefined ⇒ LLM only.
+   */
+  decide?: () => DecisionModelService | undefined;
 }
+
+/** Decision-model probability at or above which a candidate is kept. */
+const DECISION_KEEP_THRESHOLD = 0.5;
+const DECISION_TASK = 'recall.relevance';
+const DECISION_INSTRUCTION =
+  "Is this recalled item directly useful for answering the user's current message? " +
+  'Answer no for generic background or operational notes (tool or integration inventories, ' +
+  '"no access to X, use Y"), items about a different subject, or anything only loosely related.';
 
 const DEFAULT_MAX_TOKENS = 512;
 const DEFAULT_MAX_CANDIDATE_CHARS = 280;
@@ -167,13 +184,21 @@ export function createRecallRelevanceJudge(
         }
       }
 
-      const lines = candidates.map((c) => {
-        const text = c.text.replace(/\s+/g, ' ').trim().slice(0, maxChars);
-        return `[id=${c.id} kind=${c.kind}] ${text}`;
-      });
+      const lines = candidates.map((c) => `${itemPrefix(c)}${itemText(c, maxChars)}`);
       const userBlock =
         `Current message:\n${userMessage.trim()}\n\n` +
         `Recalled items:\n${lines.join('\n')}`;
+
+      // Cache a genuine verdict (LLM or decision model) for deterministic
+      // replay. Evict the oldest entry when over the cap (insertion-ordered Map).
+      const remember = (kept: ReadonlySet<string>): void => {
+        if (cacheMax <= 0) return;
+        verdictCache.set(cacheKey, [...kept]);
+        if (verdictCache.size > cacheMax) {
+          const oldest = verdictCache.keys().next().value;
+          if (oldest !== undefined) verdictCache.delete(oldest);
+        }
+      };
 
       try {
         const run = opts.privacy?.('recall-judge');
@@ -183,6 +208,11 @@ export function createRecallRelevanceJudge(
         if (!masked.send) {
           log(`[recall-judge] privacy: ${masked.reason} — judge skipped, keeping all candidates`);
           return allIds;
+        }
+        const decided = await decideRelevant(opts.decide, masked.text, userMessage, candidates, log);
+        if (decided) {
+          remember(decided);
+          return decided;
         }
         const response = await opts.llm.complete({
           model,
@@ -210,15 +240,7 @@ export function createRecallRelevanceJudge(
         for (const id of rawRelevant) {
           if (typeof id === 'string' && allIds.has(id)) kept.add(id);
         }
-        // Cache this genuine verdict for deterministic replay. Evict the oldest
-        // entry when over the cap (insertion-ordered Map).
-        if (cacheMax > 0) {
-          verdictCache.set(cacheKey, [...kept]);
-          if (verdictCache.size > cacheMax) {
-            const oldest = verdictCache.keys().next().value;
-            if (oldest !== undefined) verdictCache.delete(oldest);
-          }
-        }
+        remember(kept);
         return kept;
       } catch (err) {
         log(
@@ -230,4 +252,106 @@ export function createRecallRelevanceJudge(
       }
     },
   };
+}
+
+function itemPrefix(c: RecallCandidate): string {
+  return `[id=${c.id} kind=${c.kind}] `;
+}
+
+function itemText(c: RecallCandidate, maxChars: number): string {
+  return c.text.replace(/\s+/g, ' ').trim().slice(0, maxChars);
+}
+
+/**
+ * Splits the masked request block back into the masked message and one
+ * masked line per candidate. The block is built line by line and masking only
+ * replaces spans inside a line, so the structure survives; any drift (a line
+ * added or lost, a prefix rewritten) returns undefined and the caller takes
+ * the LLM path, which sends the block as a whole.
+ */
+function splitMaskedBlock(
+  maskedBlock: string,
+  userMessage: string,
+  candidates: readonly RecallCandidate[],
+): { message: string; items: string[] } | undefined {
+  const lines = maskedBlock.split('\n');
+  const messageLines = userMessage.trim().split('\n').length;
+  if (lines.length !== messageLines + 3 + candidates.length) return undefined;
+  if (lines[0] !== 'Current message:') return undefined;
+  if (lines[messageLines + 1] !== '' || lines[messageLines + 2] !== 'Recalled items:') {
+    return undefined;
+  }
+  const items: string[] = [];
+  for (const [i, c] of candidates.entries()) {
+    const line = lines[messageLines + 3 + i] ?? '';
+    const prefix = itemPrefix(c);
+    if (!line.startsWith(prefix)) return undefined;
+    items.push(line.slice(prefix.length));
+  }
+  return { message: lines.slice(1, messageLines + 1).join('\n'), items };
+}
+
+function resolveDecisionModel(
+  decide: (() => DecisionModelService | undefined) | undefined,
+): DecisionModelService | undefined {
+  try {
+    return decide?.();
+  } catch {
+    // An undeclared or broken lookup must never fail the turn: LLM path.
+    return undefined;
+  }
+}
+
+/**
+ * The decision-model verdict: one yes/no per candidate in ONE batch over the
+ * already-masked request. Returns undefined — never throws — when there is
+ * no batch-capable decision model, the call fails, or any candidate's answer
+ * is missing; the caller then runs the LLM judge. Logs counts and timing
+ * only, never text.
+ */
+async function decideRelevant(
+  decide: (() => DecisionModelService | undefined) | undefined,
+  maskedBlock: string,
+  userMessage: string,
+  candidates: readonly RecallCandidate[],
+  log: (msg: string) => void,
+): Promise<Set<string> | undefined> {
+  const service = resolveDecisionModel(decide);
+  if (!service?.decideAll) return undefined;
+  const split = splitMaskedBlock(maskedBlock, userMessage, candidates);
+  if (!split) {
+    log('[recall-judge] decision model skipped: masked request lost its structure — LLM judge');
+    return undefined;
+  }
+  const questions: Record<string, { kind: 'yesno'; instruction: string }> = {};
+  for (const [i, text] of split.items.entries()) {
+    questions[`item_${String(i)}`] = {
+      kind: 'yesno',
+      instruction: `${DECISION_INSTRUCTION}\nRecalled item (${candidates[i]?.kind ?? 'item'}): ${text}`,
+    };
+  }
+  const startedAt = Date.now();
+  const prefix = (): string =>
+    `[recall-judge] decision model provider=${service.provider} ms=${String(Date.now() - startedAt)}`;
+  try {
+    // Re-validated here: a malformed answer must never pass as a decision.
+    const result = normalizeDecisionBatch(
+      { questions },
+      await service.decideAll({ task: DECISION_TASK, input: split.message, questions }),
+    );
+    const kept = new Set<string>();
+    for (const [i, c] of candidates.entries()) {
+      const answer = result.answers[`item_${String(i)}`];
+      if (answer?.kind !== 'yesno') {
+        log(`${prefix()} missing answers — LLM judge`);
+        return undefined;
+      }
+      if (answer.probability >= DECISION_KEEP_THRESHOLD) kept.add(c.id);
+    }
+    log(`${prefix()} kept=${String(kept.size)}/${String(candidates.length)}`);
+    return kept;
+  } catch (err) {
+    log(`${prefix()} failed (${err instanceof Error ? err.name : 'error'}) — LLM judge`);
+    return undefined;
+  }
 }

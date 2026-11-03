@@ -41,6 +41,8 @@ export interface TurnHookPayload {
   readonly userMessage?: string;
   /** `onBeforeTurn`: the fast-path triage's verdict (see `@omadia/orchestrator`). */
   readonly routeHint?: 'simple' | 'complex';
+  /** `onBeforeTurn`: the decision model's plan verdict (see `@omadia/orchestrator`). */
+  readonly planHint?: 'plan' | 'direct';
   readonly assistantAnswer?: string;
   readonly toolName?: string;
   readonly toolResult?: string;

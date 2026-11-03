@@ -88,6 +88,9 @@ export type ChatTriageOutcome =
       ms: number;
       /** the decision model's verdict, when one decided the turn */
       decision?: DecisionTrace;
+      /** the decision model's plan-runner hint (does the agent need an
+       *  explicit multi-step plan?) — absent when it decided none */
+      planHint?: 'plan' | 'direct';
     };
 
 /**
@@ -288,6 +291,7 @@ export function createFastPathService(deps: FastPathServiceDeps): FastPathServic
           reason: triage.reason,
           ms: Date.now() - t0,
           ...(triage.route ? { route: triage.route } : {}),
+          ...(triage.planHint ? { planHint: triage.planHint } : {}),
           ...traced,
         };
       }
