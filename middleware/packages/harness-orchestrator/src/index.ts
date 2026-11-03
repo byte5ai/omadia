@@ -827,6 +827,7 @@ export {
 export type {
   DomainTool,
   DomainToolSpec,
+  SubAgentToolHandle,
   AskObserver,
   Askable,
 } from './tools/domainQueryTool.js';

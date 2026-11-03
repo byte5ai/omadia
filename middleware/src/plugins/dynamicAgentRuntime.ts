@@ -607,6 +607,18 @@ export class DynamicAgentRuntime {
       // agent for BOTH the domain tool dispatch AND every sub-agent
       // inner tool call within it.
       agentId,
+      // the sub-agent's own tools, callable without its model loop — the
+      // fast path may plan the read ones the operator allow-listed
+      subAgentTools: () =>
+        subAgentTools.map((t) => ({
+          name: t.spec.name,
+          description: t.spec.description,
+          input_schema: t.spec.input_schema as Readonly<Record<string, unknown>>,
+          handle: async (input: unknown) => {
+            const res = await t.handle(input);
+            return typeof res === 'string' ? res : res.output;
+          },
+        })),
     });
 
     // OB-29-1 — publish the DomainTool as a `subAgent:<agentId>` service

@@ -4,6 +4,8 @@ import {
   fetchRecipeRows,
   parseRefreshSource,
   renderSummary,
+  turnInvoker,
+  type FastPathToolDefinition,
   type RefreshSource,
 } from '@omadia/fast-path';
 
@@ -62,7 +64,13 @@ export async function runFastPath(
   startSurfaceSeq: number,
   /** this turn's plannable tools (built-in + offered learned) and the
    *  fetch whitelist (built-in ∪ active learned) */
-  turnTools: { plannable: number; allowed: ReadonlySet<string>; permitted: ReadonlySet<string> },
+  turnTools: {
+    plannable: number;
+    allowed: ReadonlySet<string>;
+    permitted: ReadonlySet<string>;
+    /** tools that run through their own `invoke` (allow-listed sub-agent tools) */
+    definitions?: readonly FastPathToolDefinition[];
+  },
   /** an action turn's target record — its plan must query exactly it */
   target?: TargetRecord,
   /** the decision model's layout for a plan skeleton (decisionCanvas.ts) —
@@ -107,8 +115,9 @@ export async function runFastPath(
   // ToolsAccessor exposes neither specs nor an availability probe: a tool
   // that is not registered (e.g. odoo_query with generic reads disabled)
   // surfaces as invoke's "unknown or handler-less" → miss tool-unavailable.
-  const invoke = toolsAccessor?.invoke?.bind(toolsAccessor);
-  if (!invoke) return miss('no-invoker');
+  const baseInvoke = toolsAccessor?.invoke?.bind(toolsAccessor);
+  if (!baseInvoke) return miss('no-invoker');
+  const invoke = turnInvoker(baseInvoke, turnTools.definitions);
 
   const jobs: FastPathJob[] = [];
   let firstRecords: Array<Record<string, unknown>> = [];

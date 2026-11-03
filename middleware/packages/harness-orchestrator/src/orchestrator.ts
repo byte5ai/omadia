@@ -11063,6 +11063,24 @@ export class Orchestrator {
         invoke: (input: unknown) => this.invokeFastPathMcpTool(tool, input),
       });
     }
+    // a sub-agent's own tools, `via` its domain tool: offered only while the
+    // domain tool is; the fast path's allow-list + read classifier decide
+    const names = new Set(out.map((d) => d.name));
+    for (const tool of this.domainToolsByName.values()) {
+      if (tool.subAgentTools === undefined || tool.mcpServerId !== undefined || !offered.has(tool.name)) continue;
+      for (const inner of tool.subAgentTools()) {
+        if (names.has(inner.name) || offered.has(inner.name)) continue;
+        names.add(inner.name);
+        out.push({
+          name: inner.name,
+          description: inner.description,
+          input_schema: inner.input_schema,
+          via: tool.name,
+          ...(tool.agentId !== undefined ? { agentId: tool.agentId } : {}),
+          invoke: (input: unknown) => inner.handle(input),
+        });
+      }
+    }
     return sortByToolName(out);
   }
 

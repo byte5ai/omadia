@@ -66,6 +66,8 @@ import type { FastPathTriagePort } from '../packages/harness-orchestrator/src/fa
 import type { NativeToolRegistry } from '../packages/harness-orchestrator/src/nativeToolRegistry.js';
 import type { AgentRow } from '../packages/harness-orchestrator/src/registry/configStore.js';
 import { buildForAgent } from '../packages/harness-orchestrator/src/registry/applyDiff.js';
+import { createDomainTool } from '../packages/harness-orchestrator/src/tools/domainQueryTool.js';
+import { parseAgentToolAllowList } from '../packages/harness-plugin-fast-path/src/service.js';
 
 // ── fixtures: real-world shaped plugin tool definitions ──────────────────
 
@@ -614,3 +616,152 @@ describe('generic tool specs — canvas', () => {
     assert.equal(out.baseCalls, 1);
   });
 });
+
+// ── 8. sub-agent tools (`via` their domain tool) ───────────────────────────
+
+const AGENT_ID = '@omadia/agent-crm';
+const VIA = 'query_crm';
+/** the sub-agent's own read tool, as the orchestrator offers it */
+const viaDef = (invoked: string[]): FastPathToolDefinition => ({
+  ...DYNAMICS_QUERY,
+  via: VIA,
+  agentId: AGENT_ID,
+  invoke: (input: unknown) => {
+    invoked.push(JSON.stringify(input));
+    return Promise.resolve(JSON.stringify(ACCOUNTS));
+  },
+});
+
+describe('sub-agent tools — the operator allow-list', () => {
+  it('parseAgentToolAllowList: names, plugin ids, * and empty', () => {
+    const d = viaDef([]);
+    assert.equal(parseAgentToolAllowList('')(d), false);
+    assert.equal(parseAgentToolAllowList(undefined)(d), false);
+    assert.equal(parseAgentToolAllowList('*')(d), true);
+    assert.equal(parseAgentToolAllowList(` other, ${AGENT_ID} `)(d), true);
+    assert.equal(parseAgentToolAllowList('dynamics_query')(d), true);
+  });
+
+  it('admitToolDefinitions: only allow-listed ones whose domain tool is permitted; their names join permitted', () => {
+    const service = (allow: string) =>
+      createFastPathService({
+        config: { get: <T>(k: string) => (k === 'fast_path_agent_tools' ? allow : undefined) as T | undefined },
+        model: 'class:fast',
+        privacyGuard: () => undefined,
+        privacyForced: () => false,
+        log: () => {},
+      });
+    const defs = [PAPIERKRAM_QUERY, viaDef([])];
+    const off = service('').admitToolDefinitions(defs, new Set([VIA]));
+    assert.deepEqual(off.definitions.map((d) => d.name), ['papierkram_query']);
+    assert.equal(off.permitted.has('dynamics_query'), false);
+    const on = service(AGENT_ID).admitToolDefinitions(defs, new Set([VIA]));
+    assert.deepEqual(on.definitions.map((d) => d.name), ['papierkram_query', 'dynamics_query']);
+    assert.equal(on.permitted.has('dynamics_query'), true);
+    const notOffered = service('*').admitToolDefinitions(defs, new Set(['other']));
+    assert.deepEqual(notOffered.definitions.map((d) => d.name), ['papierkram_query'], 'domain tool not offered → out');
+  });
+});
+
+describe('sub-agent tools — orchestrator wiring', () => {
+  it("an offered domain tool's own tools come with `via`, `agentId` and a direct invoke", async () => {
+    const port: FastPathTriagePort = {
+      channelEnabled: () => true,
+      triageChatTurn: () => Promise.resolve({ kind: 'agent', reason: 'test', ms: 0 }),
+    };
+    const built = buildForAgent(AGENT_ROW, orchestratorDeps(() => port, []), RUNTIME);
+    const asked: string[] = [];
+    const handled: unknown[] = [];
+    built.bundle.raw.registerDomainTool(
+      createDomainTool({
+        name: VIA,
+        description: 'CRM agent',
+        agent: { ask: (q: string) => (asked.push(q), Promise.resolve('model answer')) },
+        domain: 'crm',
+        agentId: AGENT_ID,
+        subAgentTools: () => [
+          {
+            name: 'dynamics_query',
+            description: DYNAMICS_QUERY.description ?? '',
+            input_schema: DYNAMICS_QUERY.input_schema as Record<string, unknown>,
+            handle: (input: unknown) => (handled.push(input), Promise.resolve('[]')),
+          },
+        ],
+      }),
+    );
+    const offered = built.bundle.agent.offeredToolNames?.() ?? new Set<string>();
+    assert.ok(offered.has(VIA), 'the domain tool is offered');
+    assert.equal(offered.has('dynamics_query'), false, 'the inner tool is NOT offered to the model');
+    const def = (built.bundle.agent.offeredToolDefinitions?.() ?? []).find((d) => d.name === 'dynamics_query');
+    assert.equal(def?.via, VIA);
+    assert.equal(def?.agentId, AGENT_ID);
+    assert.equal(await def?.invoke?.({ entity: 'accounts' }), '[]');
+    assert.deepEqual(handled, [{ entity: 'accounts' }]);
+    assert.deepEqual(asked, [], 'no sub-agent model loop');
+  });
+});
+
+async function canvasAgentToolTurn(allow: string): Promise<{ invoked: string[]; ctxInvokes: string[]; baseCalls: number; logs: string[] }> {
+  const reg = new Map<string, unknown>();
+  const logs: string[] = [];
+  const invoked: string[] = [];
+  const ctxInvokes: string[] = [];
+  let baseCalls = 0;
+  const config = { get: <T>(k: string) => (k === 'fast_path_agent_tools' ? allow : undefined) as T | undefined };
+  const ctx = {
+    log: (m: string) => logs.push(m),
+    services: {
+      get: <T>(name: string): T | undefined => reg.get(name) as T | undefined,
+      provide: (name: string, impl: unknown) => {
+        reg.set(name, impl);
+        return () => reg.delete(name);
+      },
+    },
+    llm: withRouterPlanner({ complete: () => Promise.resolve({ text: CANVAS_COMPOSER }) }),
+    config,
+    tools: {
+      register: () => () => {},
+      invoke: (name: string): Promise<string> => {
+        ctxInvokes.push(name);
+        return Promise.reject(new Error(`tools.invoke: '${name}' is unknown or handler-less`));
+      },
+    },
+  } as unknown as PluginContext;
+  reg.set(CHAT_AGENT_SERVICE, {
+    agent: {
+      // the model gets the domain tool only; its own tool rides `via` it
+      offeredToolNames: () => new Set(['odoo_query', VIA]),
+      offeredToolDefinitions: () => [viaDef(invoked) as never],
+      chat: () => Promise.reject(new Error('unused')),
+      async *chatStream() {
+        baseCalls += 1;
+        await Promise.resolve();
+        yield { type: 'done', answer: 'agent', toolCalls: 0, iterations: 1 } as ChatStreamEvent;
+      },
+    },
+  } satisfies ChatAgentBundle);
+  reg.set(
+    FAST_PATH_SERVICE,
+    createFastPathService({ config, model: 'class:fast', privacyGuard: () => undefined, privacyForced: () => false, log: (m) => logs.push(m) }),
+  );
+  await activateCanvas(ctx);
+  const agent = (reg.get('canvasChatAgent') as ChatAgentBundle).agent;
+  await collect(agent.chatStream({ userMessage: 'Welche Firmen sitzen in Berlin?', canvasSessionId: 'cs-sub' } as ChatTurnInput));
+  return { invoked, ctxInvokes, baseCalls, logs };
+}
+
+describe('sub-agent tools — canvas', () => {
+  it('allow-listed: the canvas table is filled through the tool’s own invoke, no agent turn', async () => {
+    const out = await canvasAgentToolTurn(AGENT_ID);
+    assert.equal(out.invoked.length, 1, out.logs.join('\n'));
+    assert.deepEqual(out.ctxInvokes, [], 'never through ctx.tools.invoke');
+    assert.equal(out.baseCalls, 0, out.logs.join('\n'));
+  });
+
+  it('not allow-listed: not plannable → the agent answers', async () => {
+    const out = await canvasAgentToolTurn('');
+    assert.deepEqual(out.invoked, []);
+    assert.equal(out.baseCalls, 1);
+  });
+});
+
