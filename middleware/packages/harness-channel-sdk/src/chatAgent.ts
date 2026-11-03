@@ -140,6 +140,31 @@ export interface FastPathDecision {
   readonly direct?: true;
   /** the turn was answered from data without the agent */
   readonly answered?: true;
+  /** the gate answered below the confidence bar: a language model routed
+   *  the turn instead (the steps still show what the decision model said) */
+  readonly fallback?: true;
+  /** every decision-model answer of the turn, in call order */
+  readonly steps?: ReadonlyArray<FastPathDecisionStep>;
+  /** canvas only: how the turn's view was built */
+  readonly ui?: FastPathDecisionUi;
+}
+
+/** One decision-model answer — task id, chosen option id, confidence, time. */
+export interface FastPathDecisionStep {
+  /** `fast-path.gate`, `fast-path.source`, `fast-path.direct-plan`, `canvas.layout` */
+  readonly task: string;
+  readonly choice: string;
+  readonly confidence: number;
+  readonly ms: number;
+}
+
+/** How a canvas turn's view was built: `plan` / `cache` = from the query
+ *  plan, no composer model call; `simple` = a plain answer view, no
+ *  composer; `composer` = the skeleton composer model. `layout` is the
+ *  decision model's presentation of the rows. */
+export interface FastPathDecisionUi {
+  readonly skeleton: 'plan' | 'cache' | 'simple' | 'composer';
+  readonly layout?: 'table' | 'bar' | 'line' | 'pie';
 }
 
 /** One tool definition as the agent offers it to its model (Anthropic

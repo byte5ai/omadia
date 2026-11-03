@@ -1,7 +1,13 @@
 import type { DecisionBatchResult, DecisionModelService, DecisionQuestion } from '@omadia/plugin-api';
 import { normalizeDecisionBatch } from '@omadia/plugin-api';
 
-import { DECISION_TIMEOUT_MS, DIRECT_PLAN_MIN_CONFIDENCE, sourceOptions } from './decisionRouter.js';
+import {
+  DECISION_TIMEOUT_MS,
+  DIRECT_PLAN_MIN_CONFIDENCE,
+  sourceOptions,
+  type DecisionStepSink,
+  type GateSignal,
+} from './decisionRouter.js';
 import type { FastPathToolSpec } from './fastPath.js';
 import { planToFetch, type LearnedPlan } from './learnedPlanStore.js';
 import { containsPlaceholder } from './literalStripping.js';
@@ -217,6 +223,10 @@ export async function turnGateByDecision(opts: {
   allowedTools: ReadonlySet<string>;
   /** the privacy run's restore — a picked span back to the real value */
   restore: (text: string) => string;
+  /** told every answer of the batch (`fast-path.turn-gate.<question>`) */
+  onStep?: DecisionStepSink;
+  /** told the gate's verdict as soon as the batch answered */
+  onGate?: (gate: GateSignal) => void;
   log: (message: string) => void;
 }): Promise<TurnGateResult | undefined> {
   if (!opts.decide.decideAll) return undefined;
@@ -224,8 +234,20 @@ export async function turnGateByDecision(opts: {
   const candidates = opts.candidates.filter(isGateCandidate);
   const { questions, slotOptions } = turnGateQuestions({ ...opts, candidates });
   const result = await askBatch(opts.decide, opts.message, questions, opts.log);
-  if (!result) return undefined;
+  if (!result) {
+    opts.onGate?.({ verdict: 'none' });
+    return undefined;
+  }
   const ms = Date.now() - t0;
+  // one step per answer — the question id, never a span or an option text
+  for (const [id, a] of Object.entries(result.answers)) {
+    const task = `${TURN_GATE_TASK}.${id.startsWith('slot_') ? 'slot' : id}`;
+    opts.onStep?.(
+      a.kind === 'yesno'
+        ? { task, choice: a.probability >= 0.5 ? 'yes' : 'no', confidence: Math.max(a.probability, 1 - a.probability), ms }
+        : { task, choice: id.startsWith('slot_') ? 'value' : a.choice, confidence: a.confidence, ms },
+    );
+  }
   const pData = yes(result, 'data');
   const pComplex = yes(result, 'complex');
   const pPlan = yes(result, 'plan');
@@ -235,7 +257,10 @@ export async function turnGateByDecision(opts: {
       `data=${pData?.toFixed(2) ?? '-'} complex=${pComplex?.toFixed(2) ?? '-'} plan=${pPlan?.toFixed(2) ?? '-'} ` +
       `source=${source ? `${source.choice}:${source.confidence.toFixed(2)}` : '-'} questions=${Object.keys(questions).length} ms=${ms}`,
   );
-  if (pData === undefined) return undefined;
+  if (pData === undefined) {
+    opts.onGate?.({ verdict: 'none' });
+    return undefined;
+  }
   const trace = (over: Pick<DecisionTrace, 'verdict' | 'confidence'> & Partial<DecisionTrace>): DecisionTrace => ({
     provider: opts.decide.provider,
     ...(result.model !== undefined ? { model: result.model } : {}),
@@ -245,13 +270,18 @@ export async function turnGateByDecision(opts: {
 
   if (pData <= DATA_NO) {
     const route = pComplex === undefined || pComplex >= 0.5 ? 'complex' : 'simple';
+    opts.onGate?.({ verdict: 'model', route, confidence: 1 - pData });
     const planHint = pPlan === undefined ? undefined : pPlan >= PLAN_YES ? 'plan' : pPlan <= PLAN_NO ? 'direct' : undefined;
     return {
       outcome: { kind: 'agent', reason: `agent:${route}`, route, ms, decision: trace({ verdict: 'model', route, confidence: 1 - pData }) },
       ...(planHint ? { planHint } : {}),
     };
   }
-  if (pData < DATA_YES) return undefined;
+  if (pData < DATA_YES) {
+    opts.onGate?.({ verdict: 'none', confidence: pData });
+    return undefined;
+  }
+  opts.onGate?.({ verdict: 'data', confidence: pData });
   if (!source || source.confidence < ROUTER_MIN_CONFIDENCE) return undefined;
   if (!source.choice.startsWith('tool:')) {
     return { outcome: { kind: 'agent', reason: 'decision-no-source', ms, decision: trace({ verdict: 'data', confidence: pData }) } };

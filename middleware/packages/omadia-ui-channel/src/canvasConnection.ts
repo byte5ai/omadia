@@ -3,6 +3,7 @@ import type {
   ChannelSessionClaims,
   ChannelSocket,
   ChatStreamEvent,
+  FastPathDecision,
   IncomingTurn,
 } from '@omadia/channel-sdk';
 import type { TargetRef } from '@omadia/plugin-api';
@@ -18,6 +19,7 @@ import {
   type HandshakeAck,
   type HandshakeError,
   type HandshakeOffer,
+  type TurnDecision,
 } from './protocol.js';
 
 /**
@@ -380,6 +382,8 @@ export function handleCanvasSocket(
     // Queued behind a turn that was still running when the socket closed.
     if (isClosed()) return;
     let terminated = false;
+    // the turn's decision-model verdict (done.fastPathDecision) → turn_complete
+    let decision: TurnDecision | undefined;
     // turn_abort (omadia-ui#13): race the stream against the abort signal so
     // the abort takes effect IMMEDIATELY, not on the next event. Already-sent
     // surface events stay applied; the canvas keeps what rendered.
@@ -411,6 +415,8 @@ export function handleCanvasSocket(
           send(ev); // forward the surface_* event 1:1
         } else if (ev.type === 'text_delta') {
           send({ type: 'agent_text_delta', forTurn: turnId, text: ev.text });
+        } else if (ev.type === 'done' && ev.fastPathDecision !== undefined) {
+          decision = toTurnDecision(ev.fastPathDecision);
         } else if (ev.type === 'error') {
           // A mid-stream error terminates the turn — `turn_error` instead of,
           // not in addition to, `turn_complete`.
@@ -422,7 +428,7 @@ export function handleCanvasSocket(
         // internal orchestrator telemetry — not part of the canvas wire.
       }
       if (!terminated && phase !== 'closed') {
-        send({ type: 'turn_complete', forTurn: turnId });
+        send({ type: 'turn_complete', forTurn: turnId, ...(decision !== undefined ? { decision } : {}) });
       }
     } catch (err) {
       send({
@@ -489,4 +495,22 @@ export function handleCanvasSocket(
     if (msg.viewStateTruncated === true) turn.viewStateTruncated = true;
     return turn;
   }
+}
+
+/** The wire copy of a turn's decision — known fields only, copied. */
+export function toTurnDecision(d: FastPathDecision): TurnDecision {
+  return {
+    provider: d.provider,
+    ...(d.model !== undefined ? { model: d.model } : {}),
+    verdict: d.verdict,
+    ...(d.route !== undefined ? { route: d.route } : {}),
+    ...(d.tool !== undefined ? { tool: d.tool } : {}),
+    confidence: d.confidence,
+    ms: d.ms,
+    ...(d.direct === true ? { direct: true as const } : {}),
+    ...(d.answered === true ? { answered: true as const } : {}),
+    ...(d.fallback === true ? { fallback: true as const } : {}),
+    ...(d.steps !== undefined ? { steps: d.steps.map((s) => ({ task: s.task, choice: s.choice, confidence: s.confidence, ms: s.ms })) } : {}),
+    ...(d.ui !== undefined ? { ui: { skeleton: d.ui.skeleton, ...(d.ui.layout !== undefined ? { layout: d.ui.layout } : {}) } } : {}),
+  };
 }

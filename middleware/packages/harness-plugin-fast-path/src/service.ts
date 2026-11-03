@@ -121,6 +121,10 @@ export interface FastPathService {
   /** `fast_path_decision_direct_plans` — the decision model may run a
    *  learned plan as stored, without the planner */
   readonly directPlansEnabled: boolean;
+  /** `fast_path_decision_canvas` — on the canvas the decision model's gate
+   *  picks the view (plan skeleton / answer view, no composer) and it picks
+   *  the layout of planned rows */
+  readonly canvasDecisionsEnabled: boolean;
   /** planner specs: the allow-listed catalog tools, then a generic spec for
    *  every read tool of `definitions` (the agent's offered tools) without
    *  one — budgeted, name-ordered, the same text for the same tool set */
@@ -177,6 +181,7 @@ export function createFastPathService(deps: FastPathServiceDeps): FastPathServic
     : undefined;
   const decisionEnabled = parseBooleanSetting(deps.config.get<unknown>('fast_path_decision_model'), true);
   const directPlansEnabled = parseBooleanSetting(deps.config.get<unknown>('fast_path_decision_direct_plans'), true);
+  const canvasDecisionsEnabled = parseBooleanSetting(deps.config.get<unknown>('fast_path_decision_canvas'), true);
   const decisionModel = (): DecisionModelService | undefined => (decisionEnabled ? deps.decisionModel?.() : undefined);
   const builtIn = plannableTools([...tools]);
   const sessions = new Map<string, PreviousQuery>();
@@ -369,6 +374,7 @@ export function createFastPathService(deps: FastPathServiceDeps): FastPathServic
     ...(answerCache ? { answerCache } : {}),
     decisionModel,
     directPlansEnabled,
+    canvasDecisionsEnabled,
     plannableTools: (definitions) => plannable(definitions),
     allowedFetchTools,
     recordFetchOutcome,

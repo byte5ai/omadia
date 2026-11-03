@@ -145,7 +145,13 @@ describe('turn gate — ONE batch request', () => {
     if (out.kind !== 'agent') return;
     assert.equal(out.route, 'complex');
     assert.equal(out.planHint, 'direct');
-    assert.deepEqual({ ...out.decision, ms: 0 }, { provider: 'jev', model: 'jev-1.14.0', verdict: 'model', route: 'complex', confidence: 0.9, ms: 0 });
+    const { steps, ...trace } = out.decision ?? { steps: [] };
+    assert.deepEqual({ ...trace, ms: 0 }, { provider: 'jev', model: 'jev-1.14.0', verdict: 'model', route: 'complex', confidence: 0.9, ms: 0 });
+    assert.deepEqual(
+      steps?.map((st) => `${st.task}=${st.choice}`),
+      ['fast-path.turn-gate.data=no', 'fast-path.turn-gate.complex=yes', 'fast-path.turn-gate.plan=no'],
+      'every batch answer is a step — question ids only',
+    );
   });
 
   it('route and plan hint follow the yes/no probabilities', async () => {

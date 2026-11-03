@@ -4,7 +4,14 @@ import { normalizeDecisionChoice } from '@omadia/plugin-api';
 import { toolPurpose, type FastPathToolSpec } from './fastPath.js';
 import { planToFetch, type LearnedPlan } from './learnedPlanStore.js';
 import { containsPlaceholder } from './literalStripping.js';
-import { ROUTER_MIN_CONFIDENCE, type DecisionTrace, type RouteOutcome, type RouterIntent } from './router.js';
+import {
+  ROUTER_MIN_CONFIDENCE,
+  type DecisionStep,
+  type DecisionTrace,
+  type RouteOutcome,
+  type RouterIntent,
+} from './router.js';
+import type { TriageRoute } from './triage.js';
 import { validatePlannedQuery, type PlannedQuery } from './triage.js';
 
 /**
@@ -94,11 +101,35 @@ export function sourceOptions(tools: readonly FastPathToolSpec[], intents: reado
   return [...toolOptions, { id: SOURCE_NONE, description: 'no listed source answers it in one read call' }];
 }
 
+/** Told every decision the model answered (also an unsure one), in call
+ *  order — what a channel shows as "what ran on the decision model". */
+export type DecisionStepSink = (step: DecisionStep) => void;
+
+/** What the gate said, told as soon as it answered — before the source or
+ *  the planner. `none`: no usable gate (no model, failure, below the bar). */
+export interface GateSignal {
+  verdict: 'data' | 'model' | 'none';
+  route?: TriageRoute;
+  confidence?: number;
+}
+
 /** Ask the decision model, HARD-bounded by {@link DECISION_TIMEOUT_MS} (the
  *  abort signal is a courtesy a provider may ignore — the race is not);
  *  undefined on any error, timeout or malformed answer (logged). Never
- *  throws. */
-async function choose(
+ *  throws. A valid answer is reported to `onStep`. */
+export async function chooseDecision(
+  decide: DecisionModelService,
+  req: { task: string; instruction: string; input: string; options: readonly DecisionOption[] },
+  log: (message: string) => void,
+  onStep?: DecisionStepSink,
+): Promise<DecisionChoiceResult | undefined> {
+  const t0 = Date.now();
+  const result = await chooseBounded(decide, req, log);
+  if (result) onStep?.({ task: req.task, choice: result.choice, confidence: result.confidence, ms: Date.now() - t0 });
+  return result;
+}
+
+async function chooseBounded(
   decide: DecisionModelService,
   req: { task: string; instruction: string; input: string; options: readonly DecisionOption[] },
   log: (message: string) => void,
@@ -129,29 +160,46 @@ export async function routeByDecision(opts: {
   tools: readonly FastPathToolSpec[];
   intents?: readonly RouterIntent[];
   log: (message: string) => void;
+  onStep?: DecisionStepSink;
+  /** told the gate's verdict as soon as it answered */
+  onGate?: (gate: GateSignal) => void;
 }): Promise<RouteOutcome | undefined> {
   const t0 = Date.now();
   const provider = opts.decide.provider;
-  const gate = await choose(
+  const steps: DecisionStep[] = [];
+  const onStep: DecisionStepSink = (step) => {
+    steps.push(step);
+    opts.onStep?.(step);
+  };
+  const gate = await chooseDecision(
     opts.decide,
     { task: GATE_TASK, instruction: GATE_INSTRUCTION, input: opts.message, options: GATE_OPTIONS },
     opts.log,
+    onStep,
   );
-  if (!gate) return undefined;
+  if (!gate) {
+    opts.onGate?.({ verdict: 'none' });
+    return undefined;
+  }
   opts.log(
     `[fast-path] decision gate channel=${opts.channel} provider=${provider} choice=${gate.choice} ` +
       `conf=${gate.confidence.toFixed(2)} ms=${Date.now() - t0}`,
   );
   // an unsure gate decides nothing: the LLM router takes the turn
-  if (gate.confidence < ROUTER_MIN_CONFIDENCE) return undefined;
+  if (gate.confidence < ROUTER_MIN_CONFIDENCE) {
+    opts.onGate?.({ verdict: 'none', confidence: gate.confidence });
+    return undefined;
+  }
   const trace = (over: Partial<DecisionTrace> & Pick<DecisionTrace, 'verdict' | 'confidence'>): DecisionTrace => ({
     provider,
     ...(gate.model !== undefined ? { model: gate.model } : {}),
     ms: Date.now() - t0,
+    steps: [...steps],
     ...over,
   });
   if (gate.choice === MODEL_SIMPLE || gate.choice === MODEL_COMPLEX) {
     const route = gate.choice === MODEL_SIMPLE ? 'simple' : 'complex';
+    opts.onGate?.({ verdict: 'model', route, confidence: gate.confidence });
     return {
       kind: 'agent',
       reason: `agent:${route}`,
@@ -160,7 +208,8 @@ export async function routeByDecision(opts: {
       decision: trace({ verdict: 'model', route, confidence: gate.confidence }),
     };
   }
-  const source = await choose(
+  opts.onGate?.({ verdict: 'data', confidence: gate.confidence });
+  const source = await chooseDecision(
     opts.decide,
     {
       task: SOURCE_TASK,
@@ -169,6 +218,7 @@ export async function routeByDecision(opts: {
       options: sourceOptions(opts.tools, opts.intents),
     },
     opts.log,
+    onStep,
   );
   const ms = Date.now() - t0;
   if (!source) return undefined;
@@ -208,6 +258,7 @@ export async function directPlanByDecision(opts: {
   plans: readonly LearnedPlan[];
   allowedTools: ReadonlySet<string>;
   log: (message: string) => void;
+  onStep?: DecisionStepSink;
 }): Promise<PlannedQuery | undefined> {
   if (/\d/.test(opts.question)) return undefined; // a number is a value the plan may not have
   const candidates = opts.plans.filter((p) => p.tool === opts.tool && isDirectPlan(p)).slice(0, MAX_DIRECT_PLANS);
@@ -220,10 +271,11 @@ export async function directPlanByDecision(opts: {
     { id: PLAN_NEW, description: 'none of these exactly — the turn needs its own query' },
   ];
   const t0 = Date.now();
-  const result = await choose(
+  const result = await chooseDecision(
     opts.decide,
     { task: DIRECT_PLAN_TASK, instruction: DIRECT_PLAN_INSTRUCTION, input: opts.message, options },
     opts.log,
+    opts.onStep,
   );
   if (!result) return undefined;
   opts.log(

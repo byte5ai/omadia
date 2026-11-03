@@ -49,6 +49,17 @@ export interface RouterIntent {
   tool: string;
 }
 
+/** One answer of the decision model — task id, the chosen option id,
+ *  its confidence and the call's time. Fixed vocabulary, never turn text. */
+export interface DecisionStep {
+  /** `fast-path.gate`, `fast-path.source`, `fast-path.direct-plan`, `canvas.layout` */
+  task: string;
+  /** the chosen option id (`data`, `tool:odoo_query`, `plan:<id>`, `chart_bar`, …) */
+  choice: string;
+  confidence: number;
+  ms: number;
+}
+
 /**
  * What a decision model (`decisionModel@1`, decisionRouter.ts) decided for a
  * turn — carried to the channel so the user can see it (web chat badge).
@@ -71,6 +82,8 @@ export interface DecisionTrace {
   ms: number;
   /** a learned plan ran as stored — no planner call */
   direct?: true;
+  /** every decision-model answer of the turn, in call order */
+  steps?: DecisionStep[];
 }
 
 export type RouteOutcome =

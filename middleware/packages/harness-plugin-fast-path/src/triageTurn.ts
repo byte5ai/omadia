@@ -1,11 +1,16 @@
 import type { DecisionModelService } from '@omadia/plugin-api';
 
 import type { AnswerCache, CacheTicket } from './answerCache.js';
-import { directPlanByDecision, routeByDecision } from './decisionRouter.js';
+import {
+  directPlanByDecision,
+  routeByDecision,
+  type DecisionStepSink,
+  type GateSignal,
+} from './decisionRouter.js';
 import type { FastLlm, FastPathToolSpec } from './fastPath.js';
-import { planQuery } from './planner.js';
 import { planToFetch, type LearnedPlan } from './learnedPlanStore.js';
-import { routeTurn, type DecisionTrace, type RouteOutcome, type RouterIntent } from './router.js';
+import { planQuery } from './planner.js';
+import { routeTurn, type DecisionStep, type DecisionTrace, type RouteOutcome, type RouterIntent } from './router.js';
 import { planSlots } from './slotCandidates.js';
 import { turnGateByDecision } from './turnGate.js';
 import type { StoredTextPrivacyRun } from './storedTextPrivacy.js';
@@ -40,10 +45,23 @@ import type { PlannedQuery, PreviousQuery, TriageRoute } from './triage.js';
  * planner runs only after a deterministic route — and not at all when the
  * decision model picks a learned plan that runs as stored. Any decision
  * failure takes the LLM path above unchanged.
+ *
+ * `onGate` tells the caller the gate's verdict the moment it answered (the
+ * canvas skips its skeleton composer on `data`), exactly once per triage —
+ * `none` when no decision model gated the turn.
  */
 
 export type TriageOutcome =
-  | { kind: 'plan'; plan: PlannedQuery; ms: number; cache?: CacheTicket; decision?: DecisionTrace }
+  | {
+      kind: 'plan';
+      plan: PlannedQuery;
+      ms: number;
+      cache?: CacheTicket;
+      decision?: DecisionTrace;
+      /** the turn message the decision model saw (masked when a shield
+       *  runs) — for a follow-up decision on the same turn (canvas layout) */
+      decisionInput?: string;
+    }
   | {
       kind: 'agent';
       route?: TriageRoute;
@@ -87,8 +105,29 @@ export async function triageTurn(opts: {
   decide?: DecisionModelService;
   /** let the decision model run a learned plan without the planner */
   directPlans?: boolean;
+  /** told the gate's verdict once, as soon as it is known */
+  onGate?: (gate: GateSignal) => void;
+  /** told every decision-model answer of the turn */
+  onDecisionStep?: DecisionStepSink;
   log: (message: string) => void;
 }): Promise<TriageOutcome> {
+  let gateTold = false;
+  const tellGate = (gate: GateSignal): void => {
+    if (gateTold) return;
+    gateTold = true;
+    opts.onGate?.(gate);
+  };
+  try {
+    return await triage(opts, tellGate);
+  } finally {
+    tellGate({ verdict: 'none' });
+  }
+}
+
+async function triage(
+  opts: Parameters<typeof triageTurn>[0],
+  tellGate: (gate: GateSignal) => void,
+): Promise<TriageOutcome> {
   const t0 = Date.now();
   const agent = (reason: string, route?: TriageRoute): TriageOutcome => ({
     kind: 'agent',
@@ -115,11 +154,28 @@ export async function triageTurn(opts: {
   const privacy = opts.privacy;
   const base = { llm: opts.llm, model: opts.model, channel: opts.channel, message, tools: opts.tools, log: opts.log };
   const intents = opts.offered.map((p) => ({ question: p.examples[0] ?? '', tool: p.tool }));
+  // the masked turn message rides on a plan for follow-up decisions
+  const decisionInput = opts.decide ? { decisionInput: message } : {};
   if (opts.decide) {
-    const decided = await decideTurn({ ...opts, decide: opts.decide, message, unmasked, previous, intents });
+    const steps: DecisionStep[] = [];
+    const onStep: DecisionStepSink = (step) => {
+      steps.push(step);
+      opts.onDecisionStep?.(step);
+    };
+    const decided = await decideTurn({
+      ...opts,
+      decide: opts.decide,
+      message,
+      unmasked,
+      previous,
+      intents,
+      onStep,
+      onGate: tellGate,
+    });
     const routed = decided?.outcome;
     const decision = routed?.decision;
-    const traced = (out: TriageOutcome): TriageOutcome => (decision ? { ...out, decision } : out);
+    // the trace lists every answer of the turn, the direct-plan pick included
+    const traced = (out: TriageOutcome): TriageOutcome => (decision ? { ...out, decision: { ...decision, steps: [...steps] } } : out);
     if (routed?.kind === 'agent') {
       const out = traced(agent(routed.reason, routed.route));
       return decided?.planHint && out.kind === 'agent' ? { ...out, planHint: decided.planHint } : out;
@@ -127,7 +183,9 @@ export async function triageTurn(opts: {
     if (routed?.kind === 'plan') {
       if (!opts.tools.some((t) => t.name === routed.tool)) return traced(agent('router-tool-not-offered'));
       const ticket = opts.answerCache ? { cache: { source: 'llm' as const, question: opts.question, previous } } : {};
-      if (decided?.direct) return traced({ kind: 'plan', plan: decided.direct, ms: Date.now() - t0, ...ticket });
+      if (decided?.direct) {
+        return traced({ kind: 'plan', plan: decided.direct, ms: Date.now() - t0, ...ticket, ...decisionInput });
+      }
       const planned = await planQuery({
         ...base,
         tools: opts.tools.filter((t) => t.name === routed.tool),
@@ -138,7 +196,7 @@ export async function triageTurn(opts: {
       });
       if (!planned.ok) return traced(agent(planned.reason));
       if (planned.plan.fetch.tool !== routed.tool) return traced(agent('planner-tool-mismatch'));
-      return traced({ kind: 'plan', plan: planned.plan, ms: Date.now() - t0, ...ticket });
+      return traced({ kind: 'plan', plan: planned.plan, ms: Date.now() - t0, ...ticket, ...decisionInput });
     }
     // no decision → the LLM router below
   }
@@ -165,6 +223,7 @@ export async function triageTurn(opts: {
     kind: 'plan',
     plan: planned.plan,
     ms: Date.now() - t0,
+    ...decisionInput,
     ...(opts.answerCache ? { cache: { source: 'llm' as const, question: opts.question, previous } } : {}),
   };
 }
@@ -228,6 +287,8 @@ async function decideTurn(opts: {
   intents: readonly RouterIntent[];
   privacy?: StoredTextPrivacyRun;
   directPlans?: boolean;
+  onStep: DecisionStepSink;
+  onGate: (gate: GateSignal) => void;
   log: (message: string) => void;
 }): Promise<{ outcome: RouteOutcome; direct?: PlannedQuery; planHint?: 'plan' | 'direct' } | undefined> {
   const privacy = opts.privacy;
@@ -246,10 +307,12 @@ async function decideTurn(opts: {
       candidates,
       allowedTools: opts.allowedTools,
       restore: privacy ? (text) => privacy.restore(text) : (text) => text,
+      onStep: opts.onStep,
+      onGate: opts.onGate,
       log: opts.log,
     });
   }
-  const routed = await routeByDecision({ ...opts, decide: opts.decide });
+  const routed = await routeByDecision({ ...opts, decide: opts.decide, onStep: opts.onStep, onGate: opts.onGate });
   if (routed?.kind !== 'plan' || !eligible || opts.message !== opts.unmasked) return routed ? { outcome: routed } : undefined;
   const direct = await directPlanByDecision({
     decide: opts.decide,
@@ -260,6 +323,7 @@ async function decideTurn(opts: {
     plans: opts.offered,
     allowedTools: opts.allowedTools,
     log: opts.log,
+    onStep: opts.onStep,
   });
   if (!direct) return { outcome: routed };
   return {

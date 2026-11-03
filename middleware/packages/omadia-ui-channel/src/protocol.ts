@@ -64,6 +64,26 @@ export interface AgentTextDelta {
 export interface TurnComplete {
   type: 'turn_complete';
   forTurn: string;
+  /** what a decision model (TypeSafe Jev, …) decided for the turn — the
+   *  turn's `done.fastPathDecision`. Optional: clients that predate it
+   *  ignore it. Fixed vocabulary and numbers only, never turn text. */
+  decision?: TurnDecision;
+}
+
+/** Wire copy of `FastPathDecision` (@omadia/channel-sdk). */
+export interface TurnDecision {
+  provider: string;
+  model?: string;
+  verdict: 'data' | 'model';
+  route?: 'simple' | 'complex';
+  tool?: string;
+  confidence: number;
+  ms: number;
+  direct?: true;
+  answered?: true;
+  fallback?: true;
+  steps?: Array<{ task: string; choice: string; confidence: number; ms: number }>;
+  ui?: { skeleton: 'plan' | 'cache' | 'simple' | 'composer'; layout?: 'table' | 'bar' | 'line' | 'pie' };
 }
 
 export interface TurnError {

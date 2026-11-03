@@ -127,6 +127,7 @@ function toFastPathDecision(
     ms: trace.ms,
     ...(trace.direct === true ? { direct: true as const } : {}),
     ...(answered ? { answered: true as const } : {}),
+    ...(trace.steps !== undefined && trace.steps.length > 0 ? { steps: trace.steps.map((s) => ({ ...s })) } : {}),
   };
 }
 

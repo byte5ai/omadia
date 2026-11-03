@@ -124,6 +124,8 @@ export type {
   ChatAgent,
   ChatAgentToolDefinition,
   FastPathDecision,
+  FastPathDecisionStep,
+  FastPathDecisionUi,
   ChatStreamObserver,
   ChatTurnInput,
   ChatTurnAttachment,
