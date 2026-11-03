@@ -8922,3 +8922,12 @@ korrekt als Daten (0,85), fand aber keine Quelle (`source=none`): Das Tool
 
 Tests: `test/fastPathGenericToolSpecs.test.ts` §8.
 
+**Nachtrag (itemsPath-Rückfall):** Live scheiterte `list_open_issues` danach
+an `unmappable`. Das Tool liefert `{ ok, items: [...] }`, beschreibt sich aber
+als „ein Array“, und der Planner riet den Pfad entsprechend falsch.
+`findRecords` (`refreshRecipes.ts`) nimmt jetzt bei einem Pfad, der ins LEERE
+läuft, das eine eindeutige Datensatz-Array (Wurzel-Array oder einzige
+Array-Eigenschaft auf oberster Ebene). Ein Pfad auf ein echtes Nicht-Array-Feld
+und mehrere Kandidaten bleiben ein Miss. `unmappable` loggt jetzt die Form
+(`itemsPath=… map=… output={ok:boolean,items:array[30]}`), nie Werte.
+

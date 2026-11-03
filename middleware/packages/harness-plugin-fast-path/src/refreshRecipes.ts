@@ -227,10 +227,20 @@ function findRecords(parsed: unknown, itemsPath?: string): unknown[] | null {
   if (itemsPath) {
     let cur: unknown = parsed;
     for (const seg of itemsPath.split('.')) {
-      if (typeof cur !== 'object' || cur === null) return null;
+      if (typeof cur !== 'object' || cur === null) {
+        cur = undefined;
+        break;
+      }
       cur = (cur as Record<string, unknown>)[seg];
     }
-    return Array.isArray(cur) ? cur : null;
+    if (Array.isArray(cur)) return cur;
+    // A generic tool's output shape is only described, and descriptions err
+    // (a builder agent's "returns an array" that is `{ ok, items: [...] }`):
+    // a path that resolves to NOTHING falls back to the ONE unambiguous
+    // record array — the root array, or the only array-valued top-level
+    // property. A path naming a real non-array field, or several candidate
+    // arrays, stays a miss.
+    return cur === undefined ? soleArray(parsed) : null;
   }
   if (Array.isArray(parsed)) return parsed;
   if (typeof parsed === 'object' && parsed !== null) {
@@ -239,6 +249,14 @@ function findRecords(parsed: unknown, itemsPath?: string): unknown[] | null {
     }
   }
   return null;
+}
+
+/** The root array, or the only array-valued top-level property; else null. */
+function soleArray(parsed: unknown): unknown[] | null {
+  if (Array.isArray(parsed)) return parsed;
+  if (typeof parsed !== 'object' || parsed === null) return null;
+  const arrays = Object.values(parsed).filter((v): v is unknown[] => Array.isArray(v));
+  return arrays.length === 1 ? arrays[0]! : null;
 }
 
 /** Read a record attribute. The literal key wins (Dynamics annotation keys

@@ -48,6 +48,7 @@ import {
 } from '../packages/harness-plugin-fast-path/src/genericToolSpecs.js';
 import type { LearnedPlan } from '../packages/harness-plugin-fast-path/src/learnedPlanStore.js';
 import { createLearnedPlanStore } from '../packages/harness-plugin-fast-path/src/learnedPlanStore.js';
+import type { RefreshSource } from '../packages/harness-plugin-fast-path/src/refreshRecipes.js';
 import {
   buildPlannerSystem,
   itemsPathRequired,
@@ -281,14 +282,21 @@ describe('generic tool specs — itemsPath is required and checked', () => {
       map: { name: 'name' },
       itemsPath: 'value',
     });
-    assert.deepEqual(res, { ok: false, reason: 'unmappable' });
+    // a path naming a REAL non-array field stays a miss (shape-only detail)
+    assert.equal(res.ok, false);
+    if (!res.ok) {
+      assert.equal(res.reason, 'unmappable');
+      assert.equal(res.detail, 'itemsPath=value map=name output={value:object,records:array[1]}');
+    }
     const missing = await fetchRecipeRows(() => Promise.resolve(out), {
       tool: 'dynamics_query',
       input: {},
       map: { name: 'name' },
       itemsPath: 'data.items',
     });
-    assert.deepEqual(missing, { ok: false, reason: 'unmappable' });
+    // a path resolving to NOTHING falls back to the one record array
+    assert.ok(missing.ok);
+    if (missing.ok) assert.deepEqual(missing.rows, [{ name: 'A' }]);
   });
 });
 
@@ -387,11 +395,17 @@ describe('generic tool specs — chat triage service', () => {
     assert.deepEqual(h.invokes, []);
   });
 
-  it('a wrong itemsPath is refused at execution → agent', async () => {
-    const h = harness({ ...DYN_PLAN, fetch: { ...DYN_PLAN.fetch, itemsPath: '@odata.context' } });
+  it('an itemsPath naming a non-array field is refused at execution → agent', async () => {
+    const h = harness({ ...DYN_PLAN, fetch: { ...DYN_PLAN.fetch, itemsPath: 'value.0.name' } });
     const out = await h.triage();
     assert.equal(out.kind, 'agent');
     if (out.kind === 'agent') assert.equal(out.reason, 'unmappable');
+  });
+
+  it('an itemsPath resolving to nothing uses the one record array (here: value) → answer', async () => {
+    const h = harness({ ...DYN_PLAN, fetch: { ...DYN_PLAN.fetch, itemsPath: '@odata.context' } });
+    const out = await h.triage();
+    assert.equal(out.kind, 'answer');
   });
 
   it('without definitions only catalog tools are offered (unchanged behaviour)', async () => {
@@ -765,3 +779,38 @@ describe('sub-agent tools — canvas', () => {
   });
 });
 
+
+// ── 9. a described-but-wrong output shape ─────────────────────────────────
+
+describe('generic tools — an itemsPath that resolves to nothing', () => {
+  const recipe = (itemsPath: string): RefreshSource => ({
+    tool: 'list_open_issues',
+    input: {},
+    itemsPath,
+    map: { number: 'number', title: 'title', author: 'user.login' },
+  });
+  const ISSUES = [
+    { number: 7, title: 'Bug A', user: { login: 'anna' } },
+    { number: 9, title: 'Bug B', user: { login: 'ben' } },
+  ];
+
+  it('falls back to the ONE record array (builder tool: `{ ok, items }` described as "an array")', async () => {
+    const invoke = () => Promise.resolve(JSON.stringify({ ok: true, items: ISSUES }));
+    for (const path of ['.', '$', 'issues']) {
+      const out = await fetchRecipeRows(invoke, recipe(path));
+      assert.ok(out.ok, path);
+      if (out.ok) assert.deepEqual(out.rows.map((r) => [r['number'], r['author']]), [[7, 'anna'], [9, 'ben']]);
+    }
+  });
+
+  it('stays a miss when several arrays could be meant, and logs only the shape', async () => {
+    const invoke = () => Promise.resolve(JSON.stringify({ open: ISSUES, closed: ISSUES, secret: 'x' }));
+    const out = await fetchRecipeRows(invoke, recipe('issues'));
+    assert.equal(out.ok, false);
+    if (!out.ok) {
+      assert.equal(out.reason, 'unmappable');
+      assert.equal(out.detail, 'itemsPath=issues map=number,title,author output={open:array[2],closed:array[2],secret:string}');
+      assert.doesNotMatch(out.detail ?? '', /Bug|anna|"x"/);
+    }
+  });
+});
