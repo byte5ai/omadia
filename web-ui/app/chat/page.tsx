@@ -40,6 +40,7 @@ import { PrivacyReceiptCard } from '../_components/chat/PrivacyReceiptCard';
 import { SaveMemoryButton } from '../_components/chat/SaveMemoryButton';
 import { TurnIncompleteNotice } from '../_components/chat/TurnIncompleteNotice';
 import { SystemDataBadge, VerifierBadge } from '../_components/chat/VerifierBadge';
+import { DecisionBadge } from '../_components/chat/DecisionBadge';
 import { VerifierBlockedNotice } from '../_components/chat/VerifierBlockedNotice';
 import { Markdown } from '../_components/Markdown';
 import { steerActiveTurn } from '../_lib/api';
@@ -1058,6 +1059,7 @@ export function MessageRow({
         ) : (
           <>
             {message.proactive && <ProactiveBadge proactive={message.proactive} />}
+            {message.fastPathDecision !== undefined && <DecisionBadge decision={message.fastPathDecision} />}
             {message.routing && <TriageBadge routing={message.routing} />}
             {message.persona && <PersonaBadge persona={message.persona} />}
             {message.recalledContext && (

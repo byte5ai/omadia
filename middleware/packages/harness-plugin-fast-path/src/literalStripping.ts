@@ -25,7 +25,39 @@ const WRITE_TOKENS: ReadonlySet<string> = new Set([
 export function isLearnableToolName(name: string): boolean {
   const n = name.toLowerCase();
   if (!READ_PREFIX.test(n) && !READ_SUFFIX.test(n)) return false;
-  return !n.split(/[_.-]+/).some((t) => WRITE_TOKENS.has(t));
+  return !hasWriteToken(n);
+}
+
+/** The lower-case word tokens of a tool name: split on `_`, `-`, `.` AND on
+ *  camelCase humps (`createInvoice` → `create`, `invoice`). */
+export function nameTokens(name: string): string[] {
+  return name
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2')
+    .toLowerCase()
+    .split(/[_.-]+/)
+    .filter((t) => t.length > 0);
+}
+
+/** Any write verb token in `name` (camelCase-aware, see {@link nameTokens}).
+ *  Vetoes a server-declared read-only hint as well as a read-verb name. */
+export function hasWriteToken(name: string): boolean {
+  return nameTokens(name).some((t) => WRITE_TOKENS.has(t));
+}
+
+const READ_VERBS: ReadonlySet<string> = new Set(['query', 'get', 'list', 'search', 'find', 'fetch', 'read', 'lookup']);
+
+/**
+ * A tool its server DECLARES read-only (MCP `readOnlyHint`) — the hint is
+ * untrusted, so the name must agree: the tool's own part (after the last
+ * `__` of `mcp__<server>__<tool>`) starts or ends with a read verb, and no
+ * token of the whole name is a write verb. camelCase-aware.
+ */
+export function isDeclaredReadToolName(name: string): boolean {
+  if (hasWriteToken(name)) return false;
+  const cut = name.lastIndexOf('__');
+  const own = nameTokens(cut >= 0 ? name.slice(cut + 2) : name);
+  return own.length > 0 && (READ_VERBS.has(own[0]!) || READ_VERBS.has(own[own.length - 1]!));
 }
 
 /** `describe`-tools are learnable but return a schema, never rows — not

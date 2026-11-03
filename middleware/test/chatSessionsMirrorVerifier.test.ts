@@ -112,4 +112,13 @@ describe('chat-session mirror — verifier fields', () => {
     assert.equal(stored?.['verifierBlocked'], undefined);
     assert.equal(stored?.['content'], 'Diese Antwort wurde zurückgehalten.');
   });
+
+  it('keeps the decision model verdict (Jev badge) and drops a malformed one', async () => {
+    const decision = { provider: 'jev', model: 'jev-1.13.0', verdict: 'data', tool: 'odoo_query', confidence: 0.91, ms: 14, direct: true, answered: true };
+    const stored = await put(session({ fastPathDecision: decision }));
+    assert.deepEqual(stored?.['fastPathDecision'], decision);
+    const bad = await put(session({ fastPathDecision: { ...decision, verdict: 'maybe' } }));
+    assert.equal(bad?.['fastPathDecision'], undefined);
+    assert.equal(bad?.['content'], 'Diese Antwort wurde zurückgehalten.');
+  });
 });

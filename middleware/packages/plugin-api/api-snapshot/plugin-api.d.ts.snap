@@ -265,6 +265,37 @@ sendToConversation(request: ConversationSendRequest): Promise<ConversationSendOu
 // ===== datasetId.d.ts =====
 export declare function normalizeDatasetUuid(raw: string): string | undefined;
 
+// ===== decisionModel.d.ts =====
+export declare const DECISION_MODEL_SERVICE_NAME = "decisionModel";
+export declare const DECISION_MODEL_CAPABILITY = "decisionModel@1";
+export interface DecisionOption {
+readonly id: string;
+readonly description: string;
+}
+export interface DecisionChoiceRequest {
+readonly task: string;
+readonly instruction: string;
+readonly input: string;
+readonly options: readonly DecisionOption[];
+readonly signal?: AbortSignal;
+}
+export interface DecisionChoiceResult {
+readonly choice: string;
+readonly confidence: number;
+readonly probabilities?: Readonly<Record<string, number>>;
+readonly model?: string;
+}
+export interface DecisionModelService {
+readonly provider: string;
+choose(req: DecisionChoiceRequest): Promise<DecisionChoiceResult>;
+}
+export declare function normalizeDecisionChoice(req: Pick<DecisionChoiceRequest, 'options'>, raw: {
+choice?: unknown;
+confidence?: unknown;
+probabilities?: unknown;
+model?: unknown;
+}): DecisionChoiceResult | undefined;
+
 // ===== embeddingClient.d.ts =====
 export interface EmbeddingClient {
 embed(text: string): Promise<number[]>;
@@ -446,6 +477,7 @@ export * from './excerptMerge.js';
 export * from './targetedSend.js';
 export * from './transcription.js';
 export * from './transcriptionGuardrails.js';
+export * from './decisionModel.js';
 export * from './conversationSend.js';
 
 // ===== knowledgeGraph.d.ts =====

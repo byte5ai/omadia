@@ -1,5 +1,5 @@
 import { FAST_PATH_TOOL_SPECS, type FastPathToolSpec } from './fastPath.js';
-import { isRowTool } from './literalStripping.js';
+import { isDeclaredReadToolName, isRowTool } from './literalStripping.js';
 
 /**
  * Generic planner specs — the fast path for EVERY plugin's read tools.
@@ -11,7 +11,9 @@ import { isRowTool } from './literalStripping.js';
  * answering agent offers its model:
  *
  *   - the NAME classifier stays the gate: only `isRowTool` names (read verb,
- *     no write token, no `describe`) get a spec; a catalog spec wins;
+ *     no write token, no `describe`) get a spec — or a tool its server
+ *     declares read-only (MCP `readOnlyHint`, untrusted) whose own name
+ *     still reads (isDeclaredReadToolName); a catalog spec wins;
  *   - the text is plugin-authored (description, property names/types/enums)
  *     — never user data; emails and long digit runs are scrubbed anyway;
  *   - the prompt stays small and cache-stable: per-tool cap
@@ -30,6 +32,19 @@ export interface FastPathToolDefinition {
   readonly name: string;
   readonly description?: string;
   readonly input_schema?: unknown;
+  /** declared read-only by its source (MCP `annotations.readOnlyHint`) —
+   *  makes a tool without a read-verb name plannable */
+  readonly readOnly?: boolean;
+  /** the answering agent's own executor for a tool `ctx.tools.invoke`
+   *  cannot reach (MCP); absent → `ctx.tools.invoke` */
+  readonly invoke?: (input: unknown) => Promise<string>;
+}
+
+/** A definition the fast path may plan a read for: a read-verb row tool, or
+ *  one declared read-only whose own name agrees (read verb, no write verb —
+ *  camelCase-aware). The hint alone never suffices. */
+export function isPlannableReadTool(def: Pick<FastPathToolDefinition, 'name' | 'readOnly'>): boolean {
+  return isRowTool(def.name) || (def.readOnly === true && isDeclaredReadToolName(def.name));
 }
 
 /** Hard cap of ONE generic spec line. */
@@ -168,7 +183,7 @@ export function genericToolSpecs(
     .filter((d) => {
       if (typeof d.name !== 'string' || seen.has(d.name)) return false;
       seen.add(d.name);
-      return isRowTool(d.name) && FAST_PATH_TOOL_SPECS[d.name] === undefined && opts.exclude?.has(d.name) !== true;
+      return isPlannableReadTool(d) && FAST_PATH_TOOL_SPECS[d.name] === undefined && opts.exclude?.has(d.name) !== true;
     })
     .sort((a, b) => byCodeUnit(a.name, b.name));
   const out: FastPathToolSpec[] = [];

@@ -180,6 +180,11 @@ export * from './targetedSend.js';
 export * from './transcription.js';
 export * from './transcriptionGuardrails.js';
 
+// `decisionModel@1`: provider-swappable typed decision model (TypeSafe Jev,
+// …) — picks one of a closed set of options with a calibrated confidence.
+// The fast path routes on it instead of an LLM call when one is installed.
+export * from './decisionModel.js';
+
 // #330 C3b — conversation-addressed proactive send ('conversationSend'):
 // post INTO a group conversation (the Facilitator's stall-nudges).
 export * from './conversationSend.js';

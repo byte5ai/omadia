@@ -1815,6 +1815,20 @@
       "providerFallback": "Fallback-Modell",
       "providerFallbackTooltip": "Das primäre Modell war nicht verfügbar — diese Antwort kam vom Fallback des Agenten ({model} bei {provider})."
     },
+    "decision": {
+      "tooltip": "{provider} hat diesen Turn vor jedem Sprachmodell-Aufruf entschieden — Konfidenz {confidence} %, {ms} ms, Datenquelle: {tool}",
+      "state": {
+        "answered": "ohne LLM beantwortet",
+        "data": "Datenquelle",
+        "model": "Modell nötig"
+      },
+      "route": {
+        "simple": "einfach",
+        "complex": "komplex"
+      },
+      "direct": "gelernte Abfrage",
+      "stats": "{confidence} % · {ms} ms"
+    },
     "systemData": {
       "label": "Originaldaten aus dem System",
       "hint": "Die Werte dieser Antwort hat der Server unverändert aus dem Quellsystem eingesetzt – das KI-Modell hat sie nicht geschrieben. Der Text drumherum und die Spaltenüberschriften stammen vom Modell."

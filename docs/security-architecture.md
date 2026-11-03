@@ -6477,6 +6477,35 @@ now includes `conversationId` and an optional `deadline`, and `run.context`
 goes out in conductor run webhooks like every other context key. Subscribers to
 conductor run events therefore see conversation ids of facilitations.
 
+## 10t. Decision model and MCP reads on the fast path (2026-11-03)
+
+**Decision model egress.** A `decisionModel@1` provider (TypeSafe Jev via
+`@omadia/decision-jev`) is an external service. The fast path sends it only
+the turn message AFTER the per-turn privacy run, plus fixed text (tool
+purposes, stored literal-stripped examples). It never sees rows or tool
+results and never runs a tool: it only chooses among options the kernel
+built. Every answer passes `normalizeDecisionChoice` (known option, finite
+confidence); anything else falls back to the LLM router.
+
+**Direct plans fail closed.** A learned plan replayed without the planner
+could answer a narrower question with a broader result. It runs only when a
+Privacy Shield is running and masked nothing in the message, the question has
+no digit, the turn is no follow-up, the plan has no placeholder and no top-N,
+and the decision is ≥ 0.85 confident. Without a shield there is no direct plan.
+
+**`readOnlyHint` is untrusted.** MCP tool annotations are hints (MCP spec).
+A hinted tool becomes fast-path plannable only when its name agrees as well:
+read verb at the start or end of the tool's own name, no write verb anywhere
+(camelCase-aware), and the native name was not cut at 64 characters (a cut
+can drop the verb). Write-capable plugin tools stay excluded as before.
+
+**MCP calls outside `dispatchTool`.** The fast path runs an MCP read through
+`Orchestrator.invokeFastPathMcpTool`, which repeats the per-call checks of
+`dispatchToolInner` (same instance's tool, still offered, plugin ready and
+granted) and refuses without an attributable caller (`mcpUserKey` in the
+turn scope). The McpManager policy guard and audit row still apply. Rows go
+to the user only, never to a model.
+
 ## 11. Reviewer checklist
 
 Before merging a PR that touches credentials, prompts, or proxy routes:

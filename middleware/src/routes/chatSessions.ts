@@ -137,6 +137,22 @@ const MessageSchema = z.object({
   verifierBlocked: z.literal(true).optional().catch(undefined),
   // Privacy Shield v4 rendered the answer from the source system's data.
   systemData: z.literal(true).optional().catch(undefined),
+  // The decision model's verdict (fast path, e.g. TypeSafe Jev) — kept so
+  // the chat badge survives a reload; a malformed value is dropped.
+  fastPathDecision: z
+    .object({
+      provider: z.string().min(1).max(80),
+      model: z.string().max(80).optional(),
+      verdict: z.enum(['data', 'model']),
+      route: z.enum(['simple', 'complex']).optional(),
+      tool: z.string().max(80).optional(),
+      confidence: z.number().min(0).max(1),
+      ms: z.number().nonnegative(),
+      direct: z.literal(true).optional(),
+      answered: z.literal(true).optional(),
+    })
+    .optional()
+    .catch(undefined),
 });
 
 const SessionSchema = z.object({

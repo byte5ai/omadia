@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/fast-path"
   name: "Fast Path"
-  version: "0.1.0"
+  version: "0.2.0"
   kind: "extension"
   domain: "omadia.fast-path"
   description:
@@ -32,6 +32,11 @@ lifecycle:
 # wait on it.
 optional_requires:
   - "privacyRedact@1"
+  # A typed decision model (TypeSafe Jev via @omadia/decision-jev, …) gates
+  # every turn BEFORE the triage model calls — model yes/no, then the data
+  # source — and may run a learned plan without the planner. Resolved per
+  # turn; without it the LLM router runs as before.
+  - "decisionModel@1"
 
 # The learned plan store persists through ctx.memory, which the kernel builds
 # ONCE at activation from the published `memoryStore` service. Without an
@@ -98,6 +103,27 @@ setup:
       help:
         en: "When on, a question that repeats one the fast path already answered (same wording, other names or values) runs its query directly, without any model call. Only names and values the question itself contains are swapped; anything unclear goes through the normal check. Stores no personal data (checked by the Privacy Shield; without it nothing is stored). Default: on."
         de: "Wenn an, läuft eine Frage, die eine bereits vom Schnellpfad beantwortete wiederholt (gleicher Wortlaut, andere Namen oder Werte), direkt ohne Modellaufruf. Getauscht werden nur Namen und Werte, die die Frage selbst nennt; alles Unklare geht durch die normale Prüfung. Speichert keine personenbezogenen Daten (geprüft vom Privacy Shield; ohne ihn wird nichts gespeichert). Standard: an."
+      required: false
+      default: "true"
+
+    - key: "fast_path_decision_model"
+      type: "boolean"
+      label:
+        en: "Use the decision model"
+        de: "Entscheidungsmodell nutzen"
+      help:
+        en: "When a decision-model plugin is installed (e.g. TypeSafe Jev), it decides every message BEFORE any model call: does it need a language model (→ the agent, right away) or does one data source answer it (plugin, API or MCP tool)? Only then is the query planned. Faster and cheaper than the model check; any failure falls back to it. Without such a plugin this switch does nothing. Default: on."
+        de: "Ist ein Entscheidungsmodell-Plugin installiert (z. B. TypeSafe Jev), entscheidet es jede Nachricht VOR jedem Modellaufruf: Braucht sie ein Sprachmodell (→ sofort der Agent) oder beantwortet sie eine Datenquelle (Plugin-, API- oder MCP-Tool)? Erst dann wird die Abfrage geplant. Schneller und günstiger als die Modellprüfung; bei jedem Fehler übernimmt diese. Ohne ein solches Plugin wirkt der Schalter nicht. Standard: an."
+      required: false
+      default: "true"
+    - key: "fast_path_decision_direct_plans"
+      type: "boolean"
+      label:
+        en: "Run learned queries without a model"
+        de: "Gelernte Abfragen ohne Modell ausführen"
+      help:
+        en: "With a decision model: a message that asks exactly what a learned query (no names or values in it) already answers runs that query directly — no planning model call. Only while a Privacy Shield runs, and only messages without numbers and without personal data it detects; anything else is planned as usual. Default: on."
+        de: "Mit Entscheidungsmodell: Eine Nachricht, die genau das fragt, was eine gelernte Abfrage (ohne Namen oder Werte) schon beantwortet, führt diese direkt aus — ohne planenden Modellaufruf. Nur bei laufendem Privacy Shield und nur Nachrichten ohne Zahlen und ohne von ihm erkannte personenbezogene Daten; alles andere wird wie gewohnt geplant. Standard: an."
       required: false
       default: "true"
 

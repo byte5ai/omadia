@@ -108,12 +108,38 @@ export interface ChatAgent {
   offeredToolNames?(): ReadonlySet<string>;
   /**
    * The model-facing definitions (name, description, JSON input schema) of
-   * the PLUGIN tools among {@link offeredToolNames} that a trusted wrapper
-   * can run outside a model turn (`ctx.tools.invoke`), name-ordered. The
+   * the tools among {@link offeredToolNames} that a trusted wrapper can run
+   * outside a model turn, name-ordered: PLUGIN tools (`ctx.tools.invoke`)
+   * and the agent's read-only MCP tools (their own `invoke`). The
    * deterministic fast path derives planner specs for the read tools among
    * them. Absent: the wrapper plans only tools it knows itself.
    */
   offeredToolDefinitions?(): ReadonlyArray<ChatAgentToolDefinition>;
+}
+
+/**
+ * What a typed decision model (`decisionModel@1`, e.g. TypeSafe Jev) decided
+ * for a turn BEFORE any model call — the fast path's gate (data or a
+ * language model) and, for data, the source. Rides on the terminal `done`
+ * event so a channel can show it. Fixed vocabulary and numbers only.
+ */
+export interface FastPathDecision {
+  /** provider id (`jev`) */
+  readonly provider: string;
+  /** provider model id (`jev-1.13.0`), when reported */
+  readonly model?: string;
+  readonly verdict: 'data' | 'model';
+  /** the agent route of a `model` verdict */
+  readonly route?: 'simple' | 'complex';
+  /** the data source (tool) of a `data` verdict */
+  readonly tool?: string;
+  /** 0..1 */
+  readonly confidence: number;
+  readonly ms: number;
+  /** a learned query ran as stored — no planning model call */
+  readonly direct?: true;
+  /** the turn was answered from data without the agent */
+  readonly answered?: true;
 }
 
 /** One tool definition as the agent offers it to its model (Anthropic
@@ -122,6 +148,11 @@ export interface ChatAgentToolDefinition {
   readonly name: string;
   readonly description: string;
   readonly input_schema: Readonly<Record<string, unknown>>;
+  /** declared read-only by its source (MCP `annotations.readOnlyHint`) */
+  readonly readOnly?: boolean;
+  /** runs the tool on the agent's behalf when `ctx.tools.invoke` cannot
+   *  (an MCP tool lives on the agent, not in the native registry) */
+  readonly invoke?: (input: unknown) => Promise<string>;
 }
 
 /** Inbound channel-supplied attachment (image/file/audio/video). Vision-capable
@@ -1142,6 +1173,11 @@ export type ChatStreamEvent =
        * recorded activity, so a tool-free turn carries no receipt and no id.
        */
       receiptId?: string;
+      /**
+       * The decision model's verdict for this turn (fast path, before any
+       * model call) — absent when no decision model decided it.
+       */
+      fastPathDecision?: FastPathDecision;
       /**
        * The model this turn actually ran on, resolved once at turn start by
        * the per-turn router (Haiku triage → Sonnet/Opus). Equals the agent's

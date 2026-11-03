@@ -155,11 +155,15 @@ function startTriage(
           .slice(0, COMPOSER_TOP_K)
       : [];
   // catalog specs + a generic spec for every read tool the base agent
-  // offers (its own definitions; @omadia/fast-path genericToolSpecs.ts)
+  // offers (its own definitions; @omadia/fast-path genericToolSpecs.ts).
+  // Tools only the agent itself can run (MCP: `invoke` on the definition)
+  // stay out — the canvas executes through ctx.tools.invoke.
   const turnTools =
     fp !== undefined
       ? offeredTools(
-          fp.plannableTools(base.offeredToolDefinitions?.()).filter((t) => permittedTools.has(t.name)),
+          fp
+            .plannableTools(base.offeredToolDefinitions?.().filter((d) => d.invoke === undefined))
+            .filter((t) => permittedTools.has(t.name)),
           offered,
         )
       : [];
@@ -192,6 +196,7 @@ function startTriage(
         tellVerdict = resolve;
       })
     : undefined;
+  const decide = fp?.decisionModel();
   const triage: Promise<TriageOutcome> | undefined =
     fp !== undefined && !privacyForced && turnTools.length > 0
       ? triageTurn({
@@ -205,6 +210,7 @@ function startTriage(
           ...(previousQuery ? { previous: previousQuery } : {}),
           ...(fastPrivacy ? { privacy: fastPrivacy } : {}),
           ...(answerCache ? { answerCache, onCacheLookup: (hit: boolean) => tellVerdict?.(hit) } : {}),
+          ...(decide ? { decide, directPlans: fp.directPlansEnabled } : {}),
           log: (m) => ctx.log(m),
         })
       : undefined;
