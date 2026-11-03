@@ -8895,3 +8895,30 @@ Balkendiagramm ohne LLM in 3,7 s (vorher als komplex gegated: Agent, ~28 s).
 Passt ein gewähltes Diagramm nicht zu den Zeilen (z. B. 69 > 50), meldet
 `ui.layout` jetzt `table` (was gezeigt wird), und der Client nennt den Grund.
 
+## Fast Path: Lese-Tools von Sub-Agenten (`fast_path_agent_tools`, 2026-11-03)
+
+Live-Befund: Der Builder-Agent `@omadia/agent-github-issue-tracker` lief als
+Sub-Agent (`query_github_issue_tracker`). Jev gatete „alle offenen Issues“
+korrekt als Daten (0,85), fand aber keine Quelle (`source=none`): Das Tool
+`list_open_issues` existierte nur in der Haiku-Schleife des Sub-Agenten
+(217 KB JSON → 88k Input-Tokens, 7,2 s, dazu der Haupt-Agent).
+
+- `DomainTool.subAgentTools()` (`domainQueryTool.ts`), gesetzt vom
+  `dynamicAgentRuntime` aus den gebridgten Toolkit-Tools.
+- `Orchestrator.offeredToolDefinitions` gibt sie mit `via` = Domain-Tool und
+  `agentId` aus, mit eigenem `invoke` (der Tool-Handler, ohne Modell). Nur
+  solange das Domain-Tool angeboten wird; dem Modell werden sie nie
+  angeboten (`offeredToolNames` bleibt unverändert).
+- `FastPathService.admitToolDefinitions` (Web: `triageChatTurn`, Canvas:
+  `openTurnGate`) lässt `via`-Tools nur durch, wenn `fast_path_agent_tools` sie
+  nennt (Tool-Name, Plugin-ID oder `*`, Standard leer), und nimmt ihre Namen
+  in `permitted` auf. Der Lese-Klassifikator (`isPlannableReadTool`) gilt wie
+  für alle generischen Tools, Schreib-Tools werden nie geplant.
+- Ausführung: Web wie bisher über `turnInvoker`; der Canvas plant jetzt
+  `via`-Tools (MCP weiterhin nicht) und führt sie in `runFastPath` über
+  `turnInvoker` aus. Bekannte Grenze: Canvas-Refresh, Varianten und
+  Zeilendetails spielen Rezepte über `ctx.tools.invoke` ab und erreichen
+  `via`-Tools noch nicht (Miss → Agent).
+
+Tests: `test/fastPathGenericToolSpecs.test.ts` §8.
+

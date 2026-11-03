@@ -222,13 +222,14 @@ function startTriage(
       : [];
   // catalog specs + a generic spec for every read tool the base agent
   // offers (its own definitions; @omadia/fast-path genericToolSpecs.ts).
-  // Tools only the agent itself can run (MCP: `invoke` on the definition)
-  // stay out — the canvas executes through ctx.tools.invoke.
+  // MCP tools (`invoke` on the definition, needing the turn's MCP caller)
+  // stay out; an allow-listed sub-agent tool (`via`) runs through its own
+  // `invoke` (runFastPath), everything else through ctx.tools.invoke.
   const turnTools =
     fp !== undefined
       ? offeredTools(
           fp
-            .plannableTools(base.offeredToolDefinitions?.().filter((d) => d.invoke === undefined))
+            .plannableTools(gate.toolDefinitions.filter((d) => d.invoke === undefined || d.via !== undefined))
             .filter((t) => permittedTools.has(t.name)),
           offered,
         )
@@ -378,6 +379,7 @@ async function settleFastPath(
             plannable: turnTools.length,
             allowed: fp?.allowedFetchTools() ?? new Set<string>(),
             permitted: permittedTools,
+            definitions: gate.toolDefinitions.filter((d) => d.via !== undefined),
           },
           target,
           layout,

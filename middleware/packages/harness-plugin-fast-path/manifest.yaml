@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/fast-path"
   name: "Fast Path"
-  version: "0.4.1"
+  version: "0.5.0"
   kind: "extension"
   domain: "omadia.fast-path"
   description:
@@ -75,6 +75,16 @@ setup:
         de: "An: Neben den gelisteten Tools kann jedes Lese-Tool, das ein anderes Plugin dem Agenten anbietet, aus dessen eigenem Eingabeschema geplant werden (Schreib-Tools nie). Aus: Genutzt werden nur die gelisteten Tools mit eingebauter Planer-Spezifikation und aus geprüften Agenten-Antworten gelernte Lese-Tools — so bleibt der Schnellpfad auf eine explizite Allow-Liste beschränkt. Standard: an."
       required: false
       default: "true"
+    - key: "fast_path_agent_tools"
+      type: "string"
+      label:
+        en: "Fast path for sub-agent read tools"
+        de: "Schnellpfad für Lese-Tools von Sub-Agenten"
+      help:
+        en: "Comma-separated tool names or agent plugin ids (e.g. @omadia/agent-github-issue-tracker), or * for all. A sub-agent's own read tools are normally only reached through its model loop; listed ones may be planned and run directly by the fast path — rows without any model call. Only while the agent itself is offered; write tools never. Default: empty (none)."
+        de: "Kommagetrennt: Tool-Namen oder Agent-Plugin-IDs (z. B. @omadia/agent-github-issue-tracker), oder * für alle. Die eigenen Lese-Tools eines Sub-Agenten erreicht man sonst nur über dessen Modellschleife; gelistete darf der Schnellpfad direkt planen und ausführen — Zeilen ohne jeden Modellaufruf. Nur solange der Agent selbst angeboten wird; Schreib-Tools nie. Standard: leer (keine)."
+      required: false
+      default: ""
     - key: "fast_path_channels"
       type: "string"
       label:

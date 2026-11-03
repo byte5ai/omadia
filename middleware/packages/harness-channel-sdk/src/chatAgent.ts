@@ -178,6 +178,12 @@ export interface ChatAgentToolDefinition {
   /** runs the tool on the agent's behalf when `ctx.tools.invoke` cannot
    *  (an MCP tool lives on the agent, not in the native registry) */
   readonly invoke?: (input: unknown) => Promise<string>;
+  /** a SUB-AGENT's own tool: the name of the domain tool (`query_<agent>`)
+   *  it belongs to. Offered for the fast path only — the model reaches it
+   *  through that domain tool, so it is permitted exactly when `via` is. */
+  readonly via?: string;
+  /** owning plugin id of a `via` tool (operator allow-lists key on it) */
+  readonly agentId?: string;
 }
 
 /** Inbound channel-supplied attachment (image/file/audio/video). Vision-capable

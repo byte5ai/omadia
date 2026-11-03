@@ -129,6 +129,14 @@ import { toolErrorFromException } from '@omadia/plugin-api';
 
 import { SubAgentRefusalError, subAgentRefusalNotice } from '../subAgentRefusal.js';
 
+/** One tool of a sub-agent, callable directly (no model loop). */
+export interface SubAgentToolHandle {
+  readonly name: string;
+  readonly description: string;
+  readonly input_schema: Readonly<Record<string, unknown>>;
+  handle(input: unknown): Promise<string>;
+}
+
 export interface DomainTool {
   name: string;
   spec: DomainToolSpec;
@@ -156,6 +164,11 @@ export interface DomainTool {
   /** MCP tools: the server declared it read-only (`readOnlyHint`). Offered
    *  to the deterministic fast path (`offeredToolDefinitions`). */
   readOnly?: boolean;
+  /** The sub-agent's own tools, runnable WITHOUT its model loop — offered
+   *  to the deterministic fast path (`offeredToolDefinitions`, `via` this
+   *  tool); the fast path's read classifier and the operator's allow-list
+   *  (`fast_path_agent_tools`) decide which it may plan. */
+  subAgentTools?: () => ReadonlyArray<SubAgentToolHandle>;
   handle(input: unknown, observer?: AskObserver): Promise<string>;
   /**
    * Privacy-Shield v3 (stable-id tokenization, slice 1) — optional PII
@@ -217,6 +230,8 @@ interface DomainToolOptions {
    * dispatch AND every sub-agent inner tool call within it.
    */
   agentId?: string;
+  /** the sub-agent's own tools, for the fast path (see DomainTool) */
+  subAgentTools?: () => ReadonlyArray<SubAgentToolHandle>;
 }
 
 export function createDomainTool(options: DomainToolOptions): DomainTool {
@@ -241,6 +256,7 @@ export function createDomainTool(options: DomainToolOptions): DomainTool {
     spec,
     domain: options.domain,
     ...(options.agentId !== undefined ? { agentId: options.agentId } : {}),
+    ...(options.subAgentTools !== undefined ? { subAgentTools: options.subAgentTools } : {}),
     async handle(input: unknown, observer?: AskObserver): Promise<string> {
       if (typeof input !== 'object' || input === null) {
         return 'Error: tool input must be an object.';

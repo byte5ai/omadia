@@ -107,6 +107,14 @@ export interface FastPathService {
   /** `fast_path_generic_tools` — other plugins' read tools plannable from
    *  their own schema (default on); off → only catalog + learned tools */
   readonly genericToolsEnabled: boolean;
+  /** The offered definitions the fast path may use, and the permitted tool
+   *  names widened by them: a sub-agent's own tool (`via` its domain tool)
+   *  only when the domain tool is permitted AND `fast_path_agent_tools`
+   *  names the tool or its plugin (`*` = every sub-agent's). */
+  admitToolDefinitions(
+    definitions: readonly FastPathToolDefinition[] | undefined,
+    permitted: ReadonlySet<string>,
+  ): { definitions: FastPathToolDefinition[]; permitted: ReadonlySet<string> };
   readonly timeZone: string;
   /** `fast_path_channels` (and the kill switch) allow `channel` */
   channelEnabled(channel: string): boolean;
@@ -182,6 +190,7 @@ export function createFastPathService(deps: FastPathServiceDeps): FastPathServic
   const decisionEnabled = parseBooleanSetting(deps.config.get<unknown>('fast_path_decision_model'), true);
   const directPlansEnabled = parseBooleanSetting(deps.config.get<unknown>('fast_path_decision_direct_plans'), true);
   const canvasDecisionsEnabled = parseBooleanSetting(deps.config.get<unknown>('fast_path_decision_canvas'), true);
+  const agentToolAllow = parseAgentToolAllowList(deps.config.get<unknown>('fast_path_agent_tools'));
   const decisionModel = (): DecisionModelService | undefined => (decisionEnabled ? deps.decisionModel?.() : undefined);
   const builtIn = plannableTools([...tools]);
   const sessions = new Map<string, PreviousQuery>();
@@ -206,6 +215,17 @@ export function createFastPathService(deps: FastPathServiceDeps): FastPathServic
       genericTools.add(t.name);
     }
     return [...catalog, ...generic.filter((t) => genericTools.has(t.name))];
+  }
+
+  function admitToolDefinitions(
+    definitions: readonly FastPathToolDefinition[] | undefined,
+    permitted: ReadonlySet<string>,
+  ): { definitions: FastPathToolDefinition[]; permitted: ReadonlySet<string> } {
+    const admitted = (definitions ?? []).filter(
+      (d) => d.via === undefined || (permitted.has(d.via) && agentToolAllow(d)),
+    );
+    const via = admitted.filter((d) => d.via !== undefined).map((d) => d.name);
+    return { definitions: admitted, permitted: via.length > 0 ? new Set([...permitted, ...via]) : permitted };
   }
 
   function recordFetchOutcome(fetches: readonly RefreshSource[], ok: boolean, reason?: string): string[] {
@@ -249,14 +269,16 @@ export function createFastPathService(deps: FastPathServiceDeps): FastPathServic
     } catch {
       // a store that cannot load still leaves the built-in tools
     }
-    const permitted = req.permittedTools;
+    const admitted = admitToolDefinitions(req.toolDefinitions, req.permittedTools);
+    const permitted = admitted.permitted;
+    const toolDefinitions = admitted.definitions;
     // only tools the answering agent may use itself — built-in and learned
     const offered = plans
       .rank(question, TRIAGE_TOP_K * 2)
       .map((s) => s.plan)
       .filter((p) => permitted.has(p.tool))
       .slice(0, TRIAGE_TOP_K);
-    const specs = offeredTools(plannable(req.toolDefinitions, permitted), offered);
+    const specs = offeredTools(plannable(toolDefinitions, permitted), offered);
     if (specs.length === 0) return agent('no-tools');
     const previous = req.sessionKey !== undefined ? sessions.get(req.sessionKey) : undefined;
 
@@ -267,7 +289,7 @@ export function createFastPathService(deps: FastPathServiceDeps): FastPathServic
     const guard = deps.privacyGuard();
     const privacy = guard !== undefined ? openStoredTextPrivacy(guard, TRIAGE_PRIVACY_JOB, 'interactive') : undefined;
     const llm = deps.llm;
-    const invoke = turnInvoker(deps.invoke, req.toolDefinitions);
+    const invoke = turnInvoker(deps.invoke, toolDefinitions);
     const decide = decisionModel();
     // answer cache → router ∥ speculative planner (triageTurn.ts)
     const runTriage = (withCache: boolean): Promise<TriageOutcome> =>
@@ -374,6 +396,7 @@ export function createFastPathService(deps: FastPathServiceDeps): FastPathServic
     ...(answerCache ? { answerCache } : {}),
     decisionModel,
     directPlansEnabled,
+    admitToolDefinitions,
     canvasDecisionsEnabled,
     plannableTools: (definitions) => plannable(definitions),
     allowedFetchTools,
@@ -385,10 +408,22 @@ export function createFastPathService(deps: FastPathServiceDeps): FastPathServic
   };
 }
 
+/** `fast_path_agent_tools`: comma list of sub-agent tool names and/or
+ *  owning plugin ids; `*` = every sub-agent's tools; empty = none. */
+export function parseAgentToolAllowList(raw: unknown): (d: FastPathToolDefinition) => boolean {
+  const list = (typeof raw === 'string' ? raw : '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  if (list.includes('*')) return () => true;
+  const set = new Set(list);
+  return (d) => set.has(d.name) || (d.agentId !== undefined && set.has(d.agentId));
+}
+
 /** The turn's executor: a tool whose definition carries its own `invoke`
- *  (an MCP read tool of the answering agent — `ctx.tools.invoke` cannot
- *  reach it) runs through that; everything else through `ctx.tools.invoke`. */
-function turnInvoker(base: ToolInvoke, definitions?: readonly FastPathToolDefinition[]): ToolInvoke {
+ *  (an MCP read tool or a sub-agent's own tool — `ctx.tools.invoke` cannot
+ *  reach either) runs through that; everything else through `ctx.tools.invoke`. */
+export function turnInvoker(base: ToolInvoke, definitions?: readonly FastPathToolDefinition[]): ToolInvoke {
   const own = new Map<string, (input: unknown) => Promise<string>>();
   for (const d of definitions ?? []) if (d.invoke !== undefined && !own.has(d.name)) own.set(d.name, d.invoke);
   if (own.size === 0) return base;

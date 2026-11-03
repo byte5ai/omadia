@@ -10,7 +10,7 @@ import {
   type ChatTurnInput,
   type RevisionId,
 } from '@omadia/channel-sdk';
-import { type FastPathService } from '@omadia/fast-path';
+import { type FastPathService, type FastPathToolDefinition } from '@omadia/fast-path';
 
 import { CANVAS_PROTOCOL_VERSION, OPS_CATALOG_VERSION } from './canvasProtocol.js';
 import { type CanvasRuntime } from './canvasRuntime.js';
@@ -46,6 +46,10 @@ export interface CanvasTurnGate {
   /** the canvas fast path — undefined when off, filtered or tool-set-unknown */
   fp: FastPathService | undefined;
   permittedTools: ReadonlySet<string>;
+  /** the base agent's offered tool definitions the fast path may use
+   *  (`FastPathService.admitToolDefinitions`: allow-listed sub-agent tools
+   *  included, their names in `permittedTools`) */
+  toolDefinitions: readonly FastPathToolDefinition[];
 }
 
 function canvasTurnBlocks(input: ChatTurnInput): CanvasTurnBlocks {
@@ -92,8 +96,12 @@ function openTurnGate(rt: CanvasRuntime, base: ChatAgent): CanvasTurnGate {
     ctx.log('[fast-path] miss channel=canvas reason=tool-set-unknown');
     fp = undefined;
   }
-  const permittedTools: ReadonlySet<string> = permitted ?? new Set<string>();
-  return { turnStartedAt, privacyGuard, privacyForced, fp, permittedTools };
+  const admitted =
+    fp !== undefined && permitted !== undefined
+      ? fp.admitToolDefinitions(base.offeredToolDefinitions?.(), permitted)
+      : { definitions: [], permitted: permitted ?? new Set<string>() };
+  const permittedTools: ReadonlySet<string> = admitted.permitted;
+  return { turnStartedAt, privacyGuard, privacyForced, fp, permittedTools, toolDefinitions: admitted.definitions };
 }
 
 export async function* canvasTurnStream(

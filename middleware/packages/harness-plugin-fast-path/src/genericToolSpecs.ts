@@ -38,6 +38,12 @@ export interface FastPathToolDefinition {
   /** the answering agent's own executor for a tool `ctx.tools.invoke`
    *  cannot reach (MCP); absent → `ctx.tools.invoke` */
   readonly invoke?: (input: unknown) => Promise<string>;
+  /** a sub-agent's own tool: its domain tool (`query_<agent>`) — permitted
+   *  exactly when that is, and only when the operator allow-listed it
+   *  (`fast_path_agent_tools`, service.ts `admitToolDefinitions`) */
+  readonly via?: string;
+  /** owning plugin id of a `via` tool */
+  readonly agentId?: string;
 }
 
 /** A definition the fast path may plan a read for: a read-verb row tool, or
