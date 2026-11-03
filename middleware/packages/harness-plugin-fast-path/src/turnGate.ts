@@ -45,12 +45,16 @@ export const DATA_NO = 0.4;
 /** `plan` probability bars for the plan-runner hint. */
 export const PLAN_YES = 0.6;
 export const PLAN_NO = 0.4;
+/** A `none` source at/above this confidence makes the turn a model turn. */
+export const NO_SOURCE_MIN = 0.8;
 /** Below this a slot value is not taken. */
 export const SLOT_MIN_CONFIDENCE = 0.85;
 
 const PLAN_PREFIX = 'plan:';
 const PLAN_NEW = 'plan_new';
 const SLOT_NONE = 'none';
+/** the source question's "no source fits" option (decisionRouter.ts) */
+const SOURCE_NONE = 'none';
 
 export const DATA_QUESTION =
   'Is the answer to the USER TURN exactly the rows of ONE read call to a data source — a lookup or list, ' +
@@ -271,12 +275,24 @@ export async function turnGateByDecision(opts: {
     ...over,
   });
 
-  if (pData <= DATA_NO) {
+  // "no offered source answers this in one read call", said with
+  // confidence, is a model verdict too — whatever the data probability
+  // (live: "Was steht in Confluence zu …" came back data=0.57 between the
+  // bars with source=none:1.00 — a sub-agent's question, not a query's)
+  const noSource = source !== undefined && source.choice === SOURCE_NONE && source.confidence >= NO_SOURCE_MIN;
+  if (pData <= DATA_NO || noSource) {
     const route = pComplex === undefined || pComplex >= 0.5 ? 'complex' : 'simple';
-    opts.onGate?.({ verdict: 'model', route, confidence: 1 - pData });
+    const confidence = pData <= DATA_NO ? 1 - pData : (source?.confidence ?? 0);
+    opts.onGate?.({ verdict: 'model', route, confidence });
     const planHint = pPlan === undefined ? undefined : pPlan >= PLAN_YES ? 'plan' : pPlan <= PLAN_NO ? 'direct' : undefined;
     return {
-      outcome: { kind: 'agent', reason: `agent:${route}`, route, ms, decision: trace({ verdict: 'model', route, confidence: 1 - pData }) },
+      outcome: {
+        kind: 'agent',
+        reason: pData <= DATA_NO ? `agent:${route}` : `agent:${route}:no-source`,
+        route,
+        ms,
+        decision: trace({ verdict: 'model', route, confidence }),
+      },
       ...(planHint ? { planHint } : {}),
     };
   }
@@ -287,6 +303,7 @@ export async function turnGateByDecision(opts: {
   opts.onGate?.({ verdict: 'data', confidence: pData });
   if (!source || source.confidence < ROUTER_MIN_CONFIDENCE) return undefined;
   if (!source.choice.startsWith('tool:')) {
+    // an unsure "none" — no route either; the agent's own router decides
     return { outcome: { kind: 'agent', reason: 'decision-no-source', ms, decision: trace({ verdict: 'data', confidence: pData }) } };
   }
   const tool = source.choice.slice('tool:'.length);
