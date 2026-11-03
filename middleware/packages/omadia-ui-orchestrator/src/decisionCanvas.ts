@@ -208,7 +208,10 @@ export function canvasDecision(opts: {
 }): FastPathDecision | undefined {
   const { trace, steps, ui } = opts;
   if (steps.length === 0 || opts.provider === undefined) return undefined;
-  const gate = steps.find((s) => s.task === 'fast-path.gate');
+  // the single gate (`fast-path.gate`: data/model_*) or the batch gate's
+  // data question (`fast-path.turn-gate.data`: yes/no)
+  const gate = steps.find((s) => s.task === 'fast-path.gate' || s.task === 'fast-path.turn-gate.data');
+  const gateSaysData = gate?.choice === 'data' || gate?.choice === 'yes';
   const base: FastPathDecision = trace
     ? {
         provider: trace.provider,
@@ -222,7 +225,7 @@ export function canvasDecision(opts: {
       }
     : {
         provider: opts.provider,
-        verdict: gate?.choice === 'data' ? 'data' : 'model',
+        verdict: gateSaysData ? 'data' : 'model',
         confidence: gate?.confidence ?? 0,
         ms: steps.reduce((sum, s) => sum + s.ms, 0),
         fallback: true as const,

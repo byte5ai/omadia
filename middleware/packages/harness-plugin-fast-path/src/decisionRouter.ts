@@ -67,6 +67,22 @@ export const GATE_INSTRUCTION =
   'own columns — or a follow-up of the PREVIOUS QUERY that only changes values. Totals, counts or rankings PER ' +
   'GROUP, comparisons, analysis, explanations, writes, several calls or anything unclear need a model.';
 
+/**
+ * The canvas shows rows as a table OR a chart (the canvas decides the
+ * layout itself), so on the canvas HOW the rows are shown is no reason for a
+ * model: "as a bar chart", or comparing one column of the rows, is still the
+ * rows of one read call. Per-group totals stay a model turn. Other channels
+ * answer in text and keep the plain gate.
+ */
+export const CANVAS_GATE_CLAUSE =
+  ' On this channel the rows are shown as a table or a chart: a request to SHOW the rows as a chart or graph, or ' +
+  'to compare or rank ONE of their own columns across the rows, is still answered by those rows.';
+
+/** The gate wording for a channel (the canvas adds {@link CANVAS_GATE_CLAUSE}). */
+export function gateInstruction(base: string, channel: string): string {
+  return channel === 'canvas' ? base + CANVAS_GATE_CLAUSE : base;
+}
+
 export const GATE_OPTIONS: readonly DecisionOption[] = [
   { id: DATA, description: 'no model: the rows of ONE read call to a data source answer it' },
   { id: MODEL_SIMPLE, description: 'model, simple: greeting, chit-chat, a short confirmation, a one-step question without data' },
@@ -173,7 +189,7 @@ export async function routeByDecision(opts: {
   };
   const gate = await chooseDecision(
     opts.decide,
-    { task: GATE_TASK, instruction: GATE_INSTRUCTION, input: opts.message, options: GATE_OPTIONS },
+    { task: GATE_TASK, instruction: gateInstruction(GATE_INSTRUCTION, opts.channel), input: opts.message, options: GATE_OPTIONS },
     opts.log,
     onStep,
   );

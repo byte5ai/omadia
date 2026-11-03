@@ -8879,3 +8879,14 @@ Wahrscheinlichkeiten und trennen schärfer.
 
 Tests: `test/fastPathTurnGate.test.ts`, `test/planRunnerRouteHint.test.ts`.
 
+**Nachtrag 2026-11-03 (Canvas-Gate):** Live wurden Diagrammwünsche („als
+Balkendiagramm“, „vergleiche … je Rechnung“) als komplex gegated, und
+`canvas.layout` kam nie zum Zug. `gateInstruction(base, channel)`
+(`decisionRouter.ts`) hängt auf dem Canvas `CANVAS_GATE_CLAUSE` an die
+Datenfrage an, und zwar an beide Gate-Varianten: `GATE_INSTRUCTION` und die
+`data`-Frage des Batch-Gates aus #1670 (`turnGate.ts`). Darstellung oder der
+Vergleich EINER Spalte über die Zeilen braucht dort kein Modell, Summen je
+Gruppe weiterhin schon. `canvasDecision` liest beim Fallback auch
+`fast-path.turn-gate.data` (ja/nein). Web-Chat: Der `DecisionBadge` zeigt beim
+Hovern bzw. Fokus alle `steps` (i18n `chat.decision.task.*` / `choice.*`).
+

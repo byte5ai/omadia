@@ -1827,7 +1827,34 @@
         "complex": "complex"
       },
       "direct": "learned query",
-      "stats": "{confidence} % · {ms} ms"
+      "stats": "{confidence} % · {ms} ms",
+      "stepsTitle": "What {provider} decided",
+      "task": {
+        "gate": "Gate",
+        "data": "Data only",
+        "complex": "Complex",
+        "plan": "Plan needed",
+        "source": "Data source",
+        "direct": "Learned query",
+        "slot": "Value",
+        "layout": "Layout",
+        "other": "Decision"
+      },
+      "choice": {
+        "yes": "yes",
+        "no": "no",
+        "data": "data, no model",
+        "model_simple": "model, simple",
+        "model_complex": "model, complex",
+        "none": "none",
+        "plan_new": "new query",
+        "plan": "stored query",
+        "value": "taken from the message",
+        "table": "table",
+        "chart_bar": "bar chart",
+        "chart_line": "line chart",
+        "chart_pie": "pie chart"
+      }
     },
     "systemData": {
       "label": "Original system data",
