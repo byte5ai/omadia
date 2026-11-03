@@ -5,7 +5,8 @@
  *
  * The canvas side (the gate picks the view, `canvas.layout`, the batch gate on
  * the canvas, decisionCanvas building blocks) is tested in the plugin repo
- * byte5ai/omadia-ui-orchestrator, test/canvasDecisionModelCanvas.test.ts.
+ * byte5ai/omadia-ui-support,
+ * packages/ui-orchestrator/test/canvasDecisionModelCanvas.test.ts.
  */
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';

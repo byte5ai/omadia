@@ -1,5 +1,5 @@
 // @omadia/conductor-core — pure, I/O-free Conductor engine (US1).
-// Sibling of @omadia/canvas-core: deterministic workflow-graph validation + advancement.
+// Sibling of @omadia/canvas-core (byte5ai/omadia-ui-support): deterministic workflow-graph validation + advancement.
 
 export * from './types.js';
 export { evaluatePredicate, resolvePath } from './predicate.js';

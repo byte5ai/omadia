@@ -1161,7 +1161,7 @@ export async function bootstrapVerifierFromEnv(
  * ever leaves the kernel (vault → vault copy). Runs each boot so a provider
  * connected later propagates on the next restart.
  *
- * The canvas plugin ships outside the core (byte5ai/omadia-ui-orchestrator).
+ * The canvas plugin ships outside the core (byte5ai/omadia-ui-support).
  * The vault is keyed by plugin id, so the mirror works the same for the
  * uploaded package — but only once it is INSTALLED: while it was bundled,
  * ingest refused any upload claiming its id; now nothing does, so keys are

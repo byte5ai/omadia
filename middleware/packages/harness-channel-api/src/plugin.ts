@@ -15,7 +15,8 @@
  *                            own — see that file's doc comment.
  *
  * Follows the same "built-in package, activate(ctx, core)" shape as
- * `@omadia/ui-channel` — see that package for the template this mirrors.
+ * `@omadia/ui-channel` (byte5ai/omadia-ui-support) — see that package for the
+ * template this mirrors.
  *
  * Issue #439: the key store, rate limiter, audit log and the bearer-auth
  * middleware now live in `@omadia/api-key-auth` so the kernel can reuse them

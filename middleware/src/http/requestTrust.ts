@@ -152,9 +152,10 @@ export function isPublicSchemeMode(raw: string): raw is PublicSchemeMode {
  * process, and a test can stand up two apps with different modes without
  * resetting global state between them. An app that never set it gets `auto`.
  *
- * The string is also read by `@omadia/ui-channel`, which keeps zero runtime
- * deps on the kernel and so spells the key literally — same arrangement as its
- * copy of `CANVAS_PATH`. Changing it here means changing it there.
+ * The string is also read by `@omadia/ui-channel` (byte5ai/omadia-ui-support),
+ * which keeps zero runtime deps on the kernel and so spells the key literally —
+ * same arrangement as its copy of `CANVAS_PATH`. Changing it here means
+ * changing it there, in another repository: it is a cross-repo contract.
  */
 export const PUBLIC_SCHEME_SETTING = 'omadia:public-scheme';
 

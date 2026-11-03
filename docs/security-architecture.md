@@ -6517,8 +6517,8 @@ vault-to-vault copy, no plaintext leaves the kernel.
 While the plugin was bundled under `middleware/packages/`, an upload claiming
 its id was refused at ingest (`packageUploadService.ts`, bundled-id collision),
 so the scope the keys went into could only ever belong to the shipped code. The
-plugin now lives in its own repository (`byte5ai/omadia-ui-orchestrator`) and
-is installed from the Hub or as a ZIP, so nothing reserves the id any more. The
+plugin now lives in its own repository (`byte5ai/omadia-ui-support`) and is
+installed from the Hub or as a ZIP, so nothing reserves the id any more. The
 mirror therefore runs only when the installed registry holds the id: keys are
 never pre-seeded into the scope of a plugin the operator has not installed.
 The built-in `@omadia/fast-path` target is unchanged.
@@ -6527,6 +6527,15 @@ Residual: the mirror runs at boot, so a freshly installed canvas plugin gets its
 keys on the next restart, and whoever the operator installs under that id
 receives them — the same trust any installed plugin gets for its own scope.
 Pinned by `middleware/test/uiOrchestratorKeyMirror.test.ts`.
+
+The canvas channel (`@omadia/ui-channel`) and the canvas protocol
+(`@omadia/canvas-core`) moved to the same repository, so their ids are not
+reserved either. Neither receives mirrored keys. The canvas WebSocket stays a
+kernel route: `WebSocketRegistry` authenticates every upgrade (session,
+whitelist, per-frame session check) before the channel's handler sees the
+socket, whoever installed the package under that id; without the channel the
+upgrade on `/omadia-ui/canvas` is a raw 404. Pairing discovery
+(`/.well-known/omadia-ui`) keeps advertising that path either way.
 
 ## 11. Reviewer checklist
 

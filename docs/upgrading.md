@@ -356,6 +356,39 @@ forward-only-migration caveat applies, so snapshot the Postgres volume first
 Do **not** redeploy the `omadia-postgres-<suffix>` app as part of a version
 bump: it holds the data volume, exactly as with the compose stack.
 
+## Upgrading past v0.200.2 — the canvas (Omadia UI) ships as plugins
+
+The canvas packages are no longer part of the core image. They live in
+[`byte5ai/omadia-ui-support`](https://github.com/byte5ai/omadia-ui-support) and
+install like any other plugin, from the Hub or as a ZIP, under their old ids:
+
+| Package | Version | Needed for |
+|---|---|---|
+| `@omadia/ui-channel` | 0.2.0 | the canvas WebSocket (`/omadia-ui/canvas`) the desktop app and canvas hosts connect to |
+| `@omadia/ui-orchestrator` | 0.2.0 | `canvasChatAgent@1`, which answers every canvas turn |
+| `@omadia/canvas-core` | 0.3.0 | only a plugin that requires `canvasValidator@1` |
+
+The channel and the orchestrator work only together: install both.
+
+**An instance that used the canvas** had these packages installed
+automatically. Their registry entries, configuration and vault scopes stay,
+but nothing activates them until the packages are uploaded again. To keep the
+canvas working:
+
+1. Before or right after pulling the new image, install `@omadia/ui-channel`
+   and `@omadia/ui-orchestrator` (Store → Hub, or Store → Local with the ZIPs).
+   The ids are free once the core no longer bundles them: on an older core the
+   upload is refused as a bundled id.
+2. Restart the middleware once. The boot copies the orchestrator's provider
+   keys into the canvas plugin's vault scope, and it does so only for an
+   installed plugin.
+
+Until then the desktop app still pairs (`/.well-known/omadia-ui` is unchanged
+and keeps advertising the canvas `wsUrl`), but the canvas connection fails: the
+WebSocket upgrade is a 404.
+
+**A new instance** has no canvas until both plugins are installed.
+
 ## Upgrading past v0.181.1 — one error contract for plugin uploads, Hub installs and the builder
 
 A plugin package reaches the host through three routes — ZIP upload, Hub

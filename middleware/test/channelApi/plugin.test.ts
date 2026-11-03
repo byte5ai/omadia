@@ -29,10 +29,11 @@ function makeDirectoryRegistry(): FakeDirectoryRegistry {
   return reg;
 }
 
-/** Mirrors `test/uiChannelPlugin.test.ts`'s `makeMocks()` for the sibling
- *  `@omadia/ui-channel` package, adapted to `registerRouter` instead of a
- *  single `registerRoute`. When `directoryRegistry` is supplied, it is served
- *  via `ctx.services.getOptional('channelDirectoryRegistry')`; when omitted,
+/** Mirrors `uiChannelPlugin.test.ts`'s `makeMocks()` for the
+ *  `@omadia/ui-channel` package (byte5ai/omadia-ui-support), adapted to
+ *  `registerRouter` instead of a single `registerRoute`. When
+ *  `directoryRegistry` is supplied, it is served via
+ *  `ctx.services.getOptional('channelDirectoryRegistry')`; when omitted,
  *  `getOptional` returns undefined (a kernel that doesn't publish it). */
 function makeMocks(secrets: SecretsAccessor, directoryRegistry?: FakeDirectoryRegistry) {
   const ctx = {

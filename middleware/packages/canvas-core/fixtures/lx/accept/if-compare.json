@@ -1,1 +1,0 @@
-{ "if": { ">": [ { "state": "x" }, { "lit": 0 } ] }, "then": { "lit": "pos" }, "else": { "lit": "nonpos" } }
