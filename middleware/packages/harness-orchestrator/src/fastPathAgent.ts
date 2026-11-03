@@ -5,6 +5,7 @@ import {
   type ChatStreamEvent,
   type ChatStreamObserver,
   type ChatTurnInput,
+  type FastPathDecision,
   type SemanticAnswer,
 } from '@omadia/channel-sdk';
 import type { ChatTriageOutcome, ChatTriageRequest } from '@omadia/fast-path';
@@ -107,8 +108,36 @@ export function passThroughReason(input: ChatTurnInput): string | undefined {
 }
 
 type Decision =
-  | { kind: 'answer'; text: string; toolCalls: number; turnId?: string }
-  | { kind: 'agent'; input: ChatTurnInput };
+  | { kind: 'answer'; text: string; toolCalls: number; turnId?: string; decision?: FastPathDecision }
+  | { kind: 'agent'; input: ChatTurnInput; decision?: FastPathDecision };
+
+/** The channel-facing copy of the fast path's decision trace. */
+function toFastPathDecision(
+  trace: NonNullable<ChatTriageOutcome['decision']>,
+  answered: boolean,
+): FastPathDecision {
+  return {
+    provider: trace.provider,
+    ...(trace.model !== undefined ? { model: trace.model } : {}),
+    verdict: trace.verdict,
+    ...(trace.route !== undefined ? { route: trace.route } : {}),
+    ...(trace.tool !== undefined ? { tool: trace.tool } : {}),
+    confidence: trace.confidence,
+    ms: trace.ms,
+    ...(trace.direct === true ? { direct: true as const } : {}),
+    ...(answered ? { answered: true as const } : {}),
+  };
+}
+
+/** `done` stamped with the decision; every other event unchanged. */
+async function* stampDecision(
+  events: AsyncIterable<ChatStreamEvent>,
+  decision: FastPathDecision | undefined,
+): AsyncGenerator<ChatStreamEvent> {
+  for await (const event of events) {
+    yield decision !== undefined && event.type === 'done' ? { ...event, fastPathDecision: decision } : event;
+  }
+}
 
 /** The wrapper keeps the agent it decorates reachable for introspection
  *  (tests and diagnostics read the CLI agent's construction deps). */
@@ -175,10 +204,20 @@ export function wrapChatAgentWithFastPath(inner: ChatAgent, deps: FastPathAgentD
       return { kind: 'agent', input };
     }
     if (outcome.kind === 'agent') {
-      return { kind: 'agent', input: outcome.route ? { ...input, routeHint: outcome.route } : input };
+      return {
+        kind: 'agent',
+        input: outcome.route ? { ...input, routeHint: outcome.route } : input,
+        ...(outcome.decision ? { decision: toFastPathDecision(outcome.decision, false) } : {}),
+      };
     }
     const turnId = await record(input, outcome.text, outcome.toolCalls);
-    return { kind: 'answer', text: outcome.text, toolCalls: outcome.toolCalls, ...(turnId ? { turnId } : {}) };
+    return {
+      kind: 'answer',
+      text: outcome.text,
+      toolCalls: outcome.toolCalls,
+      ...(turnId ? { turnId } : {}),
+      ...(outcome.decision ? { decision: toFastPathDecision(outcome.decision, true) } : {}),
+    };
   }
 
   const agent: FastPathChatAgent = {
@@ -198,7 +237,7 @@ export function wrapChatAgentWithFastPath(inner: ChatAgent, deps: FastPathAgentD
     async *chatStream(input: ChatTurnInput, observer?: ChatStreamObserver): AsyncGenerator<ChatStreamEvent> {
       const d = await decide(input);
       if (d.kind === 'agent') {
-        yield* inner.chatStream(d.input, observer);
+        yield* stampDecision(inner.chatStream(d.input, observer), d.decision);
         return;
       }
       yield { type: 'text_delta', text: d.text };
@@ -208,6 +247,7 @@ export function wrapChatAgentWithFastPath(inner: ChatAgent, deps: FastPathAgentD
         toolCalls: d.toolCalls,
         iterations: 0,
         ...(d.turnId ? { turnId: d.turnId } : {}),
+        ...(d.decision ? { fastPathDecision: d.decision } : {}),
       };
     },
     ...(inner.holdsContentUntilVerdict !== undefined

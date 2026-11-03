@@ -97,6 +97,7 @@
     "operatorAgents.detailTabs.plugins": "loanword",
     "operatorAgents.detailTabs.memory": "glossary",
     "system.vaultStatus.keySourceEnv": "code",
-    "system.platformHealth.eyebrow": "code"
+    "system.platformHealth.eyebrow": "code",
+    "chat.decision.stats": "placeholder"
   }
 }

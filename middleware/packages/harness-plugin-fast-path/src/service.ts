@@ -1,4 +1,4 @@
-import type { PrivacyGuardService } from '@omadia/plugin-api';
+import type { DecisionModelService, PrivacyGuardService } from '@omadia/plugin-api';
 
 import {
   ANSWER_CACHE_PRIVACY_JOB,
@@ -31,6 +31,7 @@ import {
 } from './learnedPlanStore.js';
 import { resolveTimeZone, type RefreshSource } from './refreshRecipes.js';
 import { openStoredTextPrivacy, TRIAGE_PRIVACY_JOB } from './storedTextPrivacy.js';
+import type { DecisionTrace } from './router.js';
 import type { PreviousQuery, TriageRoute } from './triage.js';
 import { triageTurn, type TriageOutcome } from './triageTurn.js';
 
@@ -76,6 +77,8 @@ export type ChatTriageOutcome =
       rows: number;
       toolCalls: number;
       ms: number;
+      /** the decision model's verdict, when one decided the turn */
+      decision?: DecisionTrace;
     }
   | {
       kind: 'agent';
@@ -83,6 +86,8 @@ export type ChatTriageOutcome =
       route?: TriageRoute;
       reason: string;
       ms: number;
+      /** the decision model's verdict, when one decided the turn */
+      decision?: DecisionTrace;
     };
 
 /**
@@ -107,6 +112,12 @@ export interface FastPathService {
   /** the zero-LLM answer cache (answerCache.ts) — absent when
    *  `fast_path_answer_cache` is off */
   readonly answerCache?: AnswerCache;
+  /** the installed `decisionModel@1` provider the triage routes on, resolved
+   *  per call — undefined when none runs or `fast_path_decision_model` is off */
+  decisionModel(): DecisionModelService | undefined;
+  /** `fast_path_decision_direct_plans` — the decision model may run a
+   *  learned plan as stored, without the planner */
+  readonly directPlansEnabled: boolean;
   /** planner specs: the allow-listed catalog tools, then a generic spec for
    *  every read tool of `definitions` (the agent's offered tools) without
    *  one — budgeted, name-ordered, the same text for the same tool set */
@@ -140,6 +151,8 @@ export interface FastPathServiceDeps {
   privacyGuard: () => PrivacyGuardService | undefined;
   /** the org policy requires a shield and none runs (#1535) */
   privacyForced: () => boolean;
+  /** the `decisionModel@1` provider, resolved lazily per call */
+  decisionModel?: () => DecisionModelService | undefined;
   log: (message: string) => void;
   /** test seam — an injected store */
   plans?: LearnedPlanStore;
@@ -159,6 +172,9 @@ export function createFastPathService(deps: FastPathServiceDeps): FastPathServic
   const answerCache: AnswerCache | undefined = answerCacheEnabled(deps.config.get<string | boolean>('fast_path_answer_cache'))
     ? (deps.answerCache ?? createAnswerCache({ ...(deps.memory ? { memory: deps.memory } : {}), log: deps.log }))
     : undefined;
+  const decisionEnabled = parseBooleanSetting(deps.config.get<unknown>('fast_path_decision_model'), true);
+  const directPlansEnabled = parseBooleanSetting(deps.config.get<unknown>('fast_path_decision_direct_plans'), true);
+  const decisionModel = (): DecisionModelService | undefined => (decisionEnabled ? deps.decisionModel?.() : undefined);
   const builtIn = plannableTools([...tools]);
   const sessions = new Map<string, PreviousQuery>();
   /** read tools a generic spec was built for — planned, so fetchable */
@@ -243,7 +259,8 @@ export function createFastPathService(deps: FastPathServiceDeps): FastPathServic
     const guard = deps.privacyGuard();
     const privacy = guard !== undefined ? openStoredTextPrivacy(guard, TRIAGE_PRIVACY_JOB, 'interactive') : undefined;
     const llm = deps.llm;
-    const invoke = deps.invoke;
+    const invoke = turnInvoker(deps.invoke, req.toolDefinitions);
+    const decide = decisionModel();
     // answer cache → router ∥ speculative planner (triageTurn.ts)
     const runTriage = (withCache: boolean): Promise<TriageOutcome> =>
       triageTurn({
@@ -257,19 +274,27 @@ export function createFastPathService(deps: FastPathServiceDeps): FastPathServic
         ...(previous ? { previous } : {}),
         ...(privacy ? { privacy } : {}),
         ...(withCache && answerCache ? { answerCache } : {}),
+        ...(decide ? { decide, directPlans: directPlansEnabled } : {}),
         log: deps.log,
       });
 
     /** Execute the triage's plan; undefined = a cache doubt (re-triage). */
     async function execute(triage: TriageOutcome): Promise<ChatTriageOutcome | undefined> {
+      const traced = triage.decision ? { decision: triage.decision } : {};
       if (triage.kind === 'agent') {
         if (triage.route === undefined) deps.log(`[fast-path] miss channel=${channel} reason=${triage.reason}`);
-        return { kind: 'agent', reason: triage.reason, ms: Date.now() - t0, ...(triage.route ? { route: triage.route } : {}) };
+        return {
+          kind: 'agent',
+          reason: triage.reason,
+          ms: Date.now() - t0,
+          ...(triage.route ? { route: triage.route } : {}),
+          ...traced,
+        };
       }
       const decision = triage.plan;
       const miss = (reason: string): ChatTriageOutcome => {
         settleTriage(triage, { ok: false, reason });
-        return agent(reason);
+        return { ...agent(reason), ...traced };
       };
       if (!permitted.has(decision.fetch.tool)) return miss('tool-not-permitted');
       const fetched = await fetchRecipeRows(invoke, decision.fetch, { rejectTruncated: true, timeZone });
@@ -315,7 +340,7 @@ export function createFastPathService(deps: FastPathServiceDeps): FastPathServic
           (triage.cache?.source === 'cache' ? ' via=cache' : '') +
           (learned.length > 0 ? ` plan=${learned.join(',')}` : ''),
       );
-      return { kind: 'answer', text: answer, tool: decision.fetch.tool, rows: fetched.rows.length, toolCalls: 1, ms };
+      return { kind: 'answer', text: answer, tool: decision.fetch.tool, rows: fetched.rows.length, toolCalls: 1, ms, ...traced };
     }
 
     // a slot-filled cache plan with no rows is a doubt: re-plan without it
@@ -338,6 +363,8 @@ export function createFastPathService(deps: FastPathServiceDeps): FastPathServic
     channelEnabled: (channel) => enabled && channelAllowed(channel),
     plans,
     ...(answerCache ? { answerCache } : {}),
+    decisionModel,
+    directPlansEnabled,
     plannableTools: (definitions) => plannable(definitions),
     allowedFetchTools,
     recordFetchOutcome,
@@ -346,4 +373,14 @@ export function createFastPathService(deps: FastPathServiceDeps): FastPathServic
     previousQuery: (key) => sessions.get(key),
     rememberQuery: (key, prev) => remember(key, prev),
   };
+}
+
+/** The turn's executor: a tool whose definition carries its own `invoke`
+ *  (an MCP read tool of the answering agent — `ctx.tools.invoke` cannot
+ *  reach it) runs through that; everything else through `ctx.tools.invoke`. */
+function turnInvoker(base: ToolInvoke, definitions?: readonly FastPathToolDefinition[]): ToolInvoke {
+  const own = new Map<string, (input: unknown) => Promise<string>>();
+  for (const d of definitions ?? []) if (d.invoke !== undefined && !own.has(d.name)) own.set(d.name, d.invoke);
+  if (own.size === 0) return base;
+  return (name, input) => own.get(name)?.(input) ?? base(name, input);
 }

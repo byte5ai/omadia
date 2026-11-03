@@ -11034,10 +11034,13 @@ export class Orchestrator {
   /**
    * The definitions of the PLUGIN-contributed native tools among
    * {@link offeredToolNames} — the ones `ctx.tools.invoke` can run outside a
-   * turn — name-ordered (`ChatAgent.offeredToolDefinitions`). Kernel tools
-   * (no `agentId`) and tools that declare `writeCapabilities` are left out;
-   * the fast path's read-name classifier still decides which of the rest it
-   * plans for. Plugin-authored text only — no turn data.
+   * turn — plus the MCP tools among them whose server declares them
+   * read-only, each with its own `invoke` (the domain tool's handler —
+   * `ctx.tools.invoke` cannot reach a per-agent MCP tool), name-ordered
+   * (`ChatAgent.offeredToolDefinitions`). Kernel tools (no `agentId`) and
+   * tools that declare `writeCapabilities` are left out; the fast path's
+   * read classifier still decides which of the rest it plans for.
+   * Plugin/server-authored text only — no turn data.
    */
   offeredToolDefinitions(): ReadonlyArray<ChatAgentToolDefinition> {
     const offered = this.offeredToolNames();
@@ -11048,7 +11051,40 @@ export class Orchestrator {
       if ((entry.writeCapabilities?.length ?? 0) > 0) continue;
       out.push({ name: spec.name, description: spec.description, input_schema: spec.input_schema });
     }
+    for (const tool of this.domainToolsByName.values()) {
+      if (tool.mcpServerId === undefined || tool.readOnly !== true || !offered.has(tool.name)) continue;
+      out.push({
+        name: tool.name,
+        description: tool.spec.description,
+        input_schema: tool.spec.input_schema,
+        readOnly: true,
+        invoke: (input: unknown) => this.invokeFastPathMcpTool(tool, input),
+      });
+    }
     return sortByToolName(out);
+  }
+
+  /**
+   * Run an offered read-only MCP tool for the deterministic fast path —
+   * outside a model turn, so the per-call checks of `dispatchToolInner` are
+   * repeated here: still THIS instance's tool, still offered, plugin ready
+   * and granted. Only with an attributable caller (`mcpUserKey` of the
+   * surrounding turn scope): without one a per-user server would fail
+   * closed anyway and a shared one would audit `unattributed` — so it
+   * refuses, and the fast path misses to the agent.
+   */
+  private async invokeFastPathMcpTool(tool: DomainTool, input: unknown): Promise<string> {
+    const name = tool.name;
+    if (this.domainToolsByName.get(name) !== tool || !this.offeredToolNames().has(name)) {
+      throw new Error(`fast path: tool ${name} is no longer offered`);
+    }
+    if (!this.isToolAvailable(tool.agentId) || !this.isPluginGranted(tool.agentId)) {
+      throw new Error(`fast path: tool ${name} is not available to this agent`);
+    }
+    if (!turnContext.current()?.mcpUserKey) {
+      throw new Error(`fast path: no attributable caller for ${name}`);
+    }
+    return tool.handle(input);
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

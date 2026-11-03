@@ -818,6 +818,13 @@ export interface Message {
    */
   model?: string;
   /**
+   * The decision model's verdict for this turn (e.g. TypeSafe Jev), from
+   * the `done` event: decided BEFORE any model call whether a language model
+   * is needed or one data source answers it. Untrusted shape — rendered
+   * through `decisionBadgeView`. Rendered at the top of the assistant card.
+   */
+  fastPathDecision?: unknown;
+  /**
    * Per-turn Haiku-triage verdict, from the `turn_routing` event emitted at
    * turn start. Present only when model-routing is enabled. Rendered inline at
    * the top of the assistant card as soon as the classifier resolves.

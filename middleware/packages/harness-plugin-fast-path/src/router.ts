@@ -49,9 +49,33 @@ export interface RouterIntent {
   tool: string;
 }
 
+/**
+ * What a decision model (`decisionModel@1`, decisionRouter.ts) decided for a
+ * turn — carried to the channel so the user can see it (web chat badge).
+ * Fixed vocabulary and numbers only, never turn text.
+ */
+export interface DecisionTrace {
+  /** provider id (`jev`) */
+  provider: string;
+  /** provider model id (`jev-1.13.0`), when reported */
+  model?: string;
+  /** the gate: answered by data, or a language model is needed */
+  verdict: 'data' | 'model';
+  /** the agent route of a `model` verdict */
+  route?: TriageRoute;
+  /** the chosen data source of a `data` verdict */
+  tool?: string;
+  /** gate confidence, × source confidence for a data source */
+  confidence: number;
+  /** decision time (all decision calls) */
+  ms: number;
+  /** a learned plan ran as stored — no planner call */
+  direct?: true;
+}
+
 export type RouteOutcome =
-  | { kind: 'plan'; tool: string; confidence: number; ms: number }
-  | { kind: 'agent'; route?: TriageRoute; reason: string; ms: number };
+  | { kind: 'plan'; tool: string; confidence: number; ms: number; decision?: DecisionTrace }
+  | { kind: 'agent'; route?: TriageRoute; reason: string; ms: number; decision?: DecisionTrace };
 
 export const ROUTER_SYSTEM = `You are the Omadia fast-path router. Classify ONE user turn by calling ${ROUTER_TOOL} — never answer the turn itself.
 - "deterministic": the answer IS the rows of exactly ONE read query with ONE of the TOOLS — a plain lookup or list, optionally counted, with a numeric column totalled, or the top N ROWS by one of their own columns ("Geburtstage im Januar", "offene Posten von Müller", "wie viele Kunden in Berlin", "die 5 größten offenen Rechnungen"). Set "tool".

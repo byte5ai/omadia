@@ -8745,3 +8745,64 @@ einleitende `memory`-View des Modells auf ein `/memories`, das es nicht gab
 Tests: `test/orchestrator/turnStartOverlap.test.ts` (Overlap via Hook-Gate,
 `routeHint` im Payload, leerer Index im Hint, beide Pfade),
 `test/planRunnerRouteHint.test.ts`, `memoryIndexPrefetch.test.ts` ergänzt.
+
+## Fast Path: Entscheidungsmodell vor der Triage + MCP-Reads (`decisionModel@1`, 2026-11-03)
+
+Ziel: Jeder Turn, der kein Sprachmodell braucht, läuft ohne Modellaufruf; der
+Rest geht ohne Umweg zum Agenten. Ein typisiertes Entscheidungsmodell (erster
+Provider TypeSafe Jev, Plugin `@omadia/decision-jev` im eigenen Repo) ist
+dafür schneller und billiger als der Forced-Tool-Router.
+
+- **Vertrag:** `plugin-api/src/decisionModel.ts` (1.52.0) —
+  `DecisionModelService.choose({task, instruction, input, options})` →
+  `{choice, confidence, probabilities?, model?}`, `normalizeDecisionChoice`
+  validiert jede Antwort. Registry-Key `decisionModel`, Manifest
+  `decisionModel@1`; `@omadia/fast-path` hat es in `optional_requires` und
+  löst es pro Turn auf (`ctx.services.getOptional`).
+- **Ablauf (`triageTurn.ts` → `decisionRouter.ts`):** Answer-Cache (lokal,
+  0 Calls) → Maskierung der Turn-Nachricht → **Gate** `fast-path.gate`
+  (`model_simple` / `model_complex` → Agent mit `routeHint`, 0 LLM-Calls;
+  `data` → weiter) → **Quelle** `fast-path.source` (ein Option pro
+  angebotenem Tool, inkl. MCP) → **Direktplan** `fast-path.direct-plan`
+  (aktiver gelernter Plan ohne Platzhalter/Top-N, Konfidenz ≥ 0,85, keine
+  Ziffer in der Frage, Privacy Shield läuft und hat nichts maskiert, kein
+  Follow-up) → sonst EIN Planner-Call nur für die gewählte Quelle. Der
+  spekulative Planner entfällt auf diesem Pfad.
+- **Fallback:** Fehler, ungültige Antwort, harter 2-s-Deadline
+  (`Promise.race`, nicht nur `AbortSignal`) oder Konfidenz < 0,6 → der
+  bisherige LLM-Router ∥ Planner, unverändert. Ein Decision-Provider kann nur
+  Calls sparen, nie Antworten verlieren.
+- **Privacy:** Das Entscheidungsmodell bekommt nur die maskierte
+  Turn-Nachricht; Optionsbeschreibungen sind Tool-Purposes und gelernte
+  Beispiele (gespeichert literal-stripped/maskiert).
+- **MCP-Reads:** Discovery übernimmt `annotations.readOnlyHint` in den
+  Deskriptor (persistiert in `mcp_servers.discovered_tools`, alte Server
+  brauchen eine Re-Discovery). `mcpGrantToDomainTool` setzt
+  `DomainTool.readOnly` nur bei ungekürztem Namen;
+  `Orchestrator.offeredToolDefinitions` bietet solche Tools mit eigenem
+  `invoke` an; `isPlannableReadTool` verlangt zusätzlich Lese-Verb im
+  Tool-Teil und kein Schreib-Verb (camelCase-aware). Ausführung über
+  `invokeFastPathMcpTool` (Registrierung, Angebot, Readiness, Grant,
+  `mcpUserKey` im Turn-Scope — sonst Miss). Kanal-Turns ohne äußeren
+  Identitäts-Scope (Teams/Telegram) und der Canvas planen MCP-Tools daher
+  noch nicht.
+- **Setup:** `fast_path_decision_model` (Default an — wirkt nur mit
+  installiertem Provider), `fast_path_decision_direct_plans` (Default an).
+  `@omadia/fast-path` 0.2.0.
+
+- **Sichtbarkeit im Web-Chat:** Jede Entscheidung wird als `DecisionTrace`
+  (`router.ts`: Provider, Modell, Urteil `data`/`model`, Route, Quelle,
+  Konfidenz, ms, `direct`) über `TriageOutcome` → `ChatTriageOutcome` →
+  `fastPathAgent.ts` als `done.fastPathDecision` (channel-sdk
+  `FastPathDecision`) ausgeliefert — bei FastPath-Antworten
+  (`answered: true`) UND bei Agent-Turns, die Jev geroutet hat (der `done`
+  des Agenten wird gestempelt; der Wrapper sitzt außerhalb des Verifiers).
+  Web-UI: `DecisionBadge` oben in der Assistant-Karte („Jev → ohne LLM
+  beantwortet · odoo_query · 91 % · 14 ms“ bzw. „Modell nötig · komplex“),
+  persistiert über `MessageSchema.fastPathDecision` (`chatSessions.ts`).
+
+Tests: `test/fastPathDecisionModel.test.ts`,
+`test/subAgentToolHydrationTopLevel.test.ts` (readOnly-Hint, Kürzung),
+`test/chatSessionsMirrorVerifier.test.ts` (Persistenz),
+`web-ui/app/_components/chat/__tests__/DecisionBadge.test.tsx`.
+

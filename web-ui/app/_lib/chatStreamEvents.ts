@@ -139,6 +139,9 @@ export type ChatStreamEvent =
       iterations: number;
       /** Model this turn ran on (per-turn router → Sonnet/Opus, or default). */
       model?: string;
+      /** The decision model's verdict (fast path, before any model call) —
+       *  see `Message.fastPathDecision`. Untrusted shape. */
+      fastPathDecision?: unknown;
       turnId?: string;
       palaiaExcerpt?: PalaiaExcerpt;
       autoPromotedMkId?: string;
@@ -437,6 +440,7 @@ function foldIntoMessage(m: Message, event: ChatStreamEvent): Message {
           iterations: event.iterations,
         },
         ...(event.model ? { model: event.model } : {}),
+        ...(event.fastPathDecision ? { fastPathDecision: event.fastPathDecision } : {}),
         ...(event.turnId ? { turnId: event.turnId } : {}),
         ...(event.palaiaExcerpt ? { palaiaExcerpt: event.palaiaExcerpt } : {}),
         ...(event.autoPromotedMkId

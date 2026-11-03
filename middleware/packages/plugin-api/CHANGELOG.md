@@ -8,6 +8,21 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.52.0 — 2026-11-03
+
+Additive. Provider-swappable typed decision model for the fast path.
+
+### Added
+
+- **`decisionModel@1`** (`DECISION_MODEL_SERVICE_NAME` = `'decisionModel'`,
+  `DECISION_MODEL_CAPABILITY`): `DecisionModelService.choose()` picks ONE of a
+  closed set of `DecisionOption`s with a calibrated confidence
+  (`DecisionChoiceRequest` / `DecisionChoiceResult`). First provider:
+  TypeSafe Jev (`@omadia/decision-jev`, own repo). The fast path gates every
+  turn on it before any triage model call.
+- **`normalizeDecisionChoice`** — validates a provider answer against its
+  request (known option id, finite confidence clamped to 0..1).
+
 ## 1.51.0 — 2026-11-01
 
 Additive. Kernel-verified Teams SSO for plugin routes (#1620).

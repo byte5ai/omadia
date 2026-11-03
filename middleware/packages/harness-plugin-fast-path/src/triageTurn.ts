@@ -1,8 +1,11 @@
+import type { DecisionModelService } from '@omadia/plugin-api';
+
 import type { AnswerCache, CacheTicket } from './answerCache.js';
+import { directPlanByDecision, routeByDecision } from './decisionRouter.js';
 import type { FastLlm, FastPathToolSpec } from './fastPath.js';
 import type { LearnedPlan } from './learnedPlanStore.js';
 import { planQuery } from './planner.js';
-import { routeTurn } from './router.js';
+import { routeTurn, type DecisionTrace } from './router.js';
 import type { StoredTextPrivacyRun } from './storedTextPrivacy.js';
 import type { PlannedQuery, PreviousQuery, TriageRoute } from './triage.js';
 
@@ -29,11 +32,17 @@ import type { PlannedQuery, PreviousQuery, TriageRoute } from './triage.js';
  *    ZERO model calls (nothing leaves the process). Any doubt → the steps
  *    above. Every plan carries a `cache` ticket the caller settles after
  *    executing it (hit → keep / store, miss → evict).
+ *
+ * With a decision model (`decisionModel@1`, decisionRouter.ts) step 2 is
+ * SEQUENTIAL instead: the decision model routes in milliseconds, the
+ * planner runs only after a deterministic route — and not at all when the
+ * decision model picks a learned plan that runs as stored. Any decision
+ * failure takes the LLM path above unchanged.
  */
 
 export type TriageOutcome =
-  | { kind: 'plan'; plan: PlannedQuery; ms: number; cache?: CacheTicket }
-  | { kind: 'agent'; route?: TriageRoute; reason: string; ms: number };
+  | { kind: 'plan'; plan: PlannedQuery; ms: number; cache?: CacheTicket; decision?: DecisionTrace }
+  | { kind: 'agent'; route?: TriageRoute; reason: string; ms: number; decision?: DecisionTrace };
 
 /** The user message router and planner share: user-derived text only. */
 export function buildTurnMessage(opts: { question: string; previous?: PreviousQuery }): string {
@@ -63,6 +72,11 @@ export async function triageTurn(opts: {
   /** told the cache verdict as soon as the lookup ran (before router and
    *  planner) — the canvas builds its skeleton from a hit without waiting */
   onCacheLookup?: (hit: boolean) => void;
+  /** the typed decision model — routes (and may pick a learned plan)
+   *  instead of the LLM router; absent → LLM router ∥ planner */
+  decide?: DecisionModelService;
+  /** let the decision model run a learned plan without the planner */
+  directPlans?: boolean;
   log: (message: string) => void;
 }): Promise<TriageOutcome> {
   const t0 = Date.now();
@@ -78,7 +92,8 @@ export async function triageTurn(opts: {
     opts.onCacheLookup?.(cached !== undefined);
     if (cached) return cached;
   }
-  let message = buildTurnMessage(opts);
+  const unmasked = buildTurnMessage(opts);
+  let message = unmasked;
   if (opts.privacy) {
     const masked = await opts.privacy.mask(message);
     if (!masked.send) {
@@ -89,6 +104,53 @@ export async function triageTurn(opts: {
   }
   const privacy = opts.privacy;
   const base = { llm: opts.llm, model: opts.model, channel: opts.channel, message, tools: opts.tools, log: opts.log };
+  const intents = opts.offered.map((p) => ({ question: p.examples[0] ?? '', tool: p.tool }));
+  if (opts.decide) {
+    const routed = await routeByDecision({ ...base, decide: opts.decide, intents });
+    const decision = routed?.decision;
+    const traced = (out: TriageOutcome): TriageOutcome => (decision ? { ...out, decision } : out);
+    if (routed?.kind === 'agent') return traced(agent(routed.reason, routed.route));
+    if (routed?.kind === 'plan') {
+      if (!opts.tools.some((t) => t.name === routed.tool)) return traced(agent('router-tool-not-offered'));
+      const ticket = opts.answerCache ? { cache: { source: 'llm' as const, question: opts.question, previous } } : {};
+      // a stored plan runs only for a self-contained turn a RUNNING Privacy
+      // Shield left unchanged — a masked span is a value the plan lacks, and
+      // without a shield nothing proves there is none (fail closed)
+      if (opts.directPlans === true && !previous && privacy !== undefined && message === unmasked) {
+        const direct = await directPlanByDecision({
+          decide: opts.decide,
+          channel: opts.channel,
+          message,
+          question: opts.question,
+          tool: routed.tool,
+          plans: opts.offered,
+          allowedTools: opts.allowedTools,
+          log: opts.log,
+        });
+        if (direct) {
+          return {
+            kind: 'plan',
+            plan: direct,
+            ms: Date.now() - t0,
+            ...ticket,
+            ...(decision ? { decision: { ...decision, direct: true as const } } : {}),
+          };
+        }
+      }
+      const planned = await planQuery({
+        ...base,
+        tools: opts.tools.filter((t) => t.name === routed.tool),
+        question: opts.question,
+        allowedTools: opts.allowedTools,
+        examples: opts.offered.filter((p) => p.tool === routed.tool),
+        ...(privacy ? { restore: (text: string) => privacy.restore(text) } : {}),
+      });
+      if (!planned.ok) return traced(agent(planned.reason));
+      if (planned.plan.fetch.tool !== routed.tool) return traced(agent('planner-tool-mismatch'));
+      return traced({ kind: 'plan', plan: planned.plan, ms: Date.now() - t0, ...ticket });
+    }
+    // no decision → the LLM router below
+  }
   // speculative: started BEFORE the router answers; never throws
   const planning = planQuery({
     ...base,
@@ -97,10 +159,7 @@ export async function triageTurn(opts: {
     examples: opts.offered,
     ...(privacy ? { restore: (text: string) => privacy.restore(text) } : {}),
   });
-  const route = await routeTurn({
-    ...base,
-    intents: opts.offered.map((p) => ({ question: p.examples[0] ?? '', tool: p.tool })),
-  });
+  const route = await routeTurn({ ...base, intents });
   if (route.kind === 'agent') {
     opts.log(`[fast-path] planner discarded (route=${route.reason})`);
     return agent(route.reason, route.route);

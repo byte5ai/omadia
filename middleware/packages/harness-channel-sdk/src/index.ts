@@ -123,6 +123,7 @@ export type {
   AnswerVerbosityLevel,
   ChatAgent,
   ChatAgentToolDefinition,
+  FastPathDecision,
   ChatStreamObserver,
   ChatTurnInput,
   ChatTurnAttachment,

@@ -188,6 +188,13 @@ export interface McpToolDescriptor {
    * so it survives a restart without re-discovery.
    */
   readonly outputSchema?: Record<string, unknown>;
+  /**
+   * The server's `annotations.readOnlyHint` — the tool does not modify its
+   * environment. A HINT (MCP spec): the deterministic fast path plans a read
+   * for such a tool only when its name carries no write verb either. Never
+   * an authorisation decision.
+   */
+  readonly readOnlyHint?: boolean;
 }
 
 /**
@@ -1154,6 +1161,9 @@ export class McpManager {
       // poisoning the descriptor (arrays are objects in JS, so exclude them).
       ...(isPlainObject(t.outputSchema)
         ? { outputSchema: t.outputSchema as Record<string, unknown> }
+        : {}),
+      ...(isPlainObject(t.annotations) && t.annotations['readOnlyHint'] === true
+        ? { readOnlyHint: true }
         : {}),
     }));
     for (const d of descriptors) this.rememberToolSchema(cfg.id, d);

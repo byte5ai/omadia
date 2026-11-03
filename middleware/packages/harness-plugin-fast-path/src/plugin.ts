@@ -1,5 +1,7 @@
 import {
+  DECISION_MODEL_SERVICE_NAME,
   PRIVACY_FORCE_GUARDED_ENV_VAR,
+  type DecisionModelService,
   PRIVACY_REDACT_SERVICE_NAME,
   type PluginContext,
   type PrivacyGuardService,
@@ -39,11 +41,13 @@ export async function activate(ctx: PluginContext): Promise<FastPathPluginHandle
     ...(ctx.memory ? { memory: ctx.memory.pluginWide ?? ctx.memory } : {}),
     privacyGuard,
     privacyForced: () => process.env[PRIVACY_FORCE_GUARDED_ENV_VAR] === 'true' && privacyGuard() === undefined,
+    // lazily per turn: a decision-model plugin may come up (or go) later
+    decisionModel: () => services?.getOptional?.<DecisionModelService>(DECISION_MODEL_SERVICE_NAME),
     log: (m) => ctx.log(m),
   });
   ctx.log(
     `[fast-path] ${service.enabled ? `tools: ${[...service.tools].join(',')}` : 'disabled (fast_path_tools empty)'}; ` +
-      `generic tools: ${service.genericToolsEnabled ? 'on' : 'off'}; answer cache: ${service.answerCache ? 'on' : 'off'}; timezone: ${service.timeZone}; channels: ${ctx.config?.get<string>('fast_path_channels')?.trim() || 'all'}`,
+      `generic tools: ${service.genericToolsEnabled ? 'on' : 'off'}; decision model: ${service.decisionModel()?.provider ?? 'none'}; answer cache: ${service.answerCache ? 'on' : 'off'}; timezone: ${service.timeZone}; channels: ${ctx.config?.get<string>('fast_path_channels')?.trim() || 'all'}`,
   );
   const dispose = ctx.services.provide(FAST_PATH_SERVICE, service);
   return {

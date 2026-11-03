@@ -153,6 +153,9 @@ export interface DomainTool {
   /** Display name of the originating MCP server (epic #459) — used to label
    *  KG observation nodes ingested from this tool. */
   mcpServerName?: string;
+  /** MCP tools: the server declared it read-only (`readOnlyHint`). Offered
+   *  to the deterministic fast path (`offeredToolDefinitions`). */
+  readOnly?: boolean;
   handle(input: unknown, observer?: AskObserver): Promise<string>;
   /**
    * Privacy-Shield v3 (stable-id tokenization, slice 1) — optional PII

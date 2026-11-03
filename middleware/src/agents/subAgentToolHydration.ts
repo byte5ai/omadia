@@ -274,6 +274,7 @@ function discoveredDescriptor(
       ...(isPlainObject(hit['outputSchema'])
         ? { outputSchema: hit['outputSchema'] }
         : {}),
+      ...(hit['readOnlyHint'] === true ? { readOnlyHint: true } : {}),
     };
   }
   return { name: toolRef };
@@ -284,6 +285,11 @@ function discoveredDescriptor(
  *  corrupt data rather than a lenient variant. */
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+/** `mcpNativeToolName` before its 64-char cut. */
+function untruncatedMcpName(serverName: string, toolName: string): string {
+  return `mcp__${serverName}__${toolName}`.replace(/[^a-zA-Z0-9_-]/g, '_');
 }
 
 /**
@@ -323,6 +329,11 @@ export function mcpGrantToDomainTool(
     // themselves are read live.
     mcpServerId: cfg.id,
     mcpServerName: cfg.name,
+    // only when the native name kept the WHOLE tool name: a 64-char cut can
+    // drop the verb the fast path's name check relies on
+    ...(descriptor.readOnlyHint === true && spec.name === untruncatedMcpName(cfg.name, descriptor.name)
+      ? { readOnly: true }
+      : {}),
     handle: (input: unknown) => handler(input),
   };
 }
