@@ -10,6 +10,15 @@ import {
 import { CANVAS_PROTOCOL_VERSION, OPS_CATALOG_VERSION } from './canvasProtocol.js';
 import { type CanvasRuntime } from './canvasRuntime.js';
 import { mintDataRef } from './dataRef.js';
+import {
+  chartColumns,
+  chartTree,
+  rootHeading,
+  settleLayout,
+  type CanvasLayout,
+  type ChartKind,
+} from './decisionCanvas.js';
+import type { DataRequirement } from './composition.js';
 import { type PlanColumn, type PlannedSkeleton } from './fastPathBinding.js';
 import { publishRowsEvents } from './publishRowsEvents.js';
 import { monthVariantActions, type VariantAction } from './recipeVariant.js';
@@ -25,8 +34,18 @@ export type FastPathOutcome =
       tool: string;
       rows: number;
       toolCalls: number;
+      /** how the rows went out — set when a layout decision was asked */
+      layout?: CanvasLayout;
     }
   | { hit: false; reason: string; failedFetch?: RefreshSource };
+
+type FastPathJob = {
+  containerId: string;
+  rows: Array<Record<string, unknown>>;
+  source: RefreshSource;
+  actions: VariantAction[];
+  columns?: PlanColumn[];
+};
 
 /** The deterministic fast path (see fastPath.ts). Runs only when EVERY
  *  data requirement carries a valid `fetch` for an allow-listed tool; any
@@ -46,6 +65,9 @@ export async function runFastPath(
   turnTools: { plannable: number; allowed: ReadonlySet<string>; permitted: ReadonlySet<string> },
   /** an action turn's target record — its plan must query exactly it */
   target?: TargetRecord,
+  /** the decision model's layout for a plan skeleton (decisionCanvas.ts) —
+   *  a chart replaces the table when the rows fit one */
+  layout?: Promise<{ layout: CanvasLayout } | undefined>,
 ): Promise<FastPathOutcome> {
   const {
     ctx,
@@ -88,13 +110,7 @@ export async function runFastPath(
   const invoke = toolsAccessor?.invoke?.bind(toolsAccessor);
   if (!invoke) return miss('no-invoker');
 
-  const jobs: Array<{
-    containerId: string;
-    rows: Array<Record<string, unknown>>;
-    source: RefreshSource;
-    actions: VariantAction[];
-    columns?: PlanColumn[];
-  }> = [];
+  const jobs: FastPathJob[] = [];
   let firstRecords: Array<Record<string, unknown>> = [];
   for (const plan of plans) {
     const fetched = await fetchRecipeRows(invoke, plan.fetch, {
@@ -132,17 +148,40 @@ export async function runFastPath(
     return miss('summary-unresolvable');
   }
 
-  const recipes: Array<{ containerId: string; source: RefreshSource }> = [];
+  // the decision model's layout, asked alongside the fetch: a chart view
+  // replaces the table (one more snapshot) when the rows fit one
+  const chosen = layout !== undefined && jobs.length === 1 ? await settleLayout(layout) : undefined;
+  const chart =
+    chosen !== undefined && chosen !== 'table' && jobs[0] !== undefined ? chartView(skeleton, jobs[0], chosen) : undefined;
+  if (chosen !== undefined && chosen !== 'table' && chart === undefined) {
+    ctx.log(`[ui-orchestrator] decision layout ${chosen} not applicable to the rows — table`);
+  }
+  const shownLayout: CanvasLayout | undefined = chart !== undefined ? chosen : chosen === 'table' ? 'table' : undefined;
+  const publishJobs = chart !== undefined ? [chart.job] : jobs;
   const events: ChatStreamEvent[] = [];
-  for await (const ev of synthesizeSurfaceEvents(publishRowsEvents(jobs), {
+  let seq = startSurfaceSeq;
+  if (chart !== undefined) {
+    events.push({
+      type: 'surface_snapshot',
+      canvasSessionId,
+      surfaceSeq: seq++,
+      producesRevision: '1' as RevisionId,
+      tree: chart.tree,
+      protocolVersion: CANVAS_PROTOCOL_VERSION,
+      opsCatalogVersion: OPS_CATALOG_VERSION,
+    });
+  }
+
+  const recipes: Array<{ containerId: string; source: RefreshSource }> = [];
+  for await (const ev of synthesizeSurfaceEvents(publishRowsEvents(publishJobs), {
     canvasSessionId,
     authorizedToolNames: canvasOutputTools,
     protocolVersion: CANVAS_PROTOCOL_VERSION,
     opsCatalogVersion: OPS_CATALOG_VERSION,
-    startSurfaceSeq,
-    baseRevision: '0' as RevisionId,
-    baseTree: skeleton.tree,
-    dataRequirements: skeleton.dataRequirements,
+    startSurfaceSeq: seq,
+    baseRevision: (chart !== undefined ? '1' : '0') as RevisionId,
+    baseTree: chart?.tree ?? skeleton.tree,
+    dataRequirements: chart?.requirements ?? skeleton.dataRequirements,
     onPublishedSource: (containerId, raw) => {
       const source = parseRefreshSource(raw);
       if (!source) return undefined;
@@ -155,7 +194,7 @@ export async function runFastPath(
     // only the surface events go out — the synthetic tool events carry rows
     if (ev.type.startsWith('surface_')) events.push(ev);
   }
-  if (events.filter((e) => e.type === 'surface_patch').length < jobs.length) {
+  if (events.filter((e) => e.type === 'surface_patch').length < publishJobs.length) {
     return miss('unpublishable');
   }
   for (const r of recipes) {
@@ -169,6 +208,48 @@ export async function runFastPath(
     tool: [...new Set(plans.map((p) => p.fetch.tool))].join(','),
     rows: first?.rows.length ?? 0,
     toolCalls: jobs.length,
+    ...(shownLayout !== undefined ? { layout: shownLayout } : {}),
+  };
+}
+
+/** The chart view of a planned table: the skeleton's heading over a chart
+ *  in the table's place, and the job publishing `label` / `value` points.
+ *  The recipe's map gains `label` / `value`, so a refresh replays the same
+ *  points. undefined when the rows cannot be that chart. */
+function chartView(
+  skeleton: PlannedSkeleton,
+  job: FastPathJob,
+  kind: ChartKind,
+): { tree: unknown; requirements: DataRequirement[]; job: FastPathJob } | undefined {
+  const cols = chartColumns(job.rows, Object.keys(job.source.map), kind);
+  if (cols === undefined) return undefined;
+  const labelAttr = job.source.map[cols.labelKey];
+  const valueAttr = job.source.map[cols.valueKey];
+  if (labelAttr === undefined || valueAttr === undefined) return undefined;
+  const labelOf = (key: string): string => job.columns?.find((c) => c.fieldKey === key)?.label ?? key;
+  const description = skeleton.dataRequirements[0]?.description ?? '';
+  return {
+    tree: chartTree(rootHeading(skeleton.tree), job.containerId, kind),
+    requirements: [
+      {
+        containerId: job.containerId,
+        description,
+        fields: [
+          { fieldKey: 'label', label: labelOf(cols.labelKey) },
+          { fieldKey: 'value', label: labelOf(cols.valueKey) },
+        ],
+      },
+    ],
+    job: {
+      containerId: job.containerId,
+      rows: job.rows.map((r) => ({
+        ...(r['rowKey'] !== undefined ? { rowKey: r['rowKey'] } : {}),
+        label: r[cols.labelKey],
+        value: r[cols.valueKey],
+      })),
+      source: { ...job.source, map: { label: labelAttr, value: valueAttr } },
+      actions: [],
+    },
   };
 }
 

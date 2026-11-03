@@ -1,8 +1,10 @@
 import type { PlannedQuery, TriageOutcome } from '@omadia/fast-path';
 import type { SkeletonResult } from './composition.js';
+import { questionTitle } from './decisionCanvas.js';
 
 /**
- * Skeleton for an answer-cache hit — no composer call.
+ * Skeleton for a planned turn — no composer call. Built for an answer-cache
+ * hit and, with a decision model, for every turn its gate routes to data.
  *
  * A cache hit (@omadia/fast-path answerCache.ts) skips router + planner, but
  * the canvas still waited ~2–2.6 s for the skeleton composer (live, v431):
@@ -17,7 +19,6 @@ import type { SkeletonResult } from './composition.js';
 export const CACHE_PEEK_MS = 100;
 
 const TABLE_ID = 'results';
-const MAX_TITLE = 80;
 
 /** The cached plan when the turn's cache lookup reports a hit (within
  *  `ms`), else undefined — a miss returns as soon as the lookup ran, so a
@@ -41,20 +42,13 @@ export async function peekCacheHit(
   return t?.kind === 'plan' && t.cache?.source === 'cache' ? t.plan : undefined;
 }
 
-/** The question as a heading: one line, no trailing question mark, capped. */
-function title(question: string): string {
-  const line = question.replace(/\s+/g, ' ').trim().replace(/[?？]+$/, '');
-  const capped = line.length > MAX_TITLE ? `${line.slice(0, MAX_TITLE - 1)}…` : line;
-  return capped.charAt(0).toUpperCase() + capped.slice(1);
-}
-
-/** The skeleton of a cached plan: heading + its ONE table (plan headers). */
+/** The skeleton of a plan: heading + its ONE table (plan headers). */
 export function planSkeleton(plan: PlannedQuery, question: string): SkeletonResult {
   const fields = Object.keys(plan.fetch.map).map((fieldKey) => ({
     fieldKey,
     label: plan.labels[fieldKey] ?? fieldKey,
   }));
-  const heading = title(question);
+  const heading = questionTitle(question);
   return {
     tree: {
       type: 'container',

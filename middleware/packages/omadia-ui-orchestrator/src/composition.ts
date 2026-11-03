@@ -52,8 +52,9 @@ export interface DataRequirement {
 export interface SkeletonResult {
   tree: unknown;
   dataRequirements: DataRequirement[];
-  /** `plan`: built from a cached fast-path plan, no composer call (cachedSkeleton.ts) */
-  source: 'model' | 'fallback' | 'plan';
+  /** `plan`: built from a fast-path plan, no composer call (cachedSkeleton.ts);
+   *  `simple`: a plain answer view for a simple model turn (decisionCanvas.ts) */
+  source: 'model' | 'fallback' | 'plan' | 'simple';
 }
 
 export const FALLBACK_SKELETON = {

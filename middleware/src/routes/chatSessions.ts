@@ -150,6 +150,24 @@ const MessageSchema = z.object({
       ms: z.number().nonnegative(),
       direct: z.literal(true).optional(),
       answered: z.literal(true).optional(),
+      fallback: z.literal(true).optional(),
+      steps: z
+        .array(
+          z.object({
+            task: z.string().min(1).max(80),
+            choice: z.string().min(1).max(120),
+            confidence: z.number().min(0).max(1),
+            ms: z.number().nonnegative(),
+          }),
+        )
+        .max(8)
+        .optional(),
+      ui: z
+        .object({
+          skeleton: z.enum(['plan', 'cache', 'simple', 'composer']),
+          layout: z.enum(['table', 'bar', 'line', 'pie']).optional(),
+        })
+        .optional(),
     })
     .optional()
     .catch(undefined),

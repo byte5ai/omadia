@@ -414,8 +414,15 @@ describe('decision trace → web chat (`done.fastPathDecision`)', () => {
   it('the triage carries the decision: model verdict with route, data verdict with source, direct flag', async () => {
     const model = await triage({ llm: fakeLlm().llm, decide: fakeDecide({ [GATE_TASK]: { choice: 'model_complex', confidence: 0.8 } }).decide });
     assert.deepEqual(
-      model.decision && { ...model.decision, ms: 0 },
-      { provider: 'fake', verdict: 'model', route: 'complex', confidence: 0.8, ms: 0 },
+      model.decision && { ...model.decision, ms: 0, steps: model.decision.steps?.map((s) => ({ ...s, ms: 0 })) },
+      {
+        provider: 'fake',
+        verdict: 'model',
+        route: 'complex',
+        confidence: 0.8,
+        ms: 0,
+        steps: [{ task: GATE_TASK, choice: 'model_complex', confidence: 0.8, ms: 0 }],
+      },
     );
     const planned = await triage({ llm: fakeLlm().llm, decide: fakeDecide(answered).decide });
     assert.equal(planned.decision?.verdict, 'data');
@@ -430,6 +437,7 @@ describe('decision trace → web chat (`done.fastPathDecision`)', () => {
       privacy: shield,
     });
     assert.equal(direct.decision?.direct, true);
+    assert.deepEqual(direct.decision?.steps?.map((s) => s.task), [GATE_TASK, SOURCE_TASK, DIRECT_PLAN_TASK]);
   });
 
   it('the LLM router path carries no decision', async () => {
@@ -487,6 +495,21 @@ describe('decision trace → web chat (`done.fastPathDecision`)', () => {
       confidence: 0.82,
       ms: 9,
     });
+  });
+
+  it('the decision steps are copied onto `done`', async () => {
+    const steps = [
+      { task: GATE_TASK, choice: 'data', confidence: 0.9, ms: 5 },
+      { task: SOURCE_TASK, choice: 'tool:odoo_query', confidence: 0.95, ms: 6 },
+    ];
+    const events = await collectEvents(
+      wrap({ kind: 'answer', text: 'rows', tool: 'odoo_query', rows: 2, toolCalls: 1, ms: 30, decision: { ...TRACE, steps } }).chatStream({
+        userMessage: 'Offene Posten?',
+        sessionScope: 'tab_1',
+      }),
+    );
+    const done = events.find((e) => e.type === 'done');
+    assert.deepEqual(done?.type === 'done' ? done.fastPathDecision?.steps : undefined, steps);
   });
 
   it('no decision → `done` unchanged', async () => {
