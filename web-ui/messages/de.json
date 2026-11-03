@@ -1827,7 +1827,34 @@
         "complex": "komplex"
       },
       "direct": "gelernte Abfrage",
-      "stats": "{confidence} % · {ms} ms"
+      "stats": "{confidence} % · {ms} ms",
+      "stepsTitle": "Was {provider} entschieden hat",
+      "task": {
+        "gate": "Gate",
+        "data": "Nur Daten",
+        "complex": "Komplex",
+        "plan": "Plan nötig",
+        "source": "Datenquelle",
+        "direct": "Gelernte Abfrage",
+        "slot": "Wert",
+        "layout": "Darstellung",
+        "other": "Entscheidung"
+      },
+      "choice": {
+        "yes": "ja",
+        "no": "nein",
+        "data": "Daten, kein Modell",
+        "model_simple": "Modell, einfach",
+        "model_complex": "Modell, komplex",
+        "none": "keine",
+        "plan_new": "neue Abfrage",
+        "plan": "gespeicherte Abfrage",
+        "value": "aus der Nachricht",
+        "table": "Tabelle",
+        "chart_bar": "Balkendiagramm",
+        "chart_line": "Liniendiagramm",
+        "chart_pie": "Kreisdiagramm"
+      }
     },
     "systemData": {
       "label": "Originaldaten aus dem System",

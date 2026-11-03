@@ -10,7 +10,13 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
-import type { DecisionChoiceRequest, DecisionChoiceResult, DecisionModelService } from '@omadia/plugin-api';
+import type {
+  DecisionBatchRequest,
+  DecisionBatchResult,
+  DecisionChoiceRequest,
+  DecisionChoiceResult,
+  DecisionModelService,
+} from '@omadia/plugin-api';
 
 import {
   CHAT_AGENT_SERVICE,
@@ -28,7 +34,14 @@ import {
   peekGate,
 } from '../packages/omadia-ui-orchestrator/src/decisionCanvas.js';
 import { activate } from '../packages/omadia-ui-orchestrator/src/plugin.js';
-import { GATE_TASK, SOURCE_TASK, type GateSignal } from '../packages/harness-plugin-fast-path/src/decisionRouter.js';
+import {
+  CANVAS_GATE_CLAUSE,
+  GATE_TASK,
+  routeByDecision,
+  SOURCE_TASK,
+  type GateSignal,
+} from '../packages/harness-plugin-fast-path/src/decisionRouter.js';
+import { DATA_QUESTION, turnGateQuestions } from '../packages/harness-plugin-fast-path/src/turnGate.js';
 import { createFastPathService, FAST_PATH_SERVICE } from '../packages/harness-plugin-fast-path/src/service.js';
 import { triageTurn } from '../packages/harness-plugin-fast-path/src/triageTurn.js';
 import { toTurnDecision } from '../packages/omadia-ui-channel/src/canvasConnection.js';
@@ -108,6 +121,33 @@ function fakeDecide(
         const a = answers[req.task];
         if (a === undefined) return Promise.reject(new Error(`no answer for ${req.task}`));
         return Promise.resolve({ choice: '', confidence: 0, ...a } as DecisionChoiceResult);
+      },
+    },
+  };
+}
+
+/** A batch-capable model (Jev, #1670): the turn gate in ONE `decideAll`,
+ *  `choose` for the canvas layout. */
+function fakeBatch(
+  answers: DecisionBatchResult['answers'],
+  layout?: Partial<DecisionChoiceResult>,
+): { decide: DecisionModelService; batches: DecisionBatchRequest[]; chooses: DecisionChoiceRequest[] } {
+  const batches: DecisionBatchRequest[] = [];
+  const chooses: DecisionChoiceRequest[] = [];
+  return {
+    batches,
+    chooses,
+    decide: {
+      provider: 'jev',
+      choose: (req) => {
+        chooses.push(req);
+        return layout && req.task === LAYOUT_TASK
+          ? Promise.resolve({ choice: '', confidence: 0, ...layout } as DecisionChoiceResult)
+          : Promise.reject(new Error(`no answer for ${req.task}`));
+      },
+      decideAll: (req) => {
+        batches.push(req);
+        return Promise.resolve({ answers: answers, model: 'jev-1.14.0' } as DecisionBatchResult);
       },
     },
   };
@@ -367,6 +407,69 @@ describe('canvas — the decision model picks the layout of planned rows', () =>
     const events = await collect(h.agent.chatStream(turn('Welche Rechnungen sind offen?')));
     assert.equal(snapshots(events).length, 1);
     assert.deepEqual(decisionOf(events)?.ui, { skeleton: 'plan' });
+  });
+});
+
+describe('canvas — the batch turn gate (decideAll)', () => {
+  const dataYes: DecisionBatchResult['answers'] = {
+    data: { kind: 'yesno', probability: 0.9 },
+    complex: { kind: 'yesno', probability: 0.2 },
+    plan: { kind: 'yesno', probability: 0.1 },
+    source: { kind: 'choice', choice: 'tool:odoo_query', confidence: 0.95 },
+  };
+
+  it('data yes: plan view without composer, the layout charts it, the steps name the batch questions', async () => {
+    const d = fakeBatch(dataYes, { choice: 'chart_bar', confidence: 0.9 });
+    const h = await harness({ decide: d.decide });
+    const events = await collect(h.agent.chatStream(turn('Zeige die offenen Beträge als Balkendiagramm')));
+    assert.equal(d.batches.length, 1, 'one gate request');
+    assert.match(String(d.batches[0]?.questions['data']?.instruction), /shown as a table or a chart/);
+    assert.equal(h.systems.filter(isComposer).length, 0, 'no composer call');
+    assert.deepEqual(nodeTypes(snapshots(events)[1]), ['heading', 'chart']);
+    const decision = decisionOf(events);
+    assert.deepEqual(decision?.ui, { skeleton: 'plan', layout: 'bar' });
+    assert.deepEqual(
+      decision?.steps?.map((s) => [s.task, s.choice]),
+      [
+        ['fast-path.turn-gate.data', 'yes'],
+        ['fast-path.turn-gate.complex', 'no'],
+        ['fast-path.turn-gate.plan', 'no'],
+        ['fast-path.turn-gate.source', 'tool:odoo_query'],
+        [LAYOUT_TASK, 'chart_bar'],
+      ],
+    );
+  });
+
+  it('an unsure batch gate: composer, and the fallback entry reads the data question', async () => {
+    const d = fakeBatch({ ...dataYes, data: { kind: 'yesno', probability: 0.5 } });
+    const h = await harness({ decide: d.decide });
+    const events = await collect(h.agent.chatStream(turn('Welche Rechnungen sind offen?')));
+    assert.equal(h.systems.filter(isComposer).length, 1);
+    const decision = decisionOf(events);
+    assert.equal(decision?.fallback, true);
+    assert.equal(decision?.verdict, 'data');
+  });
+});
+
+describe('gate wording — the canvas widens the data question', () => {
+  const tools = [{ name: 'odoo_query', spec: 'odoo_query — Odoo search_read.' }];
+
+  it('turn gate: the canvas adds the chart clause, other channels keep the plain question', () => {
+    const canvas = turnGateQuestions({ tools, candidates: [], message: 'x', channel: 'canvas' });
+    const web = turnGateQuestions({ tools, candidates: [], message: 'x', channel: 'web' });
+    assert.equal(canvas.questions['data']?.instruction, DATA_QUESTION + CANVAS_GATE_CLAUSE);
+    assert.equal(web.questions['data']?.instruction, DATA_QUESTION);
+  });
+
+  it('single gate: the same clause on the canvas only', async () => {
+    for (const [channel, widened] of [
+      ['canvas', true],
+      ['web', false],
+    ] as const) {
+      const d = fakeDecide({ [GATE_TASK]: { choice: 'model_complex', confidence: 0.9 } });
+      await routeByDecision({ decide: d.decide, channel, message: 'USER TURN: x', tools, log: () => {} });
+      assert.equal(d.reqs[0]?.instruction.endsWith(CANVAS_GATE_CLAUSE), widened, channel);
+    }
   });
 });
 
