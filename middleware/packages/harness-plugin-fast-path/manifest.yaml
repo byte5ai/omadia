@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/fast-path"
   name: "Fast Path"
-  version: "0.4.0"
+  version: "0.4.1"
   kind: "extension"
   domain: "omadia.fast-path"
   description:

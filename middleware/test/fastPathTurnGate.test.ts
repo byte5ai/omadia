@@ -162,6 +162,40 @@ describe('turn gate — ONE batch request', () => {
     assert.equal(unsurePlan.kind === 'agent' && unsurePlan.planHint, undefined);
   });
 
+  it('live case: data between the bars but "no source fits" said with confidence → a model turn, no LLM call', async () => {
+    // "Was steht in Confluence zu unseren Urlaubsregeln?" — data=0.57, source=none:1.00
+    const f = fakeLlm();
+    const m = batchModel(() => ({ answers: { data: yes(0.57), complex: yes(0.59), plan: yes(0.29), source: pick('none', 1) } }));
+    const out = await triage({ llm: f.llm, decide: m.decide });
+    assert.equal(f.reqs.length, 0, 'no router, no speculative planner');
+    assert.equal(out.kind, 'agent');
+    if (out.kind !== 'agent') return;
+    assert.equal(out.route, 'complex');
+    assert.equal(out.planHint, 'direct');
+    assert.equal(out.reason, 'agent:complex:no-source');
+    assert.equal(out.decision?.verdict, 'model');
+    assert.equal(out.decision?.confidence, 1);
+  });
+
+  it('a weak "none" (below 0.8) between the bars still decides nothing → the LLM router', async () => {
+    const f = fakeLlm();
+    const out = await triage({
+      llm: f.llm,
+      decide: batchModel(() => ({ answers: { data: yes(0.55), complex: yes(0.3), plan: yes(0.2), source: pick('none', 0.7) } })).decide,
+    });
+    assert.equal(out.kind, 'plan');
+    assert.ok(f.reqs.some((r) => r.toolChoice?.name === ROUTER_TOOL));
+  });
+
+  it('a confident data verdict with a confident "none" is a model turn with its route, too', async () => {
+    const out = await triage({
+      llm: fakeLlm().llm,
+      decide: batchModel(() => ({ answers: { data: yes(0.75), complex: yes(0.2), plan: yes(0.1), source: pick('none', 0.9) } })).decide,
+    });
+    assert.equal(out.kind === 'agent' && out.route, 'simple');
+    assert.equal(out.kind === 'agent' && out.decision?.verdict, 'model');
+  });
+
   it('a data turn: the source from the batch, then ONE planner call (no router)', async () => {
     const f = fakeLlm();
     const m = batchModel(() => ({ answers: { data: yes(0.9), complex: yes(0.2), plan: yes(0.1), source: pick('tool:odoo_query', 0.95) } }));
