@@ -4,6 +4,7 @@ import { normalizeDecisionBatch } from '@omadia/plugin-api';
 import {
   DECISION_TIMEOUT_MS,
   DIRECT_PLAN_MIN_CONFIDENCE,
+  gateInstruction,
   sourceOptions,
   type DecisionStepSink,
   type GateSignal,
@@ -94,9 +95,11 @@ export function turnGateQuestions(opts: {
   intents?: readonly RouterIntent[];
   candidates: readonly LearnedPlan[];
   message: string;
+  /** the canvas widens the data question (decisionRouter.ts CANVAS_GATE_CLAUSE) */
+  channel?: string;
 }): { questions: Record<string, DecisionQuestion>; slotOptions: Map<string, string[]> } {
   const questions: Record<string, DecisionQuestion> = {
-    data: { kind: 'yesno', instruction: DATA_QUESTION },
+    data: { kind: 'yesno', instruction: gateInstruction(DATA_QUESTION, opts.channel ?? '') },
     complex: { kind: 'yesno', instruction: COMPLEX_QUESTION },
     plan: { kind: 'yesno', instruction: PLAN_QUESTION },
   };

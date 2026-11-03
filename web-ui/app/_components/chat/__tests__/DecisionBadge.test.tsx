@@ -62,6 +62,29 @@ describe('<DecisionBadge>', () => {
     expect(screen.getByText('complex')).toBeTruthy();
   });
 
+  it('lists the decision steps on hover, in German, with tools as is', () => {
+    renderWithIntl(
+      <DecisionBadge
+        decision={{
+          ...ANSWERED,
+          steps: [
+            { task: 'fast-path.turn-gate.data', choice: 'yes', confidence: 0.93, ms: 180 },
+            { task: 'fast-path.turn-gate.source', choice: 'tool:odoo_query', confidence: 0.9, ms: 180 },
+            { task: 'canvas.layout', choice: 'chart_bar', confidence: 0.81, ms: 150 },
+            { task: 'x', choice: 'y', confidence: 'bad', ms: 1 },
+          ],
+        }}
+      />,
+      { locale: 'de' },
+    );
+    const tip = screen.getByRole('tooltip', { hidden: true });
+    expect(tip.textContent).toContain('Was Jev entschieden hat');
+    expect(tip.textContent).toContain('Nur Daten');
+    expect(tip.textContent).toContain('ja');
+    expect(tip.textContent).toContain('Balkendiagramm');
+    expect(tip.querySelectorAll('li').length).toBe(3);
+  });
+
   it('renders nothing for a malformed value', () => {
     const { container } = renderWithIntl(<DecisionBadge decision={{ provider: 'jev' }} />);
     expect(container.textContent).toBe('');
