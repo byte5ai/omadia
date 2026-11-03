@@ -8806,3 +8806,44 @@ Tests: `test/fastPathDecisionModel.test.ts`,
 `test/chatSessionsMirrorVerifier.test.ts` (Persistenz),
 `web-ui/app/_components/chat/__tests__/DecisionBadge.test.tsx`.
 
+## Canvas: Entscheidungsmodell baut die Ansicht (`canvas.layout`, 2026-11-03)
+
+Ziel: Auf dem Canvas bestimmte bisher der Skeleton-Composer (ein Modellaufruf,
+2–2,6 s) den ersten Paint jedes Turns — auch wenn Jev in ~0,3 s schon wusste,
+dass Daten die Antwort sind. Jetzt nutzt der Canvas das Gate auch für die
+Ansicht (`omadia-ui-orchestrator/src/decisionCanvas.ts`, `skeletonTurn.ts`).
+
+- **Gate-Signal:** `triageTurn` meldet das Gate per `onGate` (`GateSignal`
+  `data` / `model`+Route / `none`) genau einmal, sobald es geantwortet hat;
+  `onDecisionStep` meldet jede Jev-Antwort. Der Canvas wartet höchstens
+  `GATE_PEEK_MS` = 600 ms (nur reine Text-Turns, nur mit
+  `fast_path_decision_canvas`, Default an).
+- **Ansicht:** `data` → Triage abwarten → `planSkeleton(plan)` (Überschrift +
+  Tabelle `results`), kein Composer; ein Miss komponiert danach für den Agenten.
+  `model` + `simple` → `simpleSkeleton` (Frage + Text-Platzhalter), kein
+  Composer; `simpleAnswer.ts` setzt die Agent-Antwort vor `done` per Snapshot
+  ein, sofern der Agent selbst nichts publiziert hat. Sonst (komplex,
+  unsicher, langsam, kein Provider) der Composer wie bisher. Die Agent-Route
+  des Gates geht jetzt als `routeHint` an den Canvas-Agenten.
+- **Layout:** Auf einem Plan-Skeleton läuft parallel zum Fetch die Decision
+  `canvas.layout` (table / chart_bar / chart_line / chart_pie, Konfidenz ≥ 0,7,
+  Eingabe = dieselbe maskierte Turn-Nachricht wie beim Gate,
+  `TriageOutcome.decisionInput`). Nach dem Fetch höchstens 250 ms Nachfrist.
+  Ein Diagramm nur bei 2–50 Zeilen (Kreis ≤ 12, keine negativen Werte) mit
+  Text-Label- und Zahlenspalte (`chartColumns`, Geldspalten zuerst, IDs nie);
+  dann ein zweiter Snapshot mit `chart` statt Tabelle, Punkte `label`/`value`,
+  Rezept-Map `{label, value}` (Refresh liefert dieselben Punkte). Learning,
+  Answer-Cache und Summary laufen weiter über den Original-Plan.
+- **Sichtbarkeit:** `DecisionTrace.steps` / `FastPathDecision.steps`, `.ui`
+  (`plan` / `cache` / `simple` / `composer`, `layout`), `.fallback` (Gate
+  unsicher → Modell entschied). Canvas-`done` trägt `fastPathDecision` bei
+  Treffern UND Agent-Turns; `omadia-ui-channel` reicht es als
+  `turn_complete.decision` (`toTurnDecision`, nur bekannte Felder) weiter.
+  omadia-ui: Jev-Chip unten links mit Hover-Popover (alle Schritte, Konfidenz,
+  ms, eingesparte Modellaufrufe). `chatSessions.ts` persistiert `steps`/`ui`.
+- **Privacy:** Jev sieht für das Layout nur die bereits maskierte
+  Turn-Nachricht und feste Optionstexte — nie Spaltennamen oder Zeilen. Die
+  Diagramm-Eignung wird lokal an den Zeilen geprüft.
+
+Tests: `test/canvasDecisionModel.test.ts`, `test/fastPathDecisionModel.test.ts`.
+

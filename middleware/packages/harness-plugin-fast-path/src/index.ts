@@ -16,6 +16,7 @@ export * from './exampleMasking.js';
 export * from './storedTextPrivacy.js';
 export * from './triage.js';
 export * from './router.js';
+export * from './decisionRouter.js';
 export * from './planner.js';
 export * from './triageTurn.js';
 export * from './answerCacheShape.js';

@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/fast-path"
   name: "Fast Path"
-  version: "0.2.0"
+  version: "0.3.0"
   kind: "extension"
   domain: "omadia.fast-path"
   description:
@@ -124,6 +124,16 @@ setup:
       help:
         en: "With a decision model: a message that asks exactly what a learned query (no names or values in it) already answers runs that query directly — no planning model call. Only while a Privacy Shield runs, and only messages without numbers and without personal data it detects; anything else is planned as usual. Default: on."
         de: "Mit Entscheidungsmodell: Eine Nachricht, die genau das fragt, was eine gelernte Abfrage (ohne Namen oder Werte) schon beantwortet, führt diese direkt aus — ohne planenden Modellaufruf. Nur bei laufendem Privacy Shield und nur Nachrichten ohne Zahlen und ohne von ihm erkannte personenbezogene Daten; alles andere wird wie gewohnt geplant. Standard: an."
+      required: false
+      default: "true"
+    - key: "fast_path_decision_canvas"
+      type: "boolean"
+      label:
+        en: "Decision model builds the canvas view"
+        de: "Entscheidungsmodell baut die Canvas-Ansicht"
+      help:
+        en: "With a decision model, on the canvas: a question it routes to data gets its view straight from the planned query, and a simple message (greeting, confirmation) a plain answer view — both without the composing model call. It also decides whether planned rows show as a table or as a bar, line or pie chart. Anything unsure or slow composes as before. Default: on."
+        de: "Mit Entscheidungsmodell, auf dem Canvas: Eine Frage, die es zu Daten routet, bekommt ihre Ansicht direkt aus der geplanten Abfrage, eine einfache Nachricht (Gruß, Bestätigung) eine schlichte Antwortansicht — beides ohne den komponierenden Modellaufruf. Außerdem entscheidet es, ob geplante Zeilen als Tabelle oder als Balken-, Linien- oder Kreisdiagramm erscheinen. Alles Unsichere oder Langsame wird wie bisher komponiert. Standard: an."
       required: false
       default: "true"
 

@@ -2,6 +2,9 @@ import {
   type ChatAgent,
   type ChatStreamEvent,
   type ChatTurnInput,
+  type FastPathDecision,
+  type FastPathDecisionStep,
+  type FastPathDecisionUi,
   type RevisionId,
 } from '@omadia/channel-sdk';
 import {
@@ -11,6 +14,7 @@ import {
   offeredTools,
   openSkeletonPrivacy,
   triageTurn,
+  type GateSignal,
   type TriageOutcome,
 } from '@omadia/fast-path';
 
@@ -20,11 +24,13 @@ import { tapCanvasSentinels } from './canvasSentinelTap.js';
 import { type CanvasTurnBlocks, type CanvasTurnGate } from './canvasTurn.js';
 import { CACHE_PEEK_MS, peekCacheHit, planSkeleton } from './cachedSkeleton.js';
 import { composeSkeleton, type SkeletonResult } from './composition.js';
+import { canvasDecision, decideLayout, peekGate, simpleSkeleton } from './decisionCanvas.js';
 import { bindPlanToSkeleton, type PlannedSkeleton } from './fastPathBinding.js';
 import { runFastPath, type FastPathOutcome } from './fastPathRun.js';
 import { COMPOSER_TOP_K } from './learnedFastPath.js';
 import { recordCanvasTurn } from './recordCanvasTurn.js';
 import { synthesizeSurfaceEvents } from './surfaceSynthesis.js';
+import { fillSimpleAnswer } from './simpleAnswer.js';
 import { resolveTargetRecord, targetRecordBlock } from './turnTargets.js';
 import { replaceSkeletonOnWithheld } from './verdictHold.js';
 
@@ -68,19 +74,34 @@ export async function* skeletonTurnStream(
   //    intents and the planner's examples (their tools join the whitelist).
   //    Answer-cache hit (resolves in ms): the cached plan knows its table,
   //    so the skeleton is built from it and the composer is not called.
+  //    Decision model (decisionCanvas.ts): its gate picks the view — data →
+  //    the plan's skeleton, simple → a plain answer view, else the composer.
   const turnTriage = startTriage(rt, input, canvasSessionId, base, gate);
   const cachedPlan = await peekCacheHit(turnTriage.triage, turnTriage.cacheVerdict, CACHE_PEEK_MS);
-  const skeleton: SkeletonResult = cachedPlan
-    ? planSkeleton(cachedPlan, input.userMessage)
-    : await composeSkeleton({
-        llm,
-        model,
-        userText: turnTriage.turnText,
-        log: (message) => ctx.log(message),
-        skipModel: privacyForced,
-        ...(privacyGuard !== undefined ? { privacy: openSkeletonPrivacy(privacyGuard) } : {}),
-      });
+  const compose = (): Promise<SkeletonResult> =>
+    composeSkeleton({
+      llm,
+      model,
+      userText: turnTriage.turnText,
+      log: (message) => ctx.log(message),
+      skipModel: privacyForced,
+      ...(privacyGuard !== undefined ? { privacy: openSkeletonPrivacy(privacyGuard) } : {}),
+    });
+  const view: { skeleton: SkeletonResult; ui: FastPathDecisionUi['skeleton'] } = cachedPlan
+    ? { skeleton: planSkeleton(cachedPlan, input.userMessage), ui: 'cache' }
+    : await gatedView(rt, input, turnTriage, compose);
+  const { skeleton } = view;
   if (cachedPlan) ctx.log('[composition] skipped — answer-cache hit → plan skeleton');
+  // what ran on the decision model, stamped on `done` (built at the end:
+  // the layout decision is still running while the skeleton goes out)
+  const decisionOf = (answered: boolean, layout?: FastPathDecisionUi['layout']): FastPathDecision | undefined =>
+    canvasDecision({
+      provider: turnTriage.decide?.provider,
+      trace: turnTriage.trace(),
+      steps: turnTriage.steps,
+      ui: { skeleton: view.ui, ...(layout !== undefined ? { layout } : {}) },
+      answered,
+    });
   let surfaceSeq = 0;
   const initialRevision = '0' as RevisionId;
   const skeletonSnapshot: ChatStreamEvent = {
@@ -100,6 +121,7 @@ export async function* skeletonTurnStream(
   //    finish the turn. Any miss → the agent path below, exactly as before.
   const fast = await settleFastPath(rt, input, canvasSessionId, gate, turnTriage, skeleton, surfaceSeq);
   if (fast.hit) {
+    const fastPathDecision = decisionOf(true, fast.layout);
     yield* fast.events;
     const prose = fast.prose;
     yield { type: 'text_delta', text: prose };
@@ -112,10 +134,12 @@ export async function* skeletonTurnStream(
       toolCalls: fast.toolCalls,
       iterations: 0,
       ...(turnId !== undefined ? { turnId } : {}),
+      ...(fastPathDecision !== undefined ? { fastPathDecision } : {}),
     };
     ctx.log(
       `[ui-orchestrator] fast-path hit tool=${fast.tool} rows=${fast.rows} ` +
-        `ms=${Date.now() - turnStartedAt}`,
+        `ms=${Date.now() - turnStartedAt} view=${view.ui}` +
+        (fast.layout !== undefined ? ` layout=${fast.layout}` : ''),
     );
     ctx.log(`[fast-path] hit channel=canvas tool=${fast.tool} rows=${fast.rows} ms=${Date.now() - turnStartedAt}`);
     return;
@@ -123,11 +147,53 @@ export async function* skeletonTurnStream(
   ctx.log(`[ui-orchestrator] fast-path miss reason=${fast.reason}`);
   if (fp !== undefined) ctx.log(`[fast-path] miss channel=canvas reason=${fast.reason}`);
 
-  yield* delegateSkeletonTurn(rt, input, observer, base, canvasSessionId, gate, blocks, {
+  // the triage's agent route (simple/complex) — as on the web chat
+  const route = turnTriage.route();
+  const routed = route !== undefined && input.routeHint === undefined ? { ...input, routeHint: route } : input;
+  const delegated = delegateSkeletonTurn(rt, routed, observer, base, canvasSessionId, gate, blocks, {
     skeleton,
     surfaceSeq,
     initialRevision,
   });
+  const turn =
+    skeleton.source === 'simple'
+      ? fillSimpleAnswer(delegated, {
+          question: input.userMessage,
+          canvasSessionId,
+          protocolVersion: CANVAS_PROTOCOL_VERSION,
+          opsCatalogVersion: OPS_CATALOG_VERSION,
+          lastSurfaceSeq: surfaceSeq - 1,
+          lastRevision: initialRevision,
+        })
+      : delegated;
+  for await (const event of turn) {
+    const fastPathDecision = event.type === 'done' ? decisionOf(false) : undefined;
+    yield fastPathDecision !== undefined && event.type === 'done' ? { ...event, fastPathDecision } : event;
+  }
+}
+
+/** The view of a plain turn by the decision model's gate (decisionCanvas.ts):
+ *  `data` → the plan's skeleton once the plan is there (a miss composes),
+ *  `model`+`simple` → the plain answer view, else (unsure, slow, no model)
+ *  the composer as before. */
+async function gatedView(
+  rt: CanvasRuntime,
+  input: ChatTurnInput,
+  turnTriage: TurnTriage,
+  compose: () => Promise<SkeletonResult>,
+): Promise<{ skeleton: SkeletonResult; ui: FastPathDecisionUi['skeleton'] }> {
+  const gate = await peekGate(turnTriage.gate);
+  if (gate?.verdict === 'data') {
+    const triaged = await turnTriage.triage?.catch(() => undefined);
+    if (triaged?.kind === 'plan') {
+      rt.ctx.log('[composition] skipped — decision gate data → plan skeleton');
+      return { skeleton: planSkeleton(triaged.plan, input.userMessage), ui: 'plan' };
+    }
+  } else if (gate?.verdict === 'model' && gate.route === 'simple') {
+    rt.ctx.log('[composition] skipped — decision gate simple → answer view');
+    return { skeleton: simpleSkeleton(input.userMessage), ui: 'simple' };
+  }
+  return { skeleton: await compose(), ui: 'composer' };
 }
 
 /** Router ∥ speculative planner, started BEFORE the composer: the offered
@@ -197,6 +263,18 @@ function startTriage(
       })
     : undefined;
   const decide = fp?.decisionModel();
+  // the gate picks the view, and the layout is decided, only when on
+  const canvasDecisions = decide !== undefined && fp?.canvasDecisionsEnabled === true;
+  // decision-model answers of this turn (gate, source, direct plan, layout)
+  const steps: FastPathDecisionStep[] = [];
+  // the gate picks the view of a plain text turn only
+  let tellGate: ((gate: GateSignal) => void) | undefined;
+  const gateSignal =
+    canvasDecisions && plainTurn
+      ? new Promise<GateSignal>((resolve) => {
+          tellGate = resolve;
+        })
+      : undefined;
   const triage: Promise<TriageOutcome> | undefined =
     fp !== undefined && !privacyForced && turnTools.length > 0
       ? triageTurn({
@@ -210,12 +288,40 @@ function startTriage(
           ...(previousQuery ? { previous: previousQuery } : {}),
           ...(fastPrivacy ? { privacy: fastPrivacy } : {}),
           ...(answerCache ? { answerCache, onCacheLookup: (hit: boolean) => tellVerdict?.(hit) } : {}),
-          ...(decide ? { decide, directPlans: fp.directPlansEnabled } : {}),
+          ...(decide
+            ? {
+                decide,
+                directPlans: fp.directPlansEnabled,
+                onGate: (g: GateSignal) => tellGate?.(g),
+                onDecisionStep: (s: FastPathDecisionStep) => steps.push(s),
+              }
+            : {}),
           log: (m) => ctx.log(m),
         })
       : undefined;
-  if (triage === undefined) tellVerdict?.(false); // no triage → no lookup
-  return { offered, turnTools, target, turnText, fastPathKey, triage, cacheVerdict };
+  if (triage === undefined) {
+    tellVerdict?.(false); // no triage → no lookup
+    tellGate?.({ verdict: 'none' });
+  }
+  // the settled triage's decision trace, for `done`
+  let settled: TriageOutcome | undefined;
+  void triage?.then((t) => (settled = t)).catch(() => undefined);
+  return {
+    offered,
+    turnTools,
+    target,
+    turnText,
+    fastPathKey,
+    triage,
+    cacheVerdict,
+    decide,
+    canvasDecisions,
+    gate: gateSignal,
+    steps,
+    trace: () => settled?.decision,
+    /** the agent route the triage settled on, for the base agent's hint */
+    route: () => (settled?.kind === 'agent' ? settled.route : undefined),
+  };
 }
 
 /** Await the triage, bind its plan to the skeleton and run the fast path;
@@ -242,14 +348,40 @@ async function settleFastPath(
     if (bound.ok) planned = bound.skeleton;
     else planMiss = bound.reason;
   }
+  // a plan skeleton's presentation, decided alongside the fetch
+  const layout =
+    planMiss === undefined &&
+    triaged?.kind === 'plan' &&
+    skeleton.source === 'plan' &&
+    turnTriage.decide !== undefined &&
+    turnTriage.canvasDecisions &&
+    triaged.decisionInput !== undefined &&
+    Object.keys(triaged.plan.fetch.map).length >= 2
+      ? decideLayout({
+          decide: turnTriage.decide,
+          input: triaged.decisionInput,
+          log: (m) => ctx.log(m),
+          onStep: (s) => turnTriage.steps.push(s),
+        })
+      : undefined;
   let fast: FastPathOutcome =
     planMiss !== undefined
       ? { hit: false, reason: planMiss }
-      : await runFastPath(rt, input, canvasSessionId, planned, privacyForced, surfaceSeq, {
-          plannable: turnTools.length,
-          allowed: fp?.allowedFetchTools() ?? new Set<string>(),
-          permitted: permittedTools,
-        }, target);
+      : await runFastPath(
+          rt,
+          input,
+          canvasSessionId,
+          planned,
+          privacyForced,
+          surfaceSeq,
+          {
+            plannable: turnTools.length,
+            allowed: fp?.allowedFetchTools() ?? new Set<string>(),
+            permitted: permittedTools,
+          },
+          target,
+          layout,
+        );
   // answer cache: a slot-filled cached plan with no rows is a doubt (agent
   // path); the plan's execution — not a skeleton binding miss — is booked
   if (triaged?.kind === 'plan' && fast.hit && isCacheDoubt(triaged, fast.rows)) {
