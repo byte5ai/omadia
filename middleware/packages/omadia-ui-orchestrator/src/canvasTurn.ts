@@ -20,7 +20,7 @@ import { deterministicActionStream } from './deterministicAction.js';
 import { runInPlaceLearned, runRecipeVariant, runRowDetails } from './inPlaceRuns.js';
 import { recordCanvasTurn } from './recordCanvasTurn.js';
 import { variantActionRef } from './recipeVariant.js';
-import { isRowDetailsAction, ROW_DETAILS_TOOL } from './rowDetails.js';
+import { isRowDetailsAction } from './rowDetails.js';
 import { skeletonTurnStream } from './skeletonTurn.js';
 import { synthesizeSurfaceEvents } from './surfaceSynthesis.js';
 
@@ -153,7 +153,7 @@ export async function* canvasTurnStream(
   // "Details anzeigen" as a structured action: answered from the row's
   // table recipe alone (rowDetails.ts). Any miss → the paths below.
   if (isRowDetailsAction(input)) {
-    const details = await runRowDetails(rt, input, canvasSessionId, fp, privacyForced, permittedTools);
+    const details = await runRowDetails(rt, input, canvasSessionId, fp, privacyForced, permittedTools, gate.toolDefinitions);
     if (details.hit) {
       yield details.snapshot;
       yield { type: 'text_delta', text: details.prose };
@@ -164,9 +164,10 @@ export async function* canvasTurnStream(
         toolCalls: 1,
         iterations: 0,
         ...(turnId !== undefined ? { turnId } : {}),
+        ...(details.decision !== undefined ? { fastPathDecision: details.decision } : {}),
       };
       ctx.log(
-        `[fast-path] hit channel=canvas kind=row-details tool=${ROW_DETAILS_TOOL} ms=${Date.now() - turnStartedAt}`,
+        `[fast-path] hit channel=canvas kind=row-details tool=${details.tool} ms=${Date.now() - turnStartedAt}`,
       );
       return;
     }

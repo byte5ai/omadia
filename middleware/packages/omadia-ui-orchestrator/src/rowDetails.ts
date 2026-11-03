@@ -27,7 +27,7 @@ export const ROW_DETAILS_TOOL = 'odoo_query';
 /** Container ids of the rendered detail view. */
 const VIEW_ID = 'row-details';
 
-type Lang = 'de' | 'en';
+export type Lang = 'de' | 'en';
 
 const TEXT: Readonly<Record<Lang, {
   title: string;
@@ -168,18 +168,25 @@ export function buildRowDetailsTree(opts: {
   fields: readonly string[];
   lang: Lang;
 }): { tree: Record<string, unknown>; title: string | undefined } {
-  const t = TEXT[opts.lang];
   const title = recordName(opts.record);
   const rows = opts.fields.map((attr) => ({
-    rowKey: attr,
-    cells: {
-      field: catalogColumnLabel({ fieldKey: attr, attr, model: opts.model, lang: opts.lang }),
-      value: formatDetailValue(opts.model, attr, opts.record[attr], opts.record, opts.lang),
-    },
+    key: attr,
+    field: catalogColumnLabel({ fieldKey: attr, attr, model: opts.model, lang: opts.lang }),
+    value: formatDetailValue(opts.model, attr, opts.record[attr], opts.record, opts.lang),
   }));
+  return { title, tree: detailViewTree(title, rows, opts.lang) };
+}
+
+/** The detail view itself: heading (title or "Details") + a 2-column
+ *  Feld/Wert table — shared by Odoo and generic (rowDetailsGeneric.ts) details. */
+export function detailViewTree(
+  title: string | undefined,
+  fields: ReadonlyArray<{ key: string; field: string; value: string }>,
+  lang: Lang,
+): Record<string, unknown> {
+  const t = TEXT[lang];
+  const rows = fields.map((f) => ({ rowKey: f.key, cells: { field: f.field, value: f.value } }));
   return {
-    title,
-    tree: {
       type: 'container',
       id: 'root',
       layout: 'stack',
@@ -195,8 +202,12 @@ export function buildRowDetailsTree(opts: {
           rows,
         },
       ],
-    },
   };
+}
+
+/** "Ja"/"Nein" and the empty mark of the UI language. */
+export function detailWords(lang: Lang): { yes: string; no: string; empty: string } {
+  return { yes: TEXT[lang].yes, no: TEXT[lang].no, empty: EMPTY };
 }
 
 /** The templated answer sentence ("Details zu <name>."). */
@@ -205,6 +216,6 @@ export function rowDetailsAnswer(title: string | undefined, lang: Lang): string 
 }
 
 /** Transcript line for an action turn without user text. */
-export function rowDetailsAsk(model: string, id: number, lang: Lang): string {
+export function rowDetailsAsk(model: string, id: number | string, lang: Lang): string {
   return `${TEXT[lang].ask} (${model} ${id})`;
 }

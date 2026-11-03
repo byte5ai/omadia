@@ -1838,7 +1838,8 @@
         "direct": "Learned query",
         "slot": "Value",
         "layout": "Layout",
-        "other": "Decision"
+        "other": "Decision",
+        "detail": "Detail tool"
       },
       "choice": {
         "yes": "yes",

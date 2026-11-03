@@ -8931,3 +8931,31 @@ Array-Eigenschaft auf oberster Ebene). Ein Pfad auf ein echtes Nicht-Array-Feld
 und mehrere Kandidaten bleiben ein Miss. `unmappable` loggt jetzt die Form
 (`itemsPath=… map=… output={ok:boolean,items:array[30]}`), nie Werte.
 
+## Canvas: generische Zeilendetails (`canvas.detail-tool`, 2026-11-03)
+
+„Details anzeigen“ war nur für `odoo_query` LLM-frei. Bei jeder anderen Tabelle
+lief der Klick über den Agenten (live: GitHub-Issue → Verifier hielt die Antwort
+zurück). Jetzt gilt es für jede Integration, ohne Sonderfall
+(`omadia-ui-orchestrator/src/rowDetailsGeneric.ts`):
+
+1. **Kandidaten:** angebotene Lese-Tools DESSELBEN Agenten wie das Tabellen-Tool
+   (`agentId` bzw. `via`), mit Lese-Namen und genau EINEM Schlüsselparameter
+   (einzige Pflicht-Eigenschaft bzw. einzige Eigenschaft).
+2. **Wahl:** Das Entscheidungsmodell wählt per `canvas.detail-tool`. Eingabe ist
+   fester Text (Tool-Name, Beschreibung, Spaltenschlüssel), nie ein Zeilenwert.
+   Ohne Modell oder bei Unsicherheit wird ein einzelner Kandidat direkt genommen.
+3. **Schlüssel:** der Zeilenschlüssel, wenn die Tabelle nach diesem Parameter
+   geschlüsselt ist. Sonst der Parameterwert des Zeilen-Datensatzes, über einen
+   erneuten Lauf des Tabellen-Rezepts.
+4. **Rendering:** ein Datensatz, entweder die Wurzel, das einzige verschachtelte
+   Objekt neben Status-Skalaren oder ein Array mit genau einem Element. Daraus
+   wird eine Feld/Wert-Tabelle (`detailViewTree`, geteilt mit Odoo). IDs,
+   API-URLs und interne Schlüssel werden ausgeblendet; die eigene Browser-URL
+   des Datensatzes erscheint als „Link“. Verschachtelte Objekte werden über ihr
+   Namensfeld gezeigt, lange Texte auf 600 Zeichen gekappt.
+5. `done.fastPathDecision` trägt die Wahl (Chip/Badge: „Detail-Abfrage“).
+
+`odoo_query` bleibt beim bisherigen Pfad mit den Katalog-Beschriftungen.
+Tests: `test/uiOrchestratorRowDetailsGeneric.test.ts` (GitHub-artiger
+Builder-Agent und CRM-artiger Kontakt).
+

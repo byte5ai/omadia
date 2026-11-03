@@ -19,7 +19,17 @@ export interface FastPathDecision {
 }
 
 /** i18n key of a decision step's task (`chat.decision.task.*`). */
-export type DecisionStepTask = 'gate' | 'data' | 'complex' | 'plan' | 'source' | 'direct' | 'slot' | 'layout' | 'other';
+export type DecisionStepTask =
+  | 'gate'
+  | 'data'
+  | 'complex'
+  | 'plan'
+  | 'source'
+  | 'direct'
+  | 'slot'
+  | 'layout'
+  | 'detail'
+  | 'other';
 
 /** One decision-model answer for the hover list. `choiceKey` keys
  *  `chat.decision.choice.*`; without it `choice` is shown as is (a tool). */
@@ -60,6 +70,7 @@ const TASKS: Readonly<Record<string, DecisionStepTask>> = {
   'fast-path.turn-gate.direct': 'direct',
   'fast-path.turn-gate.slot': 'slot',
   'canvas.layout': 'layout',
+  'canvas.detail-tool': 'detail',
 };
 
 const CHOICES = new Set([

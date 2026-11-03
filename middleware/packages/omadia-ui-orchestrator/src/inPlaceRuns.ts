@@ -3,13 +3,14 @@ import {
   type PluginContext,
   type PrivacyGuardService,
 } from '@omadia/plugin-api';
-import { type ChatStreamEvent, type ChatTurnInput, type RevisionId } from '@omadia/channel-sdk';
+import { type ChatStreamEvent, type ChatTurnInput, type FastPathDecision, type RevisionId } from '@omadia/channel-sdk';
 import {
   fetchRecipeRows,
   openSkeletonPrivacy,
   parseRefreshSource,
   renderSummary,
   type FastPathService,
+  type FastPathToolDefinition,
   type RefreshSource,
 } from '@omadia/fast-path';
 
@@ -32,6 +33,7 @@ import {
 } from './rowDetails.js';
 import { synthesizeSurfaceEvents } from './surfaceSynthesis.js';
 import { validateTree } from './treeValidator.js';
+import { genericRowDetails } from './rowDetailsGeneric.js';
 import { actionTargetRow } from './turnTargets.js';
 
 /**
@@ -147,7 +149,7 @@ export async function runRecipeVariant(
 }
 
 export type RowDetailsOutcome =
-  | { hit: true; snapshot: ChatStreamEvent; prose: string; ask: string }
+  | { hit: true; snapshot: ChatStreamEvent; prose: string; ask: string; tool: string; decision?: FastPathDecision }
   | { hit: false; reason: string };
 
 /** LLM-free "Details anzeigen" (rowDetails.ts): the target row's table
@@ -162,6 +164,9 @@ export async function runRowDetails(
   fp: FastPathService | undefined,
   privacyForced: boolean,
   permitted: ReadonlySet<string>,
+  /** the turn's admitted tool definitions (canvasTurn.ts gate) — a table
+   *  another read tool filled opens through its agent's detail tool */
+  definitions: readonly FastPathToolDefinition[] = [],
 ): Promise<RowDetailsOutcome> {
   const { ctx, toolsAccessor, refreshRecipes } = rt;
   const miss = (reason: string): RowDetailsOutcome => ({ hit: false, reason });
@@ -171,7 +176,42 @@ export async function runRowDetails(
   if (!row) return miss('no-target');
   const recipe = refreshRecipes.get(canvasSessionId, row.containerId);
   if (!recipe) return miss('no-recipe');
-  if (recipe.tool !== ROW_DETAILS_TOOL) return miss('tool-unsupported');
+  if (recipe.tool !== ROW_DETAILS_TOOL) {
+    const baseInvoke = toolsAccessor?.invoke?.bind(toolsAccessor);
+    if (!baseInvoke) return miss('no-invoker');
+    const generic = await genericRowDetails({
+      fp,
+      recipe,
+      rowKey: row.key,
+      definitions,
+      permitted,
+      baseInvoke,
+      lang: rowDetailsLanguage(input),
+      log: (m) => ctx.log(m),
+    });
+    if (!generic.hit) return miss(generic.reason);
+    const valid = validateTree(generic.tree);
+    if (!valid.ok) {
+      ctx.log(`[ui-orchestrator] row-details tree invalid: ${valid.errors ?? ''}`);
+      return miss('invalid-tree');
+    }
+    return {
+      hit: true,
+      snapshot: {
+        type: 'surface_snapshot',
+        canvasSessionId,
+        surfaceSeq: 0,
+        producesRevision: '0' as RevisionId,
+        tree: generic.tree,
+        protocolVersion: CANVAS_PROTOCOL_VERSION,
+        opsCatalogVersion: OPS_CATALOG_VERSION,
+      },
+      prose: generic.prose,
+      ask: generic.ask,
+      tool: generic.tool,
+      ...(generic.decision ? { decision: generic.decision } : {}),
+    };
+  }
   if (!fp.allowedFetchTools().has(ROW_DETAILS_TOOL)) return miss('tool-not-allowed');
   if (!permitted.has(ROW_DETAILS_TOOL)) return miss('tool-not-permitted');
   // the row key is a record id only when the table keyed its rows by `id`
@@ -212,6 +252,7 @@ export async function runRowDetails(
     },
     prose: rowDetailsAnswer(view.title, lang),
     ask: rowDetailsAsk(model, id, lang),
+    tool: ROW_DETAILS_TOOL,
   };
 }
 
