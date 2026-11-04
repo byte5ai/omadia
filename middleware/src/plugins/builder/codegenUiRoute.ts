@@ -78,6 +78,10 @@ export function uiRouteMountSlug(agentId: string): string {
   return agentId.replace(/^@[^/]+\//, '');
 }
 
+/** `compat.core` of a generated plugin with ui_routes: `'teams-sso'` exists
+ *  since `@omadia/plugin-api` 1.51.0. */
+export const TEAMS_SSO_MIN_CORE = '>=1.51.0 <2.0';
+
 /** The `permissions.public_paths` entry codegen declares for a plugin with
  *  ui_routes, so its Teams tabs can be granted. */
 export function teamsTabPublicPath(agentId: string): string {
@@ -685,6 +689,16 @@ export function createTeamsTabRouters(opts: TeamsTabRouterOptions): {
   // single live route entry, so the ui_route routers are merged here instead
   // of being registered one by one under the same prefix.
   const data = Router();
+  // Fail closed: only the kernel's teams-sso gate sets teamsSsoUser. A host
+  // that does not know the mode (or mounted this router some other way) never
+  // sets it, so the page is refused instead of served without auth.
+  data.use((req, res, next) => {
+    if (!(req as { teamsSsoUser?: unknown }).teamsSsoUser) {
+      res.status(401).json({ code: 'auth.teams_sso_required' });
+      return;
+    }
+    next();
+  });
   for (const router of opts.dataRouters) data.use(router);
   return { shell, data };
 }
