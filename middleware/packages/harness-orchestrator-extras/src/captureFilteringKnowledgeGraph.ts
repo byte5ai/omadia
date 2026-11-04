@@ -51,6 +51,7 @@
  */
 
 import type {
+  CaptureDisclosure,
   KnowledgeGraph,
   TurnIngest,
   TurnIngestResult,
@@ -121,13 +122,36 @@ import type {
   DatasetSummary,
 } from '@omadia/plugin-api';
 
-import type { CaptureFilter } from './captureFilter.js';
+import type { CaptureFilter, CaptureFilterDecision } from './captureFilter.js';
 
 export interface CaptureFilteringKnowledgeGraphOptions {
   inner: KnowledgeGraph;
   filter: CaptureFilter;
   /** Optional log sink. Defaults to `console.error`. */
   log?: (msg: string) => void;
+}
+
+/**
+ * The decision as the chat shows it (OB-81). `persisted` means knowledge: a
+ * tail-only turn stays in the session record but is not knowledge, so it reads
+ * as not persisted and keeps its score, the reason it was filtered. Counts and
+ * markers only, never turn text.
+ */
+function captureDisclosureOf(
+  decision: CaptureFilterDecision,
+  result: TurnIngestResult,
+): CaptureDisclosure {
+  const persisted = decision.persist;
+  return {
+    persisted,
+    reasons: decision.reasons,
+    entryType: persisted ? decision.entryType : null,
+    visibility: persisted ? decision.visibility : null,
+    significance: decision.significance,
+    embedded: result.embeddingScheduled === true,
+    privacyBlocksStripped: decision.privacyBlocksStripped,
+    hintTagsProcessed: decision.hintTagsProcessed,
+  };
 }
 
 export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
@@ -197,7 +221,11 @@ export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
       const result = await this.inner.ingestTurn(tailOnly);
       // #1082 — say so on the result (a new object; the inner one is not
       // touched) so the caller can count filtered turns.
-      return { ...result, tailOnly: true };
+      return {
+        ...result,
+        tailOnly: true,
+        captureDisclosure: captureDisclosureOf(decision, result),
+      };
     }
 
     const cleaned: TurnIngest = {
@@ -215,7 +243,9 @@ export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
       );
     }
 
-    return this.inner.ingestTurn(cleaned);
+    const result = await this.inner.ingestTurn(cleaned);
+    if (decision.passthrough) return result;
+    return { ...result, captureDisclosure: captureDisclosureOf(decision, result) };
   }
 
   // -------------------------------------------------------------------------

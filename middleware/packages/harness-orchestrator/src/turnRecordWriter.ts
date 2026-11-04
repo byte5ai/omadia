@@ -1,5 +1,5 @@
 import type { FactExtractor } from '@omadia/orchestrator-extras';
-import type { EntityRef } from '@omadia/plugin-api';
+import type { CaptureDisclosure, EntityRef } from '@omadia/plugin-api';
 
 import type { WrittenTurn } from './requestTurnRecord.js';
 import type { SessionLogEntry, SessionLogger } from './sessionLogger.js';
@@ -28,6 +28,10 @@ export type AfterRow = (
   entityRefs: EntityRef[],
 ) => Promise<Omit<WrittenTurn, 'turnId'>>;
 
+/** Bounds {@link TurnRecordWriter}'s pending disclosures: a non-streaming turn
+ *  writes a row but has no `done` to take its disclosure. */
+const PENDING_DISCLOSURES_CAP = 256;
+
 export interface TurnRecordWriterDeps {
   readonly sessionLogger: SessionLogger | undefined;
   readonly factExtractor: FactExtractor | undefined;
@@ -42,6 +46,11 @@ export interface TurnRecordWriterDeps {
  * reported and the turn goes on.
  */
 export class TurnRecordWriter {
+  /** What the capture filter decided for a written row, until the `done`
+   *  carrying its Turn id takes it. A dozen sites write rows and hand back a
+   *  bare id, so the disclosure waits here instead of riding each of them. */
+  readonly #pendingDisclosures = new Map<string, CaptureDisclosure>();
+
   constructor(private readonly deps: TurnRecordWriterDeps) {}
 
   /**
@@ -61,7 +70,9 @@ export class TurnRecordWriter {
     const logger = this.deps.sessionLogger;
     if (!logger) return undefined;
     try {
-      return (await logger.log(entry)).turnExternalId;
+      const { turnExternalId, captureDisclosure } = await logger.log(entry);
+      if (captureDisclosure) this.noteDisclosure(turnExternalId, captureDisclosure);
+      return turnExternalId;
     } catch (err) {
       console.error(
         `[orchestrator] session log failed (continuing with ${what}):`,
@@ -69,6 +80,23 @@ export class TurnRecordWriter {
       );
       return undefined;
     }
+  }
+
+  /** The capture disclosure of a written row, once: the `done` that takes it
+   *  is the only reader. */
+  takeCaptureDisclosure(turnId: string | undefined): CaptureDisclosure | undefined {
+    if (turnId === undefined) return undefined;
+    const disclosure = this.#pendingDisclosures.get(turnId);
+    this.#pendingDisclosures.delete(turnId);
+    return disclosure;
+  }
+
+  private noteDisclosure(turnId: string, disclosure: CaptureDisclosure): void {
+    if (this.#pendingDisclosures.size >= PENDING_DISCLOSURES_CAP) {
+      const oldest = this.#pendingDisclosures.keys().next().value;
+      if (oldest !== undefined) this.#pendingDisclosures.delete(oldest);
+    }
+    this.#pendingDisclosures.set(turnId, disclosure);
   }
 
   /**
@@ -86,8 +114,13 @@ export class TurnRecordWriter {
       entityRefs: row.entityRefs,
       write: async (entityRefs) => {
         const turnId = await this.writeRow({ ...row.entry, entityRefs }, what);
+        const captureDisclosure = this.takeCaptureDisclosure(turnId);
         const rest = after ? await after(turnId, entityRefs) : {};
-        return { ...(turnId !== undefined ? { turnId } : {}), ...rest };
+        return {
+          ...(turnId !== undefined ? { turnId } : {}),
+          ...(captureDisclosure ? { captureDisclosure } : {}),
+          ...rest,
+        };
       },
     });
   }

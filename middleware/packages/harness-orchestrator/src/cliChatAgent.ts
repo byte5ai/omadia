@@ -2035,6 +2035,9 @@ export class CliChatAgent implements ChatAgent {
           ...terminalDone,
           model: this.deps.model ?? DEFAULT_MODEL,
           ...(record.turnId !== undefined ? { turnId: record.turnId } : {}),
+          ...(record.captureDisclosure !== undefined
+            ? { captureDisclosure: record.captureDisclosure }
+            : {}),
           ...(record.palaiaExcerpt !== undefined ? { palaiaExcerpt: record.palaiaExcerpt } : {}),
           ...(record.autoPromotedMkId !== undefined
             ? { autoPromotedMkId: record.autoPromotedMkId }

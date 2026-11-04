@@ -1,4 +1,4 @@
-import type { MemoryStore } from '@omadia/plugin-api';
+import type { CaptureDisclosure, MemoryStore } from '@omadia/plugin-api';
 import { scopeGraphKey } from '@omadia/channel-sdk';
 import {
   qualifyScope,
@@ -125,7 +125,9 @@ export class SessionLogger {
     readonly runTraceStats: RunTraceOutcomeStats = new RunTraceOutcomeStats(),
   ) {}
 
-  async log(entry: SessionLogEntry): Promise<{ turnExternalId: string }> {
+  async log(
+    entry: SessionLogEntry,
+  ): Promise<{ turnExternalId: string; captureDisclosure?: CaptureDisclosure }> {
     // An unparseable `time` override falls back to the clock rather than
     // throwing out of `toISOString()` — this field is public plugin-api
     // surface now, and a bad timestamp must not lose the turn.
@@ -213,6 +215,7 @@ export class SessionLogger {
 
     if (this.graph) {
       const turnExternalId = turnNodeId(gScope, iso);
+      let captureDisclosure: CaptureDisclosure | undefined;
       try {
         const ingested = await this.graph.ingestTurn({
           scope: gScope,
@@ -235,6 +238,7 @@ export class SessionLogger {
         if (ingested?.tailOnly === true) {
           this.runTraceStats.recordCaptureTailOnly();
         }
+        captureDisclosure = ingested?.captureDisclosure;
       } catch (err) {
         console.error(
           '[session-log] graph ingest failed:',
@@ -266,7 +270,7 @@ export class SessionLogger {
           recordRunTraceOutcome(this.runTraceStats, 'run-ingest-failed', err);
         }
       }
-      return { turnExternalId };
+      return { turnExternalId, ...(captureDisclosure ? { captureDisclosure } : {}) };
     }
     // No graph sink at all. Before #684 this returned in silence, which made a
     // permanently trace-less deployment indistinguishable from a healthy one.

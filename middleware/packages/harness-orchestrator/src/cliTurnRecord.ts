@@ -3,7 +3,7 @@ import type {
   RunToolCall,
   RunTracePayload,
 } from '@omadia/channel-sdk';
-import type { PalaiaExcerpt } from '@omadia/plugin-api';
+import type { CaptureDisclosure, PalaiaExcerpt } from '@omadia/plugin-api';
 
 import { OMADIA_MCP_TOOL_PREFIX } from './cliSpawnGate.js';
 
@@ -30,6 +30,7 @@ export interface CliCompletedTurn {
  */
 export interface CliTurnRecord {
   readonly turnId?: string;
+  readonly captureDisclosure?: CaptureDisclosure;
   readonly palaiaExcerpt?: PalaiaExcerpt;
   readonly autoPromotedMkId?: string;
   readonly events?: readonly ChatStreamEvent[];

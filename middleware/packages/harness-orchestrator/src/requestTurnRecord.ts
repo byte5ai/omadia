@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 
 import type { ChatStreamEvent } from '@omadia/channel-sdk';
-import type { EntityRef, PalaiaExcerpt } from '@omadia/plugin-api';
+import type { CaptureDisclosure, EntityRef, PalaiaExcerpt } from '@omadia/plugin-api';
 
 /**
  * The recorded turn of ONE user request that ran in several passes —
@@ -37,6 +37,8 @@ export interface WrittenTurn {
    *  call ran alongside the verifier instead of before it, so it reaches the
    *  `done` that goes out through the commit. */
   readonly palaiaExcerpt?: PalaiaExcerpt;
+  /** What the capture filter decided for the row. */
+  readonly captureDisclosure?: CaptureDisclosure;
   /** Stream only: events the write produced (Knowledge-Graph insert pulses). */
   readonly events?: readonly ChatStreamEvent[];
 }
@@ -65,6 +67,7 @@ export interface CommittedTurn {
   readonly turnId?: string;
   readonly autoPromotedMkId?: string;
   readonly palaiaExcerpt?: PalaiaExcerpt;
+  readonly captureDisclosure?: CaptureDisclosure;
   readonly events: readonly ChatStreamEvent[];
 }
 
@@ -150,6 +153,9 @@ export class RequestTurnRecord {
         ? { autoPromotedMkId: written.autoPromotedMkId }
         : {}),
       ...(written.palaiaExcerpt !== undefined ? { palaiaExcerpt: written.palaiaExcerpt } : {}),
+      ...(written.captureDisclosure !== undefined
+        ? { captureDisclosure: written.captureDisclosure }
+        : {}),
       events: [...(written.events ?? []), ...annotations],
     };
   }

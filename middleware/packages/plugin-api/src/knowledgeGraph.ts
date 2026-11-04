@@ -1790,6 +1790,19 @@ export interface TurnIngestResult {
    * the decorator that made the decision does.
    */
   tailOnly?: boolean;
+  /**
+   * `true` when the backend scheduled an embedding for this turn. It is
+   * computed after the write, so the vector may not exist yet. Absent means
+   * none was scheduled: no embedding client, a tail-only turn, or a backend
+   * without vectors.
+   */
+  embeddingScheduled?: boolean;
+  /**
+   * OB-81 — what the capture decorator decided for this turn, for the channels
+   * that show it. Set by the decorator that made the decision, never by a
+   * backend. Absent when no capture filter ran, or at `capture_level=off`.
+   */
+  captureDisclosure?: CaptureDisclosure;
 }
 
 // ---------------------------------------------------------------------------
@@ -1801,9 +1814,10 @@ export interface TurnIngestResult {
 // orchestrator actually persisted into Palaia / the knowledge graph for any
 // given turn.
 //
-// Track-A introduces only the wire shape: every field is optional, so a turn
-// without an active capture-pipeline simply omits the object. Track-B (after
-// OB-71 lands) wires the real Decision through the orchestrator response.
+// `CaptureFilteringKnowledgeGraph` projects its decision onto
+// `TurnIngestResult.captureDisclosure`; the session logger hands it to the
+// orchestrator, which puts it on the stream's `done` event. A turn without an
+// active capture-pipeline simply omits the object.
 // ---------------------------------------------------------------------------
 
 /**
@@ -1842,16 +1856,21 @@ export interface CaptureDisclosure {
    * capture-hint with `force="true"` short-circuited scoring.
    */
   significance: number | null;
-  /** Did the embedding sidecar compute and write a vector for this turn? */
+  /**
+   * Was an embedding scheduled for this turn? It is computed after the turn is
+   * answered, so `true` does not promise the vector exists yet, and a failed
+   * embedding leaves the turn on full-text search only.
+   */
   embedded: boolean;
   /** Number of `<private>...</private>` blocks removed before persistence. */
   privacyBlocksStripped: number;
   /** Number of `<palaia-hint .../>` tags consumed. */
   hintTagsProcessed: number;
   /**
-   * Knowledge-graph identifiers touched by this turn. Optional — exposed
-   * mainly for the inline-chat dev surface (clickable graph deep-links).
-   * Connectors that cannot link out (Teams: no graph UI) MAY omit display.
+   * Knowledge-graph identifiers touched by this turn. Optional — meant for
+   * the inline-chat dev surface (clickable graph deep-links). Not populated
+   * today: `done` also reaches Public API clients, which have no use for
+   * internal node ids. Connectors that cannot link out MAY omit display.
    */
   graphRefs?: {
     sessionId: string;
