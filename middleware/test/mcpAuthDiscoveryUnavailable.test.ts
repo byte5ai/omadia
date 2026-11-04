@@ -37,6 +37,7 @@ const AS_DOC = {
   token_endpoint: 'https://as.example/token',
 };
 
+type FetchInput = Parameters<typeof fetch>[0];
 type Answer = number | Record<string, unknown> | Error | (() => Response);
 
 function json(doc: Record<string, unknown>): Response {
@@ -59,7 +60,7 @@ function challenge(metadataUrl?: string): Response {
  *  unlisted is a 404. `calls` records every URL requested. */
 function responder(routes: Record<string, Answer>): typeof fetch & { calls: string[] } {
   const calls: string[] = [];
-  const impl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+  const impl = (async (input: FetchInput, init?: RequestInit) => {
     const url = String(input);
     calls.push(url);
     const key = init?.method === 'POST' ? 'POST' : url;
@@ -101,12 +102,12 @@ describe('McpAuthDiscovery: only a real answer means "not protected"', () => {
   // `redirect: 'error'` rejected like a network failure, so a host that
   // redirects every unknown path would have read as permanently unavailable.
   it('a redirect is an answer, and is not followed', async () => {
-    const seen: Array<RequestRedirect | undefined> = [];
+    const seen: Array<RequestInit['redirect']> = [];
     const inner = responder({
       [WELL_KNOWN]: () =>
         new Response('', { status: 301, headers: { location: 'https://www.srv.example/' } }),
     });
-    const fetchImpl = ((input: RequestInfo | URL, init?: RequestInit) => {
+    const fetchImpl = ((input: FetchInput, init?: RequestInit) => {
       seen.push(init?.redirect);
       return inner(input, init);
     }) as typeof fetch;
@@ -128,7 +129,7 @@ describe('McpAuthDiscovery: only a real answer means "not protected"', () => {
   }
 
   it('a timeout is unavailable, not "not protected"', async () => {
-    const fetchImpl = ((_input: RequestInfo | URL, init?: RequestInit) =>
+    const fetchImpl = ((_input: FetchInput, init?: RequestInit) =>
       new Promise((_resolve, reject) => {
         init?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
       })) as typeof fetch;
