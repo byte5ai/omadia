@@ -51,36 +51,51 @@ type ResolvedLeaf = {
 };
 
 const NAV: readonly NavItem[] = [
-  { kind: 'link', href: '/', key: 'dashboard' },
+  // No Dashboard entry: the omadia logo in the header already links to `/`.
+  // Primary surfaces first, then configuration; Plugins sits late on purpose
+  // (it should draw less attention than day-to-day work) and Help closes the
+  // bar, where users look for it.
   { kind: 'link', href: '/operator/skills', key: 'skills' },
   {
     kind: 'cluster',
-    key: 'pluginsCluster',
+    key: 'chatCluster',
     children: [
-      { kind: 'link', href: '/store', key: 'store' },
-      { kind: 'link', href: '/store/builder', key: 'builder' },
+      // #148 — which channel keys exist on the platform and which
+      // orchestrator handles each. Was dropped from the nav in #385 with no
+      // stated reason; it belongs next to the chat it routes into.
+      { kind: 'link', href: '/operator/channels', key: 'channels' },
+      // The in-app chat is a test/debug surface for operators — real users
+      // talk to omadia through the channels above.
+      { kind: 'link', href: '/chat', key: 'debug' },
     ],
   },
-  { kind: 'link', href: '/routines', key: 'routines' },
-  { kind: 'link', href: '/chat', key: 'chat' },
   {
     kind: 'cluster',
-    key: 'adminCluster',
+    key: 'setupCluster',
     children: [
       // OM-80 — LLM access holds the orchestrator↔provider assignment without
       // which no agent runs, yet it had no menu entry (reachable only via the
       // dashboard status card). First position: it is the setup prerequisite.
       { kind: 'link', href: '/admin/providers', key: 'llmAccess' },
-      { kind: 'link', href: '/admin', key: 'admin' },
-      { kind: 'link', href: '/system', key: 'system' },
-      // Orchestrators and Conductor moved here from the top level — they're
-      // operator-facing configuration surfaces, same audience as Admin/System.
+      // Orchestrators and Conductor moved here from the top level — they
+      // configure how agents run, not the platform itself (that is Admin).
       { kind: 'link', href: '/operator/agents', key: 'agentsCluster' },
       // #924 — the TENANT Teams sign-in. Its own entry, not a tab inside an
       // agent: one admin signs in once and every agent provisioned afterwards
       // uses it, so it has to be reachable BEFORE the first agent exists.
       { kind: 'link', href: '/operator/teams', key: 'teamsSignIn' },
       { kind: 'link', href: '/conductor', key: 'conductor' },
+      // Routines are created from chat, not on their own page — the page is
+      // an overview/management surface, so it is not a primary nav item.
+      { kind: 'link', href: '/routines', key: 'routines' },
+    ],
+  },
+  {
+    kind: 'cluster',
+    key: 'adminCluster',
+    children: [
+      { kind: 'link', href: '/admin', key: 'admin' },
+      { kind: 'link', href: '/system', key: 'system' },
       // #757 — persisted per-turn privacy receipts, same operator audience.
       { kind: 'link', href: '/operator/receipts', key: 'receipts' },
       // #760 — miss-report review queue, same operator audience.
@@ -88,6 +103,14 @@ const NAV: readonly NavItem[] = [
       // An optional feature's entry used to be hardcoded here. Plugin
       // surfaces are now contributed at runtime, so the entry appears only
       // while that plugin is installed and active — see mergeNav below.
+    ],
+  },
+  {
+    kind: 'cluster',
+    key: 'pluginsCluster',
+    children: [
+      { kind: 'link', href: '/store', key: 'store' },
+      { kind: 'link', href: '/store/builder', key: 'builder' },
     ],
   },
   // OM-09 — there was NO in-product help at all: no help route, no `?`, no

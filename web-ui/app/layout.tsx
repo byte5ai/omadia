@@ -9,11 +9,7 @@ import {
   getTranslations,
 } from 'next-intl/server';
 
-import { AuthBadge } from './_components/AuthBadge';
-import { CreateIssueButton } from './_components/CreateIssueButton';
-import { LocaleSwitcher } from './_components/LocaleSwitcher';
-import { Nav } from './_components/Nav';
-import { ThemeControls } from './_components/ThemeControls';
+import { HeaderControls } from './_components/HeaderControls';
 import { SessionWatcher } from './_components/SessionWatcher';
 import { TimeZoneSync } from './_components/TimeZoneSync';
 import { RuntimeReadinessBanner } from './_components/RuntimeReadinessBanner';
@@ -24,6 +20,7 @@ import { fontVariables } from './_fonts';
 import { ChatSessionsProvider } from './_lib/chatSessionsContext';
 import { StreamStoreProvider } from './_lib/streamStore';
 import { fetchNavEntries } from './_lib/navigation';
+import { SESSION_COOKIE, isFreshSessionToken } from './_lib/sessionToken';
 import { UI_PREFS_COOKIE, parseUiPrefsCookie } from './_lib/uiPrefs';
 import './globals.css';
 
@@ -75,6 +72,9 @@ export default async function RootLayout({
   // clock. Never throws — an unauthenticated visitor or an unreachable
   // middleware yields an empty list and the static nav renders alone.
   const navEntries = await fetchNavEntries(locale);
+  // Signed-out visitors (only /login and /setup get past the proxy without a
+  // session) see the minimal header. Decode-only, same check as the proxy.
+  const signedIn = isFreshSessionToken(jar.get(SESSION_COOKIE)?.value);
   const { palette, theme } = parseUiPrefsCookie(jar.get(UI_PREFS_COOKIE)?.value);
   return (
     <html
@@ -96,32 +96,19 @@ export default async function RootLayout({
                     className="flex shrink-0 items-center transition-opacity hover:opacity-90"
                     aria-label={t('logoAriaLabel')}
                   >
-                    <span className="flex flex-col leading-none">
+                    {/* Wordmark and tagline side by side: with the
+                        preferences in the user menu and no Dashboard entry,
+                        the bar has room for them on one baseline. */}
+                    <span className="flex items-baseline gap-3 whitespace-nowrap leading-none">
                       <span className="font-logo text-lg text-[color:var(--fg-strong)]">
                         omadia
                       </span>
-                      <span className="mt-1 text-[10px] uppercase tracking-[0.14em] text-[color:var(--fg-muted)]">
+                      <span className="hidden text-[10px] uppercase tracking-[0.14em] text-[color:var(--fg-muted)] sm:inline">
                         {t('tagline')}
                       </span>
                     </span>
                   </Link>
-                  {/* The row fits by construction, not by shrinking: below xl
-                      the theme selects collapse into one icon menu and the
-                      auth badge drops the first name, and the wide gap only
-                      starts at 2xl (#1073, OM-30). No `min-w-0` — the nowrap
-                      nav cannot shrink, so it would spill over the controls
-                      instead of overflowing at the edge. */}
-                  <div className="ml-auto flex items-center gap-2 2xl:gap-4">
-                    <Nav entries={navEntries} />
-                    <span
-                      className="hidden h-5 w-px bg-[color:var(--border)] sm:block"
-                      aria-hidden
-                    />
-                    <CreateIssueButton />
-                    <ThemeControls />
-                    <LocaleSwitcher />
-                    <AuthBadge />
-                  </div>
+                  <HeaderControls signedIn={signedIn} navEntries={navEntries} />
                 </div>
               </header>
               <div className="min-h-0 flex-1">{children}</div>

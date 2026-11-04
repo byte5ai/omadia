@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
-const SESSION_COOKIE = 'omadia_session';
+import { SESSION_COOKIE, isJwtExpiredOrMalformed } from './app/_lib/sessionToken';
 
 /**
  * Next.js proxy — gates every page + API call on the Admin UI.
@@ -65,28 +65,6 @@ function isPublicPath(pathname: string): boolean {
   // operator login form inside the Tab iframe.
   if (pathname.startsWith('/p/')) return true;
   return false;
-}
-
-/**
- * Decode the JWT payload (no signature verification) and check the `exp`
- * claim. Returns true if the token is malformed or already expired — in
- * either case we treat it as no-session and bounce to /login. Backend's
- * `requireAuth` performs full HMAC verification on every API call.
- */
-function isJwtExpiredOrMalformed(token: string): boolean {
-  const parts = token.split('.');
-  if (parts.length !== 3) return true;
-  const payloadSegment = parts[1];
-  if (!payloadSegment) return true;
-  try {
-    const b64 = payloadSegment.replace(/-/g, '+').replace(/_/g, '/');
-    const padded = b64 + '='.repeat((4 - (b64.length % 4)) % 4);
-    const payload = JSON.parse(atob(padded)) as { exp?: unknown };
-    if (typeof payload.exp !== 'number') return true;
-    return payload.exp * 1000 <= Date.now();
-  } catch {
-    return true;
-  }
 }
 
 export const config = {

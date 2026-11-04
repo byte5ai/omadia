@@ -18,7 +18,18 @@ type State =
   | { kind: 'anon' }
   | { kind: 'error'; message: string };
 
-export function AuthBadge(): React.ReactElement | null {
+/**
+ * Signed-in user chip + menu. `preferences` (palette, appearance, language)
+ * is rendered as its own section in the menu, so the header bar itself keeps
+ * only the nav, this chip and the issue button. Signed out it renders
+ * nothing: the only signed-out surfaces are /login and /setup, where a
+ * "Login" link would point at the page the visitor is already on.
+ */
+export function AuthBadge({
+  preferences,
+}: {
+  readonly preferences?: React.ReactNode;
+} = {}): React.ReactElement | null {
   const t = useTranslations('authBadge');
   const tSession = useTranslations('session');
   const locale = useLocale();
@@ -112,17 +123,7 @@ export function AuthBadge(): React.ReactElement | null {
     );
   }
 
-  if (state.kind === 'anon') {
-    return (
-      <a
-        href="/login"
-        className="inline-flex items-center gap-2 rounded-full border border-[color:var(--border)] px-3 py-1 text-[11px] uppercase tracking-[0.18em] text-[color:var(--fg-muted)] transition-colors hover:border-[color:var(--accent)] hover:text-[color:var(--ink)]"
-      >
-        <span className="text-[color:var(--highlight)] font-[900]">:</span>
-        {t('loginLink')}
-      </a>
-    );
-  }
+  if (state.kind === 'anon') return null;
 
   if (state.kind === 'error') {
     return (
@@ -181,7 +182,7 @@ export function AuthBadge(): React.ReactElement | null {
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -6 }}
             transition={{ duration: 0.15, ease: 'easeOut' }}
-            className="absolute right-0 top-full z-50 mt-2 w-64 rounded-lg border border-[color:var(--divider)] bg-[color:var(--surface)] p-3 shadow-xl"
+            className="absolute right-0 top-full z-50 mt-2 w-72 rounded-lg border border-[color:var(--divider)] bg-[color:var(--surface)] p-3 shadow-xl"
           >
             <div className="px-2 pb-3">
               <div className="text-[10px] uppercase tracking-[0.22em] text-[color:var(--fg-subtle)]">
@@ -200,6 +201,14 @@ export function AuthBadge(): React.ReactElement | null {
                 </span>
               </div>
             </div>
+            {preferences ? (
+              <div className="border-t border-[color:var(--border)] px-2 py-3">
+                <div className="mb-2 text-[10px] uppercase tracking-[0.22em] text-[color:var(--fg-subtle)]">
+                  {t('preferences')}
+                </div>
+                {preferences}
+              </div>
+            ) : null}
             <div className="border-t border-[color:var(--border)] pt-2">
               {/* eslint-disable-next-line no-restricted-syntax -- justify-between menu row with bespoke spinner, not a §4.2 CTA */}
               <button

@@ -2,7 +2,7 @@
 
 import { Moon, Palette, Sun } from 'lucide-react';
 import { useTranslations } from 'next-intl';
-import { useEffect, useId, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useRef, useSyncExternalStore } from 'react';
 
 import { getUiPrefs, putUiPrefs } from '../_lib/api';
 import {
@@ -32,6 +32,11 @@ import {
  * (/api/v1/ui-prefs). On change we apply the attribute live, mirror it into
  * the cookie (for the next pre-paint), and PUT it to the store. On mount we
  * re-read the store to seed/correct the cookie on a fresh device.
+ *
+ * Surfaces: the state lives in `useThemePrefs`, mounted once by the header.
+ * Signed in, the palette + appearance selects sit in the user menu; signed
+ * out (login/setup) only the sun/moon `AppearanceToggle` is offered — the
+ * palette is a per-user preference and has no business on the login bar.
  */
 
 const COOKIE_MAX_AGE = 60 * 60 * 24 * 365; // 1 year — a stable UI preference.
@@ -67,11 +72,23 @@ function readTheme(): Appearance {
 }
 
 const selectClass =
-  'appearance-none rounded-md border border-[color:var(--border)] bg-transparent py-1 pl-6 pr-2 text-xs ' +
+  'w-full appearance-none rounded-md border border-[color:var(--border)] bg-transparent py-1 pl-6 pr-2 text-xs ' +
   'text-[color:var(--fg-muted)] outline-none transition-colors hover:text-[color:var(--fg-strong)] ' +
   'focus:border-[color:var(--accent)] focus-visible:border-[color:var(--accent)]';
 
-export function ThemeControls(): React.ReactElement {
+export interface ThemePrefs {
+  readonly palette: PaletteName;
+  readonly theme: Appearance;
+  readonly applyPalette: (next: PaletteName) => void;
+  readonly applyTheme: (next: Appearance) => void;
+}
+
+/**
+ * Palette + appearance state and its persistence. Mount it once in an
+ * always-rendered component: the store hydration runs on mount, so hosting it
+ * inside a menu that only mounts while open would skip it on page load.
+ */
+export function useThemePrefs(): ThemePrefs {
   const palette = useSyncExternalStore(subscribeToRootAttrs, readPalette, () => 'lagoon' as const);
   const theme = useSyncExternalStore(subscribeToRootAttrs, readTheme, () => 'system' as const);
 
@@ -83,7 +100,7 @@ export function ThemeControls(): React.ReactElement {
 
   // Hydrate from the server store on mount: the cookie/SSR value may be stale
   // (or absent on a fresh device). Apply the stored choice to <html> — the
-  // MutationObserver re-renders the selects — and refresh the cookie so the
+  // MutationObserver re-renders the controls — and refresh the cookie so the
   // next pre-paint on this device matches. No PUT here: the store is already
   // the source. Stays silent when logged out / offline (cookie value holds),
   // or when the user has already made a choice this session (their PUT wins).
@@ -116,7 +133,8 @@ export function ThemeControls(): React.ReactElement {
       /* Best-effort cross-device sync. On a network/5xx error the cookie + live
        * attribute already applied, so the choice holds for this session. A 401
        * is the exception: putUiPrefs → maybeNavigateToLogin bounces to /login
-       * before this catch runs (the session is dead, re-auth is required). */
+       * before this catch runs (the session is dead, re-auth is required) —
+       * except on /login and /setup themselves, where it is a no-op. */
     });
   }
 
@@ -140,136 +158,115 @@ export function ThemeControls(): React.ReactElement {
     persist(readPalette(), next);
   }
 
-  const selects = (
-    <ThemeSelects palette={palette} theme={theme} onPalette={applyPalette} onTheme={applyTheme} />
-  );
-
-  return (
-    <>
-      {/* xl+: the two selects sit inline in the header row. */}
-      <div data-theme-inline className="hidden items-center gap-2 xl:flex">
-        {selects}
-      </div>
-      {/* Below xl they collapse into one icon menu (#1073): inline they pushed
-          the header past the desktop shell's ~1100px window and covered HELP. */}
-      <ThemeMenu>{selects}</ThemeMenu>
-    </>
-  );
+  return { palette, theme, applyPalette, applyTheme };
 }
 
-/** Icon-triggered panel holding the theme selects below xl (#1073). A
- *  `group`, not a `menu`: it holds form controls, not menu items. Closes on an
- *  outside mousedown and on Escape (focus returns to the trigger), mirroring
- *  the Nav/AuthBadge dropdowns. Only mounted while open. */
-function ThemeMenu({ children }: { readonly children: React.ReactNode }): React.ReactElement {
-  const t = useTranslations('themeControls');
-  const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const panelId = useId();
+const DARK_QUERY = '(prefers-color-scheme: dark)';
 
-  useEffect(() => {
-    if (!open) return;
-    const onMouseDown = (e: MouseEvent): void => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
-    };
-    const onKeyDown = (e: KeyboardEvent): void => {
-      if (e.key !== 'Escape') return;
-      setOpen(false);
-      triggerRef.current?.focus();
-    };
-    window.addEventListener('mousedown', onMouseDown);
-    window.addEventListener('keydown', onKeyDown);
-    return () => {
-      window.removeEventListener('mousedown', onMouseDown);
-      window.removeEventListener('keydown', onKeyDown);
-    };
-  }, [open]);
-
-  return (
-    <div ref={rootRef} className="relative xl:hidden">
-      {/* eslint-disable-next-line no-restricted-syntax -- icon-only header trigger, same chrome as the issue button */}
-      <button
-        ref={triggerRef}
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="rounded p-1.5 text-[color:var(--fg-muted)] transition hover:bg-[color:var(--bg-soft)] hover:text-[color:var(--fg-strong)]"
-        title={t('menuAriaLabel')}
-        aria-label={t('menuAriaLabel')}
-        aria-expanded={open}
-        aria-controls={panelId}
-      >
-        <Palette className="h-4 w-4" aria-hidden />
-      </button>
-      {open ? (
-        <div
-          id={panelId}
-          role="group"
-          aria-label={t('menuAriaLabel')}
-          className="absolute right-0 top-full z-50 mt-2 flex flex-col gap-2 rounded border border-[color:var(--border)] bg-[color:var(--bg-elevated)] p-3 shadow-lg"
-        >
-          {children}
-        </div>
-      ) : null}
-    </div>
-  );
+function subscribeToColorScheme(onChange: () => void): () => void {
+  const mql = window.matchMedia(DARK_QUERY);
+  mql.addEventListener('change', onChange);
+  return () => mql.removeEventListener('change', onChange);
 }
 
-interface ThemeSelectsProps {
-  readonly palette: PaletteName;
+/** Whether the page currently renders dark — resolves `system` via the OS. */
+function useIsDark(theme: Appearance): boolean {
+  const systemDark = useSyncExternalStore(
+    subscribeToColorScheme,
+    () => window.matchMedia(DARK_QUERY).matches,
+    () => false,
+  );
+  return theme === 'dark' || (theme === 'system' && systemDark);
+}
+
+/**
+ * Sun/moon button for the signed-out header: one click flips light ↔ dark.
+ * From `system` it pins the opposite of what the OS currently shows, so the
+ * click always visibly changes the page. `system` stays reachable from the
+ * appearance select in the signed-in user menu. The icon shows the mode the
+ * click switches TO.
+ */
+export function AppearanceToggle({
+  theme,
+  onTheme,
+}: {
   readonly theme: Appearance;
-  readonly onPalette: (next: PaletteName) => void;
   readonly onTheme: (next: Appearance) => void;
+}): React.ReactElement {
+  const t = useTranslations('themeControls');
+  const isDark = useIsDark(theme);
+  const label = isDark ? t('switchToLight') : t('switchToDark');
+  return (
+    // eslint-disable-next-line no-restricted-syntax -- icon-only header toggle, same chrome as the issue button
+    <button
+      type="button"
+      onClick={() => onTheme(isDark ? 'light' : 'dark')}
+      className="rounded p-1.5 text-[color:var(--fg-muted)] transition hover:bg-[color:var(--bg-soft)] hover:text-[color:var(--fg-strong)]"
+      title={label}
+      aria-label={label}
+    >
+      {isDark ? <Sun className="h-4 w-4" aria-hidden /> : <Moon className="h-4 w-4" aria-hidden />}
+    </button>
+  );
 }
 
-/** The palette + appearance selects; rendered inline at xl+ and in the
- *  collapsed panel below. State lives in ThemeControls, so both share it. */
-function ThemeSelects({ palette, theme, onPalette, onTheme }: ThemeSelectsProps): React.ReactElement {
+/** Accent palette select — lives in the signed-in user menu. */
+export function PaletteSelect({
+  palette,
+  onPalette,
+}: {
+  readonly palette: PaletteName;
+  readonly onPalette: (next: PaletteName) => void;
+}): React.ReactElement {
   const t = useTranslations('themeControls');
   return (
-    <>
-      <label className="relative inline-flex items-center" aria-label={t('paletteAriaLabel')}>
-        <Palette
-          className="pointer-events-none absolute left-1.5 h-3.5 w-3.5 text-[color:var(--fg-subtle)]"
-          aria-hidden
-        />
-        <select
-          value={palette}
-          onChange={(e) => onPalette(e.target.value as PaletteName)}
-          className={selectClass}
-        >
-          {PALETTES.map((p) => (
-            <option key={p} value={p}>
-              {t(`palette.${p}`)}
-            </option>
-          ))}
-        </select>
-      </label>
+    <label className="relative inline-flex w-40 items-center" aria-label={t('paletteAriaLabel')}>
+      <Palette
+        className="pointer-events-none absolute left-1.5 h-3.5 w-3.5 text-[color:var(--fg-subtle)]"
+        aria-hidden
+      />
+      <select
+        value={palette}
+        onChange={(e) => onPalette(e.target.value as PaletteName)}
+        className={selectClass}
+      >
+        {PALETTES.map((p) => (
+          <option key={p} value={p}>
+            {t(`palette.${p}`)}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
 
-      <label className="relative inline-flex items-center" aria-label={t('appearanceAriaLabel')}>
-        {theme === 'dark' ? (
-          <Moon
-            className="pointer-events-none absolute left-1.5 h-3.5 w-3.5 text-[color:var(--fg-subtle)]"
-            aria-hidden
-          />
-        ) : (
-          <Sun
-            className="pointer-events-none absolute left-1.5 h-3.5 w-3.5 text-[color:var(--fg-subtle)]"
-            aria-hidden
-          />
-        )}
-        <select
-          value={theme}
-          onChange={(e) => onTheme(e.target.value as Appearance)}
-          className={selectClass}
-        >
-          {APPEARANCES.map((m) => (
-            <option key={m} value={m}>
-              {t(`appearance.${m}`)}
-            </option>
-          ))}
-        </select>
-      </label>
-    </>
+/** Light/dark/system select — lives in the signed-in user menu. */
+export function AppearanceSelect({
+  theme,
+  onTheme,
+}: {
+  readonly theme: Appearance;
+  readonly onTheme: (next: Appearance) => void;
+}): React.ReactElement {
+  const t = useTranslations('themeControls');
+  const Icon = theme === 'dark' ? Moon : Sun;
+  return (
+    <label className="relative inline-flex w-40 items-center" aria-label={t('appearanceAriaLabel')}>
+      <Icon
+        className="pointer-events-none absolute left-1.5 h-3.5 w-3.5 text-[color:var(--fg-subtle)]"
+        aria-hidden
+      />
+      <select
+        value={theme}
+        onChange={(e) => onTheme(e.target.value as Appearance)}
+        className={selectClass}
+      >
+        {APPEARANCES.map((m) => (
+          <option key={m} value={m}>
+            {t(`appearance.${m}`)}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }

@@ -140,10 +140,10 @@ describe('<Nav /> cluster dropdown', () => {
 
   // OM-80 (#998) — LLM access holds the orchestrator↔provider assignment
   // without which no agent runs, yet it had no menu entry. It must be the first
-  // child of the ADMIN cluster.
-  it('admin cluster lists LLM access first, linking to /admin/providers', () => {
+  // child of the SETUP cluster (moved out of ADMIN with the agent config).
+  it('setup cluster lists LLM access first, linking to /admin/providers', () => {
     renderWithIntl(<Nav />);
-    const button = openerFor('admin');
+    const button = openerFor('setup');
     fireEvent.mouseEnter(wrapperOf(button));
 
     const link = screen.getByRole('menuitem', { name: /llm access/i });
@@ -151,6 +151,35 @@ describe('<Nav /> cluster dropdown', () => {
 
     const items = screen.getAllByRole('menuitem');
     expect(items[0]).toBe(link);
+  });
+
+  it('groups Channels and the Debug chat under a Chat cluster', () => {
+    renderWithIntl(<Nav />);
+    fireEvent.mouseEnter(wrapperOf(openerFor('chat')));
+    const items = screen.getAllByRole('menuitem');
+    expect(items.map((i) => [i.textContent, i.getAttribute('href')])).toEqual([
+      ['Channels', '/operator/channels'],
+      ['Debug', '/chat'],
+    ]);
+  });
+
+  it('splits agent configuration (Setup) from platform administration (Admin)', () => {
+    renderWithIntl(<Nav />);
+    const labelsOf = (cluster: string): string[] => {
+      fireEvent.mouseEnter(wrapperOf(openerFor(cluster)));
+      const labels = screen.getAllByRole('menuitem').map((i) => i.textContent ?? '');
+      fireEvent.keyDown(document, { key: 'Escape' });
+      return labels;
+    };
+
+    expect(labelsOf('setup')).toEqual([
+      'LLM access',
+      'Orchestrators',
+      'Teams sign-in',
+      'Conductor',
+      'Routines',
+    ]);
+    expect(labelsOf('admin')).toEqual(['Admin', 'System', 'Receipts', 'Privacy reports']);
   });
 
   it('opens on keyboard focus and on Enter (no pointer involved)', () => {

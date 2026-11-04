@@ -36,6 +36,30 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — web-ui header: minimal signed-out bar, preferences in the user menu, reordered nav
+
+UI only — no route, API or auth-logic change. Signed out (and always on
+`/login` + `/setup`) the header shows no nav and no "Login" link, only a flag
+language menu, a sun/moon light↔dark toggle and the GitHub issue button.
+Signed in, palette, appearance and language moved out of the bar into the user
+chip's menu (new "Preferences" section); the GitHub issue button sits at the
+far right in both shapes. Nav order is now Skills · Chat · Setup · Admin ·
+Plugins · Help: Dashboard was dropped (the logo already links to `/`). Chat is
+now a cluster (`nav.chatCluster`) holding Channels (`/operator/channels`, back
+in the nav after #385 dropped it) and Debug (`/chat`, `nav.debug`; `nav.chat`
+removed). The old
+Admin cluster was split — new Setup cluster (`nav.setupCluster`) holds LLM
+access, Orchestrators, Teams sign-in, Conductor and Routines (moved out of the
+top level); Admin keeps Admin, System, Receipts and Privacy reports. Plugin nav
+entries targeting `adminCluster` still land in Admin. Wordmark and tagline sit side by side. The layout
+decides signed-in vs. signed-out from the session cookie with the proxy's
+decode-only check, now shared via `web-ui/app/_lib/sessionToken.ts`. New
+component `HeaderControls`; `ThemeControls` became `useThemePrefs` +
+`AppearanceToggle`/`PaletteSelect`/`AppearanceSelect`. i18n: removed
+`authBadge.loginLink`, `themeControls.menuAriaLabel`, `nav.dashboard`; added
+`authBadge.{preferences,palette,appearance,language}` and
+`themeControls.{switchToDark,switchToLight}`.
+
 ### Changed — CI dependency audit fails closed on registry errors; Dependabot covers `desktop/` (#1239)
 
 2026-09-29 — the `audit (high+critical block)` step treated an npm registry

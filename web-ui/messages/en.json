@@ -474,8 +474,8 @@
     "openLabel": "open"
   },
   "nav": {
-    "dashboard": "Dashboard",
-    "chat": "Chat",
+    "chatCluster": "Chat",
+    "debug": "Debug",
     "store": "Hub",
     "builder": "Builder",
     "memory": "Memory",
@@ -492,6 +492,7 @@
     "agentsOverview": "Overview",
     "channels": "Channels",
     "pluginsCluster": "Plugins",
+    "setupCluster": "Setup",
     "adminCluster": "Admin",
     "help": "Help",
     "teamsSignIn": "Teams sign-in",
@@ -904,7 +905,6 @@
   "themeControls": {
     "paletteAriaLabel": "Accent palette",
     "appearanceAriaLabel": "Appearance",
-    "menuAriaLabel": "Palette and appearance",
     "palette": {
       "lagoon": "Lagoon (teal)",
       "petrol": "Petrol (blue)",
@@ -914,7 +914,9 @@
       "system": "Automatic",
       "light": "Light",
       "dark": "Dark"
-    }
+    },
+    "switchToDark": "Switch to dark mode",
+    "switchToLight": "Switch to light mode"
   },
   "login": {
     "title": "Sign in to omadia",
@@ -988,10 +990,13 @@
     "streamErrorAnnounce": "{title}: response failed"
   },
   "authBadge": {
-    "loginLink": "Login",
     "authError": "auth err",
     "signedInAs": "Signed in as",
-    "signOut": "Sign out"
+    "signOut": "Sign out",
+    "preferences": "Preferences",
+    "palette": "Palette",
+    "appearance": "Appearance",
+    "language": "Language"
   },
   "error": {
     "title": "Something went wrong",

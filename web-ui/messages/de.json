@@ -474,8 +474,8 @@
     "openLabel": "offen"
   },
   "nav": {
-    "dashboard": "Dashboard",
-    "chat": "Chat",
+    "chatCluster": "Chat",
+    "debug": "Debug",
     "store": "Hub",
     "builder": "Builder",
     "memory": "Memory",
@@ -492,6 +492,7 @@
     "agentsOverview": "Übersicht",
     "channels": "Channels",
     "pluginsCluster": "Plugins",
+    "setupCluster": "Einrichtung",
     "adminCluster": "Admin",
     "help": "Hilfe",
     "teamsSignIn": "Teams-Anmeldung",
@@ -904,7 +905,6 @@
   "themeControls": {
     "paletteAriaLabel": "Akzent-Palette",
     "appearanceAriaLabel": "Darstellung",
-    "menuAriaLabel": "Palette und Darstellung",
     "palette": {
       "lagoon": "Lagoon (Türkis)",
       "petrol": "Petrol (Blau)",
@@ -914,7 +914,9 @@
       "system": "Automatisch",
       "light": "Hell",
       "dark": "Dunkel"
-    }
+    },
+    "switchToDark": "Zum dunklen Modus wechseln",
+    "switchToLight": "Zum hellen Modus wechseln"
   },
   "login": {
     "title": "Bei omadia anmelden",
@@ -988,10 +990,13 @@
     "streamErrorAnnounce": "{title}: Antwort fehlgeschlagen"
   },
   "authBadge": {
-    "loginLink": "Login",
     "authError": "Auth-Fehler",
     "signedInAs": "Angemeldet als",
-    "signOut": "Abmelden"
+    "signOut": "Abmelden",
+    "preferences": "Einstellungen",
+    "palette": "Farbpalette",
+    "appearance": "Darstellung",
+    "language": "Sprache"
   },
   "error": {
     "title": "Etwas ist schiefgelaufen",
