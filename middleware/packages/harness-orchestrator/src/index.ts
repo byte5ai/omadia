@@ -213,6 +213,8 @@ export {
   // Exported so the no-collateral-invalidation rule of `McpManager.close(id)`
   // can be unit tested and reused by ops tooling (issue #563).
   mcpPoolScopeMatches,
+  // The Discover route needs the same reading of a failed connect as a tool call.
+  looksUnauthorized,
   // #545 — the tool-list cache rules (TTL normalisation + scope keying) are
   // the contract, unit-tested as pure functions like `mcpPoolScopeMatches`.
   mcpToolListTtlMs,

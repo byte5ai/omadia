@@ -3149,9 +3149,11 @@ async function main(): Promise<void> {
                 );
                 if (userKey === null) return delegationBlockedMessage(server.name);
                 // Only OAuth-protected servers get an auth prompt (cached
-                // discovery keeps this cheap per call).
+                // discovery keeps this cheap per call). With the metadata
+                // unreadable there is nothing to prompt for: the raw failure
+                // is more honest than "isn't set up yet".
                 const desc = await mcpOAuthService.describeAuth(server);
-                if (!desc.protected) return null;
+                if (!desc.protected || desc.discoveryUnavailable) return null;
                 // Machine block the chat parses into an in-line "Connect" card
                 // + modal (web-ui McpAuthRequiredCard). Mirrors the <nudge>
                 // block contract: human text stays readable for the model and
