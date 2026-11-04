@@ -123,6 +123,13 @@ export interface ToolDispatchCallerContext {
   readonly userId?: string;
   /** Correlation id for logs/traces. */
   readonly requestId?: string;
+  /**
+   * The Agent whose dispatcher runs this call. The CLI runtime opens no
+   * orchestrator turn scope, so `turnContext.currentAgentSlug()` is empty on it.
+   * Deliberately not written into the turn context: a slug there would move
+   * plugin memory to another namespace on this runtime.
+   */
+  readonly agentSlug?: string;
 }
 
 /** Per-dispatch options. All optional — omitting the whole argument is legacy behaviour. */
@@ -194,6 +201,8 @@ export class ToolDispatchService {
        * ungated. Absent ⇒ every plugin's tools are always available.
        */
       readonly isPluginToolsReady?: (agentId: string) => boolean;
+      /** The Agent this dispatcher serves; published on every dispatch's caller. */
+      readonly agentSlug?: string;
       /**
        * #1598 — per-Agent plugin assignment, the twin of `isPluginToolsReady`:
        * `Orchestrator.isToolGranted` of the Agent this dispatcher serves. A
@@ -307,10 +316,13 @@ export class ToolDispatchService {
     input: unknown,
     options?: ToolDispatchOptions,
   ): Promise<ToolDispatchResult> {
-    const caller = options?.caller;
+    const caller =
+      this.deps.agentSlug === undefined
+        ? options?.caller
+        : { ...options?.caller, agentSlug: this.deps.agentSlug };
     // Publish caller identity for every layer beneath this dispatch. Omitted
-    // entirely when the entry point supplied none, so the loopback path runs with
-    // an empty store exactly as before.
+    // entirely when neither the entry point nor this dispatcher has anything to
+    // publish; the loopback path of an Agent-bound dispatcher carries the slug.
     return caller === undefined
       ? this.dispatchIdempotent(name, input, options)
       : runWithDispatchCaller(caller, () =>

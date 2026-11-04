@@ -1,6 +1,7 @@
-import { app, dialog, type MessageBoxOptions } from 'electron';
+import { app, BrowserWindow, dialog, type MessageBoxOptions, type MessageBoxReturnValue } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import fs from 'node:fs';
+import { dialogParent } from './dialogParent';
 import { embeddedDbDir, secretsFile, snapshotDir, updateAttemptsFile } from './paths';
 import { getActiveSupervisor } from './supervisor';
 import { log, logFile } from './log';
@@ -62,11 +63,18 @@ function takeManualCheckPending(): boolean {
   return true;
 }
 
+function showBox(options: MessageBoxOptions): Promise<MessageBoxReturnValue> {
+  const parent = dialogParent(BrowserWindow.getAllWindows());
+  if (parent === undefined) return dialog.showMessageBox(options);
+  parent.show();
+  return dialog.showMessageBox(parent, options);
+}
+
 async function showUpdaterDialog(options: MessageBoxOptions): Promise<void> {
   try {
     // These status dialogs are intentionally unbounded: the point of a manual
     // check is to stay visible until the user has seen the updater outcome.
-    await dialog.showMessageBox(options);
+    await showBox(options);
   } catch (err) {
     log.error(`[updater] failed to show dialog "${options.title}": ${String(err)}`);
   }
@@ -233,7 +241,7 @@ export function initUpdater(): void {
     // This restart decision is intentionally unbounded: installing an update
     // without explicit user consent would be worse than waiting for it here.
     const t = shellT();
-    const { response } = await dialog.showMessageBox({
+    const { response } = await showBox({
       type: 'info',
       buttons: [
         t('updater.ready.restartNow', 'Restart now'),

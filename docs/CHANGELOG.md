@@ -36,6 +36,40 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Desktop runtime: one module instance, clean exit, usable update dialog
+
+2026-11-04. Found in the desktop functional tests of v0.195.1 and v0.195.2.
+
+- **The packaged app loaded its built-in plugins twice.** `stage-runtime.mjs`
+  materialises `node_modules/@omadia/*` as real copies next to `packages/`, and
+  the kernel loaded plugins from `./packages`. Node keys modules by real path, so
+  the orchestrator plugin and the kernel each had their own `turnContext`, and
+  everything in the kernel that reads it saw nothing of the plugin's scope. Desktop
+  now sets `BUILT_IN_PACKAGES_DIR` to `node_modules/@omadia`. This was the actual
+  cause of the routine failure in #1667 on the API-key runtime: v0.195.1 with only
+  this setting creates routines. It was specific to the desktop package (Docker
+  keeps the symlinks), not every deployment as that entry says.
+  Behaviour that now matches Docker on desktop: the kernel's readers of the turn
+  context take effect (KG read scope and privacy, audience floor, MCP user
+  identity, sub-agent hydration). A plugin's `ctx.memory` written during a turn
+  lands under the Agent's slug; on a non-default Agent (`fallback` included),
+  entries stored earlier under `default` stay there and that plugin no longer
+  reads them through this accessor.
+- **The kernel never exited on SIGTERM or SIGINT.** Its signal handlers ran the
+  cleanup and left the HTTP server running until the supervisor sent SIGKILL
+  (desktop 4s, Docker 10s). It now exits after the cleanup, at most 3s later. The
+  builder drain drops from 5s to 1.5s so the stdio MCP cleanup behind it still
+  runs. An in-flight request is cut when the cleanup ends instead of getting the
+  rest of the supervisor's grace period.
+- **Routines from channel turns on the CLI runtime.** That runtime opens no
+  orchestrator turn scope, so `manage_routine` could not name the Agent. Its
+  dispatcher now publishes the slug on the dispatch caller context.
+- **The updater's dialogs froze the app on macOS.** Without a parent window they
+  run the native modal loop, which stops the main process, including quit and
+  SIGTERM. They now attach to the app's window as a sheet and bring it forward.
+- **`OMADIA_VERSION`** is stamped for the kernel and the web UI of the packaged
+  app, so `/health`, `/system` and the update page report the real version.
+
 ### Added
 - Fast path: a confident "no data source fits" (`source=none` ≥ 0.8) in the Jev turn gate makes the turn a model turn even when the data probability sits between the bars — no LLM router, no discarded planner call (live: a Confluence question came back `data=0.57`, `source=none:1.00`). `@omadia/fast-path` 0.4.1.
 - Fast path: the Jev **turn gate** — every decision of a turn in ONE decision-model request (`decideAll`, plugin-api 1.53.0): model yes/no, simple/complex, plan needed (the plan-runner takes it instead of its own Haiku gate), data source, and a learned plan with its `{{text_n}}` slots filled from the (masked) turn — data questions with names run without the planner. `@omadia/fast-path` 0.4.0, `@omadia/plugin-plan-runner` 0.2.1, `@omadia/decision-jev` 0.2.0.

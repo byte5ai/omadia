@@ -209,6 +209,7 @@ import { createAdminTranscriptionProviderRouter } from './routes/adminTranscript
 import { createAdminCliBackendsRouter } from './routes/adminCliBackends.js';
 import { createAdminLastTurnRouter } from './routes/adminLastTurn.js';
 import { setCliLoginAuthorizedHook } from './platform/cliAuthService.js';
+import { exitAfterShutdown } from './platform/exitAfterShutdown.js';
 import {
   autoAssignSubscriptionCli,
   SUBSCRIPTION_CLI_PROVIDER,
@@ -6631,10 +6632,13 @@ async function main(): Promise<void> {
     },
   });
 
+  let stopMdnsAdvertiser: (() => Promise<void> | undefined) | undefined;
   const shutdownBuilder = async (): Promise<void> => {
     try {
       builderRebuildScheduler.cancelAll();
-      await builderBuildQueue.drain(5_000).catch(() => {
+      // Well inside SHUTDOWN_TIMEOUT_MS: the rest of this function (stdio MCP
+      // children above all) has to run before the process exits.
+      await builderBuildQueue.drain(1_500).catch(() => {
         // best-effort
       });
       await previewCache.closeAll();
@@ -6652,12 +6656,14 @@ async function main(): Promise<void> {
       // Stop every active routine (drops scheduler entries; in-flight runs
       // see their AbortSignal). Idempotent if undefined.
       routinesHandle?.close();
+      await stopMdnsAdvertiser?.();
     } catch {
       // ignore — process is exiting anyway
     }
   };
-  process.once('SIGTERM', shutdownBuilder);
-  process.once('SIGINT', shutdownBuilder);
+  const onShutdownSignal = exitAfterShutdown(shutdownBuilder);
+  process.once('SIGTERM', onShutdownSignal);
+  process.once('SIGINT', onShutdownSignal);
 
   app.use(
     '/api/v1/builder',
@@ -7105,11 +7111,7 @@ async function main(): Promise<void> {
     }).then((adv) => {
       mdnsAdvertisement = adv;
     });
-    const stopMdns = (): void => {
-      void mdnsAdvertisement?.stop();
-    };
-    process.once('SIGTERM', stopMdns);
-    process.once('SIGINT', stopMdns);
+    stopMdnsAdvertiser = () => mdnsAdvertisement?.stop();
   }
 
   // Fast-fail on EADDRINUSE: without this, hot-reload or a stale `npm run dev`
