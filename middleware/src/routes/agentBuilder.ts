@@ -768,10 +768,15 @@ export function createAgentBuilderRouter(
       // Read-only lookup only: detail fetch may surface a persisted verdict but
       // must never compute one on demand (the LLM scan is explicit-trigger
       // only, via POST /verdict/llm-scan below — never fired from a GET).
-      const [row, llmVerifier, usedBy, usedByAgents] = await Promise.all([
+      const [row, ack, llmVerifier, usedBy, usedByAgents] = await Promise.all([
         skill.contentHash === null
           ? Promise.resolve(undefined)
           : l.graph.getSkillVerdict(skill.contentHash, CURRENT_VERIFIER_VERSION),
+        // Same key as `POST /verdict/ack`, so a suppression shows after a
+        // reload and lapses with the verifier version or a content change.
+        skill.contentHash === null
+          ? Promise.resolve(undefined)
+          : l.graph.getSkillVerdictAck(skill.contentHash, CURRENT_VERIFIER_VERSION),
         options.getLlmVerifier?.() ?? Promise.resolve(undefined),
         l.graph.listSubAgentsBySkillId(skill.id),
         l.graph.listAgentsByPersonaSkillId(skill.id),
@@ -811,6 +816,7 @@ export function createAgentBuilderRouter(
                 computedAt: llmRow.computedAt,
               }
             : null,
+          ...(ack ? { ackedBy: ack.ackedBy, ackedAt: ack.ackedAt } : {}),
         },
         usedByCount: usedBy.length,
         usedByAgentsCount: usedByAgents.length,
