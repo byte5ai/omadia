@@ -254,6 +254,7 @@ export function UpdateClient({ webUiApp }: UpdateClientProps): React.ReactElemen
   // supplies the web-ui's. A command with `<middleware-app>` in it is a command
   // the operator has to go and look up before they can run it.
   const onFly = status?.platform?.kind === 'fly';
+  const onDesktop = status?.platform?.kind === 'desktop';
   const flyCommand = useMemo(() => {
     const version = target.length > 0 ? target : 'vX.Y.Z';
     const mw = status?.platform?.appName ?? '<middleware-app>';
@@ -355,7 +356,7 @@ export function UpdateClient({ webUiApp }: UpdateClientProps): React.ReactElemen
           {t('title')}
         </h1>
         <p className="mt-3 max-w-2xl text-[16px] leading-[1.55] text-[color:var(--fg-muted)]">
-          {t('intro')}
+          {t(onDesktop ? 'desktopIntro' : 'intro')}
         </p>
       </header>
 
@@ -437,7 +438,16 @@ export function UpdateClient({ webUiApp }: UpdateClientProps): React.ReactElemen
         </div>
       </section>
 
-      {status !== null && !status.executor.configured && (
+      {onDesktop && (
+        <section className="mb-6 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4 text-sm">
+          <h2 className="mb-2 text-[10px] font-semibold tracking-wider text-[color:var(--fg-muted)] uppercase">
+            {t('desktopTitle')}
+          </h2>
+          <p className="text-[color:var(--fg-muted)]">{t('desktopBody')}</p>
+        </section>
+      )}
+
+      {status !== null && !status.executor.configured && !onDesktop && (
         <section className="mb-6 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4 text-sm">
           <h2 className="mb-2 text-[10px] font-semibold tracking-wider text-[color:var(--fg-muted)] uppercase">
             {t('notifyOnlyTitle')}

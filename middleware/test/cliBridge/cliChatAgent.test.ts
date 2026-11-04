@@ -845,6 +845,13 @@ describe('CliChatAgent interactive cards (#1102 Stage 2b)', () => {
     ],
   };
 
+  it('names the model on the done event, for the chat footer', async () => {
+    const events = await collect(agentWithDrain(() => ({}), { n: 0 }));
+    const done = events.find((e) => e.type === 'done');
+    assert.ok(done && done.type === 'done');
+    assert.ok(done.model, 'done.model is what the footer chip reads');
+  });
+
   it('attaches a drained choice card to the done event', async () => {
     const calls = { n: 0 };
     const agent = agentWithDrain(() => ({ pendingUserChoice: CHOICE }), calls);

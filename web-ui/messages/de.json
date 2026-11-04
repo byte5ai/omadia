@@ -5455,6 +5455,9 @@
     "checkStale": "Die Release-Prüfung hat GitHub nicht erreicht, oder GitHub hat sie abgelehnt (Rate-Limit); der angezeigte Wert kann veraltet sein.",
     "checkNow": "Jetzt prüfen",
     "checking": "Prüfe…",
+    "desktopIntro": "Die Version, die diese App gerade fährt, und ob ein neueres Release existiert.",
+    "desktopTitle": "Desktop-App",
+    "desktopBody": "Die Desktop-App aktualisiert sich selbst: Sie sucht bei jedem Start nach einem neuen Release, lädt es herunter und fragt vor dem Neustart. Prüfen kannst du es auch unter Hilfe > Nach Updates suchen oder über das Tray-Symbol.",
     "notifyOnlyTitle": "Manuelles Update",
     "notifyOnlyBody": "Es ist kein Updater konfiguriert — diese Instanz kann Versionen melden, aber kein Update ausführen. Unter Docker Compose aktiviert das optionale Overlay (docker-compose.update.yaml) die Ausführung. Sonst vom Host aus aktualisieren:",
     "notifyOnlyComposeLabel": "Docker Compose",
@@ -6053,7 +6056,7 @@
   "graph": {
     "page": {
       "canvasLoading": "lade Graph-Canvas…",
-      "errorDevEndpoint": "Dev-Graph-Endpoint nicht verfügbar. Setze DEV_ENDPOINTS_ENABLED=true in middleware/.env.",
+      "errorDevEndpoint": "Der Graph-Browser ist auf dieser Instanz aus. Er braucht die Umgebungsvariable DEV_ENDPOINTS_ENABLED=true am Kernel, mit der jeder angemeldete Nutzer den rohen Knowledge Graph und Speicher lesen kann, auch die Chats aller Nutzer. Deshalb bleibt er standardmäßig aus.",
       "errorLoadFailed": "Graph-Load fehlgeschlagen (stats={stats}, sessions={sessions})",
       "reload": "↻ neu laden",
       "allSessions": "Alle Sessions",

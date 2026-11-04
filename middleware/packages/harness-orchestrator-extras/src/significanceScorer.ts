@@ -53,7 +53,8 @@ const DECISION_QUESTIONS: Readonly<Record<string, DecisionQuestion>> = {
     instruction:
       'Is this conversation turn worth remembering for future sessions? Yes for a decision, deadline, ' +
       'name, customer-specific quirk, recurring pattern, or learned data-model / schema / domain ' +
-      'conventions. No for chit-chat, thanks, greetings, or a one-off answer with no new fact.',
+      'conventions. No for chit-chat, thanks, greetings, a one-off answer with no new fact, or a ' +
+      'question answered from what is already remembered.',
   },
   entry_type: {
     kind: 'choice',
@@ -89,6 +90,9 @@ Output STRICT JSON with exactly two fields:
 Definitions:
   score      — How worth-remembering is this turn for future recall?
                 0.0 = trivial chit-chat, weather, "thanks", repeated greetings.
+                0.1 = the user only asks about something already known and the
+                      answer restates it ("which bike do I like?", "you told me
+                      earlier that …"): nothing new to remember.
                 0.5 = useful answer, but no new fact about the user/world.
                 1.0 = high-signal: a decision, deadline, name, address, password
                       hint, customer-specific quirk, recurring pattern, OR

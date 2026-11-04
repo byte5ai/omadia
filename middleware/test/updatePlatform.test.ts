@@ -13,6 +13,10 @@ import { resolvePlatform } from '../src/update/platform.js';
  */
 
 describe('resolvePlatform', () => {
+  it('reports the desktop app, which installs its own updates', () => {
+    assert.deepEqual(resolvePlatform({ OMADIA_DESKTOP_EMBEDDED: 'true' }), { kind: 'desktop' });
+  });
+
   it('reports Fly with the app name and machine id', () => {
     assert.deepEqual(
       resolvePlatform({

@@ -6565,11 +6565,11 @@ export interface UpdateStatus {
     pinPersisted?: boolean;
   };
   auditAvailable: boolean;
-  /** Where the middleware runs. Only used to make the manual instructions
-   *  concrete — `unknown` on compose and anywhere else, which is the generic
-   *  case, not an error. */
+  /** Where the middleware runs. Picks the manual instructions: concrete on Fly,
+   *  none on the self-updating desktop app, and `unknown` on compose and anywhere
+   *  else, which is the generic case, not an error. */
   platform?: {
-    kind: 'fly' | 'unknown';
+    kind: 'fly' | 'desktop' | 'unknown';
     appName?: string;
     machineId?: string;
   };

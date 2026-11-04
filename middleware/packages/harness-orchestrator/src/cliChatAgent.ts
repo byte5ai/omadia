@@ -2033,6 +2033,7 @@ export class CliChatAgent implements ChatAgent {
         }
         yield {
           ...terminalDone,
+          model: this.deps.model ?? DEFAULT_MODEL,
           ...(record.turnId !== undefined ? { turnId: record.turnId } : {}),
           ...(record.palaiaExcerpt !== undefined ? { palaiaExcerpt: record.palaiaExcerpt } : {}),
           ...(record.autoPromotedMkId !== undefined

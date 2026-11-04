@@ -36,6 +36,27 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Desktop findings: usage ledger, chat footer, memory noise, admin pages
+
+2026-11-04. Found in the desktop functional tests of v0.195.1 and v0.195.2.
+
+- **Background calls on the subscription CLI were billed and counted twice.**
+  `withProviderUsageTracking` added a priced row next to the one the CLI adapter
+  writes at cost 0, because `haiku-cli` matches the `haiku` price. It now skips
+  providers that record their own usage. Existing rows keep their cost.
+- **CLI turns show their model** in the chat footer (`done.model`).
+- **A question answered from memory should no longer become a new memory.** The
+  significance prompts now score such a turn below the capture threshold. This is
+  prompt guidance, not a deterministic check, and the scorer only sees the single
+  turn, so it depends on the answer showing that the fact was already known.
+- **`/admin/update` on desktop** says the app updates itself instead of showing
+  Docker Compose and Fly commands (`platform.kind: 'desktop'`).
+- **`/graph`** no longer points at `middleware/.env`, which a desktop user does not
+  have, and says what enabling the setting exposes.
+- **A key with no verdict is probed** when the LLM access page opens, so the
+  desktop wizard's key does not read "stored, not verified". A pass is stored; an
+  offline install repeats the bounded probe on later page opens.
+- **`latest-mac.yml`** describes the stapled DMGs (`refresh-mac-feed-dmg.mjs`).
 ### Fixed — Desktop runtime: one module instance, clean exit, usable update dialog
 
 2026-11-04. Found in the desktop functional tests of v0.195.1 and v0.195.2.

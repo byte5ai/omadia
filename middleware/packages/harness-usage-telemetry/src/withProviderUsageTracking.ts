@@ -1,6 +1,7 @@
 /**
  * Wraps an `LlmProvider` so every `complete()` and the terminal `final` event
- * of `stream()` is recorded by the usage telemetry singleton, transparently.
+ * of `stream()` is recorded by the usage telemetry singleton, transparently,
+ * unless the provider records its own usage.
  *
  * This is the provider-level successor to `withUsageTracking` (which proxies a
  * raw Anthropic SDK client). The background Haiku callers — verifier
@@ -20,7 +21,7 @@ import type {
   LlmStreamEvent,
   LlmUsage,
 } from '@omadia/llm-provider';
-import { recordUsage } from './recorder.js';
+import { providerRecordsOwnUsage, recordUsage } from './recorder.js';
 
 export interface UsageTrackingOptions {
   /** Logical origin tag stored on each row (e.g. 'verifier', 'extras'). */
@@ -34,6 +35,9 @@ function record(
   providerId: string,
   opts: UsageTrackingOptions,
 ): void {
+  // The subscription CLI writes its own row at cost 0. A second one here would
+  // double the tokens and price them per token, as if the call were metered.
+  if (providerRecordsOwnUsage(providerId)) return;
   try {
     recordUsage({
       source: opts.source,
