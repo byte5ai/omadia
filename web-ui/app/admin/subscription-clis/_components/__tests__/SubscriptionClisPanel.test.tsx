@@ -38,6 +38,7 @@ const CLI_TOOLS_DIR = '/var/lib/omadia/cli-tools';
 
 vi.mock('../../../../_lib/api', () => ({
   getCliBackends: mockGetCliBackends,
+  recheckCliBackends: () => mockGetCliBackends(true),
   startCliLogin: mockStartCliLogin,
   submitCliLoginCode: mockSubmitCliLoginCode,
   getCliLoginStatus: mockGetCliLoginStatus,

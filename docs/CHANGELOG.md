@@ -36,6 +36,19 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — A CLI already signed in gets the orchestrator
+
+2026-11-04. Found in the desktop functional test of v0.195.2.
+
+The hand-off to the subscription CLI only ran after a login through omadia. On a
+fresh "I already have a subscription" install with `claude` signed in on the
+machine, the orchestrator stayed on Anthropic with no key and chat answered 503,
+although the subscriptions page promises the assignment. The hand-off now also
+runs after boot and on the page's re-check (`POST /api/v1/admin/cli-backends/recheck`).
+It is stricter than the login path, because nobody asked for it there: it only
+runs when no provider has a key, stored or from `ANTHROPIC_API_KEY` /
+`OPENAI_API_KEY`, and only moves plugins whose `llm_provider` was never set.
+
 ### Added
 - Fast path: a confident "no data source fits" (`source=none` ≥ 0.8) in the Jev turn gate makes the turn a model turn even when the data probability sits between the bars — no LLM router, no discarded planner call (live: a Confluence question came back `data=0.57`, `source=none:1.00`). `@omadia/fast-path` 0.4.1.
 - Fast path: the Jev **turn gate** — every decision of a turn in ONE decision-model request (`decideAll`, plugin-api 1.53.0): model yes/no, simple/complex, plan needed (the plan-runner takes it instead of its own Haiku gate), data source, and a learned plan with its `{{text_n}}` slots filled from the (masked) turn — data questions with names run without the planner. `@omadia/fast-path` 0.4.0, `@omadia/plugin-plan-runner` 0.2.1, `@omadia/decision-jev` 0.2.0.
