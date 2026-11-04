@@ -15,6 +15,7 @@ import { useFormatter, useTranslations } from 'next-intl';
 import { Button } from '../../../_components/ui/Button';
 import {
   getCliBackends,
+  recheckCliBackends,
   startCliLogin,
   submitCliLoginCode,
   getCliLoginStatus,
@@ -81,7 +82,7 @@ export function SubscriptionClisPanel({
   const load = useCallback(async (force: boolean) => {
     if (force) setRechecking(true);
     try {
-      const data = await getCliBackends(force);
+      const data = force ? await recheckCliBackends() : await getCliBackends(false);
       setState({ kind: 'ready', data });
       if (force) {
         setJustRefreshed(true);
