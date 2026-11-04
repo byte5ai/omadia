@@ -36,6 +36,28 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Desktop findings: usage ledger, chat footer, memory noise, admin pages
+
+2026-11-04. Found in the desktop functional tests of v0.195.1 and v0.195.2.
+
+- **Background calls on the subscription CLI were billed and counted twice.**
+  `withProviderUsageTracking` added a priced row next to the one the CLI adapter
+  writes at cost 0, because `haiku-cli` matches the `haiku` price. It now skips
+  providers that record their own usage. Existing rows keep their cost.
+- **CLI turns show their model** in the chat footer (`done.model`).
+- **A question answered from memory should no longer become a new memory.** The
+  significance prompts now score such a turn below the capture threshold. This is
+  prompt guidance, not a deterministic check, and the scorer only sees the single
+  turn, so it depends on the answer showing that the fact was already known.
+- **`/admin/update` on desktop** says the app updates itself instead of showing
+  Docker Compose and Fly commands (`platform.kind: 'desktop'`).
+- **`/graph`** no longer points at `middleware/.env`, which a desktop user does not
+  have, and says what enabling the setting exposes.
+- **A key with no verdict is probed** when the LLM access page opens, so the
+  desktop wizard's key does not read "stored, not verified". A pass is stored; an
+  offline install repeats the bounded probe on later page opens.
+- **`latest-mac.yml`** describes the stapled DMGs (`refresh-mac-feed-dmg.mjs`).
+
 ### Added
 - Fast path: a confident "no data source fits" (`source=none` ≥ 0.8) in the Jev turn gate makes the turn a model turn even when the data probability sits between the bars — no LLM router, no discarded planner call (live: a Confluence question came back `data=0.57`, `source=none:1.00`). `@omadia/fast-path` 0.4.1.
 - Fast path: the Jev **turn gate** — every decision of a turn in ONE decision-model request (`decideAll`, plugin-api 1.53.0): model yes/no, simple/complex, plan needed (the plan-runner takes it instead of its own Haiku gate), data source, and a learned plan with its `{{text_n}}` slots filled from the (masked) turn — data questions with names run without the planner. `@omadia/fast-path` 0.4.0, `@omadia/plugin-plan-runner` 0.2.1, `@omadia/decision-jev` 0.2.0.

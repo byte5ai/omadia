@@ -163,6 +163,20 @@ describe('/admin/update', () => {
     expect(screen.getByText(/image line in your fly\.toml/i)).toBeInTheDocument();
   });
 
+  it('shows no server commands in the desktop app, which updates itself', async () => {
+    mockGetUpdateStatus.mockResolvedValue(
+      status({
+        executor: { configured: false, reachable: false },
+        platform: { kind: 'desktop' },
+      }),
+    );
+    renderWithIntl(<UpdateClient />);
+
+    expect(await screen.findByText(/updates itself/)).toBeInTheDocument();
+    expect(screen.queryByText(/docker compose/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/fly deploy/)).not.toBeInTheDocument();
+  });
+
   it('keeps the placeholders, and drops the Fly-only hints, off Fly', async () => {
     mockGetUpdateStatus.mockResolvedValue(
       status({

@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { useFormatter, useTranslations } from 'next-intl';
 
@@ -504,6 +504,19 @@ function ProviderRow({
       setSaveError(err);
     }
   };
+
+  // A key that arrived without a probe (the desktop wizard's, or a seeded one)
+  // reads "stored, not verified" until someone presses "Test key". Probe it once
+  // per page open: a pass is stored for good, an inconclusive result only for a
+  // few minutes, so an offline install repeats this bounded background probe.
+  const autoProbed = useRef(false);
+  useEffect(() => {
+    if (autoProbed.current || p.toolLess || keyless || !hasStoredKey) return;
+    if (p.status !== 'unverified' || p.verifyReason) return;
+    autoProbed.current = true;
+    void runVerify();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runVerify is recreated per render; the ref makes this one-shot
+  }, [p.status, p.verifyReason, p.toolLess, keyless, hasStoredKey]);
 
   const removeKey = async (): Promise<void> => {
     if (saveStatus === 'saving') return;

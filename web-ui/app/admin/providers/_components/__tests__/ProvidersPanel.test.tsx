@@ -136,6 +136,35 @@ describe('<ProvidersPanel />', () => {
     expect(screen.queryByText(/Add key/)).toBeNull();
   });
 
+  it('probes a key that arrived without a verdict, once', async () => {
+    mockVerifyProvider.mockClear();
+    mockVerifyProvider.mockResolvedValue({ status: 'verified' });
+    mockGetProviders.mockResolvedValue(
+      providersResponse({
+        providers: [provider({ connected: true, status: 'unverified' })],
+      }),
+    );
+    renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+    await screen.findByText(/Change key/);
+    await vi.waitFor(() => expect(mockVerifyProvider).toHaveBeenCalledTimes(1));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(mockVerifyProvider).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not probe again after an unreachable probe left a reason', async () => {
+    mockVerifyProvider.mockClear();
+    mockGetProviders.mockResolvedValue(
+      providersResponse({
+        providers: [provider({ connected: true, status: 'unverified', verifyReason: 'network_error' })],
+      }),
+    );
+    renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+    await screen.findByText(/Change key/);
+    expect(mockVerifyProvider).not.toHaveBeenCalled();
+  });
+
   // #1460 — a keyless provider (Ollama) is `connected` without any key.
   it('offers no "Change/Remove key" for a keyless provider with no key stored', async () => {
     mockGetProviders.mockResolvedValue(
@@ -305,7 +334,7 @@ describe('<ProvidersPanel />', () => {
   it('offers "Test key" once a key exists, and probes on click', async () => {
     mockGetProviders.mockResolvedValue(
       providersResponse({
-        providers: [provider({ connected: true, status: 'unverified' })],
+        providers: [provider({ connected: true, status: 'unverified', verifyReason: 'network_error' })],
       }),
     );
     renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
@@ -380,7 +409,7 @@ describe('<ProvidersPanel />', () => {
     it('refreshes the selected provider and reloads its row', async () => {
       mockGetProviders.mockResolvedValue(
         providersResponse({
-          providers: [provider({ connected: true, status: 'unverified' })],
+          providers: [provider({ connected: true, status: 'unverified', verifyReason: 'network_error' })],
         }),
       );
       renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
@@ -509,7 +538,7 @@ describe('<ProvidersPanel />', () => {
     it('surfaces a rejected refresh request and still reloads the provider row', async () => {
       mockGetProviders.mockResolvedValue(
         providersResponse({
-          providers: [provider({ connected: true, status: 'unverified' })],
+          providers: [provider({ connected: true, status: 'unverified', verifyReason: 'network_error' })],
         }),
       );
       mockRefreshProviderModels.mockRejectedValue(new Error('upstream unavailable'));

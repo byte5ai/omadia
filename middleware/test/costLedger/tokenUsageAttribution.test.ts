@@ -278,6 +278,26 @@ describe('#1098 — each capture seam names the provider that generated the cost
     }
   });
 
+  it('withProviderUsageTracking leaves the subscription CLI to its own row', async () => {
+    const fake = {
+      id: 'claude-cli',
+      capabilities: {},
+      complete: () => Promise.resolve(response),
+      stream: async function* () {
+        yield { type: 'final', response };
+      },
+      classifyError: () => ({ retryable: false, kind: 'other' }),
+    } as unknown as Parameters<typeof withProviderUsageTracking>[0];
+    const tracked = withProviderUsageTracking(fake, { source: 'extras' });
+
+    await tracked.complete({ model: 'haiku-cli', messages: [] } as never);
+    for await (const _ev of tracked.stream({ model: 'haiku-cli', messages: [] } as never)) {
+      // drain
+    }
+
+    assert.equal((await flushedRows()).length, 0);
+  });
+
   it('the model and persona routers record their classifier provider', async () => {
     const classifier = { id: 'router-prov', complete: () => Promise.resolve(response) };
 

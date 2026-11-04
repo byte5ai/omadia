@@ -842,6 +842,11 @@ jobs:
               sleep 60
             done
           done
+          # Stapling changed the DMGs; the feed still carries their old hashes.
+          # A rebuild of a tag older than this script keeps them.
+          if [ -f scripts/refresh-mac-feed-dmg.mjs ]; then
+            node scripts/refresh-mac-feed-dmg.mjs release/latest-mac.yml
+          fi
 
       - name: Verify macOS signatures (acceptance gate)
         if: ${{ startsWith(matrix.os, 'macos') && env.APPLE_P12_BASE64 != '' && env.NOTARIZE == 'yes' }}
