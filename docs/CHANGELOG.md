@@ -57,6 +57,14 @@ changelog.
   desktop wizard's key does not read "stored, not verified". A pass is stored; an
   offline install repeats the bounded probe on later page opens.
 - **`latest-mac.yml`** describes the stapled DMGs (`refresh-mac-feed-dmg.mjs`).
+### Fixed — Builder Teams tabs fail closed on hosts without `teams-sso` (#1620)
+
+2026-11-04. A generated plugin's Teams data router refuses every request that
+the kernel's `teams-sso` gate did not verify (`req.teamsSsoUser` missing), and
+a plugin with ui_routes declares `compat.core: ">=1.51.0 <2.0"`. Before, the
+package installed on a host older than plugin-api 1.51.0 would have served the
+data mount like a granted `'public'` route, without authentication.
+
 ### Fixed — Desktop runtime: one module instance, clean exit, usable update dialog
 
 2026-11-04. Found in the desktop functional tests of v0.195.1 and v0.195.2.

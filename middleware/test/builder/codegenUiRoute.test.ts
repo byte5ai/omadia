@@ -653,7 +653,13 @@ describe('#1620 — the generated routes/teamsTabRouter.ts, executed', () => {
       dataRouters: [page],
     });
     const app = express();
-    app.use('/p/agent-x/teams/_data', tab.data);
+    // Stands in for the kernel gate: only `?as=user` counts as verified.
+    app.use('/p/agent-x/teams/_data', (req, _res, next) => {
+      if (req.query['as'] === 'user') {
+        (req as { teamsSsoUser?: unknown }).teamsSsoUser = { oid: 'u1' };
+      }
+      next();
+    }, tab.data);
     app.use('/p/agent-x/teams', tab.shell);
     const server = await listenLoopback(app);
     const { port } = server.address() as AddressInfo;
@@ -670,8 +676,13 @@ describe('#1620 — the generated routes/teamsTabRouter.ts, executed', () => {
       assert.match(html, /s\.integrity = "sha384-[A-Za-z0-9+/=]+"/);
       assert.ok(!html.includes('Dashboard <script>'), 'title is escaped');
 
-      const data = await fetch(`${base}/p/agent-x/teams/_data/dashboard`);
-      assert.ok((await data.text()).includes(SECRET));
+      const verified = await fetch(`${base}/p/agent-x/teams/_data/dashboard?as=user`);
+      assert.ok((await verified.text()).includes(SECRET));
+
+      // Fail closed when no kernel gate verified the request (older core).
+      const unverified = await fetch(`${base}/p/agent-x/teams/_data/dashboard`);
+      assert.equal(unverified.status, 401);
+      assert.ok(!(await unverified.text()).includes(SECRET));
 
       const unknown = await fetch(`${base}/p/agent-x/teams/other`);
       assert.equal(unknown.status, 404);
