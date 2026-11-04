@@ -10,6 +10,8 @@ export const RUNTIME_SENTINELS = [
   'omadia/middleware/node_modules/@omadia/plugin-api/package.json',
   'omadia/middleware/node_modules/@omadia/llm-adapter-anthropic/package.json',
   'omadia/middleware/node_modules/express/package.json',
+  // The kernel loads its built-in plugins from here (`builtInPackagesDir`).
+  'omadia/middleware/node_modules/@omadia/orchestrator/manifest.yaml',
   'omadia/web-ui/server.js',
   'omadia/web-ui/.next/BUILD_ID',
   'omadia/web-ui/node_modules/next/package.json',

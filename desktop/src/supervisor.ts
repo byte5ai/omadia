@@ -1,3 +1,4 @@
+import { app } from 'electron';
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import path from 'node:path';
@@ -11,9 +12,15 @@ import {
   platformDataDir,
   embeddingModelsDir,
   attachmentsDir,
+  isPackagedRuntime,
 } from './paths';
 import { findFreePorts, isPortFree } from './ports';
-import { desktopKernelEnvDefaults } from './kernelEnvDefaults';
+import {
+  desktopKernelEnvDefaults,
+  packagedPackagesEnv,
+  packagedVersionEnv,
+  type PackagedRuntime,
+} from './kernelEnvDefaults';
 import {
   attachmentReadiness,
   capabilityKernelEnv,
@@ -28,6 +35,10 @@ import type { ChildStopOutcome } from './childLifecycle';
 import { credentialKeychainKey, vaultKey, allProviderKeys } from './secrets';
 import { log } from './log';
 import { resolveAugmentedPath } from './pathEnv';
+
+function packagedRuntime(): PackagedRuntime {
+  return { packaged: isPackagedRuntime(), version: app.getVersion(), kernelCwd: kernelCwd() };
+}
 
 const augmentedPath = resolveAugmentedPath(process.env['PATH']);
 
@@ -555,6 +566,8 @@ export class Supervisor extends EventEmitter {
       // the packaged app — second fresh-install killer found on v0.115.0.
       // The explicit override removes the guesswork entirely.
       MULTI_ORCH_MIGRATIONS_DIR: path.join(kernelCwd(), 'migrations'),
+      ...packagedPackagesEnv(packagedRuntime()),
+      ...packagedVersionEnv(packagedRuntime()),
       PLATFORM_DATA_DIR: platformDataDir(),
       // OM-97: the keyless embedding adapter's weights. Explicit rather than
       // left to the adapter's `PLATFORM_DATA_DIR` fallback, because the thing
@@ -643,6 +656,7 @@ export class Supervisor extends EventEmitter {
       PORT: String(uiPort),
       HOSTNAME: '127.0.0.1',
       MIDDLEWARE_URL: `http://127.0.0.1:${kernelPort}`,
+      ...packagedVersionEnv(packagedRuntime()),
     };
   }
 

@@ -35,6 +35,11 @@ function devRuntimeRoot(): string {
   return path.resolve(__dirname, '..', '..');
 }
 
+/** True in the packaged app, false for `npm run dev` against the sibling builds. */
+export function isPackagedRuntime(): boolean {
+  return !isDev;
+}
+
 /** Entry script for the middleware kernel (`node dist/index.js`). */
 export function kernelEntry(): string {
   const root = runtimeRoot();
