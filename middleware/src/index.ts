@@ -209,8 +209,10 @@ import { createAdminTranscriptionProviderRouter } from './routes/adminTranscript
 import { createAdminCliBackendsRouter } from './routes/adminCliBackends.js';
 import { createAdminLastTurnRouter } from './routes/adminLastTurn.js';
 import { setCliLoginAuthorizedHook } from './platform/cliAuthService.js';
+import { exitAfterShutdown } from './platform/exitAfterShutdown.js';
 import {
   autoAssignSubscriptionCli,
+  handOffExistingCliLogin,
   SUBSCRIPTION_CLI_PROVIDER,
 } from './platform/providerAssignment.js';
 import {
@@ -5983,7 +5985,21 @@ async function main(): Promise<void> {
   // Subscription-CLI backends (#309) — detect installed/logged-in vendor CLIs
   // (Claude/Codex/Gemini) so the operator can run agents on a subscription.
   // Read-only host-capability probe; never triggers a login or consumes quota.
-  app.use('/api/v1/admin/cli-backends', requireAuth, createAdminCliBackendsRouter());
+  // A CLI signed in outside omadia never passes the login hook below, so the
+  // same hand-off also runs after the boot and on the operator's "re-check".
+  const handOffCliLogin = (): Promise<unknown> =>
+    handOffExistingCliLogin({
+      installedRegistry,
+      vault: secretVault,
+      reactivate: reactivateAgent,
+      llmProviderCatalog,
+      log: (msg) => console.log(msg),
+    });
+  app.use(
+    '/api/v1/admin/cli-backends',
+    requireAuth,
+    createAdminCliBackendsRouter({ onRecheck: handOffCliLogin }),
+  );
   console.log('[middleware] CLI backends endpoint ready at /api/v1/admin/cli-backends (auth: required)');
   // OM-100b — the runtime half of the Systemstatus panel: whether the last
   // chat turn actually came back. Process-scoped and read-only.
@@ -6631,10 +6647,13 @@ async function main(): Promise<void> {
     },
   });
 
+  let stopMdnsAdvertiser: (() => Promise<void> | undefined) | undefined;
   const shutdownBuilder = async (): Promise<void> => {
     try {
       builderRebuildScheduler.cancelAll();
-      await builderBuildQueue.drain(5_000).catch(() => {
+      // Well inside SHUTDOWN_TIMEOUT_MS: the rest of this function (stdio MCP
+      // children above all) has to run before the process exits.
+      await builderBuildQueue.drain(1_500).catch(() => {
         // best-effort
       });
       await previewCache.closeAll();
@@ -6652,12 +6671,14 @@ async function main(): Promise<void> {
       // Stop every active routine (drops scheduler entries; in-flight runs
       // see their AbortSignal). Idempotent if undefined.
       routinesHandle?.close();
+      await stopMdnsAdvertiser?.();
     } catch {
       // ignore — process is exiting anyway
     }
   };
-  process.once('SIGTERM', shutdownBuilder);
-  process.once('SIGINT', shutdownBuilder);
+  const onShutdownSignal = exitAfterShutdown(shutdownBuilder);
+  process.once('SIGTERM', onShutdownSignal);
+  process.once('SIGINT', onShutdownSignal);
 
   app.use(
     '/api/v1/builder',
@@ -7076,6 +7097,11 @@ async function main(): Promise<void> {
     console.log(`[middleware] orchestrator model: ${config.ORCHESTRATOR_MODEL}`);
     console.log(`[middleware] sub-agent model:   ${config.SUB_AGENT_MODEL}`);
     console.log(`[middleware] domain tools: ${domainTools.map((t) => t.name).join(', ')}`);
+    void handOffCliLogin().catch((err: unknown) => {
+      console.warn(
+        `[providers] subscription hand-off at boot failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
   });
 
   // Attach the canvas WebSocket transport to the same http.Server, so the
@@ -7105,11 +7131,7 @@ async function main(): Promise<void> {
     }).then((adv) => {
       mdnsAdvertisement = adv;
     });
-    const stopMdns = (): void => {
-      void mdnsAdvertisement?.stop();
-    };
-    process.once('SIGTERM', stopMdns);
-    process.once('SIGINT', stopMdns);
+    stopMdnsAdvertiser = () => mdnsAdvertisement?.stop();
   }
 
   // Fast-fail on EADDRINUSE: without this, hot-reload or a stale `npm run dev`

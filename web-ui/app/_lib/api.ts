@@ -671,6 +671,14 @@ export async function getCliBackends(force = false): Promise<CliBackendsResponse
   );
 }
 
+/**
+ * The operator's "re-check": a fresh probe, and a CLI already signed in on the
+ * host gets the orchestrator when no provider is configured.
+ */
+export async function recheckCliBackends(): Promise<CliBackendsResponse> {
+  return postJson<CliBackendsResponse>('/v1/admin/cli-backends/recheck', {});
+}
+
 export interface CliLoginStart {
   sessionId: string;
   verificationUrl: string;

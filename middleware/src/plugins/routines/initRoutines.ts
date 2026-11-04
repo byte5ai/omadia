@@ -1,5 +1,5 @@
 import type { Pool } from 'pg';
-import { turnContext } from '@omadia/orchestrator';
+import { currentDispatchCaller, turnContext } from '@omadia/orchestrator';
 
 import type { JobScheduler } from '../jobScheduler.js';
 import {
@@ -138,7 +138,8 @@ export async function initRoutines(
     resolveContext: () => {
       const ctx = routineTurnContext.current();
       if (!ctx) return undefined;
-      const agentSlug = turnContext.currentAgentSlug();
+      // The CLI runtime has no orchestrator turn scope, only its dispatcher.
+      const agentSlug = turnContext.currentAgentSlug() ?? currentDispatchCaller()?.agentSlug;
       return agentSlug ? { ...ctx, agentSlug } : ctx;
     },
   });
