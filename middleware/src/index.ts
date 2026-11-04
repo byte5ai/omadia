@@ -212,6 +212,7 @@ import { setCliLoginAuthorizedHook } from './platform/cliAuthService.js';
 import { exitAfterShutdown } from './platform/exitAfterShutdown.js';
 import {
   autoAssignSubscriptionCli,
+  handOffExistingCliLogin,
   SUBSCRIPTION_CLI_PROVIDER,
 } from './platform/providerAssignment.js';
 import {
@@ -5984,7 +5985,21 @@ async function main(): Promise<void> {
   // Subscription-CLI backends (#309) — detect installed/logged-in vendor CLIs
   // (Claude/Codex/Gemini) so the operator can run agents on a subscription.
   // Read-only host-capability probe; never triggers a login or consumes quota.
-  app.use('/api/v1/admin/cli-backends', requireAuth, createAdminCliBackendsRouter());
+  // A CLI signed in outside omadia never passes the login hook below, so the
+  // same hand-off also runs after the boot and on the operator's "re-check".
+  const handOffCliLogin = (): Promise<unknown> =>
+    handOffExistingCliLogin({
+      installedRegistry,
+      vault: secretVault,
+      reactivate: reactivateAgent,
+      llmProviderCatalog,
+      log: (msg) => console.log(msg),
+    });
+  app.use(
+    '/api/v1/admin/cli-backends',
+    requireAuth,
+    createAdminCliBackendsRouter({ onRecheck: handOffCliLogin }),
+  );
   console.log('[middleware] CLI backends endpoint ready at /api/v1/admin/cli-backends (auth: required)');
   // OM-100b — the runtime half of the Systemstatus panel: whether the last
   // chat turn actually came back. Process-scoped and read-only.
@@ -7082,6 +7097,11 @@ async function main(): Promise<void> {
     console.log(`[middleware] orchestrator model: ${config.ORCHESTRATOR_MODEL}`);
     console.log(`[middleware] sub-agent model:   ${config.SUB_AGENT_MODEL}`);
     console.log(`[middleware] domain tools: ${domainTools.map((t) => t.name).join(', ')}`);
+    void handOffCliLogin().catch((err: unknown) => {
+      console.warn(
+        `[providers] subscription hand-off at boot failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
   });
 
   // Attach the canvas WebSocket transport to the same http.Server, so the

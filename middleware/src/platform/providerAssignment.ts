@@ -32,10 +32,11 @@ import {
 } from '@omadia/llm-provider';
 
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
-import type { CliBackendsSnapshot } from './cliBackendDetector.js';
+import { detectCliBackends, type CliBackendsSnapshot } from './cliBackendDetector.js';
 import {
   DEFAULT_PROVIDER,
   LLM_PLUGINS,
+  findProviderKey,
   readStringConfig,
   resolveProviderVerification,
   type LlmProviderCatalogView,
@@ -285,6 +286,12 @@ export interface SubscriptionAutoAssignDeps extends ProviderAssignmentDeps {
    *  computes it. */
   readonly cliSnapshot?: CliBackendsSnapshot | undefined;
   readonly log?: (message: string) => void;
+  /**
+   * Leave a plugin alone once `llm_provider` is set at all, the default included.
+   * A login shows what the operator wants; a boot or a re-check does not, and an
+   * explicit `anthropic` without a key may be someone about to add one.
+   */
+  readonly onlyUnassigned?: boolean;
 }
 
 export interface SubscriptionAutoAssignOutcome {
@@ -366,6 +373,10 @@ export async function autoAssignSubscriptionCli(
       skipped.push({ pluginId: desc.id, reason: `explicit_provider:${current}` });
       continue;
     }
+    if (deps.onlyUnassigned === true && readStringConfig(cfg, 'llm_provider') !== undefined) {
+      skipped.push({ pluginId: desc.id, reason: `explicit_provider:${current}` });
+      continue;
+    }
     const verification = await resolveProviderVerification(current, {
       vault: deps.vault,
       llmProviderCatalog: deps.llmProviderCatalog,
@@ -428,4 +439,68 @@ export async function autoAssignSubscriptionCli(
     }
   }
   return { assigned, skipped };
+}
+
+export interface ExistingCliLoginDeps extends SubscriptionAutoAssignDeps {
+  /** Injected by tests, so none of them shells out to a real CLI. */
+  readonly detectCli?: () => Promise<CliBackendsSnapshot | undefined>;
+  /** Injected by tests; defaults to `process.env`. */
+  readonly env?: Readonly<Record<string, string | undefined>>;
+  readonly llmProviderCatalog?: LlmProviderCatalogView & {
+    list(): ReadonlyArray<{ readonly id: string }>;
+  };
+}
+
+/**
+ * LLM keys a deployment hands the kernel by environment. They are not always in
+ * the vault (bootstrap seeds Anthropic's only on first registration, and the
+ * desktop wizard's OpenAI key not at all), but each one says "this install has a
+ * provider", so the subscription must not take over.
+ */
+const LLM_KEY_ENV_VARS = ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY'] as const;
+
+/** Whether any provider has a stored or environment-supplied API key. */
+async function anyProviderKeyConfigured(deps: ExistingCliLoginDeps): Promise<boolean> {
+  const env = deps.env ?? process.env;
+  if (LLM_KEY_ENV_VARS.some((name) => (env[name] ?? '').trim().length > 0)) return true;
+  for (const provider of deps.llmProviderCatalog?.list() ?? []) {
+    if ((await findProviderKey(deps.vault, provider.id as ProviderId)) !== undefined) return true;
+  }
+  return false;
+}
+
+/** The hand-off in flight: the re-check and the boot must not rebuild plugins side by side. */
+let existingLoginHandOff: Promise<SubscriptionAutoAssignOutcome | undefined> | undefined;
+
+/**
+ * The login hook only sees a sign-in made through omadia. A CLI that was already
+ * signed in on the host (the usual case for someone who picks "I already have a
+ * subscription") would otherwise leave the orchestrator on an Anthropic default
+ * with no key, and chat answers 503 although the subscription is ready.
+ *
+ * Stricter than the login path, because nobody asked for it here: it only runs
+ * when no provider has a key anywhere, and only moves plugins that were never
+ * assigned. Anything else stays the operator's decision.
+ */
+export function handOffExistingCliLogin(
+  deps: ExistingCliLoginDeps,
+): Promise<SubscriptionAutoAssignOutcome | undefined> {
+  existingLoginHandOff ??= runExistingCliLoginHandOff(deps).finally(() => {
+    existingLoginHandOff = undefined;
+  });
+  return existingLoginHandOff;
+}
+
+async function runExistingCliLoginHandOff(
+  deps: ExistingCliLoginDeps,
+): Promise<SubscriptionAutoAssignOutcome | undefined> {
+  if (await anyProviderKeyConfigured(deps)) return undefined;
+  const detect = deps.detectCli ?? ((): Promise<CliBackendsSnapshot> => detectCliBackends());
+  const cliSnapshot = await detect().catch(() => undefined);
+  const verification = await resolveProviderVerification(SUBSCRIPTION_CLI_PROVIDER, {
+    llmProviderCatalog: deps.llmProviderCatalog,
+    cliSnapshot,
+  });
+  if (verification.status !== 'verified') return undefined;
+  return autoAssignSubscriptionCli({ ...deps, cliSnapshot, onlyUnassigned: true });
 }
