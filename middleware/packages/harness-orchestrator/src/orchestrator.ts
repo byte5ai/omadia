@@ -4186,6 +4186,7 @@ export class Orchestrator {
         : undefined,
       [],
     );
+    const captureDisclosure = this.turnRecords.takeCaptureDisclosure(persistedTurnId);
     const palaiaExcerpt = await this.maybeExtractExcerpt(input.userMessage, turn.answer);
     const autoPromotedMkId = await this.maybePromoteTurn({
       turnId: persistedTurnId,
@@ -4214,6 +4215,7 @@ export class Orchestrator {
     ];
     return {
       ...(persistedTurnId ? { turnId: persistedTurnId } : {}),
+      ...(captureDisclosure ? { captureDisclosure } : {}),
       ...(palaiaExcerpt ? { palaiaExcerpt } : {}),
       ...(autoPromotedMkId ? { autoPromotedMkId } : {}),
       ...(events.length > 0 ? { events } : {}),
@@ -4766,10 +4768,14 @@ export class Orchestrator {
     // stream yields (this is the single funnel), on the disclosure-off path
     // as well; `chat()` does the same for the non-streaming result.
     const expanded = this.expandDegradedDoneEvent(done, input);
+    // OB-81 — a row written inside the turn; a deferred row's disclosure comes
+    // with its commit instead (`finishRequestDone`).
+    const captureDisclosure = this.turnRecords.takeCaptureDisclosure(expanded.turnId);
     const delivered = {
       ...expanded,
       answer: localizeRefusalNotice(expanded.answer, this.turnLocale(input)),
       answerVerbosity: this.resolveAnswerVerbosity(input),
+      ...(captureDisclosure ? { captureDisclosure } : {}),
     };
     const aiDisclosure = this.resolveTurnDisclosure(input);
     if (!aiDisclosure) return delivered;

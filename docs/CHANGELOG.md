@@ -36,6 +36,24 @@ changelog.
 
 ## [Unreleased]
 
+### Added — `captureDisclosure` on the chat stream
+
+2026-11-04. OB-81 declared the field and the chat renders it, but nothing ever
+produced a value, so no turn carried one.
+
+- **The stream's `done` event now carries `captureDisclosure`:** what the capture
+  filter decided for the turn (persisted, entry type, visibility, significance,
+  stripped `<private>` blocks, consumed hint tags, reasons). It is set on
+  orchestrator, verifier-committed, subscription-CLI and fast-path turns, and
+  stays on a withheld answer because it holds no answer content. Absent without a
+  capture filter, at `capture_level=off`, and when the turn was not written.
+- **A tail-only turn reads `persisted: false`** with its score: it stays in the
+  session record but is not knowledge.
+- **`embedded` means scheduled.** The vector is computed after the answer, so the
+  field cannot promise it exists. The Neon backend reports this through the new
+  `TurnIngestResult.embeddingScheduled`.
+- `graphRefs` stays unset: `done` also reaches Public API clients, which have no
+  use for internal node ids. Non-streaming replies are unchanged.
 ### Fixed — Admin API: excerpt duplicates, skill ack, workflow version number
 
 2026-11-04. Found while building the admin interface against the Admin API.

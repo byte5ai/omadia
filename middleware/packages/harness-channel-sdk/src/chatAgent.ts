@@ -1,4 +1,9 @@
-import type { ChannelKind, PrivacyReceipt, RecalledContext } from '@omadia/plugin-api';
+import type {
+  CaptureDisclosure,
+  ChannelKind,
+  PrivacyReceipt,
+  RecalledContext,
+} from '@omadia/plugin-api';
 import type {
   AgentConsultation,
   AiDisclosure,
@@ -1163,6 +1168,11 @@ export type ChatStreamEvent =
       /** Privacy-Proxy aggregate receipt for this turn. PII-free; clients
        *  render it as a collapsible disclosure under the answer. */
       privacyReceipt?: PrivacyReceipt;
+      /** OB-81 — what this turn left in the knowledge graph. PII-free; clients
+       *  render it as a collapsible disclosure under the answer. Absent when
+       *  no capture filter ran, at `capture_level=off`, or when the turn was
+       *  not written. */
+      captureDisclosure?: CaptureDisclosure;
       /** Privacy Shield v4 — real values in `answer` the LLM never saw;
        *  clients MAY highlight their occurrences. */
       maskedValues?: readonly string[];
