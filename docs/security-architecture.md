@@ -1254,7 +1254,12 @@ manifest, granted by the operator): a data-free shell (`'public'`) per route
 that asks Teams for an SSO token and fetches the page from
 `/p/<slug>/teams/_data<path>` (`'teams-sso'`, all ui_route routers merged into
 one, because a granted path dispatches to a single route entry). The
-`ctx.uiRoutes` descriptor points at the shell.
+`ctx.uiRoutes` descriptor points at the shell. The data router's first
+middleware refuses a request without `req.teamsSsoUser` (fail closed: a host
+that does not know `'teams-sso'` would otherwise serve it like a granted
+`'public'` route), and the manifest's `compat.core` becomes `>=1.51.0 <2.0`, so
+such a host refuses the package at upload. Hand-written plugins follow the same
+pattern (`omadia-plugin-starter`).
 
 Not part of this change: channel-teams still uses its own copy of the verifier
 (follow-up: consume the kernel's); a real Teams-tab login also needs the Entra
