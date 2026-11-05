@@ -1118,12 +1118,15 @@ describe('codegen.generate', () => {
       permsMatch[1]!,
       /public_paths:\s*\n\s*- \/api\/plugins\/agent-hr-dash\/webhook\s*\n\s*- \/p\/agent-hr-dash\/teams/,
     );
+    // 'teams-sso' needs plugin-api >= 1.51.0 on the host.
+    assert.match(text, /compat:\s*\n\s*core: ">=1\.51\.0 <2\.0"/);
   });
 
   it('#1596 — no public_paths key without a declaration', async () => {
     const { spec, slots } = loadFixture();
     const text = (await generate({ spec, slots })).get('manifest.yaml')!.toString('utf-8');
     assert.doesNotMatch(text, /public_paths:/);
+    assert.match(text, /core: ">=1\.0 <2\.0"/);
   });
 
   it('omits Phase-B permission blocks when spec.permissions is undefined', async () => {

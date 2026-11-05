@@ -7,7 +7,11 @@ import {
   type SlotDef,
   type TemplateManifest,
 } from './boilerplateSource.js';
-import { buildUiRouteArtifacts, teamsTabPublicPath } from './codegenUiRoute.js';
+import {
+  buildUiRouteArtifacts,
+  TEAMS_SSO_MIN_CORE,
+  teamsTabPublicPath,
+} from './codegenUiRoute.js';
 import { lookupServiceType } from './serviceTypeRegistry.js';
 
 /**
@@ -555,6 +559,12 @@ function reproduceManifestCapabilities(
       const teamsTab = teamsTabPublicPath(spec.id);
       if (!declared.includes(teamsTab)) declared.push(teamsTab);
       permsNode.set('public_paths', doc.createNode(declared));
+    }
+    // A host without `'teams-sso'` (plugin-api < 1.51.0) would treat the
+    // data mount like an unauthenticated public route; refuse it at upload.
+    const compatNode = doc.get('compat', true);
+    if (yaml.isMap(compatNode)) {
+      compatNode.set('core', TEAMS_SSO_MIN_CORE);
     }
   }
 
