@@ -192,6 +192,17 @@ describe('CliChatAgent terminal error results (#1325)', () => {
   });
 });
 
+const DISCLOSURE = {
+  persisted: true,
+  reasons: [],
+  entryType: 'memory',
+  visibility: 'team',
+  significance: null,
+  embedded: false,
+  privacyBlocksStripped: 0,
+  hintTagsProcessed: 0,
+} as const;
+
 describe('CliChatAgent turn record and recall (#1391)', () => {
   it('records a successful turn once and releases its record on done', async () => {
     const recorded: Array<{ input: ChatTurnInput; turn: CliCompletedTurn }> = [];
@@ -203,6 +214,7 @@ describe('CliChatAgent turn record and recall (#1391)', () => {
           return {
             turnId: 'turn-1391',
             autoPromotedMkId: 'mk-1',
+            captureDisclosure: DISCLOSURE,
             events: [{ type: 'turn_annotation', channel: 'kg_insert', payload: {} }],
           };
         },
@@ -236,6 +248,7 @@ describe('CliChatAgent turn record and recall (#1391)', () => {
     );
     assert.equal(done?.turnId, 'turn-1391');
     assert.equal((done as { autoPromotedMkId?: string }).autoPromotedMkId, 'mk-1');
+    assert.deepEqual(done?.captureDisclosure, DISCLOSURE);
   });
 
   it('still releases the answer when recording rejects', async () => {

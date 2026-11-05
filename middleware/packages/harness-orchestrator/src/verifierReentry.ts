@@ -197,6 +197,9 @@ export async function finishRequestDone(
       // its model call overlapped the verifier (see the orchestrator's
       // `startPalaiaExcerpt`). Present only when the committed pass made one.
       ...(committed.palaiaExcerpt !== undefined ? { palaiaExcerpt: committed.palaiaExcerpt } : {}),
+      ...(committed.captureDisclosure !== undefined
+        ? { captureDisclosure: committed.captureDisclosure }
+        : {}),
     },
     events: committed.events,
   };

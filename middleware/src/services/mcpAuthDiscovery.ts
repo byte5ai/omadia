@@ -10,8 +10,10 @@
  *        code_challenge_methods_supported, grant_types_supported
  *
  * A server that returns a usable protected-resource document is treated as
- * OAuth-protected; anything else is "no discoverable auth" and the caller
- * falls back to the raw error.
+ * OAuth-protected. "No discoverable auth" (null) needs an answer that actually
+ * says so: the server replied, offered no document and did not challenge. A
+ * timeout, a network error or a 5xx is NOT that answer — it says nothing about
+ * the server, so it surfaces as `discovery_unavailable` instead of null.
  */
 
 import { guardedOutboundFetch, readTextCapped } from './guardedOutboundFetch.js';
@@ -53,6 +55,13 @@ export interface DiscoveredAuth {
   readonly server: AuthServerMetadata;
 }
 
+/** The metadata could not be read right now (timeout, network, 5xx, 429). Says
+ *  nothing about whether the server is protected. */
+export const DISCOVERY_UNAVAILABLE = 'discovery_unavailable';
+/** The server answered 401 but offers no usable metadata: it wants a credential
+ *  of some kind, and OAuth cannot be set up from what it advertises. */
+export const UNADVERTISED_AUTH_CHALLENGE = 'unadvertised_auth_challenge';
+
 export class McpAuthDiscoveryError extends Error {
   constructor(
     readonly code: string,
@@ -87,6 +96,12 @@ export function sameIssuer(a: string, b: string): boolean {
   return canonicalIssuer(a) !== '' && canonicalIssuer(a) === canonicalIssuer(b);
 }
 
+/** Answers a retry could change. Every other status is the server's own say and
+ *  stands as "no document here". */
+function isRetryableStatus(status: number): boolean {
+  return status >= 500 || status === 408 || status === 425 || status === 429;
+}
+
 /** The origin an MCP server's well-known documents live under (scheme+host). */
 export function serverOrigin(endpoint: string): string {
   return new URL(endpoint).origin;
@@ -98,11 +113,33 @@ export interface McpAuthDiscoveryDeps {
 }
 
 const DISCOVERY_CACHE_TTL_MS = 5 * 60 * 1000;
+/** A failure is only remembered long enough to spare the remote a burst of status
+ *  polls; a retry a little later must reach the server again. */
+const DISCOVERY_FAILURE_CACHE_TTL_MS = 15 * 1000;
+
+type DiscoveryCacheEntry =
+  | { readonly at: number; readonly ttlMs: number; readonly value: DiscoveredAuth | null }
+  | { readonly at: number; readonly ttlMs: number; readonly failure: McpAuthDiscoveryError };
+
+/** One metadata GET. `absent` is the server's answer that there is no document;
+ *  `unavailable` means no such answer was obtained. */
+type MetadataFetch =
+  | { readonly kind: 'doc'; readonly doc: Record<string, unknown> }
+  | { readonly kind: 'absent' }
+  | { readonly kind: 'unavailable'; readonly reason: string };
+
+/** What an unauthenticated `initialize` revealed. `challenge` is a 401 without
+ *  usable metadata behind it. */
+type ChallengeProbe =
+  | { readonly kind: 'resource'; readonly resource: ProtectedResourceMetadata }
+  | { readonly kind: 'none' }
+  | { readonly kind: 'challenge' }
+  | { readonly kind: 'unavailable'; readonly reason: string };
 
 export class McpAuthDiscovery {
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
-  private readonly cache = new Map<string, { at: number; value: DiscoveredAuth | null }>();
+  private readonly cache = new Map<string, DiscoveryCacheEntry>();
 
   constructor(deps?: McpAuthDiscoveryDeps) {
     // Guarded by default (see `guardedOutboundFetch`): discovery follows a URL
@@ -112,10 +149,12 @@ export class McpAuthDiscovery {
     this.timeoutMs = deps?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
 
-  /** Full discovery from a server endpoint URL. Returns null when the server
-   *  advertises no OAuth-protected-resource document (i.e. not discoverably
-   *  auth-protected). Throws only on a malformed/partial advertisement.
-   *  Cached per origin (5 min) so a per-call auth check is cheap. */
+  /** Full discovery from a server endpoint URL. Returns null only when the
+   *  server answered that it is not discoverably auth-protected. Throws
+   *  `McpAuthDiscoveryError` on a malformed/partial advertisement, on a 401 with
+   *  no usable metadata, and (`discovery_unavailable`) when the answer could not
+   *  be obtained. Results are cached per endpoint for 5 min so a per-call auth
+   *  check is cheap; failures only for a few seconds. */
   async discover(serverEndpoint: string): Promise<DiscoveredAuth | null> {
     // Only http(s) endpoints have discoverable OAuth. A stdio command
     // ("npx …") or any non-URL endpoint is not OAuth-protected — don't throw
@@ -124,10 +163,25 @@ export class McpAuthDiscovery {
     // Cache by the FULL endpoint, not just origin: RFC 9728 metadata can be
     // path-specific (e.g. M365 exposes one resource-metadata doc per server).
     const cached = this.cache.get(serverEndpoint);
-    if (cached && Date.now() - cached.at < DISCOVERY_CACHE_TTL_MS) return cached.value;
-    const value = await this.discoverUncached(serverEndpoint);
-    this.cache.set(serverEndpoint, { at: Date.now(), value });
-    return value;
+    if (cached && Date.now() - cached.at < cached.ttlMs) {
+      if ('failure' in cached) throw cached.failure;
+      return cached.value;
+    }
+    return await this.discoverUncached(serverEndpoint)
+      .then((value) => {
+        this.cache.set(serverEndpoint, { at: Date.now(), ttlMs: DISCOVERY_CACHE_TTL_MS, value });
+        return value;
+      })
+      .catch((err: unknown) => {
+        if (err instanceof McpAuthDiscoveryError) {
+          this.cache.set(serverEndpoint, {
+            at: Date.now(),
+            ttlMs: DISCOVERY_FAILURE_CACHE_TTL_MS,
+            failure: err,
+          });
+        }
+        throw err;
+      });
   }
 
   private async discoverUncached(serverEndpoint: string): Promise<DiscoveredAuth | null> {
@@ -135,9 +189,7 @@ export class McpAuthDiscovery {
     // (1) Well-known at the origin root, then (2) the RFC 9728 pointer the server
     // returns in its 401 `WWW-Authenticate: Bearer resource_metadata="…"` header
     // (M365 serves a path-specific metadata doc there, not at the root).
-    const resource =
-      (await this.fetchProtectedResource(origin)) ??
-      (await this.fetchProtectedResourceViaChallenge(serverEndpoint));
+    const resource = await this.resolveProtectedResource(origin, serverEndpoint);
     if (!resource) return null;
     const issuer = resource.authorizationServers[0];
     if (!issuer) {
@@ -150,28 +202,49 @@ export class McpAuthDiscovery {
     return { resource, server };
   }
 
-  private async fetchProtectedResource(
+  private async resolveProtectedResource(
     origin: string,
+    serverEndpoint: string,
   ): Promise<ProtectedResourceMetadata | null> {
-    const doc = await this.getJson(`${origin}/.well-known/oauth-protected-resource`);
-    return this.parseProtectedResource(doc, origin);
+    const wellKnown = await this.getJson(`${origin}/.well-known/oauth-protected-resource`);
+    const atRoot =
+      wellKnown.kind === 'doc' ? this.parseProtectedResource(wellKnown.doc, origin) : null;
+    if (atRoot) return atRoot;
+    // Probed even when the well-known read failed: the challenge can still point
+    // at a readable path-specific document.
+    const probe = await this.probeChallenge(serverEndpoint);
+    if (probe.kind === 'resource') return probe.resource;
+    const unavailable =
+      wellKnown.kind === 'unavailable' ? wellKnown : probe.kind === 'unavailable' ? probe : null;
+    if (unavailable) {
+      throw new McpAuthDiscoveryError(
+        DISCOVERY_UNAVAILABLE,
+        `auth metadata for ${origin} is unavailable right now: ${unavailable.reason}`,
+      );
+    }
+    if (probe.kind === 'challenge') {
+      throw new McpAuthDiscoveryError(
+        UNADVERTISED_AUTH_CHALLENGE,
+        `${origin} answered 401 but advertises no usable protected-resource metadata`,
+      );
+    }
+    return null;
   }
 
   /** RFC 9728: read the `resource_metadata` URL the server advertises in the
    *  `WWW-Authenticate: Bearer resource_metadata="…"` header of its 401, then
    *  fetch the protected-resource doc from there. Handles servers (e.g. M365)
    *  that expose a path-specific metadata doc rather than the origin root. */
-  private async fetchProtectedResourceViaChallenge(
-    serverEndpoint: string,
-  ): Promise<ProtectedResourceMetadata | null> {
+  private async probeChallenge(serverEndpoint: string): Promise<ChallengeProbe> {
     try {
       await assertPublicHttpsUrl(serverEndpoint);
     } catch {
-      return null;
+      return { kind: 'none' };
     }
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     let metadataUrl: string | null = null;
+    let status: number;
     try {
       const res = await this.fetchImpl(serverEndpoint, {
         method: 'POST',
@@ -187,28 +260,37 @@ export class McpAuthDiscovery {
           },
         }),
         signal: controller.signal,
-        redirect: 'error',
+        redirect: 'manual',
       });
+      status = res.status;
       const wa = res.headers.get('www-authenticate');
       if (wa) {
         const m = /resource_metadata="?([^",\s]+)"?/i.exec(wa);
         if (m?.[1]) metadataUrl = m[1];
       }
-    } catch {
-      return null;
+    } catch (err) {
+      return { kind: 'unavailable', reason: `initialize probe failed: ${String(err)}` };
     } finally {
       clearTimeout(timer);
     }
-    if (!metadataUrl) return null;
-    const doc = await this.getJson(metadataUrl);
-    return this.parseProtectedResource(doc, serverEndpoint);
+    if (metadataUrl) {
+      const fetched = await this.getJson(metadataUrl);
+      if (fetched.kind === 'unavailable') return fetched;
+      const resource =
+        fetched.kind === 'doc' ? this.parseProtectedResource(fetched.doc, serverEndpoint) : null;
+      if (resource) return { kind: 'resource', resource };
+    }
+    if (status === 401) return { kind: 'challenge' };
+    if (isRetryableStatus(status)) {
+      return { kind: 'unavailable', reason: `initialize probe answered HTTP ${String(status)}` };
+    }
+    return { kind: 'none' };
   }
 
   private parseProtectedResource(
-    doc: Record<string, unknown> | null,
+    doc: Record<string, unknown>,
     fallbackResource: string,
   ): ProtectedResourceMetadata | null {
-    if (!doc) return null;
     const authServers = strArr(doc['authorization_servers']);
     if (authServers.length === 0) return null;
     return {
@@ -220,13 +302,20 @@ export class McpAuthDiscovery {
   }
 
   private async fetchAuthServer(issuer: string): Promise<AuthServerMetadata> {
-    const doc = await this.fetchAuthServerDoc(issuer);
-    if (!doc) {
+    const fetched = await this.fetchAuthServerDoc(issuer);
+    if (fetched.kind === 'unavailable') {
+      throw new McpAuthDiscoveryError(
+        DISCOVERY_UNAVAILABLE,
+        `authorization-server metadata for issuer ${issuer} is unavailable right now: ${fetched.reason}`,
+      );
+    }
+    if (fetched.kind === 'absent') {
       throw new McpAuthDiscoveryError(
         'no_auth_server_metadata',
         `no authorization-server metadata for issuer ${issuer}`,
       );
     }
+    const { doc } = fetched;
     const authorizationEndpoint = str(doc['authorization_endpoint']);
     const tokenEndpoint = str(doc['token_endpoint']);
     if (!authorizationEndpoint || !tokenEndpoint) {
@@ -298,9 +387,7 @@ export class McpAuthDiscovery {
    * the RFC 8414 insertion form first (it's what path-scoped brokers like
    * Smithery actually serve), then the appended fallbacks.
    */
-  private async fetchAuthServerDoc(
-    issuer: string,
-  ): Promise<Record<string, unknown> | null> {
+  private async fetchAuthServerDoc(issuer: string): Promise<MetadataFetch> {
     const base = issuer.replace(/\/+$/, '');
     const candidates: string[] = [];
     try {
@@ -318,43 +405,59 @@ export class McpAuthDiscovery {
     candidates.push(`${base}/.well-known/oauth-authorization-server`);
     candidates.push(`${base}/.well-known/openid-configuration`);
     const seen = new Set<string>();
+    // A candidate that could not be read leaves the outcome open: only when
+    // every form answered "not here" is the issuer's metadata really absent.
+    let unavailable: MetadataFetch | null = null;
     for (const url of candidates) {
       if (seen.has(url)) continue;
       seen.add(url);
-      const doc = await this.getJson(url);
-      if (doc) return doc;
+      const fetched = await this.getJson(url);
+      if (fetched.kind === 'doc') return fetched;
+      if (fetched.kind === 'unavailable') unavailable ??= fetched;
     }
-    return null;
+    return unavailable ?? { kind: 'absent' };
   }
 
-  private async getJson(url: string): Promise<Record<string, unknown> | null> {
+  private async getJson(url: string): Promise<MetadataFetch> {
     // SSRF guard (codex W9 fold): the well-known chain + endpoints are
-    // attacker-influenced; refuse internal hosts and disable redirects.
+    // attacker-influenced; refuse internal hosts and do not follow redirects.
     try {
       await assertPublicHttpsUrl(url);
     } catch {
-      return null;
+      return { kind: 'absent' };
     }
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    let text: string | null;
     try {
+      // `manual`, not `error`: nothing is followed either way, but a 3xx stays
+      // visible as the answer it is. `error` would reject exactly like a network
+      // failure, and a host that redirects everything would then read as down.
       const res = await this.fetchImpl(url, {
         headers: { accept: 'application/json' },
         signal: controller.signal,
-        redirect: 'error',
+        redirect: 'manual',
       });
-      if (res.status === 404) return null;
-      if (!res.ok) return null;
+      if (isRetryableStatus(res.status)) {
+        return { kind: 'unavailable', reason: `${url} answered HTTP ${String(res.status)}` };
+      }
+      if (!res.ok) return { kind: 'absent' };
       // Metered while reading, not measured after: `res.text()` would have the
       // whole body resident before the cap could reject it.
-      const text = await readTextCapped(res, MAX_METADATA_BYTES);
-      if (text === null) return null;
-      const parsed = JSON.parse(text) as unknown;
-      return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null;
-    } catch {
-      return null;
+      text = await readTextCapped(res, MAX_METADATA_BYTES);
+    } catch (err) {
+      return { kind: 'unavailable', reason: `${url} failed: ${String(err)}` };
     } finally {
       clearTimeout(timer);
+    }
+    if (text === null) return { kind: 'absent' };
+    try {
+      const parsed = JSON.parse(text) as unknown;
+      return parsed && typeof parsed === 'object'
+        ? { kind: 'doc', doc: parsed as Record<string, unknown> }
+        : { kind: 'absent' };
+    } catch {
+      return { kind: 'absent' };
     }
   }
 }

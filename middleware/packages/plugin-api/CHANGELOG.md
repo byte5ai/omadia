@@ -8,6 +8,19 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.54.0 — 2026-11-04
+
+Additive. The capture disclosure gets a producer.
+
+### Added
+
+- **`TurnIngestResult.captureDisclosure?`** — what a capture decorator decided
+  for the turn. Set by the decorator, never by a backend; absent when no capture
+  filter ran or at `capture_level=off`.
+- **`TurnIngestResult.embeddingScheduled?`** — the backend scheduled an
+  embedding for the turn. It is computed after the write, so the vector may not
+  exist yet.
+
 ## 1.53.0 — 2026-11-03
 
 Additive. Decision batches: several questions in one provider round trip.

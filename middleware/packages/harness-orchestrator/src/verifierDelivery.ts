@@ -261,10 +261,11 @@ function skipLeavesUnconfirmed(reason: VerifierSkipReason): boolean {
  * `text_delta` carries. Built from an allowlist: the turn's identity and
  * telemetry stay (`toolCalls`, `iterations`, `runTrace`, `turnId`,
  * `receiptId`, `model`, `provenance`, `aiDisclosure`, `directLineSession`,
- * `agentsConsulted`, `privacyReceipt`, `correlationId`), and so do a degraded
- * turn's failure markers (`degraded`, `committedTools` — tool names): the
- * turn still threw after a tool committed, and the operator health signal,
- * the API-key audit and the web chat's turn-incomplete row read them.
+ * `agentsConsulted`, `privacyReceipt`, `captureDisclosure`, `correlationId`),
+ * and so do a degraded turn's failure markers (`degraded`, `committedTools` —
+ * tool names): the turn still threw after a tool committed, and the operator
+ * health signal, the API-key audit and the web chat's turn-incomplete row read
+ * them.
  * Everything that carried the withheld answer's content goes — attachments,
  * files, follow-ups, masked values, the delegated answer, cards, excerpts and
  * any field added later. The notice is in the turn's disclosure locale, then
@@ -295,6 +296,7 @@ export function withheldDone(
       ...(done.agentsConsulted ? { agentsConsulted: done.agentsConsulted } : {}),
       ...(done.answerVerbosity ? { answerVerbosity: done.answerVerbosity } : {}),
       ...(done.privacyReceipt ? { privacyReceipt: done.privacyReceipt } : {}),
+      ...(done.captureDisclosure ? { captureDisclosure: done.captureDisclosure } : {}),
       ...(done.correlationId ? { correlationId: done.correlationId } : {}),
       ...(done.degraded === true
         ? {

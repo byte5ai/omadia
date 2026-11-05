@@ -982,6 +982,8 @@ sessionId: string;
 turnId: string;
 entityNodeIds: string[];
 tailOnly?: boolean;
+embeddingScheduled?: boolean;
+captureDisclosure?: CaptureDisclosure;
 }
 export interface CaptureDisclosure {
 persisted: boolean;

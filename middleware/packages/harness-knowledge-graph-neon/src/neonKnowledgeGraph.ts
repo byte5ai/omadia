@@ -574,11 +574,17 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       // #1096 — a tail-only turn is never a recall candidate, so an embedding
       // for it would be spend with no reader. This is the cost half of the
       // capture filter's job, kept intact while the session record is not.
-      if (!turn.tailOnly && this.currentEmbeddingClient()) {
+      const embeddingScheduled = !turn.tailOnly && this.currentEmbeddingClient() !== undefined;
+      if (embeddingScheduled) {
         void this.embedAndStoreTurn(turnUuid, turn.userMessage, turn.assistantAnswer);
       }
 
-      return { sessionId: sessionExtId, turnId: turnExtId, entityNodeIds };
+      return {
+        sessionId: sessionExtId,
+        turnId: turnExtId,
+        entityNodeIds,
+        ...(embeddingScheduled ? { embeddingScheduled } : {}),
+      };
     } catch (err) {
       await client.query('ROLLBACK');
       throw err;

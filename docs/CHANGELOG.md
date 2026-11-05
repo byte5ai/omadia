@@ -36,6 +36,63 @@ changelog.
 
 ## [Unreleased]
 
+### Added — `captureDisclosure` on the chat stream
+
+2026-11-04. OB-81 declared the field and the chat renders it, but nothing ever
+produced a value, so no turn carried one.
+
+- **The stream's `done` event now carries `captureDisclosure`:** what the capture
+  filter decided for the turn (persisted, entry type, visibility, significance,
+  stripped `<private>` blocks, consumed hint tags, reasons). It is set on
+  orchestrator, verifier-committed, subscription-CLI and fast-path turns, and
+  stays on a withheld answer because it holds no answer content. Absent without a
+  capture filter, at `capture_level=off`, and when the turn was not written.
+- **A tail-only turn reads `persisted: false`** with its score: it stays in the
+  session record but is not knowledge.
+- **`embedded` means scheduled.** The vector is computed after the answer, so the
+  field cannot promise it exists. The Neon backend reports this through the new
+  `TurnIngestResult.embeddingScheduled`.
+- `graphRefs` stays unset: `done` also reaches Public API clients, which have no
+  use for internal node ids. Non-streaming replies are unchanged.
+### Fixed — Admin API: excerpt duplicates, skill ack, workflow version number
+
+2026-11-04. Found while building the admin interface against the Admin API.
+
+- **`GET /api/v1/admin/duplicates/excerpts` always answered 404.** `/:id` was
+  registered first, so `excerpts` was read as a MergeCandidate id. The list now
+  registers above `/:id`.
+- **`GET /skills/:id` dropped the verdict ack.** Only the POST returned it, so
+  "acknowledged by X" vanished on reload. `verdict.ackedBy` and `verdict.ackedAt`
+  now come back on the detail read, under the same key as the POST.
+- **Workflows carry their version number.** `GET /conductors` and
+  `GET /conductors/:slug` return `activeVersionNumber` next to `activeVersionId`,
+  null when nothing is published. Additive, no migration.
+### Fixed — MCP auth discovery: a failed read is not "not protected"
+
+2026-11-04. Found on Figma in the new admin: the Authorization section vanished
+and Discover answered `502 mcp_discover_failed`, because `https://mcp.figma.com/mcp`
+answered 401 while its metadata took ~8 s and `api.figma.com` answered 503.
+
+- **`McpAuthDiscovery` no longer turns timeouts, network errors, 5xx, 408, 425 or
+  429 into `null`.** They throw `discovery_unavailable`, remembered for 15 s instead
+  of 5 min. `null` now takes a real answer: the server replied, offered no document
+  and did not challenge.
+- **A 401 with no usable metadata is not "not protected" either**
+  (`unadvertised_auth_challenge`). `describeAuth` reports it as protected, except
+  on a server with its own `headers`: the probe sends none of them, so an API-key
+  server answers 401 even when set up correctly.
+- **`auth-status` gains `discoveryUnavailable`.** While set, `protected: true` is
+  the cautious reading and the issuer fields are placeholders.
+- **`POST .../discover` answers `409 mcp_needs_auth` for a 401** even with the
+  metadata unreadable. A server that is down stays a 502, and a rejected static API
+  key too. `POST .../authorize` answers `503 mcp_auth_discovery_unavailable` while
+  the metadata is unreadable, instead of a 500.
+- **A chat tool call keeps its raw error** while the metadata is unreadable,
+  instead of claiming the server "isn't set up yet".
+- **Metadata fetches use `redirect: 'manual'`.** Nothing is followed, as before, but
+  `error` rejected like a network failure and a host redirecting every unknown path
+  would have read as permanently unavailable.
+
 ### Fixed — Desktop findings: usage ledger, chat footer, memory noise, admin pages
 
 2026-11-04. Found in the desktop functional tests of v0.195.1 and v0.195.2.
@@ -57,6 +114,14 @@ changelog.
   desktop wizard's key does not read "stored, not verified". A pass is stored; an
   offline install repeats the bounded probe on later page opens.
 - **`latest-mac.yml`** describes the stapled DMGs (`refresh-mac-feed-dmg.mjs`).
+### Fixed — Builder Teams tabs fail closed on hosts without `teams-sso` (#1620)
+
+2026-11-04. A generated plugin's Teams data router refuses every request that
+the kernel's `teams-sso` gate did not verify (`req.teamsSsoUser` missing), and
+a plugin with ui_routes declares `compat.core: ">=1.51.0 <2.0"`. Before, the
+package installed on a host older than plugin-api 1.51.0 would have served the
+data mount like a granted `'public'` route, without authentication.
+
 ### Fixed — Desktop runtime: one module instance, clean exit, usable update dialog
 
 2026-11-04. Found in the desktop functional tests of v0.195.1 and v0.195.2.

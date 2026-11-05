@@ -77,6 +77,13 @@ export interface CaptureFilterDecision {
   cleanAssistantAnswer: string;
   /** Marker reasons for observability log. */
   reasons: readonly string[];
+  /** `<private>` blocks removed from both texts. */
+  privacyBlocksStripped: number;
+  /** `<palaia-hint />` tags consumed from both texts. */
+  hintTagsProcessed: number;
+  /** `true` at `level=off`: nothing was decided, so there is nothing to
+   *  disclose (`CaptureDisclosure` is omitted). */
+  passthrough: boolean;
 }
 
 /** Inline marker the operator/agent emits to override classification.
@@ -225,6 +232,9 @@ export class CaptureFilter {
         cleanUserMessage: input.userMessage,
         cleanAssistantAnswer: input.assistantAnswer,
         reasons: Object.freeze(reasons),
+        privacyBlocksStripped: 0,
+        hintTagsProcessed: 0,
+        passthrough: true,
       };
     }
 
@@ -260,6 +270,9 @@ export class CaptureFilter {
         cleanUserMessage,
         cleanAssistantAnswer,
         reasons: Object.freeze(reasons),
+        privacyBlocksStripped: totalPrivateBlocks,
+        hintTagsProcessed: totalHintTags,
+        passthrough: false,
       };
     }
 
@@ -331,6 +344,9 @@ export class CaptureFilter {
       cleanUserMessage,
       cleanAssistantAnswer,
       reasons: Object.freeze(reasons),
+      privacyBlocksStripped: totalPrivateBlocks,
+      hintTagsProcessed: totalHintTags,
+      passthrough: false,
     };
   }
 }

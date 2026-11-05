@@ -9,6 +9,7 @@ import {
   type SemanticAnswer,
 } from '@omadia/channel-sdk';
 import type { ChatTriageOutcome, ChatTriageRequest } from '@omadia/fast-path';
+import type { CaptureDisclosure } from '@omadia/plugin-api';
 
 import { isValidSessionId } from './chatSessionStore.js';
 import type { SessionLogEntry } from './sessionLogger.js';
@@ -59,7 +60,9 @@ export interface FastPathAgentDeps {
    *  (`ChatAgent.offeredToolDefinitions`); absent → catalog/learned only */
   toolDefinitions?: () => ReadonlyArray<ChatAgentToolDefinition>;
   /** the bundle's session logger — a hit is recorded like any turn */
-  logSession?: (entry: SessionLogEntry) => Promise<{ turnExternalId: string }>;
+  logSession?: (
+    entry: SessionLogEntry,
+  ) => Promise<{ turnExternalId: string; captureDisclosure?: CaptureDisclosure }>;
   /** a Privacy Shield runs: the recorded turn gets an EMPTY masked view so
    *  no capture decorator sends the rows to a model of its own */
   privacyGuarded: () => boolean;
@@ -109,7 +112,14 @@ export function passThroughReason(input: ChatTurnInput): string | undefined {
 }
 
 type Decision =
-  | { kind: 'answer'; text: string; toolCalls: number; turnId?: string; decision?: FastPathDecision }
+  | {
+      kind: 'answer';
+      text: string;
+      toolCalls: number;
+      turnId?: string;
+      captureDisclosure?: CaptureDisclosure;
+      decision?: FastPathDecision;
+    }
   | { kind: 'agent'; input: ChatTurnInput; decision?: FastPathDecision };
 
 /** The channel-facing copy of the fast path's decision trace. */
@@ -148,11 +158,15 @@ export interface FastPathChatAgent extends ChatAgent {
 }
 
 export function wrapChatAgentWithFastPath(inner: ChatAgent, deps: FastPathAgentDeps): FastPathChatAgent {
-  async function record(input: ChatTurnInput, text: string, toolCalls: number): Promise<string | undefined> {
+  async function record(
+    input: ChatTurnInput,
+    text: string,
+    toolCalls: number,
+  ): Promise<{ turnId: string; captureDisclosure?: CaptureDisclosure } | undefined> {
     if (!deps.logSession || input.sessionScope === undefined) return undefined;
     const guarded = deps.privacyGuarded();
     try {
-      const { turnExternalId } = await deps.logSession({
+      const { turnExternalId, captureDisclosure } = await deps.logSession({
         scope: input.sessionScope,
         userMessage: input.userMessage,
         assistantAnswer: text,
@@ -164,7 +178,7 @@ export function wrapChatAgentWithFastPath(inner: ChatAgent, deps: FastPathAgentD
         ...(guarded ? { maskedView: { userMessage: '', assistantAnswer: '' } } : {}),
         unprotected: !guarded,
       });
-      return turnExternalId;
+      return { turnId: turnExternalId, ...(captureDisclosure ? { captureDisclosure } : {}) };
     } catch (err) {
       deps.log(`[fast-path] session log failed: ${err instanceof Error ? err.message : String(err)}`);
       return undefined;
@@ -220,12 +234,12 @@ export function wrapChatAgentWithFastPath(inner: ChatAgent, deps: FastPathAgentD
         ...(outcome.decision ? { decision: toFastPathDecision(outcome.decision, false) } : {}),
       };
     }
-    const turnId = await record(input, outcome.text, outcome.toolCalls);
+    const recorded = await record(input, outcome.text, outcome.toolCalls);
     return {
       kind: 'answer',
       text: outcome.text,
       toolCalls: outcome.toolCalls,
-      ...(turnId ? { turnId } : {}),
+      ...recorded,
       ...(outcome.decision ? { decision: toFastPathDecision(outcome.decision, true) } : {}),
     };
   }
@@ -257,6 +271,7 @@ export function wrapChatAgentWithFastPath(inner: ChatAgent, deps: FastPathAgentD
         toolCalls: d.toolCalls,
         iterations: 0,
         ...(d.turnId ? { turnId: d.turnId } : {}),
+        ...(d.captureDisclosure ? { captureDisclosure: d.captureDisclosure } : {}),
         ...(d.decision ? { fastPathDecision: d.decision } : {}),
       };
     },
