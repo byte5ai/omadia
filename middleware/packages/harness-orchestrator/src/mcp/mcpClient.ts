@@ -491,7 +491,7 @@ export function mcpPoolScopeMatches(key: string, id: string): boolean {
 }
 
 /** True when an error/result string looks like an authorization failure. */
-function looksUnauthorized(text: string): boolean {
+export function looksUnauthorized(text: string): boolean {
   return (
     /-?32401\b/.test(text) ||
     /\b401\b/.test(text) ||

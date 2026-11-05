@@ -32,6 +32,7 @@ import {
 } from '@omadia/orchestrator';
 import {
   isDeprecatedMcpTransport,
+  looksUnauthorized,
   McpManager,
   mcpToolNameFromRef,
   turnContext,
@@ -54,6 +55,7 @@ import {
   parseDelegation,
   resolveMcpUserKey,
 } from '../services/mcpDelegation.js';
+import { DISCOVERY_UNAVAILABLE, McpAuthDiscoveryError } from '../services/mcpAuthDiscovery.js';
 import {
   checkOperatorOutboundUrl,
   createMcpConnectGuard,
@@ -147,6 +149,8 @@ export interface AgentBuilderRouterOptions {
       acquisitionMode: 'stored' | 'cimd' | 'dcr' | 'manual';
       cimdSupported: boolean;
       cimdBlockedReason: string | null;
+      /** `protected` rests on a failed metadata read, not on an advertisement. */
+      discoveryUnavailable?: boolean;
     }>;
     beginAuthorization(server: McpServerRow, userKey: string): Promise<{ authorizeUrl: string }>;
     /** `iss` is the RFC 9207 authorization-response parameter (W0-1, D1),
@@ -1395,7 +1399,10 @@ export function createAgentBuilderRouter(
         try {
           const row = (await l.graph.listMcpServers()).find((s) => s.id === str(req.params.id));
           const desc = row ? await options.mcpOAuth.describeAuth(row) : null;
-          if (desc?.protected) {
+          // With the metadata unreadable, `protected` alone proves nothing: only
+          // the connect's own 401 tells an unauthorized server from one that is
+          // down, and a server that is down stays a 502.
+          if (desc?.protected && (!desc.discoveryUnavailable || looksUnauthorized(raw))) {
             res.status(409).json({
               error: 'mcp_needs_auth',
               needsAuth: true,
@@ -1747,6 +1754,8 @@ export function createAgentBuilderRouter(
         cimdSupported: desc.cimdSupported,
         cimdBlockedReason: desc.cimdBlockedReason,
         needsClient: !desc.brokered && desc.issuer !== null && client === undefined,
+        // Issuer and acquisition mode above are placeholders while this is set.
+        discoveryUnavailable: desc.discoveryUnavailable === true,
         redirectUri: options.mcpOAuth.redirectUri,
       });
     } catch (err) {
@@ -1791,6 +1800,10 @@ export function createAgentBuilderRouter(
         if (err instanceof Error && err.name === 'McpOAuthNeedsClientError') {
           const issuer = await options.mcpOAuth.issuerFor(server);
           res.status(409).json({ error: 'needs_oauth_client', issuer });
+          return;
+        }
+        if (err instanceof McpAuthDiscoveryError && err.code === DISCOVERY_UNAVAILABLE) {
+          res.status(503).json({ error: 'mcp_auth_discovery_unavailable', message: err.message });
           return;
         }
         throw err;

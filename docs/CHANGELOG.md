@@ -36,6 +36,32 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — MCP auth discovery: a failed read is not "not protected"
+
+2026-11-04. Found on Figma in the new admin: the Authorization section vanished
+and Discover answered `502 mcp_discover_failed`, because `https://mcp.figma.com/mcp`
+answered 401 while its metadata took ~8 s and `api.figma.com` answered 503.
+
+- **`McpAuthDiscovery` no longer turns timeouts, network errors, 5xx, 408, 425 or
+  429 into `null`.** They throw `discovery_unavailable`, remembered for 15 s instead
+  of 5 min. `null` now takes a real answer: the server replied, offered no document
+  and did not challenge.
+- **A 401 with no usable metadata is not "not protected" either**
+  (`unadvertised_auth_challenge`). `describeAuth` reports it as protected, except
+  on a server with its own `headers`: the probe sends none of them, so an API-key
+  server answers 401 even when set up correctly.
+- **`auth-status` gains `discoveryUnavailable`.** While set, `protected: true` is
+  the cautious reading and the issuer fields are placeholders.
+- **`POST .../discover` answers `409 mcp_needs_auth` for a 401** even with the
+  metadata unreadable. A server that is down stays a 502, and a rejected static API
+  key too. `POST .../authorize` answers `503 mcp_auth_discovery_unavailable` while
+  the metadata is unreadable, instead of a 500.
+- **A chat tool call keeps its raw error** while the metadata is unreadable,
+  instead of claiming the server "isn't set up yet".
+- **Metadata fetches use `redirect: 'manual'`.** Nothing is followed, as before, but
+  `error` rejected like a network failure and a host redirecting every unknown path
+  would have read as permanently unavailable.
+
 ### Fixed — Desktop findings: usage ledger, chat footer, memory noise, admin pages
 
 2026-11-04. Found in the desktop functional tests of v0.195.1 and v0.195.2.
