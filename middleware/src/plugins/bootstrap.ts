@@ -30,6 +30,8 @@ const MEMORY_POSTGRES_ID = '@omadia/memory-postgres';
 const ORCHESTRATOR_TOOL_ID = '@omadia/orchestrator';
 const ORCHESTRATOR_EXTRAS_TOOL_ID = '@omadia/orchestrator-extras';
 const VERIFIER_TOOL_ID = '@omadia/verifier';
+/** The canvas orchestrator — a standalone plugin (Hub / ZIP upload), not a
+ *  built-in. Named here only as a key-mirror target. */
 const UI_ORCHESTRATOR_TOOL_ID = '@omadia/ui-orchestrator';
 const FAST_PATH_TOOL_ID = '@omadia/fast-path';
 /** Providers whose API keys are mirrored into the canvas plugin's scope. */
@@ -1158,6 +1160,13 @@ export async function bootstrapVerifierFromEnv(
  * scope. Non-destructive (skips a key the canvas already holds); no plaintext
  * ever leaves the kernel (vault → vault copy). Runs each boot so a provider
  * connected later propagates on the next restart.
+ *
+ * The canvas plugin ships outside the core (byte5ai/omadia-ui-support).
+ * The vault is keyed by plugin id, so the mirror works the same for the
+ * uploaded package — but only once it is INSTALLED: while it was bundled,
+ * ingest refused any upload claiming its id; now nothing does, so keys are
+ * never copied into the scope of an id the operator has not installed. A
+ * fresh install therefore gets its keys on the next restart.
  */
 async function mirrorProviderKeysToUiOrchestrator(
   deps: BootstrapDeps,
@@ -1171,10 +1180,13 @@ async function mirrorProviderKeysToUiOrchestrator(
   }
   // The fast-path triage (@omadia/fast-path) makes its own `ctx.llm` call
   // too — same reason, same mirror.
-  for (const [target, why] of [
-    [UI_ORCHESTRATOR_TOOL_ID, 'canvas LLM enablement'],
-    [FAST_PATH_TOOL_ID, 'fast-path triage LLM enablement'],
+  for (const [target, why, installedOnly] of [
+    [UI_ORCHESTRATOR_TOOL_ID, 'canvas LLM enablement', true],
+    // Built-in: may not be registered yet on a first boot (the built-in
+    // bootstrap runs after this), so it is mirrored unconditionally.
+    [FAST_PATH_TOOL_ID, 'fast-path triage LLM enablement', false],
   ] as const) {
+    if (installedOnly && !deps.registry.has(target)) continue;
     const updates: Record<string, string> = {};
     for (const key of vaultKeys) {
       const existing = await deps.vault.get(target, key);

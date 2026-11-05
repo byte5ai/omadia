@@ -17,9 +17,11 @@
  *      so it is correct behind the Fly edge / any reverse proxy).
  */
 
-/** Canvas WebSocket path — kept in sync with `@omadia/omadia-ui-channel`'s
- *  `CANVAS_PATH`. A stable wire constant; duplicated here to avoid a runtime
- *  dependency from the kernel onto a channel plugin package. */
+/** Canvas WebSocket path — kept in sync with `@omadia/ui-channel`'s
+ *  `CANVAS_PATH` (byte5ai/omadia-ui-support). A stable wire constant;
+ *  duplicated here to avoid a runtime dependency from the kernel onto a
+ *  channel plugin package. Advertised whether or not the channel is
+ *  installed: without it, the upgrade is a raw 404. */
 export const CANVAS_WS_PATH = '/omadia-ui/canvas';
 
 /** Discovery endpoints. `/.well-known/omadia-ui` is the canonical one; the

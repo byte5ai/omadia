@@ -158,7 +158,6 @@ jobs:
       # repo keeps finding (#640, #752). If it gains tests, add it here.
       - name: Test (workspace package suites)
         run: |
-          npm run test -w @omadia/canvas-core
           npm run test -w @omadia/conductor-core
           npm run test -w @omadia/plugin-api
           npm run test -w @omadia/transcription-adapter-openai

@@ -82,7 +82,7 @@ export {
  * Default inbound frame cap for channel routes: 32 MiB (ws's own default is
  * 100 MiB). Sized against the largest frame the canvas channel treats as
  * valid, measured in ASCII: `canvas_list_put` is sanitized to 50 entries × a
- * 262_144-character tree (`omadia-ui-channel/src/protocol.ts`
+ * 262_144-character tree (`@omadia/ui-channel`'s `src/protocol.ts`
  * `sanitizeCanvasList`) ≈ 12.5 MiB of ASCII (the limit counts UTF-16 code
  * units, not bytes), so the cap leaves ~2.5× headroom over that ASCII worst
  * case. The desktop client caps neither the slot count nor the tree size

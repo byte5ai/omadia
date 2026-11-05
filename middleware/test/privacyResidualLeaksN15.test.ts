@@ -7,7 +7,9 @@
  *         intern-exempt, so a `view` handed those values to the model.
  * #1535 — with `OMADIA_PRIVACY_FORCE_GUARDED=true` a turn that would run
  *         unmasked is refused: no provider running on the in-process path,
- *         and every turn on the subscription-CLI path.
+ *         and every turn on the subscription-CLI path. (That the canvas
+ *         skeleton is then not composed by a model is tested in the
+ *         @omadia/ui-orchestrator plugin repo.)
  */
 import { strict as assert } from 'node:assert';
 import { afterEach, beforeEach, describe, it } from 'node:test';
@@ -26,8 +28,6 @@ import {
 } from '@omadia/orchestrator/dist/orchestrator.js';
 import { createJobPrivacy } from '@omadia/orchestrator-extras/dist/jobPrivacy.js';
 import { PRIVACY_FORCE_GUARDED_ENV_VAR } from '@omadia/plugin-api';
-
-import { composeSkeleton } from '../packages/omadia-ui-orchestrator/src/composition.js';
 
 import {
   CliChatAgent,
@@ -284,22 +284,5 @@ describe('#1535 the policy reaches the model calls around the turn', () => {
     const open = createJobPrivacy(() => undefined, {});
     const sent = await open('inconsistency-detector' as never).mask('Marc Demo');
     assert.deepEqual(sent, { send: true, text: 'Marc Demo' }, 'unchanged without the policy');
-  });
-
-  it('the canvas skeleton is not composed by a model', async () => {
-    let llmCalls = 0;
-    const skeleton = await composeSkeleton({
-      llm: {
-        complete: async () => {
-          llmCalls += 1;
-          return { text: '{}' };
-        },
-      } as never,
-      model: 'm',
-      userText: 'Zeig mir Marc Demo',
-      skipModel: true,
-    });
-    assert.equal(llmCalls, 0);
-    assert.equal(skeleton.source, 'fallback');
   });
 });

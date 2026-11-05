@@ -13,8 +13,12 @@
  *      never a tool the agent does not offer; the canvas whitelist learns it;
  *   6. orchestrator — the triage gets the Agent's own plugin read-tool
  *      definitions (no kernel tools, no write-capable tools);
- *   7. canvas — a generic tool fills a canvas table when the base agent
- *      offers its definition; without one the base agent answers.
+ *   7. sub-agent tools — the operator allow-list, the orchestrator offers
+ *      them with `via`, `agentId` and a direct invoke;
+ *   8. an itemsPath that resolves to nothing uses the one record array.
+ *
+ * The canvas side (a generic or sub-agent tool fills a canvas table) is tested
+ * in the @omadia/ui-orchestrator plugin repo.
  */
 
 import { strict as assert } from 'node:assert';
@@ -24,13 +28,8 @@ import { InMemoryNudgeRegistry } from '@omadia/plugin-api';
 import type { EntityRefBus, KnowledgeGraph, MemoryStore } from '@omadia/plugin-api';
 
 import {
-  CHAT_AGENT_SERVICE,
-  type ChatAgentBundle,
   type ChatStreamEvent,
-  type ChatTurnInput,
 } from '../packages/harness-channel-sdk/src/index.js';
-import type { PluginContext } from '../packages/plugin-api/src/index.js';
-import { activate as activateCanvas } from '../packages/omadia-ui-orchestrator/src/plugin.js';
 import {
   fetchRecipeRows,
   plannableTools,
@@ -58,7 +57,6 @@ import {
 import { buildRouterSystem } from '../packages/harness-plugin-fast-path/src/router.js';
 import {
   createFastPathService,
-  FAST_PATH_SERVICE,
   type ChatTriageRequest,
 } from '../packages/harness-plugin-fast-path/src/service.js';
 import { withRouterPlanner, type ForcedCall } from './_helpers/fastPathRouterPlanner.js';
@@ -528,110 +526,7 @@ describe('generic tool specs — orchestrator wiring', () => {
   });
 });
 
-// ── 7. canvas ─────────────────────────────────────────────────────────────
-
-const ACCOUNTS_TREE = {
-  type: 'container',
-  id: 'root',
-  layout: 'stack',
-  children: [
-    { type: 'heading', id: 'h', content: 'Firmen in Berlin', level: 2 },
-    {
-      type: 'table',
-      id: 'accounts',
-      loading: 'skeleton',
-      columns: [
-        { fieldKey: 'name', label: 'Firma' },
-        { fieldKey: 'city', label: 'Ort' },
-      ],
-      rows: [],
-    },
-  ],
-};
-const CANVAS_COMPOSER = JSON.stringify({
-  tree: ACCOUNTS_TREE,
-  dataRequirements: [
-    {
-      containerId: 'accounts',
-      description: 'Firmen in Berlin',
-      fields: [
-        { fieldKey: 'name', label: 'Firma' },
-        { fieldKey: 'city', label: 'Ort' },
-      ],
-      fetch: DYN_PLAN.fetch,
-    },
-  ],
-  summary: '{count} Firmen in Berlin.',
-  locale: 'de-DE',
-});
-
-async function canvasTurn(withDefinitions: boolean): Promise<{ invokes: string[]; baseCalls: number; logs: string[] }> {
-  const reg = new Map<string, unknown>();
-  const logs: string[] = [];
-  const invokes: string[] = [];
-  let baseCalls = 0;
-  const ctx = {
-    log: (m: string) => logs.push(m),
-    services: {
-      get: <T>(name: string): T | undefined => reg.get(name) as T | undefined,
-      provide: (name: string, impl: unknown) => {
-        reg.set(name, impl);
-        return () => reg.delete(name);
-      },
-    },
-    llm: withRouterPlanner({ complete: () => Promise.resolve({ text: CANVAS_COMPOSER }) }),
-    config: { get: () => undefined },
-    tools: {
-      register: () => () => {},
-      invoke: (name: string): Promise<string> => {
-        invokes.push(name);
-        return Promise.resolve(JSON.stringify(ACCOUNTS));
-      },
-    },
-  } as unknown as PluginContext;
-  reg.set(CHAT_AGENT_SERVICE, {
-    agent: {
-      offeredToolNames: () => new Set(['odoo_query', 'dynamics_query']),
-      ...(withDefinitions ? { offeredToolDefinitions: () => [DYNAMICS_QUERY as never] } : {}),
-      chat: () => Promise.reject(new Error('unused')),
-      async *chatStream() {
-        baseCalls += 1;
-        await Promise.resolve();
-        yield { type: 'done', answer: 'agent', toolCalls: 0, iterations: 1 } as ChatStreamEvent;
-      },
-    },
-  } satisfies ChatAgentBundle);
-  reg.set(
-    FAST_PATH_SERVICE,
-    createFastPathService({
-      config: ctx.config,
-      model: 'class:fast',
-      privacyGuard: () => undefined,
-      privacyForced: () => false,
-      log: (m) => logs.push(m),
-    }),
-  );
-  await activateCanvas(ctx);
-  const agent = (reg.get('canvasChatAgent') as ChatAgentBundle).agent;
-  await collect(agent.chatStream({ userMessage: 'Welche Firmen sitzen in Berlin?', canvasSessionId: 'cs-gen' } as ChatTurnInput));
-  return { invokes, baseCalls, logs };
-}
-
-describe('generic tool specs — canvas', () => {
-  it("the base agent's definition makes a generic tool fill the canvas table", async () => {
-    const out = await canvasTurn(true);
-    assert.deepEqual(out.invokes, ['dynamics_query'], out.logs.join('\n'));
-    assert.equal(out.baseCalls, 0, out.logs.join('\n'));
-  });
-
-  it('without definitions the generic tool is not plannable → base agent', async () => {
-    const out = await canvasTurn(false);
-    assert.deepEqual(out.invokes, []);
-    assert.equal(out.baseCalls, 1);
-  });
-});
-
-// ── 8. sub-agent tools (`via` their domain tool) ───────────────────────────
+// ── 7. sub-agent tools (`via` their domain tool) ───────────────────────────
 
 const AGENT_ID = '@omadia/agent-crm';
 const VIA = 'query_crm';
@@ -715,72 +610,7 @@ describe('sub-agent tools — orchestrator wiring', () => {
   });
 });
 
-async function canvasAgentToolTurn(allow: string): Promise<{ invoked: string[]; ctxInvokes: string[]; baseCalls: number; logs: string[] }> {
-  const reg = new Map<string, unknown>();
-  const logs: string[] = [];
-  const invoked: string[] = [];
-  const ctxInvokes: string[] = [];
-  let baseCalls = 0;
-  const config = { get: <T>(k: string) => (k === 'fast_path_agent_tools' ? allow : undefined) as T | undefined };
-  const ctx = {
-    log: (m: string) => logs.push(m),
-    services: {
-      get: <T>(name: string): T | undefined => reg.get(name) as T | undefined,
-      provide: (name: string, impl: unknown) => {
-        reg.set(name, impl);
-        return () => reg.delete(name);
-      },
-    },
-    llm: withRouterPlanner({ complete: () => Promise.resolve({ text: CANVAS_COMPOSER }) }),
-    config,
-    tools: {
-      register: () => () => {},
-      invoke: (name: string): Promise<string> => {
-        ctxInvokes.push(name);
-        return Promise.reject(new Error(`tools.invoke: '${name}' is unknown or handler-less`));
-      },
-    },
-  } as unknown as PluginContext;
-  reg.set(CHAT_AGENT_SERVICE, {
-    agent: {
-      // the model gets the domain tool only; its own tool rides `via` it
-      offeredToolNames: () => new Set(['odoo_query', VIA]),
-      offeredToolDefinitions: () => [viaDef(invoked) as never],
-      chat: () => Promise.reject(new Error('unused')),
-      async *chatStream() {
-        baseCalls += 1;
-        await Promise.resolve();
-        yield { type: 'done', answer: 'agent', toolCalls: 0, iterations: 1 } as ChatStreamEvent;
-      },
-    },
-  } satisfies ChatAgentBundle);
-  reg.set(
-    FAST_PATH_SERVICE,
-    createFastPathService({ config, model: 'class:fast', privacyGuard: () => undefined, privacyForced: () => false, log: (m) => logs.push(m) }),
-  );
-  await activateCanvas(ctx);
-  const agent = (reg.get('canvasChatAgent') as ChatAgentBundle).agent;
-  await collect(agent.chatStream({ userMessage: 'Welche Firmen sitzen in Berlin?', canvasSessionId: 'cs-sub' } as ChatTurnInput));
-  return { invoked, ctxInvokes, baseCalls, logs };
-}
-
-describe('sub-agent tools — canvas', () => {
-  it('allow-listed: the canvas table is filled through the tool’s own invoke, no agent turn', async () => {
-    const out = await canvasAgentToolTurn(AGENT_ID);
-    assert.equal(out.invoked.length, 1, out.logs.join('\n'));
-    assert.deepEqual(out.ctxInvokes, [], 'never through ctx.tools.invoke');
-    assert.equal(out.baseCalls, 0, out.logs.join('\n'));
-  });
-
-  it('not allow-listed: not plannable → the agent answers', async () => {
-    const out = await canvasAgentToolTurn('');
-    assert.deepEqual(out.invoked, []);
-    assert.equal(out.baseCalls, 1);
-  });
-});
-
-
-// ── 9. a described-but-wrong output shape ─────────────────────────────────
+// ── 8. a described-but-wrong output shape ─────────────────────────────────
 
 describe('generic tools — an itemsPath that resolves to nothing', () => {
   const recipe = (itemsPath: string): RefreshSource => ({

@@ -59,7 +59,7 @@ test('electron-builder copies the whole staged runtime with this repo\'s extraRe
   const staged = [
     ...RUNTIME_SENTINELS,
     'omadia/middleware/node_modules/express/node_modules/debug/package.json',
-    'omadia/middleware/packages/canvas-core/node_modules/@jridgewell/trace-mapping/package.json',
+    'omadia/middleware/packages/conductor-core/node_modules/@jridgewell/trace-mapping/package.json',
     'omadia/middleware/migrations/0001_init.sql',
   ];
   writeFiles(

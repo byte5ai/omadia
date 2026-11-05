@@ -114,6 +114,5 @@
   "test/slice10MergeCandidate.test.ts": 1,
   "test/subAgentToolHydrationTopLevel.test.ts": 1,
   "test/toolIdempotency.test.ts": 1,
-  "test/turnContext.test.ts": 5,
-  "test/uiOrchestratorSurface.test.ts": 3
+  "test/turnContext.test.ts": 5
 }
