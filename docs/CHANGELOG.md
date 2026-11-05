@@ -36,6 +36,19 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Admin API: excerpt duplicates, skill ack, workflow version number
+
+2026-11-04. Found while building the admin interface against the Admin API.
+
+- **`GET /api/v1/admin/duplicates/excerpts` always answered 404.** `/:id` was
+  registered first, so `excerpts` was read as a MergeCandidate id. The list now
+  registers above `/:id`.
+- **`GET /skills/:id` dropped the verdict ack.** Only the POST returned it, so
+  "acknowledged by X" vanished on reload. `verdict.ackedBy` and `verdict.ackedAt`
+  now come back on the detail read, under the same key as the POST.
+- **Workflows carry their version number.** `GET /conductors` and
+  `GET /conductors/:slug` return `activeVersionNumber` next to `activeVersionId`,
+  null when nothing is published. Additive, no migration.
 ### Fixed — MCP auth discovery: a failed read is not "not protected"
 
 2026-11-04. Found on Figma in the new admin: the Authorization section vanished
