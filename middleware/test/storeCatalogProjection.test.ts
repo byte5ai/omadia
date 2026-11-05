@@ -257,10 +257,11 @@ describe('store · hub source provenance (#1459)', () => {
     });
   });
 
-  it('a hub download carries the coordinates of the version it downloaded, not the latest', async () => {
+  it('an installed hub download carries the coordinates of the version it downloaded, not the latest', async () => {
     await withStore(
       {
         catalog: [plugin(CONFLUENCE, { version: '0.3.0' })],
+        installed: { [CONFLUENCE]: '0.3.0' },
         packages: [pkg(CONFLUENCE, '0.3.0', 'registry:omadia-public', HUB_SHA_030)],
       },
       async (base) => {
@@ -268,6 +269,22 @@ describe('store · hub source provenance (#1459)', () => {
         assert.equal(item.source?.registry, 'omadia-public');
         assert.equal(item.source?.sha256, HUB_SHA_030);
         assert.match(item.source?.download_url ?? '', /\/0\.3\.0\/plugin\.zip$/);
+        assert.equal(item.install_state, 'update-available');
+        assert.equal(item.available_version, '0.3.3');
+      },
+    );
+  });
+
+  it('a hub download at the latest version keeps its local entry and coordinates', async () => {
+    await withStore(
+      {
+        catalog: [plugin(CONFLUENCE, { version: '0.3.3' })],
+        packages: [pkg(CONFLUENCE, '0.3.3', 'registry:omadia-public', HUB_SHA_033)],
+      },
+      async (base) => {
+        const item = (await list(base)).find((p) => p.id === CONFLUENCE)!;
+        assert.equal(item.version, '0.3.3');
+        assert.equal(item.source?.sha256, HUB_SHA_033);
         assert.equal(tabOf(item), 'hub');
       },
     );
@@ -303,6 +320,56 @@ describe('store · hub source provenance (#1459)', () => {
         ).json()) as { plugin: Plugin };
         assert.equal(detail.plugin.install_state, 'update-available');
         assert.equal(detail.plugin.source, undefined);
+      },
+    );
+  });
+});
+
+describe('store · an uninstalled hub download the hub has moved past', () => {
+  const stale = {
+    catalog: [plugin(CONFLUENCE, { version: '0.3.0', setup_fields: [] })],
+    packages: [pkg(CONFLUENCE, '0.3.0', 'registry:omadia-public', HUB_SHA_030)],
+  };
+
+  it('the list offers the hub version, the old package stays removable', async () => {
+    await withStore(stale, async (base) => {
+      const item = (await list(base)).find((p) => p.id === CONFLUENCE)!;
+      assert.equal(item.version, '0.3.3');
+      assert.equal(item.install_state, 'available');
+      assert.equal(item.source?.sha256, HUB_SHA_033);
+      assert.match(item.source?.download_url ?? '', /\/0\.3\.3\/plugin\.zip$/);
+      assert.equal(item.removable_package, true);
+      assert.equal(tabOf(item), 'hub');
+    });
+  });
+
+  it('the detail agrees with the list, down to the manifest', async () => {
+    await withStore(stale, async (base) => {
+      const res = await fetch(`${base}/${encodeURIComponent(CONFLUENCE)}`);
+      assert.equal(res.status, 200);
+      const body = (await res.json()) as {
+        plugin: Plugin;
+        manifest: Record<string, unknown>;
+        install_available: boolean;
+      };
+      assert.equal(body.plugin.version, '0.3.3');
+      assert.equal(body.plugin.source?.sha256, HUB_SHA_033);
+      assert.equal(body.plugin.removable_package, true);
+      assert.deepEqual(body.manifest, { source: body.plugin.source });
+      assert.equal(body.install_available, true);
+    });
+  });
+
+  it("an operator's own older upload is a choice and stays", async () => {
+    await withStore(
+      {
+        catalog: [plugin(CONFLUENCE, { version: '0.3.0' })],
+        packages: [pkg(CONFLUENCE, '0.3.0', 'op@example.com', UPLOAD_SHA)],
+      },
+      async (base) => {
+        const item = (await list(base)).find((p) => p.id === CONFLUENCE)!;
+        assert.equal(item.version, '0.3.0');
+        assert.equal(item.source, undefined);
       },
     );
   });

@@ -37,7 +37,8 @@ interface StoreDeps {
   registry: InstalledRegistry;
   /** Optional remote registries. When present, their plugins are merged into
    *  the list with `install_state: 'available'` + a `source` marker so the
-   *  operator can install from the hub. A local plugin of the same id wins;
+   *  operator can install from the hub. A local plugin of the same id wins,
+   *  unless it is an uninstalled hub download the hub has since moved past;
    *  a registry fetch failure never breaks the local listing. */
   client?: RegistryClient;
   /** Spec 004 — read-only access to plugins' pushed `ctx.status` so the list
@@ -148,6 +149,8 @@ export function createStoreRouter(deps: StoreDeps): Router {
       // It carries the hub `source` only when its package really is the hub's
       // download (#1459), and an installed one leaves the hub tab for the
       // installed tab (#1469) — the page partitions on install_state first.
+      // The exception is a hub download nobody installed: once the hub has a
+      // newer version the store offers that one (`hubOfferOverStaleDownload`).
       // A registry hiccup degrades to local-only, never 500s.
       //
       // #1458 — "never breaks the local listing" used to hold for fast
@@ -300,6 +303,7 @@ export function createStoreRouter(deps: StoreDeps): Router {
         applyInstallState(entry, deps.registry),
         deps.uploadedPackages,
       );
+      let manifest = entry.manifest;
       // #1495 — a package fetched from the Hub and not installed (a cancelled
       // prerequisites wizard leaves exactly that) is a local catalog entry,
       // so this response used to carry no `source`. Without it the install
@@ -318,12 +322,19 @@ export function createStoreRouter(deps: StoreDeps): Router {
           : undefined;
       if (uploaded) {
         const resolved = await resolveRegistryEntry(deps.client, id);
+        const offer = resolved
+          ? hubOfferOverStaleDownload(plugin, resolved, deps.uploadedPackages)
+          : undefined;
         const same = resolved?.entry.versions.find(
           (v) =>
             v.version === uploaded.version &&
             v.sha256.toLowerCase() === uploaded.sha256.toLowerCase(),
         );
-        if (resolved && same) {
+        if (offer) {
+          plugin = offer;
+          // The local manifest describes the older download.
+          manifest = offer.source ? { source: offer.source } : {};
+        } else if (resolved && same) {
           plugin = {
             ...plugin,
             source: {
@@ -383,7 +394,7 @@ export function createStoreRouter(deps: StoreDeps): Router {
       }
       const body: StoreGetResponse = {
         plugin,
-        manifest: entry.manifest,
+        manifest,
         install_available: installAvailable,
         ...(plugin.incompatibility_reasons || collision
           ? {
@@ -595,18 +606,39 @@ function hubSourceForLocal(
   };
 }
 
+/** The hub's entry for a plugin whose local package is an out-of-date hub
+ *  download nobody installed — opening the install dialog fetches the package,
+ *  so cancelling it leaves one behind. That package is a download, not a
+ *  choice: unlike an install or an operator's own upload it must not hide the
+ *  hub's newer version. Stays `removable_package`, the old files are still
+ *  there until the install replaces them. */
+function hubOfferOverStaleDownload(
+  existing: Plugin,
+  resolved: ResolvedRegistryPlugin,
+  packages: StoreDeps['uploadedPackages'],
+): Plugin | undefined {
+  if (existing.install_state !== 'available') return undefined;
+  const pkg = packages?.get(existing.id);
+  if (!pkg || pkg.uploaded_by !== `registry:${resolved.registry}`) return undefined;
+  if (!isNewerVersion(resolved.entry.latest_version, pkg.version)) return undefined;
+  return { ...registryEntryToPlugin(resolved), removable_package: true };
+}
+
 /** Enrich a local store entry with its hub `source` (when its package is the
  *  hub's download, #1459), and flag it as `update-available` (C6) when the hub
  *  advertises a newer version than the installed one — whatever the origin of
  *  the installed bytes. Only installed plugins are eligible — an `available`
- *  or `incompatible` entry keeps its state. Returns a copy (catalog objects
- *  are shared across requests and must not be mutated). */
+ *  or `incompatible` entry keeps its state, except an out-of-date hub download
+ *  (`hubOfferOverStaleDownload`). Returns a copy (catalog objects are shared
+ *  across requests and must not be mutated). */
 function enrichWithRegistry(
   existing: Plugin,
   resolved: ResolvedRegistryPlugin,
   registry: InstalledRegistry,
   packages: StoreDeps['uploadedPackages'],
 ): Plugin {
+  const offer = hubOfferOverStaleDownload(existing, resolved, packages);
+  if (offer) return offer;
   const source =
     existing.source ??
     hubSourceForLocal(existing.id, resolved, packages);

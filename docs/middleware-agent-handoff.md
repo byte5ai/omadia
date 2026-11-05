@@ -8991,3 +8991,18 @@ zurück). Jetzt gilt es für jede Integration, ohne Sonderfall
 Tests: `test/uiOrchestratorRowDetailsGeneric.test.ts` (GitHub-artiger
 Builder-Agent und CRM-artiger Kontakt).
 
+### Store: ein veralteter Hub-Download verdeckt die Hub-Version nicht mehr
+
+Schon der erste Schritt des Installationsdialogs („Paket holen“) legt das Paket
+in den Upload-Speicher. Wird der Dialog abgebrochen, bleibt es dort liegen. Weil
+der lokale Eintrag bei gleicher ID Vorrang hat, zeigte der Store danach dauerhaft
+diese Version, auch wenn der Hub längst weiter war.
+
+`hubOfferOverStaleDownload` (`src/routes/store.ts`) zeigt in Liste und Detail
+stattdessen den Hub-Eintrag, wenn alle drei Bedingungen gelten: Das Plugin ist
+nicht installiert, das Paket stammt aus genau dieser Registry
+(`uploaded_by: registry:<name>`), und der Hub hat eine neuere Version. Ein eigener
+Upload des Betreibers bleibt stehen, er ist eine bewusste Wahl. Das alte Paket
+bleibt `removable_package`, bis die Installation es ersetzt.
+
+Tests: `test/storeCatalogProjection.test.ts`.
