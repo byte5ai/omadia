@@ -772,7 +772,8 @@ This keeps the supply chain explicit:
   with its own calls replayed, §7c); a turn without that replay ledger keeps
   the same single retry, so an MCP write whose reply was lost can run twice.
   Conductor human steps treat an absent or malformed response as approval
-  unless the step sets `human.strictApproval` (§7a).
+  unless the step sets `human.strictApproval` (§7a); an EXPLICIT rejection
+  never advances on an unguarded transition in either mode (#1698, §7a).
 
 ### Plugin-borne workflow templates (#478)
 
@@ -3565,6 +3566,38 @@ explicit here so a deployment can reason about them:
   deadline fallback that lands on a normal outgoing path
   (`timeout_equals_approval`) — if that shared path is the approval path, a
   timeout silently approves.
+- **A rejection cannot advance on an unguarded transition (#1698).** The
+  polarity above decides what `stepResult.approved` *is*; until #1698 nothing
+  on the transition path read it. An outgoing edge without a guard matches
+  unconditionally, so a human step whose only edge carried no guard ran the
+  gated action on an explicit `{approved:false}` — and `strictApproval: true`
+  did not change that, it only normalised the flag. The engine
+  (`conductor-core/src/engine.ts`) now excludes unguarded edges whenever a
+  human step's result carries `approved: false`: only a transition whose guard
+  asks for the rejection may fire. That holds for the declared deadline
+  fallback too — it carries no answer either, and firing it would report an
+  explicit "no" as a missed deadline — and it holds when the step is terminal,
+  because a run ending `completed` on a refusal is indistinguishable from one
+  ending on an approval. With nothing matching, the run ends `failed` with the
+  surfaced stuck code `approval_rejected_no_transition`. An absent or
+  non-boolean `approved`
+  is deliberately NOT a rejection here — in fail-open mode that case is
+  approval by definition, and under strict the executor has already turned it
+  into a literal `false` — so the rule changes no path of a step nobody
+  rejected. The validator warns on the shape that produces it
+  (`rejection_unguarded_edge`) regardless of `strictApproval` and regardless
+  of the target step's kind, and the designer pre-fills an edge drawn out of a
+  human step with the approval guard (the next one with the rejection guard).
+  Caveat for operators: this applies to already-published workflow versions
+  too, so a graph that routed a rejection through one unguarded edge now needs
+  that edge guarded — `{"op":"ne","path":"stepResult.approved","value":true}`
+  on a timeout fallback makes it serve rejections as well (a real timeout is
+  fired by `expireAwait` and never consults guards), which is the shape
+  `fixtures/valid-release-signoff.json` now carries. `{"op":"always"}` states
+  "both outcomes, same step"; note that it is an opt-out the validator cannot
+  tell from a mistake — it checks that a guard is present, not what it says,
+  so an `always` on an edge into an irreversible action restores the old
+  behaviour silently. Keep it for edges whose target handles both answers.
 - **Run cancellation is an operator surface, not a bypass.** Cancel never
   skips a gate — it terminates the run. A waiting run's open awaits close as
   `'cancelled'`; a running run stops at the next step boundary (mid-step

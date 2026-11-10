@@ -111,7 +111,9 @@ connectors and inserts no confirmation step before a tool runs:
   again, so the key is a retry-safety mitigation and does not make a write run
   at most once (`middleware/src/mcp/README.md`, Idempotency).
 - Conductor human steps treat an absent or malformed response as approval
-  unless the step sets `human.strictApproval`.
+  unless the step sets `human.strictApproval`. An explicit rejection
+  (`{approved:false}`) is a different case: since #1698 it never advances on
+  an unguarded transition, in either mode.
 
 Details: [`docs/security-architecture.md`](../security-architecture.md) §4 and
 §7a.

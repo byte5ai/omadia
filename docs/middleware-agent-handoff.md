@@ -9006,3 +9006,81 @@ Upload des Betreibers bleibt stehen, er ist eine bewusste Wahl. Das alte Paket
 bleibt `removable_package`, bis die Installation es ersetzt.
 
 Tests: `test/storeCatalogProjection.test.ts`.
+
+### Conductor: eine Ablehnung nimmt keine ungeguardete Transition mehr (#1698)
+
+Die beiden Hälften der Freigabe waren nie verbunden: der Executor entschied, *ob*
+freigegeben wurde, die Engine entschied, *wohin* der Lauf geht — und die Engine
+kannte keine Freigabe. Eine ausgehende Kante ohne `guard` matcht bedingungslos
+(`conductor-core/src/engine.ts`), also lief ein Human-Step mit einer einzigen
+ungeguardeten Kante bei explizitem `{approved: false}` genauso weiter wie bei
+einer Freigabe und führte die Aktion aus, die die Freigabe schützen sollte.
+`human.strictApproval: true` änderte das nicht — das Flag normalisierte nur
+`stepResult.approved` (`runExecutor.ts`), und diesen Wert las auf dem
+Transitions-Pfad niemand. Schlimmer: `approval_fail_open` wurde ausgerechnet von
+`strictApproval: true` unterdrückt, der Einstellung, die die Warnung empfiehlt.
+
+Jetzt: trägt das Ergebnis eines **Human**-Steps `approved: false`, fallen
+ungeguardete Kanten aus der Kandidatenmenge. Nur eine Transition, deren Guard
+nach der Ablehnung fragt, feuert — **auch der Deadline-Fallback nicht**: er trägt
+ebenfalls keine Antwort, und ihn zu nehmen meldet ein explizites „Nein“ als
+verpasste Frist (expense-approvals Eskalation sagt dem Betreiber dann „was not
+decided within 48 hours“). Greift nichts, endet der Lauf `failed` mit dem neuen
+Stuck-Code `approval_rejected_no_transition` (statt des generischen
+`no_transition_no_fallback`) — und das gilt auch für einen **terminalen**
+Human-Step: der gatet nichts, aber ein `completed` wäre in Lauf-Liste und
+Run-Ended-Webhook nicht von einer Freigabe zu unterscheiden. Ein **fehlendes**
+oder nicht-boolesches `approved`
+ist bewusst *keine* Ablehnung: im Fail-open-Modus ist dieser Fall per Definition
+eine Freigabe, und unter `strictApproval` hat der Executor ihn längst in ein
+echtes `false` verwandelt. Damit ändert die Regel keinen Pfad eines Steps, den
+niemand abgelehnt hat — Agent- und Action-Steps bleiben ohnehin unberührt.
+
+Drumherum:
+
+- **Validator**: neue non-blocking Warnung `rejection_unguarded_edge`, sobald ein
+  Human-Step eine ungeguardete Happy-Path-Kante hat — unabhängig von
+  `strictApproval` (das Flag entschied den Pfad nie) und unabhängig von der Art
+  des Ziel-Steps (der Schaden läuft über ein Human- oder Agent-Ziel genauso
+  weit wie über ein Action-Ziel). `approval_fail_open` bleibt unverändert
+  action-only: die beiden Warnungen sagen Verschiedenes.
+- **Designer**: eine neu gezogene Kante **aus einem Human-Step** startet mit dem
+  Freigabe-Guard (`stepResult.approved = true`) statt leer, die nächste aus
+  demselben Step mit dem Ablehnungs-Guard (`= false`) — zweimal `true` würde zur
+  Laufzeit als `ambiguous_guards` kollidieren. Der Inspector erklärt es an der
+  Guard-Eingabe (`guardHumanRejectionHint`). Der Hinweistext
+  der Checkbox „Strikte Freigabe“ behauptete bisher das Gegenteil des
+  Verhaltens und ist in `en.json`/`de.json` korrigiert.
+- **Templates**: `onboarding-checklist` guardet seine Kanten und hat einen
+  `halted`-Schritt für die Ablehnung (vorher brachte eine Ablehnung des
+  HR-Schritts den IT-Await mit dem Text „HR onboarding … is done“ hervor).
+  `expense-approval` und `notify-and-escalate` sagen am Eskalations-Schritt mit
+  `{"op":"always"}` explizit „jeder Ausgang, derselbe Schritt“.
+- **Builder-Agent**: Prompt-Regel, dass jede Kante aus einem Human-Step einen
+  Guard braucht und die Ablehnung einen eigenen Pfad.
+
+Betriebs-Hinweis: Graphen werden pro Version gespeichert und von der aktuellen
+Engine ausgeführt, die Änderung gilt also auch für bereits publizierte
+Versionen. Ein Graph, der eine Ablehnung über eine ungeguardete Kante geführt
+hat, braucht dort jetzt einen Guard. Für einen Timeout-Fallback, der zugleich
+den Ablehnungspfad spielt, ist das
+`{"op":"ne","path":"stepResult.approved","value":true}` — der echte Timeout
+feuert den Fallback über `expireAwait` und wertet Guards nie aus, die Frist
+funktioniert also weiter. Genau diese Form trägt jetzt
+`fixtures/valid-release-signoff.json` (`t_deadline` → `s_autoreject`).
+`{"op":"always"}` heißt „beide Ausgänge, derselbe Schritt“ — bewusst ein Opt-out,
+das der Validator nicht von einem Versehen unterscheiden kann: er prüft, *dass*
+ein Guard da ist, nicht *was* er sagt. Auf einer Kante in eine unumkehrbare
+Aktion stellt `always` das alte Verhalten still wieder her.
+
+Auch angeglichen: `previewRun` normalisiert Human-Antworten jetzt über dieselbe
+`normalizeHumanResult`-Funktion wie `resolveAwait` (vorher rohes
+`humanResponses[stepId]`), sonst zeigt ein Dry-Run eines strikten Steps den
+Freigabe-Pfad, den der echte Lauf verweigert.
+
+Gegenstück zu #759: dort entstanden Flag, Normalisierung und Lint, der
+Transitions-Pfad blieb unberührt.
+
+Tests: `packages/conductor-core/test/engine.test.ts` (Transition statt nur Flag),
+`test/conductorCancelAndStrictApproval.test.ts` (#1698-Block: beide Modi,
+`quorum: 'all'`, geguardeter Ablehnungspfad, Fail-open-Garbage unverändert).

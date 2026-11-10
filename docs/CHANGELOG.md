@@ -36,6 +36,46 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Conductor: a rejected approval no longer takes an unguarded transition (#1698)
+
+2026-11-10. The approval gate computed the decision and then ignored it: the
+executor normalised `stepResult.approved`, the engine chose the path, and nothing
+on the path read the flag. An outgoing edge without a guard matches
+unconditionally, so a human step with one unguarded edge ran the action it was
+meant to gate on an explicit `{"approved": false}` — and `strictApproval: true`
+did not change that, it only silenced the one warning (`approval_fail_open`) that
+mentioned the shape. Counterpart to #759, which shipped the flag, the
+normalisation and the lint but never touched the transition path.
+
+- **A rejected human step may only leave on a transition whose guard asks for the
+  rejection.** Unguarded happy-path edges are excluded, the declared deadline
+  fallback included — firing it would report an explicit "no" as a missed
+  deadline. Nothing matching ends the run `failed` with the new stuck code
+  `approval_rejected_no_transition`; a terminal rejected step is reported the same
+  way instead of `completed`, which read as an approval everywhere.
+- **An absent or non-boolean `approved` is deliberately not a rejection.** In
+  fail-open mode that case is approval by definition, and under `strictApproval`
+  the executor has already turned it into a literal `false`, so no path changes
+  for a step nobody rejected. Agent and action steps are untouched.
+- **New publish warning `rejection_unguarded_edge`**, raised whenever a human step
+  has an unguarded happy-path edge — regardless of `strictApproval` (the flag
+  never decided the path) and regardless of the target step's kind.
+  `approval_fail_open` is unchanged.
+- **Designer:** an edge drawn out of a human step is pre-filled with the approval
+  guard, the next one with the rejection guard; the checkbox hint for "strict
+  approval" stated the opposite of the behaviour and is corrected in both locales.
+- **Bundled content:** `onboarding-checklist` guards its edges and gains a
+  `halted` step (rejecting the HR step used to open the IT await reading "HR
+  onboarding … is done"); `expense-approval` and `notify-and-escalate` state
+  `{"op":"always"}` on the escalation edge where both outcomes deliberately share
+  a target; the builder agent's prompt now requires a guard per human edge.
+- **Migration, for already-published versions too** (graphs are stored per
+  version and run by the current engine): a graph that routed a rejection through
+  an unguarded edge needs that edge guarded. `{"op":"ne","path":"stepResult.approved","value":true}`
+  on a timeout fallback makes it serve rejections as well (the timeout path itself
+  is fired directly by `expireAwait` and never consults guards);
+  `{"op":"always"}` states "both outcomes, same step".
+
 ### Added — `captureDisclosure` on the chat stream
 
 2026-11-04. OB-81 declared the field and the chat renders it, but nothing ever

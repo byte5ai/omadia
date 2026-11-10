@@ -192,3 +192,4 @@ middleware/test/integration-github/
 # Local-only screencast pipeline (Playwright recorder + GIF conversion).
 # Tooling for the README demo GIF; not part of the repo.
 /screencast/
+/.scratch

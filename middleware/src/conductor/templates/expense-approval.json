@@ -69,7 +69,7 @@
         "guard": { "op": "eq", "path": "stepResult.approved", "value": false }
       },
       { "id": "t-approval-timeout", "source": "approve", "target": "escalate" },
-      { "id": "t-escalated", "source": "escalate", "target": "announce" }
+      { "id": "t-escalated", "source": "escalate", "target": "announce", "guard": { "op": "always" } }
     ],
     "triggers": [{ "id": "trigger-manual", "kind": "manual" }]
   },
