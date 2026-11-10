@@ -76,6 +76,12 @@ function makeFakePipeline(opts: {
 }): FakePipelineHandle {
   const calls: Array<{ userEmail: string; draftId: string }> = [];
   let buildN = 0;
+  // Mirrors BuildPipeline's own `lastStatus` bookkeeping (Issue #227) so
+  // tests can exercise the GET /preview/status fallback to it.
+  const lastStatus = new Map<
+    string,
+    { status: 'ok' | 'failed'; buildN?: number; errorCount?: number; reason?: string }
+  >();
   const fake = {
     run: async (input: { userEmail: string; draftId: string }) => {
       calls.push(input);
@@ -93,6 +99,10 @@ function makeFakePipeline(opts: {
         const { BuildPipelineError } = await import(
           '../../src/plugins/builder/buildPipeline.js'
         );
+        lastStatus.set(input.draftId, {
+          status: 'failed',
+          reason: 'codegen_failed',
+        });
         throw new BuildPipelineError(
           'codegen_failed',
           `BuildPipeline: codegen failed (${String(opts.codegenIssues.length)} issue(s))`,
@@ -109,6 +119,12 @@ function makeFakePipeline(opts: {
         );
       }
       if (opts.failWith) {
+        lastStatus.set(input.draftId, {
+          status: 'failed',
+          buildN,
+          errorCount: (opts.failingErrors ?? []).length,
+          reason: opts.failWith,
+        });
         return {
           buildN,
           draft,
@@ -123,6 +139,7 @@ function makeFakePipeline(opts: {
           },
         };
       }
+      lastStatus.set(input.draftId, { status: 'ok', buildN });
       return {
         buildN,
         draft,
@@ -134,6 +151,7 @@ function makeFakePipeline(opts: {
         },
       };
     },
+    getLastBuildStatus: (draftId: string) => lastStatus.get(draftId),
   };
   return {
     pipeline: fake as unknown as BuildPipeline,
@@ -288,7 +306,10 @@ async function startHarness(opts: {
   const port = (server.address() as AddressInfo).port;
   const baseUrl = `http://127.0.0.1:${String(port)}`;
 
+  let closed = false;
   const close = async (): Promise<void> => {
+    if (closed) return;
+    closed = true;
     await new Promise<void>((resolve, reject) => {
       server.close((err) => (err ? reject(err) : resolve()));
     });
@@ -335,7 +356,12 @@ describe('builder preview routes', () => {
     tmp = mkdtempSync(path.join(tmpdir(), 'builder-preview-routes-'));
   });
 
-  after(() => {
+  after(async () => {
+    // Closes whichever harness the last-run test left open. Normally the
+    // next test's beforeEach does this, but running a single test via
+    // --test-name-pattern skips that beforeEach, leaving the server open
+    // and the process hanging past the file-level test timeout.
+    if (harness) await harness.close();
     rmSync(tmp, { recursive: true, force: true });
   });
 
@@ -643,6 +669,51 @@ describe('builder preview routes', () => {
       assert.equal(res.status, 500);
       const body = (await res.json()) as { code: string };
       assert.equal(body.code, 'builder.codegen_failed');
+    });
+  });
+
+  describe('GET /preview/status', () => {
+    it('reports the last failed build instead of falling back to idle', async () => {
+      harness = await startHarness({
+        tmpDir: tmp,
+        pipelineFail: 'tsc',
+        failingErrors: [
+          {
+            path: 'src/plugin.ts',
+            line: 12,
+            col: 4,
+            code: 'TS2304',
+            message: "Cannot find name 'frobnicate'.",
+          },
+        ],
+      });
+      harness.setSession('alice@example.com');
+      const draft = await harness.store.create('alice@example.com', 'Bad');
+
+      // Trigger a build that fails with a tsc error, same as an auto-rebuild
+      // after a broken slot edit would.
+      const refresh = await fetch(
+        `${harness.baseUrl}/api/v1/builder/drafts/${draft.id}/preview/refresh`,
+        { method: 'POST' },
+      );
+      assert.equal(refresh.status, 500);
+
+      // Simulate the page reload: the Workspace re-hydrates its build
+      // status from this endpoint.
+      const res = await fetch(
+        `${harness.baseUrl}/api/v1/builder/drafts/${draft.id}/preview/status`,
+      );
+      assert.equal(res.status, 200);
+      const body = (await res.json()) as {
+        phase: string;
+        buildN?: number;
+        errorCount?: number;
+      };
+      assert.equal(
+        body.phase,
+        'failed',
+        `expected status to report the last failed build, got phase=${body.phase}`,
+      );
     });
   });
 

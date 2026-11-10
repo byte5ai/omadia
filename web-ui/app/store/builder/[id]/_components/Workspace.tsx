@@ -436,7 +436,9 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
   // Re-hydrate buildStatus on mount: page reload loses the SSE event
   // stream, but the preview-cache may still hold a successful build.
   // Without this, installEnabled is stuck on 'phase=idle' until the
-  // user manually clicks Rebuild.
+  // user manually clicks Rebuild. Issue #1737 — a failed last build must
+  // re-hydrate too, otherwise the footer reverts to idle and the "Fix
+  // with Builder" button disappears even though the draft is still broken.
   useEffect(() => {
     let alive = true;
     void getPreviewStatus(draft.id)
@@ -444,6 +446,13 @@ export function Workspace({ initialDraft }: WorkspaceProps): React.ReactElement 
         if (!alive) return;
         if (res.phase === 'ok' && res.buildN !== undefined) {
           setBuildStatus({ phase: 'ok', buildN: res.buildN });
+        } else if (res.phase === 'failed') {
+          setBuildStatus({
+            phase: 'failed',
+            buildN: res.buildN,
+            reason: res.reason,
+            errorCount: res.errorCount,
+          });
         }
       })
       .catch(() => {
