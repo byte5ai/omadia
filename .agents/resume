@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Never reinstall dependencies on wake. Docker is owned by systemd; starting
+# an already-running container is a cheap, idempotent repair after activation.
+sudo systemctl start docker
+sudo docker start omadia-orb-postgres >/dev/null
+for ((attempt = 0; attempt < 8; attempt++)); do
+  if sudo docker exec omadia-orb-postgres pg_isready -U omadia -d omadia_test; then
+    exit 0
+  fi
+  sleep 0.5
+done
+echo 'Orb Postgres did not become ready' >&2
+exit 1

@@ -36,6 +36,22 @@ changelog.
 
 ## [Unreleased]
 
+### Added — Reproduzierbare Amp-Orb-Umgebung
+
+2026-11-10. `.agents/setup` installiert die gepinnten Node-Toolchains
+(Kernel/Web-UI aus `.nvmrc`, Desktop Node 24), die drei npm-Lockfile-Bäume
+inklusive nativer Addons sowie Docker Compose/Buildx und baut die Middleware-
+Workspace-Exports. Beide Runtimes installieren mit dem npm der Node-22-Toolchain,
+damit Desktop-Install-Skripte nicht still übersprungen werden. Ein ausschließlich an
+Loopback gebundener PostgreSQL-16/pgvector-Container stellt getrennte lokale
+App- und Testdatenbanken bereit; seine Durability ist für Wegwerfdaten reduziert.
+Login-Shells wählen die Toolchain passend zum Checkout-Verzeichnis.
+`.agents/resume` repariert nur den Datenbankstart, ohne Pakete neu zu installieren.
+ENV-Vorlagen werden nur bei fehlenden Dateien kopiert, keine Benutzeranmeldung
+oder Produktions-Credentials werden im Snapshot abgelegt. Portal-Manifeste sind
+jetzt auch im versionierten `.gitignore` ausgeschlossen. Betriebsdetails und
+Test-DSNs stehen im Handoff §14.
+
 ### Added — `captureDisclosure` on the chat stream
 
 2026-11-04. OB-81 declared the field and the chat renders it, but nothing ever
