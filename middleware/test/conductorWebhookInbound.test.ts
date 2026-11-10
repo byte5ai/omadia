@@ -1,5 +1,6 @@
 import { strict as assert } from 'node:assert';
 import crypto from 'node:crypto';
+import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { describe, it } from 'node:test';
 
@@ -101,6 +102,47 @@ async function post(base: string, body: string, opts: PostOpts = {}): Promise<{ 
   const res = await fetch(`${base}/api/hooks/${opts.endpointId ?? ENDPOINT_ID}`, { method: 'POST', headers, body });
   const json = (await res.json().catch(() => ({}))) as Record<string, unknown>;
   return { status: res.status, json };
+}
+
+/** POSTs over `node:http`, because `fetch` ALWAYS sets a `Content-Type` for a
+ *  string body — so `post()` above structurally cannot express the request issue
+ *  #1700 is about: a correctly signed delivery that carries NO content type (or an
+ *  empty one). Pass `contentType: undefined` to omit the header entirely. */
+async function postRaw(
+  base: string,
+  body: string,
+  opts: { contentType?: string; secret?: string; deliveryId: string },
+): Promise<{ status: number; json: Record<string, unknown> }> {
+  const headers: Record<string, string | number> = {
+    'content-length': Buffer.byteLength(body),
+    'x-webhook-signature': sign(opts.secret ?? SECRET, body),
+    'x-webhook-delivery-id': opts.deliveryId,
+  };
+  if (opts.contentType !== undefined) headers['content-type'] = opts.contentType;
+  const { port } = new URL(base);
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      { host: '127.0.0.1', port: Number(port), path: `/api/hooks/${ENDPOINT_ID}`, method: 'POST', headers },
+      (res) => {
+        let text = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk: string) => {
+          text += chunk;
+        });
+        res.on('end', () => {
+          let json: Record<string, unknown> = {};
+          try {
+            json = JSON.parse(text) as Record<string, unknown>;
+          } catch {
+            json = {};
+          }
+          resolve({ status: res.statusCode ?? 0, json });
+        });
+      },
+    );
+    req.on('error', reject);
+    req.end(body);
+  });
 }
 
 describe('conductor webhook inbound route', () => {
@@ -243,6 +285,88 @@ describe('conductor webhook inbound route', () => {
       assert.equal(second.status, 200);
       assert.equal(second.json['outcome'], 'duplicate'); // not rate_limited
       assert.equal(h.emitCalls.length, 1);
+    } finally {
+      await h.close();
+    }
+  });
+});
+
+// Issue #1700 — the raw parser's content-type matcher must not decide whether the
+// HMAC ever sees the signed bytes. body-parser's wildcard type STRING (`'*' + '/*'`)
+// runs through `type-is`, which needs a media type to compare against: a request
+// with no `content-type` header — or an empty one — matched nothing, so the parser
+// skipped, `req.body` stayed `{}`, the handler HMAC'd `Buffer.alloc(0)` and a
+// CORRECTLY signed delivery answered 401 `webhook.bad_signature`. The route uses a
+// function matcher for exactly this reason. These tests must go through `node:http`:
+// `fetch` always sets a content type for a string body and so cannot express the case.
+describe('conductor webhook inbound route — content type never gates the signature (#1700)', () => {
+  it('no content-type header at all → the signature verifies (202 started)', async () => {
+    const h = await harness();
+    try {
+      const r = await postRaw(h.base, JSON.stringify({ orderId: 42 }), { deliveryId: 'd-1700-absent' });
+      assert.equal(r.status, 202);
+      assert.equal(r.json['outcome'], 'started');
+      assert.equal(h.emitCalls.length, 1);
+      assert.equal(h.outcomes.get('d-1700-absent'), 'started');
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('empty content-type value → the signature verifies (202 started)', async () => {
+    const h = await harness();
+    try {
+      const r = await postRaw(h.base, JSON.stringify({ orderId: 42 }), {
+        contentType: '',
+        deliveryId: 'd-1700-empty',
+      });
+      assert.equal(r.status, 202);
+      assert.equal(r.json['outcome'], 'started');
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('no content-type and a non-JSON body → invalid_payload, NOT bad_signature', async () => {
+    const h = await harness();
+    try {
+      // The outcome the issue expected for a missing header, and the right one for
+      // unparseable bytes: the signature passed, only the JSON parse failed.
+      const r = await postRaw(h.base, 'not json at all', { deliveryId: 'd-1700-text' });
+      assert.equal(r.status, 200);
+      assert.equal(r.json['outcome'], 'invalid_payload');
+      assert.equal(h.emitCalls.length, 0);
+      assert.equal(h.outcomes.get('d-1700-text'), 'invalid_payload');
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('a WRONG signature without a content-type still answers 401 (the fix widens parsing, not auth)', async () => {
+    const h = await harness();
+    try {
+      const r = await postRaw(h.base, JSON.stringify({ orderId: 42 }), {
+        secret: 'wrong-secret',
+        deliveryId: 'd-1700-wrong',
+      });
+      assert.equal(r.status, 401);
+      assert.equal(r.json['code'], 'webhook.bad_signature');
+      assert.equal(h.emitCalls.length, 0);
+      assert.equal(h.outcomes.size, 0);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('text/plain carries the bytes too — the content type is irrelevant to the HMAC', async () => {
+    const h = await harness();
+    try {
+      const r = await postRaw(h.base, JSON.stringify({ orderId: 42 }), {
+        contentType: 'text/plain',
+        deliveryId: 'd-1700-plain',
+      });
+      assert.equal(r.status, 202);
+      assert.equal(r.json['outcome'], 'started');
     } finally {
       await h.close();
     }

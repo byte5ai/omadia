@@ -2601,6 +2601,16 @@ should re-verify on any change to this route:
   trusted; an unknown `endpointId` and a known one with a wrong secret
   answer byte-for-byte the same `401 {"code":"webhook.bad_signature"}` — a
   caller can never use the response to probe which endpoint ids are real.
+- **Content-type independent (#1700).** The HMAC is over bytes, so the
+  sender's `Content-Type` must never decide whether verification sees those
+  bytes. The route-level `express.raw()` therefore uses a FUNCTION type
+  matcher: body-parser's wildcard type *string* goes through `type-is`, which
+  needs a media type to compare against, so a delivery with no `Content-Type`
+  header (or an empty one) matched nothing, was never parsed, and a correctly
+  signed request answered `401 webhook.bad_signature` — pointing the sender at
+  its signing code instead of at the missing header. A sender may omit the
+  header; only the JSON parse then decides the outcome. The same applies to the
+  plugin raw-body path (`platform/pluginRouteRegistry.ts`, `rawBodyCapture`).
 - **Always 2xx on noise.** Once the signature verifies and the delivery id
   is claimed, every remaining branch (disabled endpoint, malformed JSON, no
   subscribed workflow) answers `2xx`. Only a bad signature (401) or the
