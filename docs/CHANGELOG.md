@@ -36,6 +36,46 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Conductor: a failed run records why it failed
+
+2026-11-10. #1699. The reason a run failed reached the container log and nothing
+else: neither table had an error column, the run context held only
+`stepAttempts`, and the API served exactly those fields — so "Verlauf" could
+render a red badge and no cause.
+
+- **Every failure path carries its own code.** `step_not_in_graph`,
+  `timer_misconfigured`, `no_role_holder`, `await_timed_out`, `effect_threw`,
+  `step_timeout`, `resume_no_current_step`, `max_steps_exceeded` — plus the
+  engine's own `StuckCode` values (`ambiguous_guards`,
+  `postcondition_unmet_no_fallback`, …), which `@omadia/conductor-core` always
+  produced and the executor always dropped.
+- **A run that exhausted the step budget no longer hangs silently** (US2-AS4):
+  the driver's `MAX_STEPS` exit wrote no step row at all and left the run
+  `running` for ever. It now records `max_steps_exceeded`; a dry run that hits
+  the same budget reports it instead of reading as a clean pass.
+- **Stored on the step and mirrored on the run** (conductor migration `0013`):
+  `error_code`, a redacted and truncated `error_message`, and `error_detail`
+  (the code's typed arguments). The run-level copy is what the run list renders.
+  No backfill: a pre-`0013` row reads "cause not recorded", never a guess — and
+  so does a stored code this build has no vocabulary for, with the message kept
+  beside it as detail.
+- **Recorded on the recovered path too** — a human step skipped for want of a
+  holder, an await that timed out into its fallback. A ticking timer and an
+  operator cancel record none; neither is a fault.
+- **Messages are safe to persist:** credentials and provider correlation handles
+  (`request_id`, `cf-ray`, `sk-…`) are stripped and the text is capped at 2 000
+  characters. Never a stack trace. Credentials, not PII.
+- **Step duration works at all now.** Every step row was written with
+  `started_at == ended_at` (both from the same transaction), so no step ever had
+  a duration. The driver passes the real start; the await paths pass the await's
+  `created_at`.
+- **`run.failed` webhooks carry `errorCode`/`errorMessage`**, a dry run reports
+  its reason (and a throwing agent step no longer 500s the preview route), and
+  the trace shows "Duration" and "Reason" columns plus the boolean actor
+  qualifiers (`noHolder`, `timedOut`, …) it used to swallow. Only the boolean
+  ones: `operator_cancel` carries the requesting principal, which does not
+  belong in the trace table.
+
 ### Added — `captureDisclosure` on the chat stream
 
 2026-11-04. OB-81 declared the field and the chat renders it, but nothing ever
