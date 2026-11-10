@@ -9006,3 +9006,93 @@ Upload des Betreibers bleibt stehen, er ist eine bewusste Wahl. Das alte Paket
 bleibt `removable_package`, bis die Installation es ersetzt.
 
 Tests: `test/storeCatalogProjection.test.ts`.
+
+### Conductor: ein fehlgeschlagener Lauf nennt seinen Grund (#1699)
+
+Bisher stand der Grund eines Fehlschlags **nur im Container-Log**: `conductor_runs`
+und `conductor_run_steps` hatten keine Fehlerspalte, der Kontext trug bloß
+`stepAttempts`, und `GET /conductors/<slug>/runs/<id>` gab genau diese Felder
+heraus — der „Verlauf" konnte deshalb nur ein rotes Badge zeigen (FR-030 /
+US2-AS4 verlangen den Grund).
+
+Es waren **sieben** Stellen in `runExecutor.ts`, die `status: 'failed'` schreiben,
+jede mit einer anderen Ursache. Zwei trugen nichts, fünf schmuggelten einen
+groben Hinweis in das `actor`-JSONB — und der Trace rendert davon nur `kind` und
+`ref`, warf also auch den weg.
+
+**Die achte Stelle schrieb gar nichts** (Review-Fund, US2-AS4): der
+`MAX_STEPS`-Ausgang der Treiberschleife. Jedes `break` darin schreibt vorher
+seine Zeile; fällt die Schleife mit noch offenem Step heraus, war das Budget
+erschöpft — und der Lauf blieb für immer `running`, ohne Zeile und ohne Ursache,
+genau der „silent hang with no recorded state", den AS4 verbietet. Jetzt:
+`max_steps_exceeded`, mit `{ maxSteps, stepId }` im Detail. Die Trockenübung
+hatte denselben Ausgang und meldete ihn als **Erfolg** — auch das ist jetzt ein
+Fehlschlag mit Grund.
+
+**Vokabular statt Satz.** `ConductorRunErrorCode` (`src/conductor/runError.ts`) ist
+die einzige Quelle: die acht Executor-Codes (`step_not_in_graph`,
+`timer_misconfigured`, `no_role_holder`, `await_timed_out`, `effect_threw`,
+`step_timeout`, `resume_no_current_step`, `max_steps_exceeded`) **plus** die vom Engine exportierten
+`StuckCode`-Werte unverändert — `@omadia/conductor-core` klassifiziert längst,
+warum ein Weiterschalten scheitert (`ambiguous_guards`,
+`postcondition_unmet_no_fallback`, …) und nennt die Knoten; das landete vorher nur
+im Log. Der Code wird **an der Stelle** entschieden, nie aus einem Satz
+zurückgeparst (gleiche Linie wie `last_error_detail`, #897). Ein gespeicherter
+Code außerhalb des Vokabulars wird beim Lesen **verworfen** (die Oberfläche
+schreibt dort „Ursache nicht erfasst"), die Meldung bleibt aber als Beleg
+daneben stehen.
+
+**Migration `0013_conductor_run_error.sql`** (eigenes Ledger
+`_conductor_migrations`, nächster freier Slot war 0013, weil 0012 doppelt vergeben
+ist): `error_code`/`error_message`/`error_detail` auf `conductor_run_steps`,
+`error_code`/`error_message` auf `conductor_runs`. Die Lauf-Spalten sind eine
+bewusste Kopie des terminalen Schritts — die Lauf-**Liste** (`GET /:slug/runs`)
+liefert keine Schritte, und eine Liste, die nicht sagen kann, warum eine Zeile rot
+ist, war der Anlass des Issues. Kein CHECK auf `error_code`: die Spalten werden
+auf dem Fehlerpfad in derselben Transaktion wie `status = 'failed'` geschrieben, ein
+im CHECK fehlender Code würde also genau diesen Statuswrite verlieren (Klasse
+#915). Kein Backfill — die Ursache wurde nie erfasst; `error_code IS NULL` heißt
+„Ursache nicht erfasst", nie eine geratene.
+
+**Auch auf dem geheilten Pfad.** Ein Human-Step ohne erreichbaren Inhaber, der
+seinen In-Graph-Fallback nimmt, und ein Await, das in seinen Fallback läuft,
+schreiben ihren Code ebenfalls — der Lauf endet `completed`, und der Betrieb muss
+trotzdem sehen, dass ein Mensch übersprungen wurde. Ein tickender Timer schreibt
+keinen (der Step tut genau seine Arbeit), ein Operator-Abbruch auch nicht
+(`cancelled` ist ein Ergebnis, kein Fehler). Die Lauf-Kopie entsteht **nur** beim
+terminalen Write, aus dessen eigenem Fehler.
+
+**Text, der persistiert werden darf:** `redactRunErrorMessage` =
+`redactSecrets` (Credentials) → `redactProviderInternals` (`request_id`, `cf-ray`,
+`sk-…`) → Whitespace flach → hart auf 2 000 Zeichen. Kein Stacktrace. Entfernt
+Credentials, **nicht** PII — dieselbe Grenze wie `redactAuditError` für
+`mcp_call_log`.
+
+**Dauer.** `recordStepAndAdvance` nahm kein `started_at` und setzte `ended_at =
+now()` im selben Statement; `now()` ist Transaktionszeit, also war
+`started_at == ended_at` für **jede** Zeile, nicht nur für die fehlgeschlagene.
+Der Treiber übergibt jetzt den vor dem Effekt genommenen Zeitpunkt, die
+Await-Pfade das `created_at` des Awaits (der Human-Step begann, als er parkte),
+und auch die synthetische `(resume)`-Zeile trägt ihren Start.
+
+**Weitere Oberflächen:** `buildRunEventPayload` trägt `errorCode`/`errorMessage`
+(ein `run.failed`-Abonnent erfuhr vorher nur *dass*); `PreviewResult` ist eine
+diskriminierte Union (`{status:'failed', error}` | `{status:'completed'}`, so
+kann kein Flag dem Grund widersprechen — CONTRIBUTING.md) und ein werfender
+Agent-Step beendet die Vorschau als `failed` statt die Route mit 500 zu beenden;
+`web-ui/app/_lib/api.ts` deklariert `startedAt`/`endedAt` endlich (die API lieferte
+sie immer, der Client-Typ kannte sie nicht); `ConductorRunTrace.tsx` zeigt Spalten
+„Dauer" und „Grund", der Code über den Katalog `conductor.runErrorCodes.*`
+mit `t.has`-Fallback (unbekannter Code → der Code selbst, nie ein Absturz und
+nie „kein Grund"; kein handgepflegtes Vokabular-Duplikat in der UI), die
+Meldung nur als Beleg daneben; Zahl über `useFormatter`, Einheit über den
+Katalog (`durationMs`/`durationSeconds`/`durationMinutes`, de also „1,5 s") —
+und `actorLabel` hängt die bisher verschluckten **booleschen** Qualifier
+(`noHolder`, `timedOut`, `ticked`, `invalid`) an. **Nur** die booleschen:
+`operator_cancel` trägt `requestedBy: <Principal>`, und wer abgebrochen hat,
+gehört nicht in die Trace-Tabelle (FR-030 „respecting existing redaction").
+
+Tests: `test/conductorRunFailureCause.test.ts` (alle sieben Pfade + Redaction +
+Trockenübung), `test/conductorRunError.pg.test.ts` (Read-back aus den Spalten,
+Dauer, unbekannter Code, Abbruch ohne Fehler),
+`web-ui/app/conductor/_components/__tests__/ConductorRunReason.test.tsx`.

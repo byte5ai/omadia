@@ -1,6 +1,8 @@
 import type { Pool } from 'pg';
 import type { JsonObject, JsonValue } from '@omadia/conductor-core';
 
+import { asRunErrorCode, type ConductorRunError, type ConductorRunErrorCode } from './runError.js';
+
 export type RunStatus = 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled';
 export type TriggerKind = 'manual' | 'cron' | 'channel' | 'agent' | 'webhook' | 'workflow' | 'event';
 
@@ -33,6 +35,12 @@ export interface ConductorRun {
    *  whoever re-drives a flagged run cancels it at the first boundary. */
   cancelRequestedBy: string | null;
   cancelRequestedAt: Date | null;
+  /** #1699 — cause of a terminal failure, copied from the step that failed so the
+   *  run LIST (which carries no steps) can name it. Null on a run that never
+   *  failed, and on one that failed before 0013 — "cause not recorded", never a
+   *  guess. */
+  errorCode: ConductorRunErrorCode | null;
+  errorMessage: string | null;
 }
 
 export interface ConductorRunStep {
@@ -45,6 +53,13 @@ export interface ConductorRunStep {
   transitionTaken: string | null;
   startedAt: Date;
   endedAt: Date | null;
+  /** #1699 — why this step did not complete normally. Also set on a step the run
+   *  RECOVERED from (a human step skipped for want of a holder, an await that
+   *  timed out into its fallback): the run ends `completed` and the operator
+   *  still needs to see it. */
+  errorCode: ConductorRunErrorCode | null;
+  errorMessage: string | null;
+  errorDetail: JsonValue | null;
 }
 
 interface RunRow {
@@ -60,6 +75,8 @@ interface RunRow {
   ended_at: Date | null;
   cancel_requested_by: string | null;
   cancel_requested_at: Date | null;
+  error_code: string | null;
+  error_message: string | null;
 }
 
 interface StepRow {
@@ -72,6 +89,9 @@ interface StepRow {
   transition_taken: string | null;
   started_at: Date;
   ended_at: Date | null;
+  error_code: string | null;
+  error_message: string | null;
+  error_detail: JsonValue | null;
 }
 
 function toRun(r: RunRow): ConductorRun {
@@ -88,6 +108,11 @@ function toRun(r: RunRow): ConductorRun {
     endedAt: r.ended_at,
     cancelRequestedBy: r.cancel_requested_by,
     cancelRequestedAt: r.cancel_requested_at,
+    // Validated against the closed vocabulary, not passed through: a code this
+    // build cannot interpret must read like a pre-0013 row. The message is kept
+    // either way — it was redacted and truncated on the way in.
+    errorCode: asRunErrorCode(r.error_code),
+    errorMessage: r.error_message,
   };
 }
 
@@ -102,11 +127,14 @@ function toStep(r: StepRow): ConductorRunStep {
     transitionTaken: r.transition_taken,
     startedAt: r.started_at,
     endedAt: r.ended_at,
+    errorCode: asRunErrorCode(r.error_code),
+    errorMessage: r.error_message,
+    errorDetail: r.error_detail,
   };
 }
 
-const RUN_COLS = `id, workflow_version_id, status, current_step_id, context, trigger_kind, trigger_source, is_dry_run, started_at, ended_at, cancel_requested_by, cancel_requested_at`;
-const STEP_COLS = `id, run_id, step_id, seq, actor, postcondition_outcome, transition_taken, started_at, ended_at`;
+const RUN_COLS = `id, workflow_version_id, status, current_step_id, context, trigger_kind, trigger_source, is_dry_run, started_at, ended_at, cancel_requested_by, cancel_requested_at, error_code, error_message`;
+const STEP_COLS = `id, run_id, step_id, seq, actor, postcondition_outcome, transition_taken, started_at, ended_at, error_code, error_message, error_detail`;
 
 /** Persistence for runs + their durable per-step record (resume checkpoint + audit trace). */
 export class ConductorRunStore {
@@ -182,14 +210,27 @@ export class ConductorRunStore {
     status: RunStatus;
     /** Driver's lease token — the run UPDATE is fenced on it (throws RunLeaseLostError on mismatch). */
     claimedBy: string;
+    /**
+     * #1699 — when this step BEGAN. Omitted, the column falls back to its
+     * `DEFAULT now()`, which is what every row carried until now: `now()` is
+     * transaction-start time and `ended_at` is set in the same statement, so
+     * `started_at == ended_at` and the duration was structurally lost for every
+     * step, not only failed ones. Callers that know the real start (the driver,
+     * which captures it before the effect runs; the await paths, which have the
+     * await's `created_at`) pass it.
+     */
+    startedAt?: Date | null;
+    /** #1699 — why the step did not complete normally (see `runError.ts`). */
+    error?: ConductorRunError | null;
   }): Promise<void> {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
       await client.query(
         `INSERT INTO conductor_run_steps
-           (run_id, step_id, seq, actor, postcondition_outcome, transition_taken, ended_at)
-         VALUES ($1, $2, $3, $4::jsonb, $5, $6, now())`,
+           (run_id, step_id, seq, actor, postcondition_outcome, transition_taken, started_at, ended_at,
+            error_code, error_message, error_detail)
+         VALUES ($1, $2, $3, $4::jsonb, $5, $6, COALESCE($7::timestamptz, now()), now(), $8, $9, $10::jsonb)`,
         [
           input.runId,
           input.stepId,
@@ -197,6 +238,10 @@ export class ConductorRunStore {
           input.actor === null ? null : JSON.stringify(input.actor),
           input.postconditionOutcome,
           input.transitionTaken,
+          input.startedAt ?? null,
+          input.error?.code ?? null,
+          input.error?.message ?? null,
+          input.error?.detail == null ? null : JSON.stringify(input.error.detail),
         ],
       );
       const ended =
@@ -206,12 +251,29 @@ export class ConductorRunStore {
         // matches and 0 rows update — we roll back (the step row too) and signal RunLeaseLostError.
         // While the run stays 'running', refresh claimed_at — the per-step heartbeat the resume
         // worker uses to tell a live drive from an orphaned one.
+        // #1699 — the run-level copy of the cause is written ONLY on the write that
+        // ends the run, and only from that write's own error: a mid-run step that
+        // recovered (a skipped human step) must not stamp the run as failed, and a
+        // later terminal write must not inherit an earlier step's cause. On a
+        // non-terminal write the columns are left exactly as they are rather than
+        // nulled, so nothing can clobber a cause already recorded.
         `UPDATE conductor_runs
             SET current_step_id = $2, context = $3::jsonb, status = $4,
                 ended_at = CASE WHEN $5 THEN now() ELSE ended_at END,
+                error_code = CASE WHEN $5 THEN $7 ELSE error_code END,
+                error_message = CASE WHEN $5 THEN $8 ELSE error_message END,
                 claimed_at = CASE WHEN $4 = 'running' THEN now() ELSE claimed_at END
           WHERE id = $1 AND claimed_by = $6`,
-        [input.runId, input.nextStepId, JSON.stringify(input.context), input.status, ended, input.claimedBy],
+        [
+          input.runId,
+          input.nextStepId,
+          JSON.stringify(input.context),
+          input.status,
+          ended,
+          input.claimedBy,
+          input.error?.code ?? null,
+          input.error?.message ?? null,
+        ],
       );
       if ((upd.rowCount ?? 0) === 0) throw new RunLeaseLostError(input.runId);
       await client.query('COMMIT');
