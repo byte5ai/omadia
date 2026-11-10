@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import express, { Router } from 'express';
 import type { RequestHandler } from 'express';
 import cookieParser from 'cookie-parser';
-import type { Server } from 'node:http';
+import http, { type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
 import {
@@ -167,6 +167,41 @@ function jsonRouter(): Router {
   return r;
 }
 
+/** POSTs over `node:http` instead of `fetch`, because `fetch` ALWAYS sets a
+ *  `Content-Type` for a string body and the case under test is a request that
+ *  carries none at all (issue #1700). Returns status + raw text. */
+async function postWithHeaders(
+  baseUrl: string,
+  path: string,
+  body: string,
+  headers: Record<string, string>,
+): Promise<{ status: number; text: string }> {
+  const { port } = new URL(baseUrl);
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        host: '127.0.0.1',
+        port: Number(port),
+        path,
+        method: 'POST',
+        headers: { 'content-length': Buffer.byteLength(body), ...headers },
+      },
+      (res) => {
+        let text = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk: string) => {
+          text += chunk;
+        });
+        res.on('end', () => {
+          resolve({ status: res.statusCode ?? 0, text });
+        });
+      },
+    );
+    req.on('error', reject);
+    req.end(body);
+  });
+}
+
 function sign(body: string): string {
   return `sha256=${crypto.createHmac('sha256', WEBHOOK_SECRET).update(Buffer.from(body)).digest('hex')}`;
 }
@@ -236,6 +271,48 @@ describe("#470 C6 — auth:'custom' + body:'raw' webhook through the generic pat
         Buffer.isBuffer(seen.body),
         `req.body should be a Buffer, got ${typeof seen.body}`,
       );
+    } finally {
+      h.server.close();
+    }
+  });
+
+  // Issue #1700 — the raw parser's content-type matcher must not decide whether
+  // signature verification sees the signed bytes. body-parser's wildcard type
+  // STRING goes through `type-is`, which needs a media type to compare against, so
+  // a request with NO `content-type` header matched nothing: `req.rawBody` stayed
+  // unset and a correctly signed delivery failed. `rawBodyCapture` uses a function
+  // matcher for exactly this request. A sender is free to omit the header — an HMAC
+  // is over bytes, not over a media type.
+  it('valid signature with NO content-type header → 200 (#1700)', async () => {
+    const { h, seen } = await setup();
+    try {
+      const body = '{"zeta":1,   "alpha":"ä ö ü", "n":[1,2,3]}';
+      const res = await postWithHeaders(h.baseUrl, `${HOOK_PREFIX}/webhook`, body, {
+        'X-Hub-Signature-256': sign(body),
+      });
+      assert.equal(res.status, 200);
+      assert.deepEqual(JSON.parse(res.text), { ok: true, bytes: Buffer.byteLength(body) });
+      assert.ok(
+        Buffer.isBuffer(seen.body),
+        `req.body should be a Buffer, got ${typeof seen.body}`,
+      );
+    } finally {
+      h.server.close();
+    }
+  });
+
+  // Same request, header PRESENT but empty — the other shape `curl -H 'content-type:'`
+  // produces, and the other one `type-is` refuses to match.
+  it('valid signature with an EMPTY content-type header → 200 (#1700)', async () => {
+    const { h } = await setup();
+    try {
+      const body = '{"a":1}';
+      const res = await postWithHeaders(h.baseUrl, `${HOOK_PREFIX}/webhook`, body, {
+        'content-type': '',
+        'X-Hub-Signature-256': sign(body),
+      });
+      assert.equal(res.status, 200);
+      assert.deepEqual(JSON.parse(res.text), { ok: true, bytes: Buffer.byteLength(body) });
     } finally {
       h.server.close();
     }

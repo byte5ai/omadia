@@ -54,6 +54,27 @@ produced a value, so no turn carried one.
   `TurnIngestResult.embeddingScheduled`.
 - `graphRefs` stays unset: `done` also reaches Public API clients, which have no
   use for internal node ids. Non-streaming replies are unchanged.
+### Fixed — raw-body webhooks: a missing `Content-Type` no longer fails the HMAC
+
+2026-11-10. Reported as #1700: a correctly signed inbound delivery sent without a
+`Content-Type` header answered `401 webhook.bad_signature`, pointing the sender at
+its signing code instead of at the header.
+
+- **The raw parsers now use a FUNCTION content-type matcher.** body-parser's
+  wildcard type *string* goes through `type-is`, which needs a media type to
+  compare against: a request with no `Content-Type` (or an empty one) matched
+  nothing, was never parsed, and the handler HMAC'd an empty buffer. An HMAC is
+  over bytes, so the sender's media type must not decide whether verification
+  sees them. Fixed for `POST /api/hooks/:endpointId`
+  (`routes/conductorWebhooksInbound.ts`) and for every plugin `body: 'raw'` route
+  (`platform/pluginRouteRegistry.ts`, `rawBodyCapture`), whose own doc comment
+  already promised the "sends nothing at all" case worked.
+- **Parsing widened, authorisation unchanged.** A wrong signature still answers
+  the same `401`, an unknown endpoint id still answers byte-for-byte that same
+  `401`, and the 256 kb limit is untouched. With no header, only the JSON parse
+  decides the outcome: valid JSON starts the run, unparseable bytes end as
+  `invalid_payload`.
+
 ### Fixed — Admin API: excerpt duplicates, skill ack, workflow version number
 
 2026-11-04. Found while building the admin interface against the Admin API.
