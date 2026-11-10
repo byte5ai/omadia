@@ -28,6 +28,8 @@ interface RecordedStep {
   actor: unknown;
   status: string;
   context: Record<string, unknown>;
+  /** #1698 — the transition the engine actually took; the seam the rejection bug lived in. */
+  transition?: string | null;
 }
 
 function humanGraph(strictApproval: boolean): WorkflowGraph {
@@ -57,8 +59,12 @@ function makeHarness(opts: {
   responses?: Array<{ responderId: string; response: unknown }>;
   cancelRequested?: boolean;
   requestCancelResult?: Record<string, unknown> | null;
+  /** #1698 — let effects RUN (recording the step ids) instead of throwing, so a test can
+   *  assert that the gated action did or did not execute. */
+  recordEffects?: boolean;
 }) {
   const recorded: RecordedStep[] = [];
+  const effectCalls: string[] = [];
   const cancelledAwaitRuns: string[] = [];
   const ended: string[] = [];
   const awaitRow = {
@@ -85,8 +91,14 @@ function makeHarness(opts: {
       (opts.run as { cancelRequestedBy?: string; cancelRequestedAt?: Date }).cancelRequestedAt = new Date();
       return opts.run;
     },
-    async recordStepAndAdvance(input: RecordedStep & { runId: string }) {
-      recorded.push({ stepId: input.stepId, actor: input.actor, status: input.status, context: input.context });
+    async recordStepAndAdvance(input: RecordedStep & { runId: string; transitionTaken?: string | null }) {
+      recorded.push({
+        stepId: input.stepId,
+        actor: input.actor,
+        status: input.status,
+        context: input.context,
+        transition: input.transitionTaken ?? null,
+      });
     },
   };
   const workflowStore = {
@@ -97,8 +109,16 @@ function makeHarness(opts: {
     runStore: runStore as never,
     awaitStore: awaitStore as never,
     effects: {
-      async runAgentStep() { throw new Error('effects must not run in these tests'); },
-      async runActionStep() { throw new Error('effects must not run in these tests'); },
+      async runAgentStep(step: { id: string }) {
+        if (!opts.recordEffects) throw new Error('effects must not run in these tests');
+        effectCalls.push(step.id);
+        return { result: { ran: true }, actor: { kind: 'agent' } };
+      },
+      async runActionStep(step: { id: string }) {
+        if (!opts.recordEffects) throw new Error('effects must not run in these tests');
+        effectCalls.push(step.id);
+        return { result: { ran: true }, actor: { kind: 'action' } };
+      },
     } as never,
     resolveRoleHolders: async () => ({
       holders: opts.holders ?? ['alice'],
@@ -107,7 +127,7 @@ function makeHarness(opts: {
     }),
     notifyRunEnded: (run) => { ended.push(String((run as { status: string }).status)); },
   });
-  return { executor, recorded, cancelledAwaitRuns, ended };
+  return { executor, recorded, cancelledAwaitRuns, ended, effectCalls };
 }
 
 const WAITING_RUN = {
@@ -242,6 +262,106 @@ describe('#759 strictApproval semantics', () => {
   });
 });
 
+// #1698 — the counterpart to the #759 tests above: those assert the approval FLAG, these
+// assert the PATH. The bug was that the two were never connected, so an explicit rejection
+// took the unguarded edge and ran the action the approval was meant to gate.
+describe('#1698 a rejection must not take an unguarded transition', () => {
+  const gatedGraph = (strictApproval: boolean, guards: boolean): WorkflowGraph =>
+    ({
+      entryStepId: 'h1',
+      steps: [
+        {
+          id: 'h1',
+          kind: 'human',
+          human: {
+            principal: { kind: 'role', ref: 'approvers' },
+            channel: 'teams',
+            message: 'ok?',
+            ...(strictApproval ? { strictApproval: true } : {}),
+          },
+        },
+        { id: 'act', kind: 'action', actionId: 'webhook.post' },
+        { id: 'denied', kind: 'action', actionId: 'act.denied' },
+      ],
+      transitions: guards
+        ? [
+            { id: 't2', source: 'h1', target: 'act', guard: { op: 'eq', path: 'stepResult.approved', value: true } },
+            { id: 't3', source: 'h1', target: 'denied', guard: { op: 'eq', path: 'stepResult.approved', value: false } },
+          ]
+        : [{ id: 't2', source: 'h1', target: 'act' }],
+    }) as unknown as WorkflowGraph;
+
+  for (const strict of [true, false]) {
+    it(`strictApproval: ${String(strict)} — {approved:false} neither takes t2 nor runs the action`, async () => {
+      const h = makeHarness({
+        graph: gatedGraph(strict, false),
+        run: { ...WAITING_RUN },
+        holders: ['alice'],
+        recordEffects: true,
+      });
+      await h.executor.resolveAwait('aw1', 'alice', { approved: false });
+      assert.equal(h.recorded.length, 1);
+      assert.equal(h.recorded[0]!.stepId, 'h1');
+      assert.equal(h.recorded[0]!.transition, null);
+      assert.equal(h.recorded[0]!.status, 'failed');
+      assert.deepEqual(h.effectCalls, []);
+    });
+  }
+
+  it('an approval still takes the unguarded transition and runs the action', async () => {
+    const h = makeHarness({
+      graph: gatedGraph(true, false),
+      run: { ...WAITING_RUN },
+      holders: ['alice'],
+      recordEffects: true,
+    });
+    await h.executor.resolveAwait('aw1', 'alice', { approved: true });
+    assert.equal(h.recorded[0]!.transition, 't2');
+    assert.deepEqual(h.effectCalls, ['act']);
+  });
+
+  it('a guarded rejection path is taken when the graph declares one', async () => {
+    const h = makeHarness({
+      graph: gatedGraph(true, true),
+      run: { ...WAITING_RUN },
+      holders: ['alice'],
+      recordEffects: true,
+    });
+    await h.executor.resolveAwait('aw1', 'alice', { approved: false });
+    assert.equal(h.recorded[0]!.transition, 't3');
+    assert.deepEqual(h.effectCalls, ['denied']);
+  });
+
+  it("quorum 'all': one rejection among the holders strands the unguarded edge", async () => {
+    const h = makeHarness({
+      graph: gatedGraph(true, false),
+      run: { ...WAITING_RUN },
+      holders: ['alice', 'bob'],
+      quorum: 'all',
+      responses: [
+        { responderId: 'alice', response: { approved: true } },
+        { responderId: 'bob', response: { approved: false } },
+      ],
+      recordEffects: true,
+    });
+    await h.executor.resolveAwait('aw1', 'bob', { approved: false });
+    assert.equal(h.recorded[0]!.transition, null);
+    assert.deepEqual(h.effectCalls, []);
+  });
+
+  it('a fail-open garbage response is NOT a rejection and keeps its path (no behaviour change)', async () => {
+    const h = makeHarness({
+      graph: gatedGraph(false, false),
+      run: { ...WAITING_RUN },
+      holders: ['alice'],
+      recordEffects: true,
+    });
+    await h.executor.resolveAwait('aw1', 'alice', {});
+    assert.equal(h.recorded[0]!.transition, 't2');
+    assert.deepEqual(h.effectCalls, ['act']);
+  });
+});
+
 describe('#759 validator warnings', () => {
   const base = (human: Record<string, unknown>, fallbackTransitionId?: string): WorkflowGraph =>
     ({
@@ -283,6 +403,67 @@ describe('#759 validator warnings', () => {
     assert.equal(result.ok, true, JSON.stringify(result.errors));
     const codes = (result.warnings ?? []).map((w) => w.code);
     assert.ok(!codes.includes('approval_fail_open'), codes.join(','));
+  });
+
+  // #1698 — the warning that fires on the shape the designer produces by default.
+  it('warns rejection_unguarded_edge for an unguarded happy-path edge out of a human step', () => {
+    const graph = {
+      entryStepId: 'h1',
+      steps: [
+        { id: 'h1', kind: 'human', human: { principal: { kind: 'role', ref: 'approvers' }, channel: 'teams', message: 'ok?', strictApproval: true } },
+        { id: 'act', kind: 'action', actionId: 'send_mail' },
+      ],
+      transitions: [{ id: 't2', source: 'h1', target: 'act' }],
+    } as unknown as WorkflowGraph;
+    const result = validate(graph);
+    assert.equal(result.ok, true, JSON.stringify(result.errors));
+    const warning = (result.warnings ?? []).find((w) => w.code === 'rejection_unguarded_edge');
+    assert.ok(warning, JSON.stringify(result.warnings));
+    // strictApproval does not silence it — the flag never decided the path (#1698).
+    assert.deepEqual(warning!.nodeIds, ['h1', 't2']);
+  });
+
+  it('warns rejection_unguarded_edge even when the unguarded edge targets a human step', () => {
+    const graph = {
+      entryStepId: 'h1',
+      steps: [
+        { id: 'h1', kind: 'human', human: { principal: { kind: 'role', ref: 'hr' }, channel: 'teams', message: 'done?' } },
+        { id: 'h2', kind: 'human', human: { principal: { kind: 'role', ref: 'it' }, channel: 'teams', message: 'done?' } },
+      ],
+      transitions: [{ id: 't2', source: 'h1', target: 'h2' }],
+    } as unknown as WorkflowGraph;
+    const codes = (validate(graph).warnings ?? []).map((w) => w.code);
+    assert.ok(codes.includes('rejection_unguarded_edge'), codes.join(','));
+    // approval_fail_open stays action-only — the two warnings say different things.
+    assert.ok(!codes.includes('approval_fail_open'), codes.join(','));
+  });
+
+  it('fully guarded outgoing transitions raise no rejection warning', () => {
+    const graph = {
+      entryStepId: 'h1',
+      steps: [
+        { id: 'h1', kind: 'human', human: { principal: { kind: 'role', ref: 'approvers' }, channel: 'teams', message: 'ok?', strictApproval: true } },
+        { id: 'act', kind: 'action', actionId: 'send_mail' },
+        { id: 'denied', kind: 'action', actionId: 'act.denied' },
+      ],
+      transitions: [
+        { id: 't-ok', source: 'h1', target: 'act', guard: { op: 'eq', path: 'stepResult.approved', value: true } },
+        { id: 't-no', source: 'h1', target: 'denied', guard: { op: 'eq', path: 'stepResult.approved', value: false } },
+      ],
+    } as unknown as WorkflowGraph;
+    const codes = (validate(graph).warnings ?? []).map((w) => w.code);
+    assert.ok(!codes.includes('rejection_unguarded_edge'), codes.join(','));
+  });
+
+  it('the declared deadline fallback alone does not raise it (a fallback is not a happy path)', () => {
+    const result = validate(
+      base(
+        { principal: { kind: 'role', ref: 'approvers' }, channel: 'teams', message: 'ok?', deadline: 'PT6H', strictApproval: true },
+        't-fb',
+      ),
+    );
+    const codes = (result.warnings ?? []).map((w) => w.code);
+    assert.ok(!codes.includes('rejection_unguarded_edge'), codes.join(','));
   });
 
   it('a clean graph carries no warnings key at all', () => {
