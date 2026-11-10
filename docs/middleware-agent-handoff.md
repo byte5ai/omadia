@@ -7378,8 +7378,54 @@ npm test                      # Node --test mit tsx-Loader, 63 Tests
 npm run smoke:entity-refs     # E2E-Smoke für EntityRef-Capture-Pfad
 ```
 
-**Nicht aufrufen:** `npm run build` — Repo-Konvention sagt
-"dev-only, typecheck + lint reichen".
+`npm run build` baut zuerst die Workspace-Pakete in Abhängigkeitsreihenfolge,
+dann den Kernel und seine Non-TS-Assets (wie im `middleware`-CI-Job).
+Ein frischer Checkout braucht diese `dist/`-Exports auch für Tests.
+
+### Amp-Orbs (2026-11-10)
+
+`.agents/setup` bereitet den Snapshot vor: Node aus der Root-`.nvmrc` für
+Kernel/Web-UI, Node 24.22.2 für Desktop-Checks, npm-Abhängigkeiten aller drei
+Lockfiles mit Dev-/Optional-Paketen, den vollständigen Middleware-/Workspace-Build,
+native SQLite-/Sharp-Probes sowie Docker Compose und Buildx. Installationen
+nutzen auf beiden Node-Versionen das mit Node 22 gelieferte npm, damit Desktop-
+Install-Skripte nicht von neueren npm-Approval-Defaults übersprungen werden.
+Downloads der Node-Archive werden per SHA-256
+geprüft. Fehlende ENV-Dateien werden aus den Vorlagen kopiert; existierende
+Dateien bleiben unverändert. Keine Logins oder produktiven Secrets im Setup.
+Modelle und optionale Python-/GPU-Sidecars werden nicht vorab heruntergeladen.
+
+Der systemd-eigene Docker-Daemon läuft automatisch. Der Container
+`omadia-orb-postgres` (`pgvector/pgvector:pg16`) veröffentlicht Port 5432
+**nur an `127.0.0.1`**. `omadia` ist die App-Datenbank, `omadia_test` die
+Wegwerf-Testdatenbank; beide haben die `vector`-Extension. Benutzer und
+Passwort sind die öffentlichen lokalen Vorlagenwerte `omadia` — niemals für
+Produktion verwenden. `fsync`, `synchronous_commit` und `full_page_writes`
+sind für Wegwerfdaten abgeschaltet. `.agents/resume` startet nur Docker und
+den vorhandenen Container und prüft seine Bereitschaft, ohne Installationen.
+
+Der einmalige Hook in `~/.bash_profile` wählt in neuen Login-Shells die
+Toolchain anhand des Git-Roots (auch in verlinkten Worktrees): unter
+`desktop/` Node 24, sonst Node 22. Wer aus dem Root `npm --prefix desktop`
+aufruft, muss Node 24 explizit im PATH setzen; die Auswahl erfolgt beim
+Shell-Start, nicht nach jedem Verzeichniswechsel.
+
+Die Test-DSNs **nicht global exportieren** und `DATABASE_URL` nicht auf die
+Testdatenbank setzen: `npm test` würde PG-Suites parallel aktivieren, während
+die CI sie bewusst seriell und getrennt ausführt. Für den PG-Lauf aus
+`middleware/`:
+
+```bash
+GRAPH_PG_TEST_URL=postgresql://omadia:omadia@127.0.0.1:5432/omadia_test \
+MEMORY_PG_TEST_URL=postgresql://omadia:omadia@127.0.0.1:5432/omadia_test \
+npm run test:pg
+```
+
+App-Server werden nicht automatisch gestartet. Bei Bedarf über
+`amp orb service start … --portal` betreiben, nicht per `nohup`/`&`.
+Portal-Manifeste unter `.amp/portals/` sind ignoriert.
+Neue Orbs nutzen dieses Setup erst nach Aufnahme auf den Projekt-Base-Branch;
+ein lokaler Feature-Commit allein aktualisiert keinen Snapshot.
 
 ### Aktuell laufende Background-Tasks
 
