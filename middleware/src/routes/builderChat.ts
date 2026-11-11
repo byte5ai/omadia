@@ -112,8 +112,16 @@ export function registerBuilderChatRoutes(
       res.flushHeaders();
 
       let clientGone = false;
+      let clientGoneResolve: (() => void) | null = null;
+      const clientGonePromise = new Promise<void>((resolve) => {
+        clientGoneResolve = resolve;
+      });
       res.on('close', () => {
-        if (!res.writableEnded) clientGone = true;
+        if (!res.writableEnded) {
+          clientGone = true;
+          clientGoneResolve?.();
+          clientGoneResolve = null;
+        }
       });
 
       const turnId = randomUUID();
@@ -136,42 +144,41 @@ export function registerBuilderChatRoutes(
       const turnTimeoutMs = deps.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS;
       const turnDeadline = Date.now() + turnTimeoutMs;
 
-      try {
-        const iterator = deps.builderAgent.runTurn({
-          draftId,
-          userEmail: email,
-          userMessage: message,
-          modelChoice,
-          turnId,
-        });
+      const turnTask = (async (): Promise<void> => {
+        try {
+          const iterator = deps.builderAgent.runTurn({
+            draftId,
+            userEmail: email,
+            userMessage: message,
+            modelChoice,
+            turnId,
+          });
 
-        for await (const ev of iterator) {
-          if (clientGone) break;
-          if (Date.now() > turnDeadline) {
-            write(
-              stamp({
-                type: 'error',
-                code: 'builder.turn_timeout',
-                message: `builder turn exceeded ${String(turnTimeoutMs)}ms`,
-              }),
-            );
-            break;
-          }
-          // Theme E0 heartbeats are pure liveness pulses. They go stale on
-          // resume (sinceLastActivityMs is wall-clock-now-relative) and
-          // would only bloat the ring buffer (180 frames per 6-min turn at
-          // a 2s cadence). Skip stamping/recording — emit raw, no id.
-          if (ev.type === 'heartbeat') {
-            if (!clientGone) {
-              res.write(`${JSON.stringify(ev)}\n`);
+          for await (const ev of iterator) {
+            if (Date.now() > turnDeadline) {
+              write(
+                stamp({
+                  type: 'error',
+                  code: 'builder.turn_timeout',
+                  message: `builder turn exceeded ${String(turnTimeoutMs)}ms`,
+                }),
+              );
+              break;
             }
-            continue;
+            // Theme E0 heartbeats are pure liveness pulses. They go stale on
+            // resume (sinceLastActivityMs is wall-clock-now-relative) and
+            // would only bloat the ring buffer (180 frames per 6-min turn at a
+            // 2s cadence). Skip stamping/recording — emit raw, no id.
+            if (ev.type === 'heartbeat') {
+              if (!clientGone) {
+                res.write(`${JSON.stringify(ev)}\n`);
+              }
+              continue;
+            }
+            write(stamp(ev));
           }
-          write(stamp(ev));
-        }
-      } catch (err) {
-        const message_ = err instanceof Error ? err.message : String(err);
-        if (!clientGone) {
+        } catch (err) {
+          const message_ = err instanceof Error ? err.message : String(err);
           console.error(
             `[builder/chat] turn failed for ${email}/${draftId}:`,
             err,
@@ -187,11 +194,14 @@ export function registerBuilderChatRoutes(
           } catch {
             // Buffer already finalised — nothing else we can do.
           }
+        } finally {
+          deps.turnRingBuffer?.finalize(turnId);
         }
-      } finally {
-        deps.turnRingBuffer?.finalize(turnId);
-        if (!res.writableEnded) res.end();
-      }
+      })();
+
+      // Disconnecting the HTTP client must not cancel the turn generator.
+      await Promise.race([turnTask, clientGonePromise]);
+      if (!clientGone && !res.writableEnded) res.end();
     },
   );
 

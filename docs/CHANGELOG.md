@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-11-11
+
+- Builder chat turns now continue draining after a client disconnects, preserving transcript persistence and replaying terminal events on reconnect.
+
 All notable changes to omadia are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),

@@ -43,6 +43,8 @@ interface TestApp {
   rebuilds: Array<{ userEmail: string; draftId: string }>;
   tmpRoot: string;
   turnRingBuffer: BuilderTurnRingBuffer | undefined;
+  askStarted: Promise<void>;
+  releaseAsk: () => void;
   close: () => Promise<void>;
 }
 
@@ -78,6 +80,7 @@ async function createTestApp(opts: {
   finalText?: string;
   toolCalls?: Array<{ id: string; name: string; input: unknown; output: string; isError?: boolean }>;
   withTurnRingBuffer?: boolean;
+  holdAsk?: boolean;
 } = {}): Promise<TestApp> {
   const tmpRoot = mkdtempSync(path.join(tmpdir(), 'builder-chat-routes-'));
   const dbPath = path.join(tmpRoot, 'drafts.db');
@@ -87,6 +90,16 @@ async function createTestApp(opts: {
   const draft = await draftStore.create(userEmail, 'Test');
   const bus = new SpecEventBus();
   const rebuilds: Array<{ userEmail: string; draftId: string }> = [];
+  let resolveAskStarted: (() => void) | null = null;
+  const askStarted = new Promise<void>((resolve) => {
+    resolveAskStarted = resolve;
+  });
+  let releaseAskPromise: (() => void) | null = null;
+  const askGate = opts.holdAsk
+    ? new Promise<void>((resolve) => {
+        releaseAskPromise = resolve;
+      })
+    : Promise.resolve();
 
   const fakeAnthropic = {} as Anthropic;
   const builderAgent = new BuilderAgent({
@@ -108,7 +121,17 @@ async function createTestApp(opts: {
       'seo-analyst': { root: tmpRoot, description: 'test reference' },
     },
     systemPromptSeed: async () => 'TEST-SEED',
-    buildSubAgent: makeFakeBuildSubAgent(opts.finalText ?? 'ok', opts.toolCalls),
+    buildSubAgent: (subOpts) => {
+      const fake = makeFakeBuildSubAgent(opts.finalText ?? 'ok', opts.toolCalls)(subOpts);
+      return {
+        async ask(question, observer) {
+          resolveAskStarted?.();
+          resolveAskStarted = null;
+          await askGate;
+          return fake.ask(question, observer);
+        },
+      };
+    },
     tools: [
       patchSpecTool as unknown as BuilderTool<unknown, unknown>,
       fillSlotTool as unknown as BuilderTool<unknown, unknown>,
@@ -149,6 +172,11 @@ async function createTestApp(opts: {
     rebuilds,
     tmpRoot,
     turnRingBuffer,
+    askStarted,
+    releaseAsk() {
+      releaseAskPromise?.();
+      releaseAskPromise = null;
+    },
     async close() {
       await new Promise<void>((resolve) => server.close(() => resolve()));
       await draftStore.close();
@@ -471,4 +499,57 @@ describe('GET /api/v1/builder/drafts/:id/turn/:turnId/resume', () => {
     // Ids are still monotonic across snapshot + tail.
     assert.deepEqual(frames.map((f) => f.id), [1, 2, 3, 4]);
   });
+  it('keeps a disconnected turn running and replayable', async () => {
+    app = await createTestApp({
+      withTurnRingBuffer: true,
+      holdAsk: true,
+      finalText: 'answer after reconnect',
+    });
+    const controller = new AbortController();
+    const response = await fetch(
+      `${app.baseUrl}/api/v1/builder/drafts/${app.draftId}/turn`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ message: 'continue after disconnect' }),
+        signal: controller.signal,
+      },
+    );
+    assert.equal(response.status, 200);
+    const reader = response.body?.getReader();
+    assert.ok(reader);
+    const first = await reader.read();
+    const firstLine = new TextDecoder().decode(first.value).trim().split('\n')[0];
+    const start = JSON.parse(firstLine) as FrameOnWire & { turnId: string };
+    assert.equal(start.type, 'turn_started');
+
+    await app.askStarted;
+    controller.abort();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    app.releaseAsk();
+
+    for (let i = 0; i < 100; i += 1) {
+      if (app.turnRingBuffer?.isFinal(start.turnId) === true) break;
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(app.turnRingBuffer?.isFinal(start.turnId), true);
+
+    const resumed = await getResume(app.baseUrl, app.draftId, start.turnId, 0);
+    assert.equal(resumed.status, 200);
+    assert.equal(
+      resumed.frames.some(
+        (frame) =>
+          frame.type === 'chat_message' &&
+          frame.role === 'assistant' &&
+          frame.text === 'answer after reconnect',
+      ),
+      true,
+    );
+    assert.equal(resumed.frames[resumed.frames.length - 1]?.type, 'turn_done');
+
+    const draft = await app.draftStore.load(app.userEmail, app.draftId);
+    assert.ok(draft);
+    assert.equal(draft.transcript.at(-1)?.content, 'answer after reconnect');
+  });
+
 });
