@@ -9006,3 +9006,37 @@ Upload des Betreibers bleibt stehen, er ist eine bewusste Wahl. Das alte Paket
 bleibt `removable_package`, bis die Installation es ersetzt.
 
 Tests: `test/storeCatalogProjection.test.ts`.
+
+### Conductor: Trigger-Payloads können das Loop-Budget nicht mehr steuern (#1702)
+
+Der Event-Router übergab die eingehende Payload unverändert als Initial-Context
+an den Executor; nur der Ephemeral-Pfad strippte die executor-eigenen Keys — die
+beiden Pfade widersprachen sich also. Ein Self-Loop mit Guard
+`lt ctx.stepAttempts.a 3` lief bei einer korrekt signierten Webhook-Payload
+`{"stepAttempts":{"a":-5}}` **acht** Mal, bei `{"a":99}` genau einmal. Wer das
+Endpoint-Secret hat, entschied damit, wie oft ein Step mit Kosten oder
+Seiteneffekten feuert. `{"steps":{…}}` konnte zusätzlich Ergebnisse für Steps
+vorlegen, die nie gelaufen sind.
+
+Die reservierten Keys (`steps`, `stepAttempts`, `transcript`, `transcriptText`)
+liegen jetzt in **einem** Modul (`src/conductor/runContext.ts`, vorher privat in
+`ephemeralRunService.ts`). `sanitizeRunContext` läuft in
+`ConductorRunExecutor.startRun` **und** `previewRun` — das ist das einzige Tor,
+durch das jede Trigger-Art geht (event/webhook, manuell `POST /:slug/runs`, cron,
+agent). `ConductorEventRouter.emit` strippt zusätzlich einmal vor der
+Filter-Auswertung, damit ein Trigger-`filter` gegen genau den Context matcht, den
+der Run danach sieht. Verschachtelte Keys bleiben unangetastet — gestrippt wird
+nur die oberste Ebene, denn nur dort liest der Executor.
+
+Für Run-Zeilen, die VOR dem Fix persistiert wurden, ist nur der Zähler gehärtet:
+`bumpStepAttempt` akzeptiert ausschließlich eine nicht-negative Ganzzahl und
+startet bei allem anderen (negativ, gebrochen, Infinity, String) wieder bei 0.
+Weiter geht es absichtlich nicht — `resumeRun`/`expireAwait` fahren aus dem
+gespeicherten Context weiter, und der enthält ab Step 1 legitim
+`steps`/`transcript`; dort zu strippen würde jeden laufenden Run um seinen
+eigenen Zustand bringen. Ein vor dem Fix gestarteter Run behält also ein
+geseedetes `ctx.steps`/`ctx.transcript` bis zu seinem Ende; neue Runs können
+keines mehr bekommen.
+
+Security: `docs/security-architecture.md` §7.
+Tests: `test/conductorReservedContextKeys.test.ts`.
