@@ -3,23 +3,38 @@ import { describe, it } from 'node:test';
 
 import type { Pool } from 'pg';
 
-import { ConductorWebhookEndpointStore, CONDUCTOR_VAULT_AGENT_ID } from '../src/conductor/webhookEndpointStore.js';
+import {
+  ConductorWebhookEndpointStore,
+  CONDUCTOR_VAULT_AGENT_ID,
+  REDELIVERABLE_OUTCOMES,
+  type WebhookInboundOutcome,
+} from '../src/conductor/webhookEndpointStore.js';
 import type { SecretVault } from '../src/secrets/vault.js';
 
 // Issue #437 — the metadata-in-Postgres / secret-in-Vault split (modeled on
 // DevGithubAppStore): the secret is never written to a conductor_webhook_endpoints
 // column, and the inbound delivery claim is a dedupe no-op on the second call.
+// Issue #1701 — plus: a row that only recorded a refusal ('disabled') is re-claimable,
+// so disabling an endpoint does not permanently swallow the sender's delivery id.
 
 interface IssuedQuery {
   sql: string;
   params: unknown[];
 }
 
-function fakePool(): { pool: Pool; queries: IssuedQuery[]; deliveryClaims: Set<string> } {
+interface FakeDeliveryRow {
+  outcome: WebhookInboundOutcome;
+  receivedAt: Date;
+}
+
+function fakePool(): { pool: Pool; queries: IssuedQuery[]; deliveryRows: Map<string, FakeDeliveryRow> } {
   const queries: IssuedQuery[] = [];
   // Keyed `${endpointId}::${deliveryId}` — the composite (endpoint_id, delivery_id)
   // PK the real table enforces, so two endpoints can each claim their own id '1'.
-  const deliveryClaims = new Set<string>();
+  // The VALUE matters as much as the key: claim()'s primary dedupe branch reads the
+  // row's `outcome`/`received_at` to decide duplicate vs. re-claim, so a fake that
+  // only tracked key existence would leave that branch (and this issue) unreachable.
+  const deliveryRows = new Map<string, FakeDeliveryRow>();
   const query = async (sql: string, params: unknown[] = []): Promise<{ rows: unknown[]; rowCount: number }> => {
     queries.push({ sql, params });
     const s = sql.replace(/\s+/g, ' ').trim();
@@ -42,28 +57,47 @@ function fakePool(): { pool: Pool; queries: IssuedQuery[]; deliveryClaims: Set<s
     if (s.startsWith('BEGIN') || s.startsWith('COMMIT') || s.startsWith('ROLLBACK') || s.startsWith('SELECT pg_advisory_xact_lock')) {
       return { rows: [], rowCount: 0 };
     }
-    if (s.startsWith('SELECT 1 FROM conductor_webhook_inbound_deliveries')) {
+    if (s.startsWith('SELECT outcome, received_at FROM conductor_webhook_inbound_deliveries')) {
       const [endpointId, deliveryId] = params as [string, string];
-      const exists = deliveryClaims.has(`${endpointId}::${deliveryId}`);
-      return { rows: exists ? [{ '?column?': 1 }] : [], rowCount: exists ? 1 : 0 };
+      const row = deliveryRows.get(`${endpointId}::${deliveryId}`);
+      return row
+        ? { rows: [{ outcome: row.outcome, received_at: row.receivedAt }], rowCount: 1 }
+        : { rows: [], rowCount: 0 };
     }
     if (s.startsWith('SELECT COUNT(*)::text AS n FROM conductor_webhook_inbound_deliveries')) {
       const [endpointId] = params as [string];
       const prefix = `${endpointId}::`;
-      const n = [...deliveryClaims].filter((k) => k.startsWith(prefix)).length;
+      const n = [...deliveryRows.keys()].filter((k) => k.startsWith(prefix)).length;
       return { rows: [{ n: String(n) }], rowCount: 1 };
     }
     if (s.startsWith('INSERT INTO conductor_webhook_inbound_deliveries')) {
       const [deliveryId, endpointId] = params as [string, string];
       const key = `${endpointId}::${deliveryId}`;
-      if (deliveryClaims.has(key)) return { rows: [], rowCount: 0 }; // ON CONFLICT DO NOTHING
-      deliveryClaims.add(key);
+      if (deliveryRows.has(key)) return { rows: [], rowCount: 0 }; // ON CONFLICT DO NOTHING
+      deliveryRows.set(key, { outcome: 'received', receivedAt: new Date() });
+      return { rows: [], rowCount: 1 };
+    }
+    // claim()'s re-claim of an abandoned / refusal-only row.
+    if (s.startsWith("UPDATE conductor_webhook_inbound_deliveries SET outcome = 'received'")) {
+      const [endpointId, deliveryId] = params as [string, string];
+      const key = `${endpointId}::${deliveryId}`;
+      if (!deliveryRows.has(key)) return { rows: [], rowCount: 0 };
+      deliveryRows.set(key, { outcome: 'received', receivedAt: new Date() });
+      return { rows: [], rowCount: 1 };
+    }
+    // setOutcome().
+    if (s.startsWith('UPDATE conductor_webhook_inbound_deliveries SET outcome = $3')) {
+      const [deliveryId, endpointId, outcome] = params as [string, string, WebhookInboundOutcome];
+      const key = `${endpointId}::${deliveryId}`;
+      const row = deliveryRows.get(key);
+      if (!row) return { rows: [], rowCount: 0 };
+      deliveryRows.set(key, { outcome, receivedAt: row.receivedAt });
       return { rows: [], rowCount: 1 };
     }
     return { rows: [], rowCount: 0 };
   };
   const pool = { query, connect: async () => ({ query, release: () => undefined }) } as unknown as Pool;
-  return { pool, queries, deliveryClaims };
+  return { pool, queries, deliveryRows };
 }
 
 const NO_RATE_LIMIT = { limit: 1_000_000, windowMs: 60_000 };
@@ -170,7 +204,7 @@ describe('ConductorWebhookEndpointStore', () => {
   });
 
   it('a rate-limited claim inserts no row — retrying the same delivery id costs nothing extra', async () => {
-    const { pool, deliveryClaims } = fakePool();
+    const { pool, deliveryRows } = fakePool();
     const { vault } = fakeVault();
     const store = new ConductorWebhookEndpointStore(pool, vault);
     const cap = { limit: 0, windowMs: 60_000 };
@@ -178,6 +212,65 @@ describe('ConductorWebhookEndpointStore', () => {
     const result = await store.claim('d-1', 'ep-1', cap);
 
     assert.equal(result, 'rate_limited');
-    assert.equal(deliveryClaims.size, 0);
+    assert.equal(deliveryRows.size, 0);
+  });
+
+  // Issue #1701 — a request answered 200 {"outcome":"disabled"} was still written to
+  // the ledger, and the dedupe check looked only at the key, so the sender's honest
+  // retry after the endpoint was enabled again was answered 'duplicate' and no run
+  // ever started: the event was lost silently.
+  describe('claim() after a delivery that only recorded a refusal (#1701)', () => {
+    it('only a refusal is redeliverable — the set is exactly { disabled }', () => {
+      // Pins the triage the constant documents: every other outcome either ran emit()
+      // ('started', 'no_subscribers'), is the sender's to fix ('invalid_payload'),
+      // never becomes a row's outcome ('duplicate') or writes no row ('rate_limited').
+      assert.deepEqual([...REDELIVERABLE_OUTCOMES].sort(), ['disabled']);
+    });
+
+    it("re-claims a 'disabled' row instead of reporting it as a duplicate", async () => {
+      const { pool, deliveryRows } = fakePool();
+      const { vault } = fakeVault();
+      const store = new ConductorWebhookEndpointStore(pool, vault);
+
+      // Endpoint disabled: the route claims the id, then finalizes 'disabled'.
+      assert.equal(await store.claim('d7', 'ep-1', NO_RATE_LIMIT), 'claimed');
+      await store.setOutcome('d7', 'ep-1', 'disabled');
+      assert.equal(deliveryRows.get('ep-1::d7')?.outcome, 'disabled');
+
+      // Endpoint enabled again, sender redelivers the SAME id — must be processable.
+      const retried = await store.claim('d7', 'ep-1', NO_RATE_LIMIT);
+
+      assert.equal(retried, 'claimed', "a delivery refused as 'disabled' must not consume the delivery id");
+      assert.equal(deliveryRows.size, 1, 're-claiming must reuse the row, not insert a second one');
+      assert.equal(deliveryRows.get('ep-1::d7')?.outcome, 'received', 're-claim resets the row to in-flight');
+    });
+
+    it('re-claims immediately — no staleness window, unlike abandoned-in-flight recovery', async () => {
+      const { pool, deliveryRows } = fakePool();
+      const { vault } = fakeVault();
+      const store = new ConductorWebhookEndpointStore(pool, vault);
+
+      await store.claim('d7', 'ep-1', NO_RATE_LIMIT);
+      await store.setOutcome('d7', 'ep-1', 'disabled');
+      // received_at is "now": a staleness-gated re-claim would still answer 'duplicate'.
+      deliveryRows.set('ep-1::d7', { outcome: 'disabled', receivedAt: new Date() });
+
+      assert.equal(await store.claim('d7', 'ep-1', NO_RATE_LIMIT), 'claimed');
+    });
+
+    it("still reports a duplicate for an outcome that DID process the event ('started', 'no_subscribers')", async () => {
+      const { pool } = fakePool();
+      const { vault } = fakeVault();
+      const store = new ConductorWebhookEndpointStore(pool, vault);
+
+      await store.claim('d-started', 'ep-1', NO_RATE_LIMIT);
+      await store.setOutcome('d-started', 'ep-1', 'started');
+      await store.claim('d-empty', 'ep-1', NO_RATE_LIMIT);
+      await store.setOutcome('d-empty', 'ep-1', 'no_subscribers');
+
+      // emit() already ran for both — re-claiming would re-route a handled event.
+      assert.equal(await store.claim('d-started', 'ep-1', NO_RATE_LIMIT), 'duplicate');
+      assert.equal(await store.claim('d-empty', 'ep-1', NO_RATE_LIMIT), 'duplicate');
+    });
   });
 });
