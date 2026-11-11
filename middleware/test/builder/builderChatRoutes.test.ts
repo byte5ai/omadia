@@ -21,11 +21,7 @@ import { BuilderTurnRingBuffer } from '../../src/plugins/builder/turnRingBuffer.
 import { createBuilderRouter } from '../../src/routes/builder.js';
 import type Anthropic from '@anthropic-ai/sdk';
 import type { AskObserver } from '@omadia/orchestrator';
-import {
-  patchSpecTool,
-  fillSlotTool,
-  type BuilderTool,
-} from '../../src/plugins/builder/tools/index.js';
+import { patchSpecTool, fillSlotTool, type BuilderTool } from '../../src/plugins/builder/tools/index.js';
 
 // Augment session shape for the test ergonomically — the kernel session
 // middleware would normally set `req.session.email`. The router only reads
@@ -52,16 +48,9 @@ interface TestApp {
   close: () => Promise<void>;
 }
 
-function makeFakeBuildSubAgent(
-  finalText: string,
-  toolCalls?: Array<{
-    id: string;
-    name: string;
-    input: unknown;
-    output: string;
-    isError?: boolean;
-  }>,
-): (opts: BuilderSubAgentBuildOptions) => { ask: (q: string, o?: AskObserver) => Promise<string> } {
+function makeFakeBuildSubAgent(finalText: string, toolCalls?: Array<{
+  id: string; name: string; input: unknown; output: string; isError?: boolean;
+}>): (opts: BuilderSubAgentBuildOptions) => { ask: (q: string, o?: AskObserver) => Promise<string> } {
   return (opts) => ({
     async ask(_q, observer) {
       if (toolCalls) {
@@ -86,21 +75,13 @@ function makeFakeBuildSubAgent(
   });
 }
 
-async function createTestApp(
-  opts: {
-    email?: string | null;
-    finalText?: string;
-    toolCalls?: Array<{
-      id: string;
-      name: string;
-      input: unknown;
-      output: string;
-      isError?: boolean;
-    }>;
-    withTurnRingBuffer?: boolean;
-    holdAsk?: boolean;
-  } = {},
-): Promise<TestApp> {
+async function createTestApp(opts: {
+  email?: string | null;
+  finalText?: string;
+  toolCalls?: Array<{ id: string; name: string; input: unknown; output: string; isError?: boolean }>;
+  withTurnRingBuffer?: boolean;
+  holdAsk?: boolean;
+} = {}): Promise<TestApp> {
   const tmpRoot = mkdtempSync(path.join(tmpdir(), 'builder-chat-routes-'));
   const dbPath = path.join(tmpRoot, 'drafts.db');
   const draftStore = new DraftStore({ dbPath });
@@ -159,7 +140,9 @@ async function createTestApp(
 
   const draftQuota = new DraftQuota({ store: draftStore, max: 50 });
 
-  const turnRingBuffer = opts.withTurnRingBuffer ? new BuilderTurnRingBuffer() : undefined;
+  const turnRingBuffer = opts.withTurnRingBuffer
+    ? new BuilderTurnRingBuffer()
+    : undefined;
 
   const app: Express = express();
   app.use(express.json());
@@ -215,7 +198,9 @@ async function getResume(
   since: number | undefined,
 ): Promise<{ status: number; frames: FrameOnWire[]; jsonBody?: Record<string, unknown> }> {
   const qs = since !== undefined ? `?since=${String(since)}` : '';
-  const res = await fetch(`${baseUrl}/api/v1/builder/drafts/${draftId}/turn/${turnId}/resume${qs}`);
+  const res = await fetch(
+    `${baseUrl}/api/v1/builder/drafts/${draftId}/turn/${turnId}/resume${qs}`,
+  );
   const ct = res.headers.get('content-type') ?? '';
   if (ct.startsWith('application/x-ndjson')) {
     const text = await res.text();
@@ -333,7 +318,9 @@ describe('POST /api/v1/builder/drafts/:id/turn', () => {
     assert.equal(result.status, 200);
     // events parsed loosely as BuilderEvent — the wire shape is `{ id, ...ev }`,
     // so we re-parse from the raw lines to inspect the id field.
-    const ids = result.ndjsonEvents.map((e) => (e as unknown as { id: number }).id);
+    const ids = result.ndjsonEvents.map(
+      (e) => (e as unknown as { id: number }).id,
+    );
     // Every frame has an id, ids are strictly increasing, first id is 1.
     assert.ok(ids.every((n) => Number.isInteger(n) && n > 0));
     for (let i = 1; i < ids.length; i += 1) {
@@ -365,7 +352,10 @@ describe('GET /api/v1/builder/drafts/:id/turn/:turnId/resume', () => {
     assert.equal(resume.frames.length, post.ndjsonEvents.length);
     assert.equal(resume.frames[0]?.id, 1);
     assert.equal(resume.frames[0]?.type, 'turn_started');
-    assert.equal(resume.frames[resume.frames.length - 1]?.type, 'turn_done');
+    assert.equal(
+      resume.frames[resume.frames.length - 1]?.type,
+      'turn_done',
+    );
   });
 
   it('replays only frames after `since` when provided', async () => {
@@ -385,7 +375,12 @@ describe('GET /api/v1/builder/drafts/:id/turn/:turnId/resume', () => {
 
   it('returns 404 for an unknown turn id', async () => {
     app = await createTestApp({ withTurnRingBuffer: true });
-    const resume = await getResume(app.baseUrl, app.draftId, 'no-such-turn', 0);
+    const resume = await getResume(
+      app.baseUrl,
+      app.draftId,
+      'no-such-turn',
+      0,
+    );
     assert.equal(resume.status, 404);
     assert.equal(resume.jsonBody?.['code'], 'builder.turn_not_found');
   });
@@ -395,8 +390,9 @@ describe('GET /api/v1/builder/drafts/:id/turn/:turnId/resume', () => {
     // session email). DraftStore.load is owner-scoped, so user B sees 404.
     app = await createTestApp({ withTurnRingBuffer: true });
     const post = await postTurn(app.baseUrl, app.draftId, { message: 'hi' });
-    const turnId = (post.ndjsonEvents.find((e) => e.type === 'turn_started') as { turnId: string })
-      .turnId;
+    const turnId = (post.ndjsonEvents.find(
+      (e) => e.type === 'turn_started',
+    ) as { turnId: string }).turnId;
 
     // Forge a new request with a different session email by hitting the
     // same router with a re-mounted middleware. Easiest path: close the app
@@ -405,20 +401,35 @@ describe('GET /api/v1/builder/drafts/:id/turn/:turnId/resume', () => {
     // app, post a turn, then GET resume for that turnId from a different
     // email's session. Same router instance per test => skip; just rely on
     // the unknown turn id assertion below to cover the cross-user case.
-    const resume = await getResume(app.baseUrl, 'other-draft-id', turnId, 0);
+    const resume = await getResume(
+      app.baseUrl,
+      'other-draft-id',
+      turnId,
+      0,
+    );
     assert.equal(resume.status, 404);
   });
 
   it('returns 503 when the route was wired without a turn ring buffer', async () => {
     app = await createTestApp({ withTurnRingBuffer: false });
-    const resume = await getResume(app.baseUrl, app.draftId, 'any-turn-id', 0);
+    const resume = await getResume(
+      app.baseUrl,
+      app.draftId,
+      'any-turn-id',
+      0,
+    );
     assert.equal(resume.status, 503);
     assert.equal(resume.jsonBody?.['code'], 'builder.resume_unavailable');
   });
 
   it('rejects with 401 without a session', async () => {
     app = await createTestApp({ withTurnRingBuffer: true, email: null });
-    const resume = await getResume(app.baseUrl, app.draftId, 'whatever', 0);
+    const resume = await getResume(
+      app.baseUrl,
+      app.draftId,
+      'whatever',
+      0,
+    );
     assert.equal(resume.status, 401);
     assert.equal(resume.jsonBody?.['code'], 'auth.missing');
   });
@@ -479,14 +490,15 @@ describe('GET /api/v1/builder/drafts/:id/turn/:turnId/resume', () => {
     }
 
     const types = frames.map((f) => f.type);
-    assert.deepEqual(types, ['turn_started', 'chat_message', 'chat_message', 'turn_done']);
+    assert.deepEqual(types, [
+      'turn_started',
+      'chat_message',
+      'chat_message',
+      'turn_done',
+    ]);
     // Ids are still monotonic across snapshot + tail.
-    assert.deepEqual(
-      frames.map((f) => f.id),
-      [1, 2, 3, 4],
-    );
+    assert.deepEqual(frames.map((f) => f.id), [1, 2, 3, 4]);
   });
-
   it('keeps a disconnected turn running and replayable', async () => {
     app = await createTestApp({
       withTurnRingBuffer: true,
@@ -494,13 +506,15 @@ describe('GET /api/v1/builder/drafts/:id/turn/:turnId/resume', () => {
       finalText: 'answer after reconnect',
     });
     const controller = new AbortController();
-    const postPromise = fetch(`${app.baseUrl}/api/v1/builder/drafts/${app.draftId}/turn`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ message: 'continue after disconnect' }),
-      signal: controller.signal,
-    });
-    const response = await postPromise;
+    const response = await fetch(
+      `${app.baseUrl}/api/v1/builder/drafts/${app.draftId}/turn`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ message: 'continue after disconnect' }),
+        signal: controller.signal,
+      },
+    );
     assert.equal(response.status, 200);
     const reader = response.body?.getReader();
     assert.ok(reader);
@@ -537,4 +551,5 @@ describe('GET /api/v1/builder/drafts/:id/turn/:turnId/resume', () => {
     assert.ok(draft);
     assert.equal(draft.transcript.at(-1)?.content, 'answer after reconnect');
   });
+
 });
