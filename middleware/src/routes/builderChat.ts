@@ -5,10 +5,7 @@ import type { BuilderAgent, BuilderEvent } from '../plugins/builder/builderAgent
 import type { DraftStore } from '../plugins/builder/draftStore.js';
 import { BuilderModelRegistry } from '../plugins/builder/modelRegistry.js';
 import type { BuilderModelId } from '../plugins/builder/types.js';
-import type {
-  BuilderTurnRingBuffer,
-  StampedFrame,
-} from '../plugins/builder/turnRingBuffer.js';
+import type { BuilderTurnRingBuffer, StampedFrame } from '../plugins/builder/turnRingBuffer.js';
 
 /**
  * Builder chat-surface routes.
@@ -47,95 +44,96 @@ const DEFAULT_TURN_TIMEOUT_MS = 900_000;
  * Mounts the builder chat routes onto an existing router. Idempotent against
  * the same router instance — caller must guarantee a single registration.
  */
-export function registerBuilderChatRoutes(
-  router: Router,
-  deps: BuilderChatDeps,
-): void {
-  router.post(
-    '/drafts/:id/turn',
-    async (req: Request, res: Response) => {
-      const email = readEmail(req);
-      if (!email) {
-        sendJson(res, 401, { code: 'auth.missing', message: 'no session' });
-        return;
-      }
-      const draftId = readId(req);
-      if (!draftId) {
-        sendJson(res, 400, {
-          code: 'builder.invalid_id',
-          message: 'missing :id',
-        });
-        return;
-      }
-
-      const body = (req.body ?? {}) as { message?: unknown; model?: unknown };
-      if (typeof body.message !== 'string' || body.message.trim().length === 0) {
-        sendJson(res, 400, {
-          code: 'builder.invalid_message',
-          message: 'message must be a non-empty string',
-        });
-        return;
-      }
-      const message = body.message;
-
-      let modelChoice: BuilderModelId;
-      if (body.model === undefined) {
-        const draft = await deps.draftStore.load(email, draftId);
-        if (!draft) {
-          sendJson(res, 404, {
-            code: 'builder.draft_not_found',
-            message: `kein Draft mit id '${draftId}'`,
-          });
-          return;
-        }
-        modelChoice = draft.codegenModel;
-      } else if (
-        typeof body.model === 'string' &&
-        BuilderModelRegistry.has(body.model)
-      ) {
-        modelChoice = body.model;
-      } else {
-        sendJson(res, 400, {
-          code: 'builder.invalid_model',
-          message:
-            `model '${String(body.model)}' ist in keinem konfigurierten ` +
-            `LLM-Provider registriert`,
-        });
-        return;
-      }
-
-      // Open the NDJSON stream.
-      res.status(200);
-      res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
-      res.setHeader('Cache-Control', 'no-cache, no-transform');
-      res.setHeader('X-Accel-Buffering', 'no');
-      res.flushHeaders();
-
-      let clientGone = false;
-      res.on('close', () => {
-        if (!res.writableEnded) clientGone = true;
+export function registerBuilderChatRoutes(router: Router, deps: BuilderChatDeps): void {
+  router.post('/drafts/:id/turn', async (req: Request, res: Response) => {
+    const email = readEmail(req);
+    if (!email) {
+      sendJson(res, 401, { code: 'auth.missing', message: 'no session' });
+      return;
+    }
+    const draftId = readId(req);
+    if (!draftId) {
+      sendJson(res, 400, {
+        code: 'builder.invalid_id',
+        message: 'missing :id',
       });
+      return;
+    }
 
-      const turnId = randomUUID();
-      deps.turnRingBuffer?.start(turnId);
+    const body = (req.body ?? {}) as { message?: unknown; model?: unknown };
+    if (typeof body.message !== 'string' || body.message.trim().length === 0) {
+      sendJson(res, 400, {
+        code: 'builder.invalid_message',
+        message: 'message must be a non-empty string',
+      });
+      return;
+    }
+    const message = body.message;
 
-      // Local fallback id when no ring buffer is wired — keeps the wire
-      // format identical so consumers don't need to special-case the
-      // missing-buffer setup.
-      let localId = 0;
-      const stamp = (ev: BuilderEvent): StampedFrame => {
-        if (deps.turnRingBuffer) return deps.turnRingBuffer.record(turnId, ev);
-        localId += 1;
-        return { id: localId, ev };
-      };
-      const write = (frame: StampedFrame): void => {
-        if (clientGone) return;
-        res.write(`${JSON.stringify(framePayload(frame))}\n`);
-      };
+    let modelChoice: BuilderModelId;
+    if (body.model === undefined) {
+      const draft = await deps.draftStore.load(email, draftId);
+      if (!draft) {
+        sendJson(res, 404, {
+          code: 'builder.draft_not_found',
+          message: `kein Draft mit id '${draftId}'`,
+        });
+        return;
+      }
+      modelChoice = draft.codegenModel;
+    } else if (typeof body.model === 'string' && BuilderModelRegistry.has(body.model)) {
+      modelChoice = body.model;
+    } else {
+      sendJson(res, 400, {
+        code: 'builder.invalid_model',
+        message:
+          `model '${String(body.model)}' ist in keinem konfigurierten ` +
+          `LLM-Provider registriert`,
+      });
+      return;
+    }
 
-      const turnTimeoutMs = deps.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS;
-      const turnDeadline = Date.now() + turnTimeoutMs;
+    // Open the NDJSON stream.
+    res.status(200);
+    res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders();
 
+    let clientGone = false;
+    let clientGoneResolve: (() => void) | null = null;
+    const clientGonePromise = new Promise<void>((resolve) => {
+      clientGoneResolve = resolve;
+    });
+    res.on('close', () => {
+      if (!res.writableEnded) {
+        clientGone = true;
+        clientGoneResolve?.();
+        clientGoneResolve = null;
+      }
+    });
+
+    const turnId = randomUUID();
+    deps.turnRingBuffer?.start(turnId);
+
+    // Local fallback id when no ring buffer is wired — keeps the wire
+    // format identical so consumers don't need to special-case the
+    // missing-buffer setup.
+    let localId = 0;
+    const stamp = (ev: BuilderEvent): StampedFrame => {
+      if (deps.turnRingBuffer) return deps.turnRingBuffer.record(turnId, ev);
+      localId += 1;
+      return { id: localId, ev };
+    };
+    const write = (frame: StampedFrame): void => {
+      if (clientGone) return;
+      res.write(`${JSON.stringify(framePayload(frame))}\n`);
+    };
+
+    const turnTimeoutMs = deps.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS;
+    const turnDeadline = Date.now() + turnTimeoutMs;
+
+    const turnTask = (async (): Promise<void> => {
       try {
         const iterator = deps.builderAgent.runTurn({
           draftId,
@@ -146,7 +144,6 @@ export function registerBuilderChatRoutes(
         });
 
         for await (const ev of iterator) {
-          if (clientGone) break;
           if (Date.now() > turnDeadline) {
             write(
               stamp({
@@ -171,11 +168,19 @@ export function registerBuilderChatRoutes(
         }
       } catch (err) {
         const message_ = err instanceof Error ? err.message : String(err);
+        if (clientGone) {
+          try {
+            stamp({
+              type: 'error',
+              code: 'builder.chat_failed',
+              message: message_,
+            });
+          } catch {
+            // Buffer already finalised �?nothing else we can do.
+          }
+        }
         if (!clientGone) {
-          console.error(
-            `[builder/chat] turn failed for ${email}/${draftId}:`,
-            err,
-          );
+          console.error(`[builder/chat] turn failed for ${email}/${draftId}:`, err);
           try {
             write(
               stamp({
@@ -190,138 +195,139 @@ export function registerBuilderChatRoutes(
         }
       } finally {
         deps.turnRingBuffer?.finalize(turnId);
-        if (!res.writableEnded) res.end();
       }
-    },
-  );
+    })();
+
+    // Return promptly after disconnect while the supervised task continues
+    // draining the iterator and recording replayable terminal events.
+    await Promise.race([turnTask, clientGonePromise]);
+    if (!clientGone && !res.writableEnded) res.end();
+  });
 
   // ── GET /drafts/:id/turn/:turnId/resume ────────────────────────────────
-  router.get(
-    '/drafts/:id/turn/:turnId/resume',
-    async (req: Request, res: Response) => {
-      const email = readEmail(req);
-      if (!email) {
-        sendJson(res, 401, { code: 'auth.missing', message: 'no session' });
-        return;
-      }
-      const draftId = readId(req);
-      if (!draftId) {
-        sendJson(res, 400, {
-          code: 'builder.invalid_id',
-          message: 'missing :id',
-        });
-        return;
-      }
-      const turnId = readTurnId(req);
-      if (!turnId) {
-        sendJson(res, 400, {
-          code: 'builder.invalid_turn_id',
-          message: 'missing :turnId',
-        });
-        return;
-      }
-      if (!deps.turnRingBuffer) {
-        sendJson(res, 503, {
-          code: 'builder.resume_unavailable',
-          message: 'turn replay buffer is not wired',
-        });
-        return;
-      }
-
-      // Owner-scope guard: don't allow user A to peek at user B's turns
-      // even if they happen to know the turnId. We rely on the draft id
-      // being owner-scoped (DraftStore.load filters on email).
-      const draft = await deps.draftStore.load(email, draftId);
-      if (!draft) {
-        sendJson(res, 404, {
-          code: 'builder.draft_not_found',
-          message: `kein Draft mit id '${draftId}'`,
-        });
-        return;
-      }
-
-      const since = parseSince(req.query['since']);
-
-      const isFinal = deps.turnRingBuffer.isFinal(turnId);
-      if (isFinal === null) {
-        sendJson(res, 404, {
-          code: 'builder.turn_not_found',
-          message: `kein replay-buffer für turn '${turnId}' (unbekannt oder GC'd)`,
-        });
-        return;
-      }
-
-      // Open the resume stream.
-      res.status(200);
-      res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
-      res.setHeader('Cache-Control', 'no-cache, no-transform');
-      res.setHeader('X-Accel-Buffering', 'no');
-      res.flushHeaders();
-
-      let clientGone = false;
-      res.on('close', () => {
-        if (!res.writableEnded) clientGone = true;
+  router.get('/drafts/:id/turn/:turnId/resume', async (req: Request, res: Response) => {
+    const email = readEmail(req);
+    if (!email) {
+      sendJson(res, 401, { code: 'auth.missing', message: 'no session' });
+      return;
+    }
+    const draftId = readId(req);
+    if (!draftId) {
+      sendJson(res, 400, {
+        code: 'builder.invalid_id',
+        message: 'missing :id',
       });
+      return;
+    }
+    const turnId = readTurnId(req);
+    if (!turnId) {
+      sendJson(res, 400, {
+        code: 'builder.invalid_turn_id',
+        message: 'missing :turnId',
+      });
+      return;
+    }
+    if (!deps.turnRingBuffer) {
+      sendJson(res, 503, {
+        code: 'builder.resume_unavailable',
+        message: 'turn replay buffer is not wired',
+      });
+      return;
+    }
 
-      const writeFrame = (frame: StampedFrame): void => {
-        if (clientGone) return;
-        res.write(`${JSON.stringify(framePayload(frame))}\n`);
-      };
+    // Owner-scope guard: don't allow user A to peek at user B's turns
+    // even if they happen to know the turnId. We rely on the draft id
+    // being owner-scoped (DraftStore.load filters on email).
+    const draft = await deps.draftStore.load(email, draftId);
+    if (!draft) {
+      sendJson(res, 404, {
+        code: 'builder.draft_not_found',
+        message: `kein Draft mit id '${draftId}'`,
+      });
+      return;
+    }
 
-      // Replay buffered frames first (deterministic, ordered).
-      const buffered = deps.turnRingBuffer.snapshot(turnId, since) ?? [];
-      let highestId = since;
-      for (const frame of buffered) {
-        if (clientGone) break;
-        writeFrame(frame);
-        if (frame.id > highestId) highestId = frame.id;
-      }
+    const since = parseSince(req.query['since']);
 
-      if (clientGone) {
-        if (!res.writableEnded) res.end();
+    const isFinal = deps.turnRingBuffer.isFinal(turnId);
+    if (isFinal === null) {
+      sendJson(res, 404, {
+        code: 'builder.turn_not_found',
+        message: `kein replay-buffer für turn '${turnId}' (unbekannt oder GC'd)`,
+      });
+      return;
+    }
+
+    // Open the resume stream.
+    res.status(200);
+    res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders();
+
+    let clientGone = false;
+    res.on('close', () => {
+      if (!res.writableEnded) clientGone = true;
+    });
+
+    const writeFrame = (frame: StampedFrame): void => {
+      if (clientGone) return;
+      res.write(`${JSON.stringify(framePayload(frame))}\n`);
+    };
+
+    // Replay buffered frames first (deterministic, ordered).
+    const buffered = deps.turnRingBuffer.snapshot(turnId, since) ?? [];
+    let highestId = since;
+    for (const frame of buffered) {
+      if (clientGone) break;
+      writeFrame(frame);
+      if (frame.id > highestId) highestId = frame.id;
+    }
+
+    if (clientGone) {
+      if (!res.writableEnded) res.end();
+      return;
+    }
+    if (deps.turnRingBuffer.isFinal(turnId)) {
+      // Replay-only path — buffer is final, snapshot drained.
+      res.end();
+      return;
+    }
+
+    // Live-tail path — subscribe and forward frames as they land. Skip any
+    // frames the snapshot already covered to avoid double-delivery in the
+    // race window between snapshot() and subscribe().
+    await new Promise<void>((resolve) => {
+      if (!deps.turnRingBuffer) {
+        resolve();
         return;
       }
-      if (deps.turnRingBuffer.isFinal(turnId)) {
-        // Replay-only path — buffer is final, snapshot drained.
-        res.end();
-        return;
-      }
-
-      // Live-tail path — subscribe and forward frames as they land. Skip any
-      // frames the snapshot already covered to avoid double-delivery in the
-      // race window between snapshot() and subscribe().
-      await new Promise<void>((resolve) => {
-        if (!deps.turnRingBuffer) {
-          resolve();
-          return;
-        }
-        const unsubscribe = deps.turnRingBuffer.subscribe(
-          turnId,
-          (frame) => {
-            if (clientGone) {
-              unsubscribe();
-              resolve();
-              return;
-            }
-            if (frame.id <= highestId) return;
-            highestId = frame.id;
-            writeFrame(frame);
-          },
-          () => {
+      const unsubscribe = deps.turnRingBuffer.subscribe(
+        turnId,
+        (frame) => {
+          if (clientGone) {
             unsubscribe();
             resolve();
-          },
-        );
-        const onClose = (): void => {
+            return;
+          }
+          if (frame.id <= highestId) return;
+          highestId = frame.id;
+          writeFrame(frame);
+        },
+        () => {
           unsubscribe();
           resolve();
-        };
-        res.once('close', onClose);
-      });
+        },
+      );
+      const onClose = (): void => {
+        unsubscribe();
+        resolve();
+      };
+      res.once('close', onClose);
+    });
 
-      if (!res.writableEnded) res.end();
-    },
-  );
+    if (!res.writableEnded) res.end();
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -357,10 +363,6 @@ function parseSince(raw: unknown): number {
   return parsed;
 }
 
-function sendJson(
-  res: Response,
-  status: number,
-  body: Record<string, unknown>,
-): void {
+function sendJson(res: Response, status: number, body: Record<string, unknown>): void {
   res.status(status).json(body);
 }
