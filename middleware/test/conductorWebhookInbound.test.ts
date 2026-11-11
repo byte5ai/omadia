@@ -9,8 +9,10 @@ import {
   createConductorWebhooksInboundRouter,
   type ConductorWebhookInboundDeps,
   type ConductorWebhookEmitResult,
+  type ConductorWebhookInboundEndpoint,
 } from '../src/routes/conductorWebhooksInbound.js';
 import type { WebhookClaimResult, WebhookInboundOutcome } from '../src/conductor/webhookEndpointStore.js';
+import { REDELIVERABLE_OUTCOMES } from '../src/conductor/webhookEndpointStore.js';
 import { listenLoopback } from './_helpers/listenLoopback.js';
 
 // Issue #437 — inbound Conductor webhook route: signature-first verification
@@ -28,6 +30,9 @@ function sign(secret: string, body: string): string {
 
 interface Harness {
   base: string;
+  /** The single known endpoint, by reference — mutate `enabled` mid-test to model an
+   *  operator flipping the endpoint off and on again (issue #1701). */
+  endpoint: ConductorWebhookInboundEndpoint;
   outcomes: Map<string, WebhookInboundOutcome>;
   emitCalls: Array<{ eventId: string; source: string }>;
   close: () => Promise<void>;
@@ -35,35 +40,48 @@ interface Harness {
 
 async function harness(
   over: Partial<ConductorWebhookInboundDeps> = {},
-  opts: { rateLimit?: number; jsonParserFirst?: boolean } = {},
+  opts: { rateLimit?: number; jsonParserFirst?: boolean; endpointEnabled?: boolean } = {},
 ): Promise<Harness> {
   // Keyed `${endpointId}::${deliveryId}` — mirrors the store's composite PK scoping
-  // (finding: a global key would misread endpoint B's id '1' as a dupe of A's).
-  const claimed = new Set<string>();
+  // (finding: a global key would misread endpoint B's id '1' as a dupe of A's). The
+  // VALUE is the row's recorded outcome, because the real claim() decides duplicate
+  // vs. re-claim from it — and this fake asks the PRODUCTION set (not a hand-copied
+  // list), so adding an outcome to REDELIVERABLE_OUTCOMES cannot leave this harness
+  // quietly asserting the old behaviour.
+  const ledger = new Map<string, WebhookInboundOutcome>();
   const perEndpointCount = new Map<string, number>();
   const outcomes = new Map<string, WebhookInboundOutcome>();
   const emitCalls: Array<{ eventId: string; source: string }> = [];
   const rateLimit = opts.rateLimit ?? Number.POSITIVE_INFINITY;
+  const endpoint: ConductorWebhookInboundEndpoint = {
+    eventId: 'orders.created',
+    enabled: opts.endpointEnabled ?? true,
+  };
 
   const deps: ConductorWebhookInboundDeps = {
     enabled: true,
-    getEndpoint: async (endpointId) =>
-      endpointId === ENDPOINT_ID ? { eventId: 'orders.created', enabled: true } : null,
+    getEndpoint: async (endpointId) => (endpointId === ENDPOINT_ID ? endpoint : null),
     getSecret: async (endpointId) => (endpointId === ENDPOINT_ID ? SECRET : undefined),
     claim: async (deliveryId, endpointId): Promise<WebhookClaimResult> => {
       // Dedupe BEFORE the rate check — a redelivery of an id already claimed by
       // this endpoint must never be misreported as rate-limited just because the
       // endpoint is currently busy with other (unique) deliveries.
       const key = `${endpointId}::${deliveryId}`;
-      if (claimed.has(key)) return 'duplicate';
-      const count = perEndpointCount.get(endpointId) ?? 0;
-      if (count >= rateLimit) return 'rate_limited';
-      claimed.add(key);
-      perEndpointCount.set(endpointId, count + 1);
+      const recorded = ledger.get(key);
+      // Issue #1701: a row whose outcome never reached emit() does not consume the
+      // delivery id — the store re-claims it instead of answering 'duplicate'.
+      if (recorded !== undefined && !REDELIVERABLE_OUTCOMES.has(recorded)) return 'duplicate';
+      if (recorded === undefined) {
+        const count = perEndpointCount.get(endpointId) ?? 0;
+        if (count >= rateLimit) return 'rate_limited';
+        perEndpointCount.set(endpointId, count + 1);
+      }
+      ledger.set(key, 'received');
       return 'claimed';
     },
-    setOutcome: async (deliveryId, _endpointId, outcome) => {
+    setOutcome: async (deliveryId, endpointId, outcome) => {
       outcomes.set(deliveryId, outcome);
+      ledger.set(`${endpointId}::${deliveryId}`, outcome);
     },
     emit: async (eventId, _payload, source): Promise<ConductorWebhookEmitResult> => {
       emitCalls.push({ eventId, source });
@@ -84,7 +102,13 @@ async function harness(
   app.use(createConductorWebhooksInboundRouter(() => deps));
   const server = await listenLoopback(app);
   const port = (server.address() as AddressInfo).port;
-  return { base: `http://127.0.0.1:${port}`, outcomes, emitCalls, close: () => new Promise((r) => server.close(() => r())) };
+  return {
+    base: `http://127.0.0.1:${port}`,
+    endpoint,
+    outcomes,
+    emitCalls,
+    close: () => new Promise((r) => server.close(() => r())),
+  };
 }
 
 interface PostOpts {
@@ -190,6 +214,58 @@ describe('conductor webhook inbound route', () => {
       assert.equal(r.json['outcome'], 'disabled');
       assert.equal(h.outcomes.get('d-6'), 'disabled');
       assert.equal(h.emitCalls.length, 0);
+    } finally {
+      await h.close();
+    }
+  });
+
+  // Issue #1701 — the reported repro, end to end: a request to a disabled endpoint is
+  // answered 200 {"outcome":"disabled"} and recorded, and the sender's redelivery of
+  // the SAME delivery id after the endpoint is enabled again used to be answered
+  // 'duplicate' with no run started — the event was lost silently.
+  it('a delivery refused while disabled is redeliverable once the endpoint is enabled again', async () => {
+    const h = await harness({}, { endpointEnabled: false });
+    try {
+      const body = JSON.stringify({ orderId: 7 });
+
+      const refused = await post(h.base, body, { deliveryId: 'd7' });
+      assert.equal(refused.status, 200);
+      assert.equal(refused.json['outcome'], 'disabled');
+      assert.equal(h.outcomes.get('d7'), 'disabled', 'the refusal is still recorded for the operator audit');
+      assert.equal(h.emitCalls.length, 0);
+
+      h.endpoint.enabled = true;
+      const retried = await post(h.base, body, { deliveryId: 'd7' });
+
+      assert.equal(retried.status, 202);
+      assert.equal(retried.json['outcome'], 'started');
+      assert.equal(h.emitCalls.length, 1, 'the redelivery must actually start a run');
+      assert.equal(h.outcomes.get('d7'), 'started');
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('a delivery that already started a run stays a duplicate across an endpoint off/on cycle', async () => {
+    const h = await harness();
+    try {
+      const body = JSON.stringify({ orderId: 8 });
+      assert.equal((await post(h.base, body, { deliveryId: 'd8' })).status, 202);
+
+      // Redelivered while the endpoint is OFF: answered from the ledger before the
+      // enabled check, so the 'started' row is never overwritten with 'disabled' —
+      // which would otherwise make the delivery re-runnable after the next enable.
+      h.endpoint.enabled = false;
+      const whileOff = await post(h.base, body, { deliveryId: 'd8' });
+      assert.equal(whileOff.json['outcome'], 'duplicate');
+      assert.equal(h.outcomes.get('d8'), 'started');
+
+      // And enabling it again does not resurrect a delivery that already ran.
+      h.endpoint.enabled = true;
+      const whileOn = await post(h.base, body, { deliveryId: 'd8' });
+
+      assert.equal(whileOn.json['outcome'], 'duplicate');
+      assert.equal(h.emitCalls.length, 1);
     } finally {
       await h.close();
     }

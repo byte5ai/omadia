@@ -27,10 +27,18 @@
  *      how many workflow runs one endpoint can start — a request over the cap gets
  *      429 and consumes no delivery id (nothing is recorded, so it costs the sender
  *      nothing to retry once the window rolls forward).
- *   3. From there every branch finalizes exactly one terminal outcome — a silent
- *      drop is impossible — and noise (disabled endpoint, malformed JSON, no
- *      subscribed workflow) always answers 2xx so a well-behaved sender's retry
- *      policy never turns an ignorable delivery into a redelivery storm.
+ *   3. From there every branch finalizes exactly one outcome — a silent drop is
+ *      impossible — and noise (disabled endpoint, malformed JSON, no subscribed
+ *      workflow) always answers 2xx so a well-behaved sender's retry policy never
+ *      turns an ignorable delivery into a redelivery storm.
+ *
+ * Not every recorded outcome is terminal for dedupe (issue #1701): a delivery refused
+ * because the endpoint is disabled is written to the ledger, but it is in the store's
+ * `REDELIVERABLE_OUTCOMES`, so `claim()` hands that row out again and the sender's
+ * redelivery of the SAME id after the endpoint is enabled actually starts a run
+ * instead of being answered `'duplicate'` with the event dropped. The re-claim
+ * overwrites the `'disabled'` outcome, so the ledger shows a refusal only while it is
+ * still the delivery's latest state.
  */
 
 import crypto from 'node:crypto';
