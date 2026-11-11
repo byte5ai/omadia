@@ -19,6 +19,10 @@ import type { PatternCatalog } from './patternCatalog.js';
 import { RunAlreadyEndedError, WorkflowNotFoundError } from './runExecutor.js';
 import type { ConductorRunExecutor } from './runExecutor.js';
 import type { ConductorWorkflowStore } from './workflowStore.js';
+// Executor-owned run-context keys live in ONE place (#1702) — stripped on the
+// way in by startRun, and on the way back out here (listOwnRuns hands the
+// plugin its start payload, not executor state).
+import { sanitizeRunContext } from './runContext.js';
 
 /** Reserved prefix for agent-generated workflows — the manual create/instantiate
  *  routes reject it, so the namespaces cannot collide. */
@@ -136,19 +140,6 @@ export function sanitizeForLog(value: string, maxChars = MAX_AGENT_ID_CHARS): st
   return capped.replace(CONTROL_CHARS_RE, '?');
 }
 
-/**
- * Executor-owned run-context keys. A caller-seeded `stepAttempts` would stretch
- * loop budgets, `steps` would fake history, and a seeded `transcript` /
- * `transcriptText` would let a caller fabricate a conversation the agents never
- * had — so they are stripped on the way in (createEphemeralRun) AND on the way
- * back out (listOwnRuns hands the plugin its start payload, not executor state).
- */
-const RESERVED_CONTEXT_KEYS: ReadonlySet<string> = new Set(['steps', 'stepAttempts', 'transcript', 'transcriptText']);
-
-function withoutReservedKeys(source: Record<string, unknown>): Record<string, unknown> {
-  return Object.fromEntries(Object.entries(source).filter(([key]) => !RESERVED_CONTEXT_KEYS.has(key)));
-}
-
 function requireAgentId(agentId: unknown): string {
   if (typeof agentId !== 'string' || agentId.trim().length === 0) {
     throw new EphemeralInvalidInputError('agentId is required');
@@ -248,7 +239,7 @@ export class ConductorEphemeralRunService {
       workflowSlug: row.workflowSlug,
       patternId: row.patternId,
       expiresAt: row.expiresAt.toISOString(),
-      payload: withoutReservedKeys(row.context),
+      payload: sanitizeRunContext(row.context),
       state: row.state,
     }));
   }
@@ -376,9 +367,10 @@ export class ConductorEphemeralRunService {
     });
 
     try {
-      // Reserved context keys are executor-owned (see RESERVED_CONTEXT_KEYS) —
-      // a seeded transcript would be answered by the next speaker as if real.
-      const payload = withoutReservedKeys(input.payload ?? {}) as JsonObject;
+      // startRun is the gate that strips the executor-owned keys (runContext.ts).
+      // Sanitizing here too keeps THIS service's contract self-evident: the
+      // payload handed to startRun is the same one listOwnRuns reports back.
+      const payload = sanitizeRunContext((input.payload ?? {}) as JsonObject);
       const run = await this.deps.executor.startRun({
         slug,
         payload,
