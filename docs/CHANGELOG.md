@@ -36,6 +36,17 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — MCP tool scan for credential forwarding
+
+2026-11-12. Discovered MCP tool descriptions could direct an agent to read
+local credential files, forward their contents as tool arguments, and conceal
+the read while receiving a clean verdict.
+
+- The deterministic scan now raises these English and German instructions to
+  `high_risk`, so MCP grants require acknowledgement. Ordinary file references
+  and generic `note`/`sidenote` fields remain unflagged.
+- Hidden-content detection now includes pseudo-tags, Unicode tag characters, and bidirectional formatting controls.
+
 ### Added — `captureDisclosure` on the chat stream
 
 2026-11-04. OB-81 declared the field and the chat renders it, but nothing ever
