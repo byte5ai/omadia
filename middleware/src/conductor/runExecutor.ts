@@ -126,7 +126,8 @@ export class ConductorRunExecutor {
       this.log(`[conductor] suppressed trigger for disabled workflow '${input.slug}'`);
       throw new WorkflowDisabledError(`workflow '${input.slug}' is disabled`);
     }
-    if (!wf.activeVersionId) throw new WorkflowNotPublishedError(`workflow '${input.slug}' has no active version`);
+    if (!wf.activeVersionId)
+      throw new WorkflowNotPublishedError(`workflow '${input.slug}' has no active version`);
     const version = await this.workflowStore.getVersion(wf.activeVersionId);
     if (!version) throw new WorkflowNotPublishedError(`active version of '${input.slug}' missing`);
 
@@ -146,7 +147,9 @@ export class ConductorRunExecutor {
     }
     const graph = version.graph;
     void this.driveFrom(run.id, graph, graph.entryStepId, input.payload, lease).catch((err) => {
-      this.log(`[conductor] run ${run.id} drive crashed: ${err instanceof Error ? err.message : String(err)}`);
+      this.log(
+        `[conductor] run ${run.id} drive crashed: ${err instanceof Error ? err.message : String(err)}`,
+      );
     });
     return run;
   }
@@ -185,9 +188,7 @@ export class ConductorRunExecutor {
           .catch(() => null);
     return {
       ...(run.triggerKind ? { triggerKind: run.triggerKind } : {}),
-      ...(typeof eventId === 'string' && eventId !== ''
-        ? { triggerEventId: eventId }
-        : {}),
+      ...(typeof eventId === 'string' && eventId !== '' ? { triggerEventId: eventId } : {}),
       workflowId,
     };
   }
@@ -228,9 +229,16 @@ export class ConductorRunExecutor {
         // superseded driver cannot also record the cancellation.
         if (await this.runStore.isCancelRequested(runId)) {
           await this.runStore.recordStepAndAdvance({
-            runId, seq, stepId, actor: { kind: 'operator_cancel' },
-            postconditionOutcome: 'n/a', transitionTaken: null, nextStepId: null,
-            context, status: 'cancelled', claimedBy: lease,
+            runId,
+            seq,
+            stepId,
+            actor: { kind: 'operator_cancel' },
+            postconditionOutcome: 'n/a',
+            transitionTaken: null,
+            nextStepId: null,
+            context,
+            status: 'cancelled',
+            claimedBy: lease,
           });
           this.log(`[conductor] run ${runId} cancelled at step boundary '${stepId}'`);
           break;
@@ -238,8 +246,16 @@ export class ConductorRunExecutor {
         const step = graph.steps.find((s) => s.id === stepId);
         if (!step) {
           await this.runStore.recordStepAndAdvance({
-            runId, seq, stepId, actor: null, postconditionOutcome: 'n/a', transitionTaken: null,
-            nextStepId: null, context, status: 'failed', claimedBy: lease,
+            runId,
+            seq,
+            stepId,
+            actor: null,
+            postconditionOutcome: 'n/a',
+            transitionTaken: null,
+            nextStepId: null,
+            context,
+            status: 'failed',
+            claimedBy: lease,
           });
           break;
         }
@@ -258,9 +274,16 @@ export class ConductorRunExecutor {
             // validate() catches this at publish time; a runtime miss must
             // fail loudly rather than park a run nothing can ever wake.
             await this.runStore.recordStepAndAdvance({
-              runId, seq, stepId, actor: { kind: 'timer', invalid: true },
-              postconditionOutcome: 'n/a', transitionTaken: null, nextStepId: null,
-              context, status: 'failed', claimedBy: lease,
+              runId,
+              seq,
+              stepId,
+              actor: { kind: 'timer', invalid: true },
+              postconditionOutcome: 'n/a',
+              transitionTaken: null,
+              nextStepId: null,
+              context,
+              status: 'failed',
+              claimedBy: lease,
             });
             break;
           }
@@ -281,7 +304,9 @@ export class ConductorRunExecutor {
           if (await this.runStore.isCancelRequested(runId)) {
             return this.finalizeCancelledWaitingRun(runId, lease);
           }
-          this.log(`[conductor] run ${runId} parked on timer '${step.id}' (${step.timer?.duration ?? '?'})`);
+          this.log(
+            `[conductor] run ${runId} parked on timer '${step.id}' (${step.timer?.duration ?? '?'})`,
+          );
           return (await this.runStore.get(runId)) ?? (await this.requireRun(runId));
         }
 
@@ -300,11 +325,20 @@ export class ConductorRunExecutor {
             return (await this.runStore.get(runId)) ?? (await this.requireRun(runId));
           }
           // No reachable holder → don't hang. Take the step's in-graph fallback (FR-024), else fail.
-          const fb = step.fallbackTransitionId ? graph.transitions.find((tr) => tr.id === step.fallbackTransitionId) : undefined;
+          const fb = step.fallbackTransitionId
+            ? graph.transitions.find((tr) => tr.id === step.fallbackTransitionId)
+            : undefined;
           await this.runStore.recordStepAndAdvance({
-            runId, seq, stepId, actor: { kind: 'human', noHolder: true },
-            postconditionOutcome: 'unmet', transitionTaken: fb?.id ?? null, nextStepId: fb?.target ?? null,
-            context, status: fb ? 'running' : 'failed', claimedBy: lease,
+            runId,
+            seq,
+            stepId,
+            actor: { kind: 'human', noHolder: true },
+            postconditionOutcome: 'unmet',
+            transitionTaken: fb?.id ?? null,
+            nextStepId: fb?.target ?? null,
+            context,
+            status: fb ? 'running' : 'failed',
+            claimedBy: lease,
           });
           if (!fb) break;
           currentStepId = fb.target;
@@ -314,14 +348,25 @@ export class ConductorRunExecutor {
 
         let exec;
         try {
-          exec = step.kind === 'agent'
-            ? await this.effects.runAgentStep(step, context, { runId, ...triggerMeta })
-            : await this.effects.runActionStep(step, context, { runId, ...triggerMeta });
+          exec =
+            step.kind === 'agent'
+              ? await this.effects.runAgentStep(step, context, { runId, ...triggerMeta })
+              : await this.effects.runActionStep(step, context, { runId, ...triggerMeta });
         } catch (err) {
-          this.log(`[conductor] run ${runId} step '${stepId}' threw: ${err instanceof Error ? err.message : String(err)}`);
+          this.log(
+            `[conductor] run ${runId} step '${stepId}' threw: ${err instanceof Error ? err.message : String(err)}`,
+          );
           await this.runStore.recordStepAndAdvance({
-            runId, seq, stepId, actor: { kind: step.kind, ref: step.agentId ?? step.actionId ?? null },
-            postconditionOutcome: 'n/a', transitionTaken: null, nextStepId: null, context, status: 'failed', claimedBy: lease,
+            runId,
+            seq,
+            stepId,
+            actor: { kind: step.kind, ref: step.agentId ?? step.actionId ?? null },
+            postconditionOutcome: 'n/a',
+            transitionTaken: null,
+            nextStepId: null,
+            context,
+            status: 'failed',
+            claimedBy: lease,
           });
           break;
         }
@@ -329,7 +374,15 @@ export class ConductorRunExecutor {
         const decision = nextStep(graph, stepId, exec.result, context);
         context = this.accumulate(context, stepId, exec.result);
         context = appendTranscript(context, step, exec.result);
-        currentStepId = await this.applyDecision(runId, seq, stepId, exec.actor, decision, context, lease);
+        currentStepId = await this.applyDecision(
+          runId,
+          seq,
+          stepId,
+          exec.actor,
+          decision,
+          context,
+          lease,
+        );
         if (currentStepId) seq += 1;
       }
     } catch (err) {
@@ -369,7 +422,9 @@ export class ConductorRunExecutor {
       try {
         this.notifyRunEnded?.(run);
       } catch (err) {
-        this.log(`[conductor] run ${run.id} notifyRunEnded threw: ${err instanceof Error ? err.message : String(err)}`);
+        this.log(
+          `[conductor] run ${run.id} notifyRunEnded threw: ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
     }
     return run;
@@ -391,8 +446,16 @@ export class ConductorRunExecutor {
       // 'running' with no next step is an inconsistent state — finalize rather than hang.
       const seq = (await this.runStore.stepsForRun(runId)).length;
       await this.runStore.recordStepAndAdvance({
-        runId, seq, stepId: '(resume)', actor: { kind: 'resume', reason: 'no_current_step' },
-        postconditionOutcome: 'n/a', transitionTaken: null, nextStepId: null, context: run.context, status: 'failed', claimedBy: lease,
+        runId,
+        seq,
+        stepId: '(resume)',
+        actor: { kind: 'resume', reason: 'no_current_step' },
+        postconditionOutcome: 'n/a',
+        transitionTaken: null,
+        nextStepId: null,
+        context: run.context,
+        status: 'failed',
+        claimedBy: lease,
       });
       return (await this.runStore.get(runId)) ?? run;
     }
@@ -419,7 +482,9 @@ export class ConductorRunExecutor {
     if (flagged.status === 'waiting') {
       return this.finalizeCancelledWaitingRun(runId);
     }
-    this.log(`[conductor] run ${runId} cancel requested by '${requestedBy}' — driver will honour at the next step boundary`);
+    this.log(
+      `[conductor] run ${runId} cancel requested by '${requestedBy}' — driver will honour at the next step boundary`,
+    );
     return flagged;
   }
 
@@ -439,13 +504,19 @@ export class ConductorRunExecutor {
     if (!lease) await this.runStore.acquireLease(runId, l);
     const seq = (await this.runStore.stepsForRun(runId)).length;
     await this.runStore.recordStepAndAdvance({
-      runId, seq, stepId: run.currentStepId ?? '(cancel)',
+      runId,
+      seq,
+      stepId: run.currentStepId ?? '(cancel)',
       actor: {
         kind: 'operator_cancel',
         ...(run.cancelRequestedBy ? { requestedBy: run.cancelRequestedBy } : {}),
       },
-      postconditionOutcome: 'n/a', transitionTaken: null, nextStepId: null,
-      context: run.context, status: 'cancelled', claimedBy: l,
+      postconditionOutcome: 'n/a',
+      transitionTaken: null,
+      nextStepId: null,
+      context: run.context,
+      status: 'cancelled',
+      claimedBy: l,
     });
     this.log(
       `[conductor] run ${runId} cancelled by '${run.cancelRequestedBy ?? 'operator'}' (${closed} await(s) closed)`,
@@ -454,9 +525,14 @@ export class ConductorRunExecutor {
   }
 
   /** A human responded — resolve the await and resume the run. */
-  async resolveAwait(awaitId: string, responderId: string, response: JsonValue): Promise<ConductorRun> {
+  async resolveAwait(
+    awaitId: string,
+    responderId: string,
+    response: JsonValue,
+  ): Promise<ConductorRun> {
     const aw = await this.awaitStore.get(awaitId);
-    if (!aw || aw.status !== 'waiting') throw new AwaitNotPendingError(`await '${awaitId}' is not pending`);
+    if (!aw || aw.status !== 'waiting')
+      throw new AwaitNotPendingError(`await '${awaitId}' is not pending`);
 
     // Holders resolved LIVE (baton moves re-target) and canonicalized so a lowercased-email responder
     // (the channel layer always lowercases) matches an operator-typed holder. Used for BOTH the
@@ -479,7 +555,9 @@ export class ConductorRunExecutor {
     // payload (client-controllable, carries only awaitId) let any recipient of the card resolve a step
     // they don't own — including non-holders in a shared chat (review: Forge HIGH-1 / Claude M1).
     if (!requiredSet.has(responder)) {
-      throw new AwaitResponderNotHolderError(`responder '${responderId}' is not a holder of await '${awaitId}'`);
+      throw new AwaitResponderNotHolderError(
+        `responder '${responderId}' is not a holder of await '${awaitId}'`,
+      );
     }
 
     await this.awaitStore.recordResponse(awaitId, responder, response);
@@ -509,7 +587,9 @@ export class ConductorRunExecutor {
     if (aw.quorum === 'all') {
       const responses = await this.awaitStore.listResponses(awaitId);
       const respondedRequired = new Set(
-        responses.map((r) => canonicalizePrincipalId(r.responderId)).filter((id) => requiredSet.has(id)),
+        responses
+          .map((r) => canonicalizePrincipalId(r.responderId))
+          .filter((id) => requiredSet.has(id)),
       );
       // Empty `required` (a role with no current holders, e.g. all batons moved away) is NOT
       // vacuously complete — that would let one stray response resolve a no-holder await. Such a
@@ -532,16 +612,22 @@ export class ConductorRunExecutor {
               .join(', ')} unavailable)`,
           );
         }
-        this.log(`[conductor] await ${awaitId} quorum 'all': ${respondedRequired.size}/${required.length} required responded`);
+        this.log(
+          `[conductor] await ${awaitId} quorum 'all': ${respondedRequired.size}/${required.length} required responded`,
+        );
         return (await this.runStore.get(aw.runId)) ?? (await this.requireRun(aw.runId));
       }
       // Aggregate over CURRENT required holders only — a holder who lost the baton (or whose stale
       // answer predates a baton move) must not skew `approved` or appear in `responses` (review C#1).
-      const counted = responses.filter((r) => requiredSet.has(canonicalizePrincipalId(r.responderId)));
+      const counted = responses.filter((r) =>
+        requiredSet.has(canonicalizePrincipalId(r.responderId)),
+      );
       stepResult = {
         quorum: 'all',
         approved: counted.every((r) => isApproved(r.response, strict)),
-        responses: Object.fromEntries(counted.map((r) => [canonicalizePrincipalId(r.responderId), r.response])),
+        responses: Object.fromEntries(
+          counted.map((r) => [canonicalizePrincipalId(r.responderId), r.response]),
+        ),
       };
     }
 
@@ -553,7 +639,15 @@ export class ConductorRunExecutor {
     const decision = nextStep(graph, aw.stepId, stepResult, run.context);
     const context = this.accumulate(run.context, aw.stepId, stepResult);
     const seq = (await this.runStore.stepsForRun(aw.runId)).length;
-    const next = await this.applyDecision(aw.runId, seq, aw.stepId, { kind: 'human', quorum: aw.quorum, resolvedUserId: responder }, decision, context, lease);
+    const next = await this.applyDecision(
+      aw.runId,
+      seq,
+      aw.stepId,
+      { kind: 'human', quorum: aw.quorum, resolvedUserId: responder },
+      decision,
+      context,
+      lease,
+    );
     if (next) return this.driveFrom(aw.runId, graph, next, context, lease);
     return this.finalizeIfEnded((await this.runStore.get(aw.runId)) ?? run);
   }
@@ -569,26 +663,49 @@ export class ConductorRunExecutor {
     const lease = randomUUID();
     await this.runStore.acquireLease(aw.runId, lease); // take over the parked run's lease
     const seq = (await this.runStore.stepsForRun(aw.runId)).length;
-    const fallback = aw.fallbackTransitionId ? graph.transitions.find((tr) => tr.id === aw.fallbackTransitionId) : undefined;
+    const fallback = aw.fallbackTransitionId
+      ? graph.transitions.find((tr) => tr.id === aw.fallbackTransitionId)
+      : undefined;
     // #330 C3 — a timer expiry is the step doing exactly its job, not a
     // missed deadline; the actor says so, and the trace stays honest.
-    const actor: JsonValue = aw.principalKind === 'timer' ? { kind: 'timer', ticked: true } : { kind: 'human', timedOut: true };
+    const actor: JsonValue =
+      aw.principalKind === 'timer'
+        ? { kind: 'timer', ticked: true }
+        : { kind: 'human', timedOut: true };
     // A timer expiring is the step working as designed — 'unmet' would lie.
     const expiredOutcome = aw.principalKind === 'timer' ? 'n/a' : 'unmet';
     if (!fallback) {
       await this.runStore.recordStepAndAdvance({
-        runId: aw.runId, seq, stepId: aw.stepId, actor,
-        postconditionOutcome: expiredOutcome, transitionTaken: null, nextStepId: null, context: run.context, status: 'failed', claimedBy: lease,
+        runId: aw.runId,
+        seq,
+        stepId: aw.stepId,
+        actor,
+        postconditionOutcome: expiredOutcome,
+        transitionTaken: null,
+        nextStepId: null,
+        context: run.context,
+        status: 'failed',
+        claimedBy: lease,
       });
       const ended = await this.runStore.get(aw.runId);
       if (ended) this.finalizeIfEnded(ended);
       return;
     }
     await this.runStore.recordStepAndAdvance({
-      runId: aw.runId, seq, stepId: aw.stepId, actor,
-      postconditionOutcome: expiredOutcome, transitionTaken: fallback.id, nextStepId: fallback.target, context: run.context, status: 'running', claimedBy: lease,
+      runId: aw.runId,
+      seq,
+      stepId: aw.stepId,
+      actor,
+      postconditionOutcome: expiredOutcome,
+      transitionTaken: fallback.id,
+      nextStepId: fallback.target,
+      context: run.context,
+      status: 'running',
+      claimedBy: lease,
     });
-    this.log(`[conductor] await ${awaitId} timed out → fallback '${fallback.id}' (run ${aw.runId})`);
+    this.log(
+      `[conductor] await ${awaitId} timed out → fallback '${fallback.id}' (run ${aw.runId})`,
+    );
     await this.driveFrom(aw.runId, graph, fallback.target, run.context, lease);
   }
 
@@ -596,13 +713,18 @@ export class ConductorRunExecutor {
    * Dry-run / preview (US8 / FR-029): simulate the workflow path in memory with NO persistence
    * and NO side effects — no conductor_runs/awaits rows, no real notification, no durable await.
    * Human steps are answered inline (supplied `humanResponses[stepId]`, default `{approved:true}`);
-   * agent steps run a real turn; action steps are stubbed (irreversible connector actions are not
+   * agent and action steps are stubbed (irreversible connector actions and LLM turns are not
    * executed). Returns the full simulated step path so the operator gains confidence before activating.
    */
-  async previewRun(slug: string, payload: JsonObject, humanResponses: Record<string, JsonValue> = {}): Promise<PreviewResult> {
+  async previewRun(
+    slug: string,
+    payload: JsonObject,
+    humanResponses: Record<string, JsonValue> = {},
+  ): Promise<PreviewResult> {
     const wf = await this.workflowStore.getBySlug(slug);
     if (!wf) throw new WorkflowNotFoundError(`workflow '${slug}' not found`);
-    if (!wf.activeVersionId) throw new WorkflowNotPublishedError(`workflow '${slug}' has no active version`);
+    if (!wf.activeVersionId)
+      throw new WorkflowNotPublishedError(`workflow '${slug}' has no active version`);
     const version = await this.workflowStore.getVersion(wf.activeVersionId);
     if (!version) throw new WorkflowNotPublishedError(`active version of '${slug}' missing`);
     const graph = version.graph;
@@ -626,7 +748,9 @@ export class ConductorRunExecutor {
       // #330 C3 — preview simulates a timer instantly: record it and follow
       // the on-expiry fallback (no parking in a dry-run).
       if (step.kind === 'timer') {
-        const fb = step.fallbackTransitionId ? graph.transitions.find((tr) => tr.id === step.fallbackTransitionId) : undefined;
+        const fb = step.fallbackTransitionId
+          ? graph.transitions.find((tr) => tr.id === step.fallbackTransitionId)
+          : undefined;
         steps.push({
           stepId,
           kind: step.kind,
@@ -649,9 +773,8 @@ export class ConductorRunExecutor {
         result = humanResponses[stepId] ?? { approved: true };
         actor = 'human (inline)';
       } else if (step.kind === 'agent') {
-        const exec = await this.effects.runAgentStep(step, context, { runId: `preview:${slug}` });
-        result = exec.result;
-        actor = `agent:${step.agentId ?? '?'}`;
+        result = { simulated: true, agentId: step.agentId ?? null };
+        actor = `agent (stubbed):${step.agentId ?? '?'}`;
       } else {
         result = { simulated: true, actionId: step.actionId ?? null };
         actor = `action (stubbed):${step.actionId ?? '?'}`;
@@ -684,7 +807,12 @@ export class ConductorRunExecutor {
   /** Opens a durable await + parks the run. Returns false (without parking) when a role principal has
    *  NO current holder — nobody could answer, so the caller takes the step's fallback instead of
    *  hanging the run forever (FR-024). */
-  private async openHumanAwait(runId: string, step: Step, context: JsonObject, lease: string): Promise<boolean> {
+  private async openHumanAwait(
+    runId: string,
+    step: Step,
+    context: JsonObject,
+    lease: string,
+  ): Promise<boolean> {
     const h = step.human;
     if (h?.principal.kind === 'role') {
       const lookup = await this.resolveRoleHolders(h.principal.ref);
@@ -698,7 +826,9 @@ export class ConductorRunExecutor {
           `[conductor] run ${runId} human step '${step.id}' role '${h.principal.ref}': holder lookup is PARTIAL and empty — parking rather than taking the fallback`,
         );
       } else if (lookup.holders.length === 0) {
-        this.log(`[conductor] run ${runId} human step '${step.id}' role '${h.principal.ref}' has no current holder`);
+        this.log(
+          `[conductor] run ${runId} human step '${step.id}' role '${h.principal.ref}' has no current holder`,
+        );
         return false;
       }
     }
@@ -719,7 +849,9 @@ export class ConductorRunExecutor {
       fallbackTransitionId: step.fallbackTransitionId ?? null,
     });
     await this.runStore.park(runId, step.id, context, lease);
-    this.log(`[conductor] run ${runId} awaiting human at step '${step.id}' (${h?.principal.kind}:${h?.principal.ref})`);
+    this.log(
+      `[conductor] run ${runId} awaiting human at step '${step.id}' (${h?.principal.kind}:${h?.principal.ref})`,
+    );
     return true;
   }
 
@@ -748,22 +880,46 @@ export class ConductorRunExecutor {
   ): Promise<string | null> {
     if (decision.kind === 'advance') {
       await this.runStore.recordStepAndAdvance({
-        runId, seq, stepId, actor, postconditionOutcome: decision.postcondition, transitionTaken: decision.transitionId,
-        nextStepId: decision.targetStepId, context, status: 'running', claimedBy: lease,
+        runId,
+        seq,
+        stepId,
+        actor,
+        postconditionOutcome: decision.postcondition,
+        transitionTaken: decision.transitionId,
+        nextStepId: decision.targetStepId,
+        context,
+        status: 'running',
+        claimedBy: lease,
       });
       return decision.targetStepId;
     }
     if (decision.kind === 'complete') {
       await this.runStore.recordStepAndAdvance({
-        runId, seq, stepId, actor, postconditionOutcome: decision.postcondition, transitionTaken: null,
-        nextStepId: null, context, status: 'completed', claimedBy: lease,
+        runId,
+        seq,
+        stepId,
+        actor,
+        postconditionOutcome: decision.postcondition,
+        transitionTaken: null,
+        nextStepId: null,
+        context,
+        status: 'completed',
+        claimedBy: lease,
       });
       return null;
     }
     this.log(`[conductor] run ${runId} stuck at '${stepId}': ${decision.message}`);
     await this.runStore.recordStepAndAdvance({
-      runId, seq, stepId, actor, postconditionOutcome: decision.postcondition, transitionTaken: null,
-      nextStepId: stepId, context, status: 'failed', claimedBy: lease,
+      runId,
+      seq,
+      stepId,
+      actor,
+      postconditionOutcome: decision.postcondition,
+      transitionTaken: null,
+      nextStepId: stepId,
+      context,
+      status: 'failed',
+      claimedBy: lease,
     });
     return null;
   }

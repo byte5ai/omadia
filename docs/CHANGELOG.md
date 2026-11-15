@@ -36,6 +36,13 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Conductor previews no longer execute agent steps
+
+2026-11-15. Conductor previews now stub agent steps alongside action steps, so
+previewing a workflow cannot start a real LLM turn, create token usage, or run
+agent tools and side effects. Normal conductor runs continue to execute agent
+steps normally.
+
 ### Added — `captureDisclosure` on the chat stream
 
 2026-11-04. OB-81 declared the field and the chat renders it, but nothing ever
