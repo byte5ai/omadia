@@ -77,7 +77,7 @@ export class MemoryToolHandler {
       const lines = findLineNumbers(content, oldStr);
       return `No replacement was performed. Multiple occurrences of old_str \`${oldStr}\` in lines: ${lines.join(', ')}. Please ensure it is unique`;
     }
-    const replaced = content.replace(oldStr, newStr);
+    const replaced = content.replace(oldStr, () => newStr);
     await this.store.writeFile(virtualPath, replaced);
     return `The memory file has been edited.\n${formatFileContents(virtualPath, replaced)}`;
   }
