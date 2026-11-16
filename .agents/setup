@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+started=$SECONDS
+step() {
+  local label=$1 start=$SECONDS
+  shift
+  printf '\n==> %s\n' "$label"
+  "$@"
+  printf '==> %s completed in %ss\n' "$label" "$((SECONDS - start))"
+}
+
+# Keep toolchains separate: the kernel enforces Node 22, desktop CI uses 24.
+node_version="$(tr -d '[:space:]' < .nvmrc)"
+desktop_node_version=24.22.2
+toolchains="$HOME/.local/share/omadia/toolchains"
+scratch="$(mktemp -d)"
+trap 'rm -rf -- "$scratch"' EXIT
+install_node() {
+  local version=$1 archive
+  if [[ -x "$toolchains/node-v$version/bin/node" ]]; then
+    return
+  fi
+  case "$(uname -m)" in
+    x86_64) archive="node-v$version-linux-x64" ;;
+    aarch64) archive="node-v$version-linux-arm64" ;;
+    *) echo 'Unsupported Node architecture' >&2; return 1 ;;
+  esac
+  curl -fsSL --retry 3 "https://nodejs.org/dist/v$version/$archive.tar.xz" -o "$scratch/$archive.tar.xz"
+  curl -fsSL --retry 3 "https://nodejs.org/dist/v$version/SHASUMS256.txt" -o "$scratch/checksums"
+  (cd "$scratch"; grep " $archive.tar.xz\$" checksums | sha256sum --check -)
+  mkdir -p "$toolchains"
+  tar -xJf "$scratch/$archive.tar.xz" -C "$toolchains"
+  mv -- "$toolchains/$archive" "$toolchains/node-v$version"
+}
+step "Node $node_version" install_node "$node_version"
+step "Desktop Node $desktop_node_version" install_node "$desktop_node_version"
+export PATH="$toolchains/node-v$node_version/bin:$PATH"
+
+packages=()
+for package in build-essential python3 curl xz-utils docker-compose-plugin docker-buildx-plugin; do
+  if ! dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -qx 'install ok installed'; then
+    packages+=("$package")
+  fi
+done
+if ((${#packages[@]})); then
+  step 'Refresh apt metadata' sudo apt-get update -qq
+  step 'System dependencies' sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${packages[@]}"
+fi
+
+# A systemd-owned Docker daemon survives setup/snapshot activation. Only the
+# disposable database starts automatically, not the complete application stack.
+step 'Docker daemon' sudo systemctl enable --now docker
+if ! sudo docker container inspect omadia-orb-postgres >/dev/null 2>&1; then
+  step 'Fetch pgvector' sudo docker pull pgvector/pgvector:pg16
+  sudo docker create --name omadia-orb-postgres --restart unless-stopped \
+    -p 127.0.0.1:5432:5432 \
+    -e POSTGRES_USER=omadia -e POSTGRES_PASSWORD=omadia -e POSTGRES_DB=omadia \
+    pgvector/pgvector:pg16 \
+    -c fsync=off -c synchronous_commit=off -c full_page_writes=off >/dev/null
+fi
+sudo docker start omadia-orb-postgres >/dev/null
+for ((attempt = 0; attempt < 30; attempt++)); do
+  if sudo docker exec omadia-orb-postgres pg_isready -U omadia -d omadia >/dev/null; then
+    break
+  fi
+  sleep 1
+done
+sudo docker exec omadia-orb-postgres psql -U omadia -d omadia -v ON_ERROR_STOP=1 \
+  -c 'CREATE EXTENSION IF NOT EXISTS vector;'
+if [[ "$(sudo docker exec omadia-orb-postgres psql -U omadia -d postgres -Atc "SELECT 1 FROM pg_database WHERE datname = 'omadia_test'")" != 1 ]]; then
+  sudo docker exec omadia-orb-postgres createdb -U omadia omadia_test
+fi
+sudo docker exec omadia-orb-postgres psql -U omadia -d omadia_test -v ON_ERROR_STOP=1 \
+  -c 'CREATE EXTENSION IF NOT EXISTS vector;'
+
+for workspace in middleware web-ui desktop; do
+  version=$node_version
+  [[ "$workspace" != desktop ]] || version=$desktop_node_version
+  # Use the kernel toolchain's npm for both runtimes. Node 24's bundled npm
+  # can silently skip dependency install scripts unless separately approved.
+  step "Dependencies: $workspace" env PATH="$toolchains/node-v$version/bin:$PATH" \
+    node "$toolchains/node-v$node_version/lib/node_modules/npm/bin/npm-cli.js" \
+    --prefix "$workspace" ci --include=dev --include=optional --no-audit --no-fund
+done
+step 'SQLite native addon' npm --prefix middleware run ensure-native-abi
+step 'Sharp native addon' node -e "require('./middleware/node_modules/sharp')({create:{width:1,height:1,channels:3,background:'white'}}).png().toBuffer().then(() => console.log('sharp OK'))"
+step 'Workspace and kernel build' npm --prefix middleware run build
+
+[[ -f middleware/.env ]] || cp -- middleware/.env.example middleware/.env
+[[ -f web-ui/.env.local ]] || cp -- web-ui/.env.local.example web-ui/.env.local
+git config core.hooksPath .hooks
+
+# Non-interactive login shells used by Amp and supervised services need the
+# same runtime. Scope this to Omadia checkouts, including linked worktrees.
+mkdir -p "$HOME/.config/omadia"
+cat > "$HOME/.config/omadia/orb-env.sh" <<EOF
+if [[ -z "\${OMADIA_ORB_ENV_LOADED:-}" ]]; then
+  omadia_root=\$(git rev-parse --show-toplevel 2>/dev/null || true)
+  if [[ -f "\$omadia_root/middleware/scripts/check-node-version.mjs" && -f "\$omadia_root/.nvmrc" ]]; then
+    OMADIA_ORB_ENV_LOADED=1
+    omadia_node=\$(tr -d '[:space:]' < "\$omadia_root/.nvmrc")
+    case "\$PWD/" in "\$omadia_root/desktop/"*) omadia_node=$desktop_node_version ;; esac
+    case "\$PATH" in
+      "$toolchains/node-v\$omadia_node/bin"|"$toolchains/node-v\$omadia_node/bin:"*) ;;
+      *) export PATH="$toolchains/node-v\$omadia_node/bin:\$PATH" ;;
+    esac
+    unset omadia_node
+  fi
+  unset omadia_root
+fi
+EOF
+profile_marker='# Omadia orb toolchains and disposable test database'
+if ! grep -Fqx "$profile_marker" "$HOME/.bash_profile" 2>/dev/null; then
+  printf '\n%s\nsource "$HOME/.config/omadia/orb-env.sh"\n' "$profile_marker" >> "$HOME/.bash_profile"
+fi
+printf '\nOrb setup completed in %ss\n' "$((SECONDS - started))"
