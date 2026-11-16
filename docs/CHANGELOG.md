@@ -53,8 +53,11 @@ alike. There was also no log line per failed attempt, only the final
   re-exports it, so nothing imported from there breaks).
 - **One log line per failed attempt**, naming the target and the schedule:
   `[conductor] webhook delivery <id> to <url> attempt 2/6 failed: <cause>;
-  retrying in 60s`. The non-retryable exhaustions (`subscription disabled`,
-  `subscription secret missing`) now log too — before, they recorded silently.
+  retrying in 60s`. A subscription that can never succeed (`subscription
+  disabled`, `subscription secret missing`) logs too — before, it recorded
+  silently — and is reported as `abandoned`, not as `exhausted after 1 attempts`:
+  no attempt budget was spent, and a grep for the real exhaustion line must not
+  also land on these.
 - **The retry worker is covered too**, not just the inline first attempt — it is
   what drives attempts 2..6, so it is where most of the issue's missing lines
   were. Its three catch blocks (reconcile pass, `claimDue`, a crashed attempt)

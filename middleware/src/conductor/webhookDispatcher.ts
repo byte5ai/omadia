@@ -3,7 +3,7 @@ import type { JsonObject } from '@omadia/conductor-core';
 import { describeError } from '../platform/describeError.js';
 
 import type { ConductorWebhookDelivery, ConductorWebhookSubscription, ConductorWebhookSubscriptionStore } from './webhookSubscriptionStore.js';
-import { postWebhook, signWebhookBody, type PostWebhookResult } from './webhookOutbound.js';
+import { describeHttpFailure, postWebhook, signWebhookBody, type PostWebhookResult } from './webhookOutbound.js';
 
 /**
  * Issue #437 — outbound delivery: fans an internal event (today `run.completed` /
@@ -24,10 +24,7 @@ import { postWebhook, signWebhookBody, type PostWebhookResult } from './webhookO
 const DEFAULT_MAX_ATTEMPTS = 6;
 const BASE_BACKOFF_MS = 30_000; // 30s, doubling per attempt, capped below
 const MAX_BACKOFF_MS = 30 * 60_000; // 30 min
-/** `last_error` is shown verbatim in the operator UI and repeated in a log line,
- *  so a response body (capped at 64 KiB by `postWebhook`) is trimmed to a
- *  readable sentence before it is stored. */
-const MAX_LAST_ERROR_CHARS = 500;
+const MAX_LAST_ERROR_CHARS = 500; // see `condense`
 
 export class ConductorWebhookDispatcher {
   private readonly maxAttempts: number;
@@ -86,14 +83,14 @@ export class ConductorWebhookDispatcher {
    *  terminal or retryable outcome on the delivery row. */
   async attempt(delivery: ConductorWebhookDelivery, subscription: ConductorWebhookSubscription): Promise<void> {
     if (!subscription.enabled) {
-      await this.exhaust(delivery, subscription, 'subscription disabled');
+      await this.abandon(delivery, subscription, 'subscription disabled');
       return;
     }
     const secret = await this.deps.store.getSecret(subscription.id).catch(() => undefined);
     if (!secret) {
       // Not retryable — no secret means no subscription+deliveries will ever succeed;
       // exhaust it immediately rather than spin attempts against a broken row.
-      await this.exhaust(delivery, subscription, 'subscription secret missing');
+      await this.abandon(delivery, subscription, 'subscription secret missing');
       return;
     }
 
@@ -120,23 +117,28 @@ export class ConductorWebhookDispatcher {
     }
   }
 
-  /** Terminal failure with no attempt left to spend (or none worth spending). */
-  private async exhaust(delivery: ConductorWebhookDelivery, subscription: ConductorWebhookSubscription, error: string): Promise<void> {
+  /** Terminal failure that spent no attempt budget: the subscription itself is
+   *  broken, so no number of retries could win. Reported as `abandoned`, NOT as
+   *  `exhausted after 1 attempts` — the budget is untouched, and an operator
+   *  grepping for the exhaustion line must not also land on these. */
+  private async abandon(delivery: ConductorWebhookDelivery, subscription: ConductorWebhookSubscription, error: string): Promise<void> {
     const reason = condense(error);
-    const attemptNumber = delivery.attempts + 1; // this attempt, 1-indexed
     await this.deps.store.recordFailure(delivery.id, reason, null);
-    this.log(
-      `[conductor] webhook delivery ${delivery.id} to ${subscription.url} exhausted after ${String(attemptNumber)} attempts: ${reason}`,
-    );
+    this.log(`[conductor] webhook delivery ${delivery.id} to ${subscription.url} abandoned: ${reason}`);
   }
 
+  /** A failed attempt: retried with backoff while budget is left, terminal once the
+   *  last allowed attempt has been spent. */
   private async fail(delivery: ConductorWebhookDelivery, subscription: ConductorWebhookSubscription, error: string): Promise<void> {
     const attemptNumber = delivery.attempts + 1; // this attempt, 1-indexed
+    const reason = condense(error);
     if (attemptNumber >= this.maxAttempts) {
-      await this.exhaust(delivery, subscription, error);
+      await this.deps.store.recordFailure(delivery.id, reason, null);
+      this.log(
+        `[conductor] webhook delivery ${delivery.id} to ${subscription.url} exhausted after ${String(attemptNumber)} attempts: ${reason}`,
+      );
       return;
     }
-    const reason = condense(error);
     const backoffMs = Math.min(MAX_BACKOFF_MS, BASE_BACKOFF_MS * 2 ** delivery.attempts);
     await this.deps.store.recordFailure(delivery.id, reason, new Date(Date.now() + backoffMs));
     // One line per failed attempt — without it the first visible sign of trouble is
@@ -145,13 +147,6 @@ export class ConductorWebhookDispatcher {
       `[conductor] webhook delivery ${delivery.id} to ${subscription.url} attempt ${String(attemptNumber)}/${String(this.maxAttempts)} failed: ${reason}; retrying in ${String(Math.round(backoffMs / 1000))}s`,
     );
   }
-}
-
-/** A non-2xx response. The body is the only diagnosis the receiver offers, so it is
- *  kept — but an empty one must not leave a dangling "http 500: ". */
-function describeHttpFailure(result: PostWebhookResult): string {
-  const snippet = result.bodySnippet.trim();
-  return snippet ? `http ${String(result.status)}: ${snippet}` : `http ${String(result.status)}`;
 }
 
 /** One line, bounded length — `last_error` is rendered in the operator UI and

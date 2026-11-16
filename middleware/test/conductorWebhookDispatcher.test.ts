@@ -53,8 +53,9 @@ interface FakeStore {
   successes: string[];
   failures: Array<{ id: string; error: string; nextAttemptAt: Date | null }>;
   /** Lines the dispatcher emitted through its `log` dep — #1704 asserts one per
-   *  failed attempt, not just the final exhaustion. */
+   *  failed attempt, not just the final exhaustion. Wire it with `log: fake.log`. */
   logs: string[];
+  log: (msg: string) => void;
   /** Resolves once `deliverEvent`'s fire-and-forget attempt(s) have all settled — the
    *  route/executor never awaits them either, so tests must wait on this instead of
    *  the `deliverEvent`/`attempt` return value. */
@@ -111,7 +112,17 @@ function fakeStore(
     }
     void pending;
   };
-  return { store: store as unknown as ConductorWebhookSubscriptionStore, createCalls, claimOneCalls, successes, failures, logs: [], settled };
+  const logs: string[] = [];
+  return {
+    store: store as unknown as ConductorWebhookSubscriptionStore,
+    createCalls,
+    claimOneCalls,
+    successes,
+    failures,
+    logs,
+    log: (msg: string) => logs.push(msg),
+    settled,
+  };
 }
 
 describe('ConductorWebhookDispatcher', () => {
@@ -258,7 +269,7 @@ describe('ConductorWebhookDispatcher', () => {
     const fake = fakeStore({ secret: SECRET });
     const dispatcher = new ConductorWebhookDispatcher({
       store: fake.store,
-      log: (msg) => fake.logs.push(msg),
+      log: fake.log,
       sendRequest: async () => {
         // Exactly what undici throws for an unresolvable host: the message names no
         // cause at all, the diagnosis sits in `cause`.
@@ -297,7 +308,7 @@ describe('ConductorWebhookDispatcher', () => {
     const dispatcher = new ConductorWebhookDispatcher({
       store: fake.store,
       maxAttempts: 3,
-      log: (msg) => fake.logs.push(msg),
+      log: fake.log,
       sendRequest: async () => ({ ok: false, status: 500, bodySnippet: 'boom' }),
     });
 
@@ -340,15 +351,20 @@ describe('ConductorWebhookDispatcher', () => {
     assert.match(recorded, /^http 502: /);
   });
 
-  it('logs the non-retryable exhaustions (disabled subscription, missing secret) too', async () => {
+  it('logs a broken subscription as abandoned, never as a spent attempt budget', async () => {
+    // Review finding: reporting these as `exhausted after 1 attempts` is wrong twice
+    // over — no budget was spent, and it pollutes a grep for the real exhaustion line
+    // (the issue's own log sample is `exhausted after 6 attempts`).
     const noSecret = fakeStore({ secret: undefined });
-    const a = new ConductorWebhookDispatcher({ store: noSecret.store, log: (m) => noSecret.logs.push(m) });
+    const a = new ConductorWebhookDispatcher({ store: noSecret.store, log: noSecret.log });
     await a.attempt(delivery(), subscription());
-    assert.match(noSecret.logs[0] ?? '', /secret missing/);
+    assert.match(noSecret.logs[0] ?? '', /abandoned: subscription secret missing/);
+    assert.doesNotMatch(noSecret.logs[0] ?? '', /exhausted|attempts/);
 
     const disabled = fakeStore({ secret: SECRET });
-    const b = new ConductorWebhookDispatcher({ store: disabled.store, log: (m) => disabled.logs.push(m) });
+    const b = new ConductorWebhookDispatcher({ store: disabled.store, log: disabled.log });
     await b.attempt(delivery(), subscription({ enabled: false }));
-    assert.match(disabled.logs[0] ?? '', /subscription disabled/);
+    assert.match(disabled.logs[0] ?? '', /abandoned: subscription disabled/);
+    assert.doesNotMatch(disabled.logs[0] ?? '', /exhausted|attempts/);
   });
 });

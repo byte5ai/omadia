@@ -41,11 +41,15 @@ function causeOf(value: unknown): unknown {
  *  prefixed unless the message already spells it out. */
 function describeCause(cause: unknown): string {
   const causeMessage = cause instanceof Error ? cause.message : typeof cause === 'string' ? cause : '';
-  const code = isObject(cause) && typeof cause['code'] === 'string' ? cause['code'] : '';
+  const code = codeOf(cause);
   if (causeMessage && code && !causeMessage.includes(code)) return `${code}: ${causeMessage}`;
   return causeMessage || code;
 }
 
-function isObject(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null && !Array.isArray(v);
+/** undici hangs the system-error code off the cause as a plain `code` property —
+ *  on an `Error` instance, or on a bare object for a synthesised one. */
+function codeOf(cause: unknown): string {
+  if (typeof cause !== 'object' || cause === null) return '';
+  const code = (cause as { code?: unknown }).code;
+  return typeof code === 'string' ? code : '';
 }

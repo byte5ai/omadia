@@ -22,6 +22,10 @@
 
 import { createHash } from 'node:crypto';
 
+// #1482 — `err.message` plus its `cause`; a refused connection, a DNS miss or a
+// refused redirect all reach us as a bare "fetch failed". The rendering moved to
+// `platform/describeError.ts` when Conductor's webhook dispatcher needed the same
+// thing (#1704).
 import { describeError } from '../platform/describeError.js';
 
 import type {
@@ -608,13 +612,3 @@ function parseAuthors(
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
-
-/**
- * #1482 — `err.message` plus its `cause`. Node's fetch reports a refused
- * connection, a DNS miss or a refused redirect as a bare "fetch failed" and
- * puts the reason in `err.cause`; without it the log could not say why. The
- * rendering itself now lives in `platform/describeError.ts`, shared with
- * Conductor's outbound webhook dispatcher (#1704); re-exported here because
- * this module was its original home.
- */
-export { describeError };

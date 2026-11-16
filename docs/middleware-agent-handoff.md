@@ -1391,8 +1391,11 @@ Connection-Refused und Protokoll-Mismatch identisch. Drei Punkte dagegen:
 - **Eine Logzeile pro fehlgeschlagenem Versuch**, nicht nur beim finalen
   Exhaust (der bis zu einer halben Stunde nach dem ersten Fehler kommt):
   `[conductor] webhook delivery <id> to <url> attempt 2/6 failed: <grund>;
-  retrying in 60s`. Die nicht-retrybaren Abbrüche (`subscription disabled`,
-  `subscription secret missing`) loggen jetzt ebenfalls.
+  retrying in 60s`. Eine Subscription, die nie erfolgreich sein kann
+  (`subscription disabled`, `subscription secret missing`), loggt jetzt ebenfalls
+  — als `abandoned: <grund>`, nicht als `exhausted after 1 attempts`: dort wurde
+  kein Attempt-Budget verbraucht, und ein Grep auf die echte Exhaust-Zeile darf
+  diese Fälle nicht mittreffen.
 - **Auch der `ConductorWebhookRetryWorker`**, nicht nur der inline erste
   Versuch: er fährt die Attempts 2..6, dort fehlten also die meisten Zeilen.
   Seine drei Catch-Blöcke (Reconcile-Pass, `claimDue`, abgestürzter Attempt)
