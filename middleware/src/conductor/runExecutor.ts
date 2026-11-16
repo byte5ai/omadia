@@ -10,6 +10,7 @@ import type { ConductorAwaitStore } from './awaitStore.js';
 import type { StepEffects } from './stepEffects.js';
 import { canonicalizePrincipalId } from './principalId.js';
 import { appendTranscript } from './transcript.js';
+import { sanitizeRunContext } from './runContext.js';
 import type { RoleHolderResolver } from './roleHolderResolver.js';
 import type { AggregateHolderLookup } from '@omadia/channel-sdk';
 
@@ -120,6 +121,12 @@ export class ConductorRunExecutor {
     isDryRun?: boolean;
     awaitCompletion?: boolean;
   }): Promise<ConductorRun> {
+    // #1702 — the initial context is caller-supplied, but the executor-owned keys
+    // inside it are not up for grabs: a trigger payload that seeded
+    // `stepAttempts` steered the loop budget, and one that seeded `steps` faked
+    // results for steps that never ran. Stripped HERE, the one gate every
+    // trigger kind (event/webhook, manual, cron, agent) passes through.
+    const payload = sanitizeRunContext(input.payload);
     const wf = await this.workflowStore.getBySlug(input.slug);
     if (!wf) throw new WorkflowNotFoundError(`workflow '${input.slug}' not found`);
     if (wf.status === 'disabled') {
@@ -134,7 +141,7 @@ export class ConductorRunExecutor {
     const run = await this.runStore.create({
       workflowVersionId: version.id,
       entryStepId: version.graph.entryStepId,
-      context: input.payload,
+      context: payload,
       triggerKind: input.triggerKind ?? 'manual',
       triggerSource: input.triggerSource ?? null,
       isDryRun: input.isDryRun ?? false,
@@ -142,10 +149,10 @@ export class ConductorRunExecutor {
     });
 
     if (input.awaitCompletion) {
-      return this.driveFrom(run.id, version.graph, version.graph.entryStepId, input.payload, lease);
+      return this.driveFrom(run.id, version.graph, version.graph.entryStepId, payload, lease);
     }
     const graph = version.graph;
-    void this.driveFrom(run.id, graph, graph.entryStepId, input.payload, lease).catch((err) => {
+    void this.driveFrom(run.id, graph, graph.entryStepId, payload, lease).catch((err) => {
       this.log(`[conductor] run ${run.id} drive crashed: ${err instanceof Error ? err.message : String(err)}`);
     });
     return run;
@@ -607,7 +614,9 @@ export class ConductorRunExecutor {
     if (!version) throw new WorkflowNotPublishedError(`active version of '${slug}' missing`);
     const graph = version.graph;
 
-    let context: JsonObject = { ...payload };
+    // #1702 — a preview whose payload seeded `steps`/`stepAttempts` would
+    // rehearse a path the real run cannot take. Same gate as startRun.
+    let context: JsonObject = sanitizeRunContext(payload);
     let currentStepId: string | null = graph.entryStepId;
     const steps: PreviewStep[] = [];
     let status: 'completed' | 'failed' = 'completed';
@@ -732,7 +741,12 @@ export class ConductorRunExecutor {
    *  in this run. Deterministic loop budget for guarded cycles. */
   private bumpStepAttempt(context: JsonObject, stepId: string): JsonObject {
     const prev = asObject(context.stepAttempts);
-    const before = typeof prev[stepId] === 'number' ? (prev[stepId] as number) : 0;
+    const raw = prev[stepId];
+    // Only a non-negative integer is a count. Anything else — a negative or
+    // fractional number, Infinity, a string — restarts at 0 rather than
+    // offsetting the budget (#1702 belt-and-braces: payloads are stripped at
+    // startRun, but a run row persisted before that fix still carries one).
+    const before = typeof raw === 'number' && Number.isInteger(raw) && raw >= 0 ? raw : 0;
     return { ...context, stepAttempts: { ...prev, [stepId]: before + 1 } };
   }
 
