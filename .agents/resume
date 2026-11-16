@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Amp discards setup-time profile edits when activating a shared snapshot.
+# Reconnect the prepared environment after activation and on every wake.
+profile_marker='# Omadia orb toolchains and disposable test database'
+if ! grep -Fqx "$profile_marker" "$HOME/.bash_profile" 2>/dev/null; then
+  printf '\n%s\nsource "$HOME/.config/omadia/orb-env.sh"\n' "$profile_marker" >> "$HOME/.bash_profile"
+fi
+
 # Never reinstall dependencies on wake. Docker is owned by systemd; starting
 # an already-running container is a cheap, idempotent repair after activation.
 sudo systemctl start docker
