@@ -76,6 +76,36 @@ render a red badge and no cause.
   ones: `operator_cancel` carries the requesting principal, which does not
   belong in the trace table.
 
+### Fixed — Conductor inbound webhook: a disabled endpoint no longer eats the delivery id
+
+2026-11-11. A request to a disabled inbound endpoint was answered
+`200 {"outcome":"disabled"}` and written to `conductor_webhook_inbound_deliveries`.
+The dedupe check looked only at `(endpoint_id, delivery_id)`, so the sender's honest
+redelivery after the endpoint was enabled again was answered
+`200 {"outcome":"duplicate"}`, no run started, and the event was lost silently —
+without a log line, because both answers are plain 200s (#1701).
+
+- **A `'disabled'` row is re-claimable.** `ConductorWebhookEndpointStore.claim()`
+  treats an outcome in the new exported `REDELIVERABLE_OUTCOMES` set as an attempt
+  that never reached `emit()`, re-claims the existing row (no second row is inserted)
+  and answers `'claimed'`. Unlike the abandoned-in-flight recovery there is no
+  staleness window: the endpoint can come back a second after the refusal.
+- **Outcomes that did process the event stay terminal.** `'started'` and
+  `'no_subscribers'` both ran `emit()`, so re-claiming them would re-route a handled
+  event; `'invalid_payload'` is sender-side and the body is covered by the HMAC.
+  `'rate_limited'` already inserts no row. A redelivery arriving while the endpoint is
+  off is answered from the ledger before the enabled check, so a `'started'` row is
+  never overwritten with `'disabled'`.
+- **Two deliberate limits.** The ledger holds one row per
+  `(endpoint_id, delivery_id)`, so a successful redelivery overwrites the `'disabled'`
+  outcome: `conductor_webhook_inbound_deliveries` shows a refusal only while nobody
+  has redelivered that id — the refusals that still matter. And a refusal keeps
+  occupying a rate-limit slot for the rolling window (a re-claim bumps `received_at`),
+  because that is what bounds ledger growth while an endpoint is off; the redelivery
+  of an already-refused id is never throttled, it short-circuits before the window
+  count.
+- No migration, no API change.
+
 ### Added — `captureDisclosure` on the chat stream
 
 2026-11-04. OB-81 declared the field and the chat renders it, but nothing ever
@@ -94,6 +124,57 @@ produced a value, so no turn carried one.
   `TurnIngestResult.embeddingScheduled`.
 - `graphRefs` stays unset: `done` also reaches Public API clients, which have no
   use for internal node ids. Non-streaming replies are unchanged.
+### Fixed — raw-body webhooks: a missing `Content-Type` no longer fails the HMAC
+
+2026-11-10. Reported as #1700: a correctly signed inbound delivery sent without a
+`Content-Type` header answered `401 webhook.bad_signature`, pointing the sender at
+its signing code instead of at the header.
+
+- **The raw parsers now use a FUNCTION content-type matcher.** body-parser's
+  wildcard type *string* goes through `type-is`, which needs a media type to
+  compare against: a request with no `Content-Type` (or an empty one) matched
+  nothing, was never parsed, and the handler HMAC'd an empty buffer. An HMAC is
+  over bytes, so the sender's media type must not decide whether verification
+  sees them. Fixed for `POST /api/hooks/:endpointId`
+  (`routes/conductorWebhooksInbound.ts`) and for every plugin `body: 'raw'` route
+  (`platform/pluginRouteRegistry.ts`, `rawBodyCapture`), whose own doc comment
+  already promised the "sends nothing at all" case worked.
+- **Parsing widened, authorisation unchanged.** A wrong signature still answers
+  the same `401`, an unknown endpoint id still answers byte-for-byte that same
+  `401`, and the 256 kb limit is untouched. With no header, only the JSON parse
+  decides the outcome: valid JSON starts the run, unparseable bytes end as
+  `invalid_payload`.
+
+### Fixed — Conductor: a webhook payload could steer a workflow's loop budget
+
+2026-11-11. The event router handed an inbound payload to the executor as the
+run's initial context untouched, while the ephemeral path stripped the
+executor-owned keys — the two disagreed.
+
+- **Reserved run-context keys are stripped at one gate.** `steps`,
+  `stepAttempts`, `transcript` and `transcriptText` now live in
+  `conductor/runContext.ts` and are removed in `startRun` and `previewRun`, so
+  every trigger kind (event/webhook, manual, cron, agent) is treated alike. A
+  signed `{"stepAttempts":{"a":-5}}` made a step guarded by
+  `lt ctx.stepAttempts.a 3` run eight times and `{"a":99}` made it run once;
+  both now run the designed three. A seeded `steps` map can no longer present
+  results for steps that never ran.
+- **A trigger `filter` is evaluated against the sanitized context** the run
+  will actually see, not against keys the sender added. Behaviour change worth
+  a look before upgrading: a published workflow whose trigger `filter`
+  references `ctx.steps`, `ctx.stepAttempts` or `ctx.transcriptText` stops
+  matching, and the inbound webhook reports `no_subscribers` instead of
+  `started`. Such a filter could only ever have matched on sender-supplied
+  values, which is the bug.
+- **`ctx.stepAttempts` counts only non-negative integers.** Anything else
+  restarts at 0 — the one hardening that also covers run rows persisted before
+  this fix. The resume paths keep trusting their stored context (it legitimately
+  holds `steps`/`transcript` from the first step on), so a run started before
+  the upgrade keeps whatever it was seeded with until it ends.
+- Nested keys of the same name are untouched; only the top level is executor-owned.
+- `ctx.speaker` stays caller-settable on purpose: seeding it picks who speaks
+  first, which a start payload may decide, not what was said.
+
 ### Fixed — Admin API: excerpt duplicates, skill ack, workflow version number
 
 2026-11-04. Found while building the admin interface against the Admin API.

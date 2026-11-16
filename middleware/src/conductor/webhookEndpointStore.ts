@@ -37,9 +37,11 @@ export type WebhookInboundOutcome =
   | 'no_subscribers';
 
 /** Result of {@link ConductorWebhookEndpointStore.claim}: `'claimed'` means THIS call
- *  owns processing the delivery; `'duplicate'` means the id was already recorded (a
- *  redelivery); `'rate_limited'` means the endpoint's rolling-window cap is already
- *  full and no row was inserted (rejected before dedupe, no delivery id is consumed). */
+ *  owns processing the delivery; `'duplicate'` means the id was already recorded AND
+ *  that record consumed it (so not every recorded id answers `'duplicate'` — see
+ *  {@link REDELIVERABLE_OUTCOMES}); `'rate_limited'` means the endpoint's
+ *  rolling-window cap is already full and no row was inserted (rejected before
+ *  dedupe, no delivery id is consumed). */
 export type WebhookClaimResult = 'claimed' | 'duplicate' | 'rate_limited';
 
 /**
@@ -58,6 +60,45 @@ export type WebhookClaimResult = 'claimed' | 'duplicate' | 'rate_limited';
  * still reported as `'duplicate'` and does not trigger a second `emit()`.
  */
 export const IN_FLIGHT_CLAIM_STALE_MS = 30_000;
+
+/**
+ * Issue #1701 — recorded outcomes that do NOT consume the delivery id: a sender may
+ * redeliver the same `X-Webhook-Delivery-Id` and `claim()` will hand it out again.
+ *
+ * A delivery refused because the endpoint was disabled never reached `emit()`: the
+ * event was not processed, nothing was routed, no run started. Treating that row as a
+ * terminal duplicate loses the event for good — the sender's honest redelivery after
+ * the endpoint is enabled again is answered `'duplicate'` and no run ever starts (the
+ * reported bug: a disabled endpoint silently swallows the delivery id).
+ *
+ * So `claim()` re-claims such a row instead of reporting it as a duplicate. Unlike the
+ * abandoned-claim recovery above there is NO staleness window: nothing is in flight to
+ * protect against, and the endpoint can be enabled a second after the refusal.
+ *
+ * Deliberately NOT in this set:
+ *   - `'started'` / `'no_subscribers'` — `emit()` DID run for these, so re-claiming
+ *     would re-route an event this endpoint already processed (a duplicate run).
+ *   - `'invalid_payload'` — the body is covered by the HMAC, so a corrected payload is
+ *     a different request the sender should send under a fresh delivery id.
+ *   - `'duplicate'` — never written as a row's outcome; it IS the dedupe answer.
+ *   - `'rate_limited'` — inserts no row at all, so it already consumes no id.
+ *
+ * TWO CONSEQUENCES, both deliberate:
+ *   1. The refusal is NOT a durable audit record. There is one row per
+ *      `(endpoint_id, delivery_id)`, so a later successful redelivery overwrites the
+ *      `'disabled'` outcome. An operator reading `conductor_webhook_inbound_deliveries`
+ *      sees `'disabled'` only for refusals nobody has redelivered yet — which is the
+ *      set that matters (those are the events still missing). Recording every attempt
+ *      separately would need its own table or an attempt counter; the ledger's job
+ *      here is dedupe, not a request log.
+ *   2. A refusal still occupies a rate-limit slot for the rolling window, and a
+ *      re-claim bumps `received_at`, extending that residence. That is what bounds
+ *      ledger growth while an endpoint is off — exempting refusals would make a
+ *      disabled endpoint an unbounded row sink for a correctly-signed sender minting
+ *      fresh ids. The redelivery of an already-refused id is never throttled: it
+ *      short-circuits in the dedupe branch, before the window count.
+ */
+export const REDELIVERABLE_OUTCOMES: ReadonlySet<WebhookInboundOutcome> = new Set(['disabled']);
 
 export interface ConductorWebhookInboundDelivery {
   deliveryId: string;
@@ -200,6 +241,12 @@ export class ConductorWebhookEndpointStore {
    *      could call `setOutcome()`. Re-claiming that row (bumping `received_at`, NOT
    *      inserting a new one) lets a legitimate retry actually re-run `emit()`
    *      instead of being told the event was already handled when it never was.
+   *      SECOND EXCEPTION (issue #1701): a row whose outcome is in
+   *      {@link REDELIVERABLE_OUTCOMES} — today just `'disabled'` — recorded an
+   *      attempt that never reached `emit()`, so it is re-claimed the same way, with
+   *      no staleness window (nothing was ever in flight). Without this, disabling an
+   *      endpoint turns every delivery id a sender tries meanwhile into a permanent
+   *      `'duplicate'` and the event is lost even after the endpoint comes back.
    *   3. Only for a genuinely NEW id: count this endpoint's delivery rows in the
    *      rolling window. Over the cap ⇒ COMMIT and refuse as `'rate_limited'` — no
    *      row is inserted, so a rate-limited request never consumes a delivery id.
@@ -230,7 +277,8 @@ export class ConductorWebhookEndpointStore {
         const abandonedInFlightClaim =
           existing.outcome === 'received' &&
           Date.now() - existing.received_at.getTime() > IN_FLIGHT_CLAIM_STALE_MS;
-        if (!abandonedInFlightClaim) {
+        const redeliverable = REDELIVERABLE_OUTCOMES.has(existing.outcome);
+        if (!abandonedInFlightClaim && !redeliverable) {
           await client.query('COMMIT');
           return 'duplicate';
         }
