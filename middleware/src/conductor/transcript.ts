@@ -6,8 +6,9 @@
 // here, and the next speaker's prompt interpolates `{{ctx.transcriptText}}`.
 //
 // Executor-owned, like `steps` and `stepAttempts`: a caller-seeded transcript
-// would let a plugin fabricate a conversation that never happened, so
-// `createEphemeralRun` strips both keys from the payload.
+// would let a caller fabricate a conversation that never happened, so both keys
+// are stripped from every start payload. The reserved set and the filter live in
+// `runContext.ts`; the gate is `startRun`/`previewRun` (#1702).
 
 import type { JsonObject, JsonValue, Step } from '@omadia/conductor-core';
 
