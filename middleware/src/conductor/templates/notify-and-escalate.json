@@ -63,7 +63,7 @@
         "guard": { "op": "eq", "path": "stepResult.acknowledged", "value": true }
       },
       { "id": "t-ack-timeout", "source": "acknowledge", "target": "escalate" },
-      { "id": "t-escalated", "source": "escalate", "target": "announce" }
+      { "id": "t-escalated", "source": "escalate", "target": "announce", "guard": { "op": "always" } }
     ],
     "triggers": [{ "id": "trigger-incident", "kind": "event", "eventId": "slot:event:incident" }]
   },

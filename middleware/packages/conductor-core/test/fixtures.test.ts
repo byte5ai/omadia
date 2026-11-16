@@ -53,7 +53,11 @@ describe('fixtures — deterministic walk through valid-release-signoff', () => 
     expect(path.map((d) => (d.kind === 'advance' ? d.transitionId : d.kind))).toEqual(['t1', 't_approve', 'complete']);
   });
 
-  it('deadline path: unmet approval falls through to s_autoreject', () => {
+  // #1698 — `t_deadline` serves BOTH the 24h timeout (fired directly by `expireAwait`, guards
+  // not consulted) and an explicit rejection. The second only works because the transition
+  // guards for "anything that is not an explicit yes": a rejection may not take an unguarded
+  // edge, the declared fallback included. This is the migration shape for existing graphs.
+  it('deadline path: a rejection takes the guarded fallback to s_autoreject', () => {
     const path = walk({ s1: { notes: 'cut' }, s2: { approved: false } }, { base: 'main' });
     expect(path.map((d) => (d.kind === 'advance' ? d.transitionId : d.kind))).toEqual(['t1', 't_deadline', 'complete']);
   });

@@ -9,7 +9,15 @@ import { RunLeaseLostError } from './runStore.js';
 import type { ConductorAwaitStore } from './awaitStore.js';
 import type { StepEffects } from './stepEffects.js';
 import { canonicalizePrincipalId } from './principalId.js';
+import {
+  runError,
+  runErrorFromThrow,
+  stepNotInGraphError,
+  timerMisconfiguredError,
+  type ConductorRunError,
+} from './runError.js';
 import { appendTranscript } from './transcript.js';
+import { sanitizeRunContext } from './runContext.js';
 import type { RoleHolderResolver } from './roleHolderResolver.js';
 import type { AggregateHolderLookup } from '@omadia/channel-sdk';
 
@@ -31,16 +39,42 @@ export interface PreviewStep {
   result: JsonValue;
 }
 
-export interface PreviewResult {
-  status: 'completed' | 'failed';
-  steps: PreviewStep[];
-  context: JsonObject;
-}
+/**
+ * #1699 — `failed` and its cause are one fact, so they are one variant: a dry
+ * run is not persisted, which makes this the operator's whole surface, and a
+ * `failed` preview with no reason is exactly what the live trace was blamed for.
+ */
+export type PreviewResult =
+  | { status: 'completed'; steps: PreviewStep[]; context: JsonObject }
+  | { status: 'failed'; steps: PreviewStep[]; context: JsonObject; error: ConductorRunError };
 
 const MAX_STEPS = 1000;
 
 function asObject(v: JsonValue | undefined): JsonObject {
   return typeof v === 'object' && v !== null && !Array.isArray(v) ? v : {};
+}
+
+/**
+ * The step result a human response becomes before it reaches the engine. Under `strict` the
+ * `approved` flag is forced to a literal boolean so the engine (and #1698's rejection rule)
+ * sees the decision that was actually made; without it the raw response passes through
+ * unchanged, which is the documented fail-open contract.
+ *
+ * An object response keeps its other keys; a non-object response (string/array/number — always
+ * a rejection under strict) survives under `raw`, so the step record and the run context never
+ * lose the payload the decision was made on.
+ *
+ * Shared with `previewRun` (#1698): a dry run that normalized differently from the real run
+ * showed the operator the approval path the real run refuses.
+ */
+function normalizeHumanResult(response: JsonValue, strict: boolean): JsonValue {
+  if (!strict) return response;
+  return {
+    ...(typeof response === 'object' && response !== null && !Array.isArray(response)
+      ? (response as JsonObject)
+      : { raw: response }),
+    approved: isApproved(response, true),
+  };
 }
 
 /**
@@ -120,6 +154,12 @@ export class ConductorRunExecutor {
     isDryRun?: boolean;
     awaitCompletion?: boolean;
   }): Promise<ConductorRun> {
+    // #1702 — the initial context is caller-supplied, but the executor-owned keys
+    // inside it are not up for grabs: a trigger payload that seeded
+    // `stepAttempts` steered the loop budget, and one that seeded `steps` faked
+    // results for steps that never ran. Stripped HERE, the one gate every
+    // trigger kind (event/webhook, manual, cron, agent) passes through.
+    const payload = sanitizeRunContext(input.payload);
     const wf = await this.workflowStore.getBySlug(input.slug);
     if (!wf) throw new WorkflowNotFoundError(`workflow '${input.slug}' not found`);
     if (wf.status === 'disabled') {
@@ -134,7 +174,7 @@ export class ConductorRunExecutor {
     const run = await this.runStore.create({
       workflowVersionId: version.id,
       entryStepId: version.graph.entryStepId,
-      context: input.payload,
+      context: payload,
       triggerKind: input.triggerKind ?? 'manual',
       triggerSource: input.triggerSource ?? null,
       isDryRun: input.isDryRun ?? false,
@@ -142,10 +182,10 @@ export class ConductorRunExecutor {
     });
 
     if (input.awaitCompletion) {
-      return this.driveFrom(run.id, version.graph, version.graph.entryStepId, input.payload, lease);
+      return this.driveFrom(run.id, version.graph, version.graph.entryStepId, payload, lease);
     }
     const graph = version.graph;
-    void this.driveFrom(run.id, graph, graph.entryStepId, input.payload, lease).catch((err) => {
+    void this.driveFrom(run.id, graph, graph.entryStepId, payload, lease).catch((err) => {
       this.log(`[conductor] run ${run.id} drive crashed: ${err instanceof Error ? err.message : String(err)}`);
     });
     return run;
@@ -221,6 +261,11 @@ export class ConductorRunExecutor {
     try {
       while (currentStepId && seq < MAX_STEPS) {
         const stepId: string = currentStepId;
+        // #1699 — when this step actually began. The step row's `started_at`
+        // used to come from its DEFAULT now(), in the same transaction (and
+        // therefore at the same instant) as its `ended_at`, so every step's
+        // duration read as zero. Captured before the step does anything.
+        const stepStartedAt = new Date();
         // #759 — honour a pending operator cancel at the step boundary. A
         // mid-step kill is deliberately not attempted: the at-least-once
         // effect window stays bounded to one step, exactly like crash
@@ -230,7 +275,7 @@ export class ConductorRunExecutor {
           await this.runStore.recordStepAndAdvance({
             runId, seq, stepId, actor: { kind: 'operator_cancel' },
             postconditionOutcome: 'n/a', transitionTaken: null, nextStepId: null,
-            context, status: 'cancelled', claimedBy: lease,
+            context, status: 'cancelled', claimedBy: lease, startedAt: stepStartedAt,
           });
           this.log(`[conductor] run ${runId} cancelled at step boundary '${stepId}'`);
           break;
@@ -239,7 +284,8 @@ export class ConductorRunExecutor {
         if (!step) {
           await this.runStore.recordStepAndAdvance({
             runId, seq, stepId, actor: null, postconditionOutcome: 'n/a', transitionTaken: null,
-            nextStepId: null, context, status: 'failed', claimedBy: lease,
+            nextStepId: null, context, status: 'failed', claimedBy: lease, startedAt: stepStartedAt,
+            error: stepNotInGraphError(stepId),
           });
           break;
         }
@@ -260,7 +306,11 @@ export class ConductorRunExecutor {
             await this.runStore.recordStepAndAdvance({
               runId, seq, stepId, actor: { kind: 'timer', invalid: true },
               postconditionOutcome: 'n/a', transitionTaken: null, nextStepId: null,
-              context, status: 'failed', claimedBy: lease,
+              context, status: 'failed', claimedBy: lease, startedAt: stepStartedAt,
+              error: timerMisconfiguredError(stepId, durationMs ? 'fallback' : 'duration', {
+                duration: step.timer?.duration ?? null,
+                fallbackTransitionId: step.fallbackTransitionId ?? null,
+              }),
             });
             break;
           }
@@ -304,7 +354,17 @@ export class ConductorRunExecutor {
           await this.runStore.recordStepAndAdvance({
             runId, seq, stepId, actor: { kind: 'human', noHolder: true },
             postconditionOutcome: 'unmet', transitionTaken: fb?.id ?? null, nextStepId: fb?.target ?? null,
-            context, status: fb ? 'running' : 'failed', claimedBy: lease,
+            context, status: fb ? 'running' : 'failed', claimedBy: lease, startedAt: stepStartedAt,
+            // Recorded even when the fallback saves the run: it ends `completed`
+            // and the operator still has to see that a human was skipped.
+            error: runError(
+              'no_role_holder',
+              `human step '${stepId}' has no reachable holder for ${step.human?.principal.kind ?? 'principal'} '${step.human?.principal.ref ?? '?'}'`,
+              {
+                ...(fb ? { fallbackTransitionId: fb.id } : {}),
+                principal: step.human?.principal.ref ?? null,
+              },
+            ),
           });
           if (!fb) break;
           currentStepId = fb.target;
@@ -322,6 +382,14 @@ export class ConductorRunExecutor {
           await this.runStore.recordStepAndAdvance({
             runId, seq, stepId, actor: { kind: step.kind, ref: step.agentId ?? step.actionId ?? null },
             postconditionOutcome: 'n/a', transitionTaken: null, nextStepId: null, context, status: 'failed', claimedBy: lease,
+            startedAt: stepStartedAt,
+            // The message is redacted and truncated by `runError` — a provider
+            // error (the reported 429) carries both credentials and correlation
+            // handles, which is why it could not simply be stored verbatim.
+            error: runErrorFromThrow(err, {
+              stepKind: step.kind,
+              ref: step.agentId ?? step.actionId ?? null,
+            }),
           });
           break;
         }
@@ -329,8 +397,29 @@ export class ConductorRunExecutor {
         const decision = nextStep(graph, stepId, exec.result, context);
         context = this.accumulate(context, stepId, exec.result);
         context = appendTranscript(context, step, exec.result);
-        currentStepId = await this.applyDecision(runId, seq, stepId, exec.actor, decision, context, lease);
+        currentStepId = await this.applyDecision(runId, seq, stepId, exec.actor, decision, context, lease, stepStartedAt);
         if (currentStepId) seq += 1;
+      }
+
+      // #1699 / US2-AS4 — the loop has TWO exits, and only one of them was
+      // recorded. Every `break` above persists its step first, so falling out
+      // with a step still pending can only mean the MAX_STEPS budget ran out —
+      // and that left the run 'running' for ever with no row and no cause: the
+      // silent hang with no recorded state AS4 forbids. `seq` equals the number
+      // of rows already written, so MAX_STEPS is the free slot for this one.
+      if (currentStepId && seq >= MAX_STEPS) {
+        const stuckAt: string = currentStepId;
+        await this.runStore.recordStepAndAdvance({
+          runId, seq, stepId: stuckAt, actor: { kind: 'engine', maxSteps: MAX_STEPS },
+          postconditionOutcome: 'n/a', transitionTaken: null, nextStepId: null,
+          context, status: 'failed', claimedBy: lease, startedAt: new Date(),
+          error: runError(
+            'max_steps_exceeded',
+            `run exceeded the ${String(MAX_STEPS)}-step budget, still pending at '${stuckAt}'`,
+            { maxSteps: MAX_STEPS, stepId: stuckAt },
+          ),
+        });
+        this.log(`[conductor] run ${runId} exceeded the ${String(MAX_STEPS)}-step budget at '${stuckAt}'`);
       }
     } catch (err) {
       if (err instanceof RunLeaseLostError) {
@@ -385,6 +474,9 @@ export class ConductorRunExecutor {
    * idempotency keys. Called only by the resume worker, after it has claimed the run.
    */
   async resumeRun(runId: string, lease: string): Promise<ConductorRun> {
+    // #1699 — when this resume attempt began; the synthetic '(resume)' row below
+    // is a step record like any other and must not carry a zero duration.
+    const startedAt = new Date();
     const run = await this.requireRun(runId);
     if (run.status !== 'running') return run; // completed/parked between claim and resume
     if (!run.currentStepId) {
@@ -393,6 +485,8 @@ export class ConductorRunExecutor {
       await this.runStore.recordStepAndAdvance({
         runId, seq, stepId: '(resume)', actor: { kind: 'resume', reason: 'no_current_step' },
         postconditionOutcome: 'n/a', transitionTaken: null, nextStepId: null, context: run.context, status: 'failed', claimedBy: lease,
+        startedAt,
+        error: runError('resume_no_current_step', `run '${runId}' is 'running' with no current step — cannot resume`),
       });
       return (await this.runStore.get(runId)) ?? run;
     }
@@ -498,14 +592,7 @@ export class ConductorRunExecutor {
     // `stepResult.approved` unchanged. An object response keeps its other keys; a non-object
     // response (string/array/number — always a rejection under strict) survives under `raw` so
     // the step record and run context never lose the payload the decision was made on.
-    let stepResult: JsonValue = strict
-      ? {
-          ...(typeof response === 'object' && response !== null && !Array.isArray(response)
-            ? (response as JsonObject)
-            : { raw: response }),
-          approved: isApproved(response, true),
-        }
-      : response;
+    let stepResult: JsonValue = normalizeHumanResult(response, strict);
     if (aw.quorum === 'all') {
       const responses = await this.awaitStore.listResponses(awaitId);
       const respondedRequired = new Set(
@@ -553,7 +640,7 @@ export class ConductorRunExecutor {
     const decision = nextStep(graph, aw.stepId, stepResult, run.context);
     const context = this.accumulate(run.context, aw.stepId, stepResult);
     const seq = (await this.runStore.stepsForRun(aw.runId)).length;
-    const next = await this.applyDecision(aw.runId, seq, aw.stepId, { kind: 'human', quorum: aw.quorum, resolvedUserId: responder }, decision, context, lease);
+    const next = await this.applyDecision(aw.runId, seq, aw.stepId, { kind: 'human', quorum: aw.quorum, resolvedUserId: responder }, decision, context, lease, aw.createdAt);
     if (next) return this.driveFrom(aw.runId, graph, next, context, lease);
     return this.finalizeIfEnded((await this.runStore.get(aw.runId)) ?? run);
   }
@@ -575,10 +662,27 @@ export class ConductorRunExecutor {
     const actor: JsonValue = aw.principalKind === 'timer' ? { kind: 'timer', ticked: true } : { kind: 'human', timedOut: true };
     // A timer expiring is the step working as designed — 'unmet' would lie.
     const expiredOutcome = aw.principalKind === 'timer' ? 'n/a' : 'unmet';
+    // #1699 — a human deadline passing unanswered is a cause worth recording, on
+    // the fallback path too (the run can end `completed` and the operator still
+    // needs to know nobody answered). A TIMER expiring is the step doing exactly
+    // its job — same reasoning as `expiredOutcome` above — so it records none.
+    const expiryError: ConductorRunError | null =
+      aw.principalKind === 'timer'
+        ? null
+        : runError(
+            'await_timed_out',
+            `human step '${aw.stepId}' passed its deadline with no response from ${aw.principalKind} '${aw.principalRef}'`,
+            {
+              principal: aw.principalRef,
+              ...(aw.deadlineAt ? { deadlineAt: aw.deadlineAt.toISOString() } : {}),
+              ...(fallback ? { fallbackTransitionId: fallback.id } : {}),
+            },
+          );
     if (!fallback) {
       await this.runStore.recordStepAndAdvance({
         runId: aw.runId, seq, stepId: aw.stepId, actor,
         postconditionOutcome: expiredOutcome, transitionTaken: null, nextStepId: null, context: run.context, status: 'failed', claimedBy: lease,
+        startedAt: aw.createdAt, error: expiryError,
       });
       const ended = await this.runStore.get(aw.runId);
       if (ended) this.finalizeIfEnded(ended);
@@ -587,6 +691,7 @@ export class ConductorRunExecutor {
     await this.runStore.recordStepAndAdvance({
       runId: aw.runId, seq, stepId: aw.stepId, actor,
       postconditionOutcome: expiredOutcome, transitionTaken: fallback.id, nextStepId: fallback.target, context: run.context, status: 'running', claimedBy: lease,
+      startedAt: aw.createdAt, error: expiryError,
     });
     this.log(`[conductor] await ${awaitId} timed out → fallback '${fallback.id}' (run ${aw.runId})`);
     await this.driveFrom(aw.runId, graph, fallback.target, run.context, lease);
@@ -607,17 +712,22 @@ export class ConductorRunExecutor {
     if (!version) throw new WorkflowNotPublishedError(`active version of '${slug}' missing`);
     const graph = version.graph;
 
-    let context: JsonObject = { ...payload };
+    // #1702 — a preview whose payload seeded `steps`/`stepAttempts` would
+    // rehearse a path the real run cannot take. Same gate as startRun.
+    let context: JsonObject = sanitizeRunContext(payload);
     let currentStepId: string | null = graph.entryStepId;
     const steps: PreviewStep[] = [];
-    let status: 'completed' | 'failed' = 'completed';
+    // #1699 — the preview's reason, same vocabulary as a persisted run's. It is
+    // also the outcome: a preview fails exactly when it has a cause, so there is
+    // no separate status flag that could disagree with it.
+    let error: ConductorRunError | undefined;
     let guard = MAX_STEPS;
 
     while (currentStepId && guard-- > 0) {
       const stepId: string = currentStepId;
       const step = graph.steps.find((s) => s.id === stepId);
       if (!step) {
-        status = 'failed';
+        error = stepNotInGraphError(stepId);
         break;
       }
 
@@ -636,7 +746,10 @@ export class ConductorRunExecutor {
           result: { simulated: true, duration: step.timer?.duration ?? null },
         });
         if (!fb) {
-          status = 'failed';
+          error = timerMisconfiguredError(stepId, 'fallback', {
+            duration: step.timer?.duration ?? null,
+            fallbackTransitionId: step.fallbackTransitionId ?? null,
+          });
           break;
         }
         currentStepId = fb.target;
@@ -646,11 +759,21 @@ export class ConductorRunExecutor {
       let result: JsonValue;
       let actor: string;
       if (step.kind === 'human') {
-        result = humanResponses[stepId] ?? { approved: true };
+        // #1698 — normalize exactly as `resolveAwait` does, or the dry run shows a path the
+        // real run refuses: under strictApproval a malformed answer is a rejection, and a
+        // rejection may not take an unguarded transition.
+        result = normalizeHumanResult(humanResponses[stepId] ?? { approved: true }, step.human?.strictApproval === true);
         actor = 'human (inline)';
       } else if (step.kind === 'agent') {
-        const exec = await this.effects.runAgentStep(step, context, { runId: `preview:${slug}` });
-        result = exec.result;
+        // A rehearsal must report a throwing agent step, not 500 the preview route.
+        try {
+          const exec = await this.effects.runAgentStep(step, context, { runId: `preview:${slug}` });
+          result = exec.result;
+        } catch (err) {
+          error = runErrorFromThrow(err, { stepKind: step.kind, ref: step.agentId ?? null });
+          this.log(`[conductor] preview '${slug}' step '${stepId}' threw: ${error.message ?? '(no message)'}`);
+          break;
+        }
         actor = `agent:${step.agentId ?? '?'}`;
       } else {
         result = { simulated: true, actionId: step.actionId ?? null };
@@ -671,12 +794,25 @@ export class ConductorRunExecutor {
       if (decision.kind === 'advance') {
         currentStepId = decision.targetStepId;
       } else {
-        status = decision.kind === 'complete' ? 'completed' : 'failed';
+        if (decision.kind === 'stuck') {
+          error = runError(decision.code, decision.message, { nodeIds: decision.nodeIds });
+        }
         currentStepId = null;
       }
     }
 
-    return { status, steps, context };
+    // Same budget exit as a real drive (#1699): a rehearsal that ran out of
+    // steps used to read as a clean pass, which is the worst possible answer
+    // to "would this workflow work?".
+    if (currentStepId && !error) {
+      error = runError(
+        'max_steps_exceeded',
+        `preview exceeded the ${String(MAX_STEPS)}-step budget, still pending at '${currentStepId}'`,
+        { maxSteps: MAX_STEPS, stepId: currentStepId },
+      );
+    }
+
+    return error ? { status: 'failed', steps, context, error } : { status: 'completed', steps, context };
   }
 
   // ── helpers ────────────────────────────────────────────────────────────────
@@ -732,7 +868,12 @@ export class ConductorRunExecutor {
    *  in this run. Deterministic loop budget for guarded cycles. */
   private bumpStepAttempt(context: JsonObject, stepId: string): JsonObject {
     const prev = asObject(context.stepAttempts);
-    const before = typeof prev[stepId] === 'number' ? (prev[stepId] as number) : 0;
+    const raw = prev[stepId];
+    // Only a non-negative integer is a count. Anything else — a negative or
+    // fractional number, Infinity, a string — restarts at 0 rather than
+    // offsetting the budget (#1702 belt-and-braces: payloads are stripped at
+    // startRun, but a run row persisted before that fix still carries one).
+    const before = typeof raw === 'number' && Number.isInteger(raw) && raw >= 0 ? raw : 0;
     return { ...context, stepAttempts: { ...prev, [stepId]: before + 1 } };
   }
 
@@ -745,25 +886,33 @@ export class ConductorRunExecutor {
     decision: ReturnType<typeof nextStep>,
     context: JsonObject,
     lease: string,
+    /** #1699 — when the step this decision closes began (the drive loop's capture,
+     *  or an await's `created_at` for a human step that was parked meanwhile). */
+    startedAt?: Date,
   ): Promise<string | null> {
     if (decision.kind === 'advance') {
       await this.runStore.recordStepAndAdvance({
         runId, seq, stepId, actor, postconditionOutcome: decision.postcondition, transitionTaken: decision.transitionId,
-        nextStepId: decision.targetStepId, context, status: 'running', claimedBy: lease,
+        nextStepId: decision.targetStepId, context, status: 'running', claimedBy: lease, startedAt,
       });
       return decision.targetStepId;
     }
     if (decision.kind === 'complete') {
       await this.runStore.recordStepAndAdvance({
         runId, seq, stepId, actor, postconditionOutcome: decision.postcondition, transitionTaken: null,
-        nextStepId: null, context, status: 'completed', claimedBy: lease,
+        nextStepId: null, context, status: 'completed', claimedBy: lease, startedAt,
       });
       return null;
     }
     this.log(`[conductor] run ${runId} stuck at '${stepId}': ${decision.message}`);
     await this.runStore.recordStepAndAdvance({
       runId, seq, stepId, actor, postconditionOutcome: decision.postcondition, transitionTaken: null,
-      nextStepId: stepId, context, status: 'failed', claimedBy: lease,
+      nextStepId: stepId, context, status: 'failed', claimedBy: lease, startedAt,
+      // #1699 — the engine already classifies WHY advancement failed (ambiguous
+      // guards vs. no fallback vs. a dangling fallback id) and names the nodes;
+      // that classification used to reach the log line above and nothing else.
+      // Its `StuckCode` values are part of the stored vocabulary unchanged.
+      error: runError(decision.code, decision.message, { nodeIds: decision.nodeIds }),
     });
     return null;
   }

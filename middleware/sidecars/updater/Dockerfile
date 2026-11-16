@@ -10,7 +10,7 @@
 # It never mounts /var/run/docker.sock. All Engine access goes through the
 # docker-socket-proxy service defined in docker-compose.update.yaml, whose
 # endpoint allowlist is visible in that file.
-FROM node:22.23.2-alpine
+FROM node:22.23.5-alpine
 
 RUN apk add --no-cache tini
 

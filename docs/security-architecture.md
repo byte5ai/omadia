@@ -772,7 +772,8 @@ This keeps the supply chain explicit:
   with its own calls replayed, §7c); a turn without that replay ledger keeps
   the same single retry, so an MCP write whose reply was lost can run twice.
   Conductor human steps treat an absent or malformed response as approval
-  unless the step sets `human.strictApproval` (§7a).
+  unless the step sets `human.strictApproval` (§7a); an EXPLICIT rejection
+  never advances on an unguarded transition in either mode (#1698, §7a).
 
 ### Plugin-borne workflow templates (#478)
 
@@ -2601,6 +2602,16 @@ should re-verify on any change to this route:
   trusted; an unknown `endpointId` and a known one with a wrong secret
   answer byte-for-byte the same `401 {"code":"webhook.bad_signature"}` — a
   caller can never use the response to probe which endpoint ids are real.
+- **Content-type independent (#1700).** The HMAC is over bytes, so the
+  sender's `Content-Type` must never decide whether verification sees those
+  bytes. The route-level `express.raw()` therefore uses a FUNCTION type
+  matcher: body-parser's wildcard type *string* goes through `type-is`, which
+  needs a media type to compare against, so a delivery with no `Content-Type`
+  header (or an empty one) matched nothing, was never parsed, and a correctly
+  signed request answered `401 webhook.bad_signature` — pointing the sender at
+  its signing code instead of at the missing header. A sender may omit the
+  header; only the JSON parse then decides the outcome. The same applies to the
+  plugin raw-body path (`platform/pluginRouteRegistry.ts`, `rawBodyCapture`).
 - **Always 2xx on noise.** Once the signature verifies and the delivery id
   is claimed, every remaining branch (disabled endpoint, malformed JSON, no
   subscribed workflow) answers `2xx`. Only a bad signature (401) or the
@@ -2623,6 +2634,36 @@ resolved address to defend against DNS-rebinding between the precheck and
 the connection. A subscription URL is also checked at creation time
 (`assertOutboundUrlAllowed`), so an operator gets an immediate 400 rather
 than only discovering the block on the first delivery attempt.
+
+**The payload is data, never executor state (#1702).** A correctly signed
+delivery decides the run's *initial context*, so every key in it that the
+executor also writes and reads back as ground truth has to be stripped on the
+way in. The reserved set lives in one place,
+`middleware/src/conductor/runContext.ts`:
+
+- `stepAttempts` — the deterministic loop budget. A seeded
+  `{"stepAttempts":{"a":-5}}` made a step guarded by `lt ctx.stepAttempts.a 3`
+  run **eight** times, and `{"a":99}` made it run once: whoever held the
+  endpoint secret decided how often a step with a cost or a side effect fired.
+- `steps` — per-step results. A seeded entry presents a result for a step that
+  never ran, and the next postcondition / transition guard believes it.
+- `transcript` / `transcriptText` — the agent dialogue bus; a seeded one
+  fabricates a conversation the next speaker answers as if real.
+
+`sanitizeRunContext` is applied in `ConductorRunExecutor.startRun` and
+`previewRun` — the single gate every trigger kind passes through (event /
+webhook, manual `POST /:slug/runs`, cron, agent `createEphemeralRun`), so the
+inbound-webhook path and the ephemeral path can no longer disagree about it.
+`ConductorEventRouter.emit` strips once more before evaluating a trigger
+`filter`, so a predicate is matched against exactly the context the run will
+see rather than against keys the run never gets. For runs persisted BEFORE the fix only the
+counter is hardened: `bumpStepAttempt` treats only a non-negative integer as a
+count and restarts at 0 on anything else (negative, fractional, Infinity, a
+string). The resume paths (`resumeRun`, `expireAwait`) deliberately do NOT
+strip, because a stored context legitimately holds `steps`/`transcript` from
+step 1 onward and stripping there would rob a live run of its own state — so a
+pre-fix run keeps whatever it was seeded with until it ends, while no new run
+can be seeded at all.
 
 ## 7b. Tamper-evident receipt chain (#758)
 
@@ -3565,6 +3606,38 @@ explicit here so a deployment can reason about them:
   deadline fallback that lands on a normal outgoing path
   (`timeout_equals_approval`) — if that shared path is the approval path, a
   timeout silently approves.
+- **A rejection cannot advance on an unguarded transition (#1698).** The
+  polarity above decides what `stepResult.approved` *is*; until #1698 nothing
+  on the transition path read it. An outgoing edge without a guard matches
+  unconditionally, so a human step whose only edge carried no guard ran the
+  gated action on an explicit `{approved:false}` — and `strictApproval: true`
+  did not change that, it only normalised the flag. The engine
+  (`conductor-core/src/engine.ts`) now excludes unguarded edges whenever a
+  human step's result carries `approved: false`: only a transition whose guard
+  asks for the rejection may fire. That holds for the declared deadline
+  fallback too — it carries no answer either, and firing it would report an
+  explicit "no" as a missed deadline — and it holds when the step is terminal,
+  because a run ending `completed` on a refusal is indistinguishable from one
+  ending on an approval. With nothing matching, the run ends `failed` with the
+  surfaced stuck code `approval_rejected_no_transition`. An absent or
+  non-boolean `approved`
+  is deliberately NOT a rejection here — in fail-open mode that case is
+  approval by definition, and under strict the executor has already turned it
+  into a literal `false` — so the rule changes no path of a step nobody
+  rejected. The validator warns on the shape that produces it
+  (`rejection_unguarded_edge`) regardless of `strictApproval` and regardless
+  of the target step's kind, and the designer pre-fills an edge drawn out of a
+  human step with the approval guard (the next one with the rejection guard).
+  Caveat for operators: this applies to already-published workflow versions
+  too, so a graph that routed a rejection through one unguarded edge now needs
+  that edge guarded — `{"op":"ne","path":"stepResult.approved","value":true}`
+  on a timeout fallback makes it serve rejections as well (a real timeout is
+  fired by `expireAwait` and never consults guards), which is the shape
+  `fixtures/valid-release-signoff.json` now carries. `{"op":"always"}` states
+  "both outcomes, same step"; note that it is an opt-out the validator cannot
+  tell from a mistake — it checks that a guard is present, not what it says,
+  so an `always` on an edge into an irreversible action restores the old
+  behaviour silently. Keep it for edges whose target handles both answers.
 - **Run cancellation is an operator surface, not a bypass.** Cancel never
   skips a gate — it terminates the run. A waiting run's open awaits close as
   `'cancelled'`; a running run stops at the next step boundary (mid-step
