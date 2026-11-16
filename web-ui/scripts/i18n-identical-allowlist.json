@@ -28,6 +28,7 @@
     "operatorAgents.modelPolicy.summaryAuto": "loanword",
     "adminDatasets.fields.nameOptional": "loanword",
     "dashboard.onboarding.cases.hr.name": "loanword",
+    "conductor.durationMinutes": "loanword",
     "conductor.graphLabel": "loanword",
     "conductor.guardLabel": "glossary",
     "conductor.payloadLabel": "loanword",

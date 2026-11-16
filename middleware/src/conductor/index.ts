@@ -67,6 +67,10 @@ async function buildRunEventPayload(run: ConductorRun, workflowStore: ConductorW
     workflowName: workflow?.name ?? null,
     triggerKind: run.triggerKind,
     context: run.context,
+    // #1699 — a `run.failed` subscriber used to learn only THAT a run failed.
+    // Null on a run that failed before migration 0013 ("cause not recorded").
+    errorCode: run.errorCode,
+    errorMessage: run.errorMessage,
   };
 }
 
