@@ -36,6 +36,19 @@ changelog.
 
 ## [Unreleased]
 
+### Security — Node 22.23.5 in every shipped image
+
+2026-11-16. The middleware, web-ui and updater images move to Node 22.23.5,
+a security release with eight high-severity fixes in `http`, `http2` and
+`tls` (among them CVE-2026-123864, nested parser execution from empty writes,
+which reaches the updater's `node:http` control plane). The updater sidecar
+was still on 22.23.2 because Dependabot did not watch its Dockerfile. It now
+does, in `.github/dependabot.yml`. The same rollup moves `docx` from 9.7.1 to
+9.15.4. Generated `.docx` files now include a theme part and the TOC1–TOC9
+styles, express table widths in fiftieths of a percent, and drop the control
+characters XML 1.0 forbids. Before this change those characters made Word
+refuse the file.
+
 ### Fixed — Conductor: a rejected approval no longer takes an unguarded transition (#1698)
 
 2026-11-10. The approval gate computed the decision and then ignored it: the
