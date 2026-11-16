@@ -55,6 +55,29 @@ function asObject(v: JsonValue | undefined): JsonObject {
 }
 
 /**
+ * The step result a human response becomes before it reaches the engine. Under `strict` the
+ * `approved` flag is forced to a literal boolean so the engine (and #1698's rejection rule)
+ * sees the decision that was actually made; without it the raw response passes through
+ * unchanged, which is the documented fail-open contract.
+ *
+ * An object response keeps its other keys; a non-object response (string/array/number — always
+ * a rejection under strict) survives under `raw`, so the step record and the run context never
+ * lose the payload the decision was made on.
+ *
+ * Shared with `previewRun` (#1698): a dry run that normalized differently from the real run
+ * showed the operator the approval path the real run refuses.
+ */
+function normalizeHumanResult(response: JsonValue, strict: boolean): JsonValue {
+  if (!strict) return response;
+  return {
+    ...(typeof response === 'object' && response !== null && !Array.isArray(response)
+      ? (response as JsonObject)
+      : { raw: response }),
+    approved: isApproved(response, true),
+  };
+}
+
+/**
  * A human response counts as approval unless it is explicitly `{ approved: false }` (the reject
  * button's payload). Fail-open by default: an absent/garbage/missing flag counts as approval, and
  * only a strict boolean `false` is a reject (the inbox sends a typed boolean). A guard step's
@@ -569,14 +592,7 @@ export class ConductorRunExecutor {
     // `stepResult.approved` unchanged. An object response keeps its other keys; a non-object
     // response (string/array/number — always a rejection under strict) survives under `raw` so
     // the step record and run context never lose the payload the decision was made on.
-    let stepResult: JsonValue = strict
-      ? {
-          ...(typeof response === 'object' && response !== null && !Array.isArray(response)
-            ? (response as JsonObject)
-            : { raw: response }),
-          approved: isApproved(response, true),
-        }
-      : response;
+    let stepResult: JsonValue = normalizeHumanResult(response, strict);
     if (aw.quorum === 'all') {
       const responses = await this.awaitStore.listResponses(awaitId);
       const respondedRequired = new Set(
@@ -743,7 +759,10 @@ export class ConductorRunExecutor {
       let result: JsonValue;
       let actor: string;
       if (step.kind === 'human') {
-        result = humanResponses[stepId] ?? { approved: true };
+        // #1698 — normalize exactly as `resolveAwait` does, or the dry run shows a path the
+        // real run refuses: under strictApproval a malformed answer is a rejection, and a
+        // rejection may not take an unguarded transition.
+        result = normalizeHumanResult(humanResponses[stepId] ?? { approved: true }, step.human?.strictApproval === true);
         actor = 'human (inline)';
       } else if (step.kind === 'agent') {
         // A rehearsal must report a throwing agent step, not 500 the preview route.

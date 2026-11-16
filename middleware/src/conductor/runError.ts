@@ -49,6 +49,7 @@ const RUN_ERROR_CODES: Record<ConductorRunErrorCode, true> = {
   no_transition_no_fallback: true,
   ambiguous_guards: true,
   fallback_transition_missing: true,
+  approval_rejected_no_transition: true,
   // executor
   step_not_in_graph: true,
   timer_misconfigured: true,

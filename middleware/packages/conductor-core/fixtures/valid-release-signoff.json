@@ -32,7 +32,7 @@
     { "id": "t1", "source": "s1", "target": "s2", "guard": { "op": "exists", "path": "stepResult.notes" } },
     { "id": "t_fail", "source": "s1", "target": "s_end_fail" },
     { "id": "t_approve", "source": "s2", "target": "s3", "guard": { "op": "eq", "path": "stepResult.approved", "value": true } },
-    { "id": "t_deadline", "source": "s2", "target": "s_autoreject" }
+    { "id": "t_deadline", "source": "s2", "target": "s_autoreject", "guard": { "op": "ne", "path": "stepResult.approved", "value": true } }
   ],
   "triggers": [
     { "id": "tr1", "kind": "event", "eventId": "github.pull_request.merged", "filter": { "op": "eq", "path": "ctx.base", "value": "main" } },

@@ -571,7 +571,8 @@
       "postcondition_unmet_no_fallback": "Postcondition nicht erfüllt und kein Fallback deklariert",
       "no_transition_no_fallback": "Keine Transition passte und kein Fallback deklariert",
       "ambiguous_guards": "Mehrere Transitionen passten gleichzeitig",
-      "fallback_transition_missing": "Deklarierte Fallback-Transition existiert nicht"
+      "fallback_transition_missing": "Deklarierte Fallback-Transition existiert nicht",
+      "approval_rejected_no_transition": "Abgelehnt, und keine Transition behandelt die Ablehnung"
     },
     "resultContext": "Ergebnis-Kontext",
     "loadError": "Workflows konnten nicht geladen werden",
@@ -585,7 +586,7 @@
     "cancelRunFailed": "Der Lauf konnte nicht abgebrochen werden",
     "cancelPendingHint": "Abbruch angefordert — der Lauf stoppt an der nächsten Schrittgrenze.",
     "strictApprovalLabel": "Strikte Freigabe",
-    "strictApprovalHint": "Nur eine explizite Freigabe führt weiter; eine fehlende oder fehlerhafte Antwort zählt als Ablehnung. Empfohlen, wenn dieser Schritt eine unumkehrbare Aktion schützt.",
+    "strictApprovalHint": "Nur eine explizite Freigabe zählt als Freigabe; eine fehlende oder fehlerhafte Antwort zählt als Ablehnung. Eine Ablehnung läuft nie über eine ungeguardete Transition weiter — guarde die ausgehenden Transitionen auf stepResult.approved, damit die Ablehnung ihren eigenen Pfad hat. Empfohlen, wenn dieser Schritt eine unumkehrbare Aktion schützt.",
     "designerHeading": "Visueller Designer",
     "designerHint": "Steps hinzufügen, zum Verdrahten zwischen ihnen ziehen, einen Step im Inspector bearbeiten, dann Speichern. Markiere einen Step als Einstieg.",
     "chatHeading": "Konversationeller Builder",
@@ -650,6 +651,7 @@
     "entryLabel": "Einstiegs-Step",
     "transitionLabel": "Transition",
     "guardLabel": "Guard (JSON, optional)",
+    "guardHumanRejectionHint": "Eine Transition aus einem Human-Step wird bei einer Ablehnung nur genommen, wenn ihr Guard danach fragt. Guarde den Freigabe-Pfad auf stepResult.approved = true und gib der Ablehnung eine eigene Transition.",
     "awaitsHeading": "Wartende Human-Steps",
     "approve": "Freigeben",
     "reject": "Ablehnen",

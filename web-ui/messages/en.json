@@ -571,7 +571,8 @@
       "postcondition_unmet_no_fallback": "Postcondition unmet and no fallback declared",
       "no_transition_no_fallback": "No transition matched and no fallback declared",
       "ambiguous_guards": "Several transitions matched at once",
-      "fallback_transition_missing": "Declared fallback transition does not exist"
+      "fallback_transition_missing": "Declared fallback transition does not exist",
+      "approval_rejected_no_transition": "Rejected, and no transition handles the rejection"
     },
     "resultContext": "Result context",
     "loadError": "Could not load workflows",
@@ -585,7 +586,7 @@
     "cancelRunFailed": "The run could not be cancelled",
     "cancelPendingHint": "Cancellation requested — the run stops at the next step boundary.",
     "strictApprovalLabel": "Strict approval",
-    "strictApprovalHint": "Only an explicit approve advances; a missing or malformed response counts as a rejection. Recommended when this step gates an irreversible action.",
+    "strictApprovalHint": "Only an explicit approve counts as approval; a missing or malformed response counts as a rejection. A rejection never advances on an unguarded transition — guard the outgoing transitions on stepResult.approved so the refusal has a path of its own. Recommended when this step gates an irreversible action.",
     "designerHeading": "Visual designer",
     "designerHint": "Add steps, drag between them to wire transitions, edit a step in the inspector, then Save. Mark one step as the entry.",
     "chatHeading": "Conversational builder",
@@ -650,6 +651,7 @@
     "entryLabel": "Entry step",
     "transitionLabel": "Transition",
     "guardLabel": "Guard (JSON, optional)",
+    "guardHumanRejectionHint": "A transition out of a human step is never taken on a rejection unless its guard asks for one. Guard the approval path on stepResult.approved = true and give the rejection its own transition.",
     "awaitsHeading": "Pending human steps",
     "approve": "Approve",
     "reject": "Reject",
