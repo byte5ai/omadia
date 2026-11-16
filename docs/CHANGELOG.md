@@ -36,6 +36,17 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Node-Aktivierung nach Amp-Snapshot-Restore
+
+2026-11-16. Neue Orbs hatten die Node-22-/24-Toolchains und alle Pakete,
+starteten aber Shells mit Node 26: Amp verwirft Setup-Änderungen an den
+Shell-Profilen beim Aktivieren eines gemeinsamen Snapshots. Das Setup
+hinterlegt jetzt einen direkten Node-22-PATH für den Snapshot; Resume
+registriert den vorbereiteten Root-/Desktop-Selektor nach der Aktivierung
+idempotent erneut. Ein CI-Regressionstest setzt die Profile wie beim Restore
+zurück und prüft Aktivierung, wiederholtes Resume und erhaltene Profileinträge.
+Keine Pakete werden beim Resume installiert.
+
 ### Added — Reproduzierbare Amp-Orb-Umgebung
 
 2026-11-10. `.agents/setup` installiert die gepinnten Node-Toolchains

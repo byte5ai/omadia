@@ -7423,10 +7423,21 @@ Der systemd-eigene Docker-Daemon läuft automatisch. Der Container
 Wegwerf-Testdatenbank; beide haben die `vector`-Extension. Benutzer und
 Passwort sind die öffentlichen lokalen Vorlagenwerte `omadia` — niemals für
 Produktion verwenden. `fsync`, `synchronous_commit` und `full_page_writes`
-sind für Wegwerfdaten abgeschaltet. `.agents/resume` startet nur Docker und
-den vorhandenen Container und prüft seine Bereitschaft, ohne Installationen.
+sind für Wegwerfdaten abgeschaltet. `.agents/resume` startet Docker und
+den vorhandenen Container, prüft seine Bereitschaft und stellt die Shell-
+Aktivierung wieder her, ohne Installationen.
 
-Der einmalige Hook in `~/.bash_profile` wählt in neuen Login-Shells die
+**Snapshot-Grenze:** Amp verwirft Setup-Änderungen an Shell-Profilen und behält
+nur hinzugefügte PATH-Verzeichnisse. `.agents/setup` deklariert deshalb Node 22
+als direkten PATH-Eintrag für den Snapshot. Den Hook für den vorbereiteten
+Selektor `~/.config/omadia/orb-env.sh` registriert erst `.agents/resume` nach
+Aktivierung und bei jedem Wake erneut (idempotent). Nur während Setup einen
+`source`-Eintrag anzulegen reicht nicht: Dann startete ein frischer Orb trotz
+installierter Node-22-/24-Binaries mit Node 26. `.agents/resume.test.mjs`
+prüft die durch Profile-Reset und Resume laufende Aktivierung im CI-Job
+`middleware`, inklusive Wiederholung und erhaltener Profileinträge.
+
+Der Hook in `~/.bash_profile` wählt in neuen Login-Shells die
 Toolchain anhand des Git-Roots (auch in verlinkten Worktrees): unter
 `desktop/` Node 24, sonst Node 22. Wer aus dem Root `npm --prefix desktop`
 aufruft, muss Node 24 explizit im PATH setzen; die Auswahl erfolgt beim
