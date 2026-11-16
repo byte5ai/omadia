@@ -571,7 +571,8 @@
       "postcondition_unmet_no_fallback": "Postcondition nicht erfüllt und kein Fallback deklariert",
       "no_transition_no_fallback": "Keine Transition passte und kein Fallback deklariert",
       "ambiguous_guards": "Mehrere Transitionen passten gleichzeitig",
-      "fallback_transition_missing": "Deklarierte Fallback-Transition existiert nicht"
+      "fallback_transition_missing": "Deklarierte Fallback-Transition existiert nicht",
+      "approval_rejected_no_transition": "Abgelehnt, und keine Transition behandelt die Ablehnung"
     },
     "resultContext": "Ergebnis-Kontext",
     "loadError": "Workflows konnten nicht geladen werden",

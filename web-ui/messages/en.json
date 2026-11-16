@@ -571,7 +571,8 @@
       "postcondition_unmet_no_fallback": "Postcondition unmet and no fallback declared",
       "no_transition_no_fallback": "No transition matched and no fallback declared",
       "ambiguous_guards": "Several transitions matched at once",
-      "fallback_transition_missing": "Declared fallback transition does not exist"
+      "fallback_transition_missing": "Declared fallback transition does not exist",
+      "approval_rejected_no_transition": "Rejected, and no transition handles the rejection"
     },
     "resultContext": "Result context",
     "loadError": "Could not load workflows",
