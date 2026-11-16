@@ -5,6 +5,7 @@ import { describe, it } from 'node:test';
 import type { JsonObject } from '@omadia/conductor-core';
 
 import { ConductorWebhookDispatcher } from '../src/conductor/webhookDispatcher.js';
+import { runEndedEvent } from '../src/conductor/webhookEvents.js';
 import type {
   ConductorWebhookDelivery,
   ConductorWebhookSubscription,
@@ -133,6 +134,40 @@ describe('ConductorWebhookDispatcher', () => {
     assert.ok(seenBody);
     assert.equal(seenHeaders?.['x-omadia-signature'], `sha256=${crypto.createHmac('sha256', SECRET).update(seenBody!).digest('hex')}`);
     assert.equal(seenHeaders?.['x-omadia-event'], 'run.completed');
+  });
+
+  // #1705 — a cancelled run used to be dispatched under 'run.failed' (the inline
+  // ternary in index.ts collapsed every non-completed status onto it), so the only
+  // trace of the cancel was `payload.status`. Read back off the wire: the header the
+  // receiver actually reads, and WHICH subscription got anything at all.
+  it('delivers a cancelled run as run.cancelled, and a run.failed subscriber hears nothing', async () => {
+    const fake = fakeStore({
+      subscriptions: [subscription({ id: 'sub-cancelled', event: 'run.cancelled' }), subscription({ id: 'sub-failed', event: 'run.failed' })],
+      secret: SECRET,
+    });
+    let seenHeaders: Record<string, string> | undefined;
+    let seenBody: string | undefined;
+    const dispatcher = new ConductorWebhookDispatcher({
+      store: fake.store,
+      sendRequest: async (input) => {
+        seenHeaders = input.headers;
+        seenBody = input.body;
+        return { ok: true, status: 200, bodySnippet: '' };
+      },
+    });
+
+    const event = runEndedEvent('cancelled');
+    assert.ok(event);
+    await dispatcher.deliverEvent(event, { runId: 'r-1', status: 'cancelled' });
+    await fake.settled();
+
+    assert.deepEqual(
+      fake.createCalls.map((c) => c.subscriptionId),
+      ['sub-cancelled'],
+      'only the run.cancelled subscription may receive a cancel',
+    );
+    assert.equal(seenHeaders?.['x-omadia-event'], 'run.cancelled');
+    assert.equal((JSON.parse(seenBody ?? '{}') as { event?: string }).event, 'run.cancelled');
   });
 
   it('does not fan out to a subscription for a different event or a disabled one', async () => {

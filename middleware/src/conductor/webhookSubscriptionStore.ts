@@ -5,6 +5,7 @@ import type { JsonObject } from '@omadia/conductor-core';
 
 import type { SecretVault } from '../secrets/vault.js';
 import { CONDUCTOR_VAULT_AGENT_ID } from './webhookEndpointStore.js';
+import type { ConductorRunEndedStatus } from './webhookEvents.js';
 
 /**
  * Issue #437 — outbound Conductor webhooks: `conductor_webhook_subscriptions`
@@ -302,6 +303,12 @@ export class ConductorWebhookSubscriptionStore {
    * to its run — `createDelivery` always includes `runId` in the payload (see
    * `index.ts`'s `notifyRunEnded` hook).
    *
+   * The `s.event = ('run.' || r.status)` join is the same 1:1 status→event mapping
+   * `runEndedEvent` (webhookEvents.ts) applies on the live path, so a cancelled run
+   * reconciles against a `run.cancelled` subscription and nothing else (#1705 — the
+   * status list below used to stop at 'completed'/'failed', which left a cancel
+   * unrecoverable if the process died in the fire-and-forget window).
+   *
    * Bounded by BOTH `sinceIso` (the caller's lookback window) AND each subscription's
    * own `enabled_since` (review finding): without the latter, creating a brand-new
    * subscription — or re-enabling one that was disabled — would backfill every
@@ -312,8 +319,8 @@ export class ConductorWebhookSubscriptionStore {
    */
   async listMissingRunDeliveries(
     sinceIso: string,
-  ): Promise<Array<{ runId: string; status: 'completed' | 'failed'; subscriptionId: string }>> {
-    const r = await this.pool.query<{ run_id: string; status: 'completed' | 'failed'; subscription_id: string }>(
+  ): Promise<Array<{ runId: string; status: ConductorRunEndedStatus; subscriptionId: string }>> {
+    const r = await this.pool.query<{ run_id: string; status: ConductorRunEndedStatus; subscription_id: string }>(
       `SELECT r.id AS run_id, r.status AS status, s.id AS subscription_id
          FROM conductor_runs r
          JOIN conductor_webhook_subscriptions s
@@ -321,7 +328,7 @@ export class ConductorWebhookSubscriptionStore {
           AND s.event = ('run.' || r.status)
           AND r.ended_at >= s.enabled_since
         WHERE r.is_dry_run = false
-          AND r.status IN ('completed', 'failed')
+          AND r.status IN ('completed', 'failed', 'cancelled')
           AND r.ended_at >= $1
           AND NOT EXISTS (
                 SELECT 1 FROM conductor_webhook_deliveries d
