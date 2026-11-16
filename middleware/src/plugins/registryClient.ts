@@ -22,6 +22,8 @@
 
 import { createHash } from 'node:crypto';
 
+import { describeError } from '../platform/describeError.js';
+
 import type {
   RegistryConfigEntry,
   RegistryIndexV1,
@@ -610,19 +612,9 @@ function errMsg(err: unknown): string {
 /**
  * #1482 — `err.message` plus its `cause`. Node's fetch reports a refused
  * connection, a DNS miss or a refused redirect as a bare "fetch failed" and
- * puts the reason in `err.cause`; without it the log could not say why.
+ * puts the reason in `err.cause`; without it the log could not say why. The
+ * rendering itself now lives in `platform/describeError.ts`, shared with
+ * Conductor's outbound webhook dispatcher (#1704); re-exported here because
+ * this module was its original home.
  */
-export function describeError(err: unknown): string {
-  const message = errMsg(err);
-  const cause = err instanceof Error ? (err as { cause?: unknown }).cause : undefined;
-  if (cause === undefined || cause === null) return message;
-  const causeMessage =
-    cause instanceof Error ? cause.message : typeof cause === 'string' ? cause : '';
-  const code =
-    isObject(cause) && typeof cause['code'] === 'string' ? cause['code'] : '';
-  const detail =
-    causeMessage && code && !causeMessage.includes(code)
-      ? `${code}: ${causeMessage}`
-      : causeMessage || code;
-  return detail && detail !== message ? `${message} (${detail})` : message;
-}
+export { describeError };

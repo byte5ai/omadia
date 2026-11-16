@@ -52,6 +52,9 @@ interface FakeStore {
   claimOneCalls: string[];
   successes: string[];
   failures: Array<{ id: string; error: string; nextAttemptAt: Date | null }>;
+  /** Lines the dispatcher emitted through its `log` dep — #1704 asserts one per
+   *  failed attempt, not just the final exhaustion. */
+  logs: string[];
   /** Resolves once `deliverEvent`'s fire-and-forget attempt(s) have all settled — the
    *  route/executor never awaits them either, so tests must wait on this instead of
    *  the `deliverEvent`/`attempt` return value. */
@@ -108,7 +111,7 @@ function fakeStore(
     }
     void pending;
   };
-  return { store: store as unknown as ConductorWebhookSubscriptionStore, createCalls, claimOneCalls, successes, failures, settled };
+  return { store: store as unknown as ConductorWebhookSubscriptionStore, createCalls, claimOneCalls, successes, failures, logs: [], settled };
 }
 
 describe('ConductorWebhookDispatcher', () => {
@@ -248,5 +251,104 @@ describe('ConductorWebhookDispatcher', () => {
     assert.equal(attempted, false);
     assert.equal(fake.successes.length, 0);
     assert.equal(fake.failures.length, 0);
+  });
+  // --- #1704: a failed delivery has to say WHY, on the row and in the log. -------
+
+  it('records the undici cause, not a bare "fetch failed", on a transport failure', async () => {
+    const fake = fakeStore({ secret: SECRET });
+    const dispatcher = new ConductorWebhookDispatcher({
+      store: fake.store,
+      log: (msg) => fake.logs.push(msg),
+      sendRequest: async () => {
+        // Exactly what undici throws for an unresolvable host: the message names no
+        // cause at all, the diagnosis sits in `cause`.
+        throw new TypeError('fetch failed', {
+          cause: Object.assign(new Error('getaddrinfo ENOTFOUND doesnotexist.invalid'), { code: 'ENOTFOUND' }),
+        });
+      },
+    });
+
+    await dispatcher.attempt(delivery(), subscription({ url: 'https://doesnotexist.invalid/' }));
+
+    assert.match(fake.failures[0]?.error ?? '', /fetch failed/);
+    assert.match(fake.failures[0]?.error ?? '', /ENOTFOUND/);
+    assert.match(fake.failures[0]?.error ?? '', /doesnotexist\.invalid/);
+  });
+
+  it('distinguishes a refused connection from a DNS miss', async () => {
+    const fake = fakeStore({ secret: SECRET });
+    const dispatcher = new ConductorWebhookDispatcher({
+      store: fake.store,
+      sendRequest: async () => {
+        throw new TypeError('fetch failed', {
+          cause: Object.assign(new Error('connect ECONNREFUSED 172.18.0.2:5432'), { code: 'ECONNREFUSED' }),
+        });
+      },
+    });
+
+    await dispatcher.attempt(delivery(), subscription({ url: 'http://postgres:5432/' }));
+
+    assert.match(fake.failures[0]?.error ?? '', /ECONNREFUSED/);
+    assert.doesNotMatch(fake.failures[0]?.error ?? '', /ENOTFOUND/);
+  });
+
+  it('logs a line for every failed attempt, naming the attempt number and the retry delay', async () => {
+    const fake = fakeStore({ secret: SECRET });
+    const dispatcher = new ConductorWebhookDispatcher({
+      store: fake.store,
+      maxAttempts: 3,
+      log: (msg) => fake.logs.push(msg),
+      sendRequest: async () => ({ ok: false, status: 500, bodySnippet: 'boom' }),
+    });
+
+    await dispatcher.attempt(delivery({ attempts: 0 }), subscription());
+    await dispatcher.attempt(delivery({ attempts: 1 }), subscription());
+    await dispatcher.attempt(delivery({ attempts: 2 }), subscription());
+
+    assert.equal(fake.logs.length, 3); // one per attempt, not just the exhaustion
+    assert.match(fake.logs[0] ?? '', /attempt 1\/3 failed: http 500: boom; retrying in 30s/);
+    assert.match(fake.logs[1] ?? '', /attempt 2\/3 failed/);
+    assert.match(fake.logs[2] ?? '', /exhausted after 3 attempts/);
+    // Every line names the target, so the log alone identifies the broken subscription.
+    for (const line of fake.logs) assert.match(line, /https:\/\/example\.com\/hook/);
+  });
+
+  it('does not leave a dangling "http 500: " when the response body is empty', async () => {
+    const fake = fakeStore({ secret: SECRET });
+    const dispatcher = new ConductorWebhookDispatcher({
+      store: fake.store,
+      sendRequest: async () => ({ ok: false, status: 500, bodySnippet: '' }),
+    });
+
+    await dispatcher.attempt(delivery(), subscription());
+
+    assert.equal(fake.failures[0]?.error, 'http 500');
+  });
+
+  it('condenses a large multi-line error body into one bounded line', async () => {
+    const fake = fakeStore({ secret: SECRET });
+    const dispatcher = new ConductorWebhookDispatcher({
+      store: fake.store,
+      sendRequest: async () => ({ ok: false, status: 502, bodySnippet: `<html>\n  <body>${'x'.repeat(2000)}</body>\n</html>` }),
+    });
+
+    await dispatcher.attempt(delivery(), subscription());
+
+    const recorded = fake.failures[0]?.error ?? '';
+    assert.ok(recorded.length <= 500, `last_error should stay bounded, got ${String(recorded.length)}`);
+    assert.doesNotMatch(recorded, /\n/);
+    assert.match(recorded, /^http 502: /);
+  });
+
+  it('logs the non-retryable exhaustions (disabled subscription, missing secret) too', async () => {
+    const noSecret = fakeStore({ secret: undefined });
+    const a = new ConductorWebhookDispatcher({ store: noSecret.store, log: (m) => noSecret.logs.push(m) });
+    await a.attempt(delivery(), subscription());
+    assert.match(noSecret.logs[0] ?? '', /secret missing/);
+
+    const disabled = fakeStore({ secret: SECRET });
+    const b = new ConductorWebhookDispatcher({ store: disabled.store, log: (m) => disabled.logs.push(m) });
+    await b.attempt(delivery(), subscription({ enabled: false }));
+    assert.match(disabled.logs[0] ?? '', /subscription disabled/);
   });
 });

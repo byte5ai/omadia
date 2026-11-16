@@ -36,6 +36,43 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Conductor: a failed webhook delivery says why, and says it per attempt (#1704)
+
+2026-11-16. Every transport failure of an outbound delivery was stored as the
+same four words. `webhookDispatcher.ts` recorded `err.message`, and undici
+reports a DNS miss, a refused connection and a protocol mismatch all as a bare
+`fetch failed`, keeping the actual reason in `err.cause` — so `last_error` read
+`fetch failed` for an unresolvable host and for a connection to a Postgres port
+alike. There was also no log line per failed attempt, only the final
+`exhausted after 6 attempts`, up to half an hour after the delivery first failed.
+
+- **`last_error` carries the cause chain**: `fetch failed (getaddrinfo ENOTFOUND
+  doesnotexist.invalid)`, `fetch failed (connect ECONNREFUSED 172.18.0.2:5432)`.
+  The rendering moved to `middleware/src/platform/describeError.ts`, shared with
+  the registry client's own one-level version from #1482 (`registryClient.ts`
+  re-exports it, so nothing imported from there breaks).
+- **One log line per failed attempt**, naming the target and the schedule:
+  `[conductor] webhook delivery <id> to <url> attempt 2/6 failed: <cause>;
+  retrying in 60s`. The non-retryable exhaustions (`subscription disabled`,
+  `subscription secret missing`) now log too — before, they recorded silently.
+- **The retry worker is covered too**, not just the inline first attempt — it is
+  what drives attempts 2..6, so it is where most of the issue's missing lines
+  were. Its three catch blocks (reconcile pass, `claimDue`, a crashed attempt)
+  now name the cause via `describeError` instead of `err.message`, and the one
+  terminal outcome it records without going through the dispatcher — a delivery
+  whose subscription has since been deleted — leaves a log line instead of
+  dying silently.
+- **`last_error` is one bounded line.** `postWebhook` passes up to 64 KiB of
+  response body through, and the operator UI renders the value verbatim; it is
+  now whitespace-collapsed and truncated to 500 characters. An empty body gives
+  `http 500` instead of the dangling `http 500: `.
+- **Not changed, deliberately:** the backoff schedule (30s doubling, ≈31 minutes
+  to exhaust) and the SSRF pre-check at subscription-creation time, which only
+  inspects literal addresses. A hostname that resolves to a private address is
+  still accepted at creation and still refused by the guarded undici `Agent` at
+  connect time — that refusal is simply now legible in `last_error` instead of
+  reading as `fetch failed`.
+
 ### Fixed — Conductor: a rejected approval no longer takes an unguarded transition (#1698)
 
 2026-11-10. The approval gate computed the decision and then ignored it: the
