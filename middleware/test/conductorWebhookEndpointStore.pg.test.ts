@@ -184,6 +184,59 @@ describe('ConductorWebhookEndpointStore (pg)', { skip: !pgAvailable }, () => {
     });
   });
 
+  // Issue #1701 — a request to a DISABLED endpoint is answered 200 {"outcome":"disabled"}
+  // and still written to this ledger. The dedupe check used to look only at the key, so
+  // the sender's honest redelivery after the endpoint was enabled again was answered
+  // 'duplicate', no run started, and the event was lost silently. 'disabled' records an
+  // attempt the endpoint REFUSED — emit() never ran — so it must not consume the id.
+  describe('claim() after a delivery refused because the endpoint was disabled (#1701)', () => {
+    it('re-claims the row, so the sender can redeliver the same id once the endpoint is enabled again', async () => {
+      const endpointId = await newEndpoint();
+      const cap = { limit: 1_000, windowMs: 60_000 };
+
+      // Endpoint disabled: the route claims the id, then finalizes 'disabled'.
+      assert.equal(await store.claim('d7', endpointId, cap), 'claimed');
+      await store.setOutcome('d7', endpointId, 'disabled');
+
+      // Endpoint enabled again, same delivery id redelivered.
+      const retried = await store.claim('d7', endpointId, cap);
+
+      assert.equal(retried, 'claimed', "a delivery refused as 'disabled' must not consume the delivery id");
+      const deliveries = await store.listDeliveries(endpointId, 10);
+      assert.equal(deliveries.length, 1, 're-claiming reuses the row rather than inserting a second one');
+      // Documented consequence of the single-row ledger: the re-claim overwrites the
+      // refusal, so 'disabled' survives only while nobody has redelivered the id.
+      assert.equal(deliveries[0]?.outcome, 'received', 'the re-claimed row is in flight again');
+    });
+
+    it('needs no staleness window — a refusal is re-claimable immediately', async () => {
+      const endpointId = await newEndpoint();
+      const cap = { limit: 1_000, windowMs: 60_000 };
+
+      assert.equal(await store.claim('d-fresh', endpointId, cap), 'claimed');
+      await store.setOutcome('d-fresh', endpointId, 'disabled');
+      // received_at is "now": an operator can re-enable the endpoint a second later,
+      // so unlike the abandoned-in-flight case there is nothing to wait out.
+      assert.equal(await store.claim('d-fresh', endpointId, cap), 'claimed');
+    });
+
+    it('a repeatedly-refused delivery id never inserts a second row', async () => {
+      const endpointId = await newEndpoint();
+      const cap = { limit: 1_000, windowMs: 60_000 };
+
+      for (let i = 0; i < 3; i += 1) {
+        assert.equal(await store.claim('d-loop', endpointId, cap), 'claimed');
+        await store.setOutcome('d-loop', endpointId, 'disabled');
+      }
+
+      const deliveries = await store.listDeliveries(endpointId, 10);
+      assert.equal(deliveries.length, 1);
+      // The refusals an operator still needs to see — nobody redelivered this id, so
+      // the ledger keeps showing that the endpoint turned the sender away.
+      assert.equal(deliveries[0]?.outcome, 'disabled');
+    });
+  });
+
   it('claim() rate limit is scoped per endpoint under concurrency — a saturated endpoint never throttles another', async () => {
     const busy = await newEndpoint();
     const other = await newEndpoint();

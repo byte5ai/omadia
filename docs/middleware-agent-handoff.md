@@ -1335,9 +1335,31 @@ Server-generiert = kein Dedupe, aber kein stiller Drop) in
 endpoint.eventId, payload, 'webhook:<endpointId>')` — jeder Workflow mit
 passendem `event`- **oder** `webhook`-Trigger (`eventRouter.ts` matcht jetzt
 beide Kinds identisch) startet einen Run. Jede geclaimte Delivery landet mit
-genau einem terminalen `outcome`; Noise (disabled, malformed JSON, kein
-Subscriber) antwortet immer `2xx` (Redelivery-Storm-Vermeidung), der globale
-Kill-Switch ist `CONDUCTOR_WEBHOOKS_ENABLED` (§10).
+genau einem `outcome`; Noise (disabled, malformed JSON, kein Subscriber)
+antwortet immer `2xx` (Redelivery-Storm-Vermeidung), der globale Kill-Switch ist
+`CONDUCTOR_WEBHOOKS_ENABLED` (§10).
+
+Nicht jedes `outcome` ist für das Dedupe terminal (#1701): `'disabled'` steht in
+`REDELIVERABLE_OUTCOMES` (`webhookEndpointStore.ts`, exportiert) — die Delivery
+wurde *abgelehnt*, `emit()` lief nie, also verbraucht sie die Delivery-Id nicht.
+`claim()` re-claimt eine solche Row (ohne zweite Row, ohne Staleness-Fenster,
+anders als die Abandoned-In-Flight-Recovery über `IN_FLIGHT_CLAIM_STALE_MS`).
+Sonst würde ein deaktivierter Endpoint jede Delivery-Id dauerhaft schlucken: die
+ehrliche Redelivery nach dem Re-Enable bekäme `'duplicate'`, kein Run, Event
+still verloren. `'started'` und `'no_subscribers'` bleiben terminal (für beide
+lief `emit()` bereits), `'invalid_payload'` ebenso (Body ist HMAC-gedeckt ⇒
+korrigierte Payload = neue Delivery-Id), `'rate_limited'` schreibt ohnehin keine
+Row.
+
+Zwei bewusste Grenzen davon: (1) Die Row ist **kein** dauerhaftes Audit der
+Ablehnung — es gibt genau eine Row pro `(endpoint_id, delivery_id)`, eine
+erfolgreiche Redelivery überschreibt `'disabled'`. In
+`conductor_webhook_inbound_deliveries` steht `'disabled'` also nur, solange die
+Id niemand redelivered hat — genau die Fälle, deren Event noch fehlt. (2) Eine
+Ablehnung belegt weiter einen Rate-Limit-Slot im rollierenden Fenster (ein
+Re-Claim setzt `received_at` neu); das begrenzt das Row-Wachstum, während ein
+Endpoint aus ist. Die Redelivery einer bereits abgelehnten Id wird nie
+gethrottelt, sie kurzschließt vor dem Window-Count.
 
 **Outbound:** `ConductorWebhookDispatcher` (`webhookDispatcher.ts`) — ein
 neuer `notifyRunEnded`-Hook in `ConductorRunExecutor` (feuert exakt an jedem
