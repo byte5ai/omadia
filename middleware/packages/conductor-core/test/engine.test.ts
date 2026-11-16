@@ -86,3 +86,47 @@ describe('nextStep — US1 acceptance', () => {
     expect(a).toEqual(b);
   });
 });
+
+// #1703 — a caller may supply the postcondition for a step that declares none, so a
+// result carrying its own success flag (`webhook.post`'s `{ ok: false, status }`)
+// stops advancing the graph like a successful one.
+describe('nextStep — defaultPostcondition', () => {
+  const opts = { defaultPostcondition: { op: 'eq' as const, path: 'stepResult.data.ok', value: true } };
+  // s2 declares no postcondition; t2_ok is its only happy path, t2_fail its fallback.
+  const g: WorkflowGraph = {
+    entryStepId: 's2',
+    steps: [
+      { id: 's2', kind: 'action', actionId: 'act.post', fallbackTransitionId: 't2_fail' },
+      { id: 'next', kind: 'action', actionId: 'act.done' },
+      { id: 'recover', kind: 'action', actionId: 'act.recover' },
+    ],
+    transitions: [
+      { id: 't2_ok', source: 's2', target: 'next' },
+      { id: 't2_fail', source: 's2', target: 'recover' },
+    ],
+  };
+
+  it('fills an absent postcondition — unmet takes the fallback', () => {
+    expect(nextStep(g, 's2', { data: { ok: false } }, noCtx, opts)).toEqual({
+      kind: 'advance', transitionId: 't2_fail', targetStepId: 'recover', reason: 'postcondition_unmet_fallback', postcondition: 'unmet',
+    });
+  });
+
+  it('met leaves the happy path untouched', () => {
+    const d = nextStep(g, 's2', { data: { ok: true } }, noCtx, opts);
+    expect(d).toEqual({ kind: 'advance', transitionId: 't2_ok', targetStepId: 'next', reason: 'guard_matched', postcondition: 'met' });
+  });
+
+  it("never overrides the step's own postcondition", () => {
+    const own: WorkflowGraph = {
+      ...g,
+      steps: [{ ...g.steps[0]!, postcondition: { op: 'exists', path: 'stepResult.data' } }, ...g.steps.slice(1)],
+    };
+    // The default would say unmet; the step's own says met, and the step's own wins.
+    expect(nextStep(own, 's2', { data: { ok: false } }, noCtx, opts).postcondition).toBe('met');
+  });
+
+  it('omitting it keeps "absent ≡ always met"', () => {
+    expect(nextStep(g, 's2', { data: { ok: false } }, noCtx).postcondition).toBe('n/a');
+  });
+});

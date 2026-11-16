@@ -1,7 +1,27 @@
 // Deterministic step advancement (FR-001, FR-002, FR-006). Pure; no I/O.
 
-import type { Decision, JsonObject, JsonValue, PostconditionOutcome, WorkflowGraph } from './types.js';
+import type { Decision, JsonObject, JsonValue, PostconditionOutcome, Predicate, WorkflowGraph } from './types.js';
 import { evaluatePredicate } from './predicate.js';
+
+export interface NextStepOptions {
+  /**
+   * Exit postcondition to apply when the step declares none of its own (issue #1703).
+   *
+   * The engine's rule is "absent ≡ always met", which is right for a step whose
+   * result cannot fail — and wrong for one that reports a failure IN its result.
+   * `webhook.post` was the case that proved it: a receiver answering 500 came back
+   * as `{ ok: false, status: 500 }` and, with no postcondition declared, advanced
+   * the graph exactly like a delivered one.
+   *
+   * A caller that knows a step's result carries a success flag supplies the matching
+   * predicate here. It is a DEFAULT, never an override: a step with its own
+   * `postcondition` is evaluated on that alone, so a workflow author stays in charge
+   * of what counts as failure for their step. Either way the outcome runs through the
+   * normal path below — `unmet` fires `fallbackTransitionId` (the graph's error path),
+   * and `postcondition_unmet_no_fallback` surfaces it as `stuck` when none is declared.
+   */
+  defaultPostcondition?: Predicate;
+}
 
 /**
  * Given a completed step's result and the run context, deterministically decide the next move:
@@ -13,13 +33,14 @@ import { evaluatePredicate } from './predicate.js';
  *      - More than one match  → `stuck` (ambiguous_guards) — a deterministic, surfaced error.
  *      - None match           → fire the fallback, else `complete` if terminal, else `stuck`.
  *
- * Identical (graph, currentStepId, stepResult, ctx) always yields an identical Decision.
+ * Identical (graph, currentStepId, stepResult, ctx, opts) always yields an identical Decision.
  */
 export function nextStep(
   graph: WorkflowGraph,
   currentStepId: string,
   stepResult: JsonValue,
   ctx: JsonObject,
+  opts: NextStepOptions = {},
 ): Decision {
   const step = graph.steps.find((s) => s.id === currentStepId);
   if (!step) {
@@ -27,8 +48,10 @@ export function nextStep(
   }
 
   const scope = { ctx, stepResult };
-  const hasPost = step.postcondition !== undefined;
-  const postMet = hasPost ? evaluatePredicate(step.postcondition!, scope) : true;
+  // The step's own postcondition wins; the caller's default only fills an absence.
+  const postcondition = step.postcondition ?? opts.defaultPostcondition;
+  const hasPost = postcondition !== undefined;
+  const postMet = hasPost ? evaluatePredicate(postcondition, scope) : true;
   const postOutcome: PostconditionOutcome = hasPost ? (postMet ? 'met' : 'unmet') : 'n/a';
 
   const outgoing = graph.transitions.filter((t) => t.source === currentStepId);
