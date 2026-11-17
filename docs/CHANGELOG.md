@@ -36,6 +36,41 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Conductor operator API: a malformed id no longer returns the Postgres error
+
+2026-11-17. `conductor_runs.id`, `conductor_awaits.id`, `conductor_workflows.id`
+and `conductor_webhook_subscriptions.id` are `uuid` columns, and the operator
+routes handed the caller's id to the store unchecked. `999` therefore failed in
+Postgres with `22P02 invalid input syntax for type uuid: "999"`, and each
+handler's catch-all copied that sentence into a 500 body — eight routes, from
+`GET /conductors/<slug>/runs/:runId` to
+`POST /conductors/webhooks/subscriptions/:id/rotate-secret`. Same class as
+#1318/#1398 (#1706).
+
+- **The shape is checked first.** `createConductorRouter` registers
+  `requireUuidParam('conductor.invalid_input', 400)` for `runId`, `awaitId`,
+  `workflowId` and `subscriptionId`: a non-UUID is not an unknown row but an
+  unusable id, so it is a `400` that never reaches the store, while a
+  well-formed id with no row behind it keeps the handler's `404`. The two codes
+  are the pair the admin UI already localizes.
+- **`requireUuidParam` takes the refusal status.** Default `404` — unchanged for
+  admin-users (#1318) and routines (#1398), whose malformed-id answer is
+  deliberately the same 404 an unknown id gets.
+- **The subscription param is now `:subscriptionId`.** `:id` on that router
+  belongs to the template routes and carries slug-shaped ids
+  (`notify-and-escalate`), which must not be uuid-guarded. URLs are unchanged.
+- **An unknown inbound endpoint no longer reports success.** `endpoint_id` is
+  `TEXT`, so there was no Postgres error to surface: the `status` and `DELETE`
+  writes matched zero rows and still answered `204`. Both now answer
+  `404 conductor.not_found`, as does `deliveries`, which used to return
+  `{"deliveries": []}` — "nothing has arrived yet" for an endpoint that does not
+  exist. Subscriptions got the same existence check.
+- **`POST /conductors/awaits/:awaitId/respond` answers 404 for an await that is
+  not there.** The new `AwaitNotFoundError` separates "no such await row" from
+  "this await is closed", which were one `409 conductor.await_not_pending`. An
+  approve/reject card button still reads both as `already_resolved`.
+- No migration, no URL change, no web-ui change.
+
 ### Fixed — Node-Aktivierung nach Amp-Snapshot-Restore
 
 2026-11-16. Neue Orbs hatten die Node-22-/24-Toolchains und alle Pakete,
