@@ -389,7 +389,8 @@ test('legacy tokens keep their exact meaning', async () => {
     ['core', '/memories/core/brand.md'],
     ['core', '/memories/sessions/s1/turn.md'],
     ['core', '/memories/chat-sessions/c1/turn.md'],
-    ['core', '/memories/_rules/hr.md'],
+    // `_rules/` is read-only for agents (#1827); `_brand/` keeps the `_*` grant.
+    ['core', '/memories/_brand/hr.md'],
     ['agent:hr:*', '/memories/agents/hr/notes.md'],
     [`orchestrator:${AGENT}:*`, `/memories/orchestrators/${AGENT}/notes.md`],
     ['session:*', '/memories/sessions/s1/turn.md'],

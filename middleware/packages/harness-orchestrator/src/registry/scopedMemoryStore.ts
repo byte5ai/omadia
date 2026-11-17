@@ -272,8 +272,8 @@ const CORE_PREFIXES = [
 const CORE_NOTES_PREFIXES = ['/memories/core/'];
 
 /**
- * Subtrees inside `core` that no agent may ever write, whatever else its scope
- * grants — a deny list, evaluated before any positive pattern.
+ * Subtrees that no agent may ever write, whatever else its scope grants — a
+ * deny list, evaluated before any positive pattern.
  *
  * `/memories/core/audit/` holds the tamper-evident record of privileged
  * OPERATOR actions (currently the promotion log written by
@@ -283,8 +283,16 @@ const CORE_NOTES_PREFIXES = ['/memories/core/'];
  * operator did to its memory — which is precisely the property an audit trail
  * must not have. It is written by kernel services on the ROOT store, which
  * never passes through this wrapper, so nothing legitimate loses a write.
+ *
+ * `/memories/_rules/` (#1827): every file there reaches EVERY agent for EVERY
+ * account — the system prompt has agents read it, and the durable-rules hook
+ * copies each write into team-wide durable knowledge. A context-free turn
+ * (mode "Off", the default, so any chat, Public API or channel turn) holds
+ * plain `core`, which grants `_*`, so one chat could plant a rule for all.
+ * Rules now come from the repo seed only (`MEMORY_SEED_DIR`), written on the
+ * root store at boot or by a re-seed purge.
  */
-const AGENT_UNWRITABLE_PREFIXES = ['/memories/core/audit/'];
+const AGENT_UNWRITABLE_PREFIXES = ['/memories/core/audit/', '/memories/_rules/'];
 
 function isAgentUnwritable(path: string): boolean {
   return AGENT_UNWRITABLE_PREFIXES.some(

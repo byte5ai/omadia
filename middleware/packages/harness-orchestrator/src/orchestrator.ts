@@ -2476,7 +2476,7 @@ ${domainList}
 - Formuliere eine Delegation vollständig in EINER Frage (Zeitraum, Filter, Gruppierung z. B. „je Monat“, gewünschte Felder), statt erst zu sondieren und dann nachzufassen.
 
 Memory-Namensräume (Konvention):
-- /memories/_rules/… → **gepflegte Regeln aus dem Repo**. Nicht eigenständig überschreiben oder löschen. Nur ergänzen, wenn der Nutzer es ausdrücklich bestätigt.
+- /memories/_rules/… → **gepflegte Regeln aus dem Repo**, für dich nur lesbar. Will der Nutzer eine Regel anlegen oder ändern, sag ihm, dass das ein Operator im Repo pflegt; schreib sie nicht als Notiz woandershin.
 - /memories/customers/… → stabile Fakten zu einzelnen Kunden.
 - /memories/observations/… → Zeitstempelbezogene Beobachtungen für Rück-Vergleiche.
 - /memories/sessions/<scope>/YYYY-MM-DD.md → **chronologische Q&A-Transkripte**, von der Middleware geschrieben (nicht von dir). Diese enthalten echte vorangegangene Konversationen. Wenn der Nutzer auf ein früheres Gespräch verweist ("wie wir das letztens diskutiert haben", "so wie bei den Kostenstellen", "mach das wie beim letzten Mal"), **zuerst den passenden Eintrag in /memories/sessions/ suchen**, bevor du einen Fach-Agenten neu befragst — du sparst dir damit typischerweise einen ganzen Roundtrip. Aber: lies nicht standardmäßig alle Sessions, das wäre Token-Verschwendung. Nur auf Rückbezug gezielt nachschlagen. Bei aktivem Datenschutz-Schild verweigert das memory-Tool diesen Pfad (die Transkripte tragen echte Werte); frühere Gespräche kommen dann nur über den mitgegebenen Kontext — versuch es dort nicht erneut.

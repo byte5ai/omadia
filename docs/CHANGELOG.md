@@ -36,6 +36,19 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — `/memories/_rules/` ist für Agents nur lesbar (#1827)
+
+2026-11-17. Jede Datei unter `/memories/_rules/` wirkt für alle Agents und
+alle Accounts: der System-Prompt lässt Agents sie lesen, und der
+Durable-Rules-Hook kopiert jeden Write in team-weites kuratiertes Wissen. Im
+Default-Modus „Aus“ hält jeder Chat-, Public-API- und Kanal-Turn den
+`core`-Grant, der `_*` schreibbar macht, also konnte ein einzelner Chat (oder
+eingeschleuster Text) eine Regel für alle anlegen. `_rules/` steht jetzt auf
+der Deny-Liste von `ScopedMemoryStore`; Lesen bleibt erlaubt. Regeln kommen nur
+noch aus dem Repo-Seed (`MEMORY_SEED_DIR`). System-Prompt, CLI-Memory-Text und
+Seed-README sagen das. Bereits angelegte Regeln bleiben bestehen; wie Regeln
+künftig gepflegt werden, ist als Diskussion offen.
+
 ### Fixed — Node-Aktivierung nach Amp-Snapshot-Restore
 
 2026-11-16. Neue Orbs hatten die Node-22-/24-Toolchains und alle Pakete,

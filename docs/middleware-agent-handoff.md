@@ -3979,8 +3979,11 @@ spätere Migrationen trivial.
   Startup aus `middleware/seed/memory/_rules/` kopiert. Modus `missing`
   bedeutet: neue Files werden angelegt, existierende nicht überschrieben
   (Runtime-Edits bleiben). Modus `overwrite` würde pinning erzwingen.
-  Der Orchestrator-Prompt sagt: nur mit expliziter User-Bestätigung
-  ändern.
+  Für Agents nur lesbar (#1827, Deny-Prefix in `ScopedMemoryStore`): jede
+  Datei hier wirkt für alle Agents und Accounts, darum entstehen Regeln nur
+  über den Repo-Seed. Der `DurableRulesMemoryStore`-Hook feuert damit aus dem
+  Chat nicht mehr; Seed-Regeln erreichen den Durable-Tier über
+  `scripts/backfill-durable-rules.ts`.
 - `/memories/customers/<name>.md` — stabile Fakten pro Kunde.
 - `/memories/observations/YYYY-QX.md` — Zeitstempelbezogen.
 - `/memories/sessions/<scope>/YYYY-MM-DD.md` — Transkripte, *geschrieben
@@ -5492,6 +5495,12 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 ---
 
 ## 13. Offene Roadmap
+
+- **Pflege von Memory-Regeln (#1827-Folge).** `/memories/_rules/` ist für
+  Agents nur lesbar; Regeln kommen nur aus dem Repo-Seed. Offen (GitHub-
+  Diskussion): Admin-Seite für globale Regeln, persönliche bzw. Agent-Regeln
+  aus dem Chat, und Aufräumen von Regeln ohne Owner, die vor dem Fix angelegt
+  wurden (#1829, #1831).
 
 - **Teams-SSO für Plugin-Routen (#1620): Kernel-Modus erledigt.** Offen:
   channel-teams auf den Kernel-Verifier umstellen (eigene Kopie in
@@ -7633,7 +7642,10 @@ Write abgelehnt, auch wenn ein zweites Pattern ihn gewähren würde. Sonst re-ö
 `/memories/core/audit/` ist für **jeden** Agent unbeschreibbar (Deny-Prefix vor jeder
 positiven Prüfung). Dort liegt das Promote-Audit-Log; `core` ist ein Read/Write-Grant, das
 jeder Agent hält, also könnte ein Agent ohne diesen Ausschnitt das Protokoll dessen
-überschreiben, was ein Operator mit seinem Memory gemacht hat.
+überschreiben, was ein Operator mit seinem Memory gemacht hat. Seit #1827 steht auch
+`/memories/_rules/` auf der Deny-Liste: `core` gewährt `_*`, und eine Regel-Datei wirkt
+für alle Agents und Accounts. Wie Regeln künftig gepflegt werden (Admin-Seite, Regeln pro
+Agent/Account), ist offen (§13).
 
 ### Kontext-Key
 

@@ -1,8 +1,7 @@
 # Smart-Card-Interaktionen — domain-agnostische Regel
 
 > Seeded beim Container-Start aus `middleware/seed/memory/_rules/`. Präfix
-> `_rules/` = **nicht eigenständig überschreiben** — nur ergänzen, wenn der
-> Nutzer ausdrücklich bestätigt. Diese Regel gilt für ALLE Domänen
+> `_rules/` = **für Agents nur lesbar**, gepflegt wird im Repo. Diese Regel gilt für ALLE Domänen
 > (Accounting, HR, Confluence, Company-Enrichment, Graph-Lookups, Diagramme).
 
 Zwei Tools stehen zur Verfügung, um die Konversation interaktiv zu halten.
