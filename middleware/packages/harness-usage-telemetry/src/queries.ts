@@ -15,6 +15,7 @@
  */
 import type { Pool } from 'pg';
 
+import { computeCacheSavingsUsd } from './pricing.js';
 import {
   modelsToReprice,
   resolvePrices,
@@ -55,6 +56,13 @@ export interface UsageTotals {
   readonly unpricedCalls: number;
   /** #1389 — the model ids behind {@link unpricedCalls}, sorted. */
   readonly unpricedModels: readonly string[];
+  /**
+   * Net USD that prompt caching saved on METERED calls: cache reads at the
+   * full input rate minus the cache-write premium. Without caching,
+   * {@link costUsd} would have been `costUsd + cacheSavingsUsd`. Subscription
+   * calls are left out — they bill nothing either way.
+   */
+  readonly cacheSavingsUsd: number;
 }
 
 export interface UsageByKey {
@@ -84,6 +92,8 @@ export interface UsageByKey {
    * Their cost is not in {@link costUsd}.
    */
   readonly unpricedCalls?: number | undefined;
+  /** Net cache saving of this model's metered calls; "By model" rows only. */
+  readonly cacheSavingsUsd?: number | undefined;
 }
 
 export type UsageKeyGroup = 'builder' | 'other';
@@ -179,6 +189,9 @@ function andWhere(where: string, condition: string): string {
   return where ? `${where} AND ${condition}` : `WHERE ${condition}`;
 }
 
+/** Same 8-decimal rounding the per-call cost uses, so sums stay exact. */
+const roundUsd = (n: number): number => Math.round(n * 1e8) / 1e8;
+
 const num = (v: unknown): number => {
   const n = typeof v === 'string' ? Number(v) : (v as number);
   return Number.isFinite(n) ? n : 0;
@@ -216,6 +229,7 @@ async function fetchTotals(pool: Pool, w: UsageWindow, b: Bucketing): Promise<Us
     cacheHitRatio: warmDenom > 0 ? cacheReadTokens / warmDenom : 0,
     unpricedCalls: 0,
     unpricedModels: [],
+    cacheSavingsUsd: 0,
   };
 }
 
@@ -409,6 +423,43 @@ async function fetchZeroCostCalls(
 }
 
 /**
+ * Net cache saving per model, metered calls only. Priced from per-model sums,
+ * so the long-context tier is not applied — see {@link computeCacheSavingsUsd}.
+ */
+async function fetchCacheSavingsByModel(
+  pool: Pool,
+  w: UsageWindow,
+  b: Bucketing,
+): Promise<ReadonlyMap<string, number>> {
+  const params: unknown[] = [];
+  const where = andWhere(
+    windowClause(w, params, b),
+    `source NOT IN (${SUBSCRIPTION_SOURCE_LIST}) AND cache_read_tokens + cache_creation_tokens > 0`,
+  );
+  const { rows } = await pool.query(
+    `SELECT
+       model,
+       COALESCE(SUM(cache_read_tokens),0)     AS cache_read_tokens,
+       COALESCE(SUM(cache_creation_tokens),0) AS cache_creation_tokens
+     FROM token_usage ${where}
+     GROUP BY 1`,
+    params,
+  );
+  return new Map(
+    rows.map((r: Record<string, unknown>) => {
+      const model = String(r.model ?? 'unknown');
+      return [
+        model,
+        computeCacheSavingsUsd(model, {
+          cacheReadTokens: num(r.cache_read_tokens),
+          cacheCreationTokens: num(r.cache_creation_tokens),
+        }),
+      ] as const;
+    }),
+  );
+}
+
+/**
  * Builds the full dashboard payload in one pass: totals, per-model and
  * per-source breakdowns, and a cost time series. `bucket` controls time-series
  * granularity (default 'hour'); `timeZone` is the IANA zone buckets are cut in
@@ -422,12 +473,13 @@ export async function getUsageDashboard(
   timeZone = 'UTC',
 ): Promise<UsageDashboard> {
   const b: Bucketing = { bucket, timeZone };
-  const [totals, byModel, bySource, timeSeries, zeroCost] = await Promise.all([
+  const [totals, byModel, bySource, timeSeries, zeroCost, savingsByModel] = await Promise.all([
     fetchTotals(pool, w, b),
     fetchByKey(pool, 'model', w, b),
     fetchByKey(pool, 'source', w, b),
     fetchTimeSeries(pool, w, b),
     fetchZeroCostGroups(pool, w, b),
+    fetchCacheSavingsByModel(pool, w, b),
   ]);
   const repriceable = await fetchZeroCostCalls(pool, w, b, modelsToReprice(zeroCost));
   // #1389 — before capByKey, so a priced row can move into the top ten.
@@ -442,8 +494,12 @@ export async function getUsageDashboard(
       costUsd: resolved.totalsCostUsd,
       unpricedCalls: resolved.unpricedCalls,
       unpricedModels: resolved.unpricedModels,
+      cacheSavingsUsd: roundUsd([...savingsByModel.values()].reduce((acc, v) => acc + v, 0)),
     },
-    byModel: resolved.byModel,
+    byModel: resolved.byModel.map((r) => {
+      const saving = savingsByModel.get(r.key) ?? 0;
+      return saving !== 0 ? { ...r, cacheSavingsUsd: saving } : r;
+    }),
     bySource: capByKey(resolved.bySource),
     timeSeries: resolved.timeSeries,
   };

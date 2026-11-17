@@ -15,6 +15,7 @@ export {
   priceForModel,
   hasKnownPrice,
   computeCostUsd,
+  computeCacheSavingsUsd,
   normalizeUsage,
 } from './pricing.js';
 
@@ -32,6 +33,8 @@ export {
 } from './recorder.js';
 
 export { withProviderUsageTracking } from './withProviderUsageTracking.js';
+
+export { type FxRate, createEcbEurRateSource } from './exchangeRate.js';
 
 export {
   type UsageWindow,

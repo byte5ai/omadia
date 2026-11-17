@@ -5277,7 +5277,9 @@
       "calls": "Calls",
       "cacheHitRate": "Cache-Hit-Rate",
       "cacheHitHint": "Anteil Input aus dem warmen Cache",
-      "tokens": "Tokens (in / out)"
+      "tokens": "Tokens (in / out)",
+      "cacheSavings": "Cache-Ersparnis",
+      "cacheSavingsHint": "Ohne Cache: {uncached}"
     },
     "panels": {
       "costOverTime": "Kosten über Zeit",
@@ -5288,6 +5290,11 @@
     "barTitle": "{date} · {cost} · {calls, plural, one {# Call} other {# Calls}}",
     "rowStats": "{calls} Calls · {input} in · {output} out · {cacheRead} Cache gelesen · {cacheWrite} Cache geschrieben",
     "rowReference": " · Abo-Calls ≈ {reference} API-Gegenwert",
+    "rowCacheSavings": " · Cache-Ersparnis {saving}",
+    "currency": {
+      "label": "Währung",
+      "converted": "{usd} · EZB-Kurs vom {date}"
+    },
     "groups": {
       "builder": "Builder ({count, plural, one {# Entwurf} other {# Entwürfe}})",
       "other": "Sonstige ({count, plural, one {# Quelle} other {# Quellen}})"

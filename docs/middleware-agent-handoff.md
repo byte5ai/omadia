@@ -4298,6 +4298,7 @@ Users sofort (`users.session_version`, §3 „Serverseitiger Sitzungs-Widerruf�
 | Variable | Wirkung |
 |---|---|
 | `WS_SESSION_FRAME_RECHECK_MS` | Offene Channel-WebSockets (Canvas): ein Frame erreicht das Plugin nur, wenn die Prüfung der Sitzung höchstens so viele ms vor seiner Ankunft begann; sonst liest die Registry die `users`-Zeile erneut (ein Point-Read), während der Frame wartet. Bestimmt, wie schnell ein Widerruf auf einer anderen Replica einen aktiven Socket stoppt (ein schweigender Socket wird alle 60 s geprüft). Default `5000`, erlaubt `0`–`60000` (zod-validiert beim Boot, ein leerer Wert heißt Default); `0` prüft jeden Frame. Ist die Zeile nicht lesbar, werden Frames abgewiesen (Canvas: `turn_error`), der Socket bleibt offen. Siehe „Canvas WebSocket-Transport (Omadia UI, PR-11)“. |
+| `USAGE_FX_DISABLED` | `true` schaltet den Abruf des EZB-Tageskurses für die EUR-Ansicht des Kosten-Dashboards ab (`GET www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml`, ohne Credentials, höchstens alle 6 h). Default aus — für air-gapped oder egress-beschränkte Installationen. Ohne Kurs bleibt das Dashboard in USD. Siehe Abschnitt Usage-Telemetrie, Lesepfad. |
 
 ### Self-Update und Release-Check (#432, #1381)
 
@@ -8223,6 +8224,25 @@ Long-Context-Tier) — Totals, Zeilen und Zeitreihe sind dann höher als
 `SUM(cost_usd)`; das Ledger bleibt append-only, kein Backfill. Abo-Zeilen
 (OM-103) sind nie „Preis unbekannt". Ein lokales Modell verliert den Hinweis
 durch einen expliziten $0-Eintrag in der Preistabelle.
+
+Cache-Ersparnis: `totals.cacheSavingsUsd` und `byModel[].cacheSavingsUsd`
+(nur gesetzt, wenn ≠ 0) = Cache-Reads zum vollen Input-Preis minus Cached-Preis,
+abzüglich des Write-Aufschlags (`CACHE_WRITE_MULTIPLIER − 1`), über
+`computeCacheSavingsUsd`. Nur metered Calls (Abo-Calls kosten so oder so
+nichts); unbekannte Modelle sparen 0. Gerechnet auf Modell-Summen zum
+Basis-Tarif — der Long-Context-Tier (Haiku 5.5 > 100k) fehlt, die Zahl ist dort
+eine Unterschätzung. Kann negativ werden (mehr geschrieben als gelesen).
+`costUsd + cacheSavingsUsd` = Kosten ohne Cache.
+
+EUR-Ansicht: Die Antwort trägt `fx: { eurPerUsd, date, source: 'ECB' } | null`
+(`exchangeRate.ts`). Quelle ist der EZB-Tageskurs
+(`eurofxref-daily.xml`), 6 h gecacht; nach einem Fehler bleibt der letzte Kurs
+stehen und der nächste Versuch kommt frühestens nach 10 min. Die Route wartet
+höchstens 1,5 s auf einen Refresh und antwortet sonst mit `fx: null` (der
+Refresh läuft weiter und füllt den Cache). `USAGE_FX_DISABLED=true` schaltet
+den Abruf ab. Das Ledger bleibt USD; die Web-UI rechnet nur zur Anzeige um,
+nennt Kurs und Datum unter den Gesamtkosten und startet auf `de` in EUR, sonst
+in USD (Umschalter EUR | USD, nur wenn ein Kurs da ist).
 
 Noch offen: der Verifier läuft nach dem Turn-Scope (Zeilen ohne Turn-ID,
 siehe #1098); `ctx.llm` liefert keine Cache-Zahlen (Plugin-Vertrag hat keine);
