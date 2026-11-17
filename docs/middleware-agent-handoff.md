@@ -7634,6 +7634,11 @@ Write abgelehnt, auch wenn ein zweites Pattern ihn gewähren würde. Sonst re-ö
 positiven Prüfung). Dort liegt das Promote-Audit-Log; `core` ist ein Read/Write-Grant, das
 jeder Agent hält, also könnte ein Agent ohne diesen Ausschnitt das Protokoll dessen
 überschreiben, was ein Operator mit seinem Memory gemacht hat.
+Seit #1827 gilt das auch für Eltern-Pfade: `delete` und die Quelle von `rename` werden
+abgelehnt, wenn der Pfad das Audit-Log enthält (`/memories/core`, `/memories`), denn die
+Stores nehmen bei Verzeichnissen alle Nachfahren mit. Geprüft wird der kanonische Pfad
+(doppelte und abschliessende Slashes zusammengefasst), wie ihn der Store auflöst.
+Offen aus #1827: wer `_rules/` schreiben darf (Entscheidung zum Zugriffsmodell).
 
 ### Kontext-Key
 
