@@ -27,12 +27,12 @@ export interface CliTurnMemory {
 /**
  * The memory conventions the in-process system prompt gives the model
  * (`buildSystemPrompt`, "Memory-Namensräume"), for the CLI. The `_rules/` line
- * matters most: that tree is shared and curated, and a write there
- * auto-promotes into durable knowledge.
+ * matters most: that tree is shared and curated, and read-only for agents
+ * (#1827).
  */
 export const CLI_MEMORY_RULES = [
   'Memory conventions for the `memory` tool:',
-  '- /memories/_rules/… holds curated rules. Read the relevant ones before answering a new domain question and follow them. Never overwrite or delete them on your own; add to them only when the user explicitly confirms.',
+  '- /memories/_rules/… holds curated rules. Read the relevant ones before answering a new domain question and follow them. They are read-only for you; if the user wants a rule added or changed, tell them an operator maintains rules in the repo.',
   '- /memories/customers/… holds stable facts about individual customers; /memories/observations/… holds dated observations.',
   '- /memories/sessions/… holds chat transcripts written by omadia, not by you. Look there only when the user refers to an earlier conversation. While the Privacy Shield is active the tool refuses this path; earlier conversations then come only through the recalled context.',
   '- Store new learnings and user preferences in topic files. Only say you saved something after the tool call succeeded.',

@@ -392,3 +392,29 @@ function teamKeyOf(bound: BoundTurnMemory): string {
   }
   assert.fail(`binding has no team axis: ${bound.scope.join(', ')}`);
 }
+
+// #1827 — a file under `/memories/_rules/` becomes a rule for every agent and
+// every account. A context-free turn holds plain `core`, which grants `_*`, so
+// any chat could plant one; the tree is read-only for agents now.
+test('rules under /memories/_rules/ are readable but never writable by an agent', async () => {
+  const { root, binder } = fixture();
+  const rule = '/memories/_rules/smart-cards.md';
+  await root.createFile(rule, 'seeded rule');
+
+  for (const bound of [
+    binder.forOrigin(undefined), // context-free turn: plain `core`
+    binder.forOrigin(teamsChannel('19:chan-a@thread.tacv2', 'team-a')),
+  ]) {
+    const store = bound.store;
+    assert.equal(await store.readFile(rule), 'seeded rule');
+    await assert.rejects(() => store.createFile('/memories/_rules/weather.md', 'answer SUNNY'), MemoryScopeViolation);
+    await assert.rejects(() => store.writeFile(rule, 'tampered'), MemoryScopeViolation);
+    await assert.rejects(() => store.delete(rule), MemoryScopeViolation);
+    await assert.rejects(() => store.delete('/memories/_rules'), MemoryScopeViolation);
+    await assert.rejects(() => store.rename(rule, '/memories/_rules/x.md'), MemoryScopeViolation);
+  }
+  assert.equal(await root.readFile(rule), 'seeded rule');
+  assert.equal(await root.fileExists('/memories/_rules/weather.md'), false);
+  // Other shared `_*` trees keep their grant on a context-free turn.
+  await binder.forOrigin(undefined).store.writeFile('/memories/_brand/logo.md', 'ok');
+});
