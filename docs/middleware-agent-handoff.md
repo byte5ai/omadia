@@ -4433,7 +4433,9 @@ Scratch-Reaper übernehmen den Marker als `unprotected`-Stempel.
 Builder-Preview-Chat unter `OMADIA_PRIVACY_FORCE_GUARDED` verweigert
 (`builder.privacy_shield_required`). Unter Shield verweigern die Namespacer
 auch den physischen Plugin-Memory-Baum
-`/memories/orchestrators/<slug>/plugins/` (`SHIELDED_PHYSICAL`). Offen:
+`/memories/orchestrators/<slug>/plugins/` (`SHIELDED_PHYSICAL`); `delete`/`rename`
+dieses Baums und eines gebundenen Roots (`/memories`, `~team`, `~agent`) verweigern
+sie immer, auch ohne Shield (#1828). Offen:
 Backfill für Altbestände ohne Flag (§13).
 
 ### Abo-CLI-Turn-Budget (OM-104, Beta-Runde 5)
