@@ -2108,6 +2108,10 @@ The same provenance reaches three more readers (#1540):
   the agent's private root and holds what the plugin fetched in clear, so
   under a shield the namespacers refuse that physical tree for every
   operation (`SHIELDED_PHYSICAL`), whatever model-facing path reaches it.
+  Without a shield the tree stays readable and writable, but the namespacers
+  never delete or move it, or move anything into it (#1828); they also refuse
+  `delete`/`rename` of a bound root (`/memories`, `~team`, `~agent`), which
+  the store's own guard only knows as the physical `/memories`.
 - **Stored processes.** `processes.unprotected` (migration 0035, plugin-api
   1.40.0) is set by `write_process`/`edit_process` in an unprotected turn and
   never cleared by an edit. Under a turn's privacy handle `query_processes`,

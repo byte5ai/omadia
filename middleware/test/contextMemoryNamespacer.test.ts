@@ -284,3 +284,15 @@ async function collectFiles(store: InMemoryMemoryStore): Promise<string[]> {
   }
   return [...files];
 }
+
+test('context turn: delete of /memories and of a bound tier root is refused (#1828)', async () => {
+  const { store, nsr } = channelTurn();
+  await nsr.createFile('/memories/a.md', 'channel');
+  await store.createFile(`${AGENT_ROOT}/plugins/p1/state.json`, '{}');
+  for (const root of ['/memories', '/memories/~team', '/memories/~agent']) {
+    await assert.rejects(nsr.delete(root), { name: 'MemoryInvalidPathError' });
+  }
+  await assert.rejects(nsr.delete('/memories/~agent/plugins/p1'), { name: 'MemoryInvalidPathError' });
+  assert.equal(await store.readFile(`${CHANNEL_ROOT}/a.md`), 'channel');
+  assert.equal(await store.readFile(`${AGENT_ROOT}/plugins/p1/state.json`), '{}');
+});
