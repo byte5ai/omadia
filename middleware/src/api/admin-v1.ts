@@ -121,6 +121,9 @@ export interface PluginSetupField {
    *  `type === 'boolean'` (#1464 — `"true"` normalized), a `number` for
    *  `type === 'integer'` (#1524), a `string` otherwise. */
   default?: string | string[] | boolean | number;
+  /** #1958 — `integer` only: the smallest accepted value. Enforced on install
+   *  and on every post-install edit; mirrors `InstallSetupField.min`. */
+  min?: number;
   /** Allowed values for `type === 'enum'`. Mirrors the install-wizard
    *  schema so the post-install editor can render a `<select>` instead of
    *  a free-text input. */
@@ -1041,6 +1044,9 @@ export interface InstallSetupField {
   help?: LocalizedMarkdown;
   required: boolean;
   default?: unknown;
+  /** #1958 — `integer` only: the smallest accepted value. See
+   *  `PluginSetupField.min`; parsed by the same rule in both projections. */
+  min?: number;
   enum?: SetupEnumOption[];
   provider?: string;
   scopes?: string[];
