@@ -36,6 +36,20 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Chat-Turns können das Promote-Audit-Log nicht mehr löschen (#1827)
+
+2026-11-17. Die Deny-Liste von `ScopedMemoryStore` prüfte nur den genannten
+Pfad. Ein `delete /memories/core` aus einem kontextfreien Turn (Modus „Aus“,
+der Default) entfernte im Postgres-Store alle Nachfahren, auch
+`/memories/core/audit/memory-promotions.jsonl`; ein `rename` hätte es
+verschoben, und `/memories/core//audit/…` umging die Prüfung, weil der Store
+den doppelten Slash erst danach zusammenfasst. `delete` und die
+`rename`-Quelle werden jetzt abgelehnt, wenn sie das Audit-Log enthalten, und
+die Deny-Prüfung läuft auf dem kanonischen Pfad. Andere Dateien unter
+`/memories/core/` bleiben schreib- und löschbar. Der zweite Teil von #1827
+(Regeln unter `_rules/` aus jedem Turn) braucht eine Entscheidung zum
+Zugriffsmodell und ist nicht Teil dieses Fixes.
+
 ### Fixed — Node-Aktivierung nach Amp-Snapshot-Restore
 
 2026-11-16. Neue Orbs hatten die Node-22-/24-Toolchains und alle Pakete,

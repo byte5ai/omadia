@@ -295,6 +295,30 @@ test('the promotion audit log is readable by an agent but never writable', async
   assert.equal(await root.readFile(auditPath), '{"event":"memory.promote"}\n');
 });
 
+// #1827 — a directory delete or rename takes every descendant with it, so a
+// parent of the audit log (or a path the store collapses onto it) must be
+// refused as well, on the context-free turn that holds plain `core`.
+test('the audit log cannot be removed or moved through a parent or a non-canonical path', async () => {
+  const { root, binder } = fixture();
+  const auditPath = '/memories/core/audit/memory-promotions.jsonl';
+  await root.createFile(auditPath, '{"event":"memory.promote"}\n');
+  await root.createFile('/memories/core/notes.md', 'shared note');
+  const store = binder.forOrigin(undefined).store;
+
+  for (const parent of ['/memories/core', '/memories/core/', '/memories/core/audit', '/memories//core']) {
+    await assert.rejects(() => store.delete(parent), MemoryScopeViolation, parent);
+  }
+  await assert.rejects(() => store.rename('/memories/core', '/memories/elsewhere'), MemoryScopeViolation);
+  await assert.rejects(() => store.writeFile('/memories/core//audit/memory-promotions.jsonl', 'x'), MemoryScopeViolation);
+  await assert.rejects(() => store.delete('/memories/core//audit/memory-promotions.jsonl'), MemoryScopeViolation);
+  assert.equal(await root.readFile(auditPath), '{"event":"memory.promote"}\n');
+
+  // Siblings of the audit tree stay deletable and renamable.
+  await store.rename('/memories/core/notes.md', '/memories/core/notes-old.md');
+  await store.delete('/memories/core/notes-old.md');
+  assert.equal(await root.fileExists('/memories/core/notes-old.md'), false);
+});
+
 test('two structurally different scopes that format alike do not share a tier', async () => {
   // `formatSessionScope` is injective only over the strings `parseSessionScope`
   // emits, and §4 has adapters build conversation scopes directly. Without the
