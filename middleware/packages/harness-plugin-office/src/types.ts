@@ -38,8 +38,9 @@ function formulaTextSchema(maxLength: number) {
 }
 
 /**
- * A formula cell. The renderer writes `formula` verbatim as the cell's Excel
- * formula. Cross-sheet references work by writing the sheet name into the
+ * A formula cell. The renderer writes `formula` as the cell's Excel formula,
+ * verbatim except for one leading `=`, which it drops (the file stores the
+ * bare expression; `storedFormulaText` in formulaText.ts). Cross-sheet references work by writing the sheet name into the
  * formula, e.g. `SUMIFS('Offene Posten'!E:E, 'Offene Posten'!C:C, A2)`.
  * Formulas use the file format's grammar: English function names and `,`
  * between arguments, whatever language the spreadsheet application runs in.

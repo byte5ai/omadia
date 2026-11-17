@@ -61,3 +61,17 @@ export function formulaTextReason(text: string): string | undefined {
   }
   return undefined;
 }
+
+/**
+ * The formula as the file stores it: without the `=` a user types in front of
+ * it. The file format's `<f>` element holds the bare expression, and the
+ * application adds the `=` itself when it shows the formula, so a written
+ * `=SUM(A1:A3)` displays as `==SUM(A1:A3)`, which is not a formula and shows
+ * no value. Callers (LLMs above all) write formulas the way a cell shows them,
+ * so one leading `=` is dropped here, before the policy checks the text and
+ * before exceljs writes it. Only one: `==A1` keeps its second `=` and stays
+ * as broken as it was sent.
+ */
+export function storedFormulaText(formula: string): string {
+  return formula.startsWith('=') ? formula.slice(1) : formula;
+}

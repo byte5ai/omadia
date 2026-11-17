@@ -93,6 +93,41 @@ describe('office xlsx formulas — no cached values, recalculation on open', () 
     assert.doesNotMatch(sheet, /<v>999<\/v>/, 'the supplied cache is not stored as any value');
   });
 
+  it('stores a formula without a leading "="', async () => {
+    // `<f>` holds the bare expression; the application adds the `=` itself, so
+    // a stored `=SUM(…)` would display as `==SUM(…)` and compute nothing.
+    const result = await renderXlsx({
+      sheets: [
+        {
+          name: 'S',
+          columns: [
+            { key: 'a', header: 'A', type: 'number' },
+            { key: 'b', header: 'B' },
+            { key: 'c', header: 'C', formula: '=A{row}*2' },
+          ],
+          rows: [{ a: 1, b: { formula: '=SUM(A2:A3)' } }, { a: 2, b: { formula: '=A3=1' } }],
+        },
+      ],
+    });
+    const sheet = (await unzipToText(result.buffer)).get('xl/worksheets/sheet1.xml') ?? '';
+    assert.equal(storedFormula(sheet, 'B2'), 'SUM(A2:A3)');
+    assert.equal(storedFormula(sheet, 'B3'), 'A3=1', 'only the leading "=" is dropped');
+    assert.equal(storedFormula(sheet, 'C2'), 'A2*2');
+    assert.equal(storedFormula(sheet, 'C3'), 'A3*2');
+    assert.doesNotMatch(sheet, /<f>=/, 'no stored formula starts with "="');
+  });
+
+  it('refuses a formula that is nothing but "="', async () => {
+    const inline = {
+      sheets: [{ name: 'S', columns: [{ key: 'a', header: 'A' }], rows: [{ a: { formula: '=' } }] }],
+    };
+    await assert.rejects(renderXlsx(inline as XlsxDescriptor), /rejected/);
+    const computed: XlsxDescriptor = {
+      sheets: [{ name: 'S', columns: [{ key: 'a', header: 'A', formula: '=' }], rows: [{}] }],
+    };
+    await assert.rejects(renderXlsx(computed), /non-empty/);
+  });
+
   it('asks the opening application to recalculate when the workbook holds a formula', async () => {
     const workbookXml = async (d: XlsxDescriptor): Promise<string> =>
       (await unzipToText((await renderXlsx(d)).buffer)).get('xl/workbook.xml') ?? '';

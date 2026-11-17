@@ -15,6 +15,7 @@ import {
   assertComputedColumnStaysInWorkbook,
   assertFormulaStaysInWorkbook,
 } from './formulaPolicy.js';
+import { storedFormulaText } from './formulaText.js';
 import { normalizeOoxml } from './ooxmlNormalize.js';
 import {
   PROVENANCE_CATEGORY,
@@ -87,7 +88,9 @@ function cellValueOf(row: Readonly<Record<string, unknown>>, key: string): CellV
   }
   if (typeof value !== 'object' || Array.isArray(value)) return undefined;
   const formula: unknown = (value as { formula?: unknown }).formula;
-  return typeof formula === 'string' && formula.length > 0 ? { formula } : undefined;
+  if (typeof formula !== 'string') return undefined;
+  const stored = storedFormulaText(formula);
+  return stored.length > 0 ? { formula: stored } : undefined;
 }
 
 /**
@@ -101,18 +104,23 @@ function cellValueOf(row: Readonly<Record<string, unknown>>, key: string): CellV
  * (formulaText.ts), so what they read is what exceljs writes and the opening
  * application reads.
  */
-function checkColumn(col: ColumnSpec, sheetName: string): void {
+function checkColumn(col: ColumnSpec, sheetName: string): ColumnSpec {
   if (typeof col.header !== 'string') {
     throw new OfficeRenderError(
       `header in sheet "${sheetName}", column "${String(col.key)}" rejected: a column header is text`,
     );
   }
-  if (!col.formula) return;
+  if (!col.formula) return col;
   const location = `sheet "${sheetName}", computed column "${String(col.key)}"`;
   if (typeof col.formula !== 'string') {
     throw new OfficeRenderError(`formula in ${location} rejected: a computed column's formula is text`);
   }
-  assertComputedColumnStaysInWorkbook(col.formula, location);
+  const formula = storedFormulaText(col.formula);
+  if (formula.length === 0) {
+    throw new OfficeRenderError(`formula in ${location} rejected: a computed column's formula is non-empty text`);
+  }
+  assertComputedColumnStaysInWorkbook(formula, location);
+  return { ...col, formula };
 }
 
 /** Coerce a cell value into the type Excel should store, so number formats
@@ -174,9 +182,9 @@ export async function renderXlsx(descriptor: XlsxDescriptor): Promise<RenderResu
   descriptor.sheets.forEach((sheet, index) => {
     const ws = workbook.addWorksheet(sanitizeSheetName(sheet.name, index));
     // Headers and computed-column templates are checked before exceljs sees
-    // any of them.
-    for (const col of sheet.columns) checkColumn(col, ws.name);
-    ws.columns = sheet.columns.map((col) => ({
+    // any of them; templates come back as the file stores them (no `=`).
+    const columns = sheet.columns.map((col) => checkColumn(col, ws.name));
+    ws.columns = columns.map((col) => ({
       header: col.header,
       key: col.key,
       ...(col.width !== undefined ? { width: col.width } : {}),
@@ -187,7 +195,7 @@ export async function renderXlsx(descriptor: XlsxDescriptor): Promise<RenderResu
 
     for (const row of sheet.rows) {
       const coerced: Record<string, CellValue | Date> = {};
-      for (const [columnIndex, col] of sheet.columns.entries()) {
+      for (const [columnIndex, col] of columns.entries()) {
         // Computed columns derive their value from the formula template below,
         // not from the row/dataset — leave the cell empty for now.
         if (col.formula) {
@@ -210,7 +218,7 @@ export async function renderXlsx(descriptor: XlsxDescriptor): Promise<RenderResu
       // cached value is ever stored next to one (defence in depth on top of
       // `cellValueOf`). Cross-sheet references (e.g. `'Offene Posten'!C:C`)
       // resolve when the opening application recalculates.
-      for (const col of sheet.columns) {
+      for (const col of columns) {
         const formula = formulaFor(col, coerced[col.key], rowNumber);
         if (formula === undefined) continue;
         const cell = added.getCell(col.key);
