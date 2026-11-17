@@ -36,6 +36,45 @@ changelog.
 
 ## [Unreleased]
 
+### Security — Conductor-Webhook-Hardening (#1707)
+
+2026-11-17. Fünf Lücken der Webhook-Oberfläche, die zusammen entscheiden, was
+den Server verlässt und was ein Operator hinterher rekonstruieren kann.
+
+**Breaking:** Der Run-`context` (jedes Step-Ergebnis, inklusive Freitext aus
+Freigaben) verlässt den Server nur noch, wenn eine Subscription ihn explizit
+anfordert. `conductor_webhook_subscriptions.include_context` ist für **alle**
+Rows `false`, auch bestehende — ein Empfänger, der bisher still Step-Ergebnisse
+bekam, bekommt sie bis zum Einschalten in der Admin-UI (oder per `POST
+…/subscriptions/:id/payload-scope`) nicht mehr. Die Projektion läuft vor dem
+Schreiben der Delivery-Row, der Kontext landet also auch nicht mehr in
+`conductor_webhook_deliveries.payload`.
+
+Außerdem: Retention für gespeicherte Payloads (Redaktion nach
+`CONDUCTOR_WEBHOOK_PAYLOAD_RETENTION_DAYS=30`, Löschen terminaler Rows nach
+`CONDUCTOR_WEBHOOK_DELIVERY_RETENTION_DAYS=180`); neun `admin_audit`-Actions für
+Endpoint-/Subscription-Lifecycle (vorher keine einzige Row auf `%webhook%`);
+ein Replay-Fenster über `X-Webhook-Timestamp` mit Signatur über
+`<timestamp>.<body>` (`CONDUCTOR_WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS=300`,
+`CONDUCTOR_WEBHOOK_REQUIRE_TIMESTAMP=false` schließt den Legacy-Pfad);
+Secret-Rotation mit Gnadenfrist (`CONDUCTOR_WEBHOOK_SECRET_GRACE_SECONDS=3600`,
+`?immediate=true` für den Leak-Fall); und ein sichtbarer Kill-Switch — mit
+`CONDUCTOR_WEBHOOKS_ENABLED=false` antwortet Inbound jetzt `503
+webhook.inbound_disabled` statt `200 {"outcome":"disabled"}`, die Boot-Zeile
+nennt den Zustand, `GET /api/v1/operator/conductors/webhooks/posture` liefert
+ihn samt geltender Fenster, und die Admin-Seite zeigt ihn als Banner.
+
+Kleine API-Änderung aus dem Review: `POST …/webhooks/{endpoints,subscriptions}/:id/status`
+antwortet für eine unbekannte Id jetzt `404` statt `204` — vorher wurde dafür
+sogar eine `admin_audit`-Row über eine nie passierte Zustandsänderung
+geschrieben. DELETE bleibt idempotent (`204`), auditiert aber nur noch, wenn es
+wirklich etwas gelöscht hat.
+
+Migration `src/conductor/migrations/0014_webhook_hardening.sql`
+(`include_context`, `secret_previous_until`, Retention-Index). Details:
+Handoff „Conductor Webhooks — Hardening (#1707)", `docs/security-architecture.md`
+§7d.
+
 ### Fixed — Node-Aktivierung nach Amp-Snapshot-Restore
 
 2026-11-16. Neue Orbs hatten die Node-22-/24-Toolchains und alle Pakete,

@@ -5175,7 +5175,11 @@
     "intro": "Inbound endpoints start subscribed workflow runs; outbound subscriptions receive an HMAC-signed delivery on run completion or failure. A created or rotated secret is shown once — it is never returned again.",
     "badge": {
       "enabled": "enabled",
-      "disabled": "disabled"
+      "disabled": "disabled",
+      "contextOn": "context on",
+      "contextOff": "no context",
+      "contextOnTitle": "Deliveries carry every step result of the run, including free-text human responses.",
+      "contextOffTitle": "Deliveries carry the run id, status and workflow only — no step results."
     },
     "endpoints": {
       "heading": "Inbound endpoints",
@@ -5203,7 +5207,11 @@
         "outcome": "Outcome",
         "receivedAt": "Received"
       },
-      "blockedByReveal": "Copy and dismiss this secret before you create or rotate another one."
+      "blockedByReveal": "Copy and dismiss this secret before you create or rotate another one.",
+      "rotateNow": "Rotate now",
+      "rotateNowHint": "Revoke the old secret immediately, with no overlap window. Use this when the secret has leaked.",
+      "confirmRotateNow": "Revoke the old secret immediately? Any sender still using it will get 401s right away.",
+      "previousSecretValidUntil": "Previous secret still valid until {when}"
     },
     "subscriptions": {
       "heading": "Outbound subscriptions",
@@ -5211,7 +5219,8 @@
       "fields": {
         "url": "URL",
         "event": "Event",
-        "description": "Description (optional)"
+        "description": "Description (optional)",
+        "includeContext": "Send step results"
       },
       "create": "Create subscription",
       "loading": "Loading …",
@@ -5234,7 +5243,11 @@
         "nextAttemptAt": "Next attempt",
         "createdAt": "Created"
       },
-      "blockedByReveal": "Copy and dismiss this secret before you create or rotate another one."
+      "blockedByReveal": "Copy and dismiss this secret before you create or rotate another one.",
+      "includeContextHint": "Off by default: a delivery carries the run id, status and workflow. Switched on, it also carries every step result — including free text a person typed into an approval — to this receiver, and stores it until retention removes it.",
+      "includeContext": "Include step results",
+      "excludeContext": "Exclude step results",
+      "confirmIncludeContext": "Send every step result of a run — including free text people typed into approvals — to this receiver?"
     },
     "errors": {
       "unexpected": "The request could not be sent.",
@@ -5244,6 +5257,19 @@
       "serverFailed": "The server could not complete this action. Try again; if it repeats, check the middleware logs.",
       "invalidInput": "The request is missing a required value.",
       "requestFailed": "The request failed (HTTP {status})."
+    },
+    "posture": {
+      "loading": "Checking the webhook state …",
+      "inboundOn": "Inbound deliveries are being processed.",
+      "inboundOff": "Inbound deliveries are switched off — every request is answered 503.",
+      "inboundOffDetail": "The endpoints below accept nothing while CONDUCTOR_WEBHOOKS_ENABLED=false. Set it to true and restart the middleware.",
+      "notConfiguredDetail": "This server has no Conductor database wired, so the webhook surface does not exist here.",
+      "factTimestamp": "Replay window: {seconds} seconds ({mode}).",
+      "timestampRequired": "a timestamp is required",
+      "timestampOptional": "senders without a timestamp are still accepted",
+      "factGrace": "Secret rotation: the previous secret stays valid for {seconds} seconds.",
+      "factRetention": "Retention: stored payloads are redacted after {payloadDays} days, delivery records deleted after {deliveryDays} days.",
+      "factRateLimit": "Rate limit: {perMinute} deliveries per endpoint per minute."
     }
   },
   "adminDomains": {

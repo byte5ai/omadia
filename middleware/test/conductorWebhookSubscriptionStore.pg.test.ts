@@ -356,4 +356,131 @@ describe('ConductorWebhookSubscriptionStore (pg)', { skip: !pgAvailable }, () =>
       assert.equal(row?.status, 'exhausted');
     });
   });
+
+  // ── #1707: payload scope + retention ────────────────────────────────────────
+  // Reported: the delivery payload carried the run's whole `context` (every step
+  // result, including free-text human responses) and the same text stayed in
+  // `conductor_webhook_deliveries.payload` indefinitely.
+  describe('payload scope + retention (#1707)', () => {
+    const SENSITIVE = { steps: { freigabe: { approved: false, kommentar: 'P09 Testkommentar' } } };
+
+    it('include_context defaults to false, and the opt-in round-trips', async () => {
+      const { subscription } = await store.create({ url: 'https://example.com/ctx', event: 'run.completed', createdBy: MARK });
+      assert.equal(subscription.includeContext, false);
+      await store.setIncludeContext(subscription.id, true);
+      assert.equal((await store.get(subscription.id))?.includeContext, true);
+      // The dispatcher's fan-out read carries the flag — it is what the projection uses.
+      const enabled = (await store.listEnabledForEvent('run.completed')).find((sub) => sub.id === subscription.id);
+      assert.equal(enabled?.includeContext, true);
+    });
+
+    it('listMissingRunDeliveries carries include_context, so reconciliation projects like the inline path', async () => {
+      const subId = await newSubscription('run.completed');
+      await store.setIncludeContext(subId, true);
+      const runId = await terminalRun('completed');
+      const missing = (await store.listMissingRunDeliveries(new Date(Date.now() - 60_000).toISOString())).filter(
+        (m) => m.subscriptionId === subId && m.runId === runId,
+      );
+      assert.equal(missing.length, 1);
+      assert.equal(missing[0]?.includeContext, true);
+    });
+
+    it('redacts a stored payload past the window down to {runId, status, redacted}, keeping the row', async () => {
+      const subId = await newSubscription();
+      const created = await store.createDelivery({
+        subscriptionId: subId,
+        event: 'run.completed',
+        payload: { runId: `run-${randomUUID()}`, status: 'completed', context: SENSITIVE },
+      });
+      // Terminal first: the sweep deliberately skips a row that still owes an attempt.
+      await store.recordSuccess(created.id);
+      await pool.query(`UPDATE conductor_webhook_deliveries SET created_at = now() - interval '40 days' WHERE id = $1`, [created.id]);
+
+      assert.equal(await store.redactDeliveryPayloadsOlderThan(30), 1);
+
+      const rows = await store.listForSubscription(subId);
+      const row = rows.find((d) => d.id === created.id);
+      assert.ok(row, 'the row itself must survive — the delivery history is not the sensitive part');
+      assert.equal(row?.payload['context'], undefined);
+      assert.equal(row?.payload['redacted'], true);
+      assert.equal(row?.payload['status'], 'completed');
+      assert.equal(JSON.stringify(row?.payload).includes('P09 Testkommentar'), false);
+    });
+
+    it('redaction KEEPS runId, so the (subscription, run) unique index still blocks a duplicate delivery', async () => {
+      const subId = await newSubscription();
+      const runId = `run-${randomUUID()}`;
+      const created = await store.createDelivery({ subscriptionId: subId, event: 'run.completed', payload: { runId, context: SENSITIVE } });
+      await store.recordSuccess(created.id);
+      await pool.query(`UPDATE conductor_webhook_deliveries SET created_at = now() - interval '40 days' WHERE id = $1`, [created.id]);
+      assert.equal(await store.redactDeliveryPayloadsOlderThan(30), 1);
+
+      const again = await store.createDelivery({ subscriptionId: subId, event: 'run.completed', payload: { runId } });
+      assert.equal(again.id, created.id, 'a redacted row must still win the conflict, or reconciliation would re-send it');
+    });
+
+    it('leaves a payload inside the window alone, and is idempotent over an already-redacted row', async () => {
+      const subId = await newSubscription();
+      const fresh = await store.createDelivery({
+        subscriptionId: subId,
+        event: 'run.completed',
+        payload: { runId: `run-${randomUUID()}`, context: SENSITIVE },
+      });
+      const old = await store.createDelivery({
+        subscriptionId: subId,
+        event: 'run.completed',
+        payload: { runId: `run-${randomUUID()}`, context: SENSITIVE },
+      });
+      await store.recordSuccess(old.id);
+      await pool.query(`UPDATE conductor_webhook_deliveries SET created_at = now() - interval '40 days' WHERE id = $1`, [old.id]);
+
+      assert.equal(await store.redactDeliveryPayloadsOlderThan(30), 1);
+      // A second sweep rewrites nothing — the already-redacted row is excluded.
+      assert.equal(await store.redactDeliveryPayloadsOlderThan(30), 0);
+      const rows = await store.listForSubscription(subId);
+      assert.deepEqual(rows.find((d) => d.id === fresh.id)?.payload['context'], SENSITIVE);
+    });
+
+    // Review finding: the sweep had no status filter, so a pending row past the
+    // window was redacted and would then have been DELIVERED as
+    // {runId, status, redacted} — the receiver gets the redaction instead of the event.
+    it('never redacts a row that still owes a delivery attempt', async () => {
+      const subId = await newSubscription();
+      const pending = await store.createDelivery({
+        subscriptionId: subId,
+        event: 'run.completed',
+        payload: { runId: `run-${randomUUID()}`, context: SENSITIVE },
+      });
+      await pool.query(`UPDATE conductor_webhook_deliveries SET created_at = now() - interval '40 days' WHERE id = $1`, [pending.id]);
+
+      assert.equal(await store.redactDeliveryPayloadsOlderThan(30), 0);
+      const row = (await store.listForSubscription(subId)).find((d) => d.id === pending.id);
+      assert.equal(row?.status, 'pending');
+      assert.deepEqual(row?.payload['context'], SENSITIVE, 'still pending ⇒ still the real event');
+
+      // Once it reaches a terminal state the same sweep redacts it.
+      await store.recordFailure(pending.id, 'gave up', null);
+      assert.equal(await store.redactDeliveryPayloadsOlderThan(30), 1);
+      assert.equal((await store.listForSubscription(subId)).find((d) => d.id === pending.id)?.payload['redacted'], true);
+    });
+
+    it('deletes TERMINAL rows past the ledger window and never a pending one', async () => {
+      const subId = await newSubscription();
+      const pending = await store.createDelivery({ subscriptionId: subId, event: 'run.completed', payload: { runId: `run-${randomUUID()}` } });
+      const delivered = await store.createDelivery({ subscriptionId: subId, event: 'run.completed', payload: { runId: `run-${randomUUID()}` } });
+      await store.recordSuccess(delivered.id);
+      await pool.query(`UPDATE conductor_webhook_deliveries SET created_at = now() - interval '400 days' WHERE id = ANY($1::uuid[])`, [
+        [pending.id, delivered.id],
+      ]);
+
+      assert.equal(await store.deleteDeliveriesOlderThan(180), 1);
+      const ids = (await store.listForSubscription(subId)).map((d) => d.id);
+      assert.equal(ids.includes(delivered.id), false);
+      assert.equal(
+        ids.includes(pending.id),
+        true,
+        'a pending row still owes someone a delivery attempt, however old it is',
+      );
+    });
+  });
 });

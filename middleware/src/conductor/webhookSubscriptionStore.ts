@@ -20,6 +20,12 @@ export interface ConductorWebhookSubscription {
   event: string;
   description: string | null;
   enabled: boolean;
+  /** Issue #1707 — opt-in for the run `context` (every step result, including
+   *  free-text human responses) in this subscription's delivery payload. FALSE for
+   *  every row by default, existing ones included: the payload is projected through
+   *  `projectRunEventPayload` before it is sent AND before it is stored, so an
+   *  opted-out subscription never puts step results on the wire or in the ledger. */
+  includeContext: boolean;
   createdBy: string;
   createdAt: Date;
 }
@@ -45,6 +51,7 @@ interface SubscriptionRow {
   event: string;
   description: string | null;
   enabled: boolean;
+  include_context: boolean;
   created_by: string;
   created_at: Date;
 }
@@ -69,6 +76,7 @@ function toSubscription(r: SubscriptionRow): ConductorWebhookSubscription {
     event: r.event,
     description: r.description,
     enabled: r.enabled,
+    includeContext: r.include_context,
     createdBy: r.created_by,
     createdAt: r.created_at,
   };
@@ -101,16 +109,23 @@ export class ConductorWebhookSubscriptionStore {
 
   /** Create a subscription. Returns the plaintext signing secret ONCE — receivers
    *  configure it out of band to verify the `X-Omadia-Signature` header. */
-  async create(input: { url: string; event: string; description?: string | null; createdBy: string }): Promise<{
+  async create(input: {
+    url: string;
+    event: string;
+    description?: string | null;
+    createdBy: string;
+    /** Issue #1707 — defaults to FALSE (no run context in the payload). */
+    includeContext?: boolean;
+  }): Promise<{
     subscription: ConductorWebhookSubscription;
     secret: string;
   }> {
     const secret = mintSecret();
     const r = await this.pool.query<SubscriptionRow>(
-      `INSERT INTO conductor_webhook_subscriptions (url, event, description, created_by)
-       VALUES ($1, $2, $3, $4)
-       RETURNING id, url, event, description, enabled, created_by, created_at`,
-      [input.url, input.event, input.description ?? null, input.createdBy],
+      `INSERT INTO conductor_webhook_subscriptions (url, event, description, created_by, include_context)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING id, url, event, description, enabled, include_context, created_by, created_at`,
+      [input.url, input.event, input.description ?? null, input.createdBy, input.includeContext ?? false],
     );
     const row = r.rows[0]!;
     await this.vault.set(CONDUCTOR_VAULT_AGENT_ID, outboundSecretKey(row.id), secret);
@@ -119,7 +134,7 @@ export class ConductorWebhookSubscriptionStore {
 
   async list(): Promise<ConductorWebhookSubscription[]> {
     const r = await this.pool.query<SubscriptionRow>(
-      `SELECT id, url, event, description, enabled, created_by, created_at
+      `SELECT id, url, event, description, enabled, include_context, created_by, created_at
          FROM conductor_webhook_subscriptions ORDER BY created_at DESC`,
     );
     return r.rows.map(toSubscription);
@@ -127,7 +142,7 @@ export class ConductorWebhookSubscriptionStore {
 
   async get(id: string): Promise<ConductorWebhookSubscription | null> {
     const r = await this.pool.query<SubscriptionRow>(
-      `SELECT id, url, event, description, enabled, created_by, created_at
+      `SELECT id, url, event, description, enabled, include_context, created_by, created_at
          FROM conductor_webhook_subscriptions WHERE id = $1`,
       [id],
     );
@@ -137,7 +152,7 @@ export class ConductorWebhookSubscriptionStore {
   /** Enabled subscriptions matching an event — the dispatcher's fan-out read. */
   async listEnabledForEvent(event: string): Promise<ConductorWebhookSubscription[]> {
     const r = await this.pool.query<SubscriptionRow>(
-      `SELECT id, url, event, description, enabled, created_by, created_at
+      `SELECT id, url, event, description, enabled, include_context, created_by, created_at
          FROM conductor_webhook_subscriptions WHERE event = $1 AND enabled = true`,
       [event],
     );
@@ -166,6 +181,16 @@ export class ConductorWebhookSubscriptionStore {
           SET enabled = $2, updated_at = now(), enabled_since = CASE WHEN $2 THEN now() ELSE enabled_since END
         WHERE id = $1`,
       [id, enabled],
+    );
+  }
+
+  /** Issue #1707 — flip the run-context opt-in. Takes effect on the NEXT delivery
+   *  created for this subscription; already-stored payloads are not rewritten (the
+   *  retention sweep redacts those on its own schedule). */
+  async setIncludeContext(id: string, includeContext: boolean): Promise<void> {
+    await this.pool.query(
+      `UPDATE conductor_webhook_subscriptions SET include_context = $2, updated_at = now() WHERE id = $1`,
+      [id, includeContext],
     );
   }
 
@@ -312,9 +337,14 @@ export class ConductorWebhookSubscriptionStore {
    */
   async listMissingRunDeliveries(
     sinceIso: string,
-  ): Promise<Array<{ runId: string; status: 'completed' | 'failed'; subscriptionId: string }>> {
-    const r = await this.pool.query<{ run_id: string; status: 'completed' | 'failed'; subscription_id: string }>(
-      `SELECT r.id AS run_id, r.status AS status, s.id AS subscription_id
+  ): Promise<Array<{ runId: string; status: 'completed' | 'failed'; subscriptionId: string; includeContext: boolean }>> {
+    const r = await this.pool.query<{
+      run_id: string;
+      status: 'completed' | 'failed';
+      subscription_id: string;
+      include_context: boolean;
+    }>(
+      `SELECT r.id AS run_id, r.status AS status, s.id AS subscription_id, s.include_context AS include_context
          FROM conductor_runs r
          JOIN conductor_webhook_subscriptions s
            ON s.enabled = true
@@ -330,7 +360,15 @@ export class ConductorWebhookSubscriptionStore {
               )`,
       [sinceIso],
     );
-    return r.rows.map((row) => ({ runId: row.run_id, status: row.status, subscriptionId: row.subscription_id }));
+    return r.rows.map((row) => ({
+      runId: row.run_id,
+      status: row.status,
+      subscriptionId: row.subscription_id,
+      // Issue #1707 — the reconciliation pass must project the payload exactly like
+      // the inline path does, or a recovered delivery would carry context the
+      // subscription is not opted in to.
+      includeContext: row.include_context,
+    }));
   }
 
   async recordSuccess(deliveryId: string): Promise<void> {
@@ -352,6 +390,70 @@ export class ConductorWebhookSubscriptionStore {
         WHERE id = $1`,
       [deliveryId, nextAttemptAt ? 'pending' : 'exhausted', error, nextAttemptAt],
     );
+  }
+
+  // ── retention (issue #1707) ───────────────────────────────────────────────
+
+  /**
+   * Redact the stored payload of every delivery older than `days`, keeping the row.
+   * `conductor_webhook_deliveries.payload` used to hold the full run event — step
+   * results and the free text a human typed into an approval — for the lifetime of
+   * the install. This is the bounded window for that content.
+   *
+   * The row SURVIVES redaction, with `{runId, status, redacted: true}` in place of
+   * the payload. This UPDATE is the ONLY definition of that shape — the sweep is
+   * set-based, so it cannot call a TypeScript projection, and a second definition in
+   * TS would be a contract that only the unused copy was tested against (#1707
+   * review finding). The shape is pinned by the pg test instead. Two reasons it is a
+   * redaction and not a delete: the delivery history an operator reads (status, attempts, timings,
+   * which run) is exactly the part that is not sensitive, and `run_id` — generated
+   * from `payload->>'runId'` — must keep its entry in the partial unique index over
+   * `(subscription_id, run_id)`, or the reconciliation pass could create a second
+   * delivery for a run that already had one.
+   *
+   * `pending` rows are excluded (review finding): such a row still owes a delivery
+   * attempt, and redacting it would send the receiver `{runId, status, redacted}` as
+   * if that were the event. They age out of `pending` on their own — the attempt cap
+   * exhausts in hours — and are redacted on a later sweep.
+   *
+   * Idempotent: a row already carrying `redacted` is skipped, so a sweep that runs
+   * every few hours rewrites nothing. The age anchor is the DB clock (`now()`), never
+   * the process clock (the #709 reaper-clock lesson).
+   */
+  async redactDeliveryPayloadsOlderThan(days: number): Promise<number> {
+    const r = await this.pool.query(
+      `UPDATE conductor_webhook_deliveries
+          SET payload = jsonb_strip_nulls(
+                jsonb_build_object('runId', payload->>'runId', 'status', payload->>'status')
+              ) || jsonb_build_object('redacted', true)
+        WHERE created_at < now() - make_interval(days => $1)
+          AND status <> 'pending'
+          AND NOT (payload ? 'redacted')`,
+      [days],
+    );
+    return r.rowCount ?? 0;
+  }
+
+  /**
+   * Delete delivery rows past the (longer) ledger window, so the table is bounded
+   * rather than merely de-sensitised. Only rows that have reached a TERMINAL state
+   * are deleted — a `pending` row still owes someone a delivery attempt, however old
+   * it is, and deleting it would drop the event silently.
+   *
+   * Safe against the reconciliation pass only because this window is far wider than
+   * its 24h lookback (`WEBHOOK_RECONCILE_WINDOW_MS`): once a deleted row's run is
+   * outside that lookback, `listMissingRunDeliveries` no longer considers the run at
+   * all, so the missing row is never "recovered" into a duplicate delivery. The
+   * config clamp in `webhookRetention.ts` is what keeps that true.
+   */
+  async deleteDeliveriesOlderThan(days: number): Promise<number> {
+    const r = await this.pool.query(
+      `DELETE FROM conductor_webhook_deliveries
+        WHERE created_at < now() - make_interval(days => $1)
+          AND status IN ('delivered', 'failed', 'exhausted')`,
+      [days],
+    );
+    return r.rowCount ?? 0;
   }
 
   async listForSubscription(subscriptionId: string, limit = 50): Promise<ConductorWebhookDelivery[]> {

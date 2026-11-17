@@ -6295,6 +6295,10 @@ export interface ConductorWebhookEndpoint {
   eventId: string;
   description: string | null;
   enabled: boolean;
+  /** #1707 — while this is in the future, the secret the last rotation superseded
+   *  still verifies, so a sender can be reconfigured without an outage. Null once the
+   *  grace has lapsed (or if nothing was ever rotated). Never the secret itself. */
+  secretPreviousUntil: string | null;
   createdBy: string;
   createdAt: string;
   /** Absolute inbound URL (`<middleware base>/api/hooks/:endpointId`), computed
@@ -6318,8 +6322,32 @@ export interface ConductorWebhookSubscription {
   event: string;
   description: string | null;
   enabled: boolean;
+  /** #1707 — whether this subscription's deliveries carry the run `context` (every
+   *  step result, free-text human responses included). False for every subscription
+   *  by default; it is an explicit opt-in. */
+  includeContext: boolean;
   createdBy: string;
   createdAt: string;
+}
+
+/**
+ * #1707 — the operator-visible state of the webhook surface. `inboundEnabled` is the
+ * `CONDUCTOR_WEBHOOKS_ENABLED` kill switch, which used to be invisible everywhere:
+ * with it off, every inbound request was answered `200 {"outcome":"disabled"}`, so
+ * senders saw success, the log printed its usual mount line and the admin page showed
+ * nothing. `configured: false` means the middleware has no Conductor wiring at all
+ * (no Postgres) — also "webhooks are off", for a different reason.
+ */
+export interface ConductorWebhookPosture {
+  configured: boolean;
+  inboundEnabled: boolean;
+  requireTimestamp?: boolean;
+  timestampToleranceSeconds?: number;
+  secretGraceSeconds?: number;
+  maxInboundDeliveriesPerMinute?: number;
+  payloadRetentionDays?: number;
+  deliveryRetentionDays?: number;
+  contextOptIn?: boolean;
 }
 
 export interface ConductorWebhookOutboundDelivery {
@@ -6352,6 +6380,10 @@ async function deleteRequest(path: string): Promise<void> {
   }
 }
 
+export async function getWebhookPosture(): Promise<{ posture: ConductorWebhookPosture }> {
+  return getJson(`${WEBHOOKS_BASE}/posture`);
+}
+
 export async function listWebhookEndpoints(): Promise<{ endpoints: ConductorWebhookEndpoint[] }> {
   return getJson(`${WEBHOOKS_BASE}/endpoints`);
 }
@@ -6363,8 +6395,14 @@ export async function createWebhookEndpoint(input: {
   return postJson(`${WEBHOOKS_BASE}/endpoints`, input);
 }
 
-export async function rotateWebhookEndpointSecret(endpointId: string): Promise<{ secret: string }> {
-  return postJson(`${WEBHOOKS_BASE}/endpoints/${encodeURIComponent(endpointId)}/rotate-secret`, {});
+/** #1707 — `immediate` opts out of the rotation grace and cuts over at once, which is
+ *  the right answer when the rotation IS the response to a leaked secret. */
+export async function rotateWebhookEndpointSecret(
+  endpointId: string,
+  opts?: { immediate?: boolean },
+): Promise<{ secret: string; previousSecretValidUntil: string | null }> {
+  const query = opts?.immediate === true ? '?immediate=true' : '';
+  return postJson(`${WEBHOOKS_BASE}/endpoints/${encodeURIComponent(endpointId)}/rotate-secret${query}`, {});
 }
 
 export async function setWebhookEndpointEnabled(endpointId: string, enabled: boolean): Promise<void> {
@@ -6389,8 +6427,16 @@ export async function createWebhookSubscription(input: {
   url: string;
   event: string;
   description?: string;
+  /** #1707 — opt in to the run context. Omitted/false means the delivery carries the
+   *  run's identity and outcome but none of its step results. */
+  includeContext?: boolean;
 }): Promise<{ subscription: ConductorWebhookSubscription; secret: string }> {
   return postJson(`${WEBHOOKS_BASE}/subscriptions`, input);
+}
+
+/** #1707 — flip the run-context opt-in on an existing subscription. */
+export async function setWebhookSubscriptionIncludeContext(id: string, includeContext: boolean): Promise<void> {
+  return postJson(`${WEBHOOKS_BASE}/subscriptions/${encodeURIComponent(id)}/payload-scope`, { includeContext });
 }
 
 export async function rotateWebhookSubscriptionSecret(id: string): Promise<{ secret: string }> {

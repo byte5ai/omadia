@@ -356,7 +356,7 @@ import {
   EntraProvider,
 } from './auth/providers/EntraProvider.js';
 import { runAuthBootstrap } from './auth/bootstrap.js';
-import { AdminAuditLog, auditActorFromLabel, roleChangeAuditEntry } from './auth/adminAuditLog.js';
+import { AdminAuditLog, auditActorFromLabel, roleChangeAuditEntry, webhookChangeAuditEntry } from './auth/adminAuditLog.js';
 import {
   PlatformSettingsStore,
   SETTING_AUTH_ACTIVE_PROVIDERS,
@@ -3513,7 +3513,14 @@ async function main(): Promise<void> {
   // itself must still be registered here, before express.json(), for the raw-body HMAC
   // verification to ever see real request bytes once Conductor IS wired.
   app.use(createConductorWebhooksInboundRouter(() => conductorWebhookInboundDepsRef));
-  console.log('[middleware] conductor webhook inbound router mounted at /api/hooks/:endpointId (raw-body, before express.json)');
+  // #1707 — the mount line used to print identically whether or not the kill switch
+  // was on, so a `CONDUCTOR_WEBHOOKS_ENABLED=false` install looked healthy in the log
+  // while every inbound delivery was being dropped. State goes in the line.
+  console.log(
+    `[middleware] conductor webhook inbound router mounted at /api/hooks/:endpointId (raw-body, before express.json) — inbound deliveries ${
+      config.CONDUCTOR_WEBHOOKS_ENABLED ? 'ENABLED' : 'DISABLED (CONDUCTOR_WEBHOOKS_ENABLED=false; every request answers 503)'
+    }`,
+  );
 
   // `verify` records the RAW byte count (see `http/rawBodySize.ts`). Route-level
   // size gates downstream can only measure `JSON.stringify(req.body)`, which is
@@ -4873,6 +4880,19 @@ async function main(): Promise<void> {
         await adminAudit?.record(roleChangeAuditEntry(entry));
       },
       webhooksEnabled: config.CONDUCTOR_WEBHOOKS_ENABLED,
+      // #1707 — webhook administration lands in the admin trail. Closure, not the
+      // instance, for the same reason as auditRoleChange: `adminAudit` is constructed
+      // further down this block and the route only dereferences it at request time.
+      auditWebhookChange: async (entry) => {
+        // #775 — the mapping (and the "an email must never reach the uuid actor_id
+        // column" rule) lives in webhookChangeAuditEntry so it is testable.
+        await adminAudit?.record(webhookChangeAuditEntry(entry));
+      },
+      webhookTimestampToleranceMs: config.CONDUCTOR_WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS * 1000,
+      webhookRequireTimestamp: config.CONDUCTOR_WEBHOOK_REQUIRE_TIMESTAMP,
+      webhookSecretGraceMs: config.CONDUCTOR_WEBHOOK_SECRET_GRACE_SECONDS * 1000,
+      webhookPayloadRetentionDays: config.CONDUCTOR_WEBHOOK_PAYLOAD_RETENTION_DAYS,
+      webhookDeliveryRetentionDays: config.CONDUCTOR_WEBHOOK_DELIVERY_RETENTION_DAYS,
       // #330 — guardrails for agent-generated ephemeral workflows (env-tunable).
       ephemeral: {
         defaultTtlMs: config.CONDUCTOR_EPHEMERAL_DEFAULT_TTL_MS,

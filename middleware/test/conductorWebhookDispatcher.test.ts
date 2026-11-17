@@ -24,6 +24,9 @@ function subscription(over: Partial<ConductorWebhookSubscription> = {}): Conduct
     event: 'run.completed',
     description: null,
     enabled: true,
+    // #1707 — a subscription receives the run context only by opting in; the default
+    // here mirrors the column default so a test that forgets it asserts the secure path.
+    includeContext: false,
     createdBy: 'operator',
     createdAt: new Date(),
     ...over,
@@ -248,5 +251,55 @@ describe('ConductorWebhookDispatcher', () => {
     assert.equal(attempted, false);
     assert.equal(fake.successes.length, 0);
     assert.equal(fake.failures.length, 0);
+  });
+});
+
+describe('outbound dispatcher — run-context opt-in (#1707)', () => {
+  // The reported leak: the delivery payload carried the run's whole `context`, i.e.
+  // every step result including the free text a human typed into an approval
+  // ("kommentar": "P09 Testkommentar"), and the same text was stored in
+  // `conductor_webhook_deliveries.payload` indefinitely. The projection runs BEFORE
+  // the row is created, so an opted-out subscription leaks it to neither.
+
+  const RUN_EVENT: JsonObject = {
+    runId: 'run-1',
+    status: 'completed',
+    workflowSlug: 'freigabe',
+    context: { steps: { freigabe: { approved: false, kommentar: 'P09 Testkommentar' } } },
+  };
+
+  it('strips the context from the stored payload of an opted-out subscription', async () => {
+    const f = fakeStore({ subscriptions: [subscription()] });
+    const d = new ConductorWebhookDispatcher({ store: f.store, sendRequest: async () => ({ ok: true, status: 200, bodySnippet: '' }) });
+    await d.deliverEvent('run.completed', RUN_EVENT);
+    await f.settled();
+    const payload = f.createCalls[0]?.payload;
+    assert.equal(payload?.['context'], undefined);
+    assert.equal(payload?.['contextOmitted'], true);
+    // Everything else the receiver needs is untouched.
+    assert.equal(payload?.['runId'], 'run-1');
+    assert.equal(payload?.['workflowSlug'], 'freigabe');
+    assert.equal(JSON.stringify(f.createCalls).includes('P09 Testkommentar'), false);
+  });
+
+  it('keeps the context for a subscription that opted in', async () => {
+    const f = fakeStore({ subscriptions: [subscription({ includeContext: true })] });
+    const d = new ConductorWebhookDispatcher({ store: f.store, sendRequest: async () => ({ ok: true, status: 200, bodySnippet: '' }) });
+    await d.deliverEvent('run.completed', RUN_EVENT);
+    await f.settled();
+    assert.deepEqual(f.createCalls[0]?.payload['context'], RUN_EVENT['context']);
+    assert.equal(f.createCalls[0]?.payload['contextOmitted'], undefined);
+  });
+
+  it('projects PER subscription — one opted in, one not, same event', async () => {
+    const f = fakeStore({
+      subscriptions: [subscription({ id: 'sub-out' }), subscription({ id: 'sub-in', includeContext: true })],
+    });
+    const d = new ConductorWebhookDispatcher({ store: f.store, sendRequest: async () => ({ ok: true, status: 200, bodySnippet: '' }) });
+    await d.deliverEvent('run.completed', RUN_EVENT);
+    await f.settled();
+    const byId = new Map(f.createCalls.map((c) => [c.subscriptionId, c.payload]));
+    assert.equal(byId.get('sub-out')?.['context'], undefined);
+    assert.deepEqual(byId.get('sub-in')?.['context'], RUN_EVENT['context']);
   });
 });
