@@ -5497,8 +5497,8 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 ## 13. Offene Roadmap
 
 - **Pflege von Memory-Regeln (#1827-Folge).** `/memories/_rules/` ist für
-  Agents nur lesbar; Regeln kommen nur aus dem Repo-Seed. Offen (GitHub-
-  Diskussion): Admin-Seite für globale Regeln, persönliche bzw. Agent-Regeln
+  Agents nur lesbar; Regeln kommen nur aus dem Repo-Seed. Offen
+  (Diskussion #2041): Admin-Seite für globale Regeln, persönliche bzw. Agent-Regeln
   aus dem Chat, und Aufräumen von Regeln ohne Owner, die vor dem Fix angelegt
   wurden (#1829, #1831).
 
