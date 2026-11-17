@@ -2,6 +2,8 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 
 import { auditActorFromRequest } from '../auth/adminAuditLog.js';
+import type { WebhookAuditEntryInput } from '../auth/adminAuditLog.js';
+import type { ConductorWebhookPosture } from './webhookRoutes.js';
 
 import { validate } from '@omadia/conductor-core';
 import type { JsonObject, KnownRefs, WorkflowGraph } from '@omadia/conductor-core';
@@ -135,6 +137,23 @@ export interface ConductorRouterDeps {
     holderId: string;
     holdersAfter: string[];
   }) => Promise<void>;
+  /**
+   * #1707 — audit sink for webhook administration. Creating, rotating, disabling and
+   * deleting an inbound endpoint or an outbound subscription decides what may start a
+   * workflow run and where run data is sent; before this, `admin_audit` held no row
+   * matching `%webhook%` at all. Optional like `auditRoleChange` (tests and hosts
+   * without an audit log keep working) and best-effort at the call site.
+   */
+  auditWebhookChange?: (entry: WebhookAuditEntryInput) => Promise<void>;
+  /** #1707 — how long a rotated inbound endpoint secret keeps its predecessor valid
+   *  (`CONDUCTOR_WEBHOOK_SECRET_GRACE_SECONDS`). 0/absent restores the pre-#1707
+   *  instant cutover. */
+  webhookSecretGraceMs?: number;
+  /** #1707 — the operator-visible state of the webhook surface, served verbatim by
+   *  `GET /webhooks/posture`: whether the inbound route is live at all (the
+   *  `CONDUCTOR_WEBHOOKS_ENABLED` kill switch, previously invisible everywhere) plus
+   *  the hardening windows in force. */
+  webhookPosture?: ConductorWebhookPosture;
 }
 
 /**

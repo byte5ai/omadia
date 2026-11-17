@@ -2,6 +2,7 @@ import type { JsonObject } from '@omadia/conductor-core';
 
 import type { ConductorWebhookDelivery, ConductorWebhookSubscription, ConductorWebhookSubscriptionStore } from './webhookSubscriptionStore.js';
 import { postWebhook, signWebhookBody, type PostWebhookResult } from './webhookOutbound.js';
+import { projectRunEventPayload } from './webhookPayload.js';
 
 /**
  * Issue #437 — outbound delivery: fans an internal event (today `run.completed` /
@@ -50,7 +51,11 @@ export class ConductorWebhookDispatcher {
     }
     for (const sub of subs) {
       try {
-        const created = await this.deps.store.createDelivery({ subscriptionId: sub.id, event, payload });
+        const created = await this.deps.store.createDelivery({
+          subscriptionId: sub.id,
+          event,
+          payload: projectRunEventPayload(payload, { includeContext: sub.includeContext }),
+        });
         // Claim the row before attempting inline — closes the race with the retry
         // worker's poll loop, which sees this same row as immediately due (issue #437
         // finding: an unclaimed inline attempt and a concurrent worker tick could both

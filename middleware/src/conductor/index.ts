@@ -40,6 +40,7 @@ import { ConductorEphemeralAttachmentsStore } from './ephemeralAttachmentsStore.
 import { createTemplateStore } from './templateStore.js';
 import type { ConductorTemplateStore } from './templateStore.js';
 import { createConductorRouter } from './routes.js';
+import type { ConductorRouterDeps } from './routes.js';
 import { ConductorFacilitationAdmin } from './facilitationAdmin.js';
 import { ConductorSayService } from './sayService.js';
 import type { AgentChannelIdentityResolver, ConductorSayDeps } from './sayService.js';
@@ -50,6 +51,8 @@ import { ConductorWebhookSubscriptionStore } from './webhookSubscriptionStore.js
 import { ConductorWebhookDispatcher } from './webhookDispatcher.js';
 import { ConductorWebhookRetryWorker } from './webhookRetryWorker.js';
 import { assertOutboundUrlAllowed } from './webhookOutbound.js';
+import { projectRunEventPayload } from './webhookPayload.js';
+import { resolveRetentionWindows, startWebhookPayloadRetention } from './webhookRetention.js';
 import type { ConductorWebhookInboundDeps } from '../routes/conductorWebhooksInbound.js';
 
 /** Issue #437 — the run.completed/run.failed webhook payload shape. Shared between
@@ -101,13 +104,15 @@ export type { ConductorTemplateStore, TemplateRecord, TemplateStatus } from './t
 export { createCompositeTemplateCatalog, loadTemplateCatalog, userTemplateVisible } from './templateCatalog.js';
 export type { CompositeTemplateCatalog, TemplateSummary } from './templateCatalog.js';
 export { ConductorWebhookEndpointStore, generateInboundDeliveryId } from './webhookEndpointStore.js';
-export type { ConductorWebhookEndpoint, WebhookInboundOutcome } from './webhookEndpointStore.js';
+export type { ConductorWebhookEndpoint, WebhookInboundOutcome, WebhookVerificationSecrets } from './webhookEndpointStore.js';
 export { ConductorWebhookSubscriptionStore } from './webhookSubscriptionStore.js';
 export type { ConductorWebhookSubscription, ConductorWebhookDelivery, WebhookDeliveryStatus } from './webhookSubscriptionStore.js';
 export { ConductorWebhookDispatcher } from './webhookDispatcher.js';
 export { ConductorWebhookRetryWorker } from './webhookRetryWorker.js';
 export { WEBHOOK_POST_ACTION_ID, invokeWebhookPostAction } from './webhookPostAction.js';
 export { assertOutboundUrlAllowed, WebhookUrlNotAllowedError } from './webhookOutbound.js';
+export { projectRunEventPayload } from './webhookPayload.js';
+export { startWebhookPayloadRetention, resolveRetentionWindows, MIN_RETENTION_DAYS } from './webhookRetention.js';
 export { loadPatternCatalog } from './patternCatalog.js';
 export type { PatternCatalog } from './patternCatalog.js';
 export { ConductorEphemeralStore } from './ephemeralStore.js';
@@ -299,6 +304,10 @@ export async function wireConductor(deps: {
    *  die with their workflow. Best-effort: a throw is logged, never blocks
    *  the reap. Implemented in src/index.ts — wireConductor has no ConfigStore. */
   onEphemeralReaped?: (workflow: { id: string; slug: string }) => Promise<void>;
+  /** #1707 — audit sink for webhook administration (endpoint/subscription create,
+   *  rotate, enable/disable, delete, payload scope). Passed straight through to the
+   *  admin router; `index.ts` maps it onto `admin_audit`. */
+  auditWebhookChange?: NonNullable<ConductorRouterDeps['auditWebhookChange']>;
   /** Global inbound kill switch (`CONDUCTOR_WEBHOOKS_ENABLED`). Default true. */
   webhooksEnabled?: boolean;
   /** Outbound delivery attempt cap + per-attempt timeout — defaults live in webhookDispatcher.ts. */
@@ -307,6 +316,22 @@ export async function wireConductor(deps: {
   /** Per-endpoint inbound rate limit (`CONDUCTOR_WEBHOOK_MAX_DELIVERIES_PER_MINUTE`),
    *  enforced atomically alongside the delivery-id dedupe. Default 60/minute. */
   webhookInboundMaxPerMinute?: number;
+  /** #1707 — inbound replay window: how far `X-Webhook-Timestamp` may be from this
+   *  server's clock (`CONDUCTOR_WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS`, default 300s),
+   *  and whether a request without that header is refused outright
+   *  (`CONDUCTOR_WEBHOOK_REQUIRE_TIMESTAMP`, default false — pre-#1707 senders sign
+   *  the bare body and must keep working until their operator has moved them over). */
+  webhookTimestampToleranceMs?: number;
+  webhookRequireTimestamp?: boolean;
+  /** #1707 — how long a rotated inbound endpoint secret keeps its predecessor valid
+   *  (`CONDUCTOR_WEBHOOK_SECRET_GRACE_SECONDS`, default 3600s). Rotation used to 401
+   *  the sender's very next request. */
+  webhookSecretGraceMs?: number;
+  /** #1707 — retention for stored outbound delivery payloads: redaction age and the
+   *  (longer) age at which a terminal delivery row is deleted. Both clamped in
+   *  `webhookRetention.ts`; defaults 30 / 180 days. */
+  webhookPayloadRetentionDays?: number;
+  webhookDeliveryRetentionDays?: number;
   /** Review finding — the middleware's own externally-reachable base URL
    *  (`CONDUCTOR_WEBHOOK_PUBLIC_BASE_URL` falling back to `PUBLIC_BASE_URL`), used to
    *  build the absolute inbound endpoint URL the operator UI displays. */
@@ -329,6 +354,16 @@ export async function wireConductor(deps: {
 
   // Issue #437 — webhooks. Built before the executor so `notifyRunEnded` can dispatch
   // outbound deliveries the moment a run reaches a terminal state.
+  //
+  // #1707 — the hardening knobs are resolved HERE, once, because three consumers must
+  // agree on them: the inbound router (replay window), the rotate-secret route (grace)
+  // and the operator-facing posture the admin UI renders. A posture that reported
+  // anything other than what is enforced would be worse than no posture at all.
+  const webhooksEnabled = deps.webhooksEnabled ?? true;
+  const webhookTimestampToleranceMs = deps.webhookTimestampToleranceMs ?? 300_000;
+  const webhookRequireTimestamp = deps.webhookRequireTimestamp ?? false;
+  const webhookSecretGraceMs = deps.webhookSecretGraceMs ?? 3_600_000;
+  const webhookInboundRateLimit = { limit: deps.webhookInboundMaxPerMinute ?? 60, windowMs: 60_000 };
   const webhookEndpoints = new ConductorWebhookEndpointStore(deps.pool, deps.vault);
   const webhookSubscriptions = new ConductorWebhookSubscriptionStore(deps.pool, deps.vault);
   const webhookDispatcher = new ConductorWebhookDispatcher({
@@ -354,7 +389,14 @@ export async function wireConductor(deps: {
       if (!run) continue; // shouldn't happen — the run this delivery would describe is gone
       const payload = await buildRunEventPayload(run, workflowStore);
       await webhookSubscriptions
-        .createDelivery({ subscriptionId: m.subscriptionId, event: `run.${m.status}`, payload })
+        .createDelivery({
+          subscriptionId: m.subscriptionId,
+          event: `run.${m.status}`,
+          // #1707 — the SAME projection the inline path applies. Without it a
+          // delivery recovered by reconciliation would carry the run context that
+          // this subscription is not opted in to.
+          payload: projectRunEventPayload(payload, { includeContext: m.includeContext }),
+        })
         .catch((err: unknown) => {
           log(`[conductor] webhook reconciliation: creating delivery for run ${m.runId} failed: ${err instanceof Error ? err.message : String(err)}`);
         });
@@ -368,6 +410,14 @@ export async function wireConductor(deps: {
     log,
   });
   webhookRetryWorker.start();
+  // #1707 — bounded retention for the stored delivery payloads. Before this, the full
+  // run event (step results, free-text human responses) sat in
+  // `conductor_webhook_deliveries.payload` for the lifetime of the install.
+  const webhookRetentionDays = resolveRetentionWindows({
+    payloadRetentionDays: deps.webhookPayloadRetentionDays ?? 30,
+    deliveryRetentionDays: deps.webhookDeliveryRetentionDays ?? 180,
+  });
+  startWebhookPayloadRetention({ store: webhookSubscriptions, ...webhookRetentionDays, log });
 
   // #330 — ephemeral lifecycle store, built before the executor so the terminal
   // hook below can dispose of an agent-generated workflow the moment its run ends
@@ -626,6 +676,22 @@ export async function wireConductor(deps: {
       webhookEndpoints,
       webhookSubscriptions,
       ...(deps.auditRoleChange ? { auditRoleChange: deps.auditRoleChange } : {}),
+      ...(deps.auditWebhookChange ? { auditWebhookChange: deps.auditWebhookChange } : {}),
+      webhookSecretGraceMs,
+      // #1707 — the kill switch and the hardening windows the admin UI renders. Built
+      // from the SAME values the inbound router and the retention sweep were given,
+      // so the page can never show a posture the server is not actually enforcing.
+      webhookPosture: {
+        configured: true,
+        inboundEnabled: webhooksEnabled,
+        requireTimestamp: webhookRequireTimestamp,
+        timestampToleranceSeconds: Math.round(webhookTimestampToleranceMs / 1000),
+        secretGraceSeconds: Math.round(webhookSecretGraceMs / 1000),
+        maxInboundDeliveriesPerMinute: webhookInboundRateLimit.limit,
+        payloadRetentionDays: webhookRetentionDays.payloadRetentionDays,
+        deliveryRetentionDays: webhookRetentionDays.deliveryRetentionDays,
+        contextOptIn: true,
+      },
       assertOutboundUrlAllowed: (url) => {
         assertOutboundUrlAllowed(url); // throws WebhookUrlNotAllowedError — route catches + 400s it
       },
@@ -635,14 +701,16 @@ export async function wireConductor(deps: {
 
   // Issue #437 — deps for the unauthenticated inbound router mounted early in
   // `index.ts` (before `express.json()`, via a forward reference this wiring assigns).
-  const webhookInboundRateLimit = { limit: deps.webhookInboundMaxPerMinute ?? 60, windowMs: 60_000 };
   const webhookInboundDeps: ConductorWebhookInboundDeps = {
-    enabled: deps.webhooksEnabled ?? true,
+    enabled: webhooksEnabled,
+    timestampToleranceMs: webhookTimestampToleranceMs,
+    requireTimestamp: webhookRequireTimestamp,
     getEndpoint: async (endpointId) => {
       const ep = await webhookEndpoints.get(endpointId);
       return ep ? { eventId: ep.eventId, enabled: ep.enabled } : null;
     },
-    getSecret: (endpointId) => webhookEndpoints.getSecret(endpointId),
+    // #1707 — current secret plus, during a rotation grace, the one it superseded.
+    getSecrets: (endpointId) => webhookEndpoints.getVerificationSecrets(endpointId),
     claim: (deliveryId, endpointId) => webhookEndpoints.claim(deliveryId, endpointId, webhookInboundRateLimit),
     setOutcome: (deliveryId, endpointId, outcome) => webhookEndpoints.setOutcome(deliveryId, endpointId, outcome),
     emit: (eventId, payload, source) => eventRouter.emit(eventId, payload, source),

@@ -6,11 +6,12 @@ import { ApiError, type ConductorWebhookSubscription } from '../../../../_lib/ap
 import { renderWithIntl } from '../../../../_lib/test-utils';
 import { WebhookSubscriptionsSection } from '../WebhookSubscriptionsSection';
 
-const { mockList, mockCreate, mockRotate, mockDelete } = vi.hoisted(() => ({
+const { mockList, mockCreate, mockRotate, mockDelete, mockIncludeContext } = vi.hoisted(() => ({
   mockList: vi.fn(),
   mockCreate: vi.fn(),
   mockRotate: vi.fn(),
   mockDelete: vi.fn(),
+  mockIncludeContext: vi.fn(),
 }));
 
 vi.mock('../../../../_lib/api', async (importOriginal) => ({
@@ -19,17 +20,22 @@ vi.mock('../../../../_lib/api', async (importOriginal) => ({
   createWebhookSubscription: mockCreate,
   rotateWebhookSubscriptionSecret: mockRotate,
   deleteWebhookSubscription: mockDelete,
+  setWebhookSubscriptionIncludeContext: mockIncludeContext,
 }));
 
-function sub(id: string): ConductorWebhookSubscription {
+function sub(id: string, over: Partial<ConductorWebhookSubscription> = {}): ConductorWebhookSubscription {
   return {
     id,
     url: `https://example.com/${id}`,
     event: 'run.completed',
     description: null,
     enabled: true,
+    // #1707 — mirrors the column default: a subscription sends no step results
+    // until an operator opts in.
+    includeContext: false,
     createdBy: 'admin',
     createdAt: '2026-10-01T00:00:00Z',
+    ...over,
   };
 }
 
@@ -103,5 +109,83 @@ describe('<WebhookSubscriptionsSection />', () => {
     fireEvent.click(screen.getByText(de.oneTimeSecret.dismiss));
     expect(screen.queryByText(t.blockedByReveal)).toBeNull();
     vi.unstubAllGlobals();
+  });
+});
+
+// #1707 — the run-context opt-in. A delivery used to carry the run's whole `context`
+// (every step result, including free text a person typed into an approval) with
+// nothing in this UI to see or change that.
+describe('<WebhookSubscriptionsSection /> — run-context opt-in (#1707)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockIncludeContext.mockResolvedValue(undefined);
+  });
+  afterEach(() => {
+    vi.clearAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it('labels a subscription that sends no step results, and one that does', async () => {
+    mockList.mockResolvedValue({ subscriptions: [sub('a'), sub('b', { includeContext: true })] });
+    renderWithIntl(<WebhookSubscriptionsSection />, { locale: 'de' });
+
+    expect(await screen.findByText(de.adminWebhooks.badge.contextOff)).toBeTruthy();
+    expect(screen.getByText(de.adminWebhooks.badge.contextOn)).toBeTruthy();
+  });
+
+  it('creates with the opt-in OFF unless the box is ticked', async () => {
+    mockList.mockResolvedValue({ subscriptions: [] });
+    mockCreate.mockResolvedValue({ subscription: sub('a'), secret: 'a'.repeat(64) });
+    renderWithIntl(<WebhookSubscriptionsSection />, { locale: 'de' });
+
+    const input = await screen.findByPlaceholderText('https://example.com/hook');
+    fireEvent.change(input, { target: { value: 'https://example.com/hook' } });
+    fireEvent.click(screen.getByText(t.create));
+
+    await waitFor(() => expect(mockCreate).toHaveBeenCalledTimes(1));
+    expect(mockCreate.mock.calls[0]?.[0]).toMatchObject({ includeContext: false });
+  });
+
+  it('ticking the box opts the new subscription in', async () => {
+    mockList.mockResolvedValue({ subscriptions: [] });
+    mockCreate.mockResolvedValue({ subscription: sub('a', { includeContext: true }), secret: 'b'.repeat(64) });
+    renderWithIntl(<WebhookSubscriptionsSection />, { locale: 'de' });
+
+    const input = await screen.findByPlaceholderText('https://example.com/hook');
+    fireEvent.change(input, { target: { value: 'https://example.com/hook' } });
+    fireEvent.click(screen.getByLabelText(t.fields.includeContext));
+    fireEvent.click(screen.getByText(t.create));
+
+    await waitFor(() => expect(mockCreate).toHaveBeenCalledTimes(1));
+    expect(mockCreate.mock.calls[0]?.[0]).toMatchObject({ includeContext: true });
+  });
+
+  it('switching the context ON asks first, and does nothing when declined', async () => {
+    mockList.mockResolvedValue({ subscriptions: [sub('a')] });
+    vi.stubGlobal('confirm', () => false);
+    renderWithIntl(<WebhookSubscriptionsSection />, { locale: 'de' });
+
+    // By role, not by text: the create form's checkbox label is a different control
+    // with a near-identical name, and clicking it would prove nothing.
+    fireEvent.click(await screen.findByRole('button', { name: t.includeContext }));
+    await waitFor(() => expect(mockIncludeContext).not.toHaveBeenCalled());
+  });
+
+  it('switching it ON after confirming calls through; switching it OFF needs no confirmation', async () => {
+    mockList.mockResolvedValue({ subscriptions: [sub('a')] });
+    vi.stubGlobal('confirm', () => true);
+    renderWithIntl(<WebhookSubscriptionsSection />, { locale: 'de' });
+
+    fireEvent.click(await screen.findByRole('button', { name: t.includeContext }));
+    await waitFor(() => expect(mockIncludeContext).toHaveBeenCalledWith('a', true));
+
+    vi.clearAllMocks();
+    vi.stubGlobal('confirm', () => {
+      throw new Error('turning the context OFF must not prompt');
+    });
+    mockList.mockResolvedValue({ subscriptions: [sub('a', { includeContext: true })] });
+    renderWithIntl(<WebhookSubscriptionsSection />, { locale: 'de' });
+    fireEvent.click((await screen.findAllByRole('button', { name: t.excludeContext }))[0]!);
+    await waitFor(() => expect(mockIncludeContext).toHaveBeenCalledWith('a', false));
   });
 });

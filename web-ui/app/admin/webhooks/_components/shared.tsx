@@ -108,3 +108,27 @@ export function StatusBadge({ enabled }: { enabled: boolean }): React.ReactEleme
     </span>
   );
 }
+
+/**
+ * #1707 — whether a subscription's deliveries carry the run `context` (every step
+ * result, free-text human responses included). Shown next to the enabled badge
+ * because it is the louder of the two facts about where run data goes: an enabled
+ * subscription with the context on sends a human's typed comment to an external
+ * receiver. Styled as a warning in that state, neutral when scoped down.
+ */
+export function PayloadScopeBadge({ includeContext }: { includeContext: boolean }): React.ReactElement {
+  const t = useTranslations('adminWebhooks.badge');
+  return (
+    <span
+      className={[
+        'inline-flex items-center gap-2 rounded-full px-2 py-0.5 text-[11px] uppercase tracking-[0.16em]',
+        includeContext
+          ? 'bg-[color:var(--warning)]/10 text-[color:var(--warning)]'
+          : 'bg-[color:var(--border)]/40 text-[color:var(--fg-muted)]',
+      ].join(' ')}
+      title={includeContext ? t('contextOnTitle') : t('contextOffTitle')}
+    >
+      {includeContext ? t('contextOn') : t('contextOff')}
+    </span>
+  );
+}

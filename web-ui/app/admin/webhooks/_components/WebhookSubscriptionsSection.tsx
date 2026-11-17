@@ -12,6 +12,7 @@ import {
   listWebhookSubscriptions,
   rotateWebhookSubscriptionSecret,
   setWebhookSubscriptionEnabled,
+  setWebhookSubscriptionIncludeContext,
   type ConductorWebhookOutboundDelivery,
   type ConductorWebhookSubscription,
 } from '@/app/_lib/api';
@@ -19,6 +20,7 @@ import {
 import { OneTimeSecret } from '@/app/_components/OneTimeSecret';
 
 import {
+  PayloadScopeBadge,
   StatusBadge,
   WebhookError,
   card,
@@ -38,6 +40,12 @@ type State =
  * create/enable-disable/rotate-secret/delete, plus per-subscription delivery
  * log with retry status — the acceptance-criterion "failed outbound deliveries
  * retry with backoff and are visible in a delivery log (admin UI)".
+ *
+ * #1707 — plus the run-context opt-in. A delivery used to carry the run's whole
+ * `context`: every step result, including the free text a human typed into an
+ * approval, sent to the receiver and stored indefinitely. It is off unless the
+ * operator switches it on here, per subscription, and the row says which state it
+ * is in rather than leaving that to be inferred.
  */
 export function WebhookSubscriptionsSection(): React.ReactElement {
   const t = useTranslations('adminWebhooks.subscriptions');
@@ -54,6 +62,7 @@ export function WebhookSubscriptionsSection(): React.ReactElement {
   const [url, setUrl] = useState('');
   const [event, setEvent] = useState('run.completed');
   const [description, setDescription] = useState('');
+  const [includeContext, setIncludeContext] = useState(false);
   const [creating, setCreating] = useState(false);
 
   const reload = useCallback(async (): Promise<void> => {
@@ -79,9 +88,11 @@ export function WebhookSubscriptionsSection(): React.ReactElement {
         url: url.trim(),
         event: event.trim(),
         ...(description.trim() ? { description: description.trim() } : {}),
+        includeContext,
       });
       setUrl('');
       setDescription('');
+      setIncludeContext(false);
       setRevealedSecret({ id: subscription.id, secret });
       await reload();
     } catch (err) {
@@ -89,7 +100,7 @@ export function WebhookSubscriptionsSection(): React.ReactElement {
     } finally {
       setCreating(false);
     }
-  }, [url, event, description, reload, revealedSecret, tErr]);
+  }, [url, event, description, includeContext, reload, revealedSecret, tErr]);
 
   const onRotate = useCallback(async (id: string): Promise<void> => {
     if (revealedSecret) return;
@@ -119,6 +130,25 @@ export function WebhookSubscriptionsSection(): React.ReactElement {
       }
     },
     [reload, tErr],
+  );
+
+  /** #1707 — switching the context ON starts sending step results to an external
+   *  receiver, so it asks first; switching it OFF needs no confirmation. */
+  const onToggleContext = useCallback(
+    async (id: string, next: boolean): Promise<void> => {
+      if (next && !confirm(t('confirmIncludeContext'))) return;
+      setActionError(null);
+      setPending(id);
+      try {
+        await setWebhookSubscriptionIncludeContext(id, next);
+        await reload();
+      } catch (err) {
+        setActionError(toFriendlyError(err, tErr));
+      } finally {
+        setPending(null);
+      }
+    },
+    [reload, t, tErr],
   );
 
   const onDelete = useCallback(
@@ -186,9 +216,21 @@ export function WebhookSubscriptionsSection(): React.ReactElement {
           <span className="text-[11px] uppercase tracking-[0.16em] text-[color:var(--fg-muted)]">{t('fields.description')}</span>
           <input className={inputCls} value={description} onChange={(e) => setDescription(e.target.value)} />
         </label>
+        <label className="flex items-center gap-2 pb-2">
+          <input
+            type="checkbox"
+            checked={includeContext}
+            onChange={(e) => setIncludeContext(e.target.checked)}
+            aria-describedby="webhook-include-context-hint"
+          />
+          <span className="text-[13px] text-[color:var(--fg-muted)]">{t('fields.includeContext')}</span>
+        </label>
         <Button variant="primary" onClick={() => void onCreate()} disabled={!url.trim() || creating || revealedSecret !== null}>
           {creating ? '…' : t('create')}
         </Button>
+        <p id="webhook-include-context-hint" className="w-full text-[12px] text-[color:var(--fg-muted)]">
+          {t('includeContextHint')}
+        </p>
       </div>
       {/* Above the list, not inside the row it belongs to: if that row vanishes
           (deleted, or the reload after a create failed) the secret and its
@@ -223,6 +265,7 @@ export function WebhookSubscriptionsSection(): React.ReactElement {
                   <div className="flex items-center gap-2">
                     <span className="text-[15px] font-semibold text-[color:var(--fg-strong)]">{sub.event}</span>
                     <StatusBadge enabled={sub.enabled} />
+                    <PayloadScopeBadge includeContext={sub.includeContext} />
                   </div>
                   <code className="text-[12px] text-[color:var(--fg-muted)]">{sub.url}</code>
                   {sub.description && <span className="text-[13px] text-[color:var(--fg-muted)]">{sub.description}</span>}
@@ -233,6 +276,13 @@ export function WebhookSubscriptionsSection(): React.ReactElement {
                   </Button>
                   <Button variant="secondary" onClick={() => void onToggle(sub.id, !sub.enabled)} disabled={pending === sub.id}>
                     {sub.enabled ? t('disable') : t('enable')}
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    onClick={() => void onToggleContext(sub.id, !sub.includeContext)}
+                    disabled={pending === sub.id}
+                  >
+                    {sub.includeContext ? t('excludeContext') : t('includeContext')}
                   </Button>
                   <Button variant="secondary" onClick={() => void onRotate(sub.id)} disabled={revealedSecret !== null} busy={pending === sub.id} busyLabel={t('rotating')}>
                     {t('rotateSecret')}

@@ -5175,7 +5175,11 @@
     "intro": "Eingehende Endpunkte starten abonnierte Workflow-Runs; ausgehende Subscriptions erhalten eine HMAC-signierte Zustellung bei Run-Abschluss oder -Fehlschlag. Ein erzeugtes oder rotiertes Secret wird einmalig angezeigt — danach nie wieder.",
     "badge": {
       "enabled": "aktiv",
-      "disabled": "inaktiv"
+      "disabled": "inaktiv",
+      "contextOn": "mit Kontext",
+      "contextOff": "ohne Kontext",
+      "contextOnTitle": "Zustellungen enthalten alle Schrittergebnisse des Runs, auch Freitext-Antworten von Personen.",
+      "contextOffTitle": "Zustellungen enthalten nur Run-ID, Status und Workflow — keine Schrittergebnisse."
     },
     "endpoints": {
       "heading": "Eingehende Endpunkte",
@@ -5203,7 +5207,11 @@
         "outcome": "Ergebnis",
         "receivedAt": "Empfangen"
       },
-      "blockedByReveal": "Kopiere dieses Secret und blende es aus, bevor du ein weiteres anlegst oder rotierst."
+      "blockedByReveal": "Kopiere dieses Secret und blende es aus, bevor du ein weiteres anlegst oder rotierst.",
+      "rotateNow": "Sofort rotieren",
+      "rotateNowHint": "Das alte Secret ohne Überlappungsfenster sofort entziehen. Dafür gedacht, wenn das Secret abgeflossen ist.",
+      "confirmRotateNow": "Das alte Secret sofort entziehen? Jeder Sender, der es noch verwendet, bekommt ab sofort 401.",
+      "previousSecretValidUntil": "Vorheriges Secret noch gültig bis {when}"
     },
     "subscriptions": {
       "heading": "Ausgehende Subscriptions",
@@ -5211,7 +5219,8 @@
       "fields": {
         "url": "URL",
         "event": "Event",
-        "description": "Beschreibung (optional)"
+        "description": "Beschreibung (optional)",
+        "includeContext": "Schrittergebnisse senden"
       },
       "create": "Subscription anlegen",
       "loading": "Lädt …",
@@ -5234,7 +5243,11 @@
         "nextAttemptAt": "Nächster Versuch",
         "createdAt": "Erstellt"
       },
-      "blockedByReveal": "Kopiere dieses Secret und blende es aus, bevor du ein weiteres anlegst oder rotierst."
+      "blockedByReveal": "Kopiere dieses Secret und blende es aus, bevor du ein weiteres anlegst oder rotierst.",
+      "includeContextHint": "Standardmäßig aus: eine Zustellung enthält Run-ID, Status und Workflow. Eingeschaltet enthält sie zusätzlich alle Schrittergebnisse — auch Freitext, den Personen in eine Freigabe geschrieben haben — und speichert sie bis zur Bereinigung.",
+      "includeContext": "Schrittergebnisse einbeziehen",
+      "excludeContext": "Schrittergebnisse ausschließen",
+      "confirmIncludeContext": "Alle Schrittergebnisse eines Runs — auch Freitext aus Freigaben — an diesen Empfänger senden?"
     },
     "errors": {
       "unexpected": "Die Anfrage konnte nicht gesendet werden.",
@@ -5244,6 +5257,19 @@
       "serverFailed": "Der Server konnte die Aktion nicht ausführen. Versuche es erneut; tritt es wieder auf, prüfe die Middleware-Logs.",
       "invalidInput": "In der Anfrage fehlt ein Pflichtwert.",
       "requestFailed": "Die Anfrage ist fehlgeschlagen (HTTP {status})."
+    },
+    "posture": {
+      "loading": "Webhook-Status wird geprüft …",
+      "inboundOn": "Eingehende Zustellungen werden verarbeitet.",
+      "inboundOff": "Eingehende Zustellungen sind abgeschaltet — jede Anfrage wird mit 503 beantwortet.",
+      "inboundOffDetail": "Solange CONDUCTOR_WEBHOOKS_ENABLED=false gilt, nehmen die Endpunkte unten nichts an. Auf true setzen und die Middleware neu starten.",
+      "notConfiguredDetail": "Dieser Server hat keine Conductor-Datenbank angebunden, die Webhook-Oberfläche existiert hier nicht.",
+      "factTimestamp": "Replay-Fenster: {seconds} Sekunden ({mode}).",
+      "timestampRequired": "Zeitstempel erforderlich",
+      "timestampOptional": "Sender ohne Zeitstempel werden weiterhin akzeptiert",
+      "factGrace": "Secret-Rotation: das vorherige Secret bleibt {seconds} Sekunden gültig.",
+      "factRetention": "Aufbewahrung: gespeicherte Payloads werden nach {payloadDays} Tagen bereinigt, Zustellungssätze nach {deliveryDays} Tagen gelöscht.",
+      "factRateLimit": "Ratenlimit: {perMinute} Zustellungen pro Endpunkt und Minute."
     }
   },
   "adminDomains": {

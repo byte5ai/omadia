@@ -37,6 +37,24 @@ export type AuditAction =
   | 'channel.binding_change'
   // #330 round 4 — the operator terminated a live facilitation from the admin lens.
   | 'conductor.facilitation_terminate'
+  // #1707 — Conductor webhook administration. Creating, rotating, disabling and
+  // deleting an inbound endpoint or an outbound subscription decides what may start
+  // a workflow run and where run data is sent, and none of it was recorded before
+  // (`SELECT action FROM admin_audit WHERE action ILIKE '%webhook%'` returned no
+  // rows). `before`/`after` carry url, event id, enabled state and the payload-scope
+  // flag — NEVER the signing secret or a delivery payload.
+  | 'conductor.webhook_endpoint_create'
+  | 'conductor.webhook_endpoint_rotate_secret'
+  | 'conductor.webhook_endpoint_status'
+  | 'conductor.webhook_endpoint_delete'
+  | 'conductor.webhook_subscription_create'
+  | 'conductor.webhook_subscription_rotate_secret'
+  | 'conductor.webhook_subscription_status'
+  | 'conductor.webhook_subscription_delete'
+  // The run-context opt-in (`include_context`) — switching it ON sends every step
+  // result, free-text human responses included, to an external receiver, so it is
+  // its own trail entry rather than a field buried in a status change.
+  | 'conductor.webhook_subscription_payload_scope'
   // #965 — an operator extended their own session ("I'm still here"). One
   // row per renewal keeps a renewal chain visible after the fact.
   | 'auth.session_renew'
@@ -322,6 +340,80 @@ function rowToEntry(row: AuditRow): AuditEntry {
     createdAt: row.created_at,
   };
 }
+
+/**
+ * #1707 — the Conductor webhook administration actions an admin route may record.
+ * A discriminated pair, so a route cannot invent an action name the `AuditAction`
+ * union has never heard of: {@link webhookChangeAuditEntry} derives the string.
+ */
+export type WebhookAuditEvent =
+  | { kind: 'endpoint'; change: 'create' | 'rotate_secret' | 'status' | 'delete' }
+  | { kind: 'subscription'; change: 'create' | 'rotate_secret' | 'status' | 'delete' | 'payload_scope' };
+
+/** What the route knows: which object changed and how. */
+export type WebhookAuditChange = WebhookAuditEvent & {
+  /** Endpoint id or subscription uuid — the free-text `target`, never a secret. */
+  id: string;
+  before?: unknown;
+  after?: unknown;
+};
+
+/** …plus who did it, which only the request can supply. */
+export type WebhookAuditEntryInput = WebhookAuditChange & {
+  actor: string;
+  /** The session's omadia user uuid when there is one — see #775: `actor` is the SUB
+   *  (an email under local auth) and must never reach the uuid `admin_audit.actor_id`. */
+  actorUserId?: string;
+};
+
+function webhookAuditAction(event: WebhookAuditEvent): AuditAction {
+  if (event.kind === 'endpoint') {
+    switch (event.change) {
+      case 'create':
+        return 'conductor.webhook_endpoint_create';
+      case 'rotate_secret':
+        return 'conductor.webhook_endpoint_rotate_secret';
+      case 'status':
+        return 'conductor.webhook_endpoint_status';
+      case 'delete':
+        return 'conductor.webhook_endpoint_delete';
+    }
+  }
+  switch (event.change) {
+    case 'create':
+      return 'conductor.webhook_subscription_create';
+    case 'rotate_secret':
+      return 'conductor.webhook_subscription_rotate_secret';
+    case 'status':
+      return 'conductor.webhook_subscription_status';
+    case 'delete':
+      return 'conductor.webhook_subscription_delete';
+    case 'payload_scope':
+      return 'conductor.webhook_subscription_payload_scope';
+  }
+}
+
+/**
+ * #1707 — map a Conductor webhook administration action to an audit entry.
+ *
+ * Same discipline as {@link roleChangeAuditEntry}: the uuid reaches `actor_id` only
+ * when the session actually carried one, and the caller's actor label (session email,
+ * else the sub) goes to the free-text `actor_email` — putting an email into the uuid
+ * column is what silently emptied the #759 trail (see #775).
+ *
+ * `before`/`after` are whatever the route chose to record (url, event id, enabled
+ * state, payload scope) and must NEVER carry the signing secret or a delivery payload.
+ */
+export function webhookChangeAuditEntry(entry: WebhookAuditEntryInput): AuditEntryInput {
+  return {
+    actor: { id: entry.actorUserId, email: entry.actor },
+    action: webhookAuditAction(entry),
+    target: `conductor-webhook-${entry.kind}:${entry.id}`,
+    ...(entry.before === undefined ? {} : { before: entry.before }),
+    ...(entry.after === undefined ? {} : { after: entry.after }),
+  };
+}
+
 
 /**
  * #775 — map a conductor role-holder change to an audit entry WITHOUT ever
