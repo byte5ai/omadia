@@ -70,9 +70,36 @@ export const ROUTINES_AGENT_ID = 'de.byte5.routines';
 /** Per-user quota on active routines. Enforced at create() time. */
 export const DEFAULT_MAX_ACTIVE_PER_USER = 50;
 
-/** Minimum wall-clock interval between two firings. Enforced at create()
- *  time after deriving an estimated period from the cron expression. */
+/** Minimum wall-clock interval between two firings. Enforced by
+ *  {@link assertRoutineCronInterval} on every path that schedules a routine. */
 export const MIN_RUN_INTERVAL_MS = 60_000;
+
+/**
+ * #1742 — refuse a cron that can fire more than once per
+ * {@link MIN_RUN_INTERVAL_MS}: every firing is a full, paid agent turn.
+ *
+ * croner accepts an optional leading seconds field (six fields instead of
+ * five). A five-field cron, and croner's `@hourly`-style nicknames (which
+ * expand to five fields), fire at second 0 of a whole local minute, so two
+ * firings are always at least a minute apart — DST shifts move the clock by
+ * whole quarter-hours and cannot bring two distinct minute marks closer. A
+ * six-field cron keeps that bound exactly when its seconds field names one
+ * fixed second; `*`, a step, a list or a range can fire several times within
+ * one minute. The check is structural rather than measuring gaps between
+ * `nextRuns()`, because sampling misses irregular schedules such as
+ * `5-6 0 9 1 1 *` (two firings one second apart, once a year).
+ *
+ * Fields are split on runs of whitespace, as croner splits them. Syntax
+ * errors are not this function's concern: `JobScheduler.register()` reports
+ * them.
+ */
+export function assertRoutineCronInterval(cron: string): void {
+  const fields = cron.trim().split(/\s+/);
+  const [seconds = ''] = fields;
+  if (fields.length === 6 && !/^\d+$/.test(seconds)) {
+    throw new RoutineCronTooFrequentError(cron);
+  }
+}
 
 /**
  * #1025 — who is asking for a routine mutation.
@@ -123,6 +150,19 @@ export class RoutineQuotaExceededError extends Error {
   constructor(public readonly limit: number) {
     super(`maximum of ${limit} active routines per user reached`);
     this.name = 'RoutineQuotaExceededError';
+  }
+}
+
+/** #1742 — see {@link assertRoutineCronInterval}. */
+export class RoutineCronTooFrequentError extends Error {
+  constructor(public readonly cron: string) {
+    super(
+      `cron '${cron}' can fire more than once per minute; routines run at most ` +
+        `every ${String(MIN_RUN_INTERVAL_MS / 1000)}s. Use the 5-field format ` +
+        `(minute hour day-of-month month day-of-week), e.g. '* * * * *' for ` +
+        `every minute — a seconds field, if present, must be a single number`,
+    );
+    this.name = 'RoutineCronTooFrequentError';
   }
 }
 
@@ -212,10 +252,13 @@ export interface RoutineRunnerOptions {
  *   4. `stop()` — dispose every registered job. The scheduler's
  *      `stopForPlugin` does this in O(n).
  *
- * The runner deliberately does **not** validate cron strings itself —
+ * The runner deliberately does **not** validate cron syntax itself —
  * `JobScheduler.register()` does that via croner and throws
- * `JobValidationError` on malformed input. The tool layer translates
- * those errors into user-facing messages.
+ * `JobValidationError` on malformed input. What the runner does own is the
+ * routine-specific cadence policy: `registerInScheduler`, the one path
+ * create, resume and boot all schedule through, refuses a cron that fires
+ * more than once per minute (`assertRoutineCronInterval`). The tool layer
+ * translates those errors into user-facing messages.
  */
 export class RoutineRunner {
   private readonly store: RoutineStore;
@@ -523,7 +566,16 @@ export class RoutineRunner {
         `[routines/runner] resumed routine ${id} but no sender for channel '${updated.channel}'`,
       );
     }
-    this.registerInScheduler(updated);
+    try {
+      this.registerInScheduler(updated);
+    } catch (err) {
+      // Same rollback as createRoutine: a routine the scheduler refuses (a
+      // malformed or, #1742, sub-minute cron persisted before the check)
+      // must not look active while nothing fires.
+      this.unregisterFromScheduler(id);
+      await this.store.setStatus(id, 'paused', ownerFilter(scope));
+      throw err;
+    }
     return updated;
   }
 
@@ -562,6 +614,7 @@ export class RoutineRunner {
   // --- internals -----------------------------------------------------------
 
   private registerInScheduler(routine: Routine): void {
+    assertRoutineCronInterval(routine.cron);
     if (this.disposers.has(routine.id)) {
       // Already registered (resume after a no-op pause). Drop the old one
       // first so register() doesn't throw JobAlreadyRegisteredError.

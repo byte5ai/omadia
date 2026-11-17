@@ -10,6 +10,7 @@ import {
   type Routine,
 } from './routineStore.js';
 import {
+  RoutineCronTooFrequentError,
   RoutineNotFoundError,
   RoutineQuotaExceededError,
   UnknownChannelError,
@@ -397,6 +398,9 @@ function formatError(err: unknown): string {
     return `Error: ${err.message}`;
   }
   if (err instanceof UnknownChannelError) {
+    return `Error: ${err.message}`;
+  }
+  if (err instanceof RoutineCronTooFrequentError) {
     return `Error: ${err.message}`;
   }
   if (err instanceof JobValidationError) {
