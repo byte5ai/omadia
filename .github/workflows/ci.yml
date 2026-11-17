@@ -78,6 +78,9 @@ jobs:
           cache: 'npm'
           cache-dependency-path: middleware/package-lock.json
 
+      - name: Orb resume regression
+        run: node --test ../.agents/resume.test.mjs
+
       - name: npm ci (middleware + workspaces)
         run: npm ci --include=optional --no-audit --no-fund
 
