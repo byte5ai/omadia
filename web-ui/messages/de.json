@@ -4504,6 +4504,7 @@
       "save": "Speichern",
       "saveWithCount": "Speichern ({count})",
       "savedCheck": "✓ Gespeichert",
+      "savedRestartPending": "✓ Gespeichert – das Plugin läuft weiter und übernimmt die neuen Werte nach dem nächsten Neustart.",
       "savedNotStarted": "Gespeichert – aber das Plugin ist mit den neuen Werten nicht gestartet.",
       "connected": "Verbunden",
       "notConnected": "Nicht verbunden",

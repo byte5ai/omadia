@@ -36,6 +36,20 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Setup-Felder des Knowledge Graph speichern ohne Crash-Loop (#1860)
+
+2026-11-17. orchestrator-extras legt mit `replace` einen Wrapper über den
+`knowledgeGraph`-Service. Ein Hot-Restart des Graph-Plugins nach dem Speichern
+von Setup-Feldern ließ den Wrapper stehen, die neue Instanz scheiterte an
+„duplicate provider“, das Plugin wurde `errored` gespeichert, und der nächste
+Boot brach ohne `knowledgeGraph` ab. Jetzt wird ein Plugin, dessen Service ein
+anderes Plugin wrappt, nicht mehr im laufenden Prozess neu gestartet: die
+Werte werden gespeichert, der Status bleibt `active`, und der Store sagt, dass
+sie nach dem nächsten Neustart gelten (`activation.restart_pending`). Bereits
+hängende Einträge mit diesem Fehler setzt `retryErroredPlugins` beim Boot
+zurück, so dass betroffene Instanzen ohne Handarbeit an `installed.json`
+wieder starten.
+
 ### Fixed — Node-Aktivierung nach Amp-Snapshot-Restore
 
 2026-11-16. Neue Orbs hatten die Node-22-/24-Toolchains und alle Pakete,

@@ -4504,6 +4504,7 @@
       "save": "Save",
       "saveWithCount": "Save ({count})",
       "savedCheck": "✓ Saved",
+      "savedRestartPending": "✓ Saved — the plugin keeps running and uses the new values after the next restart.",
       "savedNotStarted": "Saved — but the plugin did not start with the new values.",
       "connected": "Connected",
       "notConnected": "Not connected",
