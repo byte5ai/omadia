@@ -399,6 +399,11 @@ from occasional, explicit asks outside answers; answers carry no rating buttons.
 **Rule of thumb:** if something needs a name, a personality or should be addressable, it
 is an agent. If it extends what agents can do, it is a capability plugin. If it adds a new
 class of agent to the system, it is an archetype plugin.
+If it is a part of omadia itself that provides platform functions to all agents and
+operators, it is a **system module**: for example Conductor (workflows), omadia UI
+(desktop canvas), omadia Proof (provable actions) and the memory system. A system module
+is neither an agent nor a plugin attached to agents: it has no identity, never speaks to
+people as an actor, and agents use it only through kernel services and their grants.
 
 **Two classes of plugins, clearly distinguished:**
 
