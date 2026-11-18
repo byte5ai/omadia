@@ -217,7 +217,7 @@ audit (Codex, 2026-11-18) checked every change against the code and its history.
 | **Direct Line** (`#token`, sticky mode) | Removed (owner decision): direct addressing (INV-1) replaces it. Its advantage, a verbatim, attributed answer block the asking agent cannot alter, lives on in `contributions[]` (§5.4); `agentsConsulted` stays as trace summary. |
 | **Fast path** (`@omadia/fast-path`) | **Purpose:** simple data questions without the full agent loop (about 15 s and, in one documented case, a sub-agent run of 88,000 input tokens avoided): a fast model plans one read query, the plugin runs it and renders the rows; no model sees the rows; learned plans, a cache and confidence thresholds; any miss falls back to the agent unchanged (`middleware/packages/harness-plugin-fast-path/src/fastPath.ts`, `triageTurn.ts`). It already embodies INV-11. **Conflict:** its answer skips the agent's persona, boundaries and AI disclosure, there is no per-agent switch, and it may use sub-agents' read tools (#1876). **Adaptation:** kept entirely, as the addressed agent's **fast lane**: the agent is fixed first (deterministically); triage, planner, learned plans and cache run as the agent's internal helpers under its model policy, only with its own read tools, with discretion labels on learned plans; the answer renders under its identity with AI disclosure; a miss returns to the same agent; switchable per agent; never for facilitators. Model-written labels and the planner's summary (`middleware/packages/harness-plugin-fast-path/src/planner.ts:85`, accepted by `parseSummary` in `fastPath.ts:200`) are `prose`: they pass the identity guard or are replaced by registered templates; the agent's boundaries and answer preferences apply, including on cache hits (the cache is keyed by agent and its settings version). Its data plans pass the boundary check of §5.13 before execution and before reuse from the cache. |
 | **Fallback agent** ("Standard Orchestrator") | The special role ends. The operator configures **default agents per human user and channel**, or switches the default off (§5.6). The default agent gets no automatic plugin attachment (INV-8). |
-| **Auto-attach of plugins** (`attachAllPlugins`, `attachNewPluginsToFallbackAgent`, `attachToDefaultOrchestrator`) | Removed. A plugin install offers to attach the plugin to agents the operator picks; nothing is attached without that choice. |
+| **Auto-attach of plugins** (`attachAllPlugins`, `attachNewPluginsToFallbackAgent`, `attachToDefaultOrchestrator`) | Removed. Installing a capability plugin offers to grant its capabilities to agents the operator picks; nothing is granted without that choice. Other plugins (channels, models, archetypes, system modules, templates) are never attached to agents. |
 | **UI orchestrator** of the desktop UI (`canvasChatAgent`, Tier 2) | **Purpose:** fast layout changes and local operations, early skeletons, targeted data requests and incremental patches while slow content work runs (omadia-ui `CONCEPT.md`). **Conflict:** it receives every canvas turn before any agent and delegates content to sub-agents. **Adaptation:** becomes the selected agent's **presentation helper**: the agent is fixed first; the helper keeps its parallelism (early skeleton, local operations, incremental patches) inside the agent's envelope and identity; content comes from the agent. |
 | **Orchestrator** as an agent | Gone. The `Orchestrator` class is the runtime of one agent; registry, router, consultation broker, scheduler and Conductor form the management layer (§5.6). |
 
@@ -480,16 +480,16 @@ privacy shield and budget).
 
 **Model gateway.** Only model plugins (kind `model`) hold model
 credentials and talk to model APIs, and only the kernel's model gateway calls them. Every
-other plugin, of either class, reaches models only through that gateway inside an
+plugin other than a model plugin reaches models only through that gateway inside an
 execution context. Its **effective network permission** is what it has today, minus
 model providers: the static targets of its manifest, the targets an operator configured,
 and, where the manifest declares it and the operator enabled it, the `public-web` mode
 (any public host, with today's private-range blocklist enforced at connect time,
 `middleware/src/platform/httpAccessor.ts:139`, used for example by the SEO scanner).
-In every mode the endpoints of the installed model providers are blocked for non-provider
-plugins. Kernel-internal extensions (agent runtime, verifier,
+In every mode the endpoints of the installed model providers are blocked for every plugin
+whose kind is not `model`. Kernel-internal system modules (agent runtime, verifier,
 fast lane) are the gateway's trusted callers and also run inside an execution context.
-Extensions that build their own provider pool today (for example
+System modules that build their own provider pool today (for example
 `middleware/packages/harness-orchestrator-extras/src/plugin.ts:222`) move onto the gateway;
 sandboxing outbound access (the global `fetch`, `pluginContext.ts:555`) is a prerequisite
 for shipping archetype plugins and for enforcing this for capability plugins (#2088,
@@ -507,7 +507,7 @@ execution context, which decides whose budget it uses:
 | Agent turn | an agent's own turn, its internal helpers, capability calls it makes (including embeddings for semantic search or memory writes during the turn); also a draft preview, see below | the agent's envelope |
 | Execution scope | actions of an archetype plugin's process (#2090), including transcription of a live session | the scope's deadline and budget |
 | Inbound processing | transcribing a voice message before the addressed agent's turn | the addressed agent's envelope |
-| Operator job | an admin function an operator starts explicitly in the admin UI (including the chats of the Agent Builder and the Plugin Builder), bounded and with exactly the effects that function declares, under the starting operator's rights; several model calls share one job budget, a deadline and a cancel button. Today: issue preview (`middleware/src/issues/issueReformulator.ts:62`, result is a draft in a form), skill verification (`middleware/src/services/skillVerdictLlmVerifier.ts:350`, stores the verdict), topic regrouping (`harness-orchestrator-extras/src/topicClustering.ts:205`, creates topics) and bulk promotion (`harness-orchestrator-extras/src/bulkPromotion.ts:169`, updates significance). Never a chat message | the instance's operator-tools budget and model policy |
+| Operator job | an admin function an operator starts explicitly in the admin UI (including the chats of the Agent Builder and the Plugin Builder), bounded and with exactly the effects that function declares, under the starting operator's rights; several model calls share one job budget, a deadline and a cancel button. Today: issue preview (`middleware/src/issues/issueReformulator.ts:62`, result is a draft in a form), skill verification (`middleware/src/services/skillVerdictLlmVerifier.ts:350`, stores the verdict), topic regrouping (`harness-orchestrator-extras/src/topicClustering.ts:205`, creates topics) and bulk promotion (`harness-orchestrator-extras/src/bulkPromotion.ts:169`, updates significance). Never posts to team conversations; a builder's dialog stays inside its admin tool | the instance's operator-tools budget and model policy |
 | Maintenance run | a kernel or plugin job that keeps an index current (for example the embedding backfill, `harness-knowledge-graph-neon/src/embeddingBackfill.ts:475`) | the instance's maintenance budget set by the operator, with a deadline per run; only `embed` is allowed, never `complete` or `transcribe`, and it never posts to people |
 
 Semantic search, re-indexing and transcription keep working with the lock in place; only
@@ -528,8 +528,9 @@ tool dispatch with the agent's grants and the privacy shield
 New work for `run_loop`:
 - **Runaway protection, not cost metering.** The purpose is that no bug (for example a
   faulty trigger firing in a loop) can run up costs unattended. A CLI turn therefore keeps
-  today's limits: a deadline (`OMADIA_CLI_SPAWN_TIMEOUT_MS`, default 10 minutes), the idle
-  timeout and the kill switch. Unattended work (triggers, routines, operator jobs,
+  today's limits, a deadline (`OMADIA_CLI_SPAWN_TIMEOUT_MS`, default 10 minutes) and the
+  idle timeout, and gains termination through the instance-wide kill switch (new work;
+  today `cliChatAgent.ts` only ends the child process on error or abort). Unattended work (triggers, routines, operator jobs,
   maintenance runs, archetype process scopes) is additionally bounded by its caps and
   circuit breaker (§5.12), whichever path its model calls take. No per-call budget gate
   is put into the CLI loop.
@@ -608,9 +609,9 @@ capabilities for an agent of an existing archetype.
 
 | | Agent | Plugin |
 |---|---|---|
-| Role | Actor: a virtual colleague who does the work. | Supplier: extends what agents can do. |
+| Role | Actor: a virtual colleague who does the work. | Delivery package; its manifest kind determines what it supplies (§5.10 table). The rows below describe capability and archetype plugins; system modules, model and channel plugins follow the execution-context table. |
 | Identity | Name, avatar, personality, speaks to people. | None. Never speaks to people, never addressable. |
-| Accountability | Appears in audit as the actor of every action. | Appears as the tool or integration an actor used. |
+| Accountability | Appears in audit as the actor of every action. | A capability plugin appears as the tool or integration an actor used. |
 | Permissions | Holds grants. | Declares what can be granted (capabilities with read/write scopes) and keeps integration credentials in the vault; agents never see secrets. |
 | Memory and state | Own memory tree, scoped by audience. | Capability plugins: only technical state (configuration, caches, sync cursors), no memory of conversations. Archetype plugins: additionally the process state of their archetype's work (see below), never general conversation memory. |
 | Models | Runs its own model loop under its model policy. | May use a model internally to implement a capability, under the calling agent's model policy, budget, grants and audience, recorded in that agent's trace; returns data to the agent, never text to a person. |
@@ -629,7 +630,7 @@ capabilities for an agent of an existing archetype.
   text the agent may use); only agents and `system` emit to people (§5.5);
 - a capability call runs in the calling agent's envelope: its grants, the audience, its
   model policy and budget; it never widens them;
-- a plugin's internal model calls appear in the calling agent's trace and usage.
+- a capability plugin's internal model calls appear in the calling agent's trace and usage; other plugins' model calls are recorded under their execution context (table above).
 
 
 ### 5.11 Discretion: who may learn what, and how much
