@@ -518,7 +518,7 @@ archetype plugin disables its agents and keeps their records; it never converts 
 another archetype. **Uninstall is kernel-guarded:** before the plugin is unloaded the kernel
 itself, independent of the plugin's `onUninstall` (whose failure is caught today,
 `middleware/src/plugins/installService.ts:916`), ends every running process of that
-archetype's agents: it marks them terminated ("archetype plugin removed"), releases all
+archetype's agents: it ends them as `aborted` (reason "archetype plugin removed"), releases all
 their reservations and subscriptions, revokes their execution scopes, grants and scheduled
 jobs, and posts one registered `system` notice in each affected home conversation. The
 plugin's tables keep their last state for the operator.
