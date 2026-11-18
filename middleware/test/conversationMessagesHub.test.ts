@@ -11,6 +11,8 @@ import { describe, it } from 'node:test';
 
 import type { ConversationMessageRecord } from '@omadia/plugin-api';
 
+import { createConversationMessagesService } from '../src/channels/conversationMessages/service.js';
+
 import {
   assignRevision,
   InMemoryConversationMessageStore,
@@ -94,6 +96,40 @@ describe('conversationMessages: subscribe', () => {
     assert.deepEqual(await f.hub.listSince(scopeOf('mara'), '@acme/snoop'), { events: [] });
     await f.hub.unsubscribe(scopeOf('mara'), '@acme/snoop');
     assert.equal(f.hub.isSubscribed('teams', CONVERSATION, MARA_KEY), true, 'still subscribed');
+  });
+});
+
+describe('conversationMessages: isSubscribed', () => {
+  it('answers exactly, from the store, and only for the caller own subscriptions', async () => {
+    const store = new InMemoryConversationMessageStore();
+    const f = hubFixture(store);
+    const engine = createConversationMessagesService({ hub: f.hub, callerPluginId: ENGINE, isEngine: () => true });
+    const snoop = createConversationMessagesService({ hub: f.hub, callerPluginId: '@acme/snoop', isEngine: () => false });
+    assert.equal(await engine.isSubscribed?.(scopeOf('mara')), false, 'nothing yet');
+    assert.deepEqual(await engine.subscribe(scopeOf('mara')), { outcome: 'subscribed' });
+    assert.equal(await engine.isSubscribed?.(scopeOf('mara')), true);
+    assert.equal(await engine.isSubscribed?.(scopeOf('mara', '19:other@thread.v2')), false, 'another conversation');
+    assert.equal(await engine.isSubscribed?.(scopeOf('nora')), false, 'another agent');
+    assert.equal(await snoop.isSubscribed?.(scopeOf('mara')), false, 'not the engine');
+
+    // A fresh hub over the same store (a restart) answers without a boot
+    // refresh having run: the question re-reads the store.
+    const restarted = hubFixture(store);
+    const after = createConversationMessagesService({ hub: restarted.hub, callerPluginId: ENGINE, isEngine: () => true });
+    assert.equal(await after.isSubscribed?.(scopeOf('mara')), true);
+
+    await engine.unsubscribe(scopeOf('mara'));
+    assert.equal(await after.isSubscribed?.(scopeOf('mara')), false, 'ended elsewhere: seen at once');
+  });
+
+  it('a former engine gets false even for the subscription it created', async () => {
+    const store = new InMemoryConversationMessageStore();
+    const f = hubFixture(store);
+    let isEngine = true;
+    const engine = createConversationMessagesService({ hub: f.hub, callerPluginId: ENGINE, isEngine: () => isEngine });
+    await engine.subscribe(scopeOf('mara'));
+    isEngine = false;
+    assert.equal(await engine.isSubscribed?.(scopeOf('mara')), false);
   });
 });
 

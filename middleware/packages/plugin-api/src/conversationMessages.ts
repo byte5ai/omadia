@@ -123,4 +123,16 @@ export interface ConversationMessagesService {
     scope: ConversationMessageScope,
     opts?: { after?: string; limit?: number },
   ): Promise<ConversationMessagePage>;
+  /**
+   * Does the caller hold an ACTIVE subscription for exactly this scope right
+   * now? The exact form of what an engine otherwise has to infer from a
+   * refused send or an empty replay: after its own restart, a revoked grant
+   * or a disabled agent the kernel may have ended a subscription, and the
+   * engine has to reconcile its live facilitations against that. Read from
+   * the store, not from a cache, so it is right directly after boot. Answers
+   * only for the caller's own subscriptions: `false` for another plugin's, for
+   * a caller that is not the facilitation engine, and for an unknown scope.
+   * Optional: absent on a kernel before plugin-api 1.56.0.
+   */
+  isSubscribed?(scope: ConversationMessageScope): Promise<boolean>;
 }

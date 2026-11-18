@@ -75,6 +75,13 @@ facilitations view is not part of it; that is the engine plugin's own UI.
 - **Language**: sent only when the operator changed it on a facilitator;
   standard agents never send it.
 
+### Added — `conversationMessages.isSubscribed` (epic #2043)
+
+plugin-api 1.56.0. The facilitation engine can ask whether it holds an active
+subscription for a scope (`isSubscribed?(scope): Promise<boolean>`, read from
+the store, own subscriptions only), to reconcile its live facilitations after
+a restart, a revoked grant or a disabled agent.
+
 ### Fixed — Native facilitators, found by running the real engine against the real kernel (epic #2043)
 
 - A plugin whose `activate()` threw after registering tools kept them registered; the next activation failed with "duplicate native-tool name". Failed activations and deactivations now drop the plugin's tools.

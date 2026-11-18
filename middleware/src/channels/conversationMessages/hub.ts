@@ -463,6 +463,13 @@ export class ConversationMessageHub {
     };
   }
 
+  /** Exact, for the engine's own reconcile: re-reads the store first, so the
+   *  answer does not depend on a boot refresh or a notification having run. */
+  async holdsSubscription(scope: ConversationMessageScope, pluginId: string): Promise<boolean> {
+    await this.refresh();
+    return this.owned(scope, pluginId) !== undefined;
+  }
+
   /** The caller's own active subscription for the scope, or nothing. */
   private owned(scope: ConversationMessageScope, pluginId: string | undefined): MessageSubscription | undefined {
     if (!scope || typeof scope.agentSlug !== 'string') return undefined;

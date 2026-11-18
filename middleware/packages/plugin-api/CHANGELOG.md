@@ -8,6 +8,20 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.56.0 — 2026-11-18
+
+Additive (epic #2043).
+
+### Added
+
+- **`ConversationMessagesService.isSubscribed?(scope): Promise<boolean>`** —
+  whether the calling engine holds an active subscription for exactly this
+  scope, read from the store. For reconciling live facilitations after a
+  restart, a revoked grant or a disabled agent, instead of inferring the loss
+  from `not_permitted` or an empty `listSince`. `false` for another plugin's
+  subscription and for a caller that is not the facilitation engine. Optional
+  member: feature-detect it.
+
 ## 1.55.0 — 2026-11-18
 
 Additive. Contracts for native facilitators with the engine in a plugin

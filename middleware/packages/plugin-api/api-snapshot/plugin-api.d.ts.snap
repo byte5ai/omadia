@@ -337,6 +337,7 @@ listSince(scope: ConversationMessageScope, opts?: {
 after?: string;
 limit?: number;
 }): Promise<ConversationMessagePage>;
+isSubscribed?(scope: ConversationMessageScope): Promise<boolean>;
 }
 
 // ===== conversationSend.d.ts =====

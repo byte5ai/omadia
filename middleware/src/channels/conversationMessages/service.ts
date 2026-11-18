@@ -52,6 +52,10 @@ export function createConversationMessagesService(
       if (!allowed()) return undefined;
       return hub.getEvent(scope, callerPluginId, messageId, revision);
     },
+    async isSubscribed(scope) {
+      if (!allowed() || callerPluginId === undefined) return false;
+      return hub.holdsSubscription(scope, callerPluginId);
+    },
     async listSince(scope, opts) {
       if (!allowed()) return { events: [] };
       return hub.listSince(scope, callerPluginId, opts);
