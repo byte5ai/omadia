@@ -36,6 +36,13 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Rollout defects of native facilitators (epic #2043)
+
+- The Teams template revision is read from `appPackage/TEMPLATE_REVISION.txt`
+  (the extension-less `TEMPLATE_REVISION` is still read as a fallback). The
+  plugin zip ingest refuses an extension-less file there, so channel-teams
+  0.36.0 could not be installed; 0.36.1 ships the `.txt`.
+
 ### Added — Facilitators in the agent directory (#2066, epic #2043)
 
 2026-11-18. Operator UI for facilitator-kind agents in `web-ui`. The
@@ -196,7 +203,7 @@ and the neutrality contract. No facilitation tables in the kernel.
   several bots in one chat are removed; nothing is stored.
 - **Teams app package version** is `1.<template revision>.<identity
   revision>`; the template revision is read from
-  `appPackage/TEMPLATE_REVISION` of the installed channel plugin (absent = 0,
+  `appPackage/TEMPLATE_REVISION.txt` of the installed channel plugin (absent = 0,
   versions unchanged), so a changed template is republished for existing
   agents.
 - **Kernel contract suite** (`middleware/test/facilitatorContract.pg.test.ts`,

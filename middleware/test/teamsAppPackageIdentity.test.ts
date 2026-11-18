@@ -193,10 +193,17 @@ describe('teams app package — template revision in the version (#2043)', () =>
     revision,
     icons: null,
   });
-  async function versionFor(templateRevision: string | undefined, revision?: number): Promise<string> {
+  async function versionFor(
+    templateRevision: string | undefined,
+    revision?: number,
+    files: Record<string, string> = {},
+  ): Promise<string> {
     const root = await packageRoot();
     if (templateRevision !== undefined) {
-      await writeFile(path.join(root, 'appPackage', 'TEMPLATE_REVISION'), templateRevision, 'utf8');
+      await writeFile(path.join(root, 'appPackage', 'TEMPLATE_REVISION.txt'), templateRevision, 'utf8');
+    }
+    for (const [name, content] of Object.entries(files)) {
+      await writeFile(path.join(root, 'appPackage', name), content, 'utf8');
     }
     const assets = await loaderFor(
       root,
@@ -226,9 +233,22 @@ describe('teams app package — template revision in the version (#2043)', () =>
     assert.ok(higher(noIdentity, '1.0.999'));
   });
 
+  it('reads TEMPLATE_REVISION.txt, and the extension-less name only when that is absent', async () => {
+    // The plugin zip ingest refuses an extension-less file under appPackage/,
+    // so the name a package can actually ship is the one with `.txt`. The old
+    // name stays readable for a package linked from a checkout.
+    assert.equal(await versionFor(undefined, 5, { TEMPLATE_REVISION: '2\n' }), '1.2.5', 'legacy name alone');
+    assert.equal(await versionFor('3\n', 5, { TEMPLATE_REVISION: '2\n' }), '1.3.5', 'the .txt wins');
+    await assert.rejects(
+      versionFor(undefined, 1, { TEMPLATE_REVISION: 'two' }),
+      /TEMPLATE_REVISION must hold a non-negative integer/,
+      'a broken legacy file is an error too, not revision 0',
+    );
+  });
+
   it('refuses a revision file that is not a non-negative integer', async () => {
     for (const bad of ['two', '-1', '1.5', '']) {
-      await assert.rejects(versionFor(bad, 1), /TEMPLATE_REVISION must hold a non-negative integer/, bad);
+      await assert.rejects(versionFor(bad, 1), /TEMPLATE_REVISION\.txt must hold a non-negative integer/, bad);
     }
     assert.equal(await versionFor('0', 3), '1.0.3');
   });

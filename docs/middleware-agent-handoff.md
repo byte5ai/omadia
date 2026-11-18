@@ -9593,7 +9593,9 @@ Pushes hängen an Message-Subscriptions.
   hat; Teilnehmer tragen `principalId`; Duplikate mehrerer Bots werden über ein
   begrenztes In-Memory-Set entfernt; gespeichert wird nichts.
 - **Teams-App-Paket:** Version `1.<TEMPLATE_REVISION>.<Identity-Revision>`
-  (`src/services/teamsAppPackageAssets.ts`); Graph-Rechte der Instanz-App für
+  (`src/services/teamsAppPackageAssets.ts`); die Revision steht in
+  `appPackage/TEMPLATE_REVISION.txt` des Channel-Plugins (mit Endung, weil der
+  Zip-Ingest endungslose Dateien dort ablehnt; der alte Name wird noch gelesen); Graph-Rechte der Instanz-App für
   Readiness und Reparatur stehen in `docs/teams-multi-agent-identities.md` §2.4.
 
 ### Härtungen nach dem Review (2026-11-18)
