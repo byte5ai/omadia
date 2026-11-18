@@ -16,8 +16,14 @@
  *   - one worker per detector (= per deny-list config), spawned lazily,
  *     reused across calls with request ids, and terminated after a minute
  *     idle, so a replaced config leaves no thread behind;
- *   - the worker is `unref()`ed: it never keeps the process alive. A pending
- *     request's budget timer does, but only until the budget runs out;
+ *   - an IDLE worker is `unref()`ed: it never keeps the process alive. While
+ *     it holds a request it is ref'd, so its reply — or its 'error'/'exit' —
+ *     is always delivered. The budget timer alone cannot hold the loop open:
+ *     when it fires just after the worker marked the request finished but
+ *     before the reply crossed over, it stands down ("the reply is on its
+ *     way"), and with only an unref'd worker left the loop drains and the
+ *     request never settles. The budget still bounds a ref'd worker — a
+ *     runaway is terminated;
  *   - the budget timer starts once the worker is online; spawning has its
  *     own, generous timeout (a cold worker under load may take a while), and
  *     a worker that does not come up fails closed too.
@@ -147,6 +153,7 @@ export class CustomPatternWorker {
     return new Promise<readonly PatternResult[]>((resolve, reject) => {
       const entry: Pending = { patterns, text, budgetMs, resolve, reject };
       this.pending.set(id, entry);
+      this.holdOpen();
       this.post(live, id, entry);
     });
   }
@@ -205,7 +212,7 @@ export class CustomPatternWorker {
       if (this.live === live) this.dispose(new Error('[privacy-guard v4] custom pattern worker exited'));
     });
     // After the listeners: attaching a 'message' listener refs the worker
-    // again.
+    // again. Idle until `match` hands it a request (`holdOpen`).
     worker.unref();
     return live;
   }
@@ -217,13 +224,22 @@ export class CustomPatternWorker {
     if (entry.timer !== undefined) clearTimeout(entry.timer);
     if ('error' in reply) entry.reject(new Error(`[privacy-guard v4] custom pattern failed: ${reply.error}`));
     else entry.resolve(reply.results);
+    this.holdOpen();
     this.scheduleIdle();
+  }
+
+  /** Ref the worker while it holds a request, unref it once idle. */
+  private holdOpen(): void {
+    if (this.live === undefined) return;
+    if (this.pending.size > 0) this.live.worker.ref();
+    else this.live.worker.unref();
   }
 
   private onBudget(live: Live, id: number): void {
     const entry = this.pending.get(id);
     if (this.live !== live || entry === undefined) return;
-    // Finished just as the timer fired: the reply is on its way.
+    // Finished just as the timer fired: the reply is on its way (the ref'd
+    // worker keeps the loop open until it arrives).
     if (Atomics.load(live.progress, FINISHED_REQUEST) >= id) return;
     const runningId = Atomics.load(live.progress, RUNNING_REQUEST);
     if (runningId < id) {
@@ -252,6 +268,7 @@ export class CustomPatternWorker {
       if (queuedEntry.timer !== undefined) clearTimeout(queuedEntry.timer);
       this.pending.set(queuedId, queuedEntry);
     }
+    this.holdOpen();
     fresh.online.then(
       () => {
         for (const [queuedId, queuedEntry] of queued) {

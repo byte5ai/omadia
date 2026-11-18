@@ -118,7 +118,7 @@ export async function renderDocx(descriptor: DocxDescriptor): Promise<RenderResu
   // docx v9 stamps wall-clock zip mtimes and dcterms:created/modified with no
   // API to pin them; normalize both so re-renders are byte-identical and the
   // content-addressed cache in officeService actually hits (#645).
-  const buffer = await normalizeOoxml(raw, { rewriteCoreDates: true });
+  const buffer = await normalizeOoxml(raw);
 
   return {
     buffer,

@@ -3,6 +3,7 @@ import type { ComponentProps, ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 
 import * as api from '../../../../../_lib/api';
+import { getPersonaTemplate } from '../../../../../_lib/personaTemplates';
 import { PersonaTemplateGallery } from '../PersonaTemplateGallery';
 import { renderWithIntl } from './personaIntlHelper';
 
@@ -106,6 +107,25 @@ describe('<PersonaTemplateGallery />', () => {
     expect(patchBuilderSpecSpy).not.toHaveBeenCalled();
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
     expect(onApplied).toHaveBeenCalledWith(expect.objectContaining({ template: 'customer-service' }));
+  });
+
+  it('switching from one template to another sends the new template axes (#1791)', async () => {
+    const salesDev = getPersonaTemplate('sales-dev')!;
+    const engineer = getPersonaTemplate('software-engineer')!;
+    render(
+      <PersonaTemplateGallery
+        draftId="draft-8"
+        persona={{ template: salesDev.id, axes: { ...salesDev.axes } }}
+        onClose={onClose}
+      />,
+    );
+    fireEvent.click(screen.getByTestId(`gallery-card-${engineer.id}`));
+    fireEvent.click(screen.getByTestId('gallery-apply'));
+
+    await waitFor(() => expect(setPersonaConfigSpy).toHaveBeenCalledTimes(1));
+    const [, payload] = setPersonaConfigSpy.mock.calls[0]!;
+    expect(payload.template).toBe(engineer.id);
+    expect(payload.axes).toEqual(engineer.axes);
   });
 
   it('Skill prefill triggers a second patchBuilderSpec call AFTER persona persists', async () => {

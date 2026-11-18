@@ -494,8 +494,8 @@
     "openLabel": "offen"
   },
   "nav": {
-    "dashboard": "Dashboard",
-    "chat": "Chat",
+    "chatCluster": "Chat",
+    "debug": "Debug",
     "store": "Hub",
     "builder": "Builder",
     "memory": "Memory",
@@ -512,6 +512,7 @@
     "agentsOverview": "Übersicht",
     "channels": "Channels",
     "pluginsCluster": "Plugins",
+    "setupCluster": "Einrichtung",
     "adminCluster": "Admin",
     "help": "Hilfe",
     "teamsSignIn": "Teams-Anmeldung",
@@ -997,7 +998,6 @@
   "themeControls": {
     "paletteAriaLabel": "Akzent-Palette",
     "appearanceAriaLabel": "Darstellung",
-    "menuAriaLabel": "Palette und Darstellung",
     "palette": {
       "lagoon": "Lagoon (Türkis)",
       "petrol": "Petrol (Blau)",
@@ -1007,7 +1007,9 @@
       "system": "Automatisch",
       "light": "Hell",
       "dark": "Dunkel"
-    }
+    },
+    "switchToDark": "Zum dunklen Modus wechseln",
+    "switchToLight": "Zum hellen Modus wechseln"
   },
   "login": {
     "title": "Bei omadia anmelden",
@@ -1095,13 +1097,16 @@
     "streamErrorAnnounce": "{title}: Antwort fehlgeschlagen"
   },
   "authBadge": {
-    "loginLink": "Login",
     "authError": "Auth-Fehler",
     "signedInAs": "Angemeldet als",
     "signOut": "Überall abmelden",
     "signOutHint": "Meldet dich auf all deinen Geräten ab, nicht nur auf diesem.",
     "signOutFailed": "Die Abmeldung hat nicht geklappt. Du bist noch angemeldet.",
-    "signOutRetry": "Erneut abmelden"
+    "signOutRetry": "Erneut abmelden",
+    "preferences": "Einstellungen",
+    "palette": "Farbpalette",
+    "appearance": "Darstellung",
+    "language": "Sprache"
   },
   "error": {
     "title": "Etwas ist schiefgelaufen",
@@ -4506,6 +4511,7 @@
       "save": "Speichern",
       "saveWithCount": "Speichern ({count})",
       "savedCheck": "✓ Gespeichert",
+      "savedRestartPending": "✓ Gespeichert – das Plugin läuft weiter und übernimmt die neuen Werte nach dem nächsten Neustart.",
       "savedNotStarted": "Gespeichert – aber das Plugin ist mit den neuen Werten nicht gestartet.",
       "connected": "Verbunden",
       "notConnected": "Nicht verbunden",

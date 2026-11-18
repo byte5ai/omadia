@@ -89,6 +89,7 @@ import {
   readStoredTokens,
   writeStoredTokens,
 } from '../plugins/oauth/tokenStore.js';
+import { normalizeTypedSetupValue } from '../plugins/setupFieldValue.js';
 import { createLlmProviderFromNeutral } from './anthropicLlmProvider.js';
 import { pluginLlmUsageSource, recordPluginLlmUsage } from './pluginLlmUsage.js';
 import { builtinClassDefault } from './builtinLlmProviders.js';
@@ -507,7 +508,13 @@ export function createPluginContext(
         if (!entry) continue;
         const value = entry.config[key];
         if (value !== undefined && value !== null) {
-          return value as T;
+          // #1958 — older builds stored a `boolean` / `integer` field edited
+          // after install as a string. Hand the plugin the declared type, so
+          // such a stored value works without the operator re-saving it.
+          const field = catalog
+            .get(id)
+            ?.plugin.setup_fields?.find((f) => f.key === key);
+          return (field ? normalizeTypedSetupValue(field.type, value) : value) as T;
         }
       }
       return undefined;

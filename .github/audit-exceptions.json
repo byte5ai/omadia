@@ -14,6 +14,52 @@
       "reason": "botbuilder 4.23.3 (latest; host-provided for the Teams channel plugin) and its botbuilder-core, botframework-connector and botframework-schema pin zod ^3.23.8, and the fix exists only in zod 4.6.6; forcing zod 4 makes botbuilder throw on load (z.object().nonstrict). The vulnerable code is the per-element issue accumulation of array schemas. Inbound Bot Framework requests reach zod only through CloudAdapter.process, which checks the body with z.record(z.unknown()) and never parses the array schemas in botframework-schema; the other parse calls validate configuration, sockets and callbacks, not request data. Remove this entry once botbuilder ships on zod 4.6.6 or later.",
       "reviewed": "2026-10-28",
       "expires": "2026-11-27"
+    },
+    {
+      "advisory": "GHSA-fc5q-39xc-vjpf",
+      "package": "picomatch",
+      "workspaces": [
+        "middleware"
+      ],
+      "via": [
+        "typescript-eslint",
+        "vitest"
+      ],
+      "production": true,
+      "reason": "GHSA-fc5q-39xc-vjpf (ReDoS in picomatch through repeated single-branch extglobs) covers every release up to and including 4.0.7, the latest one, so no upgrade or override fixes it. The vulnerable path needs an attacker-chosen glob pattern. In the middleware picomatch is reached through typescript-eslint -> @typescript-eslint/typescript-estree -> tinyglobby, which only globs the tsconfig paths of parserOptions.project. The one runtime use of ESLint, the Builder auto-fix pass (src/plugins/builder/eslintAutoFixPass.ts), sets no project option and lints text with a fixed config, so no pattern from a request or from plugin source reaches picomatch. The other route, vitest in packages/conductor-core, is test tooling that never ships. Remove this entry once picomatch ships a fixed release and tinyglobby resolves to it.",
+      "reviewed": "2026-11-18",
+      "expires": "2026-12-18"
+    },
+    {
+      "advisory": "GHSA-fc5q-39xc-vjpf",
+      "package": "picomatch",
+      "workspaces": [
+        "web-ui"
+      ],
+      "via": [
+        "next-intl",
+        "@testing-library/jest-dom",
+        "@vitejs/plugin-react",
+        "eslint-config-next",
+        "vitest"
+      ],
+      "production": true,
+      "reason": "GHSA-fc5q-39xc-vjpf (ReDoS in picomatch through repeated single-branch extglobs) covers every release up to and including 4.0.7, the latest one, so no upgrade or override fixes it. The vulnerable path needs an attacker-chosen glob pattern. In the web-ui production tree picomatch is reached through next-intl -> @parcel/watcher, whose wrapper turns the caller's `ignore` globs into regular expressions. next-intl loads the watcher only in its development plugin to watch the message files, with patterns fixed in its own code; the production server never subscribes to the watcher and no request data reaches it. The other routes (@testing-library/jest-dom, @vitejs/plugin-react, eslint-config-next, vitest) are lint and test tooling that never ships. Remove this entry once picomatch ships a fixed release and @parcel/watcher resolves to it.",
+      "reviewed": "2026-11-18",
+      "expires": "2026-12-18"
+    },
+    {
+      "advisory": "GHSA-fc5q-39xc-vjpf",
+      "package": "picomatch",
+      "workspaces": [
+        "desktop"
+      ],
+      "via": [
+        "electron-builder"
+      ],
+      "reason": "GHSA-fc5q-39xc-vjpf (ReDoS in picomatch through repeated single-branch extglobs) covers every release up to and including 4.0.7, the latest one, so no upgrade or override fixes it. The vulnerable path needs an attacker-chosen glob pattern. In the desktop workspace picomatch is reached only through electron-builder -> app-builder-lib -> @electron/rebuild -> node-gyp -> tinyglobby, build tooling that runs on the packaging machine with patterns from its own code and never ships in the app. Remove this entry once picomatch ships a fixed release and tinyglobby resolves to it.",
+      "reviewed": "2026-11-18",
+      "expires": "2027-02-16"
     }
   ]
 }

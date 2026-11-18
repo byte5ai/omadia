@@ -204,6 +204,65 @@ describe('#1553 custom patterns never block the event loop', () => {
   });
 });
 
+describe('custom pattern worker: a pending request keeps the event loop alive', () => {
+  // Under CI load the worker thread can be preempted after it marked a
+  // request finished and before its reply is posted. The budget timer then
+  // fires, sees "finished", and stands down; with only the unref'd worker
+  // left, the loop drained and the request never settled — node:test then
+  // reported every test of this file as "Promise resolution is still pending
+  // but the event loop has already resolved". The child process below forces
+  // that window (busy-wait in the worker between the two steps) and must see
+  // every request settle. It runs in its own process because a drained loop
+  // ends the process. The child is CommonJS: workers inherit execArgv, and
+  // `--input-type=module` would turn the (CommonJS) worker source into ESM.
+  it('settles a request whose reply lags behind its budget timer', () => {
+    const script = `
+      const wt = require('node:worker_threads');
+      const { syncBuiltinESMExports } = require('node:module');
+      const POST = 'parentPort.postMessage({ id, results });';
+      const Real = wt.Worker;
+      wt.Worker = class extends Real {
+        constructor(source, options) {
+          if (!String(source).includes(POST)) throw new Error('worker source changed: cannot simulate the race');
+          super(String(source).replace(POST, 'const until = Date.now() + 50; while (Date.now() < until) {} ' + POST), options);
+        }
+      };
+      syncBuiltinESMExports();
+      void (async () => {
+        const dist = process.env.PRIVACY_GUARD_DIST;
+        const { CustomPatternWorker } = await import(dist + '/customPatternWorker.js');
+        const worker = new CustomPatternWorker();
+        for (let round = 0; round < 3; round += 1) {
+          // Budget 0: the timer fires while the worker sits in the window.
+          // Under load the match may also really run out of it — either way
+          // the request must SETTLE.
+          const outcome = await worker
+            .match([{ source: 'ORD-\\\\d{6}', flags: 'gu' }], 'Bestellung ORD-123456.', 0)
+            .then((results) => JSON.stringify(results.map((r) => r.spans)), (err) => err.name);
+          console.log('settled ' + outcome);
+        }
+        worker.dispose();
+      })().catch((err) => { console.error(err); process.exitCode = 1; });
+    `;
+    const out = spawnSync(process.execPath, ['-e', script], {
+      encoding: 'utf8',
+      timeout: 30_000,
+      env: {
+        ...process.env,
+        PRIVACY_GUARD_DIST: dirname(
+          fileURLToPath(import.meta.resolve('@omadia/plugin-privacy-guard/dist/customPatternWorker.js')),
+        ),
+      },
+    });
+    assert.equal(out.status, 0, `child exited ${String(out.status)}: ${out.stderr}`);
+    const settled = out.stdout.split('\n').filter((line) => line.startsWith('settled '));
+    assert.equal(settled.length, 3, `not every request settled: ${out.stdout}`);
+    for (const line of settled) {
+      assert.match(line, /^settled (\[\[\[11,21\]\]\]|PatternBudgetExceeded)$/, line);
+    }
+  });
+});
+
 describe('#760 idnum C0 patterns', () => {
   const CASES: Array<[string, string]> = [
     ['DE Steuer-ID grouped', 'Meine Steuer-ID lautet 12 345 678 901.'],
