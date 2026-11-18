@@ -178,7 +178,7 @@ Paths are relative to the kernel repo unless a sister repo is named.
 | G11 | The desktop UI's architecture has its own orchestrator: a "Tier 2 UI Orchestrator" (small model) receives every canvas turn, decides between local action, UI composition and content, and delegates content to `chatAgent@1` and its sub-agents. | INV-1, INV-6 | omadia-ui `CONCEPT.md` ("Architecture", "Tier 2 — UI Orchestrator") |
 | G12 | Consultation attribution is uneven: web chat and Teams render the delegated answer and the consulted footer; Telegram renders neither. | INV-4 | `web-ui/app/_components/chat/AgentsConsultedFooter.tsx`; `omadia-channel-teams` `src/teamsCard.ts:755-776`; `middleware/src/config.ts:93-95` |
 | G13 | The default agent is a super-agent by design: first boot attaches every installed plugin to it, and every later kernel install path (Hub install, upload, reinstall, built-ins) attaches each new plugin of any kind to it. It also receives all unbound traffic. | INV-8 | `middleware/packages/harness-orchestrator/src/registry/onboarding.ts:104-129,155-176`; `middleware/src/index.ts:1797-1803` (#1491, #1498); `middleware/packages/harness-orchestrator/src/routing/channelResolver.ts:40` |
-| G14 | `agent_to_agent` (migration `0058`) is a per-conversation relay switch, not a permission for A to consult B: it has no target agent. | INV-5 | `middleware/migrations/0058_agent_to_agent.sql:52` and its table key `(channel_type, channel_key, agent_id)` |
+| G14 | Agent-to-agent today has two levels: a per-agent switch (`agents.agent_to_agent`) and a per-conversation policy (`agent_channel_policies`, key `(channel_type, channel_key, agent_id)`); the runtime requires both. Neither names a target agent, so neither is a permission for A to consult B. | INV-5 | `middleware/migrations/0058_agent_to_agent.sql:52,83`; `middleware/src/conductor/peerPolicy.ts:105` |
 | G15 | The audience floor is inactive unless a provider is configured: without one the guard returns no restriction. | INV-2, INV-5 | `middleware/packages/harness-orchestrator/src/audienceFloorGuard.ts:272` |
 | G16 | The product calls every configured agent "Orchestrator" (navigation, create form, chat picker, glossary rule "keep in English"). | INV-6 | `web-ui/messages/GLOSSARY.md`; `web-ui/messages/en.json` (`nav.agentsCluster`, `agentPicker.label`) |
 | G18 | Proactivity exists only in pieces, and none of them is bounded: **routines** are user-owned recurring cron jobs (5-field cron, at least 60 s apart, run timeout up to 10 min, 50 active per user) without an end date, a cost cap or a one-shot form, created by an agent only on a user's request; **plugin jobs** (cron or interval) run until the plugin is deactivated, and a failing handler does not stop future ticks; **Conductor workflows** have event, webhook and cron triggers, but operators author them. An agent cannot wake itself or subscribe to an event on its own, and no LLM spend cap was found. | INV-10 | `middleware/src/plugins/routines/routineStore.ts`, `routineRunner.ts:77`, `manageRoutineTool.ts:48-65,118`; `middleware/packages/plugin-api/src/pluginContext.ts:254-274`; `middleware/src/conductor/eventRouter.ts`, `runStore.ts:7` |
@@ -427,7 +427,7 @@ capabilities for an agent of an existing archetype.
 | Identity | Name, avatar, personality, speaks to people. | None. Never speaks to people, never addressable. |
 | Accountability | Appears in audit as the actor of every action. | Appears as the tool or integration an actor used. |
 | Permissions | Holds grants. | Declares what can be granted (capabilities with read/write scopes) and keeps integration credentials in the vault; agents never see secrets. |
-| Memory | Own memory tree, scoped by audience. | Only its own technical state (configuration, caches, sync cursors); no memory of conversations. |
+| Memory and state | Own memory tree, scoped by audience. | Capability plugins: only technical state (configuration, caches, sync cursors), no memory of conversations. Archetype plugins: additionally the process state of their archetype's work (see below), never general conversation memory. |
 | Models | Runs its own model loop under its model policy. | May use a model internally to implement a capability, under the calling agent's model policy, budget, grants and audience, recorded in that agent's trace; returns data to the agent, never text to a person. |
 | Origin | Created by the operator, by hand, in the Builder or from a template. | Installed from the hub or uploaded. |
 
@@ -686,7 +686,7 @@ Each existing element keeps its purpose, moved out of the message body:
 
 | Element today | Purpose | Target |
 |---|---|---|
-| AI disclosure | EU AI Act Art. 50 | Stays as the law requires, in the most discreet form the channel offers. How often it appears is an operator setting, default per answer until OD-5 is settled (#2087). |
+| AI disclosure | EU AI Act Art. 50 | Stays as the law requires, in the most discreet form the channel offers. Today the text line appears once per conversation (`middleware/packages/harness-channel-sdk/src/aiDisclosure.ts:249-265`), the structured field on every answer, and Teams adds its own chip to every card. How often channel markers appear becomes an operator setting (#2087); default: today's behaviour until OD-5 is settled. |
 | Verifier badge, system-data chip | Show that facts were checked or come from a system | In details; the agent says how sure it is in words when it matters (§5.8). |
 | "Konsultiert" footer, "Direkte Antwort von" chip | Tamper-evident attribution (#332) | Contributions of other agents appear with a plain attribution in the text or as that agent's own post (§5.4); the full trace stays in details. |
 | "Kürzer / Mehr Details" buttons | Change answer length without retyping | Not on every answer; the user just asks ("kürzer bitte"), the agent's verbosity setting covers the default. |
@@ -825,9 +825,10 @@ paths**. Internal test and demo instances are re-seeded.
   plugin output (replaced by agent creation); the fast path's answer outside the agent's
   identity (the fast path itself stays).
 - **Kept and repurposed:** `agentsConsulted` stays as trace summary; `delegatedAnswer` is
-  replaced by `contributions[]` (§5.4); `agent_to_agent` stays the per-conversation switch
-  that lets agents speak in a chat, while authorization comes only from consultation
-  grants.
+  replaced by `contributions[]` (§5.4); both existing levels stay (the per-agent switch
+  `agents.agent_to_agent` and the per-conversation `agent_channel_policies`, which decide
+  whether agents may speak with each other in a chat); a consultation or discussion
+  additionally needs the directed consultation grants. All three must allow it.
 - **Channel plugins** render `speaker` and consultation blocks in the same release; the
   SDK name line covers channels without native per-agent identity.
 - **Onboarding:** a fresh installation starts with no agent holding any capability; the
@@ -935,9 +936,11 @@ Kernel unless noted. Each item becomes one issue in epic #2042.
 - OD-5: how often the visible AI disclosure must appear in a conversation (every answer, or
   once per conversation and on speaker change). Owner direction: the minimal form that is
   permissible; if a disclosure on every message is required, it stays switchable by the
-  operator with default on. The product provides the setting with default `per_answer`
-  until the question is settled (#2087); the structured disclosure field stays on every
-  answer, and the form stays as discreet as the channel allows (§5.14).
+  operator with default on. The product provides the setting (#2087); until the question is
+  settled the default keeps today's behaviour (text line once per conversation; channel
+  markers such as the Teams chip per answer). The structured disclosure field stays on
+  every answer unless the operator switches the disclosure off; the form stays as discreet
+  as the channel allows (§5.14).
 
 ## 10. Not verified
 

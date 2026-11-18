@@ -26,19 +26,22 @@ cannot safely own.
 | Archetype registry, `agents.archetype` (#2088), enforced omissions, neutrality block, persona bounds (#2060) | Kernel |
 | Stored inbound message events with platform-stated author, message id and revision | Kernel, `conversationMessages` service |
 | Delivery of every group message for an active facilitation | Kernel subscription and the channel plugins |
-| Posting and direct messages as the facilitator's own identity, `no_identity` instead of another bot | Kernel |
+| Posting and direct messages as the facilitator's own identity, `no_identity` instead of another bot; allowed targets from reservation and follow-up permissions (#2091) | Kernel |
 | Every model turn of a facilitator (privacy shield, model policy, discretion, receipts, budgets, deadlines, kill switch) | Kernel, `agentTurn` service |
-| Readiness and session capability registries | Kernel, pass-through |
+| Readiness and session capability registries (#2091) | Kernel, pass-through |
 | Tables, lifecycle, contributions, decision methods, scheduler and outbox, transparency, process, visibility, retention, quotas (#2061 to #2065, #2070) | Plugin |
 | Sessions, media-adaptive playbook, scoped capabilities (#2076 to #2078) | Plugin, with `omadia-m365-connector` |
 | Facilitations view | Plugin UI |
 | Facilitators in the agent directory (#2066) | Kernel web-ui |
 
 - Contract: `@omadia/plugin-api` 1.55.0 and `@omadia/channel-sdk` 0.3.0.
-- **Bounded timing from the first version:** the plugin runs its own leased scheduler, but
-  every model call goes through the kernel's `agentTurn`, which enforces the
-  facilitation's deadline, budget and the instance kill switch (AVE §5.12); every
-  plugin job carries a deadline bound to its facilitation. The scheduler can move onto
+- **Bounded timing from the first version:** the plugin runs its own leased scheduler for
+  the facilitator's triggers (agent triggers in the sense of AVE §5.12, not plugin jobs).
+  Every action needs the kernel's execution authorization (#2090), which carries one of
+  three bounded scopes, each with its own deadline and budget: `active` (until the
+  facilitation's deadline), `closing` (delivery of essential messages such as the result
+  or abort report, at most 7 days after `closed` or `aborted`), `follow_up` (until the
+  follow-up deadline). An expired scope never re-opens moderation. The scheduler can move onto
   agent triggers (#2082) later without changing these guarantees.
 - No Teams test tenant is available: contract tests run against a simulated transport,
   plus a manual checklist on a real instance whose results are recorded in the release
@@ -254,8 +257,8 @@ States exist on three levels, each with its own rules:
   readiness of its identity in this channel and conversation (Teams: §6.2; other channels:
   §6.4), then posts the opening handshake (§5.7). The conversation id always
   comes from the inbound turn.
-- **active:** every inbound human message is processed in the facilitation's own session
-  (§5.3); the scheduler handles time-based events (§5.6).
+- **active:** every inbound human message is processed in the facilitation's own model
+  context (§5.3); the scheduler handles time-based events (§5.6).
 - **concluding:** the definition of done is met. Contribution and reminder triggers of
   the active phase are cancelled in the same transaction. The facilitator posts the final
   summary (decisions, next steps with owners and due dates, open points). A group
@@ -265,9 +268,12 @@ States exist on three levels, each with its own rules:
   closes automatically. (#2071 removed confirmation rounds the model added on its own in
   the plugin's definition-of-done verdict; the old pattern's separate initiator
   confirmation step still exists and goes with it, §8.) Then `closed`.
-- **following_up:** only if action items with owners were agreed. A bounded follow-up
-  context with its own deadline (last due date plus a grace period set at start, default
-  7 days) and its own triggers: reminders to owners before due dates, a status post at the
+- **following_up:** only if action items with owners were agreed; without them the
+  facilitation goes from `closed` straight to `ended`. A bounded follow-up context with
+  its own deadline: the earlier of (last due date plus a grace period set at start,
+  default 7 days) and the instance's follow-up horizon (default 90 days after `closed`;
+  due dates beyond the horizon minus the grace period are refused when agreed). `ended_at`
+  is stored and its own triggers: reminders to owners before due dates, a status post at the
   agreed time, and acceptance of completion messages from owners (authenticated message in
   the facilitation's home conversation, a card button or a direct reply to the reminder).
   It accepts nothing else, holds only the follow-up grants of §5.11, and revokes them at
@@ -300,10 +306,14 @@ States exist on three levels, each with its own rules:
   see the session agenda and what is posted in that conversation, never the home
   conversation's history or protocol (§5.8). Contributions are accepted from the home
   conversation and from linked session conversations while the session is `live`.
-- **Authorship comes only from authenticated inbound events.** A contribution is recorded
-  by `record_contribution(messageId, payload)`: the engine takes author, tenant, channel,
-  message id, revision and timestamp from the stored inbound event, never from model
-  arguments. Which messages are accepted in which phase is defined by the input matrix
+- **Authorship and content come only from authenticated inbound events.** A contribution is
+  recorded by `record_contribution(messageId, revision, payload)`: the engine takes author,
+  tenant, channel, message id, revision, timestamp **and the original text** from the stored
+  inbound event, never from model arguments. For the announced format the engine parses
+  the original text deterministically and refuses a payload that differs from the parse.
+  A payload the model interpreted from free text is stored as `ambiguous` with the
+  message's revision and counts only after its author confirms exactly that
+  interpretation; a confirmation of an outdated revision is refused. Which messages are accepted in which phase is defined by the input matrix
   below; everything else is refused, in particular messages from other conversations,
   messages from before the facilitation started (for example from an earlier one) and
   messages from people who are not eligible for the step.
@@ -359,8 +369,10 @@ What the engine keeps deterministic, and the model never computes:
   allows, never exposing anyone) and balance dominant ones.
 - **Step progress and timeboxes:** the facilitator closes or extends a step on time and
   says so.
-- **Clusters and summaries** are proposals by the facilitator; they become part of the
-  record only after the group confirms them.
+- **Clusters and intermediate summaries** are proposals by the facilitator; they become part
+  of the record after group consent (§5.7). Session and final summaries follow the
+  conditional rule of §5.2: confirmed only where the method or the definition of done
+  requires it, otherwise published.
 - **Decisions** are evaluated by the methods of §5.5; **action items** need an owner who
   confirms in their own message and a due date.
 
@@ -463,6 +475,16 @@ participant.
   initiator receives nothing the group was not told about. A machine-checkable result
   needs no extra confirmation by the initiator; a free-text definition of done is
   confirmed by the group (consent) before closing.
+- **Group consent** (one procedure for everything the group must agree to: agenda, clusters,
+  intermediate summaries, summaries where required, stakeholders, follow-up meetings,
+  changes to the definition of done or method): a versioned proposal with its electorate
+  (the eligible participants of the scope, §5.5), posted in the conversation; it passes
+  when no eligible participant objects within its window (set at start, default 12 h,
+  never past the deadline; shorter for a live session, default 5 minutes); objections and
+  agreements count only from authenticated messages or card answers; an objection blocks
+  until it is resolved; withdrawing a consent before the window ends is allowed. A model's
+  statement that "the group agrees" never counts. Grants of §5.11 are issued only from a
+  passed consent record.
 - **Changes to the definition of done or the method:** anyone may propose. The
   facilitator puts the proposal to the group as a consent decision: it takes effect when
   no active participant objects within the window set at start (default 12 h, never past
@@ -735,6 +757,18 @@ kept compatible.
 22. **Meeting chat.** Preparation in group chat A, live session in meeting chat B linked
     from A, follow-up in A: contributions from B count during the session only; a person
     only in B never sees A's history.
+23. **Content authenticity.** A tool call with a genuine message id but a ballot that differs
+    from the message's text is refused; a confirmation of an interpretation of an older
+    revision is refused.
+24. **Group consent.** A model statement that the group agrees issues no grant and changes
+    no record; one objection within the window blocks the proposal; consent passes after the
+    window without objection.
+25. **Execution scopes.** After the facilitation's deadline no moderation action runs, but
+    the abort report is still delivered within the `closing` scope, also after a restart
+    during delivery; a later follow-up reminder runs within the `follow_up` scope.
+26. **Follow-up horizon.** Without action items the facilitation goes from `closed` to
+    `ended`; a due date beyond the horizon minus the grace period is refused when agreed;
+    a due date just inside it is followed up and retention starts at `ended`.
 
 ## 10. Work breakdown
 
