@@ -152,6 +152,12 @@ for everyone.
   code, what trade-off was made, what alternative was considered and ruled
   out. Auto-generated boilerplate (param descriptions that just restate
   the type) is noise; please skip it.
+- **Terminology**: [`docs/terminology.md`](docs/terminology.md) is binding
+  for code, docs, specs, UI texts, API descriptions, issues, pull requests
+  and plugin manifests in this repo and every `omadia-*` sister repo. Use
+  its terms with exactly its meanings (agent, archetype, capability plugin,
+  archetype plugin, skill, channel, management layer, …); retired terms such
+  as "orchestrator" as a product concept are not used.
 
 ## Security guidelines
 

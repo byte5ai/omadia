@@ -62,16 +62,10 @@ The owner's requirement:
 
 ## 2. Terms
 
-| Term | Meaning in this spec |
-|---|---|
-| **Agent** | A virtual employee: one row in `agents` with its own identity, personality, capabilities, memory, model policy and channel identities. The only entity that speaks to users. **Anything that meets users with a name or a persona is an agent.** |
-| **Agent kind** | `standard` (works for users and teams, may pursue their interests) or `facilitator` (impartial moderator, companion spec). |
-| **Plugin** | An installable package that extends what agents can do: integrations, tools, channels, providers, UI extensions, skill packs, agent templates. Never an actor (§5.10). |
-| **Capability** | Something a plugin (or the kernel) offers and an agent may be granted: a tool, an integration scope (read/write), a skill. A capability has no name or persona towards users and never speaks to them; its output is data for the calling agent. |
-| **Consultation** | One agent asking another agent, as a colleague, for a contribution (§5.4). |
-| **Speaker** | Who a user-visible message comes from: an agent, or `system` for notices of the management layer. Stamped by the harness. |
-| **Audience** | The humans who can read a turn's answer. Their rights cap what any agent may disclose (`audienceFloor`, #575). |
-| **Management layer** | The deterministic kernel below the agents: routing, identity, grants, privacy shield, memory scoping, audit, scheduling, Conductor. It is not an agent (§5.6). |
+The binding definitions of agent, archetype, plugin (capability and archetype plugin),
+capability, skill, channel, consultation, speaker, management layer, discretion, trigger
+and every other term used here are in [`docs/terminology.md`](../../docs/terminology.md).
+They apply to the whole omadia project; this spec uses them with exactly those meanings.
 
 There is no orchestrator agent. An installation has one or more agents and the
 management layer. "Orchestrator" survives only as a code name of the agent runtime
@@ -203,8 +197,9 @@ audit (Codex, 2026-11-18) checked every change against the code and its history.
 
 ### 5.1 One entity: the agent
 
-- `agents` gains `kind` (`standard` | `facilitator`, default `standard`). The companion
-  spec defines `facilitator`.
+- `agents` gains `archetype` (default `standard`). The kernel keeps a registry of
+  archetypes; `standard` is built in, archetype plugins register further ones (§5.10).
+  The companion spec defines `facilitator`.
 - An agent owns: identity (`agent_identities`: display name, short and long description,
   avatar, instructions, persona axes, verbosity), capability grants, memory tree, model
   policy, consultation grants, channel identities and bindings.
@@ -220,7 +215,7 @@ audit (Codex, 2026-11-18) checked every change against the code and its history.
 | **DB sub-agents** (`agent_subagents`, `ask_<name>`, Builder canvas node "Sub-Agent") | **Purpose:** helpers of one agent with their own (often cheaper) model, token and step budgets, a skill as prompt and a subset of the agent's tools, without the full conversation; this isolates context and cost (`middleware/packages/harness-orchestrator/src/registry/subAgentTools.ts`). **Conflict:** only where users meet them as a named specialist (the Strategist). **Adaptation:** kept as the agent's **internal helpers** (§5.6): no name or persona towards users, shown in the trace as the agent's own work, tool and memory access a subset of the agent's, the agent's budget covers all helpers, a cheaper model allowed by the agent's policy. The Builder node stays as "helper". A specialist users want to address is created as an agent. |
 | **Persona skills** (`agent_persona_skills`, `personaRouter`) | **Purpose:** per turn, a cheap classifier picks the fitting answering mode from short skill descriptions and only then loads the skill body, saving context and a delegation run (`middleware/packages/harness-orchestrator/src/personaRouter.ts`). **Conflict:** the chosen body replaces the agent's identity and the UI says "Answering as X". **Adaptation:** kept as **working modes**: the same selection, but the skill is added beneath the agent's fixed identity, personality and boundaries (it never replaces the system prompt's identity part); the mode is visible in the answer's details and the trace, not in the message; selection runs as the agent's internal helper. |
 | **Direct Line** (`#token`, sticky mode) | Removed (owner decision): direct addressing (INV-1) replaces it. Its advantage, a verbatim, attributed answer block the asking agent cannot alter, lives on in `contributions[]` (§5.4); `agentsConsulted` stays as trace summary. |
-| **Fast path** (`@omadia/fast-path`) | **Purpose:** simple data questions without the full agent loop (about 15 s and, in one documented case, a sub-agent run of 88,000 input tokens avoided): a fast model plans one read query, the plugin runs it and renders the rows; no model sees the rows; learned plans, a cache and confidence thresholds; any miss falls back to the agent unchanged (`middleware/packages/harness-plugin-fast-path/src/fastPath.ts`, `triageTurn.ts`). It already embodies INV-11. **Conflict:** its answer skips the agent's persona, boundaries and AI disclosure, there is no per-agent switch, and it may use sub-agents' read tools (#1876). **Adaptation:** kept entirely, as the addressed agent's **fast lane**: the agent is fixed first (deterministically); triage, planner, learned plans and cache run as the agent's internal helpers under its model policy, only with its own read tools, with discretion labels on learned plans; the answer renders under its identity with AI disclosure; a miss returns to the same agent; switchable per agent; never for facilitators. |
+| **Fast path** (`@omadia/fast-path`) | **Purpose:** simple data questions without the full agent loop (about 15 s and, in one documented case, a sub-agent run of 88,000 input tokens avoided): a fast model plans one read query, the plugin runs it and renders the rows; no model sees the rows; learned plans, a cache and confidence thresholds; any miss falls back to the agent unchanged (`middleware/packages/harness-plugin-fast-path/src/fastPath.ts`, `triageTurn.ts`). It already embodies INV-11. **Conflict:** its answer skips the agent's persona, boundaries and AI disclosure, there is no per-agent switch, and it may use sub-agents' read tools (#1876). **Adaptation:** kept entirely, as the addressed agent's **fast lane**: the agent is fixed first (deterministically); triage, planner, learned plans and cache run as the agent's internal helpers under its model policy, only with its own read tools, with discretion labels on learned plans; the answer renders under its identity with AI disclosure; a miss returns to the same agent; switchable per agent; never for facilitators. Model-written labels and the planner's summary (`middleware/packages/harness-plugin-fast-path/src/planner.ts:85`, accepted by `parseSummary` in `fastPath.ts:200`) are `prose`: they pass the identity guard or are replaced by registered templates; the agent's boundaries and answer preferences apply, including on cache hits (the cache is keyed by agent and its settings version). |
 | **Fallback agent** ("Standard Orchestrator") | The special role ends. The operator configures **default agents per human user and channel**, or switches the default off (§5.6). The default agent gets no automatic plugin attachment (INV-8). |
 | **Auto-attach of plugins** (`attachAllPlugins`, `attachNewPluginsToFallbackAgent`, `attachToDefaultOrchestrator`) | Removed. A plugin install offers to attach the plugin to agents the operator picks; nothing is attached without that choice. |
 | **UI orchestrator** of the desktop UI (`canvasChatAgent`, Tier 2) | **Purpose:** fast layout changes and local operations, early skeletons, targeted data requests and incremental patches while slow content work runs (omadia-ui `CONCEPT.md`). **Conflict:** it receives every canvas turn before any agent and delegates content to sub-agents. **Adaptation:** becomes the selected agent's **presentation helper**: the agent is fixed first; the helper keeps its parallelism (early skeleton, local operations, incremental patches) inside the agent's envelope and identity; content comes from the agent. |
@@ -321,6 +316,8 @@ requires grants in both directions.
   | `system` | Management-layer notice | Template rules; speaker `system` |
 - **Identity guard (mandatory, fail-closed).** Before publication, every `prose` emission
   passes a guard that is independent of the fact verifier and its settings:
+  - claims to be human ("I am a person", "not a bot") are blocked like claims to be another
+    agent;
   - deterministic checks against the directory of agent names and aliases: the agent
     calling itself by another agent's name, first-person self-identification as another
     agent, attributed quotes or paraphrases of another agent ("X says", "according to X")
@@ -380,7 +377,7 @@ to work with. Each is owned by the agent runtime, not left to a prompt alone.
 | Honest limits | When something lies outside its capabilities or rights, the agent says so plainly and names who can help (a colleague agent or a person), instead of guessing. |
 | Communication and emotion | Tone, warmth, humour and empathy follow the configured personality and the situation; it reacts to frustration, praise and urgency like a good colleague. It never claims to be human. |
 | Team etiquette | In group chats it speaks when addressed or when its role calls for it, never chimes in on every message (#1035 communication profile). |
-| Quality | Claims are checked before they ship (verifier), and the agent says how sure it is when it matters. |
+| Quality | Data from systems reaches people through the side channel and needs no model check. For factual claims in `prose`, the fact verifier is on by default in `shadow` with metrics; each instance moves it to `enforce` once its false-positive rate is acceptable (today it is off by default, `middleware/src/config.ts:684`). The agent says how sure it is when it matters. |
 
 Operators can see per agent how people rate the collaboration, so the target picture of §1
 becomes measurable. The signal comes from natural reactions where the channel has them and
@@ -397,7 +394,32 @@ from occasional, explicit asks outside answers; answers carry no rating buttons.
 ### 5.10 Agents and plugins: the boundary
 
 **Rule of thumb:** if something needs a name, a personality or should be addressable, it
-is an agent. If it extends what agents can do, it is a plugin.
+is an agent. If it extends what agents can do, it is a capability plugin. If it adds a new
+class of agent to the system, it is an archetype plugin.
+
+**Two classes of plugins, clearly distinguished:**
+
+| | Capability plugin | Archetype plugin |
+|---|---|---|
+| Adds | Tools, integrations, channels, providers, extensions, UI, skills, agent templates: what agents can do | A new agent archetype: a class of agent the system did not have (today the facilitator; later others) |
+| Manifest kind | `integration`, `tool`, `channel`, `provider`, `extension`, `ui`, `skill`, `agent-template` | `archetype` |
+| Hub and install | Listed as capabilities; installing attaches it to no agent (INV-8) | Own hub category "agent archetypes"; installing asks for an explicit confirmation that a new kind of agent is added |
+| Operator UI | Capability grants on an agent's page | Its own section in the agent directory, where the operator creates agents of that archetype |
+| Holds | Only technical state | The process state of its archetype's work (for example facilitations), bound to its agents' processes, with discretion labels and retention; never general conversation memory |
+
+**Archetype contract.** An archetype plugin declares a descriptor the kernel enforces:
+what the archetype inherits from the agent model, what it adds, what it deliberately
+omits (grants, memory, consultation, default-agent role, fast lane), its role contract
+(for the facilitator the neutrality block) and its persona bounds. The kernel stays
+responsible for every agent of every archetype: identity and speaker, INV-1 to INV-11,
+refusing the omitted grants, discretion, and every model turn (run through the kernel's
+agent turn, with model policy, privacy shield, budgets, deadlines and kill switch). An
+agent has exactly one archetype, set at creation; it never switches. Uninstalling an
+archetype plugin disables its agents and keeps their records; it never converts them to
+another archetype.
+
+An **agent template** is something else: a preset of identity, personality and
+capabilities for an agent of an existing archetype.
 
 | | Agent | Plugin |
 |---|---|---|
@@ -422,7 +444,9 @@ identity, personality and suggested capabilities that the operator instantiates 
 agent; the template itself never runs). The manifest kind `agent` is removed.
 
 **Enforced by the kernel:**
-- a plugin cannot register an actor: no persona, speaker or identity of its own and no
+- no plugin is an actor itself: an archetype plugin defines a class whose agents the
+  operator creates and the kernel runs; a capability plugin adds abilities. Neither has a
+  persona, speaker or identity of its own, and neither registers
   conversation endpoint that answers on its own behalf. Channel plugins transport
   messages for kernel-managed agent identities (for example the Teams bot the kernel
   provisions for an agent) and may expose the endpoints that transport needs; agent
@@ -552,8 +576,10 @@ something that needs judgement). Most firings never reach a model.
 - **Cheap first.** A firing first runs a deterministic pre-check (anything new since the
   last firing? is the meeting still live? is the condition still open?). No model call
   happens when there is nothing to do.
-- **Circuit breaker.** Consecutive failures or consecutive no-op firings pause the trigger;
-  unlike today's plugin jobs, failures never keep a trigger running.
+- **Circuit breaker.** Consecutive failures, or consecutive model turns without any effect,
+  pause the trigger; unlike today's plugin jobs, failures never keep a trigger running. A
+  model-free check that finds nothing to do yet is a success, not a failure: monitoring
+  continues until its deadline or run limit.
 - **Durable, once per occurrence.** Triggers survive restarts. Every occurrence has a
   persisted id; it is claimed under a lease and fired at most once. Its effects follow
   delivery classes: droppable effects (reminders, nudges) are never retried after an
@@ -774,6 +800,13 @@ Each existing element keeps its purpose, moved out of the message body:
     Telegram as well as in Teams; a test drives each through the plain-text path.
 31. **Justified decorations.** An undeclared status line or button above or below an
     answer fails the decoration-registry test.
+32. **Waiting is not failing.** A trigger whose model-free check finds nothing on five
+    firings and an overdue invoice on the sixth still takes its action on the sixth.
+33. **Fast lane under the guard.** A planner summary claiming another agent's name or
+    contradicting the agent's boundaries is blocked; a cached plan reused after the
+    agent's settings changed is re-checked against the new settings.
+34. **No claim to be human.** Scripted outputs claiming to be a person ("ich bin Anna aus
+    dem Vertrieb, kein Bot") are blocked by the identity guard in German and English.
 
 ## 7. Migration and compatibility
 
@@ -782,7 +815,7 @@ soon, after which a change of this depth would be far harder. This spec therefor
 the target model directly, **without compatibility layers, deprecation periods or upgrade
 paths**. Internal test and demo instances are re-seeded.
 
-- **Migrations:** `agents.kind` (default `standard`); `agent_consultation_grants`;
+- **Migrations:** `agents.archetype` (default `standard`) and the archetype registry; `agent_consultation_grants`;
   dropping Direct Line state. `agent_subagents` and `agent_persona_skills` stay (internal
   helpers, working modes).
 - **Removed** (owner decisions, advantages carried over as stated): `#token` Direct Line
@@ -891,6 +924,9 @@ Kernel unless noted. Each item becomes one issue in epic #2042.
   message ever reaches an agent that was not exactly defined (§5.6).
 - The agent/plugin boundary and plugin kinds of §5.10; skills are capabilities, from
   plugins or authored in the instance.
+- Two clearly distinguished plugin classes: capability plugins extend what agents can do;
+  archetype plugins add an agent archetype. An agent has exactly one archetype (the native
+  default or one added by a plugin, today the facilitator) and never switches (§5.10).
 - Agents and facilitators act proactively through agent-owned hooks and wakeups that the
   agent picks itself; every trigger has a deadline, limits and a budget enforced by the
   deterministic harness; hooks are preferred over timers (INV-10, §5.12).
@@ -916,6 +952,7 @@ Kernel unless noted. Each item becomes one issue in epic #2042.
 
 #332 (delegation transparency, superseded), #445 (Direct Line, removed), #860 (per-agent
 Teams identity), #914 (agent identity), #1018 (agent-to-agent in chats), #1035
-(communication profile), #1876 (fast path), #1880 (silent fallback), #1888 and #1796
-(`#name` and tool-name collisions, gone with sub-agent addressing), #1777 (Builder persona
+(communication profile), #1876 (fast path), #1880 (silent fallback), #1888 (`#name`
+collisions, gone with Direct Line), #1796 (tool-name collisions; helper tool names must be
+collision-free or refused deterministically, #2050), #1777 (Builder persona
 only in preview), #575 (audience floor).

@@ -1,15 +1,50 @@
-# Native facilitators: impartial moderators as a kind of agent
+# Native facilitators: impartial moderators as an agent archetype
 
 > **Status: DRAFT for owner sign-off.** This document implements nothing. It defines the
-> facilitator as a native kind of agent in the kernel, replaces the plugin
-> `@omadia/agent-facilitator`, and cuts the work into issues. It builds on
+> facilitator as an agent archetype, added to the system by the archetype plugin
+> `@omadia/agent-facilitator` (rewritten as 1.0.0, §0), and cuts the work into issues. It builds on
 > [`agents-as-virtual-employees`](../2042-agents-as-virtual-employees/spec.md) (cited as
-> AVE, invariants INV-1 to INV-8).
+> AVE, invariants INV-1 to INV-11). Terms as defined in
+> [`docs/terminology.md`](../../docs/terminology.md).
 >
 > **Measured against** kernel `origin/main` @ `f727a83c`, `omadia-agent-facilitator`
 > 0.6.0 @ `a7c93a1`, `omadia-channel-teams` 0.35.0 @ `e1aacfc`. Reviewed adversarially by
 > a second model family (Codex) on 2026-11-18; its findings are incorporated. §12 lists
 > what is unverified.
+
+## 0. Owner amendment: an archetype plugin (2026-11-18)
+
+The facilitator is its own agent archetype (AVE §5.10). The archetype is added to the
+system by an **archetype plugin**, `omadia-agent-facilitator`, rewritten as 1.0.0. This is
+not the old model: the old plugin was a capability attached to a normal agent; the
+archetype plugin adds a class of agent whose agents the operator creates and the kernel
+runs. As much logic as possible lives in the plugin; the kernel keeps what a plugin
+cannot safely own.
+
+| Part | Owner |
+|---|---|
+| Archetype registry, `agents.archetype`, enforced omissions, neutrality block, persona bounds (#2060) | Kernel |
+| Stored inbound message events with platform-stated author, message id and revision | Kernel, `conversationMessages` service |
+| Delivery of every group message for an active facilitation | Kernel subscription and the channel plugins |
+| Posting and direct messages as the facilitator's own identity, `no_identity` instead of another bot | Kernel |
+| Every model turn of a facilitator (privacy shield, model policy, discretion, receipts, budgets, deadlines, kill switch) | Kernel, `agentTurn` service |
+| Readiness and session capability registries | Kernel, pass-through |
+| Tables, lifecycle, contributions, decision methods, scheduler and outbox, transparency, process, visibility, retention, quotas (#2061 to #2065, #2070) | Plugin |
+| Sessions, media-adaptive playbook, scoped capabilities (#2076 to #2078) | Plugin, with `omadia-m365-connector` |
+| Facilitations view | Plugin UI |
+| Facilitators in the agent directory (#2066) | Kernel web-ui |
+
+- Contract: `@omadia/plugin-api` 1.55.0 and `@omadia/channel-sdk` 0.3.0.
+- **Bounded timing from the first version:** the plugin runs its own leased scheduler, but
+  every model call goes through the kernel's `agentTurn`, which enforces the
+  facilitation's deadline, budget and the instance kill switch (AVE §5.12); every
+  plugin job carries a deadline bound to its facilitation. The scheduler can move onto
+  agent triggers (#2082) later without changing these guarantees.
+- No Teams test tenant is available: contract tests run against a simulated transport,
+  plus a manual checklist on a real instance whose results are recorded in the release
+  issue (§6.2, §9).
+- The data model of §5.1 lives in plugin migrations, except the kernel parts above.
+- Where this section and the rest of the spec disagree, this section holds.
 
 ## 1. Why this exists
 
@@ -39,16 +74,18 @@ Two things are broken today, and both must be fixed for the next release:
    broke trust: wrong "still missing" messages, reminders after completion, a restart
    because the definition of done could not be changed. §4 traces each failure to code.
 
-Facilitation as a plugin is conceptually wrong. A facilitator is like a derived class of
-an agent: it inherits what makes an agent a virtual employee, adds what moderation
+Facilitation as a capability plugin attached to a normal agent is conceptually wrong. A
+facilitator is like a derived class of an agent, an archetype of its own (§0): it inherits what makes an agent a virtual employee, adds what moderation
 needs, and deliberately omits what would make it partial.
 
-## 2. The facilitator kind
+## 2. The facilitator archetype
 
-`agents.kind = 'facilitator'` (AVE §5.1). An operator creates facilitators like agents:
+`agents.archetype = 'facilitator'`, registered by the archetype plugin (§0, AVE §5.10). An
+operator creates facilitators like agents:
 as named virtual employees with a configurable personality, one or several per instance.
-One facilitator can run facilitations in several conversations at the same time. The kind
-is fixed at creation: an agent never switches between `standard` and `facilitator`, so no
+One facilitator can run facilitations in several conversations at the same time. The
+archetype is fixed at creation: an agent never switches between `standard` and
+`facilitator`, so no
 facilitator carries memory, grants or loyalties from a former life as a standard agent.
 
 ### 2.1 Inherited from agent
@@ -75,7 +112,7 @@ facilitator's:
 | **Keep time and focus** | Holds timeboxes per step, the meeting slot and the overall deadline; parks off-topic points in a visible parking lot and brings the group back to the current step; proposes to close or extend a step. |
 | **Run live sessions** | Moderates online and hybrid meetings with whatever the channel offers: live polls, speaking order, hand raises, a visible agenda and timer, balance between people in the room and people remote (§6.3). |
 | **Record** | Keeps the protocol: path to the result, decisions with their rationale, open points, insights, and action items with owner and due date. |
-| **Close bindingly** | Ends every session and the facilitation with a confirmed summary: decisions, next steps with owner and due date, open points; the group confirms before closing. |
+| **Close bindingly** | Ends every session and the facilitation with a confirmed summary: decisions, next steps with owner and due date, open points; the group confirms it where the method or the agreed definition of done requires that; otherwise it is published and the facilitation closes. |
 | **Report and follow up** | Posts the result to the group, sends the protocol to participants and named stakeholders, schedules agreed follow-up meetings, reports to the initiator, and reminds owners of action items until their due date. |
 
 To do this it has:
@@ -94,14 +131,14 @@ To do this it has:
 | Business capabilities: plugin, MCP and native tool grants to company data (ERP, CRM, knowledge graph, mail, files). | Information power makes a moderator partial. Only facilitation tools, the roster and the narrow facilitation-scoped capabilities of §5.11 are available. |
 | Acting for a user: delegated per-user tokens, "on behalf of" actions. | It serves no one. |
 | General memory: cross-session recall, automatic capture, learning jobs, the agent memory tree. | A moderator who remembers who argued what last time is not neutral. Its only memory is the state and protocol of each facilitation, bound to that facilitation. |
-| Assistance outside a facilitation (questions, tasks, 1:1 help). | It is not an assistant. Such requests get a friendly refusal that names what it does. |
+| Assistance outside a facilitation (questions, tasks, 1:1 help). | It is not an assistant. Such requests get a friendly refusal that names what it does. Preparation, facilitation and follow-up messages of its own facilitations are not assistance. |
 | Consulting other agents, and being consulted or attached by them (AVE §5.4). | A partial agent behind the facilitator would make it partial; a facilitator inside a partial agent would not be accepted. |
-| Being the default agent, persona skills, the fast path. | Each would let it answer for someone or as someone else. |
+| Being the default agent, identity switching, the fast lane. | Each would let it answer for someone or as someone else. Working modes that add moderation methods (AVE §5.2) are allowed; they never change who speaks. |
 | A private channel to the initiator that the group does not know about. | Everything the initiator receives is disclosed to the group (§5.7). |
 
 The kernel enforces every row: grants and consultation grants to a facilitator are refused
 at write time; the memory tool, recall, capture and learning jobs are not wired for
-`kind = 'facilitator'`; the routes for default agent, persona and fast path reject it;
+`archetype = 'facilitator'`; the routes for default agent, persona and fast path reject it;
 outside an active facilitation its runtime only offers the refusal and the setup flow.
 
 ### 2.4 Neutrality contract
@@ -159,7 +196,7 @@ borrowing another bot.
 
 ## 5. Target design
 
-### 5.1 Data model (core migrations)
+### 5.1 Data model (plugin migrations; kernel parts per §0)
 
 | Table | Holds |
 |---|---|
@@ -167,7 +204,7 @@ borrowing another bot.
 | `facilitation_sessions` | facilitation id, kind (`async` chat phase, `live` meeting), scheduled start and end, meeting reference (channel meeting id), modality (`chat`, `online`, `hybrid`), capability snapshot (§6.1), consent state for audio and video processing, status. |
 | `facilitation_stakeholders` | facilitation id, principal or address, role (`receives protocol`, `invited to follow-ups`), added by, confirmed by the group. |
 | `facilitation_steps` | facilitation id, position, kind (`open`, `collect`, `discuss`, `cluster`, `prioritise`, `decide`, `assign`, `close`), title, timebox, decision method and options where the step decides, status. The agenda. |
-| `facilitation_participants` | facilitation id, principal id (authenticated channel user id), display name, source (`roster`, `joined`), status (`active`, `left`), changed at, changed by event. |
+| `facilitation_participants` | facilitation id, scope (`home` or a session id), principal id (authenticated channel user id), display name, source (`roster`, `joined`), status (`active`, `left`), changed at, changed by event. |
 | `facilitation_dod_versions` | facilitation id, version, text, structured criteria where machine-checkable, proposed by, proposal message id, consent state, effective at. |
 | `facilitation_contributions` | facilitation id, step id, participant principal, kind (`idea`, `position`, `concern`, `question`, `proposal`, `vote`, `confirmation`, `objection`, `abstention`, `commitment`), payload validated against the step, source message id (unique per facilitation), status (`valid`, `ambiguous`, `superseded`, `withdrawn`), recorded at. |
 | `facilitation_clusters` | step id, label, member contribution ids, proposed by the facilitator, confirmed by the group (yes/no). |
@@ -192,7 +229,7 @@ States exist on three levels, each with its own rules:
 |---|---|---|
 | **Step** (agenda item) | `open` → `closed` (or `extended`) | Its own evaluation (§5.5) or the group closes it; a closed step accepts no further contributions. |
 | **Session** (async phase or live meeting) | `scheduled` → `live` → `closed` | Its time slot ends or the group closes it with a confirmed session summary. |
-| **Facilitation** | as above | `concluding` when the definition of done is met; `closed` after the group confirmed the final summary; `following_up` while agreed action items are open; `ended` when all are done or overdue, or the follow-up deadline passed. |
+| **Facilitation** | as above | `concluding` when the definition of done is met; `closed` after the final summary was published (and confirmed where required); `following_up` while agreed action items are open; `ended` when all are done or overdue, or the follow-up deadline passed. |
 
 - **invited:** the facilitator's bot is in a group conversation.
 - **configuring:** a person in the group asks the facilitator to start; that person is
@@ -220,7 +257,11 @@ States exist on three levels, each with its own rules:
   phases in the chat and live sessions (meetings) with their own time slot (§6.3);
   preparation happens before a live session, follow-up after the close.
 - **closed / ended / aborted:** result or honest abort report to the group and the
-  initiator; bindings released at `ended` or `aborted`; protocol retained per §5.8.
+  initiator. The exclusive conversation reservation is released at `closed` (or
+  `aborted`), so a new facilitation or discussion can start while follow-up continues;
+  follow-up keeps only a non-exclusive permission to remind owners and post status in the
+  home conversation, tied to its facilitation id, until `ended`. Protocol retained per
+  §5.8.
 
 ### 5.3 One session, authenticated contributions
 
@@ -242,10 +283,19 @@ States exist on three levels, each with its own rules:
 - **Authorship comes only from authenticated inbound events.** A contribution is recorded
   by `record_contribution(messageId, payload)`: the engine takes author, tenant, channel,
   message id, revision and timestamp from the stored inbound event, never from model
-  arguments. Refused: a message from a conversation that is neither the home conversation
-  nor a live linked session conversation, a message received before
-  this facilitation became `active` (for example from an earlier facilitation), a message
-  whose author is not a participant, and any message after the facilitation concluded.
+  arguments. Which messages are accepted in which phase is defined by the input matrix
+  below; everything else is refused, in particular messages from other conversations,
+  messages from before the facilitation started (for example from an earlier one) and
+  messages from people who are not eligible for the step.
+
+  | Input | configuring | active: open step | active: closed step | concluding | following_up |
+  |---|---|---|---|---|---|
+  | Preparation input (topics, pre-reads, agenda remarks) | accepted | accepted | refused | refused | refused |
+  | Contribution or change of one's own contribution | refused | accepted (until the step closes) | refused | refused | refused |
+  | Confirmation of the final summary | refused | refused | refused | accepted (where required) | refused |
+  | Completion message of an action-item owner | refused | refused | refused | refused | accepted |
+  | Change proposal to the definition of done or method | accepted | accepted | accepted | refused | refused |
+  | Status request, stop | accepted | accepted | accepted | accepted | accepted (stop ends follow-up) |
 - **Edits:** an edited message produces a new revision; the latest revision received
   before conclusion counts, and the facilitator confirms the change to its author.
 - **Effect:** a contribution in the announced format counts at once. A contribution the
@@ -313,7 +363,7 @@ the chat itself. Secret ballots are out of scope for v1.
 Every method also accepts an explicit abstention, which counts as a contribution and
 scores nothing.
 
-**Changing a contribution:** allowed until the facilitation reaches `concluding`. With
+**Changing a contribution:** allowed until its step closes. With
 the default close rule ("evaluate when every participant has contributed"), the last
 contribution triggers evaluation; the alternative close rule "evaluate at the deadline"
 keeps changes possible until the deadline, and status shows a provisional result.
@@ -330,6 +380,12 @@ within its window and never past the deadline.
 | Consent with a standing objection | Stays `active`; the facilitator moderates the objection and puts an amended proposal; at the deadline: abort report with the objection |
 | Assignment with an unconfirmed name | Stays `active` until the named person confirms or declines; at the deadline: abort report naming the open items |
 | Free-text definition of done | Group consent on "the definition of done is met" (§5.7), then the facilitation goes to `concluding` |
+
+**Eligibility per step:** every step declares its electorate: by default the active `home`
+participants; a step run inside a live session may declare the session participants
+instead. Session-only participants never count as missing for home steps. Membership is
+tracked per scope: leaving a meeting chat ends only the session membership, never the home
+membership.
 
 **Membership changes:** a person who joins the conversation becomes a participant and is
 welcomed with the current state; a person who leaves becomes `left`, their contribution
@@ -430,7 +486,7 @@ work in parallel. Reaching a quota produces a `system` notice in the conversatio
 ### 5.11 Facilitation-scoped capabilities
 
 A facilitator holds no business capabilities (§2.3). Closing and following up still need
-two narrow capabilities, granted by the kernel to `kind = 'facilitator'` only and bound to
+two narrow capabilities, granted by the kernel to `archetype = 'facilitator'` only and bound to
 one facilitation:
 
 | Capability | Allowed | Never |
@@ -439,8 +495,17 @@ one facilitation:
 | **Follow-up scheduling** | Read free/busy (no event details) of participants and confirmed stakeholders for the follow-up meetings the group agreed; create the invitations with agenda and protocol link. | Read calendar contents; change or cancel other events; invite people the group did not agree on. |
 
 Both run on the instance's existing integrations (for Microsoft 365 the M365 connector)
-under a facilitation-scoped grant that the kernel issues at close and revokes when the
-follow-up ends. Every use is audited and listed in the protocol.
+under facilitation-scoped grants with an explicit lifecycle, independent of whether action
+items exist:
+
+| Grant | Issued when | Allows | Revoked when |
+|---|---|---|---|
+| Protocol dispatch | A session closes or the facilitation closes or aborts | Sending that session's or the final confirmed protocol to the recipients of §5.8 | All sends of that protocol are confirmed, or 7 days passed (a failed send is reported to the initiator) |
+| Follow-up scheduling | The group agreed a follow-up meeting | Free/busy and invitations for exactly that meeting | The invitations are sent, or the agreed date passed |
+| Follow-up reminders | The facilitation enters `following_up` | Reminders to owners and status posts | `ended` or stop |
+
+Every use is audited and listed in the protocol. Pending sends survive restarts through the
+outbox (§5.6).
 
 ## 6. Channels, meetings and media
 
@@ -488,9 +553,11 @@ with it, without changes to the facilitator itself.
 - **Direct messages** use conversation references stored per bot; first contact needs
   the app installed for the user. Where that is not possible, reminders stay neutral in
   the group and the facilitator says so.
-- **Contract tests** run against a real Teams test tenant before release: message without
-  mention, missing consent, first-contact DM, blocked DM, restart, two facilitator bots in
-  one chat.
+- **Contract tests** run against a simulated Teams transport (no test tenant is available,
+  §0): message without mention, missing consent, first-contact DM, blocked DM, restart, two
+  facilitator bots in one chat. Before release the same scenarios are checked manually on a
+  real instance with a written checklist, and the results are recorded in the release
+  issue.
 
 ### 6.3 Online and hybrid meetings
 
@@ -552,15 +619,15 @@ chat what it cannot do.
 There are no customer installations yet (owner, 2026-11-18), so nothing is migrated or
 kept compatible.
 
-- The plugin `@omadia/agent-facilitator` is removed from the hub when the kernel release
-  ships; its repository is archived on the owner's decision.
-- Everything only the plugin needed goes: the `facilitation` Conductor pattern (whatever its version, v6 since #2071), the
-  facilitator use of `agentProvisioning.ensureAgent`, the `facilitation-` scoped roles.
-  Kernel services other features use (ephemeral runs, discussions, `say`) stay.
+- The plugin `omadia-agent-facilitator` is rewritten as 1.0.0, an archetype plugin (§0).
+  It is not archived; byte5ai/omadia-agent-facilitator#17 changes accordingly.
+- The old Conductor path goes: the `facilitation` pattern (whatever its version, v6 since
+  #2071), `facilitationAdmin`, the `facilitation-` scoped roles, the old panel and the
+  facilitator use of `agentProvisioning.ensureAgent`. Kernel services other features use
+  (ephemeral runs, discussions, `say`) stay.
 - Internal test instances drop their auto-provisioned facilitator agent and create
   facilitators through the new flow.
-- Open issues #8 to #16 in `omadia-agent-facilitator` are closed as superseded with links
-  to this spec's issues.
+- Issues #8 to #16 in `omadia-agent-facilitator` are closed as superseded.
 
 ## 9. Acceptance criteria
 
@@ -608,8 +675,9 @@ kept compatible.
     content access is audited.
 12. **No silent end.** A failed step or reached TTL produces an abort report in the group;
     a reached quota produces a `system` notice.
-13. **Teams contract tests** of §6.2 pass against the real test tenant; the field scenario
-    (criterion 1) also passes in Slack, Discord and Telegram through plain text.
+13. **Teams contract tests** of §6.2 pass against the simulated transport, and the manual
+    checklist on a real instance is recorded as passed; the field scenario (criterion 1)
+    also passes in Slack, Discord and Telegram through plain text.
 14. **Retrospective.** A four-person retrospective: ideas collected without mentions,
     clusters proposed and confirmed by the group, two actions decided, each with an owner
     who confirmed and a due date; the protocol lists decisions with rationale and the
@@ -642,7 +710,8 @@ kept compatible.
 
 ## 10. Work breakdown
 
-Kernel unless noted. Each item becomes one issue in epic #2043.
+Each item becomes one issue in epic #2043; the owner (kernel or plugin) of each part is
+given in §0.
 
 1. Agent kind `facilitator`: data model, enforced omissions (grants, memory, assistance,
    consultation, default, persona, fast path), neutrality block and persona bounds (§2).
@@ -661,10 +730,9 @@ Kernel unless noted. Each item becomes one issue in epic #2043.
 9. Removal of the plugin path: Conductor pattern, provisioning, roles (§8).
 10. End-to-end and race acceptance suite (§9).
 11. `omadia-channel-teams`: all messages for an active facilitator, readiness check,
-    proactive posts as own bot with mentions, per-bot DM references, contract tests in a
-    test tenant (§6.2).
-12. `omadia-agent-facilitator`: removal from the hub, archive, close of superseded issues
-    (§8).
+    proactive posts as own bot with mentions, per-bot DM references, contract tests against
+    a simulated transport plus a recorded manual checklist (§6.2).
+12. `omadia-agent-facilitator`: rewrite as archetype plugin 1.0.0 (§0, §8).
 13. Meetings: sessions, preparation, live moderation, binding close (§6.3).
 14. Media-adaptive moderation: capability snapshot contract and playbook mapping (§6.1,
     with #584 for audio).
@@ -675,12 +743,15 @@ Kernel unless noted. Each item becomes one issue in epic #2043.
 
 ## 11. Owner decisions
 
-| Id | Question | Recommendation |
-|---|---|---|
-| OD-F1 | Must a facilitator have its own channel identity before it can facilitate? | Yes. A facilitator speaking through another agent's bot is not its own entity. |
-| OD-F2 | Who may change a running definition of done or method? | Anyone proposes; the group decides by consent within a window; the facilitator announces. The initiator commissions, the group owns the process. |
-| OD-F3 | Are private reminders by direct message allowed? | Yes, where the channel allows it; the group only ever gets neutral reminders. |
-| OD-F4 | Retention of facilitation records after close? | Instance setting, default 90 days. |
+**Decided by the owner (2026-11-18), all as recommended:**
+- OD-F1: a facilitator needs its own channel identity before it can facilitate; no
+  default-bot fallback.
+- OD-F2: anyone may propose a change to the definition of done or the method; the group
+  decides by consent within a window; the facilitator announces the new version.
+- OD-F3: private reminders by direct message where the channel supports them; the group
+  only gets neutral reminders.
+- OD-F4: retention after close is an instance setting, default 90 days.
+- The facilitator archetype is delivered by an archetype plugin (§0).
 
 ## 12. Not verified
 
