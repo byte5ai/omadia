@@ -472,12 +472,29 @@ kernel's loopback MCP server allowed (`cliSpawnGate.ts`: `--tools ""`,
 `--disallowedTools`, `--strict-mcp-config`), so every tool call goes through the kernel's
 tool dispatch with the agent's grants and the privacy shield
 (`toolDispatchService.ts`); the prompt and replayed context are masked before spawn
-(`maskUserPrompt`); the agent's model policy must allow the provider; the turn reserves
-its budget before spawn (a turn that cannot reserve it does not start) and is killed at
-its deadline, on idle timeout or on the kill switch; reported usage is settled against the
-reservation afterwards. A CLI that
-starts without the loopback server, or with any other tool, is refused (as today,
-`cliChatAgent.ts:503`).
+(`maskUserPrompt`); the agent's model policy must allow the provider.
+
+New work for `run_loop`:
+- **Budget inside the loop.** The budget unit is reference cost (for subscription
+  providers the price the same tokens would cost on the API, today's `referenceCostUsd`;
+  otherwise the real cost). The turn reserves the agent's per-turn limit before spawn (a
+  turn that cannot reserve it does not start). The kernel counts every model response of
+  the stream (each `assistant` event) with the usage it reports and kills the process as
+  soon as the counted cost reaches the reservation; where a CLI version reports no
+  per-response usage, the turn is limited to a number of model responses derived from the
+  reservation and the model's maximum cost per response. Built-in CLI helpers are off
+  with the built-in tools; omadia helpers called through the loopback tools run in the
+  kernel and are charged to the same reservation. At most the response in flight can
+  overshoot. The turn is also killed at its deadline, on idle timeout and on the kill
+  switch; the final usage is settled against the reservation.
+- **Isolated profile.** The CLI starts with a kernel-managed profile directory as `HOME`
+  and `CLAUDE_CONFIG_DIR` that contains only the subscription login, so no global
+  `~/.claude/CLAUDE.md` or other instruction file is read (today a residual,
+  `cliSpawnGate.ts:66`, `HOME` and `CLAUDE_CONFIG_DIR` passed through, `:320`).
+- **Exact tool set.** The CLI's reported tool list must equal the loopback tools offered
+  for this turn, and the loopback server must be connected; otherwise the turn is refused.
+  Today `checkCliInit` (`cliChatAgent.ts:497-503`) accepts any list that contains one
+  omadia tool and does not check the server status.
 
 An agent has exactly one archetype, set at creation; it never switches. Uninstalling an
 archetype plugin disables its agents and keeps their records; it never converts them to
@@ -902,7 +919,11 @@ Each existing element keeps its purpose, moved out of the message body:
     work through the gateway; the embedding and transcription adapters' direct clients are
     reachable only from the gateway; a maintenance run calling `complete` is refused; an
     agent on `claude-cli` uses its granted tools through `run_loop`, a tool it lacks is
-    refused, a turn without budget does not start, and a running turn stops at its deadline and the kill switch.
+    refused, a turn without budget does not start, a running loop that reaches its budget
+    before the deadline makes no further model response, and a running turn stops at its
+    deadline and the kill switch; a planted `~/.claude/CLAUDE.md` in the test profile has
+    no effect while login and allowed tools work; a CLI reporting an extra tool, an
+    omadia tool not offered this turn or a disconnected loopback server is refused.
 38. **Disclosure level none.** Two questions, one about information that exists but is
     withheld at level `none`, one about information that does not exist: the visible
     answers do not allow telling the cases apart.

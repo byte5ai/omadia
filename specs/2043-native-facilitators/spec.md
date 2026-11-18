@@ -43,11 +43,14 @@ cannot safely own.
 
   | Scope | Until | Allowed targets |
   |---|---|---|
-  | `configuring` | the handshake is posted (atomic switch to `active`), at most 72 h after the start request (configurable); then `aborted` with a short note | home conversation, direct replies to the initiator |
+  | `configuring` | the handshake is posted (atomic switch to `active`), at most 72 h after the start request (configurable); then `aborted` with a short note | home conversation, direct replies to the initiator, private status answers |
   | `active` | the facilitation's deadline | home conversation, linked session conversations in `scheduled`, `live` or `confirming`, private reminders to participants, private answers to a participant's status request |
-  | `closing` (one per closing event: each session close, entering `concluding`, abort; own id) | three bounded parts, all inside one scope: (1) delivery of the event's essential message (session summary, result, abort report), at most 7 days after the event; (2) a group confirmation the event requires, starting at confirmed delivery, for its window; (3) protocol dispatch of the then final protocol (§5.11), at most 7 days after it became final; the scope ends when the last part is done; absolute limit: event + 14 days + one confirmation window | home conversation, the session conversations of this facilitation, the protocol recipients of §5.8 |
+  | `closing` (one per closing event: each session close, entering `concluding`, abort; own id) | three bounded parts, all inside one scope: (1) delivery of the event's essential message (session summary, result, abort report), at most 7 days after the event; (2) a group confirmation the event requires, starting at confirmed delivery, for its window; (3) protocol dispatch of the then final protocol (§5.11), at most 7 days after it became final; the scope ends when the last part is done; absolute limit: event + 14 days + one confirmation window | home conversation, the session conversations of this facilitation, the protocol recipients of §5.8, private status answers |
   | `scheduling` | the agreed follow-up meeting's invitations are sent or its date passed | the invitees confirmed by group consent |
-  | `follow_up` | the follow-up deadline | the home conversation and the owners of open action items |
+  | `follow_up` | the follow-up deadline | the home conversation, the owners of open action items, private status answers |
+
+  "Private status answers" means: the private chat of an active participant who asked the
+  facilitator for this facilitation's status there (§5.3), with that status only.
 
   The scopes exist independently of the reservation and of whether action items exist. An
   expired scope never re-opens moderation. The scheduler can move onto
@@ -59,7 +62,9 @@ cannot safely own.
 - **Kernel contracts** (versioned in `@omadia/plugin-api`), each with its own issue:
   - `conversationMessages` (#2089): stored inbound events (author, tenant, channel, message id,
     revision, timestamp, platform-stated). An archetype plugin reads and subscribes only to
-    conversations its agents hold a reservation or follow-up permission for; foreign
+    conversations its agents hold a reservation or follow-up permission for, plus private
+    messages to the facilitator from active participants of a running facilitation,
+    limited to status requests and reminder replies (§5.3); foreign
     conversation or message ids and superseded revisions are refused; access ends with the
     reservation or permission.
   - `agentTurn` and execution authorization (#2090): the plugin calls the kernel with agent id,
@@ -295,7 +300,11 @@ States exist on three levels, each with its own rules:
   objection in the report; moderation does not re-open. If delivery still fails when the
   `closing` scope ends, the facilitation closes as `closed` with "not delivered", and the
   initiator and operator are told where possible. The reservation is released at
-  `closed`. The facilitator posts the final
+  `closed`. The facilitation leaves `concluding` only when every session closing that
+  requires confirmation has ended (confirmed, not confirmed, or not delivered when its
+  `closing` scope ended); until then it keeps the reservation, accepts only consent
+  answers to those session summaries, status requests and stop, and posts nothing but
+  those closing documents. The facilitator then posts the final
   summary (decisions, next steps with owners and due dates, open points). A group
   confirmation is asked only if the method or the agreed definition of done requires it
   (for example consent or a free-text definition of done); otherwise the result is published and the facilitation
@@ -959,6 +968,15 @@ kept compatible.
     participant of two running facilitations is asked which one. Stakeholders receive a
     published, a confirmed, a not-confirmed and an aborted protocol, each marked with
     its status.
+
+40. **Pending session confirmation at the close.** A session summary that needs
+    confirmation fails to deliver; the facilitation's definition of done is met
+    meanwhile; after a restart the summary is delivered and an objection arrives within
+    its window: the objection counts, the session closes "not confirmed", only then the
+    final summary goes out; the same with and without action items.
+41. **Private status in every phase.** A participant who is neither initiator nor owner of
+    an action item asks privately in `configuring`, `active`, `concluding` and
+    `following_up` and gets the status each time.
 
 ## 10. Work breakdown
 
