@@ -225,6 +225,42 @@ describe('AgentIdentity — facilitator (#2066)', () => {
     expect(alert.textContent).not.toContain('server prose');
   });
 
+  it('offers the language on the profile tab and saves the choice', async () => {
+    mockGet.mockResolvedValue(dto());
+    mockSave.mockResolvedValue({ ...dto({ language: 'de' }), republish: 'not_provisioned' });
+    renderWithIntl(<AgentIdentity slug="mod" kind="facilitator" />);
+    const select = (await screen.findByLabelText('Language')) as HTMLSelectElement;
+    expect([...select.options].map((o) => o.value)).toEqual(['', 'de', 'en']);
+    expect(select.value).toBe('');
+    await userEvent.selectOptions(select, 'de');
+    await userEvent.click(screen.getByRole('button', { name: 'Save identity' }));
+    await waitFor(() => expect(mockSave).toHaveBeenCalledTimes(1));
+    expect((mockSave.mock.calls[0]![1] as { language: string | null }).language).toBe('de');
+  });
+
+  it('keeps a stored tag this UI has no name for', async () => {
+    mockGet.mockResolvedValue(dto({ language: 'de-CH' }));
+    mockSave.mockResolvedValue({ ...dto({ language: 'de-CH' }), republish: 'not_provisioned' });
+    renderWithIntl(<AgentIdentity slug="mod" kind="facilitator" />);
+    const select = (await screen.findByLabelText('Language')) as HTMLSelectElement;
+    expect(select.value).toBe('de-CH');
+    await userEvent.type(screen.getByLabelText('Display name'), 'Mona');
+    await userEvent.click(screen.getByRole('button', { name: 'Save identity' }));
+    await waitFor(() => expect(mockSave).toHaveBeenCalledTimes(1));
+    expect((mockSave.mock.calls[0]![1] as { language: string | null }).language).toBe('de-CH');
+  });
+
+  it('round-trips the language of a standard agent without showing the control', async () => {
+    mockGet.mockResolvedValue(dto({ language: 'en' }));
+    mockSave.mockResolvedValue({ ...dto({ language: 'en' }), republish: 'not_provisioned' });
+    renderWithIntl(<AgentIdentity slug="sales" />);
+    await userEvent.type(await screen.findByLabelText('Display name'), 'Sales');
+    expect(screen.queryByLabelText('Language')).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Save identity' }));
+    await waitFor(() => expect(mockSave).toHaveBeenCalledTimes(1));
+    expect((mockSave.mock.calls[0]![1] as { language: string | null }).language).toBe('en');
+  });
+
   it('leaves a standard agent unbounded', async () => {
     mockGet.mockResolvedValue(dto());
     renderWithIntl(<AgentIdentity slug="sales" />);

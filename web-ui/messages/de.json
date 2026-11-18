@@ -2548,6 +2548,13 @@
           "standard": "Standard — Auslieferungszustand",
           "detailed": "Ausführlich — mit Begründung, Quellen und Annahmen",
           "max": "Maximal — alle Zwischenschritte, Rohwerte und Unsicherheiten"
+        },
+        "language": "Sprache",
+        "languageInherit": "Sprache der Installation",
+        "languageHint": "In dieser Sprache spricht der Facilitator. Ohne Auswahl gilt die Sprache der Installation.",
+        "languageOptions": {
+          "de": "Deutsch",
+          "en": "Englisch"
         }
       },
       "republish": {

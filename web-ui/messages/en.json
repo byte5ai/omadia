@@ -2548,6 +2548,13 @@
           "standard": "Standard — as delivered",
           "detailed": "Detailed — with reasoning, sources and assumptions",
           "max": "Maximum — every step, raw value and uncertainty"
+        },
+        "language": "Language",
+        "languageInherit": "Installation language",
+        "languageHint": "The language the facilitator speaks. Without a choice it uses the installation language.",
+        "languageOptions": {
+          "de": "German",
+          "en": "English"
         }
       },
       "republish": {
