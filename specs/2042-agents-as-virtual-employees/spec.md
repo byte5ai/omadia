@@ -477,18 +477,19 @@ tool dispatch with the agent's grants and the privacy shield
 New work for `run_loop`:
 - **Budget before every model call.** The budget unit is reference cost (for
   subscription providers the price the same tokens would cost on the API, today's
-  `referenceCostUsd`; otherwise the real cost). Every model call of the loop is gated
-  before it starts, with its worst-case cost (the model's maximum context and output at
-  its price): the first call by the reservation made before spawn, every later call at the
-  point where the kernel returns tool results through the loopback server (the CLI makes
-  its next model call only after receiving them); if the remaining reservation is below
-  the worst-case cost of one more call, the kernel does not return the results and ends
-  the process. Actual usage reported per response replaces the worst case where present;
-  without it the worst case is charged. Built-in CLI helpers are off with the built-in
-  tools; an omadia helper called through a loopback tool reserves its own part of the
-  same reservation atomically before it runs. The sum therefore never exceeds the
+  `referenceCostUsd`; otherwise the real cost). The checkpoint is a kernel model proxy:
+  the CLI is started with `ANTHROPIC_BASE_URL` pointing to it (documented by Claude Code
+  as the way to "route requests through a proxy or gateway"), so every model request of
+  the CLI, including automatic compaction and retries, passes the kernel before it is
+  forwarded. Each request is admitted only if the remaining reservation covers its
+  worst-case cost (its context plus maximum output at the model's price); otherwise it
+  is refused and the turn ends. Actual usage from the response replaces the worst case.
+  An omadia helper called through a loopback tool reserves its own part of the same
+  reservation atomically before it runs. The sum therefore never exceeds the
   reservation. The turn is also ended at its deadline, on idle timeout and on the kill
-  switch.
+  switch. Unverified: whether the CLI keeps using the subscription login with a custom
+  base URL; this is the first task of #2053. If it does not, the issue goes back to the
+  owner before any implementation; until then `run_loop` is not offered.
 - **Isolated profile for every CLI spawn.** Every start of the CLI, for `run_loop` and
   for `complete` (summaries, extraction, classification, verifier;
   `middleware/src/platform/claudeCliAdapter.ts:246`), uses a kernel-managed profile
@@ -926,7 +927,8 @@ Each existing element keeps its purpose, moved out of the message body:
     refused, a turn without budget does not start, a running loop that reaches its budget
     before the deadline makes no further model call, the total stays within the
     reservation also when the remaining budget is below the next call's possible cost,
-    with parallel helpers and without per-response usage, and a running turn stops at its
+    with parallel helpers, with an automatic compaction between two tool calls and with
+    a retried request, and a running turn stops at its
     deadline and the kill switch; a planted `~/.claude/CLAUDE.md` in the test profile has
     no effect on `run_loop` or `complete` while login and allowed tools work; a CLI reporting an extra tool, an
     omadia tool not offered this turn or a disconnected loopback server is refused.

@@ -43,10 +43,10 @@ cannot safely own.
 
   | Scope | Until | Allowed targets |
   |---|---|---|
-  | `configuring` | the handshake is posted (atomic switch to `active`), at most 72 h after the start request (configurable); then `aborted` with a short note | home conversation, direct replies to the initiator, private status answers |
+  | `configuring` | the handshake is posted (atomic switch to `active`), at most 72 h after the start request (configurable); then `aborted` with a short note | home conversation, linked session conversations in `scheduled`, direct replies to the initiator, private status answers |
   | `active` | the facilitation's deadline | home conversation, linked session conversations in `scheduled`, `live` or `confirming`, private reminders to participants, private answers to a participant's status request |
   | `closing` (one per closing event: each session close, entering `concluding`, abort; own id) | the closing procedure of §5.2 (waiting, delivery, confirmation, dispatch), each part with its own limit; absolute limit 30 days after the event | home conversation, the session conversations of this facilitation, the protocol recipients of §5.8, private status answers |
-  | `scheduling` | the agreed follow-up meeting's invitations are sent or its date passed | the invitees confirmed by group consent |
+  | `scheduling` | the agreed follow-up meeting's invitations are sent, its date passed, or the facilitation is stopped or aborted | the invitees confirmed by group consent |
   | `follow_up` | the follow-up deadline | the home conversation, the owners of open action items, private status answers |
 
   "Private status answers" means: the private chat of an active participant who asked the
@@ -322,7 +322,11 @@ States exist on three levels, each with its own rules:
   consent windows close, no further consent answers are accepted, an undelivered session
   summary is sent without a consent request and marked `not confirmed` (reason:
   facilitation stopped), and the abort report says so. No consent request is ever sent
-  that can no longer be answered.
+  that can no longer be answered. In the same transaction every `scheduling` scope and
+  follow-up scheduling grant of the facilitation is revoked and pending invitation jobs
+  are cancelled: no further free/busy query, no further invitation. Invitations already
+  sent stay; the abort report lists them, and cancelling them is a separate request of
+  the initiator.
 - **following_up:** only if action items with owners were agreed; without them the
   facilitation goes from `closed` straight to `ended`. A bounded follow-up context with
   its own deadline: the earlier of (last due date plus a grace period set at start,
@@ -356,7 +360,13 @@ States exist on three levels, each with its own rules:
 - **Conversations:** a facilitation has one home conversation (where it was started).
   A live session may run in another conversation (for example the chat of a scheduled
   Teams meeting): the initiator links it in the home conversation when the session is
-  scheduled, and the facilitator confirms the link in both. People in the linked
+  scheduled (in `configuring` or `active`), and the facilitator confirms the link in
+  both. Linking takes the session conversation's own reservation in the same
+  transaction; if another process (another facilitation or an agent discussion) holds it,
+  the link fails and the facilitator says so in the home conversation. The session
+  conversation's reservation is released when the session reaches `closed`; its closing
+  documents then go out under its `closing` scope. Reading a linked conversation needs
+  this reservation. People in the linked
   conversation who are not participants are added as session participants only; they
   see the session agenda and what is posted in that conversation, never the home
   conversation's history or protocol (§5.8).
@@ -416,8 +426,14 @@ States exist on three levels, each with its own rules:
   active participant of exactly one running facilitation of this facilitator (otherwise
   one question which one is meant); only a status request or a reply to a reminder is
   processed there, answered in that private chat with that facilitation's status only.
-  Anything else in the private chat is an ordinary agent turn outside the facilitation
-  (§5.2 `invited`). A person who is not an active participant gets no status.
+  The answer follows the asker's participant scope (§5.5, §5.8): a home participant gets
+  the facilitation's status including the names of who is missing; a session participant
+  gets only the status of the sessions they belong to (agenda, session state, time slot),
+  never names, tallies or anything of the home conversation. Several memberships give the
+  union of what each scope may see, nothing more; a person who left a scope gets nothing
+  of it after leaving. Anything else in the private chat is an ordinary agent turn
+  outside the facilitation (§5.2 `invited`). A person who is not an active participant
+  gets no status.
 - **Edits:** an edited message produces a new revision; the latest revision received
   before its step closes counts, and the facilitator confirms the change to its author.
 - **Effect:** a contribution in the announced format counts at once. A contribution the
@@ -597,8 +613,9 @@ participant.
   are given on request or where they matter, not as a block of status.
 - **Status** on request at any time: phase, how many contributions are open, current (or
   provisional) tally where the method has one, deadline, definition-of-done version. In
-  the group the facilitator never names who is missing, also on request; a participant
-  who asks in a private chat with the facilitator gets the names. Who has contributed is
+  the group the facilitator never names who is missing, also on request; a home
+  participant who asks in a private chat with the facilitator gets the names (session
+  participants get only their sessions' status, §5.3). Who has contributed is
   shown only where the method's visibility makes contributions public anyway.
 - **Result** goes to the group first, then to the initiator with the protocol (only if
   the initiator is still an active participant at send time). The
@@ -689,7 +706,7 @@ items exist:
 | Grant | Issued when | Allows | Revoked when |
 |---|---|---|---|
 | Protocol dispatch | That session's or the facilitation's protocol becomes final (published, or its confirmation window ended), or the facilitation aborts | Sending that protocol to the recipients of §5.8, within the `closing` scope of the same event | All sends of that protocol are confirmed, or 7 days after it became final (a failed send is reported to the initiator) |
-| Follow-up scheduling | The group agreed a follow-up meeting | Free/busy and invitations for exactly that meeting | The invitations are sent, or the agreed date passed |
+| Follow-up scheduling | The group agreed a follow-up meeting | Free/busy and invitations for exactly that meeting | The invitations are sent, the agreed date passed, or the facilitation is stopped or aborted |
 | Follow-up reminders | The facilitation enters `following_up` | Reminders to owners and status posts | `ended` or stop |
 
 Every use is audited and listed in the protocol. Pending sends survive restarts through the
@@ -1006,6 +1023,18 @@ kept compatible.
     confirmed` (participants could not be verified) after the bounded retries. A result
     that never gets delivered has delivery status `not delivered` and result status
     `published` or `not confirmed (not delivered)`.
+
+45. **Linked session in preparation.** A meeting chat is linked before the handshake,
+    confirmed and prepared there, also across a restart; a second process linking the
+    same chat at the same time, or a chat held by an agent discussion, gets neither the
+    reservation nor read access.
+46. **Session guest status.** An active session-only participant asks privately "who is
+    still missing?" and gets only their session's status, no names, tallies or goals of
+    the home conversation; a home participant gets the full answer; a person with both
+    memberships gets each scope's part; after leaving, nothing more.
+47. **Stop before invitations.** A follow-up meeting is agreed, its invitations not yet
+    sent; stop and restart: no free/busy query and no invitation follow; the abort report
+    is delivered and lists any invitations already sent.
 
 ## 10. Work breakdown
 
