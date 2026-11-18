@@ -1376,6 +1376,62 @@ Retries (überlebt Prozess-Restart). Zusätzlich: ein Built-in-Action
 `invokeAction`-Wiring VOR dem `dynamicAgentRuntime`-Dispatch, kein Plugin
 nötig) für Ad-hoc-Outbound-POST aus einem Workflow-Step.
 
+**Non-2xx = fehlgeschlagener Step (#1703).** Die Action *meldet* die Absage
+weiterhin im Ergebnis (`{ ok, status }`) und wirft NICHT — ein Throw wird vom
+`ConductorRunExecutor` gefangen, bevor die Engine läuft, der Run endet dann
+ohne Transition und ein Graph könnte seinen Error-Pfad nie nehmen. Stattdessen
+hängt `RealStepEffects.runActionStep` dem Step die Default-Postcondition
+`WEBHOOK_POST_DEFAULT_POSTCONDITION` (`stepResult.data.ok == true`) an, falls
+der Autor keine eigene deklariert hat; der Executor reicht sie als
+`NextStepOptions.defaultPostcondition` an `nextStep` weiter (Default, nie
+Override — eine eigene Postcondition gewinnt immer). Ein 500 des Receivers oder
+ein 429 (Quota) ist damit `unmet`: `fallbackTransitionId` feuert (FR-024, der
+Error-Pfad des Graphen), sonst `postcondition_unmet_no_fallback` → Run `failed`.
+`postcondition_outcome` steht als `unmet` in der History, `status` im
+Run-Context. Vorher galt "keine Postcondition ≡ immer erfüllt", also war eine
+nicht erfolgte Zustellung in UI und API nicht von einer echten zu
+unterscheiden.
+
+**Diagnose eines fehlgeschlagenen Outbound-Versuchs (#1704).** `last_error`
+trug bis dahin nur `err.message` — und undici meldet *jeden* Transportfehler als
+blankes `fetch failed` und legt den Grund in `err.cause`, also lasen DNS-Miss,
+Connection-Refused und Protokoll-Mismatch identisch. Drei Punkte dagegen:
+
+- `platform/describeError.ts` (gemeinsam mit dem `RegistryClient`, dessen
+  Ein-Ebenen-Variante aus #1482 dorthin gewandert ist — `registryClient.ts`
+  re-exportiert sie nur noch) hängt die `cause`-Kette an die Message:
+  `fetch failed (getaddrinfo ENOTFOUND doesnotexist.invalid)` bzw.
+  `fetch failed (connect ECONNREFUSED 172.18.0.2:5432)`. Maximal drei Ebenen,
+  Dubletten übersprungen, `code:`-Präfix nur wenn die Message ihn nicht schon
+  nennt.
+- **Eine Logzeile pro fehlgeschlagenem Versuch**, nicht nur beim finalen
+  Exhaust (der bis zu einer halben Stunde nach dem ersten Fehler kommt):
+  `[conductor] webhook delivery <id> to subscription <sub-id> (<origin>) attempt 2/6 failed: <grund>;
+  retrying in 60s`. Eine Subscription, die nie erfolgreich sein kann
+  (`subscription disabled`, `subscription secret missing`), loggt jetzt ebenfalls
+  — als `abandoned: <grund>`, nicht als `exhausted after 1 attempts`: dort wurde
+  kein Attempt-Budget verbraucht, und ein Grep auf die echte Exhaust-Zeile darf
+  diese Fälle nicht mittreffen.
+- **Auch der `ConductorWebhookRetryWorker`**, nicht nur der inline erste
+  Versuch: er fährt die Attempts 2..6, dort fehlten also die meisten Zeilen.
+  Seine drei Catch-Blöcke (Reconcile-Pass, `claimDue`, abgestürzter Attempt)
+  nennen jetzt die Ursache über `describeError`; und das eine terminale
+  Ergebnis, das er **ohne** den Dispatcher schreibt — eine Delivery, deren
+  Subscription inzwischen gelöscht wurde — loggt jetzt
+  `[conductor] webhook delivery <id> for subscription <sub> abandoned:
+  subscription no longer exists` statt lautlos `recordFailure` zu rufen.
+- `last_error` ist einzeilig und auf 500 Zeichen begrenzt (`condense`), weil die
+  Operator-UI den Wert wörtlich rendert und `postWebhook` bis zu 64 KiB
+  Response-Body durchreicht; ein leerer Body ergibt `http 500` statt des
+  abgeschnittenen `http 500: `.
+
+Unverändert bleiben dabei bewusst zwei Beobachtungen aus demselben Issue: das
+Backoff-Schema (30s verdoppelnd, ≈31 min bis Exhaust) und der SSRF-Precheck beim
+Anlegen einer Subscription, der nur Literal-Adressen prüft — ein Hostname, der
+erst zur Connect-Zeit auf eine private Adresse auflöst, wird weiterhin
+angenommen und dann vom guarded `Agent` abgelehnt (sichtbar jetzt als
+benannter Connect-Fehler im `last_error`).
+
 **Security:** Secrets (Inbound-Endpoint + Outbound-Subscription) leben
 ausschließlich im Vault (`core:conductor`, Split Metadata-in-Postgres /
 Secret-in-Vault nach `DevGithubAppStore`-Vorbild) — nie in Graph-JSON, nie in
@@ -4298,6 +4354,7 @@ Users sofort (`users.session_version`, §3 „Serverseitiger Sitzungs-Widerruf�
 | Variable | Wirkung |
 |---|---|
 | `WS_SESSION_FRAME_RECHECK_MS` | Offene Channel-WebSockets (Canvas): ein Frame erreicht das Plugin nur, wenn die Prüfung der Sitzung höchstens so viele ms vor seiner Ankunft begann; sonst liest die Registry die `users`-Zeile erneut (ein Point-Read), während der Frame wartet. Bestimmt, wie schnell ein Widerruf auf einer anderen Replica einen aktiven Socket stoppt (ein schweigender Socket wird alle 60 s geprüft). Default `5000`, erlaubt `0`–`60000` (zod-validiert beim Boot, ein leerer Wert heißt Default); `0` prüft jeden Frame. Ist die Zeile nicht lesbar, werden Frames abgewiesen (Canvas: `turn_error`), der Socket bleibt offen. Siehe „Canvas WebSocket-Transport (Omadia UI, PR-11)“. |
+| `USAGE_FX_DISABLED` | `true` schaltet den Abruf des EZB-Tageskurses für die EUR-Ansicht des Kosten-Dashboards ab (`GET www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml`, ohne Credentials, höchstens alle 6 h). Default aus — für air-gapped oder egress-beschränkte Installationen. Ohne Kurs bleibt das Dashboard in USD. Siehe Abschnitt Usage-Telemetrie, Lesepfad. |
 
 ### Self-Update und Release-Check (#432, #1381)
 
@@ -5491,6 +5548,15 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 ---
 
 ## 13. Offene Roadmap
+
+- **Agenten als virtuelle Mitarbeiter, kein Orchestrator (#2042), native
+  Facilitators (#2043): Specs im Entwurf.** `specs/2042-agents-as-virtual-employees/`
+  und `specs/2043-native-facilitators/` legen das Zielmodell fest: nur Agenten plus
+  eine deterministische Verwaltungsebene, kein Orchestrator-Agent, keine versteckten
+  Sub-Agents, kein Super-Agent ab Werk, Facilitator als eigene Agent-Art statt Plugin.
+  Ohne Kompatibilitätsschicht, weil es noch keine Kundeninstallationen gibt. Die
+  Abschnitte dieses Dokuments zu Sub-Agents, Direct Line, Persona-Skills und
+  Fallback-Agent beschreiben den Stand vor dem Umbau.
 
 - **Teams-SSO für Plugin-Routen (#1620): Kernel-Modus erledigt.** Offen:
   channel-teams auf den Kernel-Verifier umstellen (eigene Kopie in
@@ -8223,6 +8289,25 @@ Long-Context-Tier) — Totals, Zeilen und Zeitreihe sind dann höher als
 `SUM(cost_usd)`; das Ledger bleibt append-only, kein Backfill. Abo-Zeilen
 (OM-103) sind nie „Preis unbekannt". Ein lokales Modell verliert den Hinweis
 durch einen expliziten $0-Eintrag in der Preistabelle.
+
+Cache-Ersparnis: `totals.cacheSavingsUsd` und `byModel[].cacheSavingsUsd`
+(nur gesetzt, wenn ≠ 0) = Cache-Reads zum vollen Input-Preis minus Cached-Preis,
+abzüglich des Write-Aufschlags (`CACHE_WRITE_MULTIPLIER − 1`), über
+`computeCacheSavingsUsd`. Nur metered Calls (Abo-Calls kosten so oder so
+nichts); unbekannte Modelle sparen 0. Gerechnet auf Modell-Summen zum
+Basis-Tarif — der Long-Context-Tier (Haiku 5.5 > 100k) fehlt, die Zahl ist dort
+eine Unterschätzung. Kann negativ werden (mehr geschrieben als gelesen).
+`costUsd + cacheSavingsUsd` = Kosten ohne Cache.
+
+EUR-Ansicht: Die Antwort trägt `fx: { eurPerUsd, date, source: 'ECB' } | null`
+(`exchangeRate.ts`). Quelle ist der EZB-Tageskurs
+(`eurofxref-daily.xml`), 6 h gecacht; nach einem Fehler bleibt der letzte Kurs
+stehen und der nächste Versuch kommt frühestens nach 10 min. Die Route wartet
+höchstens 1,5 s auf einen Refresh und antwortet sonst mit `fx: null` (der
+Refresh läuft weiter und füllt den Cache). `USAGE_FX_DISABLED=true` schaltet
+den Abruf ab. Das Ledger bleibt USD; die Web-UI rechnet nur zur Anzeige um,
+nennt Kurs und Datum unter den Gesamtkosten und startet auf `de` in EUR, sonst
+in USD (Umschalter EUR | USD, nur wenn ein Kurs da ist).
 
 Noch offen: der Verifier läuft nach dem Turn-Scope (Zeilen ohne Turn-ID,
 siehe #1098); `ctx.llm` liefert keine Cache-Zahlen (Plugin-Vertrag hat keine);
