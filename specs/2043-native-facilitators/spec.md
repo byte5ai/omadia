@@ -10,6 +10,46 @@
 > 0.6.0 @ `a7c93a1`, `omadia-channel-teams` 0.35.0 @ `e1aacfc`. Reviewed adversarially by
 > a second model family (Codex) on 2026-11-18; its findings are incorporated. §12 lists
 > what is unverified.
+>
+> **Amended by the owner on 2026-11-18** (§0): the facilitation engine is built in the
+> plugin `@omadia/agent-facilitator`, not in the kernel. The decisions of §11 are taken.
+> Where §0 and a later section disagree, §0 holds.
+
+## 0. Owner amendment (2026-11-18): the engine lives in the plugin
+
+The facilitator stays a native kind of agent, with everything §2 says about identity,
+omissions and neutrality. What changes is where the facilitation engine lives: as much
+logic and as many migrations as possible sit in the plugin `@omadia/agent-facilitator`
+(1.0.0, a rewrite), and the kernel keeps only what a plugin cannot safely own.
+
+| Part | Owner | Reason |
+|---|---|---|
+| `agents.kind`, enforced omissions, neutrality block, persona bounds (§2) | Kernel | Grants, memory wiring, default agent and prompt compile are kernel-owned; a plugin cannot enforce them against itself. |
+| Stored inbound message events with author, tenant, message id, revision, timestamp (§5.3) | Kernel (`conversationMessages` service) | The record of who wrote what must not depend on a model argument. The plugin reads it by id. |
+| Delivery of every group message for an active facilitation (§6.2) | Kernel subscription, channel plugin | The channel's mention gate needs an answer that survives a plugin restart. |
+| Posting and direct messages as the facilitator's own identity (§6.2) | Kernel | Sender resolution is the identity guarantee; `no_identity` instead of another bot. |
+| Running the facilitator's model turn | Kernel (`agentTurn` service) | Privacy shield, model policy and receipts apply; the text comes back unposted. |
+| Readiness and session capability registries (§6.1) | Kernel, pass-through | Generic registries; channel and media plugins declare, the engine reads. |
+| All tables of §5.1, lifecycle, contributions, decision methods, scheduler, outbox and locking, handshake, status, report, rule changes, process, action items, protocol (§5.2 to §5.7) | Plugin | Engine logic on plugin-owned migrations (`ctx.sql`), jobs and routes. |
+| Visibility, retention, quotas (§5.8, §5.10) | Plugin | Own tables, routes and jobs; the kernel only expires its event store. |
+| Sessions, consent state, playbook mapping (§6.1, §6.3) | Plugin | Consumes the capability snapshot. |
+| Facilitation-scoped capabilities (§5.11) | Plugin and M365 connector | The engine passes the allowed recipients with every call; the connector refuses everyone else. No kernel-issued grant. |
+| Facilitations view, per-facilitator defaults (§7) | Plugin UI | Served through the plugin UI host. |
+| "Facilitators" in the agent directory: create, personality, Teams identity (§7) | Kernel web-ui | Operates on kernel entities. |
+
+Consequences:
+
+- A facilitator-kind agent is bound to the one active plugin that declares the manifest
+  capability `facilitationEngine@1` and gets exactly that plugin's tools. Without the
+  plugin, or without the operator's SQL grant for it, the facilitator says that
+  facilitation is not set up; it does nothing else.
+- The contract is `@omadia/plugin-api` 1.55.0 and `@omadia/channel-sdk` 0.3.0.
+- Timing does not wait for agent triggers (#2082): the plugin runs a leased scheduler
+  over its own tables and can move onto triggers later.
+- The plugin is not retired and its repository is not archived (§8, §10 item 12).
+- Trust boundary: authorship cannot be forged by the model. The plugin's code holds a
+  database grant and is trusted like any installed plugin with one.
+- No Teams test tenant is available. §6.2 and §9 criterion 13 are amended below.
 
 ## 1. Why this exists
 
@@ -159,7 +199,7 @@ borrowing another bot.
 
 ## 5. Target design
 
-### 5.1 Data model (core migrations)
+### 5.1 Data model (plugin migrations, see §0)
 
 | Table | Holds |
 |---|---|
@@ -437,9 +477,11 @@ with it, without changes to the facilitator itself.
 - **Direct messages** use conversation references stored per bot; first contact needs
   the app installed for the user. Where that is not possible, reminders stay neutral in
   the group and the facilitator says so.
-- **Contract tests** run against a real Teams test tenant before release: message without
-  mention, missing consent, first-contact DM, blocked DM, restart, two facilitator bots in
-  one chat.
+- **Contract tests** cover message without mention, missing consent, first-contact DM,
+  blocked DM, restart and two facilitator bots in one chat against a simulated Bot
+  Framework and Graph transport. No test tenant is available (owner, 2026-11-18), so
+  these scenarios are additionally checked by hand on a real instance, following a
+  written checklist in the Teams plugin's docs, before a release is called verified.
 
 ### 6.3 Online and hybrid meetings
 
@@ -488,9 +530,10 @@ facilitator says so.
 There are no customer installations yet (owner, 2026-11-18), so nothing is migrated or
 kept compatible.
 
-- The plugin `@omadia/agent-facilitator` is removed from the hub when the kernel release
-  ships; its repository is archived on the owner's decision.
-- Everything only the plugin needed goes: the `facilitation` Conductor pattern (v6 since #2071), the
+- The plugin `@omadia/agent-facilitator` stays and is rewritten as the engine (1.0.0,
+  §0). Versions up to 0.7.x stop working once the kernel release ships and are replaced
+  in the same rollout.
+- Everything only the old plugin needed goes: the `facilitation` Conductor pattern (v6 since #2071), the
   facilitator use of `agentProvisioning.ensureAgent`, the `facilitation-` scoped roles.
   Kernel services other features use (ephemeral runs, discussions, `say`) stay.
 - Internal test instances drop their auto-provisioned facilitator agent and create
@@ -541,7 +584,8 @@ kept compatible.
     content access is audited.
 12. **No silent end.** A failed step or reached TTL produces an abort report in the group;
     a reached quota produces a `system` notice.
-13. **Teams contract tests** of §6.2 pass against the real test tenant.
+13. **Teams contract tests** of §6.2 pass against the simulated transport, and the manual
+    checklist was run once on a real instance.
 14. **Retrospective.** A four-person retrospective: ideas collected without mentions,
     clusters proposed and confirmed by the group, two actions decided, each with an owner
     who confirmed and a due date; the protocol lists decisions with rationale and the
@@ -588,8 +632,8 @@ Kernel unless noted. Each item becomes one issue in epic #2043.
 11. `omadia-channel-teams`: all messages for an active facilitator, readiness check,
     proactive posts as own bot with mentions, per-bot DM references, contract tests in a
     test tenant (§6.2).
-12. `omadia-agent-facilitator`: removal from the hub, archive, close of superseded issues
-    (§8).
+12. `omadia-agent-facilitator`: rewrite as the engine, 1.0.0 (§0). Items 2 to 7, 13, 14
+    and 15 are built there; item 9 shrinks to the old Conductor path.
 13. Meetings: sessions, preparation, live moderation, binding close (§6.3).
 14. Media-adaptive moderation: capability snapshot contract and playbook mapping (§6.1,
     with #584 for audio).
@@ -598,14 +642,14 @@ Kernel unless noted. Each item becomes one issue in epic #2043.
 16. `omadia-channel-teams`: Teams meetings for facilitators (meeting chat, cards and live
     polls, presence, later audio) (§6.3).
 
-## 11. Owner decisions
+## 11. Owner decisions (taken)
 
 | Id | Question | Recommendation |
 |---|---|---|
-| OD-F1 | Must a facilitator have its own channel identity before it can facilitate? | Yes. A facilitator speaking through another agent's bot is not its own entity. |
-| OD-F2 | Who may change a running definition of done or method? | Anyone proposes; the group decides by consent within a window; the facilitator announces. The initiator commissions, the group owns the process. |
-| OD-F3 | Are private reminders by direct message allowed? | Yes, where the channel allows it; the group only ever gets neutral reminders. |
-| OD-F4 | Retention of facilitation records after close? | Instance setting, default 90 days. |
+| OD-F1 | Must a facilitator have its own channel identity before it can facilitate? | **Decided 2026-11-18, as recommended.** Yes. A facilitator speaking through another agent's bot is not its own entity. |
+| OD-F2 | Who may change a running definition of done or method? | **Decided 2026-11-18, as recommended.** Anyone proposes; the group decides by consent within a window; the facilitator announces. The initiator commissions, the group owns the process. |
+| OD-F3 | Are private reminders by direct message allowed? | **Decided 2026-11-18, as recommended.** Yes, where the channel allows it; the group only ever gets neutral reminders. |
+| OD-F4 | Retention of facilitation records after close? | **Decided 2026-11-18, as recommended.** Instance setting, default 90 days. |
 
 ## 12. Not verified
 
