@@ -23,9 +23,9 @@ import {
  *  1. IT HAS ITS OWN TEAMS IDENTITY. Owner decision (spec 2043 §0): a
  *     facilitator never speaks through another bot, so one without its own
  *     identity is "not ready", not "falls back to the default bot".
- *  2. A FACILITATION ENGINE IS USABLE: exactly one installed plugin provides
- *     `facilitationEngine@1` and reports itself available (which it does not
- *     without its SQL grant). The kernel answers this on
+ *  2. A FACILITATION ENGINE IS USABLE: exactly one installed plugin declares
+ *     `facilitationEngine@1`, the operator granted its SQL access, and it
+ *     reports itself available. The kernel answers this on
  *     `GET /v1/operator/agents/facilitation-engine`.
  *  3. THAT ENGINE IS ATTACHED TO THIS FACILITATOR. The kernel attaches it by
  *     itself (at create, when an engine is installed or replaced, at boot),
@@ -172,21 +172,38 @@ export function FacilitationEngineNotice(props: {
       )}
       {status.state === 'ambiguous' &&
         t('ambiguous', { plugins: status.pluginIds.join(', ') })}
-      {status.state === 'unavailable' && (
+      {status.state === 'ungranted' && (
         <>
-          {t('unavailable', { plugin: status.pluginId })}
+          {t('ungranted', { plugin: status.pluginId })}
           <Link
             href={`/store/${encodeURIComponent(status.pluginId)}#grants`}
             className={NOTICE_LINK_CLASS}
           >
             {t('openGrants')}
           </Link>
-          {status.reason !== null && (
-            <span
-              data-testid="facilitation-engine-reason"
-              className="mt-1 block text-xs opacity-80"
-            >
-              {t('reportedReason', { detail: status.reason })}
+        </>
+      )}
+      {status.state === 'unusable' && (
+        <>
+          {t(`unusable.${status.reason}`, { plugin: status.pluginId })}
+          <Link
+            href={`/store/${encodeURIComponent(status.pluginId)}`}
+            className={NOTICE_LINK_CLASS}
+          >
+            {t('openPlugin')}
+          </Link>
+          {status.engineReason !== null && (
+            // The plugin's own words are not ours to translate, so they are
+            // not put into one of our sentences: a label, then the text as
+            // the plugin wrote it.
+            <span className="mt-2 block text-xs">
+              <span className="block opacity-80">{t('engineReasonLabel')}</span>
+              <q
+                data-testid="facilitation-engine-reason"
+                className="mt-0.5 block font-mono"
+              >
+                {status.engineReason}
+              </q>
             </span>
           )}
         </>

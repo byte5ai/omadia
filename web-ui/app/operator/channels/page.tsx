@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import { getTranslations } from 'next-intl/server';
 
+import { isFacilitatorAgent, listOperatorAgents } from '../../_lib/agents';
 import { redirectIfUnauthorized } from '../../_lib/authRedirect';
 import {
   listOperatorChannels,
@@ -42,6 +43,12 @@ export default async function OperatorChannelsPage(): Promise<React.ReactElement
   // worse outcome than a missing hint. `fetchDisclosurePosture` swallows its
   // own errors and returns null.
   const disclosurePosture = await fetchDisclosurePosture();
+  // #2066 — which agents are facilitators, so they are not offered as a
+  // routing target. Best effort: without the list every agent stays offered
+  // and the kernel's 409 is what the operator sees.
+  const facilitatorSlugs = await listOperatorAgents()
+    .then((res) => res.agents.filter(isFacilitatorAgent).map((a) => a.slug))
+    .catch(() => []);
 
   return (
     <main className="mx-auto w-full max-w-[1400px] px-6 py-12 lg:px-8 lg:py-16">
@@ -57,7 +64,7 @@ export default async function OperatorChannelsPage(): Promise<React.ReactElement
           {loadError}
         </div>
       ) : (
-        <ChannelsDashboard initial={initial!} />
+        <ChannelsDashboard initial={initial!} facilitatorSlugs={facilitatorSlugs} />
       )}
     </main>
   );

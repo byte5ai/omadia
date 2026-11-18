@@ -434,7 +434,8 @@
         "riskWarning": "Heuristischer Scan hat diesen Skill markiert: {codes}. Als Persona steuert er den Top-Level-Agent mit vollem Tool-Zugriff — vor Verwendung prüfen.",
         "confirmAttachAction": "Trotzdem anhängen",
         "confirmAttachHighRisk": "Der heuristische Scan dieses Skills zeigt hohes Risiko ({codes}). Als Persona steuert er den Top-Level-Agent mit vollem Tool-Zugriff. Bestätige, dass du ihn geprüft hast, bevor du ihn anhängst."
-      }
+      },
+      "facilitatorsNote": "Facilitatoren sind hier nicht aufgeführt: Channels, Sub-Agenten, Tools, MCP-Server und Zeitpläne lassen sich mit ihnen nicht verdrahten."
     }
   },
   "selfExtension": {
@@ -2949,7 +2950,8 @@
         "consultation": "Ein Facilitator konsultiert keine anderen Agenten und wird von ihnen nicht konsultiert.",
         "sub_agent": "Ein Facilitator hat keine Sub-Agenten und lässt sich an keinen anderen Agenten anhängen.",
         "assistance": "Ein Facilitator ist kein Assistent. Er moderiert ausschließlich.",
-        "unknown": "Das steht für einen Facilitator nicht zur Verfügung."
+        "unknown": "Das steht für einen Facilitator nicht zur Verfügung.",
+        "channel_binding": "Ein Facilitator lässt sich an keinen Channel binden. Er nimmt unter eigener Teams-Identität an einer Unterhaltung teil und wird nie per Routing angesprochen."
       },
       "issues": {
         "persona_axis_above_bound": "{axis}: für einen Facilitator höchstens {bound}.",
@@ -2977,7 +2979,7 @@
           "unknown": "Die Teams-Identität ließ sich nicht prüfen."
         },
         "teamsLink": "Teams-Einrichtung öffnen",
-        "engineNotReady": "Auf dieser Instanz läuft keine Facilitation-Engine.",
+        "engineNotReady": "Auf dieser Instanz gibt es keine nutzbare Facilitation-Engine. In einer Gruppe angesprochen, antwortet dieser Facilitator nur, dass Moderationen auf dieser Instanz noch nicht eingerichtet sind und man sich an die Administration wenden soll.",
         "engineLink": "Beheben",
         "engineMissing": "Die Facilitation-Engine ist diesem Facilitator nicht angehängt, obwohl das normalerweise automatisch geschieht.",
         "engineDisabled": "Die Facilitation-Engine ist für diesen Facilitator abgeschaltet."
@@ -2993,14 +2995,20 @@
         "openPlugin": "Plugin öffnen",
         "openGrants": "Datenbankzugriff freigeben",
         "nothingToGrant": "Es gibt noch keine einzelne Engine zum Anhängen. Sobald genau eine installiert ist, wird sie automatisch angehängt.",
-        "unavailable": "Die Facilitation-Engine „{plugin}“ ist installiert, kann aber noch keine Facilitations ausführen. Meist fehlt die Freigabe für den Datenbankzugriff.",
-        "reportedReason": "Die Engine meldet: {detail}",
         "attached": "Angehängt",
         "disabled": "Für diesen Facilitator abgeschaltet",
         "missing": "Nicht angehängt",
         "repairHint": "Die Engine wird normalerweise ohne Zutun angehängt. Hier ist das nicht geschehen oder wurde rückgängig gemacht; erneutes Anhängen behebt das.",
         "repair": "Engine anhängen",
-        "repairing": "Wird angehängt"
+        "repairing": "Wird angehängt",
+        "ungranted": "Das Plugin „{plugin}“ kann die Facilitation-Engine sein, sein Datenbankzugriff ist aber nicht freigegeben. Bis dahin ist es nicht die Engine, und kein Facilitator kann moderieren.",
+        "unusable": {
+          "inactive": "Die Facilitation-Engine „{plugin}“ ist installiert, aber nicht aktiv.",
+          "not_reported": "Die Facilitation-Engine „{plugin}“ ist aktiv, hat aber noch nicht gemeldet, dass sie bereit ist.",
+          "engine_reported": "Die Facilitation-Engine „{plugin}“ meldet, dass sie nicht bereit ist.",
+          "unknown": "Die Facilitation-Engine „{plugin}“ kann gerade keine Facilitations ausführen."
+        },
+        "engineReasonLabel": "Meldung des Plugins im Wortlaut:"
       },
       "detail": {
         "kindHeading": "Facilitator"

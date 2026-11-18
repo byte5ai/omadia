@@ -434,7 +434,8 @@
         "riskWarning": "Heuristic scan flagged this skill: {codes}. As a persona it drives the top-level agent with full tool access — review before relying on it.",
         "confirmAttachAction": "Attach anyway",
         "confirmAttachHighRisk": "This skill's heuristic scan is at high risk ({codes}). As a persona it drives the top-level agent with full tool access. Confirm you've reviewed it before attaching."
-      }
+      },
+      "facilitatorsNote": "Facilitators are not listed here: channels, sub-agents, tools, MCP servers and schedules cannot be wired to them."
     }
   },
   "selfExtension": {
@@ -2949,7 +2950,8 @@
         "consultation": "A facilitator neither consults other agents nor is consulted by them.",
         "sub_agent": "A facilitator has no sub-agents and cannot be attached to another agent.",
         "assistance": "A facilitator is not an assistant. It only moderates.",
-        "unknown": "This is not available for a facilitator."
+        "unknown": "This is not available for a facilitator.",
+        "channel_binding": "A facilitator cannot be bound to a channel. It joins a conversation under its own Teams identity and is never routed to."
       },
       "issues": {
         "persona_axis_above_bound": "{axis}: at most {bound} for a facilitator.",
@@ -2977,7 +2979,7 @@
           "unknown": "Its Teams identity could not be checked."
         },
         "teamsLink": "Open Teams provisioning",
-        "engineNotReady": "No facilitation engine is running on this instance.",
+        "engineNotReady": "No usable facilitation engine on this instance. Asked in a group, this facilitator only answers that facilitation is not set up on this instance yet and that people should contact their administrator.",
         "engineLink": "Repair",
         "engineMissing": "The facilitation engine is not attached to this facilitator, although that normally happens automatically.",
         "engineDisabled": "The facilitation engine is switched off for this facilitator."
@@ -2993,14 +2995,20 @@
         "openPlugin": "Open the plugin",
         "openGrants": "Grant database access",
         "nothingToGrant": "There is no single engine to attach yet. Once exactly one is installed, it is attached automatically.",
-        "unavailable": "The facilitation engine “{plugin}” is installed but cannot run facilitations yet. Usually its database access has not been granted.",
-        "reportedReason": "The engine reports: {detail}",
         "attached": "Attached",
         "disabled": "Switched off for this facilitator",
         "missing": "Not attached",
         "repairHint": "The engine is normally attached without anyone doing anything. Here that did not happen or was undone; attaching it again repairs this.",
         "repair": "Attach engine",
-        "repairing": "Attaching"
+        "repairing": "Attaching",
+        "ungranted": "The plugin “{plugin}” can be the facilitation engine, but its database access has not been granted. Until then it is not the engine and no facilitator can moderate.",
+        "unusable": {
+          "inactive": "The facilitation engine “{plugin}” is installed but not active.",
+          "not_reported": "The facilitation engine “{plugin}” is active but has not reported that it is ready.",
+          "engine_reported": "The facilitation engine “{plugin}” reports that it is not ready.",
+          "unknown": "The facilitation engine “{plugin}” cannot run facilitations right now."
+        },
+        "engineReasonLabel": "Message from the plugin, as it sent it:"
       },
       "detail": {
         "kindHeading": "Facilitator"

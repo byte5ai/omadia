@@ -61,11 +61,19 @@ facilitations view is not part of it; that is the engine plugin's own UI.
 - **Readiness**: a facilitator is "not ready" without its own installed Teams
   identity, without a usable engine or without the engine grant, each with a
   link to the fix. Teams provisioning is the existing per-agent flow.
-- **Engine notice** from `GET /api/v1/operator/agents/facilitation-engine`:
-  no engine installed, more than one installed, or installed but not usable
-  (typically the missing SQL grant, with the engine's own reason as detail).
-  With a usable engine that contributes a nav entry, the directory links to
-  its facilitations view.
+- **Engine notice** from `GET /api/v1/operator/agents/facilitation-engine`,
+  one sentence per state and reason code: no engine installed (link to the
+  store), more than one installed, installed without its SQL grant (link to
+  the plugin's grants), bound but inactive, not reported or reporting itself
+  not ready (link to the plugin; the plugin's own words are shown apart, as
+  sent). With a usable engine that contributes a nav entry, the directory
+  links to its facilitations view. The readiness line says what a
+  facilitator answers in a group meanwhile.
+- **No channel binding**: the channels dashboard and the Builder agent picker
+  do not offer facilitators; `409 facilitator_omission` with omission
+  `channel_binding` is shown as a sentence.
+- **Language**: sent only when the operator changed it on a facilitator;
+  standard agents never send it.
 
 ### Added — Native facilitators, kernel side (epic #2043)
 

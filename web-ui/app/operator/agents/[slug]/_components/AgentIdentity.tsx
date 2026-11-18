@@ -287,13 +287,16 @@ export function AgentIdentity(props: AgentIdentityProps): React.ReactElement {
       // The select can only hold a known level or '' (inherit); the guard keeps
       // the wire type honest without a cast.
       verbosity: isAnswerVerbosity(form.verbosity) ? form.verbosity : null,
-      // Sent for every agent, also where the control is not shown: the PUT
-      // replaces the document, and an absent language would clear it.
-      language: trimmedOrNull(form.language),
+      // The kernel keeps the stored language when the field is absent, so it
+      // is sent only by the one editor that has the control, and only when
+      // the operator changed it (`null` = back to the installation language).
+      ...(isFacilitator && form.language !== savedForm.language
+        ? { language: trimmedOrNull(form.language) }
+        : {}),
       persona: compact(persona),
       quality: compact(quality),
     }),
-    [form, persona, quality],
+    [form, savedForm, persona, quality, isFacilitator],
   );
 
   const save = useCallback(async (): Promise<void> => {

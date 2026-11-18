@@ -238,19 +238,30 @@ describe('AgentIdentity — facilitator (#2066)', () => {
     expect((mockSave.mock.calls[0]![1] as { language: string | null }).language).toBe('de');
   });
 
-  it('keeps a stored tag this UI has no name for', async () => {
+  it('does not send the language of a facilitator when it was not changed', async () => {
     mockGet.mockResolvedValue(dto({ language: 'de-CH' }));
     mockSave.mockResolvedValue({ ...dto({ language: 'de-CH' }), republish: 'not_provisioned' });
     renderWithIntl(<AgentIdentity slug="mod" kind="facilitator" />);
     const select = (await screen.findByLabelText('Language')) as HTMLSelectElement;
+    // A stored tag this UI has no name for stays selected.
     expect(select.value).toBe('de-CH');
     await userEvent.type(screen.getByLabelText('Display name'), 'Mona');
     await userEvent.click(screen.getByRole('button', { name: 'Save identity' }));
     await waitFor(() => expect(mockSave).toHaveBeenCalledTimes(1));
-    expect((mockSave.mock.calls[0]![1] as { language: string | null }).language).toBe('de-CH');
+    expect(mockSave.mock.calls[0]![1]).not.toHaveProperty('language');
   });
 
-  it('round-trips the language of a standard agent without showing the control', async () => {
+  it('sends null when a facilitator goes back to the installation language', async () => {
+    mockGet.mockResolvedValue(dto({ language: 'de' }));
+    mockSave.mockResolvedValue({ ...dto(), republish: 'not_provisioned' });
+    renderWithIntl(<AgentIdentity slug="mod" kind="facilitator" />);
+    await userEvent.selectOptions(await screen.findByLabelText('Language'), '');
+    await userEvent.click(screen.getByRole('button', { name: 'Save identity' }));
+    await waitFor(() => expect(mockSave).toHaveBeenCalledTimes(1));
+    expect(mockSave.mock.calls[0]![1]).toHaveProperty('language', null);
+  });
+
+  it('never sends the language of a standard agent', async () => {
     mockGet.mockResolvedValue(dto({ language: 'en' }));
     mockSave.mockResolvedValue({ ...dto({ language: 'en' }), republish: 'not_provisioned' });
     renderWithIntl(<AgentIdentity slug="sales" />);
@@ -258,7 +269,7 @@ describe('AgentIdentity — facilitator (#2066)', () => {
     expect(screen.queryByLabelText('Language')).toBeNull();
     await userEvent.click(screen.getByRole('button', { name: 'Save identity' }));
     await waitFor(() => expect(mockSave).toHaveBeenCalledTimes(1));
-    expect((mockSave.mock.calls[0]![1] as { language: string | null }).language).toBe('en');
+    expect(mockSave.mock.calls[0]![1]).not.toHaveProperty('language');
   });
 
   it('leaves a standard agent unbounded', async () => {

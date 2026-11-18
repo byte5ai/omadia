@@ -13,6 +13,7 @@ const { ApiError } = await import('../api');
 const {
   clampFacilitatorAxes,
   clampFacilitatorAxis,
+  facilitationEnginePluginId,
   facilitatorAxisBound,
   facilitatorAxisDisplayValue,
   issueAxis,
@@ -143,22 +144,47 @@ describe('facilitation engine status', () => {
         plugin_id: 'engine',
         plugin_ids: ['engine'],
         available: true,
-        unavailable_reason: null,
+        reason_code: null,
+        engine_reason: null,
       }),
     ).toEqual({ state: 'ready', pluginId: 'engine' });
   });
 
-  it('reads bound-but-unavailable with the engine reason as detail', () => {
+  it('reads an ungranted candidate as its own state, not as the engine', () => {
+    const status = parseFacilitationEngineStatus({
+      ...base,
+      state: 'ungranted',
+      plugin_id: 'engine',
+      plugin_ids: ['engine'],
+      available: false,
+      reason_code: 'ungranted',
+      engine_reason: null,
+    });
+    expect(status).toEqual({ state: 'ungranted', pluginId: 'engine' });
+    expect(status && facilitationEnginePluginId(status)).toBeNull();
+  });
+
+  it('reads the reason code of a bound engine that is not usable', () => {
+    const bound = { ...base, state: 'bound', plugin_id: 'engine', plugin_ids: ['engine'], available: false };
+    expect(
+      parseFacilitationEngineStatus({ ...bound, reason_code: 'inactive', engine_reason: null }),
+    ).toEqual({ state: 'unusable', pluginId: 'engine', reason: 'inactive', engineReason: null });
     expect(
       parseFacilitationEngineStatus({
-        ...base,
-        state: 'bound',
-        plugin_id: 'engine',
-        plugin_ids: ['engine'],
-        available: false,
-        unavailable_reason: 'no SQL grant',
+        ...bound,
+        reason_code: 'engine_reported',
+        engine_reason: 'migrations not run',
       }),
-    ).toEqual({ state: 'unavailable', pluginId: 'engine', reason: 'no SQL grant' });
+    ).toEqual({
+      state: 'unusable',
+      pluginId: 'engine',
+      reason: 'engine_reported',
+      engineReason: 'migrations not run',
+    });
+    // A code this client does not know yet still gets a sentence.
+    expect(
+      parseFacilitationEngineStatus({ ...bound, reason_code: 'something_new', engine_reason: 'x' }),
+    ).toEqual({ state: 'unusable', pluginId: 'engine', reason: 'unknown', engineReason: null });
   });
 
   it('is null for a body that is not the documented shape', () => {
