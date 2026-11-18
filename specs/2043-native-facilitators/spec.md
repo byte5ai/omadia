@@ -12,45 +12,11 @@
 > a second model family (Codex) on 2026-11-18; its findings are incorporated. §12 lists
 > what is unverified.
 >
-> **Amended by the owner on 2026-11-18** (§0): the facilitation engine is built in the
-> plugin `@omadia/agent-facilitator`, not in the kernel. The decisions of §11 are taken.
-> Where §0 and a later section disagree, §0 holds.
-
-## 0. Owner amendment (2026-11-18): the engine lives in the plugin
-
-The facilitator stays a native kind of agent, with everything §2 says about identity,
-omissions and neutrality. What changes is where the facilitation engine lives: as much
-logic and as many migrations as possible sit in the plugin `@omadia/agent-facilitator`
-(1.0.0, a rewrite), and the kernel keeps only what a plugin cannot safely own.
-
-| Part | Owner | Reason |
-|---|---|---|
-| `agents.kind`, enforced omissions, neutrality block, persona bounds (§2) | Kernel | Grants, memory wiring, default agent and prompt compile are kernel-owned; a plugin cannot enforce them against itself. |
-| Stored inbound message events with author, tenant, message id, revision, timestamp (§5.3) | Kernel (`conversationMessages` service) | The record of who wrote what must not depend on a model argument. The plugin reads it by id. |
-| Delivery of every group message for an active facilitation (§6.2) | Kernel subscription, channel plugin | The channel's mention gate needs an answer that survives a plugin restart. |
-| Posting and direct messages as the facilitator's own identity (§6.2) | Kernel | Sender resolution is the identity guarantee; `no_identity` instead of another bot. |
-| Running the facilitator's model turn | Kernel (`agentTurn` service) | Privacy shield, model policy and receipts apply; the text comes back unposted. |
-| Readiness and session capability registries (§6.1) | Kernel, pass-through | Generic registries; channel and media plugins declare, the engine reads. |
-| All tables of §5.1, lifecycle, contributions, decision methods, scheduler, outbox and locking, handshake, status, report, rule changes, process, action items, protocol (§5.2 to §5.7) | Plugin | Engine logic on plugin-owned migrations (`ctx.sql`), jobs and routes. |
-| Visibility, retention, quotas (§5.8, §5.10) | Plugin | Own tables, routes and jobs; the kernel only expires its event store. |
-| Sessions, consent state, playbook mapping (§6.1, §6.3) | Plugin | Consumes the capability snapshot. |
-| Facilitation-scoped capabilities (§5.11) | Plugin and M365 connector | The engine passes the allowed recipients with every call; the connector refuses everyone else. No kernel-issued grant. |
-| Facilitations view, per-facilitator defaults (§7) | Plugin UI | Served through the plugin UI host. |
-| "Facilitators" in the agent directory: create, personality, Teams identity (§7) | Kernel web-ui | Operates on kernel entities. |
-
-Consequences:
-
-- A facilitator-kind agent is bound to the one active plugin that declares the manifest
-  capability `facilitationEngine@1` and gets exactly that plugin's tools. Without the
-  plugin, or without the operator's SQL grant for it, the facilitator says that
-  facilitation is not set up; it does nothing else.
-- The contract is `@omadia/plugin-api` 1.55.0 and `@omadia/channel-sdk` 0.3.0.
-- Timing does not wait for agent triggers (#2082): the plugin runs a leased scheduler
-  over its own tables and can move onto triggers later.
-- The plugin is not retired and its repository is not archived (§8, §10 item 12).
-- Trust boundary: authorship cannot be forged by the model. The plugin's code holds a
-  database grant and is trusted like any installed plugin with one.
-- No Teams test tenant is available. §6.2 and §9 criterion 13 are amended below.
+> **Amended by the owner on 2026-11-18** (§0): the facilitator archetype is delivered by
+> the archetype plugin `@omadia/agent-facilitator` (repo `omadia-agent-facilitator`), with
+> the engine in the plugin. The decisions of §11 are taken. Where §0 and a later section
+> disagree, §0 holds. §0.1 records what #2092 has already built and where it still
+> differs from this spec.
 
 ## 0. Owner amendment: an archetype plugin (2026-11-18)
 
@@ -120,6 +86,22 @@ cannot safely own.
     and checks also need a valid execution authorization with deadline and run counter,
     and stop with the kill switch.
 - Where this section and the rest of the spec disagree, this section holds.
+
+## 0.1 Implemented state (#2092, merged 2026-11-18)
+
+#2092 built the kernel and web-ui side against an earlier version of §0 ("the engine lives
+in the plugin"). It is the starting point; the differences below are closed by the issues
+named, not by reverting it.
+
+| Built in #2092 | This spec | Closed by |
+|---|---|---|
+| `agents.kind` (`facilitator`) with enforced omissions, neutrality block, persona bounds (migration 0067) | `agents.archetype` with an archetype registry; the facilitator archetype comes from an archetype plugin (AVE §5.10) | #2088, #2060 |
+| Engine bound by the manifest capability `facilitationEngine@1` plus the operator's SQL grant; the plugin is trusted like any plugin with a database grant | manifest kind `archetype`; database role limited to the plugin's own schema, never the shared core pool (AVE §5.10) | #2088 |
+| `conversationMessages` (migration 0068): stored inbound messages, subscribe, replay | plus process-bound reads, typed events (cards, reactions, transcript segments), link requests | #2089 |
+| `agentTurn`: one engine-run turn in the agent's envelope, text returned unposted | plus execution authorization with bounded scopes, budgets, deadlines and kill switch for every action | #2090 |
+| Send as own identity, `no_identity`, readiness and session capability registries | plus allowed targets per scope, per-conversation readiness, fresh roster query | #2091 |
+| Facilitation-scoped capabilities: the engine passes the allowed recipients, the connector refuses everyone else; no kernel-issued grant | kernel-issued facilitation-scoped grants bound to execution scopes, revoked on stop and end of service (§5.11) | #2078, #2090 |
+| Old `facilitation` Conductor pattern and its plugin services removed | same | #2067 |
 
 ## 1. Why this exists
 
