@@ -856,7 +856,9 @@ An ideal colleague answers with what matters, not with status lines and buttons.
 today already carry too much: in Teams a "✨ AI-generated" chip, a verifier badge, a
 system-data chip, "💬 Direkte Antwort von …", a "🔎 Konsultiert: …" footer, "🔽 Kürzer / 🔼
 Mehr Details", "💡 Nächste Varianten" and Direct-Line buttons (`omadia-channel-teams`
-`src/teamsCard.ts`); most channels (Telegram, for example) cannot show such elements at
+`src/teamsCard.ts`; the buttons can be switched off by the operator through seven
+`teams_card_*` settings, all on by default, `src/teamsCardFeatures.ts`, the chips cannot);
+Slack, Discord and WhatsApp put a 👀 reaction on every received message; most channels (Telegram, for example) cannot show such elements at
 all. Answers become long, complex and hard to read, and the colleague feeling breaks.
 
 **Rule:** the message body contains what a good colleague would say. Everything else lives
