@@ -416,8 +416,18 @@ omits (grants, memory, consultation, default-agent role, fast lane), its role co
 (for the facilitator the neutrality block) and its persona bounds. The kernel stays
 responsible for every agent of every archetype: identity and speaker, INV-1 to INV-11,
 refusing the omitted grants, discretion, and every model turn (run through the kernel's
-agent turn, with model policy, privacy shield, budgets, deadlines and kill switch). An
-agent has exactly one archetype, set at creation; it never switches. Uninstalling an
+agent turn, with model policy, privacy shield, budgets, deadlines and kill switch).
+
+**Enforcement boundary for archetype plugins.** "Every model turn through the kernel" is
+enforced technically, not by convention: the plugin's model accessor (`ctx.llm`) accepts a
+call only with a valid execution scope and routes it through the agent turn; an archetype
+plugin's outbound network is limited to its manifest allow-list and never includes model
+provider endpoints. Today the global `fetch` is still reachable from plugins
+(`middleware/src/platform/pluginContext.ts:555`) and `ctx.llm` calls the provider directly
+(`pluginContext.ts:1822`); sandboxing outbound access for archetype plugins is therefore a
+prerequisite for shipping one (#2088).
+
+An agent has exactly one archetype, set at creation; it never switches. Uninstalling an
 archetype plugin disables its agents and keeps their records; it never converts them to
 another archetype.
 
@@ -518,8 +528,11 @@ data classification:
 | `existence` | Only that a colleague or system knows something, with whom to ask ("Mira can help with this"). |
 | `none` | Nothing, not even existence. |
 
-A blocked flow is never silent towards the agent: it receives a structured refusal and
-answers honestly that it cannot share this here, without revealing what it withholds.
+A blocked flow is never silent towards the agent: it receives a structured refusal. What
+the person sees depends on the disclosure level: at `existence` or above the agent says
+honestly that it cannot share this here, without revealing what it withholds; at `none`
+the answer is the same as when no such information exists, so neither the information nor
+the fact that something was withheld can be inferred.
 
 **Defaults.** The context-memory ACL is on for every agent in mode `members` (recall uses
 only knowledge everyone present owns, migration `0062`; today the column defaults to
@@ -824,6 +837,12 @@ Each existing element keeps its purpose, moved out of the message body:
 36. **Selection vs binding.** A group conversation is bound to agent A; user U selects B and
     user V selects C: U's unaddressed messages reach B, V's reach C, everyone else's reach
     A, also after a restart.
+37. **Enforcement boundary.** A test archetype plugin that tries a model call through
+    `ctx.llm` without a scope, and one through a direct HTTP request to a model provider,
+    makes no model call in either case, and none with the kill switch on.
+38. **Disclosure level none.** Two questions, one about information that exists but is
+    withheld at level `none`, one about information that does not exist: the visible
+    answers do not allow telling the cases apart.
 
 ## 7. Migration and compatibility
 

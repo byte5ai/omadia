@@ -44,7 +44,7 @@ cannot safely own.
   | Scope | Until | Allowed targets |
   |---|---|---|
   | `active` | the facilitation's deadline | home conversation, linked session conversations in `scheduled`, `live` or `confirming`, private reminders to participants |
-  | `closing` | all essential messages (result, abort report, session or final protocol) confirmed, at most 7 days after `closed` or `aborted` | home conversation, the session conversations of this facilitation, the protocol recipients of §5.8 |
+  | `closing` (one per closing event: each session close, the facilitation's close or abort; own id) | all essential messages of that event (session protocol, result, abort report) confirmed, at most 7 days after the event | home conversation, the session conversations of this facilitation, the protocol recipients of §5.8 |
   | `scheduling` | the agreed follow-up meeting's invitations are sent or its date passed | the invitees confirmed by group consent |
   | `follow_up` | the follow-up deadline | the home conversation and the owners of open action items |
 
@@ -419,7 +419,7 @@ the chat itself. Secret ballots are out of scope for v1.
 | Ranked vote | Distinct options with ranks 1..n; partial rankings allowed. | Configurable points per rank (default 3/2/1); missing ranks score 0. Duplicate options or ranks are refused with a hint; an empty ballot is not a contribution. | Fixed at start; default: runoff vote among the tied options. |
 | Single choice | One option. | Most votes. | As above. |
 | Approval | Any non-empty set of options. | Most approvals. | As above. |
-| Consent | Consent or objection with a reason. | Passes when no objection stands; objections are moderated, then the proposal is put again. | n/a |
+| Consent | Consent or objection with a reason. | Uses the group-consent procedure of §5.7: the step closes only after its window without a standing objection; full early agreement does not end the window, and consents may be withdrawn until it ends. | n/a |
 | Assignment | One name per item (for example per role), confirmed by the named person. | Done when every item has one confirmed name. | n/a |
 
 Every method also accepts an explicit abstention, which counts as a contribution and
@@ -439,6 +439,7 @@ within its window and never past the deadline.
 |---|---|
 | Clear result (ranked, single, approval) | The step closes with this result; the agenda continues with the next step. The facilitation reaches `concluding` only when its definition of done is met. |
 | Tie | Runoff round among the tied options with the same method; deadline = the earlier of the original deadline and the runoff window set at start (default 12 h); at the deadline without a decision: abort report naming the tie |
+| Consent window ended without a standing objection | The step closes with the decision; grants derived from it may be issued |
 | Consent with a standing objection | Stays `active`; the facilitator moderates the objection and puts an amended proposal; at the deadline: abort report with the objection |
 | Assignment with an unconfirmed name | Stays `active` until the named person confirms or declines; at the deadline: abort report naming the open items |
 | Free-text definition of done | Group consent on "the definition of done is met" (§5.7), then the facilitation goes to `concluding` |
@@ -820,6 +821,11 @@ kept compatible.
     know, `existence` gets a note that something was left out, `none` gets neither content,
     derived summaries nor a hint. One owner with two open action items writes an
     unreferenced "erledigt": neither item closes, one question is asked.
+31. **Consent step and closing scopes.** All participants agree early to a consent
+    decision and one objects before the window ends: the step stays open and no grant is
+    issued. Two sessions close during the same active facilitation: each protocol is sent
+    under its own `closing` scope with its own 7-day limit, independently, also across a
+    restart.
 
 ## 10. Work breakdown
 
