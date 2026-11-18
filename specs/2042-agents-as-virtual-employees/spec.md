@@ -833,7 +833,8 @@ Each existing element keeps its purpose, moved out of the message body:
     agent's name or personality; a routine stays pausable by its human owner; a plugin
     sync recovers after a transient network error.
 29. **Uncluttered answers.** A normal answer in Teams consists of the text and the AI
-    disclosure in its most discreet form, with no status chips, footers or buttons; the
+    disclosure as the operator's frequency setting renders it (#2087; with the default
+    `channel_default` today's Teams chip), with no other status chips, footers or buttons; the
     same answer in Telegram is plain text; the trace, verification and consulted agents
     are reachable in details or by asking.
 30. **Channel parity.** Every capability of an agent, including choosing an agent, giving
