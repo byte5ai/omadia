@@ -39,7 +39,7 @@
 // above bound what even a misbehaving plugin can reach.
 
 import type { AgentRow, ConfigStore } from '@omadia/orchestrator';
-import { AgentGraphStore, ConfigValidationError } from '@omadia/orchestrator';
+import { AgentGraphStore, ConfigValidationError, isFacilitatorKind } from '@omadia/orchestrator';
 import type { Pool } from 'pg';
 
 import type { ConductorEphemeralAttachmentsStore, EphemeralAttachment } from '../conductor/ephemeralAttachmentsStore.js';
@@ -196,6 +196,13 @@ export function createAgentSetupServices(deps: {
       };
 
       const existing = await configStore.getAgentBySlug(slug);
+      // #2060 — default provisioning never touches a facilitator: its only
+      // grant is the facilitation engine's, set by the operator. A plugin
+      // that asks to be attached to one is skipped, loudly.
+      if (existing && isFacilitatorKind(existing)) {
+        log(`[agent-setup] '${slug}' is a facilitator — skipped provisioning for ${input.pluginId}`);
+        return { created: false, agentSlug: slug };
+      }
       if (existing) {
         await ensureAttachment(existing);
         await registry.reload();

@@ -25,7 +25,7 @@
  * assistant identity apply unchanged to every agent that never used this.
  */
 
-import { isModelRef } from '@omadia/orchestrator';
+import { isModelRef, withFacilitatorNeutrality, type AgentKind } from '@omadia/orchestrator';
 import type { ModelPolicy } from '@omadia/plugin-api';
 
 import { compileBoundariesSection } from '../plugins/builder/boundaryPresets.js';
@@ -43,6 +43,7 @@ import {
   type PersonaModelFamily,
 } from '../plugins/personaDelta.js';
 import { compileSycophancyGuard } from '../plugins/sycophancyGuard.js';
+import { FACILITATOR_DEFAULT_SYCOPHANCY } from './facilitatorContract.js';
 
 export interface ComposeAgentIdentityPromptInput {
   /** The operator's own text about this agent. */
@@ -51,6 +52,12 @@ export interface ComposeAgentIdentityPromptInput {
   readonly quality: QualityConfig | null;
   /** Which model family the persona deltas are computed against. */
   readonly family: PersonaModelFamily;
+  /**
+   * #2060 — the agent's kind. For a `facilitator` the neutrality contract is
+   * appended as the LAST section, whatever the operator authored, and the
+   * sycophancy guard is never off. Absent = `standard`.
+   */
+  readonly kind?: AgentKind;
 }
 
 export interface ComposedAgentIdentityPrompt {
@@ -82,11 +89,20 @@ export function composeAgentIdentityPrompt(
   );
   if (boundaries.text.length > 0) sections.push(boundaries.text);
 
-  const sycophancy = compileSycophancyGuard(input.quality?.sycophancy);
+  const isFacilitator = input.kind === 'facilitator';
+  const configuredSycophancy = input.quality?.sycophancy;
+  const sycophancy = compileSycophancyGuard(
+    isFacilitator && (configuredSycophancy === undefined || configuredSycophancy === 'off')
+      ? FACILITATOR_DEFAULT_SYCOPHANCY
+      : configuredSycophancy,
+  );
   if (sycophancy.length > 0) sections.push(sycophancy);
 
+  const authored = sections.length > 0 ? sections.join('\n\n') : null;
   return {
-    text: sections.length > 0 ? sections.join('\n\n') : null,
+    // #2060 — LAST, and present even when nothing was authored: "empty in,
+    // empty out" holds for a standard agent only.
+    text: isFacilitator ? withFacilitatorNeutrality(authored) : authored,
     droppedBoundaryPresets: boundaries.droppedIds,
   };
 }
@@ -106,6 +122,8 @@ export { inferFamilyFromModel } from '../plugins/personaDelta.js';
 export interface AgentPersonaFamilySource {
   readonly modelRouting?: Record<string, unknown> | null;
   readonly modelPolicy?: ModelPolicy;
+  /** #2060 — carried so the recompose path compiles the kind's contract. */
+  readonly kind?: AgentKind;
 }
 
 /**
@@ -147,7 +165,12 @@ export function agentPersonaFamilies(
  * family is the primary and becomes `text`/`family`, the map carries all.
  */
 export function composeForFamilies(
-  input: { instructions: string | null; persona: PersonaConfig | null; quality: QualityConfig | null },
+  input: {
+    instructions: string | null;
+    persona: PersonaConfig | null;
+    quality: QualityConfig | null;
+    kind?: AgentKind;
+  },
   families: readonly PersonaModelFamily[],
 ): { primary: ComposedAgentIdentityPrompt; family: PersonaModelFamily; byFamily: Record<string, string> } {
   const byFamily: Record<string, string> = {};
@@ -261,6 +284,7 @@ export async function recomposeStaleIdentities(
           instructions: identity.instructions,
           persona: identity.persona,
           quality: identity.quality,
+          ...(agent.kind !== undefined ? { kind: agent.kind } : {}),
         },
         agentPersonaFamilies(agent),
       );

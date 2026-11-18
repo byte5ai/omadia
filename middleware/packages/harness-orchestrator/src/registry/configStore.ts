@@ -12,6 +12,7 @@ import {
   type AgentChannelPolicyRow,
   type AgentToAgentMode,
 } from './agentToAgent.js';
+import { parseAgentKind, type AgentKind } from './agentKind.js';
 import { parseModelPolicy } from './modelPolicy.js';
 import type { ModelPolicy } from '@omadia/plugin-api';
 
@@ -64,6 +65,12 @@ export interface AgentRow {
   /** Reserved, not enforced (#978) — see {@link PrivacyProfile}. */
   readonly privacyProfile: PrivacyProfile;
   readonly status: AgentStatus;
+  /**
+   * #2060 — `agents.kind` (migration 0067), fixed at creation. Optional on
+   * the row type so pre-existing `AgentRow` fixtures stay valid; absent reads
+   * as `'standard'` (see {@link parseAgentKind}).
+   */
+  readonly kind?: AgentKind;
   /** Per-agent model routing (Agent Builder P0). Raw JSONB; shaped to
    *  `ModelRoutingConfig` at the API boundary. `null`/absent = inherit
    *  platform default. Optional so pre-existing AgentRow fixtures stay valid. */
@@ -223,6 +230,8 @@ export interface AgentInput {
   /** Reserved, not enforced (#978) — see {@link PrivacyProfile}. */
   readonly privacyProfile?: PrivacyProfile;
   readonly status?: AgentStatus;
+  /** #2060 — only settable here: the kind is fixed at creation. */
+  readonly kind?: AgentKind;
 }
 
 export interface AgentPatch {
@@ -363,6 +372,8 @@ interface AgentDbRow {
   description: string | null;
   privacy_profile: PrivacyProfile;
   status: AgentStatus;
+  /** #2060 — `agents.kind`; absent on a DB that predates migration 0067. */
+  kind?: string | null;
   model_routing: Record<string, unknown> | null;
   canvas_position: CanvasPosition | null;
   /** W5 — `agents.context_memory`; absent on a DB that predates migration 0050. */
@@ -456,6 +467,7 @@ function mapAgent(row: AgentDbRow): AgentRow {
     description: row.description,
     privacyProfile: row.privacy_profile,
     status: row.status,
+    kind: parseAgentKind(row.kind),
     modelRouting: row.model_routing ?? null,
     canvasPosition: row.canvas_position ?? null,
     contextMemory: parseContextMemoryMode(row.context_memory),
@@ -581,8 +593,8 @@ export class ConfigStore {
     }
     try {
       const { rows } = await this.pool.query<AgentDbRow>(
-        `INSERT INTO agents (slug, name, description, privacy_profile, status)
-         VALUES ($1, $2, $3, COALESCE($4, 'default'), COALESCE($5, 'enabled'))
+        `INSERT INTO agents (slug, name, description, privacy_profile, status, kind)
+         VALUES ($1, $2, $3, COALESCE($4, 'default'), COALESCE($5, 'enabled'), COALESCE($6, 'standard'))
          RETURNING *`,
         [
           input.slug,
@@ -590,6 +602,7 @@ export class ConfigStore {
           input.description ?? null,
           input.privacyProfile ?? null,
           input.status ?? null,
+          input.kind ?? null,
         ],
       );
       // INSERT ... RETURNING with non-zero rowcount always yields exactly
@@ -961,15 +974,25 @@ export class ConfigStore {
   }
 
   async setFallbackAgentId(agentId: string | null): Promise<PlatformSettingsRow> {
-    const { rows } = await this.pool.query<PlatformSettingsDbRow>(
-      `INSERT INTO multi_orchestrator_settings (id, fallback_agent_id, updated_at)
-       VALUES (true, $1, now())
-       ON CONFLICT (id) DO UPDATE SET
-         fallback_agent_id = EXCLUDED.fallback_agent_id,
-         updated_at        = now()
-       RETURNING fallback_agent_id, updated_at`,
-      [agentId],
-    );
+    let rows: PlatformSettingsDbRow[];
+    try {
+      ({ rows } = await this.pool.query<PlatformSettingsDbRow>(
+        `INSERT INTO multi_orchestrator_settings (id, fallback_agent_id, updated_at)
+         VALUES (true, $1, now())
+         ON CONFLICT (id) DO UPDATE SET
+           fallback_agent_id = EXCLUDED.fallback_agent_id,
+           updated_at        = now()
+         RETURNING fallback_agent_id, updated_at`,
+        [agentId],
+      ));
+    } catch (err) {
+      // #2060 — the trigger of migration 0067 is the last line of defence;
+      // surface it as a domain error instead of a raw pg failure.
+      if (isConstraintViolation(err, 'fallback_agent_not_facilitator')) {
+        throw new ConfigValidationError('a facilitator cannot be the default agent');
+      }
+      throw err;
+    }
     const row = rows[0];
     if (!row) {
       throw new Error('setFallbackAgentId: RETURNING produced no row');
@@ -1065,6 +1088,15 @@ function isUndefinedTable(err: unknown): boolean {
     !!err &&
     typeof err === 'object' &&
     (err as { code?: string }).code === '42P01'
+  );
+}
+
+/** A violation raised with a named constraint (CHECK or a trigger's RAISE). */
+function isConstraintViolation(err: unknown, constraint: string): boolean {
+  return (
+    !!err &&
+    typeof err === 'object' &&
+    (err as { constraint?: string }).constraint === constraint
   );
 }
 

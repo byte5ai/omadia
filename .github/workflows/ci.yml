@@ -326,7 +326,9 @@ jobs:
           # (memberScopedOwners.pg, 5 tests); measured ran=419.
           # 421 → 423 with the receipt chain order regression (#1526,
           # receiptChainOrder.pg, 2 tests).
-          PG_TEST_FLOOR: '423'
+          # 423 → 427 with the agent kind constraints (#2060, agentKind.pg,
+          # 4 tests).
+          PG_TEST_FLOOR: '427'
         run: |
           set -eo pipefail
           npm run test:pg 2>&1 | tee pg-test.out

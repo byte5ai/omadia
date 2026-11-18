@@ -8,7 +8,10 @@ import {
   FALLBACK_AGENT_SLUG,
   mcpToolNameFromRef,
   type AgentGraphStore,
+  AGENT_KINDS,
   AGENT_TO_AGENT_MODES,
+  assertNotFacilitator,
+  isFacilitatorKind,
   DEFAULT_MODEL_POLICY,
   isModelRef,
   parseAgentToAgentMode,
@@ -32,6 +35,11 @@ import {
   type TeamsTargetKind,
 } from '../platform/teamsInstallTarget.js';
 import type { Plugin, PluginSetupField } from '../api/admin-v1.js';
+import {
+  assertFacilitatorPluginGrants,
+  respondFacilitatorRefusal,
+} from '../platform/facilitatorGuard.js';
+import { assertFacilitatorIdentity } from '../services/facilitatorContract.js';
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
 import { attachablePluginIds } from '../plugins/defaultOrchestratorAttach.js';
@@ -164,6 +172,8 @@ const AgentCreateSchema = z.object({
   description: z.string().max(2000).optional(),
   privacy_profile: z.enum(['strict', 'default']).optional(),
   status: z.enum(['enabled', 'disabled']).optional(),
+  // #2060 — only on create: the kind is fixed for the agent's lifetime.
+  kind: z.enum(AGENT_KINDS).optional(),
 });
 
 const AgentPatchSchema = z.object({
@@ -1822,6 +1832,17 @@ export function createOperatorAgentsRouter(
       });
   }
 
+  /** #2060 — where the facilitation engine plugin is looked up. */
+  function engineSources(): {
+    installedRegistry: InstalledRegistry | undefined;
+    catalog: PluginCatalog | undefined;
+  } {
+    return {
+      installedRegistry: options.getInstalledRegistry?.(),
+      catalog: options.getPluginCatalog?.(),
+    };
+  }
+
   function slugParam(req: Request, res: Response): string | undefined {
     const raw = req.params['slug'];
     if (typeof raw !== 'string' || raw.length === 0) {
@@ -1848,6 +1869,8 @@ export function createOperatorAgentsRouter(
   }
 
   function badRequest(res: Response, err: unknown): void {
+    // #2060 — one mapping for every facilitator refusal on this router.
+    if (respondFacilitatorRefusal(res, err)) return;
     if (err instanceof ConfigValidationError) {
       res.status(409).json({ error: 'config_validation', message: err.message });
       return;
@@ -1897,6 +1920,7 @@ export function createOperatorAgentsRouter(
             name: a.name,
             description: a.description,
             privacy_profile: a.privacyProfile,
+            kind: a.kind ?? 'standard',
             is_fallback: a.id === settings.fallbackAgentId,
           })),
         fallback_slug:
@@ -1929,6 +1953,7 @@ export function createOperatorAgentsRouter(
           description: a.description,
           privacy_profile: a.privacyProfile,
           status: a.status,
+          kind: a.kind ?? 'standard',
           created_at: a.createdAt,
           updated_at: a.updatedAt,
           active: active.has(a.id),
@@ -1970,9 +1995,14 @@ export function createOperatorAgentsRouter(
           ? { privacyProfile: body.privacy_profile }
           : {}),
         ...(body.status ? { status: body.status } : {}),
+        ...(body.kind ? { kind: body.kind } : {}),
       });
       await live.registry.reload();
-      res.status(201).json({ id: created.id, slug: created.slug });
+      res.status(201).json({
+        id: created.id,
+        slug: created.slug,
+        kind: created.kind ?? 'standard',
+      });
     } catch (err) {
       badRequest(res, err);
     }
@@ -2098,6 +2128,8 @@ export function createOperatorAgentsRouter(
         return;
       }
       const previous = normalizeContextMemoryMode(agent.contextMemory);
+      // #2060 — every mode other than `off` scopes a memory a facilitator does not have.
+      if (body.mode !== 'off') assertNotFacilitator(agent, 'memory');
       await live.store.updateAgent(agent.id, { contextMemory: body.mode });
       // Same reload contract as every other write on this router: the running
       // registry rebuilds the agent's `MemoryBinder` with the new mode, so the
@@ -2153,6 +2185,7 @@ export function createOperatorAgentsRouter(
         return;
       }
       const previous = parseAgentToAgentMode(agent.agentToAgent);
+      if (body.mode === 'on') assertNotFacilitator(agent, 'agent_to_agent');
       await live.store.updateAgent(agent.id, { agentToAgent: body.mode });
       await live.registry.reload();
       if (previous !== body.mode) {
@@ -2253,6 +2286,7 @@ export function createOperatorAgentsRouter(
               instructions: identity.instructions,
               persona: identity.persona,
               quality: identity.quality,
+              ...(updated.kind !== undefined ? { kind: updated.kind } : {}),
             },
             agentPersonaFamilies(updated),
           );
@@ -2343,6 +2377,7 @@ export function createOperatorAgentsRouter(
           channelKey,
           agent.id,
         );
+        if (body.enabled) assertNotFacilitator(agent, 'agent_to_agent');
         const row = await live.store.upsertAgentChannelPolicy({
           channelType,
           channelKey,
@@ -2455,8 +2490,18 @@ export function createOperatorAgentsRouter(
       // against it, so composing against the wrong one would emit the wrong
       // traits.
       // #1033 — one compile per family the policy names (primary first).
+      // #2060 — a facilitator's identity is checked against the neutrality
+      // contract before anything is stored (persona bounds, instructions).
+      if (isFacilitatorKind(agent)) {
+        assertFacilitatorIdentity({ instructions: body.instructions, persona, quality });
+      }
       const compiled = composeForFamilies(
-        { instructions: body.instructions ?? null, persona, quality },
+        {
+          instructions: body.instructions ?? null,
+          persona,
+          quality,
+          ...(agent.kind !== undefined ? { kind: agent.kind } : {}),
+        },
         agentPersonaFamilies(agent),
       );
       const family = compiled.family;
@@ -2733,6 +2778,11 @@ export function createOperatorAgentsRouter(
       // upsertAgentPlugin overwrites config on conflict — pass the existing
       // config through so a toggle never wipes a per-Agent configuration.
       const config = isFallback ? {} : (row?.config ?? {});
+      assertFacilitatorPluginGrants(
+        existing,
+        [{ pluginId: body.id, enabled: body.enabled }],
+        engineSources(),
+      );
       await live.store.upsertAgentPlugin(existing.id, {
         pluginId: body.id,
         config,
@@ -3836,6 +3886,12 @@ export function createOperatorAgentsRouter(
       // still smuggle a per-Agent config into the fallback row.
       const settings = await live.store.getPlatformSettings();
       const isFallback = settings.fallbackAgentId === existing.id;
+      // #2060 — checked before the first write, so a refused set changes nothing.
+      assertFacilitatorPluginGrants(
+        existing,
+        body.plugins.map((p) => ({ pluginId: p.id, enabled: p.enabled })),
+        engineSources(),
+      );
       const current = await live.store.listAgentPlugins(existing.id);
       const desired = new Set(body.plugins.map((p) => p.id));
       for (const p of current) {
@@ -3920,6 +3976,7 @@ export function createOperatorAgentsRouter(
           res.status(404).json({ error: 'not_found' });
           return;
         }
+        assertNotFacilitator(target, 'default_agent');
         await live.store.setFallbackAgentId(target.id);
       }
       await live.registry.reload();

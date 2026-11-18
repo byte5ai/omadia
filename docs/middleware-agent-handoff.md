@@ -9380,3 +9380,67 @@ keines mehr bekommen.
 
 Security: `docs/security-architecture.md` §7.
 Tests: `test/conductorReservedContextKeys.test.ts`.
+
+
+## Native Facilitators: Kernel-Seite (Epic #2043, 2026-11-18)
+
+Ein Facilitator ist eine eigene Art von Agent (`agents.kind = 'facilitator'`,
+Migration `0067_agent_kind`), der nur moderiert. Aufteilung nach
+Owner-Entscheidung „plugin-first“: Engine (Tabellen, Lebenszyklus, Zählung,
+Scheduler) im Plugin `omadia-agent-facilitator`, der Kernel bleibt dünn und
+enthält **keine** Facilitation-Tabellen. Spec: `specs/2043-native-facilitators/spec.md`.
+
+### Kind und erzwungene Auslassungen (#2060)
+
+- `packages/harness-orchestrator/src/registry/agentKind.ts`: `AgentKind`,
+  `assertNotFacilitator(agent, omission)` als **der** Seam für „nicht für
+  Facilitators“ (Epic #2042 nutzt ihn für Konsultation in beide Richtungen),
+  `FacilitatorOmissionError` (`code: 'facilitator_omission'`).
+- Die Art ist nach dem Anlegen fix (DB-Trigger). Ein Facilitator ist nie der
+  Default-Agent (DB-Trigger plus Route).
+- **Engine-Bindung per Manifest-Capability, keine Plugin-ID im Kernel:**
+  `src/platform/facilitatorGuard.ts` sucht das eine installierte, nicht
+  fehlerhafte Plugin, das `facilitationEngine@1` unter `provides` deklariert.
+  Kein oder mehr als ein Provider: es lässt sich nichts granten. Die Registry
+  schneidet die Grant-Zeilen eines Facilitators zusätzlich mit diesem Plugin
+  (`PluginCapabilityLookup.facilitatorGrantable`).
+- **Schreibzeit (Routen):** `operatorAgents.ts` und `agentBuilder.ts` lehnen
+  ab: fremde Plugin-Grants, Context-Memory-Modi, Default-Agent,
+  Agent-to-Agent (Schalter und Chat-Policy), Persona-Skills, Sub-Agents,
+  Tool-/MCP-Grants, Schedules. Antwort `409 facilitator_omission`.
+- **Laufzeit (`buildOrchestratorForAgent`, `AgentRuntimeConfig.kind`):** kein
+  Memory-Tool/-Binder, kein Recall (`contextRetriever`, `sessionBriefing`),
+  kein Capture (`sessionLogger`, Knowledge Graph), kein Learning
+  (`factExtractor`, `excerptExtractor`, Auto-Promote), keine Kalender-Tools,
+  keine Persona-Skills, kein Fast Path. `Orchestrator.agentKind` dreht die
+  Grant-Regel um: ein Facilitator bekommt **nur** Tools seiner gegranteten
+  Plugins (kein Owner oder kein Grant-Set = verweigert).
+- **Assistenz-Verweigerung:** `facilitatorAgent.ts` umschließt den
+  `ChatAgent`. Ein Turn erreicht das Modell nur aus einer Gruppenkonversation
+  (`origin.scope.kind` `conversation`/`group`, dort bittet jemand um eine
+  Moderation) oder als Engine-Turn (`runAsEngineTurn`). Alles andere (1:1,
+  Web-Chat, API, Workflow-Step, unbekannte Herkunft) bekommt eine feste,
+  freundliche Absage ohne Modellaufruf.
+- `agentSetupService.ensureAgent` überspringt Facilitators; das
+  Fallback-Onboarding kann sie nicht treffen (Fallback ist nie ein Facilitator).
+
+### Neutralitätsvertrag (Spec §2.4)
+
+- Text: `registry/facilitatorNeutrality.ts` (`FACILITATOR_NEUTRALITY_BLOCK`).
+  Er wird an drei Stellen als **letzter** Abschnitt gesetzt:
+  `composeAgentIdentityPrompt` (Save), `recomposeStaleIdentities` (Boot) und
+  beim Bauen des Agents nach Name und Steckbrief. Damit trägt ihn auch ein
+  Facilitator ohne gespeicherte Identität.
+- `src/services/facilitatorContract.ts`: Persona-Grenzen (`sarcasm` ≤ 20,
+  `drama` ≤ 30, `humor` ≤ 60, `risk_tolerance` ≤ 60, `warmth` ≥ 30,
+  Sycophancy-Guard nie `off`) und ein deterministischer Regel-Katalog für
+  Operator-Anweisungen (Deutsch und Englisch, kein Modellaufruf). Verstoß:
+  `422 facilitator_contract_violation` mit `issues[]`. Der Katalog ist eine
+  Hilfe beim Speichern, nicht die Durchsetzung: die leistet der Block.
+
+### Offen
+
+- Der allgemeine Orchestrator-System-Prompt (Memory-Konventionen,
+  Fach-Agenten-Liste) wird auch für Facilitators gebaut; die Abschnitte sind
+  ohne die zugehörigen Tools wirkungslos. Ein schlanker Facilitator-Rumpf ist
+  ein Follow-up.

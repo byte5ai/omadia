@@ -36,6 +36,41 @@ changelog.
 
 ## [Unreleased]
 
+### Added — Native facilitators, kernel side (epic #2043)
+
+2026-11-18. A facilitator is a kind of agent that only moderates. The engine
+(tables, lifecycle, counting, scheduler) lives in the plugin
+`omadia-agent-facilitator`; the kernel adds the kind, its enforced omissions
+and the neutrality contract. No facilitation tables in the kernel.
+
+- **Migration `0067_agent_kind`** (#2060): `agents.kind`
+  (`standard` | `facilitator`, default `standard`, CHECK). Trigger
+  `agents_kind_immutable` refuses any change of the kind after insert; trigger
+  `fallback_agent_not_facilitator` on `multi_orchestrator_settings` refuses a
+  facilitator as the default agent. Existing rows are `standard`.
+- **Operator API**: `POST /api/v1/operator/agents` takes `kind`; list, picker
+  and create answer carry it. Refusals for a facilitator answer
+  `409 { error: "facilitator_omission", omission, message }`: plugin grants
+  other than the installed plugin whose manifest provides
+  `facilitationEngine@1` (none or more than one installed: nothing can be
+  granted), context-memory modes, default-agent designation, agent-to-agent
+  switch and per-chat policy, persona skills, sub-agents, tool and MCP grants,
+  schedules. An identity that conflicts with the neutrality contract answers
+  `422 { error: "facilitator_contract_violation", issues[] }` (persona axis
+  bounds, sycophancy guard off, instructions matched by a deterministic rule
+  list; no model call).
+- **Runtime**: a facilitator is built without memory tool and binder, recall,
+  session capture, fact/excerpt extraction, auto-promote, knowledge-graph and
+  calendar tools, persona skills and fast path. It is offered and may run only
+  the tools of its granted plugins, and the registry intersects its grant rows
+  with the engine plugin. The peer gate is closed for it in both directions and
+  a workflow step cannot run it. Outside a group conversation or an engine-run
+  turn its `ChatAgent` answers with a fixed refusal, without a model call.
+- **Neutrality block**: compiled as the last section of a facilitator's
+  identity prompt at save time, in the boot recompose and again when the agent
+  is built (after name and self-description), so it is present without a
+  stored identity too.
+
 ### Fixed — Custom-Pattern-Worker: eine laufende Anfrage hält den Prozess offen
 
 2026-11-18. `@omadia/plugin-privacy-guard` 0.16.1. Der Worker, der die

@@ -122,6 +122,20 @@ export type {
   MemoryBinderOptions,
 } from './memoryBinder.js';
 export {
+  AGENT_KINDS,
+  FacilitatorOmissionError,
+  assertNotFacilitator,
+  isFacilitatorKind,
+  parseAgentKind,
+} from './registry/agentKind.js';
+export type { AgentKind, FacilitatorOmission } from './registry/agentKind.js';
+export {
+  FACILITATOR_NEUTRALITY_BLOCK,
+  FACILITATOR_NEUTRALITY_HEADING,
+  applyKindContract,
+  withFacilitatorNeutrality,
+} from './registry/facilitatorNeutrality.js';
+export {
   AGENT_TO_AGENT_MODES,
   isAgentToAgentEnabled,
   parseAgentToAgentMode,

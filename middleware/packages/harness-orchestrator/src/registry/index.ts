@@ -19,6 +19,7 @@ import {
   type DiffAction,
   type DiffPlan,
 } from './applyDiff.js';
+import { isFacilitatorKind } from './agentKind.js';
 import {
   ConfigValidationError,
   type AgentPluginRow,
@@ -97,6 +98,17 @@ export interface PluginCapabilityLookup {
    * plugins" rather than failing the seed.
    */
   listInstalled?(): readonly string[] | undefined;
+  /**
+   * #2060 — the plugin ids a facilitator-kind agent may be granted: the one
+   * installed plugin whose manifest provides the facilitation engine
+   * capability, or none. The registry intersects a facilitator's enabled
+   * `agent_plugins` rows with this list before it builds, so a row that got
+   * in past the write-time refusal (a hand edit, an engine that was since
+   * replaced) grants nothing.
+   *
+   * `undefined` (no lookup wired) and an empty list both mean "nothing".
+   */
+  facilitatorGrantable?(): readonly string[] | undefined;
 }
 
 export interface OrchestratorRegistryOptions {
@@ -343,6 +355,28 @@ export class OrchestratorRegistry {
     this.snapshot = snap;
   }
 
+  /**
+   * The authorisation set an agent is built with: its enabled grant rows.
+   * #2060 — for a facilitator, intersected with what the platform says a
+   * facilitator may hold (the facilitation engine). No lookup = nothing.
+   */
+  private grantedPluginIdsFor(
+    agent: AgentRow,
+    plugins: readonly AgentPluginRow[],
+  ): string[] {
+    const enabled = plugins.filter((p) => p.enabled).map((p) => p.pluginId);
+    if (!isFacilitatorKind(agent)) return enabled;
+    const grantable = new Set(this.options.pluginLookup?.facilitatorGrantable?.() ?? []);
+    const dropped = enabled.filter((id) => !grantable.has(id));
+    if (dropped.length > 0) {
+      this.log(`registry: facilitator grants ignored (not the facilitation engine)`, {
+        slug: agent.slug,
+        dropped,
+      });
+    }
+    return enabled.filter((id) => grantable.has(id));
+  }
+
   private runAction(
     action: DiffAction,
     pluginsByAgent: Map<string, AgentPluginRow[]>,
@@ -359,7 +393,7 @@ export class OrchestratorRegistry {
           this.deps,
           this.options.defaultRuntimeConfig,
           personaSkillsFor(graph.personaSkillsByAgent.get(action.agent.id) ?? []),
-          plugins.filter((p) => p.enabled).map((p) => p.pluginId),
+          this.grantedPluginIdsFor(action.agent, plugins),
         );
         const bindings = bindingsByAgent.get(action.agent.id) ?? [];
         const memoryScope = computeMemoryScope(action.agent.slug);
@@ -410,7 +444,7 @@ export class OrchestratorRegistry {
           this.deps,
           this.options.defaultRuntimeConfig,
           personaSkillsFor(graph.personaSkillsByAgent.get(action.agent.id) ?? []),
-          plugins.filter((p) => p.enabled).map((p) => p.pluginId),
+          this.grantedPluginIdsFor(action.agent, plugins),
         );
         const bindings = bindingsByAgent.get(action.agent.id) ?? [];
         const memoryScope = computeMemoryScope(action.agent.slug);

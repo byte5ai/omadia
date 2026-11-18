@@ -414,6 +414,7 @@ import {
   createPendingDefaultAttach,
   withInstalledParents,
 } from './plugins/defaultOrchestratorAttach.js';
+import { facilitatorGrantablePluginIds } from './platform/facilitatorGuard.js';
 import { warmPatternWorker } from './plugins/setupFieldPattern.js';
 import { BuiltInPackageStore } from './plugins/builtInPackageStore.js';
 import { LocalDevPackageStore } from './plugins/localDevPackageStore.js';
@@ -1347,6 +1348,10 @@ async function main(): Promise<void> {
         ? summary.memory_writes
         : [];
       return Array.from(new Set([...reads, ...writes]));
+    },
+    // #2060 — the one plugin a facilitator-kind agent may be granted.
+    facilitatorGrantable(): readonly string[] {
+      return facilitatorGrantablePluginIds({ installedRegistry, catalog: pluginCatalog });
     },
     listInstalled(): readonly string[] {
       // Include `active` AND `inactive` plugins (the latter may simply

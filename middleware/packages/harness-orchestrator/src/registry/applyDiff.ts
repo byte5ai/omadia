@@ -421,6 +421,8 @@ export function buildForAgent(
       // to `undefined` (grant everything) — hence the explicit presence check
       // on the argument rather than on its length.
       ...(grantedPluginIds !== undefined ? { grantedPluginIds } : {}),
+      // #2060 — what the factory keys every facilitator omission on.
+      ...(agent.kind !== undefined && agent.kind !== 'standard' ? { kind: agent.kind } : {}),
     },
     deps,
   );
