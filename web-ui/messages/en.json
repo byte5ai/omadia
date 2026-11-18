@@ -3176,6 +3176,7 @@
       "scrollToBottomAriaLabel": "Jump to latest message",
       "placeholder": {
         "thinking": "Builder is thinking …",
+        "awaitingChoice": "Builder is waiting for your choice above …",
         "idle": "Describe what the agent should do. Enter to send, Shift+Enter for a line break."
       },
       "button": {
@@ -3185,7 +3186,8 @@
       "liveness": {
         "streamLive": "Stream live · {elapsed} · model {model}",
         "iterActivity": "Iter {iteration} · last activity {gap}",
-        "likelyStuck": "likely stuck — press Stop?"
+        "likelyStuck": "likely stuck — press Stop?",
+        "awaitingChoice": "waiting for your choice"
       },
       "turnStats": {
         "live": "Turn live",
