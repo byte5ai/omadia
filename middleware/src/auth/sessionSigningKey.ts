@@ -11,8 +11,11 @@ const KEY_BYTES = 64;
  * and persists in the core-auth vault scope so the same machine (and any
  * replacement reading the same vault) keeps minting verifiable cookies.
  *
- * Rotating the key = every outstanding session is invalidated. That is the
- * only supported "log out everyone" lever; no separate key-version field.
+ * Rotating the key = every outstanding session of EVERY user is invalidated.
+ * That is the global "log out everyone" lever; no separate key-version
+ * field. Ending one user's sessions does not need it: that is the per-user
+ * `users.session_version` marker (`sessionRevocation.ts`), moved by
+ * sign-out, an admin password reset and disabling the account.
  */
 export async function resolveSessionSigningKey(
   vault: SecretVault,

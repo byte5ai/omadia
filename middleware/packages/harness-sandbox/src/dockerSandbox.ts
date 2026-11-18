@@ -1,8 +1,14 @@
 import { createHash } from 'node:crypto';
 
 import type { AgentComputerProfile } from './agentComputerProfile.js';
-import { execDockerViaSpawn, type DockerExec } from './dockerExec.js';
+import { execDockerViaSpawn, type DockerExec, type DockerExecResult } from './dockerExec.js';
 import { clampSandboxPathPosix } from './pathGuard.js';
+import {
+  dockerResourceLimitArgs,
+  resolveSandboxResourceLimits,
+  resourceLimitsNotInForce,
+  type SandboxResourceLimits,
+} from './resourceLimits.js';
 import type { SandboxRegistry } from './sandboxRegistry.js';
 import type {
   Sandbox,
@@ -37,6 +43,24 @@ import type {
  * argv, AND (behind `SANDBOX_DOCKER_TEST=1`) by a real container attempting
  * an outbound request and observing it fail. See `agentComputerProfile.ts`
  * for why this distinction is load-bearing.
+ *
+ * ## Resource limits are WIRED, not declared
+ *
+ * Every container gets `--memory`, `--memory-swap`, `--cpus` and
+ * `--pids-limit` from `dockerResourceLimitArgs()` (see `resourceLimits.ts`):
+ * the per-call `timeout` stops one command, not a fork bomb or a runaway
+ * allocation left running in the long-lived container. Limits are fixed at
+ * `docker run`, so a container that already exists (created by an older
+ * build, or under different limits) gets the current ones via `docker update`
+ * before it is started again. Either way `docker inspect` must then show
+ * every limit in force, or the container runs nothing: `provision()` throws,
+ * and the container is stopped and kept (existing) or removed (just created).
+ * `requireLimitsInForce()` says why it refuses rather than replaces.
+ * Same two-tier proof as egress (`dockerSandboxLimits.test.ts`): the stub
+ * tests assert the argv and the refusals, the real-Docker tier asserts what
+ * the daemon and the kernel applied, including for out-of-range values, that
+ * an oversized allocation is killed, and that a container whose limits cannot
+ * be updated is refused.
  */
 export interface DockerSandboxBackendOptions {
   /** Container image. Small, POSIX shell, busybox coreutils (`ls -1p`, `cat`,
@@ -59,6 +83,16 @@ export interface DockerSandboxBackendOptions {
    * exercised now via the Docker backend's own deterministic case.
    */
   readonly registry?: SandboxRegistry;
+  /**
+   * Ceilings for every container this backend creates or re-attaches. A field
+   * left out, or given an invalid value, comes from its `OMADIA_SANDBOX_*`
+   * env variable and then from `DEFAULT_SANDBOX_RESOURCE_LIMITS`. There is no
+   * way to switch a limit off.
+   */
+  readonly resourceLimits?: Partial<SandboxResourceLimits>;
+  /** Warnings (a container refused because its limits are not in force, a
+   *  failed stop or removal). Defaults to `console.warn`. */
+  readonly log?: (msg: string) => void;
 }
 
 const DEFAULT_IMAGE = 'alpine:3.20';
@@ -81,12 +115,16 @@ export class DockerSandboxBackend implements SandboxBackend {
    *  the deterministic container name, not from this map. */
   private readonly live = new Map<string, DockerSandbox>();
   private readonly registry: SandboxRegistry | undefined;
+  private readonly resourceLimits: SandboxResourceLimits;
+  private readonly log: (msg: string) => void;
 
   constructor(options: DockerSandboxBackendOptions = {}) {
     this.image = options.image ?? DEFAULT_IMAGE;
     this.workDir = options.workDir ?? DEFAULT_WORK_DIR;
     this.execDocker = options.execDocker ?? execDockerViaSpawn;
     this.registry = options.registry;
+    this.resourceLimits = resolveSandboxResourceLimits(options.resourceLimits);
+    this.log = options.log ?? ((msg) => console.warn(msg));
   }
 
   async provision(args: {
@@ -112,7 +150,11 @@ export class DockerSandboxBackend implements SandboxBackend {
     const exists = await this.containerExists(name);
     if (!exists) {
       await this.runContainer(name, args.profile);
+      await this.requireLimitsInForce(name, { created: true });
     } else {
+      // Limits are fixed at `docker run`; bring an existing container up to
+      // the current ones, and check them, before it runs anything again.
+      await this.requireLimitsInForce(name, { created: false });
       // Idempotent re-attach: bring an existing-but-stopped container back
       // up. `docker start` on an already-running container is a harmless
       // no-op (exit 0).
@@ -164,12 +206,88 @@ export class DockerSandboxBackend implements SandboxBackend {
     if (!profile.egress) {
       args.push('--network', 'none');
     }
+    // Resource ceilings, wired the same way: before the image, or Docker
+    // would hand them to the container's command as arguments.
+    args.push(...dockerResourceLimitArgs(this.resourceLimits));
     args.push(this.image, 'sh', '-c', `mkdir -p '${this.workDir}' && exec sleep infinity`);
     const result = await this.exec(args, { timeoutMs: 60_000 });
     if (result.exitCode !== 0) {
       throw new Error(
         `DockerSandboxBackend: failed to provision container '${name}': ${result.stderr || result.stdout}`,
       );
+    }
+  }
+
+  /**
+   * Fail closed: a container runs nothing unless `docker inspect` shows every
+   * current limit in force. An existing container first gets the current
+   * limits via `docker update`; a refused update counts as not in force.
+   *
+   * On a miss this refuses the request rather than creating a replacement.
+   * The container's own filesystem is the scope's durable workspace (there is
+   * no volume), so replacing it would silently discard what the agent
+   * installed and wrote there. An existing container is stopped instead, so
+   * nothing left running in it goes on without the limits, and kept with its
+   * files: the next `provision()` retries the update on the stopped container,
+   * and an operator who removes it gets a new, bounded one. A container this
+   * call just created holds nothing yet, so it is removed; a replacement would
+   * meet the same daemon. The log line and the error name the container and
+   * the missing limits, never Docker's output.
+   */
+  private async requireLimitsInForce(name: string, opts: { readonly created: boolean }): Promise<void> {
+    const updateFailure = opts.created ? undefined : await this.updateResourceLimits(name);
+    const missing = updateFailure !== undefined ? [updateFailure] : await this.limitsNotInForce(name);
+    if (missing.length === 0) return;
+    const detail = missing.join('; ');
+
+    if (opts.created) {
+      const removed = await this.tryDocker(['rm', '-f', name], 30_000);
+      this.log(
+        `[sandbox] container '${name}' runs nothing: its resource limits are not in force (${detail}); ${removed ? 'it was removed' : 'removing it failed'}`,
+      );
+      throw new Error(
+        `DockerSandboxBackend: new container '${name}' was not used because its resource limits are not in force (${detail}). ${removed ? 'It was removed.' : 'Removing it failed.'} Nothing ran in it. Check that the Docker daemon can enforce memory, swap, CPU and PID limits.`,
+      );
+    }
+    const stopped = await this.tryDocker(['stop', '-t', '0', name], 30_000);
+    this.log(
+      `[sandbox] container '${name}' runs nothing: its resource limits are not in force (${detail}); ${stopped ? 'it was stopped and kept' : 'stopping it failed'}`,
+    );
+    throw new Error(
+      `DockerSandboxBackend: container '${name}' was not used because its resource limits are not in force (${detail}). ${stopped ? 'It was stopped and kept with its files.' : 'Stopping it failed.'} The next request tries the update again; removing the container (docker rm -f ${name}) gives the scope a new one with the limits.`,
+    );
+  }
+
+  /** `undefined` when `docker update` applied the current limits, else why not. */
+  private async updateResourceLimits(name: string): Promise<string | undefined> {
+    const result = await this.tryExec(['update', ...dockerResourceLimitArgs(this.resourceLimits), name]);
+    return result?.exitCode === 0 ? undefined : failedStep('docker update', result);
+  }
+
+  /** The limits `docker inspect` does not show in force (`resourceLimitsNotInForce()`). */
+  private async limitsNotInForce(name: string): Promise<readonly string[]> {
+    const result = await this.tryExec(['inspect', '--type', 'container', '--format', '{{json .HostConfig}}', name]);
+    if (result?.exitCode !== 0) return [failedStep('docker inspect', result)];
+    const hostConfig = parseJsonObject(result.stdout);
+    if (hostConfig === undefined) return ['docker inspect returned no readable HostConfig'];
+    return resourceLimitsNotInForce(hostConfig, this.resourceLimits);
+  }
+
+  /** A cleanup step: a failure is logged by exit status only and reported as `false`. */
+  private async tryDocker(args: readonly string[], timeoutMs: number): Promise<boolean> {
+    const result = await this.tryExec(args, timeoutMs);
+    if (result?.exitCode === 0) return true;
+    this.log(`[sandbox] ${failedStep(`docker ${args[0] ?? ''}`, result)} for '${args[args.length - 1] ?? ''}'`);
+    return false;
+  }
+
+  /** `exec` for a step whose failure is an outcome: an injected `execDocker`
+   *  that throws comes back as `undefined`. */
+  private async tryExec(args: readonly string[], timeoutMs = 15_000): Promise<DockerExecResult | undefined> {
+    try {
+      return await this.exec(args, { timeoutMs });
+    } catch {
+      return undefined;
     }
   }
 
@@ -183,6 +301,23 @@ export class DockerSandboxBackend implements SandboxBackend {
       maxOutputBytes: 4 * 1024 * 1024,
       ...(opts.input !== undefined ? { input: opts.input } : {}),
     });
+  }
+}
+
+/** Why a Docker step did not succeed, from its exit status alone: Docker's
+ *  output stays out of logs and errors. */
+function failedStep(step: string, result: DockerExecResult | undefined): string {
+  if (result === undefined) return `${step} could not run`;
+  if (result.timedOut) return `${step} timed out`;
+  return `${step} failed (exit ${String(result.exitCode)})`;
+}
+
+function parseJsonObject(text: string): object | undefined {
+  try {
+    const value: unknown = JSON.parse(text);
+    return typeof value === 'object' && value !== null ? value : undefined;
+  } catch {
+    return undefined;
   }
 }
 

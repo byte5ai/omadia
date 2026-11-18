@@ -406,6 +406,8 @@ export interface InstallFailure {
   code: string;
   message: string;
   details?: unknown;
+  /** #1477 — ingest-refusal localization values, as on the ZIP upload. */
+  params?: Record<string, string>;
 }
 
 export type InstallResponse = InstallSuccess | InstallFailure;

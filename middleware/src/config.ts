@@ -4,6 +4,9 @@ import dotenv from 'dotenv';
 import { z } from 'zod';
 
 import type { RegistryConfigEntry } from './api/registry-v1.js';
+import { isClientAddressPolicy } from './auth/clientAddress.js';
+import { SETUP_TOKEN_MAX_LENGTH, SETUP_TOKEN_MIN_LENGTH } from './auth/setupToken.js';
+import { isPublicSchemeMode, isTrustedProxyList } from './http/requestTrust.js';
 
 // Resolve .env relative to this file so the server works from any CWD.
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -35,7 +38,9 @@ const devFlag = () =>
     .transform((v) => v === 'true')
     .default(false);
 
-const ConfigSchema = z.object({
+/** Exported so tests can read a default without going through `process.env`
+ *  (which the `.env` file above may override). Boot parses it via `loadConfig`. */
+export const ConfigSchema = z.object({
   PORT: z.coerce.number().int().positive().default(3979),
 
   // Interface to bind. Defaults to dual-stack `::` (all interfaces) so Fly-Edge
@@ -57,7 +62,12 @@ const ConfigSchema = z.object({
   // time), so a fresh install follows the vendor's current frontier model
   // instead of a version baked into the code. A concrete id still works.
   ORCHESTRATOR_MODEL: z.string().min(1).default('class:frontier'),
-  ORCHESTRATOR_MAX_TOKENS: z.coerce.number().int().positive().default(8192),
+  // #1210 — thinking counts toward `max_tokens` on always-thinking models, so
+  // size this for thinking PLUS the reply, not for the reply alone. 32_000 is
+  // the frontier class's registry `maxTokens`; the orchestrator plugin also
+  // floors an older installed config at this value, and the provider seam
+  // clamps it back down to whatever the resolved model actually accepts.
+  ORCHESTRATOR_MAX_TOKENS: z.coerce.number().int().positive().default(32_000),
   // Live model discovery: how often each connected provider's list-models API
   // is re-read into the catalog (0 = boot only, never periodically).
   LLM_MODEL_DISCOVERY_INTERVAL_MS: z.coerce
@@ -96,17 +106,25 @@ const ConfigSchema = z.object({
   // SKILLS_DIR. Model default matches the orchestrator; override to run
   // sub-agents cheaper (Sonnet/Haiku) while keeping the orchestrator on Opus.
   SUB_AGENT_MODEL: z.string().min(1).default('class:frontier'),
-  SUB_AGENT_MAX_TOKENS: z.coerce.number().int().positive().default(4096),
+  // Half the orchestrator budget (#1210): a sub-agent answers one delegated
+  // question rather than composing the turn, but it runs on the same
+  // always-thinking class by default, so 4096 bought thinking and nothing else.
+  SUB_AGENT_MAX_TOKENS: z.coerce.number().int().positive().default(16_000),
   SUB_AGENT_MAX_ITERATIONS: z.coerce.number().int().positive().default(16),
+  // Reasoning effort for sub-agent model calls. Bounds the thinking only —
+  // results and answers keep SUB_AGENT_MAX_TOKENS. Unset = no effort sent (the
+  // model's default); sent only to models whose catalogue declares the level.
+  SUB_AGENT_EFFORT: z.enum(['low', 'medium', 'high', 'xhigh']).optional(),
 
-  // BuilderAgent runtime — separate from SUB_AGENT_MAX_TOKENS because
-  // fill_slot generates whole TS slot bodies (5–15k output tokens for a
-  // realistic plugin slot is normal). With 4096 the model would emit
-  // `{"slotKey":"…","source":"<truncated>` and the SDK aggregator would
-  // drop the partial source field, producing zod errors that look like
-  // "Required: source" — see OB-31. 16384 covers the common cases;
-  // operators can bump to the model's max (32k for opus-4-7) via env.
-  BUILDER_AGENT_MAX_TOKENS: z.coerce.number().int().positive().default(16384),
+  // BuilderAgent runtime — its own knob because fill_slot generates whole TS
+  // slot bodies (5–15k output tokens for a realistic plugin slot is normal),
+  // so it must be tunable without moving every other sub-agent. At the old
+  // 4096 the model emitted `{"slotKey":"…","source":"<truncated>` and the SDK
+  // aggregator dropped the partial source field, producing zod errors that
+  // looked like "Required: source" — see OB-31. Since #1210 raised
+  // SUB_AGENT_MAX_TOKENS the two sit at a comparable budget; operators can
+  // bump this to the model's max (32k for the frontier class) via env.
+  BUILDER_AGENT_MAX_TOKENS: z.coerce.number().int().positive().default(16_384),
   SKILLS_DIR: z.string().min(1).default('../skills'),
 
   // Memory persistence backend selection.
@@ -143,17 +161,41 @@ const ConfigSchema = z.object({
 
   // OB-49 first-boot seed. When the users table is empty AND both vars
   // are set, the bootstrap creates a single admin user with these creds.
-  // Otherwise the unauthenticated /api/v1/auth/setup wizard is mounted
-  // and the operator completes setup via the browser. Either path is a
-  // one-shot: once any user exists, both paths refuse.
+  // Otherwise the /api/v1/auth/setup wizard opens and the operator
+  // completes setup via the browser. Either path is a one-shot: once any
+  // user exists, both paths refuse. The password follows the shared policy
+  // (auth/passwordPolicy.ts): shorter than 8 characters falls back to the
+  // wizard, longer than 1024 stops the boot before any account is created.
   ADMIN_BOOTSTRAP_EMAIL: z.string().optional(),
   ADMIN_BOOTSTRAP_PASSWORD: z.string().optional(),
   ADMIN_BOOTSTRAP_DISPLAY_NAME: z.string().optional(),
-  // Public base URL the `return` redirect lands on after a successful
-  // login. In prod this is the middleware host itself (admin UI eventually
-  // moves to its own Fly app → point this at that host). In dev it's the
-  // Next.js origin (localhost:3000) so the Set-Cookie from the callback
-  // lands on the SAME domain the browser is on — cookies don't cross hosts.
+  // Operator authorisation for the first-user wizard: POST /api/v1/auth/setup
+  // requires this value in its `setup_token` body field, checked before
+  // anything else (auth/setupToken.ts). Unset → the kernel generates a token
+  // at boot, stores it in platform_settings so every replica and restart
+  // shares it until the first admin exists, and prints it once per boot in
+  // the log ("setup token: …"). One-shot like the wizard itself. 16 to 512
+  // characters; an empty value means unset (optionalNonEmpty).
+  ADMIN_SETUP_TOKEN: optionalNonEmpty(
+    z.string().min(SETUP_TOKEN_MIN_LENGTH).max(SETUP_TOKEN_MAX_LENGTH),
+  ),
+  // Set to 'true' ONLY by the desktop app's supervisor for the kernel it
+  // spawns (desktop/src/supervisor.ts). Honoured solely together with a
+  // literal loopback HOST: then the first-user wizard needs no setup token,
+  // because the kernel is reachable from this machine only. A loopback HOST
+  // without this flag still needs the token (a same-host reverse proxy makes
+  // a loopback kernel public), and so does this flag without loopback.
+  OMADIA_DESKTOP_EMBEDDED: devFlag(),
+  // Public origin for the absolute URLs the middleware hands to a browser:
+  // the login `return` redirect, the Entra post-logout redirect, plugin flow
+  // callbacks (`/bot-api/...`), and — unless their own override is set — the
+  // `/api/*` callbacks (AUTH_REDIRECT_URI, MCP_OAUTH_REDIRECT_URI,
+  // CONDUCTOR_WEBHOOK_PUBLIC_BASE_URL, TEAMS_PUBLIC_BASE_URL). Point it at the
+  // origin users open, so the Set-Cookie from the callback lands on the SAME
+  // domain the browser is on. In dev that's the Next.js origin
+  // (localhost:3000); the docker-compose stack sets localhost:3333 in
+  // `middleware/compose.defaults.env` (#1317). The default below is the port
+  // of a from-source run.
   PUBLIC_BASE_URL: z
     .string()
     .url()
@@ -167,6 +209,14 @@ const ConfigSchema = z.object({
   // only when the callback must resolve on a different origin than
   // FLOW_PUBLIC_BASE_URL/api/v1/operator/mcp-oauth/callback (the default).
   MCP_OAUTH_REDIRECT_URI: z.string().url().optional(),
+  // Issue #1342 — stdio MCP servers run as child processes of the middleware,
+  // with its OS user, filesystem and network. `false` refuses to save new
+  // stdio servers (manual or catalog import) and refuses existing stdio rows
+  // at connect time, so no process is spawned. Default on (backwards-compatible).
+  MCP_STDIO_ENABLED: z
+    .enum(['true', 'false'])
+    .transform((v) => v === 'true')
+    .default(true),
   // Absolute URL Azure AD redirects to after login. MUST be registered
   // verbatim in the MS365 App Registration. In prod: middleware's own
   // /api/v1/auth/callback. In dev: http://localhost:3000/bot-api/v1/auth/callback
@@ -184,6 +234,82 @@ const ConfigSchema = z.object({
   // Lower bound 4 = the fixed login window (a smaller cap would be
   // meaningless); upper bound one week.
   AUTH_SESSION_MAX_LIFETIME_HOURS: z.coerce.number().min(4).max(168).default(12),
+  // Channel WebSockets (canvas): a frame reaches its plugin only on a session
+  // check that started at most this many ms before the frame arrived; an
+  // older verdict is re-checked first (one users-row read) while the frame
+  // waits. This bounds how long a revocation made on another replica takes to
+  // stop an open socket. 0 = check before every frame; at most 60 s, the
+  // idle-socket sweep. An empty value means the default, not 0 (coercion
+  // would read "" as 0).
+  WS_SESSION_FRAME_RECHECK_MS: z.preprocess(
+    (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
+    z.coerce.number().int().min(0).max(60_000).default(5_000),
+  ),
+  // Which hops may speak for the client (#1310, §10o). Comma-separated
+  // addresses and/or `IP/bits` blocks, or `loopback`|`linklocal`|
+  // `uniquelocal`. This becomes Express's `trust proxy`, so it decides whether
+  // `req.secure` / `req.protocol` / `req.hostname` / `req.ip` believe the
+  // request's `X-Forwarded-*` headers — and with them whether the auth
+  // cookies get `Secure`. Empty (the default) = `none`: trust no hop, believe
+  // no forwarded header. NOT a hop count: Express counts hops from the server
+  // INCLUDING the immediate peer, so `1` trusts a client that connects
+  // directly and believes its forged header — the schema rejects a bare
+  // number for that reason. Set it to the address of the reverse proxy in
+  // front of this process (web-ui's container address, your Caddy/Traefik/
+  // nginx, the platform edge); `loopback` for a desktop install, where the
+  // caveat is that anything else on loopback is then trusted too.
+  TRUSTED_PROXY_ADDRESSES: z
+    .string()
+    .default('')
+    .transform((v) => v.trim())
+    .refine(
+      isTrustedProxyList,
+      'must be empty/none, or up to 16 comma-separated IPs, IP/bits blocks or loopback|linklocal|uniquelocal (not a hop count)',
+    ),
+  // The scheme clients reach this deployment over (#1310, §10o). Governs every
+  // scheme-shaped decision in the process: the `Secure` flag on the session,
+  // login-device and PKCE cookies, and the `https`/`wss` URLs the pairing
+  // descriptor hands out. `auto` (the default) follows the connection via
+  // `req.secure`, which honours `X-Forwarded-Proto` only from the hops
+  // TRUSTED_PROXY_ADDRESSES names. `https` for a reverse proxy that terminates
+  // TLS but sets no `X-Forwarded-Proto` — `auto` cannot tell that apart from
+  // genuine plain HTTP, and trusting the header from every sender is the bug
+  // this replaced. `http` for a deployment that is plain HTTP on purpose.
+  // One setting rather than a cookie-only flag because a deployment that
+  // declares HTTPS for its cookies must advertise HTTPS in its pairing URLs
+  // too; a `ws://` URL on an HTTPS page is blocked as mixed content.
+  PUBLIC_SCHEME: z
+    .string()
+    .default('auto')
+    .transform((v) => (v.trim() === '' ? 'auto' : v.trim()))
+    .refine(isPublicSchemeMode, 'must be auto, https or http'),
+  // Password sign-in rate limit (docs/security-architecture.md §10m): where
+  // the limiter takes a client's address from. `socket` = the TCP peer, which
+  // cannot be forged (default; behind a proxy every client shares the proxy's
+  // address, and the limiter treats it as shared). `xff:<n>` = the n-th
+  // X-Forwarded-For entry counted from the RIGHT — set n to the number of
+  // trusted proxies that APPEND the client to the header (a Caddy, Traefik or
+  // suitably configured nginx in front of web-ui: xff:1). `header:<name>` = a
+  // header the edge SETS: on Fly.io header:Fly-Client-IP, NOT xff:1 — Fly
+  // puts the app's own address right-most. Never the left-most
+  // X-Forwarded-For entry, which the client writes. Empty = the default.
+  AUTH_LOGIN_CLIENT_ADDRESS: z
+    .string()
+    .default('socket')
+    .transform((v) => (v.trim() === '' ? 'socket' : v.trim()))
+    .refine(isClientAddressPolicy, 'must be socket, xff:<1..8> or header:<name>'),
+  // IPv6 clients are keyed by this many leading bits: one host controls its
+  // whole /64. A /56 holds 256 /64s and a /48 65,536, so an attacker with a
+  // whole allocation brings that many client keys; 48 or 56 folds it into one
+  // key, at the price of lumping together unrelated clients that share it.
+  AUTH_LOGIN_IPV6_PREFIX: z.coerce.number().int().min(32).max(64).default(64),
+  // Concurrent argon2 verifications password sign-in (and the setup wizard's
+  // hash) may run before further attempts get 503 auth.busy. One of them is
+  // kept for browsers with a sign-in device cookie (none when this is 1).
+  // Each needs 19 MiB and a libuv threadpool thread (UV_THREADPOOL_SIZE,
+  // default 4), so slots beyond the pool size only queue. 1..16:
+  // 16 × 19 MiB ≈ 300 MiB.
+  AUTH_LOGIN_MAX_INFLIGHT: z.coerce.number().int().min(1).max(16).default(4),
 
   // Friction-free desktop pairing (#293). The server owns the mapping
   // "human-facing URL → canvas transport URL"; these knobs let one config
@@ -399,7 +525,7 @@ const ConfigSchema = z.object({
     .transform((v) => v === 'true')
     .default(false),
 
-  // Diagram rendering (Kroki + Tigris/MinIO). When all required fields are
+  // Diagram rendering (Kroki + Tigris/SeaweedFS). When all required fields are
   // present, the orchestrator exposes `render_diagram` and the middleware
   // mounts the HMAC-signed image-proxy at /diagrams/<key>. Missing values
   // disable the feature cleanly — the rest of the middleware is unaffected.
@@ -419,12 +545,17 @@ const ConfigSchema = z.object({
   // Teams rejects card images > 1 MB; be strict and cap below that.
   DIAGRAM_MAX_PNG_BYTES: z.coerce.number().int().positive().default(900_000),
 
-  // Object-storage (S3-compatible). Locally: MinIO from compose.yml. On Fly:
+  // Object-storage (S3-compatible). Locally: SeaweedFS from docker-compose.storage.yaml. On Fly:
   // auto-populated by `fly storage create` (Tigris).
   BUCKET_NAME: z.string().optional(),
   AWS_ENDPOINT_URL_S3: optionalNonEmpty(z.string().url()),
   AWS_ACCESS_KEY_ID: z.string().optional(),
   AWS_SECRET_ACCESS_KEY: z.string().optional(),
+  // Local attachment store for a single-machine install without S3 (the
+  // desktop app sets it when its "Attachments" switch is on). Used only when
+  // the four S3 values above are NOT all set; published as the same
+  // `tigrisStore` service. See platform/attachmentStore.ts.
+  ATTACHMENT_STORE_DIR: optionalNonEmpty(z.string()),
 
   // Off-site backup of the encrypted vault to the same Tigris bucket. The
   // backup only holds ciphertext — the master key (VAULT_KEY) is never
@@ -530,8 +661,25 @@ const ConfigSchema = z.object({
   // claims — re-checked against Odoo + knowledge-graph. VERIFIER_MODE picks
   // the blast radius:
   //   - shadow  : verifier runs + logs verdicts, never blocks or retries.
-  //   - enforce : contradictions block the reply, trigger one retry with
-  //               a correction prompt; final failure shows an honest error.
+  //   - enforce : a delivery gate on /api/chat/stream and every other
+  //               chatStream consumer as well as chat(): an answer with a
+  //               contradiction (or a missing/invented citation, an uncalled
+  //               tool) or one the verifier could not check (it could not
+  //               run, every check failed) is replaced by a withheld-answer
+  //               notice; one whose claims it could not all confirm goes out
+  //               unchanged, its state on the verifier badge;
+  //               the stream sends no answer text before the verdict. Turns that end in an
+  //               input card (and the answer it rides on) or a
+  //               turn-incomplete notice go out unchecked; an answer Privacy
+  //               Shield rendered is never verified and is withheld. A
+  //               contradiction first triggers one correction retry (on the
+  //               stream too, except canvas turns); a borderline answer draws
+  //               a second sample on the non-streaming path. Neither runs a
+  //               tool again: the turn's tool results are replayed. The
+  //               subscription-CLI runtime and routines are not wrapped by
+  //               the verifier.
+  // VERIFIER_RESAMPLE_ON_BORDERLINE=false switches that second sample off
+  // (seeded into the plugin config on first boot only, like the others).
   // Leave OFF in production until the shadow-mode metrics are clean.
   VERIFIER_ENABLED: z
     .enum(['true', 'false'])
@@ -542,6 +690,10 @@ const ConfigSchema = z.object({
   VERIFIER_MAX_CLAIMS: z.coerce.number().int().positive().default(20),
   VERIFIER_AMOUNT_TOLERANCE: z.coerce.number().nonnegative().default(0.01),
   VERIFIER_MAX_RETRIES: z.coerce.number().int().min(0).max(2).default(1),
+  VERIFIER_RESAMPLE_ON_BORDERLINE: z
+    .enum(['true', 'false'])
+    .transform((v) => v === 'true')
+    .default(true),
 
   // Package upload (phases 1–5 of the zip-upload roadmap). Default OFF —
   // only flipped on once admin UI + security review are through.
@@ -597,17 +749,21 @@ const ConfigSchema = z.object({
   // Remote plugin registries (the plugin "store"). JSON array of
   // {url,name,token?} entries — Core fetches each registry's `index.json`,
   // merges them (first-wins on id collision), and installs ZIPs through the
-  // EXISTING upload pipeline. Empty/unset → no remote registry: OSS instances
-  // run standalone and manual ZIP upload still works. `token`, when present,
+  // EXISTING upload pipeline. Read on FIRST boot only (the list is admin-managed
+  // afterwards): unset → the public hub.omadia.ai; '[]' → no remote registry,
+  // the instance runs standalone and manual ZIP upload still works (#1483).
+  // `token`, when present,
   // is sent as `Authorization: Bearer` (how a private byte5/customer hub is
   // consumed). Example:
   //   REGISTRY_URLS='[{"name":"omadia-public","url":"https://hub.omadia.ai"}]'
   REGISTRY_URLS: z.string().optional(),
+  // #1458 — deadline for one registry's index (headers + body). Kept below
+  // the web UI's 10 s server-side fetch budget; values above 8000 are clamped.
   REGISTRY_FETCH_TIMEOUT_MS: z.coerce
     .number()
     .int()
     .positive()
-    .default(15_000),
+    .default(5_000),
 
   // --- Public MCP endpoint (W2-3, issue #542) ------------------------------
   // omadia's own tools, exposed over a stateless Streamable-HTTP MCP server at
@@ -734,6 +890,9 @@ function loadConfig(): Config {
     PLUGIN_DEV_DIR: parsed.data.PLUGIN_DEV_DIR
       ? resolvePath(parsed.data.PLUGIN_DEV_DIR)
       : undefined,
+    ATTACHMENT_STORE_DIR: parsed.data.ATTACHMENT_STORE_DIR
+      ? resolvePath(parsed.data.ATTACHMENT_STORE_DIR)
+      : undefined,
   };
 }
 
@@ -796,4 +955,27 @@ export function parseRegistries(
     out.push(entry);
   }
   return out;
+}
+
+/**
+ * #1483 — `REGISTRY_URLS` as a first-boot seed. `undefined` means "the
+ * operator said nothing" (unset, blank, or unusable — the seeder then uses
+ * the public default hub); `[]` means the operator wrote `'[]'` and wants an
+ * instance without a registry. `parseRegistries` alone cannot tell the two
+ * apart: it returns [] for both.
+ */
+export function registrySeedFromEnv(
+  raw: string | undefined,
+  log: (msg: string) => void = (m) => console.warn(m),
+): RegistryConfigEntry[] | undefined {
+  if (!raw || raw.trim() === '') return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    parsed = undefined;
+  }
+  if (Array.isArray(parsed) && parsed.length === 0) return [];
+  const entries = parseRegistries(raw, log);
+  return entries.length > 0 ? entries : undefined;
 }

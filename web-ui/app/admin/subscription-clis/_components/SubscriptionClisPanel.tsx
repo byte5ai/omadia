@@ -15,6 +15,7 @@ import { useFormatter, useTranslations } from 'next-intl';
 import { Button } from '../../../_components/ui/Button';
 import {
   getCliBackends,
+  recheckCliBackends,
   startCliLogin,
   submitCliLoginCode,
   getCliLoginStatus,
@@ -81,7 +82,7 @@ export function SubscriptionClisPanel({
   const load = useCallback(async (force: boolean) => {
     if (force) setRechecking(true);
     try {
-      const data = await getCliBackends(force);
+      const data = force ? await recheckCliBackends() : await getCliBackends(false);
       setState({ kind: 'ready', data });
       if (force) {
         setJustRefreshed(true);
@@ -134,8 +135,8 @@ export function SubscriptionClisPanel({
         <p className="mt-2 text-sm leading-[1.55] text-[color:var(--fg-muted)]">
           {t('explainer.singleOperator')}
         </p>
-        {/* #1102 — one honest caveat: the subscription path has no long-term
-            memory yet, so operators are not surprised by a missing feature. */}
+        {/* #1391 — the honest caveat: the subscription path has no answer
+            verifier, so operators are not surprised by a missing feature. */}
         <p className="mt-2 text-sm leading-[1.55] text-[color:var(--fg-muted)]">
           {t('explainer.featureNote')}
         </p>

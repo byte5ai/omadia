@@ -5,7 +5,7 @@ import type { TeamsTargetKind } from './teamsInstallTarget';
 /**
  * Typed client for the operator multi-orchestrator REST surface
  * (`/api/v1/operator/agents/*` — see `routes/operatorAgents.ts` in the
- * middleware). Used by `app/operator/agents/page.tsx` (RSC fetches) and
+ * middleware). Used by `app/operator/agents/(index)/page.tsx` (RSC fetches) and
  * the client-side dashboard component (writes).
  *
  * `botApi` + `forwardCookieHeader` are inlined here because `_lib/api.ts`
@@ -472,7 +472,7 @@ export async function removeAgentPeerChannel(
 // ── W5 memory-ACL rollout switch (#899) ────────────────────────────────
 
 /**
- * The three modes `agents.context_memory` accepts. Structural contract with
+ * The modes `agents.context_memory` accepts. Structural contract with
  * the middleware, same arrangement as {@link TEAMS_PROVISIONING_STATES}: the
  * column's CHECK constraint (migration 0050) owns the vocabulary, the route
  * re-states it, and this list mirrors it so the radio group renders without a
@@ -484,6 +484,7 @@ export const CONTEXT_MEMORY_MODES = [
   'off',
   'enforce',
   'enforce-strict',
+  'members',
 ] as const;
 
 export type ContextMemoryMode = (typeof CONTEXT_MEMORY_MODES)[number];
@@ -602,8 +603,9 @@ export async function getAgentGrants(slug: string): Promise<AgentGrantsDto> {
 
 /**
  * Machine codes the operator-agents plugin/grant routes emit as
- * `{ error: '<code>' }` (they predate the `{ code }` envelope `ApiError.code`
- * parses, so the code must be read from the body).
+ * `{ error: '<code>' }` (they predate the `{ code }` envelope; `ApiError.code`
+ * falls back to `error` since #1333, this list is what limits the codes a page
+ * may translate).
  *
  * i18n HARD RULE: these are NOT user-facing text. Pages map each code to a
  * message-catalogue key and render the localized copy; the raw body string
@@ -1153,8 +1155,10 @@ export interface PluginSetupFieldDto {
   type: SetupFieldType;
   /** #602 (OM-17) — localized help map; same contract as `label`. */
   help?: LocalizedMarkdown | string;
-  default?: string | string[];
-  enum?: Array<{ value: string; label: string }>;
+  /** Typed like the manifest field: `boolean` (#1464), `number` for an
+   *  `integer` field (#1524), `string[]` for a `host_list`. */
+  default?: string | string[] | boolean | number;
+  enum?: Array<{ value: string; label: string; label_localized?: LocalizedMarkdown }>;
 }
 
 export interface PluginCatalogEntryDto {

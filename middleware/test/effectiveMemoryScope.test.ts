@@ -174,10 +174,13 @@ test('core stays READABLE in every branch, but writable only context-free', () =
   // context-FREE privilege; knowledge leaves a context via promote (decision 2).
   assert.ok(effectiveMemoryScope('public', contextFreeAxes()).includes('core'));
   assert.ok(effectiveMemoryScope('public', channelAxes('teams~c1')).includes('ro:core'));
+  // enforce-strict keeps the shared NOTES readable but not the transcripts:
+  // every conversation's transcript sits in one flat tree, so reading it from
+  // a context turn crossed the very boundary strict exists to hold.
   assert.ok(
     effectiveMemoryScope('public', channelAxes('teams~c1'), {
       mode: 'enforce-strict',
-    }).includes('ro:core'),
+    }).includes('ro:core-notes'),
   );
   // …and the bare, writable token never appears on a context turn.
   for (const mode of ['enforce', 'enforce-strict'] as const) {
@@ -369,7 +372,7 @@ test('enforce-strict drops the agent tier from context turns entirely', () => {
   const scope = effectiveMemoryScope('public', axes, { mode: 'enforce-strict' });
 
   // Assert — not even read-only.
-  assert.deepStrictEqual(scope, ['ro:core', 'channel:teams~c1:*', 'team:teams~acme:*']);
+  assert.deepStrictEqual(scope, ['ro:core-notes', 'channel:teams~c1:*', 'team:teams~acme:*']);
   assert.ok(!scope.some((p) => p.includes('orchestrator:')));
 });
 

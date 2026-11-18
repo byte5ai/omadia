@@ -13,7 +13,9 @@ export {
   CACHE_READ_MULTIPLIER,
   CACHE_WRITE_MULTIPLIER,
   priceForModel,
+  hasKnownPrice,
   computeCostUsd,
+  computeCacheSavingsUsd,
   normalizeUsage,
 } from './pricing.js';
 
@@ -23,12 +25,16 @@ export {
   initUsageRecorder,
   isUsageRecorderReady,
   recordUsage,
+  providerRecordsOwnUsage,
   setUsageContextProvider,
+  runWithUsageContext,
   flush as flushUsageRecorder,
   shutdownUsageRecorder,
 } from './recorder.js';
 
 export { withProviderUsageTracking } from './withProviderUsageTracking.js';
+
+export { type FxRate, createEcbEurRateSource } from './exchangeRate.js';
 
 export {
   type UsageWindow,
@@ -36,7 +42,14 @@ export {
   type UsageByKey,
   type UsageBucket,
   type UsageDashboard,
+  type UsageBucketSize,
+  type UsageKeyGroup,
   SUBSCRIPTION_SOURCES,
+  BUILDER_SOURCE_PREFIX,
+  BUILDER_SOURCE_KEY,
+  OTHER_SOURCE_KEY,
+  BY_SOURCE_LIMIT,
+  capByKey,
   getUsageDashboard,
 } from './queries.js';
 

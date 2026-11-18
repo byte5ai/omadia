@@ -1,4 +1,13 @@
+import { posix } from 'node:path';
+
 import type { MemoryEntry, MemoryStore } from '@omadia/plugin-api';
+import {
+  isUnprotectedNote,
+  markUnprotectedNote,
+  stripUnprotectedNoteMarker,
+} from '@omadia/orchestrator-extras';
+
+import { currentTurnIsShielded, isCurrentTurnUnprotected } from './turnProtection.js';
 
 /**
  * Per-orchestrator memory namespacer.
@@ -7,9 +16,11 @@ import type { MemoryEntry, MemoryStore } from '@omadia/plugin-api';
  * unaware that several Agents share one physical store. This wrapper makes
  * each Agent see a PRIVATE `/memories` root that is physically backed by
  * `/memories/orchestrators/<slug>/...`, while a small allow-list of shared
- * namespaces (`core`, `sessions`, `chat-sessions`, brand `_*`) passes through
- * untouched so cross-agent kernel data (session transcripts, brand files,
- * system rules) stays common.
+ * namespaces (`core`, `sessions`, brand `_*`) passes through untouched so
+ * cross-agent kernel data (session transcripts, brand files, system rules)
+ * stays common. `chat-sessions` is refused outright (see
+ * {@link MODEL_DENIED_SEGMENTS}).
+ *
  *
  * It is a transparent bijection:
  *   - inbound paths are rewritten into the private tree (`toInner`)
@@ -38,7 +49,93 @@ const MEMORIES_ROOT = '/memories';
  * `contexts` is deliberately NOT in here: the per-context trees are private
  * per Agent × context, never shared.
  */
-const SHARED_SEGMENTS = new Set(['core', 'sessions', 'chat-sessions']);
+const SHARED_SEGMENTS = new Set(['core', 'sessions']);
+
+/**
+ * First segments the model-facing `memory` tool may not address at all.
+ *
+ * `/memories/chat-sessions/<id>.json` is the web UI's copy of a chat, kept by
+ * `ChatSessionStore` (which writes through the scoped store, not through this
+ * mapper). It holds every answer as the user saw it — including answers
+ * Privacy Shield rendered server-side from a dataset (`answerSource:
+ * 'privacy-render'`): real rows that never went to the model. `memory` is
+ * exempt from interning (`privacyInternPolicy.ts`), so a `view` here handed
+ * those rows to the model in clear (#1102). The model has no use for the raw
+ * chat JSON. The `/memories/sessions/` transcripts are refused only while a
+ * Privacy Shield runs (see {@link SHIELDED_SEGMENTS}).
+ */
+const MODEL_DENIED_SEGMENTS = new Set(['chat-sessions']);
+
+/**
+ * First segments refused while a Privacy Shield provider runs (#1534).
+ *
+ * `SessionLogger` writes every turn to `/memories/sessions/<scope>/<day>.md`
+ * with its real values restored, protected or not. `memory` is intern-exempt,
+ * so a `view` there handed the model names and e-mail addresses the shield
+ * masked during the turn itself, from any chat. Masking the text on the way
+ * out would only catch detector-visible spans, so the tree is refused instead;
+ * earlier conversations reach the model through recall, which masks and skips
+ * `unprotected` turns. Without a shield nothing is masked anyway, and the
+ * transcripts stay readable.
+ */
+const SHIELDED_SEGMENTS = new Set(['sessions']);
+
+/**
+ * Physical trees refused while a Privacy Shield runs (#1540): a plugin's
+ * `ctx.memory` (`/memories/orchestrators/<slug>/plugins/<id>/`) sits inside
+ * the agent's private root, so the `memory` tool reached it as
+ * `/memories/plugins/…` (or `~agent/plugins/…` in a context turn). A plugin
+ * stores what it fetched with its real values, whatever the turn's
+ * protection, so the tree is refused like the transcripts. Matched on the
+ * normalised physical path.
+ */
+const SHIELDED_PHYSICAL = /^\/memories\/orchestrators\/[^/]+\/plugins(\/|$)/;
+
+/** Thrown for a path in {@link MODEL_DENIED_SEGMENTS}, in
+ *  {@link SHIELDED_SEGMENTS} under a shield, or for an unprotected note under
+ *  a shield (#1540); the memory tool turns it into an `Error:` result. */
+export class MemoryPathDenied extends Error {
+  constructor(path: string, reason?: 'privacy-shield' | 'unprotected-note') {
+    super(
+      reason === 'privacy-shield'
+        ? `The path ${path} is not available to the memory tool while the Privacy Shield is active. ` +
+            'Earlier conversations reach you through the recalled context instead.'
+        : reason === 'unprotected-note'
+          ? `The note ${path} was written in a conversation without the Privacy Shield and is not ` +
+              'available while the Privacy Shield is active. Do not retry it or change it; keep new notes in a file of their own.'
+          : `The path ${path} is not available to the memory tool.`,
+    );
+    this.name = 'MemoryPathDenied';
+  }
+}
+
+/**
+ * Is a Privacy Shield in force for the memory tool right now? Read on every
+ * call, since the provider can come and go at runtime. Omitted: never (tests,
+ * callers without a shield).
+ */
+export type ShieldActive = () => boolean;
+
+/**
+ * #1540 — where a note's provenance comes from. `writtenUnprotected` is read
+ * on each write: true marks the note unprotected (`noteProvenance.ts` in
+ * orchestrator-extras). `readerShielded` is read on each read of a marked
+ * note: true refuses it while the shield is active. Omitted: no note is
+ * marked, and a marked note is refused whenever the shield is active.
+ */
+export interface NoteProvenance {
+  writtenUnprotected(): boolean;
+  readerShielded(): boolean;
+}
+
+/** The kernel's provenance: the current turn's privacy handle. A turn without
+ *  one (no guard, or the subscription CLI, which has no shield) writes
+ *  unprotected notes and reads them without the marker line: its model sees
+ *  every value as it is anyway, and a CLI agent keeps its own notes. */
+export const TURN_NOTE_PROVENANCE: NoteProvenance = {
+  writtenUnprotected: isCurrentTurnUnprotected,
+  readerShielded: currentTurnIsShielded,
+};
 
 /**
  * Reserved model-facing first segments, recognised ONLY in context mode.
@@ -91,6 +188,10 @@ abstract class MemoryNamespacerBase implements MemoryStore {
     private readonly reservedRoots: ReadonlyMap<string, string>,
     /** Segments recognised as reserved, bound or not. */
     private readonly reservedSegments: ReadonlySet<string>,
+    /** #1534 — refuse {@link SHIELDED_SEGMENTS} while this returns true. */
+    private readonly shieldActive: ShieldActive | undefined,
+    /** #1540 — see {@link NoteProvenance}. */
+    private readonly noteProvenance: NoteProvenance | undefined,
   ) {
     const bindings: RootBinding[] = [
       { outer: MEMORIES_ROOT, inner: privateRoot },
@@ -103,11 +204,23 @@ abstract class MemoryNamespacerBase implements MemoryStore {
 
   /** Model-facing `/memories/...` → physical path. */
   protected toInner(path: string): string {
+    const inner = this.mapToInner(path);
+    if (this.shieldActive?.() === true && SHIELDED_PHYSICAL.test(posix.normalize(inner))) {
+      throw new MemoryPathDenied(path, 'privacy-shield');
+    }
+    return inner;
+  }
+
+  private mapToInner(path: string): string {
     if (path === MEMORIES_ROOT) return this.privateRoot;
     if (!path.startsWith(`${MEMORIES_ROOT}/`)) return path; // not ours; leave it
     const rest = path.slice(MEMORIES_ROOT.length); // '/...'
 
     const seg = firstSegment(rest);
+    if (MODEL_DENIED_SEGMENTS.has(seg)) throw new MemoryPathDenied(path);
+    if (SHIELDED_SEGMENTS.has(seg) && this.shieldActive?.() === true) {
+      throw new MemoryPathDenied(path, 'privacy-shield');
+    }
     if (this.reservedSegments.has(seg)) {
       const root = this.reservedRoots.get(seg);
       // Unbound reserved segment → leave it outside every compiled scope.
@@ -130,37 +243,59 @@ abstract class MemoryNamespacerBase implements MemoryStore {
     return path; // shared / unmapped — already in the outer namespace
   }
 
-  list(virtualPath: string): Promise<MemoryEntry[]> {
-    return this.inner.list(this.toInner(virtualPath)).then((entries) =>
-      entries.map((e) => ({ ...e, virtualPath: this.toOuter(e.virtualPath) })),
-    );
+  /**
+   * #1540 — a note written in a turn without a shield, or after a tool
+   * bypassed it, is marked unprotected. A note written in a protected turn is
+   * stored as written: its model only saw masked values.
+   */
+  private withProvenance(content: string): string {
+    return this.noteProvenance?.writtenUnprotected() === true
+      ? markUnprotectedNote(content)
+      : content;
   }
 
-  fileExists(virtualPath: string): Promise<boolean> {
+  // `async`, so a denied path (`toInner` throws) rejects like any store error.
+  async list(virtualPath: string): Promise<MemoryEntry[]> {
+    const entries = await this.inner.list(this.toInner(virtualPath));
+    return entries.map((e) => ({ ...e, virtualPath: this.toOuter(e.virtualPath) }));
+  }
+
+  async fileExists(virtualPath: string): Promise<boolean> {
     return this.inner.fileExists(this.toInner(virtualPath));
   }
 
-  directoryExists(virtualPath: string): Promise<boolean> {
+  async directoryExists(virtualPath: string): Promise<boolean> {
     return this.inner.directoryExists(this.toInner(virtualPath));
   }
 
-  readFile(virtualPath: string): Promise<string> {
-    return this.inner.readFile(this.toInner(virtualPath));
+  /**
+   * #1540 — a note written in an unprotected turn is refused to a reader the
+   * shield masks (masking on the way out would only catch detector-visible
+   * spans, as for the transcripts). Any other reader gets it without the
+   * marker line.
+   */
+  async readFile(virtualPath: string): Promise<string> {
+    const content = await this.inner.readFile(this.toInner(virtualPath));
+    if (!isUnprotectedNote(content)) return content;
+    if (this.shieldActive?.() === true && this.noteProvenance?.readerShielded() !== false) {
+      throw new MemoryPathDenied(virtualPath, 'unprotected-note');
+    }
+    return stripUnprotectedNoteMarker(content);
   }
 
-  createFile(virtualPath: string, content: string): Promise<void> {
-    return this.inner.createFile(this.toInner(virtualPath), content);
+  async createFile(virtualPath: string, content: string): Promise<void> {
+    return this.inner.createFile(this.toInner(virtualPath), this.withProvenance(content));
   }
 
-  writeFile(virtualPath: string, content: string): Promise<void> {
-    return this.inner.writeFile(this.toInner(virtualPath), content);
+  async writeFile(virtualPath: string, content: string): Promise<void> {
+    return this.inner.writeFile(this.toInner(virtualPath), this.withProvenance(content));
   }
 
-  delete(virtualPath: string): Promise<void> {
+  async delete(virtualPath: string): Promise<void> {
     return this.inner.delete(this.toInner(virtualPath));
   }
 
-  rename(fromVirtualPath: string, toVirtualPath: string): Promise<void> {
+  async rename(fromVirtualPath: string, toVirtualPath: string): Promise<void> {
     return this.inner.rename(
       this.toInner(fromVirtualPath),
       this.toInner(toVirtualPath),
@@ -172,12 +307,19 @@ const NO_RESERVED_ROOTS: ReadonlyMap<string, string> = new Map();
 const NO_RESERVED_SEGMENTS: ReadonlySet<string> = new Set<string>();
 
 export class OrchestratorMemoryNamespacer extends MemoryNamespacerBase {
-  constructor(agentSlug: string, inner: MemoryStore) {
+  constructor(
+    agentSlug: string,
+    inner: MemoryStore,
+    shieldActive?: ShieldActive,
+    noteProvenance?: NoteProvenance,
+  ) {
     super(
       inner,
       `${MEMORIES_ROOT}/orchestrators/${agentSlug}`,
       NO_RESERVED_ROOTS,
       NO_RESERVED_SEGMENTS,
+      shieldActive,
+      noteProvenance,
     );
   }
 }
@@ -216,6 +358,16 @@ export interface ContextMemoryNamespacerOptions {
    * `ScopedMemoryStore`, NOT by this mapper.
    */
   readonly agentRoot?: string;
+  /**
+   * Further model-facing segments (e.g. `~g-<key>`) → physical roots, listed
+   * under `/memories` so the model can find them. Read-only by the `ro:`
+   * patterns of the `ScopedMemoryStore`, not by this mapper.
+   */
+  readonly sharedRoots?: ReadonlyMap<string, string>;
+  /** #1534 — refuse `/memories/sessions/` while this returns true. */
+  readonly shieldActive?: ShieldActive;
+  /** #1540 — see {@link NoteProvenance}. */
+  readonly noteProvenance?: NoteProvenance;
 }
 
 /**
@@ -229,6 +381,8 @@ export interface ContextMemoryNamespacerOptions {
  * /memories/~agent/... → <agentRoot>/...     (read-only via the `ro:` pattern)
  * /memories/core/...   → unchanged           (shared passthrough)
  * /memories/_rules/... → unchanged           (shared passthrough)
+ * /memories/chat-sessions/... → refused      (MemoryPathDenied)
+ * /memories/sessions/...      → refused under a Privacy Shield (#1534)
  * ```
  *
  * `list` never leaks a physical `contexts/...` path outward: every entry is
@@ -239,6 +393,9 @@ export interface ContextMemoryNamespacerOptions {
  * guarantee of the layering is preserved.
  */
 export class ContextMemoryNamespacer extends MemoryNamespacerBase {
+  /** Model-facing segments of `sharedRoots`, announced by `list('/memories')`. */
+  private readonly listedSegments: readonly string[];
+
   constructor(options: ContextMemoryNamespacerOptions, inner: MemoryStore) {
     const roots = new Map<string, string>();
     // A wider root identical to the private root would break the bijection
@@ -249,11 +406,45 @@ export class ContextMemoryNamespacer extends MemoryNamespacerBase {
     if (options.agentRoot && options.agentRoot !== options.privateRoot) {
       roots.set(AGENT_SEGMENT, options.agentRoot);
     }
+    const listed: string[] = [];
+    for (const [segment, root] of options.sharedRoots ?? []) {
+      if (!segment.startsWith('~') || roots.has(segment) || root === options.privateRoot) continue;
+      roots.set(segment, root);
+      listed.push(segment);
+    }
     super(
       inner,
       options.privateRoot,
       roots,
-      new Set([TEAM_SEGMENT, AGENT_SEGMENT]),
+      new Set([TEAM_SEGMENT, AGENT_SEGMENT, ...listed]),
+      options.shieldActive,
+      options.noteProvenance,
     );
+    this.listedSegments = listed;
+  }
+
+  /**
+   * The shared roots live outside the private tree, so a plain listing of
+   * `/memories` would never show them. They are appended there — and only
+   * there — as directories. A private tree that does not exist yet lists as
+   * empty when there are shared roots to show.
+   */
+  /** `/memories` exists whenever there is a shared root to show in it. */
+  override async directoryExists(virtualPath: string): Promise<boolean> {
+    if (virtualPath === MEMORIES_ROOT && this.listedSegments.length > 0) return true;
+    return super.directoryExists(virtualPath);
+  }
+
+  override async list(virtualPath: string): Promise<MemoryEntry[]> {
+    if (virtualPath !== MEMORIES_ROOT || this.listedSegments.length === 0) {
+      return super.list(virtualPath);
+    }
+    const own = (await super.directoryExists(virtualPath)) ? await super.list(virtualPath) : [];
+    const shared = this.listedSegments.map((segment) => ({
+      virtualPath: `${MEMORIES_ROOT}/${segment}`,
+      isDirectory: true,
+      sizeBytes: 0,
+    }));
+    return [...own, ...shared];
   }
 }

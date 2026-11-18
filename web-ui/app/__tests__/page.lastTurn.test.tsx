@@ -65,6 +65,19 @@ vi.mock('../_lib/agents', () => ({
   getMcpServerSummary: mockMcp,
 }));
 
+// #1384 — the page also reads the middleware's /health; a healthy stack here.
+vi.mock('../_lib/platformHealth', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../_lib/platformHealth')>()),
+  fetchMiddlewareHealth: async () => ({
+    reachable: true,
+    body: { checks: { database: 'ok' } },
+  }),
+}));
+
+vi.mock('../_components/PlatformHealthBanner', () => ({
+  PlatformHealthBanner: (): null => null,
+}));
+
 vi.mock('../_lib/authRedirect', () => ({
   redirectIfUnauthorized: vi.fn(),
 }));
@@ -73,7 +86,7 @@ vi.mock('../_components/dashboard/DashboardOnboarding', () => ({
   DashboardOnboarding: (): React.ReactElement => <div data-testid="onboarding" />,
 }));
 
-import DashboardPage from '../page';
+import DashboardPage from '../(dashboard)/page';
 
 /** A healthy baseline: one verified provider, one agent. Every card above the
  *  last-turn card reads OK until a failed turn says otherwise. */

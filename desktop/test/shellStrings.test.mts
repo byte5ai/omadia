@@ -76,8 +76,37 @@ describe('createShellTranslate', () => {
       'boot.failed.rerunSetup',
       'boot.superseded.title',
       'boot.superseded.detail',
+      'secrets.unreadable.title',
+      'secrets.unreadable.message',
+      'secrets.unreadable.detail',
+      'secrets.unreadable.showFile',
+      'secrets.unreadable.quit',
+      'secrets.remedy.read',
+      'secrets.remedy.decrypt',
+      'secrets.remedy.noKeyring',
+      'secrets.remedy.damaged',
+      'secrets.startOver',
+      'secrets.snapshotsUnknown',
     ]) {
       assert.notEqual(t(key, 'UNTRANSLATED'), 'UNTRANSLATED', `${key} is missing`);
+    }
+  });
+
+  it('keeps every placeholder of the secrets-unreadable dialog in German', () => {
+    // The paths ARE the instructions here: a translation that drops one leaves
+    // the user without the file they have to restore.
+    const t = createShellTranslate('de');
+    const expected: ReadonlyArray<readonly [string, readonly string[]]> = [
+      ['secrets.unreadable.detail', ['{file}', '{remedy}', '{startOver}', '{reason}', '{logFile}']],
+      ['secrets.remedy.decrypt', ['{backup}', '{snapshots}']],
+      ['secrets.remedy.damaged', ['{backup}', '{snapshots}']],
+      ['secrets.startOver', ['{dataDir}']],
+    ];
+    for (const [key, placeholders] of expected) {
+      const german = t(key, '');
+      for (const placeholder of placeholders) {
+        assert.ok(german.includes(placeholder), `${key} lost ${placeholder}`);
+      }
     }
   });
 });
@@ -145,6 +174,19 @@ describe('the new shell dialogs are translated', () => {
     });
     assert.match(filled, /omadia-desktop\.log/);
     assert.doesNotMatch(filled, /\{logFile\}/);
+  });
+
+  it('translates the copy-failed note and keeps the key in it', () => {
+    // The note exists to put the key back on screen after a failed copy; a
+    // translation that drops {key} would show the warning without the key.
+    for (const key of ['recovery.copyFailed.title', 'recovery.copyFailed.message']) {
+      assert.notEqual(t(key, 'UNTRANSLATED'), 'UNTRANSLATED', `${key} is missing`);
+    }
+    const filled = fillPlaceholders(t('recovery.copyFailed.detail', 'UNTRANSLATED'), {
+      key: 'KEY-1234',
+    });
+    assert.match(filled, /KEY-1234/);
+    assert.doesNotMatch(filled, /UNTRANSLATED|\{key\}/);
   });
 
   it('promises no automatic reload, in either language', () => {

@@ -134,5 +134,28 @@ void describe('#833 review — RequiresWizard keeps chaining over errored instal
     expect(
       screen.queryByText(/ended in state .*errored/i),
     ).toBeNull();
+    // #1496 — installed is not running: the final screen names the step that
+    // did not start instead of "… and all prerequisites are active".
+    expect(screen.getByText(en.store.requiresWizard.notAllRunning)).toBeTruthy();
+    expect(screen.queryByText(en.store.requiresWizard.allInstalled)).toBeNull();
+    expect(screen.queryByText(/all prerequisites are active/i)).toBeNull();
+  });
+
+  void it('keeps the all-active success screen when every step is running', async () => {
+    mockConfigure
+      .mockResolvedValueOnce({ job: job(PROVIDER_ID, 'active'), agent_id: PROVIDER_ID })
+      .mockResolvedValueOnce({ job: job(TARGET_ID, 'active'), agent_id: TARGET_ID });
+
+    renderWizard();
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: new RegExp(en.store.requiresWizard.installAll, 'i'),
+      }),
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(en.store.requiresWizard.allInstalled)).toBeTruthy();
+    });
+    expect(screen.queryByText(en.store.requiresWizard.notAllRunning)).toBeNull();
   });
 });

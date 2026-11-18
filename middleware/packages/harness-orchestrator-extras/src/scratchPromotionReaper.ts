@@ -42,6 +42,10 @@ import type { Pool } from 'pg';
 import type { KnowledgeGraph, MemorableKind, Visibility } from '@omadia/plugin-api';
 
 import type { SignificanceScorer } from './captureFilter.js';
+import { isUnprotectedNote, stripUnprotectedNoteMarker } from './noteProvenance.js';
+
+/** A plugin's `ctx.memory` tree inside an agent's scratch tree (#1540). */
+const PLUGIN_MEMORY_PATH = /^\/memories\/orchestrators\/[^/]+\/plugins\//;
 
 /** Physical prefix of the agent-scratch tree inside `memory_files`. */
 const SCRATCH_PREFIX = '/memories/orchestrators/';
@@ -203,7 +207,14 @@ export function createScratchPromotionReaper(
     for (const row of rows) {
       try {
         const slug = deriveAgentSlug(row.virtual_path);
-        const trimmed = row.content.trim();
+        // #1540 — a note written in an unprotected turn: score and summarise
+        // it without the marker line, and stamp the memory `unprotected`. A
+        // plugin's own `ctx.memory` file holds what the plugin fetched in
+        // clear, whatever the turn: always `unprotected`.
+        const unprotected =
+          isUnprotectedNote(row.content) || PLUGIN_MEMORY_PATH.test(row.virtual_path);
+        const content = stripUnprotectedNoteMarker(row.content);
+        const trimmed = content.trim();
 
         if (trimmed.length < MIN_NON_TRIVIAL_LEN) {
           await reapUnpromoted(row.virtual_path);
@@ -222,13 +233,14 @@ export function createScratchPromotionReaper(
         // orchestrator slug so recall can still attribute it to that Agent.
         await deps.kg.createMemorableKnowledge({
           kind: REAPER_MK_KIND,
-          summary: deriveSummary(row.content),
+          summary: deriveSummary(content),
           significance: score,
           createdBy: 'scratch-reaper',
           involvedOmadiaUserIds: [],
           aclOwners: [],
           visibility: 'team',
           ...(slug ? { originAgent: slug } : {}),
+          ...(unprotected ? { unprotected: true } : {}),
         });
 
         // Delete ONLY after a successful create — a failed promote (caught

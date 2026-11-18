@@ -483,7 +483,9 @@ describe('POST /api/v1/builder/drafts/:id/install (B.6-1)', () => {
     assert.equal(json['code'], 'package.id_mismatch');
   });
 
-  it('returns 500 when ingest fails with an unmapped code', async () => {
+  // #1477 — an ingest refusal is the package's fault on every route; an
+  // unmapped code is 422 like on the ZIP upload and the Hub install, not 500.
+  it('returns 422 when ingest fails with an unmapped code', async () => {
     app = await createTestApp({
       ingest: makeFakeIngest({
         failCode: 'package.unknown_failure',
@@ -494,9 +496,9 @@ describe('POST /api/v1/builder/drafts/:id/install (B.6-1)', () => {
       app.baseUrl,
       `/api/v1/builder/drafts/${app.draftId}/install`,
     );
-    assert.equal(status, 500);
+    assert.equal(status, 422);
     assert.ok(json);
-    assert.equal(json['reason'], 'ingest_failed');
+    assert.equal(json['reason'], 'manifest_invalid');
   });
 });
 

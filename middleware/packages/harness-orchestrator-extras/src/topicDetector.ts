@@ -6,6 +6,8 @@ import {
   type EmbeddingClient,
 } from '@omadia/embeddings';
 
+import type { OpenJobPrivacy } from './jobPrivacy.js';
+
 /**
  * Three-stage topic-detection pipeline:
  *
@@ -54,9 +56,18 @@ export interface TopicDetectorOptions {
    *  this decision. `continue` is the forgiving default — we'd rather keep
    *  context than silently discard it. */
   fallbackDecision?: TopicDecision;
+  /**
+   * WP-10 — the Privacy Shield route for the classifier's request: the
+   * previous exchange as the channel stored it and the new message. A run
+   * that cannot mask skips the classifier (`unsure` ⇒ `ask`). Absent ⇒ the
+   * request goes out as built.
+   */
+  privacy?: OpenJobPrivacy;
 }
 
-const DEFAULTS: Required<TopicDetectorOptions> = {
+type TopicDetectorTuning = Required<Omit<TopicDetectorOptions, 'privacy'>>;
+
+const DEFAULTS: TopicDetectorTuning = {
   upperThreshold: 0.55,
   lowerThreshold: 0.15,
   centroidDepth: 5,
@@ -66,14 +77,17 @@ const DEFAULTS: Required<TopicDetectorOptions> = {
 };
 
 export class TopicDetector {
-  private readonly opts: Required<TopicDetectorOptions>;
+  private readonly opts: TopicDetectorTuning;
+  private readonly privacy: OpenJobPrivacy | undefined;
 
   constructor(
     private readonly embeddings: EmbeddingClient,
     private readonly llm: LlmProvider,
     opts: TopicDetectorOptions = {},
   ) {
-    this.opts = { ...DEFAULTS, ...opts };
+    const { privacy, ...tuning } = opts;
+    this.opts = { ...DEFAULTS, ...tuning };
+    this.privacy = privacy;
   }
 
   async classify(input: TopicClassifyInput): Promise<TopicClassifyResult> {
@@ -188,11 +202,18 @@ ${truncate(lastTurn.assistantAnswer, 400)}
 NEW user message:
 ${truncate(input.userMessage, 400)}`;
 
+    const run = this.privacy?.('topic-detector');
+    const masked = run ? await run.mask(user) : { send: true as const, text: user };
+    if (!masked.send) {
+      // Skipped like a failed classifier: the user resolves it on the card.
+      console.error(`[topic] privacy: ${masked.reason} — classifier skipped`);
+      return 'unsure';
+    }
     const response = await this.llm.complete({
       model: this.opts.classifierModel,
       maxTokens: this.opts.classifierMaxTokens,
       system,
-      messages: [textMessage('user', user)],
+      messages: [textMessage('user', masked.text)],
     });
     const raw = collectText(response.content).toLowerCase().trim();
     if (raw.startsWith('continue')) return 'continue';

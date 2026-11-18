@@ -212,3 +212,32 @@ describe('GET / (listing)', () => {
     assert.equal(row.subscriptionNotice, true);
   });
 });
+
+// #1460 — an OAuth provider is `requiresApiKey: false`. The verify route used
+// to answer `verified` for it without a single check; its check is the stored
+// grant, which the read-side resolver already answers.
+describe('POST /:id/verify on an OAuth provider (#1460)', () => {
+  async function verify(): Promise<Record<string, unknown>> {
+    const res = await fetch(`${harness!.baseUrl}/api/v1/admin/providers/${PROVIDER}/verify`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+    });
+    return (await res.json()) as Record<string, unknown>;
+  }
+
+  it('answers no_key while no grant is stored, not verified', async () => {
+    harness = await makeHarness([]);
+    assert.equal((await verify())['status'], 'no_key');
+  });
+
+  it('answers verified once the device-flow tokens are stored', async () => {
+    harness = await makeHarness([]);
+    const keys = providerOAuthVaultKeys(PROVIDER);
+    await harness.vault.setMany(ORCH, {
+      [keys.access]: 'at',
+      [keys.refresh]: 'rt',
+      [keys.updatedAt]: new Date().toISOString(),
+    });
+    assert.equal((await verify())['status'], 'verified');
+  });
+});

@@ -7,7 +7,11 @@ import {
   type SlotDef,
   type TemplateManifest,
 } from './boilerplateSource.js';
-import { buildUiRouteArtifacts } from './codegenUiRoute.js';
+import {
+  buildUiRouteArtifacts,
+  TEAMS_SSO_MIN_CORE,
+  teamsTabPublicPath,
+} from './codegenUiRoute.js';
 import { lookupServiceType } from './serviceTypeRegistry.js';
 
 /**
@@ -521,6 +525,13 @@ function reproduceManifestCapabilities(
         }
         permsNode.set('llm', doc.createNode(llm));
       }
+      // #1596 follow-up — routes reached without an omadia session
+      // (webhooks, OAuth callbacks) need a manifest declaration before
+      // `ctx.routes.register(..., { auth: 'custom' })` is accepted; the
+      // operator grant then decides whether the kernel serves them.
+      if (perms.public_paths && perms.public_paths.length > 0) {
+        permsNode.set('public_paths', doc.createNode(perms.public_paths));
+      }
       // Epic #459 W7 (issue #458) — declaring permissions.mcp enables ctx.mcp.
       // The operator still grants specific servers; servers_hint is a
       // suggestion surfaced in the grant UI.
@@ -532,6 +543,28 @@ function reproduceManifestCapabilities(
           ),
         );
       }
+    }
+  }
+
+  // #1620 — a plugin with ui_routes serves its Teams tabs under
+  // `/p/<slug>/teams` (`codegenUiRoute.ts`): a data-free shell
+  // (`auth:'public'`) and the teams-sso data mount. Both need this one
+  // declaration to be registerable at all, and the operator's grant to be
+  // served. Appended after the spec's own entries (which may never be under
+  // `/p/` — `PermissionsSchema`), so codegen is the only writer of it.
+  if (spec.ui_routes.length > 0) {
+    const permsNode = doc.get('permissions', true);
+    if (yaml.isMap(permsNode)) {
+      const declared = [...(spec.permissions?.public_paths ?? [])];
+      const teamsTab = teamsTabPublicPath(spec.id);
+      if (!declared.includes(teamsTab)) declared.push(teamsTab);
+      permsNode.set('public_paths', doc.createNode(declared));
+    }
+    // A host without `'teams-sso'` (plugin-api < 1.51.0) would treat the
+    // data mount like an unauthenticated public route; refuse it at upload.
+    const compatNode = doc.get('compat', true);
+    if (yaml.isMap(compatNode)) {
+      compatNode.set('core', TEAMS_SSO_MIN_CORE);
     }
   }
 

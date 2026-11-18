@@ -78,7 +78,7 @@ describe('PrivacyGuardService.v4ToolSpecs', () => {
 });
 
 describe('PrivacyGuardService.runV4Tool — end-to-end data path', () => {
-  it('returns a canvas-table sentinel envelope for table renders', async () => {
+  it('hands the canvas-table snapshot to the side channel, not the tool_result (#1402)', async () => {
     const svc = createPrivacyGuardService();
     const turnId = 't-table-envelope';
     const interned = await svc.internToolResultV4({
@@ -94,12 +94,25 @@ describe('PrivacyGuardService.runV4Tool — end-to-end data path', () => {
       toolName: 'v4_render_answer',
       input: {
         datasetId: datasetIdOf(interned.digestText),
-        columns: ['employee', 'days'],
+        columns: [{ field: 'employee', label: 'Mitarbeiter' }, 'days'],
         format: 'table',
       },
     });
 
-    const payload = JSON.parse(rendered.resultText) as {
+    // The LLM-bound tool_result: shape only — never a real cell value.
+    for (const value of [...REAL_NAMES, '4471', '5582', '6693']) {
+      assert.ok(
+        !rendered.resultText.includes(value),
+        `tool_result leaked real value "${value}"`,
+      );
+    }
+    assert.ok(!rendered.resultText.includes('_pending'), 'tool_result carries a canvas sentinel');
+    assert.ok(rendered.resultText.includes('3 rows'), rendered.resultText);
+    assert.ok(rendered.resultText.includes('"Mitarbeiter"'), rendered.resultText);
+
+    // The canvas side channel still carries the full snapshot.
+    assert.ok(rendered.canvasSentinel, 'a table render returns its canvas snapshot');
+    const payload = JSON.parse(rendered.canvasSentinel) as {
       _pendingCanvasTree: {
         tree: {
           children: Array<{
@@ -117,6 +130,29 @@ describe('PrivacyGuardService.runV4Tool — end-to-end data path', () => {
       'guard-protected',
     );
     assert.equal(table?.rows[0]?.cells.employee, 'Marvin Vomberg');
+
+    // The user-facing render is unchanged.
+    const answer = await svc.takeRenderedAnswerV4(turnId);
+    assert.ok(answer?.text.includes('Marvin Vomberg'));
+  });
+
+  it('a non-table render returns the note and no canvas snapshot', async () => {
+    const svc = createPrivacyGuardService();
+    const turnId = 't-list-note';
+    const interned = await svc.internToolResultV4({
+      sessionId: 's',
+      turnId,
+      toolName: 'hr.leave',
+      rawResult: JSON.stringify(HR_LEAVE),
+    });
+    const rendered = await svc.runV4Tool({
+      sessionId: 's',
+      turnId,
+      toolName: 'v4_render_answer',
+      input: { datasetId: datasetIdOf(interned.digestText), columns: ['employee'], format: 'list' },
+    });
+    assert.equal(rendered.canvasSentinel, undefined);
+    for (const name of REAL_NAMES) assert.ok(!rendered.resultText.includes(name));
   });
 
   it('intern → verb → render → takeRenderedAnswer yields a real answer', async () => {
@@ -270,6 +306,40 @@ describe('PrivacyGuardService.runV4Tool — end-to-end data path', () => {
     assert.equal(answer.isError, undefined, 'an ordinary answer carries no error flag');
   });
 
+  it('takeRenderedAnswerV4 surfaces the model prose apart from the rows — and none for blank prose', async () => {
+    const svc = createPrivacyGuardService();
+    const render = async (turnId: string, prose: string | undefined) => {
+      const interned = await svc.internToolResultV4({
+        sessionId: 's',
+        turnId,
+        toolName: 'hr.leave',
+        rawResult: JSON.stringify(HR_LEAVE),
+      });
+      await svc.runV4Tool({
+        sessionId: 's',
+        turnId,
+        toolName: 'v4_render_answer',
+        input: {
+          datasetId: datasetIdOf(interned.digestText),
+          columns: ['employee', 'days'],
+          format: 'table',
+          ...(prose !== undefined ? { prose } : {}),
+        },
+      });
+      return svc.takeRenderedAnswerV4(turnId);
+    };
+
+    const withProse = await render('t-prose', 'Urlaub nach Tagen:');
+    assert.equal(withProse?.prose, 'Urlaub nach Tagen:');
+    assert.ok(withProse?.text.startsWith('Urlaub nach Tagen:'));
+    assert.ok(withProse?.text.includes('Anna Rüsche'));
+
+    // Always reported: '' says "no prose" — absent would read as a provider
+    // that predates the field, which the kernel fails closed on.
+    assert.equal((await render('t-blank', '   '))?.prose, '');
+    assert.equal((await render('t-none', undefined))?.prose, '');
+  });
+
   it('takeRenderedAnswerV4 clears the stash after taking', async () => {
     const svc = createPrivacyGuardService();
     const turnId = 't-clear';
@@ -394,5 +464,70 @@ describe('PrivacyGuardService — control-flow text is never a cleartext channel
       false,
       'the name behind the `Error:` prefix leaked into the digest',
     );
+  });
+});
+
+describe('PrivacyGuardService.runV4Tool — render ack (#1542, #1543, #1559)', () => {
+  const PAGE = {
+    id: 98765,
+    title: 'Kontaktliste Testteam',
+    raw: { a: { b: { c: { d: 'Jonas Weber' } } }, e: { f: { g: 'jonas.weber@example.com' } } },
+  };
+  const PAGE_VALUES = ['Jonas', 'Weber', 'jonas.weber@example.com', 'Kontaktliste'];
+
+  it('names the unrenderable columns and the provenance — and no value', async () => {
+    const svc = createPrivacyGuardService();
+    const turnId = 't-ack-1542';
+    const interned = await svc.internToolResultV4({
+      sessionId: 's',
+      turnId,
+      toolName: 'confluence_get_page',
+      rawResult: JSON.stringify([PAGE]),
+    });
+    const rendered = await svc.runV4Tool({
+      sessionId: 's',
+      turnId,
+      toolName: 'v4_render_answer',
+      input: {
+        datasetId: datasetIdOf(interned.digestText),
+        columns: [{ field: 'title', label: 'Titel' }, { field: 'raw', label: 'Inhalt (wörtlich)' }],
+        format: 'table',
+      },
+    });
+    assert.ok(rendered.resultText.includes('Could not be rendered: ["Inhalt (wörtlich)"]'), rendered.resultText);
+    assert.ok(rendered.renderProvenance?.includes('source tool `confluence_get_page`'));
+    assert.ok(rendered.resultText.includes(rendered.renderProvenance ?? '\u0000'));
+    for (const value of PAGE_VALUES) {
+      assert.ok(!rendered.resultText.includes(value), `ack leaked "${value}"`);
+      assert.ok(!rendered.renderProvenance?.includes(value), `provenance leaked "${value}"`);
+    }
+    // The user's answer says the content could not be shown, and how to get it.
+    const answer = await svc.takeRenderedAnswerV4(turnId);
+    assert.ok(answer?.text.includes('lässt sich in dieser geschützten Ansicht nicht darstellen'));
+  });
+
+  it('a list render carries the provenance too; the export flag reaches the footer', async () => {
+    const svc = createPrivacyGuardService();
+    const rows = Array.from({ length: 60 }, (_, i) => ({ employee: `Quentin Zabrowski ${String(i)}`, days: i }));
+    for (const fileExportAvailable of [false, true]) {
+      const turnId = `t-list-1559-${String(fileExportAvailable)}`;
+      const interned = await svc.internToolResultV4({
+        sessionId: 's',
+        turnId,
+        toolName: 'hr.leave',
+        rawResult: JSON.stringify(rows),
+      });
+      const rendered = await svc.runV4Tool({
+        sessionId: 's',
+        turnId,
+        toolName: 'v4_render_answer',
+        input: { datasetId: datasetIdOf(interned.digestText), columns: ['employee'], format: 'list' },
+        fileExportAvailable,
+      });
+      assert.ok(rendered.resultText.includes('Table provenance'), rendered.resultText);
+      assert.ok(!rendered.resultText.includes('Zabrowski'));
+      const answer = await svc.takeRenderedAnswerV4(turnId);
+      assert.equal(answer?.text.includes('Excel-Datei') === true, fileExportAvailable, answer?.text ?? '');
+    }
   });
 });

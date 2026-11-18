@@ -21,6 +21,10 @@ export interface AskObserver {
     postcondition?: {
       issues: readonly string[];
     };
+    /** The call did not run in this pass: a verifier re-entry handed back
+     *  the first run's result (`toolReplayLedger.ts`). RunTraceCollector
+     *  copies it onto the RunToolCall. */
+    replayed?: boolean;
   }): void;
   onIterationPhase?(ev: {
     iteration: number;
@@ -121,6 +125,17 @@ export interface Askable {
  * the Nudge-Pipeline's multi-domain trigger can count distinct domains.
  */
 import type { ToolPIIField, WriteCapability } from '@omadia/plugin-api';
+import { toolErrorFromException } from '@omadia/plugin-api';
+
+import { SubAgentRefusalError, subAgentRefusalNotice } from '../subAgentRefusal.js';
+
+/** One tool of a sub-agent, callable directly (no model loop). */
+export interface SubAgentToolHandle {
+  readonly name: string;
+  readonly description: string;
+  readonly input_schema: Readonly<Record<string, unknown>>;
+  handle(input: unknown): Promise<string>;
+}
 
 export interface DomainTool {
   name: string;
@@ -146,6 +161,14 @@ export interface DomainTool {
   /** Display name of the originating MCP server (epic #459) — used to label
    *  KG observation nodes ingested from this tool. */
   mcpServerName?: string;
+  /** MCP tools: the server declared it read-only (`readOnlyHint`). Offered
+   *  to the deterministic fast path (`offeredToolDefinitions`). */
+  readOnly?: boolean;
+  /** The sub-agent's own tools, runnable WITHOUT its model loop — offered
+   *  to the deterministic fast path (`offeredToolDefinitions`, `via` this
+   *  tool); the fast path's read classifier and the operator's allow-list
+   *  (`fast_path_agent_tools`) decide which it may plan. */
+  subAgentTools?: () => ReadonlyArray<SubAgentToolHandle>;
   handle(input: unknown, observer?: AskObserver): Promise<string>;
   /**
    * Privacy-Shield v3 (stable-id tokenization, slice 1) — optional PII
@@ -207,6 +230,8 @@ interface DomainToolOptions {
    * dispatch AND every sub-agent inner tool call within it.
    */
   agentId?: string;
+  /** the sub-agent's own tools, for the fast path (see DomainTool) */
+  subAgentTools?: () => ReadonlyArray<SubAgentToolHandle>;
 }
 
 export function createDomainTool(options: DomainToolOptions): DomainTool {
@@ -231,6 +256,7 @@ export function createDomainTool(options: DomainToolOptions): DomainTool {
     spec,
     domain: options.domain,
     ...(options.agentId !== undefined ? { agentId: options.agentId } : {}),
+    ...(options.subAgentTools !== undefined ? { subAgentTools: options.subAgentTools } : {}),
     async handle(input: unknown, observer?: AskObserver): Promise<string> {
       if (typeof input !== 'object' || input === null) {
         return 'Error: tool input must be an object.';
@@ -252,9 +278,29 @@ export function createDomainTool(options: DomainToolOptions): DomainTool {
         return answer;
       } catch (err) {
         const elapsed = ((Date.now() - started) / 1000).toFixed(1);
-        const message = err instanceof Error ? err.message : String(err);
-        console.error(`${logTag} ${options.name} → ERROR (${elapsed}s): ${message}`);
-        return `Error while querying ${options.name}: ${message}`;
+        // #1219 — the sub-agent's model declined the question. The withheld
+        // notice below would say "a tool failed" and hide that, so the parent
+        // could neither rephrase nor tell the user; it gets a fixed,
+        // harness-authored notice naming the decline instead. Only this exact
+        // type: its message is never used, and nothing else is let through.
+        if (err instanceof SubAgentRefusalError) {
+          console.warn(
+            `${logTag} ${options.name} → DECLINED (${elapsed}s) by the model's safety classifiers, category=${err.category ?? 'none'}`,
+          );
+          return subAgentRefusalNotice(options.name, err.category);
+        }
+        // Every other exception out of `ask()` (a provider error, an empty
+        // answer, the iteration limit) reaches the parent's model as the
+        // data-free withheld notice, never as its message: the parent hands
+        // this text on unchanged when the sub-agent already interned a dataset
+        // (`subAgentResultV4` concatenates it). The notice keeps the `Error:`
+        // prefix, so the parent flags it `is_error`. Full error in the log.
+        return toolErrorFromException(options.name, err, {
+          site: `domain:${options.domain}`,
+          log: (line, e) => {
+            console.error(`${logTag} ${options.name} → ERROR (${elapsed}s) ${line}`, e);
+          },
+        });
       }
     },
   };

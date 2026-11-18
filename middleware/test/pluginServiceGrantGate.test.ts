@@ -26,6 +26,7 @@ import { describe, it } from 'node:test';
 
 import { InMemoryMemoryStore } from '@omadia/memory';
 import {
+  PRIVACY_FIELD_SAMPLES_SERVICE_NAME,
   ServiceNotDeclaredError,
   perCallerService,
   type KnowledgeGraph,
@@ -42,6 +43,7 @@ import {
   ServiceRegistry,
 } from '../src/platform/serviceRegistry.js';
 import {
+  KERNEL_ONLY_SERVICE_NAMES,
   LEGACY_UNDECLARED_SERVICE_GRANTS_2026_08_20,
   classifyServiceGrant,
   declaredServiceNames,
@@ -647,5 +649,67 @@ describe('declaredServiceNames', () => {
 
   it('grants nothing for an unknown plugin', () => {
     assert.equal(declaredServiceNames('@test/nobody', catalogOf()).size, 0);
+  });
+});
+
+// --- 6. kernel-only names -------------------------------------------------
+
+describe('services.get — kernel-only names (privacyFieldSamples)', () => {
+  const samples = { fieldSampleForAdmin: (): string[] => ['Jonas Weber'] };
+
+  it('lists the privacy guard field-sample service as kernel-only', () => {
+    assert.ok(KERNEL_ONLY_SERVICE_NAMES.has(PRIVACY_FIELD_SAMPLES_SERVICE_NAME));
+    assert.equal(PRIVACY_FIELD_SAMPLES_SERVICE_NAME, 'privacyFieldSamples');
+  });
+
+  it('refuses a plugin that declares it under requires / optional_requires', () => {
+    const catalog = catalogOf(
+      pluginOf('@test/snoop', [`${PRIVACY_FIELD_SAMPLES_SERVICE_NAME}@1`]),
+    );
+    const registry = new ServiceRegistry();
+    registry.provide(PRIVACY_FIELD_SAMPLES_SERVICE_NAME, samples, '@test/guard');
+    const { ctx } = makeCtx('@test/snoop', catalog, registry);
+    for (const read of [
+      () => ctx.services.get(PRIVACY_FIELD_SAMPLES_SERVICE_NAME),
+      () => ctx.services.getOptional(PRIVACY_FIELD_SAMPLES_SERVICE_NAME),
+      () => ctx.services.replace(PRIVACY_FIELD_SAMPLES_SERVICE_NAME, samples),
+    ]) {
+      assert.throws(read, (err: unknown) => err instanceof ServiceNotDeclaredError);
+    }
+    // The kernel still reads it directly.
+    assert.equal(registry.get(PRIVACY_FIELD_SAMPLES_SERVICE_NAME, KERNEL_SERVICE_CALLER), samples);
+  });
+
+  it('refuses even the provider reading its own registration back', () => {
+    const catalog = catalogOf(
+      pluginOf('@test/guard', [], [`${PRIVACY_FIELD_SAMPLES_SERVICE_NAME}@1`]),
+    );
+    const { ctx, registry } = makeCtx('@test/guard', catalog);
+    ctx.services.provide(PRIVACY_FIELD_SAMPLES_SERVICE_NAME, samples);
+    assert.equal(
+      classifyServiceGrant(
+        '@test/guard',
+        PRIVACY_FIELD_SAMPLES_SERVICE_NAME,
+        declaredServiceNames('@test/guard', catalog),
+        catalog,
+        (name) => registry.providedBy('@test/guard', name),
+      ),
+      'kernel-only',
+    );
+    assert.throws(
+      () => ctx.services.get(PRIVACY_FIELD_SAMPLES_SERVICE_NAME),
+      (err: unknown) => err instanceof ServiceNotDeclaredError,
+    );
+  });
+
+  it('refuses a bundled plugin granted privacyRedact by the legacy ramp', () => {
+    const catalog = catalogWithOrigin('bundled', [pluginOf('@omadia/plugin-office', [])]);
+    const registry = new ServiceRegistry();
+    registry.provide(PRIVACY_FIELD_SAMPLES_SERVICE_NAME, samples, '@test/guard');
+    const { ctx } = makeCtx('@omadia/plugin-office', catalog, registry);
+    assert.throws(
+      () => ctx.services.get(PRIVACY_FIELD_SAMPLES_SERVICE_NAME),
+      (err: unknown) => err instanceof ServiceNotDeclaredError,
+    );
   });
 });

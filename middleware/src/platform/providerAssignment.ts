@@ -7,20 +7,36 @@
  * very same fail-closed checks (tool-less provider vs tool-driving plugin,
  * model/provider mismatch, routing-disable on a non-Anthropic switch), so they
  * moved here instead of being duplicated.
+ *
+ * Model refs (#1083): a class ref (`class:frontier`) is stored VERBATIM — the
+ * same as the runtime config PATCH does — so the agent follows the provider's
+ * catalog instead of being pinned to today's frontier model. The consumers of
+ * the keys written here resolve it with `resolveConfiguredModel` /
+ * `resolveModelRefStrict` (#1079): the orchestrator, verifier and extras once
+ * at activation (the assignment reactivates the plugin; a later discovery run
+ * that moves the class rebuilds them — `classDefaultRebuild.ts`, #1359), the
+ * issue reformulation (`issuesRouter`, reading
+ * `orchestrator_model`) per call.
+ * It fails closed only when the provider serves no model at all.
+ * Provider-qualified ids and legacy aliases are still normalised to the bare
+ * vendor `modelId`.
  */
 import {
+  isClassRef,
   listModelsByProvider,
   modelForClass,
+  resolveConfiguredModel,
   resolveModelRef,
   type ModelInfo,
   type ProviderId,
 } from '@omadia/llm-provider';
 
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
-import type { CliBackendsSnapshot } from './cliBackendDetector.js';
+import { detectCliBackends, type CliBackendsSnapshot } from './cliBackendDetector.js';
 import {
   DEFAULT_PROVIDER,
   LLM_PLUGINS,
+  findProviderKey,
   readStringConfig,
   resolveProviderVerification,
   type LlmProviderCatalogView,
@@ -28,6 +44,7 @@ import {
 } from './pluginLlmReadiness.js';
 import {
   ProviderDependentRebuildError,
+  capturingPluginOf,
   isEffectiveProviderChange,
   providerDependentsOf,
   reactivateAfterProviderWrite,
@@ -45,6 +62,10 @@ export interface ProviderAssignmentInput {
   readonly pluginId: string;
   readonly provider: string;
   readonly model: string;
+  /** Leave the rebuild of the plugin that captures this one (the
+   *  orchestrator, for extras and the verifier — #1394) to the caller. For a
+   *  batch that rebuilds the capturer itself afterwards. */
+  readonly deferCapturerRebuild?: boolean;
 }
 
 export type ProviderAssignmentResult =
@@ -52,8 +73,11 @@ export type ProviderAssignmentResult =
       readonly ok: true;
       readonly pluginId: string;
       readonly provider: string;
-      /** The bare vendor model id that was persisted. */
+      /** What was persisted: a class ref as given, else the bare vendor id. */
       readonly model: string;
+      /** The concrete model `model` resolves to for `provider` right now —
+       *  equal to `model` unless that is a class ref. */
+      readonly resolvedModel: string;
     }
   | {
       readonly ok: false;
@@ -125,23 +149,19 @@ export async function applyProviderAssignment(
       message: `${desc.label} needs tool support; the subscription CLI provider is tool-less. Use it only for tool-less roles (e.g. extraction/classification).`,
     };
   }
-  // Resolve against the CHOSEN provider so class refs (`class:frontier`),
-  // provider-qualified ids (`openai:gpt-5.5`) and legacy aliases (`opus`) all
-  // disambiguate to it. Guard the classic mistake: a known model that belongs
-  // to a DIFFERENT provider (e.g. claude-* assigned to openai). Unknown models
-  // (custom / openai-compatible) are allowed through.
-  const known = resolveModelRef(model, { defaultProvider: provider as ProviderId });
-  if (known !== undefined && known.provider !== provider) {
+  // #1583 — a plugin that cannot run on the subscription CLI at all: refuse,
+  // rather than save an assignment the plugin then silently does not start on.
+  if (desc.rejectsSubscriptionCli === true && providerWire === 'claude-cli') {
     return {
       ok: false,
       status: 400,
-      code: 'providers.model_provider_mismatch',
-      message: `model '${model}' belongs to provider '${known.provider}', not '${provider}'`,
+      code: 'providers.subscription_cli_unsupported',
+      message: `${desc.label} cannot run on the subscription CLI: it needs a provider with an API key. Assign it a key-based provider (e.g. Anthropic).`,
     };
   }
-  // Persist the bare vendor id the adapter expects — normalise qualified ids /
-  // class refs / aliases to `modelId`; pass unknown custom ids through as-is.
-  const storeModel = known?.modelId ?? model;
+  const resolution = resolveAssignedModel(model, provider);
+  if (!resolution.ok) return resolution;
+  const { storeModel, resolvedModel } = resolution;
 
   const entry = deps.installedRegistry.get(pluginId);
   const nextConfig: Record<string, unknown> = { ...(entry?.config ?? {}) };
@@ -159,6 +179,7 @@ export async function applyProviderAssignment(
     outcome = await reactivateAfterProviderWrite(deps, pluginId, {
       providerChanged: isEffectiveProviderChange(entry?.config, nextConfig),
       providerWritten: true,
+      ...(input.deferCapturerRebuild === true ? { rebuildCapturer: false } : {}),
     });
   } catch (err) {
     if (err instanceof ProviderDependentRebuildError) {
@@ -193,7 +214,50 @@ export async function applyProviderAssignment(
       primaryApplied: false,
     };
   }
-  return { ok: true, pluginId, provider, model: storeModel };
+  return { ok: true, pluginId, provider, model: storeModel, resolvedModel };
+}
+
+type AssignedModelResolution =
+  | { readonly ok: true; readonly storeModel: string; readonly resolvedModel: string }
+  | Extract<ProviderAssignmentResult, { ok: false }>;
+
+/**
+ * Decide what to persist for `model` under `provider`, and what it resolves
+ * to right now.
+ *
+ *  - class ref → kept verbatim (#1083); resolved with the runtime's own
+ *    resolver, which falls back to the nearest class and then to any model the
+ *    provider serves. Nothing at all → `providers.model_class_unavailable`.
+ *  - anything else → resolved against the CHOSEN provider so qualified ids
+ *    (`openai:gpt-5.5`) and legacy aliases (`opus`) disambiguate to it and are
+ *    stored as the bare vendor id. A known model of a DIFFERENT provider is the
+ *    classic mistake and is rejected; unknown (custom / openai-compatible) ids
+ *    pass through as-is.
+ */
+function resolveAssignedModel(model: string, provider: string): AssignedModelResolution {
+  if (isClassRef(model)) {
+    const resolved = resolveConfiguredModel(model, provider);
+    if (resolved === undefined || isClassRef(resolved)) {
+      return {
+        ok: false,
+        status: 400,
+        code: 'providers.model_class_unavailable',
+        message: `provider '${provider}' serves no model for '${model}'`,
+      };
+    }
+    return { ok: true, storeModel: model, resolvedModel: resolved };
+  }
+  const known = resolveModelRef(model, { defaultProvider: provider as ProviderId });
+  if (known !== undefined && known.provider !== provider) {
+    return {
+      ok: false,
+      status: 400,
+      code: 'providers.model_provider_mismatch',
+      message: `model '${model}' belongs to provider '${known.provider}', not '${provider}'`,
+    };
+  }
+  const storeModel = known?.modelId ?? model;
+  return { ok: true, storeModel, resolvedModel: storeModel };
 }
 
 // ---------------------------------------------------------------------------
@@ -222,6 +286,12 @@ export interface SubscriptionAutoAssignDeps extends ProviderAssignmentDeps {
    *  computes it. */
   readonly cliSnapshot?: CliBackendsSnapshot | undefined;
   readonly log?: (message: string) => void;
+  /**
+   * Leave a plugin alone once `llm_provider` is set at all, the default included.
+   * A login shows what the operator wants; a boot or a re-check does not, and an
+   * explicit `anthropic` without a key may be someone about to add one.
+   */
+  readonly onlyUnassigned?: boolean;
 }
 
 export interface SubscriptionAutoAssignOutcome {
@@ -272,6 +342,8 @@ export async function autoAssignSubscriptionCli(
     ...LLM_PLUGINS.filter((p) => hasDependents(p.id)),
   ];
 
+  const rebuilt = new Set<string>();
+  const capturersToRebuild = new Set<string>();
   for (const desc of handOffOrder) {
     if (!deps.installedRegistry.has(desc.id)) {
       skipped.push({ pluginId: desc.id, reason: 'not_installed' });
@@ -279,6 +351,10 @@ export async function autoAssignSubscriptionCli(
     }
     if (desc.requiresTools === true) {
       skipped.push({ pluginId: desc.id, reason: 'requires_tools' });
+      continue;
+    }
+    if (desc.rejectsSubscriptionCli === true) {
+      skipped.push({ pluginId: desc.id, reason: 'subscription_cli_unsupported' });
       continue;
     }
     const cfg = deps.installedRegistry.get(desc.id)?.config ?? {};
@@ -297,6 +373,10 @@ export async function autoAssignSubscriptionCli(
       skipped.push({ pluginId: desc.id, reason: `explicit_provider:${current}` });
       continue;
     }
+    if (deps.onlyUnassigned === true && readStringConfig(cfg, 'llm_provider') !== undefined) {
+      skipped.push({ pluginId: desc.id, reason: `explicit_provider:${current}` });
+      continue;
+    }
     const verification = await resolveProviderVerification(current, {
       vault: deps.vault,
       llmProviderCatalog: deps.llmProviderCatalog,
@@ -310,7 +390,17 @@ export async function autoAssignSubscriptionCli(
       pluginId: desc.id,
       provider: SUBSCRIPTION_CLI_PROVIDER,
       model: model.modelId,
+      // The capturing orchestrator is processed last and rebuilt by its own
+      // step; when that step does not run, it is rebuilt once below.
+      deferCapturerRebuild: true,
     });
+    // Only a step that actually rebuilt the plugin counts: a validation
+    // failure returns before any reactivation.
+    if (result.ok || result.primaryApplied !== undefined) {
+      rebuilt.add(desc.id);
+      const capturer = capturingPluginOf(desc.id);
+      if (capturer !== undefined) capturersToRebuild.add(capturer);
+    }
     if (result.ok) {
       assigned.push(desc.id);
       log(
@@ -335,5 +425,82 @@ export async function autoAssignSubscriptionCli(
       log(`[providers] subscription hand-off: ${desc.id} ${verdict} (${result.code}: ${result.message})`);
     }
   }
+  // #1394 — a switched extras / verifier is captured by the orchestrator; when
+  // the orchestrator's own step did not rebuild it (skipped: it has a
+  // credential, an explicit provider, …), rebuild it once now.
+  for (const capturer of capturersToRebuild) {
+    if (rebuilt.has(capturer) || !deps.installedRegistry.has(capturer)) continue;
+    try {
+      await deps.reactivate?.(capturer);
+    } catch (err) {
+      log(
+        `[providers] subscription hand-off: rebuilding ${capturer} after its captured plugins switched FAILED: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
   return { assigned, skipped };
+}
+
+export interface ExistingCliLoginDeps extends SubscriptionAutoAssignDeps {
+  /** Injected by tests, so none of them shells out to a real CLI. */
+  readonly detectCli?: () => Promise<CliBackendsSnapshot | undefined>;
+  /** Injected by tests; defaults to `process.env`. */
+  readonly env?: Readonly<Record<string, string | undefined>>;
+  readonly llmProviderCatalog?: LlmProviderCatalogView & {
+    list(): ReadonlyArray<{ readonly id: string }>;
+  };
+}
+
+/**
+ * LLM keys a deployment hands the kernel by environment. They are not always in
+ * the vault (bootstrap seeds Anthropic's only on first registration, and the
+ * desktop wizard's OpenAI key not at all), but each one says "this install has a
+ * provider", so the subscription must not take over.
+ */
+const LLM_KEY_ENV_VARS = ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY'] as const;
+
+/** Whether any provider has a stored or environment-supplied API key. */
+async function anyProviderKeyConfigured(deps: ExistingCliLoginDeps): Promise<boolean> {
+  const env = deps.env ?? process.env;
+  if (LLM_KEY_ENV_VARS.some((name) => (env[name] ?? '').trim().length > 0)) return true;
+  for (const provider of deps.llmProviderCatalog?.list() ?? []) {
+    if ((await findProviderKey(deps.vault, provider.id as ProviderId)) !== undefined) return true;
+  }
+  return false;
+}
+
+/** The hand-off in flight: the re-check and the boot must not rebuild plugins side by side. */
+let existingLoginHandOff: Promise<SubscriptionAutoAssignOutcome | undefined> | undefined;
+
+/**
+ * The login hook only sees a sign-in made through omadia. A CLI that was already
+ * signed in on the host (the usual case for someone who picks "I already have a
+ * subscription") would otherwise leave the orchestrator on an Anthropic default
+ * with no key, and chat answers 503 although the subscription is ready.
+ *
+ * Stricter than the login path, because nobody asked for it here: it only runs
+ * when no provider has a key anywhere, and only moves plugins that were never
+ * assigned. Anything else stays the operator's decision.
+ */
+export function handOffExistingCliLogin(
+  deps: ExistingCliLoginDeps,
+): Promise<SubscriptionAutoAssignOutcome | undefined> {
+  existingLoginHandOff ??= runExistingCliLoginHandOff(deps).finally(() => {
+    existingLoginHandOff = undefined;
+  });
+  return existingLoginHandOff;
+}
+
+async function runExistingCliLoginHandOff(
+  deps: ExistingCliLoginDeps,
+): Promise<SubscriptionAutoAssignOutcome | undefined> {
+  if (await anyProviderKeyConfigured(deps)) return undefined;
+  const detect = deps.detectCli ?? ((): Promise<CliBackendsSnapshot> => detectCliBackends());
+  const cliSnapshot = await detect().catch(() => undefined);
+  const verification = await resolveProviderVerification(SUBSCRIPTION_CLI_PROVIDER, {
+    llmProviderCatalog: deps.llmProviderCatalog,
+    cliSnapshot,
+  });
+  if (verification.status !== 'verified') return undefined;
+  return autoAssignSubscriptionCli({ ...deps, cliSnapshot, onlyUnassigned: true });
 }

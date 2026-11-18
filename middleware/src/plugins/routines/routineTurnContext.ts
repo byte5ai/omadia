@@ -24,7 +24,8 @@ import type { ManageRoutineContext } from './manageRoutineTool.js';
  * in exchange for plugin isolation.
  *
  * Outside a turn (unit tests, ad-hoc invocations) and on channels no
- * producer covers, the context is undefined and the tool returns
+ * producer covers, the context is undefined: the tool is not offered
+ * (`isManageRoutineOffered`), and a call that still arrives returns
  * `ROUTINE_NO_CONTEXT_ERROR`.
  */
 

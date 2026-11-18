@@ -2,14 +2,13 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
 import type { AgentId } from '../api/admin-v1.js';
+import type { ActivationFailure } from './activationFailure.js';
 import {
   blockActivation,
-  CIRCUIT_BREAKER_THRESHOLD,
+  bumpFailure,
   type InstalledAgent,
   type InstalledRegistry,
 } from './installedRegistry.js';
-
-const ERROR_TAIL_MAX = 500;
 
 /**
  * File-backed installed-agents registry. No encryption — entries are
@@ -75,33 +74,23 @@ export class FileInstalledRegistry implements InstalledRegistry {
 
   async markActivationFailed(
     id: AgentId,
-    error: string,
+    error: string | ActivationFailure,
     unresolvedRequires?: readonly string[],
   ): Promise<void> {
     this.ensureLoaded();
     const current = this.agents.get(id);
     if (!current) return;
-    const prevCount = current.activation_failure_count ?? 0;
-    const nextCount = prevCount + 1;
-    const next: InstalledAgent = {
-      ...current,
-      activation_failure_count: nextCount,
-      last_activation_error: error.slice(0, ERROR_TAIL_MAX),
-      last_activation_error_at: new Date().toISOString(),
-    };
-    if (unresolvedRequires && unresolvedRequires.length > 0) {
-      next.unresolved_requires = [...unresolvedRequires];
-    } else {
-      delete next.unresolved_requires;
-    }
-    if (nextCount >= CIRCUIT_BREAKER_THRESHOLD) {
-      next.status = 'errored';
-    }
-    this.agents.set(id, next);
+    this.agents.set(
+      id,
+      bumpFailure(current, error, new Date().toISOString(), unresolvedRequires),
+    );
     await this.persist();
   }
 
-  async markActivationBlocked(id: AgentId, error: string): Promise<void> {
+  async markActivationBlocked(
+    id: AgentId,
+    error: string | ActivationFailure,
+  ): Promise<void> {
     this.ensureLoaded();
     const current = this.agents.get(id);
     if (!current) return;
@@ -124,6 +113,7 @@ export class FileInstalledRegistry implements InstalledRegistry {
     delete next.activation_failure_count;
     delete next.last_activation_error;
     delete next.last_activation_error_at;
+    delete next.last_activation_error_code;
     delete next.unresolved_requires;
     this.agents.set(id, next);
     await this.persist();
@@ -138,12 +128,14 @@ export class FileInstalledRegistry implements InstalledRegistry {
       current.activation_failure_count !== undefined ||
       current.last_activation_error !== undefined ||
       current.last_activation_error_at !== undefined ||
+      current.last_activation_error_code !== undefined ||
       current.unresolved_requires !== undefined;
     if (!wasErrored && !hadAnyErrorField) return;
     const next: InstalledAgent = { ...current };
     delete next.activation_failure_count;
     delete next.last_activation_error;
     delete next.last_activation_error_at;
+    delete next.last_activation_error_code;
     delete next.unresolved_requires;
     if (wasErrored) next.status = 'active';
     this.agents.set(id, next);

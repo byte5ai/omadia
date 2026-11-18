@@ -14,6 +14,10 @@ import { ChevronDown, Eraser, GitBranch, Navigation, Network } from 'lucide-reac
 import { ChatTabs } from '../_components/ChatTabs';
 import { ScrollToBottomButton } from '../_components/ScrollToBottomButton';
 import { Button } from '../_components/ui/Button';
+import {
+  answerVerbosityNeighbour,
+  type AnswerVerbosity,
+} from '../_lib/agentIdentity';
 import { useStickToBottom } from '../_lib/useStickToBottom';
 import { AgentPicker } from '../_components/AgentPicker';
 import { AgentUnavailableBanner } from '../_components/AgentUnavailableBanner';
@@ -35,10 +39,14 @@ import { RecalledContextCard } from '../_components/chat/RecalledContextCard';
 import { PrivacyReceiptCard } from '../_components/chat/PrivacyReceiptCard';
 import { SaveMemoryButton } from '../_components/chat/SaveMemoryButton';
 import { TurnIncompleteNotice } from '../_components/chat/TurnIncompleteNotice';
+import { SystemDataBadge, VerifierBadge } from '../_components/chat/VerifierBadge';
+import { DecisionBadge } from '../_components/chat/DecisionBadge';
+import { VerifierBlockedNotice } from '../_components/chat/VerifierBlockedNotice';
 import { Markdown } from '../_components/Markdown';
-import { resetChatSession, steerActiveTurn } from '../_lib/api';
+import { steerActiveTurn } from '../_lib/api';
 import { isSendKey } from '../_lib/composerKeys';
 import { parseTurnIncomplete } from '../_lib/turnIncomplete';
+import { hasNoTurns } from '../_lib/chatProactiveMerge';
 import {
   deriveTitle,
   newSessionId,
@@ -107,6 +115,9 @@ const MOCK_KG_WALK: KgWalkPayload = {
 };
 
 const EMPTY_SUBSCRIBE = (): (() => void) => () => undefined;
+
+/** How long the "reset reached this browser only" notice stays (#1071). */
+const RESET_PARTIAL_NOTICE_MS = 10_000;
 
 function useKgMockEnabled(): boolean {
   // useSyncExternalStore avoids a setState-in-effect: the client snapshot reads
@@ -193,8 +204,19 @@ export default function ChatPage(): React.ReactElement {
     setActive,
     clearMessages,
     mutateById,
+    refreshProactive,
   } = useChatSessionsCtx();
   const streamStore = useStreamStore();
+
+  // #1071 — a scheduled routine created from a chat delivers into that chat on
+  // the server. Sessions hydrate once per full page load (the provider lives
+  // in the root layout), so re-read the chat the user is looking at whenever
+  // this page mounts, hydration finishes or the active chat changes —
+  // otherwise navigating here from /routines would show nothing new.
+  useEffect(() => {
+    if (hydrating || !activeId) return;
+    refreshProactive(activeId);
+  }, [hydrating, activeId, refreshProactive]);
   const sending = streamStore.isActive(activeId);
   const kgMockEnabled = useKgMockEnabled();
   const [kgWalkEnabled, setKgWalkEnabled] = useKgWalkEnabled();
@@ -236,6 +258,9 @@ export default function ChatPage(): React.ReactElement {
   const [input, setInput] = useState('');
   const [resetPending, setResetPending] = useState(false);
   const [confirmResetOpen, setConfirmResetOpen] = useState(false);
+  /** #1071 — the last reset cleared this browser only; the server kept its
+   *  routine deliveries, which come back on the next re-read. */
+  const [resetPartial, setResetPartial] = useState(false);
   /** Mid-turn steering — true while a `/chat/steer` request is in flight. */
   const [steerBusy, setSteerBusy] = useState(false);
   /** Transient composer notice after a steer attempt: 'sent' when it was
@@ -254,6 +279,7 @@ export default function ChatPage(): React.ReactElement {
   const { isAtBottom, scrollToBottom } = useStickToBottom(scrollRef, [
     activeSession.messages,
   ]);
+  const activeHasNoTurns = hasNoTurns(activeSession.messages);
 
   // Slice 4c — clear the auto-promoted-MK marker on a message after the
   // user Discards it. The manual save-as-memory button then comes back so
@@ -273,7 +299,7 @@ export default function ChatPage(): React.ReactElement {
   );
 
   const send = useCallback(
-    (overrideText?: string): void => {
+    (overrideText?: string, opts?: { answerVerbosity?: AnswerVerbosity }): void => {
       // Two entry points use this: the Senden button (reads `input`) and the
       // Smart-Card option buttons (pass the chosen label via overrideText).
       const trimmed = (overrideText ?? input).trim();
@@ -297,8 +323,35 @@ export default function ChatPage(): React.ReactElement {
         streaming: true,
       };
 
+      // Hand the stream off to <StreamRunner /> via the store BEFORE the
+      // bubbles land. The runner owns the fetch + NDJSON-parse loop and writes
+      // deltas back into ChatSessions via context, so a menu-switch or
+      // ChatTabs switch no longer kills the stream. `startTurn` refuses while
+      // the session already has a live stream: a second send in the same tick
+      // (Enter + click, a double click — `sending` is still false in this
+      // closure) used to append its user bubble and a `streaming` placeholder
+      // first and then get refused, leaving a question that was never sent
+      // and a "Stream live" counter that never stopped — persisted with the
+      // session. Refused ⇒ nothing is appended.
+      // Phase A — only the FIRST turn ships agentSlug; subsequent turns
+      // use the session-pinned snapshot on the server side.
+      // #1071 — a cleared chat holding only routine deliveries counts as empty.
+      const isFirstTurn = activeHasNoTurns;
+      const started = streamStore.startTurn({
+        sessionId: targetSessionId,
+        pendingMessageId: pendingId,
+        message: trimmed,
+        ...(isFirstTurn && selectedAgentSlug
+          ? { agentSlug: selectedAgentSlug }
+          : {}),
+        // Phase 3 — a "Kürzer" / "Mehr Details" re-ask carries its level for
+        // this one turn; a normal send carries nothing.
+        ...(opts?.answerVerbosity ? { answerVerbosity: opts.answerVerbosity } : {}),
+      });
+      if (!started) return;
+
       mutateById(targetSessionId, (session) => {
-        const isFirst = session.messages.length === 0;
+        const isFirst = hasNoTurns(session.messages);
         // Strip pendingUserChoice, pendingMcpInput AND followUpOptions from
         // older assistant messages so the button rows / input forms disappear as
         // soon as the user commits to a choice or types a fresh message. Lives
@@ -316,22 +369,6 @@ export default function ChatPage(): React.ReactElement {
       // A sent message always lands at the bottom, even if the user had
       // scrolled up to read earlier messages before sending.
       scrollToBottom();
-
-      // Hand the stream off to <StreamRunner /> via the store. The runner
-      // owns the fetch + NDJSON-parse loop and writes deltas back into
-      // ChatSessions via context, so a menu-switch or ChatTabs switch no
-      // longer kills the stream.
-      // Phase A — only the FIRST turn ships agentSlug; subsequent turns
-      // use the session-pinned snapshot on the server side.
-      const isFirstTurn = activeSession.messages.length === 0;
-      streamStore.startTurn({
-        sessionId: targetSessionId,
-        pendingMessageId: pendingId,
-        message: trimmed,
-        ...(isFirstTurn && selectedAgentSlug
-          ? { agentSlug: selectedAgentSlug }
-          : {}),
-      });
       inputRef.current?.focus();
     },
     [
@@ -341,7 +378,7 @@ export default function ChatPage(): React.ReactElement {
       activeId,
       mutateById,
       streamStore,
-      activeSession.messages.length,
+      activeHasNoTurns,
       selectedAgentSlug,
       scrollToBottom,
     ],
@@ -393,6 +430,17 @@ export default function ChatPage(): React.ReactElement {
     };
   }, [steerNotice]);
 
+  // …and the partial-reset notice once it has been read.
+  useEffect(() => {
+    if (!resetPartial) return;
+    const timer = setTimeout(() => {
+      setResetPartial(false);
+    }, RESET_PARTIAL_NOTICE_MS);
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [resetPartial]);
+
   // OM-21/37: plain Enter sends, matching every other composer in the app.
   // ⌘/Ctrl+Enter stays an accepted alias (it was the only documented shortcut
   // here), Shift+Enter falls through to the browser's own newline, and an
@@ -421,18 +469,13 @@ export default function ChatPage(): React.ReactElement {
       // runner would happily keep writing deltas into a freshly cleared
       // message list.
       streamStore.abort(activeId);
-      // Backend rotates the conversation pointer so the agent starts a new
-      // turn-chain. KG / Memory are NOT touched. If the backend isn't
-      // reachable we still clear locally — the user wanted a fresh slate.
-      try {
-        await resetChatSession(activeId);
-      } catch (err) {
-        console.warn(
-          '[chat-reset] backend reset failed, clearing locally only:',
-          err instanceof Error ? err.message : err,
-        );
-      }
-      await clearMessages(activeId);
+      // `clearMessages` resets the backend copy too (`POST …/reset`, #1071 —
+      // the only explicit clear): the conversation pointer rotates so the
+      // agent starts a new turn-chain; KG / Memory are NOT touched. If the
+      // backend isn't reachable it still clears locally — the user wanted a
+      // fresh slate — and says that routine deliveries may come back.
+      const outcome = await clearMessages(activeId);
+      setResetPartial(outcome === 'partial');
     } finally {
       setResetPending(false);
       inputRef.current?.focus();
@@ -623,7 +666,7 @@ export default function ChatPage(): React.ReactElement {
             {activeSession.messages.length === 0 && (
               <EmptyState hydrating={hydrating} session={activeSession} />
             )}
-            {activeSession.messages.map((m) => (
+            {activeSession.messages.map((m, idx) => (
               <MessageRow
                 key={m.id}
                 message={m}
@@ -631,6 +674,21 @@ export default function ChatPage(): React.ReactElement {
                 onChoose={(value) => {
                   send(value);
                 }}
+                // Only the LAST answer gets the size buttons: a re-ask lands
+                // at the bottom of the chat, so re-asking an older question
+                // there would read as a non-sequitur. And only when the
+                // nearest user message above is a typed question — the
+                // answer to a choice-card / follow-up click sits under the
+                // option LABEL ("Ja"), which is nothing to re-ask.
+                {...(idx === activeSession.messages.length - 1 &&
+                resizableQuestionFor(activeSession.messages, idx) !== undefined
+                  ? {
+                      onResize: (level: AnswerVerbosity) => {
+                        const question = resizableQuestionFor(activeSession.messages, idx);
+                        if (question) send(question, { answerVerbosity: level });
+                      },
+                    }
+                  : {})}
                 onDiscardAutoPromoted={clearAutoPromoted}
               />
             ))}
@@ -683,6 +741,11 @@ export default function ChatPage(): React.ReactElement {
                 </span>
               )}
             </div>
+          )}
+          {resetPartial && (
+            <p role="status" className="text-[11px] text-[color:var(--warning)]">
+              {t('resetPartialNotice')}
+            </p>
           )}
           {/* §5.3 Spotlight: the composer is the stage — radial accent glow
               behind it, three-stop showcase glow on the focused input. */}
@@ -889,11 +952,14 @@ export function MessageRow({
   message,
   disabled,
   onChoose,
+  onResize,
   onDiscardAutoPromoted,
 }: {
   message: Message;
   disabled: boolean;
   onChoose: (value: string) => void;
+  /** Phase 3 — re-ask this answer's question at the given size level. */
+  onResize?: (level: AnswerVerbosity) => void;
   /** Slice 4c — called when the user successfully Discards an
    *  auto-promoted MK so the parent can clear `autoPromotedMkId` on
    *  this message and the manual save-as-memory button comes back. */
@@ -901,8 +967,10 @@ export function MessageRow({
 }): React.ReactElement {
   const t = useTranslations('chat');
   const isUser = message.role === 'user';
+  // #1071 — a routine delivery has no turn duration; a "⏱ 0.0s" would read
+  // as a measurement.
   const elapsed =
-    message.finishedAt !== undefined
+    message.finishedAt !== undefined && message.proactive === undefined
       ? ((message.finishedAt - message.startedAt) / 1000).toFixed(1)
       : null;
   // Show the Theme E0+E1 liveness row whenever the turn is in flight
@@ -979,8 +1047,9 @@ export function MessageRow({
             : message.error
               ? 'bg-[color:var(--danger)]/8 text-[color:var(--danger)] ring-1 ring-[color:var(--danger-edge)]'
               : // #1094 — a degraded turn is not an error, but it must not
-                // look like an ordinary answer either.
-                degradedTurn
+                // look like an ordinary answer either. Same for an answer
+                // the verifier withheld: the bubble holds its notice.
+                degradedTurn || message.verifierBlocked
                 ? 'bg-[color:var(--bg-elevated)] text-[color:var(--fg-strong)] ring-1 ring-[color:var(--warning)]'
                 : 'bg-[color:var(--bg-elevated)] text-[color:var(--fg-strong)] ring-1 ring-[color:var(--border)]',
         ].join(' ')}
@@ -989,6 +1058,8 @@ export function MessageRow({
           <div className="whitespace-pre-wrap text-sm">{message.content}</div>
         ) : (
           <>
+            {message.proactive && <ProactiveBadge proactive={message.proactive} />}
+            {message.fastPathDecision !== undefined && <DecisionBadge decision={message.fastPathDecision} />}
             {message.routing && <TriageBadge routing={message.routing} />}
             {message.persona && <PersonaBadge persona={message.persona} />}
             {message.recalledContext && (
@@ -1020,6 +1091,13 @@ export function MessageRow({
                 {...(degradedTurn.correlationId
                   ? { correlationId: degradedTurn.correlationId }
                   : {})}
+              />
+            )}
+            {message.verifierBlocked && (
+              <VerifierBlockedNotice
+                hasAnswerText={delegatedNote.length > 0}
+                cause={message.verifier?.withheldCause}
+                contradictionCount={message.verifier?.contradictionCount}
               />
             )}
             {delegatedNote.length > 0 ? (
@@ -1080,16 +1158,40 @@ export function MessageRow({
                 onChoose={onChoose}
               />
             )}
+            {!isUser &&
+              !message.streaming &&
+              !message.error &&
+              // Same rule as the memory button: a withheld or degraded turn is
+              // a notice, and an open choice / MCP form is a question — none
+              // of them is an answer whose size the user would adjust.
+              !message.verifierBlocked &&
+              message.degradedTurn === undefined &&
+              message.pendingUserChoice === undefined &&
+              message.pendingMcpInput === undefined &&
+              message.answerVerbosity !== undefined &&
+              onResize !== undefined && (
+                <VerbosityStepButtons
+                  level={message.answerVerbosity.effective}
+                  disabled={disabled}
+                  onResize={onResize}
+                />
+              )}
             {message.captureDisclosure && (
               <CaptureDisclosure disclosure={message.captureDisclosure} />
             )}
             {message.privacyReceipt && (
-              <PrivacyReceiptCard receipt={message.privacyReceipt} turnId={message.turnId} />
+              <PrivacyReceiptCard
+                receipt={message.privacyReceipt}
+                {...(message.receiptId ? { receiptId: message.receiptId } : {})}
+              />
             )}
           </>
         )}
         {!isUser &&
-          (message.telemetry || elapsed || message.turnId !== undefined) && (
+          (message.telemetry ||
+            elapsed ||
+            message.turnId !== undefined ||
+            message.verifier) && (
             <div className="mt-2 flex flex-wrap items-center border-t border-current/10 pt-2 text-[11px] text-[color:var(--fg-muted)]">
               {message.telemetry && (
                 <span>
@@ -1105,12 +1207,18 @@ export function MessageRow({
                   {shortModelName(message.model)}
                 </span>
               )}
+              {message.systemData && <SystemDataBadge />}
+              {message.verifier && (
+                <VerifierBadge summary={message.verifier} systemData={message.systemData === true} />
+              )}
               {elapsed !== null && <span className="ml-3">⏱ {elapsed}s</span>}
               {message.streaming && (
                 <span className="ml-3">{t('streamingSuffix')}</span>
               )}
               {!message.streaming &&
                 !message.error &&
+                // A withheld answer is a notice — nothing to keep in memory.
+                !message.verifierBlocked &&
                 message.turnId !== undefined &&
                 (message.autoPromotedMkId !== undefined ? (
                   <AutoPromotedBanner
@@ -1412,6 +1520,44 @@ function PersonaBadge({
       >
         {label}
       </span>
+    </div>
+  );
+}
+
+/**
+ * #1071 — marks an assistant message the server delivered on a schedule (a
+ * routine created from this chat), so it is not mistaken for an answer to the
+ * user's last question.
+ */
+function ProactiveBadge({
+  proactive,
+}: {
+  proactive: NonNullable<Message['proactive']>;
+}): React.ReactElement {
+  const t = useTranslations('chat');
+  const label = proactive.routineName
+    ? t('proactiveRoutineBadge', { name: proactive.routineName })
+    : t('proactiveBadge');
+  // What the text-only web delivery had to drop, named from the marker in
+  // the reader's language (the server stores counts, not prose).
+  const attachments = proactive.droppedAttachments ?? 0;
+  const dropped: string[] = [];
+  if (attachments > 0) {
+    dropped.push(t('proactiveDroppedAttachments', { count: attachments }));
+  }
+  if (proactive.droppedInteractive !== undefined) {
+    dropped.push(t('proactiveDroppedInteractive', { kind: proactive.droppedInteractive }));
+  }
+  return (
+    <div className="mb-2 flex flex-col items-start gap-1 text-[11px]">
+      <span className="inline-flex items-center rounded-full bg-[color:var(--accent)]/10 px-2 py-0.5 font-medium text-[color:var(--accent)] ring-1 ring-[color:var(--accent)]">
+        {label}
+      </span>
+      {dropped.map((note) => (
+        <span key={note} className="text-[color:var(--fg-muted)]">
+          {note}
+        </span>
+      ))}
     </div>
   );
 }
@@ -1855,6 +2001,86 @@ function formatFileSize(bytes: number): string {
  * heavy color accent — so the eye treats them as *quick next steps*, not
  * as blocking UI like `ChoiceCard`.
  */
+/**
+ * The question an answer at `idx` can be re-asked with: the nearest user
+ * message above it, provided it is a typed question. A user message that
+ * was produced by a choice-card / follow-up click carries the option label
+ * as its content, and the assistant message right before it holds the card
+ * that was clicked — re-asking "Ja" with a size hint would be meaningless, so
+ * that case (and an empty, file-only message) yields undefined.
+ */
+export function resizableQuestionFor(
+  messages: readonly Message[],
+  idx: number,
+): string | undefined {
+  for (let i = idx - 1; i >= 0; i -= 1) {
+    const m = messages[i];
+    if (!m || m.role !== 'user') continue;
+    const prev = messages[i - 1];
+    const clickedCard =
+      prev?.role === 'assistant' &&
+      (prev.pendingUserChoice !== undefined ||
+        prev.pendingMcpInput !== undefined ||
+        (prev.followUpOptions?.some((o) => o.prompt === m.content) ?? false));
+    const text = m.content.trim();
+    return clickedCard || text.length === 0 ? undefined : text;
+  }
+  return undefined;
+}
+
+/**
+ * Phase 3 — "Kürzer" / "Mehr Details": re-ask the same question one step
+ * down / up the answer-size scale for one turn. Mirrors the Teams card's
+ * buttons; the one at the end of the scale is left out, not disabled.
+ */
+function VerbosityStepButtons({
+  level,
+  disabled,
+  onResize,
+}: {
+  level: AnswerVerbosity;
+  disabled: boolean;
+  onResize: (level: AnswerVerbosity) => void;
+}): React.ReactElement | null {
+  const t = useTranslations('chat');
+  const shorter = answerVerbosityNeighbour(level, 'shorter');
+  const longer = answerVerbosityNeighbour(level, 'longer');
+  if (!shorter && !longer) return null;
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-2">
+      <span className="text-[10px] font-medium tracking-wide text-[color:var(--fg-muted)] uppercase">
+        {t('verbosityLabel')}
+      </span>
+      {shorter && (
+        <Button
+          variant="secondary"
+          size="sm"
+          pill
+          disabled={disabled}
+          onClick={() => {
+            onResize(shorter);
+          }}
+        >
+          {t('verbosityShorter')}
+        </Button>
+      )}
+      {longer && (
+        <Button
+          variant="secondary"
+          size="sm"
+          pill
+          disabled={disabled}
+          onClick={() => {
+            onResize(longer);
+          }}
+        >
+          {t('verbosityLonger')}
+        </Button>
+      )}
+    </div>
+  );
+}
+
 function FollowUpButtons({
   options,
   disabled,

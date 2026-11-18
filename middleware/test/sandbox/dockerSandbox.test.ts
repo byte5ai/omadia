@@ -5,6 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { DockerSandboxBackend, _internal } from '../../packages/harness-sandbox/src/dockerSandbox.js';
 import { resolveAgentComputerProfile } from '../../packages/harness-sandbox/src/agentComputerProfile.js';
 import type { DockerExec, DockerExecContext, DockerExecResult } from '../../packages/harness-sandbox/src/dockerExec.js';
+import { withInspectableLimits } from '../_helpers/dockerInspectStub.js';
 
 /**
  * #576 P1 — DockerSandboxBackend tests.
@@ -28,13 +29,17 @@ interface RecordedCall {
   readonly input: string | undefined;
 }
 
+/** `docker inspect` answers like a daemon that applied the limit flags
+ *  (`dockerInspectStub.ts`); the limit checks themselves live in
+ *  `dockerSandboxLimits.test.ts`. */
 function stubExec(
   script: (ctx: DockerExecContext, callIndex: number) => DockerExecResult,
 ): { exec: DockerExec; calls: RecordedCall[] } {
   const calls: RecordedCall[] = [];
+  const answer = withInspectableLimits(script);
   const exec: DockerExec = async (ctx) => {
     calls.push({ args: ctx.args, input: ctx.input });
-    return script(ctx, calls.length - 1);
+    return answer(ctx, calls.length - 1);
   };
   return { exec, calls };
 }

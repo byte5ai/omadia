@@ -47,7 +47,8 @@ const STOP_TIMEOUT_MS = 2_000;
 class PayloadTooLargeError extends Error {}
 
 export interface LoopbackMcpServerDeps {
-  readonly dispatch: ToolDispatchService;
+  /** Only `dispatch` is called; a CLI turn may wrap it per turn (#1102). */
+  readonly dispatch: Pick<ToolDispatchService, 'dispatch'>;
   readonly bearer: string;
   readonly tools: readonly DispatchableToolSpec[];
   readonly serverName?: string;

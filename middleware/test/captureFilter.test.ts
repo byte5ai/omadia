@@ -365,4 +365,98 @@ describe('CaptureFilteringKnowledgeGraph', () => {
     assert.equal(result.tailOnly, undefined);
     assert.ok(result.turnId.startsWith('turn:keep-scope'));
   });
+
+  it('WP-09: the scorer gets the masked view, the inner graph stores the turn without it', async () => {
+    const scored: string[] = [];
+    const filter = new CaptureFilter({
+      captureLevel: 'normal',
+      defaultVisibility: 'team',
+      significanceThreshold: 0.2,
+      significanceScorer: {
+        async score(text: string) {
+          scored.push(text);
+          return { score: 0.9 };
+        },
+      },
+    });
+    const inner = new InMemoryKnowledgeGraph();
+    const stored: Array<Parameters<typeof inner.ingestTurn>[0]> = [];
+    const recordingInner = new Proxy(inner, {
+      get(target, prop, receiver) {
+        if (prop === 'ingestTurn') {
+          return async (turn: Parameters<typeof inner.ingestTurn>[0]) => {
+            stored.push(turn);
+            return target.ingestTurn(turn);
+          };
+        }
+        const value: unknown = Reflect.get(target, prop, receiver);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    const wrapped = new CaptureFilteringKnowledgeGraph({ inner: recordingInner, filter, log: () => {} });
+
+    await wrapped.ingestTurn({
+      scope: 'masked-scope',
+      time: '2026-10-02T08:00:00.000Z',
+      userMessage: 'Schreib an anna.schmidt@firma.de',
+      assistantAnswer: 'Erledigt, Mail an anna.schmidt@firma.de ist raus.',
+      entityRefs: [],
+      maskedView: {
+        userMessage: 'Schreib an lukas.becker@example.net',
+        assistantAnswer: 'Erledigt, Mail an lukas.becker@example.net ist raus.',
+      },
+    });
+
+    assert.deepEqual(scored, [
+      'Schreib an lukas.becker@example.net\n\nErledigt, Mail an lukas.becker@example.net ist raus.',
+    ]);
+    assert.equal(stored.length, 1);
+    assert.ok(stored[0]!.userMessage.includes('anna.schmidt@firma.de'), 'the stored turn keeps the real value');
+    assert.equal('maskedView' in stored[0]!, false, 'the masked view is never stored');
+  });
+});
+
+describe('CaptureFilter.classify — WP-09 masked view', () => {
+  function recordingFilter(scored: string[]): CaptureFilter {
+    return new CaptureFilter({
+      captureLevel: 'normal',
+      defaultVisibility: 'team',
+      significanceThreshold: 0.2,
+      significanceScorer: {
+        async score(text: string) {
+          scored.push(text);
+          return { score: 0.8 };
+        },
+      },
+    });
+  }
+
+  it('scores the masked view, cleaned like the stored texts, and keeps the stored texts', async () => {
+    const scored: string[] = [];
+    const decision = await recordingFilter(scored).classify({
+      userMessage: 'Kunde Max Mustermann <private>pin 1234</private>',
+      assistantAnswer: 'Notiert für Max Mustermann. <palaia-hint type="task" />',
+      maskedView: {
+        userMessage: 'Kunde Lukas Becker <private>pin 1234</private>',
+        assistantAnswer: 'Notiert für Lukas Becker. <palaia-hint type="task" />',
+      },
+    });
+    assert.deepEqual(scored, ['Kunde Lukas Becker \n\nNotiert für Lukas Becker.']);
+    assert.equal(decision.cleanUserMessage, 'Kunde Max Mustermann ');
+    assert.equal(decision.entryType, 'task', 'hints are read from the stored texts');
+    assert.equal(decision.significance, 0.8);
+  });
+
+  it('an empty masked view skips the scorer and persists with the default classification', async () => {
+    const scored: string[] = [];
+    const decision = await recordingFilter(scored).classify({
+      userMessage: 'Kunde Max Mustermann',
+      assistantAnswer: 'Notiert.',
+      maskedView: { userMessage: '', assistantAnswer: '' },
+    });
+    assert.deepEqual(scored, [], 'nothing may leave in clear');
+    assert.equal(decision.persist, true);
+    assert.equal(decision.significance, null);
+    assert.ok(decision.reasons.includes('masked-view-empty:scorer-skipped'));
+  });
 });

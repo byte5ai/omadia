@@ -184,6 +184,24 @@ function toRequestBody(req: LlmRequest): Record<string, unknown> {
   };
 }
 
+const outputFormatIgnoredWarned = new Set<string>();
+
+/** #1219 — same contract as the OpenAI adapter: `outputFormat` is not mapped
+ *  onto this backend's structured-output channel, so a caller asking for a
+ *  schema gets an unconstrained answer it must parse tolerantly. Noted once
+ *  per model through the provider's own `log` rather than raised, so a
+ *  JSON-shaped request never breaks a turn. */
+function noteOutputFormatIgnored(
+  log: (...args: unknown[]) => void,
+  req: LlmRequest,
+): void {
+  if (req.outputFormat === undefined || outputFormatIgnoredWarned.has(req.model)) return;
+  outputFormatIgnoredWarned.add(req.model);
+  log(
+    `[llm-adapter-openai-responses] model '${req.model}' — outputFormat is not mapped by this adapter; the response is NOT schema-constrained, parse it tolerantly`,
+  );
+}
+
 function num(v: unknown): number | undefined {
   return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
 }
@@ -259,6 +277,7 @@ export function createOpenAiResponsesProvider(
 ): LlmProvider {
   const fetchImpl = options.fetchImpl ?? fetch;
   const url = `${options.baseURL.replace(/\/+$/, '')}/responses`;
+  const log = options.log ?? ((): void => {});
 
   async function bearer(): Promise<string> {
     if (options.bearerProvider) return options.bearerProvider();
@@ -269,6 +288,7 @@ export function createOpenAiResponsesProvider(
   }
 
   async function* streamImpl(req: LlmRequest): AsyncGenerator<LlmStreamEvent> {
+    noteOutputFormatIgnored(log, req);
     const token = await bearer();
     const res = await fetchImpl(url, {
       method: 'POST',

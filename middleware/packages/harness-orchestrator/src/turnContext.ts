@@ -1,9 +1,11 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import type { LlmProvider } from '@omadia/llm-provider';
 import type { AudienceFloorProvider } from './audienceFloorGuard.js';
 import type { CommandPolicyProvider } from './commandPolicyGuard.js';
 import type { ChatParticipantsProvider } from './chatParticipants.js';
 import type { McpInputSentinelMint } from './mcp/pendingMcpInput.js';
 import type { PrivacyTurnHandle } from './privacyHandle.js';
+import type { ToolReplayLedger } from './toolReplayLedger.js';
 
 /**
  * Per-turn context that propagates implicitly through every `await` triggered
@@ -34,6 +36,24 @@ import type { PrivacyTurnHandle } from './privacyHandle.js';
  *   helper falls back to a fresh value when called outside any turn context
  *   (unit tests, ad-hoc invocations) so callers never need a guard.
  */
+/**
+ * The graph boundary of a turn whose agent restricts it (see
+ * `TurnContextValue.graphReadScope`):
+ *  - `conversation` (`enforce-strict`): turns of this graph scope only;
+ *    `scope: null` = none.
+ *  - `members`: this agent's turns everyone present owns; `audience: null` =
+ *    the room is not known, so none.
+ *  - `nothing`: a turn the restriction cannot reach (context-free) — none.
+ */
+export type GraphReadScope =
+  | { readonly kind: 'conversation'; readonly scope: string | null }
+  | {
+      readonly kind: 'members';
+      readonly audience: readonly string[] | null;
+      readonly agentScopePrefix: string;
+    }
+  | { readonly kind: 'nothing' };
+
 export interface TurnContextValue {
   turnId: string;
   turnDate: string;
@@ -71,6 +91,13 @@ export interface TurnContextValue {
    * back to the raw `userId` for an ACL decision.
    */
   resolvedOmadiaUserId?: string;
+  /**
+   * The User-Cluster the turn's run trace is filed under, resolved at the
+   * start of the turn (`resolveRunTraceOwner`). A holder rather than a plain
+   * id so "resolved to nobody" (`{}` — trace without a user link) is told
+   * apart from "not resolved here" (absent — derive it as before).
+   */
+  runTraceOwner?: { readonly userId?: string };
   /**
    * W2-1 (#544) — the turn's session scope (`input.sessionScope`, falling back
    * to the turn id when the caller supplied none), as computed once by the
@@ -271,6 +298,47 @@ export interface TurnContextValue {
    */
   memoryFileRead?: { value: boolean };
   /**
+   * Which turns of the knowledge graph this turn may read, set once the
+   * kernel has bound the turn's context memory (`enforce-strict`, `members`).
+   * Read by every graph read that is not the kernel's own recall — today the
+   * plugin `KnowledgeGraphAccessor` — so a domain tool cannot search past the
+   * boundary the recall legs keep. Empty box = unrestricted (every other
+   * mode). Mutable holder for the same shallow-copy reason as
+   * {@link memoryFileRead}.
+   */
+  graphReadScope?: { value?: GraphReadScope };
+  /**
+   * The turn's wire view: its user message exactly as the model received it
+   * (normalised — an MCP input-card reply is its label by then — and masked
+   * under the turn's policy) and its final answer exactly as the model wrote
+   * it, BEFORE surrogate restore. Written by the answer loops, read once when
+   * a verifier-wrapped turn hands its privacy state over: the answer verifier
+   * may see only this view — never the caller's raw text, never restored
+   * values. Mutable holder for the same shallow-copy reason as
+   * {@link memoryFileRead}.
+   */
+  wireView?: { userMessage?: string; answer?: string };
+  /**
+   * #1543 — the provenance notes of this turn's Privacy Shield renders
+   * (`PrivacyV4ToolResult.renderProvenance`): source tool, verb chain, row
+   * counts, column labels — never a value. Appended to the persisted answer
+   * so the next turn knows which query produced the table the user sees (its
+   * rows are turn-scoped and gone by then). Mutable holder for the same
+   * shallow-copy reason as {@link memoryFileRead}.
+   */
+  renderProvenance?: { notes: string[] };
+  /**
+   * Where the orchestrator's own model calls run this turn — its provider and
+   * model after `resolveTurnExecution`, and after a fallback hop the fallback.
+   * Read by `LocalSubAgent` as ITS fallback: a sub-agent whose configured model
+   * the provider does not serve (a stale manifest/`SUB_AGENT_MODEL` id after a
+   * provider switch) hops onto the model the turn demonstrably runs on instead
+   * of failing the delegation. Empty box = no orchestrator turn (builder,
+   * tests), so no sub-agent fallback. Mutable holder for the same
+   * shallow-copy reason as {@link memoryFileRead}.
+   */
+  orchestratorExecution?: { value?: OrchestratorExecution };
+  /**
    * #904 — the memory-tool handler bound to the turn that is currently
    * delegating to a sub-agent.
    *
@@ -290,6 +358,27 @@ export interface TurnContextValue {
    * would have silently reopened a wider store.
    */
   subAgentMemoryHandler?: SubAgentMemoryHandler;
+  /**
+   * The request's tool replay ledger (`toolReplayLedger.ts`). Set by the
+   * orchestrator's turn entry point (`runTurnCore`, `chatStream`): the ledger a
+   * verifier bound to the input for this request, or a turn-local one that
+   * keeps no results. Every seam that runs a tool handler consults it before
+   * the handler runs — `Orchestrator.dispatchToolDeadlined`,
+   * `LocalSubAgent.dispatch`, `ToolDispatchService.invoke` — so a re-entry
+   * replays the first run's results and nothing repeats a call whose outcome
+   * is unknown. Carried into every nested scope by the `{ ...ctx }` spread —
+   * but not into work that outlives the turn (a long-running task's runner),
+   * which gets a ledger of its own (`runDetachedFromRequestLedger`);
+   * undefined outside a turn (the public MCP endpoint), where every dispatch
+   * executes as before. Holds raw handler results: never log or persist it.
+   */
+  toolReplayLedger?: ToolReplayLedger;
+}
+
+/** See `TurnContextValue.orchestratorExecution`. */
+export interface OrchestratorExecution {
+  readonly provider: LlmProvider;
+  readonly model: string;
 }
 
 /**
@@ -425,7 +514,8 @@ export const turnContext = {
  * as attribution would stamp plausible-looking wrong ids on the row, which is
  * worse than an honest NULL. Nested scopes that copy fields selectively
  * (`pluginContext.callTool`, skill-bound tools) drop `sessionScope` too and read
- * as "no turn"; no capture seam runs inside them today.
+ * as "no turn": a plugin `ctx.llm` call made inside them (#1390) is recorded
+ * without turn attribution.
  *
  * Structural return type so this module keeps its dependency-free shape; it is
  * assignable to `@omadia/usage-telemetry`'s `UsageContext`.

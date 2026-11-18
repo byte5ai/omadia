@@ -58,7 +58,8 @@ import type {
 } from '@omadia/plugin-api';
 
 import { turnContext } from '../turnContext.js';
-import { currentIdempotencyScope } from '../toolIdempotency.js';
+import { currentIdempotencyScope, sendsEachCallOnce } from '../toolIdempotency.js';
+import { recordMcpAuthPrompt } from './mcpAuthPromptMint.js';
 import {
   MCP_INPUT_MAX_REPLAY_DEPTH,
   extractMcpInputPrompt,
@@ -187,6 +188,13 @@ export interface McpToolDescriptor {
    * so it survives a restart without re-discovery.
    */
   readonly outputSchema?: Record<string, unknown>;
+  /**
+   * The server's `annotations.readOnlyHint` — the tool does not modify its
+   * environment. A HINT (MCP spec): the deterministic fast path plans a read
+   * for such a tool only when its name carries no write verb either. Never
+   * an authorisation decision.
+   */
+  readonly readOnlyHint?: boolean;
 }
 
 /**
@@ -404,6 +412,14 @@ export interface McpManagerOptions {
    *  `MCP_TOOLLIST_DEFAULT_TTL_MS`. `0` (or negative) restores the
    *  spec-strict reading — absent `ttlMs` means no caching. */
   readonly toolListTtlMs?: number;
+  /** Issues #1341 / #1342 — checked before ANY transport is built (no socket,
+   *  no child process), with the config whose endpoint is actually dialled.
+   *  Throwing refuses the connect; the error reaches `listTools` callers
+   *  unchanged and `callTool` returns its message without the auth-prompt
+   *  fallback (that fallback would itself contact the refused host). Same
+   *  optional-dependency shape as `auth`: omitting it leaves behaviour
+   *  byte-identical to before. */
+  readonly connectGuard?: (cfg: McpServerConfig) => Promise<void>;
 }
 
 /** Default idle lifetime of a pooled MCP connection (5 minutes). */
@@ -475,7 +491,7 @@ export function mcpPoolScopeMatches(key: string, id: string): boolean {
 }
 
 /** True when an error/result string looks like an authorization failure. */
-function looksUnauthorized(text: string): boolean {
+export function looksUnauthorized(text: string): boolean {
   return (
     /-?32401\b/.test(text) ||
     /\b401\b/.test(text) ||
@@ -776,9 +792,11 @@ const DEFAULT_MCP_CALL_TIMEOUT_MS = 60_000;
 const DEFAULT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS = 180_000;
 
 /**
- * Attempts one `callTool` may make: the original plus ONE transient retry.
- * Exported so the timeout hierarchy reasons about the real number rather than
- * re-deriving it from the loop below.
+ * Attempts one `callTool` may make: the original plus ONE transient retry —
+ * only the original under an `exactlyOnce` idempotency scope or inside
+ * `runSendingEachCallOnce` (`toolIdempotency.ts`). Exported so the timeout
+ * hierarchy reasons about the real number rather than re-deriving it from the
+ * loop below.
  */
 export const MCP_CALL_MAX_ATTEMPTS = 2;
 
@@ -877,6 +895,10 @@ export class McpManager {
    *  per-server: the false positive (an unrelated purge skipping one write) is
    *  just one extra fetch, and a purge is rare. */
   private toolListPurgeGen = 0;
+
+  /** Errors raised by `options.connectGuard`, so `callTool` can tell a refused
+   *  connect from a failed one by identity rather than by message text. */
+  private readonly guardRefusals = new WeakSet<object>();
 
   /** Optional audit observer + dispatch guard (issues #462/#454). Existing
    *  `new McpManager()` call sites keep working unchanged. */
@@ -1140,6 +1162,9 @@ export class McpManager {
       ...(isPlainObject(t.outputSchema)
         ? { outputSchema: t.outputSchema as Record<string, unknown> }
         : {}),
+      ...(isPlainObject(t.annotations) && t.annotations['readOnlyHint'] === true
+        ? { readOnlyHint: true }
+        : {}),
     }));
     for (const d of descriptors) this.rememberToolSchema(cfg.id, d);
     // #545 — file the result under the scope the server declared.
@@ -1259,8 +1284,15 @@ export class McpManager {
     // idempotency key it publishes `exactlyOnce`, and this loop then makes ONE
     // attempt: at-most-once beats at-least-once for writes.
     //
+    // The same holds inside a request a verifier may re-enter: while its replay
+    // ledger is bound, the dispatch seams publish `sendsEachCallOnce`
+    // (`toolIdempotency.ts`). That request runs each write at most once, it
+    // counts every MCP tool as a write, and its ledger sees one handler call
+    // however often this loop re-sent it.
+    //
     // The mitigation itself is untouched for everything else — read tools, and
-    // write tools dispatched without an idempotency key, still get the retry.
+    // write tools dispatched without an idempotency key outside such a request,
+    // still get the retry.
     //
     // W4 — the retry does NOT get a fresh `maxTotalTimeout`. Two attempts each
     // allowed the full absolute ceiling made one `callTool` worth up to
@@ -1271,7 +1303,7 @@ export class McpManager {
     // is not started at all once the budget is spent.
     const idempotency = currentIdempotencyScope();
     const maxAttempts =
-      idempotency?.exactlyOnce === true ? 1 : MCP_CALL_MAX_ATTEMPTS;
+      idempotency?.exactlyOnce === true || sendsEachCallOnce() ? 1 : MCP_CALL_MAX_ATTEMPTS;
     let lastFailure = `Error: MCP tool "${toolName}" on "${cfg.name}" failed.`;
     const budgetStartedAt = Date.now();
     /** What is left of the shared absolute ceiling, or `null` when it is gone. */
@@ -1285,6 +1317,14 @@ export class McpManager {
       try {
         pooled = await this.getOrConnect(cfg, token);
       } catch (err) {
+        // Refused by the connect guard (#1341 / #1342): nothing was dialled, a
+        // retry would be refused again, and the auth-prompt fallback in
+        // `handleFailure` would contact the refused host for OAuth metadata.
+        if (this.isGuardRefusal(err)) {
+          const refusal = `Error: could not connect to MCP server "${cfg.name}": ${msg(err)}`;
+          this.emitCall(cfg, toolName, 'fail', refusal, startedAt, actingIdentity);
+          return refusal;
+        }
         // A server that requires OAuth often refuses the connection outright
         // (streamable-HTTP surfaces the 401 as "-32000 Connection closed"), so
         // this path must also offer the auth prompt — not just tool-level errors.
@@ -1433,6 +1473,10 @@ export class McpManager {
       }
       if (authMessage) {
         this.emitCall(cfg, toolName, 'fail', 'auth_required', startedAt, actingIdentity);
+        // Provenance for the dispatch seam: this exact text, produced in this
+        // dispatch, may reach the model verbatim. Text that merely starts like
+        // it (a remote body) is data. See `mcpAuthPromptMint.ts`.
+        recordMcpAuthPrompt(authMessage);
         return authMessage;
       }
     }
@@ -1539,6 +1583,18 @@ export class McpManager {
   }
 
   private async connect(cfg: McpServerConfig, token: string | null): Promise<Pooled> {
+    // #1341 / #1342 — the single choke point every transport passes through
+    // (both SDK families, stdio included), so the guard runs before anything
+    // is dialled or spawned. A refusal rejects this connect, which
+    // `getOrConnect` never caches.
+    if (this.options?.connectGuard) {
+      try {
+        await this.options.connectGuard(cfg);
+      } catch (err) {
+        if (err !== null && typeof err === 'object') this.guardRefusals.add(err);
+        throw err;
+      }
+    }
     // #562 phase 2 — `http` is the only transport that moved to the v2 family.
     // The branch is here rather than inside `makeTransport` because the two
     // families' `Transport` interfaces are NOT interchangeable: a v2 transport
@@ -1573,6 +1629,10 @@ export class McpManager {
     });
     await client.connect(this.makeTransport(cfg, token));
     return { client: legacySdkSession(client) };
+  }
+
+  private isGuardRefusal(err: unknown): boolean {
+    return err !== null && typeof err === 'object' && this.guardRefusals.has(err);
   }
 
   /** Resolve Vault-backed config into a cfg (epic #459): secret headers for

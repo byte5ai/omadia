@@ -7,7 +7,7 @@ import type { NavEntryDto } from '../_lib/navigation';
 import { AuthBadge } from './AuthBadge';
 import { CreateIssueButton } from './CreateIssueButton';
 import { LocaleFlagMenu, LocaleSwitcher } from './LocaleSwitcher';
-import { Nav } from './Nav';
+import { Nav, type NavBadges } from './Nav';
 import {
   AppearanceSelect,
   AppearanceToggle,
@@ -39,9 +39,12 @@ function isAuthPage(pathname: string | null): boolean {
 export function HeaderControls({
   signedIn,
   navEntries,
+  navBadges = {},
 }: {
   readonly signedIn: boolean;
   readonly navEntries: readonly NavEntryDto[];
+  /** Server-fetched nav count badges, passed straight through to `Nav`. */
+  readonly navBadges?: NavBadges;
 }): React.ReactElement {
   const pathname = usePathname();
   // Mounted here, not inside the user menu: the store hydration must run on
@@ -66,7 +69,7 @@ export function HeaderControls({
     // nowrap nav cannot shrink, so it would spill over the controls instead
     // of overflowing at the edge.
     <div className="ml-auto flex items-center gap-2 2xl:gap-4">
-      <Nav entries={navEntries} />
+      <Nav entries={navEntries} badges={navBadges} />
       <span className="hidden h-5 w-px bg-[color:var(--border)] sm:block" aria-hidden />
       <AuthBadge preferences={<UserPreferences prefs={prefs} />} />
       <CreateIssueButton />

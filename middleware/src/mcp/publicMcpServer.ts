@@ -160,8 +160,9 @@ export interface PublicMcpDispatcher {
    * Optional in the type, but LOAD-BEARING in practice whenever a privacy
    * provider is installed: the endpoint gates on `gate.masked()`, and a
    * dispatcher that never receives the gate's handle can never set it. A host
-   * that omits this while masking is required has every call refused — loudly,
-   * which is the correct direction for a privacy control.
+   * that omits this while a provider is installed has every call refused
+   * before any tool runs — loudly, which is the correct direction for a privacy
+   * control, and early enough that no sub-agent model call happens unguarded.
    */
   withPrivacy?<T>(handle: PrivacyTurnHandle, fn: () => Promise<T>): Promise<T>;
 }
@@ -219,7 +220,7 @@ export interface PublicMcpServerDeps {
   /**
    * Whether a tool call is refused when masking is unavailable or fails.
    *
-   * DEFAULTS TO TRUE. Three fail-open paths sit between a raw tool result and an
+   * DEFAULTS TO TRUE. Several paths sit between a raw tool result and an
    * internet caller, and `publicMcpPrivacy.ts` documents how each is closed. The
    * one this flag governs is the coarsest: no privacy provider installed ⇒
    * `ToolDispatchService` passes results through unchanged, by design and in
@@ -1098,6 +1099,17 @@ export class PublicMcpServer {
       }
     }
     const gate = base ? createFailClosedPrivacyGate(base) : undefined;
+    if (gate && !dispatcher.withPrivacy) {
+      // The per-call gate reaches a dispatcher only through `withPrivacy`.
+      // Without it the handler — and any sub-agent model loop beneath it —
+      // would run unguarded, and `assertMaskingCrossed` could refuse the result
+      // only after a model provider had seen the data. Refuse before any tool runs.
+      this.record(principal, binding.agentId, name, false, 'privacy masking skipped', startedAt, isWrite);
+      throw new McpError(
+        ErrorCode.InternalError,
+        'privacy masking did not run: this agent cannot receive the privacy guard, so the call was refused before any tool ran',
+      );
+    }
 
     if (this.inFlight >= this.maxConcurrentCalls) {
       this.record(principal, binding.agentId, name, false, 'concurrency ceiling', startedAt, isWrite);
@@ -1213,9 +1225,9 @@ export class PublicMcpServer {
    * per-call (its `maskingFailed()` is per-call state), the dispatcher supplied
    * by the wiring reads the handle through a mutable slot this method fills for
    * the duration of one dispatch. `PublicMcpDispatcher` therefore carries an
-   * optional `withPrivacy` escape hatch; when the wiring does not provide one,
-   * the dispatcher was built with a handle already bound and this is a plain
-   * call.
+   * optional `withPrivacy` escape hatch. With a gate, `callToolFor` has already
+   * refused a dispatcher that lacks it; without one (no provider installed and
+   * masking not required) this is a plain call.
    */
   private async dispatchWithPrivacy(
     dispatcher: PublicMcpDispatcher,
@@ -1256,9 +1268,10 @@ export class PublicMcpServer {
    * returned" and "may this be cached" have to be the same question.
    *
    * Half one: the gate turned a masking exception into a placeholder rather
-   * than letting the dispatcher's fail-open branch return the raw rows, so the
-   * body in hand may be that placeholder — or, worse if this were missing, a
-   * partially-masked one. Discard it entirely.
+   * than letting the dispatcher's catch answer with `internFailedNotice`, so
+   * the body in hand may be that placeholder — or, worse if this were missing,
+   * a partially-masked one. Discard it entirely: the call is refused, not
+   * served as a withheld-result error.
    *
    * Half two: the boundary must have been CROSSED, not merely "not failed".
    * `maskingFailed()` cannot tell "masking succeeded" from "masking never ran",

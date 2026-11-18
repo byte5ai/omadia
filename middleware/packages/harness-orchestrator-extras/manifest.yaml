@@ -3,7 +3,7 @@ schema_version: "1"
 identity:
   id: "@omadia/orchestrator-extras"
   name: "Orchestrator Extras"
-  version: "0.1.0"
+  version: "0.1.1"
   kind: "extension"
   domain: "core.orchestrator-extras"
   description:
@@ -48,6 +48,17 @@ optional_requires:
   - "llmProviderCatalog@1"
   - "llmProviderPool@1"
   - "installedPluginConfigReader@1"
+  # WP-10 — the memory jobs mask the stored text they send. `turnContext`
+  # (kernel) carries the turn's privacy handle; `privacyRedact` is the key the
+  # privacy guard registers its service under (its capability is named
+  # `privacy.redact@1`, see `pluginServiceGrants.ts`). Neither holds activation
+  # back: without a privacy guard the jobs send what they sent before.
+  - "turnContext@1"
+  - "privacyRedact@1"
+  # The recall relevance judge and the significance scorer ask a typed
+  # decision model (e.g. TypeSafe Jev) first when one runs, resolved per call;
+  # without it, or on any failure, they ask the LLM as before.
+  - "decisionModel@1"
 
 # ---------------------------------------------------------------------------
 # S+9.2 Sub-Commit 2b: Capability lifetime flipped.
@@ -83,31 +94,71 @@ setup:
   # Sitzung nicht erinnerte.
   fields:
     - key: "anthropic_api_key"
-      label: "Anthropic API Key"
+      label:
+        en: "Anthropic API key"
+        de: "Anthropic-API-Key"
       type: "secret"
       required: false
-      help: "Optional. OM-102: FactExtractor, TopicDetector und der Scratch-Reaper laufen auf JEDEM verfügbaren LLM-Provider — zuerst die eigene Zuordnung (llm_provider), dann die des Orchestrators (z. B. das Claude-Abo über claude-cli), erst zuletzt dieser Key. Nur nötig, wenn diese Hintergrund-Jobs bewusst auf einem eigenen Anthropic-Key laufen sollen. Ohne jeden Provider bleibt nur der ContextRetriever. (S+12.6: type: secret — Key wird im Vault gespeichert, nicht in installed.json config.)"
+      help:
+        en: "Optional. OM-102: FactExtractor, TopicDetector and the scratch reaper run on ANY available LLM provider — first their own assignment (llm_provider), then the orchestrator's (e.g. the Claude subscription via claude-cli), and only last this key. Only needed if these background jobs should deliberately run on a dedicated Anthropic key. Without any provider only the ContextRetriever remains. (S+12.6: type: secret — the key is stored in the vault, not in the installed.json config.)"
+        de: "Optional. OM-102: FactExtractor, TopicDetector und der Scratch-Reaper laufen auf JEDEM verfügbaren LLM-Provider — zuerst die eigene Zuordnung (llm_provider), dann die des Orchestrators (z. B. das Claude-Abo über claude-cli), erst zuletzt dieser Key. Nur nötig, wenn diese Hintergrund-Jobs bewusst auf einem eigenen Anthropic-Key laufen sollen. Ohne jeden Provider bleibt nur der ContextRetriever. (S+12.6: type: secret — Key wird im Vault gespeichert, nicht in installed.json config.)"
     - key: "capture_level"
-      label: "Capture-Level"
+      label:
+        en: "Capture level"
+        de: "Capture-Level"
       type: "string"
       required: false
-      help: "off | minimal | normal | aggressive. Default: normal. minimal: privacy + hints automatisch, kein LLM, keine Bewertung. normal: + Significance-Scoring, Turns unter score 0.2 werden nur als Verlaufs-Eintrag gespeichert (#1096: sie bleiben im Gesprächs-Tail sichtbar, erhalten aber kein Embedding und tauchen in der sitzungsübergreifenden Recall nicht auf). aggressive: dieselbe Grenze bei 0.5. off: Escape-Hatch — KEIN Cleanup, ungestripped text in den Index."
+      help:
+        en: "off | minimal | normal | aggressive. Default: normal. minimal: privacy + hints automatically, no LLM, no scoring. normal: + significance scoring; turns below score 0.2 are stored only as a history entry (#1096: they stay visible in the conversation tail but get no embedding and do not show up in cross-session recall). aggressive: the same cutoff at 0.5. off: escape hatch — NO cleanup, unstripped text goes into the index."
+        de: "off | minimal | normal | aggressive. Default: normal. minimal: privacy + hints automatisch, kein LLM, keine Bewertung. normal: + Significance-Scoring, Turns unter score 0.2 werden nur als Verlaufs-Eintrag gespeichert (#1096: sie bleiben im Gesprächs-Tail sichtbar, erhalten aber kein Embedding und tauchen in der sitzungsübergreifenden Recall nicht auf). aggressive: dieselbe Grenze bei 0.5. off: Escape-Hatch — KEIN Cleanup, ungestripped text in den Index."
     - key: "capture_default_visibility"
-      label: "Capture Default-Visibility"
+      label:
+        en: "Capture default visibility"
+        de: "Capture-Standard-Sichtbarkeit"
       type: "string"
       required: false
-      help: "private | team | public. Default: team. Wird verwendet, wenn weder palaia-hint noch der Scorer eine Visibility liefert."
+      help:
+        en: "private | team | public. Default: team. Used when neither a palaia hint nor the scorer provides a visibility."
+        de: "private | team | public. Default: team. Wird verwendet, wenn weder palaia-hint noch der Scorer eine Visibility liefert."
     - key: "capture_significance_threshold"
-      label: "Significance-Threshold (overrides level-default)"
+      label:
+        en: "Significance threshold (overrides level default)"
+        de: "Significance-Threshold (überschreibt den Level-Default)"
       type: "string"
       required: false
-      help: "Grenze in [0,1]. Default = level-spezifisch (normal=0.2, aggressive=0.5). Nur relevant ab capture_level=normal. Bestimmt, was als Wissen gespeichert wird (Embedding, Recall, Promotion) — nicht, was der Chat-Verlauf enthält."
+      help:
+        en: "Threshold in [0,1]. Default = level-specific (normal=0.2, aggressive=0.5). Only relevant from capture_level=normal upwards. Determines what is stored as knowledge (embedding, recall, promotion) — not what the chat history contains."
+        de: "Grenze in [0,1]. Default = level-spezifisch (normal=0.2, aggressive=0.5). Nur relevant ab capture_level=normal. Bestimmt, was als Wissen gespeichert wird (Embedding, Recall, Promotion) — nicht, was der Chat-Verlauf enthält."
     - key: "context_tail_size"
-      label: "Gesprächs-Tail (Anzahl Turns)"
+      label:
+        en: "Conversation tail (number of turns)"
+        de: "Gesprächs-Tail (Anzahl Turns)"
       type: "integer"
       required: false
       default: "10"
-      help: "Wie viele der letzten Turns der laufenden Sitzung wortwörtlich in den Kontext gehen — das einzige Gedächtnis des Modells innerhalb einer Sitzung. Default 10 (bis #1096 fest auf 3, ohne Einstellmöglichkeit). Höhere Werte kosten Platz im Token-Budget (context_default_budget_tokens), der sonst der sitzungsübergreifenden Recall zur Verfügung steht; Werte ausserhalb von 1–50 werden auf diesen Bereich geklemmt. Auf Neon behält der tägliche GC pro Sitzung höchstens graph_gc_hot_max_entries Turns (Default 50) — ein längerer Tail hätte danach nichts mehr zu lesen."
+      help:
+        en: "How many of the most recent turns of the running session go into the context verbatim — the model's only memory within a session. Default 10 (until #1096 fixed at 3, with no way to change it). Higher values cost room in the token budget (context_default_budget_tokens) that is otherwise available for cross-session recall; values outside 1–50 are clamped to that range. On Neon the daily GC keeps at most graph_gc_hot_max_entries turns per session (default 50) — a longer tail would have nothing left to read after that."
+        de: "Wie viele der letzten Turns der laufenden Sitzung wortwörtlich in den Kontext gehen — das einzige Gedächtnis des Modells innerhalb einer Sitzung. Default 10 (bis #1096 fest auf 3, ohne Einstellmöglichkeit). Höhere Werte kosten Platz im Token-Budget (context_default_budget_tokens), der sonst der sitzungsübergreifenden Recall zur Verfügung steht; Werte ausserhalb von 1–50 werden auf diesen Bereich geklemmt. Auf Neon behält der tägliche GC pro Sitzung höchstens graph_gc_hot_max_entries Turns (Default 50) — ein längerer Tail hätte danach nichts mehr zu lesen."
+    - key: "recall_decision_model"
+      label:
+        en: "Recall relevance: use the decision model"
+        de: "Recall-Relevanz: Entscheidungsmodell nutzen"
+      type: "boolean"
+      required: false
+      default: "true"
+      help:
+        en: "When a decision-model plugin is installed (e.g. TypeSafe Jev), it decides which recalled plans, processes and notes are relevant to the current message — one quick request instead of a model call on every turn with recall. It sees the same masked text the model would. Any failure falls back to the model. Without such a plugin this switch does nothing. Default: on."
+        de: "Ist ein Entscheidungsmodell-Plugin installiert (z. B. TypeSafe Jev), entscheidet es, welche abgerufenen Pläne, Prozesse und Notizen zur aktuellen Nachricht passen — eine schnelle Anfrage statt eines Modellaufrufs in jedem Turn mit Recall. Es sieht denselben maskierten Text wie das Modell. Bei jedem Fehler übernimmt das Modell. Ohne ein solches Plugin wirkt der Schalter nicht. Standard: an."
+    - key: "significance_decision_model"
+      label:
+        en: "Significance scoring: use the decision model"
+        de: "Significance-Scoring: Entscheidungsmodell nutzen"
+      type: "boolean"
+      required: false
+      default: "true"
+      help:
+        en: "When a decision-model plugin is installed (e.g. TypeSafe Jev), it scores how worth remembering a captured turn is and what kind of entry it is, instead of a model call per turn. It sees the same masked text the model would. Any failure falls back to the model. Without such a plugin this switch does nothing. Default: on."
+        de: "Ist ein Entscheidungsmodell-Plugin installiert (z. B. TypeSafe Jev), bewertet es, wie merkenswert ein gespeicherter Turn ist und welche Art Eintrag er ist, statt eines Modellaufrufs pro Turn. Es sieht denselben maskierten Text wie das Modell. Bei jedem Fehler übernimmt das Modell. Ohne ein solches Plugin wirkt der Schalter nicht. Standard: an."
 
 playbook:
   when_to_use: |

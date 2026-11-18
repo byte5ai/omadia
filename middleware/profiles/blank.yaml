@@ -1,5 +1,5 @@
 schema_version: 1
 id: blank
 name: Blank Slate
-description: Leeres Profil. Operator baut den Stack manuell zusammen — entweder via Plugin-Store oder per /store/upload für Custom-Plugins.
+description: Empty profile. Build the stack yourself in the plugin store; upload custom plugins as a ZIP in the store's "Local" tab.
 plugins: []

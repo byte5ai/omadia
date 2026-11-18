@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 /**
  * OM-96 — the dashboard's own reads must carry the deadline too.
  *
- * `app/page.tsx` awaits `listOperatorAgents()` and `getMcpServerSummary()`
+ * `app/(dashboard)/page.tsx` awaits `listOperatorAgents()` and `getMcpServerSummary()`
  * alongside the `api.ts` calls, but those two go through `agents.ts`'s OWN
  * `callJson`, which was a separate copy of the helper and passed no `signal`.
  * The root `loading.tsx` and the `api.ts` timeout together were therefore not

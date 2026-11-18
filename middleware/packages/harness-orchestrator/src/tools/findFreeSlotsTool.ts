@@ -71,19 +71,19 @@ export interface TurnAuthContext {
 export const findFreeSlotsToolSpec = {
   name: FIND_FREE_SLOTS_TOOL_NAME,
   description:
-    'Findet freie Terminslots im Kalender des Users und der genannten Teilnehmer via Microsoft Graph `findMeetingTimes`. Liefert bis zu N Top-Vorschläge mit Start/End/Confidence. Rendert anschließend eine Adaptive Card mit klickbaren Slot-Buttons — der User wählt per Klick, was einen `book_meeting`-Call im nächsten Turn auslöst.\n' +
+    'Findet freie Terminslots im Kalender des **Hosts** (Standard: der User selbst) via Microsoft Graph `getSchedule`. Die Kalender der `attendees` werden nicht geprüft, sie werden nur eingeladen. Liefert bis zu N Top-Vorschläge mit Start/End/Confidence. Rendert anschließend eine Adaptive Card mit klickbaren Slot-Buttons — der User wählt per Klick, was einen `book_meeting`-Call im nächsten Turn auslöst.\n' +
     '\n' +
     '**Wann nutzen:**\n' +
-    '- User möchte Termin/Meeting buchen und nennt Teilnehmer (Email/UPN).\n' +
-    '- User fragt nach Verfügbarkeit (z.B. "wann hat Max Zeit für 30 min diese Woche?").\n' +
+    '- User möchte einen Termin/ein Meeting buchen (mit oder ohne Teilnehmer).\n' +
+    '- User fragt nach der Verfügbarkeit einer Person (z.B. "wann hat Max Zeit für 30 min diese Woche?") → `hostEmail` = Max.\n' +
     '\n' +
     '**Wann NICHT nutzen:**\n' +
-    '- User nennt keine konkreten Teilnehmer oder Dauer → zuerst klären (normale Rückfrage oder `ask_user_choice`).\n' +
+    '- Dauer fehlt → zuerst klären (normale Rückfrage oder `ask_user_choice`). Ohne Teilnehmer ist die Suche erlaubt ("finde einen Slot morgen").\n' +
     '- User will einen *existierenden* Termin ansehen — das ist eine andere Operation (nicht implementiert).\n' +
     '\n' +
     '**Regeln:**\n' +
-    '- Slot-Suche läuft gegen den Kalender des **Hosts** (Meeting-Organizers). Standard = Caller selbst. Nur wenn der Caller explizit im Auftrag einer anderen Person sucht ("such Termin bei John", "bei der Geschäftsführung"), setz `hostEmail` auf dessen Email.\n' +
-    '- `attendees` sind die einzuladenden Personen (ohne Host). Email-Adressen oder UPNs — keine Namen. Wenn der User Namen nennt, erst auflösen. Leer erlaubt ("nur mein Kalender anzeigen").\n' +
+    '- Slot-Suche läuft nur gegen den Kalender des **Hosts** (Meeting-Organizers). Standard = Caller selbst. Setz `hostEmail` auf die Email einer anderen Person, wenn der Caller in deren Auftrag sucht ("such Termin bei John", "bei der Geschäftsführung") oder nach deren Verfügbarkeit fragt ("wann hat Max Zeit?").\n' +
+    '- `attendees` sind die einzuladenden Personen (ohne Host); ihre Kalender werden nicht geprüft. Email-Adressen oder UPNs — keine Namen. Wenn der User Namen nennt, erst auflösen. Leer erlaubt ("nur mein Kalender anzeigen").\n' +
     '- `durationMinutes` 15–480. Typisch 30/45/60.\n' +
     '- `windowDays` 1–14. Default 5.\n' +
     '- Ein `find_free_slots`-Call pro Turn. Die Card ist sidecar — du kannst normal weiterantworten.',
@@ -93,7 +93,7 @@ export const findFreeSlotsToolSpec = {
       hostEmail: {
         type: 'string',
         description:
-          'Email/UPN des Meeting-Hosts (wessen Kalender die Slots liefert). Leer lassen wenn der Caller selbst der Host ist ("ich biete an"); setzen wenn der Caller im Auftrag einer anderen Person Slots sucht ("such bei John Termin" → hostEmail=info@omadia.ai).',
+          'Email/UPN des Meeting-Hosts (wessen Kalender die Slots liefert). Leer lassen wenn der Caller selbst der Host ist ("ich biete an"); setzen wenn der Caller im Auftrag einer anderen Person Slots sucht ("such bei John Termin" → hostEmail=info@omadia.ai) oder nach deren Verfügbarkeit fragt ("wann hat Max Zeit?" → hostEmail = Max).',
       },
       attendees: {
         type: 'array',
@@ -123,7 +123,7 @@ export const findFreeSlotsToolSpec = {
         type: 'integer',
         minimum: 0,
         maximum: 100,
-        description: 'Default 100 (alle Required frei). 50 = "most of the room".',
+        description: 'Ohne Wirkung: die Suche prüft nur den Kalender des Hosts.',
       },
     },
     required: ['durationMinutes'],
@@ -236,7 +236,7 @@ export class FindFreeSlotsTool {
         status: 'no_slots_found',
         attendees,
         window: { start: windowStart, end: windowEnd },
-        hint: 'Keine gemeinsamen Slots gefunden. Vorschlag: weiter gefasstes Fenster oder minimumAttendeePercentage senken.',
+        hint: 'Keine freien Slots im Kalender des Hosts gefunden. Vorschlag: weiter gefasstes Fenster (windowDays) oder kürzere Dauer.',
       });
     }
 

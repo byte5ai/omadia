@@ -1,3 +1,4 @@
+import { app } from 'electron';
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import path from 'node:path';
@@ -10,9 +11,23 @@ import {
   webUiCwd,
   platformDataDir,
   embeddingModelsDir,
+  attachmentsDir,
+  isPackagedRuntime,
 } from './paths';
 import { findFreePorts, isPortFree } from './ports';
-import { desktopKernelEnvDefaults } from './kernelEnvDefaults';
+import {
+  desktopKernelEnvDefaults,
+  packagedPackagesEnv,
+  packagedVersionEnv,
+  type PackagedRuntime,
+} from './kernelEnvDefaults';
+import {
+  attachmentReadiness,
+  capabilityKernelEnv,
+  withoutCapabilityEnv,
+  type DesktopCapabilities,
+} from './capabilities';
+import { readSetup } from './setupState';
 import { startEmbeddedDb, stopEmbeddedDb, isEmbeddedDbRunning } from './embeddedDb';
 import type { EmbeddedDb } from './embeddedDb';
 import { stopChild, isConfirmedStopped } from './childLifecycle';
@@ -20,6 +35,10 @@ import type { ChildStopOutcome } from './childLifecycle';
 import { credentialKeychainKey, vaultKey, allProviderKeys } from './secrets';
 import { log } from './log';
 import { resolveAugmentedPath } from './pathEnv';
+
+function packagedRuntime(): PackagedRuntime {
+  return { packaged: isPackagedRuntime(), version: app.getVersion(), kernelCwd: kernelCwd() };
+}
 
 const augmentedPath = resolveAugmentedPath(process.env['PATH']);
 
@@ -36,6 +55,18 @@ export interface BootProgress {
   message: string;
   detail?: string;
 }
+
+/** The `database-exit` event: the embedded database stopped while the stack ran. */
+export interface DatabaseExit {
+  readonly reason: string;
+  /**
+   * Whether the kernel is confirmed gone. When it is not (it outlived SIGTERM
+   * and SIGKILL), nothing may start a database on its own.
+   */
+  readonly kernelStopped: boolean;
+}
+
+const DATABASE_LOST_DURING_BOOT = 'the embedded database stopped while omadia was starting';
 
 /**
  * A start() or restart() that is still running.
@@ -67,6 +98,14 @@ export interface StopOutcome {
   readonly clean: boolean;
   /** Labels of the processes that outlived their shutdown deadline. */
   readonly survivors: readonly string[];
+}
+
+export interface SupervisorOptions {
+  /**
+   * The first-run capability switches, read at every boot. Defaults to what
+   * the wizard saved in setup.json; tests inject their own.
+   */
+  readonly capabilities?: () => DesktopCapabilities;
 }
 
 /**
@@ -117,9 +156,17 @@ export class Supervisor extends EventEmitter {
    * (or a boot we superseded) is never misreported as a crash.
    */
   private generation = 0;
+  /** The first-run capability switches; see {@link SupervisorOptions.capabilities}. */
+  private readonly readCapabilities: () => DesktopCapabilities;
 
   /** Health-check window — mirrors the compose healthcheck start_period (90s). */
   private static readonly KERNEL_BOOT_TIMEOUT_MS = 90_000;
+
+  /**
+   * The one extra `/health` read after boot that checks the capability
+   * switches took. The kernel has just answered, so this is generous.
+   */
+  private static readonly CAPABILITY_CHECK_TIMEOUT_MS = 2_000;
 
   /**
    * Fixed loopback port for the kernel. The web-ui's `/bot-api` → kernel rewrite
@@ -133,6 +180,16 @@ export class Supervisor extends EventEmitter {
   private static readonly KERNEL_PORT = 8769;
 
   /**
+   * The kernel's browser-facing origin. The app window may navigate to it in
+   * place (`navigationPolicy.ts`): the Entra sign-in callback
+   * (`AUTH_REDIRECT_URI`) and signed diagram URLs (`DIAGRAM_PUBLIC_BASE_URL`)
+   * live there.
+   */
+  static kernelOrigin(): string {
+    return `http://127.0.0.1:${Supervisor.KERNEL_PORT}`;
+  }
+
+  /**
    * Rounds the settle loop may take before it gives up waiting.
    *
    * It cannot spin today: a new operation can only come from start() or
@@ -144,6 +201,12 @@ export class Supervisor extends EventEmitter {
    * needs two).
    */
   private static readonly MAX_SETTLE_ROUNDS = 8;
+
+  constructor(options: SupervisorOptions = {}) {
+    super();
+    this.readCapabilities =
+      options.capabilities ?? ((): DesktopCapabilities => readSetup().capabilities);
+  }
 
   getUiUrl(): string | null {
     return this.uiUrl;
@@ -196,6 +259,8 @@ export class Supervisor extends EventEmitter {
     let ownKernel: ChildProcess | null = null;
     let ownUi: ChildProcess | null = null;
     let ownDb: EmbeddedDb | null = null;
+    // The database this boot runs on. The boot fails when it exits under it.
+    let bootDb: EmbeddedDb | null = null;
 
     try {
       this.progress('starting-db', 'Starting embedded database…');
@@ -214,10 +279,15 @@ export class Supervisor extends EventEmitter {
           throw new Error('boot superseded');
         }
         this.db = db;
+        bootDb = db;
+        db.onUnexpectedExit?.((reason) => this.onDatabaseExit(db, reason));
+      } else {
+        bootDb = this.db;
       }
       // A stop() that landed while the database was coming up has already run
       // its teardown; anything we spawn from here on would be an orphan.
       this.assertLiveGeneration(gen);
+      this.assertDatabaseUp(bootDb);
 
       const kernelPort = Supervisor.KERNEL_PORT;
       // The kernel port is fixed (the web-ui bakes it at build time), so a clash
@@ -244,11 +314,15 @@ export class Supervisor extends EventEmitter {
       const [uiPort] = await findFreePorts(1);
 
       this.assertLiveGeneration(gen);
+      this.assertDatabaseUp(bootDb);
       this.progress('starting-kernel', 'Starting omadia kernel…');
+      // Read once per boot: the env the kernel gets and the check below must
+      // describe the same selection.
+      const capabilities = this.readCapabilities();
       ownKernel = this.forkNode(
         kernelEntry(),
         kernelCwd(),
-        this.kernelEnv(kernelPort, uiPort),
+        this.kernelEnv(kernelPort, uiPort, capabilities),
         'kernel',
         gen,
       );
@@ -256,8 +330,10 @@ export class Supervisor extends EventEmitter {
 
       this.progress('waiting-kernel', 'Waiting for the kernel to become healthy…');
       await this.waitForKernel(kernelPort, gen, ownKernel);
+      await this.confirmCapabilities(kernelPort, capabilities);
 
       this.assertLiveGeneration(gen);
+      this.assertDatabaseUp(bootDb);
       this.progress('starting-ui', 'Starting the admin interface…');
       ownUi = this.forkNode(webUiEntry(), webUiCwd(), this.uiEnv(uiPort, kernelPort), 'web-ui', gen);
       this.ui = ownUi;
@@ -267,11 +343,15 @@ export class Supervisor extends EventEmitter {
       // Nothing checks the generation between that poll resolving and the state
       // flip, and a stop() landing there would otherwise be overwritten.
       this.assertLiveGeneration(gen);
+      this.assertDatabaseUp(bootDb);
       this.state = 'running';
       this.progress('ready', 'omadia is ready.');
       return this.uiUrl;
     } catch (err) {
       const superseded = gen !== this.generation;
+      // A database that exited under this boot is the cause, whatever step
+      // noticed it (the kernel stopped for it, or a checkpoint).
+      const databaseLost = !superseded && bootDb !== null && this.db !== bootDb;
       // Always reap our OWN children. When we were superseded the concurrent
       // stop() bumped the generation and tore down whatever existed AT THAT
       // MOMENT — which, for a boot still between phases, was nothing. Skipping
@@ -283,6 +363,7 @@ export class Supervisor extends EventEmitter {
       if (!superseded) {
         this.state = 'idle';
       }
+      if (databaseLost) throw new Error(DATABASE_LOST_DURING_BOOT, { cause: err });
       throw err;
     }
   }
@@ -290,6 +371,60 @@ export class Supervisor extends EventEmitter {
   /** Bail out of a boot that a concurrent stop()/restart() has overtaken. */
   private assertLiveGeneration(gen: number): void {
     if (gen !== this.generation) throw new Error('boot superseded');
+  }
+
+  /** Bail out of a boot whose database exited under it (see onDatabaseExit). */
+  private assertDatabaseUp(bootDb: EmbeddedDb | null): void {
+    if (this.db !== bootDb) throw new Error(DATABASE_LOST_DURING_BOOT);
+  }
+
+  /**
+   * The embedded database exited without being asked to stop.
+   *
+   * The kernel's pools reconnect on demand to the address they were given. On
+   * Windows that is a loopback port, which is free while no server holds it,
+   * so the kernel must not outlive its database: it is stopped first, with the
+   * web-ui, and only then may a database start again. A running stack is then
+   * reported through `database-exit`, and the app restarts it the ordinary way
+   * (`restart()`), which starts the database before the kernel. A kernel that
+   * does not exit even after SIGKILL is reported with `kernelStopped: false`
+   * and as an error, and the app then leaves the restart to the user. A boot in
+   * flight fails instead; its kernel is stopped now rather than after a health
+   * timeout. A full shutdown in flight stops everything anyway.
+   */
+  private onDatabaseExit(db: EmbeddedDb, reason: string): void {
+    if (this.db !== db) return;
+    // The handle is dead. Whatever boots next starts a database of its own.
+    this.db = null;
+    if (this.stopping || this.state === 'stopping') return;
+    log.warn(`[db] embedded Postgres exited unexpectedly (${reason}); stopping the kernel before the database restarts`);
+    if (this.state === 'starting') {
+      void stopChild(this.kernel, 'kernel', log);
+      return;
+    }
+    const wasRunning = this.state === 'running';
+    // Published like a restart, and with the state at 'stopping', so neither a
+    // start() nor a restart() can bring a database back before the kernel is
+    // gone, and a stop() waits for this teardown.
+    this.state = 'stopping';
+    const { op, finish } = this.registerOp('restart');
+    void this.teardownChildren().then((survivors) => {
+      op.survivors.push(...survivors);
+      finish();
+      this.opsInFlight.delete(op);
+      // A full shutdown that began meanwhile owns the stack now.
+      if (this.stopping) return;
+      this.state = 'idle';
+      if (survivors.length > 0) log.warn(`[db] still alive after the database exited: ${survivors.join(' + ')}`);
+      if (!wasRunning) return;
+      const kernelStopped = !survivors.includes('kernel');
+      if (!kernelStopped) {
+        // The kernel may still be running, and a database started now would be
+        // within its reach, so the restart is left to the user.
+        this.progress('error', 'The embedded database stopped and the kernel did not exit. omadia does not restart on its own.');
+      }
+      this.emit('database-exit', { reason, kernelStopped } satisfies DatabaseExit);
+    });
   }
 
   /**
@@ -377,10 +512,17 @@ export class Supervisor extends EventEmitter {
   /**
    * `port` is the kernel's own (fixed) port; `uiPort` is the web-ui's, which is
    * allocated per launch and therefore only knowable at runtime (OM-90).
+   * `capabilities` are the wizard's switches for this boot.
    */
-  private kernelEnv(port: number, uiPort: number): NodeJS.ProcessEnv {
+  private kernelEnv(
+    port: number,
+    uiPort: number,
+    capabilities: DesktopCapabilities = this.readCapabilities(),
+  ): NodeJS.ProcessEnv {
     const env: NodeJS.ProcessEnv = {
-      ...process.env,
+      // Minus the keys the capability switches own (set at the end): an
+      // inherited value must not turn a switched-off capability back on.
+      ...withoutCapabilityEnv(process.env),
       PATH: augmentedPath,
       ELECTRON_RUN_AS_NODE: '1',
       NODE_ENV: 'production',
@@ -388,14 +530,32 @@ export class Supervisor extends EventEmitter {
       // Loopback-only. The kernel otherwise binds dual-stack `::` (all
       // interfaces), which would expose the local install on the LAN.
       HOST: '127.0.0.1',
+      // Tells the kernel it is the desktop app's own kernel. Together with the
+      // loopback HOST above — and only together with it — the first-user setup
+      // wizard opens without the operator setup token every server install
+      // needs: nothing off this machine can reach the kernel, and the person
+      // at the keyboard is the operator. Set after `...process.env` on
+      // purpose: this is a fact about how the shell runs the kernel, not a
+      // preference an inherited value may override.
+      OMADIA_DESKTOP_EMBEDDED: 'true',
       DATABASE_URL: this.db?.databaseUrl ?? '',
       // Signals the kernel that DATABASE_URL points at our embedded Postgres,
       // whose loopback port can change between launches (collision → new port).
       // The knowledge-graph plugin then treats the live env DSN as authoritative
       // over the first-boot value frozen in the vault, so a port change can't
-      // crash-loop boot against a dead port. Cloud/server leave this unset and
+      // crash-loop boot against a dead port. The live DSN also carries the
+      // kernel password and, on macOS/Linux, the socket directory; both can
+      // change between starts (password repair, temp-dir fallback), so the
+      // vault copy must never win here. Cloud/server leave this unset and
       // keep vault precedence.
       OMADIA_EMBEDDED_DB: '1',
+      // Every pool the kernel opens authenticates with SCRAM-SHA-256 or fails,
+      // like the shell's own connections (`scramOnlyConnect.ts`). On Windows
+      // the server listens on loopback TCP, and a stock pg client would answer
+      // a cleartext, MD5 or no-authentication offer from whatever took the
+      // port while the server was down. Set after `...process.env`: an
+      // inherited value must not switch it off.
+      OMADIA_DB_REQUIRE_SCRAM: '1',
       VAULT_KEY: vaultKey(),
       // #578's credential keychain is a separate trust domain with its own
       // master key; the kernel fail-hards in production without it. Missing
@@ -406,13 +566,19 @@ export class Supervisor extends EventEmitter {
       // the packaged app — second fresh-install killer found on v0.115.0.
       // The explicit override removes the guesswork entirely.
       MULTI_ORCH_MIGRATIONS_DIR: path.join(kernelCwd(), 'migrations'),
+      ...packagedPackagesEnv(packagedRuntime()),
+      ...packagedVersionEnv(packagedRuntime()),
       PLATFORM_DATA_DIR: platformDataDir(),
       // OM-97: the keyless embedding adapter's weights. Explicit rather than
       // left to the adapter's `PLATFORM_DATA_DIR` fallback, because the thing
       // being prevented is severe and silent — the old default resolved into
       // the signed app bundle and a download there breaks the code signature.
+      // A location, not a switch: the kernel auto-installs that adapter, and
+      // its weights are fetched from the admin UI's Embedding Provider page.
       OMADIA_EMBEDDING_MODEL_DIR: embeddingModelsDir(),
-      // The browser opens signed diagram URLs against this host base.
+      // The browser opens signed diagram URLs against this host base. Also a
+      // location only: diagrams need the Diagrams plugin with a Kroki server
+      // and S3 storage, which a desktop install does not ship.
       DIAGRAM_PUBLIC_BASE_URL: `http://127.0.0.1:${port}`,
       // OM-90 — the browser-facing origin every auth redirect lands on. The
       // kernel's default is `http://localhost:3979`, its OWN dev port, so
@@ -448,11 +614,37 @@ export class Supervisor extends EventEmitter {
       // (OM-70: the mDNS advertiser renamed the user's Mac on every start).
       ...desktopKernelEnvDefaults(process.env),
       ...allProviderKeys(),
+      // The wizard's capability switches (`capabilities.ts`). Attachments on →
+      // ATTACHMENT_STORE_DIR in the data folder, which the kernel turns into a
+      // local attachment store; `confirmCapabilities` checks that it did.
+      ...capabilityKernelEnv(capabilities, { attachments: attachmentsDir() }),
     };
-    // v1 wires only persistence + LLM. Embeddings (in-process), diagrams (hosted),
-    // and the filesystem attachment store are later milestones; leaving their env
-    // unset means the kernel degrades gracefully rather than failing.
     return env;
+  }
+
+  /**
+   * Check the capability switches against what the kernel reports on
+   * `/health`, and log the verdict: info when they agree, a warning when a
+   * switch did not take. Never throws. A capability that failed to come up
+   * degrades; it does not fail a boot the user is waiting on.
+   */
+  private async confirmCapabilities(
+    port: number,
+    requested: DesktopCapabilities,
+  ): Promise<void> {
+    let health: unknown = null;
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/health`, {
+        signal: AbortSignal.timeout(Supervisor.CAPABILITY_CHECK_TIMEOUT_MS),
+      });
+      if (res.ok) health = await res.json();
+    } catch {
+      /* judged below as "did not report" */
+    }
+    const verdict = attachmentReadiness(requested.attachments, health);
+    const line = `[boot] ${verdict.message}`;
+    if (verdict.honoured) log.info(line);
+    else log.warn(line);
   }
 
   private uiEnv(uiPort: number, kernelPort: number): NodeJS.ProcessEnv {
@@ -464,6 +656,7 @@ export class Supervisor extends EventEmitter {
       PORT: String(uiPort),
       HOSTNAME: '127.0.0.1',
       MIDDLEWARE_URL: `http://127.0.0.1:${kernelPort}`,
+      ...packagedVersionEnv(packagedRuntime()),
     };
   }
 

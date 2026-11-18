@@ -8,7 +8,7 @@ import {
 } from '@aws-sdk/client-s3';
 
 /**
- * Thin S3 wrapper used for both Tigris (production on Fly) and MinIO (local
+ * Thin S3 wrapper used for both Tigris (production on Fly) and SeaweedFS (local
  * docker-compose). Uses the `@aws-sdk/client-s3` v3 client because Tigris
  * auto-provisions the AWS-style env vars (`AWS_ACCESS_KEY_ID` etc.).
  *
@@ -37,7 +37,7 @@ export function createTigrisStore(options: TigrisStoreOptions): TigrisStore {
       accessKeyId: options.accessKeyId,
       secretAccessKey: options.secretAccessKey,
     },
-    // MinIO speaks path-style by default; Tigris supports both but is happiest
+    // SeaweedFS (local) speaks path-style by default; Tigris supports both but is happiest
     // with path-style when endpoint is a non-virtual host. One flag works for
     // both backends.
     forcePathStyle: true,

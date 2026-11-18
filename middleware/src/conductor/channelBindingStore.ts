@@ -18,17 +18,33 @@ import { canonicalizePrincipalId } from './principalId.js';
 export class ConductorChannelBindingStore {
   constructor(private readonly pool: Pool) {}
 
-  /** Upsert a user's conversation reference for a channel (idempotent per inbound turn). */
-  async upsert(userId: string, channelType: string, conversationRef: unknown): Promise<void> {
+  /**
+   * Upsert a user's conversation reference for a channel (idempotent per inbound turn).
+   * `scope` is the channel's tenant / workspace id the turn arrived in (Teams: AAD tenant id).
+   * Recorded additively (migration 0012) so a scope-aware resolver can distinguish the same
+   * email bound through two tenants; it does not change which binding wins today.
+   */
+  async upsert(userId: string, channelType: string, conversationRef: unknown, scope?: string): Promise<void> {
     const key = canonicalizePrincipalId(userId);
     if (!key || !channelType) return;
     await this.pool.query(
-      `INSERT INTO conductor_channel_bindings (user_id, channel_type, conversation_ref)
-       VALUES ($1, $2, $3::jsonb)
+      `INSERT INTO conductor_channel_bindings (user_id, channel_type, conversation_ref, channel_scope)
+       VALUES ($1, $2, $3::jsonb, $4)
        ON CONFLICT (user_id, channel_type)
-         DO UPDATE SET conversation_ref = EXCLUDED.conversation_ref, updated_at = now()`,
-      [key, channelType, JSON.stringify(conversationRef ?? null)],
+         DO UPDATE SET conversation_ref = EXCLUDED.conversation_ref,
+                       channel_scope = COALESCE(EXCLUDED.channel_scope, conductor_channel_bindings.channel_scope),
+                       updated_at = now()`,
+      [key, channelType, JSON.stringify(conversationRef ?? null), scope?.trim() || null],
     );
+  }
+
+  /** The scope (tenant / workspace id) a user's binding on `channelType` was captured in, if known. */
+  async getScope(userId: string, channelType: string): Promise<string | null> {
+    const r = await this.pool.query<{ channel_scope: string | null }>(
+      `SELECT channel_scope FROM conductor_channel_bindings WHERE user_id = $1 AND channel_type = $2`,
+      [canonicalizePrincipalId(userId), channelType],
+    );
+    return r.rows[0]?.channel_scope ?? null;
   }
 
   /** The conversation reference to reach `userId` on `channelType`, or null if none is bound. */

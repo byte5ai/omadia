@@ -1,11 +1,14 @@
 import {
+  PRIVACY_FIELD_SAMPLES_SERVICE_NAME,
   PRIVACY_REDACT_SERVICE_NAME,
   type PluginContext,
+  type PrivacyFieldSampleService,
   type PrivacyGuardService,
 } from '@omadia/plugin-api';
 
-import { createC1HttpDetector } from './c1Detector.js';
-import { createPrivacyGuardService } from './service.js';
+import { createC1HttpDetector, probeC1Health } from './c1Detector.js';
+import { C1_NEAR_MISS_THRESHOLD } from './fieldVetting.js';
+import { createPrivacyGuardServices } from './service.js';
 
 /**
  * @omadia/plugin-privacy-guard — plugin entry point (Privacy Shield v4).
@@ -14,6 +17,11 @@ import { createPrivacyGuardService } from './service.js';
  *   1. Build the v4 {@link PrivacyGuardService} via the pure factory.
  *   2. Publish it as `privacyRedact` (capability `privacy.redact@1`) for
  *      the orchestrator's tool-dispatch hook.
+ *   3. Publish the real-value field sample (`fieldSampleForAdmin`) as the
+ *      separate `privacyFieldSamples` service. The kernel's service gate
+ *      refuses that name to every plugin (`KERNEL_ONLY_SERVICE_NAMES`), so
+ *      only the kernel's audited admin preview reads it — a plugin granted
+ *      `privacyRedact` (e.g. `@omadia/plugin-office`) cannot.
  *
  * The v4 Data-Plane Boundary is generic over JSON shape and value
  * statistics — there is no per-tenant policy, allowlist, or detector
@@ -31,6 +39,9 @@ import { createPrivacyGuardService } from './service.js';
  * pre-C1 behavior); sidecar failure ⇒ the service's audited tier-1
  * degrade-to-C0 path.
  */
+
+/** #1562 — how long a posture probe of the C1 sidecar is reused. */
+const C1_PROBE_CACHE_MS = 30_000;
 
 export interface PrivacyGuardPluginHandle {
   close(): Promise<void>;
@@ -50,27 +61,55 @@ export async function activate(
   // resolved LIVE per detect() call: operator setup field first, env
   // fallback second (empty strings count as unset — see the `??` vs `||`
   // env gotcha in the handoff doc §10).
-  const resolveC1Url = (): string | undefined => {
+  const resolveC1Source = (): { url: string; source: 'setup' | 'env' } | undefined => {
     const fromConfig = ctx.config.get('c1_detector_url');
-    const configUrl =
-      typeof fromConfig === 'string' && fromConfig.trim() !== ''
-        ? fromConfig.trim()
-        : undefined;
+    if (typeof fromConfig === 'string' && fromConfig.trim() !== '') {
+      return { url: fromConfig.trim(), source: 'setup' };
+    }
     const envUrl = process.env['PRIVACY_C1_DETECTOR_URL']?.trim();
-    return configUrl ?? (envUrl !== undefined && envUrl !== '' ? envUrl : undefined);
+    return envUrl !== undefined && envUrl !== '' ? { url: envUrl, source: 'env' } : undefined;
   };
+  const resolveC1Url = (): string | undefined => resolveC1Source()?.url;
   const c1Detector = createC1HttpDetector({ resolveUrl: resolveC1Url });
-  const service = createPrivacyGuardService({
+  let probeCache: { url: string; at: number; reachable: Promise<boolean> } | undefined;
+  const { service, fieldSamples } = createPrivacyGuardServices({
     ...(llm ? { llmComplete: llm.complete.bind(llm) } : {}),
     // #361 — live flag reader for default-off user-prompt masking. Routed
     // through the plugin's own ConfigAccessor so an operator toggle saved
     // via the install UI applies on the very next turn (no restart).
     readConfig: (key) => ctx.config.get(key),
     c1Detector,
+    // #1556 follow-up — field-sample vetting asks the sidecar for weaker
+    // name spans too (near-miss), off the interactive lane.
+    c1NearMissDetector: createC1HttpDetector({
+      resolveUrl: resolveC1Url,
+      threshold: C1_NEAR_MISS_THRESHOLD,
+      priority: 'background',
+    }),
+    // The live sidecar URL scopes the process-wide C1 segment cache: a
+    // reconfigured sidecar misses, an unconfigured one caches nothing.
+    c1CacheScope: resolveC1Url,
+    // #1562 — the operator's posture shows whether names are detected:
+    // where the URL comes from and whether the sidecar answers right now.
+    // Cached briefly and shared while in flight: every admin page load reads
+    // the posture, and a down sidecar would hold each one for the timeout.
+    probeC1: async () => {
+      const resolved = resolveC1Source();
+      if (resolved === undefined) return { source: null, reachable: false };
+      const now = Date.now();
+      if (probeCache?.url !== resolved.url || now - probeCache.at > C1_PROBE_CACHE_MS) {
+        probeCache = { url: resolved.url, at: now, reachable: probeC1Health(resolved.url) };
+      }
+      return { source: resolved.source, reachable: await probeCache.reachable };
+    },
   });
   const disposeService = ctx.services.provide<PrivacyGuardService>(
     PRIVACY_REDACT_SERVICE_NAME,
     service,
+  );
+  const disposeFieldSamples = ctx.services.provide<PrivacyFieldSampleService>(
+    PRIVACY_FIELD_SAMPLES_SERVICE_NAME,
+    fieldSamples,
   );
 
   ctx.log(
@@ -82,6 +121,7 @@ export async function activate(
   return {
     async close(): Promise<void> {
       ctx.log('[privacy-guard] deactivating');
+      disposeFieldSamples();
       disposeService();
     },
   };

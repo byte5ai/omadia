@@ -1,3 +1,5 @@
+import { fetchMiddlewareHealth } from './platformHealth';
+
 /**
  * AI-Act marking posture, read for the operator channels dashboard (#648).
  *
@@ -28,10 +30,6 @@ export interface DisclosureHealthDto {
   channels: Record<string, DisclosureLevel>;
   inertOverrides: string[];
   warnings: string[];
-}
-
-interface HealthDto {
-  disclosure?: DisclosureHealthDto;
 }
 
 /**
@@ -76,31 +74,17 @@ export function deviatingChannels(
  *  in `@omadia/channel-sdk`; `/health` reports it as `shippedLevel`. */
 const SHIPPED_LEVEL: DisclosureLevel = 'standard';
 
-function healthUrl(): string {
-  const base = process.env['MIDDLEWARE_URL'] ?? 'http://localhost:3979';
-  return `${base}/health`;
-}
-
 /**
  * Fetch the resolved marking posture.
  *
- * Returns `null` on any failure — an unreachable middleware, a 503 from a dead
- * pool, an older build whose `/health` has no `disclosure` block. The dashboard
- * renders nothing at all in that case: this is an informational hint, and a
- * channels page that fails to load because a hint could not be fetched would be
- * a worse outcome than a missing hint.
+ * Returns `null` on any failure — an unreachable middleware, an older build
+ * whose `/health` has no `disclosure` block. A 503 from a dead pool still
+ * carries the full snapshot (#665), which `fetchMiddlewareHealth` parses. The
+ * dashboard renders nothing at all when this is `null`: this is an
+ * informational hint, and a channels page that fails to load because a hint
+ * could not be fetched would be a worse outcome than a missing hint.
  */
 export async function fetchDisclosurePosture(): Promise<DisclosureHealthDto | null> {
-  try {
-    const res = await fetch(healthUrl(), {
-      headers: { accept: 'application/json' },
-      cache: 'no-store',
-    });
-    // A 503 still carries a body (#665 — a dead pool answers 503 with the full
-    // snapshot), so parse regardless of status rather than bailing on !ok.
-    const body = (await res.json()) as HealthDto;
-    return body.disclosure ?? null;
-  } catch {
-    return null;
-  }
+  const health = await fetchMiddlewareHealth();
+  return health.reachable ? (health.body.disclosure ?? null) : null;
 }

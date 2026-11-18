@@ -29,22 +29,34 @@ setup:
   fields:
     - key: "seed_dir"
       type: "string"
-      label: "Seed-Verzeichnis"
-      help: "Optionaler Pfad mit Initial-Dateien, die beim Start kopiert werden."
+      label:
+        en: "Seed directory"
+        de: "Seed-Verzeichnis"
+      help:
+        en: "Optional path with initial files that are copied on startup."
+        de: "Optionaler Pfad mit Initial-Dateien, die beim Start kopiert werden."
       required: false
       default: "memory-seed"
 
     - key: "seed_mode"
       type: "string"
-      label: "Seed-Modus"
-      help: "'missing' (nur fehlende Dateien anlegen), 'overwrite' (Repo-Version immer pinnen) oder 'skip' (kein Seeding)."
+      label:
+        en: "Seed mode"
+        de: "Seed-Modus"
+      help:
+        en: "'missing' (only create missing files), 'overwrite' (always pin the repo version) or 'skip' (no seeding)."
+        de: "'missing' (nur fehlende Dateien anlegen), 'overwrite' (Repo-Version immer pinnen) oder 'skip' (kein Seeding)."
       required: false
       default: "missing"
 
     - key: "dev_memory_endpoints_enabled"
       type: "string"
-      label: "Dev-Memory-Endpoints aktivieren"
-      help: "'true' mountet /api/dev/memory (ungeschützt) — NUR für lokale Next-UI. Produktion MUSS leer oder 'false' bleiben."
+      label:
+        en: "Enable dev memory endpoints"
+        de: "Dev-Memory-Endpoints aktivieren"
+      help:
+        en: "'true' mounts /api/dev/memory (unprotected) — ONLY for the local Next UI. Production MUST stay empty or 'false'."
+        de: "'true' mountet /api/dev/memory (ungeschützt) — NUR für lokale Next-UI. Produktion MUSS leer oder 'false' bleiben."
       required: false
       default: "false"
 

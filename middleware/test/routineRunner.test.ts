@@ -130,6 +130,7 @@ class InMemoryRoutineStore implements RoutineStore {
       lastRunStatus: null,
       lastRunError: null,
       outputTemplate: input.outputTemplate ?? null,
+      agentSlug: input.agentSlug ?? null,
     };
     this.rows.set(id, routine);
     return routine;
@@ -333,7 +334,7 @@ interface MakeHarnessOptions {
   orchestrator?: OrchestratorLike;
   /** Live resolver seam (issue #473). Takes precedence over `orchestrator`;
    *  lets tests flip the chat agent between fires (hot-enable / rotation). */
-  getOrchestrator?: () => OrchestratorLike | undefined;
+  getOrchestrator?: (agentSlug: string | null) => OrchestratorLike | undefined;
   agentCallsRef?: Array<{
     userMessage: string;
     userId?: string;
@@ -848,6 +849,10 @@ describe('RoutineRunner — run-once delivery path', () => {
 
     assert.equal(stub.calls.length, 0, 'orchestrator must not be invoked');
     assert.equal(sender.calls.length, 0, 'sender must not be called');
+    // #1071 — a skipped fire is not a run: recording it as `ok` overwrote
+    // the last_run_error that explains an auto-pause.
+    assert.equal(h.runsStore.inserts.length, 0, 'no run history row');
+    assert.equal(h.store.recordRunCalls.length, 0, 'last_run_* untouched');
   });
 
   it('marks manually-triggered runs with trigger=manual', async () => {
@@ -1449,3 +1454,48 @@ describe('live chat-agent resolution (issue #473)', () => {
     assert.equal(h.runner.chatAgentAvailable(), true);
   });
 });
+
+describe('#1598 — a routine runs on the orchestrator that created it', () => {
+  it('passes the stored agentSlug to the resolver on every fire', async () => {
+    const hr = makeStubOrchestrator({ answerText: 'from hr' });
+    const asked: Array<string | null> = [];
+    const h = makeHarness({
+      getOrchestrator: (slug) => {
+        asked.push(slug);
+        return slug === 'hr' ? hr.orchestrator : undefined;
+      },
+    });
+    const routine = await h.runner.createRoutine({ ...baseInput, agentSlug: 'hr' });
+    await h.scheduler.fire(routine.id);
+    assert.ok(asked.includes('hr'));
+    assert.equal(h.runsStore.inserts[0]!.status, 'ok');
+    assert.equal(hr.calls.length, 1);
+  });
+
+  it('an orchestrator that no longer exists records an error run, never a wider one', async () => {
+    const wide = makeStubOrchestrator({ answerText: 'from the ungated bundle' });
+    const h = makeHarness({
+      getOrchestrator: (slug) => (slug === null ? wide.orchestrator : undefined),
+    });
+    const routine = await h.runner.createRoutine({ ...baseInput, agentSlug: 'deleted-agent' });
+    await h.scheduler.fire(routine.id);
+    assert.equal(h.runsStore.inserts[0]!.status, 'error');
+    assert.equal(wide.calls.length, 0);
+  });
+
+  it('a routine without an owner (pre-0005) asks for the standard orchestrator (null)', async () => {
+    const asked: Array<string | null> = [];
+    const std = makeStubOrchestrator();
+    const h = makeHarness({
+      getOrchestrator: (slug) => {
+        asked.push(slug);
+        return std.orchestrator;
+      },
+    });
+    const routine = await h.runner.createRoutine(baseInput);
+    await h.scheduler.fire(routine.id);
+    assert.ok(asked.length > 0 && asked.every((a) => a === null), `asked: ${JSON.stringify(asked)}`);
+    assert.equal(h.runsStore.inserts[0]!.status, 'ok');
+  });
+});
+

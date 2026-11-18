@@ -26,6 +26,7 @@
  * intermediate, not a coupling.
  */
 import type {
+  CacheHints,
   ChatMessage,
   ContentPart,
   EffortLevel,
@@ -33,6 +34,7 @@ import type {
   ImagePart,
   LlmRequest,
   LlmResponse,
+  RefusalDetails,
   SystemBlock,
   TextPart,
   ToolCallPart,
@@ -40,6 +42,7 @@ import type {
   ToolResultPart,
   ToolSpec,
 } from '@omadia/llm-provider';
+import { isClassRef, resolveModelRef } from '@omadia/llm-provider';
 
 // The orchestrator's loosely-typed Anthropic shapes. Mirrors its own
 // `type ContentBlock = any` — we narrow structurally inside the mappers.
@@ -102,9 +105,14 @@ function toContentPart(block: AnthropicBlock): ContentPart {
       };
       return part;
     }
+    case 'thinking':
+    case 'redacted_thinking':
+      // #1207 — carried opaquely so the tool loop replays it unchanged on the
+      // next iteration of the same turn; see `ReasoningPart`. The loop itself
+      // never reads these blocks, it only keeps them in `messages`.
+      return { type: 'reasoning', provider: 'anthropic', raw: block };
     default:
-      // thinking/redacted or unknown blocks have no neutral equivalent; the
-      // orchestrator never echoes them back into a request, but be lenient.
+      // unknown blocks have no neutral equivalent; be lenient.
       return { type: 'text', text: '' };
   }
 }
@@ -181,6 +189,75 @@ function toToolChoice(
 }
 
 /**
+ * Clamp a requested output budget to the RESOLVED model's own ceiling (#1210).
+ *
+ * `max_tokens` arrives pre-resolved from the caller — the orchestrator plugin's
+ * `orchestrator_max_tokens` (floored at the frontier class's ceiling) or the
+ * host's `SUB_AGENT_MAX_TOKENS` — both sized for an always-thinking frontier
+ * model, where thinking tokens count toward the budget. Sent unchanged to a
+ * model with a smaller output cap — a Haiku-class model (8_192), a Mistral
+ * (8_192), an operator's OpenAI-compatible or Ollama build — the vendor rejects
+ * the WHOLE request with a 400 rather than silently capping it, so every turn on
+ * that model fails. The floor and the clamp are not in tension: the floor raises
+ * a stale config to what a frontier model needs, the clamp lowers it to what the
+ * selected model accepts.
+ *
+ * Here because it is the chokepoint of the two paths that carry a turn's real
+ * budget: `Orchestrator`'s own `complete`/`stream` calls and every local
+ * sub-agent (via `streamMessageWithObserver` → `streamMessageEvents`). It is NOT
+ * every sender in this package — `personaRouter`, `modelRouter` and
+ * `securityScreener` hand-build an `LlmRequest` and call `provider.complete`
+ * directly, bypassing this function. They need no clamp: each sets its own
+ * small budget, well below every ceiling any provider publishes. A new sender that
+ * carries a turn-sized budget must either route through here or clamp itself.
+ *
+ * `providerId` is the connection the request is about to be sent on, and it
+ * matters: a bare vendor id two connected providers both serve is ambiguous
+ * without it, and `resolveModelRef` falls back to ANTHROPIC for a class ref —
+ * an Anthropic ceiling on a Mistral turn. Callers that know their provider pass
+ * it; callers that do not get the conservative behaviour below.
+ *
+ * An id the registry cannot resolve passes through UNTOUCHED — the registry is
+ * a curated overlay, not the universe of valid ids (an operator-typed id, a
+ * fine-tune, a local build). That is the same pass-through contract
+ * `resolveModelIdForProvider` uses, and it keeps the seam's behaviour unchanged
+ * for hosts that register no models at all (unit tests). The known gap #1210
+ * names is exactly this one: an operator-added OpenAI-compatible / Ollama /
+ * MiniMax model is unclamped until its provider contributes a `maxTokens`.
+ */
+function clampMaxTokens(
+  model: string,
+  requested: number,
+  providerId?: string,
+): number {
+  // A class ref must never reach the provider (the plugin resolves refs to a
+  // concrete vendor id at build time), and resolving one WITHOUT a provider
+  // hint silently yields Anthropic's model for that class. Leave it alone
+  // rather than clamp to a ceiling that may belong to another vendor.
+  if (providerId === undefined && isClassRef(model)) return requested;
+  const ceiling = resolveModelRef(
+    model,
+    providerId !== undefined ? { defaultProvider: providerId } : {},
+  )?.maxTokens;
+  if (ceiling === undefined || ceiling <= 0) return requested;
+  return Math.min(requested, ceiling);
+}
+
+/** True when any breakpoint the loop stamped asks for the 1-hour TTL
+ *  (`cache_control: { type: 'ephemeral', ttl: '1h' }`). */
+function hasLongCacheTtl(params: AnthropicParams): boolean {
+  const isLong = (block: AnthropicBlock): boolean =>
+    (block['cache_control'] as { ttl?: unknown } | undefined)?.ttl === '1h';
+  const systemBlocks = Array.isArray(params.system) ? params.system : [];
+  return systemBlocks.some(isLong) || (params.tools ?? []).some(isLong);
+}
+
+function cacheHintsFor(tools: boolean, longTtl: boolean): { cacheHints?: CacheHints } {
+  if (!tools && !longTtl) return {};
+  return { cacheHints: { ...(tools ? { tools: true } : {}), ...(longTtl ? { ttl: '1h' as const } : {}) } };
+}
+
+/**
  * Translate the Anthropic-shaped params the orchestrator/sub-agent built into
  * a neutral `LlmRequest`. `betas` carries provider preview opt-ins (the
  * orchestrator's `context-management` beta) that previously rode as the
@@ -189,6 +266,10 @@ function toToolChoice(
 export function toLlmRequest(
   params: AnthropicParams,
   betas?: ReadonlyArray<string>,
+  /** The provider connection this request is about to be sent on — see
+   *  {@link clampMaxTokens}. Omitted only by callers that genuinely do not
+   *  know it. */
+  providerId?: string,
 ): LlmRequest {
   const system = toSystem(params.system);
   const toolChoice = toToolChoice(params.tool_choice);
@@ -198,14 +279,12 @@ export function toLlmRequest(
       : undefined;
   return {
     model: params.model,
-    maxTokens: params.max_tokens,
+    maxTokens: clampMaxTokens(params.model, params.max_tokens, providerId),
     messages: params.messages.map(toChatMessage),
     ...(system !== undefined ? { system } : {}),
     ...(tooling !== undefined ? { tools: tooling.tools } : {}),
     ...(toolChoice !== undefined ? { toolChoice } : {}),
-    ...(tooling?.cacheTools === true
-      ? { cacheHints: { tools: true } }
-      : {}),
+    ...cacheHintsFor(tooling?.cacheTools === true, hasLongCacheTtl(params)),
     ...(betas !== undefined && betas.length > 0 ? { betas } : {}),
     ...(params.effort !== undefined ? { effort: params.effort } : {}),
   };
@@ -283,9 +362,27 @@ function fromContentPart(part: ContentPart): AnthropicBlock {
       const call = part as ToolCallPart;
       return { type: 'tool_use', id: call.id, name: call.name, input: call.input };
     }
-    default:
-      // image/tool_result never appear in a model RESPONSE.
+    case 'reasoning':
+      // Back to the exact block the model emitted — the loop pushes this into
+      // `messages` as-is, which is what closes the replay round-trip (#1207).
+      // Only Anthropic reasoning reaches here; `fromLlmResponse` drops the
+      // rest, because a foreign `raw` is not a block this loop may send.
+      return part.raw as AnthropicBlock;
+    case 'image':
+    case 'tool_result':
+      // Never appear in a model RESPONSE (they are request-side shapes).
       return { type: 'text', text: '' };
+    default: {
+      // Same reasoning as `toStopReason`: a new ContentPart member must fail
+      // the BUILD here, not silently become an empty text block in a message
+      // the loop then sends to the vendor.
+      const exhaustive: never = part;
+      throw new Error(
+        `unhandled ContentPart in a response: ${String(
+          (exhaustive as { type?: string }).type,
+        )}`,
+      );
+    }
   }
 }
 
@@ -304,15 +401,31 @@ export interface SeamMessage {
     cache_creation_input_tokens?: number;
     cache_read_input_tokens?: number;
   };
+  /**
+   * #1219 — present only when the model's safety classifiers declined the
+   * turn; `stop_reason` is then `'refusal'`. Carries the vendor's category so
+   * the loops can log and report WHY, not just that it happened.
+   */
+  refusal?: RefusalDetails;
 }
 
 export function fromLlmResponse(response: LlmResponse): SeamMessage {
   return {
-    content: response.content.map(fromContentPart),
-    stop_reason: toStopReason(
-      response.finishReason,
-      response.providerFinishReason,
-    ),
+    // #1207 — a foreign provider's reasoning is dropped rather than mapped:
+    // its `raw` is not an Anthropic block, and the loop pushes whatever lands
+    // here straight back into `messages`. Anthropic's own reasoning is kept
+    // verbatim so the in-turn replay stays byte-identical.
+    content: response.content
+      .filter((p) => p.type !== 'reasoning' || p.provider === 'anthropic')
+      .map(fromContentPart),
+    // A neutral `refusal` IS the refusal signal (#1219): the loops branch on
+    // `stop_reason === 'refusal'`, so an adapter that reports one without the
+    // Anthropic vocabulary in `providerFinishReason` must still land there.
+    stop_reason:
+      response.refusal !== undefined
+        ? 'refusal'
+        : toStopReason(response.finishReason, response.providerFinishReason),
+    ...(response.refusal !== undefined ? { refusal: response.refusal } : {}),
     model: response.model,
     usage: {
       input_tokens: response.usage.inputTokens,

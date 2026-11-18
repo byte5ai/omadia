@@ -5,15 +5,17 @@
 #   https://render.com/deploy?repo=https://github.com/byte5ai/omadia
 #
 # Mirrors docker-compose.yaml's minimal core; the optional overlays
-# (MinIO, Kroki, Ollama) are not part of the blueprint.
+# (SeaweedFS object storage, Kroki, Ollama) are not part of the blueprint.
 #
 # No secrets to paste: VAULT_KEY and CREDENTIAL_KEYCHAIN_KEY are generated
 # by Render on first sync (the GHCR image bakes NODE_ENV=production, which
-# makes both keys mandatory at boot — see README "Deployment"), and the LLM key is
-# collected by the first-admin /setup wizard at runtime and stored
-# encrypted in the vault. DEV_ENDPOINTS_ENABLED stays unset: these
-# services are publicly reachable, and the dev mounts expose raw KG +
-# memory state without auth.
+# makes both keys mandatory at boot — see README "Deployment"). The
+# first-admin /setup wizard asks for the one-time setup token the middleware
+# prints to its log on first boot (or set ADMIN_SETUP_TOKEN), and the LLM key
+# is connected in the admin UI afterwards and stored encrypted in the vault.
+# DEV_ENDPOINTS_ENABLED stays unset: these services are publicly reachable,
+# and the dev mounts are dev scaffolding that hand raw KG + memory state to
+# any logged-in session.
 #
 # Costs: the middleware needs a persistent disk, which requires paid
 # instance types — `starter` for both services plus `basic-256mb`
@@ -51,6 +53,23 @@ services:
       # plugin packages on the disk below instead of the image layer.
       - key: PLATFORM_DATA_DIR
         value: /data
+      # Password sign-in limiter: AUTH_LOGIN_CLIENT_ADDRESS is left at its
+      # default `socket` (docs/upgrading.md, middleware/.env.example). web-ui
+      # reaches the middleware through its public URL, so a browser's request
+      # passes more proxies than one sent to the middleware directly, and no
+      # single `xff:<n>` picks the browser's address on both paths. Every
+      # browser then shares one key, which the limiter treats as shared;
+      # browsers that have signed in before keep a budget of their own.
+      #
+      # The scheme clients reach this service over (#1310,
+      # docs/security-architecture.md §10o). `https`, not the `auto` default:
+      # Render serves both services over HTTPS only, but TLS is terminated at
+      # its edge and the middleware sees a plain-HTTP connection from an address
+      # TRUSTED_PROXY_ADDRESSES cannot name stably. `auto` would leave the auth
+      # cookies without Secure AND make the pairing descriptor advertise ws://
+      # to an HTTPS page, which the browser blocks as mixed content.
+      - key: PUBLIC_SCHEME
+        value: https
     disk:
       name: omadia-data
       mountPath: /data
@@ -73,6 +92,12 @@ services:
           name: omadia-middleware
           type: web
           envVarKey: RENDER_EXTERNAL_URL
+      # The /bot-api proxy states X-Forwarded-Proto itself and drops the
+      # browser's value (#1310, §10o). A Route Handler cannot observe its own
+      # TLS — next derives the request URL's protocol from that same header —
+      # so the scheme is declared. Render's edge terminates TLS: https.
+      - key: WEB_UI_PUBLIC_SCHEME
+        value: https
 
 databases:
   # --- Postgres + pgvector (knowledge graph, routines, verifier store) -----

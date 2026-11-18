@@ -38,9 +38,32 @@ export const RECEIPT_FIXTURE_PSEUDONYM: PrivacyReceipt = {
   pseudonymProjectionUsed: true,
 };
 
+/** Failing-tool turn: nothing was interned, but three tool errors were
+ *  handled at the dispatch seams — a thrown exception withheld, a returned
+ *  `Error:` text redacted, and an MCP connect prompt passed through. */
+export const RECEIPT_FIXTURE_TOOL_ERRORS: PrivacyReceipt = {
+  datasetsInterned: 0,
+  fieldsMasked: 0,
+  fieldsCleartext: 0,
+  verbsExecuted: [],
+  pseudonymProjectionUsed: false,
+  toolErrors: [
+    { toolName: 'odoo_search_partner', carrier: 'thrown', outcome: 'withheld', bytes: 212 },
+    {
+      toolName: 'crm_lookup_customer',
+      carrier: 'returned',
+      outcome: 'redacted',
+      bytes: 96,
+      redactedSpans: [{ type: 'email', detector: 'c0-regex' }],
+    },
+    { toolName: 'mcp__Strava__list_activities', carrier: 'mcp_auth_prompt', outcome: 'passed', bytes: 301 },
+  ],
+};
+
 /** Convenience array for tests / Storybook iteration. */
 export const ALL_PRIVACY_RECEIPT_FIXTURES: readonly PrivacyReceipt[] = [
   RECEIPT_FIXTURE_QUIET,
   RECEIPT_FIXTURE_RANKED,
   RECEIPT_FIXTURE_PSEUDONYM,
+  RECEIPT_FIXTURE_TOOL_ERRORS,
 ];

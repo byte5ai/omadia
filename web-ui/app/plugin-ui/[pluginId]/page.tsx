@@ -1,8 +1,11 @@
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
-import { getTranslations } from 'next-intl/server';
+import { getLocale, getTranslations } from 'next-intl/server';
+import { cache } from 'react';
 
-import { isValidPluginId } from '@/app/_lib/pluginId';
+import { fetchNavEntries, pluginUiNavLabel } from '@/app/_lib/navigation';
+import { decodePluginIdSegment } from '@/app/_lib/pluginId';
+import { pluginUiBundleMayExist } from '@/app/_lib/pluginUiBundle';
 
 import { PluginUiFrame } from './_components/PluginUiFrame';
 
@@ -28,14 +31,33 @@ import { PluginUiFrame } from './_components/PluginUiFrame';
  * reachable from a nav contribution while `//evil.example` is not.
  */
 
+/**
+ * The name heading, tab and frame title show (#1479): the label of the nav
+ * entry that points here, resolved by the middleware for the active locale —
+ * the same string the nav shows. The id is the fallback for a plugin that
+ * registered no entry (or a nav lookup that degraded to `[]`). `cache()` so
+ * `generateMetadata` and the render share one lookup per request.
+ */
+const pluginUiName = cache(async (pluginId: string): Promise<string> => {
+  const entries = await fetchNavEntries(await getLocale());
+  return pluginUiNavLabel(entries, pluginId) ?? pluginId;
+});
+
 export async function generateMetadata({
   params,
 }: {
   params: Promise<{ pluginId: string }>;
 }): Promise<Metadata> {
-  const { pluginId } = await params;
+  const { pluginId: segment } = await params;
+  const pluginId = decodePluginIdSegment(segment);
+  // An invalid id renders the 404 page; it gets the default title rather
+  // than echoing the raw segment into the tab. Same for a well-formed id with
+  // no bundle behind it (#1454) — the page below refuses it, and a tab titled
+  // after a plugin whose UI does not exist is the 404 page wearing its name.
+  if (pluginId === null) return {};
+  if (!(await pluginUiBundleMayExist(pluginId))) return {};
   const t = await getTranslations('pluginUi');
-  return { title: t('metaTitle', { pluginId }) };
+  return { title: t('metaTitle', { name: await pluginUiName(pluginId) }) };
 }
 
 export default async function PluginUiPage({
@@ -43,32 +65,45 @@ export default async function PluginUiPage({
 }: {
   params: Promise<{ pluginId: string }>;
 }): Promise<React.ReactElement> {
-  const { pluginId } = await params;
+  const { pluginId: segment } = await params;
   // Rejected here rather than passed on: an id outside the charset can never
   // resolve to a package, and refusing it keeps a malformed value out of the
   // iframe URL entirely.
   //
-  // The gate lives in `_lib/pluginId.ts` and is pinned by test to the
-  // middleware definition it claims to mirror. The version that shipped with
-  // C8 declared the same intention in a comment and then omitted the optional
-  // `@scope/`, so `@omadia/example-ui` — the id of the very plugin this
-  // route was built for, and the shape of every omadia plugin id — was
-  // rejected here. Next hands us the DECODED segment, so the value compared is
-  // `@omadia/example-ui`, not its percent-encoded form.
-  if (!isValidPluginId(pluginId)) notFound();
+  // Next 16 passes the segment still percent-encoded (`%40omadia%2Fexample-ui`),
+  // not decoded — see `decodePluginIdSegment` for the evidence. The helper
+  // decodes first and runs the charset gate (pinned by test to the middleware
+  // definition) on the decoded value; `PluginUiFrame` re-encodes it for the
+  // iframe `src`. Validating the raw param 404'd every scoped id (#1399).
+  const pluginId = decodePluginIdSegment(segment);
+  if (pluginId === null) notFound();
 
-  const t = await getTranslations('pluginUi');
+  // #1454 — a well-formed id is not a plugin UI; without this check an id with
+  // no bundle got heading, subtitle and a frame painting the middleware's JSON
+  // error, under HTTP 200. See `pluginUiBundle.ts` for what the probe does and
+  // does not promise. Two placement rules: AFTER the charset gate, so a
+  // malformed id never reaches a fetch URL, and `notFound()` called HERE
+  // rather than inside the helper — a page that delegates it loses the 404
+  // status and the guard in `app/__tests__/loadingBoundaries.test.ts` (#1398).
+  if (!(await pluginUiBundleMayExist(pluginId))) notFound();
+
+  const [t, name] = await Promise.all([
+    getTranslations('pluginUi'),
+    pluginUiName(pluginId),
+  ]);
 
   return (
     <main className="flex h-full flex-col gap-4 p-6">
       <header>
         <h1 className="text-xl font-semibold text-fg-strong">
-          {t('title', { pluginId })}
+          {t('title', { name })}
         </h1>
         <p className="text-sm text-fg-muted">{t('subtitle')}</p>
       </header>
       <div className="min-h-0 flex-1">
-        <PluginUiFrame pluginId={pluginId} />
+        {/* Keyed so a frame frozen on one plugin's src (#1480) can never be
+            reused for another's. */}
+        <PluginUiFrame key={pluginId} pluginId={pluginId} name={name} />
       </div>
     </main>
   );

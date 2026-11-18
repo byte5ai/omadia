@@ -109,6 +109,22 @@ describe('goldenRunner/parseCorpusLine', () => {
     assert.throws(() => parseCorpusLine('{not json', 'f.jsonl', 2), /f\.jsonl:2: invalid JSON/);
   });
 
+  it('accepts expected.status skipped (nothing checkable is its own class)', () => {
+    const e = parseCorpusLine(
+      JSON.stringify({ id: 's', userMessage: 'Hallo', answer: 'Hallo!', expected: { status: 'skipped' } }),
+      'f.jsonl',
+      1,
+    );
+    assert.equal(e.expected.status, 'skipped');
+  });
+
+  it('rejects expected.status unavailable — an outage is never an expected class', () => {
+    assert.throws(
+      () => parseCorpusLine(JSON.stringify({ id: 'x', userMessage: 'q', answer: 'a', expected: { status: 'unavailable' } }), 'f.jsonl', 1),
+      /expected\.status/,
+    );
+  });
+
   it('parses a v2 entry with expected.via and an odoo fixture (#639)', () => {
     const e = parseCorpusLine(
       JSON.stringify({
@@ -364,11 +380,24 @@ describe('goldenRunner/corpus integrity (#129 acceptance, key-free)', () => {
     assert.equal(new Set(ids).size, ids.length);
   });
 
-  it('covers all three VerifierVerdict statuses', () => {
+  it('covers every expected verdict class, skipped included', () => {
     const statuses = new Set(entries.map((e) => e.expected.status));
+    // `approved` stays covered — only through a deterministic-verified claim
+    // now, since trigger-skip answers are `skipped`.
     assert.ok(statuses.has('approved'));
     assert.ok(statuses.has('approved_with_disclaimer'));
     assert.ok(statuses.has('blocked'));
+    assert.ok(statuses.has('skipped'));
+  });
+
+  it('every approved entry asserts the deterministic-verified path', () => {
+    // A triggering answer whose extraction came back empty is `skipped`, so an
+    // `approved` expectation is only meaningful with evidence behind it.
+    const approvedEntries = entries.filter((e) => e.expected.status === 'approved');
+    assert.ok(approvedEntries.length > 0);
+    for (const e of approvedEntries) {
+      assert.equal(e.expected.via, 'deterministic-verified', `${e.id}: approved without via`);
+    }
   });
 
   it('covers the tool_postcondition and citation_missing claim paths', () => {

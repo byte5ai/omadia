@@ -9,7 +9,7 @@
 # botbuilder (@azure/msal-node family) have post-install hooks that break on
 # Alpine's musl libc without extra build tools. Slim keeps the image small
 # while staying on glibc.
-FROM node:22.23.2-slim AS builder
+FROM node:22.23.5-slim AS builder
 ARG TARGETARCH
 WORKDIR /app
 
@@ -55,7 +55,7 @@ COPY middleware/scripts ./scripts
 RUN npm run build
 
 # --- runtime ----------------------------------------------------------------
-FROM node:22.23.2-slim AS runtime
+FROM node:22.23.5-slim AS runtime
 ARG TARGETARCH
 WORKDIR /app
 
@@ -69,6 +69,19 @@ ENV PORT=8080
 # than repeating package.json's long-stale 0.2.0.
 ARG OMADIA_VERSION=
 ENV OMADIA_VERSION=${OMADIA_VERSION}
+# Loud but non-fatal: a local `docker compose build` legitimately has no stamp,
+# but a Fly deploy without it ships `/health` version "unknown" (happened
+# 2026-10, see docs/fly-deploy.md). Placed right after the ARG so it adds no
+# cache invalidation beyond what the ENV line already causes.
+RUN if [ -z "$OMADIA_VERSION" ]; then \
+      printf '%s\n' \
+        '==============================================================' \
+        'WARNING: OMADIA_VERSION build arg is EMPTY (middleware image).' \
+        '/health will report version "unknown".' \
+        'Fine for a local build. For byte5 Fly use scripts/fly-deploy.sh,' \
+        'otherwise pass --build-arg OMADIA_VERSION=sha-<8>.' \
+        '==============================================================' >&2; \
+    fi
 # Optional skills directory. Per-domain SKILL.md bundles ship here when a
 # deployment carries domain-specific runtime prompts. Empty by default.
 ENV SKILLS_DIR=/app/skills
@@ -91,7 +104,11 @@ RUN apt-get update \
 # a legal review; the local/dev compose enables it via build arg. Login is still
 # per-host (`claude auth login`), never baked into the image.
 ARG INSTALL_SUBSCRIPTION_CLIS=false
-ARG CLAUDE_CODE_VERSION=2.1.187
+# 2.1.312 (#1581): 2.1.187 sent the first model request without the loopback
+# MCP tools whenever the handshake took more than a few seconds, so the model
+# faked tool calls (memory) as text. 2.1.312 waits for the connection. Its
+# login prompt matches what `cliAuthService.ts` expects.
+ARG CLAUDE_CODE_VERSION=2.1.312
 RUN if [ "${INSTALL_SUBSCRIPTION_CLIS}" = "true" ]; then \
       npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
    && npm cache clean --force; \

@@ -2,7 +2,7 @@ import { mintAppJwt } from '../../services/githubAppJwt.js';
 
 /**
  * GitHub App authentication for the native direct-create path
- * (Issue #206, concept plan: docs/plans/native-issue-reporting.md — v1.2).
+ * (Issue #206).
  *
  * Why a GitHub App and not a PAT for an OPEN-SOURCE product:
  *

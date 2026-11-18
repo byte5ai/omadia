@@ -207,5 +207,19 @@ describe('mcpGrantToDomainTool', () => {
     assert.equal(tool.spec.description, 'Adds two numbers.');
     assert.deepEqual(Object.keys(tool.spec.input_schema.properties), ['a']);
     assert.deepEqual(tool.spec.input_schema.required, ['a']);
+    assert.equal(tool.readOnly, undefined, 'no hint → not read-only');
+  });
+
+  it('marks the DomainTool read-only only for a server readOnlyHint (fast path)', () => {
+    const manager = { callTool: async () => 'x', rememberToolSchema: () => {} } as unknown as McpManager;
+    const cfg = { id: SERVER_ID, name: 'billing', transport: 'http', endpoint: 'http://x' } as const;
+    assert.equal(mcpGrantToDomainTool(manager, cfg, { name: 'invoices', readOnlyHint: true }).readOnly, true);
+    assert.equal(mcpGrantToDomainTool(manager, cfg, { name: 'invoices', readOnlyHint: false }).readOnly, undefined);
+    const long = `list_${'x'.repeat(70)}`;
+    assert.equal(
+      mcpGrantToDomainTool(manager, cfg, { name: long, readOnlyHint: true }).readOnly,
+      undefined,
+      'a 64-char cut name loses the read mark — the cut may drop the verb',
+    );
   });
 });

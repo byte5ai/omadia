@@ -10,8 +10,10 @@ import { describe, expect, it } from 'vitest';
  * A privacy receipt is only written for turns in which the privacy shield
  * acted: `finalizeTurn()` in harness-plugin-privacy-guard `service.ts`
  * returns no receipt unless the turn interned a dataset, recorded a bypass or
- * a connected tool's structured output, or masked the prompt, and the
- * orchestrator persists a row only when a receipt exists. The subtitle used to
+ * a connected tool's structured output, masked the prompt, withheld or
+ * redacted a tool error's text, or sent an answer-verifier request under the
+ * turn's privacy view, and the orchestrator persists a row only when a
+ * receipt exists. The subtitle used to
  * promise a receipt for "every completed turn", which contradicted both the
  * code and the empty state right below it.
  *

@@ -8,6 +8,7 @@ import {
   ApiError,
   promoteMemory,
   type MemoryPromoteMode,
+  type MemoryPromoteSourceAxis,
   type MemoryPromoteTier,
   type MemoryPromotionReceipt,
 } from '@/app/_lib/api';
@@ -34,12 +35,15 @@ import {
 
 const MODES: readonly MemoryPromoteMode[] = ['copy', 'move'];
 
-function tiersForAxis(axis: MemoryContextLocation['axis']): MemoryPromoteTier[] {
+function tiersForAxis(axis: MemoryPromoteSourceAxis): MemoryPromoteTier[] {
   return axis === 'channel' ? ['team', 'agent'] : ['agent'];
 }
 
+/** A context location that may be promoted — never a `members` tier. */
+export type PromoteSource = MemoryContextLocation & { readonly axis: MemoryPromoteSourceAxis };
+
 export interface PromoteDialogProps {
-  source: MemoryContextLocation;
+  source: PromoteSource;
   /** Known team context keys of the same agent, offered as suggestions. */
   teamKeys: readonly string[];
   onClose: () => void;

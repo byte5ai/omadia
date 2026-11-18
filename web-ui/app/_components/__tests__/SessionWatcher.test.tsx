@@ -44,6 +44,7 @@ vi.mock('framer-motion', async (importOriginal) => {
 
 const WARNING_TITLE = 'Sitzung läuft bald ab';
 const EXPIRED_TITLE = 'Sitzung abgelaufen';
+const REVOKED_TITLE = 'Sitzung beendet';
 const STILL_HERE = 'Ich bin noch da';
 const SIGN_IN_AGAIN = 'Neu anmelden';
 const SIGN_IN_NOW = 'Jetzt neu anmelden';
@@ -295,6 +296,41 @@ describe('<SessionWatcher />', () => {
     // …and the old expiry passes without an overlay.
     await flush(2 * 60_000);
     expect(screen.queryByText(EXPIRED_TITLE)).not.toBeInTheDocument();
+  });
+
+  it('says "session ended", not "expired", when the server revoked it (#1322)', async () => {
+    mockGetSessionStatus.mockResolvedValue({
+      authenticated: false,
+      user: null,
+      expiresAt: null,
+      serverNow: null,
+      renewableUntil: null,
+      reason: 'revoked',
+    });
+    renderWithIntl(<SessionWatcher />, { locale: 'de' });
+    await flush();
+
+    expect(screen.getByRole('alertdialog', { name: REVOKED_TITLE })).toBeInTheDocument();
+    expect(screen.getByText(REVOKED_TITLE)).toBeInTheDocument();
+    expect(screen.getByText(/Deine Sitzung wurde beendet/)).toBeInTheDocument();
+    expect(screen.queryByText(EXPIRED_TITLE)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: SIGN_IN_AGAIN })).toBeInTheDocument();
+  });
+
+  it('keeps the expired copy when the server reports a plain expiry (#1322)', async () => {
+    mockGetSessionStatus.mockResolvedValue({
+      authenticated: false,
+      user: null,
+      expiresAt: null,
+      serverNow: null,
+      renewableUntil: null,
+      reason: 'expired',
+    });
+    renderWithIntl(<SessionWatcher />, { locale: 'de' });
+    await flush();
+
+    expect(screen.getByText(EXPIRED_TITLE)).toBeInTheDocument();
+    expect(screen.queryByText(REVOKED_TITLE)).not.toBeInTheDocument();
   });
 
   it('the expired overlay still requires a real login', async () => {

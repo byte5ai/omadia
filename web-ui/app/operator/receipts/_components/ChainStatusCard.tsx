@@ -40,10 +40,15 @@ export function ChainStatusCard({ initialKey }: ChainStatusCardProps): React.Rea
     }
   }
 
+  // A middleware older than #1568 sends no `verdict`: derive the old meaning.
+  const verdict = result ? (result.verdict ?? (result.ok ? 'unsigned' : 'broken')) : undefined;
+  // #1568 — `unsigned` is consistent but unverifiable: never the success tone.
   const tone = result
-    ? result.ok
+    ? verdict === 'verified'
       ? 'var(--success)'
-      : 'var(--danger)'
+      : verdict === 'unsigned'
+        ? 'var(--warning)'
+        : 'var(--danger)'
     : 'var(--fg-muted)';
 
   return (
@@ -58,11 +63,11 @@ export function ChainStatusCard({ initialKey }: ChainStatusCardProps): React.Rea
         </h2>
         {result ? (
           <span className="font-mono text-xs" style={{ color: tone }}>
-            {result.ok
-              ? result.checkpoints.signaturesChecked
-                ? t('chainVerified', { n: result.checkedEntries })
-                : t('chainVerifiedUnsigned', { n: result.checkedEntries })
-              : t('chainBroken')}
+            {verdict === 'verified'
+              ? t('chainVerified', { n: result.checkedEntries })
+              : verdict === 'unsigned'
+                ? t('chainUnsigned', { n: result.checkedEntries })
+                : t('chainBroken')}
           </span>
         ) : (
           <span className="text-xs text-[color:var(--fg-muted)]">{t('chainNotYetVerified')}</span>
@@ -108,7 +113,14 @@ export function ChainStatusCard({ initialKey }: ChainStatusCardProps): React.Rea
               {t('chainCheckpointFinding', { kind: f.kind, seq: f.seq })}
             </li>
           ))}
-          {!result.prefix.anchored ? <li>{t('chainUnanchoredPrefix')}</li> : null}
+          {(result.anchor?.findings ?? []).map((f) => (
+            <li key={`anchor-${f.kind}-${String(f.seq)}`}>
+              {t('chainAnchorFinding', { kind: f.kind, seq: f.seq })}
+            </li>
+          ))}
+          {!result.prefix.anchored && !result.prefix.unanchoredReason ? (
+            <li>{t('chainUnanchoredPrefix')}</li>
+          ) : null}
           {result.prefix.prematureDeletion ? (
             <li>
               {t('chainPrematureDeletion', {
@@ -119,6 +131,7 @@ export function ChainStatusCard({ initialKey }: ChainStatusCardProps): React.Rea
           ) : null}
         </ul>
       ) : null}
+      {result ? <ChainNotes result={result} /> : null}
       {result && result.preChainRows > 0 ? (
         <p className="mt-1 text-xs text-[color:var(--fg-muted)]">
           {t('chainPreChainRows', { n: result.preChainRows })}
@@ -128,5 +141,38 @@ export function ChainStatusCard({ initialKey }: ChainStatusCardProps): React.Rea
         <p className="mt-2 text-xs text-[color:var(--danger)]">{t('chainVerifyFailed')}</p>
       ) : null}
     </section>
+  );
+}
+
+/** Information that never turns the verdict red on its own: a keyless
+ *  retention prefix, unchecked checkpoints, the anchor comparison status. */
+function ChainNotes({ result }: { result: ProvenanceVerifyDto }): React.ReactElement | null {
+  const t = useTranslations('operatorReceipts');
+  const notes: string[] = [];
+  if (result.prefix.unanchoredReason === 'no_signing_key' && result.prefix.reapedUpToSeq > 0) {
+    notes.push(t('chainPrefixUnsigned', { seq: result.prefix.reapedUpToSeq }));
+  }
+  if (result.checkpoints.awaitingFirstCheckpoint) notes.push(t('chainAwaitingFirstCheckpoint'));
+  if ((result.checkpoints.unchecked ?? 0) > 0) {
+    notes.push(t('chainCheckpointsUnchecked', { n: result.checkpoints.unchecked }));
+  }
+  const anchor = result.anchor;
+  if (anchor?.configured) {
+    if (anchor.status === 'missing') notes.push(t('chainAnchorMissing'));
+    else if (anchor.status === 'unreadable') notes.push(t('chainAnchorUnreadable'));
+    else {
+      notes.push(t('chainAnchorCompared', { matched: anchor.matched, records: anchor.records }));
+      if (anchor.malformedLines > 0) {
+        notes.push(t('chainAnchorMalformed', { n: anchor.malformedLines }));
+      }
+    }
+  }
+  if (notes.length === 0) return null;
+  return (
+    <ul className="mt-1 list-inside list-disc text-xs text-[color:var(--fg-muted)]">
+      {notes.map((n) => (
+        <li key={n}>{n}</li>
+      ))}
+    </ul>
   );
 }

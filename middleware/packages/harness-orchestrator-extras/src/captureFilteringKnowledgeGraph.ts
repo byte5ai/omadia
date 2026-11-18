@@ -51,6 +51,7 @@
  */
 
 import type {
+  CaptureDisclosure,
   KnowledgeGraph,
   TurnIngest,
   TurnIngestResult,
@@ -61,6 +62,7 @@ import type {
   RunTrace,
   RunIngestResult,
   RunTraceView,
+  SessionReadOptions,
   SessionView,
   SessionFilter,
   SessionSummary,
@@ -87,6 +89,7 @@ import type {
   AclAuditEntry,
   AclMutationOptions,
   MemorableKnowledgePurgeFilter,
+  ConversationHistoryPurgeFilter,
   PalaiaExcerptNode,
   PalaiaExcerptUpdate,
   MemorableKnowledgeSearchOptions,
@@ -119,13 +122,36 @@ import type {
   DatasetSummary,
 } from '@omadia/plugin-api';
 
-import type { CaptureFilter } from './captureFilter.js';
+import type { CaptureFilter, CaptureFilterDecision } from './captureFilter.js';
 
 export interface CaptureFilteringKnowledgeGraphOptions {
   inner: KnowledgeGraph;
   filter: CaptureFilter;
   /** Optional log sink. Defaults to `console.error`. */
   log?: (msg: string) => void;
+}
+
+/**
+ * The decision as the chat shows it (OB-81). `persisted` means knowledge: a
+ * tail-only turn stays in the session record but is not knowledge, so it reads
+ * as not persisted and keeps its score, the reason it was filtered. Counts and
+ * markers only, never turn text.
+ */
+function captureDisclosureOf(
+  decision: CaptureFilterDecision,
+  result: TurnIngestResult,
+): CaptureDisclosure {
+  const persisted = decision.persist;
+  return {
+    persisted,
+    reasons: decision.reasons,
+    entryType: persisted ? decision.entryType : null,
+    visibility: persisted ? decision.visibility : null,
+    significance: decision.significance,
+    embedded: result.embeddingScheduled === true,
+    privacyBlocksStripped: decision.privacyBlocksStripped,
+    hintTagsProcessed: decision.hintTagsProcessed,
+  };
 }
 
 export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
@@ -140,6 +166,14 @@ export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
    * rendering a confidently wrong total.
    */
   readonly countDatasets?: (opts: { ownerOmadiaUserId: string }) => Promise<number>;
+  // #1334 — optional on the contract: forwarded only when the inner graph has
+  // them, so the purge route can tell an unsupported provider from an empty one.
+  readonly countConversationHistory?: (
+    filter: ConversationHistoryPurgeFilter,
+  ) => Promise<{ count: number }>;
+  readonly purgeConversationHistory?: (
+    filter: ConversationHistoryPurgeFilter,
+  ) => Promise<{ deletedNodes: number }>;
 
   constructor(opts: CaptureFilteringKnowledgeGraphOptions) {
     this.inner = opts.inner;
@@ -147,12 +181,20 @@ export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
     this.log = opts.log ?? ((msg): void => console.error(msg));
     const innerCount = opts.inner.countDatasets?.bind(opts.inner);
     if (innerCount) this.countDatasets = innerCount;
+    const innerCountHistory = opts.inner.countConversationHistory?.bind(opts.inner);
+    if (innerCountHistory) this.countConversationHistory = innerCountHistory;
+    const innerPurgeHistory = opts.inner.purgeConversationHistory?.bind(opts.inner);
+    if (innerPurgeHistory) this.purgeConversationHistory = innerPurgeHistory;
   }
 
-  async ingestTurn(turn: TurnIngest): Promise<TurnIngestResult> {
+  async ingestTurn(ingest: TurnIngest): Promise<TurnIngestResult> {
+    // The masked view is the scorer's input only: the inner graph stores the
+    // turn without it.
+    const { maskedView, ...turn } = ingest;
     const decision = await this.filter.classify({
       userMessage: turn.userMessage,
       assistantAnswer: turn.assistantAnswer,
+      ...(maskedView !== undefined ? { maskedView } : {}),
     });
 
     if (!decision.persist) {
@@ -179,7 +221,11 @@ export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
       const result = await this.inner.ingestTurn(tailOnly);
       // #1082 — say so on the result (a new object; the inner one is not
       // touched) so the caller can count filtered turns.
-      return { ...result, tailOnly: true };
+      return {
+        ...result,
+        tailOnly: true,
+        captureDisclosure: captureDisclosureOf(decision, result),
+      };
     }
 
     const cleaned: TurnIngest = {
@@ -197,7 +243,9 @@ export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
       );
     }
 
-    return this.inner.ingestTurn(cleaned);
+    const result = await this.inner.ingestTurn(cleaned);
+    if (decision.passthrough) return result;
+    return { ...result, captureDisclosure: captureDisclosureOf(decision, result) };
   }
 
   // -------------------------------------------------------------------------
@@ -258,11 +306,9 @@ export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
     return this.inner.deletePlan(planExternalId);
   }
 
-  listRecentPlans(opts: {
-    userId?: string;
-    limit?: number;
-    openOnly?: boolean;
-  }): Promise<GraphNode[]> {
+  listRecentPlans(
+    opts: Parameters<KnowledgeGraph['listRecentPlans']>[0],
+  ): Promise<GraphNode[]> {
     return this.inner.listRecentPlans(opts);
   }
 
@@ -270,8 +316,8 @@ export class CaptureFilteringKnowledgeGraph implements KnowledgeGraph {
     return this.inner.getRunForTurn(turnExternalId);
   }
 
-  getSession(scope: string): Promise<SessionView | null> {
-    return this.inner.getSession(scope);
+  getSession(scope: string, options?: SessionReadOptions): Promise<SessionView | null> {
+    return this.inner.getSession(scope, options);
   }
 
   listSessions(filter?: SessionFilter): Promise<SessionSummary[]> {

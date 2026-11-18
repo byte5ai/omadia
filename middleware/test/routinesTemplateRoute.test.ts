@@ -130,8 +130,8 @@ describe('PUT /v1/routines/:id/template', () => {
   });
 
   it('persists a valid template and returns the updated routine DTO', async () => {
-    h.store.seed(makeRoutine('rt-1'));
-    const res = await fetch(`${h.baseUrl}/v1/routines/rt-1/template`, {
+    h.store.seed(makeRoutine('00000000-0000-4000-8000-000000000001'));
+    const res = await fetch(`${h.baseUrl}/v1/routines/00000000-0000-4000-8000-000000000001/template`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ template: VALID_TEMPLATE }),
@@ -140,15 +140,15 @@ describe('PUT /v1/routines/:id/template', () => {
     const body = (await res.json()) as {
       routine: { id: string; outputTemplate: RoutineOutputTemplate | null };
     };
-    assert.equal(body.routine.id, 'rt-1');
+    assert.equal(body.routine.id, '00000000-0000-4000-8000-000000000001');
     assert.deepEqual(body.routine.outputTemplate, VALID_TEMPLATE);
     assert.equal(h.store.setOutputTemplateCalls.length, 1);
     assert.deepEqual(h.store.setOutputTemplateCalls[0]!.template, VALID_TEMPLATE);
   });
 
   it('clears the template when body.template is null', async () => {
-    h.store.seed(makeRoutine('rt-2', { outputTemplate: VALID_TEMPLATE }));
-    const res = await fetch(`${h.baseUrl}/v1/routines/rt-2/template`, {
+    h.store.seed(makeRoutine('00000000-0000-4000-8000-000000000002', { outputTemplate: VALID_TEMPLATE }));
+    const res = await fetch(`${h.baseUrl}/v1/routines/00000000-0000-4000-8000-000000000002/template`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ template: null }),
@@ -162,8 +162,8 @@ describe('PUT /v1/routines/:id/template', () => {
   });
 
   it('returns 400 with reason when template is malformed', async () => {
-    h.store.seed(makeRoutine('rt-3'));
-    const res = await fetch(`${h.baseUrl}/v1/routines/rt-3/template`, {
+    h.store.seed(makeRoutine('00000000-0000-4000-8000-000000000003'));
+    const res = await fetch(`${h.baseUrl}/v1/routines/00000000-0000-4000-8000-000000000003/template`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -178,8 +178,8 @@ describe('PUT /v1/routines/:id/template', () => {
   });
 
   it('returns 400 when body is missing the template field entirely', async () => {
-    h.store.seed(makeRoutine('rt-4'));
-    const res = await fetch(`${h.baseUrl}/v1/routines/rt-4/template`, {
+    h.store.seed(makeRoutine('00000000-0000-4000-8000-000000000004'));
+    const res = await fetch(`${h.baseUrl}/v1/routines/00000000-0000-4000-8000-000000000004/template`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({}),
@@ -190,7 +190,7 @@ describe('PUT /v1/routines/:id/template', () => {
   });
 
   it('returns 404 when the routine does not exist', async () => {
-    const res = await fetch(`${h.baseUrl}/v1/routines/missing/template`, {
+    const res = await fetch(`${h.baseUrl}/v1/routines/00000000-0000-4000-8000-0000000000ff/template`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ template: VALID_TEMPLATE }),
@@ -201,8 +201,8 @@ describe('PUT /v1/routines/:id/template', () => {
   });
 
   it('rejects format html with template_invalid (parser pre-empts renderer)', async () => {
-    h.store.seed(makeRoutine('rt-5'));
-    const res = await fetch(`${h.baseUrl}/v1/routines/rt-5/template`, {
+    h.store.seed(makeRoutine('00000000-0000-4000-8000-000000000005'));
+    const res = await fetch(`${h.baseUrl}/v1/routines/00000000-0000-4000-8000-000000000005/template`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -329,7 +329,7 @@ describe('POST /v1/routines/preview-template', () => {
   });
 
   it('does not touch the routine store (stateless preview)', async () => {
-    h.store.seed(makeRoutine('rt-6'));
+    h.store.seed(makeRoutine('00000000-0000-4000-8000-000000000006'));
     await fetch(`${h.baseUrl}/v1/routines/preview-template`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },

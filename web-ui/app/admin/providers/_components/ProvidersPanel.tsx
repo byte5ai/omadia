@@ -1,12 +1,15 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { useFormatter, useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
 import { ErrorHelp } from '@/app/_components/ErrorHelp';
+import { serverFieldErrors } from '@/app/_lib/apiErrorMessage';
+import { isErrorHelpCode } from '@/app/_lib/errorHelp';
 import { ChatGptConnectModal } from './ChatGptConnectModal';
+import { buildModelSelect, isClassRef, type ClassOption } from './assignmentModelOptions';
 import {
   assignProvider,
   getProviders,
@@ -115,6 +118,7 @@ function withAssignment(
   pluginId: string,
   provider: string,
   model: string,
+  resolvedModel: string | null | undefined,
 ): ProvidersResponse {
   return {
     ...data,
@@ -130,7 +134,7 @@ function withAssignment(
         provider !== 'anthropic' && a.modelRouting !== undefined
           ? { modelRouting: 'false' }
           : {};
-      return { ...a, provider, model, ...routingReset };
+      return { ...a, provider, model, resolvedModel, ...routingReset };
     }),
   };
 }
@@ -202,20 +206,34 @@ export function ProvidersPanel({
         delete n[pluginId];
         return n;
       });
-      const commitRow = (): void =>
+      const commitRow = (storedModel: string, resolvedModel: string | null | undefined): void =>
         setState((prev) =>
           prev.kind === 'ready'
-            ? { ...prev, data: withAssignment(prev.data, pluginId, provider, model) }
+            ? {
+                ...prev,
+                data: withAssignment(prev.data, pluginId, provider, storedModel, resolvedModel),
+              }
             : prev,
         );
+      // #1083 — without the server's answer (older middleware, or a persisted
+      // assignment whose rebuild failed), a concrete id resolves to itself and a
+      // class ref's resolution stays unknown (`undefined`, not `null` — `null`
+      // means "resolves to nothing").
+      const fallbackResolved = isClassRef(model) ? undefined : model;
       try {
-        await assignProvider({ pluginId, provider, model });
-        commitRow();
+        const res = await assignProvider({ pluginId, provider, model });
+        // #1083 — the server stores a class ref as given and says what it
+        // resolves to.
+        const storedModel = res?.model ?? model;
+        commitRow(
+          storedModel,
+          res?.resolvedModel ?? (isClassRef(storedModel) ? undefined : storedModel),
+        );
         setStatus((s) => ({ ...s, [pluginId]: 'saved' }));
       } catch (err) {
         // #1076 — the assignment landed; a rebuild failed. Show the row on
         // the provider the server now holds, AND the error with its Retry.
-        if (isAssignmentPersisted(err)) commitRow();
+        if (isAssignmentPersisted(err)) commitRow(model, fallbackResolved);
         setStatus((s) => ({ ...s, [pluginId]: 'error' }));
         setErrors((e) => ({ ...e, [pluginId]: err }));
       }
@@ -405,6 +423,11 @@ function ProviderRow({
   // means a pre-OM-11 middleware that cannot tell us, so we assume present and
   // keep the previous behaviour rather than disabling an action that works.
   const cliMissing = p.toolLess && p.installed === false;
+  // #1460 — a keyless provider (Ollama) is `connected` with no key at all, so
+  // `connected` cannot decide whether "Change key" / "Remove key" have
+  // anything to act on. `hasKey` can; an older middleware falls back.
+  const keyless = p.requiresApiKey === false && !p.toolLess && !p.oauthConnect;
+  const hasStoredKey = p.hasKey ?? p.connected;
   const modelsDiscoveredAt =
     p.modelsSource === 'discovered' && p.modelsDiscoveredAt
       ? new Date(p.modelsDiscoveredAt)
@@ -482,6 +505,19 @@ function ProviderRow({
     }
   };
 
+  // A key that arrived without a probe (the desktop wizard's, or a seeded one)
+  // reads "stored, not verified" until someone presses "Test key". Probe it once
+  // per page open: a pass is stored for good, an inconclusive result only for a
+  // few minutes, so an offline install repeats this bounded background probe.
+  const autoProbed = useRef(false);
+  useEffect(() => {
+    if (autoProbed.current || p.toolLess || keyless || !hasStoredKey) return;
+    if (p.status !== 'unverified' || p.verifyReason) return;
+    autoProbed.current = true;
+    void runVerify();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runVerify is recreated per render; the ref makes this one-shot
+  }, [p.status, p.verifyReason, p.toolLess, keyless, hasStoredKey]);
+
   const removeKey = async (): Promise<void> => {
     if (saveStatus === 'saving') return;
     if (!confirm(t('providers.removeKeyConfirm', { provider: p.label }))) return;
@@ -534,7 +570,7 @@ function ProviderRow({
           )}
         </span>
         <span className="flex items-center gap-3">
-          <ConnectionChip provider={p} now={now} t={t} />
+          <ConnectionChip provider={p} now={now} t={t} keylessWithoutKey={keyless && !hasStoredKey} />
           {/* Explicit re-probe. Only offered where there is a credential to
               probe — the CLI provider authenticates on the Subscriptions tab,
               and an OAuth provider has no key to probe. */}
@@ -546,7 +582,11 @@ function ProviderRow({
               disabled={verifying || saveStatus === 'saving'}
               className="text-[13px] font-medium text-[color:var(--accent)] disabled:opacity-50"
             >
-              {verifying ? t('providers.testing') : t('providers.testKey')}
+              {verifying
+                ? t('providers.testing')
+                : keyless
+                  ? t('providers.testConnection')
+                  : t('providers.testKey')}
             </button>
           )}
           {!p.toolLess && p.status !== 'no_key' && (
@@ -612,7 +652,7 @@ function ProviderRow({
             )
           ) : (
             !editing &&
-            (p.connected ? (
+            (hasStoredKey ? (
               <span className="flex items-center gap-3">
                 {/* eslint-disable-next-line no-restricted-syntax -- inline text link (bare accent text, no border/bg) */}
                 <button
@@ -641,7 +681,7 @@ function ProviderRow({
                 onClick={() => setEditing(true)}
                 className="text-[13px] font-medium text-[color:var(--accent)]"
               >
-                {t('providers.addKey')} →
+                {keyless ? t('providers.addOptionalKey') : t('providers.addKey')} →
               </button>
             ))
           )}
@@ -703,7 +743,7 @@ function ProviderRow({
             </Button>
             <StatusChip status={saveStatus} t={t} />
           </div>
-          <SaveError error={saveError} />
+          <SaveError error={saveError} fieldKey={envKey} />
         </div>
       )}
 
@@ -731,7 +771,7 @@ function ProviderRow({
 
       {/* removeKey runs while `editing` is false, so surface its failures here —
           otherwise a destructive remove that errors gives the operator no feedback. */}
-      {!p.toolLess && !editing && <SaveError error={saveError} />}
+      {!p.toolLess && !editing && <SaveError error={saveError} fieldKey={envKey} />}
 
       {/* #294 — the device-code modal for an OAuth provider connect. */}
       {oauthOpen && (
@@ -753,13 +793,41 @@ function ProviderRow({
  * One failed key save. A per-field message from a 200 PATCH response is
  * already a plain per-key string and stays as-is; a thrown `ApiError` goes
  * through the catalogue, so its code never reaches the screen as text.
+ *
+ * #1330: a rejected key answers 400 `settings.invalid_values` with the reason
+ * per field. The field's own code (`settings.openai_key_format`, …) is the
+ * headline when the catalogue knows it; otherwise the envelope's code is, and
+ * the server's reason for THIS field follows as a visible line — it is the one
+ * thing the operator needs to correct the value, so it must not hide in the
+ * support disclosure.
  */
-function SaveError({ error }: { error: unknown }): React.ReactElement | null {
+function SaveError({
+  error,
+  fieldKey,
+}: {
+  error: unknown;
+  fieldKey: string;
+}): React.ReactElement | null {
+  const t = useTranslations('adminProviders');
   if (error === undefined || error === null) return null;
   if (typeof error === 'string') {
     return <p className="text-[12px] text-[color:var(--danger)]">{error}</p>;
   }
-  return <ErrorHelp code={errorCode(error)} rawDetail={error} />;
+  const field = serverFieldErrors(error).find((f) => f.key === fieldKey);
+  if (field === undefined) {
+    return <ErrorHelp code={errorCode(error)} rawDetail={error} />;
+  }
+  if (isErrorHelpCode(field.code)) {
+    return <ErrorHelp code={field.code} />;
+  }
+  return (
+    <div className="flex flex-col gap-1">
+      <ErrorHelp code={errorCode(error)} />
+      <p className="text-[12px] text-[color:var(--fg-muted)]">
+        {t('providers.saveRejectedReason', { reason: field.message })}
+      </p>
+    </div>
+  );
 }
 
 /** Chip colours per Lume: text + edge only, never a filled state block. */
@@ -789,6 +857,7 @@ const UNVERIFIED_REASON_KEYS: Record<string, string | undefined> = {
   http_error: 'providers.unverifiedReason.httpError',
   network_error: 'providers.unverifiedReason.networkError',
   no_probe: 'providers.unverifiedReason.noProbe',
+  not_checked: 'providers.unverifiedReason.notChecked',
 };
 
 /**
@@ -800,10 +869,13 @@ function ConnectionChip({
   provider: p,
   now,
   t,
+  keylessWithoutKey = false,
 }: {
   provider: AdminProvider;
   now: number;
   t: T;
+  /** #1460 — "key stored, not verified" would be false: there is no key. */
+  keylessWithoutKey?: boolean;
 }): React.ReactElement {
   const format = useFormatter();
   return (
@@ -814,7 +886,9 @@ function ConnectionChip({
           CHIP_CLASS[p.status],
         ].join(' ')}
       >
-        {t(CHIP_LABEL_KEY[p.status])}
+        {keylessWithoutKey && p.status === 'unverified'
+          ? t('providers.unverifiedKeyless')
+          : t(CHIP_LABEL_KEY[p.status])}
       </span>
       {p.status === 'verified' && p.verifiedAt && (
         <span className="text-[11px] text-[color:var(--fg-muted)]">
@@ -875,9 +949,17 @@ function AssignmentRow({
   onToggleRouting: (pluginId: string, next: boolean) => void;
   t: T;
 }): React.ReactElement {
-  const selectedProvider =
-    providers.find((p) => p.id === a.provider) ?? providers[0];
-  const models = selectedProvider?.models ?? [];
+  // The row's own provider may be missing from `providers[]` (a provider with
+  // no models, e.g. its plugin was uninstalled). Nothing on the row may then be
+  // borrowed from another provider — not its models or class defaults (#1083),
+  // and not its legal notices (#1451): an agent assigned to a missing provider
+  // used to show the FIRST provider's label, EU-hosting note and subscription
+  // warning, i.e. a data-protection statement about a provider it never ran on.
+  // Absent own provider ⇒ the conservative default (disclosure required, no
+  // provider-specific claims) and the stored id as the name.
+  const ownProvider = providers.find((p) => p.id === a.provider);
+  const providerName = ownProvider?.label ?? a.provider;
+  const models = ownProvider?.models ?? [];
   const disabled = !a.installed;
   // Per-turn routing (#1099) is Anthropic-only — plugin.ts suppresses it under
   // any other provider — so the toggle is both disabled and guarded off it.
@@ -886,13 +968,28 @@ function AssignmentRow({
   // Data-driven: surface the AVV / Art. 28 third-party disclosure unless the
   // provider opts out via its policy (the server defaults unknown providers to
   // requiring it). Replaces the previous hard-coded `!== 'anthropic'` check.
-  const showDisclosure = selectedProvider?.requiresAvvDisclosure ?? true;
+  const showDisclosure = ownProvider?.requiresAvvDisclosure ?? true;
 
   const onProvider = (providerId: string): void => {
     const next = providers.find((p) => p.id === providerId);
-    // Default to the provider's first model when switching providers.
-    const model = next?.models[0]?.modelId ?? '';
+    // A class ref (#1083) is provider-independent: keep following the class on
+    // the new provider. A pinned (or no) model defaults to the new provider's
+    // first model, as before.
+    const model = isClassRef(a.model) ? a.model : (next?.models[0]?.modelId ?? '');
     if (model) onApply(a.pluginId, providerId, model);
+  };
+  const modelSelect = buildModelSelect({
+    stored: a.model,
+    resolvedModel: a.resolvedModel,
+    models,
+    classDefaults: ownProvider?.classDefaults,
+  });
+  const classLabel = (o: ClassOption): string => {
+    const cls = t(`assignments.classNames.${o.cls}`);
+    if (o.unresolved) return t('assignments.classOptionNoModel', { class: cls });
+    return o.target === undefined
+      ? t('assignments.classOptionUnresolved', { class: cls })
+      : t('assignments.classOption', { class: cls, model: o.target });
   };
 
   return (
@@ -925,15 +1022,31 @@ function AssignmentRow({
           onChange={(e) => onProvider(e.target.value)}
           className={`${selectCls} sm:max-w-[220px]`}
         >
+          {/* #1451 — the stored provider may be missing from `providers[]` (no
+              models, e.g. its plugin was uninstalled). Without an option
+              carrying that value the browser renders the FIRST option instead,
+              so the row claimed the agent runs on a provider it was never
+              assigned to. A disabled option keeps the select honest; the stored
+              assignment is unchanged either way (`onChange` only fires on a
+              real selection). */}
+          {ownProvider === undefined && (
+            <option value={a.provider} disabled>
+              {t('assignments.providerMissing', { provider: a.provider })}
+            </option>
+          )}
           {providers.map((p) => {
             // A tool-less provider can't drive a tool plugin → offer but disable.
             const blocked = p.toolLess === true && a.requiresTools === true;
+            // #1583 — a plugin that cannot run on the subscription CLI at all.
+            const cliRefused = p.toolLess === true && a.rejectsSubscriptionCli === true;
             return (
-              <option key={p.id} value={p.id} disabled={blocked}>
+              <option key={p.id} value={p.id} disabled={blocked || cliRefused}>
                 {p.label}
                 {blocked
                   ? ` (${t('assignments.toolLessBlocked')})`
-                  : p.connected
+                  : cliRefused
+                    ? ` (${t('assignments.subscriptionCliUnsupported')})`
+                    : p.connected
                     ? ''
                     : ` (${t('providers.notConnected')})`}
               </option>
@@ -946,17 +1059,35 @@ function AssignmentRow({
         </label>
         <select
           id={`model-${a.pluginId}`}
-          value={a.model ?? ''}
+          value={modelSelect.value}
           disabled={disabled || models.length === 0}
           onChange={(e) => onApply(a.pluginId, a.provider, e.target.value)}
           className={`${selectCls} sm:max-w-[280px]`}
         >
-          {a.model === null && <option value="">{t('assignments.pickModel')}</option>}
-          {models.map((m) => (
-            <option key={m.id} value={m.modelId}>
-              {m.label}
+          {modelSelect.placeholder && <option value="">{t('assignments.pickModel')}</option>}
+          {/* #1083 — a stored value no list entry matches keeps its own
+              option, so the select never shows option 0 in its place. */}
+          {modelSelect.extraOption && (
+            <option value={modelSelect.extraOption.value}>
+              {t('assignments.unlistedModel', { model: modelSelect.extraOption.label })}
             </option>
-          ))}
+          )}
+          {modelSelect.classOptions.length > 0 && (
+            <optgroup label={t('assignments.classGroup')}>
+              {modelSelect.classOptions.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {classLabel(o)}
+                </option>
+              ))}
+            </optgroup>
+          )}
+          <optgroup label={t('assignments.modelsGroup')}>
+            {modelSelect.modelOptions.map((m) => (
+              <option key={m.value} value={m.value}>
+                {m.label}
+              </option>
+            ))}
+          </optgroup>
         </select>
       </div>
 
@@ -1003,23 +1134,23 @@ function AssignmentRow({
           The gate is deliberately left unchanged here. */}
       {showDisclosure && (
         <p className="rounded-md border border-[color:var(--warning)]/40 bg-[color:var(--warning)]/10 px-3 py-2 text-[12px] leading-[1.5] text-[color:var(--warning)]">
-          {t('assignments.avvDisclosure', { provider: selectedProvider?.label ?? a.provider })}
+          {t('assignments.avvDisclosure', { provider: providerName })}
         </p>
       )}
-      {selectedProvider?.euHosted && (
+      {ownProvider?.euHosted && (
         <p className="rounded-md border border-[color:var(--border)] bg-[color:var(--border)]/10 px-3 py-2 text-[12px] leading-[1.5] text-[color:var(--fg-muted)]">
           {t('assignments.euHostedNote', {
-            provider: selectedProvider?.label ?? a.provider,
+            provider: providerName,
           })}
         </p>
       )}
       {/* Subscription CLIs (consumer plan): no AVV/DPA CAN exist — a stronger
           caveat than the ordinary third-party disclosure, so it gets the
           warning styling, not the muted note styling. */}
-      {selectedProvider?.subscriptionNotice && (
+      {ownProvider?.subscriptionNotice && (
         <p className="rounded-md border border-[color:var(--warning)]/40 bg-[color:var(--warning)]/10 px-3 py-2 text-[12px] leading-[1.5] text-[color:var(--warning)]">
           {t('assignments.subscriptionNotice', {
-            provider: selectedProvider?.label ?? a.provider,
+            provider: providerName,
           })}
         </p>
       )}

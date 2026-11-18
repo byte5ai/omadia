@@ -15,6 +15,8 @@ import type {
 import type { EmbeddingClient } from '@omadia/embeddings';
 import {
   createLlmProviderPool,
+  isClassRef,
+  UnresolvedModelRefError,
   type LlmProviderCatalog,
   type LlmProviderPool,
 } from '@omadia/llm-provider';
@@ -29,6 +31,7 @@ import {
   describeAiDisclosurePosture,
   formatDisclosureBootWarning,
 } from './aiDisclosurePosture.js';
+import { parseAnswerVerbosity } from './answerVerbosity.js';
 import type {
   EntityRefBus,
   KnowledgeGraph,
@@ -74,6 +77,7 @@ import {
 import type { ChatPeerAgentsProvider } from './chatParticipants.js';
 // #1085 — the name the kernel's resolver is asked to resolve; one source.
 import { DEFAULT_CLI_BINARY } from './cliChatAgent.js';
+import { createScopedChatAgent } from './scopedChatAgent.js';
 import {
   audienceGuardedAttachmentReader,
   createAttachmentReader,
@@ -102,6 +106,7 @@ import { runMultiOrchestratorMigrations } from './registry/migrator.js';
 import { ensureFallbackAgent } from './registry/onboarding.js';
 import { ReloadBus } from './registry/reloadBus.js';
 import { ChannelResolver } from './routing/channelResolver.js';
+import type { FastPathTriagePort } from './fastPathAgent.js';
 import { SessionLogger } from './sessionLogger.js';
 import {
   RunTraceOutcomeStats,
@@ -151,6 +156,7 @@ import {
 } from './tools/publishGrantedTools.js';
 import { DockerSandboxBackend } from '@omadia/sandbox';
 import { DockerPublishRuntime, InMemoryPublishStore, PostgresPublishStore, type PublishStore } from '@omadia/publish';
+import { describeSandboxResourceLimits, readSandboxResourceLimits } from './sandboxLimitsConfig.js';
 /**
  * @omadia/orchestrator — plugin entry point.
  *
@@ -203,6 +209,8 @@ import { DockerPublishRuntime, InMemoryPublishStore, PostgresPublishStore, type 
  */
 
 const CHAT_AGENT_SERVICE = 'chatAgent';
+/** `fastPath@1` (@omadia/fast-path) — bare registry key. */
+const FAST_PATH_SERVICE_NAME = 'fastPath';
 const NATIVE_TOOL_REGISTRY_SERVICE = 'nativeToolRegistry';
 const ORCHESTRATOR_REGISTRY_SERVICE = 'orchestratorRegistry';
 const CHANNEL_RESOLVER_SERVICE = 'channelResolver';
@@ -252,11 +260,24 @@ export const CHAT_PEER_AGENTS_SERVICE = 'chatPeerAgents';
 
 /** #1033 W3 — the kernel's shared provider pool (see `optional_requires`). */
 export const LLM_PROVIDER_POOL_SERVICE = 'llmProviderPool';
-// 8192, not 4096: a verbose preamble + a large structured tool call (e.g. a
-// multi-sheet create_xlsx with formulas) truncates at 4096 → `max_tokens`
-// mid-tool-call, so the file is never built. Also enforced as a floor below so
-// an already-installed registry config of 4096 gets bumped without reinstall.
-const DEFAULT_MAX_TOKENS = 8192;
+// Sized for THINKING PLUS the reply, not for the reply alone (#1210): the
+// `class:frontier` default resolves to the vendor's newest Opus via live
+// discovery, thinking is always on there and its tokens count toward
+// `max_tokens`. A thinking-off budget therefore truncates the answer — or a
+// large structured tool call (e.g. a multi-sheet create_xlsx with formulas)
+// mid-tool-call, so the file is never built. 32_000 is the frontier class's own
+// registry `maxTokens` (`platform/builtinLlmProviders.ts`). Also enforced as a
+// floor below so an already-installed smaller config (4096, or 8192 from the
+// thinking-off era) gets bumped without a reinstall — and clamped back DOWN to
+// the resolved model's own ceiling in `toLlmRequest`, so picking a model with a
+// smaller output cap (Haiku, Mistral, a local build) still sends a value its
+// API accepts instead of 400-ing every turn.
+// Exported so `test/orchestratorMaxTokenBudgets.test.ts` can pin it against the
+// host's `ORCHESTRATOR_MAX_TOKENS` default: the two are the SAME budget written
+// twice (the plugin cannot import the app layer — packages are imported BY it,
+// never the reverse), and the copy the running orchestrator actually uses is
+// this one.
+export const DEFAULT_MAX_TOKENS = 32_000;
 // Raised 25 → 100 so genuinely multi-step turns (e.g. a price-list comparison
 // across many lookups) reach a final answer. The high cap is made safe by the
 // orchestrator's round-loop guard (nudges then force-finalises a repeating
@@ -752,19 +773,38 @@ export async function activate(
   // class ref (`class:frontier`, the default), an alias or a vendor id — and
   // is resolved against the live catalog for the active provider here, at
   // build time, so the turn loop only ever sends a concrete vendor id.
+  //
+  // #1451 — the two tiers are unchanged; what is gone is the third,
+  // `?? configuredModelRef`, which broke the promise above whenever the
+  // provider served no model in the registry: the published `class:*` 404'd
+  // every turn. Activation fails instead, leaving the plugin `errored` with a
+  // message naming the setting to fix — the same trade the sub-agent host
+  // (#1079) and the verifier already make.
   const configuredModelRef =
     (ctx.config.get<string>('orchestrator_model') ?? '').trim() ||
     DEFAULT_MODEL;
   const model =
     resolveConfiguredModel(configuredModelRef, providerId) ??
-    resolveConfiguredModel(DEFAULT_MODEL, providerId) ??
-    configuredModelRef;
+    resolveConfiguredModel(DEFAULT_MODEL, providerId);
+  if (model === undefined || isClassRef(model)) {
+    throw new UnresolvedModelRefError(
+      configuredModelRef,
+      providerId,
+      'orchestrator_model (ORCHESTRATOR_MODEL)',
+    );
+  }
   // Operator persona. Empty → Orchestrator falls back to its generic,
   // integration-agnostic `DEFAULT_ASSISTANT_IDENTITY`. Lets a deployment
   // brand the bot without a hardcoded "byte5 / Odoo" identity in the harness.
   const assistantIdentity = (
     ctx.config.get<string>('assistant_identity') ?? ''
   ).trim();
+  // Operator's target answer size (`answer_verbosity`). Undefined (unset or a
+  // value the enum does not know) → the orchestrator's `standard`, which adds
+  // no prompt block at all. See `answerVerbosity.ts`.
+  const answerVerbosity = parseAnswerVerbosity(
+    ctx.config.get<unknown>('answer_verbosity'),
+  );
   // AI-Act Art. 50 (#644) — resolve the operator's disclosure setup once at
   // build time (same arrival pattern as `assistantIdentity`). Undefined → the
   // orchestrator applies the shipping default (standard, active) on every
@@ -805,7 +845,8 @@ export async function activate(
     disclosurePosture,
   );
   // Floor at DEFAULT_MAX_TOKENS: a stale installed config (older deployments
-  // persisted 4096) would otherwise truncate large file-building tool calls.
+  // persisted 4096, then 8192) would otherwise truncate thinking plus a large
+  // file-building tool call. The seam clamps this back down per model.
   const maxTokens = Math.max(
     parseNumberOrDefault(
       ctx.config.get<unknown>('orchestrator_max_tokens'),
@@ -994,10 +1035,17 @@ export async function activate(
   // independently of the turn-context `commandPolicy` seam (see that
   // module's doc) — belt AND braces, not a replacement for the existing
   // `guardToolCommands` choke point in `orchestrator.ts`'s `dispatchTool`.
+  //
+  // Container ceilings for BOTH Docker paths below (execute + publish), read
+  // once so they cannot drift: setup field > OMADIA_SANDBOX_* env > default
+  // (see sandboxLimitsConfig.ts).
+  const sandboxLimits = readSandboxResourceLimits((key) => ctx.config.get<unknown>(key));
+  const sandboxLimitsSummary = describeSandboxResourceLimits(sandboxLimits);
+  const logSandboxWarning = (msg: string): void => ctx.log(`[harness-orchestrator] ${msg}`);
   const disposeExecuteTool: Array<() => void> = [];
   const sandboxExecuteEnabled = ctx.config.get<boolean>('sandbox_execute_enabled') === true;
   if (sandboxExecuteEnabled) {
-    const sandboxBackend = new DockerSandboxBackend();
+    const sandboxBackend = new DockerSandboxBackend({ resourceLimits: sandboxLimits, log: logSandboxWarning });
     // No `writeCapabilities` annotation: that contract is a `{dataClass,
     // operation}` pair for canvas inline-edit + idempotency dedupe of
     // STRUCTURED writes (an Odoo record, a Jira ticket) — `execute`'s
@@ -1012,7 +1060,9 @@ export async function activate(
         promptDoc: EXECUTE_SYSTEM_PROMPT_DOC,
       }),
     );
-    ctx.log('[harness-orchestrator] sandbox_execute_enabled=true — registered execute native tool (Docker backend)');
+    ctx.log(
+      `[harness-orchestrator] sandbox_execute_enabled=true — registered execute native tool (Docker backend, ${sandboxLimitsSummary})`,
+    );
   } else {
     ctx.log('[harness-orchestrator] sandbox_execute_enabled not set — skipping execute native tool');
   }
@@ -1046,8 +1096,8 @@ export async function activate(
   const disposePublishTools: Array<() => void> = [];
   const sandboxPublishEnabled = ctx.config.get<boolean>('sandbox_publish_enabled') === true;
   if (sandboxPublishEnabled) {
-    const publishSandboxBackend = new DockerSandboxBackend();
-    const publishRuntime = new DockerPublishRuntime();
+    const publishSandboxBackend = new DockerSandboxBackend({ resourceLimits: sandboxLimits, log: logSandboxWarning });
+    const publishRuntime = new DockerPublishRuntime({ resourceLimits: sandboxLimits });
     const publishStore: PublishStore = graphPool ? new PostgresPublishStore(graphPool) : new InMemoryPublishStore();
     const publishSharing = audienceGrants
       ? { grants: audienceGrants, roles: new RoleSourceRegistryImpl() }
@@ -1078,7 +1128,7 @@ export async function activate(
       }),
     );
     ctx.log(
-      `[harness-orchestrator] sandbox_publish_enabled=true — registered publish/publish_rollback native tools (${graphPool ? 'Postgres' : 'in-memory'} store, sharing ${publishSharing ? 'ON' : 'off (no GrantStore configured)'})`,
+      `[harness-orchestrator] sandbox_publish_enabled=true — registered publish/publish_rollback native tools (${graphPool ? 'Postgres' : 'in-memory'} store, sharing ${publishSharing ? 'ON' : 'off (no GrantStore configured)'}, ${sandboxLimitsSummary})`,
     );
   } else {
     ctx.log('[harness-orchestrator] sandbox_publish_enabled not set — skipping publish/publish_rollback native tools');
@@ -1137,6 +1187,9 @@ export async function activate(
     turnReceiptStore: turnReceiptStoreGetter,
     ...(pluginConfigGet ? { pluginConfigGet } : {}),
     ...(isPluginToolsReady ? { isPluginToolsReady } : {}),
+    // The deterministic fast path (@omadia/fast-path) — resolved PER TURN: an
+    // optional plugin service that may activate after this plugin, or never.
+    fastPath: () => ctx.services.getOptional<FastPathTriagePort>(FAST_PATH_SERVICE_NAME),
     ...(turnOwnerGuard ? { turnOwnerGuard } : {}),
     ...(cliBinaryResolver
       ? { resolveCliBinary: (): string => cliBinaryResolver(DEFAULT_CLI_BINARY) }
@@ -1162,6 +1215,7 @@ export async function activate(
     ...(graphPool ? { graphPool } : {}),
     graphTenantId,
     ...(assistantIdentity ? { assistantIdentity } : {}),
+    ...(answerVerbosity ? { answerVerbosity } : {}),
     ...(aiDisclosure ? { aiDisclosure } : {}),
     // #579 — org security posture (org floor + optional scope tighten + mode +
     // screen URL). Undefined → the orchestrator's shipping default (`auto`).
@@ -1269,7 +1323,20 @@ export async function activate(
     },
     orchestratorDeps,
   );
-  disposeServices.push(ctx.services.provide(CHAT_AGENT_SERVICE, built.bundle));
+  // #1598 — the published `chatAgent@1` is the shared entry point for every
+  // consumer without an orchestrator of its own (canvas, channel plugins'
+  // `defaultOrchestrator`, the shared dispatcher path). The bundle built above
+  // carries no per-Agent plugin grants — it holds every plugin's tools — so it
+  // only answers turns while there is no registry (Postgres-less boot, where it
+  // IS the deployment's orchestrator). Once the registry runs, a turn goes to
+  // the standard (fallback) orchestrator, which has grants; with no standard
+  // orchestrator set, the turn is refused. `raw` and the stores stay the
+  // legacy bundle's: sub-agents attach to it and nothing there runs a turn.
+  let registry: OrchestratorRegistry | undefined;
+  const scopedAgent = createScopedChatAgent(built.bundle.agent, () => registry);
+  disposeServices.push(
+    ctx.services.provide(CHAT_AGENT_SERVICE, { ...built.bundle, agent: scopedAgent }),
+  );
   disposeServices.push(ctx.services.provide(RUN_TRACE_STATS_SERVICE, runTraceStats));
 
   // US4 — multi-orchestrator registry. Optional: only when a Postgres pool
@@ -1279,7 +1346,6 @@ export async function activate(
   // The legacy `chatAgent@1` keeps serving the default boot path — the
   // registry sits alongside it. `graphPool` is already late-resolved at
   // the top of activate() (merged from main 2026-05-26).
-  let registry: OrchestratorRegistry | undefined;
   let reloadBus: ReloadBus | undefined;
   if (graphPool) {
     try {

@@ -4,7 +4,10 @@ import { randomUUID } from 'node:crypto';
 
 import {
   agentInvocationNodeId,
+  agentScopePrefix,
   authSubjectProps,
+  CONVERSATION_HISTORY_NODE_TYPES,
+  type ConversationHistoryPurgeFilter,
   channelIdentityNodeId,
   entityNodeId,
   excerptMergeCandidateNodeId,
@@ -20,7 +23,9 @@ import {
   topicNodeId,
   turnNodeId,
   userNodeId,
+  canonicalOwners,
   type ChannelIdentityIngest,
+  type SessionReadOptions,
   type CreateMergeCandidateInput,
   type DatasetAggregate,
   type DatasetColumnSchema,
@@ -114,6 +119,7 @@ import {
   validateNodeProps,
 } from './schema.js';
 import { captureGateEpoch, type GateEpochReader } from './gateEpoch.js';
+import { scramOnlyPoolOptions } from './scramOnlyClient.js';
 
 export interface NeonKnowledgeGraphOptions {
   pool: Pool;
@@ -200,7 +206,7 @@ interface RunToolCallWritePayload {
 }
 
 export function createNeonPool(connectionString: string, poolMax = 5): Pool {
-  return new Pool({ connectionString, max: poolMax });
+  return new Pool({ connectionString, max: poolMax, ...scramOnlyPoolOptions() });
 }
 
 /**
@@ -223,7 +229,7 @@ const TRANSIENT_DB_ERROR_CODES = new Set<string>([
   '57P03', // cannot_connect_now — server is starting up
 ]);
 
-function isTransientDbError(err: unknown): boolean {
+export function isTransientDbError(err: unknown): boolean {
   const code = (err as { code?: unknown } | null)?.code;
   if (typeof code === 'string' && TRANSIENT_DB_ERROR_CODES.has(code)) {
     return true;
@@ -376,6 +382,35 @@ function buildAggregateSelectSql(
 }
 
 /**
+ * #1536 — the Turns a Plan `p` belongs to: through `PLAN_OF`, or the `turnId`
+ * property of a plan ingested before its Turn. `$1` is the tenant. A SELECT
+ * over `graph_nodes t`, for `EXISTS (…)`.
+ */
+const PLAN_TURNS_SQL = `SELECT 1 FROM graph_nodes t
+             WHERE t.tenant_id = $1 AND t.type = 'Turn'
+               AND (t.external_id = p.properties->>'turnId'
+                 OR t.id IN (SELECT e.to_node FROM graph_edges e
+                              WHERE e.tenant_id = $1 AND e.type = 'PLAN_OF'
+                                AND e.from_node = p.id))`;
+
+/**
+ * #1536 — SQL predicate: the MemorableKnowledge row `alias` holds no value a
+ * shield never masked. Neither stamped `unprotected` at write time nor
+ * derived (`DERIVED_FROM`) from a Turn stored `unprotected`; the edge check
+ * also covers MK written before the stamp existed. `tenantParam` is the
+ * placeholder of the tenant id.
+ */
+function mkProtectedSql(alias: string, tenantParam: string): string {
+  return `COALESCE((${alias}.properties->>'unprotected')::boolean, FALSE) = FALSE
+          AND NOT EXISTS (
+            SELECT 1 FROM graph_edges d
+              JOIN graph_nodes src ON src.id = d.to_node AND src.type = 'Turn'
+             WHERE d.tenant_id = ${tenantParam} AND d.type = 'DERIVED_FROM'
+               AND d.from_node = ${alias}.id
+               AND COALESCE((src.properties->>'unprotected')::boolean, FALSE))`;
+}
+
+/**
  * Postgres-backed knowledge graph (Neon serverless).
  *
  * Identity model: every node has a stable `external_id` (session:<scope>,
@@ -470,6 +505,15 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         // that a replay (capture_level=off) or a backfill re-ingests as real
         // knowledge — invisible to recall for good, with nothing to clear it.
         tailOnly: turn.tailOnly === true,
+        // #1507 — the turn answered from values the model saw raw. Only
+        // written when set, like `owners`: a re-ingest from the session
+        // transcript (backfill, replay) carries no flag and must not clear one
+        // the live turn recorded; a live re-ingest sets it either way.
+        ...(turn.unprotected !== undefined ? { unprotected: turn.unprotected } : {}),
+        // Member-scoped memory — who owns this turn's knowledge. Only written
+        // when set: a re-ingest without it (backfill, replay) keeps the owners
+        // the live turn recorded instead of erasing them.
+        ...(turn.owners !== undefined ? { owners: canonicalOwners(turn.owners) } : {}),
       });
       const turnUuid = await this.upsertNode(client, {
         externalId: turnExtId,
@@ -530,11 +574,17 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       // #1096 — a tail-only turn is never a recall candidate, so an embedding
       // for it would be spend with no reader. This is the cost half of the
       // capture filter's job, kept intact while the session record is not.
-      if (!turn.tailOnly && this.currentEmbeddingClient()) {
+      const embeddingScheduled = !turn.tailOnly && this.currentEmbeddingClient() !== undefined;
+      if (embeddingScheduled) {
         void this.embedAndStoreTurn(turnUuid, turn.userMessage, turn.assistantAnswer);
       }
 
-      return { sessionId: sessionExtId, turnId: turnExtId, entityNodeIds };
+      return {
+        sessionId: sessionExtId,
+        turnId: turnExtId,
+        entityNodeIds,
+        ...(embeddingScheduled ? { embeddingScheduled } : {}),
+      };
     } catch (err) {
       await client.query('ROLLBACK');
       throw err;
@@ -1063,7 +1113,12 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     }
   }
 
-  async getSession(scope: string): Promise<SessionView | null> {
+  async getSession(
+    scope: string,
+    options?: SessionReadOptions,
+  ): Promise<SessionView | null> {
+    const audienceOwners = audienceFilter(options?.audienceOwners);
+    if (audienceOwners === EMPTY_AUDIENCE) return null;
     const sessionExtId = sessionNodeId(scope);
     const sessionRow = await this.findNodeByExternalId(sessionExtId);
     if (!sessionRow) return null;
@@ -1073,10 +1128,14 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       SELECT ${NODE_COLUMNS}
       FROM graph_nodes
       WHERE tenant_id = $1 AND type = 'Turn' AND scope = $2
+        -- Member-scoped memory (see searchTurns): the tail of a room a new
+        -- member joined holds only turns that member also owns.
+        AND ($3::jsonb IS NULL OR properties @> jsonb_build_object('owners', $3::jsonb))
       ORDER BY (properties->>'time') ASC
       `,
-      [this.tenantId, scope],
+      [this.tenantId, scope, audienceOwners],
     );
+    if (audienceOwners !== null && turnRows.rows.length === 0) return null;
 
     const turnUuids = turnRows.rows.map((r) => r.id);
     const entityByTurn = new Map<string, GraphNode[]>();
@@ -1708,6 +1767,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     limit?: number;
     openOnly?: boolean;
     agentScopePrefix?: string;
+    excludeUnprotected?: boolean;
   }): Promise<GraphNode[]> {
     const limit = Math.max(1, Math.min(opts.limit ?? 5, 50));
     // `user_id` lives in its own column (set on ingest), not in props.
@@ -1736,6 +1796,16 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
                AND s.type = 'PlanStep'
                AND s.properties->>'status' IN ('pending', 'in_progress')
           ))
+          -- #1536 — under a Privacy Shield only a plan whose Turn is known and
+          -- not unprotected. The Turn is found through PLAN_OF or, for a plan
+          -- ingested before its Turn, the turnId property.
+          AND (NOT $6::boolean OR (
+            EXISTS (${PLAN_TURNS_SQL})
+            AND NOT EXISTS (
+              ${PLAN_TURNS_SQL}
+                AND COALESCE((t.properties->>'unprotected')::boolean, FALSE)
+            )
+          ))
         ORDER BY (p.properties->>'createdAt') DESC NULLS LAST
         LIMIT $4`,
       [
@@ -1744,6 +1814,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         opts.openOnly === true,
         limit,
         opts.agentScopePrefix ?? null,
+        opts.excludeUnprotected === true,
       ],
     );
     return res.rows.map((r) => rowToNode(r));
@@ -1844,6 +1915,8 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
   async searchTurns(opts: SearchTurnsOptions): Promise<TurnSearchHit[]> {
     const query = opts.query.trim();
     if (query.length === 0) return [];
+    const audienceOwners = audienceFilter(opts.audienceOwners);
+    if (audienceOwners === EMPTY_AUDIENCE) return [];
 
     const limit = Math.max(1, Math.min(opts.limit ?? 5, 50));
     const userIdFilter = opts.userId ?? null;
@@ -1895,6 +1968,10 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         AND ($7::text IS NULL
           OR scope LIKE $7 || '%'
           OR ($7 = 'default::' AND scope NOT LIKE '%::%'))
+        -- Member-scoped memory: everyone present must own the turn.
+        AND ($8::jsonb IS NULL OR properties @> jsonb_build_object('owners', $8::jsonb))
+        -- #1507 — a recall under a Privacy Shield skips unprotected turns.
+        AND (NOT $9::boolean OR COALESCE((properties->>'unprotected')::boolean, FALSE) = FALSE)
         AND to_tsvector(
           'simple',
           coalesce(properties->>'userMessage', '') || ' ' ||
@@ -1911,6 +1988,8 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         excludeTurnIds,
         limit,
         agentScopePrefix,
+        audienceOwners,
+        opts.excludeUnprotected === true,
       ],
     );
 
@@ -1939,6 +2018,8 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     opts: SearchTurnsByEmbeddingOptions,
   ): Promise<TurnSearchHit[]> {
     if (opts.queryEmbedding.length === 0) return [];
+    const audienceOwners = audienceFilter(opts.audienceOwners);
+    if (audienceOwners === EMPTY_AUDIENCE) return [];
     const limit = Math.max(1, Math.min(opts.limit ?? 5, 50));
     const minSimilarity = opts.minSimilarity ?? 0.3;
     const userIdFilter = opts.userId ?? null;
@@ -1989,6 +2070,8 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     //   $12 weight task
     //   $13 LIMIT (overshoot)
     //   $14 agentScopePrefix (nullable) — per-orchestrator isolation
+    //   $15 audienceOwners (nullable jsonb) — member-scoped memory
+    //   $16 excludeUnprotected (boolean) — #1507, skip `unprotected` turns
     const sql = `
       WITH scored AS (
         SELECT
@@ -2037,6 +2120,10 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
           AND ($14::text IS NULL
             OR scope LIKE $14 || '%'
             OR ($14 = 'default::' AND scope NOT LIKE '%::%'))
+          -- Member-scoped memory (see searchTurns).
+          AND ($15::jsonb IS NULL OR properties @> jsonb_build_object('owners', $15::jsonb))
+          -- #1507 — see searchTurns.
+          AND (NOT $16::boolean OR COALESCE((properties->>'unprotected')::boolean, FALSE) = FALSE)
           AND ($7::text[] IS NULL OR entry_type = ANY($7::text[]))
           AND ($8::boolean = TRUE OR tier IN ('HOT', 'WARM'))
           AND (
@@ -2121,6 +2208,8 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       weightTask,
       overshoot,
       agentScopePrefix,
+      audienceOwners,
+      opts.excludeUnprotected === true,
     ]);
 
     return result.rows
@@ -2439,6 +2528,8 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         // Per-orchestrator isolation: stamp the producing Agent so recall can
         // default-isolate by origin (team/public visibility still shares).
         ...(input.originAgent ? { origin_agent: input.originAgent } : {}),
+        // #1536 — holds values no shield masked; recall under a shield skips it.
+        ...(input.unprotected === true ? { unprotected: true } : {}),
         acl_owners: initialOwners,
         created_at: now,
         created_by: input.createdBy,
@@ -2945,6 +3036,206 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     }
   }
 
+  /**
+   * #1334 — the ONE selection both {@link countConversationHistory} and
+   * {@link purgeConversationHistory} run, as a CTE ending in `selection(id)`.
+   * Sharing the text is what makes the preview count the number the purge
+   * deletes. Params: `$1` tenant, `$2` agent scope prefix (nullable), `$3`
+   * user id (nullable), `$4` the directly-selected node types.
+   *
+   *   - `user_ids` — the omadia user id plus the AAD object ids of its channel
+   *                  identities: a Teams Turn / Session stores the AAD id in
+   *                  user_id, its Run the omadia id
+   *   - `roots`    — conversation nodes of the matching scope / user; a Turn
+   *                  also matches by its BELONGS_TO edge to the user cluster
+   *   - `steps`    — PlanSteps of a selected Plan (a step may carry no user)
+   *   - `facts`    — Facts derived ONLY from selected Turns; a Fact that a
+   *                  surviving Turn also produced stays
+   *   - `sessions` — a Session goes once none of its Turns survive; on the
+   *                  user axis only a Session that user had a part in
+   */
+  private conversationHistorySelection(filter: ConversationHistoryPurgeFilter): {
+    cte: string;
+    params: unknown[];
+  } {
+    if (filter.tenantId !== this.tenantId) {
+      throw Object.assign(new Error('tenant_mismatch'), { code: 'tenant_mismatch' });
+    }
+    const scopeMatches = (alias: string): string =>
+      `($2::text IS NULL
+         OR left(${alias}.scope, length($2)) = $2
+         OR ($2 = 'default::' AND ${alias}.scope NOT LIKE '%::%'))`;
+    const cte = `
+      WITH user_ids AS (
+        SELECT $3::text AS id WHERE $3::text IS NOT NULL
+        UNION
+        SELECT ci.properties->>'aadObjectId'
+          FROM graph_nodes ci
+          JOIN graph_edges e ON e.from_node = ci.id AND e.type = 'IS_IDENTITY_OF'
+          JOIN graph_nodes u ON u.id = e.to_node
+         WHERE $3::text IS NOT NULL
+           AND ci.tenant_id = $1 AND ci.type = 'ChannelIdentity'
+           AND u.type = 'User' AND u.external_id = 'user:' || $3
+           AND ci.properties->>'aadObjectId' IS NOT NULL
+      ),
+      roots AS (
+        SELECT n.id, n.type, n.external_id FROM graph_nodes n
+         WHERE n.tenant_id = $1
+           AND n.type = ANY($4::text[])
+           AND ${scopeMatches('n')}
+           AND ($3::text IS NULL
+             OR n.user_id IN (SELECT id FROM user_ids)
+             OR (n.type = 'Turn' AND EXISTS (
+               SELECT 1 FROM graph_edges b
+                 JOIN graph_nodes u ON u.id = b.to_node
+                WHERE b.from_node = n.id AND b.type = 'BELONGS_TO'
+                  AND u.type = 'User' AND u.external_id = 'user:' || $3)))
+      ),
+      root_turns AS (
+        SELECT id, external_id FROM roots WHERE type = 'Turn'
+      ),
+      -- A Run, its invocations and tool calls carry user_id only when the
+      -- run trace had one, and a Plan only when the planner passed it: reach
+      -- them through their edges from the selected Turns as well, so a user
+      -- purge never strands the trace of a turn it deleted.
+      base AS (
+        SELECT id FROM roots
+        UNION
+        SELECT e.to_node FROM graph_edges e
+         WHERE e.tenant_id = $1 AND e.type = 'EXECUTED'
+           AND e.from_node IN (SELECT id FROM roots WHERE type = 'Turn')
+        UNION
+        SELECT e.from_node FROM graph_edges e
+         WHERE e.tenant_id = $1 AND e.type = 'PLAN_OF'
+           AND e.to_node IN (SELECT id FROM roots WHERE type = 'Turn')
+        UNION
+        -- A Plan ingested before its Turn has no PLAN_OF edge, only the prop.
+        SELECT p.id FROM graph_nodes p
+         WHERE p.tenant_id = $1 AND p.type = 'Plan'
+           AND p.properties->>'turnId' IN (SELECT external_id FROM root_turns)
+      ),
+      invocations AS (
+        SELECT e.to_node AS id FROM graph_edges e
+         WHERE e.tenant_id = $1 AND e.type = 'INVOKED_AGENT'
+           AND e.from_node IN (SELECT id FROM base)
+      ),
+      calls AS (
+        SELECT e.to_node AS id FROM graph_edges e
+         WHERE e.tenant_id = $1 AND e.type = 'INVOKED_TOOL'
+           AND (e.from_node IN (SELECT id FROM base)
+             OR e.from_node IN (SELECT id FROM invocations))
+      ),
+      steps AS (
+        SELECT e.from_node AS id
+          FROM graph_edges e
+          JOIN graph_nodes st ON st.id = e.from_node AND st.type = 'PlanStep'
+         WHERE e.tenant_id = $1
+           AND e.type = 'STEP_OF'
+           AND e.to_node IN (SELECT id FROM base)
+      ),
+      -- A Fact's provenance is its DERIVED_FROM edge, or only its
+      -- sourceTurnId prop when it was ingested before the Turn existed. It
+      -- goes when every Turn it came from goes.
+      facts AS (
+        SELECT f.id FROM graph_nodes f
+         WHERE f.tenant_id = $1 AND f.type = 'Fact'
+           AND (EXISTS (
+                  SELECT 1 FROM graph_edges e
+                   WHERE e.from_node = f.id AND e.type = 'DERIVED_FROM'
+                     AND e.to_node IN (SELECT id FROM root_turns))
+                OR f.properties->>'sourceTurnId' IN (SELECT external_id FROM root_turns))
+           AND NOT EXISTS (
+             SELECT 1 FROM graph_edges o
+              WHERE o.from_node = f.id
+                AND o.type = 'DERIVED_FROM'
+                AND o.to_node NOT IN (SELECT id FROM root_turns))
+      ),
+      sessions AS (
+        SELECT s.id FROM graph_nodes s
+         WHERE s.tenant_id = $1
+           AND s.type = 'Session'
+           AND ${scopeMatches('s')}
+           AND ($3::text IS NULL
+             OR s.user_id IN (SELECT id FROM user_ids)
+             OR EXISTS (
+               SELECT 1 FROM graph_edges e
+                WHERE e.to_node = s.id
+                  AND e.type = 'IN_SESSION'
+                  AND e.from_node IN (SELECT id FROM roots)))
+           AND NOT EXISTS (
+             SELECT 1 FROM graph_edges e
+              WHERE e.to_node = s.id
+                AND e.type = 'IN_SESSION'
+                AND e.from_node NOT IN (SELECT id FROM roots))
+      ),
+      selection AS (
+        SELECT id FROM base
+        UNION SELECT id FROM invocations
+        UNION SELECT id FROM calls
+        UNION SELECT id FROM steps
+        UNION SELECT id FROM facts
+        UNION SELECT id FROM sessions
+      )`;
+    return {
+      cte,
+      params: [
+        this.tenantId,
+        filter.agentSlug !== undefined ? agentScopePrefix(filter.agentSlug) : null,
+        filter.userId ?? null,
+        [...CONVERSATION_HISTORY_NODE_TYPES],
+      ],
+    };
+  }
+
+  async countConversationHistory(
+    filter: ConversationHistoryPurgeFilter,
+  ): Promise<{ count: number }> {
+    const { cte, params } = this.conversationHistorySelection(filter);
+    const res = await this.pool.query<{ count: string }>(
+      `${cte} SELECT COUNT(*)::text AS count FROM selection`,
+      params,
+    );
+    return { count: Number(res.rows[0]?.count ?? '0') };
+  }
+
+  async purgeConversationHistory(
+    filter: ConversationHistoryPurgeFilter,
+  ): Promise<{ deletedNodes: number }> {
+    const { cte, params } = this.conversationHistorySelection(filter);
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const rows = await client.query<{ id: string }>(
+        `${cte} SELECT id FROM selection`,
+        params,
+      );
+      const uuids = rows.rows.map((r) => r.id);
+      if (uuids.length === 0) {
+        await client.query('COMMIT');
+        return { deletedNodes: 0 };
+      }
+      // Same belt-and-braces as purgeMemorableKnowledge: drop the incident
+      // edges explicitly instead of relying on the FK cascade alone.
+      await client.query(
+        `DELETE FROM graph_edges
+         WHERE tenant_id = $1
+           AND (from_node = ANY($2::uuid[]) OR to_node = ANY($2::uuid[]))`,
+        [this.tenantId, uuids],
+      );
+      const deleted = await client.query(
+        `DELETE FROM graph_nodes WHERE id = ANY($1::uuid[])`,
+        [uuids],
+      );
+      await client.query('COMMIT');
+      return { deletedNodes: deleted.rowCount ?? 0 };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
   async updateMemorableKnowledge(
     memorableKnowledgeNodeId: string,
     patch: MemorableKnowledgeUpdate,
@@ -3243,6 +3534,8 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     opts: MemorableKnowledgeSearchOptions,
   ): Promise<MemorableKnowledgeHit[]> {
     if (opts.queryEmbedding.length === 0) return [];
+    const audienceOwners = audienceFilter(opts.audienceOwners);
+    if (audienceOwners === EMPTY_AUDIENCE) return [];
     const limit = Math.max(1, Math.min(opts.limit ?? 5, 50));
     const minSimilarity = opts.minSimilarity ?? 0.3;
     const queryLit = vectorLiteral(opts.queryEmbedding);
@@ -3268,20 +3561,37 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         -- that IS team/public still qualifies while an owner-owned private one
         -- cannot slip through the owner branch.
         AND ($8::boolean IS NOT TRUE OR COALESCE(visibility, 'team') IN ('team', 'public'))
+        -- #1536 — under a Privacy Shield skip MK that holds unmasked values.
+        AND ($10::boolean IS NOT TRUE OR (${mkProtectedSql('graph_nodes', '$2')}))
         AND (
-          -- team/public-promoted MK stays shareable across Agents.
-          ($5::boolean AND COALESCE(visibility, 'team') IN ('team', 'public'))
-          OR (
-            properties->'acl_owners' @> jsonb_build_array($3::text)
-            -- Per-orchestrator isolation: owner-gated MK is additionally
-            -- constrained to the viewing Agent. Legacy MK without an
-            -- origin_agent stays visible to the owner.
+          -- Member-scoped memory: the room rule REPLACES the viewer ACL.
+          -- Everyone present owns the row, or an operator authored it.
+          ($9::jsonb IS NOT NULL
+            -- An operator-authored row, not an auto-promoted durable one: T3
+            -- durable auto-promotion also sets manually_authored, and that row
+            -- came out of a conversation (created_by 'auto:…').
+            AND (properties->'acl_owners' @> $9::jsonb
+              OR (manually_authored = true AND COALESCE(properties->>'created_by', '') NOT LIKE 'auto:%'))
             AND (
               $6::text IS NULL
               OR COALESCE(properties->>'origin_agent', '') = ''
               OR properties->>'origin_agent' = $6
+            ))
+          OR ($9::jsonb IS NULL AND (
+            -- team/public-promoted MK stays shareable across Agents.
+            ($5::boolean AND COALESCE(visibility, 'team') IN ('team', 'public'))
+            OR (
+              properties->'acl_owners' @> jsonb_build_array($3::text)
+              -- Per-orchestrator isolation: owner-gated MK is additionally
+              -- constrained to the viewing Agent. Legacy MK without an
+              -- origin_agent stays visible to the owner.
+              AND (
+                $6::text IS NULL
+                OR COALESCE(properties->>'origin_agent', '') = ''
+                OR properties->>'origin_agent' = $6
+              )
             )
-          )
+          ))
         )
       ORDER BY cosine_sim DESC
       LIMIT $4
@@ -3297,6 +3607,8 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       opts.viewerAgentSlug ?? null,
       opts.manuallyAuthoredOnly === true,
       opts.sharedOnly === true,
+      audienceOwners,
+      opts.excludeUnprotected === true,
     ]);
     return rows.rows
       .filter((r) => Number(r.cosine_sim) >= minSimilarity)
@@ -3310,6 +3622,8 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     opts: ExcerptSearchOptions,
   ): Promise<PalaiaExcerptHit[]> {
     if (opts.queryEmbedding.length === 0) return [];
+    const audienceOwners = audienceFilter(opts.audienceOwners);
+    if (audienceOwners === EMPTY_AUDIENCE) return [];
     const limit = Math.max(1, Math.min(opts.limit ?? 10, 50));
     const minSimilarity = opts.minSimilarity ?? 0.3;
     const queryLit = vectorLiteral(opts.queryEmbedding);
@@ -3335,18 +3649,32 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
         -- #575 sharedOnly: the excerpt inherits its parent MK's tier, so the
         -- narrowing runs against the PARENT's visibility.
         AND ($7::boolean IS NOT TRUE OR COALESCE(mk.visibility, 'team') IN ('team', 'public'))
+        -- #1536 — the parent MK's rule (see searchMemorableKnowledgeByEmbedding).
+        AND ($9::boolean IS NOT TRUE OR (${mkProtectedSql('mk', '$2')}))
         AND (
-          -- team/public-promoted parent MK stays shareable across Agents.
-          ($5::boolean AND COALESCE(mk.visibility, 'team') IN ('team', 'public'))
-          OR (
-            mk.properties->'acl_owners' @> jsonb_build_array($3::text)
-            -- Per-orchestrator isolation against the parent MK's origin_agent.
+          -- Member-scoped memory: the parent MK's room rule (see
+          -- searchMemorableKnowledgeByEmbedding) replaces the viewer ACL.
+          ($8::jsonb IS NOT NULL
+            AND (mk.properties->'acl_owners' @> $8::jsonb
+              OR (mk.manually_authored = true AND COALESCE(mk.properties->>'created_by', '') NOT LIKE 'auto:%'))
             AND (
               $6::text IS NULL
               OR COALESCE(mk.properties->>'origin_agent', '') = ''
               OR mk.properties->>'origin_agent' = $6
+            ))
+          OR ($8::jsonb IS NULL AND (
+            -- team/public-promoted parent MK stays shareable across Agents.
+            ($5::boolean AND COALESCE(mk.visibility, 'team') IN ('team', 'public'))
+            OR (
+              mk.properties->'acl_owners' @> jsonb_build_array($3::text)
+              -- Per-orchestrator isolation against the parent MK's origin_agent.
+              AND (
+                $6::text IS NULL
+                OR COALESCE(mk.properties->>'origin_agent', '') = ''
+                OR mk.properties->>'origin_agent' = $6
+              )
             )
-          )
+          ))
         )
       ORDER BY cosine_sim DESC
       LIMIT $4
@@ -3369,6 +3697,8 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       opts.teamVisibility === true || opts.sharedOnly === true,
       opts.viewerAgentSlug ?? null,
       opts.sharedOnly === true,
+      audienceOwners,
+      opts.excludeUnprotected === true,
     ]);
 
     return rows.rows
@@ -5166,6 +5496,11 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
     const limit = Math.max(1, Math.min(opts.limit ?? 25, 200));
     const model = opts.model.trim();
     if (model.length === 0) return [];
+    // Exact-id identity (plugin-api 1.21.0). `->>` yields text for a JSON
+    // number and a JSON string alike, so '7' matches an id stored as 7 or
+    // "7". An empty id names no record.
+    const idFilter = opts.id === undefined ? null : String(opts.id).trim();
+    if (idFilter !== null && idFilter.length === 0) return [];
     const nameFilter = opts.nameContains?.trim();
     const hasName = nameFilter !== undefined && nameFilter.length > 0;
     const like = hasName ? `%${nameFilter}%` : null;
@@ -5177,6 +5512,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       WHERE tenant_id = $1
         AND type IN ('OdooEntity', 'ConfluencePage')
         AND properties->>'model' = $2
+        AND ($5::text IS NULL OR properties->>'id' = $5)
         AND (
           $3::text IS NULL
           OR (properties->>'displayName') ILIKE $3
@@ -5185,7 +5521,7 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       ORDER BY properties->>'displayName' ASC NULLS LAST
       LIMIT $4
       `,
-      [this.tenantId, model, like, limit],
+      [this.tenantId, model, like, limit, idFilter],
     );
     return rows.rows.map(rowToNode);
   }
@@ -5197,6 +5533,8 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
       .map((t) => t.trim())
       .filter((t) => t.length >= 2);
     if (terms.length === 0) return [];
+    const audienceOwners = audienceFilter(opts.audienceOwners);
+    if (audienceOwners === EMPTY_AUDIENCE) return [];
 
     const perEntityLimit = Math.max(1, Math.min(opts.perEntityLimit ?? 2, 10));
     const entityLimit = Math.max(1, Math.min(opts.entityLimit ?? 5, 25));
@@ -5252,6 +5590,10 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
           AND ($6::text IS NULL
             OR t.scope LIKE $6 || '%'
             OR ($6 = 'default::' AND t.scope NOT LIKE '%::%'))
+          -- Member-scoped memory (see searchTurns).
+          AND ($7::jsonb IS NULL OR t.properties @> jsonb_build_object('owners', $7::jsonb))
+          -- #1507 — see searchTurns.
+          AND (NOT $8::boolean OR COALESCE((t.properties->>'unprotected')::boolean, FALSE) = FALSE)
         ORDER BY (t.properties->>'time') DESC
         LIMIT $5
         `,
@@ -5262,6 +5604,8 @@ export class NeonKnowledgeGraph implements KnowledgeGraph {
           excludeScope,
           perEntityLimit,
           agentScopePrefix,
+          audienceOwners,
+          opts.excludeUnprotected === true,
         ],
       );
 
@@ -5554,6 +5898,23 @@ export function rowToNode(row: NodeRow): GraphNode {
  * any driver-side binary-vector encoding so the same path works against
  * vanilla pgvector (via `pg`) and Neon's pooled endpoints alike.
  */
+/** Sentinel for "an audience was given and it is empty" — matches nothing. */
+const EMPTY_AUDIENCE = Symbol('empty-audience');
+
+/**
+ * Member-scoped memory — the SQL parameter for an `audienceOwners` option.
+ * `null` = no owner filter; a JSON array = `properties @> {"owners": …}`, which
+ * the `graph_nodes_props_gin` index serves. An empty audience is not "no
+ * filter": the caller returns no rows without querying.
+ */
+function audienceFilter(
+  audience: readonly string[] | undefined,
+): string | null | typeof EMPTY_AUDIENCE {
+  if (audience === undefined) return null;
+  const members = canonicalOwners(audience);
+  return members.length === 0 ? EMPTY_AUDIENCE : JSON.stringify(members);
+}
+
 function vectorLiteral(v: readonly number[]): string {
   // Scientific notation is rejected by pgvector's parser — toFixed() keeps us
   // in plain decimal. 6 significant digits are far more precision than cosine

@@ -42,6 +42,9 @@ export interface MissReportDto {
   createdAt: string;
 }
 
+/** The list API's `?status=` filter (#1552). */
+export type MissReportStatusFilter = 'open' | 'resolved' | 'all';
+
 const BASE = '/v1/operator/privacy/miss-reports';
 
 export async function createMissReport(input: {
@@ -59,7 +62,7 @@ export async function createMissReport(input: {
 }
 
 export async function listMissReports(
-  status: 'open' | 'resolved' | 'all' = 'open',
+  status: MissReportStatusFilter = 'open',
 ): Promise<{ items: MissReportDto[] }> {
   const res = await fetch(botApi(`${BASE}?status=${status}`), {
     headers: { ...(await forwardCookieHeader()) },

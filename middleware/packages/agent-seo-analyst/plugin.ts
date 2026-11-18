@@ -9,6 +9,12 @@ const DEFAULT_USER_AGENT = 'byte5-seo-bot/0.1 (+https://omadia.ai)';
 const DEFAULT_MAX_PAGES = 25;
 const DEFAULT_MAX_DEPTH = 3;
 const DEFAULT_TIMEOUT_MS = 15_000;
+/**
+ * #1351 — the activation self-test's own budget. Well below the runtime's
+ * 10 s `activate()` budget, and independent of `request_timeout_ms`, so the
+ * plugin decides the outcome, not the runtime timeout.
+ */
+const SELF_TEST_TIMEOUT_MS = 5_000;
 
 export interface AgentHandle {
   readonly toolkit: Toolkit;
@@ -45,18 +51,30 @@ export async function activate(ctx: PluginContext): Promise<AgentHandle> {
     http: ctx.http,
   });
 
-  // Self-Test: is the target URL reachable? HEAD would suffice, but many
-  // websites answer HEAD with 405. So GET with a short timeout.
-  const ping = await fetcher.get(targetBaseUrl, true);
+  // Self-Test: GET on the target URL (many websites answer HEAD with 405).
+  // #1351 — only a POLICY refusal stops activation: the audit mode or the
+  // allow-list forbids the configured target, and the operator has to change
+  // the configuration. An unreachable target does not — activation must not
+  // need internet access (air-gapped host, egress firewall, a short outage at
+  // boot), and every tool call checks its own target anyway (`assertFetched`).
+  const selfTestFetcher = createFetcher({
+    userAgent,
+    timeoutMs: Math.min(timeoutMs, SELF_TEST_TIMEOUT_MS),
+    log: ctx.log,
+    http: ctx.http,
+  });
+  const ping = await selfTestFetcher.get(targetBaseUrl, true);
   if (ping.blocked !== undefined) {
     ctx.log('self-test blocked', { targetBaseUrl, auditMode });
     throw new Error(`seo-analyst: ${ping.blocked}`);
   }
   if (ping.status === 0) {
-    ctx.log('self-test failed', { targetBaseUrl });
-    throw new Error(`seo-analyst: Ziel-URL nicht erreichbar (${targetBaseUrl})`);
+    ctx.log('self-test: target not reachable — activating anyway, each tool call checks its own target', {
+      targetBaseUrl,
+    });
+  } else {
+    ctx.log('self-test ok', { targetBaseUrl, status: ping.status });
   }
-  ctx.log('self-test ok', { targetBaseUrl, status: ping.status });
 
   const toolkit = createToolkit({
     fetcher,

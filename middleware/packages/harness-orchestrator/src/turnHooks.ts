@@ -56,9 +56,43 @@ export interface TurnAnnotation {
 
 export interface TurnHookPayload {
   readonly userMessage?: string;
+  /**
+   * Set on `onBeforeTurn` when the fast-path triage already classified the
+   * message (`ChatTurnInput.routeHint`): `simple` = one direct answer or a
+   * single tool call. A hook that would spend a model call deciding the same
+   * thing (the plan-runner's gate) can skip it. Absent when no triage ran.
+   */
+  readonly routeHint?: 'simple' | 'complex';
+  /**
+   * Set on `onBeforeTurn` when the fast path's decision model answered
+   * whether the turn needs an explicit multi-step plan
+   * (`ChatTurnInput.planHint`). The plan-runner takes it instead of its own
+   * gate call. Absent when none decided.
+   */
+  readonly planHint?: 'plan' | 'direct';
   readonly assistantAnswer?: string;
   readonly toolName?: string;
   readonly toolResult?: string;
+  /**
+   * #1502 — set on `onAfterToolCall`: the call failed. True for an `Error:`
+   * result and for a sub-agent whose every inner tool call failed (it still
+   * answers in prose, so `toolResult` alone reads like a success).
+   */
+  readonly toolFailed?: boolean;
+  /**
+   * #1502 — set on `onAfterToolCall`: the tool serves the turn itself
+   * (`memory`, `v4_render_answer`, `suggest_follow_ups`, `ask_user_choice`),
+   * not the user's task. Hooks that track task progress skip these calls.
+   */
+  readonly toolIsBookkeeping?: boolean;
+  /**
+   * Set on `onAfterToolCall` for a sub-agent (delegation) call: how many of its
+   * inner tool calls succeeded. A delegation is one top-level call that does
+   * several calls' worth of work; a hook that maps calls to task progress can
+   * count these instead of one. Absent for a plain tool and for a sub-agent
+   * that made no successful inner call.
+   */
+  readonly toolInnerCalls?: number;
   /** #133 (E6) — verifier block reason, set on `onVerifierBlocked`. */
   readonly blockReason?: string;
   /**

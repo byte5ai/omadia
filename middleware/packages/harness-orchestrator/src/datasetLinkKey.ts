@@ -38,9 +38,13 @@ import { createHmac, hkdfSync } from 'node:crypto';
  *
  * The secret is process-wide (`DATASET_LINK_KEY_SECRET`), falling back to a
  * key HKDF-derived from the vault master key (`VAULT_KEY`) so a standard
- * production install has link keys without a new required variable. When
- * neither exists, no key columns are written and the import notice says so —
- * a fact the model can state, not a capability it silently lacks.
+ * production install has link keys without a new required variable. #1546 —
+ * an install without `VAULT_KEY` runs on the dev key file the middleware
+ * generates (`/data/.dev-vault.key`); the middleware hands that key over at
+ * boot ({@link setDatasetVaultKeyFallback}), so the default Compose stack
+ * encrypts flagged cells too instead of storing irreversible surrogates. When
+ * none exists, no key columns are written and the import notice says so — a
+ * fact the model can state, not a capability it silently lacks.
  */
 
 /** Column-name prefix of a link-key column: `__k_<source column>`. */
@@ -128,12 +132,27 @@ export function createDatasetLinkKeyer(opts: {
  * Resolve the link-key secret from the environment:
  *
  *  1. `DATASET_LINK_KEY_SECRET` — used as-is (UTF-8) when long enough.
- *  2. `VAULT_KEY` — HKDF-SHA256(ikm = base64-decoded key, info = v1 label).
+ *  2. `VAULT_KEY` — HKDF-SHA256(ikm = base64-decoded key, info = v1 label);
+ *     for the process environment without one, the dev master key the
+ *     middleware loaded at boot (#1546, {@link setDatasetVaultKeyFallback}).
  *  3. otherwise `undefined` → the import writes no link-key columns.
  *
  * A configured-but-too-short explicit secret is *rejected*, not silently
  * accepted: a 6-char secret would make every key guessable offline.
  */
+let vaultKeyFallback: string | undefined;
+
+/**
+ * #1546 — the vault master key the middleware resolved at boot when it did
+ * NOT come from `VAULT_KEY` (the dev key file), as base64. Read by
+ * {@link resolveDatasetLinkKeySecret} only for the process environment, so a
+ * caller that passes its own `env` (tests, an explicit per-import secret)
+ * never sees it. `undefined` clears it.
+ */
+export function setDatasetVaultKeyFallback(masterKey: Buffer | undefined): void {
+  vaultKeyFallback = masterKey === undefined ? undefined : masterKey.toString('base64');
+}
+
 export function resolveDatasetLinkKeySecret(
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): Buffer | undefined {
@@ -146,7 +165,13 @@ export function resolveDatasetLinkKeySecret(
     }
     return Buffer.from(explicit, 'utf8');
   }
-  const vault = env[VAULT_KEY_ENV];
+  const fromEnv = env[VAULT_KEY_ENV];
+  const vault =
+    fromEnv !== undefined && fromEnv.length > 0
+      ? fromEnv
+      : env === process.env
+        ? vaultKeyFallback
+        : undefined;
   if (vault === undefined || vault.length === 0) return undefined;
   const ikm = Buffer.from(vault, 'base64');
   if (ikm.length === 0) return undefined;

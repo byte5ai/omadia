@@ -281,7 +281,9 @@ describe('#1096 tail size is reachable from the plugin store', () => {
     const field = entry.plugin.setup_fields.find((f) => f.key === 'context_tail_size');
     assert.ok(field, 'context_tail_size must be declared under setup.fields');
     assert.equal(field.type, 'integer');
-    assert.equal(field.default, '10');
+    // #1524 — an integer field's default reaches the catalog as a number, also
+    // when the manifest quotes it (`default: "10"`).
+    assert.equal(field.default, 10);
   });
 
   it('clamps the configured value to a whole number in [1, 50]', () => {

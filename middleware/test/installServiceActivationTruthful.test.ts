@@ -29,6 +29,7 @@ import type {
 import { InstallService } from '../src/plugins/installService.js';
 import { InMemoryInstalledRegistry } from '../src/plugins/installedRegistry.js';
 import type { SecretVault } from '../src/secrets/vault.js';
+import { ServiceNotDeclaredError } from '@omadia/plugin-api';
 
 const MANIFEST = {
   schema_version: '1',
@@ -101,6 +102,29 @@ void describe('install reports activation truthfully (#470 P5)', () => {
     );
   });
 
+  // #1456 — the install job's activation_state carries the operator-facing
+  // code, so the drawer can say "this plugin version does not fit this server"
+  // instead of the plugin-API's manifest-editing instruction.
+  void it('classifies the failure on the job and the registry entry', async () => {
+    const { service, registry, pluginId } = makeService(async (id) => {
+      throw new ServiceNotDeclaredError(id, 'entityRefBus');
+    });
+
+    const job = await install(service, pluginId);
+
+    assert.equal(job.activation_state?.state, 'errored');
+    assert.equal(job.activation_state?.error_code, 'capability_not_declared');
+    assert.match(String(job.activation_state?.error), /entityRefBus/);
+    assert.equal(registry.get(pluginId)?.last_activation_error_code, 'capability_not_declared');
+  });
+
+  void it('reports no error code on a successful install', async () => {
+    const { service, pluginId } = makeService(async () => {});
+    const job = await install(service, pluginId);
+    assert.equal(job.activation_state?.ok, true);
+    assert.equal(job.activation_state?.error_code, null);
+  });
+
   void it('still reports active when the hook succeeds', async () => {
     // The inverse guard. Without it, a change that marked EVERY install errored
     // would pass the assertion above.
@@ -155,6 +179,24 @@ void describe('install reports activation truthfully (#470 P5)', () => {
       /activation exploded/,
       'the reason must survive a reactivate that activated nothing',
     );
+  });
+
+  void it('keeps unresolved_requires when a reactivation fails again', async () => {
+    // #1452 — the same wipe the upload path had. `markActivationFailed` reads
+    // an omitted requires list as "clear it", and `retryErroredPlugins`' cap
+    // path reads exactly that list to auto-reset the plugin once the operator
+    // installs the missing provider. A failing reactivation must not take the
+    // plugin's only route back with it.
+    const { service, registry, pluginId } = makeService(async () => {
+      throw new Error('still unresolved');
+    });
+    await install(service, pluginId);
+    const installed = registry.get(pluginId)!;
+    await registry.register({ ...installed, unresolved_requires: ['@omadia/foo@1'] });
+
+    await service.reactivate(pluginId);
+
+    assert.deepEqual(registry.get(pluginId)?.unresolved_requires, ['@omadia/foo@1']);
   });
 
   void it('does not wait for the circuit breaker to flip the status', async () => {

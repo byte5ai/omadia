@@ -37,6 +37,7 @@
 import { Router, type Request, type Response } from 'express';
 
 import {
+  resolveConfiguredModel,
   resolveLlmProvider,
   type LlmProvider,
   type LlmProviderCatalog,
@@ -418,9 +419,19 @@ async function defaultResolveLlm(
   const providerId =
     (typeof cfg['llm_provider'] === 'string' && cfg['llm_provider']) ||
     DEFAULT_PROVIDER_ID;
-  const model =
-    (typeof cfg['orchestrator_model'] === 'string' && cfg['orchestrator_model']) ||
-    defaultModelFor(providerId);
+  // `orchestrator_model` may hold a class ref (`class:frontier` — the bootstrap
+  // default, and what the per-agent model select now keeps, #1083) or a legacy
+  // alias. Adapters send `model` raw, so resolve it to the concrete vendor id
+  // first; an unresolvable ref falls back to the provider's default.
+  const rawModel = cfg['orchestrator_model'];
+  const resolved =
+    typeof rawModel === 'string' ? resolveConfiguredModel(rawModel, providerId) : undefined;
+  const model = resolved || defaultModelFor(providerId);
+  if (typeof rawModel === 'string' && rawModel !== '' && !resolved) {
+    console.warn(
+      `[issues] orchestrator_model '${rawModel}' does not resolve for provider '${providerId}' — reformulating with '${model}'`,
+    );
+  }
   const provider = await resolveLlmProvider({
     providerId,
     getSecret: (k) => deps.vault.get(ORCHESTRATOR_ID, k),

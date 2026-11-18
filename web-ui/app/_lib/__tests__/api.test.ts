@@ -88,4 +88,41 @@ describe('ApiError.code', () => {
 
     expect(new ApiError(500, 'boom').code).toBeNull();
   });
+
+  // #1333 — the memory purge (and other older routes) send `{ error, message }`.
+  it('falls back to the `error` field when there is no `code`', async () => {
+    const { ApiError } = await import('../api');
+
+    const err = new ApiError(
+      400,
+      'POST /v1/admin/memory/purge/preview failed: 400',
+      '{"error":"invalid_selector","message":"a context selector must be spelled \\"<channelType>~<id>\\""}',
+    );
+
+    expect(err.code).toBe('invalid_selector');
+  });
+
+  it('prefers `code` over `error` when both are present', async () => {
+    const { ApiError } = await import('../api');
+
+    expect(new ApiError(400, 'x', '{"code":"a.b","error":"legacy"}').code).toBe('a.b');
+  });
+});
+
+describe('ApiError.serverMessage (#1333)', () => {
+  it("carries the body's message instead of dropping it", async () => {
+    const { ApiError } = await import('../api');
+
+    const err = new ApiError(400, 'POST x failed: 400', '{"error":"invalid_selector","message":"spell it teams~id"}');
+
+    expect(err.serverMessage).toBe('spell it teams~id');
+    expect(err.message).toBe('POST x failed: 400');
+  });
+
+  it('is null for a body without a message or one that is not JSON', async () => {
+    const { ApiError } = await import('../api');
+
+    expect(new ApiError(400, 'x', '{"error":"e"}').serverMessage).toBeNull();
+    expect(new ApiError(502, 'x', '<html>502</html>').serverMessage).toBeNull();
+  });
 });

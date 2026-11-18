@@ -1,10 +1,11 @@
-import type { MemoryStore } from '@omadia/plugin-api';
+import type { CaptureDisclosure, MemoryStore } from '@omadia/plugin-api';
 import { scopeGraphKey } from '@omadia/channel-sdk';
 import {
   qualifyScope,
   turnNodeId,
   type EntityRef,
   type KnowledgeGraph,
+  type TurnMaskedView,
 } from '@omadia/plugin-api';
 import { isValidSessionId, type ChatSessionStore } from './chatSessionStore.js';
 import type { RunTracePayload } from './runTraceCollector.js';
@@ -34,6 +35,12 @@ export interface SessionLogEntry {
    */
   userId?: string;
   /**
+   * Member-scoped memory — the canonical user ids that own this turn (see
+   * `TurnIngest.owners`). Forwarded to the graph; never written into the
+   * markdown transcript.
+   */
+  owners?: readonly string[];
+  /**
    * Agentic run-graph payload collected by the orchestrator. When present
    * (and a graph sink is configured) the logger fills in the canonical
    * turn id and calls ingestRun alongside ingestTurn.
@@ -55,6 +62,15 @@ export interface SessionLogEntry {
    * the segment offsets instead. Absent → `new Date()` exactly as before.
    */
   time?: string;
+  /**
+   * The turn's masked wire texts, for a turn that ran under a privacy handle
+   * (`TurnIngest.maskedView`). Handed to the graph only, for a capture
+   * decorator that scores the turn with a model of its own; the transcript
+   * and the stored turn keep `userMessage` / `assistantAnswer`.
+   */
+  maskedView?: TurnMaskedView;
+  /** #1507 — see `TurnIngest.unprotected`. Handed to the graph only. */
+  unprotected?: boolean;
 }
 
 const USER_MSG_MAX = 1_500;
@@ -109,7 +125,9 @@ export class SessionLogger {
     readonly runTraceStats: RunTraceOutcomeStats = new RunTraceOutcomeStats(),
   ) {}
 
-  async log(entry: SessionLogEntry): Promise<{ turnExternalId: string }> {
+  async log(
+    entry: SessionLogEntry,
+  ): Promise<{ turnExternalId: string; captureDisclosure?: CaptureDisclosure }> {
     // An unparseable `time` override falls back to the clock rather than
     // throwing out of `toISOString()` — this field is public plugin-api
     // surface now, and a bad timestamp must not lose the turn.
@@ -165,12 +183,15 @@ export class SessionLogger {
     }
 
     // Server-side chat-session mirror. Silently skipped for non-chat scopes
-    // (http-*, teams-*) or if no chat store is wired. This is the recovery
-    // path for mid-stream reloads — the client's own PUT idempotency dedupes
-    // when both paths land.
-    if (this.chatSessionStore && isChatSessionScope(scope)) {
+    // (http-*, teams-*, and anything that is not a web session id as the
+    // client sent it — `routine:<id>`, `@omadia/ui-channel::<user>::<id>`;
+    // the RAW scope is checked, since sanitizing would turn those into valid
+    // ids) or if no chat store is wired. This is the recovery path for
+    // mid-stream reloads — the client's own PUT idempotency dedupes when both
+    // paths land; the store appends only to a session the client created.
+    if (this.chatSessionStore && isChatSessionScope(entry.scope)) {
       try {
-        await this.chatSessionStore.appendTurnFromServer(scope, {
+        await this.chatSessionStore.appendTurnFromServer(entry.scope, {
           userMessage: entry.userMessage,
           assistantMessage: entry.assistantAnswer,
           ...(entry.toolCalls !== undefined && entry.iterations !== undefined
@@ -194,6 +215,7 @@ export class SessionLogger {
 
     if (this.graph) {
       const turnExternalId = turnNodeId(gScope, iso);
+      let captureDisclosure: CaptureDisclosure | undefined;
       try {
         const ingested = await this.graph.ingestTurn({
           scope: gScope,
@@ -204,7 +226,10 @@ export class SessionLogger {
           iterations: entry.iterations,
           entityRefs,
           ...(entry.userId ? { userId: entry.userId } : {}),
+          ...(entry.owners !== undefined ? { owners: entry.owners } : {}),
           ...(entry.speaker !== undefined ? { speaker: entry.speaker } : {}),
+          ...(entry.maskedView !== undefined ? { maskedView: entry.maskedView } : {}),
+          ...(entry.unprotected !== undefined ? { unprotected: entry.unprotected } : {}),
         });
         // #1082 — the capture filter wrote this turn for session continuity
         // only. Counted per TURN, with or without a trace: the number of
@@ -213,6 +238,7 @@ export class SessionLogger {
         if (ingested?.tailOnly === true) {
           this.runTraceStats.recordCaptureTailOnly();
         }
+        captureDisclosure = ingested?.captureDisclosure;
       } catch (err) {
         console.error(
           '[session-log] graph ingest failed:',
@@ -244,7 +270,7 @@ export class SessionLogger {
           recordRunTraceOutcome(this.runTraceStats, 'run-ingest-failed', err);
         }
       }
-      return { turnExternalId };
+      return { turnExternalId, ...(captureDisclosure ? { captureDisclosure } : {}) };
     }
     // No graph sink at all. Before #684 this returned in silence, which made a
     // permanently trace-less deployment indistinguishable from a healthy one.

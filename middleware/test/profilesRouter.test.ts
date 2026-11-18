@@ -16,6 +16,7 @@ import {
 import type { PluginCatalog } from '../src/plugins/manifestLoader.js';
 import { loadProfile } from '../src/plugins/profileLoader.js';
 import { createProfilesRouter } from '../src/routes/profiles.js';
+import { InMemoryBuiltInOptOutStore } from '../src/plugins/builtInOptOuts.js';
 import { listenLoopback } from './_helpers/listenLoopback.js';
 
 type Partial_Plugin = Pick<
@@ -601,5 +602,110 @@ describe('/api/v1/profiles router', () => {
         rmSync(dir, { recursive: true, force: true });
       }
     });
+  });
+});
+
+describe('/api/v1/profiles apply — boot-selected providers and built-in uninstalls (#1484, #1481)', () => {
+  let server: import('node:http').Server;
+  let baseUrl: string;
+  let tmpDir: string;
+  let registry: InMemoryInstalledRegistry;
+  let optOuts: InMemoryBuiltInOptOutStore;
+  const registered: string[][] = [];
+
+  before(async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'profiles-router-1484-'));
+    writeProfile(
+      tmpDir,
+      'stale',
+      [
+        'schema_version: 1',
+        'id: stale',
+        'name: Stale',
+        'description: Lists a second memory provider',
+        'plugins:',
+        '  - "@omadia/memory"',
+        '  - "@omadia/embeddings"',
+        '',
+      ].join('\n'),
+    );
+    registry = new InMemoryInstalledRegistry();
+    optOuts = new InMemoryBuiltInOptOutStore();
+    const catalog = makeCatalog([
+      {
+        id: '@omadia/memory',
+        provides: ['memoryStore@1'],
+        requires: [],
+        depends_on: [],
+      },
+      {
+        id: '@omadia/memory-postgres',
+        provides: ['memoryStore@1'],
+        requires: [],
+        depends_on: [],
+      },
+      {
+        id: '@omadia/embeddings',
+        provides: ['embeddingClient@1'],
+        requires: [],
+        depends_on: [],
+      },
+    ]);
+    const app = express();
+    app.use(express.json());
+    app.use(
+      '/api/v1/profiles',
+      createProfilesRouter({
+        catalog,
+        registry,
+        profilesDir: tmpDir,
+        builtInOptOuts: optOuts,
+        onPluginsRegistered: async (ids) => {
+          registered.push([...ids]);
+        },
+      }),
+    );
+    server = await listenLoopback(app);
+    const addr = server.address() as AddressInfo;
+    baseUrl = `http://127.0.0.1:${String(addr.port)}`;
+  });
+
+  after(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('skips a provider whose capability the boot-selected backend already provides', async () => {
+    await registry.register({
+      id: '@omadia/memory-postgres',
+      installed_version: '0.1.0',
+      installed_at: new Date().toISOString(),
+      status: 'active',
+      origin: 'bundled',
+      config: {},
+    });
+    await optOuts.add('@omadia/embeddings');
+
+    const res = await fetch(`${baseUrl}/api/v1/profiles/stale/apply`, {
+      method: 'POST',
+    });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as {
+      installed: Array<{ id: string }>;
+      skipped: Array<{ id: string; reason: string; message?: string }>;
+    };
+    assert.deepEqual(
+      body.installed.map((p) => p.id),
+      ['@omadia/embeddings'],
+    );
+    assert.equal(body.skipped.length, 1);
+    assert.equal(body.skipped[0]?.id, '@omadia/memory');
+    assert.equal(body.skipped[0]?.reason, 'capability_provided');
+    // #1491 — the host is told what to attach to the default orchestrator.
+    assert.deepEqual(registered, [['@omadia/embeddings']]);
+    assert.match(body.skipped[0]?.message ?? '', /@omadia\/memory-postgres/);
+    assert.equal(registry.has('@omadia/memory'), false);
+    // The operator asked for embeddings by name — its uninstall mark is gone.
+    assert.equal(optOuts.has('@omadia/embeddings'), false);
   });
 });

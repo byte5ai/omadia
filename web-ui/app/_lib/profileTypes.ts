@@ -38,7 +38,18 @@ export type ProfileApplyErrorReason =
 export interface ProfileApplyOutcome {
   profile_id: string;
   installed: Array<{ id: string; version: string }>;
-  skipped: Array<{ id: string; reason: 'already_installed' }>;
+  /** `capability_provided` (#1484): the capability is already covered by
+   *  the provider the boot selected; `message` names it. */
+  skipped: Array<
+    | { id: string; reason: 'already_installed' }
+    | {
+        id: string;
+        reason: 'capability_provided';
+        capability: string;
+        owner_id: string;
+        message: string;
+      }
+  >;
   errored: Array<{
     id: string;
     reason: ProfileApplyErrorReason;

@@ -41,9 +41,17 @@ function registryWith(
       },
     },
   });
+  const identityForChannel = (channelType: string, key: string) =>
+    channelType === 'teams' && key === botKey ? entryFor(ownerSlug) : undefined;
   return {
-    identityForChannel: (channelType: string, key: string) =>
-      channelType === 'teams' && key === botKey ? entryFor(ownerSlug) : undefined,
+    identityForChannel,
+    identityOwnerFor: (channelType: string, key: string) =>
+      identityForChannel(channelType, key)?.agent.id,
+    // A `fallback` agent exists, as in production — an unknown bot must still
+    // never reach it (only the configured default bot may; see
+    // conductorDefaultBot.test.ts).
+    resolveByChannel: (channelType: string, key: string) =>
+      identityForChannel(channelType, key) ?? entryFor('fallback'),
     get: (slug: string) => entryFor(slug),
   } as unknown as OrchestratorRegistry;
 }

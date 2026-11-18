@@ -15,6 +15,7 @@ import {
   resetAdminUserPassword,
   updateAdminUser,
 } from '../../../_lib/api';
+import { errorHelpLine } from '../../../_lib/errorHelp';
 
 type State =
   | { kind: 'loading' }
@@ -23,6 +24,7 @@ type State =
 
 export default function AdminUserEditPage(): React.ReactElement {
   const t = useTranslations('adminUsers');
+  const tRoot = useTranslations();
   const params = useParams<{ id: string }>();
   const router = useRouter();
   const id = params?.id ?? '';
@@ -105,6 +107,8 @@ export default function AdminUserEditPage(): React.ReactElement {
     } catch (err) {
       if (err instanceof ApiError && err.body.includes('not_local')) {
         setResetError(t('errors.notLocal'));
+      } else if (err instanceof ApiError && err.code === 'admin_users.password_too_long') {
+        setResetError(errorHelpLine(err.code, tRoot));
       } else {
         setResetError(err instanceof Error ? err.message : String(err));
       }

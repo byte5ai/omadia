@@ -158,6 +158,20 @@ function redactingPrivacyHandle(): PrivacyTurnHandle {
     checkBypass() {
       return undefined;
     },
+    async recordToolError() {
+      /* no tool error in this file */
+    },
+    async redactToolErrorText({ text }) {
+      return {
+        outcome: 'redacted',
+        text: text
+          .replaceAll(EMAIL, '[masked:email]')
+          .replaceAll(IBAN, '[masked:iban]')
+          .replaceAll(PERSON, '[masked:person]'),
+        spans: [],
+        degraded: false,
+      };
+    },
     async runV4Tool() {
       throw new Error('not used on this path');
     },

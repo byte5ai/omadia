@@ -11,6 +11,7 @@ import type {
   WorkflowGraph,
 } from './types.js';
 import { validateGraphShape } from './schema.js';
+import { unguardedHappyTransitions } from './transitions.js';
 
 function unique(xs: string[]): string[] {
   return [...new Set(xs)];
@@ -243,6 +244,24 @@ export function validate(graph: WorkflowGraph, knownRefs?: KnownRefs): Validatio
             nodeIds: [s.id],
           });
         }
+      }
+      // (c) #1698 — an unguarded happy-path edge out of a human step carries no
+      // answer: the engine refuses to take it on a rejection, so an explicit
+      // {approved:false} has nowhere to go and the run goes stuck. Independent
+      // of strictApproval — the flag never decided the path — and independent
+      // of the target's kind, because the harm travels through a human or agent
+      // target just as far as through an action one. The edge set comes from
+      // `transitions.ts`, the same helper the engine decides with, so the
+      // warning cannot drift away from the behaviour it warns about.
+      const unguardedHappy = unguardedHappyTransitions(s, transitions);
+      if (unguardedHappy.length > 0) {
+        warnings.push({
+          code: 'rejection_unguarded_edge',
+          message: `human step '${s.id}' has no path for a rejection: transition(s) ${unguardedHappy
+            .map((t) => `'${t.id}'`)
+            .join(', ')} carry no guard, so an explicit {approved:false} cannot leave the step — guard the outgoing transitions on stepResult.approved (one for true, one for false)`,
+          nodeIds: [s.id, ...unguardedHappy.map((t) => t.id)],
+        });
       }
     }
 

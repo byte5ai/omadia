@@ -2,6 +2,10 @@ import { z } from 'zod';
 
 import { PLUGIN_DOMAIN_REGEX } from '@omadia/plugin-api';
 
+import {
+  MAX_DECLARED_PUBLIC_PATHS,
+  publicPathEntrySchema,
+} from '../../platform/publicPathGrants.js';
 import type { JsonSchema } from '../zodToJsonSchema.js';
 import { isReservedToolId } from '../reservedNames.js';
 import { UiRouteSchema } from './uiRouteSchema.js';
@@ -293,6 +297,24 @@ export const PermissionsSchema = z
     llm: LlmPermissionSchema.optional(),
     /** Epic #459 W7 (issue #458) — declaring this enables `ctx.mcp`. */
     mcp: McpPermissionSchema.optional(),
+    /** #1596 follow-up — URL prefixes a route registered in activate-body
+     *  with `auth: 'custom'` / `'public'` (or `body: 'raw'`) is served under
+     *  WITHOUT an omadia session: webhooks, OAuth callbacks, signed
+     *  downloads. Codegen writes them to `manifest.permissions.public_paths`;
+     *  the kernel serves a prefix only after the operator granted it, and
+     *  the route must authenticate every request itself. Never for data
+     *  routes. `/p/` is codegen's: ui_routes are session-gated there, and
+     *  their Teams tabs get `/p/<slug>/teams` declared automatically (#1620).
+     *  Same syntax gate as the kernel (`publicPathEntrySchema`). */
+    public_paths: z
+      .array(
+        publicPathEntrySchema.refine(
+          (p) => p !== '/p' && !p.startsWith('/p/'),
+          'must not be under /p/ — that is where ui_routes are mounted; codegen declares their Teams-tab path itself',
+        ),
+      )
+      .max(MAX_DECLARED_PUBLIC_PATHS)
+      .optional(),
   })
   .strict();
 
@@ -857,7 +879,8 @@ export type SpecValidationIssue = {
     | 'ui_route_library_missing_item_template'
     | 'ui_route_react_ssr_missing_component_slot'
     | 'ui_route_free_form_missing_render_slot'
-    | 'ui_route_interactive_not_supported';
+    | 'ui_route_interactive_not_supported'
+    | 'ui_route_public_paths_full';
   toolId?: string;
   /** Route id when the issue refers to a ui_routes entry. */
   routeId?: string;
@@ -1048,6 +1071,20 @@ export function validateSpecForCodegen(
           'interactive auf false.',
       });
     }
+  }
+
+  // #1620 — codegen declares `/p/<slug>/teams` for the Teams tabs of
+  // ui_routes, on top of the spec's own public_paths. The kernel rejects a
+  // manifest with more than MAX_DECLARED_PUBLIC_PATHS entries, so leave room.
+  const ownPublicPaths = spec.permissions?.public_paths?.length ?? 0;
+  if (spec.ui_routes.length > 0 && ownPublicPaths >= MAX_DECLARED_PUBLIC_PATHS) {
+    issues.push({
+      code: 'ui_route_public_paths_full',
+      reason:
+        `spec.permissions.public_paths has ${String(ownPublicPaths)} entries, but ui_routes ` +
+        `need one more for their Teams tabs (max ${String(MAX_DECLARED_PUBLIC_PATHS)}). ` +
+        'Drop one public path.',
+    });
   }
 
   return issues;

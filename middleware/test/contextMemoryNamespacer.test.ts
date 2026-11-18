@@ -117,18 +117,13 @@ test('an unbound ~team stays outside every context root (fail-closed)', async ()
   assert.equal(await store.fileExists(`${USER_ROOT}/~team/leak.md`), false);
 });
 
-test('shared namespaces (core, _rules, chat-sessions) pass through', async () => {
+test('shared namespaces (core, _rules) pass through', async () => {
   const { store, nsr } = channelTurn();
   await nsr.writeFile('/memories/core/rules.md', 'shared');
   await nsr.writeFile('/memories/_rules/durable.md', 'rules');
-  await nsr.writeFile('/memories/chat-sessions/s1.md', 'transcript');
   // Physically NOT under any context tree.
   assert.equal(await store.readFile('/memories/core/rules.md'), 'shared');
   assert.equal(await store.readFile('/memories/_rules/durable.md'), 'rules');
-  assert.equal(
-    await store.readFile('/memories/chat-sessions/s1.md'),
-    'transcript',
-  );
   // …and readable back through the mapper at the same outer path.
   assert.equal(await nsr.readFile('/memories/core/rules.md'), 'shared');
   assert.equal(await nsr.readFile('/memories/_rules/durable.md'), 'rules');

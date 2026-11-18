@@ -31,12 +31,14 @@ vi.mock('../../_lib/api', async (importOriginal) => ({
   listProfiles: mockListProfiles,
 }));
 
+vi.mock('../../_lib/appVersion', () => ({ APP_VERSION: 'v9.9.9' }));
+
 vi.mock('../../_lib/authRedirect', () => ({
   redirectIfUnauthorized: vi.fn(),
 }));
 
 import { OnboardingModal } from '../../_components/onboarding/OnboardingModal';
-import StorePage from '../page';
+import StorePage from '../(index)/page';
 
 interface ModalProps {
   operatorInstalledCount: number;
@@ -119,5 +121,188 @@ describe('store page — profile modal wiring (#1089)', () => {
     // over an established deployment that would claim nothing is installed.
     mockListStorePlugins.mockRejectedValue(new Error('upstream 502'));
     expect(await renderedModals()).toEqual([]);
+  });
+});
+
+/** Plain text of the first <footer> in the tree StorePage returns. */
+function footerText(node: ReactNode, inFooter = false): string {
+  if (typeof node === 'string' || typeof node === 'number') {
+    return inFooter ? String(node) : '';
+  }
+  if (Array.isArray(node)) return node.map((n) => footerText(n, inFooter)).join('');
+  if (!isValidElement<{ children?: ReactNode }>(node)) return '';
+  return footerText(node.props.children, inFooter || node.type === 'footer');
+}
+
+describe('store page — footer (#1383)', () => {
+  it('shows the running build instead of a literal v1', async () => {
+    mockListProfiles.mockResolvedValue({ items: PROFILES });
+    mockListStorePlugins.mockResolvedValue({ items: [] });
+    const text = footerText(await StorePage({ searchParams: Promise.resolve({}) }));
+    expect(text).toContain('omadia · v9.9.9');
+    expect(text).not.toContain('docs/harness-platform/examples');
+    expect(text).toContain('footerSourceValue');
+  });
+});
+
+/** Every element in the tree (async server components stay unrendered). */
+function allElements(
+  node: ReactNode,
+): Array<{ type: unknown; props: Record<string, unknown> }> {
+  if (Array.isArray(node)) return node.flatMap(allElements);
+  if (!isValidElement<{ children?: ReactNode }>(node)) return [];
+  return [
+    { type: node.type, props: node.props as Record<string, unknown> },
+    ...allElements(node.props.children),
+  ];
+}
+
+function sourceTabProps(node: ReactNode): Record<string, unknown> {
+  const tabs = allElements(node).find(
+    (el) => typeof el.type === 'function' && el.type.name === 'SourceTabs',
+  );
+  if (!tabs) throw new Error('SourceTabs not rendered');
+  return tabs.props;
+}
+
+const HUB_SOURCE = {
+  registry: 'omadia-public',
+  download_url: 'https://hub.test/x.zip',
+  sha256: 'a'.repeat(64),
+};
+
+function catalogPlugin(id: string, over: Partial<Plugin>): Plugin {
+  return { ...storePlugin(id, 'operator'), ...over } as Plugin;
+}
+
+describe('store page — tabs, pills and search (#1469, #1470, #1471)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockListProfiles.mockResolvedValue({ items: [] });
+  });
+
+  it('counts an installed hub plugin once, under Installed (#1469)', async () => {
+    const items = [
+      catalogPlugin('@a/installed-from-hub', { install_state: 'installed', source: HUB_SOURCE }),
+      catalogPlugin('@a/update', { install_state: 'update-available', source: HUB_SOURCE }),
+      catalogPlugin('@a/hub-only', { install_state: 'available', source: HUB_SOURCE }),
+      catalogPlugin('@a/upload', { install_state: 'available' }),
+    ];
+    mockListStorePlugins.mockResolvedValue({ items });
+    const props = sourceTabProps(await StorePage({ searchParams: Promise.resolve({}) }));
+    expect(props).toMatchObject({ hubCount: 1, localCount: 1, installedCount: 2 });
+    expect(
+      (props.hubCount as number) +
+        (props.localCount as number) +
+        (props.installedCount as number),
+    ).toBe(items.length);
+  });
+
+  it('renders a pill for every plugin kind and highlights ?kind=extension (#1470)', async () => {
+    mockListStorePlugins.mockResolvedValue({
+      items: [catalogPlugin('@a/llm', { kind: 'extension', install_state: 'available' })],
+    });
+    const tree = await StorePage({
+      searchParams: Promise.resolve({ source: 'local', kind: 'extension' }),
+    });
+    const pills = allElements(tree)
+      .map((el) => el.props.href)
+      .filter((href): href is string => typeof href === 'string' && href.includes('kind='));
+    expect(pills).toEqual(
+      expect.arrayContaining([
+        '/store?source=local&kind=tool',
+        '/store?source=local&kind=extension',
+      ]),
+    );
+    const active = allElements(tree).find(
+      (el) => el.props.href === '/store?source=local&kind=extension',
+    );
+    expect(active?.props['aria-current']).toBe('page');
+  });
+
+  it('passes ?q to the API and keeps it in every tab and pill link (#1471)', async () => {
+    mockListStorePlugins.mockResolvedValue({ items: [] });
+    const tree = await StorePage({
+      searchParams: Promise.resolve({ q: '  odoo  ', source: 'installed' }),
+    });
+    expect(mockListStorePlugins).toHaveBeenCalledWith({ search: 'odoo' });
+    expect(sourceTabProps(tree).query).toBe('odoo');
+    const pillHrefs = allElements(tree)
+      .map((el) => el.props.href)
+      .filter((href): href is string => typeof href === 'string' && href.includes('kind='));
+    expect(pillHrefs.length).toBeGreaterThan(0);
+    for (const href of pillHrefs) expect(href).toContain('q=odoo');
+    const input = allElements(tree).find((el) => el.props.name === 'q');
+    expect(input?.props.defaultValue).toBe('odoo');
+  });
+
+  it('lists without a search parameter when ?q is absent', async () => {
+    mockListStorePlugins.mockResolvedValue({ items: [] });
+    await StorePage({ searchParams: Promise.resolve({}) });
+    expect(mockListStorePlugins).toHaveBeenCalledWith({});
+  });
+});
+
+/** Every element in the tree whose component is named `name`. */
+function elementsNamed(node: ReactNode, name: string): Array<Record<string, unknown>> {
+  if (Array.isArray(node)) return node.flatMap((n) => elementsNamed(n, name));
+  if (!isValidElement<{ children?: ReactNode }>(node)) return [];
+  const type = node.type as { name?: string };
+  const here =
+    typeof node.type === 'function' && type.name === name
+      ? [node.props as Record<string, unknown>]
+      : [];
+  return [...here, ...elementsNamed(node.props.children, name)];
+}
+
+describe('store page — registry status (#1482)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockListProfiles.mockResolvedValue({ items: PROFILES });
+  });
+
+  const failing = {
+    name: 'omadia-public',
+    ok: false,
+    checked_at: '2026-10-28T08:00:00.000Z',
+    error: { code: 'registry.index_http', message: 'GET /registry/index.json → 404' },
+  };
+
+  it('names a failing registry on the Hub tab and keeps local plugins', async () => {
+    mockListStorePlugins.mockResolvedValue({
+      items: [storePlugin('@acme/crm', 'operator')],
+      registries: [failing],
+    });
+    const tree = await StorePage({ searchParams: Promise.resolve({}) });
+    const banners = elementsNamed(tree, 'RegistryErrors');
+    expect(banners).toHaveLength(1);
+    expect(banners[0]?.failed).toEqual([failing]);
+    expect(elementsNamed(tree, 'EmptyState')[0]?.hubState).toBe('failed');
+    expect(elementsNamed(tree, 'LoadErrorState')).toEqual([]);
+  });
+
+  it('keeps "connect a registry" for an instance without registries', async () => {
+    mockListStorePlugins.mockResolvedValue({ items: [] });
+    const tree = await StorePage({ searchParams: Promise.resolve({}) });
+    expect(elementsNamed(tree, 'RegistryErrors')).toEqual([]);
+    expect(elementsNamed(tree, 'EmptyState')[0]?.hubState).toBe('none');
+  });
+
+  it('does not blame a registry that answered with nothing', async () => {
+    mockListStorePlugins.mockResolvedValue({
+      items: [],
+      registries: [{ name: 'private', ok: true, checked_at: failing.checked_at, plugin_count: 0 }],
+    });
+    const tree = await StorePage({ searchParams: Promise.resolve({}) });
+    expect(elementsNamed(tree, 'RegistryErrors')).toEqual([]);
+    expect(elementsNamed(tree, 'EmptyState')[0]?.hubState).toBe('empty');
+  });
+
+  it('shows the registry errors on the Hub tab only', async () => {
+    mockListStorePlugins.mockResolvedValue({ items: [], registries: [failing] });
+    const tree = await StorePage({
+      searchParams: Promise.resolve({ source: 'installed' }),
+    });
+    expect(elementsNamed(tree, 'RegistryErrors')).toEqual([]);
   });
 });

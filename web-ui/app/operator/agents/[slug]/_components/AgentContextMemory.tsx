@@ -217,6 +217,7 @@ export function AgentContextMemory(
                 <li>{t('contextMemory.semanticsTeam')}</li>
                 <li>{t('contextMemory.semanticsAgent')}</li>
                 <li>{t('contextMemory.semanticsApi')}</li>
+                <li>{t('contextMemory.semanticsMembers')}</li>
               </ul>
               <label className="flex cursor-pointer items-start gap-2 text-[color:var(--fg-strong)]">
                 <input

@@ -30,25 +30,41 @@ async function forwardCookieHeader(): Promise<Record<string, string>> {
 }
 
 export interface ProvenanceVerifyDto {
+  /** False only for `verdict: 'broken'`. */
   ok: boolean;
+  /** `unsigned` = consistent, but no signing key vouches for it (#1568). */
+  verdict: 'verified' | 'unsigned' | 'broken';
   checkedEntries: number;
   headSeq?: number;
   headHashHex?: string;
   recordedHeadSeq: number;
-  truncated: boolean;
   preChainRows: number;
   firstBrokenSeq?: number;
   breakKind?: string;
   checkpoints: {
     total: number;
+    /** Signature-checked and valid only (#1584). */
     verified: number;
+    unchecked: number;
     findings: Array<{ seq: number; kind: string }>;
     signaturesChecked: boolean;
+    /** Key configured, rows too young for the first checkpoint yet. */
+    awaitingFirstCheckpoint?: boolean;
   };
   prefix: {
     reapedUpToSeq: number;
     anchored: boolean;
+    unanchoredReason?: 'no_signing_key';
     prematureDeletion?: { provenCreatedAfterIso: string; retentionDays: number };
+  };
+  /** External anchor file vs. DB checkpoints (#1565). */
+  anchor: {
+    configured: boolean;
+    status?: 'ok' | 'missing' | 'unreadable';
+    records: number;
+    matched: number;
+    malformedLines: number;
+    findings: Array<{ seq: number; kind: string }>;
   };
 }
 

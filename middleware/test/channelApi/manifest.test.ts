@@ -6,7 +6,8 @@ import { loadManifestFromPath } from '../../src/plugins/manifestLoader.js';
 
 /**
  * Issue #438 — the manifest for the new public API channel package. Mirrors
- * `test/uiChannelPlugin.test.ts`'s manifest coverage for `@omadia/ui-channel`.
+ * the manifest coverage of `@omadia/ui-channel` (now in byte5ai/omadia-ui-support,
+ * packages/ui-channel/test/uiChannelPlugin.test.ts).
  */
 describe('@omadia/channel-api manifest', () => {
   it('is a valid schema-v1 channel manifest with a chat webhook route', async () => {

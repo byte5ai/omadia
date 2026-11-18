@@ -136,11 +136,92 @@ describe('<AdminDatasetsPage />', () => {
     expect(await screen.findAllByText('order_ref')).toHaveLength(2);
     // The type the importer derived, not the raw CSV string it came from.
     expect(screen.getByText('number')).toBeTruthy();
-    // Schema sample value…
-    expect(screen.getByText('SO-1001')).toBeTruthy();
-    // …and a real row from the preview page.
-    expect(screen.getByText('SO-2000')).toBeTruthy();
+    // #1558 — the schema sample is the first preview row's value, so it
+    // appears twice (schema + preview); the import-time sample is not shown.
+    expect(screen.getAllByText('SO-2000')).toHaveLength(2);
+    expect(screen.queryByText('SO-1001')).toBeNull();
+    expect(screen.queryByTestId('dataset-sample-stored-note')).toBeNull();
     expect(screen.getByText('Showing 1–25 of 4,213 rows')).toBeTruthy();
+  });
+
+  describe('link-key columns and pseudonym samples (#1558)', () => {
+    const KEYED = {
+      ...DATASET,
+      id: 'ds-2',
+      name: 'contacts',
+      sourceFileName: 'contacts.csv',
+      rowCount: 3,
+      columns: [
+        { name: 'Name', type: 'string' as const, sample: 'Lukas Becker' },
+        { name: '__k_Name', type: 'string' as const },
+        { name: 'E-Mail', type: 'string' as const, sample: 'lukas.becker@example.net' },
+        { name: '__k_E-Mail', type: 'string' as const },
+      ],
+    };
+
+    beforeEach(() => {
+      mockListDatasets.mockResolvedValue({ items: [KEYED], totalMatched: 1 });
+      mockGetDataset.mockResolvedValue(KEYED);
+    });
+
+    it('counts only the columns of the uploaded file', async () => {
+      renderWithIntl(<AdminDatasetsPage />);
+      expect(await screen.findByText(/3 rows · 2 columns/)).toBeTruthy();
+    });
+
+    it('hides __k_* columns and shows the real first-row value as the sample', async () => {
+      mockGetDatasetRows.mockResolvedValue({
+        rows: [
+          {
+            Name: 'Anna Schmidt',
+            __k_Name: 'k1:aaaa',
+            'E-Mail': 'anna.schmidt@firma.de',
+            '__k_E-Mail': 'k1:bbbb',
+          },
+        ],
+        totalMatched: 3,
+      });
+      const user = userEvent.setup();
+      renderWithIntl(<AdminDatasetsPage />);
+      await screen.findByText('contacts');
+      await user.click(screen.getByRole('button', { name: 'Schema & rows' }));
+
+      expect(await screen.findAllByText('anna.schmidt@firma.de')).toHaveLength(2);
+      expect(screen.getAllByText('Anna Schmidt')).toHaveLength(2);
+      expect(screen.queryByText(/__k_/)).toBeNull();
+      expect(screen.queryByText('k1:aaaa')).toBeNull();
+      // The pseudonym stored as the import-time sample never appears.
+      expect(screen.queryByText('lukas.becker@example.net')).toBeNull();
+    });
+
+    it('marks import-time samples as pseudonyms when no row is available', async () => {
+      mockGetDatasetRows.mockResolvedValue({ rows: [], totalMatched: 0 });
+      const user = userEvent.setup();
+      renderWithIntl(<AdminDatasetsPage />);
+      await screen.findByText('contacts');
+      await user.click(screen.getByRole('button', { name: 'Schema & rows' }));
+
+      expect(await screen.findByText('lukas.becker@example.net')).toBeTruthy();
+      expect(screen.getByTestId('dataset-sample-stored-note').textContent).toMatch(
+        /pseudonym/,
+      );
+      expect(screen.queryByText(/__k_/)).toBeNull();
+    });
+
+    it('keeps the first-row sample while paging', async () => {
+      const user = userEvent.setup();
+      mockGetDataset.mockResolvedValue(DATASET);
+      mockListDatasets.mockResolvedValue({ items: [DATASET], totalMatched: 1 });
+      renderWithIntl(<AdminDatasetsPage />);
+      await screen.findByText('Q3 orders');
+      await user.click(screen.getByRole('button', { name: 'Schema & rows' }));
+      await screen.findByText('Showing 1–25 of 4,213 rows');
+      await user.click(screen.getByRole('button', { name: 'Next' }));
+      await screen.findByText('Showing 26–50 of 4,213 rows');
+      // Schema still shows row 1's value; the preview has moved on.
+      expect(screen.getAllByText('SO-2000')).toHaveLength(1);
+      expect(screen.getByText('SO-2025')).toBeTruthy();
+    });
   });
 
   it('pages the preview server-side with a new offset', async () => {
@@ -422,13 +503,14 @@ describe('<AdminDatasetsPage />', () => {
     const toggles = screen.getAllByRole('button', { name: 'Schema & rows' });
     await user.click(toggles[0]!); // A — its rows promise stays pending
     await user.click(toggles[1]!); // B — resolves immediately
-    await screen.findByText('ACME Corp');
+    // Schema sample + preview cell (#1558: the sample is the first row's value).
+    await screen.findAllByText('ACME Corp');
 
     resolveA(rowPage(0)); // A's stale response lands after B is open
     // Let A's promise chain fully flush before asserting it changed nothing.
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(screen.queryByText('SO-2000')).toBeNull();
-    expect(screen.getByText('ACME Corp')).toBeTruthy();
+    expect(screen.getAllByText('ACME Corp')).toHaveLength(2);
   });
 
   it('translates a dataset.* error code rather than showing the raw message', async () => {

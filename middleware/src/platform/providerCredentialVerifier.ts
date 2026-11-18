@@ -75,7 +75,10 @@ export type ProviderVerificationReason =
   /** Transport-level failure: timeout, DNS, offline, or a refused redirect. */
   | 'network_error'
   /** No cheap probe exists for this wire format (e.g. `claude-cli`). */
-  | 'no_probe';
+  | 'no_probe'
+  /** #1460 — a keyless provider this process has not checked yet. "We do
+   *  not know", which readiness never paints as a problem. */
+  | 'not_checked';
 
 export interface ProviderVerification {
   readonly status: ProviderCredentialStatus;
@@ -277,11 +280,41 @@ export function invalidate(providerId: string): void {
   for (const key of [...cache.keys()]) {
     if (key.startsWith(prefix)) cache.delete(key);
   }
+  // #1460 — same rule for the keyless reachability verdicts: removing or
+  // replacing an optional key must not resurrect an earlier `verified`.
+  for (const key of [...keylessVerdicts.keys()]) {
+    if (key.startsWith(prefix)) keylessVerdicts.delete(key);
+  }
+}
+
+/**
+ * #1460 — the last reachability verdict per KEYLESS provider (Ollama, vLLM …),
+ * keyed like the cache (provider + fingerprint of the optional key, `''` when
+ * none is stored).
+ *
+ * Kept apart from the TTL cache on purpose. For a keyed provider an expired
+ * entry is re-primed from the durable `verified_at` vault record; a keyless
+ * provider has no such record — reachability is a fact about a daemon that can
+ * stop at any time, so persisting it across a restart would be the stale claim
+ * #1460 is about. Instead the read path shows the last check THIS process ran,
+ * with its time, until the next check replaces it, and `unverified` before any
+ * check has run. Bounded by the number of registered keyless providers.
+ */
+const keylessVerdicts = new Map<string, ProviderVerification>();
+
+/** #1460 — what the last reachability check of a keyless provider said, if
+ *  this process has run one for the key that is stored now (`''` for none). */
+export function getKeylessVerification(
+  providerId: string,
+  apiKey: string,
+): ProviderVerification | undefined {
+  return keylessVerdicts.get(cacheKey(providerId, keyFingerprint(apiKey)));
 }
 
 /** Test seam: clear the module-level cache. */
 export function __clearVerificationCache(): void {
   cache.clear();
+  keylessVerdicts.clear();
 }
 
 function joinUrl(base: string, path: string): string {
@@ -399,7 +432,8 @@ function buildProbe(
   if (wireFormat === 'openai' || wireFormat === 'openai-compatible') {
     return {
       url: joinUrl(base, 'models'),
-      headers: { Authorization: `Bearer ${apiKey}` },
+      // #1460 — a keyless provider without a stored key is probed bare.
+      headers: apiKey.length > 0 ? { Authorization: `Bearer ${apiKey}` } : {},
     };
   }
   return undefined;
@@ -455,29 +489,22 @@ async function interpretSuccess(
 export async function verifyProviderCredential(
   opts: VerifyProviderCredentialOptions,
 ): Promise<ProviderVerification> {
-  const { providerId, apiKey } = opts;
+  const { providerId } = opts;
+  const apiKey = opts.apiKey.trim();
   const descriptor = opts.catalog?.get(providerId);
-
-  if (apiKey.trim().length === 0) {
-    return { status: 'no_key' };
-  }
 
   const requiresApiKey =
     opts.requiresApiKey ?? descriptor?.policy?.requiresApiKey ?? true;
-  const checkedAt = new Date().toISOString();
-
-  // Local / self-hosted providers (Ollama, vLLM …) authenticate by being
-  // reachable at all — there is no credential to reject, so never spend a
-  // request on one.
-  if (requiresApiKey === false) {
-    const verification: ProviderVerification = {
-      status: 'verified',
-      verifiedAt: checkedAt,
-      checkedAt,
-    };
-    primeVerification(providerId, apiKey, verification);
-    return verification;
+  // #1460 — a keyless provider (Ollama, vLLM …) is verified by REACHING it:
+  // the same model-list probe, sent without credentials unless the operator
+  // stored an optional key for an auth proxy. It used to short-circuit to
+  // `verified` with zero requests, so a stack with no daemon showed a green
+  // "verified" chip until the first chat turn failed.
+  const keyless = requiresApiKey === false;
+  if (apiKey.length === 0 && !keyless) {
+    return { status: 'no_key' };
   }
+  const checkedAt = new Date().toISOString();
 
   if (opts.force !== true) {
     const cached = getCachedVerification(providerId, apiKey);
@@ -531,6 +558,16 @@ export async function verifyProviderCredential(
     verification = { status: 'unverified', checkedAt, reason: 'network_error' };
   }
 
+  // Without a key there is nothing a server could have rejected: a 401/403
+  // means the endpoint wants credentials the operator has not stored, which is
+  // not an `invalid` key.
+  if (keyless && apiKey.length === 0 && verification.status === 'invalid') {
+    verification = { status: 'unverified', checkedAt, reason: 'forbidden' };
+  }
+
   primeVerification(providerId, apiKey, verification);
+  if (keyless) {
+    keylessVerdicts.set(cacheKey(providerId, keyFingerprint(apiKey)), verification);
+  }
   return verification;
 }

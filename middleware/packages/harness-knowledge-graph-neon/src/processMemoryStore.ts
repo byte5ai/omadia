@@ -43,6 +43,8 @@ interface ProcessRow {
   version: number | string;
   created_at: Date | string;
   updated_at: Date | string;
+  /** #1540 — absent from projections that do not select it. */
+  unprotected?: boolean;
 }
 
 interface ProcessHistoryRow {
@@ -111,6 +113,7 @@ function rowToRecord(row: ProcessRow): ProcessRecord {
     version: Number(row.version),
     createdAt: toIso(row.created_at),
     updatedAt: toIso(row.updated_at),
+    ...(row.unprotected === true ? { unprotected: true } : {}),
   };
 }
 
@@ -229,9 +232,10 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
       id: string;
       title: string;
       similarity: number | string;
+      unprotected: boolean;
     }>(
       `
-      SELECT id, title, 1 - (embedding <=> $1::vector) AS similarity
+      SELECT id, title, unprotected, 1 - (embedding <=> $1::vector) AS similarity
         FROM processes
        WHERE tenant_id = $2
          AND embedding IS NOT NULL
@@ -249,6 +253,7 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
         conflictingId: conflict.id,
         conflictingTitle: conflict.title,
         similarity: Number(conflict.similarity),
+        ...(conflict.unprotected === true ? { conflictingUnprotected: true } : {}),
       };
     }
 
@@ -275,10 +280,10 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
     const inserted = await this.pool.query<ProcessRow>(
       `
       INSERT INTO processes
-        (id, tenant_id, scope, title, steps, visibility, embedding, version, created_at, updated_at)
+        (id, tenant_id, scope, title, steps, visibility, embedding, version, created_at, updated_at, unprotected)
       VALUES
-        ($1, $2, $3, $4, $5::jsonb, $6, $7::vector, 1, NOW(), NOW())
-      RETURNING id, scope, title, steps, visibility, version, created_at, updated_at
+        ($1, $2, $3, $4, $5::jsonb, $6, $7::vector, 1, NOW(), NOW(), $8)
+      RETURNING id, scope, title, steps, visibility, version, created_at, updated_at, unprotected
       `,
       [
         id,
@@ -288,6 +293,7 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
         JSON.stringify(steps),
         visibility,
         queryLit,
+        input.unprotected === true,
       ],
     );
     const row = inserted.rows[0];
@@ -418,9 +424,10 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
                    visibility = $5,
                    embedding = $6::vector,
                    version = version + 1,
-                   updated_at = NOW()
+                   updated_at = NOW(),
+                   unprotected = unprotected OR $7::boolean
              WHERE tenant_id = $1 AND id = $2
-             RETURNING id, scope, title, steps, visibility, version, created_at, updated_at
+             RETURNING id, scope, title, steps, visibility, version, created_at, updated_at, unprotected
             `
           : `
             UPDATE processes
@@ -428,9 +435,10 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
                    steps = $4::jsonb,
                    visibility = $5,
                    version = version + 1,
-                   updated_at = NOW()
+                   updated_at = NOW(),
+                   unprotected = unprotected OR $6::boolean
              WHERE tenant_id = $1 AND id = $2
-             RETURNING id, scope, title, steps, visibility, version, created_at, updated_at
+             RETURNING id, scope, title, steps, visibility, version, created_at, updated_at, unprotected
             `,
         embeddingParam
           ? [
@@ -440,6 +448,7 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
               JSON.stringify(newSteps),
               newVisibility,
               embeddingParam,
+              input.unprotected === true,
             ]
           : [
               this.tenantId,
@@ -447,6 +456,7 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
               newTitle,
               JSON.stringify(newSteps),
               newVisibility,
+              input.unprotected === true,
             ],
       );
 
@@ -496,6 +506,7 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
     //  $3 scope filter (nullable)
     //  $4 ftsQuery
     //  $5 limit
+    //  $6 excludeUnprotected (#1540)
     const sql = `
       WITH scored AS (
         SELECT
@@ -507,6 +518,7 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
           version,
           created_at,
           updated_at,
+          unprotected,
           CASE
             WHEN $1::text IS NULL OR embedding IS NULL THEN 0
             WHEN (1 - (embedding <=> $1::vector)) <> (1 - (embedding <=> $1::vector)) THEN 0
@@ -523,6 +535,7 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
           FROM processes
          WHERE tenant_id = $2
            AND ($3::text IS NULL OR scope = $3)
+           AND (NOT $6::boolean OR unprotected = FALSE)
            AND (
              ($1::text IS NOT NULL AND embedding IS NOT NULL)
              OR to_tsvector('simple',
@@ -532,13 +545,13 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
       ),
       normalised AS (
         SELECT
-          id, scope, title, steps, visibility, version, created_at, updated_at,
+          id, scope, title, steps, visibility, version, created_at, updated_at, unprotected,
           cosine_sim,
           CASE WHEN bm25_raw <= 0 THEN 0 ELSE bm25_raw / (bm25_raw + 1) END AS bm25_norm
           FROM scored
       )
       SELECT
-        id, scope, title, steps, visibility, version, created_at, updated_at,
+        id, scope, title, steps, visibility, version, created_at, updated_at, unprotected,
         cosine_sim, bm25_norm,
         CASE
           WHEN $1::text IS NULL THEN bm25_norm
@@ -557,7 +570,14 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
 
     const result = await this.pool.query<
       ProcessRow & { hybrid_score: number | string }
-    >(sql, [queryLit, this.tenantId, scopeFilter, trimmedQuery, limit]);
+    >(sql, [
+      queryLit,
+      this.tenantId,
+      scopeFilter,
+      trimmedQuery,
+      limit,
+      input.excludeUnprotected === true,
+    ]);
     return result.rows.map((row) => ({
       record: rowToRecord(row),
       score: Math.max(0, Math.min(1, Number(row.hybrid_score) || 0)),
@@ -567,7 +587,7 @@ export class NeonProcessMemoryStore implements ProcessMemoryService {
   async get(id: string): Promise<ProcessRecord | null> {
     const result = await this.pool.query<ProcessRow>(
       `
-      SELECT id, scope, title, steps, visibility, version, created_at, updated_at
+      SELECT id, scope, title, steps, visibility, version, created_at, updated_at, unprotected
         FROM processes
        WHERE tenant_id = $1 AND id = $2
       `,

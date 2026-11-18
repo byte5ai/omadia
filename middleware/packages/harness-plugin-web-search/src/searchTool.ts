@@ -4,10 +4,15 @@ import { z } from 'zod';
 import {
   WebSearchAuthError,
   WebSearchConfigError,
-  WebSearchError,
   WebSearchProviderError,
   WebSearchQuotaError,
 } from './errors.js';
+import {
+  compatToolErrorFromException,
+  hostToolErrorHelpers,
+  legacyHostToolError,
+  type ToolErrorHelpers,
+} from './toolErrorCompat.js';
 import type { SearchOptions, WebSearchService } from './types.js';
 
 /**
@@ -17,10 +22,42 @@ import type { SearchOptions, WebSearchService } from './types.js';
  * Tool result shape (success): JSON `{ provider, query, cached, results: [...] }`.
  * Tool result shape (error):   `Error: <message>` — the orchestrator-side
  * convention; the LLM sees a recoverable signal and can retry / pivot rather
- * than crashing the turn.
+ * than crashing the turn. The text is this plugin's own (auth, quota, config,
+ * provider id and HTTP status); a provider failure's upstream body and
+ * transport exception, and any unexpected exception, are logged under a ref
+ * and withheld from the model.
  */
 
 export const WEB_SEARCH_TOOL_NAME = 'web_search';
+
+/**
+ * A provider failure as a tool result, built from the error's fields only:
+ * provider id and HTTP status. Its message is not echoed — the upstream body
+ * (`body`) and a transport exception (`cause`) are text this plugin did not
+ * write, and a provider implemented elsewhere may still put them into the
+ * message. The full error goes to the server log under the result's ref. On a
+ * host without the tool-error helpers (plugin-api < 1.20.0) the result is the
+ * fixed {@link legacyHostToolError} text instead.
+ */
+function providerFailure(err: WebSearchProviderError, helpers: ToolErrorHelpers | null): string {
+  if (helpers === null) {
+    return legacyHostToolError(WEB_SEARCH_TOOL_NAME, err, { site: 'web-search' });
+  }
+  const ref = helpers.newToolErrorRef();
+  console.error(
+    `[web-search:${WEB_SEARCH_TOOL_NAME}] provider '${err.providerId}' failed (ref=${ref}) — error text withheld from the model:`,
+    err,
+  );
+  const status =
+    typeof err.status === 'number' && Number.isInteger(err.status) ? err.status : undefined;
+  const what =
+    status === undefined ? 'could not be reached' : `failed with HTTP ${String(status)}`;
+  return (
+    `Error: web_search provider '${err.providerId}' ${what} [ref ${ref}]. ` +
+    'Its error text was withheld from the model; an operator can find it in the server ' +
+    'log under this ref. Try again later or answer without web search.'
+  );
+}
 
 const FreshnessSchema = z.enum(['day', 'week', 'month', 'year']);
 
@@ -97,6 +134,8 @@ export const searchToolSpec: NativeToolSpec = {
  */
 export function createWebSearchToolHandler(
   service: WebSearchService,
+  /** The host's tool-error helpers; `null` on a host before plugin-api 1.20.0. */
+  toolErrorHelpers: ToolErrorHelpers | null = hostToolErrorHelpers,
 ): (input: unknown) => Promise<string> {
   return async (input: unknown): Promise<string> => {
     const parsed = WebSearchInputSchema.safeParse(input);
@@ -143,13 +182,14 @@ export function createWebSearchToolHandler(
         return `Error: web_search misconfigured — ${err.message}`;
       }
       if (err instanceof WebSearchProviderError) {
-        return `Error: web_search provider '${err.providerId}' failed — ${err.message}`;
+        return providerFailure(err, toolErrorHelpers);
       }
-      if (err instanceof WebSearchError) {
-        return `Error: ${err.message}`;
-      }
-      const msg = err instanceof Error ? err.message : String(err);
-      return `Error: web_search unexpected failure — ${msg}`;
+      // Anything else — a bare WebSearchError whose message nobody vouches
+      // for, or an exception this plugin did not author — is withheld from
+      // the model (logged in full under a ref).
+      return compatToolErrorFromException(toolErrorHelpers, WEB_SEARCH_TOOL_NAME, err, {
+        site: 'web-search',
+      });
     }
   };
 }

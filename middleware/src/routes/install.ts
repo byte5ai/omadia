@@ -13,6 +13,9 @@ import {
 } from '../plugins/installService.js';
 import type { OAuthBrokerService } from '../plugins/oauth/brokerService.js';
 import { OAuthBrokerError } from '../plugins/oauth/brokerService.js';
+import { auditActorFromRequest, type AdminAuditLog, type AuditEntryInput } from '../auth/adminAuditLog.js';
+import type { GrantSnapshot } from './runtimeGrants.js';
+import type { InstallChainResolution } from '../plugins/capabilityResolver.js';
 
 interface InstallDeps {
   service: InstallService;
@@ -20,6 +23,17 @@ interface InstallDeps {
    *  `GET /oauth/start` (operator-authed) + `GET /oauth/callback` (public,
    *  state-verified). Absent on cores running without the broker. */
   oauthBroker?: OAuthBrokerService;
+  /** #1347 — `plugin.install` / `plugin.uninstall` rows in admin_audit. */
+  audit?: Pick<AdminAuditLog, 'record'>;
+  /** Reads the grants a plugin holds, so the uninstall row can list what
+   *  left with it (the uninstall DELETEs them). */
+  grantsOf?: (pluginId: string) => Promise<GrantSnapshot>;
+  /** #1463 — enrich a 409 `install.missing_capability` whose capabilities
+   *  have no catalog provider with Hub candidates (an update of an outdated
+   *  installed parent, or a Hub install). Absent: the chain is sent as is. */
+  enrichMissingCapability?: (
+    chain: InstallChainResolution,
+  ) => Promise<InstallChainResolution>;
 }
 
 /**
@@ -43,20 +57,36 @@ export function createInstallRouter(deps: InstallDeps): Router {
     mountOAuthBroker(router, deps.service, deps.oauthBroker);
   }
 
-  router.post('/plugins/:id', (req: Request, res: Response) => {
-    withService(res, () => {
-      const rawId = req.params['id'];
-      const pluginId = typeof rawId === 'string' ? rawId : '';
-      if (!pluginId) {
-        res
-          .status(400)
-          .json({ code: 'install.invalid_plugin_id', message: 'missing id' });
+  router.post('/plugins/:id', async (req: Request, res: Response) => {
+    const rawId = req.params['id'];
+    const pluginId = typeof rawId === 'string' ? rawId : '';
+    if (!pluginId) {
+      res
+        .status(400)
+        .json({ code: 'install.invalid_plugin_id', message: 'missing id' });
+      return;
+    }
+    let job: InstallCreateResponse['job'];
+    try {
+      job = deps.service.create(pluginId);
+    } catch (err) {
+      if (
+        deps.enrichMissingCapability &&
+        err instanceof InstallError &&
+        err.code === 'install.missing_capability' &&
+        isInstallChain(err.details)
+      ) {
+        const details = await deps
+          .enrichMissingCapability(err.details)
+          .catch(() => err.details);
+        handleError(res, new InstallError(err.code, err.message, err.status, details));
         return;
       }
-      const job = deps.service.create(pluginId);
-      const body: InstallCreateResponse = { job };
-      res.status(201).json(body);
-    });
+      handleError(res, err);
+      return;
+    }
+    const body: InstallCreateResponse = { job };
+    res.status(201).json(body);
   });
 
   router.get('/jobs/:id', (req: Request, res: Response) => {
@@ -115,6 +145,14 @@ export function createInstallRouter(deps: InstallDeps): Router {
         incoming.values as Record<string, unknown>,
         jsonFiles,
       );
+      if (job.state === 'active' || job.state === 'errored') {
+        await recordAudit(deps, {
+          actor: auditActorFromRequest(req),
+          action: 'plugin.install',
+          target: `plugin:${job.plugin_id}`,
+          after: { version: job.plugin_version, state: job.state },
+        });
+      }
       const body: InstallConfigureResponse = {
         job,
         agent_id: job.plugin_id,
@@ -154,13 +192,49 @@ export function createInstallRouter(deps: InstallDeps): Router {
           });
           return;
         }
+        const grants = await readGrantsForAudit(deps, agentId);
         await deps.service.uninstall(agentId);
+        await recordAudit(deps, {
+          actor: auditActorFromRequest(req),
+          action: 'plugin.uninstall',
+          target: `plugin:${agentId}`,
+          ...(grants ? { before: { grants } } : {}),
+        });
         res.status(204).end();
       });
     },
   );
 
   return router;
+}
+
+/** Best-effort, loud: the install or uninstall stands even if the row fails. */
+async function recordAudit(deps: InstallDeps, entry: AuditEntryInput): Promise<void> {
+  if (!deps.audit) return;
+  try {
+    await deps.audit.record(entry);
+  } catch (err) {
+    console.error(
+      `[install] audit write failed for ${entry.action} ${JSON.stringify(entry.target)}:`,
+      err instanceof Error ? err.message : err,
+    );
+  }
+}
+
+async function readGrantsForAudit(
+  deps: InstallDeps,
+  pluginId: string,
+): Promise<GrantSnapshot | undefined> {
+  if (!deps.grantsOf) return undefined;
+  try {
+    return await deps.grantsOf(pluginId);
+  } catch (err) {
+    console.error(
+      `[install] could not read the grants of ${JSON.stringify(pluginId)} before uninstall:`,
+      err instanceof Error ? err.message : err,
+    );
+    return undefined;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -263,4 +337,13 @@ function handleError(res: Response, err: unknown): void {
   }
   const message = err instanceof Error ? err.message : String(err);
   res.status(500).json({ code: 'install.unexpected', message });
+}
+
+function isInstallChain(value: unknown): value is InstallChainResolution {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    Array.isArray((value as { available_providers?: unknown }).available_providers) &&
+    Array.isArray((value as { unresolved_requires?: unknown }).unresolved_requires)
+  );
 }

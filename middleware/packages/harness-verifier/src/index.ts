@@ -32,7 +32,12 @@ export { activate } from './plugin.js';
 export type { VerifierBundle, VerifierPluginHandle } from './plugin.js';
 
 // ClaimExtractor
-export { ClaimExtractor, claimContext } from './claimExtractor.js';
+export {
+  ClaimExtractor,
+  EXTRACTION_WINDOW_CHARS,
+  MAX_CLAIM_CHARS,
+} from './claimExtractor.js';
+export { claimContext } from './claimContext.js';
 export type {
   ClaimExtractorOptions,
   ExtractInput,
@@ -42,7 +47,10 @@ export type {
 // the kernel-side `verifierService.ts` until sub-commit 2b moves it.
 export {
   SOFT_ANCHOR_REF_FIELDS,
+  contradictionBasis,
   hasOdooRecordAnchor,
+  isEvidenceContradiction,
+  hasVerificationEvidence,
   isBorderlineVerdict,
   isHardClaim,
   isSoftClaim,
@@ -50,23 +58,39 @@ export {
 export type {
   Aggregation,
   Claim,
+  ClaimExtraction,
   ClaimSource,
   ClaimType,
   ClaimVerdict,
+  ContradictionBasis,
+  ExtractionGap,
   HardClaim,
+  NonEmptyClaimVerdicts,
   OdooRecordRef,
   SoftClaim,
+  UnverifiedCause,
   VerifierBadge,
   VerifierInput,
+  VerifierPrivacy,
+  VerifierSkipReason,
+  VerifierUnavailableReason,
   VerifierVerdict,
 } from './claimTypes.js';
+
+// verdictBinding — holds an injected pipeline's verdict to what its claims
+// show, before the kernel-side `VerifierService` acts on, stores or streams it.
+export { bindVerdictToClaims } from './verdictBinding.js';
+export type { BoundVerdict } from './verdictBinding.js';
 
 // correctionPrompt
 export { buildCorrectionPrompt } from './correctionPrompt.js';
 
 // DeterministicChecker
 export { DeterministicChecker } from './deterministicChecker.js';
+export { toTurnRecords } from './turnRecords.js';
+export type { TurnRecord } from './turnRecords.js';
 export type {
+  CheckContext,
   DeterministicCheckerOptions,
   GraphReader,
   OdooReader,

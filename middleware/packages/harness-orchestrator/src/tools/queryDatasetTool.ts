@@ -2,6 +2,7 @@ import { z } from 'zod';
 import {
   DatasetQueryValidationError,
   normalizeDatasetUuid,
+  toolErrorFromException,
   type KnowledgeGraph,
 } from '@omadia/plugin-api';
 
@@ -111,6 +112,17 @@ function resolveDatasetId(
 }
 
 export const QUERY_DATASET_TOOL_NAME = 'query_dataset';
+
+/**
+ * #1093 — a backend failure answers as a tool error, never a throw (a throw is
+ * a dead turn on the streaming path). Its TEXT is withheld from the model: a
+ * driver message can quote the cell value a cast failed on, and this tool
+ * reads real, decrypted cells. Class name, code (a SQLSTATE) and a log ref
+ * reach the model; the full error goes to the server log under that ref.
+ */
+function backendFailure(err: unknown): string {
+  return toolErrorFromException(QUERY_DATASET_TOOL_NAME, err, { site: 'query-dataset' });
+}
 
 export const queryDatasetToolSpec = {
   name: QUERY_DATASET_TOOL_NAME,
@@ -241,7 +253,7 @@ export class QueryDatasetTool {
           // string convention rather than throwing: a backend blip (a
           // dropped Neon connection) is something the model can retry or
           // report, while a throw is a dead turn on the streaming path.
-          return `Error: query_dataset failed — ${err instanceof Error ? err.message : String(err)}`;
+          return backendFailure(err);
         }
       }
 
@@ -270,7 +282,7 @@ export class QueryDatasetTool {
           // left the handler and, in the streaming dispatch path, ended the
           // turn. A tool error the model can read and react to is always
           // preferable to a dead turn.
-          return `Error: query_dataset failed — ${err instanceof Error ? err.message : String(err)}`;
+          return backendFailure(err);
         }
       }
 
@@ -315,7 +327,7 @@ export class QueryDatasetTool {
           if (err instanceof DatasetQueryValidationError) {
             return `Error: ${err.code} — ${err.message}. Call \`get_schema\` to see the real column names/types.`;
           }
-          return `Error: query_dataset failed — ${err instanceof Error ? err.message : String(err)}`;
+          return backendFailure(err);
         }
       }
     }

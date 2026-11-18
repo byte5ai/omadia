@@ -71,14 +71,22 @@ export class DiagramRenderTooLargeError extends Error {
   }
 }
 
-/** Thrown for upstream Kroki failures (non-2xx, timeout, network). */
+/**
+ * Thrown for upstream Kroki failures (non-2xx, timeout, network, a non-PNG
+ * answer). The message is this package's own words: renderer, kind, HTTP
+ * status. Text from elsewhere stays off it. `body` holds the upstream detail
+ * (a bounded response-body preview, which quotes the diagram source back, or
+ * the content type of a non-PNG answer) and `cause` a transport exception.
+ * Both are for the server log; the tool never hands them to a model.
+ */
 export class DiagramRenderError extends Error {
   constructor(
     message: string,
     public readonly status?: number,
     public readonly body?: string,
+    options?: ErrorOptions,
   ) {
-    super(message);
+    super(message, options);
     this.name = 'DiagramRenderError';
   }
 }

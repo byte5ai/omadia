@@ -66,31 +66,34 @@ describe('<FieldRow /> — a pattern rejection is shown in the ACTIVE locale', (
     expect(screen.getByRole('alert').textContent).toBe(EN);
   });
 
-  it('keeps the server message when the manifest declared no pattern_hint', () => {
-    // `installService` falls back to its own generic sentence in that case;
-    // the client has nothing better and must not swallow it.
-    const generic = '"Service account email" entspricht nicht dem erwarteten Muster.';
+  it('falls back to the catalog sentence when the manifest declared no pattern_hint', () => {
+    // #1401 — the generic sentence comes from the catalog in the active
+    // locale, not from the server (which writes it in German only).
     renderWithIntl(
       <FieldRow
         field={field({ pattern_hint: undefined })}
-        error={{ code: 'pattern_mismatch', message: generic }}
+        error={{ code: 'pattern_mismatch', message: '"x" entspricht nicht dem erwarteten Muster.' }}
       />,
-      { locale: 'de' },
+      { locale: 'en' },
     );
 
-    expect(screen.getByRole('alert').textContent).toBe(generic);
+    expect(screen.getByRole('alert').textContent).toBe(
+      'Service account email does not match the expected format.',
+    );
   });
 
-  it('leaves every OTHER error code untouched', () => {
-    // Only the pattern code carries manifest-owned prose. A `required` or
-    // `wrong_type` message must be rendered verbatim, hint or no hint.
-    const required = 'Feld "Service account email" ist erforderlich.';
+  it('renders other known codes from the catalog too (#1401)', () => {
+    // Was: rendered verbatim — so an English operator read the German
+    // server sentence. See setupFormLocalizedErrors.test.tsx for the rest.
     renderWithIntl(
-      <FieldRow field={field()} error={{ code: 'required', message: required }} />,
-      { locale: 'de' },
+      <FieldRow
+        field={field()}
+        error={{ code: 'required', message: 'Feld "Service account email" ist erforderlich.' }}
+      />,
+      { locale: 'en' },
     );
 
-    expect(screen.getByRole('alert').textContent).toBe(required);
+    expect(screen.getByRole('alert').textContent).toBe('Service account email is required.');
   });
 
   it('renders no error slot at all when there is no error', () => {

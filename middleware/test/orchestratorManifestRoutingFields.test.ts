@@ -58,8 +58,8 @@ describe('orchestrator manifest — #445 sticky Direct Line field', () => {
     );
     assert.ok(field, 'missing setup field: orchestrator_direct_line_sticky');
     assert.equal(field.type, 'boolean');
-    // The loader reads non-`host_list` defaults via `asString`, so the default
-    // must be the STRING "false" — a YAML boolean would read back as undefined.
-    assert.equal(field.default, 'false');
+    // #1464 — the manifest writes `default: "false"`; the loader normalizes a
+    // boolean field's default (string or YAML boolean) to a real boolean.
+    assert.equal(field.default, false);
   });
 });

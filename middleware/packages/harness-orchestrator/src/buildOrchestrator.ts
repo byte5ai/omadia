@@ -22,7 +22,7 @@ import type {
 } from '@omadia/channel-sdk';
 import type { EmbeddingClient } from '@omadia/embeddings';
 import type { EffortLevel, LlmProvider, LlmProviderPool } from '@omadia/llm-provider';
-import type { ModelRef } from '@omadia/plugin-api';
+import type { ModelRef, ProfileQualityConfig } from '@omadia/plugin-api';
 import type {
   ContextRetriever,
   FactExtractor,
@@ -47,6 +47,7 @@ import type { Pool } from 'pg';
 import { MemoryToolHandler } from '@omadia/memory';
 
 import { ChatSessionStore, chatSessionTailTurns } from './chatSessionStore.js';
+import { wrapChatAgentWithFastPath, type FastPathTriagePort } from './fastPathAgent.js';
 import type { Microsoft365Accessor } from './microsoft365-shim.js';
 import type { NativeToolRegistry } from './nativeToolRegistry.js';
 import type { ModelRoutingConfig } from './modelRouter.js';
@@ -55,6 +56,7 @@ import {
   type OrchestratorPersonaSkill,
   type AiDisclosureSetup,
 } from './orchestrator.js';
+import type { AnswerVerbosity } from './answerVerbosity.js';
 import {
   LlmScreener,
   HttpProxyScreener,
@@ -69,7 +71,10 @@ import type {
 } from './mcp/pendingMcpInput.js';
 import { CliChatAgent } from './cliChatAgent.js';
 import { ToolDispatchService } from './toolDispatchService.js';
-import { OrchestratorMemoryNamespacer } from './orchestratorMemoryNamespacer.js';
+import {
+  OrchestratorMemoryNamespacer,
+  TURN_NOTE_PROVENANCE,
+} from './orchestratorMemoryNamespacer.js';
 import { DurableRulesMemoryStore } from './durableRulesMemoryStore.js';
 import { MemoryBinder, type ContextMemoryMode } from './memoryBinder.js';
 import {
@@ -79,6 +84,7 @@ import {
 import type { TurnHookRunner } from './turnHooks.js';
 import type { ChatAgentBundle } from './plugin.js';
 import { SessionLogger, isChatSessionScope } from './sessionLogger.js';
+import { isPrivacyForceGuarded } from './privacyPolicy.js';
 import type { RunTraceOutcomeStats } from './runTraceObservability.js';
 import { AskUserChoiceTool } from './tools/askUserChoiceTool.js';
 import { BookMeetingTool } from './tools/bookMeetingTool.js';
@@ -144,6 +150,13 @@ export interface AgentRuntimeConfig {
    */
   readonly identityInstructions?: string;
   /**
+   * #1569 — the Agent's own response-quality settings
+   * (`agent_identities.quality`), for the `responseGuard` provider. Absent =
+   * the agent set none; the provider then uses its `agent_overrides` and
+   * default.
+   */
+  readonly quality?: ProfileQualityConfig;
+  /**
    * #967 — the name this Agent answers to (`agent_identities.display_name`),
    * already trimmed and non-empty when present.
    *
@@ -171,6 +184,14 @@ export interface AgentRuntimeConfig {
    */
   readonly identityShortDescription?: string;
   readonly identityLongDescription?: string;
+  /**
+   * This Agent's own answer-size contract (`agent_identities.verbosity`).
+   * A SLOT over the platform-wide `OrchestratorDeps.answerVerbosity`: when
+   * set it replaces the installation default for this Agent, so exactly ONE
+   * verbosity block ever reaches the prompt. Absent → the platform value
+   * (and with that unset, `standard`, no block).
+   */
+  readonly answerVerbosity?: AnswerVerbosity;
   /**
    * W5 memory-ACL — per-Agent rollout switch for chat-context-scoped memory.
    * Read from the `agents.context_memory` column (migration 0050).
@@ -284,6 +305,13 @@ export interface OrchestratorDeps {
    */
   readonly isPluginToolsReady?: (agentId: string) => boolean;
   /**
+   * The deterministic fast path (`fastPath@1`, `@omadia/fast-path`), resolved
+   * LAZILY per turn. When present, every bundle agent is wrapped in
+   * {@link wrapChatAgentWithFastPath} — outside the verifier — so every
+   * non-canvas channel gets the one-call triage. Absent → no wrapper.
+   */
+  readonly fastPath?: () => FastPathTriagePort | undefined;
+  /**
    * #1018 — resolves the peer AGENTS the calling agent may see in the current
    * chat, merged into `get_chat_participants` as `kind: 'agent'` entries.
    * Kernel-published (`chatPeerAgents@1`); absent ⇒ the roster stays
@@ -334,6 +362,12 @@ export interface OrchestratorDeps {
   readonly graphTenantId?: string;
   /** Operator-set assistant identity (overrides the built-in default). */
   readonly assistantIdentity?: string;
+  /**
+   * Operator's target answer size (`answer_verbosity` setup field), shared by
+   * every Agent this process builds. Absent → `standard`, no prompt block. See
+   * `OrchestratorOptions.answerVerbosity`.
+   */
+  readonly answerVerbosity?: AnswerVerbosity;
   /**
    * AI-Act Art. 50 (#644) — resolved operator disclosure config. Absent → the
    * shipping default (standard, active) on every channel. See
@@ -578,14 +612,42 @@ export function buildOrchestratorForAgent(
     config.agentId,
     deps.runTraceStats,
   );
+  // Fast path for every non-canvas channel — outermost, outside the verifier
+  // (fastPathAgent.ts says why a hit may bypass it). A hit is recorded
+  // through THIS bundle's session logger like any other turn.
+  const fastPathDeps = deps.fastPath;
+  const withFastPath = (agent: ChatAgent): ChatAgent =>
+    fastPathDeps === undefined
+      ? agent
+      : wrapChatAgentWithFastPath(agent, {
+          fastPath: fastPathDeps,
+          // the tools THIS Agent's orchestrator offers — the fast path runs
+          // nothing else (a per-Agent tool set is respected)
+          permittedTools: () => orchestrator.offeredToolNames(),
+          // …and their definitions: read tools of every plugin get a generic
+          // planner spec (@omadia/fast-path genericToolSpecs.ts)
+          toolDefinitions: () => orchestrator.offeredToolDefinitions(),
+          logSession: (entry) => sessionLogger.log(entry),
+          privacyGuarded: () => deps.privacyGuard() !== undefined,
+          log: (m) => console.log(m),
+        });
   // Trigger T1 — durable-rules live hook. Wrap the (shared-passthrough)
   // namespacer so writes to `/memories/_rules/` auto-promote into curated
   // durable MemorableKnowledge. Needs the graph pool; gated off when absent or
   // via KG_DURABLE_RULES_HOOK=false. Decorator sits OUTSIDE the namespacer so
   // it sees the model-facing `_rules/` path (namespacer passes `_` through).
+  // #1534 — under a Privacy Shield the `memory` tool may not read the session
+  // transcripts: they hold every turn's real values. The org policy counts
+  // too, so a turn that slips past the fail-closed gate (#1535) still cannot.
+  const shieldActive = (): boolean =>
+    deps.privacyGuard() !== undefined || isPrivacyForceGuarded(process.env);
+  // #1540 — notes written in an unprotected turn are marked, and refused to
+  // a turn the shield masks.
   const namespacedStore: MemoryStore = new OrchestratorMemoryNamespacer(
     config.agentId,
     scopedStore,
+    shieldActive,
+    TURN_NOTE_PROVENANCE,
   );
   const durableRulesHookEnabled =
     process.env['KG_DURABLE_RULES_HOOK'] !== 'false' && !!deps.graphPool;
@@ -626,6 +688,8 @@ export function buildOrchestratorForAgent(
     agentSlug: config.agentId,
     root: deps.memoryStore,
     mode: config.contextMemory ?? 'off',
+    shieldActive,
+    noteProvenance: TURN_NOTE_PROVENANCE,
     ...(durableRulesHookEnabled
       ? {
           durableRules: {
@@ -778,6 +842,7 @@ export function buildOrchestratorForAgent(
     ...(bookMeetingTool ? { bookMeetingTool } : {}),
     ...(deps.embeddingClient ? { embeddingClient: deps.embeddingClient } : {}),
     responseGuard: deps.responseGuard,
+    ...(config.quality ? { agentQuality: config.quality } : {}),
     privacyGuard: deps.privacyGuard,
     ...(deps.turnReceiptStore
       ? { turnReceiptStore: deps.turnReceiptStore }
@@ -823,6 +888,10 @@ export function buildOrchestratorForAgent(
     ...(config.identityName?.trim()
       ? { identityName: config.identityName.trim() }
       : {}),
+    // Agent's own setting beats the installation default (one block, never two).
+    ...((config.answerVerbosity ?? deps.answerVerbosity)
+      ? { answerVerbosity: config.answerVerbosity ?? deps.answerVerbosity }
+      : {}),
     ...(deps.aiDisclosure ? { aiDisclosure: deps.aiDisclosure } : {}),
     ...(deps.aiDisclosureSeenStore
       ? { aiDisclosureSeenStore: deps.aiDisclosureSeenStore }
@@ -853,9 +922,9 @@ export function buildOrchestratorForAgent(
   // Orchestrator is still built + returned (sub-agents attach to it post-activate;
   // exposing those to the CLI dispatch is a follow-up — native tools work now).
   if (deps.provider?.id === 'claude-cli') {
-    // Security note (P2-2): the subscription CLI sees the FULL native tool
-    // registry via the loopback MCP server, with no allowlist beyond MCP
-    // server scoping; a per-agent tool allowlist is a follow-up.
+    // Security note (P2-2): the subscription CLI sees the native tool registry
+    // via the loopback MCP server, filtered by readiness and (#1598) by this
+    // Agent's plugin assignment.
     const dispatch = new ToolDispatchService({
       nativeTools: deps.nativeToolRegistry,
       // Live read: sub-agents (ask_<slug>) attach to `orchestrator` post-activate,
@@ -864,29 +933,55 @@ export function buildOrchestratorForAgent(
       // sub-agents fail GRACEFULLY (dispatch returns an error result) until they
       // also run on the CLI (recursive Shape 3 — follow-up); tool-less ones work.
       domainToolsProvider: () => orchestrator.listDomainTools(),
+      // #1585 — kernel natives (ask_user_choice, …) dispatch to THIS build's
+      // instances, the ones `drainCliTurnCards` below reads.
+      kernelNativeHandler: (name) => orchestrator.kernelNativeHandler(name),
       // Issue #474 — this dispatcher bypasses `Orchestrator.dispatchTool`
       // entirely (the CLI reaches tools over the loopback MCP server), so
       // the readiness gate must be repeated here too.
       ...(deps.isPluginToolsReady
         ? { isPluginToolsReady: deps.isPluginToolsReady }
         : {}),
+      // #1598 — and the per-Agent plugin assignment, for the same reason.
+      isToolGranted: (name, agentId, scope) => orchestrator.isToolGranted(name, agentId, scope),
+      // A channel turn's routine has to name this Agent, see `initRoutines`.
+      agentSlug: config.agentId,
     });
     return {
       orchestrator,
       bundle: {
-        agent: new CliChatAgent({
+        agent: withFastPath(new CliChatAgent({
           dispatch,
           // #1102 — surface the choice card / follow-up chips / slot picker a
           // kernel-native tool scheduled this turn on the `done` event, so the
           // subscription-CLI path renders them like the API-key path.
           drainTurnCards: () => orchestrator.drainCliTurnCards(),
+          // #1582 — the AI disclosure, resolved and folded like an API-key turn.
+          discloseAnswer: (answer, input) => orchestrator.discloseCliAnswer(answer, input),
+          // A refusal under OMADIA_PRIVACY_FORCE_GUARDED is worded in the
+          // turn's language, by the same rule as the in-process notices.
+          noticeLocale: (input) => orchestrator.noticeLocale(input),
           model: config.model.replace(/-cli$/, '') || 'sonnet',
+          // #1391 — persist every successful CLI turn like an in-process one
+          // (session log + graph nodes, facts, excerpt, auto-promotion,
+          // `onAfterTurn`), so Memory and recall stop being blank here.
+          recordTurn: (input, turn) => orchestrator.recordCliTurn(input, turn),
+          // #1391 — and recall from the graph before the spawn, as the
+          // in-process turn does before it calls the model.
+          recallContext: (input) => orchestrator.recallCliContext(input),
+          // #1102 — `memory` from the stack this turn is bound to, served by a
+          // per-turn dispatch rather than the shared registry.
+          bindTurnMemory: (input) => orchestrator.bindCliTurnMemory(input),
           // #1087 — the CLI child is stateless by design, so the composed
           // prompt is the only memory a turn has. Feed it from the RAW chat
           // session, not the ContextRetriever tail: that one reads Session
-          // nodes from the knowledge graph, and CLI turns never reach the
-          // graph (`SessionLogger.log` runs on the in-process path only), so a
-          // KG-backed tail would be empty here rather than merely lossy.
+          // nodes from the knowledge graph, whose capture filter drops turns
+          // below its significance threshold — the short turns a chat is full
+          // of — so a KG-backed tail would be lossy. Same depth as that tail:
+          // the operator's `context_tail_size` when the retriever is wired.
+          ...(deps.contextRetriever
+            ? { sessionTailSize: deps.contextRetriever.tailSize }
+            : {}),
           sessionTail: async (sessionScope: string, limit: number) => {
             // Channel and ad-hoc HTTP scopes are not chat-session ids; the
             // store would reject them, and nothing ever wrote them. `undefined`
@@ -894,10 +989,11 @@ export function buildOrchestratorForAgent(
             // Teams conversation as a brand-new chat.
             if (!isChatSessionScope(sessionScope)) return undefined;
             const session = await chatSessionStore.get(sessionScope);
-            // Absent session ⇒ unreadable, NOT an empty chat. On this path the
-            // store is written only by the browser's fire-and-forget PUT
-            // (`chatSessions.ts`, `putRemoteSession`), which the web UI already
-            // issues when the tab is created — so a missing document means the
+            // Absent session ⇒ unreadable, NOT an empty chat. The store is
+            // written by the browser's fire-and-forget PUT (`chatSessions.ts`,
+            // `putRemoteSession`) and, since #1391, by the session logger's
+            // mirror after each recorded CLI turn; the web UI already PUTs
+            // when the tab is created — so a missing document means the
             // write was lost, not that the chat is new. Reading it as "new"
             // would reproduce #1087 silently; the cost of the other reading is
             // a disclosure note on the rare first turn that races the PUT.
@@ -914,8 +1010,12 @@ export function buildOrchestratorForAgent(
             // question that errored or was never answered): that is a gap the
             // agent must disclose, not the empty chat `[]` would claim. A
             // session with NO messages (fresh or cleared tab) is the genuine
-            // first turn and falls through to `[]`.
-            if (turns.length === 0 && session.messages.length > 0) return undefined;
+            // first turn and falls through to `[]`. #1071 — routine deliveries
+            // (`proactive`) are no conversation either: a chat holding only
+            // those (cleared, then a routine delivered) is empty, not a gap.
+            if (turns.length === 0 && session.messages.some((m) => !m.proactive)) {
+              return undefined;
+            }
             return turns;
           },
           ...(assistantIdentityWithName
@@ -939,7 +1039,7 @@ export function buildOrchestratorForAgent(
           ...(config.cliTurnSeconds !== undefined && config.cliTurnSeconds > 0
             ? { spawnTimeoutMs: Math.trunc(config.cliTurnSeconds * 1000) }
             : {}),
-        }),
+        })),
         raw: orchestrator,
         sessionLogger,
         chatSessionStore,
@@ -962,15 +1062,24 @@ export function buildOrchestratorForAgent(
       enabled: true,
       mode: deps.verifierBundle.mode,
       maxRetries: deps.verifierBundle.maxRetries,
+      // The operator's switch for the borderline resample
+      // (`verifier_resample_on_borderline`); absent → the service default (on).
+      ...(deps.verifierBundle.resampleOnBorderline !== undefined
+        ? { resampleOnBorderline: deps.verifierBundle.resampleOnBorderline }
+        : {}),
       ...(deps.turnHookRegistry
         ? { turnHookRegistry: deps.turnHookRegistry }
         : {}),
+      // The notice for an answer `enforce` withholds is worded in the turn's
+      // disclosure locale; this is the fallback when the operator turned the
+      // disclosure off (same rule as the turn-incomplete notice).
+      ...(deps.aiDisclosure?.locale ? { locale: deps.aiDisclosure.locale } : {}),
     });
   }
 
   return {
     orchestrator,
-    bundle: { agent, raw: orchestrator, sessionLogger, chatSessionStore },
+    bundle: { agent: withFastPath(agent), raw: orchestrator, sessionLogger, chatSessionStore },
     effectiveModel: config.model,
     ...(config.modelRouting ? { effectiveModelRouting: config.modelRouting } : {}),
   };

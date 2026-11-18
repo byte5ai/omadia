@@ -29,7 +29,8 @@ import type {
 
 import type { OdooFixture } from './fixtureOdooReader.js';
 
-/** The three stable assertion targets — the live `VerifierVerdict` statuses. */
+/** A live `VerifierVerdict` status. A sample can land on any of them; only
+ *  those in `STATUS_NAMES` can be an entry's EXPECTED class. */
 export type StatusName = VerifierVerdict['status'];
 
 /**
@@ -38,11 +39,12 @@ export type StatusName = VerifierVerdict['status'];
  * reason.
  *
  * The v1 blind spot was structural: a triggering answer whose extractor
- * happens to return zero claims lands in `approved` for FREE — the same
- * trigger-skip trap the corpus README warns about, one layer up. Asserting
- * only `status === 'approved'` would let that empty-extraction case pass and
- * hide a regression where the deterministic checker stopped confirming true
- * claims. `via` closes that: the entry passes only if a decided-class sample
+ * happened to return zero claims landed in `approved` for FREE — the same
+ * trigger-skip trap the corpus README warns about, one layer up. Verdicts are
+ * evidence-bound now (that empty case is `skipped`), which closes the hole in
+ * the pipeline itself; `via` still pins WHICH checker produced the class, so
+ * an `approved` reached through the judge alone cannot stand in for a
+ * deterministic re-query. The entry passes only if a decided-class sample
  * also carried a HARD-claim verdict of the required kind.
  *
  *  - `deterministic-verified`   — an Odoo/graph re-query CONFIRMED a hard claim
@@ -77,10 +79,18 @@ export interface VerdictTag {
   claimType: ClaimType;
 }
 
+/**
+ * The classes a corpus entry may expect. `skipped` (the verifier ran but had
+ * nothing to check — the trigger-skip path) is one; `unavailable` is not: an
+ * extractor outage is never the expected outcome of a fixture, so a sample
+ * that lands there fails the entry. Keep `skipped` AFTER `blocked` — the
+ * parse-error test in goldenRunner.test.ts matches the first three in order.
+ */
 const STATUS_NAMES: readonly StatusName[] = [
   'approved',
   'approved_with_disclaimer',
   'blocked',
+  'skipped',
 ];
 
 /** Trace fields lifted verbatim into `VerifierInput`. */

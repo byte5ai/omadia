@@ -43,7 +43,10 @@ export interface JobSchedulerLike {
 export interface OrchestratorLike {
   runTurn(input: ChatTurnInput): Promise<ChatTurnResult>;
 }
-import type { ProactiveSenderRegistry } from './proactiveSender.js';
+import {
+  ProactiveTargetGoneError,
+  type ProactiveSenderRegistry,
+} from './proactiveSender.js';
 import type {
   RoutineRunsStore,
   RoutineRunTrigger,
@@ -82,10 +85,15 @@ export const MIN_RUN_INTERVAL_MS = 60_000;
  * `{ kind: 'operator' }` instead of an omission that reads like an
  * oversight.
  *
- *   - `channel-user` — an end user acting through a channel turn. Scoped to
- *     the (tenant, userId) the turn context carries.
+ *   - `channel-user` — an end user acting through a channel. Scoped to the
+ *     (tenant, userId) the turn context carries (`manage_routine`) or the
+ *     smart-card click's `actor` names (`handleRoutineAction`).
  *   - `operator`     — the authenticated operator surface, deliberately
- *     cross-tenant (see the routes' own `requireAuth` rationale).
+ *     cross-tenant (see the routes' own `requireAuth` rationale). Built by
+ *     `routes/routines.ts` only, and never as a fallback for a missing
+ *     principal: a door that cannot name one refuses instead
+ *     (`RoutineActorRequiredError`). `test/routineOperatorScope.test.ts`
+ *     fails if a second producer appears.
  */
 export type RoutineActorScope =
   | ({ kind: 'channel-user' } & RoutineOwner)
@@ -125,6 +133,23 @@ export class RoutineNotFoundError extends Error {
   }
 }
 
+/**
+ * #1071 — a manual trigger of a routine that is not active (paused by the
+ * user, or auto-paused because its web chat was deleted). Refused instead of
+ * run: a run would be skipped anyway, and recording it as `ok` overwrote the
+ * `last_run_error` that explains the pause.
+ */
+export class RoutineNotActiveError extends Error {
+  constructor(
+    id: string,
+    public readonly routineName: string,
+    public readonly status: string,
+  ) {
+    super(`routine '${id}' is ${status}; resume it before triggering it`);
+    this.name = 'RoutineNotActiveError';
+  }
+}
+
 export class UnknownChannelError extends Error {
   constructor(channel: string) {
     super(`no proactive sender registered for channel '${channel}'`);
@@ -161,7 +186,13 @@ export interface RoutineRunnerOptions {
    * (not the higher-level `chat`) so it can persist the per-turn
    * `runTrace` for the call-stack viewer.
    */
-  getOrchestrator: () => OrchestratorLike | undefined;
+  /**
+   * #1598 — called with the routine's `agentSlug` (the orchestrator that
+   * created it; `null` = the standard orchestrator). The host resolves that
+   * orchestrator so the run has exactly its plugin grants; `undefined` when it
+   * no longer exists records an `error` run.
+   */
+  getOrchestrator: (agentSlug: string | null) => OrchestratorLike | undefined;
   senderRegistry: ProactiveSenderRegistry;
   log?: (msg: string) => void;
   /** Override the per-user active-routine cap. */
@@ -190,7 +221,7 @@ export class RoutineRunner {
   private readonly store: RoutineStore;
   private readonly runsStore: RoutineRunsStore;
   private readonly scheduler: JobSchedulerLike;
-  private readonly getOrchestrator: () => OrchestratorLike | undefined;
+  private readonly getOrchestrator: (agentSlug: string | null) => OrchestratorLike | undefined;
   private readonly senders: ProactiveSenderRegistry;
   private readonly log: (msg: string) => void;
   private readonly maxActivePerUser: number;
@@ -309,6 +340,9 @@ export class RoutineRunner {
     if (!routine || !ownedBy(routine, scope)) {
       throw new RoutineNotFoundError(id);
     }
+    if (routine.status !== 'active') {
+      throw new RoutineNotActiveError(id, routine.name, routine.status);
+    }
     const controller = new AbortController();
     await this.runOnce(routine, controller.signal, 'manual');
     // Re-read so caller gets the updated last_run_* fields.
@@ -334,8 +368,9 @@ export class RoutineRunner {
    * `runOnce` and record the failure, keeping the misconfiguration
    * visible in run history.
    */
-  chatAgentAvailable(): boolean {
-    return this.getOrchestrator() !== undefined;
+  chatAgentAvailable(agentSlug: string | null = null): boolean {
+    // #1598 — asked for the routine's OWN orchestrator, the one its run uses.
+    return this.getOrchestrator(agentSlug) !== undefined;
   }
 
   /**
@@ -349,9 +384,14 @@ export class RoutineRunner {
   }
 
   async createRoutine(input: CreateRoutineInput): Promise<Routine> {
-    if (!this.senders.get(input.channel)) {
+    const sender = this.senders.get(input.channel);
+    if (!sender) {
       throw new UnknownChannelError(input.channel);
     }
+    // #1071 — refuse a routine whose delivery handle the channel can never
+    // deliver to (e.g. a web routine requested outside a saved chat) now,
+    // rather than recording the same error on every cron fire.
+    sender.validateConversationRef?.(input.conversationRef ?? {});
 
     // Issue #506: check for a reconcile-eligible retry BEFORE the quota
     // gate. A retried `createRoutine` call for a routine that already
@@ -563,6 +603,10 @@ export class RoutineRunner {
     let prompt = routine.prompt;
     let tenant = routine.tenant;
     let userId = routine.userId;
+    // #1071 — a fire on a routine that is no longer active is SKIPPED, not
+    // run: nothing is recorded. Recording it as `ok` overwrote the
+    // `last_run_error` that explains an auto-pause (deleted web chat).
+    let skipped = false;
 
     try {
       // Re-read the row before invoking. A pause/delete that landed
@@ -570,7 +614,10 @@ export class RoutineRunner {
       // best-effort, not transactional). Checked first so a raced fire on
       // a paused row never records a spurious availability error.
       const fresh = await this.store.get(routine.id);
-      if (!fresh || fresh.status !== 'active') return;
+      if (!fresh || fresh.status !== 'active') {
+        skipped = true;
+        return;
+      }
       prompt = fresh.prompt;
       tenant = fresh.tenant;
       userId = fresh.userId;
@@ -580,7 +627,7 @@ export class RoutineRunner {
       // chatAgent@^1) are dark too, so a sender-first check would record
       // the misleading 'no proactive sender' error when the actual fix
       // is configuring the key.
-      const orchestrator = this.getOrchestrator();
+      const orchestrator = this.getOrchestrator(fresh.agentSlug ?? null);
       if (!orchestrator) {
         throw new ChatAgentUnavailableError();
       }
@@ -589,6 +636,10 @@ export class RoutineRunner {
       if (!sender) {
         throw new UnknownChannelError(routine.channel);
       }
+      // #1071 — a delivery target that no longer exists (a deleted web
+      // chat) fails here, BEFORE the agent turn: otherwise every cron fire
+      // would run a full turn whose output nobody can receive.
+      await sender.checkDeliverable?.(fresh.conversationRef);
 
       if (signal.aborted) {
         status = 'timeout';
@@ -635,38 +686,65 @@ export class RoutineRunner {
     } catch (err) {
       status = signal.aborted ? 'timeout' : 'error';
       errorMessage = errMsg(err);
+      if (err instanceof ProactiveTargetGoneError) {
+        errorMessage = await this.pauseOrphanedRoutine(routine.id, errorMessage);
+      }
       this.log(
         `[routines/runner] routine ${routine.id} ('${routine.name}') ${status}: ${errorMessage}`,
       );
     } finally {
-      const finishedAt = new Date();
+      if (!skipped) {
+        const finishedAt = new Date();
 
-      // Append-only per-run history with full agentic trace. Failures
-      // here log but never abort the run (parity with `recordRun`).
-      await this.runsStore.insert({
-        routineId: routine.id,
-        tenant,
-        userId,
-        trigger,
-        startedAt,
-        finishedAt,
-        status,
-        errorMessage,
-        prompt,
-        answer: result?.answer ?? null,
-        iterations: result?.iterations ?? null,
-        toolCalls: result?.toolCalls ?? null,
-        runTrace: result?.runTrace ?? null,
-      });
+        // Append-only per-run history with full agentic trace. Failures
+        // here log but never abort the run (parity with `recordRun`).
+        await this.runsStore.insert({
+          routineId: routine.id,
+          tenant,
+          userId,
+          trigger,
+          startedAt,
+          finishedAt,
+          status,
+          errorMessage,
+          prompt,
+          answer: result?.answer ?? null,
+          iterations: result?.iterations ?? null,
+          toolCalls: result?.toolCalls ?? null,
+          runTrace: result?.runTrace ?? null,
+        });
 
-      // Backwards-compat: keep updating last_run_* on the routines row
-      // so the existing operator-UI tabular row keeps working without
-      // having to join into routine_runs.
-      await this.store.recordRun({
-        id: routine.id,
-        status,
-        error: errorMessage,
-      });
+        // Backwards-compat: keep updating last_run_* on the routines row
+        // so the existing operator-UI tabular row keeps working without
+        // having to join into routine_runs.
+        await this.store.recordRun({
+          id: routine.id,
+          status,
+          error: errorMessage,
+        });
+      }
+    }
+  }
+
+  /**
+   * #1071 — the routine's delivery target is gone for good. Pause it (the
+   * system acting, so unscoped) and unregister its cron, so later fires do
+   * not each record the same failure. Returns the error to record, which
+   * says the routine was paused. A failed pause is logged, never thrown:
+   * the run is still recorded, and the next fire's pre-flight tries again.
+   */
+  private async pauseOrphanedRoutine(id: string, reason: string): Promise<string> {
+    try {
+      const paused = await this.store.setStatus(id, 'paused');
+      if (!paused) return reason;
+      this.unregisterFromScheduler(id);
+      // The chat can be gone from the server yet still live in a browser
+      // (its first PUT failed, or another device deleted it): loading the
+      // chat there stores it again, and the routine can simply be resumed.
+      return `${reason}; the routine was paused — if the chat still exists in your browser, open it and resume the routine; otherwise delete the routine and create it again from an existing conversation`;
+    } catch (err) {
+      this.log(`[routines/runner] could not pause orphaned routine ${id}: ${errMsg(err)}`);
+      return reason;
     }
   }
 

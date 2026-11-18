@@ -9,6 +9,7 @@ import { AlertTriangle, CheckCircle2, ShieldCheck, X } from 'lucide-react';
 
 import { installBuilderDraft, patchBuilderSpec } from '../../../../_lib/api';
 import { cn } from '../../../../_lib/cn';
+import { storeErrorText } from '../../../../_lib/packageErrorText';
 import type {
   Draft,
   InstallFailureReason,
@@ -75,6 +76,7 @@ interface InstallFailureBody {
   reason: InstallFailureReason;
   code: string;
   message: string;
+  params?: Record<string, string>;
   details?: unknown;
 }
 
@@ -117,6 +119,7 @@ export function InstallDiffModal({
           reason: result.reason,
           code: result.code,
           message: result.message,
+          ...(result.params !== undefined ? { params: result.params } : {}),
           ...(result.details !== undefined ? { details: result.details } : {}),
         },
       });
@@ -506,10 +509,24 @@ function FailureBanner({
   currentVersion: string;
   onBumpAndRetry: () => void | Promise<void>;
 }): React.ReactElement {
-  const headingKey = HEADING_KEYS[failure.reason];
+  const tUpload = useTranslations('store.upload.errors');
+  const tRoot = useTranslations();
+  // #1477 — `package.incompatible_core` shares the 409 `conflict` reason with
+  // the id/version collisions, but "change the id" is the wrong advice for
+  // it: the error-help copy in `message` below says what to do instead.
+  const isCoreCompat = failure.code === 'package.incompatible_core';
+  const headingKey = isCoreCompat ? undefined : HEADING_KEYS[failure.reason];
   const heading = headingKey ? t(headingKey) : t('failureGenericHeading');
-  const hintKey = HINT_KEYS[failure.reason];
+  const hintKey = isCoreCompat ? undefined : HINT_KEYS[failure.reason];
   const hint = hintKey ? t(hintKey) : undefined;
+  // The ingest pipeline writes its messages in German; render known codes
+  // from the catalog with their params, the server text only as fallback.
+  const message = storeErrorText(
+    { code: failure.code, message: failure.message, ...(failure.params ? { params: failure.params } : {}) },
+    failure.message,
+    tUpload,
+    tRoot,
+  );
   // Theme C: only the duplicate_version sub-case of `conflict` is fixable
   // by bumping. We can't reliably distinguish from `id` collisions on
   // reason alone, so we ALSO check the code prefix. `package.duplicate_version`
@@ -537,7 +554,7 @@ function FailureBanner({
             </span>
           </div>
           <p className="mt-1 text-[12px] text-[color:var(--fg-strong)]">
-            {failure.message}
+            {message}
           </p>
           {hint ? (
             <p className="mt-2 text-[11px] italic text-[color:var(--fg-muted)]">

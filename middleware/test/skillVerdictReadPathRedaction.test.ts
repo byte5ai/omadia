@@ -73,6 +73,7 @@ function makeStubGraph(): Record<string, unknown> {
       ),
     // No deterministic verdict — the LLM row is the one under test.
     getSkillVerdict: () => Promise.resolve(undefined),
+    getSkillVerdictAck: () => Promise.resolve(undefined),
     getSkillVerdictByModel: () => Promise.resolve(legacyRow()),
     upsertSkillVerdict: () => Promise.resolve(),
     listSubAgentsBySkillId: () => Promise.resolve([]),

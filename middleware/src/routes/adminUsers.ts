@@ -1,14 +1,47 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 
-import type { AdminAuditLog } from '../auth/adminAuditLog.js';
+import { auditActorFromRequest, type AdminAuditLog } from '../auth/adminAuditLog.js';
+import { loginAccountKey, loginDeviceAccountKey } from '../auth/loginAccount.js';
+import { isValidLoginEmail } from '../auth/loginEmail.js';
+import type { LoginDevices } from '../auth/loginDevices.js';
+import type { LoginRateLimiter } from '../auth/loginRateLimiter.js';
 import { hashPassword } from '../auth/passwordHasher.js';
+import { checkNewPassword, MAX_PASSWORD_LENGTH } from '../auth/passwordPolicy.js';
 import { LOCAL_PROVIDER_ID } from '../auth/providers/LocalPasswordProvider.js';
-import type { UserRecord, UserStore } from '../auth/userStore.js';
+import type { SessionRevocation } from '../auth/sessionRevocation.js';
+import type { UserRecord, UserRole, UserStatus, UserStore } from '../auth/userStore.js';
+import { requireUuidParam } from '../http/uuidParam.js';
 
 interface AdminUsersDeps {
   userStore: UserStore;
   audit: AdminAuditLog;
+  /**
+   * Server-side session revocation — told whose sessions a reset, disable or
+   * delete just ended, for consumers that hold sessions open (live sockets).
+   * The revocation itself is the `revokeSessions` bump (or the row's
+   * absence) and does not depend on it.
+   */
+  sessions?: Pick<SessionRevocation, 'announce'>;
+  /**
+   * The password sign-in limiter (docs/security-architecture.md §10m). A
+   * password reset or a re-enable clears the account's backoff on every
+   * client — the operator's in-band unlock — under its folded account key
+   * (`loginAccountKey`), so every spelling of the address is unlocked.
+   * Optional so harnesses without a limiter keep compiling; production
+   * passes the process-wide instance.
+   */
+  loginLimiter?: Pick<LoginRateLimiter, 'clearAccount'>;
+  /**
+   * The limiter's device cookies (§10m). They are bound to the account's
+   * password and status, so a create, a reset, a status change or a delete
+   * makes this process re-read the account at once instead of after its
+   * cache entry expires: old cookies stop counting as known browsers
+   * immediately. Addressed by the account's device key
+   * (`loginDeviceAccountKey`), not by the folded one. Optional like
+   * `loginLimiter`; production passes the process-wide one.
+   */
+  loginDevices?: Pick<LoginDevices, 'forget'>;
 }
 
 /**
@@ -26,9 +59,18 @@ interface AdminUsersDeps {
  * lock the operator out of their own deployment with no recovery path
  * short of the bootstrap env-vars (which would re-create the same email
  * but lose the audit trail).
+ *
+ * Server-side session revocation: a password reset and a disable move the
+ * user's session version (`revokeSessions`, in the same UPDATE as the change
+ * itself), and a delete removes the row the session is checked against —
+ * each ends every outstanding session of that user on the next request.
+ * Resetting your OWN password therefore signs you out too, everywhere.
  */
 export function createAdminUsersRouter(deps: AdminUsersDeps): Router {
   const router = Router();
+  // #1318 — `users.id` is a uuid column; a malformed id is an unknown user,
+  // not a Postgres 22P02 surfacing as a 500.
+  router.param('id', requireUuidParam('admin_users.not_found'));
 
   // ── GET /admin/users ──────────────────────────────────────────────────────
   router.get('/', async (req: Request, res: Response) => {
@@ -68,14 +110,11 @@ export function createAdminUsersRouter(deps: AdminUsersDeps): Router {
     const displayName =
       typeof body.display_name === 'string' ? body.display_name.trim() : '';
 
-    if (email.length === 0 || !email.includes('@')) {
+    if (!isValidLoginEmail(email)) {
       res.status(400).json({ code: 'admin_users.invalid_email' });
       return;
     }
-    if (password.length < 8) {
-      res.status(400).json({ code: 'admin_users.password_too_short' });
-      return;
-    }
+    if (refusePassword(res, password)) return;
     const existing = await deps.userStore.findByEmail(LOCAL_PROVIDER_ID, email);
     if (existing) {
       res.status(409).json({ code: 'admin_users.email_in_use' });
@@ -91,9 +130,11 @@ export function createAdminUsersRouter(deps: AdminUsersDeps): Router {
       displayName: displayName.length > 0 ? displayName : email,
       role: 'admin',
     });
+    // No cached "no such account" may outlive the account's creation (§10m).
+    forgetDevices(deps, created);
 
     await deps.audit.record({
-      actor: { id: undefined, email: req.session?.email },
+      actor: auditActorFromRequest(req),
       action: 'user.create',
       target: `user:${created.id}`,
       after: toPublicUser(created),
@@ -115,22 +156,12 @@ export function createAdminUsersRouter(deps: AdminUsersDeps): Router {
       return;
     }
 
-    const body = (req.body ?? {}) as {
-      display_name?: unknown;
-      status?: unknown;
-      role?: unknown;
-    };
-
-    const patch: Parameters<UserStore['update']>[1] = {};
-    if (typeof body.display_name === 'string') {
-      patch.displayName = body.display_name.trim();
+    const parsed = parseUserPatch(req.body);
+    if ('code' in parsed) {
+      res.status(400).json(parsed);
+      return;
     }
-    if (body.status === 'active' || body.status === 'disabled') {
-      patch.status = body.status;
-    }
-    if (body.role === 'admin') {
-      patch.role = body.role;
-    }
+    const patch = parsed.patch;
 
     if (patch.status === 'disabled') {
       const isSelf = await isActingOnSelf(req, before, deps.userStore);
@@ -140,15 +171,34 @@ export function createAdminUsersRouter(deps: AdminUsersDeps): Router {
       }
     }
 
-    const updated = await deps.userStore.update(id, patch);
+    // Disabling ends the user's sessions now, not at their next renewal, and
+    // moves the version so a later re-enable cannot revive an old cookie.
+    // Re-enabling and renaming leave sessions alone.
+    const revokes = patch.status === 'disabled';
+    const updated = await deps.userStore.update(
+      id,
+      revokes ? { ...patch, revokeSessions: true } : patch,
+    );
     if (!updated) {
       // Race: row vanished between findById and update.
       res.status(404).json({ code: 'admin_users.not_found' });
       return;
     }
+    if (revokes) {
+      deps.sessions?.announce({
+        provider: updated.provider,
+        sub: updated.providerUserId,
+      });
+    }
+    // A status change moves the account's device-cookie epoch (§10m); a
+    // re-enable is also the operator unlock of its sign-in backoff.
+    if (patch.status !== undefined) forgetDevices(deps, updated);
+    if (patch.status === 'active') {
+      deps.loginLimiter?.clearAccount(loginAccountKey(updated.provider, updated.email));
+    }
 
     await deps.audit.record({
-      actor: { email: req.session?.email },
+      actor: auditActorFromRequest(req),
       action: 'user.update',
       target: `user:${updated.id}`,
       before: toPublicUser(before),
@@ -176,15 +226,28 @@ export function createAdminUsersRouter(deps: AdminUsersDeps): Router {
     }
     const body = (req.body ?? {}) as { password?: unknown };
     const password = typeof body.password === 'string' ? body.password : '';
-    if (password.length < 8) {
-      res.status(400).json({ code: 'admin_users.password_too_short' });
+    // Before the hash and the UPDATE: a refused password leaves the stored
+    // hash and the session version as they were.
+    if (refusePassword(res, password)) return;
+    const passwordHash = await hashPassword(password);
+    // One statement: the new hash and the end of every session issued under
+    // the old one land together or not at all.
+    const updated = await deps.userStore.update(id, {
+      passwordHash,
+      revokeSessions: true,
+    });
+    if (!updated) {
+      // Race: row vanished between findById and update.
+      res.status(404).json({ code: 'admin_users.not_found' });
       return;
     }
-    const passwordHash = await hashPassword(password);
-    await deps.userStore.update(id, { passwordHash });
+    deps.sessions?.announce({ provider: user.provider, sub: user.providerUserId });
+    // The new hash is a new epoch: device cookies minted before it are stale.
+    forgetDevices(deps, user);
+    deps.loginLimiter?.clearAccount(loginAccountKey(user.provider, user.email));
 
     await deps.audit.record({
-      actor: { email: req.session?.email },
+      actor: auditActorFromRequest(req),
       action: 'user.reset_password',
       target: `user:${user.id}`,
       // No before/after content — we never log password material, even
@@ -217,8 +280,14 @@ export function createAdminUsersRouter(deps: AdminUsersDeps): Router {
       res.status(404).json({ code: 'admin_users.not_found' });
       return;
     }
+    // No version bump needed: a session whose row is gone is refused.
+    deps.sessions?.announce({
+      provider: target.provider,
+      sub: target.providerUserId,
+    });
+    forgetDevices(deps, target);
     await deps.audit.record({
-      actor: { email: req.session?.email },
+      actor: auditActorFromRequest(req),
       action: 'user.delete',
       target: `user:${target.id}`,
       before: toPublicUser(target),
@@ -259,10 +328,96 @@ function toPublicUser(u: UserRecord): PublicUser {
   };
 }
 
+/** The fields PATCH accepts; anything else is refused, never dropped (#1314). */
+const PATCHABLE_FIELDS: ReadonlySet<string> = new Set(['display_name', 'status', 'role']);
+const USER_STATUSES: readonly UserStatus[] = ['active', 'disabled'];
+/** omadia has exactly one role today: every user is an administrator. */
+const USER_ROLES: readonly UserRole[] = ['admin'];
+
+type UserPatch = Parameters<UserStore['update']>[1];
+
+/**
+ * #1314 — validate a PATCH body instead of applying the subset it recognises.
+ * The old handler copied `role` only when it was `'admin'` and `status` only
+ * when it was a known value and answered 200 for everything else, so
+ * `{"role":"viewer"}` "succeeded" while the user stayed an admin. A client
+ * that checks the status code must be able to trust it.
+ */
+export function parseUserPatch(
+  raw: unknown,
+): { patch: UserPatch } | { code: string; message: string } {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    return { code: 'admin_users.invalid_body', message: 'body must be a JSON object' };
+  }
+  const body = raw as Record<string, unknown>;
+  const unknown = Object.keys(body).filter((k) => !PATCHABLE_FIELDS.has(k));
+  if (unknown.length > 0) {
+    return {
+      code: 'admin_users.unknown_field',
+      message: `unsupported field(s): ${unknown.join(', ')} — PATCH accepts ${[...PATCHABLE_FIELDS].join(', ')}`,
+    };
+  }
+  const patch: UserPatch = {};
+  if (body['display_name'] !== undefined) {
+    if (typeof body['display_name'] !== 'string') {
+      return { code: 'admin_users.invalid_display_name', message: 'display_name must be a string' };
+    }
+    patch.displayName = body['display_name'].trim();
+  }
+  if (body['status'] !== undefined) {
+    const status = body['status'];
+    if (!USER_STATUSES.includes(status as UserStatus)) {
+      return {
+        code: 'admin_users.invalid_status',
+        message: `status must be one of: ${USER_STATUSES.join(', ')}`,
+      };
+    }
+    patch.status = status as UserStatus;
+  }
+  if (body['role'] !== undefined) {
+    const role = body['role'];
+    if (!USER_ROLES.includes(role as UserRole)) {
+      return {
+        code: 'admin_users.invalid_role',
+        message: `role must be one of: ${USER_ROLES.join(', ')} — every user is an administrator; role-based permissions are not available yet`,
+      };
+    }
+    patch.role = role as UserRole;
+  }
+  return { patch };
+}
+
 function readParam(req: Request, key: string): string | undefined {
   const v = (req.params as Record<string, string | string[] | undefined>)[key];
   if (typeof v === 'string' && v.length > 0) return v;
   return undefined;
+}
+
+/**
+ * Answer 400 when `password` breaks the shared policy (auth/passwordPolicy.ts)
+ * and report whether it did. Sign-in refuses anything over the maximum, so a
+ * longer password would be stored and never work.
+ */
+function refusePassword(res: Response, password: string): boolean {
+  const violation = checkNewPassword(password);
+  if (violation === 'too_short') {
+    res.status(400).json({ code: 'admin_users.password_too_short' });
+    return true;
+  }
+  if (violation === 'too_long') {
+    res.status(400).json({
+      code: 'admin_users.password_too_long',
+      message: `the password may be at most ${String(MAX_PASSWORD_LENGTH)} characters long`,
+    });
+    return true;
+  }
+  return false;
+}
+
+/** Make the device cookies re-read `user` at once (§10m), under its device key. */
+function forgetDevices(deps: AdminUsersDeps, user: UserRecord): void {
+  const deviceKey = loginDeviceAccountKey(user.provider, user.email);
+  if (deviceKey !== undefined) deps.loginDevices?.forget(deviceKey);
 }
 
 function parseIntQuery(value: unknown, fallback: number): number {

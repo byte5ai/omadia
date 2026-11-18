@@ -10,11 +10,12 @@
  * Detection is deliberately positive-only. There is no reliable "am I in
  * compose" signal from inside a container (the labels that would say so are
  * only visible through the Docker socket, which is exactly what this
- * deployment does not have), so anything that is not demonstrably Fly reports
- * `unknown` and the UI falls back to the generic instructions.
+ * deployment does not have), so anything that is demonstrably neither Fly nor
+ * the desktop app reports `unknown` and the UI falls back to the generic
+ * instructions.
  */
 
-export type PlatformKind = 'fly' | 'unknown';
+export type PlatformKind = 'fly' | 'desktop' | 'unknown';
 
 export interface PlatformInfo {
   readonly kind: PlatformKind;
@@ -34,6 +35,9 @@ function clean(value: string | undefined): string | undefined {
 export function resolvePlatform(
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): PlatformInfo {
+  // The desktop shell sets this for its own kernel, and that app updates itself.
+  if (env['OMADIA_DESKTOP_EMBEDDED'] === 'true') return { kind: 'desktop' };
+
   const appName = clean(env['FLY_APP_NAME']);
   if (appName === undefined) return { kind: 'unknown' };
 

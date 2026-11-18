@@ -1,13 +1,41 @@
-import type { LlmProvider } from '@omadia/llm-provider';
+import type { EffortLevel, LlmProvider } from '@omadia/llm-provider';
 import type {
   LocalSubAgentTool,
   LocalSubAgentToolResult,
   LocalSubAgentToolSpec,
 } from '@omadia/plugin-api';
-import { appendLimitSignalNote, isControlFlowToolResult } from '@omadia/plugin-api';
-import { streamMessageWithObserver } from './streaming.js';
+import { appendLimitSignalNote, isUnknownOutcomeToolErrorNotice } from '@omadia/plugin-api';
+import { McpAuthPromptMint, runWithMcpAuthPromptMint } from './mcp/mcpAuthPromptMint.js';
+import { isProviderWideFailure, streamMessageWithObserver } from './streaming.js';
 import type { AskObserver, AskOptions } from './tools/domainQueryTool.js';
-import { isInternExemptTool } from './privacyInternPolicy.js';
+import { internFailedNotice, isInternExemptTool } from './privacyInternPolicy.js';
+import {
+  remaskEchoedValues,
+  restorePromptSurrogatesInToolInput,
+} from './promptSurrogateToolInput.js';
+import {
+  PrimaryModelCooldown,
+  orchestratorFallbackFor,
+  type SubAgentExecution,
+} from './subAgentModelFallback.js';
+import { type SubAgentEffortFor } from './subAgentEffort.js';
+import { SubAgentRefusalError } from './subAgentRefusal.js';
+import {
+  UnknownOutcomeCalls,
+  refusedRepeat,
+  type SubToolOutcome,
+} from './subAgentUnknownOutcome.js';
+import {
+  errorClassForLog,
+  guardControlFlowResult,
+  isGuardedControlFlowResult,
+  withholdThrownToolError,
+} from './toolErrorRedaction.js';
+import {
+  ToolReplayAbortError,
+  replayMissNotice,
+  runHandlerAtMostOnce,
+} from './toolReplayLedger.js';
 import { buildDateHeader, turnContext } from './turnContext.js';
 
 // `LocalSubAgentTool` and `LocalSubAgentToolSpec` were inlined here
@@ -31,6 +59,8 @@ interface LocalSubAgentOptions {
   maxIterations: number;
   systemPrompt: string;
   tools: LocalSubAgentTool[];
+  /** Effort per executing model (`subAgentEffort.ts`); absent = none sent. */
+  effortFor?: SubAgentEffortFor;
 }
 
 // #1072 — `AskOptions` moved next to `Askable` in `tools/domainQueryTool.ts`
@@ -64,8 +94,11 @@ export class LocalSubAgent {
   private readonly maxTokens: number;
   private readonly maxIterations: number;
   private readonly systemPrompt: string;
+  private readonly effortFor: SubAgentEffortFor | undefined;
   private readonly toolsByName: Map<string, LocalSubAgentTool>;
   private readonly toolSpecs: LocalSubAgentToolSpec[];
+  /** Skips a primary model that failed for a configuration reason. */
+  private readonly primaryCooldown = new PrimaryModelCooldown();
 
   constructor(options: LocalSubAgentOptions) {
     this.name = options.name;
@@ -74,6 +107,7 @@ export class LocalSubAgent {
     this.maxTokens = options.maxTokens;
     this.maxIterations = options.maxIterations;
     this.systemPrompt = options.systemPrompt;
+    this.effortFor = options.effortFor;
     this.toolsByName = new Map(options.tools.map((t) => [t.spec.name, t]));
     // Prompt-cache the tool-spec list. Marking the FINAL spec with
     // `cache_control: ephemeral` tells Anthropic to cache everything up to
@@ -92,6 +126,13 @@ export class LocalSubAgent {
       }
     }
     this.toolSpecs = baseSpecs;
+  }
+
+  /** The `effort` key for one model call — checked per executing model, so a
+   *  fallback hop to a model without the knob sends none. */
+  private effortParam(exec: SubAgentExecution): { effort?: EffortLevel } {
+    const effort = this.effortFor?.(exec.provider.id, exec.model);
+    return effort !== undefined ? { effort } : {};
   }
 
   async ask(
@@ -121,6 +162,10 @@ export class LocalSubAgent {
     }> = [];
     let repeatFailureDetected = false;
     let lastIteration = 0;
+    // Calls that ended in an exception: whether they took effect is unknown,
+    // so an identical repeat is refused for the rest of this run, before the
+    // repeat-failure guard would allow it (`subAgentUnknownOutcome.ts`).
+    const unknownOutcome = new UnknownOutcomeCalls();
 
     // OB-31: per-turn tool obligation. When the caller declares a tool
     // that *must* be invoked at least once during this turn (e.g.
@@ -137,6 +182,23 @@ export class LocalSubAgent {
     let calledExpectedTool = false;
     let escalationsUsed = 0;
     let forceExpectedToolNext = false;
+    // Wrap-up notes already appended to the transcript (#1212).
+    const wrapUpNotesSent = new Set<string>();
+
+    // Where this run's model calls go, and where they may hop to: the
+    // orchestrator's model of this turn (`subAgentModelFallback.ts`). While
+    // the primary is cooling down after a configuration failure, the run
+    // starts on the fallback directly.
+    const primary: SubAgentExecution = { provider: this.provider, model: this.model };
+    let fallback = orchestratorFallbackFor(primary);
+    let exec: SubAgentExecution = primary;
+    if (fallback && this.primaryCooldown.isActive()) {
+      console.warn(
+        `[sub-agent ${this.name}] model '${this.model}' is cooling down after a configuration failure — running on the orchestrator's model '${fallback.model}' on '${fallback.provider.id}'`,
+      );
+      exec = fallback;
+      fallback = undefined;
+    }
 
     try {
       for (let iteration = 0; iteration < this.maxIterations; iteration++) {
@@ -167,11 +229,25 @@ export class LocalSubAgent {
         // if the model *still* refuses to call the obligation tool.
         forceExpectedToolNext = false;
 
-        let trailer = buildDateHeader(turnContext.currentTurnDate());
-        if (repeatFailureDetected && !isLastIteration) {
-          trailer = `${trailer}\n\nIMPORTANT: Du hast denselben Tool-Call mit identischem Input mehrfach hintereinander aufgerufen und immer denselben Fehler bekommen. Rufe diesen Tool-Call NICHT erneut auf. Fasse stattdessen zusammen, was du versucht hast, welcher Fehler aufgetreten ist und was als Nächstes nötig wäre — entweder eine andere Strategie ODER ein operatorseitiger Fix. Gib jetzt eine abschließende Antwort.`;
-        } else if (isLastIteration) {
-          trailer = `${trailer}\n\nIMPORTANT: Dies ist deine letzte Iteration. Du darfst KEINE weiteren Tools aufrufen. Fasse alle Zwischenergebnisse zusammen und gib eine abschließende Antwort — auch wenn die Datenlage unvollständig ist. Benenne fehlende Informationen explizit.`;
+        // #1212 — the system prompt stays the same for the whole run. A
+        // wrap-up note rides as a text block on the newest user turn (after
+        // its tool_result blocks). That message has not been sent yet, so
+        // the conversation prefix, its cache and the thinking blocks bound
+        // to it stay valid. Each note is added once: a provider that ignores
+        // `tool_choice: none` can keep the loop running after it.
+        const trailer = buildDateHeader(turnContext.currentTurnDate());
+        if (forceTextOnly) {
+          const note =
+            repeatFailureDetected && !isLastIteration
+              ? REPEAT_FAILURE_NOTE
+              : LAST_ITERATION_NOTE;
+          if (!wrapUpNotesSent.has(note)) {
+            wrapUpNotesSent.add(note);
+            messages[messages.length - 1] = withWrapUpNote(
+              messages[messages.length - 1]!,
+              note,
+            );
+          }
         }
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -182,45 +258,75 @@ export class LocalSubAgent {
           toolChoice = { type: 'tool', name: expectedTurnToolUse };
         }
 
-        const response: Message = await streamMessageWithObserver(
-          this.provider,
-          {
-            model: this.model,
-            max_tokens: this.maxTokens,
-            // Two-block system: stable prompt (cache-eligible) + the turn's
-            // frozen date from turnContext. Falls back to a fresh date when
-            // called outside any turn (tests / ad-hoc invocations).
-            system: [
-              {
-                type: 'text',
-                text: this.systemPrompt,
-                cache_control: { type: 'ephemeral' },
-              },
-              {
-                type: 'text',
-                text: trailer,
-              },
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            ] as any,
+        const params = {
+          max_tokens: this.maxTokens,
+          // Two-block system: stable prompt (cache-eligible) + the turn's
+          // frozen date from turnContext. Falls back to a fresh date when
+          // called outside any turn (tests / ad-hoc invocations).
+          system: [
+            {
+              type: 'text',
+              text: this.systemPrompt,
+              cache_control: { type: 'ephemeral' },
+            },
+            {
+              type: 'text',
+              text: trailer,
+            },
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            tools: this.toolSpecs as any,
-            messages,
-            ...(toolChoice !== undefined ? { tool_choice: toolChoice } : {}),
-          },
+          ] as any,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          tools: this.toolSpecs as any,
+          messages,
+          ...(toolChoice !== undefined ? { tool_choice: toolChoice } : {}),
+        };
+        // A hop to ANOTHER provider only before the first model call, exactly
+        // like the orchestrator (#1033 W3): from iteration 1 on the transcript
+        // carries tool_use/tool_result pairs shaped by the primary's adapter.
+        const fb =
+          fallback && (iteration === 0 || fallback.provider.id === exec.provider.id)
+            ? fallback
+            : undefined;
+        const response: Message = await streamMessageWithObserver(
+          exec.provider,
+          { ...params, model: exec.model, ...this.effortParam(exec) },
           observer,
           iteration,
           `sub-agent ${this.name}`,
+          fb
+            ? {
+                fallback: {
+                  provider: fb.provider,
+                  params: { ...params, model: fb.model, ...this.effortParam(fb) },
+                  // On the same provider a broken key or endpoint fails the
+                  // second model too; only an unknown model is worth the hop.
+                  ...(fb.provider.id === exec.provider.id
+                    ? { accepts: (reason: string) => !isProviderWideFailure(reason) }
+                    : {}),
+                },
+                onFallback: (ev) => {
+                  // The rest of this run stays on the fallback; a
+                  // configuration failure also skips the primary on the
+                  // following runs for the cooldown.
+                  exec = fb;
+                  fallback = undefined;
+                  const sticky = this.primaryCooldown.recordFallback(ev.reason);
+                  console.warn(
+                    `[sub-agent ${this.name}] model '${this.model}' on '${this.provider.id}' failed (${ev.reason}) — continuing on the orchestrator's model '${ev.model}' on '${ev.providerId}'` +
+                      (sticky ? ' for the next runs too (cooldown)' : ''),
+                  );
+                },
+              }
+            : undefined,
         );
 
-        messages.push({ role: 'assistant', content: response.content });
         const iterationTextBlocks = collectTextBlocks(response.content);
-        textParts.push(...iterationTextBlocks);
 
         // Iteration-end telemetry. Fires before any stop/dispatch decision
         // so consumers see every iteration's stop_reason — including the
         // pathological `end_turn` + 0 tool_use case the BuilderAgent
-        // wants to trap (OB-31). Wrapped in try/catch like every other
-        // observer hook: a buggy listener must not kill the turn.
+        // wants to trap (OB-31) and a refusal. Wrapped in try/catch like
+        // every other observer hook: a buggy listener must not kill the turn.
         try {
           const toolUseCount = response.content.filter(
             (b: ContentBlock) => b.type === 'tool_use',
@@ -246,6 +352,30 @@ export class LocalSubAgent {
           );
         }
 
+        // #1219 — the model's safety classifiers declined this turn (HTTP
+        // 200, `stop_reason: 'refusal'`). Nothing in this response is an
+        // answer: a pre-output refusal carries no text, a mid-stream one a
+        // fragment, and a refused partial can still hold tool_use blocks. So
+        // the run ends HERE — before the response joins `messages`, before
+        // any tool dispatch and before the OB-31 escalation (which would
+        // re-send the refused turn and earn a 400), and regardless of what
+        // earlier iterations produced: their text is a preamble to this
+        // question, not its answer. The typed error lets the domain tool
+        // hand the parent a refusal notice instead of the withheld one.
+        if (response.stop_reason === 'refusal') {
+          const rawCategory: unknown = response.refusal?.category;
+          const category =
+            typeof rawCategory === 'string' ? rawCategory : undefined;
+          console.warn(
+            `[sub-agent ${this.name}] iter ${String(iteration)} → declined by the model's safety classifiers` +
+              ` (category=${category ?? 'none'}) — ending the run without dispatching or escalating`,
+          );
+          throw new SubAgentRefusalError(this.name, category);
+        }
+
+        messages.push({ role: 'assistant', content: response.content });
+        textParts.push(...iterationTextBlocks);
+
         // Detect tool_use blocks in this iteration's content regardless of
         // stop_reason. The Anthropic API contract requires that any
         // assistant message with tool_use blocks be immediately followed
@@ -266,14 +396,26 @@ export class LocalSubAgent {
           // OB-31 escalation: caller declared an obligation tool, model
           // would exit without ever calling it, escalation budget unspent,
           // and we have iteration headroom. Synthesize a user-message
-          // reminder + flip `tool_choice` for next iteration so the API
-          // *forces* the call. After the escalation iteration we honor
-          // whatever stop_reason comes back — no second-chance loop.
+          // reminder + flip `tool_choice` for next iteration. On models that
+          // honour a forced choice the API then *requires* the call; on the
+          // ones that reject it (see `supportsForcedToolChoice()` in the
+          // Anthropic adapter) it degrades to `auto`, and the reminder text is
+          // the whole mechanism. After the escalation iteration we honor
+          // whatever stop_reason comes back — no second-chance loop. A
+          // refusal never gets here; it ended the run above.
+          // `!forceTextOnly`, not just `!isLastIteration`: once a repeat
+          // failure has withdrawn the tools (sticky `tool_choice: none`),
+          // the model cannot call the obligation tool any more, so an
+          // escalation would only buy a round-trip whose reminder
+          // contradicts the request it rides on. Let the turn end. The same
+          // holds when the next iteration is the last one: it runs text-only,
+          // so its reminder would sit next to the last-iteration note.
           if (
             expectedTurnToolUse !== undefined &&
             !calledExpectedTool &&
             escalationsUsed < maxEscalations &&
-            !isLastIteration
+            !forceTextOnly &&
+            iteration + 1 < this.maxIterations - 1
           ) {
             escalationsUsed += 1;
             forceExpectedToolNext = true;
@@ -340,11 +482,16 @@ export class LocalSubAgent {
           } catch (err) {
             console.warn(`[sub-agent ${this.name}] observer.onSubToolUse threw:`, err);
           }
+          const toolName = String(use.name);
+          const inputHash = canonicalHash(use.input);
           const started = Date.now();
-          const { output, postcondition } = await this.dispatch(
-            use.name,
-            use.input,
-          );
+          const { output, postcondition, outcomeUnknown, replayed } = unknownOutcome.has(
+            toolName,
+            inputHash,
+          )
+            ? refusedRepeat(this.name, toolName)
+            : await this.dispatchRemasked(use.name, use.input);
+          if (outcomeUnknown === true) unknownOutcome.add(toolName, inputHash);
           const elapsed = Date.now() - started;
           const isError = output.startsWith('Error:') || postcondition !== undefined;
           console.log(
@@ -357,6 +504,7 @@ export class LocalSubAgent {
               durationMs: elapsed,
               isError,
               ...(postcondition ? { postcondition } : {}),
+              ...(replayed === true ? { replayed: true } : {}),
             });
           } catch (err) {
             console.warn(`[sub-agent ${this.name}] observer.onSubToolResult threw:`, err);
@@ -367,17 +515,19 @@ export class LocalSubAgent {
             content: output,
             ...(isError ? { is_error: true } : {}),
           });
-          recentToolCalls.push({
-            name: String(use.name),
-            inputHash: canonicalHash(use.input),
-            isError,
-          });
+          recentToolCalls.push({ name: toolName, inputHash, isError });
         }
+        // A verifier re-entry that needed an inner call outside the first run
+        // is abandoned (`toolReplayLedger.ts`): stop here rather than pay a
+        // model call to answer around the refusal. The parent's checks end
+        // the re-entry either way.
+        const abandoned = turnContext.current()?.toolReplayLedger?.abortedTool;
+        if (abandoned !== undefined) throw new ToolReplayAbortError(abandoned);
         messages.push({ role: 'user', content: toolResults });
 
         // Detect "stuck": last N tool calls all matched on (name, input)
         // AND all errored. Trigger one early-termination round (forced
-        // tool_choice:none + addendum in the system trailer) instead of
+        // tool_choice:none + a wrap-up note on the newest user turn) instead of
         // looping until maxIterations.
         if (recentToolCalls.length >= REPEAT_FAILURE_THRESHOLD) {
           const tail = recentToolCalls.slice(-REPEAT_FAILURE_THRESHOLD);
@@ -425,23 +575,89 @@ export class LocalSubAgent {
     }
   }
 
-  private async dispatch(
-    toolName: string,
-    input: unknown,
-  ): Promise<{ output: string; postcondition?: { issues: readonly string[] } }> {
+  /** #1544 — every tool result this sub-agent's model reads, errors and
+   *  bypassed results included, with the turn's masked prompt values masked
+   *  again: the inner tool may have run on them. */
+  private async dispatchRemasked(toolName: string, input: unknown): Promise<SubToolOutcome> {
+    const outcome = await this.dispatch(toolName, input);
+    const privacy = turnContext.current()?.privacyHandle;
+    return { ...outcome, output: remaskEchoedValues(privacy, outcome.output) };
+  }
+
+  private async dispatch(toolName: string, input: unknown): Promise<SubToolOutcome> {
     const tool = this.toolsByName.get(toolName);
     if (!tool) return { output: `Error: unknown tool \`${toolName}\`.` };
 
     // Privacy Shield v4 — Data-Plane Boundary for sub-agent inner calls.
-    // The privacy handle is threaded through `turnContext.privacyHandle`;
-    // sub-agents inherit it from the parent orchestrator's turn scope.
-    // Absent ⇒ no privacy provider installed and the result flows through.
+    // The privacy handle is threaded through `turnContext.privacyHandle`:
+    // sub-agents inherit it from the parent orchestrator's turn scope, or from
+    // the dispatcher that ran their domain tool outside a turn (the public MCP
+    // endpoint's per-call gate — `handlerPrivacyScope.ts`). Absent ⇒ no
+    // privacy provider installed and the result flows through.
     const privacy = turnContext.current()?.privacyHandle;
+    // A THROWING inner tool used to abort this whole sub-agent run, and the
+    // parent's domain-tool wrapper then re-wrapped the exception message as
+    // prose. Now the throw resolves as a tool result here, like it does in the
+    // parent loops since #1095: the message is withheld from this sub-agent's
+    // model (class name, code, log ref — `toolErrorRedaction.ts`), the
+    // sub-agent continues and can answer without the tool. The call may have
+    // taken effect before it threw, so `ask` refuses an identical repeat for
+    // the rest of the run (`outcomeUnknown`, `subAgentUnknownOutcome.ts`). The
+    // notice is PII-free, so it skips the capture and privacy steps below.
+    //
+    // The mint records a connect prompt the MCP manager produces during this
+    // inner call (the parent dispatch's mint records it too), so only that
+    // exact text skips interning below (`mcpAuthPromptMint.ts`).
+    const authPromptMint = new McpAuthPromptMint();
+    // The request's tool replay ledger (`toolReplayLedger.ts`), asked before
+    // the inner handler runs. Inner tools declare nothing, so on a verifier
+    // re-entry every call outside the first run counts as a write: refused,
+    // and the whole re-entry is abandoned (the parent checks the shared flag).
+    // A repeat of a call whose outcome is unknown is refused in every pass,
+    // across sub-agent runs of the same request.
+    const ledger = turnContext.current()?.toolReplayLedger;
+    const seam = `subagent:${this.name}` as const;
+    const decision = ledger?.decide(seam, toolName, input, { readOnly: false });
+    if (decision?.action === 'refuse-repeat') return refusedRepeat(this.name, toolName);
+    if (decision?.action === 'refuse-miss') return { output: replayMissNotice(toolName) };
+    const replay = decision?.action === 'replay' ? decision.record : undefined;
+    let raw: Awaited<ReturnType<LocalSubAgentTool['handle']>>;
+    try {
+      if (replay?.kind === 'rejection') throw replay.error;
+      raw =
+        replay?.kind === 'result'
+          ? (replay.value as Awaited<ReturnType<LocalSubAgentTool['handle']>>)
+          : await runHandlerAtMostOnce(ledger, () =>
+              runWithMcpAuthPromptMint(authPromptMint, () =>
+                // #1544 — the inner tool runs on the user's values; this
+                // sub-agent's model keeps reading the placeholders.
+                tool.handle(
+                  isInternExemptTool(toolName)
+                    ? input
+                    : restorePromptSurrogatesInToolInput(privacy, input),
+                ),
+              ),
+            );
+    } catch (err) {
+      if (replay === undefined) ledger?.record(seam, toolName, input, { kind: 'rejection', error: err });
+      const withheld = await withholdThrownToolError({
+        toolName,
+        err,
+        privacy,
+        site: `sub-agent ${this.name}`,
+      });
+      return {
+        output: withheld.text,
+        // A refusal was not carried out, so its outcome is known (#1343).
+        ...(withheld.refused ? {} : { outcomeUnknown: true as const }),
+        ...(replay !== undefined ? { replayed: true as const } : {}),
+      };
+    }
+    if (replay === undefined) ledger?.record(seam, toolName, input, { kind: 'result', value: raw });
     // #130 — unwrap the structured tool-result union at the boundary so
     // every privacy / capture path downstream keeps seeing a plain string,
     // while we still surface the optional postcondition marker upward to
     // the observer (which the RunTraceCollector copies onto the trace).
-    const raw = await tool.handle(input);
     const rawOutput = typeof raw === 'string' ? raw : raw.output;
     const limitSignal = typeof raw === 'string' ? undefined : raw.limitSignal;
     // Plugin self-extension (Layer 1) — fold the runtime limit note into the
@@ -449,6 +665,17 @@ export class LocalSubAgent {
     // fall-through). PII-free + deterministic, safe through the data-plane.
     const result = appendLimitSignalNote(rawOutput, limitSignal);
     const postcondition = typeof raw === 'string' ? undefined : raw.postcondition;
+    // Carried by every return below. A wrapper that caught the exception
+    // itself (the tool bridges, `toolErrorFromException`) returns the withheld
+    // notice instead of throwing: that call's outcome is just as unknown.
+    const carried = {
+      ...(postcondition ? { postcondition } : {}),
+      ...(isUnknownOutcomeToolErrorNotice(rawOutput) ? { outcomeUnknown: true as const } : {}),
+      ...(replay !== undefined ? { replayed: true as const } : {}),
+    };
+    if (replay === undefined && isUnknownOutcomeToolErrorNotice(rawOutput)) {
+      ledger?.noteUnknownOutcome(toolName, input);
+    }
     // Phase C.2 — Raw tool-result capture (parallel to orchestrator.dispatchTool).
     // Sub-agent tool calls also feed routine templates, so the capture
     // hook must fire here too. Absent callback ⇒ no capture.
@@ -468,9 +695,23 @@ export class LocalSubAgent {
       // never interned (see `privacyInternPolicy.ts`). Same allowlist the
       // top-level orchestrator dispatch honours, applied here so a sub-agent
       // reading memory / stored processes sees them in clear too. Checked
-      // first so it wins over every other branch.
+      // first so it wins over every other branch. The exemption covers the
+      // normal result only: an exempt tool's `Error:` text takes the same
+      // redaction as below, like on the orchestrator's dispatch.
       if (isInternExemptTool(toolName)) {
-        return { output: result, ...(postcondition ? { postcondition } : {}) };
+        if (isGuardedControlFlowResult(result, authPromptMint)) {
+          return {
+            output: await guardControlFlowResult({
+              toolName,
+              result,
+              privacy,
+              site: `sub-agent ${this.name}`,
+              authPromptMint,
+            }),
+            ...carried,
+          };
+        }
+        return { output: remaskEchoedValues(privacy, result), ...carried };
       }
       // Slice 2.5 — same operator-owned bypass check the orchestrator's
       // outer dispatch consults. If the tool's plugin opted into `bypass`,
@@ -481,20 +722,24 @@ export class LocalSubAgent {
       if (bypass !== undefined) {
         const flag = turnContext.current()?.subAgentBypassFlag;
         if (flag) flag.value = true;
-        try {
-          await privacy.recordBypassedTool({
-            toolName,
-            pluginId: bypass.pluginId,
-            reason: 'operator_setting',
-            bytes: Buffer.byteLength(result, 'utf8'),
-          });
-        } catch (err) {
-          console.warn(
-            `[sub-agent ${this.name}] privacy.recordBypassedTool threw on '${toolName}' — bypass still applied:`,
-            err,
-          );
+        // A replayed bypass is on the first run's receipt already.
+        if (replay === undefined) {
+          try {
+            await privacy.recordBypassedTool({
+              toolName,
+              pluginId: bypass.pluginId,
+              reason: 'operator_setting',
+              bytes: Buffer.byteLength(result, 'utf8'),
+            });
+          } catch (err) {
+            console.warn(
+              `[sub-agent ${this.name}] privacy.recordBypassedTool threw on '${toolName}' — bypass still applied:`,
+              err,
+            );
+          }
         }
-        return { output: result, ...(postcondition ? { postcondition } : {}) };
+        // #1544 — raw tool data, but the user's own masked values stay masked.
+        return { output: remaskEchoedValues(privacy, result), ...carried };
       }
       // Canvas sentinel tap — sub-tools (e.g. an agent plugin's deterministic
       // canvas tree) emit `_pending*` directives too; the synthesis needs the
@@ -509,19 +754,31 @@ export class LocalSubAgent {
         }
       }
       // #1097 — a guarded tool that returned control-flow prose (the `Error:`
-      // tool-error convention, or an MCP auth prompt) must reach this
-      // sub-agent's model AS that text, not be interned. Interning it would (a) hide the failure
-      // behind a masked digest, so the sub-agent never learns the call failed
-      // and cannot act on the hint the error carries, and (b) register a
-      // renderable 1-row dataset that a later `v4_render_answer` materializes
-      // as if the error were data. Same guard, same position as the one on
-      // `Orchestrator.dispatchTool` and `ToolDispatchService.afterDispatch`:
-      // after the intern exemption and the operator bypass, before interning.
-      // The `is_error` flag on the tool_result block is derived from this very
-      // prefix (see `dispatch`'s caller), so passing it through keeps the
-      // string and the flag telling the same story.
-      if (isControlFlowToolResult(result)) {
-        return { output: result, ...(postcondition ? { postcondition } : {}) };
+      // tool-error convention, or the MCP connect prompt this inner call
+      // produced — by provenance, never by its prefix) must reach this
+      // sub-agent's model AS that text, not be interned. Interning it would
+      // (a) hide the failure behind a masked digest, so the sub-agent never
+      // learns the call failed and cannot act on the hint the error carries,
+      // and (b) register a renderable 1-row dataset that a later
+      // `v4_render_answer` materializes as if the error were data. Same guard,
+      // same position as the one on `Orchestrator.dispatchTool` and
+      // `ToolDispatchService.afterDispatch`: after the intern exemption and the
+      // operator bypass, before interning. Not interned is not unchecked: the
+      // `Error:` text is redacted through the shield (or withheld whole) and
+      // receipted — `bridgeTool` hands plugin output straight here. The
+      // `is_error` flag on the tool_result block is derived from the prefix
+      // (see `dispatch`'s caller), and the redaction keeps it.
+      if (isGuardedControlFlowResult(result, authPromptMint)) {
+        return {
+          output: await guardControlFlowResult({
+            toolName,
+            result,
+            privacy,
+            site: `sub-agent ${this.name}`,
+            authPromptMint,
+          }),
+          ...carried,
+        };
       }
       // Intern the raw result server-side and hand the LLM only the
       // identity-free digest — the raw rows never reach the LLM wire.
@@ -529,6 +786,7 @@ export class LocalSubAgent {
         const v4 = await privacy.internToolResultV4({
           toolName,
           rawResult: result,
+          toolInput: input,
         });
         // Privacy Shield v4 — record the interned datasetId so the parent
         // orchestrator can pass the REAL dataset up by reference instead of
@@ -540,17 +798,39 @@ export class LocalSubAgent {
           // The raw result is interned away; re-attach the (PII-free) limit
           // note to the digest so the agent still learns the result is bounded.
           output: appendLimitSignalNote(v4.digestText, limitSignal),
-          ...(postcondition ? { postcondition } : {}),
+          ...carried,
         };
       } catch (err) {
+        // Fail closed, like the parent's dispatch (`internFailedNotice`):
+        // this sub-agent's model never reads the raw result. The provider's
+        // error can quote that result, so the log line carries class and code only.
         console.warn(
-          `[sub-agent ${this.name}] privacy.internToolResultV4 threw on '${toolName}' — sending raw result:`,
-          err,
+          `[sub-agent ${this.name}] privacy.internToolResultV4 threw ${errorClassForLog(err)} on '${toolName}' — result WITHHELD`,
         );
+        return { output: internFailedNotice(toolName), ...carried };
       }
     }
-    return { output: result, ...(postcondition ? { postcondition } : {}) };
+    return { output: result, ...carried };
   }
+}
+
+// Wrap-up notes for the text-only iteration (#1212). The withdrawn tools
+// (`tool_choice: none`) enforce the constraint; the note only explains it.
+const REPEAT_FAILURE_NOTE =
+  'Du hast denselben Tool-Call mit identischem Input mehrfach hintereinander aufgerufen und jedes Mal denselben Fehler bekommen; ein weiterer identischer Aufruf scheitert genauso, deshalb stehen dir keine Tools mehr zur Verfügung. Gib jetzt eine abschließende Antwort: was du versucht hast, welcher Fehler aufgetreten ist und was als Nächstes nötig wäre — eine andere Strategie oder ein operatorseitiger Fix.';
+const LAST_ITERATION_NOTE =
+  'Das ist die letzte Iteration dieses Auftrags; Tools stehen nicht mehr zur Verfügung. Fasse die Zwischenergebnisse zu einer abschließenden Antwort zusammen, auch wenn die Datenlage unvollständig ist, und benenne fehlende Informationen explizit.';
+
+/** Returns `message` with `note` appended as a trailing text block. */
+function withWrapUpNote(
+  message: { role: 'user' | 'assistant'; content: ContentBlock[] | string },
+  note: string,
+): { role: 'user' | 'assistant'; content: ContentBlock[] } {
+  const blocks: ContentBlock[] =
+    typeof message.content === 'string'
+      ? [{ type: 'text', text: message.content }]
+      : message.content;
+  return { ...message, content: [...blocks, { type: 'text', text: note }] };
 }
 
 function collectTextBlocks(content: ContentBlock[]): string[] {

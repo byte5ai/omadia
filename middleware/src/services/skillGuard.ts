@@ -117,14 +117,24 @@ const SYNC_VERIFIERS: readonly Verifier[] = [regexPatternVerifier];
  * Scan a skill's frontmatter + body for risky patterns. This synchronous path
  * only runs synchronous verifiers; async verifiers (Phase 1b LLM checks) are
  * invoked separately by the verdict service, never from this import-time path.
+ *
+ * #1219 — `description` is scanned as well: it is the routing text of the
+ * sub-agent's delegation tool, so it reaches the PARENT orchestrator's system
+ * prompt and tool list, a wider audience than the body. It is scanned as text
+ * ahead of the body, so the verifiers need no new parameter.
  */
 export function scanSkillForRisks(
   frontmatter: Record<string, unknown>,
   body: string,
+  description?: string | null,
 ): SkillRisk[] {
+  const text =
+    typeof description === 'string' && description.trim().length > 0
+      ? `${description}\n${body}`
+      : body;
   const risks: SkillRisk[] = [];
   for (const verifier of SYNC_VERIFIERS) {
-    const result = verifier(frontmatter, body);
+    const result = verifier(frontmatter, text);
     if (result instanceof Promise) {
       throw new TypeError('scanSkillForRisks only supports synchronous verifiers');
     }

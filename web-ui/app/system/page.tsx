@@ -3,6 +3,9 @@ import { getTranslations } from 'next-intl/server';
 
 import { getVaultStatus } from '../_lib/api';
 import { redirectIfUnauthorized } from '../_lib/authRedirect';
+import { fetchMiddlewareHealth } from '../_lib/platformHealth';
+import { isDatabaseUnavailable } from '../_lib/runtimeReadiness';
+import { PlatformHealthCard } from './_components/PlatformHealthCard';
 import { VaultStatusCard } from './_components/VaultStatusCard';
 
 export async function generateMetadata(): Promise<Metadata> {
@@ -14,13 +17,26 @@ export const dynamic = 'force-dynamic';
 
 export default async function SystemPage(): Promise<React.ReactElement> {
   const t = await getTranslations('system.page');
+  // #1385 — loaded independently: during a Postgres outage the vault call
+  // answers 503 `auth.unavailable`, and that must not hide the card that says
+  // why. `fetchMiddlewareHealth` never rejects.
+  const [vaultResult, health] = await Promise.all([
+    getVaultStatus().then(
+      (value) => ({ ok: true as const, value }),
+      (err: unknown) => ({ ok: false as const, err }),
+    ),
+    fetchMiddlewareHealth(),
+  ]);
   let status = null;
   let loadError: string | null = null;
-  try {
-    status = await getVaultStatus();
-  } catch (err) {
-    await redirectIfUnauthorized(err);
-    loadError = err instanceof Error ? err.message : t('errorUnknownLoad');
+  let loadErrorIsDatabase = false;
+  if (vaultResult.ok) {
+    status = vaultResult.value;
+  } else {
+    await redirectIfUnauthorized(vaultResult.err);
+    loadError =
+      vaultResult.err instanceof Error ? vaultResult.err.message : t('errorUnknownLoad');
+    loadErrorIsDatabase = isDatabaseUnavailable(vaultResult.err);
   }
 
   return (
@@ -44,10 +60,16 @@ export default async function SystemPage(): Promise<React.ReactElement> {
         </p>
       </header>
 
-      <section className="mt-8 grid gap-6 lg:grid-cols-2">
+      <section className="mt-8 grid items-start gap-6 lg:grid-cols-2">
+        <PlatformHealthCard health={health} />
         {loadError ? (
           <div className="rounded-lg border border-[color:var(--danger)]/40 bg-[color:var(--danger)]/5 p-6 text-sm text-[color:var(--danger)]">
             <div className="font-semibold">{t('loadErrorTitle')}</div>
+            {loadErrorIsDatabase ? (
+              <p className="mt-2" data-testid="vault-load-error-database">
+                {t('loadErrorDatabase')}
+              </p>
+            ) : null}
             <div className="mt-2 font-mono text-xs">{loadError}</div>
           </div>
         ) : status ? (

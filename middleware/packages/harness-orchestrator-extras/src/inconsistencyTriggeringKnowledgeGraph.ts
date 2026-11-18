@@ -19,6 +19,7 @@ import type {
   AclMutationOptions,
   ChannelIdentityIngest,
   MemorableKnowledgePurgeFilter,
+  ConversationHistoryPurgeFilter,
   CreateInconsistencyInput,
   CreateExcerptMergeCandidateInput,
   CreateMergeCandidateInput,
@@ -73,6 +74,7 @@ import type {
   SearchTurnsOptions,
   SessionFilter,
   SessionSummary,
+  SessionReadOptions,
   SessionView,
   TurnIngest,
   TurnIngestResult,
@@ -102,6 +104,14 @@ export class InconsistencyTriggeringKnowledgeGraph implements KnowledgeGraph {
    * rendering a confidently wrong total.
    */
   readonly countDatasets?: (opts: { ownerOmadiaUserId: string }) => Promise<number>;
+  // #1334 — optional on the contract: forwarded only when the inner graph has
+  // them, so the purge route can tell an unsupported provider from an empty one.
+  readonly countConversationHistory?: (
+    filter: ConversationHistoryPurgeFilter,
+  ) => Promise<{ count: number }>;
+  readonly purgeConversationHistory?: (
+    filter: ConversationHistoryPurgeFilter,
+  ) => Promise<{ deletedNodes: number }>;
 
   constructor(opts: InconsistencyTriggeringKnowledgeGraphOptions) {
     this.inner = opts.inner;
@@ -109,6 +119,10 @@ export class InconsistencyTriggeringKnowledgeGraph implements KnowledgeGraph {
     this.log = opts.log ?? ((msg: string): void => { console.error(msg); });
     const innerCount = opts.inner.countDatasets?.bind(opts.inner);
     if (innerCount) this.countDatasets = innerCount;
+    const innerCountHistory = opts.inner.countConversationHistory?.bind(opts.inner);
+    if (innerCountHistory) this.countConversationHistory = innerCountHistory;
+    const innerPurgeHistory = opts.inner.purgeConversationHistory?.bind(opts.inner);
+    if (innerPurgeHistory) this.purgeConversationHistory = innerPurgeHistory;
   }
 
   private fire(mkId: string): void {
@@ -218,11 +232,9 @@ export class InconsistencyTriggeringKnowledgeGraph implements KnowledgeGraph {
   deletePlan(planExternalId: string): Promise<PlanDeleteResult> {
     return this.inner.deletePlan(planExternalId);
   }
-  listRecentPlans(opts: {
-    userId?: string;
-    limit?: number;
-    openOnly?: boolean;
-  }): Promise<GraphNode[]> {
+  listRecentPlans(
+    opts: Parameters<KnowledgeGraph['listRecentPlans']>[0],
+  ): Promise<GraphNode[]> {
     return this.inner.listRecentPlans(opts);
   }
   getRunForTurn(turnExternalId: string): Promise<RunTraceView | null> {
@@ -244,8 +256,8 @@ export class InconsistencyTriggeringKnowledgeGraph implements KnowledgeGraph {
   ): Promise<EntityCapturedTurnsHit[]> {
     return this.inner.findEntityCapturedTurns(opts);
   }
-  getSession(scope: string): Promise<SessionView | null> {
-    return this.inner.getSession(scope);
+  getSession(scope: string, options?: SessionReadOptions): Promise<SessionView | null> {
+    return this.inner.getSession(scope, options);
   }
   listSessions(filter?: SessionFilter): Promise<SessionSummary[]> {
     return this.inner.listSessions(filter);

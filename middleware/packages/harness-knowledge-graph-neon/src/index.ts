@@ -17,6 +17,22 @@ export type {
   NodeRow,
 } from './neonKnowledgeGraph.js';
 export { runGraphMigrations } from './migrator.js';
+// SCRAM-only connections for every kernel pool when the process requires it
+// (`OMADIA_DB_REQUIRE_SCRAM=1`, set by the desktop shell). Core's own pools
+// take the same option.
+export {
+  DB_REQUIRE_SCRAM_ENV,
+  ScramOnlyClient,
+  ScramRequiredError,
+  isScramRefusal,
+  isScramRequired,
+  scramOnlyPoolOptions,
+} from './scramOnlyClient.js';
+
+// "Postgres is not reachable YET" — shared with core's boot-time wait in
+// `platform/coreMigrations.ts` (#1386), so the two waits cannot disagree on
+// which errors are worth riding out.
+export { isTransientDbError } from './neonKnowledgeGraph.js';
 
 // Embedding-backfill scheduler. The InMemory sibling has no persistence
 // layer to back-fill, so this lives only here.

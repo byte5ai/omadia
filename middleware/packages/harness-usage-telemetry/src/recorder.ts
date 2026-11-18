@@ -17,6 +17,7 @@
  * in three different packages (orchestrator streaming, extras, verifier) that
  * must all write to one place without threading a pool through every seam.
  */
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Pool } from 'pg';
 import { computeCostUsd, type UsageTokens } from './pricing.js';
 
@@ -94,6 +95,34 @@ export function setUsageContextProvider(
   contextProvider = provider;
 }
 
+/**
+ * #1571 — an explicit attribution scope for work that runs for a turn after
+ * that turn's own context has closed (the answer verifier). Inside
+ * {@link runWithUsageContext} it wins over the registered provider; ids passed
+ * on a `UsageRecord` still win over both.
+ */
+const explicitContext = new AsyncLocalStorage<UsageContext>();
+
+/** Runs `fn` with every `recordUsage()` in it attributed to `ctx`. */
+export function runWithUsageContext<T>(ctx: UsageContext, fn: () => T): T {
+  return explicitContext.run(ctx, fn);
+}
+
+/**
+ * #1390 — provider ids whose adapter writes its own `token_usage` row for every
+ * call. The `claude-cli` adapter records each completion as
+ * `claude-cli-completion` with `cost_usd = 0` and the CLI's reference cost
+ * (OM-103). A seam that records at a layer above such a provider (the
+ * orchestrator's buffered path, `ctx.llm`) must skip it, or every subscription
+ * call lands in the ledger twice — once at a price nobody paid.
+ */
+const SELF_RECORDING_PROVIDER_IDS: ReadonlySet<string> = new Set(['claude-cli']);
+
+/** True when `providerId`'s adapter records its own usage rows; see above. */
+export function providerRecordsOwnUsage(providerId: string): boolean {
+  return SELF_RECORDING_PROVIDER_IDS.has(providerId);
+}
+
 const FLUSH_INTERVAL_MS = 5_000;
 const FLUSH_MAX_BATCH = 100;
 /** Hard cap so a wedged DB can't grow the buffer without bound. */
@@ -156,7 +185,7 @@ export function recordUsage(record: UsageRecord): void {
   // throwing provider must not break a telemetry write.
   let ctx: UsageContext | undefined;
   try {
-    ctx = contextProvider?.();
+    ctx = explicitContext.getStore() ?? contextProvider?.();
   } catch (err) {
     ctx = undefined;
     if (!warnedContextProviderError) {

@@ -185,6 +185,75 @@ describe('#757 turn-receipt persistence — orchestrator wiring', () => {
     assert.ok(result.privacyReceipt, 'receipt still reaches the user');
   });
 
+  it('a turn whose only shield activity was a withheld tool error persists its receipt', async () => {
+    const THROWN = `Fault: Invalid field 'x' on record {"email":"${RAW_EMAIL}"}`;
+    const replies: LlmResponse[] = [
+      {
+        content: [{ type: 'tool_call', id: 'use-1', name: 'odoo_search_partner', input: {} }],
+        finishReason: 'tool_calls',
+        providerFinishReason: 'tool_use',
+        model: 'test',
+        usage: { inputTokens: 10, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0 },
+      } as unknown as LlmResponse,
+      textResponse('Die Suche ist gerade nicht verfügbar.'),
+    ];
+    let idx = 0;
+    const provider = {
+      ...staticProvider(),
+      complete: async (): Promise<LlmResponse> => replies[idx++] ?? textResponse('done'),
+    } as unknown as LlmProvider;
+    const registry = new NativeToolRegistry();
+    registry.register('odoo_search_partner', {
+      handler: () => Promise.reject(new Error(THROWN)),
+      spec: {
+        name: 'odoo_search_partner',
+        description: 'always fails',
+        input_schema: { type: 'object' as const, properties: {}, required: [] },
+      } as never,
+      domain: 'test.pii',
+    });
+    const recorded: TurnReceiptRecordInput[] = [];
+    const orch = new Orchestrator({
+      provider,
+      model: 'test-model',
+      maxTokens: 1024,
+      maxToolIterations: 3,
+      domainTools: [],
+      nativeToolRegistry: registry,
+      sessionLogger,
+      // Prompt masking stays OFF: the tool error is the turn's only activity.
+      privacyGuard: () => createPrivacyGuardService(),
+      turnReceiptStore: () => ({
+        record: async (entry: TurnReceiptRecordInput) => {
+          recorded.push(entry);
+        },
+      }),
+    });
+
+    const result = await orch.runTurn({
+      userMessage: 'Suche den Partner.',
+      sessionScope: 'sess-te',
+      userId: 'u1',
+    });
+
+    assert.ok(result.privacyReceipt, 'a withheld tool error is shield activity worth a receipt');
+    assert.equal(recorded.length, 1, 'and it is persisted');
+    assert.deepEqual(recorded[0]!.receipt, result.privacyReceipt, 'UI truth == record truth');
+    assert.deepEqual(result.privacyReceipt.toolErrors, [
+      {
+        toolName: 'odoo_search_partner',
+        carrier: 'thrown',
+        outcome: 'withheld',
+        bytes: Buffer.byteLength(THROWN),
+      },
+    ]);
+    assert.equal(
+      JSON.stringify(recorded[0]!.receipt).includes(RAW_EMAIL),
+      false,
+      'the persisted receipt is PII-free',
+    );
+  });
+
   it('no store wired ⇒ byte-identical pre-#757 behaviour', async () => {
     const orch = new Orchestrator({
       provider: staticProvider(),

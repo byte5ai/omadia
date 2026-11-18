@@ -2,14 +2,16 @@
 
 import { useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Check, X } from 'lucide-react';
-import { useTranslations } from 'next-intl';
+import { AlertTriangle, Check, X } from 'lucide-react';
+import { useFormatter, useTranslations } from 'next-intl';
 
 import { cn } from '../../_lib/cn';
 import {
   ApiError,
+  cancelInstallJob,
   configureInstallJob,
   createInstallJob,
+  installFromRegistry,
 } from '../../_lib/api';
 import type {
   CapabilityProviderRef,
@@ -73,7 +75,9 @@ type Phase =
       requiresForm: boolean;
       stepError: string | null;
     }
-  | { kind: 'success' }
+  /** #1496 — `notRunning` names the steps that installed but did not start
+   *  (`errored`); the final screen must not call those "active". */
+  | { kind: 'success'; notRunning: string[] }
   | { kind: 'error'; message: string };
 
 /**
@@ -200,7 +204,7 @@ export function RequiresWizard({
               }}
             />
           ) : phase.kind === 'success' ? (
-            <SuccessBody targetPluginName={targetPluginName} />
+            <SuccessBody targetPluginName={targetPluginName} notRunning={phase.notRunning} />
           ) : (
             <ErrorBody message={phase.message} />
           )}
@@ -289,7 +293,11 @@ export function RequiresWizard({
   // ---------------------------------------------------------------------
 
   async function runInstallChain(): Promise<void> {
-    const steps: Array<{ pluginId: string; label: string }> = [];
+    const steps: Array<{
+      pluginId: string;
+      label: string;
+      hub?: { version: string; update: boolean };
+    }> = [];
     for (const sel of selections) {
       if (!sel.providerId) {
         setPhase({
@@ -302,13 +310,27 @@ export function RequiresWizard({
       const label = cand
         ? `${cand.name} (${sel.capability})`
         : `${sel.providerId} (${sel.capability})`;
-      steps.push({ pluginId: sel.providerId, label });
+      steps.push({
+        pluginId: sel.providerId,
+        label,
+        // #1463 — a Hub provider is fetched first; an installed one is
+        // updated in place, and the update activates it.
+        ...(cand?.source === 'registry'
+          ? {
+              hub: {
+                version: cand.version,
+                update: cand.update_from !== undefined,
+              },
+            }
+          : {}),
+      });
     }
     steps.push({
       pluginId: targetPluginId,
       label: targetPluginName,
     });
 
+    const notRunning: string[] = [];
     for (let i = 0; i < steps.length; i++) {
       const step = steps[i];
       if (!step) continue;
@@ -322,6 +344,45 @@ export function RequiresWizard({
           requiresForm: false,
           stepError: null,
         });
+        if (step.hub) {
+          const ingested = await installFromRegistry(
+            step.pluginId,
+            step.hub.version,
+          );
+          if (ingested.activation_error) {
+            setPhase({
+              kind: 'error',
+              message: t('stepActivationFailed', {
+                label: step.label,
+                error: ingested.activation_error,
+              }),
+            });
+            return;
+          }
+          if (step.hub.update) {
+            // An update starts the provider only when the core reactivates
+            // it — not for one the circuit breaker latched or that was
+            // stood down. Going on would fail the target on a provider that
+            // is not running.
+            if (!ingested.activated) {
+              setPhase({
+                kind: 'error',
+                message: t('stepUpdatedNotStarted', { label: step.label }),
+              });
+              return;
+            }
+            continue;
+          }
+          // A Hub provider with `depends_on` parents of its own that are not
+          // installed would be refused by the install gate below.
+          if ((ingested.chain?.available_providers.length ?? 0) > 0) {
+            setPhase({
+              kind: 'error',
+              message: t('stepNeedsParents', { label: step.label }),
+            });
+            return;
+          }
+        }
         const created = await createInstallJob(step.pluginId);
         const job = created.job;
         const fields = job.setup_schema?.fields ?? [];
@@ -349,15 +410,27 @@ export function RequiresWizard({
 
         const configured = await configureInstallJob(job.id, values);
         if (!isInstalledTerminal(configured.job.state)) {
+          // #1494 — a validation failure now leaves the job `awaiting_config`
+          // instead of ending it. This wizard stops the chain here, so it
+          // ends the job itself rather than leaving it open on the server.
+          if (configured.job.state === 'awaiting_config') {
+            await cancelInstallJob(configured.job.id).catch(() => undefined);
+          }
+          // #1401 — `validation_failed` carries German server text; say it
+          // from the catalog. Other codes keep the server message.
+          const error = configured.job.error;
           const message =
-            configured.job.error?.message ??
-            t('stepEndedInState', {
-              label: step.label,
-              state: configured.job.state,
-            });
+            error?.code === 'install.validation_failed'
+              ? t('stepValidationFailed', { label: step.label })
+              : (error?.message ??
+                t('stepEndedInState', {
+                  label: step.label,
+                  state: configured.job.state,
+                }));
           setPhase({ kind: 'error', message });
           return;
         }
+        if (configured.job.state === 'errored') notRunning.push(step.label);
       } catch (err) {
         const message = describeError(err);
         setPhase({ kind: 'error', message: `${step.label}: ${message}` });
@@ -365,7 +438,7 @@ export function RequiresWizard({
       }
     }
 
-    setPhase({ kind: 'success' });
+    setPhase({ kind: 'success', notRunning });
   }
 }
 
@@ -476,10 +549,19 @@ function ProviderPickRow({
                   {singleProvider ? (
                     <Chip tone="accent">{t('recommended')}</Chip>
                   ) : null}
-                  {cand.already_installed && cand.active ? (
+                  {cand.update_from !== undefined ? (
+                    <Chip tone="accent">
+                      {t('updateFrom', {
+                        from: cand.update_from,
+                        to: cand.version,
+                      })}
+                    </Chip>
+                  ) : cand.already_installed && cand.active ? (
                     <Chip tone="muted">{t('active')}</Chip>
                   ) : cand.already_installed ? (
                     <Chip tone="muted">{t('installedInactive')}</Chip>
+                  ) : cand.source === 'registry' ? (
+                    <Chip tone="muted">{t('fromHub')}</Chip>
                   ) : null}
                   <Chip tone="mono">{cand.kind}</Chip>
                 </div>
@@ -573,10 +655,30 @@ function InstallingBody({
 
 function SuccessBody({
   targetPluginName,
+  notRunning,
 }: {
   targetPluginName: string;
+  notRunning: string[];
 }): React.ReactElement {
   const t = useTranslations('store.requiresWizard');
+  const format = useFormatter();
+  if (notRunning.length > 0) {
+    // #1496 — everything is INSTALLED (the chain's contract), but not
+    // everything runs. Say which, instead of "all prerequisites are active".
+    return (
+      <div className="flex flex-col items-center gap-3 py-6 text-center">
+        <div className="flex size-12 items-center justify-center text-[color:var(--danger)]">
+          <AlertTriangle className="size-6" aria-hidden />
+        </div>
+        <div className="font-display text-xl text-[color:var(--ink)]">
+          {t('notAllRunning')}
+        </div>
+        <p className="text-[12px] text-[color:var(--muted-ink)]">
+          {t('notRunningList', { name: targetPluginName, plugins: format.list(notRunning) })}
+        </p>
+      </div>
+    );
+  }
   return (
     <div className="flex flex-col items-center gap-3 py-6 text-center">
       <div className="flex size-12 items-center justify-center text-[color:var(--success)]">

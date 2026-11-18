@@ -1,3 +1,4 @@
+import type { TurnRecord } from './turnRecords.js';
 /**
  * Shared type definitions for the answer-verifier pipeline.
  *
@@ -21,12 +22,17 @@ export type ClaimType =
                           // Never produced by the LLM-side claim extractor;
                           // verifierPipeline manufactures one per violation
                           // it scans out of the runTrace before extraction.
-  | 'citation_missing'; // #131 — synthetic claim: the turn called a
-                        // knowledge-graph tool but the answer contains no
-                        // `[ref:nodeId]` markers, so any KG-grounded
-                        // statement in the answer is structurally
-                        // unattributable. Drives the correctionPrompt
-                        // retry to force the model to add citations.
+  | 'citation_missing' // #131 — synthetic claim: the turn called a
+                       // knowledge-graph tool but the answer contains no
+                       // `[ref:nodeId]` markers, so any KG-grounded
+                       // statement in the answer is structurally
+                       // unattributable. Drives the correctionPrompt
+                       // retry to force the model to add citations.
+  | 'coverage_gap'; // synthetic claim: a part of the answer the claim
+                    // extraction did not cover (an `ExtractionGap`). Never
+                    // produced by the LLM; the pipeline adds one `not_checked`
+                    // verdict per gap, so an answer read only in part is never
+                    // `approved`.
 
 /** Which subsystem is authoritative for this claim. */
 export type ClaimSource = 'odoo' | 'graph' | 'confluence' | 'unknown';
@@ -77,6 +83,71 @@ export interface SoftClaim extends Claim {
   type: 'name' | 'qualitative';
 }
 
+/**
+ * A part of the answer a claim extraction did not cover. A closed code:
+ *  - `answer_beyond_window` — the answer is longer than the text the extractor
+ *    sends to the model; claims in the rest were never looked for.
+ *  - `claim_list_full`      — the model returned as many claims as it was
+ *    asked for at most, so it may have left further claims out.
+ *  - `claims_not_in_answer` — the model returned a well-formed claim whose
+ *    text is not in the answer, even with case and whitespace set aside (a
+ *    paraphrase, or a subject stitched in from elsewhere in the sentence).
+ *    The verbatim guard reads the whole claim and keeps it from the checkers,
+ *    so whatever part of the answer it stood for was not checked.
+ *  - `claims_too_long`      — the model returned a claim that quotes the
+ *    answer but is longer than a check takes (`MAX_CLAIM_CHARS`). It is not
+ *    cut to fit, which would check its head and leave its tail unchecked; it
+ *    is kept from the checkers instead.
+ *  - `claims_not_restored`  — behind a Privacy Shield the model read the
+ *    turn's wire view; a claim that does not map back onto the answer the
+ *    user was shown (a span cut through a placeholder, or a value that
+ *    cannot be re-read from the real literal where its check would need it)
+ *    is kept from the checkers, so the part of the answer it stood for was
+ *    not checked.
+ */
+export type ExtractionGap =
+  | 'answer_beyond_window'
+  | 'claim_list_full'
+  | 'claims_not_in_answer'
+  | 'claims_too_long'
+  | 'claims_not_restored';
+
+/**
+ * What a claim extraction found and what it did not cover. `gaps` is empty
+ * only when the model saw the whole answer, its claim list was not cut at the
+ * request limit and every claim it returned quotes the answer in full and is
+ * short enough to check; otherwise the result is incomplete and the pipeline
+ * keeps every gap in the verdict as not checked.
+ */
+export interface ClaimExtraction {
+  claims: Claim[];
+  gaps: ExtractionGap[];
+}
+
+/**
+ * Why a claim stayed `unverified`, where that is more than "checked, not
+ * confirmed" (which carries no cause):
+ *  - `not_checked`  — no check ran: no checker accepts the claim (an amount,
+ *                     id, date or aggregate whose source is neither Odoo nor
+ *                     the graph), it lies beyond the per-answer claim cap, or
+ *                     it is a `coverage_gap` entry for a part of the answer
+ *                     the extraction did not cover.
+ *  - `check_failed` — a check ran and could not finish: the re-query, the
+ *                     evidence fetch, the judge call or its contradiction
+ *                     recheck failed.
+ *  - `contradiction_unconfirmed` — the evidence judge called the claim
+ *                     contradicted, and the contradiction could not be
+ *                     confirmed: judged on Privacy Shield placeholders, not
+ *                     reproduced on recheck, citing no evidence, evidence
+ *                     its request never printed, or a record other than the
+ *                     one the claim pins. A check ran and finished, so it is
+ *                     not a fault — and it is no refutation either.
+ * None is evidence. A claim nobody checked still counts against the
+ * answer's coverage, which is why it stays in the verdict instead of being
+ * dropped.
+ */
+export type UnverifiedCause = 'not_checked' | 'check_failed' | 'contradiction_unconfirmed';
+
 /** Outcome for a single claim after checking. */
 export type ClaimVerdict =
   | { status: 'verified'; claim: Claim; source: ClaimSource }
@@ -86,12 +157,117 @@ export type ClaimVerdict =
       truth: unknown;                   // actual value we found
       source: ClaimSource;
       detail?: string;
+      /** What the withhold rests on. Absent: a check refuted the claim
+       *  against evidence ({@link contradictionBasis}). */
+      basis?: ContradictionBasis;
     }
-  | { status: 'unverified'; claim: Claim; reason: string };
+  | { status: 'unverified'; claim: Claim; reason: string; cause?: UnverifiedCause };
 
-/** Aggregated result the orchestrator consumes. */
+/**
+ * What a `contradicted` verdict rests on. Only `evidence` is a refutation:
+ * a check compared the claim with a source and the source says otherwise.
+ * Every other basis withholds the answer for a reason that is NOT a factual
+ * contradiction, and must never be presented to the user as one:
+ *  - `citation_missing`          — knowledge-graph evidence was fetched, the
+ *                                  answer carries no `[ref:…]` marker;
+ *  - `citation_unresolved`       — a marker names no source this turn's
+ *                                  knowledge-graph results returned;
+ *  - `tool_not_called`           — the claim needs live data and the turn
+ *                                  made no call that could have fetched it,
+ *                                  or it reports a failure / absence / asks
+ *                                  for a retry in a turn that made no call;
+ *  - `unsupported_failure_claim` — calls ran, but none backs the claim (a
+ *                                  missing access with no failed call, a
+ *                                  "no attachment" the user message refutes);
+ *  - `tool_postcondition`        — a tool returned a result that broke its
+ *                                  declared output schema (a technical fault).
+ */
+export type ContradictionBasis =
+  | 'evidence'
+  | 'citation_missing'
+  | 'citation_unresolved'
+  | 'tool_not_called'
+  | 'unsupported_failure_claim'
+  | 'tool_postcondition';
+
+/** The basis of a contradicted verdict. The synthetic claim types name their
+ *  own basis, so a verdict built before `basis` existed still reads right. */
+export function contradictionBasis(
+  verdict: Extract<ClaimVerdict, { status: 'contradicted' }>,
+): ContradictionBasis {
+  if (verdict.basis) return verdict.basis;
+  if (verdict.claim.type === 'citation_missing') return 'citation_missing';
+  if (verdict.claim.type === 'tool_postcondition') return 'tool_postcondition';
+  return 'evidence';
+}
+
+/** True for a claim a check refuted against a source — the only verdict
+ *  that may be called a contradiction. */
+export function isEvidenceContradiction(verdict: ClaimVerdict): boolean {
+  return verdict.status === 'contradicted' && contradictionBasis(verdict) === 'evidence';
+}
+
+/** A claim list that holds at least one checked claim. */
+export type NonEmptyClaimVerdicts = [ClaimVerdict, ...ClaimVerdict[]];
+
+/**
+ * Why the verifier ran but checked nothing:
+ *  - `no_trigger`          — the answer has no signal the verifier checks
+ *                            (amount, date, reference, …); nothing was extracted.
+ *  - `no_claims`           — the trigger fired but the extractor found no claim.
+ *  - `no_checkable_claims` — claims were extracted, but none fits a checker
+ *                            (e.g. an amount whose source is unknown).
+ *  - `incomplete_coverage` — the extraction did not cover the whole answer
+ *                            (an `ExtractionGap`) and found nothing checkable
+ *                            in the part it covered; "no claims" would say
+ *                            more than was looked at.
+ *  - `system_data`         — the answer is system data only: Privacy Shield
+ *                            rendered it server-side from the turn's tool
+ *                            results, and the model wrote no prose around it.
+ *                            Its values are the source system's own, so
+ *                            there is no claim to check. The model still
+ *                            chose the dataset and wrote the column labels;
+ *                            neither is checked.
+ */
+export type VerifierSkipReason =
+  | 'no_trigger'
+  | 'no_claims'
+  | 'no_checkable_claims'
+  | 'incomplete_coverage'
+  | 'system_data';
+
+/**
+ * Why the verifier could not run: `extractor_error` when the claim extraction
+ * failed, `pipeline_error` when the pipeline threw or returned a verdict that
+ * breaks this contract (see `bindVerdictToClaims`), `privacy_shield` when the
+ * answer may not be sent to it — the verifier wrapper sets this in `enforce`
+ * mode for an answer it has no privacy view of (behind a shield, a turn that
+ * handed none over; a server-rendered failure). A closed code on purpose: the
+ * reason is forwarded on the stream `verifier` event to API clients, so it
+ * never carries an error message — that stays in the log line where the
+ * error is caught.
+ */
+export type VerifierUnavailableReason = 'extractor_error' | 'pipeline_error' | 'privacy_shield';
+
+/**
+ * Aggregated result the orchestrator consumes. Bound to evidence:
+ *  - `approved` — every extracted claim was checked and is `verified`, at
+ *    least one (the claim list is typed non-empty, so an empty `approved`
+ *    cannot be built).
+ *  - `approved_with_disclaimer` — nothing contradicted, at least one claim
+ *    not confirmed: checked without confirmation, failed in its checker, or
+ *    never checked (`cause: 'not_checked'`, including the `coverage_gap`
+ *    entry for a part of the answer the extraction did not cover). An answer
+ *    checked only in part lands here, never in `approved`.
+ *  - `blocked` — at least one claim was contradicted.
+ *  - `skipped` — the verifier ran but had nothing it could check.
+ *  - `unavailable` — the verifier could not run.
+ * `skipped` and `unavailable` are not a pass: they carry no evidence and
+ * never map to a `verified` or `corrected` badge. Nor does a verdict whose
+ * claims all stayed unverified — see `hasVerificationEvidence`.
+ */
 export type VerifierVerdict =
-  | { status: 'approved'; claims: ClaimVerdict[]; latencyMs: number }
+  | { status: 'approved'; claims: NonEmptyClaimVerdicts; latencyMs: number }
   | {
       status: 'approved_with_disclaimer';
       claims: ClaimVerdict[];
@@ -102,6 +278,18 @@ export type VerifierVerdict =
       status: 'blocked';
       claims: ClaimVerdict[];
       contradictions: ClaimVerdict[];   // only those with status === 'contradicted'
+      latencyMs: number;
+    }
+  | {
+      status: 'skipped';
+      reason: VerifierSkipReason;
+      claims: ClaimVerdict[];           // always empty
+      latencyMs: number;
+    }
+  | {
+      status: 'unavailable';
+      reason: VerifierUnavailableReason;
+      claims: ClaimVerdict[];           // always empty
       latencyMs: number;
     };
 
@@ -153,29 +341,149 @@ export interface VerifierInput {
    * the pipeline skips the citation check in that case.
    */
   knowledgeGraphToolsCalled?: boolean;
+  /**
+   * The source ids this turn's knowledge-graph results showed the model
+   * (`id` / `turnId` fields of `query_knowledge_graph` output, after the
+   * Privacy Shield). A `[ref:…]` marker must name one of them; an empty list
+   * means the graph returned nothing citable, so no marker can be demanded
+   * (and any marker the answer carries is invented).
+   * Undefined ⇒ not known; the check then only asks for a marker at all.
+   */
+  knowledgeGraphRefs?: readonly string[];
+  /**
+   * Names of the calls in this turn that failed (`isError` in the run
+   * trace). A claim of a failed or missing access needs one of them.
+   * Undefined ⇒ not known; the detector then falls back to "any call ran".
+   */
+  failedToolsCalled?: readonly string[];
+  /**
+   * #1574 — the Odoo records (model + id) the checked turn's tools read,
+   * collected server-side from the turn's EntityRefBus. The deterministic
+   * checker re-reads them to confirm a claim whose answer names no record id
+   * (behind a Privacy Shield the model never sees one). Never sent to a model.
+   * Undefined ⇒ not known; claims without a record id then stay unverified.
+   */
+  turnRecords?: readonly TurnRecord[];
+  /**
+   * The privacy view of the turn being verified, present when that turn ran
+   * behind a Privacy Shield (`privacy.redact@1`). Every stage that sends
+   * text to a model (claim extractor, evidence judge) goes through it, so
+   * the verifier's requests fall under the same policy and the same
+   * surrogate map as the turn itself. `userMessage` / `answer` above stay the
+   * REAL values: the trigger router and the deterministic re-query run on
+   * them server-side and never leave the process.
+   */
+  privacy?: VerifierPrivacy;
 }
 
-/** Badge used by the Teams card to communicate verifier status. */
+/**
+ * Per-turn privacy view for the verifier's model requests. Supplied by the
+ * kernel from the turn's own privacy handle (never built by the verifier
+ * plugin), valid until the turn's receipt is finalised — which happens only
+ * after the verifier finished.
+ *
+ * Contract for callers: text leaves the process only as the turn's wire view
+ * (`wireUserMessage`, `wireAnswer`) in a request admitted by `admitWireView`,
+ * or as the return value of `projectForWire` — one of these calls per
+ * outbound request (the turn receipt counts each call as one verifier
+ * request). Both THROW when the request cannot be admitted; the caller must
+ * then send nothing.
+ */
+export interface VerifierPrivacy {
+  /**
+   * The user message exactly as the turn's model received it: normalised
+   * (an MCP input-card reply is its label, never the envelope with the values
+   * typed for a third-party server) and masked under the turn's prompt-mask
+   * policy (as written when the operator left `mask_user_prompt` off). The
+   * claim extractor sends this — never `VerifierInput.userMessage`.
+   */
+  readonly wireUserMessage: string;
+  /**
+   * The answer exactly as the turn's model produced it: before surrogate
+   * restore, never a server-rendered answer holding values the model did not
+   * see. The claim extractor reads this instead of `VerifierInput.answer`.
+   */
+  readonly wireAnswer: string;
+  /**
+   * Admit one request that carries the turn's wire view and static prose
+   * only. Nothing in it is masked again — the view already went through the
+   * turn's policy, and a second pass would read its placeholders as new
+   * values — but the request leaves the process and is counted.
+   */
+  admitWireView(): Promise<void>;
+  /**
+   * Project a real, verifier-composed text (claim plus knowledge-graph
+   * evidence) through the turn's surrogate map, whether or not
+   * `mask_user_prompt` is on. `identityValues` (node ids, display names and
+   * free-text fields of the evidence) are always replaced.
+   */
+  projectForWire(text: string, identityValues: readonly string[]): Promise<string>;
+  /** Invert the turn's surrogate map. Server-side only — never sent. */
+  restore(text: string): Promise<string>;
+}
+
+/**
+ * Badge on the verifier summary. Connectors (Teams card) only ever receive
+ * the first four — `toSemanticAnswer` forwards a badge only for a summary
+ * whose counts back it, so `unverified` / `unavailable` render as no badge.
+ */
 export type VerifierBadge =
-  | 'verified'            // ✓ verified
+  | 'verified'            // ✓ verified — every claim confirmed
   | 'partial'             // ⚠ partially confirmed
   | 'corrected'           // ↻ corrected (after a successful retry)
-  | 'failed';             // blocked + retry still failed
+  | 'failed'              // blocked + retry still failed
+  | 'unverified'          // no claim confirmed — nothing checkable, or no check confirmed one
+  | 'unavailable';        // the verifier could not run, or every check failed
+
+/**
+ * #132 — a verdict is "borderline" when the verifier found no contradiction,
+ * confirmed at least one claim and could not confirm another one it did try
+ * to check. Only then can a second sample add signal. Not borderline:
+ *  - a disclaimer whose unconfirmed claims were all `not_checked` — a second
+ *    sample cannot make them checkable;
+ *  - a disclaimer without a single verified claim — it confirms nothing and
+ *    is badged `unverified` / `unavailable`, not `partial`;
+ *  - `skipped` / `unavailable` — nothing checkable is not uncertainty.
+ * A resample is a second paid orchestrator turn, so the gate stays narrow.
+ * The VerifierService and tests share this one definition.
+ */
+export function isBorderlineVerdict(verdict: VerifierVerdict): boolean {
+  if (verdict.status !== 'approved_with_disclaimer') return false;
+  return (
+    verdict.claims.some((c) => c.status === 'verified') &&
+    verdict.claims.some((c) => c.status === 'unverified' && c.cause !== 'not_checked')
+  );
+}
+
+/**
+ * True only when a check settled at least one claim: a `blocked` verdict
+ * needs a contradicted claim, `approved` / `approved_with_disclaimer` a
+ * verified one. Claims that stayed `unverified` — not checked, failed in
+ * their checker, or without confirming evidence — are no evidence, so a
+ * verdict made of them alone has none; `skipped` and `unavailable` never do.
+ * Whatever derives a badge from a verdict gates on this rather than on the
+ * status alone — the pipeline is injected, so the rule is re-checked where
+ * the verification signal is produced.
+ */
+export function hasVerificationEvidence(verdict: VerifierVerdict): boolean {
+  switch (verdict.status) {
+    case 'approved':
+    case 'approved_with_disclaimer':
+      return verdict.claims.some((c) => c.status === 'verified');
+    case 'blocked':
+      // Only a refutation is evidence. A withhold for a missing citation, a
+      // call the turn never made or a broken tool result settled no claim.
+      return verdict.claims.some(isEvidenceContradiction);
+    case 'skipped':
+    case 'unavailable':
+      return false;
+  }
+}
 
 /**
  * Narrow a generic Claim into a HardClaim when it qualifies for the
  * deterministic checker. Pure predicate; no I/O.
  */
-/**
- * #132 — a verdict is "borderline" when the verifier produced no
- * contradictions but at least one claim remained `unverified`. Today this
- * is exactly `approved_with_disclaimer`. The gate keeps the predicate
- * encapsulated so the VerifierService and tests share one definition.
- */
-export function isBorderlineVerdict(verdict: VerifierVerdict): boolean {
-  return verdict.status === 'approved_with_disclaimer';
-}
-
 export function isHardClaim(claim: Claim): claim is HardClaim {
   if (claim.expectedSource !== 'odoo' && claim.expectedSource !== 'graph') {
     return false;

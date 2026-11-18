@@ -1,0 +1,414 @@
+/**
+ * LLM-free canvas refresh (omadia-ui#5, phase 2).
+ *
+ * At publish time the agent may declare a `source` refresh recipe on
+ * `canvas_publish_rows`: the EXACT tool + input it just used plus a
+ * fieldKey→attribute map. A later `canvas_refresh` then re-executes the
+ * query via `ctx.tools.invoke` and maps the result deterministically —
+ * no model in the seat. Time semantics live in the QUERY, not the clock:
+ * the instruction requires relative date operators (FetchXML `next-week`,
+ * `this-year`, …) for relative asks, so "Kurse nächste Woche" re-resolves
+ * to the then-current week on every refresh, while explicit ranges
+ * ("2025 vs 2026") replay literally.
+ *
+ * Recipes are kept per canvas session (recipeStore.ts — persisted in the
+ * canvas orchestrator's plugin memory, bounded); a canvas without a recipe
+ * simply falls back to the silent agent-turn refresh.
+ */
+
+export interface RefreshSource {
+  /** registered native tool name (e.g. dynamics_fetchxml) */
+  tool: string;
+  /** the EXACT input the publishing turn used — replayed verbatim */
+  input: unknown;
+  /** dot-path to the record array in the tool's JSON output (default:
+   *  root array, else the first array-valued property) */
+  itemsPath?: string;
+  /** fieldKey → attribute name in each result record (a missing key is
+   *  read as a dot-path: `department_id.1` = an Odoo many2one's name) */
+  map: Record<string, string>;
+  /** attribute carrying a stable row identity (optional) */
+  rowKey?: string;
+  /** deterministic post-filter on the RAW records, all clauses AND-ed —
+   *  for what the source cannot filter server-side (Odoo has no
+   *  birthday-month operator). Applied before mapping, on every replay. */
+  filter?: RefreshFilter[];
+  /** deterministic post-fetch order, applied after `filter`: clauses by
+   *  priority (the first is the primary key), ties keep the fetch order. */
+  sort?: RefreshSort[];
+  /** keep only the first `take` records after filter + sort (a top-N) */
+  take?: number;
+}
+
+/** One sort clause. `field` names a record attribute (dot-path allowed,
+ *  like `map`). The order mirrors the Privacy Shield's `v4_sort` /
+ *  `v4_top_n`, so a replay reproduces the agent's table: numbers and
+ *  booleans compare by value, everything else by its string form, a missing
+ *  value sorts last ascending (first descending). */
+export interface RefreshSort {
+  field: string;
+  dir: 'asc' | 'desc';
+}
+
+/** One post-filter clause. `field` names a record attribute (dot-path
+ *  allowed, like `map`). `datePart` reads the year/month/day of an ISO date
+ *  or datetime string (`2024-01-15`, `2024-01-15 08:00:00`) WITHOUT a
+ *  timezone shift — a birthday is a calendar date, not an instant. */
+export type RefreshFilter =
+  | { field: string; datePart: 'year' | 'month' | 'day'; eq: number }
+  | { field: string; eq: string | number | boolean };
+
+const MAX_RECIPE_BYTES = 32_768;
+const MAX_FILTER_CLAUSES = 4;
+const MAX_SORT_CLAUSES = 3;
+/** a top-N beyond this is not a ranking, it is the data set */
+export const MAX_RECIPE_TAKE = 1000;
+const DATE_PARTS: ReadonlySet<string> = new Set(['year', 'month', 'day']);
+
+function parseFilterClause(value: unknown): RefreshFilter | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const o = value as Record<string, unknown>;
+  const field = o['field'];
+  const eq = o['eq'];
+  if (typeof field !== 'string' || field.length === 0) return null;
+  if (o['datePart'] !== undefined) {
+    const part = o['datePart'];
+    if (typeof part !== 'string' || !DATE_PARTS.has(part)) return null;
+    if (typeof eq !== 'number' || !Number.isInteger(eq)) return null;
+    return { field, datePart: part as 'year' | 'month' | 'day', eq };
+  }
+  if (typeof eq !== 'string' && typeof eq !== 'number' && typeof eq !== 'boolean') return null;
+  return { field, eq };
+}
+
+/** Whitelist-parse a filter (one clause or a list). `undefined` = none
+ *  declared; null = declared but invalid — the caller refuses the whole
+ *  recipe, because one replaying UNFILTERED would show the wrong rows. */
+function parseFilter(value: unknown): RefreshFilter[] | undefined | null {
+  if (value === undefined) return undefined;
+  const list: unknown[] = Array.isArray(value) ? value : [value];
+  if (list.length === 0 || list.length > MAX_FILTER_CLAUSES) return null;
+  const out: RefreshFilter[] = [];
+  for (const clause of list) {
+    const parsed = parseFilterClause(clause);
+    if (!parsed) return null;
+    out.push(parsed);
+  }
+  return out;
+}
+
+/** Whitelist-parse a sort (one clause or a list). `undefined` = none
+ *  declared; null = declared but invalid (refuses the recipe, like a filter). */
+function parseSort(value: unknown): RefreshSort[] | undefined | null {
+  if (value === undefined) return undefined;
+  const list: unknown[] = Array.isArray(value) ? value : [value];
+  if (list.length === 0 || list.length > MAX_SORT_CLAUSES) return null;
+  const out: RefreshSort[] = [];
+  for (const clause of list) {
+    if (typeof clause !== 'object' || clause === null || Array.isArray(clause)) return null;
+    const o = clause as Record<string, unknown>;
+    const field = o['field'];
+    const dir = o['dir'];
+    if (typeof field !== 'string' || field.length === 0) return null;
+    if (dir !== 'asc' && dir !== 'desc') return null;
+    out.push({ field, dir });
+  }
+  return out;
+}
+
+/** `undefined` = none declared; null = not a positive integer ≤ the cap. */
+function parseTake(value: unknown): number | undefined | null {
+  if (value === undefined) return undefined;
+  const ok = typeof value === 'number' && Number.isInteger(value) && value > 0;
+  return ok && value <= MAX_RECIPE_TAKE ? value : null;
+}
+
+/** Whitelist-parse an agent-declared source recipe; null = not storable. */
+export function parseRefreshSource(value: unknown): RefreshSource | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const o = value as Record<string, unknown>;
+  if (typeof o['tool'] !== 'string' || o['tool'].length === 0) return null;
+  if (typeof o['map'] !== 'object' || o['map'] === null) return null;
+  const map: Record<string, string> = {};
+  for (const [k, v] of Object.entries(o['map'] as Record<string, unknown>)) {
+    if (typeof v === 'string' && v.length > 0) map[k] = v;
+  }
+  if (Object.keys(map).length === 0) return null;
+  const filter = parseFilter(o['filter']);
+  if (filter === null) return null;
+  const sort = parseSort(o['sort']);
+  if (sort === null) return null;
+  const take = parseTake(o['take']);
+  if (take === null) return null;
+  const source: RefreshSource = {
+    tool: o['tool'],
+    input: o['input'] ?? {},
+    map,
+    ...(typeof o['itemsPath'] === 'string' && o['itemsPath'].length > 0
+      ? { itemsPath: o['itemsPath'] }
+      : {}),
+    ...(typeof o['rowKey'] === 'string' && o['rowKey'].length > 0 ? { rowKey: o['rowKey'] } : {}),
+    ...(filter ? { filter } : {}),
+    ...(sort ? { sort } : {}),
+    ...(take !== undefined ? { take } : {}),
+  };
+  try {
+    if (JSON.stringify(source).length > MAX_RECIPE_BYTES) return null;
+  } catch {
+    return null;
+  }
+  return source;
+}
+
+/** `{today}`, `{today-30d}`, `{today+7d}` — a WHOLE string value only. */
+const DATE_TOKEN = /^\{today(?:([+-])(\d{1,4})d)?\}$/;
+
+/** Zone the `fast_path_timezone` setting defaults to. */
+export const DEFAULT_TIME_ZONE = 'Europe/Berlin';
+
+/** The configured IANA zone when the runtime knows it, else the default. */
+export function resolveTimeZone(raw: string | undefined): string {
+  const tz = raw?.trim();
+  if (!tz) return DEFAULT_TIME_ZONE;
+  try {
+    return new Intl.DateTimeFormat('en-US', { timeZone: tz }).resolvedOptions().timeZone;
+  } catch {
+    return DEFAULT_TIME_ZONE; // RangeError: unknown zone
+  }
+}
+
+/** `YYYY-MM-DD` of the calendar day `days` after `now`'s day in `timeZone`. */
+function zonedIsoDate(now: Date, timeZone: string, days: number): string {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+  }).formatToParts(now);
+  const part = (type: string): number => Number(parts.find((p) => p.type === type)?.value);
+  // calendar arithmetic on a zone-free UTC date — no DST edge can shift it
+  return new Date(Date.UTC(part('year'), part('month') - 1, part('day') + days)).toISOString().slice(0, 10);
+}
+
+/**
+ * Relative dates for sources without relative operators (an Odoo domain has
+ * no "today"): a recipe input may carry `{today}` / `{today±Nd}` as a whole
+ * string value, resolved HERE, at execution, to the calendar date
+ * `YYYY-MM-DD` in `timeZone` (the business day, not the server clock). The
+ * stored recipe keeps the token, so every refresh re-resolves it —
+ * "überfällig" stays relative to the day it is replayed. Returns a resolved
+ * deep copy; the input is never mutated.
+ */
+export function resolveRecipeInput(
+  input: unknown,
+  now: Date = new Date(),
+  timeZone: string = DEFAULT_TIME_ZONE,
+): unknown {
+  if (typeof input === 'string') {
+    const m = DATE_TOKEN.exec(input);
+    if (!m) return input;
+    const days = m[1] === undefined ? 0 : (m[1] === '-' ? -1 : 1) * Number(m[2]);
+    return zonedIsoDate(now, timeZone, days);
+  }
+  if (Array.isArray(input)) return input.map((v) => resolveRecipeInput(v, now, timeZone));
+  if (typeof input === 'object' && input !== null) {
+    return Object.fromEntries(
+      Object.entries(input as Record<string, unknown>).map(([k, v]) => [
+        k,
+        resolveRecipeInput(v, now, timeZone),
+      ]),
+    );
+  }
+  return input;
+}
+
+/** Locate the record array in a parsed tool output. */
+function findRecords(parsed: unknown, itemsPath?: string): unknown[] | null {
+  if (itemsPath) {
+    let cur: unknown = parsed;
+    for (const seg of itemsPath.split('.')) {
+      if (typeof cur !== 'object' || cur === null) {
+        cur = undefined;
+        break;
+      }
+      cur = (cur as Record<string, unknown>)[seg];
+    }
+    if (Array.isArray(cur)) return cur;
+    // A generic tool's output shape is only described, and descriptions err
+    // (a builder agent's "returns an array" that is `{ ok, items: [...] }`):
+    // a path that resolves to NOTHING falls back to the ONE unambiguous
+    // record array — the root array, or the only array-valued top-level
+    // property. A path naming a real non-array field, or several candidate
+    // arrays, stays a miss.
+    return cur === undefined ? soleArray(parsed) : null;
+  }
+  if (Array.isArray(parsed)) return parsed;
+  if (typeof parsed === 'object' && parsed !== null) {
+    for (const value of Object.values(parsed)) {
+      if (Array.isArray(value)) return value;
+    }
+  }
+  return null;
+}
+
+/** The root array, or the only array-valued top-level property; else null. */
+function soleArray(parsed: unknown): unknown[] | null {
+  if (Array.isArray(parsed)) return parsed;
+  if (typeof parsed !== 'object' || parsed === null) return null;
+  const arrays = Object.values(parsed).filter((v): v is unknown[] => Array.isArray(v));
+  return arrays.length === 1 ? arrays[0]! : null;
+}
+
+/** Read a record attribute. The literal key wins (Dynamics annotation keys
+ *  like `x@OData.Community.Display.V1.FormattedValue` contain dots); only a
+ *  missing key is read as a dot-path — `department_id.1` takes the display
+ *  name of an Odoo many2one pair `[id, "Name"]`. */
+function readAttr(rec: Record<string, unknown>, attr: string): unknown {
+  if (attr in rec) return rec[attr];
+  let cur: unknown = rec;
+  for (const seg of attr.split('.')) {
+    if (typeof cur !== 'object' || cur === null) return undefined;
+    cur = (cur as Record<string, unknown>)[seg];
+  }
+  return cur;
+}
+
+const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})/;
+
+function matchesClause(rec: Record<string, unknown>, clause: RefreshFilter): boolean {
+  const v = readAttr(rec, clause.field);
+  if ('datePart' in clause) {
+    const m = typeof v === 'string' ? ISO_DATE.exec(v) : null;
+    if (!m) return false; // Odoo sends `false` for an empty date — no match
+    const part = clause.datePart === 'year' ? m[1] : clause.datePart === 'month' ? m[2] : m[3];
+    return Number(part) === clause.eq;
+  }
+  return v === clause.eq;
+}
+
+/**
+ * One record value as a table cell. An Odoo many2one `[id, "Name"]` shows its
+ * name (a column mapped to `partner_id` instead of `partner_id.1` — the
+ * agent publishes dataset columns by path), a list of scalars is joined, an
+ * empty value is blank; only a genuinely nested value falls back to JSON.
+ * Mirrors the Privacy Shield materializer's `cell` (v4/materializer.ts).
+ */
+export function displayCell(value: unknown): string | number | boolean {
+  if (value === undefined || value === null) return '';
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value;
+  if (Array.isArray(value)) {
+    if (value.length === 2 && typeof value[0] === 'number' && typeof value[1] === 'string') return value[1];
+    if (value.every((e) => e === null || ['string', 'number', 'boolean'].includes(typeof e))) {
+      return value.filter((e) => e !== null).join(', ');
+    }
+  }
+  return JSON.stringify(value);
+}
+
+/** Three-way compare of two attribute values — the Privacy Shield verbs'
+ *  `compareUnknown` (v4/verbs), so a replay orders exactly like the dataset
+ *  the agent published. */
+function compareValues(a: unknown, b: unknown): number {
+  if (typeof a === 'number' && typeof b === 'number') return a - b;
+  if (typeof a === 'boolean' && typeof b === 'boolean') return a === b ? 0 : a ? 1 : -1;
+  if (a === null || a === undefined) return b === null || b === undefined ? 0 : 1;
+  if (b === null || b === undefined) return -1;
+  const sa = String(a);
+  const sb = String(b);
+  return sa < sb ? -1 : sa > sb ? 1 : 0;
+}
+
+function compareRecords(
+  a: Record<string, unknown>,
+  b: Record<string, unknown>,
+  sort: readonly RefreshSort[],
+): number {
+  for (const clause of sort) {
+    const c = compareValues(readAttr(a, clause.field), readAttr(b, clause.field));
+    if (c !== 0) return clause.dir === 'desc' ? -c : c;
+  }
+  return 0;
+}
+
+/** True when the recipe changes WHICH records (or in what order) it shows —
+ *  a filter, sort or top-N over a capped prefix is a wrong subset / ranking,
+ *  so such a recipe refuses a truncated tool result. */
+export function requiresCompleteResult(source: RefreshSource): boolean {
+  return source.filter !== undefined || source.sort !== undefined || source.take !== undefined;
+}
+
+/** `true` when the tool flags its result as a capped prefix of the real set
+ *  (odoo_query: `truncated: true`). Filtering, sorting or cutting a prefix
+ *  yields a wrong subset / ranking and a wrong count, so such recipes
+ *  (requiresCompleteResult) and the fast path refuse it. */
+export function isTruncatedOutput(raw: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return (
+      typeof parsed === 'object' &&
+      parsed !== null &&
+      (parsed as Record<string, unknown>)['truncated'] === true
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Deterministically map a tool's raw string output onto publishable rows.
+ * Returns null when the output cannot be mapped (non-JSON, no record array,
+ * no mapped field present, a truncated result under a filter, sort or take)
+ * — the caller then falls back to the agent path. An empty record array — or a filter
+ * matching nothing — maps to [] (a genuinely empty data set).
+ */
+export function applyRefreshSource(
+  raw: string,
+  source: RefreshSource,
+): Array<Record<string, unknown>> | null {
+  return mapRefreshRecords(raw, source)?.rows ?? null;
+}
+
+/** {@link applyRefreshSource} plus the RAW records behind the rows
+ *  (`records[i]` produced `rows[i]`, after filter, sort and take) — for
+ *  checks on attributes no column shows, e.g. the currency behind a summed
+ *  amount. */
+export function mapRefreshRecords(
+  raw: string,
+  source: RefreshSource,
+): { rows: Array<Record<string, unknown>>; records: Array<Record<string, unknown>> } | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  const records = findRecords(parsed, source.itemsPath);
+  if (!records) return null;
+  if (requiresCompleteResult(source) && isTruncatedOutput(raw)) return null;
+  const pairs: Array<{ row: Record<string, unknown>; record: Record<string, unknown> }> = [];
+  for (const rec of records) {
+    if (typeof rec !== 'object' || rec === null) return null;
+    const r = rec as Record<string, unknown>;
+    const row: Record<string, unknown> = {};
+    let mappedAny = false;
+    for (const [fieldKey, attr] of Object.entries(source.map)) {
+      const v = readAttr(r, attr);
+      if (v !== undefined) mappedAny = true;
+      row[fieldKey] = displayCell(v);
+    }
+    if (!mappedAny) return null; // wrong shape — refuse rather than render blanks
+    // filtered AFTER the shape check: a wrong-shaped output is refused even
+    // when the filter would have dropped every record
+    if (source.filter && !source.filter.every((c) => matchesClause(r, c))) continue;
+    if (source.rowKey !== undefined) {
+      const key = r[source.rowKey];
+      if (key !== undefined && key !== null) row['rowKey'] = String(key);
+    }
+    pairs.push({ row, record: r });
+  }
+  const sort = source.sort;
+  // Array#sort is stable: equal keys keep the fetch order, as in the verbs
+  const ordered = sort ? [...pairs].sort((a, b) => compareRecords(a.record, b.record, sort)) : pairs;
+  const taken = source.take !== undefined ? ordered.slice(0, source.take) : ordered;
+  return { rows: taken.map((p) => p.row), records: taken.map((p) => p.record) };
+}

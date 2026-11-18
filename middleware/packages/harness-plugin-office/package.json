@@ -1,6 +1,6 @@
 {
   "name": "@omadia/plugin-office",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "private": true,
   "type": "module",
   "main": "dist/index.js",
@@ -13,7 +13,7 @@
     "package": "node ../../scripts/build-plugin-zip.mjs"
   },
   "dependencies": {
-    "docx": "^9.5.1",
+    "docx": "^9.15.3",
     "exceljs": "^4.4.0",
     "jszip": "^3.10.2"
   },

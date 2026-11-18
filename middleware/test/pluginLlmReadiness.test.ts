@@ -17,7 +17,11 @@ import {
   resolveProviderVerification,
   type LlmProviderCatalogView,
 } from '../src/platform/pluginLlmReadiness.js';
-import { __clearVerificationCache } from '../src/platform/providerCredentialVerifier.js';
+import {
+  __clearVerificationCache,
+  invalidate,
+  verifyProviderCredential,
+} from '../src/platform/providerCredentialVerifier.js';
 import type {
   CliBackendsSnapshot,
   CliBackendStatus,
@@ -182,21 +186,66 @@ test('resolvePluginLlmReadiness calls detectCli once when claude-cli is assigned
   assert.equal(verdict?.status, 'verified');
 });
 
-test('a descriptor that declares no API key requirement verifies without consulting the vault', async () => {
-  const verdict = await resolveProviderVerification('anthropic', {
-    vault: {
-      get: async (): Promise<string | undefined> => {
-        throw new Error('vault should not be read');
-      },
-    },
-    llmProviderCatalog: {
-      get: () => ({
-        label: 'Ollama',
-        policy: { requiresApiKey: false },
-      }),
-    },
+// #1460 — a keyless provider is no longer `verified` by declaration: only a
+// reachability check that ran in this process makes it so.
+const KEYLESS_CATALOG = {
+  get: () => ({ label: 'Ollama', policy: { requiresApiKey: false } }),
+};
+
+test('a keyless provider nobody has checked yet is unverified, not verified', async () => {
+  __clearVerificationCache();
+  const verdict = await resolveProviderVerification('ollama', {
+    vault: new InMemorySecretVault(),
+    llmProviderCatalog: KEYLESS_CATALOG,
+  });
+  assert.equal(verdict.status, 'unverified');
+  assert.equal(verdict.reason, 'not_checked');
+});
+
+test('removing or replacing a keyless provider key drops its last check', async () => {
+  __clearVerificationCache();
+  await verifyProviderCredential({
+    providerId: 'ollama',
+    apiKey: 'proxy-key',
+    wireFormat: 'openai-compatible',
+    baseURL: 'http://localhost:11434/v1',
+    requiresApiKey: false,
+    fetchImpl: (async () =>
+      new Response(JSON.stringify({ data: [{ id: 'llama3' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })) as typeof fetch,
+  });
+  invalidate('ollama');
+  const vault = new InMemorySecretVault();
+  await vault.setMany(LLM_PLUGINS[0]!.id, { [providerApiKeyVaultKey('ollama')]: 'proxy-key' });
+  const verdict = await resolveProviderVerification('ollama', {
+    vault,
+    llmProviderCatalog: KEYLESS_CATALOG,
+  });
+  assert.equal(verdict.reason, 'not_checked');
+});
+
+test('a keyless provider reads back the last reachability check', async () => {
+  __clearVerificationCache();
+  await verifyProviderCredential({
+    providerId: 'ollama',
+    apiKey: '',
+    wireFormat: 'openai-compatible',
+    baseURL: 'http://localhost:11434/v1',
+    requiresApiKey: false,
+    fetchImpl: (async () =>
+      new Response(JSON.stringify({ data: [{ id: 'llama3' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })) as typeof fetch,
+  });
+  const verdict = await resolveProviderVerification('ollama', {
+    vault: new InMemorySecretVault(),
+    llmProviderCatalog: KEYLESS_CATALOG,
   });
   assert.equal(verdict.status, 'verified');
+  assert.ok(verdict.verifiedAt, 'a verified keyless row carries when it was checked');
 });
 
 test('a key-based provider with no stored key returns no_key', async () => {

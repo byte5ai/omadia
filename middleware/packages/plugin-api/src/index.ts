@@ -5,6 +5,7 @@ export * from './pkce.js';
 export * from './conversation.js';
 export * from './limitSignal.js';
 export * from './toolControlFlowText.js';
+export * from './toolErrorNotice.js';
 export * from './selfExtend.js';
 export * from './localSubAgentTool.js';
 export * from './piiAnnotation.js';
@@ -47,6 +48,11 @@ export * from './embeddingClient.js';
 // same contract without a dependency between them.
 export * from './responseGuard.js';
 
+// The shared boundary-preset library (#1104): the builder's per-agent
+// "Boundaries" and the `responseGuard@1` provider's install-wide defaults read
+// the same ids and rule wording.
+export * from './boundaryPresets.js';
+
 // Palaia-Phase-5 (OB-74): per-agent block/boost list, consumed by the
 // `ContextRetriever.assembleForBudget` assembler. Provider:
 // `harness-knowledge-graph-neon` (durable, tenant-scoped); no-op default
@@ -59,6 +65,10 @@ export * from './agentPriorities.js';
 // Digest crosses the LLM wire — no external NER sidecar. The Web + Teams
 // renderers build against the fixtures here.
 export * from './privacyReceipt.js';
+export * from './privacyFieldClassification.js';
+// #1527 — tolerant parser for the JSON a Haiku helper call returns; shared
+// by orchestrator-extras and the privacy guard.
+export * from './llmJson.js';
 export * from './privacyReceiptFixtures.js';
 // #757 — persistent per-turn audit receipts (kernel-provided store the
 // orchestrator resolves late-bound; receipts stay ephemeral when absent).
@@ -169,6 +179,11 @@ export * from './targetedSend.js';
 // consumers resolve it lazily and degrade when absent.
 export * from './transcription.js';
 export * from './transcriptionGuardrails.js';
+
+// `decisionModel@1`: provider-swappable typed decision model (TypeSafe Jev,
+// …) — picks one of a closed set of options with a calibrated confidence.
+// The fast path routes on it instead of an LLM call when one is installed.
+export * from './decisionModel.js';
 
 // #330 C3b — conversation-addressed proactive send ('conversationSend'):
 // post INTO a group conversation (the Facilitator's stall-nudges).

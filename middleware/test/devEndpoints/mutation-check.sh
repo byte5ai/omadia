@@ -13,7 +13,7 @@ set -uo pipefail
 
 cd "$(dirname "$0")/../.." || exit 1
 
-MUTATED_PATHS=(src/auth/publicPaths.ts src/auth/loopbackOnly.ts src/routes/graphRouterMounts.ts)
+MUTATED_PATHS=(src/auth/publicPaths.ts src/auth/loopbackOnly.ts src/routes/graphRouterMounts.ts src/index.ts)
 
 # ── Guard: never run against a dirty tree ───────────────────────────────────
 # This harness EDITS tracked source files in place and restores them with
@@ -31,9 +31,11 @@ fi
 PATHS=src/auth/publicPaths.ts
 LOOPBACK=src/auth/loopbackOnly.ts
 MOUNTS=src/routes/graphRouterMounts.ts
+INDEX=src/index.ts
 
 TESTS=('test/devEndpoints/devEndpointsAuth.e2e.test.ts'
        'test/devEndpoints/loopbackOnly.test.ts'
+       'test/devEndpoints/loopbackGuard.wiring.test.ts'
        'test/publicPaths.test.ts')
 
 pass=0; fail=0
@@ -117,6 +119,19 @@ run_mutation "the dev graph mounts regardless of DEV_ENDPOINTS_ENABLED" "$MOUNTS
   'if (!deps.enabled) return false;|||'
 
 echo "── the loopback gate ────────────────────────────────────────────────────"
+# #1350 — the gate covered /api/dev/graph only; the memory browser (a plugin
+# route under /api/dev/memory) answered any address.
+run_mutation "the loopback gate covers /api/dev/graph only" "$MOUNTS" \
+  'app.use(
+    DEV_PATH_PREFIX,|||app.use(
+    DEV_GRAPH_PATH,'
+run_mutation "the loopback gate is never mounted" "$MOUNTS" \
+  'if (!deps.loopbackOnly) return false;|||return false;'
+run_mutation "index.ts no longer calls the loopback gate" "$INDEX" \
+  'mountDevLoopbackGuard(app, { loopbackOnly: config.DEV_ENDPOINTS_LOOPBACK_ONLY });|||'
+run_mutation "index.ts mounts the loopback gate after the plugin routes" "$INDEX" \
+  'mountDevLoopbackGuard(app, { loopbackOnly: config.DEV_ENDPOINTS_LOOPBACK_ONLY });|||@@@pluginRouteRegistry.mountAll(app);|||pluginRouteRegistry.mountAll(app);
+  mountDevLoopbackGuard(app, { loopbackOnly: config.DEV_ENDPOINTS_LOOPBACK_ONLY });'
 run_mutation "the loopback gate reads the spoofable req.ip instead of the socket" "$LOOPBACK" \
   'const remote = req.socket.remoteAddress;|||const remote = req.ip ?? req.socket.remoteAddress;'
 run_mutation "the loopback gate admits every address" "$LOOPBACK" \

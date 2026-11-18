@@ -28,6 +28,7 @@
     "operatorAgents.modelPolicy.summaryAuto": "loanword",
     "adminDatasets.fields.nameOptional": "loanword",
     "dashboard.onboarding.cases.hr.name": "loanword",
+    "conductor.durationMinutes": "loanword",
     "conductor.graphLabel": "loanword",
     "conductor.guardLabel": "glossary",
     "conductor.payloadLabel": "loanword",
@@ -47,7 +48,6 @@
     "chat.saveAsMemory.skippedRequired": "diagnostic",
     "chat.saveAsMemory.skippedDerivedFrom": "diagnostic",
     "privacyReceipt.summary": "brand",
-    "privacyOperator.repoDefaultFilterPlaceholder": "loanword",
     "agentPicker.label": "glossary",
     "operatorAgents.detailMetaTitle": "brand",
     "operatorAgents.detailOpenLink": "loanword",
@@ -74,6 +74,8 @@
     "adminUsage.kpi.tokens": "loanword",
     "adminUsers.edit.providerAndId": "diagnostic",
     "adminDangerZone.selectorPlaceholder.agent": "placeholder",
+    "adminDangerZone.selectorPlaceholder.channel": "placeholder",
+    "adminDangerZone.selectorPlaceholder.team": "placeholder",
     "adminMemoryBackend.backends.postgres": "brand",
     "adminEmbeddingProvider.title": "loanword",
     "graph.filters.traceHint": "glossary",
@@ -94,6 +96,9 @@
     "operatorAgents.peers.chatSelectLabel": "loanword",
     "operatorAgents.detailTabs.teams": "brand",
     "operatorAgents.detailTabs.plugins": "loanword",
-    "operatorAgents.detailTabs.memory": "glossary"
+    "operatorAgents.detailTabs.memory": "glossary",
+    "system.vaultStatus.keySourceEnv": "code",
+    "system.platformHealth.eyebrow": "code",
+    "chat.decision.stats": "placeholder"
   }
 }

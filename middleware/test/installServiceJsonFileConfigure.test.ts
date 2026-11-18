@@ -165,7 +165,8 @@ describe('#603 — configure() with an uploaded json_file document', () => {
       {},
       { sa_key_file: serviceAccountDoc({ client_email: 'silvio@firma.de' }) },
     );
-    assert.equal(result.state, 'failed');
+    // #1494 — a validation failure keeps the job open for the corrected submit.
+    assert.equal(result.state, 'awaiting_config');
     const details = (result.error?.details ?? []) as Array<{ key?: string }>;
     const keys = details.map((d) => d.key);
     assert.ok(keys.includes('sa_email'), JSON.stringify(result.error));
@@ -179,10 +180,39 @@ describe('#603 — configure() with an uploaded json_file document', () => {
       {},
       { sa_key_file: JSON.stringify({ type: 'authorized_user' }) },
     );
-    assert.equal(result.state, 'failed');
+    // #1494 — a validation failure keeps the job open for the corrected submit.
+    assert.equal(result.state, 'awaiting_config');
     const details = (result.error?.details ?? []) as Array<{ key?: string }>;
     const keys = details.map((d) => d.key);
     assert.ok(keys.includes('sa_key_file'), JSON.stringify(result.error));
+  });
+
+  it('#1494 — the corrected file installs on the SAME job after a rejected one', async () => {
+    // The issue's scenario: an OAuth client file where the service-account
+    // key belongs. The server refuses it, and the operator picks the right
+    // file. That second submit used to answer 409 `install.wrong_state`,
+    // because the refusal had ended the job.
+    const { service, pluginId, secrets } = makeDeps();
+    const job = service.create(pluginId);
+    const rejected = await service.configure(
+      job.id,
+      {},
+      { sa_key_file: JSON.stringify({ type: 'authorized_user' }) },
+    );
+    assert.equal(rejected.state, 'awaiting_config');
+    assert.equal(rejected.step_code, 'awaiting_config');
+    assert.equal(rejected.error?.code, 'install.validation_failed');
+
+    const corrected = await service.configure(
+      job.id,
+      {},
+      { sa_key_file: serviceAccountDoc() },
+    );
+    assert.equal(corrected.id, job.id);
+    assert.equal(corrected.state, 'active', JSON.stringify(corrected.error));
+    // The stale field errors of the rejected submit are gone.
+    assert.equal(corrected.error, null);
+    assert.equal(secrets.get(`${pluginId}:sa_private_key`), PEM);
   });
 
   it('an explicitly typed value wins over the file', async () => {

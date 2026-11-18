@@ -85,8 +85,8 @@ CREATE INDEX IF NOT EXISTS idx_builder_audit_user
 `;
 
 /**
- * V4 — Native issue-reporting + workaround-tracking (concept plan:
- * docs/plans/native-issue-reporting.md). Three additive tables; no changes
+ * V4 — Native issue-reporting + workaround-tracking. Three additive
+ * tables; no changes
  * to the existing `drafts` columns. Spec-side workaround data lives inside
  * `spec_json` (immutable identity) while operational state lives in
  * `agent_workaround_state` so re-installs of the same spec keep their

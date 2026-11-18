@@ -16,7 +16,7 @@
  * secrets after registration, etc.). Same vault, different UX moment.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
 import {
   CheckCircle2,
   KeyRound,
@@ -24,6 +24,7 @@ import {
   ShieldAlert,
   Trash2,
 } from 'lucide-react';
+import { useRouter } from 'next/navigation';
 import { useLocale, useTranslations } from 'next-intl';
 
 import {
@@ -34,7 +35,11 @@ import {
   patchInstalledSecrets,
   type SetupOption,
 } from '../../_lib/api';
-import { pickLocalized } from '../../_lib/localized';
+import {
+  parseActivationResult,
+  type PluginActivationResult,
+} from '../../_lib/activationError';
+import { enumOptionLabel, pickLocalized } from '../../_lib/localized';
 import {
   resolveSetupFieldHint,
   violatesSetupPattern,
@@ -43,6 +48,7 @@ import type { PluginSetupField } from '../../_lib/storeTypes';
 import { Button } from '@/app/_components/ui/Button';
 import { ErrorHelp } from '@/app/_components/ErrorHelp';
 import { resolveErrorHelp } from '../../_lib/errorHelp';
+import { ActivationFailureNotice } from './ActivationFailureNotice';
 
 interface CredentialsEditorProps {
   pluginId: string;
@@ -111,6 +117,9 @@ export function CredentialsEditor({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<EditorError | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
+  // #1497 — the save re-activates the plugin; this is whether it came back up.
+  const [activation, setActivation] = useState<PluginActivationResult | null>(null);
+  const router = useRouter();
 
   const refreshKeys = useCallback(async () => {
     try {
@@ -193,10 +202,8 @@ export function CredentialsEditor({
       const patch: { set?: Record<string, string>; delete?: string[] } = {};
       if (Object.keys(set).length > 0) patch.set = set;
       if (del.length > 0) patch.delete = del;
-      const { keys, config_keys, config_values } = await patchInstalledSecrets(
-        pluginId,
-        patch,
-      );
+      const { keys, config_keys, config_values, activation: rawActivation } =
+        await patchInstalledSecrets(pluginId, patch);
       setStoredKeys(new Set([...keys, ...config_keys]));
       setStoredValues(config_values ?? {});
       setFieldStates((prev) =>
@@ -216,6 +223,10 @@ export function CredentialsEditor({
         ),
       );
       setSavedAt(Date.now());
+      setActivation(parseActivationResult(rawActivation));
+      // Header badge, sidebar pill and readiness are server-rendered: without
+      // this they kept the pre-save state until a manual reload.
+      router.refresh();
     } catch (err) {
       const hint = resolveSecretsPatchHint(err, setupFields, locale);
       setError(hint !== undefined ? { kind: 'hint', text: hint } : { kind: 'api', err });
@@ -230,6 +241,7 @@ export function CredentialsEditor({
     fieldStates,
     pluginId,
     locale,
+    router,
   ]);
 
   if (setupFields.length === 0) {
@@ -404,6 +416,33 @@ export function CredentialsEditor({
                     fieldKey={field.key}
                     connected={storedKeys?.has(`oauth.${field.key}`) ?? false}
                   />
+                ) : field.type === 'boolean' ? (
+                  <BooleanToggleField
+                    fieldKey={field.key}
+                    label={fieldLabel ?? field.key}
+                    value={
+                      state.pendingDelete
+                        ? undefined
+                        : state.dirty
+                          ? state.draft
+                          : storedValue
+                    }
+                    defaultValue={field.default}
+                    pendingDelete={state.pendingDelete}
+                    disabled={saving}
+                    onChange={(next) =>
+                      setFieldStates((prev) => ({
+                        ...prev,
+                        [field.key]: {
+                          // Picking the value that is already stored is a no-op,
+                          // not a pending change — keeps the save counter honest.
+                          draft: next,
+                          dirty: next !== storedValue,
+                          pendingDelete: false,
+                        },
+                      }))
+                    }
+                  />
                 ) : enumOptions ? (
                   (() => {
                     // The dropdown shows either the operator's pending
@@ -441,7 +480,7 @@ export function CredentialsEditor({
                         <option value="">{placeholder}</option>
                         {enumOptions.map((opt) => (
                           <option key={opt.value} value={opt.value}>
-                            {opt.label}
+                            {enumOptionLabel(opt, locale)}
                           </option>
                         ))}
                       </select>
@@ -469,29 +508,36 @@ export function CredentialsEditor({
                           ? t('storedRetypeToOverwrite')
                           : t('clearToDelete')
                         : (field.placeholder ?? t('notSetYet'));
-                    return (
-                      <input
-                        type={isSecret ? 'password' : 'text'}
-                        value={inputValue}
-                        disabled={state.pendingDelete || saving}
-                        aria-invalid={isInvalid || undefined}
-                        onChange={(e) =>
-                          setFieldStates((prev) => ({
-                            ...prev,
-                            [field.key]: {
-                              draft: e.target.value,
-                              dirty: true,
-                              pendingDelete: false,
-                            },
-                          }))
-                        }
-                        placeholder={placeholder}
-                        className={`min-w-0 flex-1 rounded-md border bg-[color:var(--bg)] px-3 py-2 text-[12px] text-[color:var(--ink)] placeholder:text-[color:var(--faint-ink)] focus:outline-none disabled:opacity-50 ${
-                          isInvalid
-                            ? 'border-[color:var(--danger)] focus:border-[color:var(--danger)]'
-                            : 'border-[color:var(--rule)] focus:border-[color:var(--accent)]'
-                        }`}
-                      />
+                    const inputProps = {
+                      value: inputValue,
+                      disabled: state.pendingDelete || saving,
+                      'aria-invalid': isInvalid || undefined,
+                      onChange: (
+                        e: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>,
+                      ) =>
+                        setFieldStates((prev) => ({
+                          ...prev,
+                          [field.key]: {
+                            draft: e.target.value,
+                            dirty: true,
+                            pendingDelete: false,
+                          },
+                        })),
+                      placeholder,
+                      className: `min-w-0 flex-1 rounded-md border bg-[color:var(--bg)] px-3 py-2 text-[12px] text-[color:var(--ink)] placeholder:text-[color:var(--faint-ink)] focus:outline-none disabled:opacity-50 ${
+                        isInvalid
+                          ? 'border-[color:var(--danger)] focus:border-[color:var(--danger)]'
+                          : 'border-[color:var(--rule)] focus:border-[color:var(--accent)]'
+                      }`,
+                    };
+                    // #1525 — a `multiline` field takes one entry per line
+                    // (e.g. privacy-guard `custom_patterns`); a single-line
+                    // input swallowed Enter, so only one entry could be
+                    // saved. Secrets stay a masked single-line input.
+                    return field.multiline && !isSecret ? (
+                      <textarea {...inputProps} rows={4} className={`${inputProps.className} font-mono`} />
+                    ) : (
+                      <input type={isSecret ? 'password' : 'text'} {...inputProps} />
                     );
                   })()
                 )}
@@ -538,18 +584,16 @@ export function CredentialsEditor({
           onClick={() => void onSave()}
           disabled={saving || dirtyCount === 0 || invalidKeys.size > 0}
           busy={saving}
-          busyLabel={
-            dirtyCount > 0
-              ? t('saveWithCount', { count: dirtyCount })
-              : t('save')
-          }
+          // #1475 — a progress verb, not the idle label: saving re-activates
+          // the plugin and can take seconds.
+          busyLabel={t('saving')}
         >
           <CheckCircle2 className="size-3.5" aria-hidden />
           {dirtyCount > 0
             ? t('saveWithCount', { count: dirtyCount })
             : t('save')}
         </Button>
-        {savedAt !== null ? (
+        {savedAt !== null && activation?.state !== 'errored' ? (
           <span className="text-[11px] text-[color:var(--muted-ink)]">
             {t('savedCheck')}
           </span>
@@ -565,6 +609,14 @@ export function CredentialsEditor({
           />
         )}
       </div>
+      {savedAt !== null && activation?.state === 'errored' ? (
+        <ActivationFailureNotice
+          className="mt-3"
+          lead={t('savedNotStarted')}
+          code={activation.error_code}
+          detail={activation.error}
+        />
+      ) : null}
     </div>
   );
 }
@@ -662,6 +714,9 @@ function MultiselectField({
   const [freeText, setFreeText] = useState<string>('');
   const [saving, setSaving] = useState(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
+  // #1497 — same as the scalar editor: the save re-activates the plugin.
+  const [activation, setActivation] = useState<PluginActivationResult | null>(null);
+  const router = useRouter();
 
   // Hydrate the current selection from the stored value ONCE it arrives. The
   // parent fetches config values async, so `storedValue` is undefined on the
@@ -712,14 +767,16 @@ function MultiselectField({
               .map((s) => s.trim())
               .filter(Boolean)
           : selected;
-      await patchInstalledConfig(pluginId, { [fieldKey]: values });
+      const res = await patchInstalledConfig(pluginId, { [fieldKey]: values });
       setSavedAt(Date.now());
+      setActivation(parseActivationResult(res.activation));
+      router.refresh();
     } catch (err) {
       setError(humanizeError(err, tRoot));
     } finally {
       setSaving(false);
     }
-  }, [status, freeText, selected, pluginId, fieldKey, tRoot]);
+  }, [status, freeText, selected, pluginId, fieldKey, tRoot, router]);
 
   const groups = useMemo(() => {
     const m = new Map<string, SetupOption[]>();
@@ -797,7 +854,7 @@ function MultiselectField({
             ? t('saveSelectionWithCount', { count: selected.length })
             : t('saveSelection')}
         </Button>
-        {savedAt !== null ? (
+        {savedAt !== null && activation?.state !== 'errored' ? (
           <span className="text-[11px] text-[color:var(--muted-ink)]">
             {t('savedCheck')}
           </span>
@@ -813,6 +870,14 @@ function MultiselectField({
           </button>
         ) : null}
       </div>
+      {savedAt !== null && activation?.state === 'errored' ? (
+        <ActivationFailureNotice
+          className="mt-3"
+          lead={t('savedNotStarted')}
+          code={activation.error_code}
+          detail={activation.error}
+        />
+      ) : null}
     </div>
   );
 }
@@ -884,4 +949,88 @@ function resolveSecretsPatchHint(
     // Not a JSON body: nothing field-specific to prefer.
   }
   return undefined;
+}
+
+/** True for the boolean spellings the manifest and the server use. */
+function readBoolean(raw: unknown): boolean | undefined {
+  if (raw === true || raw === 'true') return true;
+  if (raw === false || raw === 'false') return false;
+  return undefined;
+}
+
+interface BooleanToggleFieldProps {
+  fieldKey: string;
+  /** Accessible name of the yes/no group (the field's localized label). */
+  label: string;
+  /** Pending draft or stored value (`'true'` / `'false'`); undefined = not set. */
+  value: string | undefined;
+  /** Manifest default — what the plugin uses while nothing is stored. */
+  defaultValue: PluginSetupField['default'];
+  pendingDelete: boolean;
+  disabled: boolean;
+  onChange: (next: 'true' | 'false') => void;
+}
+
+/**
+ * A boolean setup field as a Ja/Nein switch instead of a free-text box that
+ * only accepted the literal words `true` / `false`. While nothing is stored
+ * the manifest default is pre-selected and marked as the default, so the
+ * operator sees what the plugin actually does today. Resetting to the default
+ * stays the trashcan next to it (delete the stored value).
+ */
+function BooleanToggleField({
+  fieldKey,
+  label,
+  value,
+  defaultValue,
+  pendingDelete,
+  disabled,
+  onChange,
+}: BooleanToggleFieldProps): React.ReactElement {
+  const t = useTranslations('store.credentials');
+  const explicit = readBoolean(value);
+  const fallback = readBoolean(defaultValue);
+  const effective = explicit ?? fallback;
+  const showsDefault = explicit === undefined && fallback !== undefined;
+  const options: ReadonlyArray<{ value: 'true' | 'false'; on: boolean }> = [
+    { value: 'true', on: true },
+    { value: 'false', on: false },
+  ];
+  return (
+    <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+      <div
+        role="radiogroup"
+        aria-label={label}
+        data-boolean-field={fieldKey}
+        className="inline-flex overflow-hidden rounded-md border border-[color:var(--rule)]"
+      >
+        {options.map((opt) => {
+          const selected = effective === opt.on;
+          return (
+            // eslint-disable-next-line no-restricted-syntax -- segmented radio control, not an action button
+            <button
+              key={opt.value}
+              type="button"
+              role="radio"
+              aria-checked={selected}
+              disabled={disabled}
+              onClick={() => onChange(opt.value)}
+              className={`px-4 py-1.5 text-[12px] font-medium transition-colors disabled:opacity-50 ${
+                selected
+                  ? 'bg-[color:var(--accent)] text-[color:var(--bg)]'
+                  : 'bg-[color:var(--bg)] text-[color:var(--muted-ink)] hover:text-[color:var(--ink)]'
+              }`}
+            >
+              {opt.on ? t('booleanYes') : t('booleanNo')}
+            </button>
+          );
+        })}
+      </div>
+      {pendingDelete ? (
+        <span className="text-[11px] text-[color:var(--danger)]">{t('pendingDelete')}</span>
+      ) : showsDefault ? (
+        <span className="text-[11px] text-[color:var(--faint-ink)]">{t('booleanDefaultActive')}</span>
+      ) : null}
+    </div>
+  );
 }

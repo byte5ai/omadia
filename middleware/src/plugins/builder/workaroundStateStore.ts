@@ -4,8 +4,8 @@ import type { Database as SqliteDatabase } from 'better-sqlite3';
 import type { Workaround } from './types.js';
 
 /**
- * Workaround operational-state store (concept plan: docs/plans/native-
- * issue-reporting.md). Backed by the v2 `agent_workaround_state` table.
+ * Workaround operational-state store. Backed by the v2
+ * `agent_workaround_state` table.
  *
  * The spec holds immutable Workaround identity (issueRef, fingerprint,
  * summary, createdAt). Operational state — `active` vs. `resolved`,

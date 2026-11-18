@@ -8,6 +8,7 @@ import {
   Database,
   Globe,
   KeyRound,
+  LockKeyhole,
   Network,
   Plug,
   ShieldAlert,
@@ -22,6 +23,8 @@ import { PluginVerdictBadge } from '../../_components/admin/PluginVerdictBadge';
 import { pickLocalized } from '../../_lib/localized';
 
 import { ApiError, getStorePlugin } from '../../_lib/api';
+import { listOperatorAgents } from '../../_lib/agents';
+import { APP_VERSION } from '../../_lib/appVersion';
 import { redirectIfUnauthorized } from '../../_lib/authRedirect';
 import type { Plugin, PluginSetupField } from '../../_lib/storeTypes';
 import {
@@ -29,6 +32,7 @@ import {
   AdminUiProvider,
   AdminUiToggle,
 } from '../../_components/store/AdminUiPanel';
+import { ConnectionCheckButton } from '../../_components/store/ConnectionCheckButton';
 import { ActionStatusBanner } from '../../_components/store/ActionStatusBanner';
 import { Chip } from '../../_components/store/Chip';
 import { AuditModeSwitch } from '../../_components/store/AuditModeSwitch';
@@ -37,6 +41,8 @@ import { GrantsPanel } from '../../_components/store/GrantsPanel';
 import { EditFromStoreButton } from '../../_components/store/EditFromStoreButton';
 import { SelfExtensionPanel } from '../../_components/store/SelfExtensionPanel';
 import { InstallButton } from '../../_components/store/InstallButton';
+import { NameDetectorStatus } from '../../_components/store/NameDetectorStatus';
+import { PRIVACY_GUARD_ID } from '../../_lib/privacyGuard';
 import { PluginIcon } from '../../_components/store/PluginIcon';
 import { StateBadge } from '../../_components/store/StateBadge';
 
@@ -54,6 +60,26 @@ export async function generateMetadata({
   } catch {
     const t = await getTranslations('store.detail');
     return { title: t('notFoundTitle') };
+  }
+}
+
+/**
+ * #1492 — the orchestrators an installed agent/tool plugin is enabled on, so
+ * the next-step hint stops asking to attach a plugin that is attached already.
+ * `null` when the question does not apply or cannot be answered — the hint then
+ * falls back to its generic wording rather than claiming either way.
+ */
+async function orchestratorsUsing(plugin: Plugin): Promise<string[] | null> {
+  const installed =
+    plugin.install_state === 'installed' || plugin.install_state === 'update-available';
+  if (!installed || (plugin.kind !== 'agent' && plugin.kind !== 'tool')) return null;
+  try {
+    const { agents } = await listOperatorAgents();
+    return agents
+      .filter((a) => a.plugins.some((p) => p.id === plugin.id && p.enabled))
+      .map((a) => a.name);
+  } catch {
+    return null;
   }
 }
 
@@ -99,6 +125,7 @@ export default async function PluginDetailPage({
   const localizedDescription =
     pickLocalized(plugin.description_localized, locale) ?? plugin.description;
   const t = await getTranslations('store.detail');
+  const attachedTo = await orchestratorsUsing(plugin);
 
   // S+7.7 / 2026-05-04 — admin-ui mount path. Conditional on the manifest
   // declaring `admin_ui_path` AND the plugin being installed (or having an
@@ -146,6 +173,9 @@ export default async function PluginDetailPage({
                   state={plugin.install_state}
                   isLegacy={isLegacy}
                   readiness={plugin.readiness}
+                  // #1453 — same precedence as the card: a reported problem
+                  // outranks a badge that only knows activation happened.
+                  actionStatus={plugin.action_status}
                 />
                 <Chip tone="mono">v{plugin.version}</Chip>
                 {plugin.signed ? (
@@ -185,6 +215,14 @@ export default async function PluginDetailPage({
           ok, e.g. after connecting via the admin UI below). */}
       <div className="mt-8">
         <ActionStatusBanner pluginId={plugin.id} initial={plugin.action_status} />
+        {/* #1453 — ask the target system now. The banner above and the badge
+            pick up the resulting status on their own poll; this only reports
+            what the check just answered. Installed plugins only: there is
+            nothing running to probe otherwise. */}
+        {plugin.install_state === 'installed' ||
+        plugin.install_state === 'update-available' ? (
+          <ConnectionCheckButton pluginId={plugin.id} />
+        ) : null}
       </div>
 
       {/* Two-column body */}
@@ -263,9 +301,14 @@ export default async function PluginDetailPage({
 
               Rendered for every INSTALLED plugin, not only for one that
               declares a grant today: the panel is also where an operator
-              confirms that a plugin asks for NOTHING, and a section that
+              confirms that a plugin needs NO grant, and a section that
               silently disappears cannot answer that question. The panel itself
               says so when the manifest declares neither.
+
+              #1474 — titled "Grants", not "Permissions", with its own icon:
+              it covers only the two grantable requests, while the
+              "Permissions" section below lists everything the manifest
+              declares. Two sections of the same name contradicted each other.
 
               `id="grants"` is the deep-link target the install wizard and the
               activation error message both point at. */}
@@ -274,7 +317,7 @@ export default async function PluginDetailPage({
             <Section
               label={t('sectionGrants')}
               id="grants"
-              icon={<ShieldCheck className="size-4" aria-hidden />}
+              icon={<LockKeyhole className="size-4" aria-hidden />}
             >
               <GrantsPanel pluginId={plugin.id} />
             </Section>
@@ -392,13 +435,28 @@ export default async function PluginDetailPage({
             enabled={install_available}
             remote={Boolean(plugin.source)}
             installedVersion={plugin.version}
+            {...(plugin.built_in_uninstall
+              ? { builtInUninstall: plugin.built_in_uninstall }
+              : {})}
+            removablePackage={plugin.removable_package === true}
             {...(plugin.readiness ? { readiness: plugin.readiness } : {})}
             {...(plugin.setup_guide ? { setupGuide: plugin.setup_guide } : {})}
             {...(plugin.available_version
               ? { availableVersion: plugin.available_version }
               : {})}
             {...(blocking_reasons ? { blockingReasons: blocking_reasons } : {})}
+            {...(plugin.provides ? { provides: plugin.provides } : {})}
+            kind={plugin.kind}
+            attachedTo={attachedTo}
           />
+
+          {/* #1562 — whether the guard's C1 name detector runs (off / active /
+              unreachable). Shown only on the Privacy Guard's own page. */}
+          {plugin.id === PRIVACY_GUARD_ID &&
+          (plugin.install_state === 'installed' ||
+            plugin.install_state === 'update-available') ? (
+            <NameDetectorStatus />
+          ) : null}
 
           {/* OM-06 / #671 — the capability this plugin provides is already
               covered by an active plugin, so the install would be refused.
@@ -505,9 +563,10 @@ export default async function PluginDetailPage({
       <footer className="mt-20 flex items-center justify-between border-t border-[color:var(--rule)] pt-4 text-[11px] uppercase tracking-[0.18em] text-[color:var(--faint-ink)]">
         <span className="flex items-center gap-2">
           <BookCheck className="size-3.5" aria-hidden />
-          Manifest: {isLegacy ? 'Legacy' : 'Schema v1'}
+          {isLegacy ? t('footerManifestLegacy') : t('footerManifestSchema', { version: 1 })}
         </span>
-        <span className="font-mono-num">omadia · v1</span>
+        {/* #1383 — the running build, as on /help; this used to be a literal `v1`. */}
+        <span className="font-mono-num normal-case">omadia · {APP_VERSION}</span>
       </footer>
     </main>
   );
@@ -590,6 +649,7 @@ async function PermissionsBlock({
   perms: Plugin['permissions_summary'];
 }): Promise<React.ReactElement> {
   const t = await getTranslations('store.detail.permissions');
+  const tGrants = await getTranslations('store.grants');
   const groups: Array<{
     label: string;
     icon: React.ReactNode;
@@ -653,8 +713,17 @@ async function PermissionsBlock({
   // its own labelled block, and the copy says plainly that declaring is not
   // granting.
   const publicPaths = perms.public_paths ?? [];
+  // #1457 — own database tables. Installed plugins also show this under
+  // "Grants", but a hub plugin's detail page is reviewed BEFORE install, and
+  // this block is all it has.
+  const sql = perms.sql ?? null;
 
-  if (active.length === 0 && flags.length === 0 && publicPaths.length === 0) {
+  if (
+    active.length === 0 &&
+    flags.length === 0 &&
+    publicPaths.length === 0 &&
+    !sql
+  ) {
     return (
       <p className="text-sm italic text-[color:var(--faint-ink)]">
         {t('none')}
@@ -685,6 +754,25 @@ async function PermissionsBlock({
           </ul>
           <p className="mt-2 text-xs italic text-[color:var(--faint-ink)]">
             {t('publicPathsNotGranted')}
+          </p>
+        </div>
+      ) : null}
+      {sql ? (
+        <div data-testid="sql-permission">
+          <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-[color:var(--muted-ink)]">
+            <Database className="size-3.5" aria-hidden />
+            {tGrants('sqlTitle')}
+          </div>
+          <p className="mt-2 text-sm text-[color:var(--muted-ink)]">
+            {tGrants('sqlBody')}
+          </p>
+          <p className="mt-2">
+            <Chip tone="mono" className="normal-case tracking-normal">
+              {tGrants('sqlLedger', { ledger: sql.ledger })}
+            </Chip>
+          </p>
+          <p className="mt-2 text-xs italic text-[color:var(--faint-ink)]">
+            {t('sqlNotGranted')}
           </p>
         </div>
       ) : null}

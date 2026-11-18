@@ -1,4 +1,4 @@
-import { app, BrowserWindow } from 'electron';
+import { app, BrowserWindow, shell } from 'electron';
 import { installApplicationMenu } from './menu';
 import path from 'node:path';
 import { Supervisor, setActiveSupervisor, BootProgress } from './supervisor';
@@ -7,7 +7,7 @@ import { CH } from './ipcTypes';
 import { createTray, setTrayStatus, destroyTray, TrayActions } from './tray';
 import { checkForUpdatesManually, initUpdater, isUpdateInstalling } from './updater';
 import { isSetupComplete } from './setupState';
-import { log, logFile, onLog } from './log';
+import { flushLog, log, logFile, onLog } from './log';
 import { classifyBootFailure, describeError } from './bootFailure';
 import {
   clearRecoveryBudget,
@@ -30,19 +30,21 @@ import {
   showBootFailure,
   showRecoveryExhausted,
   showRestartRefused,
+  showSecretsUnreadable,
   showSupersededBoot,
 } from './shellDialogs';
 import { maybeRemindRecoveryKey, showRecoveryKeyAction } from './recoveryKeyActions';
 import { createUiReadyGate } from './uiReadyGate';
 import { showAppPage } from './appPageBoot';
 import { resolveAppIconPath } from './icons';
+import { LOADING_PAGE, WIZARD_PAGE } from './bridgeSurface';
+import { installNavigationGuards } from './navigationGuards';
+import { originOf, trustedTargetsFor, type TrustedTargets } from './navigationPolicy';
 
 // Stable app identity so userData resolves to ".../omadia" in both dev and
 // packaged builds (in dev the Electron CLI would otherwise name it "Electron").
 app.setName('omadia');
 
-const LOADING_PAGE = 'loading.html';
-const WIZARD_PAGE = 'wizard.html';
 /** Marks a wizard load as following a crash, so the reset to step 0 is explained. */
 const RECOVERED_HASH = 'recovered';
 
@@ -75,8 +77,23 @@ const uiReadyGate = createUiReadyGate(UI_READY_FALLBACK_MS);
  */
 let t: ShellTranslate = (_key, fallback) => fallback;
 
+/** The bundled wizard and loading pages: the only `file:` documents the window shows. */
+function rendererDir(): string {
+  return path.join(app.getAppPath(), 'dist', 'renderer');
+}
+
 function rendererPath(file: string): string {
-  return path.join(app.getAppPath(), 'dist', 'renderer', file);
+  return path.join(rendererDir(), file);
+}
+
+/** The web UI's origin while it is serving; null before the first boot and after a stop. */
+function uiOrigin(): string | null {
+  return originOf(supervisor?.getUiUrl() ?? null);
+}
+
+/** Where a window may navigate in place: the kernel and, once it is up, the web UI. */
+function trustedTargets(): TrustedTargets {
+  return trustedTargetsFor(Supervisor.kernelOrigin(), supervisor?.getUiUrl() ?? null);
 }
 
 /**
@@ -309,6 +326,13 @@ function trayActions(): TrayActions {
  * Doubles as the supervisor's `progress` listener and as the way a recovery
  * explains itself, because both are literally "tell the renderer where the boot
  * stands" — they were two identical functions until this was noticed.
+ *
+ * Unlike renderer → main calls, these pushes are not sender-checked, and need
+ * not be: every boot path loads a bundled page first (`loadRenderer` with
+ * LOADING_PAGE or WIZARD_PAGE) and streams only while it is up, those pages
+ * carry no links and never navigate themselves, and the navigation guards
+ * keep any page-initiated move from the app's own documents on the app's own
+ * origins. So no foreign document can be on screen while the boot streams.
  */
 function sendBootProgress(p: BootProgress): void {
   if (win && !win.isDestroyed()) win.webContents.send(CH.bootProgress, p);
@@ -358,7 +382,14 @@ async function bootExistingInstall(): Promise<void> {
  */
 async function presentBootFailure(err: unknown): Promise<void> {
   if (!win) return;
-  const failure = classifyBootFailure(err);
+  const failure = classifyBootFailure(err, { quitting });
+
+  if (failure.kind === 'interrupted') {
+    // FU-161: quitting while the first page loads aborts `loadURL`. That is
+    // the quit, not a failure: no error line, no tray error state, no dialog.
+    log.info(`[main] boot stopped because the app is quitting: ${failure.detail}`);
+    return;
+  }
 
   if (failure.kind === 'superseded') {
     log.info(`[main] boot superseded (expected during an update): ${failure.detail}`);
@@ -369,12 +400,17 @@ async function presentBootFailure(err: unknown): Promise<void> {
 
   log.error(`[main] boot failed: ${failure.detail}`);
   setTrayStatus(trayActions(), 'error');
-  if ((await showBootFailure(win, t, failure.detail, logFile())) === 'rerun-setup') {
+  if (failure.kind === 'secrets-unreadable') {
+    // Setup would hit the same file: this dialog explains the restore, then quits.
+    await showSecretsUnreadable(win, t, failure.secrets, logFile(), (file) =>
+      shell.showItemInFolder(file),
+    );
+  } else if ((await showBootFailure(win, t, failure.detail, logFile())) === 'rerun-setup') {
     startWizard();
-  } else {
-    quitting = true;
-    app.quit();
+    return;
   }
+  quitting = true;
+  app.quit();
 }
 
 function startWizard(): void {
@@ -405,12 +441,18 @@ async function onReady(): Promise<void> {
   const menuActions = {
     checkForUpdates: checkForUpdatesAction,
     showRecoveryKey: () => {
-      if (win) void showRecoveryKeyAction(win, t);
+      if (win) void showRecoveryKeyAction(win, t, () => currentView() === 'wizard');
     },
   };
   installApplicationMenu(menuActions, t);
   supervisor = new Supervisor();
   setActiveSupervisor(supervisor);
+  // The supervisor has already stopped the kernel; the restart brings the
+  // database back first, then the kernel and the UI, and reloads the window.
+  // A kernel that did not exit leaves the restart to the user.
+  supervisor.on('database-exit', (exit: { kernelStopped: boolean }) =>
+    exit.kernelStopped ? void trayActions().restart() : setTrayStatus(trayActions(), 'error'),
+  );
 
   win = createWindow();
   createTray(trayActions());
@@ -440,6 +482,11 @@ async function onReady(): Promise<void> {
     onUiLocale: (locale) => {
       if (shellLocale.setUiLocale(locale)) installApplicationMenu(menuActions, t);
     },
+    // Who may call which channel (ipcSender.ts): setup only from the bundled
+    // wizard while it is on screen, UI pings only from the web UI's origin.
+    currentView,
+    appOrigin: uiOrigin,
+    rendererDir: rendererDir(),
   });
 
   initUpdater();
@@ -462,6 +509,18 @@ if (!gotLock) {
       win.show();
       win.focus();
     }
+  });
+
+  // Navigation, popup and permission guards for every webContents (the main
+  // window and any child it opens) and its session. Registered before the
+  // window exists, so nothing loads unguarded (see navigationGuards.ts).
+  app.on('web-contents-created', (_event, contents) => {
+    installNavigationGuards(contents, {
+      trusted: trustedTargets,
+      rendererDir: rendererDir(),
+      openExternal: (url) => shell.openExternal(url),
+      log,
+    });
   });
 
   app.whenReady().then(onReady).catch((err) => {
@@ -502,6 +561,14 @@ if (!gotLock) {
       } catch (err) {
         log.error(`[main] shutdown error: ${describeError(err)}`);
       } finally {
+        // FU-162: the log writes through an async stream, so the shutdown lines
+        // would die with the process. flushLog is bounded and never rejects;
+        // the catch makes sure nothing here can keep the app from exiting.
+        try {
+          await flushLog();
+        } catch {
+          /* exit regardless */
+        }
         app.exit(0);
       }
     })();

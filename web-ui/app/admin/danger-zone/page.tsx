@@ -14,16 +14,20 @@ import {
   type MemoryPurgeAxis,
   type MemoryPurgePreviewResult,
   type MemoryPurgeResult,
+  type MemoryPurgeWarning,
 } from '../../_lib/api';
 
 /**
  * Admin → Danger Zone (memory purge).
  *
  * Two-stage destructive surface for wiping memory along an axis:
- *   - 'all'     → Agent-Scratch + Knowledge-Graph
- *   - 'agent'   → Knowledge-Graph + /memories/contexts/<slug>
- *   - 'user' | 'team' | 'channel'
- *               → Knowledge-Graph + /memories/contexts/<any-agent>/<axis>/<ctxKey>
+ *   - 'all'     → agent scratch + KG remembered facts + KG conversation history
+ *   - 'agent'   → the agent's scratch trees + its KG facts and conversations
+ *   - 'user'    → /memories/contexts/<any-agent>/user/<ctxKey>, or — for an
+ *                 omadia user id — that person's member notes, KG facts and turns
+ *   - 'team' | 'channel'
+ *               → /memories/contexts/<any-agent>/<axis>/<ctxKey> only (the KG
+ *                 has no team/channel scoping yet)
  *
  * Selector semantics for the three context axes changed with the chat-context
  * memory ACL (design #870 §7). The value must ALWAYS carry a channel-type half:
@@ -39,7 +43,13 @@ import {
  * Flow: pick axis (+ selector) → Vorschau (POST /preview, dry-run counts)
  * → type the confirm phrase → Löschen (DELETE /, irreversible). The delete
  * button stays disabled until a successful preview exists AND the typed
- * confirm string matches the required phrase exactly.
+ * confirm string matches the required phrase exactly. The server enforces the
+ * preview too: the delete carries the preview's token, which only arms that
+ * exact selection (#1336). A preview that found nothing offers no delete.
+ *
+ * Server warnings and errors arrive as codes and are translated here
+ * (`warnings.*`, `errors.*`); an unknown error code falls back to the server's
+ * own message rather than a bare status line (#1333).
  *
  * Backed by `/bot-api/v1/admin/memory/purge{/preview}` (cookie-session auth,
  * same admin router as bulk-promote / inconsistencies).
@@ -58,6 +68,30 @@ const AXES: ReadonlyArray<MemoryPurgeAxis> = [
 // Literal confirm phrase for axis 'all' — compared with === against the
 // operator's input and sent to the backend. Deliberately NOT translated.
 const CONFIRM_ALL = 'DELETE ALL MEMORY';
+
+// Server codes with copy under `adminDangerZone.warnings.*` / `.errors.*`.
+const WARNING_CODES: ReadonlySet<string> = new Set([
+  'kg_not_modelled',
+  'kg_history_unsupported',
+  'user_axis_kg_only',
+  'user_axis_scratch_only',
+  'audit_unavailable',
+  'audit_update_failed',
+  'reseed_failed',
+]);
+const ERROR_CODES: ReadonlySet<string> = new Set([
+  'invalid_selector',
+  'selector_required',
+  'preview_required',
+  'confirmation_mismatch',
+  'audit_write_failed',
+]);
+
+const codeRich = {
+  code: (chunks: React.ReactNode) => (
+    <code className="font-mono text-[color:var(--danger)]">{chunks}</code>
+  ),
+};
 
 export default function DangerZonePage(): React.ReactElement {
   const t = useTranslations('adminDangerZone');
@@ -106,6 +140,36 @@ export default function DangerZonePage(): React.ReactElement {
     [resetStaging],
   );
 
+  // The re-seed changes what the purge deletes, so it invalidates the preview
+  // like any other targeting change (#1335).
+  const onReseedChange = useCallback(
+    (next: boolean): void => {
+      setReseed(next);
+      resetStaging();
+    },
+    [resetStaging],
+  );
+
+  /** Localized text for a failed call: copy keyed on the server's code, else
+   *  the server's own message, else the bare status line. */
+  const describeError = useCallback(
+    (err: unknown): string => {
+      if (err instanceof ApiError) {
+        if (err.status === 403) return t('forbiddenError');
+        if (err.code !== null && ERROR_CODES.has(err.code)) return t(`errors.${err.code}`);
+        if (err.serverMessage !== null) return err.serverMessage;
+      }
+      return err instanceof Error ? err.message : String(err);
+    },
+    [t],
+  );
+
+  const describeWarning = useCallback(
+    (w: MemoryPurgeWarning): string =>
+      WARNING_CODES.has(w.code) ? t(`warnings.${w.code}`, w.params ?? {}) : w.code,
+    [t],
+  );
+
   const loadPreview = useCallback(async (): Promise<void> => {
     if (requiresSelector && trimmedSelector.length === 0) {
       setPreviewError(t('selectorRequired'));
@@ -119,26 +183,30 @@ export default function DangerZonePage(): React.ReactElement {
       const p = await previewMemoryPurge(
         requiresSelector
           ? { axis, selector: trimmedSelector }
-          : { axis },
+          : { axis, reseed },
       );
       setPreview(p);
     } catch (err) {
-      setPreviewError(err instanceof Error ? err.message : String(err));
+      setPreviewError(describeError(err));
       setPreview(null);
     } finally {
       setPreviewLoading(false);
     }
-  }, [axis, requiresSelector, trimmedSelector, t]);
+  }, [axis, describeError, requiresSelector, reseed, trimmedSelector, t]);
 
   const confirmMatches = useMemo(
     () => requiredPhrase.length > 0 && confirmInput === requiredPhrase,
     [confirmInput, requiredPhrase],
   );
 
-  const canDelete = preview !== null && confirmMatches && !deleting;
+  const nothingToDelete =
+    preview !== null &&
+    preview.scratchCount + preview.kgCount + preview.conversationCount === 0;
+
+  const canDelete = preview !== null && !nothingToDelete && confirmMatches && !deleting;
 
   const runDelete = useCallback(async (): Promise<void> => {
-    if (!confirmMatches) return;
+    if (!confirmMatches || preview === null) return;
     setDeleting(true);
     setDeleteError(null);
     setResult(null);
@@ -147,6 +215,7 @@ export default function DangerZonePage(): React.ReactElement {
         axis,
         ...(requiresSelector ? { selector: trimmedSelector } : {}),
         confirm: requiredPhrase,
+        previewToken: preview.previewToken,
         ...(axis === 'all' ? { reseed } : {}),
       });
       setResult(r);
@@ -155,25 +224,22 @@ export default function DangerZonePage(): React.ReactElement {
       setPreview(null);
       setConfirmInput('');
     } catch (err) {
-      if (err instanceof ApiError && err.status === 403) {
-        setDeleteError(t('forbiddenError'));
-      } else {
-        setDeleteError(err instanceof Error ? err.message : String(err));
-      }
+      setDeleteError(describeError(err));
     } finally {
       setDeleting(false);
     }
   }, [
     axis,
     confirmMatches,
+    describeError,
+    preview,
     requiredPhrase,
     requiresSelector,
     reseed,
     trimmedSelector,
-    t,
   ]);
 
-  const warning = result?.warning ?? preview?.warning ?? null;
+  const warnings = (result ?? preview)?.warnings ?? [];
 
   return (
     <main className="mx-auto max-w-[800px] px-6 py-12 lg:px-8 lg:py-16">
@@ -199,18 +265,17 @@ export default function DangerZonePage(): React.ReactElement {
         <p>
           {t.rich('note', {
             strong: (chunks) => <strong>{chunks}</strong>,
-            code: (chunks) => (
-              <code className="font-mono text-[color:var(--danger)]">
-                {chunks}
-              </code>
-            ),
+            ...codeRich,
           })}
         </p>
-        {warning !== null && (
-          <p className="mt-2 border-t border-[color:var(--danger-edge)]/30 pt-2 font-medium">
-            ⚠ {warning}
+        {warnings.map((w) => (
+          <p
+            key={w.code}
+            className="mt-2 border-t border-[color:var(--danger-edge)]/30 pt-2 font-medium"
+          >
+            ⚠ {describeWarning(w)}
           </p>
-        )}
+        ))}
       </section>
 
       <section className="mb-6 rounded-lg border border-[color:var(--border)] bg-[color:var(--card)]/40 p-4">
@@ -250,22 +315,25 @@ export default function DangerZonePage(): React.ReactElement {
                 className="rounded border border-[color:var(--border)] px-2 py-1 font-mono text-sm"
               />
               <span className="text-[11px] text-[color:var(--fg-muted)]">
-                {t(`selectorHint.${axis}`)}
+                {t.rich(`selectorHint.${axis}`, codeRich)}
               </span>
             </label>
           )}
         </div>
 
         {axis === 'all' && (
-          <label className="mt-4 flex items-center gap-2 text-sm text-[color:var(--fg-muted)]">
-            <input
-              type="checkbox"
-              checked={reseed}
-              onChange={(e) => { setReseed(e.target.checked); }}
-              disabled={deleting}
-            />
-            {t('reseedLabel')}
-          </label>
+          <div className="mt-4 text-sm text-[color:var(--fg-muted)]">
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={reseed}
+                onChange={(e) => { onReseedChange(e.target.checked); }}
+                disabled={deleting}
+              />
+              {t('reseedLabel')}
+            </label>
+            <p className="mt-1 pl-6 text-[11px]">{t('reseedHint')}</p>
+          </div>
         )}
 
         <div className="mt-4 flex items-center justify-end">
@@ -306,7 +374,18 @@ export default function DangerZonePage(): React.ReactElement {
             <dd className="font-mono text-[color:var(--danger)]">
               {preview.kgCount}
             </dd>
+            <dt className="text-[color:var(--fg-muted)]">
+              {t('conversationHistory')}
+            </dt>
+            <dd className="font-mono text-[color:var(--danger)]">
+              {preview.conversationCount}
+            </dd>
           </dl>
+          {preview.reseedEntries.length > 0 && (
+            <p className="mt-2 text-sm text-[color:var(--fg-muted)]">
+              {t('reseedPreview', { entries: preview.reseedEntries.join(', ') })}
+            </p>
+          )}
         </section>
       )}
 
@@ -321,6 +400,10 @@ export default function DangerZonePage(): React.ReactElement {
         ) : requiresSelector && trimmedSelector.length === 0 ? (
           <p className="text-sm text-[color:var(--fg-muted)]">
             {t('noSelector')}
+          </p>
+        ) : nothingToDelete ? (
+          <p className="text-sm text-[color:var(--fg-muted)]">
+            {t('nothingToDelete')}
           </p>
         ) : (
           <>
@@ -373,7 +456,16 @@ export default function DangerZonePage(): React.ReactElement {
               {t('knowledgeGraph')}
             </dt>
             <dd className="font-mono">{result.kgDeleted}</dd>
+            <dt className="text-[color:var(--fg-muted)]">
+              {t('conversationHistory')}
+            </dt>
+            <dd className="font-mono">{result.conversationDeleted}</dd>
           </dl>
+          {result.reseededFiles !== undefined && (
+            <p className="mt-2 text-sm text-[color:var(--fg-muted)]">
+              {t('reseeded', { count: result.reseededFiles })}
+            </p>
+          )}
         </section>
       )}
     </main>

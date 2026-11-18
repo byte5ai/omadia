@@ -6,7 +6,7 @@ import { RSC_FETCH_TIMEOUT_MS, rscTimeoutSignal } from '../api';
  * OM-96 — a server-side fetch must not be able to hang forever.
  *
  * The reported symptom was "the DASHBOARD nav item does not navigate": the
- * page stayed and the active marker stayed. The nav was innocent. `app/page.tsx`
+ * page stayed and the active marker stayed. The nav was innocent. `app/(dashboard)/page.tsx`
  * is `force-dynamic` and awaits six `getJson()` calls; with no timeout on them
  * and no root `loading.tsx`, a middleware endpoint that accepts the connection
  * and never answers meant the RSC payload for `/` never arrived and the soft

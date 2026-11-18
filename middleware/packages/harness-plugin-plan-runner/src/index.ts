@@ -34,9 +34,11 @@ export {
   type ParsedStep,
 } from './materializer.js';
 export {
+  abandonPlan,
   advanceStep,
   applyReplan,
   finishPlan,
+  NOT_REACHED_SUMMARY,
   startFirstStep,
   type TurnPlanState,
 } from './progress.js';

@@ -59,3 +59,36 @@ export const log = {
   warn: (msg: string) => write('WARN', msg),
   error: (msg: string) => write('ERROR', msg),
 };
+
+/**
+ * How long `flushLog` waits for the disk. A drive that never answers must not
+ * hold the quit; lines still queued after this may be lost.
+ */
+export const LOG_FLUSH_TIMEOUT_MS = 2_000;
+
+/**
+ * Resolves once every line written so far has reached the log file (FU-162).
+ *
+ * `log.*` only queues a line on the async stream, so an `app.exit()` straight
+ * after a shutdown dropped what was still queued: `[boot] shutdown incomplete`,
+ * `[main] shutdown error: …`. An empty write is queued behind every earlier
+ * line, and its callback fires once they are written or the stream has failed.
+ * Resolves at once when nothing was ever written, never rejects, and gives up
+ * after LOG_FLUSH_TIMEOUT_MS.
+ */
+export function flushLog(): Promise<void> {
+  const current = stream;
+  if (current === null) return Promise.resolve();
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, LOG_FLUSH_TIMEOUT_MS);
+    const done = (): void => {
+      clearTimeout(timer);
+      resolve();
+    };
+    try {
+      current.write('', done);
+    } catch {
+      done();
+    }
+  });
+}

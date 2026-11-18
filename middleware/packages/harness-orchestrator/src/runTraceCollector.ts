@@ -1,10 +1,14 @@
 import type { AskObserver } from './tools/domainQueryTool.js';
 import type {
+  EntityRef,
+  EntityRefCollection,
   RunAgentInvocation,
   RunStatus,
   RunToolCall,
 } from '@omadia/plugin-api';
 import type { RunTracePayload } from '@omadia/channel-sdk';
+import { KNOWLEDGE_GRAPH_TOOL_NAME } from './knowledgeGraphTool.js';
+import { knowledgeGraphRefsIn } from './knowledgeGraphRefs.js';
 
 /**
  * `RunTracePayload` was lifted to `@omadia/channel-sdk` in S+10-2 so
@@ -28,7 +32,9 @@ export interface InvocationHandle {
   readonly agentName: string;
   readonly index: number;
   readonly observer: AskObserver;
-  finish(opts: { durationMs: number; status: RunStatus }): void;
+  /** `replayed`: a verifier re-entry handed back the first run's result,
+   *  the sub-agent did not run in this pass. */
+  finish(opts: { durationMs: number; status: RunStatus; replayed?: boolean }): void;
 }
 
 export interface RunTraceCollectorOptions {
@@ -36,6 +42,51 @@ export interface RunTraceCollectorOptions {
   userId?: string;
   /** ISO timestamp. Passed in so tests can pin it; production uses now(). */
   startedAt?: string;
+  /** #1571 — the turn's id (the turn context's), kept beside the payload for
+   *  the verifier ({@link turnEvidenceOf}). */
+  turnId?: string;
+  /** #1574 — the turn's EntityRef collection: the records its tools read,
+   *  kept beside the payload for the verifier ({@link turnEvidenceOf}). */
+  entityRefs?: SharedEntityRefs;
+}
+
+/**
+ * #1574 — one turn's EntityRef collection, read by two consumers: the run
+ * trace (for the verifier, at `finish()`) and the session-log row (at
+ * `drain()`). The first read drains the bus collection; both see the same
+ * refs. `drain()` keeps the bus semantics: the refs once, then `[]`. A ref
+ * published after the trace finished (no tool runs then) is not collected.
+ */
+export class SharedEntityRefs implements EntityRefCollection {
+  #refs: EntityRef[] | undefined;
+  #drained = false;
+
+  constructor(private readonly source: EntityRefCollection) {}
+
+  /** The refs collected so far, without consuming them. */
+  snapshot(): readonly EntityRef[] {
+    this.#refs ??= this.source.drain();
+    return this.#refs;
+  }
+
+  drain(): EntityRef[] {
+    if (this.#drained) return [];
+    this.#drained = true;
+    return [...this.snapshot()];
+  }
+}
+
+/** Shares a bus collection between the run trace and the session log. */
+export function shareEntityRefs(
+  source: EntityRefCollection | undefined,
+): SharedEntityRefs | undefined {
+  return source === undefined ? undefined : new SharedEntityRefs(source);
+}
+
+/** What the verifier reads about a finished turn beside its trace payload. */
+export interface TurnEvidence {
+  readonly turnId?: string;
+  readonly entityRefs: readonly EntityRef[];
 }
 
 /**
@@ -62,14 +113,36 @@ export class RunTraceCollector {
     this.startedAt = opts.startedAt ?? new Date().toISOString();
   }
 
+  /**
+   * `output` — the result text the model received. For a
+   * `query_knowledge_graph` call it supplies the turn's citable source ids
+   * ({@link noteKnowledgeGraphOutput}); other tools' output is not kept.
+   */
   recordOrchestratorToolCall(
     call: Omit<RunToolCall, 'agentContext'>,
+    output?: string,
   ): void {
+    if (call.toolName === KNOWLEDGE_GRAPH_TOOL_NAME && output !== undefined) {
+      this.noteKnowledgeGraphOutput(output);
+    }
     this.orchestratorToolCalls.push({
       ...call,
       agentContext: 'orchestrator',
     });
   }
+
+  /**
+   * Keeps the source ids a knowledge-graph result showed the model — the ids
+   * a `[ref:…]` marker in the answer may name ({@link knowledgeGraphRefsOf}).
+   * A replayed result passes through here exactly like an executed one.
+   */
+  noteKnowledgeGraphOutput(output: string): void {
+    this.knowledgeGraphOutputSeen = true;
+    for (const ref of knowledgeGraphRefsIn(output)) this.knowledgeGraphRefs.add(ref);
+  }
+
+  private knowledgeGraphOutputSeen = false;
+  private readonly knowledgeGraphRefs = new Set<string>();
 
   beginInvocation(agentName: string, agentId?: string): InvocationHandle {
     const index = this.invocationIndex++;
@@ -90,6 +163,7 @@ export class RunTraceCollector {
       },
       onSubToolResult: (ev) => {
         const meta = toolCallStarts.get(ev.id);
+        if (meta?.name === KNOWLEDGE_GRAPH_TOOL_NAME) this.noteKnowledgeGraphOutput(ev.output);
         subToolCalls.push({
           callId: ev.id,
           toolName: meta?.name ?? 'unknown',
@@ -97,6 +171,7 @@ export class RunTraceCollector {
           isError: ev.isError,
           agentContext: agentName,
           ...(ev.postcondition ? { postcondition: ev.postcondition } : {}),
+          ...(ev.replayed === true ? { replayed: true } : {}),
         });
         toolCallStarts.delete(ev.id);
       },
@@ -106,7 +181,7 @@ export class RunTraceCollector {
       agentName,
       index,
       observer,
-      finish({ durationMs, status }): void {
+      finish({ durationMs, status, replayed }): void {
         if (finished) return;
         finished = true;
         push({
@@ -117,6 +192,7 @@ export class RunTraceCollector {
           subIterations,
           status,
           toolCalls: subToolCalls,
+          ...(replayed === true ? { replayed: true } : {}),
         });
       },
     };
@@ -167,6 +243,45 @@ export class RunTraceCollector {
       ...(this.provider ? { provider: this.provider } : {}),
       ...(opts.error ? { error: opts.error } : {}),
     };
+    if (this.knowledgeGraphOutputSeen) {
+      KNOWLEDGE_GRAPH_REFS.set(payload, [...this.knowledgeGraphRefs].sort());
+    }
+    TURN_EVIDENCE.set(payload, {
+      ...(this.opts.turnId !== undefined ? { turnId: this.opts.turnId } : {}),
+      entityRefs: this.opts.entityRefs?.snapshot() ?? [],
+    });
     return payload;
   }
+}
+
+/**
+ * The citable ids per finished trace, held BESIDE the payload rather than on
+ * it: the payload goes out on the stream's `done`, into routine runs and to
+ * `ingestRun`, and these ids are verifier input for this turn only. Keyed by
+ * the payload object, so they live exactly as long as the trace does.
+ */
+const KNOWLEDGE_GRAPH_REFS = new WeakMap<RunTracePayload, readonly string[]>();
+
+/**
+ * The source ids this trace's `query_knowledge_graph` results showed the
+ * model (`id` / `turnId`), sorted — what a `[ref:…]` marker in the answer may
+ * name. Undefined when the turn made no graph call (or the trace was not
+ * built by a collector); empty when the graph returned nothing citable.
+ */
+export function knowledgeGraphRefsOf(trace: RunTracePayload): readonly string[] | undefined {
+  return KNOWLEDGE_GRAPH_REFS.get(trace);
+}
+
+/**
+ * #1571 / #1574 — the turn id and the records the turn's tools read, per
+ * finished trace, held BESIDE the payload like the knowledge-graph refs: they
+ * are verifier input for this turn only and must not ride the stream's
+ * `done`, routine runs or `ingestRun`.
+ */
+const TURN_EVIDENCE = new WeakMap<RunTracePayload, TurnEvidence>();
+
+/** The turn id and read records of a trace built by a collector, else
+ *  undefined. */
+export function turnEvidenceOf(trace: RunTracePayload): TurnEvidence | undefined {
+  return TURN_EVIDENCE.get(trace);
 }

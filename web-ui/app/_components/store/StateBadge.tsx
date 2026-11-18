@@ -1,7 +1,12 @@
 import { useFormatter, useTranslations } from 'next-intl';
 
-import type { PluginInstallState, PluginReadiness } from '../../_lib/storeTypes';
+import type {
+  PluginActionStatus,
+  PluginInstallState,
+  PluginReadiness,
+} from '../../_lib/storeTypes';
 import { cn } from '../../_lib/cn';
+import { useActivationErrorLabel } from './ActivationFailureNotice';
 
 interface StateBadgeProps {
   state: PluginInstallState;
@@ -14,6 +19,15 @@ interface StateBadgeProps {
    * case the badge renders exactly as it used to.
    */
   readiness?: PluginReadiness;
+  /**
+   * #1453 — the plugin's own pushed status. Readiness and this signal are
+   * computed independently (`withReadiness` / `withActionStatus` in
+   * `routes/store.ts`), so until this prop existed a plugin that reported a
+   * refused API key rendered a red "Nicht verbunden" pill NEXT TO an
+   * unchanged green badge. The badge is the weaker of the two claims — it only
+   * knows that activation happened — so it yields.
+   */
+  actionStatus?: PluginActionStatus;
   className?: string;
 }
 
@@ -48,10 +62,12 @@ export function StateBadge({
   state,
   isLegacy,
   readiness,
+  actionStatus,
   className,
 }: StateBadgeProps): React.ReactElement {
   const t = useTranslations('store.stateBadge');
   const format = useFormatter();
+  const activationErrorLabel = useActivationErrorLabel();
 
   if (isLegacy) {
     return (
@@ -70,12 +86,30 @@ export function StateBadge({
   const isPresent = state === 'installed' || state === 'update-available';
 
   if (isPresent && readiness?.state === 'errored') {
+    // #1456 — the localized short reason, not the raw plugin-API sentence,
+    // which leaked English developer text into the German store list.
     return (
       <span
         className={cn(PILL, DANGER_STYLE, className)}
-        title={readiness.error_detail ?? undefined}
+        title={activationErrorLabel(readiness.error_code)}
       >
         {t('errored')}
+      </span>
+    );
+  }
+
+  // #1453 — the credentials were CHECKED and refused. Red, like `errored`,
+  // because the plugin cannot serve a request — but a different label: it did
+  // come up, so "activation failed" would be a false statement. The plugin's
+  // own wording for the failure rides on the adjacent action-status pill; the
+  // badge carries the state, not the detail.
+  if (isPresent && readiness?.state === 'connection_failed') {
+    return (
+      <span
+        className={cn(PILL, DANGER_STYLE, className)}
+        title={actionStatus?.detail ?? undefined}
+      >
+        {t('connectionFailed')}
       </span>
     );
   }
@@ -106,12 +140,24 @@ export function StateBadge({
     );
   }
 
-  if (isPresent && readiness?.state === 'ready' && readiness.verified_at) {
+  // #1453 — `verified_at` is the moment the plugin last ACTIVATED; nothing
+  // asked the target system whether its credentials work. So the label says
+  // "active since", never "configured"/"verified", and it is withheld entirely
+  // once the plugin itself has reported that something needs attention.
+  const reportedTrouble =
+    actionStatus?.state === 'error' || actionStatus?.state === 'needs_action';
+
+  if (
+    isPresent &&
+    readiness?.state === 'ready' &&
+    readiness.verified_at &&
+    !reportedTrouble
+  ) {
     const at = new Date(readiness.verified_at);
     if (!Number.isNaN(at.getTime())) {
       return (
         <span className={cn(PILL, STYLE.installed, className)}>
-          {t('readyVerified', {
+          {t('activeSince', {
             time: format.dateTime(at, {
               dateStyle: 'short',
               timeStyle: 'short',

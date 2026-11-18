@@ -9,14 +9,30 @@ import {
 } from '@omadia/plugin-api';
 
 import { findUnscannableSegment } from '../services/pluginScanner.js';
-import type { InstalledRegistry } from './installedRegistry.js';
+import {
+  versionDirection,
+  type VersionChangeDirection,
+} from './versionDirection.js';
+import type { PluginActivationResult } from '../api/admin-v1.js';
+import {
+  activationResultOf,
+  describeActivationFailure,
+  type ActivationFailure,
+} from './activationFailure.js';
+import { checkCoreCompat } from './coreCompat.js';
+import {
+  CIRCUIT_BREAKER_THRESHOLD,
+  recordActivationFailure,
+  recordActivationSuccess,
+  type InstalledRegistry,
+} from './installedRegistry.js';
 import type { PluginCatalog } from './manifestLoader.js';
 import { loadManifestFromPath } from './manifestLoader.js';
 import type { MigrationRunner } from './migrationRunner.js';
-import type {
-  UploadedPackageStore} from './uploadedPackageStore.js';
 import {
+  retirePackageDir,
   type UploadedPackage,
+  type UploadedPackageStore,
 } from './uploadedPackageStore.js';
 import { extractZipToDir, ZipExtractionError } from './zipExtractor.js';
 import {
@@ -39,6 +55,17 @@ export interface IngestInput {
   uploadedBy: string;
   /** SHA-256 of the supplied buffer; computed when not provided. */
   sha256?: string;
+  /**
+   * #1455 — the caller's explicit consent to install a version that is OLDER
+   * than the one currently in the store. Absent or false, such an ingest is
+   * refused with `package.downgrade_blocked`.
+   *
+   * A request flag rather than an env var (unlike the bundled-id override at
+   * `ALLOW_BUNDLED_ID_OVERRIDE`): a downgrade harms nothing but the operator's
+   * own running plugin, and the decision belongs to whoever is pressing the
+   * button — it is a confirmation, not a privilege.
+   */
+  allowDowngrade?: boolean;
 }
 
 export interface IngestSuccess {
@@ -46,16 +73,72 @@ export interface IngestSuccess {
   package: UploadedPackage;
   plugin_id: string;
   version: string;
+  /** #1455 — set only when this ingest replaced another version of the same
+   *  plugin, so a caller can report the swap in the direction it happened.
+   *  Absent on a first upload. */
+  direction?: VersionChangeDirection;
+  /** #1490 — the version this ingest replaced in the store, present exactly
+   *  when `direction` is. Without it an operator who uploaded 1.0.1 over
+   *  1.0.0 saw the same success line as for a first upload. */
+  replaced_version?: string;
+  /**
+   * #1452 — the `onPackageReady` hook threw: the package is ingested, the
+   * plugin is NOT running, and this is why. The registry entry has been
+   * flipped to `errored` with the same message.
+   *
+   * Absence is deliberately not a positive "it is running" claim — this seam
+   * cannot make one. The host hook returns early for a plugin that is not
+   * installed-and-active (a fresh ingest goes through the install flow, which
+   * reports activation itself), so an `ok` field would read as "activated" for
+   * every upload that never attempted an activation.
+   */
+  activation_error?: string;
+  /** #1497 — the shared activation result (`PluginActivationResult`), present
+   *  only when this ingest (re)activated an installed plugin. Same absence
+   *  rule as `activation_error`. */
+  activation?: PluginActivationResult;
+  /**
+   * #1463 — true only when this ingest started the plugin (`onPackageReady`
+   * ran and returned). Absent otherwise: no activation attempted (not
+   * installed, `inactive`, latched by the circuit breaker) or it failed (then
+   * `activation_error` says why). A caller that needs the plugin running
+   * after an update reads this, not the absence of an error.
+   */
+  activated?: true;
 }
 
 export interface IngestFailure {
   ok: false;
   code: string;
+  /** Display text in one fixed language — the upload has no request locale. */
   message: string;
   details?: unknown;
+  /**
+   * #1401 — the values a client needs to render `code` in the operator's
+   * locale (e.g. `{ pluginId, version }` for `package.duplicate_version`).
+   */
+  params?: Record<string, string>;
 }
 
 export type IngestResult = IngestSuccess | IngestFailure;
+
+/**
+ * Refusals that are about the STATE of this host rather than about the package:
+ * the zip is well-formed and the request answerable, but an id is taken or a
+ * version already sits there. Routes answer these 409, which is why the set
+ * lives with the codes rather than in each route (#1455 added the fourth one
+ * and had to touch three places to do it).
+ *
+ * `package.incompatible_core` answers 409 as well, but is not a host-STATE
+ * refusal: the same package would be refused on every host of this version.
+ * `ingestErrorContract.ts` adds it on top of this set (#1477).
+ */
+export const INGEST_CONFLICT_CODES: ReadonlySet<string> = new Set([
+  'package.id_conflict_builtin',
+  'package.id_conflict_bundled',
+  'package.duplicate_version',
+  'package.downgrade_blocked',
+]);
 
 export interface PackageUploadServiceDeps {
   store: UploadedPackageStore;
@@ -71,13 +154,39 @@ export interface PackageUploadServiceDeps {
   /** Host dependencies for the peer-check (ReadonlyRecord<name, semver>). */
   hostDependencies: Record<string, string>;
   /**
-   * Optional hook. Called after a successful ingest when the registry entry
-   * for this agent already exists and is `active` (typical re-upload case:
-   * package was deleted, install status stayed). Lets the runtime
-   * (re-)activate the agent directly, without the user having to trigger
-   * the install flow again.
+   * This host's `@omadia/plugin-api` version, which the package's
+   * `compat.core` must admit. Default: read from the installed package
+   * (coreCompat.ts). Tests pin it.
+   */
+  hostPluginApiVersion?: string;
+  /**
+   * Optional hook that (re)activates the plugin after a successful ingest.
+   * Called only when `shouldReactivate` says this ingest landed on a plugin
+   * the host is supposed to be running — an `active` entry (the update /
+   * re-upload case this exists for) or an `errored` one below the
+   * circuit-breaker threshold (so a fixed version can recover it). Not called
+   * for `inactive`, for a latched/blocked entry, or for a plugin that is not
+   * installed, whose activation the install flow owns. Without a `registry`
+   * dep there is nothing to gate on and the hook always runs.
+   *
+   * #1452 — THE HOOK'S VERDICT IS RECORDED. Returning normally is written to
+   * the registry as "this plugin is running" (`recordActivationSuccess`), a
+   * throw as `errored` plus the message (`recordActivationFailure`), and the
+   * throw also travels back to the caller in `IngestSuccess.activation_error`.
+   * So an implementation must throw rather than return early whenever it did
+   * not actually activate — see the channel branch in index.ts, which asserts
+   * `isActive` afterwards because `channelRegistry.activate()` only warns when
+   * the package exports no usable plugin.
    */
   onPackageReady?: (agentId: string) => Promise<void>;
+  /**
+   * #1462 — runs after `onPackageReady` settled (success OR failure, once the
+   * verdict is recorded), so the plugins that `depends_on` the updated one
+   * drop the service objects they took from the previous version. Errors are
+   * the hook's own to record; a throw here is logged and does not change the
+   * ingest result.
+   */
+  onDependentsStale?: (agentId: string) => Promise<void>;
   /**
    * Registry of installed agents. Required when `migrationRunner` is set —
    * the upload flow reads the previous config from here before invoking
@@ -139,6 +248,8 @@ export class PackageUploadService {
       return fail(
         'package.too_large',
         `Upload überschreitet ${this.deps.limits.maxBytes} Bytes.`,
+        undefined,
+        { maxBytes: String(this.deps.limits.maxBytes) },
       );
     }
 
@@ -168,7 +279,7 @@ export class PackageUploadService {
         });
       } catch (err) {
         if (err instanceof ZipExtractionError) {
-          return fail(err.code, err.message);
+          return fail(err.code, err.message, undefined, err.params);
         }
         throw err;
       }
@@ -199,6 +310,18 @@ export class PackageUploadService {
       }
       const { plugin } = entry;
 
+      // --- 5b. compat.core must admit this host's plugin-api -----------------
+      // A plugin links against THIS host's @omadia/plugin-api at runtime;
+      // outside its stated range it may import an export the host lacks and
+      // fail to load. Refused before anything is stored.
+      const coreRefusal = checkCoreCompat(plugin, this.deps.hostPluginApiVersion);
+      if (coreRefusal) {
+        return fail('package.incompatible_core', coreRefusal.message, {
+          compat_core: coreRefusal.compat_core,
+          host_plugin_api: coreRefusal.host_plugin_api,
+        });
+      }
+
       // --- 6. package.json consistency --------------------------------------
       const pkgJsonPath = path.join(packageRoot, 'package.json');
       let pkgJson: Record<string, unknown> | null = null;
@@ -220,6 +343,8 @@ export class PackageUploadService {
           return fail(
             'package.id_mismatch',
             `package.json.name (${String(pkgJson['name'])}) stimmt nicht mit manifest.identity.id (${plugin.id}) überein.`,
+            undefined,
+            { packageName: String(pkgJson['name']), pluginId: plugin.id },
           );
         }
         if (
@@ -229,6 +354,8 @@ export class PackageUploadService {
           return fail(
             'package.version_mismatch',
             `package.json.version (${String(pkgJson['version'])}) stimmt nicht mit manifest.identity.version (${plugin.version}) überein.`,
+            undefined,
+            { packageVersion: String(pkgJson['version']), pluginVersion: plugin.version },
           );
         }
       }
@@ -246,6 +373,8 @@ export class PackageUploadService {
         return fail(
           'package.entry_missing',
           `lifecycle.entry '${entryRel}' ist im Zip nicht vorhanden.`,
+          undefined,
+          { entry: entryRel },
         );
       }
       // #453 (codex review fix) — the code scan skips node_modules/.git, so
@@ -316,6 +445,7 @@ export class PackageUploadService {
             'Ein Upload darf ein mitgeliefertes Plugin nicht überschreiben — vergib dem Paket eine eigene ID. ' +
             `Wenn der Override bewusst gewollt ist, setze ${BUNDLED_ID_OVERRIDE_ENV}=1 in der Middleware-Umgebung.`,
           { pluginId: plugin.id, overrideEnv: BUNDLED_ID_OVERRIDE_ENV },
+          { pluginId: plugin.id, overrideEnv: BUNDLED_ID_OVERRIDE_ENV },
         );
       }
 
@@ -323,21 +453,66 @@ export class PackageUploadService {
         return fail(
           'package.id_conflict_builtin',
           `Plugin-ID "${plugin.id}" kollidiert mit einem Built-in-Eintrag im Katalog.`,
+          undefined,
+          { pluginId: plugin.id },
         );
       }
       if (existingUploaded && existingUploaded.version === plugin.version) {
         return fail(
           'package.duplicate_version',
-          `Version ${plugin.version} von ${plugin.id} ist bereits hochgeladen. Version anheben oder DELETE aufrufen.`,
+          `Version ${plugin.version} von ${plugin.id} ist bereits hochgeladen. Version anheben oder das hochgeladene Paket zuerst im Store entfernen.`,
+          undefined,
+          { pluginId: plugin.id, version: plugin.version },
+        );
+      }
+
+      // --- 9a. Version direction (#1455) -----------------------------------
+      // The equality check above used to be the ONLY version check in this
+      // pipeline, which made "newer" and "older" the same code path: the
+      // migration below ran, `onPackageReady` swapped the running instance,
+      // and the replaced package folder was deleted — with nothing in the
+      // response or the log naming a direction. An older version arriving for
+      // a plugin that is already installed is an operator slip far more often
+      // than an intent (a stale `?version=` on the Hub route, a stale zip), so
+      // it has to be asked for rather than assumed.
+      //
+      // The comparison is against the STORE entry, not against the installed
+      // registry: the store holds one version per plugin, and that is the
+      // package this ingest is about to replace and delete — whether or not a
+      // runtime instance happens to be running on it.
+      const direction: VersionChangeDirection | null = existingUploaded
+        ? versionDirection(existingUploaded.version, plugin.version)
+        : null;
+      if (
+        existingUploaded &&
+        direction === 'downgrade' &&
+        input.allowDowngrade !== true
+      ) {
+        return fail(
+          'package.downgrade_blocked',
+          `Version ${plugin.version} von ${plugin.id} ist älter als die installierte Version ${existingUploaded.version}. ` +
+            'Ein Downgrade tauscht die laufende Instanz aus — es muss ausdrücklich bestätigt werden ' +
+            '(allow_downgrade).',
+          undefined,
+          {
+            pluginId: plugin.id,
+            fromVersion: existingUploaded.version,
+            toVersion: plugin.version,
+          },
         );
       }
 
       // --- 9b. Migration-Hook (onMigrate) ----------------------------------
-      // Only runs on a genuine version upgrade of an agent already installed
-      // in the registry. Fresh uploads (no registry entry) or re-uploads of
-      // the same version (caught above) do not trigger migration. The hook
-      // runs BEFORE the packages are swapped — if it throws, v1 stays
-      // unchanged and the upload is rejected.
+      // Runs on a version CHANGE of an agent already installed in the
+      // registry. Fresh uploads (no registry entry) or re-uploads of the same
+      // version (caught above) do not trigger migration. The hook runs BEFORE
+      // the packages are swapped — if it throws, v1 stays unchanged and the
+      // upload is rejected.
+      //
+      // #1455 — a change, not strictly an upgrade: a confirmed downgrade runs
+      // the hook too, with `fromVersion` above `toVersion`. The direction is
+      // in the log line the runner writes, and a plugin that needs to tell the
+      // two apart can compare the versions its `onMigrate` is handed.
       const installedBefore = this.deps.registry?.get(plugin.id);
       const shouldMigrate =
         !!existingUploaded && !!installedBefore && existingUploaded.version !== plugin.version;
@@ -410,13 +585,18 @@ export class PackageUploadService {
         file_count: fileCount,
       };
 
-      // If there was a previous upload with a different version, remove the
-      // old folder. A side-by-side layout is only permitted once a
-      // version-switching UI exists.
+      // #1455 — retire the replaced version instead of deleting it here. This
+      // used to be an `fs.rm`, several steps BEFORE `onPackageReady` activates
+      // the new version, so a swap whose activation failed left the operator
+      // with no package to go back to (the swallowed activation error itself
+      // is #1452). The copy is removed once activation has succeeded, so this
+      // is not the side-by-side layout the old comment ruled out: the store
+      // index still points at exactly one version per plugin, and the catalog
+      // is built from that index rather than from a directory scan.
+      let retired: { dir: string; version: string } | null = null;
       if (existingUploaded && existingUploaded.path !== finalDir) {
-        await fs
-          .rm(existingUploaded.path, { recursive: true, force: true })
-          .catch(() => {});
+        const dir = await retirePackageDir(existingUploaded, log);
+        if (dir !== null) retired = { dir, version: existingUploaded.version };
       }
 
       await this.deps.store.register(pkgRecord);
@@ -438,8 +618,11 @@ export class PackageUploadService {
         );
       }
 
+      // #1455 — the direction tag is independent of `[migrated]`: a downgrade
+      // onto a package that is uploaded but not installed runs no migration
+      // and would otherwise leave no trace in the log at all.
       log(
-        `[upload] ingest OK id=${plugin.id} version=${plugin.version} sha256=${sha256.slice(0, 12)} peers_missing=${peersMissing.length}${migratedConfig !== null ? ' [migrated]' : ''}`,
+        `[upload] ingest OK id=${plugin.id} version=${plugin.version} sha256=${sha256.slice(0, 12)} peers_missing=${peersMissing.length}${existingUploaded && existingUploaded.version !== plugin.version ? ` replaced=${existingUploaded.version}` : ''}${direction === 'downgrade' ? ' [downgrade]' : ''}${migratedConfig !== null ? ' [migrated]' : ''}`,
       );
 
       // Advisory code scan (issue #453) — fire-and-forget AFTER the package
@@ -468,15 +651,72 @@ export class PackageUploadService {
       // Re-upload onto an already installed agent (typical: package file
       // was deleted, registry entry still `active`). Without the hook the
       // agent stays "installed but inactive" — the tool would be visible
-      // neither in Harness nor in Teams. The hook is best-effort; errors
-      // are logged but do not break the upload response.
-      if (this.deps.onPackageReady) {
+      // neither in Harness nor in Teams. The hook does not break the upload
+      // response — the package IS ingested, and an activation failure is a
+      // separate fact — but #1452: NOT RE-THROWING IS NOT THE SAME AS NOT
+      // RECORDING. Swallowing the throw here left the registry entry claiming
+      // `active` with `last_activation_error: null` over a plugin whose
+      // `undo()` had rolled everything back, so the store badge kept showing
+      // the last SUCCESSFUL activation and readiness kept answering `ready`.
+      // Same bug the install path had in #799 / #825, on the path an operator
+      // uses far more often: the update button.
+      let activationError: string | undefined;
+      const reactivated =
+        this.deps.onPackageReady !== undefined && this.shouldReactivate(plugin.id);
+      let activated = false;
+      if (reactivated && this.deps.onPackageReady) {
         try {
           await this.deps.onPackageReady(plugin.id);
+          activated = true;
+          await this.noteActivationSuccess(plugin.id);
         } catch (err) {
-          log(
-            `[upload] onPackageReady hook failed for ${plugin.id}: ${err instanceof Error ? err.message : String(err)}`,
+          // A message, always. `new Error()` leaves `err.message` empty, and
+          // every consumer of this value tests truthiness (`if
+          // (res.activation_error)` in the store, `error_detail` in
+          // `computeReadiness`, `last_activation_error` in the registry), so an
+          // empty string would flip the entry to `errored` with the reason
+          // readable nowhere — this fix's own failure mode.
+          const failure = describeActivationFailure(
+            err,
+            'onPackageReady threw without a message',
           );
+          activationError = failure.message;
+          log(
+            `[upload] onPackageReady hook failed for ${plugin.id}: ${activationError}`,
+          );
+          await this.noteActivationFailure(plugin.id, failure);
+        }
+        if (this.deps.onDependentsStale) {
+          try {
+            await this.deps.onDependentsStale(plugin.id);
+          } catch (err) {
+            log(
+              `[upload] re-activating the dependents of ${plugin.id} failed: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
+        }
+      }
+      // #1497 — the shared activation-result shape, only when this ingest
+      // actually (re)activated the plugin, read back from the registry so it
+      // agrees with `GET /runtime/installed`. No registry, no recorded truth.
+      const activation =
+        reactivated && this.deps.registry
+          ? (activationResultOf(this.deps.registry.get(plugin.id)) ?? undefined)
+          : undefined;
+
+      // #1455 — the retired copy has served its purpose once the new version
+      // is up. It is kept on a failed activation, and its path is logged
+      // because it is the way back: that folder holds the complete previous
+      // package, so zipping it and uploading it again restores what was
+      // running — with `allow_downgrade`, since going back is itself a
+      // downgrade.
+      if (retired !== null) {
+        if (activationError !== undefined) {
+          log(
+            `[upload] ${plugin.id}: new version did not activate — previous version ${retired.version} kept at ${retired.dir} (re-upload that folder with allow_downgrade to go back)`,
+          );
+        } else {
+          await fs.rm(retired.dir, { recursive: true, force: true }).catch(() => {});
         }
       }
 
@@ -485,11 +725,121 @@ export class PackageUploadService {
         package: pkgRecord,
         plugin_id: plugin.id,
         version: plugin.version,
+        ...(direction !== null && existingUploaded
+          ? { direction, replaced_version: existingUploaded.version }
+          : {}),
+        ...(activationError !== undefined
+          ? { activation_error: activationError }
+          : {}),
+        ...(activation !== undefined ? { activation } : {}),
+        ...(activated ? { activated: true as const } : {}),
       };
     } finally {
       await fs.rm(tmpRoot, { recursive: true, force: true }).catch(() => {});
       await fs.rm(stagingRoot, { recursive: true, force: true }).catch(() => {});
     }
+  }
+
+  /**
+   * #1452 — does this ingest land on a plugin the host is supposed to be
+   * running? The gate lives here, next to the recording, rather than inside
+   * the host's hook: a second gate in the hook would silently turn the
+   * success recording below into a lie for every entry the hook declines to
+   * touch. Without a registry there is nothing to gate on (bare setups,
+   * tests) — the hook runs as before and nothing is recorded.
+   *
+   *   * `active`   → the update / re-upload case this hook exists for.
+   *   * `errored` below the circuit-breaker threshold → a previous activation
+   *                  failed. Reactivating is the ONLY way an operator can
+   *                  recover by installing a fixed version; skipping it would
+   *                  make the `errored` state this change introduces a dead
+   *                  end, because `retryErroredPlugins`' mtime path cannot
+   *                  help here (`last_activation_error_at` is stamped after
+   *                  the package rename, so the manifest is never newer).
+   *   * `errored` at or above the threshold → left alone. The count is the
+   *                  only thing separating two states that share the
+   *                  `errored` word: a plugin the breaker latched after
+   *                  `CIRCUIT_BREAKER_THRESHOLD` boot failures, and an OM-87
+   *                  `markActivationBlocked` (non-retryable by definition,
+   *                  floors the count at the threshold without counting an
+   *                  attempt). Neither may be walked around by an upload —
+   *                  `bootstrap.retryErroredPlugins` lifts them on evidence.
+   *   * `inactive` → deliberately stood down (e.g. the embedding-provider
+   *                  swap in adminEmbeddingProvider.ts). An upload must not
+   *                  start it again.
+   *   * absent     → not installed; the install flow activates and reports.
+   */
+  private shouldReactivate(pluginId: string): boolean {
+    const registry = this.deps.registry;
+    if (!registry) return true;
+    const entry = registry.get(pluginId);
+    if (!entry) return false;
+    if (entry.status === 'active') return true;
+    if (entry.status !== 'errored') return false;
+    return (entry.activation_failure_count ?? 0) < CIRCUIT_BREAKER_THRESHOLD;
+  }
+
+  /**
+   * #1452 — the hook returned, so the plugin is running. Lift the
+   * circuit-breaker state first, then stamp the activation: a plugin that
+   * comes back up after the operator installed a fixed version must stop
+   * reading `errored`, or the update would appear not to have worked.
+   *
+   * Same pair, in the same order, as `InstallService.reactivate`'s success
+   * path. The tool and agent runtimes already stamp
+   * `markActivationSucceeded` themselves, so for those this is the lift;
+   * channels record nothing of their own (`channelRegistry` never writes to
+   * the registry), so for those it is both.
+   */
+  private async noteActivationSuccess(pluginId: string): Promise<void> {
+    const registry = this.deps.registry;
+    if (!registry) return;
+    try {
+      await recordActivationSuccess(registry, pluginId);
+    } catch (err) {
+      this.log(
+        `[upload] registry markActivationSucceeded FAILED for ${pluginId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  /**
+   * #1452 — write down that the post-ingest (re)activation did not take.
+   *
+   * Two writes, because they answer different questions — the same pair
+   * `InstallService.completeInstall` makes for the install path.
+   * `markActivationFailed` records WHY and feeds
+   * `bootstrap.retryErroredPlugins`; it does not flip the status on its own,
+   * because `CIRCUIT_BREAKER_THRESHOLD` is 3. That threshold is right for a
+   * boot loop retrying a transient failure and wrong here: an update the
+   * operator just clicked is a single definitive event they are watching, not
+   * the first of three strikes. So the status is set explicitly, and only when
+   * the entry still reads `active` (the threshold may already have done it).
+   *
+   * The registry writes are themselves contained: a failing registry must not
+   * turn a successful ingest into an HTTP error, and the hook's verdict still
+   * travels back to the caller in `activation_error`.
+   */
+  private async noteActivationFailure(
+    pluginId: string,
+    failure: ActivationFailure,
+  ): Promise<void> {
+    const registry = this.deps.registry;
+    if (!registry) return;
+    try {
+      await recordActivationFailure(registry, pluginId, failure);
+    } catch (err) {
+      this.log(
+        `[upload] registry markActivationFailed FAILED for ${pluginId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  /** The file's logger, not `deps.log?.()` — a setup without the dep must
+   *  still put a failed registry write on stdout, or the reason this change
+   *  exists to record is readable nowhere. Mirrors `ingest`'s own fallback. */
+  private log(msg: string): void {
+    (this.deps.log ?? ((m: string) => console.log(m)))(msg);
   }
 
   private resolvePeers(pkgJson: Record<string, unknown> | null): string[] {
@@ -664,8 +1014,14 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
   return undefined;
 }
 
-function fail(code: string, message: string, details?: unknown): IngestFailure {
+function fail(
+  code: string,
+  message: string,
+  details?: unknown,
+  params?: Record<string, string>,
+): IngestFailure {
   const out: IngestFailure = { ok: false, code, message };
   if (details !== undefined) out.details = details;
+  if (params !== undefined) out.params = params;
   return out;
 }

@@ -1,4 +1,4 @@
-import { promises as fs } from 'node:fs';
+import { promises as fs, type Dirent } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 
@@ -9,12 +9,43 @@ import path from 'node:path';
  *   <UPLOADED_PACKAGES_DIR>/
  *     index.json                       { version: 1, packages: Record<id, UploadedPackage> }
  *     <plugin-id>/<version>/           extracted package contents (manifest.yaml, dist/, …)
+ *     <plugin-id>/.retired-<version>/  #1455 — the version a swap replaced, kept
+ *                                      until the new one has activated
  *     .staging/<uuid>/                 staging during validation — renamed away on success
  *
  * The store is `register()`-write-only from the upload flow; reads happen
  * during the manifest-catalog merge and the UI list call. Atomic writes via
  * tmpfile + rename — mirrors the pattern in fileInstalledRegistry.
  */
+
+/**
+ * #1455 — prefix of the folder a replaced version is moved to instead of being
+ * deleted outright. Dot-prefixed on purpose: the catalog is fed from this
+ * store's index (`index.ts` → `extraSources`), never from a directory scan, and
+ * the dot keeps the folder out of the way of any future scan as well.
+ */
+export const RETIRED_DIR_PREFIX: string = '.retired-';
+
+/**
+ * Remove every retired copy under `pluginDir`. Called before a new copy is
+ * laid down (at most one is kept per plugin) and when the package is deleted —
+ * otherwise an uninstall would leave an orphan nothing refers to, since the
+ * store index points only at the live version.
+ */
+export async function pruneRetiredPackageDirs(pluginDir: string): Promise<void> {
+  let entries: Dirent[];
+  try {
+    entries = await fs.readdir(pluginDir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith(RETIRED_DIR_PREFIX)) continue;
+    await fs
+      .rm(path.join(pluginDir, entry.name), { recursive: true, force: true })
+      .catch(() => {});
+  }
+}
 
 export interface UploadedPackage {
   id: string;
@@ -39,6 +70,42 @@ interface StoreFile {
   packages: Record<string, UploadedPackage>;
 }
 
+/**
+ * #1455 — move a replaced package out of the way instead of deleting it, and
+ * return where it went (null when the move failed, in which case the caller
+ * simply has no rollback copy — never a failed ingest: the replacement is
+ * already on disk at that point).
+ *
+ * At most one retired copy per plugin: any earlier one is pruned first, so a
+ * run of upgrades cannot fill the packages volume. Lives here rather than in
+ * the upload service because the layout it writes — `<id>/.retired-<version>`
+ * next to `<id>/<version>` — is this module's to define.
+ */
+export async function retirePackageDir(
+  replaced: UploadedPackage,
+  log: (msg: string) => void,
+): Promise<string | null> {
+  const pluginDir = path.dirname(replaced.path);
+  await pruneRetiredPackageDirs(pluginDir);
+  const target = path.join(
+    pluginDir,
+    `${RETIRED_DIR_PREFIX}${path.basename(replaced.path)}`,
+  );
+  try {
+    await fs.rename(replaced.path, target);
+    return target;
+  } catch (err) {
+    // The folder is usually simply gone (the typical re-upload case: the
+    // package was deleted and is being restored), which is nothing to fix.
+    // Logged either way: the alternative is an operator who believes a
+    // rollback copy exists because the feature promises one.
+    log(
+      `[upload] ${replaced.id}: no rollback copy — could not retire ${replaced.path}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return null;
+  }
+}
+
 export class UploadedPackageStore {
   private packages = new Map<string, UploadedPackage>();
   private loaded = false;
@@ -46,6 +113,7 @@ export class UploadedPackageStore {
   constructor(
     private readonly indexPath: string,
     private readonly packagesDir: string,
+    private readonly log: (msg: string) => void = (msg) => console.warn(msg),
   ) {}
 
   async load(): Promise<void> {
@@ -98,9 +166,55 @@ export class UploadedPackageStore {
     this.packages.delete(id);
     await this.persist();
     // Best-effort: remove the package dir. Errors are logged, but not thrown —
-    // the registry entry is already gone.
-    await fs.rm(pkg.path, { recursive: true, force: true }).catch(() => {});
+    // the registry entry is already gone. (#1490 — they were said to be
+    // logged and were dropped.)
+    // Security review (N02) — `pkg.path` comes from index.json; a recursive
+    // delete must never follow a path that points outside the packages root.
+    const root = path.resolve(this.packagesDir);
+    if (!path.resolve(pkg.path).startsWith(root + path.sep)) {
+      this.log(
+        `[upload] package ${id}: stored path ${pkg.path} is outside ${root} — index entry removed, folder left alone`,
+      );
+      return true;
+    }
+    await fs.rm(pkg.path, { recursive: true, force: true }).catch((err: unknown) => {
+      this.log(
+        `[upload] package ${id}: could not remove ${pkg.path}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
+    // #1455 — and the retired sibling, which the index never pointed at.
+    const pluginDir = path.dirname(pkg.path);
+    await pruneRetiredPackageDirs(pluginDir);
+    // #1490 — and the `<id>/` folder the version lived in, plus the
+    // `@scope/` folder above it, when nothing else is left in them.
+    await this.removeEmptyDirsUpTo(pluginDir);
     return true;
+  }
+
+  /**
+   * Remove `dir` and its parents while they are empty, stopping at the
+   * packages root. `rmdir` refuses a non-empty directory, which is the guard:
+   * a scope folder that still holds another plugin stays. Only directories
+   * strictly inside the root are touched — a stored path outside it (a
+   * hand-edited index) is left alone.
+   */
+  private async removeEmptyDirsUpTo(dir: string): Promise<void> {
+    const root = path.resolve(this.packagesDir);
+    let current = path.resolve(dir);
+    while (current.startsWith(root + path.sep)) {
+      try {
+        await fs.rmdir(current);
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code !== 'ENOENT' && code !== 'ENOTEMPTY' && code !== 'EEXIST') {
+          this.log(
+            `[upload] could not remove empty package folder ${current}: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+        if (code !== 'ENOENT') return;
+      }
+      current = path.dirname(current);
+    }
   }
 
   private async persist(): Promise<void> {

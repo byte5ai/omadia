@@ -17,9 +17,11 @@
  *      so it is correct behind the Fly edge / any reverse proxy).
  */
 
-/** Canvas WebSocket path — kept in sync with `@omadia/omadia-ui-channel`'s
- *  `CANVAS_PATH`. A stable wire constant; duplicated here to avoid a runtime
- *  dependency from the kernel onto a channel plugin package. */
+/** Canvas WebSocket path — kept in sync with `@omadia/ui-channel`'s
+ *  `CANVAS_PATH` (byte5ai/omadia-ui-support). A stable wire constant;
+ *  duplicated here to avoid a runtime dependency from the kernel onto a
+ *  channel plugin package. Advertised whether or not the channel is
+ *  installed: without it, the upgrade is a raw 404. */
 export const CANVAS_WS_PATH = '/omadia-ui/canvas';
 
 /** Discovery endpoints. `/.well-known/omadia-ui` is the canonical one; the
@@ -57,7 +59,15 @@ export interface PairingDescriptor {
  *  helper is trivially unit-testable. An express `Request` satisfies it. */
 export interface PairingRequestInfo {
   readonly headers: Record<string, string | string[] | undefined>;
-  /** `req.socket.encrypted` — true on a direct TLS connection. */
+  /**
+   * `req.secure` — the connection's TLS state, honouring `X-Forwarded-Proto`
+   * only from a hop `TRUSTED_PROXY_ADDRESSES` names (#1310, §10o). Supply it
+   * wherever an express `Request` is at hand; `resolveScheme` reads no
+   * forwarded proto header of its own.
+   */
+  readonly secure?: boolean;
+  /** `req.socket.encrypted` — true on a direct TLS connection. The fallback
+   *  for a caller with no express request (mDNS, hand-built descriptors). */
   readonly encrypted?: boolean;
 }
 
@@ -86,11 +96,21 @@ export interface ResolvedScheme {
   readonly host: string;
 }
 
-/** Derive the public scheme + host the client actually reached, honouring the
- *  reverse-proxy `x-forwarded-*` headers the Fly edge sets. */
+/**
+ * Derive the public scheme + host the client actually reached.
+ *
+ * The scheme comes from the CONNECTION (`req.secure`, else the socket's TLS
+ * state), never from `x-forwarded-proto` read raw: a client that sent the
+ * header used to decide the scheme of the pairing and login URLs it was then
+ * handed, which is the same defect as #1310's cookie flag. Express applies the
+ * header for us when `TRUSTED_PROXY_ADDRESSES` names the hop that set it.
+ *
+ * `x-forwarded-host` is still honoured — a split deployment cannot advertise a
+ * reachable host otherwise, and an operator who needs the host pinned sets
+ * `OMADIA_UI_PUBLIC_WS_URL`, which wins outright.
+ */
 export function resolveScheme(req: PairingRequestInfo): ResolvedScheme {
-  const xfProto = firstHeader(req, 'x-forwarded-proto');
-  const secure = xfProto ? xfProto === 'https' : Boolean(req.encrypted);
+  const secure = req.secure ?? Boolean(req.encrypted);
   const host =
     firstHeader(req, 'x-forwarded-host') ??
     firstHeader(req, 'host') ??

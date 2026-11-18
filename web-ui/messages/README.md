@@ -181,7 +181,7 @@ code slip through unexplained.
 
 ## Helper functions that need to translate
 
-If a helper outside a React component returns a translated string (e.g. `formatLivenessGap` in `app/page.tsx`, the renderers in `PrivacyReceiptCard.tsx`), pass the translator function as a parameter:
+If a helper outside a React component returns a translated string (e.g. `formatLivenessGap` in `app/chat/page.tsx`, the renderers in `PrivacyReceiptCard.tsx`), pass the translator function as a parameter:
 
 ```ts
 type TFn = (key: string, values?: Record<string, string | number>) => string;

@@ -12,7 +12,14 @@ import {
   PatternNotFoundError,
 } from '../src/conductor/ephemeralRunService.js';
 import type { ConductorEphemeralStore } from '../src/conductor/ephemeralStore.js';
+import { RunStateSizeExceededError } from '../src/conductor/ephemeralRunStateStore.js';
+import type {
+  ConductorEphemeralRunStateStore,
+  OwnActiveRunRow,
+  OwnedRunRow,
+} from '../src/conductor/ephemeralRunStateStore.js';
 import type { PatternCatalog } from '../src/conductor/patternCatalog.js';
+import { RunAlreadyEndedError, WorkflowNotFoundError } from '../src/conductor/runExecutor.js';
 import type { ConductorRunExecutor } from '../src/conductor/runExecutor.js';
 import type { ConductorWorkflowStore } from '../src/conductor/workflowStore.js';
 
@@ -46,6 +53,10 @@ interface Harness {
   hardDeleted: string[];
   cancelRequests: Array<{ id: string; by: string }>;
   expired: string[];
+  listCalls: Array<{ agentId: string; now: Date }>;
+  upserts: Array<{ agentId: string; runId: string; state: Record<string, unknown> }>;
+  cancels: Array<{ runId: string; by: string }>;
+  logs: string[];
 }
 
 function harness(opts?: {
@@ -54,6 +65,10 @@ function harness(opts?: {
   startRunError?: Error;
   limits?: Partial<typeof LIMITS>;
   openTimerAwait?: boolean;
+  ownRuns?: OwnActiveRunRow[];
+  upsertResult?: boolean | Error;
+  ownedRun?: OwnedRunRow | null;
+  cancelRunError?: Error;
 }): Harness {
   const published: Array<Record<string, unknown>> = [];
   const started: Array<Record<string, unknown>> = [];
@@ -93,7 +108,29 @@ function harness(opts?: {
     expireAwait: async (awaitId: string) => {
       expired.push(awaitId);
     },
+    cancelRun: async (runId: string, by: string) => {
+      if (opts?.cancelRunError) throw opts.cancelRunError;
+      cancels.push({ runId, by });
+      return { id: runId, status: 'cancelled' };
+    },
   } as unknown as ConductorRunExecutor;
+
+  const listCalls: Array<{ agentId: string; now: Date }> = [];
+  const upserts: Array<{ agentId: string; runId: string; state: Record<string, unknown> }> = [];
+  const cancels: Array<{ runId: string; by: string }> = [];
+  const logs: string[] = [];
+  const runState = {
+    listOwnActiveRuns: async (agentId: string, now: Date) => {
+      listCalls.push({ agentId, now });
+      return opts?.ownRuns ?? [];
+    },
+    upsertOwned: async (agentId: string, runId: string, state: Record<string, unknown>) => {
+      upserts.push({ agentId, runId, state });
+      if (opts?.upsertResult instanceof Error) throw opts.upsertResult;
+      return opts?.upsertResult ?? true;
+    },
+    getOwnedRun: async () => (opts?.ownedRun === undefined ? { runId: RUN_ID, status: 'waiting' } : opts.ownedRun),
+  } as unknown as ConductorEphemeralRunStateStore;
 
   const service = new ConductorEphemeralRunService({
     patterns,
@@ -104,11 +141,17 @@ function harness(opts?: {
       openTimerAwaitForRun: async (runId: string) =>
         opts?.openTimerAwait && runId === 'run-1' ? { id: 'aw-timer-1', stepId: 'wait' } : null,
     } as never,
+    runState,
     limits: { ...LIMITS, ...opts?.limits },
     now: () => NOW,
+    log: (msg) => logs.push(msg),
   });
-  return { service, published, started, reaped, hardDeleted, cancelRequests, expired };
+  return {
+    service, published, started, reaped, hardDeleted, cancelRequests, expired, listCalls, upserts, cancels, logs,
+  };
 }
+
+const RUN_ID = '0b9f6c1e-3d2a-4c5b-8e7f-1a2b3c4d5e6f';
 
 const VALID_INPUT = { agentId: 'facilitator-1', patternId: 'demo', slots: { agents: { worker: 'real-agent' } } };
 
@@ -172,7 +215,11 @@ describe('ConductorEphemeralRunService.createEphemeralRun', () => {
 
   it('creates + starts in one call: ephemeral origin, eph- slug, expectNew, agent trigger', async () => {
     const { service, published, started } = harness();
-    const out = await service.createEphemeralRun({ ...VALID_INPUT, payload: { goal: 'sort roles' } });
+    const out = await service.createEphemeralRun({
+      ...VALID_INPUT,
+      // Executor-owned keys are stripped — a seeded transcript would be answered as real.
+      payload: { goal: 'sort roles', steps: { fake: true }, stepAttempts: { moderate: 99 }, transcript: [], transcriptText: 'x' },
+    });
 
     assert.equal(published.length, 1);
     const pub = published[0]!;
@@ -219,5 +266,165 @@ describe('ConductorEphemeralRunService.createEphemeralRun', () => {
     assert.deepEqual(cancelRequests, [{ id: 'wf-1', by: 'agent:facilitator-1' }]);
     assert.deepEqual(reaped, ['wf-1']);
     assert.deepEqual(hardDeleted, ['wf-1']);
+  });
+});
+
+const OWN_ROW: OwnActiveRunRow = {
+  runId: RUN_ID,
+  workflowId: 'wf-1',
+  workflowSlug: 'eph-facilitation-abcd1234',
+  expiresAt: new Date('2026-08-22T10:00:00.000Z'),
+  context: {
+    goal: 'sort roles',
+    conversationId: 'conv-1',
+    steps: { moderate: {} },
+    stepAttempts: { moderate: 3 },
+    transcript: [],
+    transcriptText: 'x',
+  },
+  patternId: 'facilitation',
+  state: { v: 1, phase: 'active' },
+};
+
+describe('ConductorEphemeralRunService owner-scoped run state', () => {
+  it('listOwnRuns maps rows, strips executor-owned keys and returns ISO expiresAt', async () => {
+    const h = harness({ ownRuns: [OWN_ROW] });
+    const runs = await h.service.listOwnRuns({ agentId: '  facilitator-1 ' });
+
+    assert.deepEqual(h.listCalls, [{ agentId: 'facilitator-1', now: NOW }]);
+    assert.deepEqual(runs, [
+      {
+        runId: RUN_ID,
+        workflowId: 'wf-1',
+        workflowSlug: 'eph-facilitation-abcd1234',
+        patternId: 'facilitation',
+        expiresAt: '2026-08-22T10:00:00.000Z',
+        payload: { goal: 'sort roles', conversationId: 'conv-1' },
+        state: { v: 1, phase: 'active' },
+      },
+    ]);
+  });
+
+  it('listOwnRuns rejects a blank agentId', async () => {
+    const h = harness();
+    await assert.rejects(h.service.listOwnRuns({ agentId: ' ' }), EphemeralInvalidInputError);
+    assert.equal(h.listCalls.length, 0);
+  });
+
+  it('saveRunState validates agentId, runId, state shape and size before touching the store', async () => {
+    const h = harness();
+    const ok = { agentId: 'facilitator-1', runId: RUN_ID, state: { v: 1 } };
+    await assert.rejects(h.service.saveRunState({ ...ok, agentId: '' }), EphemeralInvalidInputError);
+    await assert.rejects(h.service.saveRunState({ ...ok, runId: 'run-1' }), EphemeralInvalidInputError);
+    for (const bad of [null, [], new Date(), 'x']) {
+      await assert.rejects(
+        h.service.saveRunState({ ...ok, state: bad as unknown as Record<string, unknown> }),
+        EphemeralInvalidInputError,
+      );
+    }
+    await assert.rejects(
+      h.service.saveRunState({ ...ok, state: { note: 'a\u0000b' } }),
+      (err: unknown) => err instanceof EphemeralInvalidInputError && err.message.includes('U+0000'),
+    );
+    await assert.rejects(h.service.saveRunState({ ...ok, state: { ['k\u0000']: 1 } }), EphemeralInvalidInputError);
+    await assert.rejects(h.service.saveRunState({ ...ok, agentId: 'a'.repeat(257) }), EphemeralInvalidInputError);
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    await assert.rejects(h.service.saveRunState({ ...ok, state: cyclic }), EphemeralInvalidInputError);
+    await assert.rejects(
+      h.service.saveRunState({ ...ok, state: { blob: 'x'.repeat(16 * 1024) } }),
+      (err: unknown) => err instanceof EphemeralInvalidInputError && err.message.includes('16384'),
+    );
+    assert.equal(h.upserts.length, 0);
+  });
+
+  it('saveRunState reports the owner-guarded upsert result', async () => {
+    const saved = harness({ upsertResult: true });
+    assert.deepEqual(
+      await saved.service.saveRunState({ agentId: 'facilitator-1', runId: RUN_ID, state: { v: 1 } }),
+      { saved: true },
+    );
+    assert.deepEqual(saved.upserts, [{ agentId: 'facilitator-1', runId: RUN_ID, state: { v: 1 } }]);
+
+    const foreign = harness({ upsertResult: false });
+    assert.deepEqual(
+      await foreign.service.saveRunState({ agentId: 'other', runId: RUN_ID, state: { v: 1 } }),
+      { saved: false },
+    );
+  });
+
+  it('saveRunState maps the schema size CHECK to EphemeralInvalidInputError and rethrows other errors', async () => {
+    const tooBig = harness({ upsertResult: new RunStateSizeExceededError() });
+    await assert.rejects(
+      tooBig.service.saveRunState({ agentId: 'facilitator-1', runId: RUN_ID, state: { v: 1 } }),
+      EphemeralInvalidInputError,
+    );
+    const boom = new Error('pg down');
+    const failing = harness({ upsertResult: boom });
+    await assert.rejects(failing.service.saveRunState({ agentId: 'facilitator-1', runId: RUN_ID, state: {} }), boom);
+  });
+
+  it('cancelOwnRun answers not_found for a foreign/unknown run without calling the executor', async () => {
+    const h = harness({ ownedRun: null });
+    assert.deepEqual(await h.service.cancelOwnRun({ agentId: 'facilitator-1', runId: RUN_ID }), {
+      cancelled: false,
+      reason: 'not_found',
+    });
+    assert.equal(h.cancels.length, 0);
+    assert.ok(h.logs.some((l) => l.includes('not_found')));
+  });
+
+  it('cancelOwnRun answers already_ended for a terminal own run without calling the executor', async () => {
+    const h = harness({ ownedRun: { runId: RUN_ID, status: 'completed' } });
+    assert.deepEqual(await h.service.cancelOwnRun({ agentId: 'facilitator-1', runId: RUN_ID }), {
+      cancelled: false,
+      reason: 'already_ended',
+    });
+    assert.equal(h.cancels.length, 0);
+  });
+
+  it('cancelOwnRun cancels an active own run via executor.cancelRun and logs the reason', async () => {
+    const h = harness({ ownedRun: { runId: RUN_ID, status: 'waiting' } });
+    assert.deepEqual(
+      await h.service.cancelOwnRun({ agentId: 'facilitator-1', runId: RUN_ID, reason: 'stopped by initiator' }),
+      { cancelled: true },
+    );
+    assert.deepEqual(h.cancels, [{ runId: RUN_ID, by: 'agent:facilitator-1' }]);
+    // Not the reaper path: no workflow-wide cancel request.
+    assert.equal(h.cancelRequests.length, 0);
+    assert.ok(h.logs.some((l) => l.includes('cancelled') && l.includes('stopped by initiator')));
+  });
+
+  it('cancelOwnRun neutralizes control characters in the logged reason', async () => {
+    const h = harness({ ownedRun: { runId: RUN_ID, status: 'running' } });
+    await h.service.cancelOwnRun({ agentId: 'facilitator-1', runId: RUN_ID, reason: 'ok\n[conductor] forged line\u001b[31m' });
+    const line = h.logs.find((l) => l.includes('cancel by agent'));
+    assert.ok(line);
+    assert.ok(!/[\u0000-\u001f]/.test(line), 'no raw control characters reach the log');
+    assert.ok(line.includes('ok?[conductor] forged line?[31m'));
+  });
+
+  it('cancelOwnRun maps races: RunAlreadyEndedError → already_ended, WorkflowNotFoundError → not_found', async () => {
+    const ended = harness({ cancelRunError: new RunAlreadyEndedError('ended') });
+    assert.deepEqual(await ended.service.cancelOwnRun({ agentId: 'facilitator-1', runId: RUN_ID }), {
+      cancelled: false,
+      reason: 'already_ended',
+    });
+    const gone = harness({ cancelRunError: new WorkflowNotFoundError('gone') });
+    assert.deepEqual(await gone.service.cancelOwnRun({ agentId: 'facilitator-1', runId: RUN_ID }), {
+      cancelled: false,
+      reason: 'not_found',
+    });
+  });
+
+  it('cancelOwnRun rethrows unexpected executor errors and validates its input', async () => {
+    const boom = new Error('lease lost');
+    const h = harness({ cancelRunError: boom });
+    await assert.rejects(h.service.cancelOwnRun({ agentId: 'facilitator-1', runId: RUN_ID }), boom);
+    await assert.rejects(h.service.cancelOwnRun({ agentId: 'facilitator-1', runId: 'nope' }), EphemeralInvalidInputError);
+    await assert.rejects(
+      h.service.cancelOwnRun({ agentId: 'facilitator-1', runId: RUN_ID, reason: 42 as unknown as string }),
+      EphemeralInvalidInputError,
+    );
   });
 });

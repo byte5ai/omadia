@@ -6,6 +6,17 @@ export {
   resolveAgentComputerProfile,
 } from './agentComputerProfile.js';
 
+export type {
+  SandboxResourceLimits,
+  SandboxResourceLimitInput,
+} from './resourceLimits.js';
+export {
+  DEFAULT_SANDBOX_RESOURCE_LIMITS,
+  SANDBOX_RESOURCE_LIMIT_ENV_KEYS,
+  dockerResourceLimitArgs,
+  resolveSandboxResourceLimits,
+} from './resourceLimits.js';
+
 export type { PathGuardOutcome } from './pathGuard.js';
 export { clampSandboxPath, clampSandboxPathPosix } from './pathGuard.js';
 

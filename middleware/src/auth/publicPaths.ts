@@ -29,8 +29,10 @@ function pathPrefixPattern(path: string): RegExp {
 
 /** Public paths that are constant regardless of configuration. */
 export const STATIC_PUBLIC_PATHS: readonly RegExp[] = [
+  // Sign-in, renewal and the first-user wizard. Every route under it
+  // authenticates itself; the wizard (`POST /api/v1/auth/setup`) with the
+  // operator's setup token (routes/authSetup.ts).
   /^\/api\/v1\/auth(?:\/|$|\?)/,
-  /^\/api\/v1\/setup(?:\/|$|\?)/,
   /^\/api\/auth(?:\/|$|\?)/,
   // Spec 005 — kernel OAuth broker callback. The IdP redirects the operator's
   // browser back here after consent; the session cookie may have lapsed during
@@ -82,10 +84,16 @@ export const STATIC_PUBLIC_PATHS: readonly RegExp[] = [
   // a hand-written regex, for the reason in this module's doc comment above:
   // the express route and this allowlist must be incapable of drifting.
   pathPrefixPattern(CIMD_METADATA_PATH),
-  // Plugin-served UI surfaces (`/p/<pluginId>/...`), iframed by Teams where
-  // only a Teams SSO token exists. Plugins exposing sensitive data validate
-  // that token themselves.
-  /^\/p\/[^/]+(?:\/|$|\?)/,
+  // Issue #1596 — there is deliberately NO `/p/<pluginId>/...` entry any more.
+  // It existed so Teams could iframe plugin pages, on the promise that "plugins
+  // exposing sensitive data validate the Teams token themselves". They did not:
+  // the plugin route registry's `auth: 'session'` gate honoured this list, so
+  // an HR plugin's absences page (sick leave included) answered anonymous
+  // requests. The static bundle at `/p/<id>/ui/` never needed the entry (core
+  // mounts it outside every requireAuth), and a plugin route that must be
+  // reachable without a session declares it in `permissions.public_paths`
+  // with `auth: 'custom'` and the operator grants it — the handover
+  // `platform/publicPathGrants.ts` is built for.
   // Issue #438 — the public API channel's chat ingress. A caller presents a
   // per-key API key (Authorization: Bearer) instead of a session cookie; the
   // `@omadia/channel-api` plugin mounts `requireApiKey` from

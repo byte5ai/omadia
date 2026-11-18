@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { getTranslations } from 'next-intl/server';
+import { cache } from 'react';
 
 import { redirectIfUnauthorized } from '../../../_lib/authRedirect';
 import {
@@ -28,6 +29,9 @@ import { AgentDetail } from './_components/AgentDetail';
 
 export const dynamic = 'force-dynamic';
 
+/** One fetch per request for both the tab title and the page (#1398). */
+const loadAgents = cache(listOperatorAgents);
+
 interface RouteParams {
   params: Promise<{ slug: string }>;
 }
@@ -35,9 +39,17 @@ interface RouteParams {
 export async function generateMetadata({
   params,
 }: RouteParams): Promise<Metadata> {
-  const { slug } = await params;
+  const { slug: rawSlug } = await params;
+  const slug = decodeURIComponent(rawSlug);
   const t = await getTranslations('operatorAgents');
-  return { title: t('detailMetaTitle', { slug: decodeURIComponent(slug) }) };
+  // #1398 — an unknown slug must not get a real-looking "Orchestrator: nope"
+  // tab title above the 404. A failed fetch keeps the slug title: the page
+  // shows the load error then, not a 404.
+  const list = await loadAgents().catch(() => null);
+  if (list && !list.agents.some((a) => a.slug === slug)) {
+    return { title: t('detailNotFoundMetaTitle') };
+  }
+  return { title: t('detailMetaTitle', { slug }) };
 }
 
 export default async function OperatorAgentDetailPage({
@@ -50,7 +62,7 @@ export default async function OperatorAgentDetailPage({
   let list: OperatorAgentsListDto | null = null;
   let loadError: string | null = null;
   try {
-    list = await listOperatorAgents();
+    list = await loadAgents();
   } catch (err) {
     await redirectIfUnauthorized(err);
     loadError = err instanceof Error ? err.message : t('loadError');

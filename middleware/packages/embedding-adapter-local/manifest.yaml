@@ -29,24 +29,75 @@ setup:
   fields:
     - key: "model_dir"
       type: "string"
-      label: "Modell-Verzeichnis"
-      help: "Verzeichnis, in dem die Modellgewichte liegen. Leer lassen → automatisch (OM-97): `OMADIA_EMBEDDING_MODEL_DIR`, sonst `<PLATFORM_DATA_DIR>/embedding-models`, sonst `var/embedding-models` unterhalb der Middleware. Die Desktop-App setzt die Env-Variable auf ihr Nutzerdaten-Verzeichnis — die Gewichte dürfen NICHT ins signierte App-Bundle geschrieben werden, das macht die Code-Signatur ungültig. Liegen Gewichte noch am alten Bundle-Pfad, übernimmt das Plugin sie beim Start einmalig ins neue Verzeichnis. Fehlen die Gewichte, aktiviert sich das Plugin, veröffentlicht aber keine Capability — Konsumenten laufen dann ohne Embeddings weiter."
+      label:
+        en: "Model directory"
+        de: "Modell-Verzeichnis"
+      help:
+        en: "Directory holding the model weights. Leave empty → automatic (OM-97): `OMADIA_EMBEDDING_MODEL_DIR`, otherwise `<PLATFORM_DATA_DIR>/embedding-models`, otherwise `var/embedding-models` below the middleware. The desktop app sets the env variable to its user data directory — the weights must NOT be written into the signed app bundle, as that invalidates the code signature. If weights still sit at the old bundle path, the plugin moves them into the new directory once at startup. If the weights are missing, the plugin activates but publishes no capability — consumers then keep running without embeddings."
+        de: "Verzeichnis, in dem die Modellgewichte liegen. Leer lassen → automatisch (OM-97): `OMADIA_EMBEDDING_MODEL_DIR`, sonst `<PLATFORM_DATA_DIR>/embedding-models`, sonst `var/embedding-models` unterhalb der Middleware. Die Desktop-App setzt die Env-Variable auf ihr Nutzerdaten-Verzeichnis — die Gewichte dürfen NICHT ins signierte App-Bundle geschrieben werden, das macht die Code-Signatur ungültig. Liegen Gewichte noch am alten Bundle-Pfad, übernimmt das Plugin sie beim Start einmalig ins neue Verzeichnis. Fehlen die Gewichte, aktiviert sich das Plugin, veröffentlicht aber keine Capability — Konsumenten laufen dann ohne Embeddings weiter."
       required: false
       default: ""
     - key: "max_input_chars"
       type: "integer"
-      label: "Maximale Eingabelänge (Zeichen)"
-      help: "Längere Texte werden vor der Tokenisierung abgeschnitten. Standard: 8000."
+      label:
+        en: "Maximum input length (characters)"
+        de: "Maximale Eingabelänge (Zeichen)"
+      help:
+        en: "Longer texts are truncated before tokenization. Default: 8000."
+        de: "Längere Texte werden vor der Tokenisierung abgeschnitten. Standard: 8000."
       required: false
       default: 8000
     - key: "max_concurrent"
       type: "integer"
-      label: "Parallele Berechnungen"
-      help: "Standard 1. Die Berechnung läuft CPU-gebunden in diesem Prozess und serialisiert ohnehin; höhere Werte konkurrieren nur mit der Event-Loop des Kernels. 0 hebt die Begrenzung auf."
+      label:
+        en: "Concurrent computations"
+        de: "Parallele Berechnungen"
+      help:
+        en: "Default 1. The computation is CPU-bound in this process and serializes anyway; higher values only compete with the kernel's event loop. 0 removes the limit."
+        de: "Standard 1. Die Berechnung läuft CPU-gebunden in diesem Prozess und serialisiert ohnehin; höhere Werte konkurrieren nur mit der Event-Loop des Kernels. 0 hebt die Begrenzung auf."
       required: false
       default: 1
 
   guide:
+    en: |
+      **The keyless route.** This plugin needs neither an API key nor a
+      running Ollama server. It computes the vectors itself, on this
+      machine's CPU, with a quantized multilingual sentence transformer
+      (`paraphrase-multilingual-MiniLM-L12-v2`, 384 dimensions).
+
+      **Fetch the weights once.** The weights are deliberately *not* included
+      in the package — they would add about 144 MB to every desktop installer,
+      for a plugin many installations never activate. Instead, run once:
+
+      ```
+      npm run fetch-model --workspace @omadia/embedding-adapter-local
+      ```
+
+      After that everything runs offline. While the weights are missing, the
+      plugin activates and logs which file is missing — but publishes no
+      capability, so consumers keep running cleanly without embeddings.
+
+      **The dedup threshold is set automatically.** Since OM-98, "Reactivate
+      provider" under Admin → Embedding Provider writes the value below into
+      the knowledge graph itself — but only if nothing is set there yet. A
+      value you set yourself stays untouched. It takes effect on the next
+      start of the knowledge graph plugin.
+
+      **Why 0.45:** This model's cosine scale is not the one the knowledge
+      graph is tuned for. German paraphrases land at 0.58–0.73 here,
+      unrelated sentences below 0.24 — so the default
+      `process_dedup_threshold=0.90` would **never** match, and silently so.
+      Set it to **0.45** in the knowledge graph plugin.
+
+      **Only one of three.** The Ollama adapter, the OpenAI-compatible adapter
+      and this plugin all provide the same capability `embeddingClient@1`.
+      Only one may be active at a time; uninstall the others first or clear
+      their access fields.
+
+      **Changing dimensions.** 384 dimensions. If that matches the vector
+      width already stored, switching only triggers a recompute; if it does
+      not, the knowledge graph blocks vector writes until the column is
+      migrated (see `docs/CHANGELOG.md`, #440).
     de: |
       **Der schlüssellose Weg.** Dieses Plugin braucht weder einen API-Schlüssel
       noch einen laufenden Ollama-Server. Es rechnet die Vektoren selbst, auf

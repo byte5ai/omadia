@@ -8,12 +8,18 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import type Anthropic from '@anthropic-ai/sdk';
+import Anthropic from '@anthropic-ai/sdk';
 
 import {
   classifyAnthropicError,
   createAnthropicProvider,
+  requiresEffortBeta,
+  acceptsEffort,
   supportsForcedToolChoice,
+  supportsStrictTools,
+  supportsThinkingReplay,
+  EFFORT_BETA,
+  THINKING_BINDING_BETA,
 } from '@omadia/llm-adapter-anthropic';
 import {
   collectText,
@@ -232,6 +238,73 @@ test('request mapping: server tool (memory) emits {type,name}, no input_schema',
   assert.deepEqual(tools[1]?.['input_schema'], { type: 'object' });
 });
 
+test('request mapping: a strict tool carries strict: true on its definition, others none', async () => {
+  // Constrained decoding (claim extractor, 2026-10-08): `strict` is a
+  // top-level field of the tool definition — not on tool_choice — and only a
+  // tool that asks for it gets it.
+  const captured: Captured = {};
+  const provider = createAnthropicProvider({
+    client: mockClient(captured, textResponse()),
+  });
+
+  await provider.complete({
+    model: 'claude-haiku-4-5-20251001',
+    maxTokens: 256,
+    tools: [
+      {
+        name: 'record_claims',
+        description: 'R',
+        inputSchema: { type: 'object', additionalProperties: false, properties: {} },
+        strict: true,
+      },
+      { name: 'a', description: 'A', inputSchema: { type: 'object' } },
+    ],
+    toolChoice: { type: 'tool', name: 'record_claims' },
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+  });
+
+  const p = captured.params as Record<string, unknown>;
+  const tools = p['tools'] as Array<Record<string, unknown>>;
+  assert.equal(tools[0]?.['strict'], true);
+  assert.equal('strict' in (tools[1] ?? {}), false);
+  assert.equal('strict' in ((p['tool_choice'] as Record<string, unknown>) ?? {}), false);
+});
+
+test('request mapping: strict is left out for a model that does not honor it', async () => {
+  // A field the endpoint does not know is a 400, not ignored: a model outside
+  // the strict allowlist gets the tool unconstrained, as before.
+  const captured: Captured = {};
+  const provider = createAnthropicProvider({
+    client: mockClient(captured, textResponse()),
+  });
+  await provider.complete({
+    model: 'claude-sonnet-4-6',
+    maxTokens: 256,
+    tools: [
+      { name: 'record_claims', description: 'R', inputSchema: { type: 'object' }, strict: true },
+    ],
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+  });
+  const tools = (captured.params as Record<string, unknown>)['tools'] as Array<Record<string, unknown>>;
+  assert.equal('strict' in (tools[0] ?? {}), false);
+});
+
+test('supportsStrictTools: Haiku 4.5 and the 5-series, not older Sonnets', () => {
+  for (const model of [
+    'claude-haiku-4-5-20251001',
+    'claude-haiku-4-5',
+    'claude-opus-4-8',
+    'claude-opus-5-5',
+    'claude-sonnet-5-5',
+    'claude-fable-5-1',
+  ]) {
+    assert.equal(supportsStrictTools(model), true, model);
+  }
+  for (const model of ['claude-sonnet-4-6', 'claude-opus-4-6', 'claude-3-5-haiku-latest', 'gpt-4o']) {
+    assert.equal(supportsStrictTools(model), false, model);
+  }
+});
+
 test('stream() yields text deltas then a final response', async () => {
   const events = [
     { type: 'message_start' },
@@ -432,11 +505,31 @@ test('toolChoice disableParallel maps to disable_parallel_tool_use', async () =>
   });
 });
 
+test('#1211 declares toolChoiceNone and sends tool_choice none with the tools intact', async () => {
+  // The orchestrator's finalize pass only keeps the tool list (and with it the
+  // cached prefix) for providers that opt in; without the flag it sends none.
+  const captured: Captured = {};
+  const provider = createAnthropicProvider({
+    client: mockClient(captured, textResponse()),
+  });
+  assert.equal(provider.capabilities.toolChoiceNone, true);
+  await provider.complete({
+    model: 'claude-opus-4-8',
+    maxTokens: 64,
+    tools: [{ name: 'a', description: 'A', inputSchema: { type: 'object' } }],
+    toolChoice: { type: 'none' },
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+  });
+  const params = captured.params as Record<string, unknown>;
+  assert.deepEqual(params['tool_choice'], { type: 'none' });
+  assert.equal((params['tools'] as unknown[]).length, 1);
+});
+
 /**
  * `claude-opus-5-5` and `claude-fable-5-1` 400 on a forced `tool_choice`
- * (measured 2026-09-23). Opus 5.5 was already selectable, so every forced
- * path — card router, claim extractor, evidence judge, sub-agent turn
- * obligation — threw on it and fell back silently.
+ * (measured 2026-09-23), and so does `claude-sonnet-5-5`. Opus 5.5 was already
+ * selectable, so every forced path — card router, claim extractor, evidence
+ * judge, sub-agent turn obligation — threw on it and fell back silently.
  */
 test('forced toolChoice degrades to auto on models that reject it', async () => {
   const cases: ReadonlyArray<[ToolChoice, Record<string, unknown>]> = [
@@ -448,7 +541,13 @@ test('forced toolChoice degrades to auto on models that reject it', async () => 
     ],
     [{ type: 'none' }, { type: 'none' }],
   ];
-  for (const model of ['claude-opus-5-5', 'claude-fable-5-1', 'claude-mythos-5-1']) {
+  for (const model of [
+    'claude-opus-5-5',
+    'claude-sonnet-5-5',
+    'claude-fable-5-1',
+    'claude-mythos-5-1',
+  ]) {
+    assert.equal(supportsForcedToolChoice(model), false, model);
     for (const [choice, expected] of cases) {
       const captured: Captured = {};
       const provider = createAnthropicProvider({
@@ -472,8 +571,15 @@ test('forced toolChoice degrades to auto on models that reject it', async () => 
 
 test('forced toolChoice is still sent to models that honour it', async () => {
   // The other direction: a gate that downgraded everywhere would pass the
-  // test above while removing forcing from Opus 5 / Fable 5 / Haiku.
-  for (const model of ['claude-opus-5', 'claude-fable-5', 'claude-haiku-4-5-20251001']) {
+  // test above while removing forcing from Opus 5 / Sonnet 5 / Fable 5 / Haiku.
+  // `claude-sonnet-5` also pins the substring match: `claude-sonnet-5-5` must
+  // not swallow its predecessor.
+  for (const model of [
+    'claude-opus-5',
+    'claude-sonnet-5',
+    'claude-fable-5',
+    'claude-haiku-4-5-20251001',
+  ]) {
     assert.equal(supportsForcedToolChoice(model), true, model);
     const captured: Captured = {};
     const provider = createAnthropicProvider({
@@ -634,6 +740,52 @@ test('legacy plugin wrapper preserves stop_sequence', async () => {
   assert.equal(res.stopReason, 'stop_sequence');
 });
 
+test('legacy plugin wrapper reports a refusal as refusal, with its category only (#1219)', async () => {
+  const lines: string[] = [];
+  const provider = createAnthropicLlmProvider({
+    client: mockClient(
+      {},
+      textResponse({
+        content: [],
+        stop_reason: 'refusal',
+        stop_details: { type: 'refusal', category: 'cyber', explanation: 'vendor prose' },
+      }),
+    ),
+    log: (...args: unknown[]) => {
+      lines.push(args.map(String).join(' '));
+    },
+  });
+  const res = await provider.complete({
+    model: 'claude-haiku-4-5-20251001',
+    messages: [{ role: 'user', content: 'Hi' }],
+  });
+  // Was `end_turn`: a decline reported as a normal turn end.
+  assert.equal(res.stopReason, 'refusal');
+  assert.equal(res.finishReason, 'stop');
+  assert.equal(res.text, '');
+  // Only the category crosses the plugin contract — not the explanation.
+  assert.deepEqual(res.refusal, { category: 'cyber' });
+  assert.ok(lines.some((l) => l.includes('category=cyber')), lines.join('\n'));
+
+  // No category: the object is still there, because its presence is the signal.
+  const bare = await createAnthropicLlmProvider({
+    client: mockClient(
+      {},
+      textResponse({ content: [], stop_reason: 'refusal', stop_details: null }),
+    ),
+    log: () => {},
+  }).complete({ model: 'claude-haiku-4-5-20251001', messages: [{ role: 'user', content: 'Hi' }] });
+  assert.equal(bare.stopReason, 'refusal');
+  assert.deepEqual(bare.refusal, {});
+
+  // An ordinary turn carries no `refusal` key at all.
+  const normal = await createAnthropicLlmProvider({
+    client: mockClient({}, textResponse()),
+    log: () => {},
+  }).complete({ model: 'claude-haiku-4-5-20251001', messages: [{ role: 'user', content: 'Hi' }] });
+  assert.equal('refusal' in normal, false);
+});
+
 /**
  * Regression: `temperature` is a hard 400 on some models, and the adapter is
  * the layer that knows the wire contract.
@@ -707,7 +859,7 @@ test('complete() still sends temperature for models that honour it', async () =>
 // #1033 — effort
 // ---------------------------------------------------------------------------
 
-test('effort maps to output_config.effort and attaches the effort beta once', async () => {
+test('effort maps to output_config.effort on every model, beta only where needed', async () => {
   const calls: Array<{ params: Record<string, unknown>; options: unknown }> = [];
   const client = {
     messages: {
@@ -719,6 +871,8 @@ test('effort maps to output_config.effort and attaches the effort beta once', as
   } as unknown as Anthropic;
   const provider = createAnthropicProvider({ client });
 
+  // Effort is GA from 4.6 on: the mapping happens, the beta does not ride
+  // along, and the caller's own betas are the only header content.
   await provider.complete({
     model: 'claude-opus-4-8',
     maxTokens: 64,
@@ -727,17 +881,891 @@ test('effort maps to output_config.effort and attaches the effort beta once', as
     messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
   });
   assert.deepEqual(calls[0]?.params['output_config'], { effort: 'xhigh' });
-  // The beta rides alongside the caller's own betas, appended not replaced.
   assert.deepEqual(calls[0]?.options, {
-    headers: { 'anthropic-beta': 'context-management-2025-06-27,effort-2025-11-24' },
+    headers: { 'anthropic-beta': 'context-management-2025-06-27' },
+  });
+
+  // Opus 4.5 still needs the opt-in: appended to the caller's betas, not
+  // replacing them.
+  await provider.complete({
+    model: 'claude-opus-4-5-20251101',
+    maxTokens: 64,
+    effort: 'high',
+    betas: ['context-management-2025-06-27'],
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+  });
+  assert.deepEqual(calls[1]?.params['output_config'], { effort: 'high' });
+  assert.deepEqual(calls[1]?.options, {
+    headers: { 'anthropic-beta': `context-management-2025-06-27,${EFFORT_BETA}` },
+  });
+
+  // A GA model carrying effort and nothing else sends no request options at
+  // all — not an empty beta header.
+  await provider.complete({
+    model: 'claude-opus-5-5',
+    maxTokens: 64,
+    effort: 'low',
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+  });
+  assert.deepEqual(calls[2]?.params['output_config'], { effort: 'low' });
+  assert.equal(calls[2]?.options, undefined);
+
+  // A caller that opts in explicitly is honoured on any model, exactly once.
+  await provider.complete({
+    model: 'claude-opus-4-5',
+    maxTokens: 64,
+    effort: 'medium',
+    betas: [EFFORT_BETA],
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+  });
+  assert.deepEqual(calls[3]?.options, {
+    headers: { 'anthropic-beta': EFFORT_BETA },
   });
 
   // No effort → no output_config, no effort beta: the common path is untouched.
   await provider.complete({
-    model: 'claude-opus-4-8',
+    model: 'claude-opus-4-5',
     maxTokens: 64,
     messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
   });
-  assert.equal(calls[1]?.params['output_config'], undefined);
-  assert.equal(calls[1]?.options, undefined);
+  assert.equal(calls[4]?.params['output_config'], undefined);
+  assert.equal(calls[4]?.options, undefined);
+});
+
+// ---------------------------------------------------------------------------
+// #1219 — structured outputs
+// ---------------------------------------------------------------------------
+
+test('outputFormat maps to output_config.format and shares the object with effort', async () => {
+  const calls: Array<{ params: Record<string, unknown>; options: unknown }> = [];
+  const client = {
+    messages: {
+      create: async (params: Record<string, unknown>, options?: unknown) => {
+        calls.push({ params, options });
+        return textResponse();
+      },
+    },
+  } as unknown as Anthropic;
+  const provider = createAnthropicProvider({ client });
+  const schema = {
+    type: 'object',
+    properties: { entities: { type: 'array', items: { type: 'string' } } },
+    required: ['entities'],
+    additionalProperties: false,
+  };
+
+  // Format alone: the current `output_config.format` shape, no beta header —
+  // structured outputs is GA, unlike effort on Opus 4.5.
+  await provider.complete({
+    model: 'claude-haiku-4-5',
+    maxTokens: 64,
+    outputFormat: { type: 'json_schema', schema },
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+  });
+  assert.deepEqual(calls[0]?.params['output_config'], {
+    format: { type: 'json_schema', schema },
+  });
+  assert.equal(calls[0]?.options, undefined);
+  // NOT the deprecated top-level parameter.
+  assert.equal(calls[0]?.params['output_format'], undefined);
+
+  // Effort + format share one object. Two independent spreads would have made
+  // the second silently drop the first.
+  await provider.complete({
+    model: 'claude-opus-5-5',
+    maxTokens: 64,
+    effort: 'low',
+    outputFormat: { type: 'json_schema', schema },
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+  });
+  assert.deepEqual(calls[1]?.params['output_config'], {
+    effort: 'low',
+    format: { type: 'json_schema', schema },
+  });
+  // The format object carries exactly `type` + `schema`. Anthropic rejects
+  // unknown nested body fields with a 400, so an extra key here would be a
+  // hard failure on the first caller that set it — not a dropped field.
+  assert.deepEqual(
+    Object.keys(
+      (calls[1]?.params['output_config'] as { format: object }).format,
+    ).sort(),
+    ['schema', 'type'],
+  );
+
+  // Neither → no `output_config` key at all, so the common path is unchanged.
+  await provider.complete({
+    model: 'claude-opus-5-5',
+    maxTokens: 64,
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+  });
+  assert.equal('output_config' in (calls[2]?.params ?? {}), false);
+});
+
+test('the plugin wrapper forwards outputFormat to output_config.format (#1219)', async () => {
+  const schema = {
+    type: 'object',
+    properties: { entities: { type: 'array', items: { type: 'string' } } },
+    required: ['entities'],
+    additionalProperties: false,
+  };
+  const captured: Captured = {};
+  const provider = createAnthropicLlmProvider({
+    client: mockClient(captured, textResponse()),
+    log: () => {},
+  });
+  await provider.complete({
+    model: 'claude-haiku-4-5-20251001',
+    outputFormat: { type: 'json_schema', schema },
+    messages: [{ role: 'user', content: 'Hi' }],
+  });
+  // `ctx.llm.complete` → neutral `outputFormat` → the adapter's current shape,
+  // carrying exactly `type` + `schema`.
+  assert.deepEqual(captured.params?.['output_config'], {
+    format: { type: 'json_schema', schema },
+  });
+  assert.equal(captured.params?.['output_format'], undefined);
+
+  // Not asked for → no `output_config` at all.
+  const plain: Captured = {};
+  await createAnthropicLlmProvider({
+    client: mockClient(plain, textResponse()),
+    log: () => {},
+  }).complete({
+    model: 'claude-haiku-4-5-20251001',
+    messages: [{ role: 'user', content: 'Hi' }],
+  });
+  assert.equal('output_config' in (plain.params ?? {}), false);
+});
+
+// ---------------------------------------------------------------------------
+// thinking: 'off' — latency-critical single calls (canvas skeleton composer)
+// ---------------------------------------------------------------------------
+
+test("thinking 'off' sends thinking disabled only where the model accepts it", async () => {
+  const calls: Array<Record<string, unknown>> = [];
+  const client = {
+    messages: {
+      create: async (params: Record<string, unknown>) => {
+        calls.push(params);
+        return textResponse();
+      },
+    },
+  } as unknown as Anthropic;
+  const provider = createAnthropicProvider({ client });
+  const ask = (model: string, effort?: 'low' | 'xhigh') =>
+    provider.complete({
+      model,
+      maxTokens: 64,
+      thinking: 'off',
+      ...(effort !== undefined ? { effort } : {}),
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+    });
+
+  // Haiku 5.5 accepts `disabled` at effort high or below.
+  await ask('claude-haiku-5-5', 'low');
+  assert.deepEqual(calls[0]?.['thinking'], { type: 'disabled' });
+  assert.deepEqual(calls[0]?.['output_config'], { effort: 'low' });
+  // …but not at xhigh/max: the request keeps its default rather than 400.
+  await ask('claude-haiku-5-5', 'xhigh');
+  assert.equal('thinking' in (calls[1] ?? {}), false);
+  // Opus 5.5 rejects `disabled` at every effort: never sent, effort is the lever.
+  await ask('claude-opus-5-5', 'low');
+  assert.equal('thinking' in (calls[2] ?? {}), false);
+  // Not asked → no thinking field on the common path.
+  await provider.complete({
+    model: 'claude-haiku-5-5',
+    maxTokens: 64,
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+  });
+  assert.equal('thinking' in (calls[3] ?? {}), false);
+});
+
+test('the plugin wrapper forwards effort and thinking (ctx.llm.complete)', async () => {
+  const captured: Captured = {};
+  await createAnthropicLlmProvider({
+    client: mockClient(captured, textResponse()),
+    log: () => {},
+  }).complete({
+    model: 'claude-haiku-5-5',
+    effort: 'low',
+    thinking: 'off',
+    messages: [{ role: 'user', content: 'Hi' }],
+  });
+  assert.deepEqual(captured.params?.['output_config'], { effort: 'low' });
+  assert.deepEqual(captured.params?.['thinking'], { type: 'disabled' });
+});
+
+// ---------------------------------------------------------------------------
+// #1219 — refusals
+// ---------------------------------------------------------------------------
+
+test('a refusal surfaces stop_details; every other stop reason carries none', async () => {
+  const replies: Array<Record<string, unknown>> = [
+    // Declined with a category — the shape Opus 5.5 returns.
+    {
+      stop_reason: 'refusal',
+      stop_details: { type: 'refusal', category: 'bio', explanation: 'declined' },
+      content: [],
+    },
+    // Declined with no details at all: presence is still the signal.
+    { stop_reason: 'refusal', stop_details: null, content: [] },
+    // A normal turn. stop_details is null here, and reading it unguarded on
+    // every response is the bug this guards against.
+    { stop_reason: 'end_turn', stop_details: null },
+  ];
+  let i = 0;
+  const client = {
+    messages: {
+      create: async () => textResponse(replies[i++]!),
+    },
+  } as unknown as Anthropic;
+  const provider = createAnthropicProvider({ client });
+  const ask = () =>
+    provider.complete({
+      model: 'claude-opus-5-5',
+      maxTokens: 64,
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+    });
+
+  const declined = await ask();
+  assert.deepEqual(declined.refusal, { category: 'bio', explanation: 'declined' });
+  // It is NOT an error and NOT a distinct finishReason — a caller that only
+  // looks at finishReason sees a normal stop with empty content.
+  assert.equal(declined.finishReason, 'stop');
+  assert.equal(declined.providerFinishReason, 'refusal');
+
+  const bare = await ask();
+  assert.deepEqual(bare.refusal, {});
+  assert.notEqual(bare.refusal, undefined);
+
+  const normal = await ask();
+  assert.equal(normal.refusal, undefined);
+});
+
+test('requiresEffortBeta matches only the Opus 4.5 family', () => {
+  for (const model of ['claude-opus-4-5', 'claude-opus-4-5-20251101']) {
+    assert.equal(requiresEffortBeta(model), true, `${model} lost its effort beta`);
+  }
+  for (const model of [
+    'claude-opus-4-6',
+    'claude-opus-4-8',
+    'claude-opus-5',
+    'claude-opus-5-5',
+    'claude-sonnet-5',
+    'claude-haiku-4-5',
+    'claude-fable-5-1',
+  ]) {
+    assert.equal(requiresEffortBeta(model), false, `${model} gained a stale beta`);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// #1207 — thinking blocks survive a tool loop
+// ---------------------------------------------------------------------------
+
+/** The two block shapes an always-thinking model emits. `signature` is what
+ *  must arrive back unchanged, so the test compares by identity, not shape. */
+const THINKING_BLOCK = {
+  type: 'thinking',
+  thinking: 'Erst die Rechnung prüfen, dann antworten.',
+  signature: 'sig-abc',
+};
+const REDACTED_BLOCK = { type: 'redacted_thinking', data: 'enc-xyz' };
+
+test('thinking/redacted blocks survive the neutral view and replay verbatim', async () => {
+  const calls: Array<{ params: Record<string, unknown>; options: unknown }> = [];
+  const client = {
+    messages: {
+      create: async (params: Record<string, unknown>, options?: unknown) => {
+        calls.push({ params, options });
+        return textResponse({
+          model: 'claude-opus-5-5',
+          content: [
+            THINKING_BLOCK,
+            REDACTED_BLOCK,
+            { type: 'text', text: 'Jetzt der Toolaufruf' },
+            { type: 'tool_use', id: 'tu_1', name: 'lookup', input: { q: 'x' } },
+          ],
+          stop_reason: 'tool_use',
+        });
+      },
+    },
+  } as unknown as Anthropic;
+  const provider = createAnthropicProvider({ client });
+
+  // Iteration 1: the model answers with thinking + text + a tool call.
+  const first = await provider.complete({
+    model: 'claude-opus-5-5',
+    maxTokens: 1024,
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Rechne' }] }],
+  });
+  assert.deepEqual(
+    first.content.map((p) => p.type),
+    ['reasoning', 'reasoning', 'text', 'tool_call'],
+  );
+  // The neutral view carries the block OPAQUELY — same object, not a copy with
+  // a re-serialised signature.
+  assert.equal(
+    (first.content[0] as { raw: unknown }).raw,
+    THINKING_BLOCK,
+  );
+  assert.equal((first.content[1] as { raw: unknown }).raw, REDACTED_BLOCK);
+  // The first request carried no reasoning, so no thinking field and no beta.
+  assert.equal(calls[0]?.params['thinking'], undefined);
+  assert.equal(calls[0]?.options, undefined);
+
+  // Iteration 2: the loop replays the assistant turn with its tool result.
+  await provider.complete({
+    model: 'claude-opus-5-5',
+    maxTokens: 1024,
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: 'Rechne' }] },
+      { role: 'assistant', content: first.content },
+      {
+        role: 'user',
+        content: [
+          { type: 'tool_result', toolCallId: 'tu_1', content: '42' },
+          // A foreign provider's reasoning must never reach the Anthropic
+          // wire — a replayed OpenAI block is not a valid Anthropic block.
+          { type: 'reasoning', provider: 'openai', raw: { foreign: true } },
+        ],
+      },
+    ],
+  });
+  const messages = calls[1]?.params['messages'] as Array<{
+    content: Array<Record<string, unknown>>;
+  }>;
+  // Byte-for-byte, in the original order, ahead of the text and tool_use.
+  assert.deepEqual(messages[1]?.content, [
+    THINKING_BLOCK,
+    REDACTED_BLOCK,
+    { type: 'text', text: 'Jetzt der Toolaufruf' },
+    { type: 'tool_use', id: 'tu_1', name: 'lookup', input: { q: 'x' } },
+  ]);
+  assert.equal(messages[1]?.content[0], THINKING_BLOCK);
+  // The foreign reasoning part is gone, the tool_result is not.
+  assert.deepEqual(messages[2]?.content, [
+    { type: 'tool_result', tool_use_id: 'tu_1', content: '42' },
+  ]);
+  // Replaying blocks opts the request into the binding controls — and the
+  // field is a 400 without its beta header, so the two go together.
+  assert.deepEqual(calls[1]?.params['thinking'], {
+    type: 'adaptive',
+    block_binding: { prefix_mismatch_behavior: 'drop_block' },
+  });
+  assert.deepEqual(calls[1]?.options, {
+    headers: { 'anthropic-beta': THINKING_BINDING_BETA },
+  });
+});
+
+test('the thinking-binding beta is appended to a caller\'s betas exactly once', async () => {
+  const calls: Array<{ params: Record<string, unknown>; options: unknown }> = [];
+  const client = {
+    messages: {
+      create: async (params: Record<string, unknown>, options?: unknown) => {
+        calls.push({ params, options });
+        return textResponse();
+      },
+    },
+  } as unknown as Anthropic;
+  const provider = createAnthropicProvider({ client });
+  const replay = (betas?: string[]) =>
+    provider.complete({
+      model: 'claude-opus-5-5',
+      maxTokens: 64,
+      ...(betas !== undefined ? { betas } : {}),
+      messages: [
+        {
+          role: 'assistant',
+          content: [
+            { type: 'reasoning', provider: 'anthropic', raw: THINKING_BLOCK },
+          ],
+        },
+      ],
+    });
+
+  await replay(['context-management-2025-06-27']);
+  assert.deepEqual(calls[0]?.options, {
+    headers: {
+      'anthropic-beta': `context-management-2025-06-27,${THINKING_BINDING_BETA}`,
+    },
+  });
+
+  await replay([THINKING_BINDING_BETA]);
+  assert.deepEqual(calls[1]?.options, {
+    headers: { 'anthropic-beta': THINKING_BINDING_BETA },
+  });
+
+  // A request with no Anthropic reasoning keeps the untouched common path:
+  // no thinking field (which would turn thinking ON for a model where it is
+  // off by default) and no beta header.
+  await provider.complete({
+    model: 'claude-opus-4-8',
+    maxTokens: 64,
+    messages: [
+      {
+        role: 'assistant',
+        content: [{ type: 'reasoning', provider: 'openai', raw: { x: 1 } }],
+      },
+    ],
+  });
+  assert.equal(calls[2]?.params['thinking'], undefined);
+  assert.equal(calls[2]?.options, undefined);
+});
+
+test('supportsThinkingReplay: only models whose default is adaptive thinking', () => {
+  // Omitting `thinking` already runs adaptive on these, so the replay field
+  // restates the default instead of turning thinking on.
+  for (const model of [
+    'claude-opus-5',
+    'claude-opus-5-5',
+    'claude-fable-5',
+    'claude-fable-5-1',
+    'claude-mythos-5-1',
+    'claude-sonnet-5-5',
+    'claude-haiku-5-5',
+    'anthropic:claude-opus-5-5',
+  ]) {
+    assert.equal(supportsThinkingReplay(model), true, model);
+  }
+  // Thinking off by default (adaptive would switch it on) or no adaptive at
+  // all (Haiku 4.5: a 400). `sonnet-5` must not match via `sonnet-5-5`.
+  for (const model of [
+    'claude-haiku-4-5',
+    'claude-haiku-4-5-20251001',
+    'claude-sonnet-4-6',
+    'claude-sonnet-5',
+    'claude-sonnet-5-20260101',
+    'claude-opus-4-8',
+    'claude-opus-4-6',
+  ]) {
+    assert.equal(supportsThinkingReplay(model), false, model);
+  }
+});
+
+/** The tool-loop history a primary always-thinking model left behind: its
+ *  thinking block ahead of a tool call, then the tool result. Exactly what the
+ *  orchestrator's fallback hop re-sends to a different model. */
+function replayedHistory() {
+  return [
+    { role: 'user' as const, content: [{ type: 'text' as const, text: 'Rechne' }] },
+    {
+      role: 'assistant' as const,
+      content: [
+        { type: 'reasoning' as const, provider: 'anthropic', raw: THINKING_BLOCK },
+        { type: 'reasoning' as const, provider: 'anthropic', raw: REDACTED_BLOCK },
+        { type: 'tool_call' as const, id: 'tu_1', name: 'lookup', input: { q: 'x' } },
+      ],
+    },
+    {
+      role: 'user' as const,
+      content: [{ type: 'tool_result' as const, toolCallId: 'tu_1', content: '42' }],
+    },
+  ];
+}
+
+/** Runs one request on either path and returns what reached the SDK. */
+async function captureRequest(
+  path: 'complete' | 'stream',
+  model: string,
+): Promise<{ params: Record<string, unknown>; options: unknown }> {
+  const calls: Array<{ params: Record<string, unknown>; options: unknown }> = [];
+  const final = textResponse({ model });
+  const client = {
+    messages: {
+      create: async (params: Record<string, unknown>, options?: unknown) => {
+        calls.push({ params, options });
+        return final;
+      },
+      stream: (params: Record<string, unknown>, options?: unknown) => {
+        calls.push({ params, options });
+        return {
+          async *[Symbol.asyncIterator]() {
+            yield { type: 'message_stop' };
+          },
+          finalMessage: async () => final,
+        };
+      },
+    },
+  } as unknown as Anthropic;
+  const provider = createAnthropicProvider({ client });
+  const req = { model, maxTokens: 64, messages: replayedHistory() };
+  if (path === 'complete') {
+    await provider.complete(req);
+  } else {
+    for await (const _ of provider.stream(req)) {
+      // drain
+    }
+  }
+  assert.equal(calls.length, 1);
+  return calls[0]!;
+}
+
+for (const path of ['complete', 'stream'] as const) {
+  test(`a model that takes thinking gets the blocks replayed (${path})`, async () => {
+    for (const model of ['claude-opus-5-5', 'claude-fable-5-1', 'claude-sonnet-5-5']) {
+      const { params, options } = await captureRequest(path, model);
+      const messages = params['messages'] as Array<{ content: unknown[] }>;
+      assert.equal(messages[1]?.content[0], THINKING_BLOCK, model);
+      assert.equal(messages[1]?.content[1], REDACTED_BLOCK, model);
+      assert.deepEqual(
+        params['thinking'],
+        { type: 'adaptive', block_binding: { prefix_mismatch_behavior: 'drop_block' } },
+        model,
+      );
+      assert.deepEqual(
+        options,
+        { headers: { 'anthropic-beta': THINKING_BINDING_BETA } },
+        model,
+      );
+    }
+  });
+
+  test(`a fallback model without default thinking gets the blocks stripped (${path})`, async () => {
+    // The orchestrator's fallback hop re-sends the primary's history verbatim:
+    // these models must see neither the blocks nor a `thinking` field (which
+    // would switch thinking on, or be a 400 on Haiku 4.5) nor the beta.
+    for (const model of [
+      'claude-haiku-4-5-20251001',
+      'claude-sonnet-4-6',
+      'claude-sonnet-5',
+      'claude-opus-4-8',
+    ]) {
+      const { params, options } = await captureRequest(path, model);
+      const messages = params['messages'] as Array<{ content: unknown[] }>;
+      assert.deepEqual(
+        messages[1]?.content,
+        [{ type: 'tool_use', id: 'tu_1', name: 'lookup', input: { q: 'x' } }],
+        model,
+      );
+      assert.deepEqual(
+        messages[2]?.content,
+        [{ type: 'tool_result', tool_use_id: 'tu_1', content: '42' }],
+        model,
+      );
+      assert.equal('thinking' in params, false, model);
+      assert.equal(options, undefined, model);
+    }
+  });
+}
+
+/** A response reporting that the API dropped a block it was sent. */
+const DROPPED = {
+  input_transformations: [
+    {
+      type: 'thinking_block_dropped',
+      path: 'messages.1.content.0',
+      reason: 'prefix_binding_mismatch',
+    },
+    { type: 'thinking_block_dropped', path: 'messages.3.content.0', reason: 'model_binding_mismatch' },
+  ],
+};
+
+/** Both request paths must report a drop — a replay runs through whichever of
+ *  the two the caller picked, and a silent drop is reasoning lost for good. */
+for (const path of ['complete', 'stream'] as const) {
+  test(`a dropped replayed block is logged on the ${path} path`, async () => {
+    const logged: string[] = [];
+    const final = textResponse(DROPPED);
+    const fakeStream = {
+      async *[Symbol.asyncIterator]() {
+        yield { type: 'message_stop' };
+      },
+      finalMessage: async () => final,
+    };
+    const client = {
+      messages: {
+        create: async () => final,
+        stream: () => fakeStream,
+      },
+    } as unknown as Anthropic;
+    const provider = createAnthropicProvider({
+      client,
+      log: (...args: unknown[]) => logged.push(args.map(String).join(' ')),
+    });
+    const req = {
+      model: 'claude-opus-5-5',
+      maxTokens: 64,
+      messages: [
+        {
+          role: 'assistant' as const,
+          content: [
+            { type: 'reasoning' as const, provider: 'anthropic', raw: THINKING_BLOCK },
+          ],
+        },
+      ],
+    };
+
+    if (path === 'complete') {
+      await provider.complete(req);
+    } else {
+      for await (const _ of provider.stream(req)) {
+        // drain
+      }
+    }
+
+    assert.ok(
+      logged.some(
+        (line) =>
+          // Reported, not interpreted: the count and the vendor's own reasons,
+          // with no claim about WHAT was dropped (later checks add types).
+          line.includes('dropped 2 replayed block(s)') &&
+          line.includes('prefix_binding_mismatch,model_binding_mismatch'),
+      ),
+      `no drop logged on ${path}: ${logged.join(' | ')}`,
+    );
+  });
+}
+
+// ---------------------------------------------------------------------------
+// #1210 — buffered completions above the SDK's non-streaming cap.
+//
+// Without a client timeout, the SDK refuses a non-streaming `messages.create`
+// whose `max_tokens` implies more than 10 minutes of generation (> 21 333
+// tokens) and throws before sending anything. The orchestrator budget is
+// 32 000, so `complete()` must stream there. These tests drive a REAL SDK
+// client over a stubbed `fetch`, so the SDK's own guard is what is exercised.
+// ---------------------------------------------------------------------------
+
+interface WireCall {
+  readonly url: string;
+  readonly body: Record<string, unknown>;
+  readonly headers: Headers;
+}
+
+function sse(events: ReadonlyArray<Record<string, unknown>>): string {
+  return events
+    .map((e) => `event: ${String(e['type'])}\ndata: ${JSON.stringify(e)}\n\n`)
+    .join('');
+}
+
+/** The SSE a streamed request receives for the same message `textResponse()`
+ *  returns buffered: two text blocks, end_turn, the same usage. */
+function streamedTextReply(model: string): string {
+  return sse([
+    {
+      type: 'message_start',
+      message: {
+        id: 'msg_test',
+        type: 'message',
+        role: 'assistant',
+        model,
+        content: [],
+        stop_reason: null,
+        stop_sequence: null,
+        usage: {
+          input_tokens: 100,
+          output_tokens: 1,
+          cache_creation_input_tokens: 50,
+          cache_read_input_tokens: 10,
+        },
+      },
+    },
+    { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+    { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Hallo ' } },
+    { type: 'content_block_stop', index: 0 },
+    { type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } },
+    { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'Welt' } },
+    { type: 'content_block_stop', index: 1 },
+    {
+      type: 'message_delta',
+      delta: { stop_reason: 'end_turn', stop_sequence: null },
+      usage: { output_tokens: 20 },
+    },
+    { type: 'message_stop' },
+  ]);
+}
+
+/** A real SDK client whose transport answers from `reply` and records each
+ *  request. No timeout is configured — exactly like `createAnthropicClient`. */
+function realClient(
+  reply: (call: WireCall) => Response,
+): { client: Anthropic; calls: WireCall[] } {
+  const calls: WireCall[] = [];
+  const stubFetch = async (
+    input: string | URL | Request,
+    init?: RequestInit,
+  ): Promise<Response> => {
+    const call: WireCall = {
+      url: String(input instanceof Request ? input.url : input),
+      body: JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>,
+      headers: new Headers(init?.headers),
+    };
+    calls.push(call);
+    return reply(call);
+  };
+  const client = new Anthropic({
+    apiKey: 'sk-test',
+    maxRetries: 0,
+    fetch: stubFetch as unknown as typeof fetch,
+  });
+  return { client, calls };
+}
+
+const textOnly = (call: WireCall): Response =>
+  call.body['stream'] === true
+    ? new Response(streamedTextReply(String(call.body['model'])), {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      })
+    : new Response(JSON.stringify(textResponse({ model: call.body['model'] })), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+
+test('#1210 — the SDK itself refuses a non-streaming create() at 32000 max_tokens', async () => {
+  // Pins the premise of the fix: if a future SDK drops this guard, the
+  // streaming branch below is no longer load-bearing.
+  const { client, calls } = realClient(textOnly);
+  assert.throws(
+    () =>
+      client.messages.create({
+        model: 'claude-opus-5-5',
+        max_tokens: 32_000,
+        messages: [{ role: 'user', content: 'Hi' }],
+      }),
+    /Streaming is required/,
+  );
+  assert.equal(calls.length, 0, 'the guard throws before anything is sent');
+});
+
+test('#1210 — complete() at 32000 max_tokens streams and maps the final message', async () => {
+  const { client, calls } = realClient(textOnly);
+  const provider = createAnthropicProvider({ client });
+
+  const res = await provider.complete({
+    model: 'claude-opus-5-5',
+    maxTokens: 32_000,
+    betas: ['context-management-2025-06-27'],
+    system: 'Sei knapp.',
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.body['stream'], true);
+  assert.equal(calls[0]?.body['max_tokens'], 32_000);
+  assert.equal(calls[0]?.body['system'], 'Sei knapp.');
+  assert.equal(
+    calls[0]?.headers.get('anthropic-beta'),
+    'context-management-2025-06-27',
+    'request options (betas) survive the streaming branch',
+  );
+  // Same mapping as the buffered path's `textResponse()` test above.
+  assert.equal(collectText(res.content), 'Hallo Welt');
+  assert.equal(res.finishReason, 'stop');
+  assert.equal(res.providerFinishReason, 'end_turn');
+  assert.equal(res.model, 'claude-opus-5-5');
+  assert.deepEqual(res.usage, {
+    inputTokens: 100,
+    outputTokens: 20,
+    cacheWriteTokens: 50,
+    cacheReadTokens: 10,
+  });
+});
+
+test('#1210 — complete() at or below 8192 max_tokens keeps the plain non-streaming request', async () => {
+  const { client, calls } = realClient(textOnly);
+  const provider = createAnthropicProvider({ client });
+
+  const res = await provider.complete({
+    model: 'claude-opus-5-5',
+    maxTokens: 8192,
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.body['stream'], undefined);
+  assert.equal(collectText(res.content), 'Hallo Welt');
+});
+
+test('#1210 — a streamed complete() failure is classified like a buffered one', async () => {
+  const { client } = realClient(
+    () =>
+      new Response(
+        JSON.stringify({
+          type: 'error',
+          error: { type: 'overloaded_error', message: 'Overloaded' },
+        }),
+        { status: 529, headers: { 'content-type': 'application/json' } },
+      ),
+  );
+  const provider = createAnthropicProvider({ client });
+
+  const err = await provider
+    .complete({
+      model: 'claude-opus-5-5',
+      maxTokens: 32_000,
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+    })
+    .then(
+      () => assert.fail('expected the 529 to reject'),
+      (e: unknown) => e,
+    );
+  assert.doesNotMatch(String(err), /Streaming is required/);
+  assert.deepEqual(provider.classifyError(err), {
+    retryable: true,
+    kind: 'overloaded',
+  });
+});
+
+test('cacheHints.ttl 1h stamps the 1-hour TTL on every breakpoint (system blocks + last tool)', async () => {
+  const captured: Captured = {};
+  const provider = createAnthropicProvider({
+    client: mockClient(captured, textResponse()),
+  });
+  await provider.complete({
+    model: 'claude-opus-5-5',
+    maxTokens: 64,
+    system: [
+      { text: 'stable domain prompt', cache: true },
+      { text: 'prior context', cache: true },
+      { text: 'per-turn date header' },
+    ],
+    tools: [
+      { name: 'a', description: 'A', inputSchema: { type: 'object', properties: {} } },
+      { name: 'b', description: 'B', inputSchema: { type: 'object', properties: {} } },
+    ],
+    cacheHints: { tools: true, ttl: '1h' },
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+  });
+  const params = captured.params as Record<string, unknown>;
+  const long = { type: 'ephemeral', ttl: '1h' };
+  assert.deepEqual(params['system'], [
+    { type: 'text', text: 'stable domain prompt', cache_control: long },
+    { type: 'text', text: 'prior context', cache_control: long },
+    { type: 'text', text: 'per-turn date header' },
+  ]);
+  const tools = params['tools'] as Array<Record<string, unknown>>;
+  assert.equal(tools[0]?.['cache_control'], undefined);
+  assert.deepEqual(tools[1]?.['cache_control'], long);
+});
+
+test('acceptsEffort: no effort ladder on Haiku 4.5 / Sonnet 4.5 / older; 4.6+ and 5.x take it', () => {
+  for (const model of ['claude-haiku-4-5-20251001', 'claude-haiku-4-5', 'claude-sonnet-4-5-20250929', 'claude-opus-4-1-20250805', 'claude-3-5-haiku-20241022']) {
+    assert.equal(acceptsEffort(model), false, `${model} must not get an effort`);
+  }
+  for (const model of ['claude-haiku-5-5', 'claude-opus-5-5', 'claude-sonnet-4-6', 'claude-opus-4-5-20251101', 'claude-fable-5-1']) {
+    assert.equal(acceptsEffort(model), true, `${model} takes an effort`);
+  }
+});
+
+test('an effort on a model without a ladder is dropped, never sent (no 400)', async () => {
+  const captured: Captured = {};
+  const provider = createAnthropicProvider({ client: mockClient(captured, textResponse()) });
+  await provider.complete({
+    model: 'claude-haiku-4-5-20251001',
+    maxTokens: 64,
+    effort: 'low',
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+  });
+  assert.equal((captured.params as Record<string, unknown>)['output_config'], undefined);
+
+  const kept: Captured = {};
+  await createAnthropicProvider({ client: mockClient(kept, textResponse()) }).complete({
+    model: 'claude-haiku-5-5',
+    maxTokens: 64,
+    effort: 'low',
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
+  });
+  assert.deepEqual((kept.params as Record<string, unknown>)['output_config'], { effort: 'low' });
 });

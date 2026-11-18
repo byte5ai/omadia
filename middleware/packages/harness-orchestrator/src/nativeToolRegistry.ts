@@ -61,6 +61,13 @@ export interface NativeToolRegistration {
    */
   readonly agentId?: string;
   /**
+   * #1598 — the ONE orchestrator (its `agentId`/slug) this tool belongs to,
+   * for tools an orchestrator registers for itself in this kernel-wide
+   * registry (deferred sub-agent tools). Every other orchestrator neither
+   * sees nor runs it. Absent = not orchestrator-owned.
+   */
+  readonly orchestratorScope?: string;
+  /**
    * Slice 2.5 — closure that reads the originating plugin's runtime
    * config, scoped to the plugin's own ConfigAccessor chain (same one
    * the plugin sees via `ctx.config.get(key)`). Used by the orchestrator
@@ -86,6 +93,44 @@ export interface NativeToolRegistration {
    * mutates data MUST declare this or it forfeits duplicate-write protection.
    */
   readonly writeCapabilities?: readonly WriteCapability[];
+  /**
+   * #1346 — per-turn availability (`ToolRegistrationOptions.isAvailable`).
+   * Read through {@link isOfferedThisTurn}, never directly. Absent ⇒ offered.
+   */
+  readonly isAvailable?: () => boolean;
+}
+
+/** Predicates that already threw once — warned about once, not per round. */
+const warnedPredicates = new WeakSet<() => boolean>();
+
+/**
+ * #1346 — should this registration be ADVERTISED on the current turn?
+ *
+ * Gates the tool list and the prompt docs, never dispatch. Must be called
+ * inside the turn scope so the predicate can read per-turn state. A predicate
+ * that throws hides the tool: offering a tool whose availability could not
+ * be established is exactly the failed round-trip this gate exists to avoid.
+ * It is not silent, though: the first throw per predicate is logged, so a
+ * plugin whose tool vanished from every turn leaves a trace.
+ */
+export function isOfferedThisTurn(
+  entry: Pick<NativeToolRegistration, 'isAvailable'> & { readonly name?: string },
+): boolean {
+  const predicate = entry.isAvailable;
+  if (!predicate) return true;
+  try {
+    return predicate();
+  } catch (err) {
+    if (!warnedPredicates.has(predicate)) {
+      warnedPredicates.add(predicate);
+      console.warn(
+        `[native-tools] isAvailable for '${entry.name ?? '<unnamed>'}' threw — tool hidden: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+    return false;
+  }
 }
 
 export interface NativeToolRegistrationOptions {
@@ -99,11 +144,15 @@ export interface NativeToolRegistrationOptions {
   /** Slice 2.5 — see `NativeToolRegistration.agentId`. Set by
    *  `ToolsAccessor.register` from the activating plugin's context. */
   agentId?: string;
+  /** #1598 — see `NativeToolRegistration.orchestratorScope`. */
+  orchestratorScope?: string;
   /** Slice 2.5 — see `NativeToolRegistration.readConfig`. Set by
    *  `ToolsAccessor.register` as `(k) => config.get(k)`. */
   readConfig?: (key: string) => unknown | undefined;
   /** #542 — see `NativeToolRegistration.writeCapabilities`. */
   writeCapabilities?: readonly WriteCapability[];
+  /** #1346 — see `NativeToolRegistration.isAvailable`. */
+  isAvailable?: () => boolean;
 }
 
 /**
@@ -128,6 +177,9 @@ export interface NativeToolHandlerRegistrationOptions {
    *  path too: a handler-only registration is dispatchable by name, so it needs
    *  the same duplicate-write protection as a `register()`-contributed tool. */
   writeCapabilities?: readonly WriteCapability[];
+  /** #1346 — see `NativeToolRegistration.isAvailable`. Gates the promptDoc
+   *  on this path (there is no spec to hide). */
+  isAvailable?: () => boolean;
 }
 
 export class NativeToolRegistry {
@@ -164,11 +216,17 @@ export class NativeToolRegistry {
             : {}),
           ...(options.domain !== undefined ? { domain: options.domain } : {}),
           ...(options.agentId !== undefined ? { agentId: options.agentId } : {}),
+          ...(options.orchestratorScope !== undefined
+            ? { orchestratorScope: options.orchestratorScope }
+            : {}),
           ...(options.readConfig !== undefined
             ? { readConfig: options.readConfig }
             : {}),
           ...(options.writeCapabilities !== undefined
             ? { writeCapabilities: options.writeCapabilities }
+            : {}),
+          ...(options.isAvailable !== undefined
+            ? { isAvailable: options.isAvailable }
             : {}),
         }
       : { name };
@@ -211,6 +269,9 @@ export class NativeToolRegistry {
       ...(options.agentId !== undefined ? { agentId: options.agentId } : {}),
       ...(options.writeCapabilities !== undefined
         ? { writeCapabilities: options.writeCapabilities }
+        : {}),
+      ...(options.isAvailable !== undefined
+        ? { isAvailable: options.isAvailable }
         : {}),
     };
     this.entries.set(name, entry);

@@ -16,6 +16,8 @@ import type { Pool } from 'pg';
 import type { KnowledgeGraph } from '@omadia/plugin-api';
 import type { EmbeddingClient } from '@omadia/embeddings';
 
+import { isUnprotectedNote, stripUnprotectedNoteMarker } from './noteProvenance.js';
+
 /** Model-facing prefix for the shared, repo-curated rules namespace. */
 export const DURABLE_RULES_PREFIX = '/memories/_rules/';
 const SOURCE_MARKER = 'source-memory-path: ';
@@ -39,6 +41,9 @@ export interface PromoteRuleInput {
    *  immediately reachable by searchMemorableKnowledgeByEmbedding. */
   embeddingClient?: EmbeddingClient;
   log?: (msg: string) => void;
+  /** #1536 — the write came from a turn without a shield, or with a bypassed
+   *  tool: stamp the MK so recall under a shield skips it. */
+  unprotected?: boolean;
 }
 
 export interface PromoteRuleResult {
@@ -52,7 +57,10 @@ export async function promoteRuleFileToDurable(
   const log = input.log ?? ((): void => {});
   try {
     if (!isDurableRulePath(input.virtualPath)) return { action: 'skipped' };
-    const trimmed = input.content.trim();
+    // #1540 — a rule file read from the raw store (the backfill script) may
+    // carry the unprotected-note marker: drop the line, keep the provenance.
+    const unprotected = input.unprotected === true || isUnprotectedNote(input.content);
+    const trimmed = stripUnprotectedNoteMarker(input.content).trim();
     if (trimmed.length === 0) return { action: 'skipped' };
 
     // Idempotency (create-only): already promoted? matched on the source marker.
@@ -86,6 +94,7 @@ export async function promoteRuleFileToDurable(
       involvedOmadiaUserIds: [],
       aclOwners: [], // team-visible curated rule (no per-user ownership)
       visibility: 'team',
+      ...(unprotected ? { unprotected: true } : {}),
     });
     const mkId = result.memorableKnowledgeNodeId;
 

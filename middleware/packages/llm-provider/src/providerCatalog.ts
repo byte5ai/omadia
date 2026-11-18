@@ -34,6 +34,33 @@ export class LlmProviderCatalog {
     string,
     { desc: LlmProviderDescriptor; disposeModels: () => void }
   >();
+  /** The BASE layer: bundled descriptors a plugin-contributed provider may
+   *  shadow but never destroy (#1451). Written only by {@link registerBase}. */
+  private readonly bundled = new Map<string, LlmProviderDescriptor>();
+
+  /**
+   * Register a BUNDLED provider: same effect as {@link register}, plus the
+   * descriptor is remembered as the base layer for its id.
+   *
+   * A plugin may contribute a provider under a built-in id (the Hub's
+   * `@omadia/plugin-llm-anthropic` ships `id: anthropic`) and legitimately
+   * replaces the bundled entry while installed. Before #1451 its UNINSTALL
+   * left the id with no entry at all until the next restart, which took the
+   * built-in provider down with it: no Anthropic model in the registry, every
+   * `class:*` ref unresolvable, and the orchestrator publishing `class:balanced`
+   * as its model — an opaque vendor 404 on every turn. Remembering the bundled
+   * descriptor here is what lets {@link unregister} put it back.
+   */
+  registerBase(desc: LlmProviderDescriptor): void {
+    this.register(desc);
+    this.bundled.set(desc.id, desc);
+  }
+
+  /** True when `id` names a BUNDLED provider — i.e. a plugin registering under
+   *  it shadows a built-in rather than contributing a new provider (#1451). */
+  isBundled(id: string): boolean {
+    return this.bundled.has(id);
+  }
 
   /** Register (or idempotently replace) a provider and its models. Throws if the
    *  models violate a registry invariant (collision with core/other ids etc.).
@@ -67,15 +94,23 @@ export class LlmProviderCatalog {
     return [...this.entries.values()].map((e) => e.desc);
   }
 
+  /** Drop a provider and its models. When the id names a BUNDLED provider the
+   *  base-layer descriptor is registered again instead of leaving the id empty
+   *  (#1451) — unregistering a plugin that shadowed a built-in restores the
+   *  built-in. Throws only if re-registering the bundled models violates a
+   *  registry invariant, which cannot happen for the models just disposed. */
   unregister(id: string): void {
     const e = this.entries.get(id);
     if (e === undefined) return;
     e.disposeModels();
     this.entries.delete(id);
+    const base = this.bundled.get(id);
+    if (base !== undefined) this.register(base);
   }
 
   clear(): void {
     for (const e of this.entries.values()) e.disposeModels();
     this.entries.clear();
+    this.bundled.clear();
   }
 }

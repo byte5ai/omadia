@@ -50,7 +50,32 @@ export interface ToolResultPart {
   readonly isError?: boolean;
 }
 
-export type ContentPart = TextPart | ImagePart | ToolCallPart | ToolResultPart;
+/**
+ * Opaque provider reasoning block (Anthropic `thinking` / `redacted_thinking`)
+ * from an assistant response.
+ *
+ * It has NO neutral meaning and is deliberately not readable: the producing
+ * adapter echoes `raw` back verbatim on later requests of the same turn, and
+ * every other adapter drops it. Never edit, split or reorder it — on
+ * always-thinking models the block carries a signature bound to the model AND
+ * to the conversation prefix that produced it, so a rewritten block is a hard
+ * 400 rather than a degraded answer.
+ */
+export interface ReasoningPart {
+  readonly type: 'reasoning';
+  /** Adapter id that produced the block (`'anthropic'`). Lets an adapter
+   *  filter out a foreign provider's reasoning instead of forwarding a block
+   *  its vendor cannot read. */
+  readonly provider: ProviderId;
+  readonly raw: unknown;
+}
+
+export type ContentPart =
+  | TextPart
+  | ImagePart
+  | ToolCallPart
+  | ToolResultPart
+  | ReasoningPart;
 
 export interface ChatMessage {
   readonly role: 'user' | 'assistant';
@@ -75,6 +100,15 @@ export interface ToolSpec {
    *  tool (OpenAI, Mistral) MUST skip it rather than send a malformed custom
    *  function. */
   readonly serverType?: string;
+  /** Ask the provider to guarantee that every call's input validates
+   *  against `inputSchema` (constrained decoding — Anthropic `strict: true`).
+   *  The schema must then be strict-clean: `additionalProperties: false` on
+   *  every object, no numeric or string-length constraints. An adapter that
+   *  cannot honor per-tool strictness — or a model it knows does not —
+   *  leaves the flag out of the request; the call is then unconstrained,
+   *  exactly as without it. (A field the endpoint does not know would be a
+   *  400, so adapters drop it rather than pass it through.) */
+  readonly strict?: boolean;
 }
 
 export type ToolChoice =
@@ -101,6 +135,12 @@ export interface CacheHints {
   /** Cache everything up to and including the tool specs (Anthropic:
    *  `cache_control` on the last tool — stable across loop iterations). */
   readonly tools?: boolean;
+  /** Lifetime of EVERY cache breakpoint in the request; absent = the
+   *  provider's default (Anthropic: 5 minutes). `'1h'` keeps a stable prefix
+   *  warm across the 5–60 minute gaps between a user's turns (Anthropic
+   *  `ttl: "1h"`, writes at 2× instead of 1.25×). One value per request:
+   *  Anthropic requires longer-lived entries before shorter ones. */
+  readonly ttl?: '1h';
 }
 
 /** One block of a structured system prompt. The structured form exists so a
@@ -148,6 +188,39 @@ export interface LlmRequest {
    * declared per model (`ModelInfo.effortLevels`), not guessed here.
    */
   readonly effort?: EffortLevel;
+  /**
+   * `'off'` asks for no extended reasoning on a latency-critical call. A
+   * best-effort HINT: an adapter switches thinking off only on models that
+   * accept it (Anthropic: `thinking: {type:'disabled'}` where the model takes
+   * it at the requested effort) and otherwise IGNORES it — never errors — so
+   * pair it with a low {@link LlmRequest.effort}, the lever every model has.
+   */
+  readonly thinking?: 'off';
+  /**
+   * Schema-constrained response (#1219). The adapter maps it to its vendor's
+   * structured-output channel (Anthropic `output_config.format`); adapters and
+   * endpoints without the concept IGNORE it — never error — with a one-time
+   * warning, exactly like {@link LlmRequest.effort}. A caller therefore still
+   * has to parse the response tolerantly: this narrows the output, it does not
+   * guarantee it on every provider.
+   *
+   * NOT to be confused with Anthropic's deprecated top-level `output_format`
+   * parameter; the adapter emits the current `output_config.format` shape.
+   */
+  readonly outputFormat?: OutputFormat;
+}
+
+/**
+ * A JSON-Schema-constrained response shape.
+ *
+ * `schema` is a JSON Schema object, passed through to the vendor untouched —
+ * the contract deliberately does not model JSON Schema itself. Vendors reject
+ * schemas they cannot compile (Anthropic wants `additionalProperties: false`
+ * and an explicit `required`), so the schema is the caller's responsibility.
+ */
+export interface OutputFormat {
+  readonly type: 'json_schema';
+  readonly schema: Record<string, unknown>;
 }
 
 /**
@@ -163,6 +236,21 @@ export type EffortLevel = (typeof EFFORT_LEVELS)[number];
  *  nuances collapse into `stop`; the raw vendor value survives in
  *  `LlmResponse.providerFinishReason` for callers that need it. */
 export type FinishReason = 'stop' | 'tool_calls' | 'max_tokens';
+
+/**
+ * Why a safety classifier declined the turn (#1219), when one did.
+ *
+ * Present on {@link LlmResponse.refusal} only for an actual refusal — a vendor
+ * that reports refusal details for nothing else, which is why this is a
+ * separate optional object rather than a field that is usually null. The
+ * category vocabulary is an OPEN set owned by the vendor (`bio`, `cyber`,
+ * `reasoning_extraction`, … and absent on older declines), so never switch on
+ * it exhaustively: treat an unknown category as a refusal like any other.
+ */
+export interface RefusalDetails {
+  readonly category?: string;
+  readonly explanation?: string;
+}
 
 export interface LlmUsage {
   readonly inputTokens: number;
@@ -182,6 +270,14 @@ export interface LlmResponse {
   /** The model id the vendor reports having served. */
   readonly model: string;
   readonly usage: LlmUsage;
+  /**
+   * Set when a safety classifier declined this turn (#1219) — i.e. when
+   * `providerFinishReason` is `'refusal'`. The turn came back HTTP 200 with no
+   * text or only a fragment, so a caller that treats it as a normal stop shows
+   * an empty answer that reads like a platform bug. Absent on every other
+   * outcome; check it before deciding a blank answer is a failure.
+   */
+  readonly refusal?: RefusalDetails;
 }
 
 /**
@@ -232,6 +328,14 @@ export interface ProviderCapabilities {
   readonly promptCaching: boolean;
   /** Supports `toolChoice: { type: 'required' | 'tool' }`. */
   readonly forcedToolChoice: boolean;
+  /**
+   * #1211 — `true` = the provider honours `toolChoice: { type: 'none' }`
+   * (`tool_choice` on the wire); unset or `false` = it may not, and the
+   * orchestrator's finalize pass, which must end the turn in text, sends no
+   * tools. Opt-in: an OpenAI-compatible server may accept the field and ignore
+   * it, and the OpenAI adapter reports `false` under its `dropToolChoice`
+   * quirk, which strips the field before the wire. */
+  readonly toolChoiceNone?: boolean;
   readonly parallelToolCalls: boolean;
   /** Whether the model emits assistant text AND tool calls in the SAME
    *  message (Anthropic) versus one-or-the-other per completion (the OpenAI
@@ -246,9 +350,14 @@ export interface ProviderCapabilities {
   readonly interleavedToolUse?: boolean;
 }
 
+/** Provider id — matches the `LlmProvider.id` of the adapter that serves it.
+ *  Open by design: a manifest may contribute an id this contract never saw,
+ *  so the named members document the built-ins rather than closing the set. */
+export type ProviderId = 'anthropic' | 'openai' | 'openai-compatible' | string;
+
 export interface LlmProvider {
   /** Stable adapter id: `anthropic`, `openai`, `openai-compatible`, … */
-  readonly id: string;
+  readonly id: ProviderId;
   readonly capabilities: ProviderCapabilities;
   complete(req: LlmRequest): Promise<LlmResponse>;
   /** Streaming completion. Yields `text_delta` events as text arrives and

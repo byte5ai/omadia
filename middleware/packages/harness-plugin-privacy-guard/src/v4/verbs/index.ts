@@ -23,7 +23,8 @@ import {
   type SortDirection,
   type VerbResult,
 } from '../types.js';
-import { VerbError, evaluatePredicate, validatePredicate } from './predicate.js';
+import { NO_SCOPE, type FieldSource } from '../../nonPersonalFields.js';
+import { VerbError, evaluatePredicate, isLinkKeyField, labelOf, validatePredicate } from './predicate.js';
 
 export { VerbError } from './predicate.js';
 
@@ -74,8 +75,17 @@ export interface VerbEngine {
 
 // --- pure helpers ----------------------------------------------------------
 
+/** #1556 — a field an operator rule cleared as a `label`. */
+function isClearedLabel(fc: FieldClassification): boolean {
+  return fc.type === 'label' && fc.classification === 'safe-cleartext';
+}
+
 /** Three-way compare; nulls sort last. */
-function compareUnknown(a: unknown, b: unknown): number {
+function compareUnknown(rawA: unknown, rawB: unknown, byLabel = false): number {
+  // #1556 — a many2one pair of a cleared `label` field sorts by its label;
+  // any other field as before (a masked pair must not order rows by name).
+  const a = byLabel ? labelOf(rawA) : rawA;
+  const b = byLabel ? labelOf(rawB) : rawB;
   if (typeof a === 'number' && typeof b === 'number') return a - b;
   if (typeof a === 'boolean' && typeof b === 'boolean') {
     return a === b ? 0 : a ? 1 : -1;
@@ -191,17 +201,61 @@ export function createVerbEngine(deps: VerbEngineDeps): VerbEngine {
     }
   }
 
-  function derive(source: Dataset, verb: string, rows: DatasetRow[]): VerbResult {
+  /** #1556 — the union of the sources (tool + scope) `inputs` hold,
+   *  deduplicated. A dataset without `sources` counts as its own tool with
+   *  no scope (`-`). */
+  function sourcesOf(inputs: readonly Dataset[]): readonly FieldSource[] {
+    const byKey = new Map<string, FieldSource>();
+    for (const d of inputs) {
+      for (const source of d.provenance.sources ?? [{ tool: d.provenance.toolName, scope: NO_SCOPE }]) {
+        byKey.set(`${source.tool}\u0000${source.scope}`, source);
+      }
+    }
+    return [...byKey.values()];
+  }
+
+  function derive(
+    source: Dataset,
+    verb: string,
+    rows: DatasetRow[],
+    verbArgs: Readonly<Record<string, unknown>> = {},
+    /** Further inputs whose rows the result mixes in (join, union). */
+    others: readonly Dataset[] = [],
+    /** Paths whose values were renamed into place (union `renameRight`). */
+    renamedTargets: ReadonlySet<string> = new Set(),
+  ): VerbResult {
+    const inputs = [source, ...others];
+    const sources = sourcesOf(inputs);
+    // #1556 — a derived field may stay a label only where every input that
+    // has the path had it as a label, and no rename put values there.
+    const labelPaths = new Set(
+      inputs
+        .flatMap((d) =>
+          d.schema.fields
+            .filter((f) => f.type === 'label' && f.classification === 'safe-cleartext')
+            .map((f) => f.path),
+        )
+        .filter(
+          (path) =>
+            !renamedTargets.has(path) &&
+            inputs.every((d) => {
+              const f = d.schema.fields.find((x) => x.path === path);
+              return f === undefined || (f.type === 'label' && f.classification === 'safe-cleartext');
+            }),
+        ),
+    );
     return deps.store.put({
       datasetId: `ds_${randomUUID()}`,
       rows,
-      schema: deps.classify(rows, 'rows'),
+      schema: deps.classify(rows, 'rows', { sources, labelPaths }),
       provenance: {
         toolName: verb,
+        sources,
         turnId: source.provenance.turnId,
         derivedFrom: source.datasetId,
         truncated: false,
         createdAt: new Date().toISOString(),
+        verbArgs,
       },
     });
   }
@@ -214,17 +268,18 @@ export function createVerbEngine(deps: VerbEngineDeps): VerbEngine {
         ds,
         'filter',
         ds.rows.filter((r) => evaluatePredicate(predicate, r)),
+        { predicate },
       );
     },
 
     sort(input, by, direction = 'asc'): VerbResult {
       const ds = resolve(input);
-      field(ds.schema, by);
+      const byLabel = isClearedLabel(field(ds.schema, by));
       const mul = direction === 'desc' ? -1 : 1;
       const rows = [...ds.rows].sort(
-        (a, b) => compareUnknown(a[by], b[by]) * mul,
+        (a, b) => compareUnknown(a[by], b[by], byLabel) * mul,
       );
-      return derive(ds, 'sort', rows);
+      return derive(ds, 'sort', rows, { by, direction });
     },
 
     topN(input, n, by, direction = 'desc'): VerbResult {
@@ -234,12 +289,12 @@ export function createVerbEngine(deps: VerbEngineDeps): VerbEngine {
         );
       }
       const ds = resolve(input);
-      field(ds.schema, by);
+      const byLabel = isClearedLabel(field(ds.schema, by));
       const mul = direction === 'desc' ? -1 : 1;
       const rows = [...ds.rows]
-        .sort((a, b) => compareUnknown(a[by], b[by]) * mul)
+        .sort((a, b) => compareUnknown(a[by], b[by], byLabel) * mul)
         .slice(0, n);
-      return derive(ds, 'top_n', rows);
+      return derive(ds, 'top_n', rows, { n, by, direction });
     },
 
     group(input, by): VerbResult {
@@ -254,7 +309,7 @@ export function createVerbEngine(deps: VerbEngineDeps): VerbEngine {
           rows.push(pick(r, by));
         }
       }
-      return derive(ds, 'group', rows);
+      return derive(ds, 'group', rows, { by });
     },
 
     aggregate(input, params): VerbResult {
@@ -289,7 +344,7 @@ export function createVerbEngine(deps: VerbEngineDeps): VerbEngine {
         for (const op of params.ops) out[op.alias] = applyAggregate(op, g.rows);
         rows.push(out);
       }
-      return derive(ds, 'aggregate', rows);
+      return derive(ds, 'aggregate', rows, { params });
     },
 
     select(input, columns): VerbResult {
@@ -299,6 +354,7 @@ export function createVerbEngine(deps: VerbEngineDeps): VerbEngine {
         ds,
         'select',
         ds.rows.map((r) => pick(r, columns)),
+        { columns },
       );
     },
 
@@ -325,7 +381,7 @@ export function createVerbEngine(deps: VerbEngineDeps): VerbEngine {
         if (matches === undefined) continue;
         for (const r of matches) rows.push({ ...r, ...l });
       }
-      return derive(leftDs, 'join', rows);
+      return derive(leftDs, 'join', rows, { on }, [rightDs]);
     },
 
     union(left, right, opts = {}): VerbResult {
@@ -348,6 +404,13 @@ export function createVerbEngine(deps: VerbEngineDeps): VerbEngine {
         if (targets.has(to)) {
           throw new VerbError(`union renameRight: two fields renamed to "${to}"`);
         }
+        // #1560 security review — a link key stays a link key: renamed to a
+        // plain name it would no longer be refused as a filter target.
+        if (isLinkKeyField(from) && !isLinkKeyField(to)) {
+          throw new VerbError(
+            `union renameRight: link-key field "${from}" can only be renamed to another __k_ field`,
+          );
+        }
         if (rightPaths.has(to) && rename[to] === undefined) {
           throw new VerbError(
             `union renameRight: target "${to}" collides with an existing right field`,
@@ -359,7 +422,14 @@ export function createVerbEngine(deps: VerbEngineDeps): VerbEngine {
         ...leftDs.rows,
         ...rightDs.rows.map((r) => renameRow(r, rename)),
       ];
-      return derive(leftDs, 'union', rows);
+      return derive(
+        leftDs,
+        'union',
+        rows,
+        { multiSource: true },
+        [rightDs],
+        new Set(Object.values(rename)),
+      );
     },
 
     distinct(input, by, keep = 'first'): VerbResult {
@@ -383,7 +453,7 @@ export function createVerbEngine(deps: VerbEngineDeps): VerbEngine {
         seen.add(key);
         kept.push(r);
       }
-      return derive(ds, 'distinct', keep === 'last' ? kept.reverse() : kept);
+      return derive(ds, 'distinct', keep === 'last' ? kept.reverse() : kept, { by, keep });
     },
   };
 }

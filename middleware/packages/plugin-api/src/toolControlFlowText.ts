@@ -19,7 +19,9 @@
  * cannot self-correct (the whole point of the `Error:` convention), cannot
  * relay the connect prompt, and — because a 1×1 masked dataset is renderable —
  * a later `v4_render_answer` materializes the error as if it were data. That
- * is #1097; every dispatch seam consults this predicate before interning.
+ * is #1097. The dispatch seams decide with `isGuardedControlFlowResult`
+ * (`@omadia/orchestrator`): the `Error:` carrier by its prefix, the connect
+ * prompt only by provenance (see below).
  *
  * The predicate is deliberately NOT content sniffing: a match anywhere inside
  * a result (`includes('<mcp-auth-required')`) or a bare `🔒` would let one
@@ -27,24 +29,31 @@
  * whole multi-row result. Every real producer starts with the full prefix
  * below, so nothing needs more than that.
  *
- * Not every `Error:` string is sanitized text. Many are (`requires \`scope\``),
- * but some producers wrap a caught exception's message in the convention —
- * `bridgeTool` in `src/plugins/dynamicAgentRuntime.ts` returns
- * `Error: ${err.message}` for any plugin exception, and an ORM or driver
- * message can echo the failing row. On the sub-agent path that text now
- * reaches the sub-agent's model raw. That is a deliberate match with the chat
- * path's policy (see `chatPathToolErrorText.test.ts`, which forwards thrown
- * exception text verbatim on the same provider wire), not a claim that the
- * text carries no PII. Where a caller is untrusted —
- * `ToolDispatchService.maskErrorText` on the public path — a thrown message
- * stays masked even when it happens to start with `Error:`.
+ * Not interning a control-flow result is not the same as trusting it. Many
+ * `Error:` strings are sanitized hints (`requires \`scope\``), but a wrapper
+ * that returns `Error: ${err.message}` hands over whatever the failing ORM or
+ * driver echoed, and an `Error:` string from an MCP tool is the REMOTE
+ * server's own body with the prefix applied by `renderToolResult`. So every
+ * seam that consults this predicate routes the `Error:` carrier through the
+ * shield's free-text detectors before the model reads it
+ * (`guardControlFlowResult` in `@omadia/orchestrator`; exception-shaped text —
+ * a JSON row echo, a stack trace — is withheld whole), a message a handler
+ * THREW is withheld from the model (`toolErrorNotice.ts`), and each handled
+ * error writes a `toolErrors` entry into the turn's privacy receipt. That
+ * holds under a privacy handle for a tool that is neither intern-exempt nor
+ * bypassed (a thrown message is withheld under bypass too); the kernel's
+ * intern-exempt tools hand both carriers to the model as they are.
+ * The in-tree wrappers that caught exceptions return the withheld notice via
+ * `toolErrorFromException` and keep only messages they author themselves;
+ * any producer that still returns exception text relies on the seam.
  *
- * Known limits, tracked on #1097: an `Error:` string from an MCP tool is the
- * REMOTE server's own body with the prefix applied by `renderToolResult`, so
- * the passthrough trusts foreign error text (the trade-off taken on the chat
- * path in #1105), and remote text that starts with the auth-prompt prefix
- * passes the same way. A passed-through result writes no privacy-receipt
- * entry. A typed control-flow result set by the producer is the durable fix.
+ * The auth-prompt carrier passes byte-identical — its connect URL and
+ * `<mcp-auth-required>` block must survive — and is receipted as well, but
+ * only on provenance: a seam passes it when `McpManager` produced that exact
+ * text in the same dispatch (`McpAuthPromptMint`, `@omadia/orchestrator`). The
+ * prefix proves nothing on its own, since a remote server can write it at the
+ * start of a text block; such text is interned like any tool result. So this
+ * predicate classifies a shape, it grants no exemption.
  */
 
 /** The orchestrator's tool-error convention prefix. */
@@ -60,10 +69,10 @@ export const TOOL_ERROR_PREFIX = 'Error:';
 export const MCP_AUTH_PROMPT_PREFIX = '🔒 The MCP server "';
 
 /**
- * True when a tool result is control flow rather than data, and must therefore
- * reach the model verbatim instead of being interned behind the Privacy
- * Shield's data-plane boundary. Prefix-anchored on purpose — see the module
- * comment.
+ * True when a tool result has the shape of control flow rather than data.
+ * Prefix-anchored on purpose — see the module comment. Not an exemption by
+ * itself: a seam passes the connect prompt only when it was produced in the
+ * same dispatch (`isGuardedControlFlowResult` in `@omadia/orchestrator`).
  */
 export function isControlFlowToolResult(result: string): boolean {
   return (

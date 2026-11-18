@@ -19,6 +19,18 @@ export type ISO8601 = string;
 export type EntityURI = string;
 export type AgentId = string;
 
+/**
+ * One option of a `type: 'enum'` setup field. `label` is the option's text
+ * resolved to English (unchanged for older clients); `label_localized`
+ * (#1401) is the manifest's `{ <locale>: text }` map, present when the
+ * manifest wrote one, for clients that pick the operator's locale.
+ */
+export interface SetupEnumOption {
+  value: string;
+  label: string;
+  label_localized?: LocalizedMarkdown;
+}
+
 export interface ApiError {
   code: string;
   message: string;
@@ -105,12 +117,14 @@ export interface PluginSetupField {
   expect?: Record<string, unknown>;
   /** Manifest default. Forwarded so the post-install editor can pre-select
    *  the default option in an `enum` dropdown when no value is stored yet.
-   *  A `string[]` for `type === 'host_list'`, a `string` otherwise. */
-  default?: string | string[];
+   *  A `string[]` for `type === 'host_list'`, a `boolean` for
+   *  `type === 'boolean'` (#1464 — `"true"` normalized), a `number` for
+   *  `type === 'integer'` (#1524), a `string` otherwise. */
+  default?: string | string[] | boolean | number;
   /** Allowed values for `type === 'enum'`. Mirrors the install-wizard
    *  schema so the post-install editor can render a `<select>` instead of
    *  a free-text input. */
-  enum?: Array<{ value: string; label: string }>;
+  enum?: SetupEnumOption[];
   /** Spec 005 — for `type === 'oauth'` fields: the `oauth_providers`
    *  descriptor id this field connects through. The kernel broker resolves
    *  the descriptor (+ this field's `scopes`) at flow time. */
@@ -126,6 +140,9 @@ export interface PluginSetupField {
   /** When true, this field holds MULTIPLE selected values (stored as a
    *  JSON-encoded `string[]`). Only meaningful alongside `options_provider`. */
   multi?: boolean;
+  /** #1525 — `string` / `secret` only: the value takes line breaks (one entry
+   *  per line), so the editor renders a textarea. */
+  multiline?: boolean;
   /**
    * OM-16 — whether the operator MUST supply a value for this field before the
    * plugin can serve a request. Required-by-default: a manifest field that
@@ -445,6 +462,15 @@ export interface PluginActionStatus {
  * readiness is computed by the kernel and therefore also covers the majority
  * of plugins that never report status at all.
  *
+ * `connection_failed` (#1453) is its own state for the same reason: the plugin
+ * activated, its fields are all filled, and the target system still refuses the
+ * credentials. "Configuration required" would send the operator to a form with
+ * nothing missing in it, and `errored` would claim the plugin never came up.
+ * It is derived from the plugin's pushed `ctx.status` — the probe's `rejected`
+ * verdict (`plugins/connectionProbe.ts`) or any `error` the plugin reports
+ * itself, the same signal that closes the tool gate (#474) — which is why it is
+ * the one readiness state that is not computed from registry + vault alone.
+ *
  * `awaiting_llm` (#884) is deliberately NOT folded into `config_required`. The
  * plugin's own manifest-required fields are all satisfied; what is missing is a
  * VERIFIED credential on the LLM provider it was assigned, and that lives on a
@@ -455,6 +481,7 @@ export interface PluginActionStatus {
 export type PluginReadinessState =
   | 'not_installed'
   | 'config_required'
+  | 'connection_failed'
   | 'awaiting_llm'
   | 'ready'
   | 'errored';
@@ -464,12 +491,25 @@ export interface PluginReadiness {
   /** Keys of required setup fields with no stored value. Empty unless
    *  `state === 'config_required'`. */
   missing_fields: string[];
-  /** ISO8601 of the moment readiness was last observed as `ready`, i.e. the
-   *  plugin's last successful activation (falls back to `installed_at`).
-   *  `null` for every non-ready state. */
+  /**
+   * ISO8601 of the plugin's last successful ACTIVATION (falls back to
+   * `installed_at`). `null` for every non-ready state.
+   *
+   * #1453 — the name is older than what the field can honestly carry, and it
+   * is kept because 20+ consumers read it: nothing here ever contacted the
+   * plugin's target system, so this is not evidence that any credential works.
+   * The admin UI renders it as "Active · since <time>" for exactly that
+   * reason. A connection that was actually CHECKED reports itself through
+   * `action_status` (`PluginActionStatus.checked_at`), written by the kernel's
+   * connection probe (`plugins/connectionProbe.ts`) from the plugin's own
+   * `verifyConnection` export.
+   */
   verified_at: string | null;
   /** Tail of the last activation error. Only for `state === 'errored'`. */
   error_detail?: string;
+  /** #1456 — classified reason, only for `state === 'errored'`. `unknown` for
+   *  an entry recorded before codes existed. */
+  error_code?: ActivationErrorCode;
 }
 
 /**
@@ -547,12 +587,34 @@ export interface Plugin {
    * catalog's own `PluginOrigin` (whether the package ships in the image).
    */
   install_origin?: PluginInstallOrigin;
+  /**
+   * #1481 — present only for a package that ships inside the middleware image.
+   * `persistent`: an uninstall sticks across restarts (the boot no longer
+   * re-seeds it). `reinstalled_at_boot`: a provider the boot selects from the
+   * environment (orchestrator, memory, knowledge graph, embeddings) — the next
+   * restart installs it again, with default settings, if this host needs it.
+   * Absent for uploaded/Hub packages, which an uninstall simply removes.
+   */
+  built_in_uninstall?: 'persistent' | 'reinstalled_at_boot';
   incompatibility_reasons?: string[];
-  /** Present only for entries sourced from a remote registry that are not yet
-   *  downloaded/ingested locally. Its presence is what tells the install flow
-   *  to fetch-then-ingest (POST /api/v1/install/registry/:id) before the
-   *  normal install-job. Structurally mirrors `RegistrySource` in
-   *  `api/registry-v1.ts`. */
+  /** Present when the bytes are (or would be) a remote registry's artifact:
+   *
+   *  - a hub-only entry (not ingested yet): the latest version's coordinates.
+   *    On the detail response this is what tells the install flow to
+   *    fetch-then-ingest (POST /api/v1/install/registry/:id) before the normal
+   *    install-job.
+   *  - a local package downloaded from that registry (`uploaded_by:
+   *    'registry:<name>'`): the downloaded version's coordinates and the
+   *    checksum recorded at ingest. List only: the detail response tags
+   *    installed plugins this way, but leaves it off a downloaded package that
+   *    is not installed yet, so its install uses the bytes already on disk
+   *    instead of fetching them again.
+   *
+   *  Absent on operator uploads and built-ins, even when the hub lists the
+   *  same id (#1459) — and an update offer (`update-available`) does not
+   *  need it. The store page puts every installed plugin under "Installed",
+   *  the rest under "Hub" when this is set and "Local" otherwise (#1469).
+   *  Structurally mirrors `RegistrySource` in `api/registry-v1.ts`. */
   source?: {
     registry: string;
     download_url: string;
@@ -562,6 +624,10 @@ export interface Plugin {
    *  configured registry advertises vs the installed one. The `version` field
    *  still reflects what is installed. */
   available_version?: string;
+  /** #1490 — set when the plugin's package sits in the upload store (uploaded
+   *  as a ZIP or fetched from a registry) and the plugin is NOT installed:
+   *  `DELETE /api/v1/install/packages/:id` will remove it. Absent otherwise. */
+  removable_package?: boolean;
   /** Parent plugin identities this one inherits secrets/config from. */
   depends_on: AgentId[];
   /** Background jobs the plugin contributes via its manifest. Always
@@ -741,7 +807,29 @@ export type PluginJobSchedule =
   | { cron: string }
   | { intervalMs: number };
 
-export type StoreListResponse = Page<Plugin>;
+/**
+ * #1482 — the outcome of the last index fetch of one configured registry.
+ * `ok: false` carries the reason the Hub tab and Admin · Registries show.
+ * The store and the admin listing wait for every registry (each bounded by
+ * its deadline), so every configured registry has an entry.
+ */
+export interface RegistrySourceStatus {
+  name: string;
+  ok: boolean;
+  /** When the outcome was fetched (it may be served from the cache). */
+  checked_at: ISO8601;
+  /** Plugins the index advertised. Present when `ok`. */
+  plugin_count?: number;
+  /** Present when not `ok`. `code` is a `registry.*` code. */
+  error?: { code: string; message: string };
+}
+
+export interface StoreListResponse extends Page<Plugin> {
+  /** #1458/#1482 — one entry per configured registry, in configured order.
+   *  Absent when no registry is configured. The list is partial when one of
+   *  them failed: the local and installed plugins are always there. */
+  registries?: RegistrySourceStatus[];
+}
 
 /** Advisory code-scan verdict for an ingested plugin package (issue #453).
  *  Absent when the plugin was never scanned (built-ins, no scanner). */
@@ -833,6 +921,74 @@ export type MissingGrant =
   | { readonly kind: 'public_path'; readonly path: string };
 
 /**
+ * #1456 — WHY an activation failed, as a closed set the UI can translate.
+ *
+ * The registry used to keep only the raw exception message, which is written
+ * for plugin authors ("add 'entityRefBus@<major>' to the manifest's
+ * `requires:` list"), is English in both locales, and cannot say what the
+ * OPERATOR can do. One code per operator action, not per exception class:
+ *
+ *  - `secret_missing` / `config_missing` — a required setup value is not
+ *    stored. Fix: fill it in on the setup form.
+ *  - `capability_not_declared` — the plugin reached for a core service its
+ *    manifest does not declare. A plugin defect the operator cannot fix:
+ *    this version does not fit this server; update, roll back or report.
+ *  - `network_not_permitted` — the plugin may not reach the configured
+ *    address under its declared network permissions.
+ *  - `permission_not_granted` — a declared permission has no operator grant.
+ *  - `dependency_unresolved` — a plugin this one requires is not installed or
+ *    not running.
+ *  - `provider_conflict` — another installed plugin already provides the same
+ *    capability.
+ *  - `target_unreachable` — a host the plugin talks to during activation did
+ *    not answer (DNS, refused, timeout).
+ *  - `unknown` — anything else, AND every registry entry written before this
+ *    field existed. The raw message stays available as the technical detail.
+ *
+ * Classified from the error OBJECT (`err.name`, typed fields, `code`), never
+ * from the message text — see `plugins/activationFailure.ts`.
+ */
+export type ActivationErrorCode =
+  | 'secret_missing'
+  | 'config_missing'
+  | 'capability_not_declared'
+  | 'network_not_permitted'
+  | 'permission_not_granted'
+  | 'dependency_unresolved'
+  | 'provider_conflict'
+  | 'target_unreachable'
+  | 'unknown';
+
+/**
+ * #1497 / #1456 — the one shape every write that (re)activates a plugin
+ * answers with: the install job (`activation_state`), the setup-field writes
+ * (`PATCH …/installed/:id/secrets`, `…/config`, `POST …/secrets/from-json` →
+ * `activation`) and the update/upload ingest routes (`activation`).
+ *
+ * Read back from the registry AFTER the attempt, so it is the same truth
+ * `GET /runtime/installed` and readiness serve — never an inference from the
+ * absence of a throw. Before this, the setup-field PATCH answered only the key
+ * names it stored and the store rendered "✓ Saved" over a plugin that had just
+ * failed to come back up.
+ */
+export interface PluginActivationResult {
+  /** The registry's status for this plugin, read back AFTER the activation
+   *  attempt. This is the #799 truthful status, not an inference from the
+   *  absence of a throw. */
+  state: 'active' | 'inactive' | 'errored';
+  /** `state === 'active'`. Restated so a client need not special-case the
+   *  status vocabulary to answer "did it come up?". */
+  ok: boolean;
+  /** `last_activation_error` from the registry — the raw activation message,
+   *  written for plugin authors. A technical detail, never the headline;
+   *  `null` on success. */
+  error: string | null;
+  /** #1456 — what kind of failure it was, for operator-facing copy. `null` on
+   *  success; `unknown` for a failure recorded without a code. */
+  error_code: ActivationErrorCode | null;
+}
+
+/**
  * #825 — the outcome of the ACTIVATION, reported separately from the outcome of
  * the JOB.
  *
@@ -862,17 +1018,7 @@ export type MissingGrant =
  * the job is still running and on `failed`/`cancelled`, where nothing was
  * installed and there was no activation to report on.
  */
-export interface InstallActivationState {
-  /** The registry's status for this plugin, read back AFTER the activation
-   *  attempt. This is the #799 truthful status, not an inference from the
-   *  absence of a throw. */
-  state: 'active' | 'inactive' | 'errored';
-  /** `state === 'active'`. Restated so a client need not special-case the
-   *  status vocabulary to answer "did it come up?". */
-  ok: boolean;
-  /** `last_activation_error` from the registry — the activation hook's message.
-   *  `null` on success. */
-  error: string | null;
+export interface InstallActivationState extends PluginActivationResult {
   /** Declared-but-not-granted permissions, derived exactly as
    *  `GET /api/v1/admin/runtime/installed/:id/grants` derives its `missing[]`
    *  (literally the same function — `plugins/grantGap.ts`). Non-empty here is
@@ -895,7 +1041,7 @@ export interface InstallSetupField {
   help?: LocalizedMarkdown;
   required: boolean;
   default?: unknown;
-  enum?: Array<{ value: string; label: string }>;
+  enum?: SetupEnumOption[];
   provider?: string;
   scopes?: string[];
   pattern?: string;
@@ -948,12 +1094,30 @@ export interface InstallSetupSchema {
   fields: InstallSetupField[];
 }
 
+/**
+ * #1401 — a stable code for {@link InstallJob.current_step}. `current_step`
+ * is display text in ONE language (the server has no request locale); a
+ * client renders `step_code` from its own catalog in the operator's locale
+ * and falls back to `current_step` for a code it does not know.
+ */
+export type InstallJobStep =
+  | 'awaiting_config'
+  | 'validating'
+  | 'activating'
+  | 'completed'
+  | 'installed_missing_permissions'
+  | 'installed_activation_failed'
+  | 'cancelled'
+  | 'failed';
+
 export interface InstallJob {
   id: string;
   plugin_id: AgentId;
   plugin_version: string;
   state: InstallJobState;
   current_step: string;
+  /** #1401 — see {@link InstallJobStep}. Optional for older servers. */
+  step_code?: InstallJobStep;
   error: ApiError | null;
   setup_schema: InstallSetupSchema | null;
   /** #825 — the activation outcome, set once the install reaches a terminal

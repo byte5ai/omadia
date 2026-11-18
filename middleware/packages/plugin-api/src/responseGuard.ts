@@ -21,10 +21,11 @@ export const RESPONSE_GUARD_CAPABILITY = 'responseGuard@1';
  *  devil's-advocate / no-flattery rules into the prompt. */
 export type SycophancyLevel = 'off' | 'low' | 'medium' | 'high';
 
-/** Boundary preset id. The provider plugin owns the canonical mapping
- *  (id → human-readable rule string). Unknown ids are dropped silently
- *  by the provider — this keeps profile configs forward-compatible when
- *  the preset library grows. */
+/** Boundary preset id. The canonical ids and rule wording are
+ *  `BOUNDARY_PRESETS` (`./boundaryPresets.ts`), shared with the agent
+ *  "Boundaries" tab; a provider MAY accept further ids of its own. Unknown
+ *  ids are dropped from the prompt by the provider — this keeps profile
+ *  configs forward-compatible when the preset library grows. */
 export type BoundaryPresetId = string;
 
 /**

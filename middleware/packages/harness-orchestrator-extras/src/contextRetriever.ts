@@ -16,6 +16,7 @@ import {
   type RecalledPlan,
   type RecalledProcess,
   type TurnSearchHit,
+  isEvidencedPlanStepDone,
 } from '@omadia/plugin-api';
 
 import type {
@@ -162,6 +163,23 @@ export interface ContextBuildInput {
    * {@link AssembleForBudgetInput}.
    */
   sharedRecallOnly?: boolean;
+  /**
+   * Member-scoped memory — see the field of the same name on
+   * {@link AssembleForBudgetInput}. Forwarded to every turn and memory leg.
+   */
+  audienceOwners?: readonly string[];
+  /**
+   * #1507 — the recalling turn runs under a Privacy Shield: leave out turns
+   * stored `unprotected` (answered without a shield, or with a bypassed
+   * tool) from the cross-session turn legs (full-text, embedding, entity).
+   * The same-chat tail keeps them for conversational continuity. #1536 —
+   * likewise the memory, excerpt and durable legs (MK stamped `unprotected`
+   * or derived from such a turn) and the plan leg (a plan of such a turn, or
+   * of no known turn).
+   */
+  excludeUnprotected?: boolean;
+  /** See the field of the same name on {@link AssembleForBudgetInput}. */
+  tailLimit?: number;
   /** External id of the turn currently being answered — excluded from hits. */
   currentTurnId?: string;
   /**
@@ -284,6 +302,24 @@ export interface AssembleForBudgetInput {
    * keeps it.
    */
   sharedRecallOnly?: boolean;
+  /**
+   * Member-scoped memory (`members` context memory) — the room's audience as
+   * canonical user ids. Every turn leg — the tail included — keeps only turns
+   * all of these people own, from any conversation of the agent; curated
+   * memory keeps rows they all own plus operator-authored ones. Plans and
+   * processes carry no owners, so they are skipped. Replaces `userId`
+   * filtering: the caller leaves `userId` out.
+   */
+  audienceOwners?: readonly string[];
+  /** #1507 — see the field of the same name on {@link ContextBuildInput}. */
+  excludeUnprotected?: boolean;
+  /**
+   * Per-call cap on the verbatim session tail: at most this many of the
+   * newest tail turns, and never more than the configured `tailSize`
+   * (`context_tail_size`). Set by the orchestrator for canvas turns, whose
+   * context rides the skeleton. Undefined ⇒ the configured `tailSize`.
+   */
+  tailLimit?: number;
   /** Optional override; otherwise `defaultBudgetTokens` from ContextRetriever-Opts. */
   budget?: { tokens: number };
 }
@@ -334,6 +370,15 @@ export interface AssembledContext {
   /** Final-rendered prose, ≤ budget tokens (best-effort, based on
    *  `chars/charsPerToken`). Empty string when nothing fit. */
   text: string;
+  /**
+   * `text` partitioned into whole rendered units — the recall blocks, each
+   * section header, and ONE segment per rendered turn (its leading newline
+   * included, so a stored turn renders to the identical segment on every
+   * later turn). `segments.join('') === text`. Lets the privacy mask scan a
+   * stored turn once and serve it from a content-hash cache afterwards.
+   * Optional so hand-built results (tests, wrappers) stay valid.
+   */
+  segments?: readonly string[];
   included: AssembledHit[];
   excluded: AssembledExclusion[];
   /** Cross-session probe payload — plans/processes/insights from prior
@@ -493,6 +538,16 @@ export class ContextRetriever {
     this.opts = { ...DEFAULTS, ...opts };
   }
 
+  /**
+   * How many verbatim turns of the active chat this retriever replays — the
+   * operator's `context_tail_size`, or the default. Read by the
+   * subscription-CLI path (#1087), which replays the raw chat session itself
+   * and must keep the same depth as this one.
+   */
+  get tailSize(): number {
+    return this.opts.tailSize;
+  }
+
   async build(input: ContextBuildInput): Promise<ContextBuildResult> {
     const extractedTerms = extractCandidateTerms(input.userMessage);
 
@@ -581,6 +636,9 @@ export class ContextRetriever {
       ...(input.sessionScope ? { sessionScope: input.sessionScope } : {}),
       ...(input.userId ? { userId: input.userId } : {}),
       ...(input.currentTurnId ? { currentTurnId: input.currentTurnId } : {}),
+      ...(input.audienceOwners ? { audienceOwners: input.audienceOwners } : {}),
+      ...(input.excludeUnprotected ? { excludeUnprotected: true } : {}),
+      ...(input.tailLimit !== undefined ? { tailLimit: input.tailLimit } : {}),
       // Per-orchestrator KG isolation is OPT-IN: only when the caller (the
       // orchestrator) passes an agent prefix do we constrain recall to that
       // Agent. Its `sessionScope` then already arrives qualified, so
@@ -606,7 +664,10 @@ export class ContextRetriever {
     // see them — gating here is what makes that filter honest rather than
     // partial.
     const hasTopicalAnchor = !this.opts.recallRequiresTerms || extractedTerms.length > 0;
-    const runCrossSessionRecall = input.restrictToScope === undefined && hasTopicalAnchor;
+    // Member-scoped memory skips them as well: plans and processes carry no
+    // owners, so nothing says whether the room may read them.
+    const runCrossSessionRecall =
+      input.restrictToScope === undefined && input.audienceOwners === undefined && hasTopicalAnchor;
     // #575 — curated memory is TIERED, unlike plans and processes: `team` /
     // `public` knowledge is shared by construction, and a restricted room is
     // entitled to it. So the memory leg narrows rather than dying with the
@@ -911,13 +972,21 @@ export class ContextRetriever {
       if (chunkChars > turnBudgetChars) break;
     }
 
-    const turnText = renderAssembled(fillOrder, included, compactMode);
+    const turnSegments = renderAssembledSegments(fillOrder, included, compactMode);
+    const turnText = turnSegments.join('');
     const text =
       recallBlocksText.length > 0
         ? turnText.length > 0
           ? `${recallBlocksText}\n\n${turnText}`
           : recallBlocksText
         : turnText;
+    // The same composition, kept partitioned (see `AssembledContext.segments`).
+    const segments: readonly string[] =
+      recallBlocksText.length > 0
+        ? turnText.length > 0
+          ? [`${recallBlocksText}\n\n`, ...turnSegments]
+          : [recallBlocksText]
+        : turnSegments;
     const tokensUsed = turnTokensUsed + recallTokens;
 
     const scope = input.sessionScope ?? '<no-scope>';
@@ -952,6 +1021,7 @@ export class ContextRetriever {
 
     return {
       text,
+      segments,
       included,
       excluded,
       recalled,
@@ -1034,7 +1104,12 @@ export class ContextRetriever {
     input: ContextBuildInput,
   ): Promise<Array<{ time: string; userMessage: string; assistantAnswer: string }>> {
     if (!input.sessionScope) return [];
-    const session = await this.graph.getSession(input.sessionScope);
+    // Member-scoped memory: the tail too — a member who just joined does not
+    // get the turns from before they were there.
+    const session = await this.graph.getSession(
+      input.sessionScope,
+      input.audienceOwners ? { audienceOwners: input.audienceOwners } : undefined,
+    );
     if (!session) return [];
     const turns = session.turns
       .map((t) => ({
@@ -1047,7 +1122,16 @@ export class ContextRetriever {
           t.time.length > 0 &&
           (t.userMessage.length > 0 || t.assistantAnswer.length > 0),
       );
-    return turns.slice(-this.opts.tailSize);
+    // `tailLimit` only ever narrows the configured window. Computed as a
+    // start index: `slice(-0)` would return the whole list.
+    const keep = Math.max(
+      0,
+      Math.min(
+        this.opts.tailSize,
+        input.tailLimit !== undefined ? Math.floor(input.tailLimit) : this.opts.tailSize,
+      ),
+    );
+    return turns.slice(Math.max(0, turns.length - keep));
   }
 
   private async loadEntityHits(
@@ -1062,6 +1146,8 @@ export class ContextRetriever {
       ...(input.agentScopePrefix
         ? { agentScopePrefix: input.agentScopePrefix }
         : {}),
+      ...(input.audienceOwners ? { audienceOwners: input.audienceOwners } : {}),
+      ...(input.excludeUnprotected ? { excludeUnprotected: true } : {}),
       perEntityLimit: 2,
       entityLimit: this.opts.entityLimit,
     });
@@ -1104,6 +1190,8 @@ export class ContextRetriever {
         ...(input.agentScopePrefix
           ? { agentScopePrefix: input.agentScopePrefix }
           : {}),
+        // #1536 — under a shield, no plan from an unprotected (or unknown) turn.
+        ...(input.excludeUnprotected ? { excludeUnprotected: true } : {}),
       });
       // Cross-session only — drop same-session plans before fetching steps so
       // the batched read does no wasted work.
@@ -1135,6 +1223,10 @@ export class ContextRetriever {
           const goal = String(s.props['goal'] ?? '');
           if (goal.length > 0) goalTexts.push(goal);
           if (status === 'done') {
+            // #1502 — a pre-fix plan-runner closed steps no call worked on;
+            // such a step is neither finished work nor open. A side-effecting
+            // one stays done: never invite a second run of a write.
+            if (!isEvidencedPlanStepDone(s.props) && s.props['sideEffecting'] !== true) continue;
             doneCount += 1;
             if (goal.length > 0) completedStepGoals.push(goal);
           } else if (status === 'pending' || status === 'in_progress') {
@@ -1201,6 +1293,8 @@ export class ContextRetriever {
       const hits = await this.processMemory.query({
         query: input.userMessage,
         limit: this.opts.processLimit,
+        // #1540 — under a shield, no process stored from an unprotected turn.
+        ...(input.excludeUnprotected ? { excludeUnprotected: true } : {}),
       });
       return hits
         .filter((h) => h.score >= this.opts.processMinScore)
@@ -1243,7 +1337,11 @@ export class ContextRetriever {
     input: ContextBuildInput,
   ): Promise<MemoryRecallHit[]> {
     if (this.opts.memoryRecallDisabled) return [];
-    if (!this.embeddingClient || !input.userId) return [];
+    const viewer = memoryViewer(input);
+    if (!this.embeddingClient || !viewer) return [];
+    const audience = input.audienceOwners ? { audienceOwners: input.audienceOwners } : {};
+    // #1536 — under a shield, no memory that holds values no shield masked.
+    const shielded = input.excludeUnprotected ? { excludeUnprotected: true } : {};
 
     let queryVector: number[];
     try {
@@ -1269,21 +1367,25 @@ export class ContextRetriever {
       [mkHits, excerptHits] = await Promise.all([
         this.graph.searchMemorableKnowledgeByEmbedding({
           queryEmbedding: queryVector,
-          viewerOmadiaUserId: input.userId,
+          viewerOmadiaUserId: viewer,
           ...(input.sharedRecallOnly ? { sharedOnly: true } : {}),
           limit: overshoot,
           minSimilarity: this.opts.memoryMinSimilarity,
           teamVisibility: this.opts.teamVisibility,
           ...(input.agentSlug ? { viewerAgentSlug: input.agentSlug } : {}),
+          ...audience,
+          ...shielded,
         }),
         this.graph.searchExcerptsByEmbedding({
           queryEmbedding: queryVector,
-          viewerOmadiaUserId: input.userId,
+          viewerOmadiaUserId: viewer,
           ...(input.sharedRecallOnly ? { sharedOnly: true } : {}),
           limit: excerptOvershoot,
           minSimilarity: this.opts.memoryMinSimilarity,
           teamVisibility: this.opts.teamVisibility,
           ...(input.agentSlug ? { viewerAgentSlug: input.agentSlug } : {}),
+          ...audience,
+          ...shielded,
         }),
       ]);
     } catch (err) {
@@ -1364,7 +1466,8 @@ export class ContextRetriever {
     input: ContextBuildInput,
   ): Promise<MemoryRecallHit[]> {
     if (this.opts.durableTierDisabled) return [];
-    if (!this.embeddingClient || !input.userId) return [];
+    const viewer = memoryViewer(input);
+    if (!this.embeddingClient || !viewer) return [];
 
     const reservedSlots = Math.max(0, this.opts.durableReservedSlots);
     if (reservedSlots === 0) return [];
@@ -1390,7 +1493,7 @@ export class ContextRetriever {
     try {
       mkHits = await this.graph.searchMemorableKnowledgeByEmbedding({
         queryEmbedding: queryVector,
-        viewerOmadiaUserId: input.userId,
+        viewerOmadiaUserId: viewer,
         limit: overshoot,
         minSimilarity: this.opts.durableMinSimilarity,
         teamVisibility: this.opts.teamVisibility,
@@ -1398,6 +1501,8 @@ export class ContextRetriever {
         // session noise crowds durable knowledge out of the over-fetch window.
         manuallyAuthoredOnly: true,
         ...(input.agentSlug ? { viewerAgentSlug: input.agentSlug } : {}),
+        ...(input.audienceOwners ? { audienceOwners: input.audienceOwners } : {}),
+        ...(input.excludeUnprotected ? { excludeUnprotected: true } : {}),
       });
     } catch (err) {
       console.error(
@@ -1448,6 +1553,8 @@ export class ContextRetriever {
             ...(input.agentScopePrefix
               ? { agentScopePrefix: input.agentScopePrefix }
               : {}),
+            ...(input.audienceOwners ? { audienceOwners: input.audienceOwners } : {}),
+            ...(input.excludeUnprotected ? { excludeUnprotected: true } : {}),
             limit: this.opts.ftsLimit,
             recallMinScore: this.opts.recallMinScore,
             recallRecencyBoost: this.opts.recallRecencyBoost,
@@ -1470,9 +1577,20 @@ export class ContextRetriever {
       ...(input.agentScopePrefix
         ? { agentScopePrefix: input.agentScopePrefix }
         : {}),
+      ...(input.audienceOwners ? { audienceOwners: input.audienceOwners } : {}),
+      ...(input.excludeUnprotected ? { excludeUnprotected: true } : {}),
       limit: this.opts.ftsLimit,
     });
   }
+}
+
+/**
+ * The `viewerOmadiaUserId` a curated-memory search needs. Under member-scoped
+ * memory the backend ignores it (`audienceOwners` replaces the viewer ACL),
+ * so any audience member stands in when the caller left `userId` out.
+ */
+function memoryViewer(input: ContextBuildInput): string | undefined {
+  return input.userId ?? input.audienceOwners?.[0];
 }
 
 interface RenderInput {
@@ -1737,12 +1855,29 @@ interface AssembledHitLookup {
   meta: AssembledHit;
 }
 
-function renderAssembled(
+/**
+ * The assembled turn block as segments: each header and each rendered turn
+ * is one segment, every segment after the first carrying the `\n` joiner as
+ * its LEADING character. `segments.join('')` is the block `parts.join('\n')`
+ * always produced, and a turn renders to the same segment wherever it sits
+ * (the first part is always a header), so it stays cacheable across turns.
+ */
+function renderAssembledSegments(
   fillOrder: ReadonlyArray<CandidateHit>,
   included: ReadonlyArray<AssembledHit>,
   compactMode: boolean,
-): string {
-  if (included.length === 0) return '';
+): string[] {
+  return renderAssembledParts(fillOrder, included, compactMode).map((part, i) =>
+    i === 0 ? part : `\n${part}`,
+  );
+}
+
+function renderAssembledParts(
+  fillOrder: ReadonlyArray<CandidateHit>,
+  included: ReadonlyArray<AssembledHit>,
+  compactMode: boolean,
+): string[] {
+  if (included.length === 0) return [];
   const includedIds = new Set(included.map((h) => h.turnId));
   const ordered: AssembledHitLookup[] = [];
   for (const c of fillOrder) {
@@ -1771,5 +1906,5 @@ function renderAssembled(
       parts.push(renderHitChunk(o.candidate, compactMode));
     }
   }
-  return parts.join('\n');
+  return parts;
 }

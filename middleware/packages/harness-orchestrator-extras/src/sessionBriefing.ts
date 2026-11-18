@@ -103,6 +103,7 @@ export function createSessionBriefingService(
         time: String(t.turn.props['time'] ?? ''),
         userMessage: String(t.turn.props['userMessage'] ?? ''),
         assistantAnswer: String(t.turn.props['assistantAnswer'] ?? ''),
+        unprotected: t.turn.props['unprotected'] === true,
       }));
       const summaryTurns = turns
         .filter((t) => t.userMessage === SESSION_SUMMARY_MARKER)
@@ -158,9 +159,10 @@ export function createSessionBriefingService(
 
       if (needsRegenerate) {
         try {
+          const summarised = realTurns.slice(-cfg.tailSize);
           const generated = await opts.summaryGenerator.generate({
             scope: input.scope,
-            turns: realTurns.slice(-cfg.tailSize).map((t) => ({
+            turns: summarised.map((t) => ({
               time: t.time,
               userMessage: t.userMessage,
               assistantAnswer: t.assistantAnswer,
@@ -181,6 +183,10 @@ export function createSessionBriefingService(
                 entityRefs: [],
                 entryType: 'process',
                 ...(input.userId ? { userId: input.userId } : {}),
+                // #1507 — a summary of an unprotected turn carries its names.
+                // As an ordinary Turn it would come back through cross-session
+                // recall under a shield, so it inherits the flag.
+                unprotected: summarised.some((t) => t.unprotected),
               });
             } catch (err) {
               const msg = err instanceof Error ? err.message : String(err);

@@ -59,6 +59,14 @@ export interface ModelCatalogSyncDeps {
   readonly log?: (message: string) => void;
   readonly warn?: (message: string) => void;
   readonly now?: () => Date;
+  /**
+   * Called after a run registered a model set whose class defaults
+   * (`frontier` / `balanced` / `fast`) differ from the previous set's. A
+   * consumer that resolved a class ref at activation still holds the old
+   * model (#1359: the boot run lands after the plugins activated on the seed).
+   * Never awaited; a throw is logged, not propagated.
+   */
+  readonly onDefaultsChanged?: (providerId: string) => void;
 }
 
 export interface ModelCatalogSync {
@@ -204,6 +212,13 @@ export function createModelCatalogSync(deps: ModelCatalogSyncDeps): ModelCatalog
     log(
       `${providerId}: ${String(outcome.models.length)} model(s) from ${String(listed.length)} listed (dropped: ${summariseDrops(outcome.dropped)}); defaults ${describeDefaults(next)}`,
     );
+    if (deps.onDefaultsChanged !== undefined && describeDefaults(desc) !== describeDefaults(next)) {
+      try {
+        deps.onDefaultsChanged(providerId);
+      } catch (err) {
+        warn(`${providerId}: defaults-changed hook failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
     return finish({ ...base, status: 'discovered', models: outcome.models.length, dropped: outcome.dropped });
   };
 

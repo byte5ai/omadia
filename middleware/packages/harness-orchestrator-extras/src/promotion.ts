@@ -56,6 +56,14 @@ export interface PromoteTurnInput {
    * promotion still produces something readable in `/memories`.
    */
   palaiaExcerpt?: PalaiaExcerpt;
+  /**
+   * #1527 — set when an excerpt extractor is installed. A missing
+   * `palaiaExcerpt` then means the extraction failed (unparseable or cut-off
+   * reply, provider error), and the turn is skipped with reason='no-excerpt'
+   * instead of being stored as `insight` + a clipped prefix of the raw
+   * answer. The answer-prefix fallback stays for boots without an extractor.
+   */
+  excerptRequired?: boolean;
   /** Fallback summary source — typically the cleaned assistant answer.
    *  Only used when `palaiaExcerpt` is absent. */
   fallbackAssistantAnswer: string;
@@ -66,6 +74,13 @@ export interface PromoteTurnInput {
    * cross-agent). Omit on legacy / single-agent boots.
    */
   originAgent?: string;
+  /**
+   * Member-scoped memory — the turn's owners. When set they become the MK's
+   * `aclOwners` (and its involved users), so the knowledge stays with the
+   * people present; an empty array means the turn belongs to nobody, and it
+   * is not promoted at all. Absent: the historical `[userId]`.
+   */
+  owners?: readonly string[];
   /**
    * Trigger T3 — durable auto-promotion. When set, an auto-promoted MK is
    * additionally marked `manuallyAuthored=true` (→ always-surface durable
@@ -89,8 +104,10 @@ export interface PromoteTurnResult {
     | 'hygiene-skip'
     | 'already-promoted'
     | 'missing-user'
+    | 'no-owners'
     | 'missing-turn'
     | 'tail-only'
+    | 'no-excerpt'
     | 'error';
   mkId?: string;
   significance: number | null;
@@ -111,6 +128,10 @@ export async function promoteTurnIfSignificant(
   if (input.userId.length === 0) {
     log(`[promotion] skip turn=${input.turnId} reason=missing-user`);
     return { promoted: false, reason: 'missing-user', significance: null };
+  }
+  if (input.owners !== undefined && input.owners.length === 0) {
+    log(`[promotion] skip turn=${input.turnId} reason=no-owners (member-scoped room not known)`);
+    return { promoted: false, reason: 'no-owners', significance: null };
   }
 
   try {
@@ -189,6 +210,13 @@ export async function promoteTurnIfSignificant(
       };
     }
 
+    if (input.excerptRequired === true && input.palaiaExcerpt === undefined) {
+      log(
+        `[promotion] skip turn=${input.turnId} reason=no-excerpt (the excerpt extractor returned none) significance=${significance.toFixed(2)}`,
+      );
+      return { promoted: false, reason: 'no-excerpt', significance };
+    }
+
     const { kind, summary, rationale } = buildPayload(
       input.palaiaExcerpt,
       input.fallbackAssistantAnswer,
@@ -224,8 +252,8 @@ export async function promoteTurnIfSignificant(
       significance,
       ...(durable ? { manuallyAuthored: true } : {}),
       createdBy: `auto:${input.userId}`,
-      involvedOmadiaUserIds: [input.userId],
-      aclOwners: [input.userId],
+      involvedOmadiaUserIds: input.owners ? [...input.owners] : [input.userId],
+      aclOwners: input.owners ? [...input.owners] : [input.userId],
       ...(input.originAgent ? { originAgent: input.originAgent } : {}),
       derivedFromTurnIds: [input.turnId],
       // Slice 6.5 — symmetric to manual save: persist the verbatim

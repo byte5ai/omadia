@@ -289,7 +289,7 @@ export function createApiChatRouter(deps: ApiChatRouterDeps): Router {
           //     browser-login flow (src/index.ts, `/api/v1/auth`) to cache an
           //     `omadiaUserId` in the session JWT — it is not a per-turn,
           //     per-channel pattern. Even the one channel with that cached id
-          //     available (omadia-ui-channel/canvasConnection.ts) uses the raw
+          //     available (@omadia/ui-channel's canvasConnection.ts) uses the raw
           //     `session.subject`, not `session.omadiaUserId`, for `userRef.id`.
           //   - `src/routes/chat.ts`'s `resolveUserId()` already documents the
           //     same behaviour for Teams and generic HTTP callers: unresolved

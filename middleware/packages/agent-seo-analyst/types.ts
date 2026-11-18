@@ -79,6 +79,8 @@ export interface RobotsReport {
   disallows_root: boolean;
   allows_our_ua: boolean;
   raw_length: number;
+  /** #1344 — `ctx.http` refused the robots.txt host; `fetched` stays false. */
+  blocked?: true;
 }
 
 export interface SitemapEntry {
@@ -87,6 +89,9 @@ export interface SitemapEntry {
   url_count: number | null;
   is_index: boolean;
   errors: string[];
+  /** #1344 — `ctx.http` refused the sitemap host (e.g. a sitemap on another
+   *  host that robots.txt points to). */
+  blocked?: true;
 }
 
 export interface TechnicalReport {

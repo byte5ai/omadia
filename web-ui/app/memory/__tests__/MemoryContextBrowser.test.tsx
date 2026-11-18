@@ -39,6 +39,7 @@ const {
   MockApiError,
   mockGetMemoryBackend,
   mockListMemoryContextLabels,
+  mockListMemoryMemberGroups,
   mockListMemoryPromotions,
 } = vi.hoisted(() => ({
   MockApiError: class MockApiError extends Error {
@@ -52,6 +53,7 @@ const {
   },
   mockGetMemoryBackend: vi.fn(),
   mockListMemoryContextLabels: vi.fn(),
+  mockListMemoryMemberGroups: vi.fn(),
   mockListMemoryPromotions: vi.fn(),
 }));
 
@@ -62,6 +64,9 @@ vi.mock('@/app/_lib/api', async (importOriginal) => {
     ApiError: MockApiError,
     getMemoryBackend: mockGetMemoryBackend,
     listMemoryContextLabels: mockListMemoryContextLabels,
+    // Names for members tiers are an enrichment on their own endpoint; this
+    // suite pins that LISTING never leaves the list endpoint.
+    listMemoryMemberGroups: mockListMemoryMemberGroups,
     listMemoryPromotions: mockListMemoryPromotions,
   };
 });
@@ -129,6 +134,7 @@ describe('memory context browser — operator endpoint', () => {
   beforeEach(() => {
     mockGetMemoryBackend.mockResolvedValue({ current: 'postgres' });
     mockListMemoryContextLabels.mockRejectedValue(new MockApiError(404, 'nope'));
+    mockListMemoryMemberGroups.mockResolvedValue({ groups: [] });
     mockListMemoryPromotions.mockResolvedValue({ entries: [] });
   });
 
@@ -146,8 +152,8 @@ describe('memory context browser — operator endpoint', () => {
     const urls = requestedUrls(stub);
     expect(urls.length).toBeGreaterThan(0);
     expect(urls.every((u) => u.pathname === LIST_PATH)).toBe(true);
-    // The dev router is unauthenticated and unmounted in production; a
-    // regression back to it would make this whole panel dead there again.
+    // The dev router is dev scaffolding and unmounted on deployed environments;
+    // a regression back to it would make this whole panel dead there again.
     expect(urls.some((u) => u.pathname.startsWith('/bot-api/dev/'))).toBe(false);
   });
 

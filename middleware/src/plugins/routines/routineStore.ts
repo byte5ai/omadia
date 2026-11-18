@@ -32,6 +32,12 @@ export interface Routine {
    * from the LLM. Loaded as JSONB from the `output_template` column.
    */
   outputTemplate: RoutineOutputTemplate | null;
+  /**
+   * #1598 — slug of the orchestrator that created the routine (migration
+   * 0005). The run resolves that orchestrator, so the routine has exactly the
+   * plugins its orchestrator is granted. `null` = the standard orchestrator.
+   */
+  agentSlug?: string | null;
 }
 
 export interface CreateRoutineInput {
@@ -45,6 +51,8 @@ export interface CreateRoutineInput {
   timeoutMs?: number;
   /** Phase C — optional output template (see Routine.outputTemplate). */
   outputTemplate?: RoutineOutputTemplate | null;
+  /** #1598 — see Routine.agentSlug. */
+  agentSlug?: string | null;
 }
 
 export interface RecordRunInput {
@@ -100,13 +108,15 @@ interface RoutineRow {
   /** Phase C — JSONB column added in migration 0004. NULL for legacy
    *  routines; structured `RoutineOutputTemplate` shape when set. */
   output_template: unknown;
+  /** #1598 — migration 0005. */
+  agent_slug: string | null;
 }
 
 const SELECT_COLUMNS = `
   id, tenant, user_id, name, cron, prompt, channel, conversation_ref,
   status, timeout_ms, created_at, updated_at,
   last_run_at, last_run_status, last_run_error,
-  output_template
+  output_template, agent_slug
 `;
 
 function rowToRoutine(row: RoutineRow): Routine {
@@ -141,6 +151,7 @@ function rowToRoutine(row: RoutineRow): Routine {
     lastRunStatus: row.last_run_status,
     lastRunError: row.last_run_error,
     outputTemplate,
+    agentSlug: row.agent_slug ?? null,
   };
 }
 
@@ -182,8 +193,8 @@ export class RoutineStore {
       const result = await this.pool.query<RoutineRow>(
         `INSERT INTO routines
            (tenant, user_id, name, cron, prompt, channel,
-            conversation_ref, timeout_ms, output_template)
-         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9::jsonb)
+            conversation_ref, timeout_ms, output_template, agent_slug)
+         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9::jsonb, $10)
          RETURNING ${SELECT_COLUMNS}`,
         [
           input.tenant,
@@ -197,6 +208,7 @@ export class RoutineStore {
           input.outputTemplate !== undefined && input.outputTemplate !== null
             ? JSON.stringify(input.outputTemplate)
             : null,
+          input.agentSlug ?? null,
         ],
       );
       const row = result.rows[0];

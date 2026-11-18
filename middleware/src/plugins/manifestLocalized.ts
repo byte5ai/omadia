@@ -11,7 +11,7 @@
 // resolves, NOT conductor-core's `LocalizedText` (which requires an `en` base and
 // resolves differently). Setup text follows the setup-text precedent.
 
-import type { LocalizedMarkdown } from '../api/admin-v1.js';
+import type { LocalizedMarkdown, SetupEnumOption } from '../api/admin-v1.js';
 
 /**
  * Normalise a manifest value into a `{ <locale>: text }` map. Accepts the
@@ -60,4 +60,18 @@ export function resolveLocalized(
     if (v && v.trim().length > 0) return v;
   }
   return undefined;
+}
+
+/**
+ * #1401 — one enum option from the manifest. `label` may be a bare string or
+ * a `{ <locale>: text }` map; the result keeps `label` as an English string
+ * (what older clients render) and adds `label_localized` when the manifest
+ * wrote a map. Missing label → the value itself.
+ */
+export function enumOption(value: string, rawLabel: unknown): SetupEnumOption {
+  const map = normalizeLocalized(rawLabel);
+  const label = resolveLocalized(map, 'en') ?? value;
+  return typeof rawLabel === 'object' && rawLabel !== null && map
+    ? { value, label, label_localized: map }
+    : { value, label };
 }

@@ -1,6 +1,12 @@
 import type { NativeToolSpec } from '@omadia/plugin-api';
 import { z } from 'zod';
 
+import {
+  compatToolErrorFromException,
+  hostToolErrorHelpers,
+  type ToolErrorHelpers,
+} from './toolErrorCompat.js';
+
 /**
  * `discussion_start` — the chat-side entry point to an agent topic discussion.
  *
@@ -114,11 +120,45 @@ export interface DiscussionsCapability {
   }): Promise<{ runId: string; workflowSlug: string; expiresAt: string }>;
   /** Who could take part in THIS chat — agents with their own bot present here. */
   partnersHere(): Promise<readonly DiscussionPartner[]>;
+  /** #1346 — can the current turn host a discussion? Optional: a kernel
+   *  before it lacks the method, and then the tools stay offered. */
+  availableHere?(): boolean;
+}
+
+/**
+ * #1346 — offer the discussion tools only on a turn that can host one.
+ *
+ * A discussion needs a conversation with the agents' own bots in it — today a
+ * Teams chat. Everywhere else (web chat, public API, Telegram, …) the kernel
+ * refuses every call, and offering the tools there cost a model round and put
+ * a tool error into answers that had nothing to do with discussions.
+ *
+ * Stays OFFERED when the capability is missing or predates `availableHere`:
+ * the handler then answers with a plain "not available on this deployment",
+ * which is deliberately louder than silence (see plugin.ts).
+ */
+export function discussionToolsAvailable(resolveDiscussions: ResolveDiscussions): boolean {
+  const discussions = resolveDiscussions();
+  if (!discussions || typeof discussions.availableHere !== 'function') return true;
+  return discussions.availableHere();
 }
 
 /** Resolved per call, never cached: `optional_requires` creates no activation
  *  edge, so the capability may appear after this plugin has activated. */
 export type ResolveDiscussions = () => DiscussionsCapability | undefined;
+
+/**
+ * The kernel's named refusals (`DiscussionNoConversationError`,
+ * `DiscussionUnknownOpenerError`, `DiscussionPeerDisabledError`,
+ * `DiscussionUnknownPartnerError` in `src/conductor/discussionHere.ts`). Their
+ * messages are kernel-authored explanations the model must relay, so they keep
+ * their text. Matched by name: this package cannot import kernel classes.
+ */
+const KERNEL_REFUSAL_NAME = /^Discussion[A-Za-z]+Error$/;
+
+function isKernelRefusal(err: unknown): err is Error {
+  return err instanceof Error && KERNEL_REFUSAL_NAME.test(err.name);
+}
 
 const NOT_AVAILABLE =
   'Error: agent discussions are not available on this deployment (the kernel publishes no conductorDiscussions capability — it needs Postgres and a recent core).';
@@ -126,7 +166,11 @@ const NOT_AVAILABLE =
 export function createDiscussionStartHandler(deps: {
   resolveDiscussions: ResolveDiscussions;
   log?: (msg: string) => void;
+  /** Default: the host's. `null` = a host before plugin-api 1.20.0. */
+  toolErrorHelpers?: ToolErrorHelpers | null;
 }): (raw: unknown) => Promise<string> {
+  const toolErrorHelpers =
+    deps.toolErrorHelpers === undefined ? hostToolErrorHelpers : deps.toolErrorHelpers;
   return async (raw: unknown): Promise<string> => {
     const parsed = DiscussionStartInputSchema.safeParse(raw);
     if (!parsed.success) {
@@ -172,10 +216,17 @@ export function createDiscussionStartHandler(deps: {
         note: 'The discussion posts itself into this chat. Reply with one short sentence and stop; do not repeat the topic or write the first contribution here.',
       });
     } catch (err) {
+      // Anything but a kernel refusal (a database or runtime failure) is
+      // exception text nobody sanitized: withheld from the model, logged.
+      if (!isKernelRefusal(err)) {
+        return compatToolErrorFromException(toolErrorHelpers, DISCUSSION_START_TOOL_NAME, err, {
+          site: 'discussion',
+        });
+      }
       // Every refusal from the kernel is a named, explainable outcome — hand it
       // to the model as prose so it can tell the person WHY, rather than
       // silently answering as if nothing had been asked.
-      const message = err instanceof Error ? err.message : String(err);
+      const message = err.message;
       deps.log?.(`[discussion] start refused: ${message}`);
       // An unknown partner is the one refusal the model can fix by itself, so
       // it comes back WITH the candidates rather than as a bare no. Karen's
@@ -194,7 +245,11 @@ export function createDiscussionStartHandler(deps: {
 export function createDiscussionPartnersHandler(deps: {
   resolveDiscussions: ResolveDiscussions;
   log?: (msg: string) => void;
+  /** Default: the host's. `null` = a host before plugin-api 1.20.0. */
+  toolErrorHelpers?: ToolErrorHelpers | null;
 }): (raw: unknown) => Promise<string> {
+  const toolErrorHelpers =
+    deps.toolErrorHelpers === undefined ? hostToolErrorHelpers : deps.toolErrorHelpers;
   return async (): Promise<string> => {
     const discussions = deps.resolveDiscussions();
     if (!discussions) return NOT_AVAILABLE;
@@ -209,7 +264,10 @@ export function createDiscussionPartnersHandler(deps: {
             : 'No other agent has its own bot in this chat, so no discussion can be held here. Say so plainly.',
       });
     } catch (err) {
-      return `Error: ${err instanceof Error ? err.message : String(err)}`;
+      if (isKernelRefusal(err)) return `Error: ${err.message}`;
+      return compatToolErrorFromException(toolErrorHelpers, DISCUSSION_PARTNERS_TOOL_NAME, err, {
+        site: 'discussion',
+      });
     }
   };
 }

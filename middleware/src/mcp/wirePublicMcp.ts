@@ -14,7 +14,12 @@ import type { Express, RequestHandler } from 'express';
 import type { Pool } from 'pg';
 
 import type { ApiKeySecretStorage, ApiKeyStore, AuditLog, RateLimiter } from '@omadia/api-key-auth';
-import { createApiKeyStore, createRateLimiter } from '@omadia/api-key-auth';
+import {
+  createApiKeyStore,
+  createAuditLog,
+  createRateLimiter,
+  USAGE_LOG_VAULT_KEY,
+} from '@omadia/api-key-auth';
 import {
   AgentGraphStore,
   createPrivacyTurnHandle,
@@ -95,6 +100,27 @@ export function createVerifyOnlyApiKeyStore(vault: SecretVault): ApiKeyStore {
       throw new Error(
         'public MCP endpoint must not revoke API keys — use @omadia/channel-api /admin/keys',
       );
+    },
+  });
+}
+
+/**
+ * #1329 — the per-key usage log, so MCP requests show up in a key's "last
+ * used" and recent activity on `/admin/api-keys` exactly like chat requests.
+ *
+ * Same vault entry `@omadia/channel-api` writes (`createAuditLog`'s writes go
+ * through one process-wide queue, so the two writers cannot drop each other's
+ * appends). The writer may touch that ONE entry and nothing else in the key
+ * namespace — minting and revoking stay with the admin routes.
+ */
+export function createPublicMcpUsageLog(vault: SecretVault): AuditLog {
+  return createAuditLog({
+    ...readOnlyVaultStorage(vault),
+    set: (key, value) => {
+      if (key !== USAGE_LOG_VAULT_KEY) {
+        throw new Error('public MCP endpoint may only write the API-key usage log');
+      }
+      return vault.set(API_KEY_VAULT_NAMESPACE, key, value);
     },
   });
 }
@@ -201,10 +227,19 @@ function makeDispatcherResolver(
     const dispatch = new ToolDispatchService({
       nativeTools: nativeToolRegistry,
       domainToolsProvider: () => entry.built.orchestrator.listDomainTools(),
+      // #1598 — a key binding names exact tools, but only tools of plugins
+      // assigned to the bound agent are reachable, as in its own chat.
+      isToolGranted: (name, agentId, scope) =>
+        entry.built.orchestrator.isToolGranted(name, agentId, scope),
       // Explicit, NOT the ambient `turnContext` fallback: this endpoint runs
       // outside any turn, so the ambient handle is always `undefined` here and
-      // relying on it would ship an unmasked public endpoint.
+      // relying on it would ship an unmasked public endpoint. The dispatcher
+      // also installs it as the ambient handle while a handler runs, so a
+      // domain tool's sub-agent model loop runs under the same gate.
       privacy: () => slot,
+      // With masking required, an empty slot means the gate never arrived: run
+      // no handler (and so no sub-agent model call) rather than run it unguarded.
+      requirePrivacyHandle: !deps.allowWithoutPrivacyMasking,
       idempotency,
       // Raw capture receives the result BEFORE masking. Deliberately records
       // SIZE ONLY — never content. `mcp_call_log` stores no tool arguments or
@@ -338,7 +373,9 @@ export function mountPublicMcp(app: Express, requireAuth: RequestHandler, deps: 
     createPublicMcpRouter({
       apiKeys,
       rateLimiter: deps.rateLimiter ?? createRateLimiter(),
-      ...(deps.keyAuditLog ? { keyAuditLog: deps.keyAuditLog } : {}),
+      ...(deps.keyAuditLog || deps.vault
+        ? { keyAuditLog: deps.keyAuditLog ?? createPublicMcpUsageLog(requireVault(deps)) }
+        : {}),
       bindings,
       // A SECOND limiter instance, not the one above. Writes get their own
       // budget so a read-heavy integration's unused read headroom cannot fund a

@@ -16,6 +16,7 @@ import {
   parseModelRef,
   resolveModelPolicyRuntime,
   validateModelPolicy,
+  ANSWER_VERBOSITY_LEVELS,
   type AgentToAgentMode,
   type ModelPolicyValidationContext,
   type ChatSessionStore,
@@ -33,6 +34,7 @@ import {
 import type { Plugin, PluginSetupField } from '../api/admin-v1.js';
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
+import { attachablePluginIds } from '../plugins/defaultOrchestratorAttach.js';
 import {
   buildBotHandle,
   TEAMS_CHAT_INSTALL_MIN_CONNECTOR_VERSION,
@@ -125,7 +127,7 @@ interface AgentPluginCatalogEntry {
  * Operator-UI backend for the multi-orchestrator runtime (US9 / T037).
  *
  * Read + write surface for the operator-facing Agents dashboard at
- * `web-ui/app/operator/agents/page.tsx`. Mounted under `/api/v1` so the
+ * `web-ui/app/operator/agents/(index)/page.tsx`. Mounted under `/api/v1` so the
  * routes are:
  *
  *   GET    /api/v1/operator/agents                       list agents + bindings + plugins
@@ -184,7 +186,7 @@ const AgentPatchSchema = z.object({
  * The assignment below is a compile-time pin: it stops compiling the moment
  * this runtime union drifts from the type the orchestrator actually consumes.
  */
-export const CONTEXT_MEMORY_MODES = ['off', 'enforce', 'enforce-strict'] as const;
+export const CONTEXT_MEMORY_MODES = ['off', 'enforce', 'enforce-strict', 'members'] as const;
 
 const _contextMemoryModesPin: readonly ContextMemoryMode[] = CONTEXT_MEMORY_MODES;
 void _contextMemoryModesPin;
@@ -1470,6 +1472,10 @@ const AgentIdentitySchema = z.object({
     .string()
     .regex(/^#[0-9A-Fa-f]{6}$/, 'expected a #RRGGBB colour')
     .nullish(),
+  // The closed five-step scale from the orchestrator package — the same list
+  // the manifest enum and the migration's CHECK use. `null` = inherit the
+  // installation-wide `answer_verbosity`.
+  verbosity: z.enum(ANSWER_VERBOSITY_LEVELS).nullish(),
   // The persona and quality blocks are validated by the SPEC's own schemas,
   // not by a second definition here. They are the same documents the Agent
   // Builder writes and `agent.md` frontmatter mirrors; a private copy would
@@ -1519,6 +1525,7 @@ export function projectAgentIdentity(
       long_description: identity?.longDescription ?? null,
       instructions: identity?.instructions ?? null,
       accent_color: identity?.accentColor ?? null,
+      verbosity: identity?.verbosity ?? null,
       persona: identity?.persona ?? null,
       quality: identity?.quality ?? null,
       revision: identity?.revision ?? 1,
@@ -2460,6 +2467,7 @@ export function createOperatorAgentsRouter(
         longDescription: body.long_description ?? null,
         instructions: body.instructions ?? null,
         accentColor: body.accent_color ?? null,
+        verbosity: body.verbosity ?? null,
         persona,
         quality,
         composed: { text: composed.text, family, byFamily: compiled.byFamily },
@@ -2491,10 +2499,16 @@ export function createOperatorAgentsRouter(
           (body.short_description ?? '').trim() ||
         (before?.longDescription ?? '').trim() !==
           (body.long_description ?? '').trim();
+      // The answer-size level is spliced into the system prompt by
+      // `buildOrchestratorForAgent` (it replaces the installation default for
+      // this Agent), so it is on this list for the same reason as the name.
+      const verbosityChanged =
+        (before?.verbosity ?? null) !== (body.verbosity ?? null);
       if (
         (before?.composed.text ?? null) !== (composed.text ?? null) ||
         nameChanged ||
-        descriptionChanged
+        descriptionChanged ||
+        verbosityChanged
       ) {
         await live.registry.reload();
       }
@@ -4129,10 +4143,17 @@ export function createOperatorAgentsRouter(
       // installedRegistry treats `errored` as un-installable until the
       // operator fixes the manifest). Include `inactive` so a plugin that
       // briefly stopped activating still ends up attached.
-      const pluginIds = installed
+      // #1601 — reference-only plugins never run as an agent and the Plugins
+      // tab does not list them; attaching one shows it as both "active" and
+      // "no longer installed", and the next save drops it again.
+      const installedIds = installed
         .list()
         .filter((e) => e.status !== 'errored')
         .map((e) => e.id);
+      const catalog = options.getPluginCatalog?.();
+      const pluginIds = catalog
+        ? attachablePluginIds(installedIds, catalog)
+        : installedIds;
       const attached = await attachAllPlugins(
         live.store,
         fallback.id,
@@ -4163,7 +4184,7 @@ export function createOperatorAgentsRouter(
  * into something the operator sees as "on".
  */
 function normalizeContextMemoryMode(raw: unknown): ContextMemoryMode {
-  return raw === 'enforce' || raw === 'enforce-strict' ? raw : 'off';
+  return raw === 'enforce' || raw === 'enforce-strict' || raw === 'members' ? raw : 'off';
 }
 
 function groupBy<T, K>(items: readonly T[], keyFn: (item: T) => K): Map<K, T[]> {

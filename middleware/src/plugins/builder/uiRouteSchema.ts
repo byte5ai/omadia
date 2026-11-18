@@ -48,6 +48,12 @@ const UiRoutePathSchema = z
   .regex(
     /^\/[a-z0-9-]+(?:\/[a-z0-9-]+)*$/,
     'path must start with `/` and contain only lowercase letters/digits/dashes (no trailing slash)',
+  )
+  // #1620 — `/p/<slug>/teams` is the Teams-tab surface codegen adds; a
+  // ui_route there would be shadowed by it once the operator grants it.
+  .refine(
+    (p) => p !== '/teams' && !p.startsWith('/teams/'),
+    'path must not start with `/teams` — reserved for the Teams-tab surface',
   );
 
 // Render-mode picker. Library covers 80% of dashboard-cases via

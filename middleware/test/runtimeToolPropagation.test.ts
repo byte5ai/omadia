@@ -4,6 +4,8 @@ import { test } from 'node:test';
 import type { DomainTool } from '@omadia/orchestrator';
 
 import {
+  hydrateAgentRegistry,
+  liveDomainTools,
   mergeDomainTools,
   reconcileDomainToolAcrossAgents,
   type ReconcileTarget,
@@ -124,4 +126,93 @@ test('mergeDomainTools: boot built-ins win on a name clash, runtime tools append
     merged.map((t) => t.name),
     ['query_acme', 'memory', 'query_new'],
   );
+});
+
+/** Fake per-Agent registry: what an orchestrator-plugin (re)activation publishes. */
+function fakeRegistry(agents: Array<{ slug: string; enabledPlugins: string[] }>) {
+  const entries = new Map(
+    agents.map((a) => [
+      a.slug,
+      {
+        agent: { slug: a.slug },
+        plugins: a.enabledPlugins.map((pluginId) => ({ pluginId, enabled: true })),
+        built: { orchestrator: fakeHost() },
+      },
+    ]),
+  );
+  let onAgentBuilt: ((slug: string, built: { orchestrator: ReturnType<typeof fakeHost> }) => void) | undefined;
+  return {
+    entries,
+    list: () => [...entries.values()],
+    get: (slug: string) => entries.get(slug),
+    setOnAgentBuilt: (cb: typeof onAgentBuilt) => {
+      onAgentBuilt = cb;
+    },
+    /** Simulate `reload()` rebuilding an Agent with a fresh orchestrator. */
+    rebuild(slug: string) {
+      const entry = entries.get(slug);
+      if (!entry) throw new Error(slug);
+      const built = { orchestrator: fakeHost() };
+      entries.set(slug, { ...entry, built });
+      onAgentBuilt?.(slug, built);
+      return built;
+    },
+  };
+}
+
+const ACCOUNTING = tool('query_odoo_accounting', 'de.byte5.agent.odoo-accounting');
+const CORE = { name: 'core_helper' } as unknown as DomainTool;
+
+test('hydrateAgentRegistry: scopes tools per Agent and counts registrations', () => {
+  const reg = fakeRegistry([
+    { slug: 'fallback', enabledPlugins: ['de.byte5.agent.odoo-accounting'] },
+    { slug: 'marketing', enabledPlugins: [] },
+  ]);
+  const attached = hydrateAgentRegistry(reg, {
+    currentDomainTools: () => [ACCOUNTING, CORE],
+    hydrateSubAgentTools: () => 0,
+    log: () => {},
+  });
+  assert.equal(attached, 3);
+  assert.ok(reg.get('fallback')?.built.orchestrator.tools.has('query_odoo_accounting'));
+  assert.ok(!reg.get('marketing')?.built.orchestrator.tools.has('query_odoo_accounting'));
+  assert.ok(reg.get('marketing')?.built.orchestrator.tools.has('core_helper'));
+});
+
+test('hydrateAgentRegistry: a registry published by a re-activation is hydrated too', () => {
+  const deps = { currentDomainTools: () => [ACCOUNTING], hydrateSubAgentTools: () => 0, log: () => {} };
+  const boot = fakeRegistry([{ slug: 'fallback', enabledPlugins: ['de.byte5.agent.odoo-accounting'] }]);
+  hydrateAgentRegistry(boot, deps);
+  // Provider switch → the orchestrator plugin re-activates → a NEW registry
+  // whose orchestrators start empty. Re-binding hydrates it.
+  const reactivated = fakeRegistry([{ slug: 'fallback', enabledPlugins: ['de.byte5.agent.odoo-accounting'] }]);
+  assert.ok(!reactivated.get('fallback')?.built.orchestrator.tools.has('query_odoo_accounting'));
+  hydrateAgentRegistry(reactivated, deps);
+  assert.ok(reactivated.get('fallback')?.built.orchestrator.tools.has('query_odoo_accounting'));
+  // …and keeps its rebuilds hydrated.
+  const rebuilt = reactivated.rebuild('fallback');
+  assert.ok(rebuilt.orchestrator.tools.has('query_odoo_accounting'));
+});
+
+test('hydrateAgentRegistry: idempotent on an already-hydrated registry', () => {
+  const reg = fakeRegistry([{ slug: 'fallback', enabledPlugins: ['de.byte5.agent.odoo-accounting'] }]);
+  const deps = { currentDomainTools: () => [ACCOUNTING], hydrateSubAgentTools: () => 0, log: () => {} };
+  hydrateAgentRegistry(reg, deps);
+  assert.doesNotThrow(() => hydrateAgentRegistry(reg, deps));
+  assert.equal(hydrateAgentRegistry(reg, deps), 0);
+});
+
+test('liveDomainTools: a dynamic agent re-uploaded after boot binds its FRESH handle', () => {
+  const kernel = tool('query_kernel', 'kernel');
+  const bootHandle = { ...ACCOUNTING, handle: 'boot' } as unknown as DomainTool;
+  const freshHandle = { ...ACCOUNTING, handle: 'fresh' } as unknown as DomainTool;
+  const live = liveDomainTools([kernel, bootHandle], [bootHandle], [freshHandle]);
+  assert.deepEqual(live.map((t) => t.name), ['query_kernel', 'query_odoo_accounting']);
+  assert.equal((live[1] as unknown as { handle: string }).handle, 'fresh');
+});
+
+test('liveDomainTools: a dynamic agent uninstalled after boot stays gone', () => {
+  const kernel = tool('query_kernel', 'kernel');
+  const live = liveDomainTools([kernel, ACCOUNTING], [ACCOUNTING], []);
+  assert.deepEqual(live.map((t) => t.name), ['query_kernel']);
 });

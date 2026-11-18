@@ -30,7 +30,8 @@ Manifest, sondern auch im Code-Contract**:
 ## 0. Voraussetzungen
 
 - Node `>=20` (das Repo pinnt die genaue Version in `.nvmrc` → `nvm use`).
-- Zugang zur Admin-UI (`https://odoo-bot-harness.fly.dev`) für den lokalen Upload.
+- Zugang zur Admin-UI (lokal `http://localhost:3333`, sonst der Host der eigenen
+  omadia-Instanz) für den lokalen Upload.
 - Zum **Publishen** auf den Hub: das `HUB_PUBLISH_TOKEN` (Bearer-Token; liegt im
   Vercel-Env des Hub-Projekts bzw. lokal in `hub/.env.local` — **write-only,
   nie im Chat/Log leaken**).
@@ -485,7 +486,7 @@ Vor dem Publish:
 > höhere Hub-Version zeigt auf Kernels mit älterer `installed_version` also
 > „Update verfügbar", der Klick endet in 422 `package.id_conflict_bundled`.
 > Für office besteht das schon (Hub 0.1.2 > installiert 0.1.1); ein Publish von
-> web-search 0.1.1 erzeugt es für web-search neu. Vor diesem Publish die
+> web-search 0.2.0 erzeugt es für web-search neu. Vor diesem Publish die
 > Update-Erkennung für Bundled-IDs abschalten oder den Badge bewusst in Kauf
 > nehmen.
 

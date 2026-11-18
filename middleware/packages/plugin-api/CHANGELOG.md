@@ -8,6 +8,721 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.54.0 — 2026-11-04
+
+Additive. The capture disclosure gets a producer.
+
+### Added
+
+- **`TurnIngestResult.captureDisclosure?`** — what a capture decorator decided
+  for the turn. Set by the decorator, never by a backend; absent when no capture
+  filter ran or at `capture_level=off`.
+- **`TurnIngestResult.embeddingScheduled?`** — the backend scheduled an
+  embedding for the turn. It is computed after the write, so the vector may not
+  exist yet.
+
+## 1.53.0 — 2026-11-03
+
+Additive. Decision batches: several questions in one provider round trip.
+
+### Added
+
+- **`DecisionModelService.decideAll?`** — optional batch call:
+  `DecisionBatchRequest` (`task`, one masked `input`, `questions` keyed by id,
+  each a `choice` over options or a `yesno`) → `DecisionBatchResult`
+  (`answers` keyed by question id: `{kind:'choice', choice, confidence}` or
+  `{kind:'yesno', probability}`; invalid answers absent). A provider that
+  evaluates questions in parallel (Jev) answers a batch about as fast as one
+  question. Absent → consumers ask question by question via `choose`.
+- **`normalizeDecisionBatch`** — validates a provider's batch answers against
+  the request; drops, never guesses.
+
+## 1.52.0 — 2026-11-03
+
+Additive. Provider-swappable typed decision model for the fast path.
+
+### Added
+
+- **`decisionModel@1`** (`DECISION_MODEL_SERVICE_NAME` = `'decisionModel'`,
+  `DECISION_MODEL_CAPABILITY`): `DecisionModelService.choose()` picks ONE of a
+  closed set of `DecisionOption`s with a calibrated confidence
+  (`DecisionChoiceRequest` / `DecisionChoiceResult`). First provider:
+  TypeSafe Jev (`@omadia/decision-jev`, own repo). The fast path gates every
+  turn on it before any triage model call.
+- **`normalizeDecisionChoice`** — validates a provider answer against its
+  request (known option id, finite confidence clamped to 0..1).
+
+## 1.51.0 — 2026-11-01
+
+Additive. Kernel-verified Teams SSO for plugin routes (#1620).
+
+### Added
+
+- **`RouteAuthMode` `'teams-sso'`** — the kernel authenticates every request
+  with a Microsoft Teams tab SSO token (`Authorization: Bearer`): signature
+  against Entra's keys, tenant and app id of a bot of the installed
+  `@omadia/channel-teams`, issued to a Teams/M365 client, delegated user,
+  lifetime. Same registration constraint and operator grant as `'public'`.
+  An omadia session does not open it. Every failure is the same 401.
+- **`TeamsSsoUser`** (`oid`, `tenantId`, `appId`, `upn?`) — what a
+  `'teams-sso'` handler finds on `req.teamsSsoUser`.
+
+## 1.50.0 — 2026-10-31
+
+Additive. Field-classification auto-approval: approved fields are re-vetted.
+
+### Added
+
+- **`FieldObservation.cleared?: boolean`** — set when every sighting since
+  the last drain was cleared by an operator rule (`non_personal_fields`)
+  instead of masked. The privacy guard keeps sampling such fields (same caps
+  and TTL as masked ones, never logged) so the kernel can re-vet an approval
+  with `vetFieldSample`; absent means masked.
+
+## 1.49.0 — 2026-10-30
+
+Additive. Field-classification suggestions for `non_personal_fields` (#1556
+follow-up).
+
+### Added
+
+- **`privacyFieldClassification.ts`**: `FieldKey`, `FieldObservation`, `FieldValueShape`,
+  `FieldSampleVerdict`, `FieldSampleC1Verdict`, `ModelClassificationRequest`,
+  `ModelClassificationResult`, `ModelPersonalVerdict`. Schema-only: no type
+  carries a field value.
+- **`FieldKey`** (`toolName`, `scope`, `fieldPath`): a field within one source
+  — an Odoo model, an uploaded dataset's id, or `-`. Observations, sample
+  verdicts and previews are keyed by it.
+- **`PrivacyGuardService`** optional methods `takeFieldObservations`,
+  `vetFieldSample`, `classifyModelsSchemaOnly` and `maskedFieldPreview`.
+- **`PrivacyFieldSampleService`** (`fieldSampleForAdmin`) and
+  **`PRIVACY_FIELD_SAMPLES_SERVICE_NAME`** (`'privacyFieldSamples'`) — the
+  real buffered values for an admin on the review page, published by the
+  privacy guard as a service of its own. Kept OFF `PrivacyGuardService`
+  (security review): every plugin granted `privacyRedact` could have read
+  them. The kernel's service gate refuses the name to every plugin; the
+  kernel restricts it to admins and audits every call that returns values.
+  Empty for an uploaded dataset (`query_dataset`).
+- **`OperatorClearedFieldEntry.scope`** (optional): the model or dataset a
+  scoped `non_personal_fields` entry cleared the field for.
+- **`parseLlmJson`** moved here from `@omadia/orchestrator-extras` (which
+  re-exports it), so plugins can parse model JSON without the kernel package.
+
+## 1.48.0 — 2026-10-30
+
+Additive. Operator-cleared non-personal fields (#1556).
+
+### Added
+
+- **`PrivacyReceipt.operatorClearedFields`** /
+  **`OperatorClearedFieldEntry`** (`{ toolName, field }`) — fields the model
+  received in clear because the operator listed them in the privacy guard's
+  `non_personal_fields` setting. PII-free: tool name and field path only.
+
+## 1.47.0 — 2026-10-29
+
+Additive. Privacy Shield masking and rendering (S3-B: #1544, #1559, #1561, #1543,
+#1542).
+
+### Added
+
+- **`PrivacyGuardService.restoreToolInputValues`** /
+  **`remaskPromptValues`** (optional) — the kernel restores whole prompt
+  surrogates (no dates, amounts or name parts) in a data tool's INPUT, and
+  masks the turn's prompt values again in every tool result text the model
+  gets (#1544). The kernel restores only with a provider that has both.
+- **`PrivacyV4ToolRequest.fileExportAvailable`** (optional `boolean`) — whether
+  the turn has a file-export tool (`create_xlsx`); a truncated table offers an
+  Excel file only then (#1559).
+- **`PrivacyV4ToolResult.renderProvenance`** (optional `string`) — a value-free
+  note of how a rendered table was built (source tool, verb chain, row counts,
+  columns) for follow-up questions (#1543).
+- **`PrivacyToolResultV4Request.audience`** / **`PrivacyDigestAudience`**
+  (`'chat' | 'public-api'`) — the public MCP endpoint gets a digest text written
+  for API callers, without the chat-only verb instructions (#1561).
+
+## 1.46.0 — 2026-10-29
+
+Additive. A truthful privacy receipt (#1541, #1557, #1562).
+
+### Added
+
+- **`PrivacyReceipt.maskedContextSpans`** — spans masked in text from earlier
+  conversations (recalled context, replayed answers and user messages).
+  `maskedPromptSpans` now covers only the user's own text of the turn, one
+  entry per distinct value; with `mask_user_prompt` off it stays absent.
+- **`PrivacyPromptMaskRequest.origin`** (`'message' | 'context'`, default
+  `message`) — which of the two lists a `maskUserPrompt` call books into.
+- **`PrivacyReceipt.nameDetector`** (`'active' | 'unconfigured' | 'failed'`)
+  — the C1 name detector during the turn's free-text masking.
+- **`PrivacyReceipt.unprotected`** — a tool of the turn bypassed the shield.
+- **`PrivacyGuardService.nameDetectorStatus()`** (optional) and
+  **`PrivacyNameDetectorStatus`** — the detector's state now (plus whether
+  `mask_user_prompt` is on), for the operator's privacy posture.
+
+### Changed (meaning, not shape)
+
+- **`PrivacyReceipt.maskedPromptSpans`** covers only the user's own text of
+  the turn, one entry per distinct value. Replayed answers, replayed user
+  messages, recalled context and the verifier's correction hint moved to
+  `maskedContextSpans`.
+- **`PrivacyReceipt.identityValuesOnWire`** counts only person-shaped values
+  (full name, e-mail, phone) the user wrote as whole words (#1549).
+
+## 1.45.0 — 2026-10-29
+
+Additive. Envelope-aware dataset provenance (v414).
+
+### Added
+
+- **`PrivacyDatasetProvenance.itemsPath`** (optional `string`) — set when the
+  origin tool result was an envelope (`{ model, scope, count, truncated,
+  records: [ … ] }`) and the dataset rows are that one field's records. A
+  derived refresh recipe carries it as `itemsPath`, so a replay reads the
+  records instead of the first array. The envelope's protocol keys (`count`,
+  `truncated`, `model`, paging/cursor keys) are dataset metadata, never row
+  columns; any other scalar sibling (a timesheet's `jahr`/`kw`) stays a column.
+
+## 1.44.0 — 2026-10-29
+
+Additive. Structured output by a forced tool call on `ctx.llm` (fast-path
+router/planner).
+
+### Added
+
+- **`LlmCompleteRequest.tools`** (`LlmToolDefinition[]`: `name`,
+  `description`, `inputSchema`) and **`LlmCompleteRequest.toolChoice`**
+  (`{ name }` — force that tool). A tool `inputSchema` needs no
+  `additionalProperties: false`. Models that cannot force a tool degrade to
+  an optional call, so a plugin must still accept a text answer.
+- **`LlmCompleteResult.toolCalls`** (`LlmToolCall[]`: `name`, parsed
+  `input`) — present only when the model called a tool. The host runs no
+  tool loop.
+
+Also additive (same release): dataset provenance, so a canvas can derive an
+LLM-free refresh recipe for a table the agent filled by privacy-shield
+`datasetId`.
+
+- **`PrivacyToolResultV4Request.toolInput?`** — the tool call input as
+  dispatched; the shield keeps it turn-scoped as the dataset's provenance.
+- **`PrivacyGuardService.datasetProvenance?(turnId, datasetId)`** →
+  **`PrivacyDatasetProvenance`** `{ tool, input, verbs, truncated }` — the ONE
+  tool call behind a dataset plus the verb chain applied since
+  (**`PrivacyDatasetVerbStep`** `{ verb, args }`). Server-side only.
+
+## 1.40.0 — 2026-10-28
+
+Additive. Stored processes carry their provenance, so a Privacy Shield can
+keep processes written in an unprotected turn out of recall and the process
+tools (#1540).
+
+### Added
+
+- **`ProcessRecord.unprotected`**, **`WriteProcessInput.unprotected`** and
+  **`EditProcessInput.unprotected`** — the process was written or edited in a
+  turn without a shield, or after a tool bypassed it. Sticky: an edit never
+  clears it.
+- **`QueryProcessesInput.excludeUnprotected`** — leave out processes stored
+  `unprotected`. A provider that ignores it stays correct for instances
+  without a shield.
+- **`conflictingUnprotected`** on the `duplicate` variant of
+  `WriteProcessResult` — the existing process is stored `unprotected`, so a
+  caller under a shield must not show its title or id.
+
+## 1.39.0 — 2026-10-28
+
+Additive. Memories and plans derived from an unprotected turn stay out of
+recall under a Privacy Shield (#1536).
+
+### Added
+
+- **`MemorableKnowledgeIngest.unprotected`** — the memory holds values no
+  shield masked (written in an unprotected turn, or from a bypassed tool
+  result). Stored as a property.
+- **`excludeUnprotected`** on `MemorableKnowledgeSearchOptions`,
+  `ExcerptSearchOptions` and `listRecentPlans` — leave out memories stamped
+  `unprotected` or derived from an `unprotected` Turn, and plans linked to
+  such a Turn or to no Turn at all. A backend that ignores it stays correct
+  for instances without a shield.
+
+## 1.38.0 — 2026-10-28
+
+Additive. A turn answered without Privacy Shield protection can be kept out of
+recall that runs under a shield (#1507).
+
+### Added
+
+- **`TurnIngest.unprotected`** — the turn ran without a `privacy.redact@1`
+  provider, or a tool bypassed the shield, so its answer holds values no
+  shield masked. Stored as a Turn property, only written when present (like
+  `owners`), so a re-ingest from transcripts keeps it.
+- **`excludeUnprotected`** on `SearchTurnsOptions`,
+  `SearchTurnsByEmbeddingOptions` and `EntityCapturedTurnsOptions` — leave
+  such turns out. A backend that ignores it stays correct for instances
+  without a shield, and recalls them under one.
+
+## 1.37.0 — 2026-10-28
+
+Additive. Prompt-surrogate restore tells the user what it could not map back
+(#1528).
+
+### Added
+
+- **`UnresolvedSurrogateCountOptions`** — `{ unreadableLiterals?: boolean }`.
+- **`PrivacyGuardService.countUnresolvedSurrogates(turnId, text, options?)`**
+  — the new optional third parameter. `unreadableLiterals: false` drops the
+  fail-closed hit on a date or amount literal whose value cannot be read, for
+  a notice to the user. Default unchanged.
+
+## 1.36.0 — 2026-10-28
+
+Additive. Plan recall can tell a really finished step from one the old
+plan-runner closed without work (#1502).
+
+### Added
+
+- **`isEvidencedPlanStepDone(props)`** — `true` only for a `done` PlanStep
+  whose `resultSummary` names a work tool or the turn's answer. A `done` step
+  with no evidence, or with a bookkeeping tool's (`memory:`,
+  `v4_render_answer:`, …), is a pre-#1502 artefact and does not count.
+- **`PLAN_STEP_ANSWER_EVIDENCE`** — the evidence recorded on the step a
+  turn's answer completes.
+- **`PLAN_BOOKKEEPING_TOOL_NAMES`** — the tools whose calls serve the turn
+  (`memory`, `v4_render_answer`, `suggest_follow_ups`, `ask_user_choice`);
+  their evidence never proves a step's work.
+
+## 1.35.0 — 2026-10-27
+
+Additive. A plugin can declare its own credential check, so an integration
+holding a wrong, revoked or expired key stops reading as healthy (#1453).
+
+### Added
+
+- **`VerifyConnection`** — the shape of the optional `verifyConnection(ctx)`
+  export the kernel calls after every successful activation (bounded, never
+  awaited on the boot path, never able to fail an activation) and on the
+  operator's re-check.
+- **`PluginConnectionVerdict`** — what that export answers: `status`
+  (`connected` / `rejected` / `inconclusive`), an optional `cause`, and the
+  plugin's own localized `title` / `detail` (core ships no operator copy).
+- **`ConnectionRejectionCause`** — `http_401`, `http_403_auth`,
+  `protocol_auth_failure`. A `rejected` verdict without one of these is
+  demoted to `inconclusive` by the kernel: `rejected` turns a plugin red and
+  withholds its tools, so core refuses to take an unnamed one on trust.
+- **`classifyHttpAuthFailure(status, bodyText?)`** — core's HTTP rules (401
+  yes, a bare 403 no), so no plugin re-derives them.
+
+Nothing existing was touched; a plugin without `verifyConnection` keeps the
+shape it had. `1.34.0` was not released.
+
+## 1.33.0 — 2026-10-16
+
+Additive. A Privacy Shield v4 table render keeps its canvas snapshot off the
+model's `tool_result` (#1402).
+
+### Added
+
+- **`PrivacyV4ToolResult`** — the return type of
+  `PrivacyGuardService.runV4Tool`: `resultText` (LLM-bound, never a real
+  value) plus the optional **`canvasSentinel`**, a table render's
+  `_pendingCanvasTree` snapshot with the real cells. The kernel hands it to
+  the turn's canvas-sentinel sink, never to the model. A provider that
+  returns `{ resultText }` alone still conforms.
+
+## 1.32.0 — 2026-10-16
+
+Additive. The Danger-Zone memory purge deletes the conversation history, not
+only the remembered facts (#1334).
+
+### Added
+
+- **`KnowledgeGraph.countConversationHistory?` / `purgeConversationHistory?`**
+  — count and hard-delete the Turns of a scope or user and everything derived
+  from them (Session, Run, AgentInvocation, ToolCall, Plan, PlanStep, Fact),
+  through one shared selection so the preview counts what the purge deletes.
+  Optional: a provider without them is reported as unsupported by the purge.
+- **`ConversationHistoryPurgeFilter`** and
+  **`CONVERSATION_HISTORY_NODE_TYPES`**.
+
+## 1.31.0 — 2026-10-16
+
+Additive. A plugin tool that only some channels can serve can say so per turn,
+so the model is not offered a call that can only fail (#1346).
+
+### Added
+
+- **`ToolRegistrationOptions.isAvailable?: () => boolean`** — evaluated by the
+  kernel inside the turn scope whenever it builds the tool list and the
+  system-prompt tool docs; `false` (or a throw) hides the tool's spec and
+  `promptDoc` for that turn (on `registerHandler`, the `promptDoc` only).
+  Must answer the same for the whole turn. Advertisement only: dispatch is not gated, so the
+  handler must still answer a call on such a turn truthfully. Absent ⇒ always
+  offered; a kernel before 1.31.0 ignores it.
+
+## 1.30.0 — 2026-10-16
+
+Additive. One boundary-preset library for both places an operator can forbid an
+agent something (#1104): the per-agent "Boundaries" tab and the install-wide
+defaults of a `responseGuard@1` provider. They used to carry separate
+libraries (12 and 10 ids) with only 2 ids in common.
+
+### Added
+
+- **`BOUNDARY_PRESETS`**, **`getBoundaryPreset(id)`**, **`BoundaryPreset`**,
+  **`BoundaryPresetCategory`** — the 12 curated presets (id, category, label
+  key, rule wording). The builder compiles them into an agent's
+  `## Boundaries` section; `@omadia/plugin-quality-guard` 0.2.0 resolves its
+  `default_boundary_presets` against the same entries.
+
+## 1.29.0 — 2026-10-16
+
+Additive. A plugin's admin surface can learn who the operator is and write
+its privileged actions into the kernel's `admin_audit` ledger (#1329, first
+user: `@omadia/channel-api`'s API-key lifecycle).
+
+### Added
+
+- **`OperatorAuthAccessor.sessionPrincipal?(cookieHeader)`** — the
+  `OperatorPrincipal` (`userId` = `users.id`, `email`) behind a valid
+  operator session, or `null`.
+- **`OperatorAuthAccessor.recordAdminAction?(cookieHeader, entry)`** — appends
+  one `admin_audit` row. The kernel resolves the actor from the cookie and
+  stamps the calling plugin's id into the row; only actions the kernel admits
+  for the calling plugin and target are written (today `api_key.*` for
+  `@omadia/channel-api`). Resolves `false` instead of throwing.
+- **`OperatorPrincipal`**, **`OperatorAdminAuditEntry`**.
+
+## 1.28.0 — 2026-10-16
+
+Additive. A plugin tool can refuse a call with a message written for the
+model (#1343). Until now every exception a tool threw reached the model only
+as the withheld notice ("The error text was withheld … The outcome is
+unknown"), so an agent could not say why a host was blocked or what an
+operator can change.
+
+### Added
+
+- **`ToolRefusalError`** (`name === 'ToolRefusalError'`) — throw it when the
+  tool did NOT carry the call out and the message is safe to show: written by
+  the tool, free of records, response bodies and upstream error text. Hosts
+  recognise it by `name`, so a plugin that must also load on an older host can
+  throw `Object.assign(new Error(msg), { name: 'ToolRefusalError' })` instead
+  of importing the class; an older host withholds it like any error.
+- **`modelReadableToolErrorMessage(err)`** — the cleaned message (control
+  characters removed, at most `MAX_REFUSAL_MESSAGE_CHARS` = 600) of a
+  `ToolRefusalError` or of a kernel `ctx.http` permission error
+  (`HttpForbiddenError`, `HttpBlockedAddressError`, `HttpRateLimitError`,
+  recognised by name AND by the kernel's message shape); `undefined` for
+  everything else.
+  A message with a line break stays withheld.
+- **`refusedToolErrorNotice(toolName, message)`** — the model-facing text,
+  `Error: tool \`<name>\` refused the call: <message>`, without the
+  unknown-outcome clause.
+- **`blockedToolErrorNotice(toolName, message)`** — for a kernel `ctx.http`
+  block the tool did not catch: `… was stopped by omadia: <message>`, with the
+  unknown-outcome clause, because the tool may have acted before the block.
+- **`readableToolErrorNotice(toolName, err)`** — picks one of the two (or
+  `undefined`), with `refused` telling whether the outcome is known.
+- **`isUnknownOutcomeToolErrorNotice(text)`** — the withheld notice or a
+  kernel block; the kernel's loops use it to refuse an identical repeat.
+- `isToolRefusalError`, `TOOL_REFUSAL_ERROR_NAME`, `MAX_REFUSAL_MESSAGE_CHARS`.
+
+### Changed
+
+- **`toolErrorFromException`** returns the refusal notice for such an error
+  (still logged under a ref) instead of the withheld notice. Every other error
+  is withheld as before. The kernel's dispatch seams run the refusal through
+  the Privacy Shield's returned-error redactor like any `Error:` text.
+
+## 1.27.0 — 2026-10-15
+
+Additive. A Privacy Shield v4 rendered answer reports the prose its model
+wrote apart from the rows the server materialized, so the answer verifier can
+check the model's text and treat the rows as system data.
+
+### Added
+
+- **`PrivacyRenderedAnswer.prose?`** — the `v4_render_answer` directive's
+  prose exactly as the model wrote it (PII-free, in the turn's masked space);
+  omitted when the model wrote none. Everything else in `text` is
+  materialized from the turn's interned tool results.
+
+## 1.26.0 — 2026-10-06
+
+Additive. Member-scoped memory: knowledge belongs to the people present when it
+came up, and a turn may use it only when everyone present is one of them. A
+knowledge-graph provider records who owns a turn and filters reads by the
+room's audience; the kernel's `members` context-memory mode drives both.
+
+### Added
+
+- **`TurnIngest.owners?`** — canonical user ids owning the turn, stored as a
+  Turn property. `[]` means owned by nobody.
+- **`audienceOwners?`** on `SearchTurnsOptions`, `SearchTurnsByEmbeddingOptions`,
+  `EntityCapturedTurnsOptions`, `MemorableKnowledgeSearchOptions` and
+  `ExcerptSearchOptions`: keep only rows whose owners include every id given.
+  For memorable knowledge (and excerpts through their parent) it replaces the
+  viewer ACL: `acl_owners ⊇ audience`, or `manually_authored`. An empty
+  audience matches nothing.
+- **`KnowledgeGraph.getSession(scope, options?)`** with `SessionReadOptions`
+  (`audienceOwners?`). Optional parameter: existing implementations still
+  satisfy the interface, but a decorator that forwards `getSession` must pass
+  `options` on, or the filter is lost.
+- **`canonicalOwners(ids)`** and **`ownersCoverAudience(owners, audience)`** —
+  the one canonical form of an owner set, and the containment rule.
+
+## 1.25.0 — 2026-10-02
+
+Additive. A Privacy Shield provider can mask the stored text a background
+memory job sends to its own model outside a turn. The memory jobs of
+`@omadia/orchestrator-extras` (topic-cluster naming, the inconsistency
+detector, the Teams topic detector) sent stored memories and earlier exchanges,
+which hold real values, through that plugin's provider whether
+`mask_user_prompt` was on or off. The in-tree privacy-guard plugin implements
+the new member from 0.8.0.
+
+### Added
+
+- **`PrivacyGuardService.openStoredTextScope?(request)`** with
+  `PrivacyStoredTextScopeRequest` (`{ job }`, a PII-free job name for the log),
+  returning a `PrivacyStoredTextScope` for one job run:
+  `maskStoredText(text)` returns the failure-closed `PrivacyPromptMaskResult`
+  (the identity shapes of the C0 baseline, the operator deny-list and the C1
+  detector when configured, always on; never `disabled`; `blocked` means the
+  job must not send the text), and `restoreStoredText(text)` inverts the run's
+  surrogate map over the job's output, so a result a user reads carries the
+  real values. The map lives in the scope object: nothing to finalize, and no
+  turn receipt books these spans. OPTIONAL, so an existing provider still
+  compiles and loads; a job that finds a provider without it skips its model
+  call instead of sending the stored text unmasked.
+
+### Documentation
+
+- `PrivacyGuardService.maskReplayedAnswer` is also the mask for the memory jobs
+  a turn awaits (the recall relevance judge, the session briefing): their
+  spans count as the turn's own egress (`maskedPromptSpans`).
+
+## 1.24.0 — 2026-10-02
+
+Additive. A turn the kernel stores can carry its masked wire texts, so a
+capture decorator that scores the turn with a model of its own no longer
+sends the stored texts, whose answer holds the real values the Privacy Shield
+restored. The capture filter of `@omadia/orchestrator-extras` sends the
+masked view to its significance scorer.
+
+### Added
+
+- **`TurnIngest.maskedView?`** with **`TurnMaskedView`**
+  (`{ userMessage, assistantAnswer }`): the user message as the turn's model
+  received it and the answer as the model wrote it, the texts the kernel's
+  fact extraction gets. Set by the kernel for a turn that ran under a privacy
+  handle; an empty view means nothing may be sent. Never stored: a backend
+  ignores it, and the capture decorator strips it before the inner graph.
+  OPTIONAL, so an existing backend or caller compiles unchanged.
+
+## 1.23.0 — 2026-10-02
+
+Additive. A Privacy Shield provider can mask the answers a channel replays as
+chat history whether or not `mask_user_prompt` is on. Teams and Telegram replay
+the answer they delivered as `priorTurns`, and an answer `v4_render_answer`
+materialized server-side carries real values the turn's model never saw, so
+with the flag off (the default) those values reached the next turn's model in
+clear. The in-tree privacy-guard plugin implements the new member from 0.7.0.
+
+### Added
+
+- **`PrivacyGuardService.maskReplayedAnswer?(request)`** with
+  `PrivacyReplayedAnswerRequest` (`{ sessionId, turnId, text }`), returning the
+  failure-closed `PrivacyPromptMaskResult`. Always on: the identity shapes of
+  the C0 baseline (e-mail, IBAN, phone, address, id number; dates and amounts
+  stay, as in a v4 digest), the operator deny-list and the C1 detector when
+  configured. The spans go through the turn's surrogate map, so
+  `restorePromptPseudonyms` restores them in the answer, and they count as the
+  turn's own egress (`maskedPromptSpans`, not `verifierEgress`). Never
+  `disabled`; `blocked` (a detector failed, or a detected value survived
+  substitution) means the answer must not be sent, and the kernel fails the
+  turn with its privacy notice. OPTIONAL, so an existing provider still
+  compiles and loads: the kernel then masks a replayed answer through
+  `maskUserPrompt`, i.e. only while `mask_user_prompt` is on, as before.
+
+### Documentation
+
+- `PrivacyReceipt.maskedPromptSpans` now also covers the replayed answers
+  masked whatever `mask_user_prompt` says, so it can be present with prompt
+  masking off.
+
+## 1.22.0 — 2026-10-02
+
+Additive (#1219): an optional field on the request, an optional field on the
+result, and one more literal on the deprecated `stopReason`.
+
+### Added
+
+- **`LlmCompleteRequest.outputFormat`** — ask `ctx.llm.complete` for a
+  schema-constrained JSON response (`{ type: 'json_schema', schema }`) instead
+  of instructing the model to emit JSON in the prompt. The schema is a JSON
+  Schema object, forwarded to the provider untouched. Those two fields are the
+  whole object: Anthropic rejects unknown nested body fields with a 400, so
+  there is deliberately no `name`.
+
+  Providers without a structured-output channel **ignore** the field rather
+  than failing, so a plugin must still parse the result tolerantly: this
+  narrows the output, it does not guarantee it everywhere. Today the Anthropic
+  adapter maps it (`output_config.format`), and the OpenAI and OpenAI
+  Responses adapters note once per model that they dropped it.
+
+  On Anthropic, though, the call **fails with a 400** for a model without
+  structured-output support and for a schema using keywords the API cannot
+  compile — `minimum`/`maximum`, `minLength`/`maxLength`, or an object
+  without `additionalProperties: false`. Nothing validates the schema before
+  it is sent. A refusal (`refusal` below) returns normally, and its `text`
+  need not match the schema.
+
+  Optional and additive — existing plugins are unaffected.
+
+- **`LlmCompleteResult.refusal?: { category?: string }`** — set when the
+  model's safety classifiers declined the request. The call still succeeds and
+  `finishReason` is `'stop'`, but `text` is empty or only a fragment, so a
+  plugin that reads `text` as the answer should check this first. `category`
+  is the provider's reason (`bio`, `cyber`, …) — an open set that may be
+  absent, so never switch on it exhaustively. Only the category crosses the
+  contract; the provider's free-text explanation stays in the host log.
+
+### Changed
+
+- **`LlmCompleteResult.stopReason`** (deprecated) gains `'refusal'`. A decline
+  used to come back as `'end_turn'`, indistinguishable from a normal turn end.
+  Comparing against the existing literals keeps compiling; a plugin that
+  switches exhaustively over this field needs one more arm — or, better, moves
+  to `finishReason` plus `refusal`.
+
+## 1.21.0 — 2026-10-01
+
+Additive. A run trace can now say that a call did not run in its pass, and
+`findEntities` can address one record by its source-system id, so a caller
+holding an entity handle such as `hr.employee:7` no longer has to turn the id
+into a substring search.
+
+### Added
+
+- **`RunToolCall.replayed?: boolean`** and **`RunAgentInvocation.replayed?: boolean`**:
+  set on the trace of an answer-verifier re-entry (a borderline resample or a
+  correction retry) for every call whose first-run result was handed back
+  instead of the tool running again. Absent on every call that ran in that
+  pass. A request records one trace, the delivered pass's
+  (commit-on-delivery): when the verifier delivers a re-entry, the session
+  log writes that pass's trace, and the first run's — where the flagged calls
+  actually ran — is not recorded. So a flagged entry stands for an execution
+  of the request, not of its pass, and its `durationMs` is the replay's, not
+  the tool's. Counting a request's executions from its recorded trace counts
+  the flagged entries too, and is a lower bound: a first-run call the
+  re-entry did not repeat is in no recorded trace. The Knowledge Graph does
+  not keep the flag yet — both bundled backends write a flagged call as an
+  ordinary `ToolCall` / `AgentInvocation` node (follow-up in
+  `docs/middleware-agent-handoff.md` §13).
+- **`FindEntitiesOptions.id?: string | number`** — exact match on the node's
+  `props.id` (Odoo record id, Confluence page id), compared as strings after
+  trimming, so `7` and `'7'` address the same record. An id that is not in
+  the graph, or an empty id, returns `[]`, never another record of the model;
+  without `id` the search stays model-wide, as before. Combinable with
+  `nameContains` (both must hold). Both in-tree backends implement it. The
+  answer verifier resolves every id-bearing entity handle through it and
+  re-checks `props.model`/`props.id` on the result, so a provider that ignores
+  the option yields no evidence rather than a substitute record.
+
+Why a filter on `findEntities` and not a node-by-id read: the handles the
+verifier sees are often two-part (`hr.employee:7`) and carry no `system`, so an
+external-id read (`odoo:hr.employee:7`) would have to guess the namespace. The
+Neon backend's private external-id lookup and the in-memory node map stay
+internal for that reason. `findEntities` still covers only `OdooEntity` and
+`ConfluencePage` nodes; plugin-namespaced entities (`PluginEntity`) are not
+reachable through it, with or without `id`.
+
+## 1.20.0 — 2026-10-01
+
+Additive. Two Privacy Shield seams gain optional contract members. The answer
+verifier's model requests run under the turn's privacy view and are accounted
+on the turn's own receipt. Tool errors are handled at the dispatch seams
+instead of reaching the model raw: a message a handler threw is withheld, a
+returned `Error:` text is redacted through the Privacy Shield, and both are
+receipted. The in-tree privacy-guard plugin implements every new member.
+
+### Added
+
+- **`PrivacyReceipt.verifierEgress?: VerifierEgressSummary`**
+  (`{ requests, maskedSpans }`): the answer verifier's post-turn model
+  requests, kept apart from `maskedPromptSpans`, which covers only the turn's
+  own model calls. PII-free: a request count plus span types and detector ids.
+- **`PrivacyPromptMaskRequest.stage?`** (`PrivacyEgressStage`,
+  `'turn' | 'verifier'`; absent means `turn`) and
+  **`PrivacyPromptMaskRequest.preview?`**, which computes the outcome without
+  extending the turn's surrogate map or recording anything in the receipt.
+- **`PrivacyGuardService.projectVerifierText?(request)`** with
+  `PrivacyVerifierProjectionRequest`: projects text the verifier composed from
+  real values (a restored claim and its evidence) through the turn's surrogate
+  map, whether or not `mask_user_prompt` is on. `blocked` means the text must
+  not be sent; a caller whose provider lacks the member sends no evidence.
+- **`PrivacyGuardService.countUnresolvedSurrogates?(turnId, text)`**: how many
+  of the turn's prompt placeholders still occur in a restored text. Dates and
+  amounts match by value in any spelling, and a date or amount the check
+  cannot read counts as a hit (fail closed).
+- **`PrivacyReceipt.toolErrors?: readonly ToolErrorEntry[]`** with
+  `ToolErrorEntry { toolName, carrier, outcome, bytes, redactedSpans? }`,
+  `ToolErrorCarrier` (`'thrown' | 'returned' | 'mcp_auth_prompt'`) and
+  `ToolErrorOutcome` (`'withheld' | 'redacted' | 'passed'`). PII-free by
+  contract: names, counts and masked span types only.
+- **`PrivacyGuardService.recordToolError?(request)`** and
+  **`PrivacyGuardService.redactToolErrorText?(request)`** with
+  `PrivacyToolErrorRequest`, `PrivacyToolErrorRedactRequest` and the
+  failure-closed union `PrivacyToolErrorRedactResult` (`redacted` | `withheld`).
+  Both members are OPTIONAL, so an existing provider still compiles and loads;
+  the kernel withholds returned `Error:` text when a provider lacks
+  `redactToolErrorText` rather than forwarding it unchecked.
+- **Runtime helpers** `describeThrownError`, `withheldToolErrorNotice`,
+  `newToolErrorRef` and `toolErrorFromException` (`toolErrorNotice.ts`): the one
+  way to turn a caught exception into a tool result — class name, sanitised
+  code and a log reference, never the message. A tool wrapper that returned
+  `Error: ${err.message}` should call `toolErrorFromException` instead. The
+  notice also tells the model that the call's outcome is unknown and not to
+  repeat a call that changes data. These are runtime exports: a plugin ZIP
+  that imports them resolves `@omadia/plugin-api` from the host, so it needs a
+  host at 1.20.0 or later.
+- **`isWithheldToolErrorNotice(text)`**: true for a notice
+  `withheldToolErrorNotice` built. Recognised by shape, so only for
+  restricting what happens next: the kernel's sub-agent loop uses it to refuse
+  an identical repeat of a call whose wrapper caught the exception itself.
+- **`RECEIPT_FIXTURE_TOOL_ERRORS`**, a receipt fixture for channel renderers.
+
+### Documentation
+
+- `toolControlFlowText.ts` no longer describes the `Error:` carrier as passing
+  to the model unchecked; see its module comment for the seam policy.
+
+## 1.19.2 — 2026-09-30
+
+Documentation only: no change to the exported type surface (the API snapshot is
+unchanged). The documented contract of `RoutinesIntegration.handleRoutineAction`
+tightens at runtime.
+
+### Changed
+
+- **`handleRoutineAction` without a usable `actor` is refused.** Kernels from
+  this release on reject the call when `actor` is absent or its `tenant` or
+  `userId` is blank. The rejection carries a German, user-facing message, no
+  routine is read or changed, and the kernel counts and logs the refusal.
+  Before, such a call ran unscoped, i.e. across tenants. The per-turn routine
+  context is no longer consulted on this path either: card clicks arrive
+  out-of-band, so a context there could only be a stale one.
+- **`actor` stays optional in the type**, so every 1.x caller keeps compiling.
+  The runtime refusal, not the type, is what protects a caller built against an
+  older 1.x contract. The optional form is deprecated, and `actor` becomes a
+  required field in 2.0. It is deliberately not tagged `@deprecated`: on the
+  property that tag would strike through every call that passes `actor`, which
+  is the correct usage.
+- Nothing to change for channel-teams 0.26.1 or later, which already passes
+  `actor`. The service name and capability ref (`routinesIntegration@1`) are
+  unchanged, so no plugin manifest needs an edit.
+
 ## 1.19.1 — 2026-09-25
 
 Documentation only. No change to the exported type surface (#978).

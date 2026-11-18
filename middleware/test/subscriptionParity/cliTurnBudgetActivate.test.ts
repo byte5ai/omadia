@@ -35,8 +35,14 @@ async function spawnTimeoutFor(
   });
   const handle = await activate(ctx);
   try {
-    const bundle = provided.get('chatAgent') as { agent: unknown; raw: unknown } | undefined;
-    assert.ok(bundle, 'activate() must publish chatAgent@1 for a claude-cli provider');
+    const published = provided.get('chatAgent') as { agent: unknown; raw: unknown } | undefined;
+    assert.ok(published, 'activate() must publish chatAgent@1 for a claude-cli provider');
+    // #1598 — the published agent delegates per turn; the CliChatAgent built
+    // for the legacy path is the wrapper's `legacy`.
+    const bundle = {
+      ...published,
+      agent: (published.agent as { legacy?: unknown }).legacy ?? published.agent,
+    };
     // The CLI branch must have produced a CliChatAgent, or the deps read below
     // inspects the wrong object and proves nothing.
     assert.notEqual(bundle.agent, bundle.raw, 'expected the CliChatAgent, not the orchestrator');

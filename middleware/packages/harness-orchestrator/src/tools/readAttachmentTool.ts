@@ -1,6 +1,10 @@
 import { z } from 'zod';
 
-import { extractAttachmentText } from '../attachmentExtract.js';
+import {
+  detectTabularFormat,
+  extractAttachmentText,
+  type TabularFormat,
+} from '../attachmentExtract.js';
 
 export const READ_ATTACHMENT_TOOL_NAME = 'read_attachment';
 
@@ -36,9 +40,10 @@ const ReadAttachmentInputSchema = z.object({
 export const readAttachmentToolSpec = {
   name: READ_ATTACHMENT_TOOL_NAME,
   description:
-    'Liest den TEXT-Inhalt eines vom User in DIESEM oder einem früheren Turn hochgeladenen Dokuments (.docx, .pdf, .md, .txt, .csv, .json) über seinen `storage_key`. ' +
+    'Liest den TEXT-Inhalt eines vom User in DIESEM oder einem früheren Turn hochgeladenen Dokuments (.docx, .pdf, .md, .txt, .json) über seinen `storage_key`. ' +
     'Die `storage_key`-Werte stehen im `[attachments-info]`-Block am Ende der User-Nachricht. ' +
     'In der Regel ist der Dokumentinhalt bereits automatisch als `[attachment-content: …]`-Block in die Nachricht eingebettet — nutze dieses Tool nur, wenn der Inhalt fehlt, abgeschnitten wurde, oder du eine Datei aus einem früheren Turn erneut lesen willst. ' +
+    'Tabellen (CSV, XLSX) liest es NICHT: sie werden beim Hochladen als Dataset importiert, ihre Zeilen liest du mit `query_dataset`. ' +
     'Bilder sind NICHT text-extrahierbar (die werden separat als Vision-Input behandelt).',
   input_schema: {
     type: 'object' as const,
@@ -54,9 +59,29 @@ export const readAttachmentToolSpec = {
 };
 
 /**
+ * The answer to a tabular upload. `read_attachment` is intern-exempt, so its
+ * result reaches the model as it is, with prompt masking on or off. A table's
+ * rows go through the dataset path instead, which privacy-scans every cell at
+ * import (`datasetImport.ts`, flagged cells encrypted at rest) and serves
+ * them through `query_dataset` behind the shield. Handing out the file's text
+ * here would put the cells that path protects on the wire in clear. Names the
+ * format only, never a cell.
+ */
+function tabularRefusal(storageKey: string, format: TabularFormat): string {
+  return (
+    `Error: attachment \`${storageKey}\` is a ${format.toUpperCase()} table, and read_attachment does not return table contents. ` +
+    'A table uploaded to the chat is imported as a dataset (see its `[dataset-imported]` block): read its rows with `query_dataset` ' +
+    '(`list_datasets` gives the `dataset_id`, then `get_schema` and `query_rows`). ' +
+    'If no dataset exists for it, tell the user the table could not be read; do not guess its contents.'
+  );
+}
+
+/**
  * Orchestrator-side handler for `read_attachment`. Resolves the attachment's
  * bytes via the injected {@link AttachmentReader}, extracts plain text, and
- * returns it (or a clear, model-readable error string). Never throws.
+ * returns it (or a clear, model-readable error string). Refuses a tabular
+ * upload — the same {@link detectTabularFormat} rule the chat-attachment
+ * ingest applies — see {@link tabularRefusal}. Never throws.
  */
 export class ReadAttachmentTool {
   constructor(private readonly reader: AttachmentReader) {}
@@ -74,6 +99,11 @@ export class ReadAttachmentTool {
       if (!found) {
         return `Error: attachment \`${key}\` not found (storage unconfigured or key unknown).`;
       }
+      // The storage key stands in for a missing file name: keys end in the
+      // upload's name or extension (`createAttachmentReader` derives the
+      // name from it the same way).
+      const tabular = detectTabularFormat(found.contentType, found.fileName ?? key);
+      if (tabular !== undefined) return tabularRefusal(key, tabular);
       const result = await extractAttachmentText(
         found.bytes,
         found.contentType,

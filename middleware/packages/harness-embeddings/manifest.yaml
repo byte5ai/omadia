@@ -46,31 +46,51 @@ setup:
   fields:
     - key: "ollama_base_url"
       type: "string"
-      label: "Ollama Base-URL"
-      help: "Base-URL des Ollama-Sidecars (kein trailing slash). Leer lassen → Plugin aktiviert sich, baut aber keinen Client (Konsumenten degraden auf in-memory / no-op)."
+      label:
+        en: "Ollama base URL"
+        de: "Ollama Base-URL"
+      help:
+        en: "Base URL of the Ollama sidecar (no trailing slash). Leave empty → the plugin activates but builds no client (consumers degrade to in-memory / no-op)."
+        de: "Base-URL des Ollama-Sidecars (kein trailing slash). Leer lassen → Plugin aktiviert sich, baut aber keinen Client (Konsumenten degraden auf in-memory / no-op)."
       required: false
       default: ""
     - key: "ollama_model"
       type: "string"
-      label: "Embedding-Modell"
-      help: "Modellname, den der Sidecar pullt. Standard: nomic-embed-text."
+      label:
+        en: "Embedding model"
+        de: "Embedding-Modell"
+      help:
+        en: "Model name the sidecar pulls. Default: nomic-embed-text."
+        de: "Modellname, den der Sidecar pullt. Standard: nomic-embed-text."
       required: false
       default: "nomic-embed-text"
     - key: "ollama_timeout_ms"
       type: "integer"
-      label: "Embed-Timeout (ms)"
-      help: "Hard-cancel pro embed()-Call. Cold-start nomic-embed-text auf Fly braucht 2-5s; 30000 ist großzügig."
+      label:
+        en: "Embed timeout (ms)"
+        de: "Embed-Timeout (ms)"
+      help:
+        en: "Hard cancel per embed() call. A cold start of nomic-embed-text on Fly takes 2-5s; 30000 is generous."
+        de: "Hard-cancel pro embed()-Call. Cold-start nomic-embed-text auf Fly braucht 2-5s; 30000 ist großzügig."
       required: false
       default: 30000
     - key: "embedding_dimensions"
       type: "integer"
-      label: "Vektor-Dimensionen des Modells"
-      help: "Wird als Provider-Metadatum veröffentlicht; der Knowledge-Graph vergleicht es mit dem Modell, mit dem der bestehende Korpus embedded wurde (#440). Bewusst OHNE Default: für bekannte Modelle (nomic-embed-text 768, mxbai-embed-large 1024, bge-m3 1024, all-minilm 384) wird der Wert aus dem Modell abgeleitet. Nur bei einem unbekannten Modell nötig — fehlt er dort, published das Plugin den Client ohne Metadaten und das Gate lässt Writes wie vor #440 unverändert zu. Widerspricht der Wert dem bekannten Modell, published das Plugin gar nichts."
+      label:
+        en: "Model vector dimensions"
+        de: "Vektor-Dimensionen des Modells"
+      help:
+        en: "Published as provider metadata; the Knowledge Graph compares it with the model the existing corpus was embedded with (#440). Deliberately WITHOUT a default: for known models (nomic-embed-text 768, mxbai-embed-large 1024, bge-m3 1024, all-minilm 384) the value is derived from the model. Only needed for an unknown model — if it is missing there, the plugin publishes the client without metadata and the gate lets writes through unchanged, as before #440. If the value contradicts the known model, the plugin publishes nothing at all."
+        de: "Wird als Provider-Metadatum veröffentlicht; der Knowledge-Graph vergleicht es mit dem Modell, mit dem der bestehende Korpus embedded wurde (#440). Bewusst OHNE Default: für bekannte Modelle (nomic-embed-text 768, mxbai-embed-large 1024, bge-m3 1024, all-minilm 384) wird der Wert aus dem Modell abgeleitet. Nur bei einem unbekannten Modell nötig — fehlt er dort, published das Plugin den Client ohne Metadaten und das Gate lässt Writes wie vor #440 unverändert zu. Widerspricht der Wert dem bekannten Modell, published das Plugin gar nichts."
       required: false
     - key: "max_concurrent"
       type: "integer"
-      label: "Max. parallele Embeddings"
-      help: "FIFO-Limit gegen Ollama-CPU-Burst (boot replay + backfill + live ingest). Default 4. 0 oder negativ → kein Limit."
+      label:
+        en: "Max. concurrent embeddings"
+        de: "Max. parallele Embeddings"
+      help:
+        en: "FIFO limit against Ollama CPU bursts (boot replay + backfill + live ingest). Default 4. 0 or negative → no limit."
+        de: "FIFO-Limit gegen Ollama-CPU-Burst (boot replay + backfill + live ingest). Default 4. 0 oder negativ → kein Limit."
       required: false
       default: 4
 

@@ -101,6 +101,7 @@ class FakeIdentityStore implements OperatorAgentIdentityStore {
       longDescription: norm(input.longDescription),
       instructions: norm(input.instructions),
       accentColor: norm(input.accentColor),
+      verbosity: input.verbosity ?? null,
       persona: input.persona,
       quality: input.quality,
       composed: input.composed,
@@ -116,6 +117,7 @@ class FakeIdentityStore implements OperatorAgentIdentityStore {
       existing.longDescription === next.longDescription &&
       existing.instructions === next.instructions &&
       existing.accentColor === next.accentColor &&
+      (existing.verbosity ?? null) === (next.verbosity ?? null) &&
       JSON.stringify(existing.persona ?? null) ===
         JSON.stringify(next.persona ?? null) &&
       JSON.stringify(existing.quality ?? null) ===
@@ -415,6 +417,42 @@ describe('operator agent identity routes (#914)', () => {
     assert.equal(res.status, 400);
   });
 
+  it('PUT stores the answer-size level and GET reports it; null means inherit', async () => {
+    const put = await fetch(`${baseUrl}/sales/identity`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ verbosity: 'brief' }),
+    });
+    assert.equal(put.status, 200);
+    const body = (await put.json()) as IdentityBody & {
+      identity: { verbosity: string | null };
+    };
+    assert.equal(body.identity.verbosity, 'brief');
+    assert.equal(identityStore.rows.get('agent-1')?.verbosity, 'brief');
+
+    const got = await fetch(`${baseUrl}/sales/identity`);
+    const gotBody = (await got.json()) as { identity: { verbosity: string | null } };
+    assert.equal(gotBody.identity.verbosity, 'brief');
+
+    const cleared = await fetch(`${baseUrl}/sales/identity`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ verbosity: null }),
+    });
+    const clearedBody = (await cleared.json()) as { identity: { verbosity: string | null } };
+    assert.equal(clearedBody.identity.verbosity, null);
+  });
+
+  it('rejects an answer-size level outside the closed scale', async () => {
+    const res = await fetch(`${baseUrl}/sales/identity`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ verbosity: 'verbose' }),
+    });
+    assert.equal(res.status, 400);
+    assert.equal(((await res.json()) as { error: string }).error, 'invalid_body');
+  });
+
   it('uploads an avatar, derives icons and serves the original back', async () => {
     const png = await opaquePng();
     const res = await fetch(`${baseUrl}/sales/identity/avatar`, {
@@ -660,6 +698,19 @@ describe('operator agent identity routes (#914)', () => {
     // the bot introduces itself with), so a rename that never reaches the
     // registry is a rename the operator sees saved and never hears spoken.
     // A rename is rare and deliberate; rolling sessions for it is the point.
+    assert.equal(reloads, 1);
+  });
+
+  it('reloads the registry when the answer-size level changed', async () => {
+    reloads = 0;
+    await fetch(`${baseUrl}/sales/identity`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ verbosity: 'tldr' }),
+    });
+    // The level is spliced into the system prompt by the build, so a saved
+    // change that never reaches the registry is the same silent no-op the
+    // name and the compiled prompt guard against.
     assert.equal(reloads, 1);
   });
 

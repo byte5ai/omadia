@@ -22,6 +22,8 @@
 import type { LlmProvider } from '@omadia/llm-provider';
 import { collectText, textMessage } from '@omadia/llm-provider';
 
+import type { OpenJobPrivacy } from './jobPrivacy.js';
+
 export interface SessionSummaryInput {
   /** Session scope (e.g. 'chat-1', 'teams-…'). Pure diagnostic field
    *  for the prompt; not used for filtering. */
@@ -52,6 +54,14 @@ export interface HaikuSessionSummaryGeneratorOptions {
   maxTokens?: number;
   /** Optional log sink. Defaults to `console.error`. */
   log?: (msg: string) => void;
+  /**
+   * WP-10 — the Privacy Shield route for the transcript, which carries the
+   * session's stored real values. The summary is restored through the same
+   * run before it is returned, so the briefing and the persisted summary
+   * carry real values. A run that cannot mask skips the summary. Absent ⇒
+   * the transcript goes out as stored.
+   */
+  privacy?: OpenJobPrivacy;
 }
 
 const DEFAULT_MODEL = 'claude-haiku-4-5-20251001';
@@ -109,20 +119,25 @@ export function createHaikuSessionSummaryGenerator(
         .join('\n\n');
 
       try {
+        const request = `<session scope="${input.scope}">\n${transcript}\n</session>`;
+        const run = opts.privacy?.('session-briefing');
+        const masked = run ? await run.mask(request) : { send: true as const, text: request };
+        if (!masked.send) {
+          log(`[session-summary] privacy: ${masked.reason} — summary skipped (scope=${input.scope})`);
+          return '';
+        }
         const response = await opts.llm.complete({
           model,
           maxTokens,
           system: SYSTEM_PROMPT,
-          messages: [
-            textMessage('user', `<session scope="${input.scope}">\n${transcript}\n</session>`),
-          ],
+          messages: [textMessage('user', masked.text)],
         });
         const text = collectText(response.content);
         if (!text) {
           log(`[session-summary] empty response from Haiku (scope=${input.scope})`);
           return '';
         }
-        return text.trim();
+        return run ? (await run.restore(text.trim())).trim() : text.trim();
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         log(`[session-summary] Haiku call failed (scope=${input.scope}): ${msg}`);

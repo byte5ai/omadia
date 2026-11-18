@@ -1,4 +1,4 @@
-import { screen } from '@testing-library/react';
+import { fireEvent, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderWithIntl } from '../../../_lib/test-utils';
@@ -19,9 +19,12 @@ interface Totals {
   costUsd: number;
   referenceCostUsd: number;
   subscriptionCalls: number;
+  unpricedCalls?: number;
+  unpricedModels?: string[];
+  cacheSavingsUsd?: number;
 }
 
-function dashboard(totals: Totals): unknown {
+function dashboard(totals: Totals, rest: Record<string, unknown> = {}): unknown {
   return {
     totals: {
       inputTokens: 1200,
@@ -34,6 +37,23 @@ function dashboard(totals: Totals): unknown {
     byModel: [],
     bySource: [],
     timeSeries: [],
+    ...rest,
+  };
+}
+
+const METERED: Totals = { calls: 5, costUsd: 2.5, referenceCostUsd: 0, subscriptionCalls: 0 };
+
+function byKey(key: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    key,
+    calls: 3,
+    costUsd: 1.3,
+    referenceCostUsd: 0,
+    inputTokens: 1000,
+    outputTokens: 200,
+    cacheReadTokens: 5000,
+    cacheCreationTokens: 208000,
+    ...extra,
   };
 }
 
@@ -69,7 +89,7 @@ describe('ADMIN → Usage & cost page', () => {
     expect(screen.getByText('Total cost').nextSibling).toHaveTextContent('$0.00');
 
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toMatch(/^\/bot-api\/usage\/dashboard\?bucket=hour&since=/);
+    expect(url).toMatch(/^\/bot-api\/usage\/dashboard\?bucket=hour&tz=UTC&since=/);
     expect(init.credentials).toBe('include');
   });
 
@@ -95,6 +115,166 @@ describe('ADMIN → Usage & cost page', () => {
     expect(screen.queryByText('Total cost')).not.toBeInTheDocument();
   });
 
+  it('#1396 — sends the configured zone and asks for whole local days', async () => {
+    respondWith(dashboard(METERED));
+    renderWithIntl(<UsageDashboardPage />, { timeZone: 'Europe/Berlin' });
+    await screen.findByText('Total cost');
+
+    fireEvent.click(screen.getByRole('button', { name: '7 days' }));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    const [url] = fetchMock.mock.calls[1] as [string];
+    const params = new URL(url, 'http://x').searchParams;
+    expect(params.get('bucket')).toBe('day');
+    expect(params.get('tz')).toBe('Europe/Berlin');
+    // 5.5 days back; the middleware floors that to local midnight, so the
+    // range is today plus six whole days, DST shift or not.
+    const back = Date.now() - new Date(params.get('since')!).getTime();
+    expect(back).toBeGreaterThan(5.5 * 86_400_000 - 60_000);
+    expect(back).toBeLessThan(5.5 * 86_400_000 + 60_000);
+  });
+
+  it('#1388 — renders bars that span the chart height, with an axis and no bar for idle buckets', async () => {
+    respondWith(
+      dashboard(METERED, {
+        timeSeries: [
+          { bucket: '2026-10-07T10:00:00.000Z', costUsd: 3.24, calls: 76 },
+          { bucket: '2026-10-07T11:00:00.000Z', costUsd: 0, calls: 0 },
+          { bucket: '2026-10-07T12:00:00.000Z', costUsd: 1.62, calls: 10 },
+        ],
+      }),
+    );
+    renderWithIntl(<UsageDashboardPage />);
+
+    const chart = await screen.findByTestId('cost-chart');
+    const buckets = Array.from(chart.children) as HTMLElement[];
+    expect(buckets).toHaveLength(3);
+    // jsdom has no layout engine: pin the class that gives each bucket a
+    // definite height, without which every bar computed to 0 px.
+    for (const b of buckets) expect(b.className).toMatch(/\bh-full\b/);
+    expect((buckets[0]!.firstElementChild as HTMLElement).style.height).toBe('100%');
+    expect((buckets[2]!.firstElementChild as HTMLElement).style.height).toBe('50%');
+    expect(buckets[1]!.childElementCount).toBe(0);
+    expect(buckets[0]!.title).toBe('Oct 7, 2026, 10:00 AM · $3.24 · 76 calls');
+    // Axis: first and last bucket.
+    expect(screen.getByText('Oct 7, 2026, 10:00 AM')).toBeInTheDocument();
+    expect(screen.getByText('Oct 7, 2026, 12:00 PM')).toBeInTheDocument();
+  });
+
+  it('#1396 — labels a daily bucket with its date only', async () => {
+    respondWith(
+      dashboard(METERED, {
+        timeSeries: [{ bucket: '2026-10-06T22:00:00.000Z', costUsd: 3.24, calls: 76 }],
+      }),
+    );
+    renderWithIntl(<UsageDashboardPage />, { timeZone: 'Europe/Berlin' });
+    await screen.findByTestId('cost-chart');
+    respondWith(
+      dashboard(METERED, {
+        timeSeries: [{ bucket: '2026-10-06T22:00:00.000Z', costUsd: 3.24, calls: 76 }],
+      }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: '7 days' }));
+
+    await vi.waitFor(() => {
+      const bucket = screen.getByTestId('cost-chart').firstElementChild as HTMLElement;
+      // Local midnight in Berlin, shown as a date with no time of day.
+      expect(bucket.title).toBe('Oct 7, 2026 · $3.24 · 76 calls');
+    });
+  });
+
+  it('#1388 — shows the empty state when every bucket is idle', async () => {
+    respondWith(
+      dashboard(METERED, {
+        timeSeries: [
+          { bucket: '2026-10-07T10:00:00.000Z', costUsd: 0, calls: 0 },
+          { bucket: '2026-10-07T11:00:00.000Z', costUsd: 0, calls: 0 },
+        ],
+      }),
+    );
+    renderWithIntl(<UsageDashboardPage />);
+    expect(await screen.findAllByText('No data in this period.')).not.toHaveLength(0);
+    expect(screen.queryByTestId('cost-chart')).not.toBeInTheDocument();
+  });
+
+  it('#1393 — a breakdown row shows cache writes, the reference cost and grouped names', async () => {
+    respondWith(
+      dashboard(METERED, {
+        byModel: [
+          byKey('claude-opus-5'),
+          byKey('claude-cli', { costUsd: 0, referenceCostUsd: 0.0219, cacheCreationTokens: 0 }),
+        ],
+        bySource: [
+          byKey('sub-agent builder', { group: 'builder', members: 3 }),
+          byKey('other', { group: 'other', members: 4 }),
+        ],
+      }),
+    );
+    renderWithIntl(<UsageDashboardPage />);
+
+    const opus = (await screen.findByText('claude-opus-5')).closest('li')!;
+    expect(within(opus).getByText(/5K cache read · 208K cache write/)).toBeInTheDocument();
+
+    const cli = screen.getByText('claude-cli').closest('li')!;
+    expect(within(cli).getByText(/· subscription calls ≈ \$0\.0219 API equivalent/)).toBeInTheDocument();
+    expect(within(opus).queryByText(/API equivalent/)).not.toBeInTheDocument();
+
+    expect(screen.getByText('Builder (3 drafts)')).toBeInTheDocument();
+    expect(screen.getByText('Other (4 sources)')).toBeInTheDocument();
+    expect(screen.queryByText('sub-agent builder')).not.toBeInTheDocument();
+  });
+
+  it('#1389 — marks unpriced models, leaves them out of the total, and says so above it', async () => {
+    respondWith(
+      dashboard(
+        { ...METERED, unpricedCalls: 7, unpricedModels: ['llama3.3:70b', 'mystery-model'] },
+        {
+          byModel: [
+            byKey('claude-opus-5', { costUsd: 2.5 }),
+            byKey('llama3.3:70b', { costUsd: 0, calls: 5, unpricedCalls: 5 }),
+          ],
+          bySource: [byKey('orchestrator', { costUsd: 2.5, calls: 8, unpricedCalls: 4 })],
+        },
+      ),
+    );
+    renderWithIntl(<UsageDashboardPage />);
+
+    const note = await screen.findByTestId('unpriced-note');
+    expect(within(note).getByText('7 calls of 2 models without a known price')).toBeInTheDocument();
+    expect(
+      within(note).getByText(/not in the total cost\. Once a price is added for llama3\.3:70b, mystery-model/),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Total cost').nextSibling).toHaveTextContent('$2.50');
+
+    // A model with no priced call shows the badge and no $0.00 "price".
+    const llama = screen.getByText('llama3.3:70b').closest('li')!;
+    expect(within(llama).getByTestId('unpriced-badge')).toHaveTextContent('price unknown');
+    expect(within(llama).queryByText('$0.00')).not.toBeInTheDocument();
+    // A source that mixes priced and unpriced calls keeps its cost and counts the rest.
+    const orchestrator = screen.getByText('orchestrator').closest('li')!;
+    expect(within(orchestrator).getByTestId('unpriced-badge')).toHaveTextContent('4 calls without price');
+    expect(within(orchestrator).getByText('$2.50')).toBeInTheDocument();
+    const opus = screen.getByText('claude-opus-5').closest('li')!;
+    expect(within(opus).queryByTestId('unpriced-badge')).not.toBeInTheDocument();
+  });
+
+  it('#1389 — shows no note when every call has a price (or the middleware predates it)', async () => {
+    respondWith(dashboard(METERED));
+    renderWithIntl(<UsageDashboardPage />);
+    await screen.findByText('Total cost');
+    expect(screen.queryByTestId('unpriced-note')).not.toBeInTheDocument();
+  });
+
+  it('#1389 — the note and badge exist in German', async () => {
+    respondWith(
+      dashboard({ ...METERED, unpricedCalls: 1, unpricedModels: ['llama3.3:70b'] }, {
+        byModel: [byKey('llama3.3:70b', { costUsd: 0, calls: 1, unpricedCalls: 1 })],
+      }),
+    );
+    renderWithIntl(<UsageDashboardPage />, { locale: 'de' });
+    expect(await screen.findByText('1 Call von 1 Modell ohne bekannten Preis')).toBeInTheDocument();
+    expect(screen.getByTestId('unpriced-badge')).toHaveTextContent('Preis unbekannt');
+  });
+
   it('renders the German catalog too', async () => {
     respondWith(
       dashboard({ calls: 2, costUsd: 0, referenceCostUsd: 0.5, subscriptionCalls: 2 }),
@@ -104,5 +284,51 @@ describe('ADMIN → Usage & cost page', () => {
     const headline = await screen.findByText(/^2 /);
     expect(headline.textContent).not.toMatch(/\{count/);
     expect(screen.getByText(/0,5000\s\$/)).toBeInTheDocument();
+  });
+  const WITH_FX = (): unknown =>
+    dashboard(
+      { ...METERED, cacheSavingsUsd: 1.5 },
+      {
+        fx: { eurPerUsd: 0.9, date: '2026-11-13', source: 'ECB' },
+        byModel: [byKey('claude-opus-5', { costUsd: 2.5, cacheSavingsUsd: 1.5 })],
+      },
+    );
+
+  it('switches between the ledger USD and EUR at the ECB rate it names', async () => {
+    respondWith(WITH_FX());
+    renderWithIntl(<UsageDashboardPage />);
+
+    // English defaults to the ledger currency.
+    const total = (await screen.findByText('Total cost')).parentElement!;
+    expect(total).toHaveTextContent('$2.50');
+    expect(screen.getByText('Cache savings').parentElement!).toHaveTextContent('$1.50');
+
+    fireEvent.click(screen.getByRole('button', { name: 'EUR' }));
+    expect(total).toHaveTextContent('€2.25');
+    expect(total).toHaveTextContent('$2.50 · ECB rate of Nov 13, 2026');
+    const savings = screen.getByText('Cache savings').parentElement!;
+    expect(savings).toHaveTextContent('€1.35');
+    expect(savings).toHaveTextContent('Without the cache: €3.60');
+    const opus = screen.getByText('claude-opus-5').closest('li')!;
+    expect(within(opus).getByText(/· cache saved €1\.35/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'USD' }));
+    expect(total).toHaveTextContent('$2.50');
+  });
+
+  it('defaults to EUR in German', async () => {
+    respondWith(WITH_FX());
+    renderWithIntl(<UsageDashboardPage />, { locale: 'de' });
+    const total = (await screen.findByText('Gesamtkosten')).parentElement!;
+    expect(total).toHaveTextContent(/2,25\s€/);
+    expect(total).toHaveTextContent(/EZB-Kurs vom 13\.11\.2026/);
+    expect(screen.getByText('Cache-Ersparnis').parentElement!).toHaveTextContent(/1,35\s€/);
+  });
+
+  it('stays in USD without a rate and offers no currency switch', async () => {
+    respondWith(dashboard(METERED, { fx: null }));
+    renderWithIntl(<UsageDashboardPage />);
+    expect((await screen.findByText('Total cost')).nextSibling).toHaveTextContent('$2.50');
+    expect(screen.queryByRole('button', { name: 'EUR' })).not.toBeInTheDocument();
   });
 });

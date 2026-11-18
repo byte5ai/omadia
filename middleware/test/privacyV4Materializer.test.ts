@@ -15,7 +15,10 @@ import { buildDigest } from '@omadia/plugin-privacy-guard/dist/v4/digest.js';
 import { createVerbEngine } from '@omadia/plugin-privacy-guard/dist/v4/verbs/index.js';
 import {
   MAX_CHAT_ROWS,
+  MAX_TEXT_CELL_CHARS,
   MaterializerError,
+  UNRENDERABLE_CELL,
+  htmlToPlainText,
   materialize,
 } from '@omadia/plugin-privacy-guard/dist/v4/materializer.js';
 
@@ -330,7 +333,11 @@ describe('Materializer — chat row cap', () => {
   it('caps a table at MAX_CHAT_ROWS and names the omitted count', () => {
     const { store } = harness();
     const { datasetId } = store.internToolResult('x', manyRows(953));
-    const r = materialize(store, { datasetId, columns: cols('employee', 'days'), format: 'table' });
+    const r = materialize(
+      store,
+      { datasetId, columns: cols('employee', 'days'), format: 'table' },
+      { fileExportAvailable: true },
+    );
     assert.equal(r.rowCount, 953, 'rowCount stays the number the answer is about');
     assert.equal(r.renderedRowCount, MAX_CHAT_ROWS);
     const lines = r.text.split('\n');
@@ -342,6 +349,14 @@ describe('Materializer — chat row cap', () => {
     assert.ok(!r.text.includes('Person Nummer 51'));
     // The structured (canvas) table is capped the same way.
     assert.equal(r.structuredTable?.rows.length, MAX_CHAT_ROWS);
+  });
+
+  it('offers no Excel file when no export tool is offered (#1559)', () => {
+    const { store } = harness();
+    const { datasetId } = store.internToolResult('x', manyRows(80));
+    const r = materialize(store, { datasetId, columns: cols('employee'), format: 'table' });
+    assert.ok(r.text.includes('… 30 weitere Zeilen nicht angezeigt (50 von 80)._'), r.text);
+    assert.ok(!r.text.includes('Excel'), 'the footer promised a file nobody can build');
   });
 
   it('caps a list the same way', () => {
@@ -377,6 +392,93 @@ describe('Materializer — chat row cap', () => {
     assert.throws(
       () => materialize(store, { datasetId, columns: cols('days'), format: 'table' }, { maxRows: 0 }),
       MaterializerError,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1542 — nested objects (a Confluence page) render readably for the user;
+// what cannot be rendered says so instead of an opaque `[nested]`.
+// ---------------------------------------------------------------------------
+
+const PAGE_HTML =
+  '<h2>Kontaktliste Testteam</h2><p>Jonas Weber &ndash; jonas.weber@example.com</p>' +
+  '<ul><li>Telefon: +49 30 1234567</li><li>Raum&nbsp;4.12 &amp; 4.13</li></ul>' +
+  '<p>Stand: Oktober<br/>gepflegt von HR — bitte aktuell halten, damit alle Kontakte stimmen.</p>';
+
+function confluencePage() {
+  return {
+    id: '98765',
+    title: 'Kontaktliste Testteam',
+    space: { key: 'ENG', name: 'Engineering', _expandable: { homepage: '/rest/api/x' } },
+    version: { number: 3, when: '2026-10-01T10:00:00Z', by: { displayName: 'Jonas Weber' } },
+    body: {
+      view: { value: PAGE_HTML, representation: 'view', _expandable: { webresource: '' } },
+      _expandable: { storage: '/rest/api/content/98765?expand=body.storage' },
+    },
+  };
+}
+
+describe('Materializer — nested objects (#1542)', () => {
+  it('renders a page body as plain text, version and space by their display fields', () => {
+    const { store } = harness();
+    const { datasetId } = store.internToolResult('confluence_get_page', [confluencePage()]);
+    const r = materialize(store, {
+      datasetId,
+      columns: [
+        { field: 'title', label: 'Titel' },
+        { field: 'space', label: 'Space' },
+        { field: 'version', label: 'Version' },
+        { field: 'body', label: 'Inhalt (wörtlich)' },
+      ],
+      format: 'table',
+    });
+    const cells = r.structuredTable?.rows[0]?.cells ?? {};
+    assert.equal(cells.space, 'ENG – Engineering');
+    assert.equal(cells.version, '3');
+    const body = String(cells.body);
+    assert.ok(body.includes('Kontaktliste Testteam\nJonas Weber – jonas.weber@example.com'), body);
+    assert.ok(body.includes('• Telefon: +49 30 1234567'), body);
+    assert.ok(body.includes('Raum 4.12 & 4.13'), body);
+    assert.ok(!body.includes('<'), 'no HTML tag reaches the cell');
+    assert.ok(!r.text.includes('_expandable'), 'API bookkeeping keys are never rendered');
+    assert.ok(!r.text.includes('[nested]'));
+    assert.deepEqual(r.unrenderedColumns, []);
+    assert.ok(!r.text.includes('nicht darstellen'), 'no "not renderable" note when all rendered');
+  });
+
+  it('caps a long text cell with an ellipsis', () => {
+    const { store } = harness();
+    const long = `<p>${'Absatz mit Inhalt. '.repeat(200)}</p>`;
+    const { datasetId } = store.internToolResult('confluence_get_page', [
+      { id: 1, body: { storage: { value: long, representation: 'storage' } } },
+    ]);
+    const r = materialize(store, { datasetId, columns: cols('body'), format: 'table' });
+    const body = String(r.structuredTable?.rows[0]?.cells.body);
+    assert.ok(body.endsWith(' …'), body.slice(-20));
+    assert.ok(body.length <= MAX_TEXT_CELL_CHARS + 2);
+  });
+
+  it('marks an unrenderable structure explicitly, reports its column and tells the user', () => {
+    const { store } = harness();
+    const deep = { a: { b: { c: { d: 1 } } }, e: { f: { g: 2 } }, h: { i: { j: 3 } } };
+    const { datasetId } = store.internToolResult('x', [{ id: 1, blob: deep }]);
+    const r = materialize(store, {
+      datasetId,
+      columns: [cols('id')[0]!, { field: 'blob', label: 'Rohdaten' }],
+      format: 'table',
+    });
+    assert.ok(r.text.includes(UNRENDERABLE_CELL), r.text);
+    assert.ok(!r.text.includes('[nested]'));
+    assert.deepEqual(r.unrenderedColumns, ['Rohdaten']);
+    assert.ok(r.text.includes('der Spalte „Rohdaten"'), r.text);
+    assert.ok(r.text.includes('Bypass'), 'the user learns how to get the content');
+  });
+
+  it('converts HTML to text: breaks kept, entities decoded, unknown entities left alone', () => {
+    assert.equal(
+      htmlToPlainText('<p>a&amp;b</p><p>c&#228;&#x00FC; &toString; &bogus;</p>'),
+      'a&b\ncäü &toString; &bogus;',
     );
   });
 });

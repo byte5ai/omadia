@@ -6,6 +6,7 @@
  * for instead of a metered API key.
  *
  *  GET  /                       → { backends, generatedAt } (`?refresh=1` to bust cache)
+ *  POST /recheck                → same, freshly probed, and assigns a CLI already signed in
  *  POST /:id/install            → 202 { status:'started' } | 200 { alreadyInstalled } (runtime npm install)
  *  GET  /:id/install/status     → { status: idle|running|succeeded|failed, … }
  *  POST /:id/login/start        → { sessionId, verificationUrl, codeEntry, status } (spawns `claude auth login`)
@@ -14,7 +15,7 @@
  *  POST /:id/login/cancel       → { ok }
  *  POST /:id/logout             → { ok }
  *
- * Detection is read-only (never triggers a login or consumes quota). The login
+ * GET detection is read-only (never triggers a login or consumes quota). The login
  * endpoints spawn the official CLI with the API-key env scrubbed (subscription
  * path only). Auth is required — this exposes host capability, not a secret.
  */
@@ -37,13 +38,36 @@ import {
   InvalidCliVersionError,
 } from '../platform/cliInstallService.js';
 
-export function createAdminCliBackendsRouter(): Router {
+export interface AdminCliBackendsRouterOptions {
+  /**
+   * Runs on the operator's re-check: a CLI signed in from a terminal while
+   * omadia runs reaches the app this way. A failure here must not hide the
+   * detection result the operator asked for.
+   */
+  readonly onRecheck?: () => Promise<unknown>;
+}
+
+export function createAdminCliBackendsRouter(
+  options: AdminCliBackendsRouterOptions = {},
+): Router {
   const router = Router();
 
   router.get('/', async (req: Request, res: Response) => {
     const force = req.query['refresh'] === '1' || req.query['refresh'] === 'true';
     try {
       const snapshot = await detectCliBackends({ force });
+      res.json(snapshot);
+    } catch (err) {
+      res.status(500).json({ error: 'detection_failed', message: errMessage(err) });
+    }
+  });
+
+  router.post('/recheck', async (_req: Request, res: Response) => {
+    try {
+      const snapshot = await detectCliBackends({ force: true });
+      await options.onRecheck?.().catch((err: unknown) => {
+        console.warn(`[cli-backends] re-check hand-off failed: ${errMessage(err)}`);
+      });
       res.json(snapshot);
     } catch (err) {
       res.status(500).json({ error: 'detection_failed', message: errMessage(err) });

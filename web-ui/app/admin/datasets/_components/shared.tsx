@@ -23,11 +23,37 @@ export const MAX_DATASET_ROWS = 50_000;
 /** Mirrors `MAX_UPLOAD_BYTES` in the datasets route (25 MiB), same reason. */
 export const MAX_UPLOAD_MB = 25;
 
+/**
+ * #1558 — mirrors `LINK_KEY_COLUMN_PREFIX` in `@omadia/orchestrator`'s
+ * `datasetLinkKey.ts`. With a link-key secret the import adds a `__k_<column>`
+ * keyed-digest column after every string column; it is internal plumbing for
+ * cross-file joins, not a column of the uploaded file.
+ */
+export const LINK_KEY_COLUMN_PREFIX = '__k_';
+
+/** Whether a dataset column is a generated link-key column (#1558). */
+export function isLinkKeyColumn(name: string): boolean {
+  return name.startsWith(LINK_KEY_COLUMN_PREFIX);
+}
+
+/** The columns of the uploaded file — link-key columns dropped (#1558). */
+export function fileColumns<T extends { name: string }>(columns: readonly T[]): T[] {
+  return columns.filter((c) => !isLinkKeyColumn(c.name));
+}
+
 /** The expanded dataset's schema + current row page. */
 export type DetailState = {
   id: string;
   dataset: DatasetSummary | null;
   rows: Array<Record<string, unknown>>;
+  /**
+   * #1558 — the dataset's first row as the preview shows it (offset 0), kept
+   * while paging. The schema's sample values come from it: the import stores
+   * a pseudonym as the sample of a privacy-flagged cell, while the preview
+   * decrypts the real value for the owner — two tables, two truths. `null`
+   * until the first page loaded, or when the dataset holds no rows.
+   */
+  firstRow: Record<string, unknown> | null;
   totalMatched: number;
   offset: number;
   loading: boolean;

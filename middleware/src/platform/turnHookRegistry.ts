@@ -39,11 +39,21 @@ export interface TurnHookContext {
 
 export interface TurnHookPayload {
   readonly userMessage?: string;
+  /** `onBeforeTurn`: the fast-path triage's verdict (see `@omadia/orchestrator`). */
+  readonly routeHint?: 'simple' | 'complex';
+  /** `onBeforeTurn`: the decision model's plan verdict (see `@omadia/orchestrator`). */
+  readonly planHint?: 'plan' | 'direct';
   readonly assistantAnswer?: string;
   readonly toolName?: string;
   readonly toolResult?: string;
+  /** #1502 — `onAfterToolCall`: the call failed (see `@omadia/orchestrator`). */
+  readonly toolFailed?: boolean;
+  /** #1502 — `onAfterToolCall`: the tool serves the turn, not the task. */
+  readonly toolIsBookkeeping?: boolean;
   /** #133 (E6) — verifier block reason, set on `onVerifierBlocked`. */
   readonly blockReason?: string;
+  /** #133 (E8) — persisted Turn node id, set on `onAfterTurn`. */
+  readonly turnExternalId?: string;
 }
 
 /** #133 (E9) — opaque annotation a hook returns for the orchestrator to emit

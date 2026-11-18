@@ -87,6 +87,7 @@ describe('R0 · listRecentPlans', () => {
       goal: 'done step',
       order: 0,
       status: 'done',
+      resultSummary: 'query_tool: ok',
     });
     await kg.upsertPlanStep({
       stepId: 'open-s2',
@@ -109,6 +110,7 @@ describe('R0 · listRecentPlans', () => {
       goal: 'all done',
       order: 0,
       status: 'done',
+      resultSummary: 'query_tool: ok',
     });
 
     const open = await kg.listRecentPlans({ openOnly: true, limit: 10 });
@@ -207,6 +209,7 @@ describe('R2 · ContextRetriever cross-session recall legs', () => {
       goal: 'write migration',
       order: 0,
       status: 'done',
+      resultSummary: 'query_tool: ok',
     });
     await kg.upsertPlanStep({
       stepId: 'prior-s2',
@@ -416,6 +419,7 @@ describe('R6 · relevance-filtered plan recall', () => {
       goal: 'Die drei wichtigsten Punkte herausarbeiten',
       order: 0,
       status: 'done',
+      resultSummary: 'query_tool: ok',
     });
     await kg.upsertPlanStep({
       stepId: 'vac-s2',
@@ -688,7 +692,14 @@ function stubLlm(reply: string | (() => never)): LlmProvider {
 
 describe('R6b · resume framing for interrupted plans', () => {
   async function renderFor(
-    steps: Array<{ goal: string; status: 'done' | 'pending' | 'in_progress'; order: number; sideEffecting?: boolean }>,
+    steps: Array<{
+      goal: string;
+      status: 'done' | 'pending' | 'in_progress';
+      order: number;
+      sideEffecting?: boolean;
+      /** resultSummary of a `done` step; `null` = none (pre-#1502 record). */
+      evidence?: string | null;
+    }>,
   ): Promise<string> {
     const kg = new InMemoryKnowledgeGraph();
     await kg.ingestPlan({
@@ -705,6 +716,9 @@ describe('R6b · resume framing for interrupted plans', () => {
         goal: s.goal,
         order: s.order,
         status: s.status,
+        ...(s.status === 'done' && s.evidence !== null
+          ? { resultSummary: s.evidence ?? 'query_tool: ok' }
+          : {}),
         ...(s.sideEffecting ? { sideEffecting: true } : {}),
       });
     }
@@ -743,6 +757,25 @@ describe('R6b · resume framing for interrupted plans', () => {
     assert.match(text, /Seiteneffekte/, 'side-effect caveat present');
     assert.match(text, /nicht doppelt/, 'warns against double execution');
   });
+
+  // #1502 — a pre-fix plan-runner closed steps no call worked on, either
+  // without evidence or with a bookkeeping call's. Recall must not tell the
+  // model to skip them as finished work.
+  for (const [label, evidence] of [
+    ['no evidence', null],
+    ['memory evidence', 'memory: The path /memories does not exist.'],
+    ['render evidence', 'v4_render_answer: rendered'],
+  ] as const) {
+    it(`a done step with ${label} is not "already done"`, async () => {
+      const text = await renderFor([
+        { goal: 'write billing migration', status: 'done', order: 0, evidence },
+        { goal: 'run billing migration', status: 'pending', order: 1 },
+      ]);
+      assert.doesNotMatch(text, /UNTERBROCHEN/, text);
+      assert.doesNotMatch(text, /NICHT wiederholen/, text);
+      assert.match(text, /0\/2 Schritte erledigt/, text);
+    });
+  }
 });
 
 describe('R8 · recall relevance judge (LLM-agnostic)', () => {

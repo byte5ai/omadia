@@ -82,6 +82,72 @@ describe('applyStreamEvent — writes are addressed by session id (#617)', () =>
     expect(next.updatedAt).toBeGreaterThanOrEqual(before.updatedAt);
   });
 
+  it('takes a retracted tool-call preamble back out of the preview (#1500)', () => {
+    const { sessions, mutateById } = stubSessions();
+
+    applyStreamEvent(sessions, 'bg', 'pending-1', { type: 'text_retract', chars: 3 });
+
+    const next = applied(mutateById, session('bg'));
+    expect(next.messages[1]?.content).toBe('so ');
+  });
+
+  it('ignores a malformed retract count', () => {
+    const { sessions, mutateById } = stubSessions();
+
+    applyStreamEvent(sessions, 'bg', 'pending-1', { type: 'text_retract', chars: Number.NaN });
+
+    const next = applied(mutateById, session('bg'));
+    expect(next.messages[1]?.content).toBe('so far');
+  });
+
+  it('never retracts past the start of the preview', () => {
+    const { sessions, mutateById } = stubSessions();
+
+    applyStreamEvent(sessions, 'bg', 'pending-1', { type: 'text_retract', chars: 999 });
+
+    const next = applied(mutateById, session('bg'));
+    expect(next.messages[1]?.content).toBe('');
+  });
+
+  it('keeps the answer-size level from done so the row can offer the next step', () => {
+    const { sessions, mutateById } = stubSessions();
+
+    applyStreamEvent(sessions, 'bg', 'pending-1', {
+      type: 'done',
+      answer: 'kurz',
+      toolCalls: 0,
+      iterations: 1,
+      answerVerbosity: { effective: 'brief', source: 'turn' },
+    });
+
+    const next = applied(mutateById, session('bg'));
+    expect(next.messages[1]?.answerVerbosity).toEqual({ effective: 'brief', source: 'turn' });
+  });
+
+  it('keeps the receipt store key from done, apart from the session-log turn id (#1573)', () => {
+    const { sessions, mutateById } = stubSessions();
+
+    applyStreamEvent(sessions, 'bg', 'pending-1', {
+      type: 'done',
+      answer: 'ok',
+      toolCalls: 1,
+      iterations: 1,
+      turnId: 'turn:fallback::s:2026-10-29T12:00:00.000Z',
+      receiptId: '4de26709-2178-42f7-831f-d1dbfe084dd7',
+      privacyReceipt: {
+        datasetsInterned: 1,
+        fieldsMasked: 0,
+        fieldsCleartext: 1,
+        verbsExecuted: [],
+        pseudonymProjectionUsed: false,
+      },
+    });
+
+    const next = applied(mutateById, session('bg'));
+    expect(next.messages[1]?.receiptId).toBe('4de26709-2178-42f7-831f-d1dbfe084dd7');
+    expect(next.messages[1]?.turnId).toBe('turn:fallback::s:2026-10-29T12:00:00.000Z');
+  });
+
   it('replaces the content wholesale with the authoritative done answer', () => {
     const { sessions, mutateById } = stubSessions();
 
@@ -237,5 +303,168 @@ describe('applyStreamEvent — degraded turns (#1094)', () => {
     const folded = applied(mutateById, session('bg')).messages[1];
     expect(folded?.degradedTurn).toBeUndefined();
     expect(folded?.content).toBe('the authoritative answer');
+  });
+});
+
+/**
+ * The answer verifier emits one `verifier` event AFTER `done` (only when it is
+ * enabled). The fold used to drop it (`default: return m`), so the web chat had
+ * no way to show what the verifier concluded — or that it checked nothing. It
+ * now lands on the message for `<VerifierBadge>`.
+ */
+describe('applyStreamEvent — verifier summary', () => {
+  it('folds the trailing verifier event into the pending message', () => {
+    const { sessions, mutateById } = stubSessions();
+
+    applyStreamEvent(sessions, 'bg', 'pending-1', {
+      type: 'verifier',
+      summary: {
+        badge: 'unavailable',
+        status: 'unavailable',
+        reason: 'pipeline_error',
+        claimCount: 0,
+        contradictionCount: 0,
+        unverifiedCount: 0,
+        retryCount: 0,
+        latencyMs: 0,
+        mode: 'shadow',
+      },
+    });
+
+    const next = applied(mutateById, session('bg'));
+    expect(next.messages[1]?.verifier?.status).toBe('unavailable');
+    expect(next.messages[1]?.verifier?.reason).toBe('pipeline_error');
+    // Metadata, not content: the answer text is left alone.
+    expect(next.messages[1]?.content).toBe('so far');
+    expect(next.messages[0]?.verifier).toBeUndefined();
+  });
+});
+
+/**
+ * In `enforce` mode the verifier releases `done` only after its verdict and
+ * puts that verdict on `done` itself. When it withheld the answer, `done`
+ * carries a localized notice as `answer` plus `answerSource:
+ * 'verifier-blocked'` and `answerIsError` — the message must keep the notice
+ * as its content and record that it is a withheld answer, so the bubble can
+ * say so instead of rendering the notice as an ordinary reply.
+ */
+describe('applyStreamEvent — enforce-mode verifier verdicts', () => {
+  const blockedSummary = {
+    badge: 'failed' as const,
+    status: 'blocked' as const,
+    claimCount: 1,
+    contradictionCount: 1,
+    unverifiedCount: 0,
+    retryCount: 0,
+    latencyMs: 30,
+    mode: 'enforce' as const,
+  };
+
+  it('a withheld answer keeps the notice, the verdict and the withheld marker', () => {
+    const { sessions, mutateById } = stubSessions();
+
+    applyStreamEvent(sessions, 'bg', 'pending-1', {
+      type: 'done',
+      answer: 'Diese Antwort wurde zurückgehalten.',
+      toolCalls: 1,
+      iterations: 1,
+      answerSource: 'verifier-blocked',
+      answerIsError: true,
+      verifier: blockedSummary,
+    });
+
+    const message = applied(mutateById, session('bg')).messages[1];
+    expect(message?.content).toBe('Diese Antwort wurde zurückgehalten.');
+    expect(message?.verifierBlocked).toBe(true);
+    expect(message?.verifier?.status).toBe('blocked');
+    expect(message?.verifier?.badge).toBe('failed');
+    // A policy decision, not a failed turn: no error styling.
+    expect(message?.error).toBeUndefined();
+    expect(message?.streaming).toBe(false);
+  });
+
+  it('a withheld turn that also failed keeps the turn-incomplete row', () => {
+    // A rendered answer the verifier may not see is withheld; when its turn
+    // threw after a tool committed, `done` keeps the degraded markers.
+    const { sessions, mutateById } = stubSessions();
+
+    applyStreamEvent(sessions, 'bg', 'pending-1', {
+      type: 'done',
+      answer: 'Diese Antwort wurde zurückgehalten.',
+      toolCalls: 2,
+      iterations: 2,
+      degraded: true,
+      committedTools: ['create_invoice', 'v4_render_answer'],
+      correlationId: 'turn-token-2',
+      answerSource: 'verifier-blocked',
+      answerIsError: true,
+      verifier: {
+        ...blockedSummary,
+        badge: 'unavailable',
+        status: 'unavailable',
+        reason: 'privacy_shield',
+        claimCount: 0,
+        contradictionCount: 0,
+      },
+    });
+
+    const message = applied(mutateById, session('bg')).messages[1];
+    expect(message?.content).toBe('Diese Antwort wurde zurückgehalten.');
+    expect(message?.verifierBlocked).toBe(true);
+    expect(message?.verifier?.reason).toBe('privacy_shield');
+    expect(message?.degradedTurn?.committedTools).toEqual(['create_invoice', 'v4_render_answer']);
+    expect(message?.degradedTurn?.correlationId).toBe('turn-token-2');
+    expect(message?.error).toBeUndefined();
+  });
+
+  it('a server-rendered answer is marked as system data — a rendered failure is not', () => {
+    for (const answerIsError of [false, true]) {
+      const { sessions, mutateById } = stubSessions();
+
+      applyStreamEvent(sessions, 'bg', 'pending-1', {
+        type: 'done',
+        answer: '| Kunde | Betrag |',
+        toolCalls: 1,
+        iterations: 1,
+        answerSource: 'privacy-render',
+        ...(answerIsError ? { answerIsError: true } : {}),
+      });
+
+      const message = applied(mutateById, session('bg')).messages[1];
+      expect(message?.systemData).toBe(answerIsError ? undefined : true);
+      expect(message?.verifierBlocked).toBeUndefined();
+    }
+  });
+
+  it('a released answer carries its verdict from done', () => {
+    const { sessions, mutateById } = stubSessions();
+
+    applyStreamEvent(sessions, 'bg', 'pending-1', {
+      type: 'done',
+      answer: 'the answer',
+      toolCalls: 0,
+      iterations: 1,
+      verifier: { ...blockedSummary, badge: 'verified', status: 'approved', contradictionCount: 0 },
+    });
+
+    const message = applied(mutateById, session('bg')).messages[1];
+    expect(message?.content).toBe('the answer');
+    expect(message?.verifier?.badge).toBe('verified');
+    expect(message?.verifierBlocked).toBeUndefined();
+  });
+
+  it('an ordinary done sets neither field', () => {
+    const { sessions, mutateById } = stubSessions();
+
+    applyStreamEvent(sessions, 'bg', 'pending-1', {
+      type: 'done',
+      answer: 'the answer',
+      toolCalls: 0,
+      iterations: 1,
+    });
+
+    const message = applied(mutateById, session('bg')).messages[1];
+    expect(message?.verifier).toBeUndefined();
+    expect(message?.verifierBlocked).toBeUndefined();
   });
 });

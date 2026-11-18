@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 
+import { requireUuidParam } from '../http/uuidParam.js';
 import {
   parseRoutineOutputTemplate,
   type RoutineOutputTemplate,
@@ -187,6 +188,11 @@ function toDto(r: Routine): RoutineDto {
  */
 export function createRoutinesRouter(deps: RoutinesRouterDeps): Router {
   const router = Router();
+  // #1398 — `routines.id` and `routine_runs.id` are uuid columns. A malformed
+  // id names no row; answer the route's 404 instead of letting Postgres 22P02
+  // become a 500 that echoes the database error.
+  router.param('id', requireUuidParam('routines.not_found'));
+  router.param('runId', requireUuidParam('routines.run_not_found'));
   const log = deps.log ?? ((m) => console.log(m));
 
   router.get('/', async (_req: Request, res: Response): Promise<void> => {
@@ -268,16 +274,26 @@ export function createRoutinesRouter(deps: RoutinesRouterDeps): Router {
           .json({ code: 'routines.not_found', message: `routine '${id}' not found` });
         return;
       }
+      // #1071 — a paused routine (by the user, or auto-paused because its
+      // web chat was deleted) is not run: answer 409 synchronously instead of
+      // a 202 for a run that would only be skipped.
+      if (routine.status !== 'active') {
+        res.status(409).json({
+          code: 'routines.not_active',
+          message: `routine '${id}' is ${routine.status}; resume it before triggering it`,
+        });
+        return;
+      }
       // Interactive path gets a synchronous 503 while no chat agent is
       // published (LLM key not configured) instead of a 202 whose run is
       // guaranteed to fail in the background — the web-ui maps this code
       // to a "set the key in Settings" message. Cron fires keep recording
       // `error` runs so the misconfiguration stays visible in history.
-      if (!deps.runner.chatAgentAvailable()) {
+      if (!deps.runner.chatAgentAvailable(routine.agentSlug ?? null)) {
         res.status(503).json({
           code: 'routines.chat_unavailable',
           message:
-            'chat agent unavailable — configure the LLM API key in Settings, then trigger again',
+            'chat agent unavailable — the routine\'s orchestrator is gone, no standard orchestrator is set, or the LLM API key is not configured',
         });
         return;
       }

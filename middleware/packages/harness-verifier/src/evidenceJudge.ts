@@ -1,7 +1,12 @@
 import type { LlmProvider, LlmResponse, ToolSpec } from '@omadia/llm-provider';
 import { textMessage, toolCalls } from '@omadia/llm-provider';
-import type { ClaimVerdict, SoftClaim } from './claimTypes.js';
-import { MAX_CONTEXT_CHARS } from './claimExtractor.js';
+import { VERIFIER_REASONING } from './verifierReasoning.js';
+import type { ClaimVerdict, SoftClaim, VerifierPrivacy } from './claimTypes.js';
+import { MAX_CONTEXT_CHARS } from './claimContext.js';
+import { citesOtherRecord } from './entityHandle.js';
+import { citedNodeId, judgeRequestParts, projectRequestParts } from './judgeRequest.js';
+import type { DecisionModelService } from '@omadia/plugin-api';
+import { decideClaims, type DecidedClaim } from './evidenceDecision.js';
 
 /**
  * LLM-as-Judge for SoftClaims (names, qualitative statements) that can't
@@ -16,19 +21,50 @@ import { MAX_CONTEXT_CHARS } from './claimExtractor.js';
  * history reuse) and only keep the contradiction if both agree. Single
  * Haiku calls are cheap; the double-check prevents one unlucky flip from
  * blocking a correct answer.
+ *
+ * Behind a Privacy Shield (`check(claim, privacy)`) each request is projected
+ * through the turn's surrogate map before it leaves the process — claim,
+ * context and evidence in one pass, so the same person is the same
+ * placeholder on both sides. The judge can still verify; a contradiction
+ * judged on placeholders is reported as `unverified` instead of blocking.
+ * Node ids never leave: the request names each snippet by a handle minted
+ * for that request (`ev-1`, `ev-2`, …), the handle the judge cites is mapped
+ * back to the snippet server-side, and a node id the text repeats is
+ * replaced like a display name.
+ *
+ * A cited `evidence_node_id` is checked deterministically against the refs
+ * the request printed — the per-request handles behind a shield, the node ids
+ * without one: a ref outside that set demotes the verdict to `unverified`,
+ * on the recheck call as well, and `source` / `truth` come only from the
+ * snippet printed under the ref, never from the claim. The rejected ref is
+ * logged by its length only, never verbatim.
  */
 
 export interface EvidenceSnippet {
-  nodeId: string;               // stable id the judge references on contradict
+  /** Stable id of the record — what a verdict resolves to. Behind a Privacy
+   *  Shield it is never sent (see the class comment); a verdict citing
+   *  anything but a ref its own request printed is rejected. */
+  nodeId: string;
   source: 'graph' | 'confluence' | 'odoo';
   content: string;              // <= ~2 kB per snippet
   title?: string;
+  /**
+   * Values in `title` / `content` that identify a person or record (display
+   * name, free-text fields, a string record key). Behind a Privacy Shield
+   * they are always replaced by placeholders before the judge's request
+   * leaves the process, whatever the detectors find — as is `nodeId`, which
+   * need not be listed. A fetcher that sets none leaves the rest of the text
+   * to the detectors.
+   */
+  identityValues?: readonly string[];
 }
 
 /**
  * Fetches evidence for one claim. Implementations typically hit the
  * knowledge-graph (findEntities, getNeighbors, turn search) but any
- * read-only source is fair game.
+ * read-only source is fair game. An id-bearing entity handle on the claim
+ * (`hr.employee:7`) names one record: return that record or nothing for it,
+ * never another record of the same model (see GraphEvidenceFetcher).
  */
 export interface EvidenceFetcher {
   fetch(claim: SoftClaim): Promise<EvidenceSnippet[]>;
@@ -42,14 +78,35 @@ export interface EvidenceJudgeOptions {
   model?: string;
   maxTokens?: number;
   log?: (msg: string) => void;
+  /**
+   * `decisionModel@1` — resolved LAZILY per `checkAll` (a provider plugin may
+   * come up after this one). With a batch-capable service every claim of the
+   * turn is judged in ONE batch; a verdict below {@link DECISION_MIN_CONFIDENCE}
+   * is `unverified`, a confident contradiction still needs the LLM recheck,
+   * and any failure or missing answer goes to the LLM judge unchanged.
+   */
+  decide?: () => DecisionModelService | undefined;
 }
+
+/** A decision-model `verified` / `contradicted` below this confidence is
+ *  reported as `unverified` — the decision model never blocks on a guess. */
+export const DECISION_MIN_CONFIDENCE = 0.8;
 
 const DEFAULTS = {
   model: 'claude-haiku-4-5-20251001',
   maxTokens: 256,
 };
 
+/** Per-snippet cap on the evidence text the judge sees. */
+const MAX_SNIPPET_CHARS = 1800;
+/** Tighter cap behind a Privacy Shield (the snippet count is capped too, see
+ *  judgeRequest.ts): it bounds what leaves the process. */
+const PRIVACY_MAX_SNIPPET_CHARS = 1200;
+
 const TOOL_NAME = 'record_verdict';
+
+/** Reason for a verdict whose citation names no snippet the judge was shown. */
+const UNKNOWN_EVIDENCE_REASON = 'evidence_node_id not in evidence set';
 
 const toolSpec: ToolSpec = {
   name: TOOL_NAME,
@@ -84,14 +141,31 @@ interface RawVerdict {
 
 type PrimitiveVerdict = 'verified' | 'unverified' | 'contradicted';
 
+interface JudgeVerdict {
+  verdict: PrimitiveVerdict;
+  /** As parsed: the ref the judge cited. Once `judgeOnce` resolved it: the
+   *  node id of the snippet printed under that ref, or absent. */
+  evidenceNodeId?: string;
+  rationale?: string;
+  /** What the judge said before its verdict was demoted to `unverified` —
+   *  a citation missing, unknown or naming another record. A demoted
+   *  `contradicted` is an unconfirmed contradiction (`check`). */
+  demotedFrom?: PrimitiveVerdict;
+}
+
+const OTHER_RECORD_REASON =
+  'cited evidence is a different record than the claim references';
+
 export class EvidenceJudge {
   private readonly llm: LlmProvider;
   private readonly fetcher: EvidenceFetcher;
   private readonly model: string;
   private readonly maxTokens: number;
   private readonly log: (msg: string) => void;
+  private readonly decide: (() => DecisionModelService | undefined) | undefined;
 
   constructor(opts: EvidenceJudgeOptions) {
+    this.decide = opts.decide;
     this.llm = opts.llm;
     this.fetcher = opts.fetcher;
     this.model = opts.model ?? DEFAULTS.model;
@@ -103,72 +177,269 @@ export class EvidenceJudge {
       });
   }
 
-  /** Check one SoftClaim. Always resolves; never throws. */
-  async check(claim: SoftClaim): Promise<ClaimVerdict> {
+  /**
+   * Check one SoftClaim. Always resolves; never throws. `claim` carries REAL
+   * values (the evidence lookup runs on them server-side); with a `privacy`
+   * view every request is projected through the turn's surrogate map first.
+   * A fetch or judge call that fails — or a request the projection would
+   * not admit, which is then never sent — is `unverified` with
+   * `cause: 'check_failed'`; evidence that does not settle the claim is plain
+   * `unverified`.
+   */
+  async check(claim: SoftClaim, privacy?: VerifierPrivacy): Promise<ClaimVerdict> {
+    const fetched = await this.fetchEvidence(claim);
+    if (!Array.isArray(fetched)) return fetched;
+    return this.judgeWithEvidence(claim, fetched, privacy);
+  }
+
+  /** The claim's evidence, or the verdict when there is none to judge. */
+  private async fetchEvidence(claim: SoftClaim): Promise<EvidenceSnippet[] | ClaimVerdict> {
     let evidence: EvidenceSnippet[];
     try {
       evidence = await this.fetcher.fetch(claim);
     } catch (err) {
-      return unverified(claim, `evidence fetch failed: ${errMsg(err)}`);
+      return checkFailed(claim, `evidence fetch failed: ${errMsg(err)}`);
     }
     if (evidence.length === 0) {
       return unverified(claim, 'no evidence available');
     }
+    return evidence;
+  }
 
-    const first = await this.judgeOnce(claim, evidence);
+  /** The LLM judge over already-fetched evidence (see {@link check}). */
+  private async judgeWithEvidence(
+    claim: SoftClaim,
+    evidence: EvidenceSnippet[],
+    privacy: VerifierPrivacy | undefined,
+  ): Promise<ClaimVerdict> {
+    const first = await this.judgeOnce(claim, evidence, privacy);
     if (first === null) {
-      return unverified(claim, 'judge returned no usable verdict');
+      // The call failed, came back without a readable verdict, or was never
+      // sent because the privacy projection did not admit it.
+      return checkFailed(claim, 'judge returned no usable verdict');
+    }
+    if (first.verdict === 'unverified') {
+      const reason = first.rationale ?? 'judge unverified';
+      return first.demotedFrom === 'contradicted'
+        ? unconfirmedContradiction(claim, reason)
+        : unverified(claim, reason);
+    }
+
+    // `parseVerdict` already demotes a citation outside the refs its request
+    // printed, and `judgeOnce` resolves a printed ref to its snippet's node id.
+    // Resolving it again here keeps that rule if the parser ever changes,
+    // before a recheck call is spent, and leaves the cited snippet as the
+    // only place `source` and `truth` can come from — never the claim's own
+    // `expectedSource`.
+    const sourceSnippet =
+      first.evidenceNodeId === undefined
+        ? undefined
+        : evidence.find((s) => s.nodeId === first.evidenceNodeId);
+    if (!sourceSnippet) {
+      return first.verdict === 'contradicted'
+        ? unconfirmedContradiction(claim, UNKNOWN_EVIDENCE_REASON)
+        : unverified(claim, UNKNOWN_EVIDENCE_REASON);
+    }
+    const source = sourceKind(sourceSnippet.source);
+
+    if (first.verdict === 'verified') {
+      return { status: 'verified', claim, source };
     }
 
     // Double-check on contradicted: one shaky Haiku flip should not block a
-    // correct answer. We only confirm when the second call agrees.
-    if (first.verdict === 'contradicted') {
-      const second = await this.judgeOnce(claim, evidence);
-      if (second === null || second.verdict !== 'contradicted') {
-        this.log(
-          `[verifier/judge] contradiction not reproduced, downgrading to unverified claim=${claim.id}`,
-        );
-        return unverified(claim, 'judge contradiction not reproduced on recheck');
-      }
+    // correct answer. We only confirm when the second call agrees; a recheck
+    // citing a ref the request did not print comes back `unverified`.
+    //
+    // Behind the shield the judge compared placeholders. Equal placeholders
+    // mean equal values, so `verified` stays sound — but a contradiction can
+    // be an artefact of the substitution (a value masked on one side and
+    // written differently on the other). It must never block an answer, so
+    // it is not confirmed and no second request is sent.
+    if (first.projected) {
+      this.log(
+        `[verifier/judge] contradiction judged on placeholders, downgrading to unverified claim=${claim.id}`,
+      );
+      return unconfirmedContradiction(
+        claim,
+        'contradiction judged on placeholder values — not confirmable behind the privacy shield',
+      );
     }
-
-    const sourceSnippet = evidence.find((s) => s.nodeId === first.evidenceNodeId);
-    const source = sourceSnippet?.source ?? claim.expectedSource;
-
-    switch (first.verdict) {
-      case 'verified':
-        return {
-          status: 'verified',
-          claim,
-          source: sourceKind(source),
-        };
-      case 'contradicted':
-        return {
-          status: 'contradicted',
-          claim,
-          truth: first.rationale ?? sourceSnippet?.content ?? null,
-          source: sourceKind(source),
-          ...(first.rationale ? { detail: first.rationale } : {}),
-        };
-      case 'unverified':
-        return unverified(claim, first.rationale ?? 'judge unverified');
-    }
+    return this.confirmContradiction(claim, evidence, privacy, sourceSnippet, () => first.rationale);
   }
 
-  async checkAll(claims: SoftClaim[]): Promise<ClaimVerdict[]> {
-    return Promise.all(claims.map((c) => this.check(c)));
+  /**
+   * The LLM recheck a contradiction needs before it counts: a fresh judge call
+   * on the same inputs must say `contradicted` again. `rationaleOf` picks the
+   * rationale that becomes truth / detail (the first LLM call's, or — after a
+   * decision-model contradiction, which has none — the recheck's).
+   */
+  private async confirmContradiction(
+    claim: SoftClaim,
+    evidence: EvidenceSnippet[],
+    privacy: VerifierPrivacy | undefined,
+    sourceSnippet: EvidenceSnippet,
+    rationaleOf: (second: JudgeVerdict) => string | undefined,
+  ): Promise<ClaimVerdict> {
+    const second = await this.judgeOnce(claim, evidence, privacy);
+    if (second === null) {
+      // The recheck never ran to a verdict: the contradiction was not tested
+      // again, so the check did not finish — a fault, not a non-reproduction.
+      this.log(
+        `[verifier/judge] contradiction recheck failed, downgrading to unverified claim=${claim.id}`,
+      );
+      return checkFailed(claim, 'judge contradiction recheck returned no usable verdict');
+    }
+    if (second.verdict !== 'contradicted') {
+      this.log(
+        `[verifier/judge] contradiction not reproduced, downgrading to unverified claim=${claim.id}`,
+      );
+      return unconfirmedContradiction(claim, 'judge contradiction not reproduced on recheck');
+    }
+    const rationale = rationaleOf(second);
+    return {
+      status: 'contradicted',
+      claim,
+      truth: rationale ?? sourceSnippet.content,
+      source: sourceKind(sourceSnippet.source),
+      ...(rationale ? { detail: rationale } : {}),
+    };
+  }
+
+  async checkAll(
+    claims: SoftClaim[],
+    privacy?: VerifierPrivacy,
+  ): Promise<ClaimVerdict[]> {
+    const service = this.batchDecisionModel();
+    if (!service || claims.length === 0) {
+      return Promise.all(claims.map((c) => this.check(c, privacy)));
+    }
+    const fetched = await Promise.all(claims.map((c) => this.fetchEvidence(c)));
+    const pending: Array<{ index: number; claim: SoftClaim; evidence: EvidenceSnippet[] }> = [];
+    fetched.forEach((f, index) => {
+      const claim = claims[index];
+      if (claim && Array.isArray(f)) pending.push({ index, claim, evidence: f });
+    });
+    const result =
+      pending.length === 0 ? undefined : await decideClaims(service, pending, privacy);
+    const counts = { verified: 0, contradicted: 0, unverifiable: 0, lowConfidence: 0, llm: 0 };
+    const verdicts = await Promise.all(
+      fetched.map(async (f, index): Promise<ClaimVerdict> => {
+        if (!Array.isArray(f)) return f;
+        const at = pending.findIndex((p) => p.index === index);
+        const p = pending[at];
+        if (!p) return this.check(claims[index] as SoftClaim, privacy);
+        const decided = result?.decided[at];
+        if (!decided) {
+          counts.llm += 1;
+          return this.judgeWithEvidence(p.claim, p.evidence, privacy);
+        }
+        if (decided.verdict !== 'unverifiable' && decided.confidence < DECISION_MIN_CONFIDENCE) {
+          counts.lowConfidence += 1;
+        } else {
+          counts[decided.verdict] += 1;
+        }
+        return this.fromDecision(p.claim, p.evidence, decided, privacy);
+      }),
+    );
+    if (pending.length > 0) {
+      this.log(
+        `[verifier/judge] decision model provider=${service.provider} ` +
+          (result
+            ? `ms=${String(result.ms)} claims=${String(pending.length)} verified=${String(counts.verified)} ` +
+              `contradicted=${String(counts.contradicted)} unverifiable=${String(counts.unverifiable)} ` +
+              `low_confidence=${String(counts.lowConfidence)} llm_fallback=${String(counts.llm)}`
+            : `failed — LLM judge for claims=${String(pending.length)}`),
+      );
+    }
+    return verdicts;
+  }
+
+  /** The decision model when one with `decideAll` runs, else undefined. */
+  private batchDecisionModel():
+    | (DecisionModelService & Required<Pick<DecisionModelService, 'decideAll'>>)
+    | undefined {
+    let service: DecisionModelService | undefined;
+    try {
+      service = this.decide?.();
+    } catch {
+      return undefined;
+    }
+    if (!service?.decideAll) return undefined;
+    return service as DecisionModelService & Required<Pick<DecisionModelService, 'decideAll'>>;
+  }
+
+  /**
+   * Maps a decision-model answer onto a verdict, as conservatively as the LLM
+   * path: below {@link DECISION_MIN_CONFIDENCE} nothing is verified or
+   * contradicted; a citation must name a snippet the request printed and the
+   * record the claim pins; a contradiction judged on placeholders is never
+   * confirmed, and any other contradiction must be reproduced by the LLM.
+   */
+  private async fromDecision(
+    claim: SoftClaim,
+    evidence: EvidenceSnippet[],
+    decided: DecidedClaim,
+    privacy: VerifierPrivacy | undefined,
+  ): Promise<ClaimVerdict> {
+    if (decided.verdict === 'unverifiable') {
+      return unverified(claim, 'decision model: evidence does not settle the claim');
+    }
+    if (decided.confidence < DECISION_MIN_CONFIDENCE) {
+      return unverified(claim, `decision model: ${decided.verdict} below confidence threshold`);
+    }
+    const isContradiction = decided.verdict === 'contradicted';
+    const demote = (reason: string): ClaimVerdict =>
+      isContradiction ? unconfirmedContradiction(claim, reason) : unverified(claim, reason);
+    const snippet =
+      decided.citedNodeId === undefined
+        ? undefined
+        : evidence.find((s) => s.nodeId === decided.citedNodeId);
+    if (!snippet) return demote('missing evidence_node_id');
+    if (citesOtherRecord(claim.relatedEntities, snippet.nodeId)) {
+      this.log(`[verifier/judge] ${OTHER_RECORD_REASON}, demoting claim=${claim.id}`);
+      return demote(OTHER_RECORD_REASON);
+    }
+    if (!isContradiction) {
+      return { status: 'verified', claim, source: sourceKind(snippet.source) };
+    }
+    if (decided.projected) {
+      return unconfirmedContradiction(
+        claim,
+        'contradiction judged on placeholder values — not confirmable behind the privacy shield',
+      );
+    }
+    return this.confirmContradiction(claim, evidence, privacy, snippet, (second) => second.rationale);
   }
 
   // ------------------------------------------------------------------
 
+  /**
+   * One judge request. Returns `null` when no usable verdict came back —
+   * including when the privacy projection was blocked, in which case NO
+   * request is sent. `projected` is true when the projection replaced
+   * anything, i.e. the judge saw placeholders.
+   */
   private async judgeOnce(
     claim: SoftClaim,
     evidence: EvidenceSnippet[],
-  ): Promise<{
-    verdict: PrimitiveVerdict;
-    evidenceNodeId?: string;
-    rationale?: string;
-  } | null> {
+    privacy: VerifierPrivacy | undefined,
+  ): Promise<(JudgeVerdict & { projected: boolean }) | null> {
+    const real = judgeRequestParts(claim, evidence, privacy !== undefined);
+    let parts = real;
+    let projected = false;
+    if (privacy) {
+      try {
+        const result = await projectRequestParts(real, evidence, privacy);
+        parts = result.parts;
+        projected = result.projected;
+      } catch (err) {
+        this.log(
+          `[verifier/judge] skipped — prompt masking blocked claim=${claim.id}: ${errMsg(err)}`,
+        );
+        return null;
+      }
+    }
+
     const system = `You judge whether a single factual claim is supported by a bundle of evidence snippets. You do NOT see the original answer — only the claim and the evidence. This is deliberate: your job is to be an independent reviewer, not to rubber-stamp.
 
 Rules:
@@ -177,27 +448,32 @@ Rules:
 - verdict = "unverified": evidence is silent, ambiguous, or only tangentially related. This is the DEFAULT when unsure.
 - verdict = "contradicted": evidence explicitly says something incompatible with the claim. Requires evidence_node_id.
 - Do NOT reward plausibility. If the evidence doesn't mention it, it's unverified — not verified.
-- When a CONTEXT line is present it is the single sentence the claim was cut from. Use it only to resolve what the claim refers to (its subject, tense); judge the CLAIM as meant in that sentence. Never base "contradicted" or "verified" on a fact that appears only in CONTEXT and not in CLAIM.`;
+- When a CONTEXT line is present it is the single sentence the claim was cut from. Use it only to resolve what the claim refers to (its subject, tense); judge the CLAIM as meant in that sentence. Never base "contradicted" or "verified" on a fact that appears only in CONTEXT and not in CLAIM.
+- RELATED names the records the claim is about. When it gives a record id for a model (e.g. "odoo:hr.employee:7"), a snippet about another record of that model (e.g. nodeId "odoo:hr.employee:12") is a different entity: it can neither verify nor contradict the claim. Only the named record itself can.
+- A snippet titled "model sample" or "name match" is a search result, not a record the claim names: rely on it only when it is unmistakably about the claim's subject.`;
 
-    const evidenceBlock = evidence
+    const maxSnippetChars = privacy ? PRIVACY_MAX_SNIPPET_CHARS : MAX_SNIPPET_CHARS;
+    const evidenceBlock = parts.evidence
       .map(
         (e, idx) =>
-          `Evidence #${String(idx + 1)} [nodeId=${e.nodeId}, source=${e.source}${e.title ? `, title=${e.title}` : ''}]:\n${truncate(e.content, 1800)}`,
+          `Evidence #${String(idx + 1)} [nodeId=${e.ref}, source=${e.source}${e.title ? `, title=${e.title}` : ''}]:\n${truncate(e.content, maxSnippetChars)}`,
       )
       .join('\n\n');
 
-    const context =
-      claim.context && claim.context.trim().toLowerCase() !== claim.text.trim().toLowerCase()
-        ? `\nCONTEXT: ${truncate(claim.context, MAX_CONTEXT_CHARS)}`
-        : '';
-    const user = `CLAIM: ${claim.text}${context}
+    const context = parts.context
+      ? `\nCONTEXT: ${truncate(parts.context, MAX_CONTEXT_CHARS)}`
+      : '';
+    const user = `CLAIM: ${parts.claimText}${context}
 CLAIM TYPE: ${claim.type}
-RELATED: ${claim.relatedEntities.join(', ') || '(none)'}
+RELATED: ${parts.related || '(none)'}
 
 EVIDENCE:
 ${evidenceBlock}`;
 
     let response: LlmResponse;
+    // Timed here like the extractor's call: the pool's provider logs no
+    // `[llm] complete ok … ms=` line of its own.
+    const startedAt = Date.now();
     try {
       response = await this.llm.complete({
         model: this.model,
@@ -206,23 +482,102 @@ ${evidenceBlock}`;
         tools: [toolSpec],
         toolChoice: { type: 'tool', name: TOOL_NAME },
         messages: [textMessage('user', user)],
+        ...VERIFIER_REASONING,
       });
+      // `usage` is optional-chained: a test double answers without one.
+      this.log(
+        `[verifier/judge] call ok claim=${claim.id} model=${response.model} ` +
+          `in=${String(response.usage?.inputTokens ?? 0)} out=${String(response.usage?.outputTokens ?? 0)} ` +
+          `cached=${String(response.usage?.cacheReadTokens ?? 0)} ms=${String(Date.now() - startedAt)}`,
+      );
     } catch (err) {
       this.log(`[verifier/judge] API FAIL: ${errMsg(err)}`);
       return null;
     }
 
-    return parseVerdict(response);
+    // The refs a verdict may cite: exactly the ones this request printed —
+    // the per-request handles behind a shield, the node ids without one.
+    const knownRefs: ReadonlySet<string> = new Set(real.evidence.map((e) => e.ref));
+    const parsed = parseVerdict(response, knownRefs, (citedLength) => {
+      // Only the length: the cited ref is model output that can repeat claim
+      // or evidence text, or break or disguise the line (U+2028, ANSI, bidi
+      // controls). `claim.id` is assigned by the extractor (`c_001`, …).
+      this.log(
+        `[verifier/judge] ${UNKNOWN_EVIDENCE_REASON}, downgrading to unverified claim=${claim.id} cited_len=${String(citedLength)}`,
+      );
+    });
+    if (parsed === null) return null;
+    // The judge cites a ref of THIS request; only the snippet printed under
+    // it can stand behind the verdict.
+    const nodeId = citedNodeId(parsed.evidenceNodeId, real, evidence);
+    // Checked on the RESOLVED node id, server-side: a record of a model the
+    // claim pins by id, but not a pinned record, is a different entity.
+    const verdict = bindToReferencedRecord(
+      claim,
+      {
+        verdict: parsed.verdict,
+        ...(nodeId !== undefined ? { evidenceNodeId: nodeId } : {}),
+        ...(parsed.rationale !== undefined ? { rationale: parsed.rationale } : {}),
+        ...(parsed.demotedFrom !== undefined ? { demotedFrom: parsed.demotedFrom } : {}),
+      },
+      this.log,
+    );
+    if (privacy === undefined) return { ...verdict, projected };
+    return { ...(await this.restoreRationale(verdict, privacy)), projected };
   }
+
+  /**
+   * The judge argued over the projected request: map its rationale (which
+   * `check` turns into truth / detail / reason) back to real values. A
+   * rationale that fails to restore is dropped rather than kept as
+   * placeholder text. The citation needs no restore — it is a handle.
+   */
+  private async restoreRationale(
+    verdict: JudgeVerdict,
+    privacy: VerifierPrivacy,
+  ): Promise<JudgeVerdict> {
+    const out: JudgeVerdict = { verdict: verdict.verdict };
+    if (verdict.evidenceNodeId !== undefined) out.evidenceNodeId = verdict.evidenceNodeId;
+    if (verdict.demotedFrom !== undefined) out.demotedFrom = verdict.demotedFrom;
+    if (verdict.rationale !== undefined) {
+      try {
+        out.rationale = await privacy.restore(verdict.rationale);
+      } catch (err) {
+        this.log(`[verifier/judge] rationale restore failed, dropped: ${errMsg(err)}`);
+      }
+    }
+    return out;
+  }
+}
+
+/**
+ * A verdict citing a record of a model the claim pins by id, but not a
+ * pinned record, rests on a different entity than the claim is about. The
+ * prompt says so; this enforces it deterministically for the first call and
+ * the contradiction recheck alike, on the node id the cited ref resolved to:
+ * such a verdict becomes `unverified`. The log names the claim only — a node
+ * id can carry an external key or a user id.
+ */
+function bindToReferencedRecord(
+  claim: SoftClaim,
+  verdict: JudgeVerdict,
+  log: (msg: string) => void,
+): JudgeVerdict {
+  if (verdict.verdict === 'unverified') return verdict;
+  if (!citesOtherRecord(claim.relatedEntities, verdict.evidenceNodeId)) {
+    return verdict;
+  }
+  log(`[verifier/judge] ${OTHER_RECORD_REASON}, demoting claim=${claim.id}`);
+  return { verdict: 'unverified', rationale: OTHER_RECORD_REASON, demotedFrom: verdict.verdict };
 }
 
 // ---------------- helpers ----------------
 
-function parseVerdict(response: LlmResponse): {
-  verdict: PrimitiveVerdict;
-  evidenceNodeId?: string;
-  rationale?: string;
-} | null {
+function parseVerdict(
+  response: LlmResponse,
+  knownRefs: ReadonlySet<string>,
+  onUnknownRef: (citedLength: number) => void,
+): JudgeVerdict | null {
   // Defensive: the contract guarantees `content` is an array, but keep the
   // historical never-throws behavior against malformed input.
   if (!Array.isArray(response.content)) return null;
@@ -235,18 +590,22 @@ function parseVerdict(response: LlmResponse): {
       typeof raw.evidence_node_id === 'string'
         ? raw.evidence_node_id.trim()
         : '';
+    const needsCitation = verdict === 'verified' || verdict === 'contradicted';
     // verified and contradicted MUST cite a node id — otherwise demote.
-    if ((verdict === 'verified' || verdict === 'contradicted') && !nodeId) {
-      return { verdict: 'unverified', rationale: 'missing evidence_node_id' };
+    if (needsCitation && !nodeId) {
+      return { verdict: 'unverified', rationale: 'missing evidence_node_id', demotedFrom: verdict };
+    }
+    // ...and it must name a snippet this call was shown. Exact match on the
+    // trimmed string: ids are opaque, so no case-folding or prefix matching.
+    if (needsCitation && !knownRefs.has(nodeId)) {
+      onUnknownRef(nodeId.length);
+      return { verdict: 'unverified', rationale: UNKNOWN_EVIDENCE_REASON, demotedFrom: verdict };
     }
     const rationale =
       typeof raw.rationale === 'string' ? raw.rationale.slice(0, 300) : '';
-    const out: {
-      verdict: PrimitiveVerdict;
-      evidenceNodeId?: string;
-      rationale?: string;
-    } = { verdict };
-    if (nodeId) out.evidenceNodeId = nodeId;
+    const out: JudgeVerdict = { verdict };
+    // An unknown ref never leaves the parser, not even on `unverified`.
+    if (nodeId && knownRefs.has(nodeId)) out.evidenceNodeId = nodeId;
     if (rationale) out.rationale = rationale;
     return out;
   }
@@ -262,9 +621,22 @@ function unverified(claim: SoftClaim, reason: string): ClaimVerdict {
   return { status: 'unverified', claim, reason };
 }
 
-function sourceKind(
-  source: EvidenceSnippet['source'] | SoftClaim['expectedSource'],
-): 'odoo' | 'graph' {
+function checkFailed(claim: SoftClaim, reason: string): ClaimVerdict {
+  return { status: 'unverified', claim, reason, cause: 'check_failed' };
+}
+
+/** A contradiction the judge reported but that could not be confirmed. */
+function unconfirmedContradiction(claim: SoftClaim, reason: string): ClaimVerdict {
+  return { status: 'unverified', claim, reason, cause: 'contradiction_unconfirmed' };
+}
+
+/**
+ * Maps the cited snippet's source onto the verdict's source. Only a snippet
+ * can supply it (never the claim's expectation). `ClaimSource` also knows
+ * 'confluence', but a confluence snippet is still recorded as 'graph' here —
+ * a long-standing mapping, kept as is.
+ */
+function sourceKind(source: EvidenceSnippet['source']): 'odoo' | 'graph' {
   return source === 'odoo' ? 'odoo' : 'graph';
 }
 

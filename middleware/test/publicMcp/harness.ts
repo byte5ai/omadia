@@ -56,7 +56,7 @@ import {
   type PublicMcpKeyBindingStore,
 } from '../../src/mcp/publicMcpKeyBindings.js';
 import { PUBLIC_MCP_PATH } from '../../src/mcp/publicMcpPath.js';
-import { mountPublicMcp } from '../../src/mcp/wirePublicMcp.js';
+import { mountPublicMcp, type WirePublicMcpDeps } from '../../src/mcp/wirePublicMcp.js';
 import type {
   PublicMcpAuditEntry,
   PublicMcpDispatcher,
@@ -114,6 +114,7 @@ export function fakeApiKeyStore(keys: readonly FakeKey[]): ApiKeyStore {
     create: () => Promise.reject(new Error('not used')),
     list: () => Promise.reject(new Error('not used')),
     revoke: () => Promise.reject(new Error('not used')),
+    delete: () => Promise.reject(new Error('not used')),
     verify: (token) =>
       Promise.resolve(records.find((r) => r.hash === sha256Hex(String(token)))),
   };
@@ -267,7 +268,8 @@ export function realDispatcher(
  * `mask` replaces every email-looking span with `[email]`, so a test can assert
  * the real address never reaches the wire. `failOn` makes `internToolResultV4`
  * throw for one tool, which is the provider-error case the endpoint must fail
- * CLOSED on (the dispatch layer's own behaviour there is fail-OPEN).
+ * CLOSED on by refusing the call (the dispatch layer on its own answers with
+ * the `internFailedNotice` error instead).
  */
 export function maskingPrivacyService(opts?: { failOn?: string }): PrivacyGuardService {
   return {
@@ -338,6 +340,9 @@ export interface HarnessOptions {
   readonly audit?: PublicMcpAuditEntry[];
   readonly toolTimeoutMs?: number;
   readonly maxConcurrentCalls?: number;
+  /** Extra `mountPublicMcp` deps, spread last. With `getRegistry` set, the
+   *  PRODUCTION dispatcher resolver runs instead of `dispatchers`. */
+  readonly wire?: Partial<WirePublicMcpDeps>;
 }
 
 export interface Harness {
@@ -393,12 +398,15 @@ export async function startHarness(opts: HarnessOptions): Promise<Harness> {
       createInMemoryPublicMcpKeyBindingStore(
         opts.bindingRows as Parameters<typeof createInMemoryPublicMcpKeyBindingStore>[0],
       ),
-    resolveDispatcher: (agentId) => opts.dispatchers[agentId],
+    ...(opts.wire?.getRegistry
+      ? {}
+      : { resolveDispatcher: (agentId: string) => opts.dispatchers[agentId] }),
     ...(audit ? { audit: (entry: PublicMcpAuditEntry) => audit.push(entry) } : {}),
     ...(opts.toolTimeoutMs !== undefined ? { toolTimeoutMs: opts.toolTimeoutMs } : {}),
     ...(opts.maxConcurrentCalls !== undefined
       ? { maxConcurrentCalls: opts.maxConcurrentCalls }
       : {}),
+    ...opts.wire,
   });
 
   const server: Server = createServer(app);

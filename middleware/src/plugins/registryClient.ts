@@ -13,6 +13,11 @@
 //
 // Multi-registry from day one: `registries` is a list; private hubs are
 // consumed by attaching a bearer `token`.
+//
+// #1458 — one registry must never hold the store hostage. Every index fetch
+// runs under one deadline that covers the body too, the deadline stays below
+// the web UI's server-side fetch budget, outcomes are cached (failures for a
+// shorter time), and concurrent callers share one in-flight fetch.
 // ===========================================================================
 
 import { createHash } from 'node:crypto';
@@ -24,10 +29,22 @@ import type {
   RegistryPluginEntry,
   RegistryVersionEntry,
 } from '../api/registry-v1.js';
-import type { PluginKind } from '../api/admin-v1.js';
+import type { PluginKind, RegistrySourceStatus } from '../api/admin-v1.js';
 
 const INDEX_PATH = '/registry/index.json';
-const DEFAULT_TIMEOUT_MS = 15_000;
+/** #1458 — index deadline (headers AND body). The web UI aborts its
+ *  server-side fetches after 10 s (`RSC_FETCH_TIMEOUT_MS`), and the store list
+ *  waits for the slowest registry, so this has to finish well before that. */
+const DEFAULT_TIMEOUT_MS = 5_000;
+/** Upper bound for a configured index deadline — see DEFAULT_TIMEOUT_MS. */
+export const MAX_INDEX_TIMEOUT_MS = 8_000;
+/** Artifact downloads are explicit operator actions and up to 50 MiB, so they
+ *  get their own, longer deadline (also covering the body). */
+const DEFAULT_ARTIFACT_TIMEOUT_MS = 120_000;
+/** Same budgets as the MCP registry client: a good index is reused for five
+ *  minutes, a failed one is retried after a minute. */
+const DEFAULT_CACHE_TTL_MS = 5 * 60_000;
+const DEFAULT_FAILURE_TTL_MS = 60_000;
 const DEFAULT_MAX_INDEX_BYTES = 5 * 1024 * 1024; // 5 MiB
 const DEFAULT_MAX_ARTIFACT_BYTES = 50 * 1024 * 1024; // 50 MiB
 
@@ -64,6 +81,8 @@ export interface RegistryFetchError {
 export interface RegistryListResult {
   plugins: ResolvedRegistryPlugin[];
   errors: RegistryFetchError[];
+  /** #1482 — one entry per configured registry, in configured order. */
+  sources: RegistrySourceStatus[];
 }
 
 export interface RegistryClientDeps {
@@ -71,24 +90,58 @@ export interface RegistryClientDeps {
   /** Injectable for tests; defaults to the global `fetch`. */
   fetchImpl?: typeof fetch;
   log?: (msg: string) => void;
+  /** Index deadline; clamped to `MAX_INDEX_TIMEOUT_MS`. */
   timeoutMs?: number;
+  artifactTimeoutMs?: number;
+  /** How long a fetched index is reused. 0 disables the cache. */
+  cacheTtlMs?: number;
+  /** How long a failed fetch is reused before the registry is asked again. */
+  failureTtlMs?: number;
+  /** Injectable clock for tests. */
+  now?: () => number;
   maxIndexBytes?: number;
   maxArtifactBytes?: number;
 }
+
+/** The cached outcome of one registry's index fetch. */
+type IndexOutcome =
+  | { ok: true; index: RegistryIndexV1; checkedAt: number; expiresAt: number }
+  | { ok: false; error: RegistryFetchError; checkedAt: number; expiresAt: number };
 
 export class RegistryClient {
   private registries: RegistryConfigEntry[];
   private readonly fetchImpl: typeof fetch;
   private readonly log: (msg: string) => void;
   private readonly timeoutMs: number;
+  private readonly artifactTimeoutMs: number;
+  private readonly cacheTtlMs: number;
+  private readonly failureTtlMs: number;
+  private readonly now: () => number;
   private readonly maxIndexBytes: number;
   private readonly maxArtifactBytes: number;
+  /** registry name → last outcome. Cleared by `setRegistries`. */
+  private readonly cache = new Map<string, IndexOutcome>();
+  /** registry name → the fetch every concurrent caller waits on. */
+  private readonly inflight = new Map<string, Promise<IndexOutcome>>();
+  /** Bumped by `setRegistries`, so a fetch started against the old list can
+   *  not write its outcome into the new cache. */
+  private generation = 0;
 
   constructor(deps: RegistryClientDeps) {
     this.registries = deps.registries;
     this.fetchImpl = deps.fetchImpl ?? globalThis.fetch;
     this.log = deps.log ?? ((m) => console.log(m));
-    this.timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const wanted = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    if (wanted > MAX_INDEX_TIMEOUT_MS) {
+      this.log(
+        `[registry] index timeout ${wanted}ms exceeds the store budget — using ${MAX_INDEX_TIMEOUT_MS}ms`,
+      );
+    }
+    this.timeoutMs = Math.min(wanted, MAX_INDEX_TIMEOUT_MS);
+    this.artifactTimeoutMs = deps.artifactTimeoutMs ?? DEFAULT_ARTIFACT_TIMEOUT_MS;
+    this.cacheTtlMs = deps.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
+    this.failureTtlMs = deps.failureTtlMs ?? DEFAULT_FAILURE_TTL_MS;
+    this.now = deps.now ?? Date.now;
     this.maxIndexBytes = deps.maxIndexBytes ?? DEFAULT_MAX_INDEX_BYTES;
     this.maxArtifactBytes = deps.maxArtifactBytes ?? DEFAULT_MAX_ARTIFACT_BYTES;
   }
@@ -104,6 +157,10 @@ export class RegistryClient {
    */
   setRegistries(registries: RegistryConfigEntry[]): void {
     this.registries = registries;
+    // A changed url or token must be fetched again, not served from the cache.
+    this.generation++;
+    this.cache.clear();
+    this.inflight.clear();
   }
 
   /** Snapshot of the configured registry names (display/diagnostics only). */
@@ -123,16 +180,17 @@ export class RegistryClient {
    */
   async fetchIndex(reg: RegistryConfigEntry): Promise<RegistryIndexV1> {
     const url = joinUrl(reg.url, INDEX_PATH);
-    const res = await this.doFetch(url, reg.token, 'index');
+    const buf = await this.request(url, reg.token, 'index', this.timeoutMs, (res) => {
+      if (!res.ok) {
+        void res.body?.cancel().catch(() => {});
+        throw new RegistryError(
+          'registry.index_http',
+          `${reg.name}: GET ${INDEX_PATH} → ${res.status}`,
+        );
+      }
+      return this.readCapped(res, this.maxIndexBytes, 'index');
+    });
 
-    if (!res.ok) {
-      throw new RegistryError(
-        'registry.index_http',
-        `${reg.name}: GET ${INDEX_PATH} → ${res.status}`,
-      );
-    }
-
-    const buf = await this.readCapped(res, this.maxIndexBytes, 'index');
     let raw: unknown;
     try {
       raw = JSON.parse(buf.toString('utf8'));
@@ -148,32 +206,42 @@ export class RegistryClient {
   /**
    * Fetch every configured registry in parallel and merge. First registry in
    * the configured order wins on plugin-id collision (the loser is dropped
-   * with a warning). A registry that fails is recorded in `errors`, not
-   * thrown — the store must still render the registries that are reachable.
+   * with a warning). A registry that fails is recorded in `errors` and
+   * `sources`, not thrown — the store must still render the registries that
+   * are reachable. Outcomes come from the cache when they are fresh enough.
    */
   async listAll(): Promise<RegistryListResult> {
-    const settled = await Promise.allSettled(
-      this.registries.map(async (reg) => ({
-        reg,
-        index: await this.fetchIndex(reg),
-      })),
+    const registries = this.registries;
+    const outcomes = await Promise.all(
+      registries.map((reg) => this.indexOutcome(reg)),
     );
 
     const plugins: ResolvedRegistryPlugin[] = [];
     const errors: RegistryFetchError[] = [];
+    const sources: RegistrySourceStatus[] = [];
     const seen = new Map<string, string>(); // plugin id → winning registry name
 
-    for (let i = 0; i < settled.length; i++) {
-      const outcome = settled[i]!;
-      const reg = this.registries[i]!;
-      if (outcome.status === 'rejected') {
-        const err = outcome.reason;
-        const code = err instanceof RegistryError ? err.code : 'registry.fetch';
-        errors.push({ registry: reg.name, code, message: errMsg(err) });
-        this.log(`[registry] ${reg.name} unreachable: ${errMsg(err)}`);
+    for (let i = 0; i < outcomes.length; i++) {
+      const outcome = outcomes[i]!;
+      const reg = registries[i]!;
+      const checked_at = new Date(outcome.checkedAt).toISOString();
+      if (!outcome.ok) {
+        errors.push(outcome.error);
+        sources.push({
+          name: reg.name,
+          ok: false,
+          checked_at,
+          error: { code: outcome.error.code, message: outcome.error.message },
+        });
         continue;
       }
-      for (const entry of outcome.value.index.plugins) {
+      sources.push({
+        name: reg.name,
+        ok: true,
+        checked_at,
+        plugin_count: outcome.index.plugins.length,
+      });
+      for (const entry of outcome.index.plugins) {
         const owner = seen.get(entry.id);
         if (owner) {
           this.log(
@@ -186,7 +254,46 @@ export class RegistryClient {
       }
     }
 
-    return { plugins, errors };
+    return { plugins, errors, sources };
+  }
+
+  /** One registry's index, from the cache, from a fetch already in flight,
+   *  or freshly fetched. Never rejects: a failure is an outcome too. */
+  private indexOutcome(reg: RegistryConfigEntry): Promise<IndexOutcome> {
+    const cached = this.cache.get(reg.name);
+    if (cached && cached.expiresAt > this.now()) return Promise.resolve(cached);
+    const pending = this.inflight.get(reg.name);
+    if (pending) return pending;
+
+    const generation = this.generation;
+    const fetched = this.fetchIndex(reg).then(
+      (index): IndexOutcome => {
+        const checkedAt = this.now();
+        return { ok: true, index, checkedAt, expiresAt: checkedAt + this.cacheTtlMs };
+      },
+      (err: unknown): IndexOutcome => {
+        const checkedAt = this.now();
+        const code = err instanceof RegistryError ? err.code : 'registry.fetch';
+        const message = describeError(err);
+        // Logged once per real fetch, not once per cached read.
+        this.log(`[registry] ${reg.name} unreachable: ${message}`);
+        return {
+          ok: false,
+          error: { registry: reg.name, code, message },
+          checkedAt,
+          expiresAt: checkedAt + this.failureTtlMs,
+        };
+      },
+    );
+    const settled = fetched.then((outcome) => {
+      if (generation === this.generation) {
+        this.inflight.delete(reg.name);
+        this.cache.set(reg.name, outcome);
+      }
+      return outcome;
+    });
+    this.inflight.set(reg.name, settled);
+    return settled;
   }
 
   /**
@@ -209,18 +316,40 @@ export class RegistryClient {
 
     this.assertHostPinned(reg, args.downloadUrl);
 
-    const res = await this.doFetch(args.downloadUrl, reg.token, 'artifact');
-    if (!res.ok) {
-      throw new RegistryError(
-        'registry.artifact_http',
-        `${reg.name}: GET ${args.downloadUrl} → ${res.status}`,
-      );
+    try {
+      return await this.downloadVerified(reg, args);
+    } catch (err) {
+      // The cached index pointed here; a missing or changed artifact means it
+      // is out of date — the next lookup must fetch it again.
+      this.invalidate(reg.name);
+      throw err;
     }
+  }
 
-    const buffer = await this.readCapped(
-      res,
-      this.maxArtifactBytes,
+  /** Drop one registry's cached outcome. */
+  invalidate(name: string): void {
+    this.cache.delete(name);
+  }
+
+  private async downloadVerified(
+    reg: RegistryConfigEntry,
+    args: { downloadUrl: string; sha256: string },
+  ): Promise<{ buffer: Buffer; sha256: string }> {
+    const buffer = await this.request(
+      args.downloadUrl,
+      reg.token,
       'artifact',
+      this.artifactTimeoutMs,
+      (res) => {
+        if (!res.ok) {
+          void res.body?.cancel().catch(() => {});
+          throw new RegistryError(
+            'registry.artifact_http',
+            `${reg.name}: GET ${args.downloadUrl} → ${res.status}`,
+          );
+        }
+        return this.readCapped(res, this.maxArtifactBytes, 'artifact');
+      },
     );
     const actual = createHash('sha256').update(buffer).digest('hex');
     if (actual.toLowerCase() !== args.sha256.toLowerCase()) {
@@ -255,34 +384,47 @@ export class RegistryClient {
     }
   }
 
-  private async doFetch(
+  /**
+   * GET `url` and hand the response to `read`, all under ONE deadline. The
+   * timer used to stop at the response headers, so a registry that sent
+   * headers and then stalled the body held the request open (#1458).
+   */
+  private async request<T>(
     url: string,
     token: string | undefined,
     kind: 'index' | 'artifact',
-  ): Promise<Response> {
+    timeoutMs: number,
+    read: (res: Response) => Promise<T>,
+  ): Promise<T> {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const fail = (err: unknown): RegistryError =>
+      controller.signal.aborted
+        ? new RegistryError('registry.timeout', `${kind} fetch timed out after ${timeoutMs}ms`)
+        : new RegistryError('registry.network', `${kind} fetch failed: ${describeError(err)}`);
     try {
       const headers: Record<string, string> = {
         Accept:
           kind === 'index' ? 'application/json' : 'application/octet-stream',
       };
       if (token) headers['Authorization'] = `Bearer ${token}`;
-      return await this.fetchImpl(url, {
-        method: 'GET',
-        headers,
-        signal: controller.signal,
-        redirect: 'error',
-      });
-    } catch (err) {
-      const aborted =
-        err instanceof Error && err.name === 'AbortError';
-      throw new RegistryError(
-        aborted ? 'registry.timeout' : 'registry.network',
-        aborted
-          ? `${kind} fetch timed out after ${this.timeoutMs}ms`
-          : `${kind} fetch failed: ${errMsg(err)}`,
-      );
+      let res: Response;
+      try {
+        res = await this.fetchImpl(url, {
+          method: 'GET',
+          headers,
+          signal: controller.signal,
+          redirect: 'error',
+        });
+      } catch (err) {
+        throw fail(err);
+      }
+      try {
+        return await read(res);
+      } catch (err) {
+        if (err instanceof RegistryError) throw err;
+        throw fail(err);
+      }
     } finally {
       clearTimeout(timer);
     }
@@ -463,4 +605,24 @@ function parseAuthors(
 
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * #1482 — `err.message` plus its `cause`. Node's fetch reports a refused
+ * connection, a DNS miss or a refused redirect as a bare "fetch failed" and
+ * puts the reason in `err.cause`; without it the log could not say why.
+ */
+export function describeError(err: unknown): string {
+  const message = errMsg(err);
+  const cause = err instanceof Error ? (err as { cause?: unknown }).cause : undefined;
+  if (cause === undefined || cause === null) return message;
+  const causeMessage =
+    cause instanceof Error ? cause.message : typeof cause === 'string' ? cause : '';
+  const code =
+    isObject(cause) && typeof cause['code'] === 'string' ? cause['code'] : '';
+  const detail =
+    causeMessage && code && !causeMessage.includes(code)
+      ? `${code}: ${causeMessage}`
+      : causeMessage || code;
+  return detail && detail !== message ? `${message} (${detail})` : message;
 }

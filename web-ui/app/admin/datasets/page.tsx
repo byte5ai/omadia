@@ -16,6 +16,7 @@ import {
 import { DatasetDetail } from './_components/DatasetDetail';
 import { UploadSection } from './_components/UploadSection';
 import {
+  fileColumns,
   LIST_PER_PAGE,
   ROWS_PER_PAGE,
   toFriendlyError,
@@ -133,6 +134,7 @@ export default function AdminDatasetsPage(): React.ReactElement {
               id,
               dataset: known,
               rows: [],
+              firstRow: null,
               totalMatched: 0,
               offset,
               loading: true,
@@ -145,21 +147,27 @@ export default function AdminDatasetsPage(): React.ReactElement {
           getDatasetRows(id, { limit: ROWS_PER_PAGE, offset }),
         ]);
         if (detailReq.current !== req) return;
-        setDetail({
+        const rows = page.rows ?? [];
+        setDetail((prev) => ({
           id,
           dataset,
-          rows: page.rows ?? [],
+          rows,
+          // #1558 — the schema samples come from the file's first row as the
+          // preview shows it; turning a page keeps the one already loaded.
+          firstRow:
+            offset === 0 ? (rows[0] ?? null) : prev?.id === id ? prev.firstRow : null,
           totalMatched: page.totalMatched,
           offset,
           loading: false,
           error: null,
-        });
+        }));
       } catch (err) {
         if (detailReq.current !== req) return;
         setDetail({
           id,
           dataset: null,
           rows: [],
+          firstRow: null,
           totalMatched: 0,
           offset,
           loading: false,
@@ -270,7 +278,7 @@ export default function AdminDatasetsPage(): React.ReactElement {
                     <span className="text-[13px] text-[color:var(--fg-muted)]">
                       {t('meta', {
                         rows: format.number(d.rowCount),
-                        columns: format.number(d.columns.length),
+                        columns: format.number(fileColumns(d.columns).length),
                         created: format.dateTime(new Date(d.createdAt), {
                           dateStyle: 'medium',
                           timeStyle: 'short',

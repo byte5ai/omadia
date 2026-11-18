@@ -97,13 +97,18 @@ declare module 'express-serve-static-core' {
  *    mTLS header). A webhook receiver verifying `X-Hub-Signature-256` over
  *    `req.rawBody` is the canonical case.
  *
+ *  - `'teams-sso'` (#1620) — same registration constraint and same
+ *    reachability rule as `'public'`, but the KERNEL authenticates: the entry's
+ *    stack starts with the Teams SSO gate (`auth/teamsSsoGate.ts`), bound once
+ *    at registration like the session gate. Pure: no session fallback.
+ *
  * There is deliberately no `'none'`. A plugin cannot self-declare its way out
- * of authentication: `'public'`/`'custom'` are only reachable through a
- * manifest declaration the operator consented to (`plan.md` §3 — "an
- * `auth: 'none'` option that a plugin can self-declare would be a security
+ * of authentication: `'public'`/`'custom'`/`'teams-sso'` are only reachable
+ * through a manifest declaration the operator consented to (`plan.md` §3 —
+ * "an `auth: 'none'` option that a plugin can self-declare would be a security
  * regression").
  */
-export type PluginRouteAuth = 'session' | 'public' | 'custom';
+export type PluginRouteAuth = 'session' | 'public' | 'custom' | 'teams-sso';
 
 /**
  * How the request body reaches the plugin router.
@@ -171,6 +176,14 @@ export const PLUGIN_RAW_BODY_LIMIT = '512kb';
  *  once per registration, never per request. */
 export type SessionAuthResolver = () => RequestHandler | undefined;
 
+/** #1620 — builds the Teams SSO gate for one entry; `source` is the plugin id,
+ *  for refusal logs. Late-bound for the same reason as {@link SessionAuthResolver}:
+ *  the installed registry the audiences come from is built after this registry.
+ *  Called once per `'teams-sso'` registration. */
+export type TeamsSsoAuthResolver = (
+  source: string,
+) => RequestHandler | undefined;
+
 export interface PluginRouteRegistryOptions {
   /**
    * REQUIRED. There is no "unwired" registry: a construction site that cannot
@@ -181,6 +194,13 @@ export interface PluginRouteRegistryOptions {
    * remove.
    */
   readonly sessionAuth: SessionAuthResolver;
+  /**
+   * #1620 — the gate for `auth: 'teams-sso'`. Optional because only the
+   * production composition root has a verifier to give; without it a
+   * `'teams-sso'` registration THROWS (see `register`), it never degrades to
+   * an unauthenticated route.
+   */
+  readonly teamsSsoAuth?: TeamsSsoAuthResolver;
 }
 
 interface RouteEntry {
@@ -222,12 +242,14 @@ export class PluginRouteRegistry {
   private mounted = false;
   private app: Express | null = null;
   private readonly sessionAuth: SessionAuthResolver;
+  private readonly teamsSsoAuth: TeamsSsoAuthResolver | undefined;
   /** Per-entry mini-app used by `resolvePublicDispatch`, built once and reused.
    *  Keyed on the entry object so a disposed entry's wrapper is collectable. */
   private readonly dispatchWrappers = new WeakMap<RouteEntry, RequestHandler>();
 
   constructor(opts: PluginRouteRegistryOptions) {
     this.sessionAuth = opts.sessionAuth;
+    this.teamsSsoAuth = opts.teamsSsoAuth;
   }
 
   /**
@@ -241,7 +263,8 @@ export class PluginRouteRegistry {
    * Throws when `auth` resolves to `'session'` and the resolver has no handler
    * to give. That is a kernel wiring bug (registration running before
    * `createRequireAuth`), and it must be loud: the alternative is a route that
-   * silently serves unauthenticated because the gate was not built yet.
+   * silently serves unauthenticated because the gate was not built yet. The
+   * same holds for `'teams-sso'` without a Teams SSO gate.
    */
   register(
     prefix: string,
@@ -285,6 +308,13 @@ export class PluginRouteRegistry {
         throw new Error(
           `PluginRouteRegistry: '${source}' registered '${prefix}' with auth:'session' but no session middleware is available yet — ` +
             'the kernel must build requireAuth before activating plugins',
+        );
+      }
+    } else if (auth === 'teams-sso') {
+      authHandler = this.teamsSsoAuth?.(source) ?? null;
+      if (!authHandler) {
+        throw new Error(
+          `PluginRouteRegistry: '${source}' registered '${prefix}' with auth:'teams-sso' but this kernel has no Teams SSO verifier wired`,
         );
       }
     }
@@ -344,7 +374,7 @@ export class PluginRouteRegistry {
   /**
    * Epic #470 C6 / G2 — the ambient app mount serves `auth: 'session'` ONLY.
    *
-   * `'public'` and `'custom'` entries are reachable exclusively through
+   * `'public'`, `'custom'` and `'teams-sso'` entries are reachable exclusively through
    * {@link resolvePublicDispatch}, i.e. through C4's terminating public-path
    * mount, which re-checks the operator grant on every request. Mounting them
    * here too would make consent decorative: a non-session entry composes a
@@ -520,8 +550,7 @@ function guarded(entry: RouteEntry): RequestHandler {
 }
 
 /**
- * `express.raw()` with a wildcard content-type matcher, plus the `req.rawBody`
- * alias.
+ * `express.raw()` that accepts every content type, plus the `req.rawBody` alias.
  *
  * The matcher accepts ANY content type on purpose: a webhook sender chooses its
  * own `Content-Type` (GitHub sends `application/json`, others send
@@ -529,12 +558,22 @@ function guarded(entry: RouteEntry): RequestHandler {
  * computed over bytes, not over a media type. Matching on type here would make
  * signature verification silently content-type dependent.
  *
+ * Which is why the matcher is a FUNCTION and not body-parser's wildcard type
+ * STRING (issue #1700): a string matcher goes through `type-is`, which needs a
+ * media type to compare against, so a request with NO `content-type` header —
+ * the "or nothing at all" case above — matches nothing, the wildcard included.
+ * body-parser then skips parsing, `req.rawBody` is never set, and the plugin's
+ * HMAC runs over the wrong bytes (or none) while the delivery was signed
+ * correctly. A function matcher skips the type check altogether. Bodyless
+ * requests still skip the parser via body-parser's own `hasBody` guard, so
+ * nothing is read where there is nothing to read.
+ *
  * Idempotent: when `pluginRawBodyMount` already parsed the body ahead of the
  * global JSON parser, body-parser short-circuits on its own `_body` marker and
  * `req.body` is already the Buffer this sets `rawBody` from.
  */
 function rawBodyCapture(limit: string): RequestHandler {
-  const parse = expressRaw({ type: '*/*', limit });
+  const parse = expressRaw({ type: () => true, limit });
   return (req, res, next) => {
     parse(req, res, (err?: unknown) => {
       if (err) {

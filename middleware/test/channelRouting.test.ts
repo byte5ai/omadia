@@ -68,13 +68,12 @@ describe('resolveChatAgentForChannel', () => {
     assert.equal(resolveChatAgentForChannel(ctx, 'teams', 'c1'), fallback);
   });
 
-  it('degrades to the shared singleton when the resolver rejects', () => {
-    const singleton = agent('singleton');
+  it('#1598 — refuses (undefined) when the resolver rejects, never the singleton', () => {
     const ctx = ctxWith({
       [CHANNEL_RESOLVER_SERVICE]: resolver({ decision: 'reject' }),
-      [CHAT_AGENT_SERVICE]: { agent: singleton },
+      [CHAT_AGENT_SERVICE]: { agent: agent('singleton') },
     });
-    assert.equal(resolveChatAgentForChannel(ctx, 'teams', 'c1'), singleton);
+    assert.equal(resolveChatAgentForChannel(ctx, 'teams', 'c1'), undefined);
   });
 
   it('degrades to the shared singleton when no resolver is published', () => {

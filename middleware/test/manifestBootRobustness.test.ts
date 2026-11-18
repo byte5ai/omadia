@@ -241,7 +241,7 @@ describe('OM-89 catalog permission diagnostics', { concurrency: false }, () => {
     });
   });
 
-  it('loads all 24 built-in filesystem manifests without an unknown-key report', async () => {
+  it('loads all 22 built-in filesystem manifests without an unknown-key report', async () => {
     await withTempDir(async (dir) => {
       const packageRoots: string[] = [];
       for (const entry of await fs.readdir(PACKAGES_DIR, { withFileTypes: true })) {
@@ -256,7 +256,7 @@ describe('OM-89 catalog permission diagnostics', { concurrency: false }, () => {
         }
         if (/^ {2}filesystem:\s*$/m.test(raw)) packageRoots.push(packageRoot);
       }
-      assert.ok(packageRoots.length >= 24, 'all 24 current built-in declarations must be covered');
+      assert.ok(packageRoots.length >= 22, 'all 22 current built-in declarations must be covered');
       const reports: (readonly UnknownPermissionKeys[])[] = [];
       const catalog = new PluginCatalog({
         manifestDir: dir,

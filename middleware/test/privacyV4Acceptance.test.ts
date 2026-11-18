@@ -79,12 +79,10 @@ describe('Privacy Shield v4 — HR-Urlaubsranking acceptance', () => {
     // Verb chain the LLM composes: aggregate → join → sort.
     const run = async (toolName: string, input: unknown): Promise<string> => {
       const r = await svc.runV4Tool({ ...ids, toolName, input });
-      // `v4_render_answer` now terminates the turn with a server-rendered
-      // user-facing payload (`_pendingCanvasTree` for tables), so it is no
-      // longer fed back into the model turn and must not count as LLM-bound.
-      if (toolName !== 'v4_render_answer') {
-        wire.push(r.resultText);
-      }
+      // #1402 — every `v4_*` result, the render's included, goes back to the
+      // model as its tool_result: it counts as LLM-bound. The render's canvas
+      // snapshot travels as `canvasSentinel`, off the wire.
+      wire.push(r.resultText);
       return r.resultText;
     };
 

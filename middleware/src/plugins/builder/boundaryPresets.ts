@@ -23,109 +23,18 @@
  * @see Issue #54
  */
 
-export type BoundaryCategory = 'data' | 'scope' | 'authority' | 'communication';
+// The library itself lives in `@omadia/plugin-api` so the Quality Guard
+// plugin reads the same ids and wording (#1104); this module keeps the
+// builder-facing names and the prompt compilation.
+import {
+  BOUNDARY_PRESETS,
+  getBoundaryPreset,
+  type BoundaryPreset,
+  type BoundaryPresetCategory,
+} from '@omadia/plugin-api';
 
-export interface BoundaryPreset {
-  /** Stable key, stored in the spec */
-  id: string;
-  /** Category for UI grouping */
-  category: BoundaryCategory;
-  /** i18n key in the "Boundaries" namespace */
-  labelKey: string;
-  /** Compiled prompt wording — kemia controls this, not the operator */
-  prompt: string;
-}
-
-export const BOUNDARY_PRESETS: readonly BoundaryPreset[] = [
-  // ── data ────────────────────────────────────────────────────────────────
-  {
-    id: 'no-financial-data',
-    category: 'data',
-    labelKey: 'presetNoFinancial',
-    prompt:
-      'You must NEVER access, process, or provide specific financial data, account balances, or transaction details. If asked, redirect to the appropriate financial department.',
-  },
-  {
-    id: 'no-pii',
-    category: 'data',
-    labelKey: 'presetNoPii',
-    prompt:
-      'You must NEVER collect, store, or process personally identifiable information (PII) such as names, addresses, phone numbers, social security numbers, or similar. If a user shares PII unsolicited, do not repeat or store it.',
-  },
-  {
-    id: 'no-medical-data',
-    category: 'data',
-    labelKey: 'presetNoMedical',
-    prompt:
-      'You must NEVER provide medical diagnoses, treatment recommendations, or interpret health data. Always redirect medical questions to qualified healthcare professionals.',
-  },
-  {
-    id: 'no-legal-advice',
-    category: 'data',
-    labelKey: 'presetNoLegal',
-    prompt:
-      'You must NEVER provide legal advice, interpret laws or contracts, or make recommendations that could be construed as legal counsel. Always recommend consulting a qualified attorney.',
-  },
-  // ── scope ───────────────────────────────────────────────────────────────
-  {
-    id: 'own-domain-only',
-    category: 'scope',
-    labelKey: 'presetOwnDomain',
-    prompt:
-      'You must strictly stay within your assigned domain and expertise area. If a question falls outside your scope, clearly state that it is outside your area of responsibility and suggest who might help.',
-  },
-  {
-    id: 'no-code-execution',
-    category: 'scope',
-    labelKey: 'presetNoCode',
-    prompt:
-      'You must NEVER generate, execute, or assist with writing code, scripts, or technical commands. Redirect technical requests to the development team.',
-  },
-  {
-    id: 'no-external-links',
-    category: 'scope',
-    labelKey: 'presetNoExternal',
-    prompt:
-      'You must NEVER provide external URLs, links, or references to third-party websites. Only reference internal documentation and resources.',
-  },
-  // ── authority ───────────────────────────────────────────────────────────
-  {
-    id: 'no-discount-authority',
-    category: 'authority',
-    labelKey: 'presetNoDiscount',
-    prompt:
-      'You do NOT have authority to offer, promise, or negotiate discounts, refunds, or pricing changes. All pricing decisions must be escalated to authorized personnel.',
-  },
-  {
-    id: 'no-commitments',
-    category: 'authority',
-    labelKey: 'presetNoCommitments',
-    prompt:
-      'You must NEVER make binding commitments, promises, or guarantees on behalf of the organization. You may provide information but not enter agreements.',
-  },
-  {
-    id: 'no-personnel-decisions',
-    category: 'authority',
-    labelKey: 'presetNoPersonnel',
-    prompt:
-      'You must NEVER make, suggest, or imply decisions about hiring, firing, promotions, or other personnel matters. These are strictly human-authority decisions.',
-  },
-  // ── communication ───────────────────────────────────────────────────────
-  {
-    id: 'no-speculation',
-    category: 'communication',
-    labelKey: 'presetNoSpeculation',
-    prompt:
-      "You must NEVER speculate or guess when you are uncertain. If you don't have confirmed information, say so explicitly rather than providing potentially incorrect answers.",
-  },
-  {
-    id: 'no-competitor-discussion',
-    category: 'communication',
-    labelKey: 'presetNoCompetitor',
-    prompt:
-      'You must NEVER discuss, compare, or comment on competitor products or services. If asked, politely redirect the conversation to your own offerings.',
-  },
-] as const;
+export { BOUNDARY_PRESETS, getBoundaryPreset, type BoundaryPreset };
+export type BoundaryCategory = BoundaryPresetCategory;
 
 /**
  * German label mapping — the resolver in `PersonaPillar.tsx` falls back
@@ -148,10 +57,6 @@ export const BOUNDARY_LABELS_DE: Readonly<Record<string, string>> = {
   presetNoSpeculation: 'Keine Spekulationen',
   presetNoCompetitor: 'Keine Wettbewerber-Diskussion',
 };
-
-export function getBoundaryPreset(id: string): BoundaryPreset | undefined {
-  return BOUNDARY_PRESETS.find((p) => p.id === id);
-}
 
 /**
  * Compile a list of boundary preset IDs + custom lines into prompt text.

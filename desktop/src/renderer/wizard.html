@@ -90,31 +90,23 @@
           </p>
         </section>
 
-        <!-- 2: Capabilities -->
+        <!--
+          2: Capabilities. Every switch here must reach the kernel: the
+          supervisor turns it into kernel env on each boot and checks /health
+          that it took (capabilities.ts). Semantic memory and diagrams are not
+          offered because nothing here can switch them on.
+        -->
         <section class="step hidden" data-step="2">
           <h1 data-i18n="caps.title">Optional capabilities</h1>
-          <p class="lead" data-i18n="caps.lead">You can change these later. The core (chat, memory, audit) always works.</p>
+          <p class="lead" data-i18n="caps.lead">The core (chat, memory, audit) always works.</p>
           <label class="toggle">
             <input type="checkbox" id="capAttachments" checked />
             <span>
               <strong data-i18n="caps.attachments">Attachments</strong>
-              <em data-i18n="caps.attachmentsHint">Store uploaded files on your local disk.</em>
+              <em data-i18n="caps.attachmentsHint">Keep files that reach omadia, such as attachments from connected channels, in your data folder on this computer.</em>
             </span>
           </label>
-          <label class="toggle">
-            <input type="checkbox" id="capEmbeddings" />
-            <span>
-              <strong><span data-i18n="caps.embeddings">Semantic memory</span> <small class="soon" data-i18n="caps.embeddingsBadge">preview</small></strong>
-              <em data-i18n="caps.embeddingsHint">In-process embeddings for topic detection. Downloads a small model on first use.</em>
-            </span>
-          </label>
-          <label class="toggle">
-            <input type="checkbox" id="capDiagrams" />
-            <span>
-              <strong><span data-i18n="caps.diagrams">Diagrams</span> <small class="soon" data-i18n="caps.diagramsBadge">needs network</small></strong>
-              <em data-i18n="caps.diagramsHint">Render diagrams via the hosted omadia service.</em>
-            </span>
-          </label>
+          <p class="hint" data-i18n="caps.later">Semantic memory and diagrams are not switched on here. Semantic memory downloads its model under Admin → Embedding Provider. Diagrams need the Diagrams plugin, a Kroki server and S3-compatible storage.</p>
         </section>
 
         <!-- 3: Data location -->

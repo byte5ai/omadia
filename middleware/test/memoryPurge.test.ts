@@ -1,10 +1,18 @@
 import { strict as assert } from 'node:assert';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { beforeEach, describe, it } from 'node:test';
 
 import { InMemoryMemoryStore } from '@omadia/memory';
 import { memoryContextKey } from '@omadia/channel-sdk';
 
-import { previewMemoryPurge, purgeMemory } from '../src/services/memoryPurge.js';
+import {
+  bundledSeedEntries,
+  previewMemoryPurge,
+  purgeMemory,
+  reseedMemory,
+} from '../src/services/memoryPurge.js';
 
 // ---------------------------------------------------------------------------
 // WS3 — Danger-Zone scratch purge helpers. Exercised against an
@@ -94,15 +102,58 @@ describe('memoryPurge (scratch helpers)', () => {
     assert.equal(await store.fileExists('/memories/_rules/r.md'), true);
   });
 
-  it("axis 'all' with reseed removes _rules too", async () => {
-    const preview = await previewMemoryPurge(store, 'all', undefined, { reseed: true });
+  it("axis 'all' with reseedEntries removes only the re-seeded entries (#1335)", async () => {
+    // The user data a re-seed used to wipe: none of it is in the bundled seed.
+    await store.createFile('/memories/chat-sessions/u1/tabs.json', '[]');
+    await store.createFile('/memories/sessions/scope-1/log.md', 'q&a');
+    await store.createFile('/memories/_brand/logo.md', 'logo');
+    await store.createFile('/memories/core/kernel.md', 'core');
+    await store.createFile('/memories/ui-prefs/u1.json', '{}');
+
+    const options = { reseedEntries: ['_rules'] };
+    const preview = await previewMemoryPurge(store, 'all', undefined, options);
     assert.equal(preview, 2); // orchestrators + _rules
 
-    const deleted = await purgeMemory(store, 'all', undefined, { reseed: true });
-    assert.equal(deleted, 2);
+    const deleted = await purgeMemory(store, 'all', undefined, options);
+    assert.equal(deleted, preview, 'the purge deletes exactly what the preview counted');
 
     assert.equal(await store.fileExists('/memories/orchestrators/a/x.md'), false);
     assert.equal(await store.fileExists('/memories/_rules/r.md'), false);
+    for (const kept of [
+      '/memories/chat-sessions/u1/tabs.json',
+      '/memories/sessions/scope-1/log.md',
+      '/memories/_brand/logo.md',
+      '/memories/core/kernel.md',
+      '/memories/ui-prefs/u1.json',
+    ]) {
+      assert.equal(await store.fileExists(kept), true, `${kept} must survive a re-seed purge`);
+    }
+  });
+
+  it('reseedMemory writes the bundled seed back without a restart (#1335)', async () => {
+    const seedDir = await mkdtemp(path.join(tmpdir(), 'purge-seed-'));
+    try {
+      await mkdir(path.join(seedDir, '_rules'));
+      await writeFile(path.join(seedDir, '_rules', 'smart-cards.md'), 'bundled rule');
+      assert.deepEqual(await bundledSeedEntries(seedDir), ['_rules']);
+
+      await purgeMemory(store, 'all', undefined, {
+        reseedEntries: await bundledSeedEntries(seedDir),
+      });
+      assert.equal(await reseedMemory(store, seedDir), 1);
+
+      assert.equal(await store.fileExists('/memories/_rules/r.md'), false, 'runtime rule is reset');
+      assert.equal(
+        await store.readFile('/memories/_rules/smart-cards.md'),
+        'bundled rule',
+      );
+    } finally {
+      await rm(seedDir, { recursive: true, force: true });
+    }
+  });
+
+  it('bundledSeedEntries of a missing seed dir is empty, so re-seed deletes nothing extra', async () => {
+    assert.deepEqual(await bundledSeedEntries('/nonexistent/seed/dir'), []);
   });
 
   it("axis 'user' with no context forest at all deletes nothing", async () => {

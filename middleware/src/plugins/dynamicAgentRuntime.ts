@@ -3,7 +3,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import type { AnthropicClient } from '@omadia/llm-adapter-anthropic';
-import type { LlmProviderPool } from '@omadia/llm-provider';
+import type { EffortLevel, LlmProviderPool } from '@omadia/llm-provider';
 import type { z } from 'zod';
 
 import { canvasOutputToolIds } from '../platform/canvasOutputRegistry.js';
@@ -12,6 +12,9 @@ import { eventEmitIds } from '../platform/eventCatalogRegistry.js';
 import { createPluginContext } from '../platform/pluginContext.js';
 import type { OperatorAuthAccessor } from '@omadia/plugin-api';
 import type { PluginRouteRegistry } from '../platform/pluginRouteRegistry.js';
+import { claimDeclaredPublicPaths } from '../platform/publicPathClaim.js';
+import type { PublicPathGrantRegistry } from '../platform/publicPathGrants.js';
+import type { PublicPathGrantStore } from '../platform/publicPathGrantStore.js';
 import type { NotificationRouter } from '../platform/notificationRouter.js';
 import type { PluginStatusRegistry } from '../platform/pluginStatusRegistry.js';
 import type { UiRouteCatalog } from '../platform/uiRouteCatalog.js';
@@ -23,6 +26,7 @@ import { resolveClaudeCliBin } from '../platform/cliBinary.js';
 import {
   createCliSubAgent,
   LocalSubAgent,
+  subAgentEffortFor,
   type Askable,
   type LocalSubAgentTool,
   type LocalSubAgentToolResult,
@@ -34,6 +38,13 @@ import {
 } from '@omadia/orchestrator';
 
 import { parseAgentMd } from './agentMdFrontmatter.js';
+import { bridgedToolError, type BridgeStage } from './bridgedToolError.js';
+import {
+  PluginProbeTracker,
+  credentialFingerprint,
+  type BoundProbe,
+  type ConnectionProbeOutcome,
+} from './connectionProbe.js';
 import { selectSubAgentHost } from './subAgentHostModel.js';
 import type { BuiltInPackageStore } from './builtInPackageStore.js';
 import type { InstalledRegistry } from './installedRegistry.js';
@@ -47,6 +58,7 @@ import { compileSycophancyGuard } from './sycophancyGuard.js';
 import { topoSortByDependsOn } from './topoSort.js';
 import type { UploadedPackageStore } from './uploadedPackageStore.js';
 import { zodToJsonSchema } from './zodToJsonSchema.js';
+import { describeActivationFailure } from './activationFailure.js';
 
 /**
  * Runtime for uploaded agent packages.
@@ -103,8 +115,11 @@ interface UploadedAgentHandle {
 
 interface UploadedModuleShape {
   activate?: (ctx: unknown) => Promise<UploadedAgentHandle>;
+  /** Issue #1453 — optional credential check. See `connectionProbe.ts`. */
+  verifyConnection?: (ctx: unknown) => unknown;
   default?: {
     activate?: (ctx: unknown) => Promise<UploadedAgentHandle>;
+    verifyConnection?: (ctx: unknown) => unknown;
   };
 }
 
@@ -125,6 +140,10 @@ interface ActiveAgent {
    *  entry. Called on deactivate so a hot-upgrade doesn't leave a stale
    *  DomainTool reachable via `ctx.subAgent.ask`. */
   disposeSubAgentService: () => void;
+  /** Issue #1453 — bound connection probe, kept so the operator-triggered
+   *  re-check can run it against the SAME context the agent activated with.
+   *  Absent for a package that exports no `verifyConnection`. */
+  probe?: BoundProbe;
 }
 
 export interface DynamicAgentRuntimeDeps {
@@ -142,6 +161,8 @@ export interface DynamicAgentRuntimeDeps {
   subAgentModel: string;
   subAgentMaxTokens: number;
   subAgentMaxIterations: number;
+  /** `SUB_AGENT_EFFORT` — absent = no effort sent (the model's default). */
+  subAgentEffort?: EffortLevel;
   /** The host's configured LLM provider id for dynamic sub-agents (default
    *  `anthropic`). Late-bound so a post-boot provider switch is picked up. */
   hostProviderId?: () => string;
@@ -159,6 +180,12 @@ export interface DynamicAgentRuntimeDeps {
   /** Shared registry for plugin-contributed Express routers. Activated
    *  plugins register mounts here via `ctx.routes.register(prefix, router)`. */
   pluginRouteRegistry: PluginRouteRegistry;
+  /** Epic #470 C4 / H1 — claims for an agent's `permissions.public_paths`
+   *  (S3-G: Builder `spec.permissions.public_paths`). Optional; absent means
+   *  nothing is claimed and every route stays behind the session gate. */
+  publicPathGrants?: PublicPathGrantRegistry;
+  publicPathGrantStore?: PublicPathGrantStore;
+  corePublicPaths?: readonly RegExp[];
   notificationRouter: NotificationRouter;
   uiRouteCatalog: UiRouteCatalog;
   /** Kernel-wide background-job scheduler. Plugin-contributed jobs register
@@ -223,7 +250,28 @@ export class DynamicAgentRuntime {
   private readonly active = new Map<string, ActiveAgent>();
   private orchestrator: Orchestrator | null = null;
 
-  constructor(private readonly deps: DynamicAgentRuntimeDeps) {}
+  /** Issue #1453 — binds and backgrounds each agent's credential check. Same
+   *  tracker the tool runtime holds; see `connectionProbe.ts`. */
+  private readonly probes: PluginProbeTracker;
+
+  constructor(private readonly deps: DynamicAgentRuntimeDeps) {
+    // #1453 — built in the body, not as a field initializer: field
+    // initializers run before the parameter property `deps` is assigned.
+    this.probes = new PluginProbeTracker({
+      isActive: (id) => this.active.has(id),
+      log: (msg) => {
+        this.log(msg);
+      },
+    });
+  }
+
+  /** The runtime's own logger, resolved per call so a dep set later still
+   *  wins over the console fallback. */
+  private log(msg: string): void {
+    (this.deps.log ?? ((m: string) => {
+      console.log(m);
+    }))(msg);
+  }
 
   /** Must be set exactly once after orchestrator construction.
    *  Hot-register only takes effect after this.
@@ -309,7 +357,10 @@ export class DynamicAgentRuntime {
         const msg = err instanceof Error ? err.message : String(err);
         log(`[dynamic-runtime] activate FAILED for ${id}: ${msg}`);
         try {
-          await this.deps.registry.markActivationFailed(id, msg);
+          await this.deps.registry.markActivationFailed(
+            id,
+            describeActivationFailure(err),
+          );
         } catch (registryErr) {
           // Registry write failure is secondary — log but don't rethrow.
           log(
@@ -448,6 +499,33 @@ export class DynamicAgentRuntime {
       );
     }
 
+    // S3-G — claim the declared public paths AFTER activate(), exactly like the
+    // tool runtime; without the claim a granted `auth:'custom'` route (webhook,
+    // OAuth callback) is never served.
+    const grants = this.deps.publicPathGrants;
+    if (grants) {
+      try {
+        await claimDeclaredPublicPaths(
+          agentId,
+          catalogEntry.plugin.permissions_summary?.public_paths ?? [],
+          {
+            grants,
+            store: this.deps.publicPathGrantStore,
+            corePublicPaths: this.deps.corePublicPaths,
+            routeRegistry: this.deps.pluginRouteRegistry,
+            log,
+            tag: 'dynamic-runtime',
+          },
+        );
+      } catch (err) {
+        grants.releaseBySource(agentId);
+        this.deps.pluginRouteRegistry.disposeBySource(agentId);
+        this.deps.uiRouteCatalog.disposeBySource(agentId);
+        await entryCloseQuietly(handle);
+        throw err;
+      }
+    }
+
     const subAgentTools: LocalSubAgentTool[] = handle.toolkit.tools.map((t) =>
       bridgeTool(t),
     );
@@ -490,6 +568,7 @@ export class DynamicAgentRuntime {
     // requests). Run the sub-agent through its own CliChatAgent instead — the
     // `claude` CLI owns the loop, the sub-agent's tools reach it over a fresh
     // loopback MCP server. Every other provider keeps the in-process path.
+    const effortFor = subAgentEffortFor(this.deps.subAgentEffort);
     const subAgent: Askable =
       hostProviderId === 'claude-cli'
         ? createCliSubAgent({
@@ -508,6 +587,7 @@ export class DynamicAgentRuntime {
             maxIterations: this.deps.subAgentMaxIterations,
             systemPrompt,
             tools: subAgentTools,
+            ...(effortFor !== undefined ? { effortFor } : {}),
           });
 
     const description = buildDomainToolDescription(catalogEntry);
@@ -527,6 +607,18 @@ export class DynamicAgentRuntime {
       // agent for BOTH the domain tool dispatch AND every sub-agent
       // inner tool call within it.
       agentId,
+      // the sub-agent's own tools, callable without its model loop — the
+      // fast path may plan the read ones the operator allow-listed
+      subAgentTools: () =>
+        subAgentTools.map((t) => ({
+          name: t.spec.name,
+          description: t.spec.description,
+          input_schema: t.spec.input_schema as Readonly<Record<string, unknown>>,
+          handle: async (input: unknown) => {
+            const res = await t.handle(input);
+            return typeof res === 'string' ? res : res.output;
+          },
+        })),
     });
 
     // OB-29-1 — publish the DomainTool as a `subAgent:<agentId>` service
@@ -538,6 +630,26 @@ export class DynamicAgentRuntime {
       domainTool,
     );
 
+    // Issue #1453 — bind the package's own credential check, if it exports one.
+    // The fingerprint keys the verdict cache: a provider write reactivates
+    // every dependent plugin, and re-probing each target system for
+    // credentials that did not change is exactly the waste the cache exists
+    // to avoid. It spans the secrets AND the non-secret config, because a
+    // `PATCH /installed/:id/config` reactivates too — a repaired `url` must
+    // not be served the rejection the wrong one earned.
+    // Unavailable vault ⇒ no fingerprint ⇒ no caching.
+    const fingerprint = await credentialFingerprint(
+      this.deps.vault,
+      agentId,
+      this.deps.registry.get(agentId)?.config,
+    );
+    const probe = this.probes.bind(
+      agentId,
+      mod,
+      ctx,
+      fingerprint !== undefined ? { credentialFingerprint: fingerprint } : {},
+    );
+
     this.active.set(agentId, {
       agentId,
       handle,
@@ -545,6 +657,7 @@ export class DynamicAgentRuntime {
       rawTools: handle.toolkit.tools,
       subAgentTools,
       disposeSubAgentService,
+      ...(probe ? { probe } : {}),
     });
     this.orchestrator?.registerDomainTool(domainTool);
 
@@ -596,7 +709,27 @@ export class DynamicAgentRuntime {
     log(
       `[dynamic-runtime] ACTIVATED ${agentId} as ${toolName} (tools=${subAgentTools.length}, entry=${entryRel})`,
     );
+
+    // Issue #1453 — credential check after the agent is up, never awaited.
+    if (probe) this.probes.start(agentId, probe);
     return domainTool;
+  }
+
+  /** Issue #1453 — settle every connection probe this runtime has started.
+   *  For tests; nothing on the boot path waits for probes. */
+  async whenConnectionProbesSettled(): Promise<void> {
+    await this.probes.settled();
+  }
+
+  /** Issue #1453 — re-run one active agent's credential check in place.
+   *  `undefined` means "no answer": not active here, or no probe declared. */
+  async verifyConnectionNow(
+    agentId: string,
+  ): Promise<ConnectionProbeOutcome | undefined> {
+    const probe = this.active.get(agentId)?.probe;
+    if (!probe) return undefined;
+    // `force`: a "check now" that answers from a cache is not a check.
+    return this.probes.run(agentId, probe, { force: true });
   }
 
   async deactivate(agentId: string): Promise<boolean> {
@@ -638,6 +771,8 @@ export class DynamicAgentRuntime {
     // v0.4.0 → v0.5.0).
     const disposedCount =
       this.deps.pluginRouteRegistry.disposeBySource(agentId);
+    // S3-G — ownership goes in the same breath as the routers.
+    this.deps.publicPathGrants?.releaseBySource(agentId);
     if (disposedCount > 0) {
       log(
         `[dynamic-runtime] disposed ${String(disposedCount)} route mount(s) for ${agentId}`,
@@ -691,6 +826,27 @@ export class DynamicAgentRuntime {
    *  registry says WHICH tools are deterministic, this says HOW to run one
    *  without a model. Data-driven agents never reach here — they go through the
    *  domain tool + compose path instead. */
+  /** #1598 — the agent plugin whose tool `invokeAgentTool` (`'invoke'`) or
+   *  `invokeAgentToolStream` (`'stream'`) would actually run for `toolId` —
+   *  the same search as each of them, so the grant is checked against the
+   *  plugin whose code runs even if two plugins expose the same id. */
+  ownerOfAgentTool(toolId: string, kind: 'invoke' | 'stream'): string | undefined {
+    for (const [agentId, entry] of this.active) {
+      if (kind === 'invoke' && entry.subAgentTools.some((t) => t.spec.name === toolId)) {
+        return agentId;
+      }
+      if (
+        kind === 'stream' &&
+        entry.rawTools.some(
+          (c) => toolIdentifier(c) === toolId && isStreamingUploadedToolkitTool(c),
+        )
+      ) {
+        return agentId;
+      }
+    }
+    return undefined;
+  }
+
   async invokeAgentTool(toolId: string, input: unknown): Promise<string | undefined> {
     for (const entry of this.active.values()) {
       const tool = entry.subAgentTools.find((t) => t.spec.name === toolId);
@@ -831,7 +987,15 @@ function toolIdentifier(t: UploadedToolkit['tools'][number] | LocalSubAgentTool)
   return isLocalSubAgentTool(t) ? t.spec.name : t.id;
 }
 
-function bridgeTool(
+/**
+ * Bridge an uploaded toolkit tool onto the `LocalSubAgentTool` contract. A
+ * failure comes back as an `Error:` result from `bridgedToolError`: a readable
+ * hint when the model's input failed the schema, the withheld notice when the
+ * tool's own code threw.
+ *
+ * @internal Exported for tests only.
+ */
+export function bridgeTool(
   td: UploadedToolkit['tools'][number] | LocalSubAgentTool,
 ): LocalSubAgentTool {
   if (isLocalSubAgentTool(td)) return td;
@@ -855,8 +1019,10 @@ function bridgeTool(
     async handle(
       input: unknown,
     ): Promise<string | LocalSubAgentToolResult> {
+      let stage: BridgeStage = 'input';
       try {
         const parsed = td.input.parse(input);
+        stage = 'run';
         const result = await td.run(parsed);
         if (td.output) {
           const outCheck = td.output.safeParse(result);
@@ -880,7 +1046,7 @@ function bridgeTool(
           ? result
           : JSON.stringify(result, null, 2);
       } catch (err) {
-        return `Error: ${err instanceof Error ? err.message : String(err)}`;
+        return bridgedToolError(td.id, err, stage, 'dynamic-agent');
       }
     },
   };

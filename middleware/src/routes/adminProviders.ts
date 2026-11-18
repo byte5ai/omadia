@@ -6,9 +6,14 @@
  * lives on this page (not buried in the per-plugin settings panel).
  *
  * GET  /                 → providers (from the global model registry, with
- *                          connection status) + per-plugin LLM assignments.
+ *                          connection status and per-class default model) +
+ *                          per-plugin LLM assignments, each with the stored
+ *                          model ref AND the concrete model it resolves to
+ *                          (`resolvedModel`, #1083 — a class ref such as
+ *                          `class:frontier` is not a vendor id).
  * POST /assignment       → set { provider, model } for an LLM-consuming plugin
- *                          (writes its config + reactivates). A dedicated
+ *                          (writes its config + reactivates; a class ref is
+ *                          stored as given, see providerAssignment.ts). A dedicated
  *                          endpoint (plugin id in the body, not the URL) avoids
  *                          the encoded-slash proxy 404 the runtime config route
  *                          hits from the browser.
@@ -32,11 +37,14 @@ import {
   exchangeAuthorizationCode,
   listModels,
   listModelsByProvider,
+  modelForClass,
   OPENAI_CODEX_OAUTH,
   pollDeviceToken,
   primeProviderOAuthTokens,
   requestUserCode,
+  resolveConfiguredModel,
   writeProviderOAuthTokens,
+  type ModelClass,
   type OAuthClientConfig,
   type OAuthTokens,
   type ProviderId,
@@ -70,6 +78,7 @@ import {
   type ModelCatalogSync,
 } from '../platform/modelCatalogSync.js';
 import { applyProviderAssignment } from '../platform/providerAssignment.js';
+import { rebuildOrder } from '../platform/providerDependents.js';
 
 export interface AdminProvidersDeps {
   readonly installedRegistry: InstalledRegistry;
@@ -108,6 +117,21 @@ function providerLabel(id: ProviderId): string {
   }
 }
 
+const MODEL_CLASSES: readonly ModelClass[] = ['frontier', 'balanced', 'fast'];
+
+/** The model each class resolves to for `providerId` (#1083) — lets the UI
+ *  label the class options it does not have selected without copying the
+ *  registry's `classDefault` rule into the client. Classes the provider does
+ *  not serve are left out. */
+function classDefaultsFor(providerId: ProviderId): Partial<Record<ModelClass, string>> {
+  const out: Partial<Record<ModelClass, string>> = {};
+  for (const cls of MODEL_CLASSES) {
+    const hit = modelForClass(cls, providerId);
+    if (hit !== undefined) out[cls] = hit.modelId;
+  }
+  return out;
+}
+
 /** Fan a provider's OAuth tokens out to EVERY LLM-plugin scope with one shared
  *  `updatedAt` stamp (newest-wins hydration relies on the stamp), then reactivate
  *  the installed ones so they re-read. Refresh-token rotation makes divergent
@@ -129,10 +153,13 @@ async function fanOutProviderOAuthTokens(
     );
   }
   if (deps.reactivate) {
-    for (const desc of LLM_PLUGINS) {
-      if (deps.installedRegistry.has(desc.id)) {
-        await deps.reactivate(desc.id).catch(() => undefined);
-      }
+    // Capture order (#1394): the orchestrator captures the verifier's and
+    // extras' services in its own activate(), so it is rebuilt last.
+    const installed = LLM_PLUGINS.map((d) => d.id).filter((id) =>
+      deps.installedRegistry.has(id),
+    );
+    for (const id of rebuildOrder(installed, (pid) => deps.installedRegistry.has(pid))) {
+      await deps.reactivate(id).catch(() => undefined);
     }
   }
 }
@@ -229,6 +256,11 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
           // Retained for backwards compatibility: "a key is on file". Callers
           // that need "the key actually works" must read `status` instead.
           connected: verification.status !== 'no_key',
+          // #1460 — a keyless provider (Ollama) is `connected` without any
+          // key, so `connected` cannot tell the UI whether "Change key" /
+          // "Remove key" have anything to act on. These two can.
+          requiresApiKey: descriptor?.policy?.requiresApiKey !== false,
+          hasKey: (await findProviderKey(deps.vault, id)) !== undefined,
           // OM-11: the customer clicked "Anmelden →" on a provider whose CLI is
           // not on this server and landed on a page with no possible action.
           // The DTO carried no way to know that. Key-based providers need no
@@ -287,6 +319,7 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
             maxTokens: m.maxTokens,
             vision: m.vision,
           })),
+          classDefaults: classDefaultsFor(id),
           };
         }),
       );
@@ -297,15 +330,27 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
         const installed = deps.installedRegistry.has(p.id);
         const cfg = (installed ? deps.installedRegistry.get(p.id)?.config : {}) ?? {};
         const modelKey = p.modelKeys[0] ?? '';
+        const provider = readStringConfig(cfg, 'llm_provider') ?? DEFAULT_PROVIDER;
+        const model = readStringConfig(cfg, modelKey) ?? null;
         return {
           pluginId: p.id,
           label: p.label,
           installed,
-          provider: readStringConfig(cfg, 'llm_provider') ?? DEFAULT_PROVIDER,
-          model: readStringConfig(cfg, modelKey) ?? null,
+          provider,
+          model,
+          // #1083 — the concrete model the stored ref currently resolves to,
+          // computed by the runtime's own resolver: a class ref follows the
+          // provider's catalog, an alias maps to its vendor id. Plugins that
+          // resolve once at activation are rebuilt when discovery moves the
+          // class (#1359), so this matches the running model.
+          // `null` when unset or unresolvable. `model` stays the raw stored
+          // ref (the intent).
+          resolvedModel: model === null ? null : (resolveConfiguredModel(model, provider) ?? null),
           modelKey,
           // This plugin drives a tool loop → the UI disables tool-less providers.
           requiresTools: p.requiresTools === true,
+          // #1583 — the plugin cannot run on the subscription CLI at all.
+          rejectsSubscriptionCli: p.rejectsSubscriptionCli === true,
           // surface the orchestrator's per-turn routing flag so the page can show
           // /edit it directly (it gets force-disabled on a non-Anthropic switch).
           ...(p.id === '@omadia/orchestrator'
@@ -349,21 +394,31 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
 
     try {
       const descriptor = deps.llmProviderCatalog?.get(providerId);
+      // A CLI-login or OAuth provider has no endpoint to reach and no key to
+      // probe: its check IS the login (#309) / the stored grant (#294), which
+      // the read-side resolver already answers.
+      if (providerId === 'claude-cli' || descriptor?.oauth !== undefined) {
+        res.json(
+          await resolveProviderVerification(providerId as ProviderId, {
+            vault: deps.vault,
+            llmProviderCatalog: deps.llmProviderCatalog,
+            cliSnapshot: await detectCliBackends().catch(() => undefined),
+          }),
+        );
+        return;
+      }
+      const keyless = descriptor?.policy?.requiresApiKey === false;
       const found = await findProviderKey(deps.vault, providerId as ProviderId);
-      if (found === undefined) {
-        // Keyless providers verify without a credential; everything else needs
-        // one before there is anything to probe.
-        if (descriptor?.policy?.requiresApiKey === false) {
-          res.json({ status: 'verified' } satisfies ProviderVerification);
-          return;
-        }
+      // #1460 — a keyless provider is checked by reaching it, key or not; it
+      // used to answer `verified` here without a single request.
+      if (found === undefined && !keyless) {
         res.json({ status: 'no_key' } satisfies ProviderVerification);
         return;
       }
 
       const verification = await verifyProviderCredential({
         providerId,
-        apiKey: found.apiKey,
+        apiKey: found?.apiKey ?? '',
         ...(descriptor?.wireFormat !== undefined
           ? { wireFormat: descriptor.wireFormat }
           : {}),
@@ -378,7 +433,10 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
 
       // Durability. Written ONLY here and on a key save — never on a read: the
       // vault is a single encrypted blob rewritten in full on every write.
-      if (deps.vault) {
+      // #1460 — never for a keyless provider: its verdict is reachability, a
+      // fact about a daemon that can stop at any time, and a record surviving
+      // a restart would claim a check that no longer holds.
+      if (deps.vault && found !== undefined && !keyless) {
         const vaultKey = providerVerifiedAtVaultKey(providerId);
         try {
           if (verification.status === 'verified') {
@@ -470,7 +528,13 @@ export function createAdminProvidersRouter(deps: AdminProvidersDeps): Router {
       });
       return;
     }
-    res.json({ ok: true, pluginId: result.pluginId, provider: result.provider, model: result.model });
+    res.json({
+      ok: true,
+      pluginId: result.pluginId,
+      provider: result.provider,
+      model: result.model,
+      resolvedModel: result.resolvedModel,
+    });
   });
 
   // -------------------------------------------------------------------------

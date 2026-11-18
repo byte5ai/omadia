@@ -5,7 +5,8 @@
  *   - `POST /chat`         — public, self-authenticating (API key). The only
  *                            path `publicPaths.ts` exempts from the session
  *                            gate for this plugin.
- *   - `/admin/keys`        — key lifecycle (create/list/revoke). NOT
+ *   - `/admin/keys`        — key lifecycle (create/list/revoke/delete,
+ *                            scope catalog, per-key usage). NOT
  *                            exempted in `publicPaths.ts`, and (as of the
  *                            issue #438 follow-up) actually enforced: gated
  *                            by `ctx.operatorAuth` inside
@@ -14,7 +15,8 @@
  *                            own — see that file's doc comment.
  *
  * Follows the same "built-in package, activate(ctx, core)" shape as
- * `@omadia/ui-channel` — see that package for the template this mirrors.
+ * `@omadia/ui-channel` (byte5ai/omadia-ui-support) — see that package for the
+ * template this mirrors.
  *
  * Issue #439: the key store, rate limiter, audit log and the bearer-auth
  * middleware now live in `@omadia/api-key-auth` so the kernel can reuse them
@@ -84,7 +86,13 @@ export async function activate(
       auditLog,
     }),
   );
-  router.use('/admin/keys', createAdminKeysRouter(apiKeys, ctx.operatorAuth));
+  router.use(
+    '/admin/keys',
+    createAdminKeysRouter(apiKeys, ctx.operatorAuth, {
+      usageLog: auditLog,
+      log: (...args) => ctx.log(...args),
+    }),
+  );
 
   core.registerRouter(ctx.agentId, API_PREFIX, router);
   ctx.log(

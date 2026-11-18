@@ -6,6 +6,7 @@ import type {
   ChannelUserRef,
   ConversationMembershipEvent,
   ConversationRosterProvider,
+  PeopleDirectoryProvider,
   ConversationSendProvider,
   CoreApi,
   HttpMethod,
@@ -18,6 +19,7 @@ import { deriveChannelType } from './channelType.js';
 import type { ExpressRouteRegistry } from './routeRegistry.js';
 import type { WebSocketRegistry } from './webSocketRegistry.js';
 import type { ConversationRosterRegistry } from './rosterRegistry.js';
+import type { PeopleDirectoryRegistry } from './peopleDirectoryRegistry.js';
 import type { ConversationEventHub } from './conversationEventHub.js';
 import type { TargetedSendRegistry } from './targetedSendRegistry.js';
 import type { ConversationSendRegistry } from './conversationSendRegistry.js';
@@ -142,6 +144,8 @@ export interface CreateCoreApiOptions {
    * simply not defined, so old plugins and non-group wirings stay untouched.
    */
   rosterRegistry?: ConversationRosterRegistry;
+  /** People directory (Conductor human-step principal resolution) — same optional pattern. */
+  peopleDirectories?: PeopleDirectoryRegistry;
   targetedSends?: TargetedSendRegistry;
   conversationEvents?: ConversationEventHub;
   /** #330 C3b — conversation-addressed proactive send (group nudges). */
@@ -302,6 +306,12 @@ export function createCoreApi(opts: CreateCoreApiOptions): CoreApi {
     const rosters = opts.rosterRegistry;
     api.registerRosterProvider = (channelId: string, provider: ConversationRosterProvider): void => {
       rosters.register(channelId, provider);
+    };
+  }
+  if (opts.peopleDirectories) {
+    const peopleDirectories = opts.peopleDirectories;
+    api.registerPeopleDirectoryProvider = (channelId: string, provider: PeopleDirectoryProvider): void => {
+      peopleDirectories.register(channelId, provider);
     };
   }
   if (opts.targetedSends) {

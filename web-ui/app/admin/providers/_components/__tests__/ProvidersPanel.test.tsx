@@ -136,6 +136,81 @@ describe('<ProvidersPanel />', () => {
     expect(screen.queryByText(/Add key/)).toBeNull();
   });
 
+  it('probes a key that arrived without a verdict, once', async () => {
+    mockVerifyProvider.mockClear();
+    mockVerifyProvider.mockResolvedValue({ status: 'verified' });
+    mockGetProviders.mockResolvedValue(
+      providersResponse({
+        providers: [provider({ connected: true, status: 'unverified' })],
+      }),
+    );
+    renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+    await screen.findByText(/Change key/);
+    await vi.waitFor(() => expect(mockVerifyProvider).toHaveBeenCalledTimes(1));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(mockVerifyProvider).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not probe again after an unreachable probe left a reason', async () => {
+    mockVerifyProvider.mockClear();
+    mockGetProviders.mockResolvedValue(
+      providersResponse({
+        providers: [provider({ connected: true, status: 'unverified', verifyReason: 'network_error' })],
+      }),
+    );
+    renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+    await screen.findByText(/Change key/);
+    expect(mockVerifyProvider).not.toHaveBeenCalled();
+  });
+
+  // #1460 — a keyless provider (Ollama) is `connected` without any key.
+  it('offers no "Change/Remove key" for a keyless provider with no key stored', async () => {
+    mockGetProviders.mockResolvedValue(
+      providersResponse({
+        providers: [
+          provider({
+            id: 'ollama',
+            label: 'Ollama (local)',
+            connected: true,
+            status: 'unverified',
+            requiresApiKey: false,
+            hasKey: false,
+          }),
+        ],
+      }),
+    );
+    renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+    expect(await screen.findByText(/Add key \(optional\)/)).toBeTruthy();
+    expect(screen.queryByText(/Change key/)).toBeNull();
+    expect(screen.queryByText('Remove key')).toBeNull();
+    expect(screen.getByText('Test connection')).toBeTruthy();
+    expect(screen.queryByText('Test key')).toBeNull();
+  });
+
+  it('offers "Change/Remove key" for a keyless provider once a key is stored', async () => {
+    mockGetProviders.mockResolvedValue(
+      providersResponse({
+        providers: [
+          provider({
+            id: 'ollama',
+            label: 'Ollama (local)',
+            connected: true,
+            status: 'unverified',
+            requiresApiKey: false,
+            hasKey: true,
+          }),
+        ],
+      }),
+    );
+    renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+    expect(await screen.findByText(/Change key/)).toBeTruthy();
+    expect(screen.getByText('Remove key')).toBeTruthy();
+  });
+
   it('opens the key input and PATCHes the new key when "Change key" is clicked', async () => {
     mockGetProviders.mockResolvedValue(
       providersResponse({
@@ -259,7 +334,7 @@ describe('<ProvidersPanel />', () => {
   it('offers "Test key" once a key exists, and probes on click', async () => {
     mockGetProviders.mockResolvedValue(
       providersResponse({
-        providers: [provider({ connected: true, status: 'unverified' })],
+        providers: [provider({ connected: true, status: 'unverified', verifyReason: 'network_error' })],
       }),
     );
     renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
@@ -334,7 +409,7 @@ describe('<ProvidersPanel />', () => {
     it('refreshes the selected provider and reloads its row', async () => {
       mockGetProviders.mockResolvedValue(
         providersResponse({
-          providers: [provider({ connected: true, status: 'unverified' })],
+          providers: [provider({ connected: true, status: 'unverified', verifyReason: 'network_error' })],
         }),
       );
       renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
@@ -463,7 +538,7 @@ describe('<ProvidersPanel />', () => {
     it('surfaces a rejected refresh request and still reloads the provider row', async () => {
       mockGetProviders.mockResolvedValue(
         providersResponse({
-          providers: [provider({ connected: true, status: 'unverified' })],
+          providers: [provider({ connected: true, status: 'unverified', verifyReason: 'network_error' })],
         }),
       );
       mockRefreshProviderModels.mockRejectedValue(new Error('upstream unavailable'));
@@ -744,6 +819,73 @@ describe('<ProvidersPanel />', () => {
     expect(
       screen.queryByText(en.errorHelp.settings.no_valid_changes.next),
     ).toBeNull();
+  });
+
+  // #1330: the server says WHY it refused the key, per field. That reason used
+  // to be lost behind "PATCH settings failed: 400" (or the envelope's generic
+  // help). A field code with catalogue copy is now the headline.
+  it('#1330: a coded field rejection shows its own localized reason', async () => {
+    mockGetProviders.mockResolvedValue(
+      providersResponse({
+        providers: [provider({ connected: true, status: 'unverified' })],
+      }),
+    );
+    mockPatchSettings.mockRejectedValue(
+      new ApiError(
+        400,
+        'PATCH /v1/admin/settings failed: 400',
+        JSON.stringify({
+          code: 'settings.invalid_values',
+          errors: [
+            {
+              key: 'ANTHROPIC_API_KEY',
+              message: 'Anthropic keys start with a fixed prefix',
+              code: 'settings.anthropic_key_format',
+            },
+          ],
+        }),
+      ),
+    );
+    renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+    fireEvent.click(await screen.findByText(/Change key/));
+    const input = await screen.findByPlaceholderText('Paste API key …');
+    fireEvent.change(input, { target: { value: 'not-an-anthropic-key' } });
+    fireEvent.click(screen.getByText('Save key'));
+
+    expect(
+      await screen.findByText(en.errorHelp.settings.anthropic_key_format.what),
+    ).toBeTruthy();
+    expect(screen.queryByText(/PATCH \/v1\/admin\/settings failed/)).toBeNull();
+  });
+
+  it('#1330: an uncoded field rejection shows the server reason, not only the envelope', async () => {
+    mockGetProviders.mockResolvedValue(
+      providersResponse({
+        providers: [provider({ connected: true, status: 'unverified' })],
+      }),
+    );
+    mockPatchSettings.mockRejectedValue(
+      new ApiError(
+        400,
+        'PATCH /v1/admin/settings failed: 400',
+        JSON.stringify({
+          code: 'settings.invalid_values',
+          errors: [{ key: 'ANTHROPIC_API_KEY', message: 'key looks truncated' }],
+        }),
+      ),
+    );
+    renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+    fireEvent.click(await screen.findByText(/Change key/));
+    const input = await screen.findByPlaceholderText('Paste API key …');
+    fireEvent.change(input, { target: { value: 'whatever' } });
+    fireEvent.click(screen.getByText('Save key'));
+
+    expect(
+      await screen.findByText(en.errorHelp.settings.invalid_values.what),
+    ).toBeTruthy();
+    expect(screen.getByText('Reason: key looks truncated')).toBeTruthy();
   });
 
   it('OM-09: the raw body is disclosed only through supportDetail, redacted', async () => {
@@ -1102,5 +1244,241 @@ describe('<ProvidersPanel />', () => {
       expect(await screen.findByText(en.adminProviders.status.saved)).toBeTruthy();
       expect(toggle.checked).toBe(true);
     });
+  });
+
+  describe('model classes in the per-agent model select (#1083)', () => {
+    const modelLabel = en.adminProviders.assignments.modelLabel;
+    const providerLabel = en.adminProviders.assignments.providerLabel;
+    const row = (modelId: string, cls: 'fast' | 'balanced' | 'frontier', label: string) => ({
+      id: `x:${modelId}`,
+      modelId,
+      label,
+      class: cls,
+      contextWindow: 200_000,
+      maxTokens: 8_192,
+      vision: false,
+    });
+    const anthropic = () =>
+      provider({
+        connected: true,
+        models: [
+          row('claude-opus-5', 'frontier', 'Claude Opus 5'),
+          row('claude-haiku-x', 'fast', 'Claude Haiku X'),
+        ],
+        classDefaults: { frontier: 'claude-opus-5', fast: 'claude-haiku-x' },
+      });
+    const openai = () =>
+      provider({
+        id: 'openai',
+        label: 'OpenAI',
+        connected: true,
+        models: [row('gpt-5.5', 'frontier', 'GPT-5.5'), row('gpt-5.4-mini', 'fast', 'GPT-5.4 mini')],
+        classDefaults: { frontier: 'gpt-5.5', fast: 'gpt-5.4-mini' },
+      });
+
+    it('shows a stored class ref as its own selected option, labelled with the resolved model', async () => {
+      mockGetProviders.mockResolvedValue(
+        providersResponse({
+          providers: [anthropic()],
+          assignments: [
+            orchestratorAssignment({ model: 'class:fast', resolvedModel: 'claude-haiku-x' }),
+          ],
+        }),
+      );
+      renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+      const select = (await screen.findByLabelText(modelLabel)) as HTMLSelectElement;
+      // The issue's DOM check: before the fix this was the first option.
+      expect(select.value).toBe('class:fast');
+      expect(select.options[select.selectedIndex]?.textContent).toBe('Fast (auto → Claude Haiku X)');
+      // Unselected classes are offered too, labelled with their class default.
+      expect(screen.getByRole('option', { name: 'Frontier (auto → Claude Opus 5)' })).toBeTruthy();
+    });
+
+    it('keeps a class ref when the provider changes instead of pinning the first model', async () => {
+      mockGetProviders.mockResolvedValue(
+        providersResponse({
+          providers: [anthropic(), openai()],
+          assignments: [
+            orchestratorAssignment({ model: 'class:fast', resolvedModel: 'claude-haiku-x' }),
+          ],
+        }),
+      );
+      mockAssignProvider.mockResolvedValue({
+        ok: true,
+        pluginId: '@omadia/orchestrator',
+        provider: 'openai',
+        model: 'class:fast',
+        resolvedModel: 'gpt-5.4-mini',
+      });
+      renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+      fireEvent.change(await screen.findByLabelText(providerLabel), {
+        target: { value: 'openai' },
+      });
+
+      await waitFor(() =>
+        expect(mockAssignProvider).toHaveBeenCalledWith({
+          pluginId: '@omadia/orchestrator',
+          provider: 'openai',
+          model: 'class:fast',
+        }),
+      );
+      const select = screen.getByLabelText(modelLabel) as HTMLSelectElement;
+      await waitFor(() =>
+        expect(select.options[select.selectedIndex]?.textContent).toBe(
+          'Fast (auto → GPT-5.4 mini)',
+        ),
+      );
+    });
+
+    it('still applies the first model when the provider changes from a pinned model', async () => {
+      mockGetProviders.mockResolvedValue(
+        providersResponse({
+          providers: [anthropic(), openai()],
+          assignments: [orchestratorAssignment({ model: 'claude-opus-5' })],
+        }),
+      );
+      mockAssignProvider.mockResolvedValue({});
+      renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+      fireEvent.change(await screen.findByLabelText(providerLabel), {
+        target: { value: 'openai' },
+      });
+
+      await waitFor(() =>
+        expect(mockAssignProvider).toHaveBeenCalledWith({
+          pluginId: '@omadia/orchestrator',
+          provider: 'openai',
+          model: 'gpt-5.5',
+        }),
+      );
+    });
+
+    it('stores a picked class ref as the class, not as its current model', async () => {
+      mockGetProviders.mockResolvedValue(
+        providersResponse({
+          providers: [anthropic()],
+          assignments: [orchestratorAssignment({ model: 'claude-opus-5' })],
+        }),
+      );
+      mockAssignProvider.mockResolvedValue({});
+      renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+      const select = (await screen.findByLabelText(modelLabel)) as HTMLSelectElement;
+      fireEvent.change(select, { target: { value: 'class:frontier' } });
+
+      await waitFor(() =>
+        expect(mockAssignProvider).toHaveBeenCalledWith({
+          pluginId: '@omadia/orchestrator',
+          provider: 'anthropic',
+          model: 'class:frontier',
+        }),
+      );
+      await waitFor(() => expect(select.value).toBe('class:frontier'));
+    });
+
+    it('never labels an unresolvable class ref with another provider’s model', async () => {
+      // The stored provider has no models, so it is missing from `providers[]`
+      // and the server reports `resolvedModel: null`. The row must not borrow
+      // the first listed provider's class defaults or models.
+      mockGetProviders.mockResolvedValue(
+        providersResponse({
+          providers: [anthropic()],
+          assignments: [
+            orchestratorAssignment({
+              provider: 'gone-provider',
+              model: 'class:frontier',
+              resolvedModel: null,
+            }),
+          ],
+        }),
+      );
+      renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+      const select = (await screen.findByLabelText(modelLabel)) as HTMLSelectElement;
+      expect(select.value).toBe('class:frontier');
+      expect(select.options[select.selectedIndex]?.textContent).toBe(
+        'Frontier (unresolved — no model available)',
+      );
+      expect(screen.queryByRole('option', { name: /Claude Opus 5/ })).toBeNull();
+      expect(select.disabled).toBe(true);
+    });
+
+    it('shows a stored alias as its own selected option, never as option 0', async () => {
+      mockGetProviders.mockResolvedValue(
+        providersResponse({
+          providers: [anthropic()],
+          assignments: [orchestratorAssignment({ model: 'opus', resolvedModel: 'claude-opus-5' })],
+        }),
+      );
+      renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+      const select = (await screen.findByLabelText(modelLabel)) as HTMLSelectElement;
+      expect(select.value).toBe('opus');
+      expect(select.options[select.selectedIndex]?.textContent).toBe(
+        'opus (not in the model list)',
+      );
+    });
+  });
+});
+
+/**
+ * #1451 — the assigned provider can be missing from `providers[]` entirely
+ * (its catalog entry was unregistered when a provider plugin that had shadowed
+ * a built-in id got uninstalled). The select kept `value="anthropic"` with no
+ * matching option, so the browser rendered the FIRST option instead and the
+ * page claimed the agent ran on a provider it was never assigned to.
+ */
+describe('<ProvidersPanel /> — an assigned provider that is not registered', () => {
+  const providerLabel = en.adminProviders.assignments.providerLabel;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetProviders.mockResolvedValue(
+      providersResponse({
+        providers: [
+          provider({
+            id: 'claude-cli',
+            label: 'Claude (subscription CLI)',
+            subscriptionNotice: true,
+            euHosted: true,
+          }),
+        ],
+        assignments: [orchestratorAssignment({ provider: 'anthropic' })],
+      }),
+    );
+  });
+
+  it('keeps the stored provider selected as a disabled option, not option 0', async () => {
+    renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+    const select = (await screen.findByLabelText(providerLabel)) as HTMLSelectElement;
+    expect(select.value).toBe('anthropic');
+    const selected = select.options[select.selectedIndex];
+    expect(selected?.textContent).toBe('anthropic (not registered)');
+    expect(selected?.disabled).toBe(true);
+  });
+
+  it('writes nothing — rendering the missing provider is not a selection', async () => {
+    renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+    await screen.findByLabelText(providerLabel);
+    expect(mockAssignProvider).not.toHaveBeenCalled();
+  });
+
+  it('borrows no legal notice from the first provider in the list', async () => {
+    renderWithIntl(<ProvidersPanel onSwitchToSubscriptions={vi.fn()} />);
+
+    await screen.findByLabelText(providerLabel);
+    // The only listed provider is EU-hosted and subscription-backed; the agent
+    // runs on neither, so neither claim may appear.
+    expect(screen.queryByText(/hosted in the EU/)).toBeNull();
+    expect(screen.queryByText(/personal Claude subscription/)).toBeNull();
+    // The Art. 28 disclosure stays on (conservative default) and names the
+    // stored provider, not the one that happens to be listed first.
+    const disclosure = screen.getByText(/third-party processor/);
+    expect(disclosure.textContent).toContain('anthropic');
+    expect(disclosure.textContent).not.toContain('Claude (subscription CLI)');
   });
 });

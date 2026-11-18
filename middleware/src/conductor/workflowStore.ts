@@ -8,6 +8,9 @@ export interface ConductorWorkflow {
   description: string | null;
   status: 'enabled' | 'disabled';
   activeVersionId: string | null;
+  /** The number behind `activeVersionId` (the `v4` an operator sees). Optional so
+   *  fakes/fixtures keep typechecking; null when nothing is published. */
+  activeVersionNumber?: number | null;
   /** Template provenance (#478): which template manifest (id + version) this
    *  workflow was instantiated from. Informational only — copy-not-reference
    *  stands, the columns power the "template updated" hint, never execution.
@@ -42,6 +45,7 @@ interface WorkflowRow {
   description: string | null;
   status: 'enabled' | 'disabled';
   active_version_id: string | null;
+  active_version_number: number | null;
   template_id: string | null;
   template_version: number | null;
   origin: 'manual' | 'ephemeral';
@@ -75,6 +79,7 @@ function toWorkflow(r: WorkflowRow): ConductorWorkflow {
     description: r.description,
     status: r.status,
     activeVersionId: r.active_version_id,
+    activeVersionNumber: r.active_version_number,
     templateId: r.template_id,
     templateVersion: r.template_version,
     origin: r.origin,
@@ -84,7 +89,11 @@ function toWorkflow(r: WorkflowRow): ConductorWorkflow {
   };
 }
 
-const WORKFLOW_COLS = 'id, slug, name, description, status, active_version_id, template_id, template_version, origin, expires_at, created_by_agent, reaped_at';
+// The subselect keeps every read (and the publish's RETURNING, which sees the version
+// inserted earlier in its transaction) on one column list; the version id is the PK.
+const WORKFLOW_COLS = `id, slug, name, description, status, active_version_id,
+  (SELECT v.version FROM conductor_workflow_versions v WHERE v.id = conductor_workflows.active_version_id) AS active_version_number,
+  template_id, template_version, origin, expires_at, created_by_agent, reaped_at`;
 
 /**
  * Persistence for workflow headers + immutable versions. A publish snapshots the

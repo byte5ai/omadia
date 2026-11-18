@@ -1,8 +1,9 @@
-import { describe, it } from 'node:test';
+import { afterEach, beforeEach, describe, it, mock } from 'node:test';
 import { strict as assert } from 'node:assert';
 
 import type { LlmProvider, LlmRequest, LlmResponse, LlmStreamEvent } from '@omadia/llm-provider';
 import type { ChatStreamEvent } from '@omadia/channel-sdk';
+import type { PrivacyGuardService, PrivacyToolErrorRequest } from '@omadia/plugin-api';
 import { NativeToolRegistry, Orchestrator } from '@omadia/orchestrator';
 
 /**
@@ -17,10 +18,12 @@ import { NativeToolRegistry, Orchestrator } from '@omadia/orchestrator';
  * `tool_result`, and — when an earlier tool had committed — issue #506's
  * emergency branch reported the dead turn to the caller as a SUCCESS.
  *
- * These are the fences around the fix. Note the raw exception message is asserted
- * verbatim: that is deliberate and mirrors the chat path's W4 fence in
- * `chatPathToolErrorText.test.ts` — the operator debugging their own tool needs the
- * driver's real message, so the streaming catch must not mask or digest it either.
+ * These are the fences around the fix. They assert the SHAPE of the settled slot
+ * (`Error:` prefix, `isError`), not the exception text: under a privacy provider
+ * the message is withheld from the model (`toolErrorRedaction.ts`; the second
+ * describe block below and `chatPathToolErrorText.test.ts` pin that), and only an
+ * unshielded deployment still sees the raw text — the same parity every other
+ * tool result has there.
  */
 
 const usage = {
@@ -179,12 +182,12 @@ describe('Issue #1095 — streaming path: a rejected tool dispatch settles its s
     assert.ok(result?.type === 'tool_result');
     assert.equal(result.id, 'use-1');
     assert.equal(result.isError, true);
-    assert.equal(result.output, `Error: ${PG_MESSAGE}`);
+    assert.match(result.output, /^Error: /);
 
-    // The model gets the error back, verbatim, and can react to it.
+    // The model gets an error back and can react to it.
     assert.ok(
-      toolResultTexts(seen).includes(`Error: ${PG_MESSAGE}`),
-      `model must receive the raw error text; saw ${JSON.stringify(toolResultTexts(seen))}`,
+      toolResultTexts(seen).some((t) => t.startsWith('Error: ')),
+      `model must receive an error tool_result; saw ${JSON.stringify(toolResultTexts(seen))}`,
     );
 
     const done = events.find((e) => e.type === 'done');
@@ -236,7 +239,7 @@ describe('Issue #1095 — streaming path: a rejected tool dispatch settles its s
     const ok = byId.get('use-ok');
     assert.ok(failed?.type === 'tool_result' && ok?.type === 'tool_result');
     assert.equal(failed.isError, true);
-    assert.equal(failed.output, 'Error: boom');
+    assert.match(failed.output, /^Error: /);
     assert.equal(ok.isError, false);
     assert.equal(ok.output, 'slow-ok-output');
   });
@@ -295,8 +298,123 @@ describe('Issue #1095 — streaming path: a rejected tool dispatch settles its s
       `expected the model's own answer, got ${JSON.stringify(answer.text)}`,
     );
     assert.ok(
-      toolResultTexts(seen).includes(`Error: ${PG_MESSAGE}`),
-      `model must receive the raw error text; saw ${JSON.stringify(toolResultTexts(seen))}`,
+      toolResultTexts(seen).some((t) => t.startsWith('Error: ')),
+      `model must receive an error tool_result; saw ${JSON.stringify(toolResultTexts(seen))}`,
+    );
+  });
+});
+
+/**
+ * The same settle-the-slot guarantees WITH a privacy provider installed — the
+ * configuration in which the exception message must never reach the model, the
+ * streamed `tool_result` event, or the next provider request.
+ */
+describe('Issue #1095 — streaming path under a privacy provider: the message is withheld', () => {
+  function shieldedOrchestrator(
+    provider: LlmProvider,
+    registry: NativeToolRegistry,
+    recorded: PrivacyToolErrorRequest[],
+  ): Orchestrator {
+    const service = {
+      async internToolResultV4(request: { toolName: string; rawResult: string }) {
+        return { digestText: `«dataset:${request.toolName}»`, datasetId: `ds-${request.toolName}` };
+      },
+      async recordBypassedTool() {},
+      async recordToolError(request: PrivacyToolErrorRequest) {
+        recorded.push(request);
+      },
+      async runV4Tool() {
+        return { resultText: '' };
+      },
+      async subAgentResultV4() {
+        return { resultText: '' };
+      },
+      async takeRenderedAnswerV4() {
+        return undefined;
+      },
+      v4ToolSpecs() {
+        return [];
+      },
+      async finalizeTurn() {
+        return undefined;
+      },
+    } as unknown as PrivacyGuardService;
+    return new Orchestrator({
+      provider,
+      model: 'test',
+      maxTokens: 1024,
+      maxToolIterations: 5,
+      domainTools: [],
+      nativeToolRegistry: registry,
+      privacyGuard: () => service,
+    });
+  }
+
+  beforeEach(() => {
+    mock.method(console, 'error', () => {});
+  });
+  afterEach(() => {
+    mock.restoreAll();
+  });
+
+  it('settles the slot with the withheld notice; siblings finish; no #506 pseudo-success', async () => {
+    const recorded: PrivacyToolErrorRequest[] = [];
+    const registry = registryWith([
+      { name: 'committing_tool', handler: () => Promise.resolve('committed') },
+      {
+        name: 'throwing_tool',
+        handler: async (): Promise<string> => {
+          await new Promise((r) => setTimeout(r, 10));
+          throw new Error(PG_MESSAGE);
+        },
+      },
+      {
+        name: 'slow_ok_tool',
+        handler: async (): Promise<string> => {
+          await new Promise((r) => setTimeout(r, 60));
+          return 'slow-ok-output';
+        },
+      },
+    ]);
+    const { provider, seen } = recordingStreamProvider([
+      toolCallResponse([{ id: 'use-commit', name: 'committing_tool', input: {} }]),
+      toolCallResponse([
+        { id: 'use-throw', name: 'throwing_tool', input: {} },
+        { id: 'use-ok', name: 'slow_ok_tool', input: {} },
+      ]),
+      textResponse('real answer'),
+    ]);
+
+    const events = await collect(
+      shieldedOrchestrator(provider, registry, recorded).chatStream({ userMessage: 'go' }),
+    );
+
+    const byId = new Map(
+      events.filter((e) => e.type === 'tool_result').map((e) => [e.type === 'tool_result' ? e.id : '', e]),
+    );
+    const failed = byId.get('use-throw');
+    const ok = byId.get('use-ok');
+    assert.ok(failed?.type === 'tool_result' && ok?.type === 'tool_result', 'both slots settled');
+    assert.equal(failed.isError, true);
+    assert.equal(failed.output.includes('invalid input syntax'), false, 'the streamed event leaked it');
+    assert.match(failed.output, /^Error: tool `throwing_tool` failed with Error \[ref /);
+    assert.equal(ok.isError, false);
+    assert.equal(ok.output, '«dataset:slow_ok_tool»', 'the sibling finished and was interned');
+
+    const wire = toolResultTexts(seen);
+    assert.equal(
+      wire.some((t) => t.includes('invalid input syntax')),
+      false,
+      'the next provider request carried the exception text',
+    );
+    assert.ok(wire.includes(failed.output), 'the model got the same notice the client saw');
+
+    const done = events.find((e) => e.type === 'done');
+    assert.ok(done?.type === 'done');
+    assert.ok(done.answer.startsWith('real answer'), `got ${JSON.stringify(done.answer)}`);
+    assert.deepEqual(
+      recorded.map((e) => [e.toolName, e.carrier, e.outcome]),
+      [['throwing_tool', 'thrown', 'withheld']],
     );
   });
 });

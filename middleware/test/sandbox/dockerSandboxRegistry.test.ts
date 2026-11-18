@@ -5,6 +5,7 @@ import { DockerSandboxBackend, _internal } from '../../packages/harness-sandbox/
 import { resolveAgentComputerProfile } from '../../packages/harness-sandbox/src/agentComputerProfile.js';
 import { InMemorySandboxRegistry } from '../../packages/harness-sandbox/src/sandboxRegistry.js';
 import type { DockerExec, DockerExecContext, DockerExecResult } from '../../packages/harness-sandbox/src/dockerExec.js';
+import { withInspectableLimits } from '../_helpers/dockerInspectStub.js';
 
 /**
  * #576 P3 — DockerSandboxBackend + SandboxRegistry integration.
@@ -18,9 +19,11 @@ import type { DockerExec, DockerExecContext, DockerExecResult } from '../../pack
 
 function stubExec(script: (ctx: DockerExecContext) => DockerExecResult) {
   const calls: Array<{ args: readonly string[] }> = [];
+  // `docker inspect` answers like a daemon that applied the limit flags.
+  const answer = withInspectableLimits(script);
   const exec: DockerExec = async (ctx) => {
     calls.push({ args: ctx.args });
-    return script(ctx);
+    return answer(ctx);
   };
   return { exec, calls };
 }

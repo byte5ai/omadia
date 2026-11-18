@@ -39,6 +39,13 @@ type AnthropicMessageParam = {
 };
 
 const CACHE_EPHEMERAL = { type: 'ephemeral' } as const;
+const CACHE_EPHEMERAL_1H = { type: 'ephemeral', ttl: '1h' } as const;
+
+/** The `cache_control` for every breakpoint of a request — one TTL per
+ *  request (`CacheHints.ttl`), so no 5-minute entry can precede a 1-hour one. */
+function cacheControl(hints: CacheHints | undefined): typeof CACHE_EPHEMERAL | typeof CACHE_EPHEMERAL_1H {
+  return hints?.ttl === '1h' ? CACHE_EPHEMERAL_1H : CACHE_EPHEMERAL;
+}
 
 /** Narrow mapper for nested tool_result content — the type signature
  *  enforces Anthropic's constraint that tool results may only nest
@@ -56,6 +63,13 @@ function toAnthropicResultPart(
           data: part.data,
         },
       };
+}
+
+/** Whether this part is reasoning THIS adapter produced. A foreign provider's
+ *  reasoning is not a valid Anthropic block, so it is filtered, never sent.
+ *  Whether the TARGET model may receive it is {@link supportsThinkingReplay}. */
+function isAnthropicReasoning(part: ContentPart): boolean {
+  return part.type === 'reasoning' && part.provider === 'anthropic';
 }
 
 function toAnthropicPart(part: ContentPart): AnthropicContentBlockParam {
@@ -80,28 +94,46 @@ function toAnthropicPart(part: ContentPart): AnthropicContentBlockParam {
             : part.content.map(toAnthropicResultPart),
         ...(part.isError !== undefined ? { is_error: part.isError } : {}),
       };
+    case 'reasoning':
+      // Echoed back byte-for-byte — see `ReasoningPart`. Foreign reasoning,
+      // and any reasoning sent to a model that does not take it, never
+      // reaches here: `toAnthropicMessages` filters it out.
+      return part.raw as AnthropicContentBlockParam;
   }
 }
 
+/**
+ * @param replayReasoning whether the target model takes replayed thinking
+ *   ({@link supportsThinkingReplay}). When false, EVERY reasoning part is
+ *   stripped — the pre-#1207 wire shape — so a fallback model never sees
+ *   blocks it cannot read nor a `thinking` field it did not ask for.
+ */
 function toAnthropicMessages(
   messages: ReadonlyArray<ChatMessage>,
+  replayReasoning: boolean,
 ): AnthropicMessageParam[] {
   return messages.map((m) => ({
     role: m.role,
-    content: m.content.map(toAnthropicPart),
+    content: m.content
+      .filter(
+        (p) =>
+          p.type !== 'reasoning' || (replayReasoning && isAnthropicReasoning(p)),
+      )
+      .map(toAnthropicPart),
   }));
 }
 
 function toAnthropicTools(
   tools: ReadonlyArray<ToolSpec>,
   cacheHints: CacheHints | undefined,
+  strictSupported: boolean,
 ): AnthropicContentBlockParam[] {
   return tools.map((tool, i) => {
     // Caching the LAST tool caches everything up to that point — the
     // stable prefix across tool-loop iterations (localSubAgent convention).
     const cache =
       cacheHints?.tools === true && i === tools.length - 1
-        ? { cache_control: CACHE_EPHEMERAL }
+        ? { cache_control: cacheControl(cacheHints) }
         : {};
     // Provider-native server tool (memory, web_search, …): typed, schema
     // owned server side. Emit the `{ type, name }` shape — a custom-tool
@@ -113,6 +145,11 @@ function toAnthropicTools(
       name: tool.name,
       description: tool.description,
       input_schema: tool.inputSchema,
+      // Constrained decoding: the API guarantees the call's input validates
+      // against `input_schema` (no beta header) — only on a model that
+      // honors it (`supportsStrictTools`); elsewhere the call goes out
+      // unconstrained instead of failing with a 400.
+      ...(tool.strict === true && strictSupported ? { strict: true } : {}),
       ...cache,
     };
   });
@@ -153,10 +190,14 @@ function fromAnthropicContent(
         name: block['name'] as string,
         input: block['input'],
       });
+    } else if (block.type === 'thinking' || block.type === 'redacted_thinking') {
+      // #1207 — kept OPAQUE so the tool loop passes it back unmodified. On
+      // always-thinking models (Opus 5.5, Fable 5.1) the short notes between
+      // tool calls arrive as thinking blocks, and stripping them both loses
+      // that reasoning and breaks the signature/ordering checks on the next
+      // iteration of the same turn.
+      parts.push({ type: 'reasoning', provider: 'anthropic', raw: block });
     }
-    // thinking/redacted blocks are intentionally dropped from the neutral
-    // view — phase-2 callers that need them read providerFinishReason and
-    // raw usage instead; revisit when a second provider exposes reasoning.
   }
   return parts;
 }
@@ -182,11 +223,64 @@ function mapFinishReason(stopReason: string | null | undefined): {
   }
 }
 
+/**
+ * `stop_details` → the neutral refusal object (#1219).
+ *
+ * The API populates `stop_details` ONLY for `stop_reason: 'refusal'` and leaves
+ * it null everywhere else, so the stop reason is the gate — reading the field
+ * unguarded would be a null deref on every normal turn. `category` is an open
+ * vendor set (`bio`, `cyber`, `reasoning_extraction`, …) and may be absent, so
+ * a refusal with no category still produces an object: its presence is the
+ * signal, its contents are diagnostics.
+ */
+function toRefusal(
+  message: Anthropic.Message,
+): { category?: string; explanation?: string } | undefined {
+  if (message.stop_reason !== 'refusal') return undefined;
+  const details = (message as unknown as Record<string, unknown>)['stop_details'];
+  if (details === null || typeof details !== 'object') return {};
+  const { category, explanation } = details as Record<string, unknown>;
+  return {
+    ...(typeof category === 'string' ? { category } : {}),
+    ...(typeof explanation === 'string' ? { explanation } : {}),
+  };
+}
+
+/**
+ * Logs the blocks the API dropped from a request (#1207).
+ *
+ * Under {@link THINKING_BINDING_BETA} every response carries a top-level
+ * `input_transformations` array — empty when nothing was dropped, absent
+ * entirely without the header. A drop means the turn SILENTLY lost part of
+ * what it replayed: `prefix_binding_mismatch` is something in the middleware
+ * editing the turn mid-flight (the finalize pass, a persona hop),
+ * `model_binding_mismatch` is an expected provider fallback. Neither is an
+ * error, and neither is visible anywhere else, so it goes to the log.
+ *
+ * The vendor adds transformation types and reasons over later checks, so this
+ * REPORTS the reasons it got rather than asserting what was dropped.
+ */
+function logInputTransformations(
+  message: Anthropic.Message,
+  log: (...args: unknown[]) => void,
+): void {
+  const entries = (message as unknown as Record<string, unknown>)[
+    'input_transformations'
+  ];
+  if (!Array.isArray(entries) || entries.length === 0) return;
+  const reasons = entries
+    .map((e) => String((e as Record<string, unknown>)['reason'] ?? 'unknown'))
+    .join(',');
+  log(`dropped ${String(entries.length)} replayed block(s): ${reasons}`);
+}
+
 function mapResponse(message: Anthropic.Message): LlmResponse {
   const usage = message.usage as unknown as Record<string, unknown>;
   const cacheWrite = usage['cache_creation_input_tokens'];
   const cacheRead = usage['cache_read_input_tokens'];
+  const refusal = toRefusal(message);
   return {
+    ...(refusal !== undefined ? { refusal } : {}),
     content: fromAnthropicContent(
       message.content as unknown as Array<
         { type: string } & Record<string, unknown>
@@ -213,13 +307,13 @@ function buildSystem(req: LlmRequest): unknown {
   if (system === undefined) return undefined;
   if (typeof system === 'string') {
     return req.cacheHints?.system === true
-      ? [{ type: 'text', text: system, cache_control: CACHE_EPHEMERAL }]
+      ? [{ type: 'text', text: system, cache_control: cacheControl(req.cacheHints) }]
       : system;
   }
   return system.map((b) => ({
     type: 'text',
     text: b.text,
-    ...(b.cache === true ? { cache_control: CACHE_EPHEMERAL } : {}),
+    ...(b.cache === true ? { cache_control: cacheControl(req.cacheHints) } : {}),
   }));
 }
 
@@ -278,9 +372,15 @@ export function supportsTemperature(model: string): boolean {
  *
  * Again not derivable from the version number (`opus-5` forces fine,
  * `opus-5-5` does not). Mythos 5.1 shares the Fable 5.1 API surface.
+ * `claude-sonnet-5-5` answers the same 400 (found in the #1219 review), while
+ * `claude-sonnet-5` still forces fine.
+ *
+ * Comments elsewhere point at {@link supportsForcedToolChoice} instead of
+ * naming models, so this list is the one place to extend.
  */
 const FORCED_TOOL_CHOICE_UNSUPPORTED = [
   'claude-opus-5-5',
+  'claude-sonnet-5-5',
   'claude-fable-5-1',
   'claude-mythos-5-1',
 ];
@@ -288,6 +388,30 @@ const FORCED_TOOL_CHOICE_UNSUPPORTED = [
 /** Whether this model accepts a forced `tool_choice` (`required` / `tool`). */
 export function supportsForcedToolChoice(model: string): boolean {
   return !FORCED_TOOL_CHOICE_UNSUPPORTED.some((m) => model.includes(m));
+}
+
+/** Model-id fragments of the models that honor strict tool use (structured
+ *  outputs): Haiku 4.5, Opus 4.1/4.5/4.8 and every 5-series model. An
+ *  allowlist, not a denylist — a model or gateway that does not know the
+ *  field answers 400 instead of ignoring it. */
+const STRICT_TOOLS_SUPPORTED = [
+  'haiku-4-5',
+  'opus-4-1',
+  'opus-4-5',
+  'opus-4-8',
+  'opus-5',
+  'sonnet-5',
+  'fable-5',
+  'mythos-5',
+];
+
+/**
+ * Whether `strict: true` may be sent on a tool definition for this model.
+ * On any other model a strict `ToolSpec` goes out without the flag — the
+ * call is then unconstrained, exactly as before, rather than a 400.
+ */
+export function supportsStrictTools(model: string): boolean {
+  return STRICT_TOOLS_SUPPORTED.some((m) => model.includes(m));
 }
 
 /**
@@ -308,14 +432,118 @@ function effectiveToolChoice(req: LlmRequest): ToolChoice | undefined {
     : { type: 'auto' };
 }
 
+/**
+ * The beta that lets a request choose what happens to a replayed thinking
+ * block whose conversation prefix no longer matches, and that adds
+ * `input_transformations` to every response.
+ *
+ * It is NOT optional once `thinking.block_binding` is sent: without the header
+ * the field is a hard 400 (`block_binding: Extra inputs are not permitted`),
+ * so {@link carriesReasoning} gates both in {@link toRequestOptions} and here.
+ * Claude API only — Bedrock/Vertex get it per model and Foundry not at all, so
+ * a future non-first-party base URL has to re-check this.
+ */
+export const THINKING_BINDING_BETA = 'thinking-binding-controls-2026-08-01';
+
+/**
+ * Model-id fragments of the models that run ADAPTIVE thinking when the
+ * `thinking` field is omitted: Claude Opus 5 / 5.5, Fable 5 / 5.1, Mythos
+ * 5 / 5.1, Sonnet 5.5 and Haiku 5.5. On these, sending
+ * `thinking: { type: 'adaptive', block_binding }` restates the default, so it
+ * never switches thinking on. An allowlist, not a denylist:
+ *
+ * - Opus 4.6/4.7/4.8 and Sonnet 4.6 run WITHOUT thinking unless asked —
+ *   `adaptive` there would turn it on behind the caller's back.
+ * - Haiku 4.5 and older do not accept `adaptive` at all (400).
+ * - `block_binding` requires adaptive thinking on every model.
+ *
+ * `sonnet-5-5`, not `sonnet-5`: Sonnet 5 does run adaptive by default, but
+ * replay there is untested, so it keeps the pre-#1207 shape (blocks
+ * stripped) until someone verifies it.
+ */
+const THINKING_REPLAY_SUPPORTED = [
+  'opus-5',
+  'fable-5',
+  'mythos-5',
+  'sonnet-5-5',
+  'haiku-5-5',
+];
+
+/**
+ * Whether replayed thinking blocks — and with them the `thinking` field and
+ * {@link THINKING_BINDING_BETA} — may be sent to this model. On any other
+ * model the blocks are stripped from the request instead (the pre-#1207
+ * behaviour), which matters on the fallback path: the turn's blocks were
+ * produced by the primary model and travel with the messages to whatever
+ * model the fallback names.
+ */
+export function supportsThinkingReplay(model: string): boolean {
+  return THINKING_REPLAY_SUPPORTED.some((m) => model.includes(m));
+}
+
+/**
+ * Whether this request replays Anthropic thinking blocks.
+ *
+ * True only when the target model takes them ({@link supportsThinkingReplay})
+ * AND it emitted blocks earlier in the same turn, so a route on any other
+ * model — the primary or a fallback — never sees the `thinking` field at all.
+ */
+function carriesReasoning(req: LlmRequest): boolean {
+  return (
+    supportsThinkingReplay(req.model) &&
+    req.messages.some((m) => m.content.some(isAnthropicReasoning))
+  );
+}
+
+/**
+ * Model-id fragments that think adaptively by default AND accept
+ * `thinking: {type:'disabled'}` — only at effort `high` or below. An
+ * allowlist: Opus 5.5 / Fable reject `disabled` at every effort (400),
+ * Sonnet 5.5 needs `between_tools` instead, and models that do not think
+ * unless asked (Opus 4.x, Haiku 4.5) need nothing. Extend only after
+ * checking the model's thinking rules.
+ */
+const THINKING_OFF_SUPPORTED = ['haiku-5-5'];
+
+/** Whether a `thinking: 'off'` hint becomes `{type:'disabled'}` here. Never
+ *  while replaying thinking blocks (those need the adaptive field). */
+function disablesThinking(req: LlmRequest): boolean {
+  return (
+    req.thinking === 'off' &&
+    THINKING_OFF_SUPPORTED.some((m) => req.model.includes(m)) &&
+    req.effort !== 'xhigh' &&
+    !carriesReasoning(req)
+  );
+}
+
 function buildParams(req: LlmRequest): Record<string, unknown> {
   const system = buildSystem(req);
   const toolChoice = effectiveToolChoice(req);
+  const outputConfig = toOutputConfig(req);
   return {
     model: req.model,
     max_tokens: req.maxTokens,
-    messages: toAnthropicMessages(req.messages),
+    messages: toAnthropicMessages(req.messages, supportsThinkingReplay(req.model)),
     ...(system !== undefined ? { system } : {}),
+    // #1207 — a replayed block whose prefix no longer matches (the finalize
+    // pass editing `system`/`tools`, a persona hop, a steer merged into an
+    // earlier message, privacy masking) is DROPPED instead of failing the
+    // turn with a 400. `adaptive` is the only thinking mode these models
+    // accept, and it is never a behaviour change: the field is sent only to a
+    // model whose default already IS adaptive thinking
+    // (`supportsThinkingReplay`), and only when blocks are being replayed.
+    // A fallback to a model outside that list gets the blocks stripped and no
+    // field; a fallback inside it that cannot read the primary's blocks drops
+    // them as `model_binding_mismatch` — expected, and logged.
+    ...(carriesReasoning(req)
+      ? {
+          thinking: {
+            type: 'adaptive',
+            block_binding: { prefix_mismatch_behavior: 'drop_block' },
+          },
+        }
+      : {}),
+    ...(disablesThinking(req) ? { thinking: { type: 'disabled' } } : {}),
     // Sending a temperature a model no longer honours is a hard 400, not a
     // warning. Callers ask for determinism (`temperature: 0`) on paths where
     // an exception degrades to fail-open — the security screener is one — so
@@ -324,7 +552,7 @@ function buildParams(req: LlmRequest): Record<string, unknown> {
       ? { temperature: req.temperature }
       : {}),
     ...(req.tools !== undefined && req.tools.length > 0
-      ? { tools: toAnthropicTools(req.tools, req.cacheHints) }
+      ? { tools: toAnthropicTools(req.tools, req.cacheHints, supportsStrictTools(req.model)) }
       : {}),
     ...(toolChoice !== undefined
       ? { tool_choice: toAnthropicToolChoice(toolChoice) }
@@ -332,15 +560,107 @@ function buildParams(req: LlmRequest): Record<string, unknown> {
     // #1033 — the normalized effort maps 1:1 onto Anthropic's
     // `output_config.effort` vocabulary (`low|medium|high|xhigh|max`); we
     // never send `max`, which the contract deliberately does not carry.
-    ...(req.effort !== undefined
-      ? { output_config: { effort: req.effort } }
-      : {}),
+    // #1219 — `outputFormat` shares that object, so both are built together:
+    // two spreads would make the second overwrite the first.
+    ...(outputConfig !== undefined ? { output_config: outputConfig } : {}),
   };
 }
 
-/** The beta that unlocks `output_config.effort`. Attached only when a request
- *  actually carries an effort, so the common path keeps its header set. */
+/**
+ * The `output_config` object, or undefined when the request carries neither an
+ * effort nor an output format — so the common path sends no such key at all.
+ *
+ * `format` is the CURRENT structured-output shape (`{type:'json_schema',
+ * schema}`), not the deprecated top-level `output_format` parameter. It needs
+ * no beta, but it is NOT available on every model: a model without
+ * structured-output support answers 400, and so does a schema the API cannot
+ * compile — `minimum`/`maximum`, `minLength`/`maxLength`, or an object
+ * without `additionalProperties: false`. The adapter forwards the schema
+ * untouched and does not pre-validate either; the caller owns both. A refusal
+ * (`stop_reason: 'refusal'`) still comes back as a normal response, and its
+ * text need not match the schema. Anthropic also rejects `format` together
+ * with document citations; nothing in this adapter sends citations today, so
+ * there is no guard here — add one if citation support lands.
+ */
+/**
+ * Model-id fragments without an effort ladder — `output_config.effort` is a
+ * 400 there: Haiku 4.5, Sonnet 4.5 and the generations before them (effort is
+ * GA from the 4.6 generation; Opus 4.5 takes it behind {@link EFFORT_BETA}).
+ * The `LlmRequest` contract: an adapter IGNORES an effort the model cannot
+ * take, with a one-time warning — a caller's `effort: 'low'` (fast-path,
+ * extras, verifier calls on a fast model) must never break a turn on an
+ * install whose fast class is still Haiku 4.5.
+ */
+const EFFORT_UNSUPPORTED = [
+  'claude-haiku-4-5',
+  'claude-sonnet-4-5',
+  'claude-opus-4-1',
+  'claude-opus-4-2025',
+  'claude-sonnet-4-2025',
+  'claude-3',
+];
+const warnedNoEffort = new Set<string>();
+
+/** Whether `output_config.effort` may be sent to this model. Exported for the test. */
+export function acceptsEffort(model: string): boolean {
+  return !EFFORT_UNSUPPORTED.some((m) => model.includes(m));
+}
+
+/** The effort this request may send — dropped (warned once per model) where
+ *  the model has no ladder. */
+function sendableEffort(req: LlmRequest): LlmRequest['effort'] {
+  if (req.effort === undefined) return undefined;
+  if (acceptsEffort(req.model)) return req.effort;
+  if (!warnedNoEffort.has(req.model)) {
+    warnedNoEffort.add(req.model);
+    console.warn(`[llm-adapter-anthropic] effort '${req.effort}' ignored — model '${req.model}' has no effort ladder`);
+  }
+  return undefined;
+}
+
+function toOutputConfig(req: LlmRequest): Record<string, unknown> | undefined {
+  const effort = sendableEffort(req);
+  const cfg: Record<string, unknown> = {
+    ...(effort !== undefined ? { effort } : {}),
+    ...(req.outputFormat !== undefined
+      ? {
+          // Exactly `type` + `schema`: the API rejects unknown nested body
+          // fields with a 400, so the object is built field by field rather
+          // than spread from the neutral DTO.
+          format: {
+            type: req.outputFormat.type,
+            schema: req.outputFormat.schema,
+          },
+        }
+      : {}),
+  };
+  return Object.keys(cfg).length > 0 ? cfg : undefined;
+}
+
+/** The beta that unlocked `output_config.effort`. Attached only when a request
+ *  carries an effort AND the model still needs the opt-in, so the common path
+ *  keeps its header set. */
 export const EFFORT_BETA = 'effort-2025-11-24';
+
+/**
+ * Models that still need {@link EFFORT_BETA} to accept `output_config.effort`.
+ *
+ * Effort is GA from the 4.6 generation onward. Opus 4.5 shipped it behind the
+ * beta and is not retired, so it keeps the opt-in. Sending the header to a GA
+ * model is not an error, but it pins the request to a beta surface for no
+ * reason — the newer models get the plain GA shape.
+ */
+const EFFORT_BETA_REQUIRED = ['claude-opus-4-5'];
+
+/**
+ * Whether `output_config.effort` needs its beta opt-in on this model.
+ *
+ * Exported for the test. The match is a substring so dated ids
+ * (`claude-opus-4-5-20251101`) and provider-qualified ids resolve correctly.
+ */
+export function requiresEffortBeta(model: string): boolean {
+  return EFFORT_BETA_REQUIRED.some((m) => model.includes(m));
+}
 
 /** Beta opt-ins → SDK request options (`anthropic-beta` header). Returns
  *  undefined when there are none, so callers pass nothing extra (preserving
@@ -350,8 +670,16 @@ function toRequestOptions(
 ): { headers: Record<string, string> } | undefined {
   const betas = [
     ...(req.betas ?? []),
-    ...(req.effort !== undefined && !(req.betas ?? []).includes(EFFORT_BETA)
+    ...(sendableEffort(req) !== undefined &&
+    requiresEffortBeta(req.model) &&
+    !(req.betas ?? []).includes(EFFORT_BETA)
       ? [EFFORT_BETA]
+      : []),
+    // #1207 — `thinking.block_binding` without this header is a 400, so the
+    // two are attached under the same condition and never separately.
+    ...(carriesReasoning(req) &&
+    !(req.betas ?? []).includes(THINKING_BINDING_BETA)
+      ? [THINKING_BINDING_BETA]
       : []),
   ];
   return betas.length > 0
@@ -430,6 +758,66 @@ export function classifyAnthropicError(err: unknown): LlmErrorClassification {
 }
 
 // ---------------------------------------------------------------------------
+// Buffered completions: plain request, or a stream drained to its final message
+// ---------------------------------------------------------------------------
+
+/**
+ * The largest `max_tokens` this adapter sends as a plain (non-streaming)
+ * `messages.create`. Above it, `complete()` streams and awaits the final
+ * message instead.
+ *
+ * Why: without a client timeout, the SDK refuses a non-streaming request
+ * whose `max_tokens` implies a generation longer than 10 minutes — it throws
+ * "Streaming is required for operations that may take longer than 10
+ * minutes" before anything is sent. That cut-off is 21 333 tokens for every
+ * model, and lower for the models in the SDK's internal, unexported
+ * `MODEL_NONSTREAMING_TOKENS` table (8192 for the Opus 4 / 4.1 entries).
+ * 8192 sits under both, so the adapter need not mirror that table; every
+ * smaller request keeps the plain call shape it always had. The orchestrator
+ * budget (32 000) and the sub-agent budget (16 000) both stream (#1210).
+ */
+const MAX_UNSTREAMED_TOKENS = 8192;
+
+/** Whether `complete()` must stream to get a response for this budget. */
+function requiresStreaming(maxTokens: number): boolean {
+  return maxTokens > MAX_UNSTREAMED_TOKENS;
+}
+
+type RequestOptions = ReturnType<typeof toRequestOptions>;
+
+async function completeUnstreamed(
+  client: Anthropic,
+  req: LlmRequest,
+  options: RequestOptions,
+): Promise<Anthropic.Message> {
+  const params = buildParams(req) as unknown as Parameters<
+    typeof client.messages.create
+  >[0];
+  const response = await (options !== undefined
+    ? client.messages.create(params, options)
+    : client.messages.create(params));
+  return response as Anthropic.Message;
+}
+
+/** Same request over the streaming endpoint, drained to the message a
+ *  non-streaming call would have returned. A failure — HTTP or mid-stream —
+ *  rejects `finalMessage()` with the SDK's error, so `classifyAnthropicError`
+ *  sees the same shapes as on the plain path. */
+async function completeViaStream(
+  client: Anthropic,
+  req: LlmRequest,
+  options: RequestOptions,
+): Promise<Anthropic.Message> {
+  const params = buildParams(req) as unknown as Parameters<
+    typeof client.messages.stream
+  >[0];
+  const stream = options !== undefined
+    ? client.messages.stream(params, options)
+    : client.messages.stream(params);
+  return stream.finalMessage();
+}
+
+// ---------------------------------------------------------------------------
 // Provider
 // ---------------------------------------------------------------------------
 
@@ -447,6 +835,11 @@ export function createAnthropicProvider(
       streaming: true,
       promptCaching: true,
       forcedToolChoice: true,
+      // #1211 — the Messages API honours `tool_choice: { type: 'none' }`
+      // (`effectiveToolChoice` passes it through unchanged), so the
+      // orchestrator's finalize pass keeps the full tool list, and with it the
+      // cached prefix, instead of sending none.
+      toolChoiceNone: true,
       parallelToolCalls: true,
       // Claude emits natural-language text alongside tool_use in one assistant
       // message, so sidecar tools (suggest_follow_ups) fire inline — no
@@ -456,14 +849,12 @@ export function createAnthropicProvider(
 
     async complete(req: LlmRequest): Promise<LlmResponse> {
       const started = Date.now();
-      const params = buildParams(req) as unknown as Parameters<
-        typeof client.messages.create
-      >[0];
       const options = toRequestOptions(req);
-      const response = await (options !== undefined
-        ? client.messages.create(params, options)
-        : client.messages.create(params));
-      const mapped = mapResponse(response as Anthropic.Message);
+      const response = requiresStreaming(req.maxTokens)
+        ? await completeViaStream(client, req, options)
+        : await completeUnstreamed(client, req, options);
+      logInputTransformations(response, log);
+      const mapped = mapResponse(response);
       log(
         `complete ok model=${mapped.model} in=${String(mapped.usage.inputTokens)} out=${String(mapped.usage.outputTokens)} ms=${String(Date.now() - started)}`,
       );
@@ -493,6 +884,7 @@ export function createAnthropicProvider(
         }
       }
       const final = await stream.finalMessage();
+      logInputTransformations(final, log);
       yield { type: 'final', response: mapResponse(final) };
     },
 

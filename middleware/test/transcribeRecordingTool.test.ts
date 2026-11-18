@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { describe, it, mock } from 'node:test';
 import { strict as assert } from 'node:assert';
 
 import { InMemoryMemoryStore } from '@omadia/memory';
@@ -167,6 +167,29 @@ describe('transcribe_recording', () => {
     const { tool } = makeTool({ service });
     const result = await tool.handle({ storage_key: AUDIO_KEY });
     assert.match(result, /^Error: transcription minute quota exhausted/);
+  });
+
+  it('withholds the text of any other provider exception', async () => {
+    const EMAIL = 'erika.mustermann@example.com';
+    const service = fakeTranscription(TWO_SPEAKERS);
+    service.transcribeFile = async () => {
+      throw Object.assign(new Error(`upstream 400: speaker label ${EMAIL} rejected`), {
+        code: 'ERR_BAD_REQUEST',
+      });
+    };
+    const { tool } = makeTool({ service });
+    const errorLog = mock.method(console, 'error', () => {});
+    let result: string;
+    try {
+      result = await tool.handle({ storage_key: AUDIO_KEY });
+    } finally {
+      errorLog.mock.restore();
+    }
+    assert.equal(result.includes(EMAIL), false, `the exception text reached the model: ${result}`);
+    assert.match(
+      result,
+      /^Error: tool `transcribe_recording` failed with Error \(code ERR_BAD_REQUEST\) \[ref /,
+    );
   });
 
   it('validates its input', async () => {

@@ -28,6 +28,7 @@ import type {
  *   POST   /detect                 manual re-trigger for one MK
  *   GET    /bulk-detect/preview    operator preview (bucket counts)
  *   POST   /bulk-detect            operator-triggered bulk pass
+ *   GET    /excerpts               Slice 12 excerpt list (before `/:id`)
  */
 
 const ListQuerySchema = z.object({
@@ -226,6 +227,36 @@ export function createDuplicatesRouter(deps: {
     }
   });
 
+  // Before `GET /:id`: Express matches in registration order, so `excerpts`
+  // would otherwise be read as a MergeCandidate id and answer 404.
+  router.get('/excerpts', async (req, res) => {
+    const sessionUserId = requireSessionUserId(req, res);
+    if (!sessionUserId) return;
+    const parsed = ListQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      res
+        .status(400)
+        .json({ code: 'duplicates.invalid_query', issues: parsed.error.issues });
+      return;
+    }
+    try {
+      const items = await deps.graph.listExcerptMergeCandidates({
+        viewerOmadiaUserId: sessionUserId,
+        ...(parsed.data.status
+          ? { status: parsed.data.status as ExcerptMergeStatus }
+          : {}),
+        ...(parsed.data.limit !== undefined ? { limit: parsed.data.limit } : {}),
+      });
+      const hydrated = await Promise.all(
+        items.map((mc) => hydrateExcerptDetail(deps.graph, mc, sessionUserId)),
+      );
+      res.json({ items: hydrated });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ code: 'duplicates.excerpt_list_failed', message });
+    }
+  });
+
   router.get('/:id', async (req: Request, res: Response) => {
     const sessionUserId = requireSessionUserId(req, res);
     if (!sessionUserId) return;
@@ -300,7 +331,8 @@ export function createDuplicatesRouter(deps: {
 
   // ═══ Slice 12 — Excerpt-Merge endpoints (mirror of MK-pendants) ═══
   // Mounted under `/excerpts/*`. Order matters: the static
-  // `/bulk-detect/*` sub-paths must register before `/:id` matchers.
+  // `/bulk-detect/*` sub-paths must register before `/:id` matchers, and the
+  // bare `GET /excerpts` list sits above the MK `GET /:id` further up.
 
   router.get('/excerpts/bulk-detect/preview', async (req, res) => {
     if (!requireSessionUserId(req, res)) return;
@@ -372,34 +404,6 @@ export function createDuplicatesRouter(deps: {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       res.status(500).json({ code: 'duplicates.excerpt_detect_failed', message });
-    }
-  });
-
-  router.get('/excerpts', async (req, res) => {
-    const sessionUserId = requireSessionUserId(req, res);
-    if (!sessionUserId) return;
-    const parsed = ListQuerySchema.safeParse(req.query);
-    if (!parsed.success) {
-      res
-        .status(400)
-        .json({ code: 'duplicates.invalid_query', issues: parsed.error.issues });
-      return;
-    }
-    try {
-      const items = await deps.graph.listExcerptMergeCandidates({
-        viewerOmadiaUserId: sessionUserId,
-        ...(parsed.data.status
-          ? { status: parsed.data.status as ExcerptMergeStatus }
-          : {}),
-        ...(parsed.data.limit !== undefined ? { limit: parsed.data.limit } : {}),
-      });
-      const hydrated = await Promise.all(
-        items.map((mc) => hydrateExcerptDetail(deps.graph, mc, sessionUserId)),
-      );
-      res.json({ items: hydrated });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      res.status(500).json({ code: 'duplicates.excerpt_list_failed', message });
     }
   });
 

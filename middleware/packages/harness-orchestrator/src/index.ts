@@ -17,7 +17,7 @@
  */
 
 // Plugin entry point
-export { activate } from './plugin.js';
+export { activate, DEFAULT_MAX_TOKENS } from './plugin.js';
 export type {
   ChatAgentBundle,
   OrchestratorPluginHandle,
@@ -64,13 +64,17 @@ export type {
 export {
   ensureFallbackAgent,
   attachAllPlugins,
+  attachNewPluginsToFallbackAgent,
   FALLBACK_AGENT_SLUG,
   // #679 / I5 — exported so a locale-aware surface can recognise the
   // server-written seed prose and render its own copy instead.
   FALLBACK_AGENT_SEED_NAME,
   FALLBACK_AGENT_SEED_DESCRIPTION,
 } from './registry/onboarding.js';
-export type { OnboardingOptions } from './registry/onboarding.js';
+export type {
+  FallbackAttachResult,
+  OnboardingOptions,
+} from './registry/onboarding.js';
 // US8 — per-Agent memory scope.
 export { computeMemoryScope } from './registry/index.js';
 export {
@@ -87,8 +91,17 @@ export {
   CONTEXT_AXES,
   contextTierRoot,
   effectiveMemoryScope,
+  membersIndexRoot,
+  membersTierRoot,
   orchestratorMemoryScope,
 } from './registry/scopedMemoryStore.js';
+// W3 — `members` notes: one tier per owner set, recorded in an index.
+export {
+  MEMBERS_SHARED_SEGMENT_PREFIX,
+  MembersIndex,
+  membersTierKey,
+} from './membersMemory.js';
+export type { MembersIndexEntry } from './membersMemory.js';
 export type {
   ContextAxis,
   ContextMemoryEnforcement,
@@ -200,6 +213,8 @@ export {
   // Exported so the no-collateral-invalidation rule of `McpManager.close(id)`
   // can be unit tested and reused by ops tooling (issue #563).
   mcpPoolScopeMatches,
+  // The Discover route needs the same reading of a failed connect as a tool call.
+  looksUnauthorized,
   // #545 — the tool-list cache rules (TTL normalisation + scope keying) are
   // the contract, unit-tested as pure functions like `mcpPoolScopeMatches`.
   mcpToolListTtlMs,
@@ -322,8 +337,11 @@ export {
   assertTimeoutHierarchy,
   // `stop_reason: "refusal"` → explicit notice instead of an empty answer.
   MODEL_REFUSAL_NOTICE,
+  localizeRefusalNotice,
   finalAnswerText,
 } from './orchestrator.js';
+// #1500 — answer text across tool-loop iterations, preamble dropped.
+export { AnswerTextAccumulator } from './answerTextAccumulator.js';
 export type { OrchestratorOptions, AiDisclosureSetup } from './orchestrator.js';
 
 // #579 — org security postures + provenance-labelled inbound screening. The
@@ -432,6 +450,9 @@ export { VerifierService } from './verifierService.js';
 
 // Sub-agent runtime
 export { LocalSubAgent } from './localSubAgent.js';
+export { subAgentEffortFor, type SubAgentEffortFor } from './subAgentEffort.js';
+// #1219 — a declined sub-agent run, and the parent-facing notice for it.
+export { SubAgentRefusalError, subAgentRefusalNotice } from './subAgentRefusal.js';
 export type {
   LocalSubAgentTool,
   LocalSubAgentToolResult,
@@ -461,6 +482,25 @@ export type {
   ToolIdempotencyOutcome,
 } from './toolIdempotency.js';
 export {
+  ToolReplayAbortError,
+  ToolReplayLedger,
+  replayMissNotice,
+  runDetachedFromRequestLedger,
+} from './toolReplayLedger.js';
+export type {
+  ToolReplayDecision,
+  ToolReplayRecord,
+  ToolReplaySeam,
+} from './toolReplayLedger.js';
+export { RequestReceipts, mergePrivacyReceipts } from './requestReceipts.js';
+export { RequestTurnRecord } from './requestTurnRecord.js';
+export type {
+  CommittedTurn,
+  RequestAfterTurn,
+  TurnRecordDraft,
+  WrittenTurn,
+} from './requestTurnRecord.js';
+export {
   currentDispatchCaller,
   runWithDispatchCaller,
 } from './toolCallerContext.js';
@@ -471,8 +511,29 @@ export {
 // for the agent's own infra tools inside a turn and unacceptable for an
 // internet-facing caller — so the endpoint refuses to serve those names at all.
 export { createPrivacyTurnHandle } from './privacyHandle.js';
-export type { PrivacyTurnHandle } from './privacyHandle.js';
+export type { PrivacyTurnHandle, PromptMaskOptions } from './privacyHandle.js';
+// Verifier privacy hand-over: the continuation a held turn hands to the
+// answer-verifier wrapper (see privacyEgress.ts).
+export type { PrivacyEgressContinuation } from './privacyEgress.js';
 export { INTERN_EXEMPT_TOOLS, isInternExemptTool } from './privacyInternPolicy.js';
+// Tool errors on their way to a model: the one helper every dispatch seam
+// routes a thrown exception or a returned `Error:` text through. The MCP
+// connect prompt passes on per-dispatch provenance (`McpAuthPromptMint`).
+export { McpAuthPromptMint, runWithMcpAuthPromptMint } from './mcp/mcpAuthPromptMint.js';
+export {
+  MAX_REDACTABLE_TOOL_ERROR_CHARS,
+  guardControlFlowResult,
+  isGuardedControlFlowResult,
+  looksExceptionShaped,
+  returnedToolErrorWithheldNotice,
+  thrownToolErrorForModel,
+  toolErrorRef,
+  withholdThrownToolError,
+} from './toolErrorRedaction.js';
+export type {
+  ThrownToolErrorOutcome,
+  ToolErrorWithholdReason,
+} from './toolErrorRedaction.js';
 export { LoopbackMcpServer } from './loopbackMcpServer.js';
 export type {
   LoopbackMcpServerDeps,
@@ -523,7 +584,7 @@ export {
 } from './knowledgeGraphTool.js';
 
 // Native-tool registry — kernel-shared dispatch table
-export { NativeToolRegistry } from './nativeToolRegistry.js';
+export { NativeToolRegistry, isOfferedThisTurn } from './nativeToolRegistry.js';
 export type {
   NativeToolRegistration,
   NativeToolRegistrationOptions,
@@ -556,9 +617,17 @@ export type {
   AiDisclosurePosture,
   ChannelPosture,
 } from './aiDisclosurePosture.js';
+export {
+  ANSWER_VERBOSITY_LEVELS,
+  DEFAULT_ANSWER_VERBOSITY,
+  buildAnswerVerbosityBlock,
+  buildAnswerVerbosityTurnBlock,
+  parseAnswerVerbosity,
+} from './answerVerbosity.js';
+export type { AnswerVerbosity } from './answerVerbosity.js';
 
 // Session logger + chat-session store
-export { SessionLogger, graphScopeFor } from './sessionLogger.js';
+export { SessionLogger, graphScopeFor, isChatSessionScope } from './sessionLogger.js';
 export type { SessionLogEntry } from './sessionLogger.js';
 
 // #684 — run-trace outcome tallies. Exported so an operator surface can read
@@ -577,12 +646,15 @@ export type {
 export {
   ChatSessionStore,
   InvalidSessionIdError,
+  ServerMirroredSessionError,
+  isServerMirroredSession,
   isValidSessionId,
 } from './chatSessionStore.js';
 export type {
   ChatSubAgentEvent,
   ChatToolEvent,
   ChatMessage,
+  ChatProactiveMarker,
   ChatSession,
   ChatSessionSummary,
   SessionConfigSnapshot,
@@ -599,6 +671,7 @@ export {
 export type {
   SubAgentMemoryHandler,
   TurnContextValue,
+  GraphReadScope,
 } from './turnContext.js';
 export {
   setMcpPrivacyBypassServers,
@@ -697,6 +770,7 @@ export {
   linkKeyColumnName,
   normalizeLinkValue,
   resolveDatasetLinkKeySecret,
+  setDatasetVaultKeyFallback,
   LINK_KEY_COLUMN_PREFIX,
   LINK_KEY_LENGTH,
   LINK_KEY_SECRET_ENV,
@@ -755,6 +829,7 @@ export {
 export type {
   DomainTool,
   DomainToolSpec,
+  SubAgentToolHandle,
   AskObserver,
   Askable,
 } from './tools/domainQueryTool.js';
@@ -840,3 +915,9 @@ export {
   createLongRunningSubAgentTool,
 } from './tasks/subAgentTaskTool.js';
 export type { LongRunningSubAgentToolOptions } from './tasks/subAgentTaskTool.js';
+export {
+  createScopedChatAgent,
+  NO_ORCHESTRATOR_MESSAGE,
+  resolveScopedBundle,
+} from './scopedChatAgent.js';
+export type { ScopedRegistryView } from './scopedChatAgent.js';

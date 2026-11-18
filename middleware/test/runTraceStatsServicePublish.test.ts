@@ -9,7 +9,7 @@ import {
   createAnthropicClient,
   createAnthropicProvider,
 } from '@omadia/llm-adapter-anthropic';
-import type { LlmProviderPool } from '@omadia/llm-provider';
+import { clearExternalModels, type LlmProviderPool } from '@omadia/llm-provider';
 import type { EntityRefBus, PluginContext } from '@omadia/plugin-api';
 
 import { InMemoryMemoryStore } from '../packages/harness-memory/src/inMemoryMemoryStore.js';
@@ -29,6 +29,7 @@ import {
 } from '../packages/harness-orchestrator/src/runTraceObservability.js';
 import { ServiceRegistry } from '../src/platform/serviceRegistry.js';
 import { createAdminRouter } from '../src/routes/admin.js';
+import { registerBuiltinProvidersIntoOverlay } from './_helpers/builtinProviders.js';
 
 /**
  * #1082 — the PUBLISH pin. `adminRunTraceRoute.test.ts` drives the route with a
@@ -98,6 +99,11 @@ const getRunTrace = async (): Promise<{ status: number; body: Record<string, unk
 };
 
 before(async () => {
+  // #1451 — the kernel registers the bundled providers (and thus their models)
+  // before any plugin activates (`src/index.ts`). Without them `activate()`
+  // now fails on its `class:frontier` default instead of publishing the class
+  // ref as a model, so this fixture has to mirror boot.
+  registerBuiltinProvidersIntoOverlay();
   provideKernelServices();
   const app = express();
   app.use(express.json());
@@ -120,6 +126,7 @@ before(async () => {
 after(async () => {
   await handle?.close();
   server.close();
+  clearExternalModels();
 });
 
 describe('#1082 orchestrator publishes its run-trace tally', () => {

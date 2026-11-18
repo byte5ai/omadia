@@ -78,6 +78,9 @@ jobs:
           cache: 'npm'
           cache-dependency-path: middleware/package-lock.json
 
+      - name: Orb resume regression
+        run: node --test ../.agents/resume.test.mjs
+
       - name: npm ci (middleware + workspaces)
         run: npm ci --include=optional --no-audit --no-fund
 
@@ -104,6 +107,12 @@ jobs:
       # core-decoupling ratchet used).
       - name: Typecheck (test + scripts trees, ratchet)
         run: npm run typecheck:test
+
+      # #1401 — every visible text of an in-tree manifest (description, setup
+      # field label/help/pattern_hint/enum labels, setup guide) is an {en, de}
+      # map. Hub packages are not checked here; the loader only warns on them.
+      - name: Manifest i18n (in-tree manifests are {en, de})
+        run: npm run manifest:i18n:check
 
       # #760 — prompt-PII detection-quality gate. Deterministic (pure regex
       # over committed fixtures, C0 set only — no sidecar): every locale must
@@ -152,7 +161,6 @@ jobs:
       # repo keeps finding (#640, #752). If it gains tests, add it here.
       - name: Test (workspace package suites)
         run: |
-          npm run test -w @omadia/canvas-core
           npm run test -w @omadia/conductor-core
           npm run test -w @omadia/plugin-api
           npm run test -w @omadia/transcription-adapter-openai
@@ -176,6 +184,47 @@ jobs:
       # otherwise be tested nowhere. No install step — it has no dependencies.
       - name: Test — updater sidecar (node --test)
         run: npm run test:updater
+
+      # Update overlay (#432): render the merged compose model.
+      # test/composeUpdateOverlay.test.ts checks what each file declares, but
+      # only compose can say whether the merge is valid: an undeclared network,
+      # a misspelled key, a value the schema rejects. `config` only
+      # interpolates the token, so a dummy value is enough.
+      - name: Compose — update overlay renders (docker compose config)
+        working-directory: .
+        env:
+          UPDATER_TOKEN: ci-render-only-not-a-secret
+        run: docker compose -f docker-compose.yaml -f docker-compose.update.yaml config --quiet
+
+      # Overlay images must still exist upstream (#1506). Nothing here pulls
+      # them, so when minio/minio and minio/mc vanished from Docker Hub the
+      # storage overlay broke on users' machines only. `manifest inspect`
+      # fetches just the manifest, no layers. Locally built images (no tag)
+      # are skipped.
+      - name: Compose — overlay images are pullable (docker manifest inspect)
+        working-directory: .
+        env:
+          UPDATER_TOKEN: ci-render-only-not-a-secret
+        run: |
+          set -euo pipefail
+          files="-f docker-compose.yaml -f docker-compose.storage.yaml -f docker-compose.diagrams.yaml -f docker-compose.embeddings.yaml -f docker-compose.update.yaml"
+          docker compose $files config --quiet
+          images=$(docker compose $files config --images | grep ':' | grep -v '^ghcr.io/byte5ai/' | sort -u)
+          # Guard: an empty list would pass without checking anything.
+          [ -n "$images" ] || { echo "no overlay images found to check" >&2; exit 1; }
+          for image in $images; do
+            echo "checking $image"
+            if ! out=$(docker manifest inspect "$image" 2>&1 >/dev/null); then
+              # A Docker Hub rate limit says nothing about the image; only a
+              # missing/denied repository or tag fails the step.
+              if grep -qi 'toomanyrequests' <<<"$out"; then
+                echo "::warning::rate-limited checking $image, skipped"
+                continue
+              fi
+              echo "::error::$image cannot be pulled: $out"
+              exit 1
+            fi
+          done
 
       # PII-detector sidecar (#361). Python, therefore outside every glob
       # above — until now it was tested nowhere, which is how a shipped
@@ -257,7 +306,18 @@ jobs:
           # d5bb0b61), i.e. 78 tests of slack; #1077 adds 6 (usageDashboard
           # 4, cliTurnBudgetRegistry 2). Re-pinned to the measured total.
           # 365 → 372 with #778 S1 (7 credential-ask askability/owner tests).
-          PG_TEST_FLOOR: '372'
+          # 372 → 409 with the session, setup, sign-in and verifier hardening
+          # (#1262, #1263, #1267: session-version migration, first-admin race,
+          # sign-in account fold, verifier verdict reason); measured ran=409.
+          # 409 → 411 with the API-key run-trace readback (apiKeyRunTrace.pg,
+          # 2 tests); measured ran=411.
+          # 411 → 414 with the enforce-strict graph-tool view on Neon
+          # (knowledgeGraphToolStrictView.pg, 3 tests); measured ran=414.
+          # 414 → 419 with member-scoped memory owner filters on Neon
+          # (memberScopedOwners.pg, 5 tests); measured ran=419.
+          # 421 → 423 with the receipt chain order regression (#1526,
+          # receiptChainOrder.pg, 2 tests).
+          PG_TEST_FLOOR: '423'
         run: |
           set -eo pipefail
           npm run test:pg 2>&1 | tee pg-test.out
@@ -313,6 +373,15 @@ jobs:
       - name: Test (vitest)
         run: npm run test
 
+      # #1401 — the catalog validator (missing/extra keys, empty values,
+      # forbidden HTML) and the hard-coded-literal ratchet: `translate` stays
+      # at 0 and `review` may only go down (scripts/i18n-literal-ceiling.json).
+      - name: i18n catalog check
+        run: npm run i18n:check
+
+      - name: i18n literal ratchet
+        run: npm run i18n:literals:check
+
       - name: Plugin UI stylesheet drift check
         # Epic #470 C8 — middleware/assets/plugin-ui/plugin-ui.css is generated
         # from this workspace's theme tokens + tailwind bridge and committed so
@@ -329,9 +398,14 @@ jobs:
   # Added for issue #932. Until now desktop/src was the only source tree in
   # the repo with no tests and no CI job -- and the only one that produced a
   # blocker in three rounds of beta testing, because it is the whole of the
-  # user's first impression. Electron's own binary is deliberately NOT
-  # downloaded: nothing here launches the app, so the ~100MB fetch would only
-  # slow the job down.
+  # user's first impression. Electron's own binary is not downloaded: since
+  # Electron 42 `npm ci` no longer fetches it (it arrives on first run), and
+  # nothing here launches the app.
+  #
+  # Node 24, unlike the other jobs: this code runs in Electron's main process
+  # on Electron's embedded Node (24 since Electron 44), and the desktop's
+  # @types/node follows that Node. The kernel's suite stays on Node 22 in the
+  # middleware job (docs/security-architecture.md §4a).
   # ------------------------------------------------------------------
   desktop:
     name: desktop (typecheck + test)
@@ -340,14 +414,12 @@ jobs:
     defaults:
       run:
         working-directory: desktop
-    env:
-      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
     steps:
       - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: '24'
           cache: 'npm'
           cache-dependency-path: desktop/package-lock.json
 
@@ -481,6 +553,22 @@ jobs:
   # findings remain warnings (some of ours are dev-tools that need a
   # Next.js major to clear). Acts as the canary for new CVE bumps in
   # transitive deps.
+  #
+  # The matrix names every directory git tracks with its own package.json
+  # AND package-lock.json (desktop, middleware, web-ui); a step before the
+  # audit fails every leg when one is missing. A new package directory also
+  # needs an npm block in .github/dependabot.yml and its
+  # `audit (high+critical block) (<dir>)` context among main's required
+  # status checks, added by an admin only after the PR that adds the leg is
+  # on main: a required context that never reports blocks every open PR.
+  # The root package-lock.json is an empty stub with no package.json beside
+  # it, so it is not a leg.
+  #
+  # desktop is audited like the others because its devDependency `electron`
+  # is the shipped runtime (the supervisor runs kernel and web-ui under it via
+  # ELECTRON_RUN_AS_NODE) and electron-updater parses the update feed inside
+  # the installed app. Its `npm ci` downloads no Electron binary: since
+  # Electron 42 the binary is fetched on first run, not in postinstall.
   # ------------------------------------------------------------------
   audit:
     name: audit (high+critical block)
@@ -497,12 +585,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        workspace: [middleware, web-ui]
+        workspace: [middleware, web-ui, desktop]
     defaults:
       run:
         working-directory: ${{ matrix.workspace }}
     steps:
       - uses: actions/checkout@v7
+
+      - name: Audit scope covers every lockfile, exception rules hold
+        working-directory: .
+        run: node --test .github/scripts/audit-scope.test.mjs .github/scripts/audit-gate.test.mjs
 
       - uses: actions/setup-node@v7
         with:
@@ -530,40 +622,77 @@ jobs:
         # outage an admin sets the repository variable
         # AUDIT_ALLOW_REGISTRY_OUTAGE=true, which downgrades the failure to a
         # warning; unset it once the registry is back (security-architecture §11).
+        #
+        # The decision itself is `.github/scripts/audit-gate.mjs`. A high or
+        # critical finding in the full tree needs a production-only report
+        # (`--omit=dev`) as well: a production finding always fails, and a
+        # finding that only development tooling pulls in passes only with a dated,
+        # reasoned entry in `.github/audit-exceptions.json` whose `via` names
+        # every route `package-lock.json` gives into the tree; `electron` counts
+        # as production (security-architecture §4a). The override above never
+        # applies once the full tree has findings: an unknown production split is
+        # not a pass. A clean tree goes through the gate too, so an exception
+        # that matches nothing any more is reported for removal.
         env:
           AUDIT_ALLOW_REGISTRY_OUTAGE: ${{ vars.AUDIT_ALLOW_REGISTRY_OUTAGE }}
         run: |
           npm install -g npm@latest
-          attempt=0
-          while :; do
-            attempt=$((attempt + 1))
-            set +e
-            npm audit --audit-level=high --json --fetch-timeout=60000 --fetch-retries=1 \
-              >audit-report.json 2>audit-stderr.log
-            exit_code=$?
-            set -e
-            if [ "$exit_code" -eq 0 ]; then
+          # run_audit <report> <stderr-log> [npm audit args]: 0 = no high/critical
+          # finding, 1 = findings (or a hard CLI error), 2 = registry still
+          # erroring after three attempts. Called in an `||` list, so errexit is
+          # off inside: every command's status is checked explicitly.
+          run_audit() {
+            report=$1
+            log=$2
+            shift 2
+            attempt=0
+            while :; do
+              attempt=$((attempt + 1))
+              code=0
+              npm audit --audit-level=high --json --fetch-timeout=60000 --fetch-retries=1 "$@" \
+                >"$report" 2>"$log" || code=$?
+              if [ "$code" -eq 0 ]; then
+                return 0
+              fi
+              if ! grep -q 'audit endpoint returned an error' "$log"; then
+                return 1
+              fi
+              if [ "$attempt" -ge 3 ]; then
+                return 2
+              fi
+              echo "::warning::npm audit endpoint error (attempt $attempt/3) -- retrying in $((attempt * 20))s"
+              sleep $((attempt * 20))
+            done
+          }
+          gate() {
+            node ../.github/scripts/audit-gate.mjs --workspace "${{ matrix.workspace }}" \
+              --full audit-report.json --prod "$1" \
+              --lock package-lock.json --exceptions ../.github/audit-exceptions.json
+          }
+          full=0
+          run_audit audit-report.json audit-stderr.log || full=$?
+          if [ "$full" -eq 0 ]; then
+            gate audit-report.json
+            exit $?
+          fi
+          if [ "$full" -eq 2 ]; then
+            cat audit-stderr.log
+            if [ "$AUDIT_ALLOW_REGISTRY_OUTAGE" = "true" ]; then
+              echo "::warning::npm audit endpoint still erroring after 3 attempts; AUDIT_ALLOW_REGISTRY_OUTAGE=true -- passing WITHOUT an audit result"
               exit 0
             fi
-            if ! grep -q 'audit endpoint returned an error' audit-stderr.log; then
-              # A real result: high/critical findings (or a hard CLI error).
-              cat audit-stderr.log
-              cat audit-report.json
-              exit "$exit_code"
-            fi
-            if [ "$attempt" -ge 3 ]; then
-              break
-            fi
-            echo "::warning::npm audit endpoint error (attempt $attempt/3) -- retrying in $((attempt * 20))s"
-            sleep $((attempt * 20))
-          done
-          cat audit-stderr.log
-          if [ "$AUDIT_ALLOW_REGISTRY_OUTAGE" = "true" ]; then
-            echo "::warning::npm audit endpoint still erroring after 3 attempts; AUDIT_ALLOW_REGISTRY_OUTAGE=true -- passing WITHOUT an audit result"
-            exit 0
+            echo "::error::npm audit endpoint still erroring after 3 attempts. An unknown audit state is not a clean result; set the repository variable AUDIT_ALLOW_REGISTRY_OUTAGE=true only for a confirmed upstream outage."
+            exit 1
           fi
-          echo "::error::npm audit endpoint still erroring after 3 attempts. An unknown audit state is not a clean result; set the repository variable AUDIT_ALLOW_REGISTRY_OUTAGE=true only for a confirmed upstream outage."
-          exit 1
+          cat audit-stderr.log
+          prod=0
+          run_audit audit-prod.json audit-prod-stderr.log --omit=dev || prod=$?
+          if [ "$prod" -eq 2 ]; then
+            cat audit-prod-stderr.log
+            echo "::error::the full tree has high or critical findings and the production-only audit could not reach the registry; without that split nothing can be excepted. AUDIT_ALLOW_REGISTRY_OUTAGE does not apply here."
+            exit 1
+          fi
+          gate audit-prod.json
 
       - name: Archive audit report
         if: always()
@@ -572,7 +701,9 @@ jobs:
           name: npm-audit-${{ matrix.workspace }}
           path: |
             ${{ matrix.workspace }}/audit-report.json
+            ${{ matrix.workspace }}/audit-prod.json
             ${{ matrix.workspace }}/audit-stderr.log
+            ${{ matrix.workspace }}/audit-prod-stderr.log
           if-no-files-found: ignore
           retention-days: 30
           # Artifact names are unique per run, not per attempt: without this, a

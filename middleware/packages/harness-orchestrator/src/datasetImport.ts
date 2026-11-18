@@ -337,6 +337,7 @@ export async function buildDatasetFromTable(
   const cellKey = opts.cellKey;
   let scannedCells = 0;
   let maskedCells = 0;
+  let surrogates: Awaited<ReturnType<typeof maskPrompt>>['map'] | undefined;
   // Display-safe value of every column in the FIRST row — the schema sample.
   // A flagged cell's stored value is now a ciphertext, which tells a human
   // nothing; the sample keeps showing the masked surrogate instead.
@@ -374,7 +375,11 @@ export async function buildDatasetFromTable(
       if (raw.length === 0) {
         outRow[header] = raw;
       } else {
-        const scanned = await maskPrompt(raw, detectors);
+        // #1546 — ONE surrogate map for the whole table. A fresh map per
+        // cell minted the first pool surrogate every time, so without a
+        // cell key 60 different e-mails were stored as one address.
+        const scanned = await maskPrompt(raw, detectors, surrogates);
+        surrogates = scanned.map;
         if (scanned.maskedText !== raw) {
           maskedCells += 1;
           display = scanned.maskedText;

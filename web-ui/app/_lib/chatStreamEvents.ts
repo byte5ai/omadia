@@ -1,5 +1,6 @@
 'use client';
 
+import type { AnswerVerbosityInfo } from './agentIdentity';
 import type {
   AgentConsultation,
   ChatSession,
@@ -22,14 +23,16 @@ import type {
   SubAgentEvent,
   ToolEvent,
   UseChatSessionsResult,
+  VerifierSummary,
 } from './chatSessions';
 import { parseTurnIncomplete } from './turnIncomplete';
 
 /**
  * Wire-format for chat stream events. Mirrors `ChatStreamEvent` in
- * `middleware/src/services/orchestrator.ts`. Validation is lax on purpose —
- * the server is trusted and any shape drift should surface as an obvious
- * UI bug rather than a silent drop.
+ * `@omadia/channel-sdk` (`middleware/packages/harness-channel-sdk/src/chatAgent.ts`)
+ * — keep the two in sync, or a field the server sends is silently dropped
+ * here. Validation is lax on purpose — the server is trusted and any shape
+ * drift should surface as an obvious UI bug rather than a silent drop.
  */
 export type ChatStreamEvent =
   | { type: 'iteration_start'; iteration: number }
@@ -55,6 +58,8 @@ export type ChatStreamEvent =
       skillName: string | null;
     }
   | { type: 'text_delta'; text: string }
+  /** #1500 — drop the last `chars` preview characters (tool-call preamble). */
+  | { type: 'text_retract'; chars: number }
   | {
       type: 'tool_use';
       id: string;
@@ -134,6 +139,9 @@ export type ChatStreamEvent =
       iterations: number;
       /** Model this turn ran on (per-turn router → Sonnet/Opus, or default). */
       model?: string;
+      /** The decision model's verdict (fast path, before any model call) —
+       *  see `Message.fastPathDecision`. Untrusted shape. */
+      fastPathDecision?: unknown;
       turnId?: string;
       palaiaExcerpt?: PalaiaExcerpt;
       autoPromotedMkId?: string;
@@ -144,9 +152,15 @@ export type ChatStreamEvent =
       pendingMcpInput?: PendingMcpInput;
       followUpOptions?: FollowUpOption[];
       privacyReceipt?: PrivacyReceipt;
+      /** #1107 — the receipt store key of this turn's receipt (the turn's
+       *  own id, not the session-log `turnId`). Present only when a receipt
+       *  row was written for it. */
+      receiptId?: string;
       maskedValues?: readonly string[];
       /** #332 Layer 1 (gap-closure) — see `Message.agentsConsulted`. */
       agentsConsulted?: AgentConsultation[];
+      /** Phase 3 — see `Message.answerVerbosity`. */
+      answerVerbosity?: AnswerVerbosityInfo;
       /** #332 Layer 2 (gap-closure) — see `Message.delegatedAnswer`. */
       delegatedAnswer?: DelegatedAnswer;
       /** #445 — see `Message.directLineSession`. */
@@ -167,10 +181,27 @@ export type ChatStreamEvent =
       /** #1094 — the turn's support token, same value the `error` variant
        *  carries (#641). */
       correlationId?: string;
+      /**
+       * Where `answer` comes from (`AnswerSource` in `@omadia/channel-sdk`).
+       * `'verifier-blocked'`: the answer verifier withheld the answer in
+       * `enforce` mode and `answer` is the server's notice saying so; the
+       * model's text never reached the stream.
+       */
+      answerSource?: 'model' | 'privacy-render' | 'verifier-blocked';
+      /** `answer` is not a result (a rendered failure, or the withheld-answer
+       *  notice). */
+      answerIsError?: boolean;
+      /** The verifier's verdict, on `done` itself in `enforce` mode (the
+       *  trailing `verifier` event carries the same summary). */
+      verifier?: VerifierSummary;
     }
   /** #133 (E9) — opaque turn annotation the orchestrator forwarded from a
    *  turn-hook. `channel: 'plan'` carries a live PlanSnapshot. */
   | { type: 'turn_annotation'; channel: string; payload: unknown }
+  /** Answer-verifier summary, emitted once AFTER `done` when the verifier is
+   *  enabled (in `enforce` mode `done.verifier` already carried it).
+   *  `skipped` / `unavailable` mean nothing was checked. */
+  | { type: 'verifier'; summary: VerifierSummary }
   /** Mid-turn steering — a user message injected via `/chat/steer` was folded
    *  into the running turn at iteration `iteration`. */
   | { type: 'steer_applied'; iteration: number; message: string }
@@ -220,6 +251,11 @@ function foldIntoMessage(m: Message, event: ChatStreamEvent): Message {
   switch (event.type) {
     case 'text_delta':
       return { ...m, content: m.content + event.text };
+    case 'text_retract': {
+      // A malformed count must not wipe the preview.
+      if (!Number.isFinite(event.chars) || event.chars <= 0) return m;
+      return { ...m, content: m.content.slice(0, Math.max(0, m.content.length - event.chars)) };
+    }
     case 'turn_routing':
       return {
         ...m,
@@ -404,6 +440,7 @@ function foldIntoMessage(m: Message, event: ChatStreamEvent): Message {
           iterations: event.iterations,
         },
         ...(event.model ? { model: event.model } : {}),
+        ...(event.fastPathDecision ? { fastPathDecision: event.fastPathDecision } : {}),
         ...(event.turnId ? { turnId: event.turnId } : {}),
         ...(event.palaiaExcerpt ? { palaiaExcerpt: event.palaiaExcerpt } : {}),
         ...(event.autoPromotedMkId
@@ -425,12 +462,14 @@ function foldIntoMessage(m: Message, event: ChatStreamEvent): Message {
           ? { followUpOptions: event.followUpOptions }
           : {}),
         ...(event.privacyReceipt ? { privacyReceipt: event.privacyReceipt } : {}),
+        ...(event.receiptId ? { receiptId: event.receiptId } : {}),
         ...(event.maskedValues && event.maskedValues.length > 0
           ? { maskedValues: event.maskedValues }
           : {}),
         ...(event.agentsConsulted && event.agentsConsulted.length > 0
           ? { agentsConsulted: event.agentsConsulted }
           : {}),
+        ...(event.answerVerbosity ? { answerVerbosity: event.answerVerbosity } : {}),
         ...(event.delegatedAnswer
           ? { delegatedAnswer: event.delegatedAnswer }
           : {}),
@@ -440,6 +479,19 @@ function foldIntoMessage(m: Message, event: ChatStreamEvent): Message {
         // after a restart, a registry rebuild or a TTL expiry.
         ...(event.directLineSession
           ? { directLineSession: event.directLineSession }
+          : {}),
+        // Enforce-mode verifier: the verdict rides `done`, and a withheld
+        // answer is marked so the bubble says so (`VerifierBlockedNotice`)
+        // instead of presenting the notice as an ordinary reply. Not an
+        // `error`: the turn ran; the verifier declined to deliver its answer.
+        ...(event.verifier ? { verifier: event.verifier } : {}),
+        ...(event.answerSource === 'verifier-blocked'
+          ? { verifierBlocked: true as const }
+          : {}),
+        // Privacy Shield v4 rendered the answer from the source system's data
+        // — marked as such (`SystemDataBadge`). A rendered failure is not.
+        ...(event.answerSource === 'privacy-render' && event.answerIsError !== true
+          ? { systemData: true as const }
           : {}),
         finishedAt: Date.now(),
         streaming: false,
@@ -459,6 +511,10 @@ function foldIntoMessage(m: Message, event: ChatStreamEvent): Message {
       const steers = [...(m.steers ?? []), event.message];
       return { ...m, steers };
     }
+    case 'verifier':
+      // Metadata about the answer, never content. `<VerifierBadge>` decides
+      // what (if anything) it may claim — green only with evidence.
+      return { ...m, verifier: event.summary };
     case 'iteration_start':
     default:
       return m;

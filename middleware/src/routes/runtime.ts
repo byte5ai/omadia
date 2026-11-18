@@ -1,9 +1,13 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 
+import { auditActorFromRequest } from '../auth/adminAuditLog.js';
+import type { AdminAuditLog } from '../auth/adminAuditLog.js';
+
 import type { BackgroundJobRegistry } from '../platform/backgroundJobRegistry.js';
 import type { ChatAgentWrapIntrospection } from '../platform/chatAgentWrapRegistry.js';
 import type { PromptContributionRegistry } from '../platform/promptContributionRegistry.js';
+import type { PluginStatusRegistry } from '../platform/pluginStatusRegistry.js';
 import type { ServiceRegistry } from '../platform/serviceRegistry.js';
 import type { TurnHookRegistry } from '../platform/turnHookRegistry.js';
 import { isAuditMode } from '../platform/httpAccessor.js';
@@ -17,9 +21,19 @@ import {
   SetupOptionsResolveError,
   withTimeout,
 } from '../plugins/dynamicAgentRuntime.js';
+import type { ConnectionProbeOutcome } from '../plugins/connectionProbe.js';
 import { extractSetupSchema } from '../plugins/installService.js';
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
+import {
+  buildPrivacyPosture,
+  readOpenFieldClassification,
+  readNameDetectorPosture,
+  checkPrivacyConfigValue,
+  isPrivacyConfigKey,
+  privacySettingsOf,
+  type OpenFieldClassificationCounts,
+} from '../plugins/privacyPosture.js';
 import { checkSetupFieldPattern } from '../plugins/setupFieldPattern.js';
 import type { PatternViolation } from '../plugins/setupFieldPattern.js';
 import { extractFromJsonFile } from '../plugins/setupJsonFile.js';
@@ -33,6 +47,8 @@ import {
   declaredPublicPathsOf,
   registerGrantRoutes,
 } from './runtimeGrants.js';
+import { activationResultOf } from '../plugins/activationFailure.js';
+import { fieldVisitorKey } from '../privacy/fieldClassification/live.js';
 
 /** Per-call budget for invoking a plugin's dynamic options provider. */
 const SETUP_OPTIONS_TIMEOUT_MS = 8_000;
@@ -100,6 +116,28 @@ interface RuntimeDeps {
    *  503 for an `sql: true` request when it is absent, and reports the SQL grant
    *  as ungranted (the fail-closed reading the activation path already uses). */
   sqlGrantStore?: PluginSqlGrantStore;
+  /** #1347 — consent changes land in the admin audit trail. */
+  audit?: Pick<AdminAuditLog, 'record'>;
+  /** #1453 — the plugins' pushed `ctx.status`, so `GET /installed` can report
+   *  a refused credential next to the registry's own view. Without it the
+   *  endpoint answers `action_status: null` for everything, which is what it
+   *  did before this issue. */
+  pluginStatusRegistry?: Pick<PluginStatusRegistry, 'get'>;
+  /** #1453 — re-run one plugin's `verifyConnection` export in place. Resolves
+   *  to `undefined` when that plugin declares no probe.
+   *
+   *  REQUIRED, unlike most of this interface: an optional verifier would ship
+   *  a 503 branch, and operator-facing copy for it, describing a state no
+   *  deployment can reach — `index.ts` always wires one. Test wiring passes a
+   *  stub. */
+  verifyConnection: (
+    agentId: string,
+  ) => Promise<ConnectionProbeOutcome | undefined>;
+  /** #1556 follow-up — open field-classification candidates for the posture
+   *  banner; `visitor` (the requesting admin, `fieldVisitorKey`) scopes the
+   *  "auto-approved since your last visit" count. Absent on the in-memory
+   *  backend: the posture reports zeros. */
+  countOpenFieldClassification?: (visitor?: string) => Promise<OpenFieldClassificationCounts>;
 }
 
 export function createRuntimeRouter(deps: RuntimeDeps): Router {
@@ -114,8 +152,36 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
       activation_failure_count: entry.activation_failure_count ?? 0,
       last_activation_error: entry.last_activation_error ?? null,
       last_activation_error_at: entry.last_activation_error_at ?? null,
+      last_activation_error_code: activationResultOf(entry)?.error_code ?? null,
+      // #1453 — a plugin can activate perfectly and still be unusable because
+      // the target system refuses its credentials. That verdict lives in the
+      // status channel, so an operator reading this endpoint alone used to see
+      // `active` / `last_activation_error: null` and nothing else.
+      action_status: deps.pluginStatusRegistry?.get(entry.id) ?? null,
     }));
     res.json({ items: rows, total: rows.length });
+  });
+
+  // GET /privacy-posture — #1507/#1508. Is a Privacy Shield provider live, and
+  // does the org-wide `OMADIA_PRIVACY_FORCE_GUARDED` clamp apply? Read by the
+  // dashboard/admin banner and the per-plugin privacy picker. Behind
+  // requireAuth with the rest of this router, never on /health.
+  router.get('/privacy-posture', async (req: Request, res: Response) => {
+    const posture = buildPrivacyPosture({
+      serviceRegistry: deps.serviceRegistry,
+      installedRegistry: deps.installedRegistry,
+      ...(deps.catalog ? { catalog: deps.catalog } : {}),
+      env: process.env,
+    });
+    // #1562 — the name detector's state; probes the sidecar (short timeout).
+    const nameDetector = posture.shield_active
+      ? await readNameDetectorPosture(deps.serviceRegistry)
+      : null;
+    const openFields = await readOpenFieldClassification(
+      deps.countOpenFieldClassification,
+      req.session ? fieldVisitorKey(req) : undefined,
+    );
+    res.json({ ...posture, name_detector: nameDetector, ...openFields });
   });
 
   // GET /installed/:id — full entry for ONE installed plugin including
@@ -148,7 +214,67 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
       activation_failure_count: entry.activation_failure_count ?? 0,
       last_activation_error: entry.last_activation_error ?? null,
       last_activation_error_at: entry.last_activation_error_at ?? null,
+      last_activation_error_code: activationResultOf(entry)?.error_code ?? null,
     });
+  });
+
+  // POST /installed/:id/verify — #1453. Re-run the plugin's OWN credential
+  // check against the target system, now, without a reactivation.
+  //
+  // The same probe runs automatically on every activation (fresh install, boot,
+  // and the reactivation that follows a setup-field edit). This endpoint exists
+  // for the case none of those cover: a key revoked or repaired UPSTREAM, with
+  // nothing on the omadia side having changed. Without it the only way to
+  // re-check was to save a field you did not want to change.
+  //
+  // Deliberately a POST: it talks to a third-party system and writes the
+  // plugin's operator-facing status. Mirrors POST /admin/providers/:id/verify,
+  // which does the same job for LLM credentials.
+  router.post('/installed/:id/verify', async (req: Request, res: Response) => {
+    const id = readId(req);
+    if (!id) {
+      res.status(400).json({ code: 'runtime.invalid_id', message: 'missing id' });
+      return;
+    }
+    const entry = deps.installedRegistry.get(id);
+    if (!entry) {
+      res.status(404).json({
+        code: 'runtime.not_installed',
+        message: `agent '${id}' is not installed`,
+      });
+      return;
+    }
+    if (entry.status !== 'active') {
+      // A plugin that never came up has no context to probe with, and the
+      // answer the operator needs is already in `last_activation_error`.
+      // Answering 'inconclusive' here would blur the two failures #1452 and
+      // #1453 exist to keep apart.
+      res.status(409).json({
+        code: 'runtime.not_active',
+        message: `agent '${id}' is not active (status '${entry.status}') — there is nothing running to probe`,
+      });
+      return;
+    }
+    let outcome: ConnectionProbeOutcome | undefined;
+    try {
+      outcome = await deps.verifyConnection(id);
+    } catch (err) {
+      // `runConnectionProbe` never rejects, so reaching this means the kernel
+      // wiring itself failed, not the plugin's check. Still not a 500 story
+      // about the credentials: say what is unknown.
+      res.status(502).json({
+        code: 'runtime.verify_failed',
+        message: err instanceof Error ? err.message : String(err),
+      });
+      return;
+    }
+
+    // `undefined` means the plugin exports no `verifyConnection`. That is not
+    // a healthy answer and must never read as one — same vocabulary the LLM
+    // provider verifier uses for a credential it could not probe.
+    res.json(
+      outcome ?? { status: 'inconclusive' as const, reason: 'no_probe' as const },
+    );
   });
 
   // PATCH /installed/:id/config — merges into non-secret config values.
@@ -199,6 +325,20 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
           delete nextConfig[k];
           continue;
         }
+        // #1510 — the two kernel-synthetic privacy keys are validated and
+        // normalised; every other key keeps the behaviour below.
+        if (isPrivacyConfigKey(k)) {
+          const checked = checkPrivacyConfigValue(k, v);
+          if (!checked.ok) {
+            res.status(400).json({
+              code: 'runtime.invalid_config',
+              message: checked.message,
+            });
+            return;
+          }
+          nextConfig[k] = checked.value;
+          continue;
+        }
         // Fields declaring `options_provider` carry a multiselect array; they
         // are validated against the live provider and stored JSON-encoded.
         // Every other key keeps the legacy blind-merge behaviour.
@@ -221,6 +361,7 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
       }
       try {
         await deps.installedRegistry.updateConfig(id, nextConfig);
+        await auditPrivacyChange(deps, req, id, installed.config, nextConfig);
         // #1076 — an `llm_provider` change also rebuilds the plugins that
         // inherit it (extras from the orchestrator), dependents first.
         await reactivateAfterProviderWrite(deps, id, {
@@ -236,6 +377,8 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
                 status: updated.status,
               }
             : null,
+          // #1497 — did the plugin come back up on the new values?
+          activation: activationResultOf(updated),
         });
       } catch (err) {
         if (err instanceof ProviderDependentRebuildError) {
@@ -925,6 +1068,22 @@ async function applySetupValues(
   const secretFieldKeys = resolveSecretFieldKeys(deps.catalog, id);
   const isSecret = (key: string): boolean =>
     secretFieldKeys === null ? true : secretFieldKeys.has(key);
+  // A `boolean` field edited after install arrives as the string 'true' /
+  // 'false' (the patch body is string-only). Store a real boolean, exactly like
+  // the install path does — plugins reading `config.get<boolean>()` would
+  // otherwise see a truthy "false". Anything else is not a boolean: refuse it
+  // before anything is written.
+  const booleanFieldKeys = resolveBooleanFieldKeys(deps.catalog, id);
+  for (const [k, v] of Object.entries(setEntries)) {
+    if (booleanFieldKeys.has(k) && v !== 'true' && v !== 'false') {
+      res.status(400).json({
+        code: 'runtime.setup_field_invalid',
+        message: `value for '${k}' must be 'true' or 'false'`,
+        field: k,
+      });
+      return;
+    }
+  }
 
   const vaultSet: Record<string, string> = {};
   const vaultDelete: string[] = [];
@@ -932,14 +1091,29 @@ async function applySetupValues(
   const configDelete: string[] = [];
   for (const [k, v] of Object.entries(setEntries)) {
     if (isSecret(k)) vaultSet[k] = v;
-    else configSet[k] = v;
-  }
-  for (const k of deleteKeys) {
-    if (isSecret(k)) vaultDelete.push(k);
-    else configDelete.push(k);
+    else configSet[k] = booleanFieldKeys.has(k) ? v === 'true' : v;
   }
 
   try {
+    // #1468 — a delete goes wherever the key actually is. Classifying it by
+    // the manifest alone sent a vault key the manifest does not declare (an
+    // orphaned `provider:<id>/api_key` in the orchestrator scope, written by
+    // the settings page for a provider that is gone) to the config branch,
+    // which answered 200 and left the secret in the vault.
+    const storedVaultKeys = new Set(
+      deleteKeys.length > 0 ? await vault.listKeys(id) : [],
+    );
+    for (const k of deleteKeys) {
+      // Only the `provider:<id>/<leaf>` namespace is reachable this way: that
+      // is what the settings page leaves behind. Other undeclared leaves
+      // (e.g. a scope's database URL) keep their manifest routing.
+      const inVault = storedVaultKeys.has(k) && /^provider:[^/]+\/[^/]+$/.test(k);
+      if (isSecret(k) || inVault) vaultDelete.push(k);
+      if (!isSecret(k) && (!inVault || Object.hasOwn(installed.config ?? {}, k))) {
+        configDelete.push(k);
+      }
+    }
+
     if (Object.keys(vaultSet).length > 0) {
       await vault.setMany(id, vaultSet);
     }
@@ -969,6 +1143,11 @@ async function applySetupValues(
       keys: keys.sort(),
       config_keys: configKeys.sort(),
       config_values: configValues,
+      // #1497 — the write re-activated the plugin; this is whether it came
+      // back up. Without it the store rendered "✓ Saved" over a plugin that
+      // had just failed to start on the new values (or had just recovered),
+      // and the page kept the old badge until a reload.
+      activation: activationResultOf(updated),
     });
   } catch (err) {
     if (err instanceof ProviderDependentRebuildError) {
@@ -998,6 +1177,18 @@ function dependentRebuildFailure(err: ProviderDependentRebuildError): {
     dependentId: err.dependentId,
     primaryApplied: err.primaryApplied,
   };
+}
+
+/** Keys of the plugin's `boolean` setup fields; empty without a catalog entry. */
+function resolveBooleanFieldKeys(
+  catalog: PluginCatalog | undefined,
+  pluginId: string,
+): Set<string> {
+  const entry = catalog?.get(pluginId);
+  const schema = entry ? extractSetupSchema(entry) : null;
+  return new Set(
+    (schema?.fields ?? []).filter((f) => f.type === 'boolean').map((f) => f.key),
+  );
 }
 
 function resolveSecretFieldKeys(
@@ -1196,4 +1387,35 @@ async function validateMultiselectValue(
     }
   }
   return { value: JSON.stringify(values) };
+}
+
+/**
+ * #1510/#1508 — record a change of a plugin's privacy keys in the admin audit
+ * trail. Best-effort like the grants audit: the config is already written, and
+ * a failed audit write must not turn a saved setting into a 500.
+ */
+async function auditPrivacyChange(
+  deps: RuntimeDeps,
+  req: Request,
+  pluginId: string,
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+): Promise<void> {
+  const prior = privacySettingsOf(before);
+  const next = privacySettingsOf(after);
+  if (!deps.audit || JSON.stringify(prior) === JSON.stringify(next)) return;
+  try {
+    await deps.audit.record({
+      actor: auditActorFromRequest(req),
+      action: 'plugin.privacy_change',
+      target: `plugin:${pluginId}`,
+      before: prior,
+      after: next,
+    });
+  } catch (err) {
+    console.error(
+      `[runtime] privacy audit write failed for ${JSON.stringify(pluginId)}:`,
+      err instanceof Error ? err.message : err,
+    );
+  }
 }

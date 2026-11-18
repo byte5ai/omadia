@@ -102,7 +102,7 @@ export interface OnboardingOptions {
  * Returns the count of plugins attached (successful upserts).
  */
 export async function attachAllPlugins(
-  store: ConfigStore,
+  store: Pick<ConfigStore, 'upsertAgentPlugin'>,
   agentId: string,
   pluginIds: readonly string[],
   log: (msg: string, fields?: Record<string, unknown>) => void = () =>
@@ -127,6 +127,61 @@ export async function attachAllPlugins(
     }
   }
   return attached;
+}
+
+/** Outcome of {@link attachNewPluginsToFallbackAgent}. */
+export interface FallbackAttachResult {
+  /** The fallback Agent's id, or `undefined` when none is set. */
+  readonly agentId: string | undefined;
+  /** Ids that got a new `agent_plugins` row. */
+  readonly attached: readonly string[];
+}
+
+/**
+ * #1491 / #1498 — the runtime half of the "the fallback Agent has every
+ * installed plugin" rule that first boot establishes via `attachAllPlugins`.
+ * The host calls it for plugins the KERNEL just installed: a Hub install or
+ * upload, or a built-in the boot seeded on an existing instance.
+ *
+ * Only ids WITHOUT a row on the fallback Agent are attached. An existing row
+ * is the operator's (or an earlier attach's) decision, so a disabled row stays
+ * disabled and a configured row keeps its config — `upsertAgentPlugin`
+ * would overwrite both. A freshly installed plugin never has a row (uninstall
+ * purges them), so for it this is the same as `attachAllPlugins`.
+ *
+ * No fallback Agent set → nothing to attach to (operator policy, see
+ * `ensureFallbackAgent`); returns `agentId: undefined`.
+ */
+export async function attachNewPluginsToFallbackAgent(
+  store: Pick<
+    ConfigStore,
+    'getPlatformSettings' | 'listAgentPlugins' | 'upsertAgentPlugin'
+  >,
+  pluginIds: readonly string[],
+  log: (msg: string, fields?: Record<string, unknown>) => void = () =>
+    undefined,
+): Promise<FallbackAttachResult> {
+  const { fallbackAgentId } = await store.getPlatformSettings();
+  if (!fallbackAgentId) return { agentId: undefined, attached: [] };
+  const existing = new Set(
+    (await store.listAgentPlugins(fallbackAgentId)).map((row) => row.pluginId),
+  );
+  const missing = [...new Set(pluginIds)].filter(
+    (id) => id !== ORCHESTRATOR_PLUGIN_ID && !existing.has(id),
+  );
+  const attached: string[] = [];
+  for (const pluginId of missing) {
+    // One id per call so the result names exactly what landed; the per-id
+    // failure handling is `attachAllPlugins`' own.
+    const count = await attachAllPlugins(
+      store,
+      fallbackAgentId,
+      [pluginId],
+      log,
+    );
+    if (count > 0) attached.push(pluginId);
+  }
+  return { agentId: fallbackAgentId, attached };
 }
 
 export async function ensureFallbackAgent(

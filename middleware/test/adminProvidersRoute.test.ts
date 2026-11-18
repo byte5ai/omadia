@@ -6,6 +6,7 @@ import type { AddressInfo } from 'node:net';
 import {
   LlmProviderCatalog,
   clearExternalModels,
+  modelForClass,
   providerApiKeyVaultKey,
   registerExternalModels,
 } from '@omadia/llm-provider';
@@ -19,6 +20,10 @@ import {
   BUILTIN_LLM_PROVIDERS,
   registerBuiltinLlmProviders,
 } from '../src/platform/builtinLlmProviders.js';
+import {
+  registerPluginLlmProvider,
+  unregisterPluginLlmProvider,
+} from '../src/platform/llmProviderManifest.js';
 import { __clearVerificationCache } from '../src/platform/providerCredentialVerifier.js';
 import type {
   ModelCatalogSync,
@@ -162,11 +167,13 @@ interface ProvidersResponse {
     euHosted?: boolean;
     subscriptionNotice?: boolean;
     models: Array<{ id: string; modelId: string; class: string }>;
+    classDefaults?: Record<string, string>;
   }>;
   assignments: Array<{
     pluginId: string;
     provider: string;
     model: string | null;
+    resolvedModel?: string | null;
     installed: boolean;
     modelRouting?: string;
   }>;
@@ -467,6 +474,115 @@ describe('admin providers route — POST /:id/verify', () => {
     const orch = body.assignments.find((a) => a.pluginId === ORCH);
     assert.equal(orch?.provider, 'openai');
     assert.equal(orch?.model, 'gpt-5.5');
+    assert.equal(orch?.resolvedModel, 'gpt-5.5');
+  });
+
+  // #1083 — a stored class ref is returned verbatim AND with the concrete model
+  // it resolves to, computed by the same resolver the runtime uses, so the
+  // page can show both the intent and the effective model.
+  it('reports what a stored class ref resolves to', async () => {
+    h = await makeHarness([
+      { id: ORCH, config: { llm_provider: 'anthropic', orchestrator_model: 'class:fast' } },
+      { id: VERIFIER },
+      { id: EXTRAS },
+    ]);
+    const body = await getProviders(h);
+    const orch = body.assignments.find((a) => a.pluginId === ORCH);
+    assert.equal(orch?.model, 'class:fast');
+    const fast = modelForClass('fast', 'anthropic');
+    assert.ok(fast, 'the built-in anthropic seed serves a fast model');
+    assert.equal(orch?.resolvedModel, fast.modelId);
+  });
+
+  it('resolves a legacy alias, and reports null when no model is stored', async () => {
+    h = await makeHarness([
+      { id: ORCH, config: { llm_provider: 'anthropic', orchestrator_model: 'opus' } },
+      { id: VERIFIER },
+      { id: EXTRAS },
+    ]);
+    const body = await getProviders(h);
+    const orch = body.assignments.find((a) => a.pluginId === ORCH);
+    assert.equal(orch?.model, 'opus');
+    assert.equal(orch?.resolvedModel, 'claude-opus-5');
+    const verifier = body.assignments.find((a) => a.pluginId === VERIFIER);
+    assert.equal(verifier?.model, null);
+    assert.equal(verifier?.resolvedModel, null);
+  });
+
+  it('lists each provider\'s class defaults, drawn from its own model list', async () => {
+    h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }]);
+    const body = await getProviders(h);
+    const anthropic = body.providers.find((p) => p.id === 'anthropic');
+    assert.ok(anthropic?.classDefaults, 'classDefaults present');
+    assert.equal(anthropic.classDefaults['frontier'], 'claude-opus-5');
+    for (const p of body.providers) {
+      const ids = new Set(p.models.map((m) => m.modelId));
+      for (const [cls, modelId] of Object.entries(p.classDefaults ?? {})) {
+        assert.ok(ids.has(modelId), `${p.id}.classDefaults.${cls}=${modelId} not in its models`);
+        const row = p.models.find((m) => m.modelId === modelId);
+        assert.equal(row?.class, cls);
+      }
+    }
+  });
+});
+
+// #1460 — a keyless provider (Ollama) was reported `verified` with zero
+// requests and offered "Change key" / "Remove key" with no key stored.
+describe('admin providers route — keyless provider (#1460)', () => {
+  let h: Harness;
+  afterEach(async () => {
+    if (h) await h.close();
+    clearExternalModels();
+    __clearVerificationCache();
+  });
+
+  function registerOllama(harness: Harness): void {
+    harness.catalog.register({
+      id: 'ollama',
+      label: 'Ollama (local)',
+      wireFormat: 'openai-compatible',
+      baseURL: 'http://ollama.test:11434/v1',
+      policy: { requiresApiKey: false },
+      models: [
+        { id: 'ollama:llama3', provider: 'ollama', modelId: 'llama3', class: 'balanced' },
+      ],
+    } as never);
+  }
+
+  it('lists an unchecked keyless provider as unverified with no key on file', async () => {
+    h = await makeHarness([{ id: ORCH }]);
+    registerOllama(h);
+    const body = await getProviders(h);
+    const row = body.providers.find((p) => p.id === 'ollama') as Record<string, unknown> | undefined;
+    assert.equal(row?.['status'], 'unverified', 'nothing has checked it yet');
+    assert.equal(row?.['requiresApiKey'], false);
+    assert.equal(row?.['hasKey'], false, 'so the UI offers no "Change/Remove key"');
+    assert.equal(h.probeCalls.length, 0, 'the listing still never probes');
+  });
+
+  it('verify reaches the server and the listing then serves that check', async () => {
+    h = await makeHarness([{ id: ORCH }], { probeStatus: 200 });
+    registerOllama(h);
+    const res = await fetch(`${h.baseUrl}/api/v1/admin/providers/ollama/verify`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+    });
+    const json = (await res.json()) as Record<string, unknown>;
+    assert.equal(json['status'], 'verified');
+    assert.deepEqual(h.probeCalls, ['http://ollama.test:11434/v1/models']);
+    const row = (await getProviders(h)).providers.find((p) => p.id === 'ollama');
+    assert.equal(row?.status, 'verified');
+  });
+
+  it('verify against an unreachable server is unverified, not verified', async () => {
+    h = await makeHarness([{ id: ORCH }], { probeStatus: 503 });
+    registerOllama(h);
+    const res = await fetch(`${h.baseUrl}/api/v1/admin/providers/ollama/verify`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+    });
+    const json = (await res.json()) as Record<string, unknown>;
+    assert.equal(json['status'], 'unverified');
   });
 });
 
@@ -620,22 +736,26 @@ describe('admin providers route — POST /assignment', () => {
     assert.equal(status, 200);
   });
 
-  it('assigns a Mistral model by class ref, stores the bare id, disables routing', async () => {
+  it('assigns a Mistral model by class ref, keeps the ref, disables routing', async () => {
     h = await makeHarness([
       { id: ORCH, config: { orchestrator_model_routing: 'true' } },
       { id: VERIFIER },
       { id: EXTRAS },
     ]);
-    // class:frontier resolves against the chosen provider → mistral-large-latest.
+    // #1083 — a deliberately chosen class ref is stored verbatim (like the
+    // runtime PATCH does), so the agent follows the provider's catalog. The
+    // response names what it resolves to right now: mistral-large-latest.
     const { status, json } = await assign(h, {
       pluginId: ORCH,
       provider: 'mistral',
       model: 'class:frontier',
     });
     assert.equal(status, 200, JSON.stringify(json));
+    assert.equal(json['model'], 'class:frontier');
+    assert.equal(json['resolvedModel'], 'mistral-large-latest');
     const cfg = h.registry.get(ORCH)?.config ?? {};
     assert.equal(cfg['llm_provider'], 'mistral');
-    assert.equal(cfg['orchestrator_model'], 'mistral-large-latest');
+    assert.equal(cfg['orchestrator_model'], 'class:frontier');
     // non-anthropic → per-turn Claude routing forced off
     assert.equal(cfg['orchestrator_model_routing'], 'false');
   });
@@ -673,17 +793,47 @@ describe('admin providers route — POST /assignment', () => {
     assert.equal(cfg['llm_provider'], 'openai');
   });
 
-  it('normalises provider-qualified ids, class refs and aliases to the bare vendor id', async () => {
+  it('normalises provider-qualified ids and aliases to the bare vendor id, keeps class refs', async () => {
     h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }]);
     // provider-qualified id
-    await assign(h, { pluginId: ORCH, provider: 'openai', model: 'openai:gpt-5.5' });
+    const qualified = await assign(h, { pluginId: ORCH, provider: 'openai', model: 'openai:gpt-5.5' });
     assert.equal(h.registry.get(ORCH)?.config['orchestrator_model'], 'gpt-5.5');
-    // class ref resolves against the chosen provider
-    await assign(h, { pluginId: ORCH, provider: 'openai', model: 'class:frontier' });
-    assert.equal(h.registry.get(ORCH)?.config['orchestrator_model'], 'gpt-5.5');
+    assert.equal(qualified.json['resolvedModel'], 'gpt-5.5');
+    // #1083 — a class ref is stored as chosen; it resolves at runtime
+    const cls = await assign(h, { pluginId: ORCH, provider: 'openai', model: 'class:frontier' });
+    assert.equal(cls.status, 200, JSON.stringify(cls.json));
+    assert.equal(h.registry.get(ORCH)?.config['orchestrator_model'], 'class:frontier');
+    assert.equal(cls.json['resolvedModel'], 'gpt-5.5');
     // legacy alias under anthropic
     await assign(h, { pluginId: ORCH, provider: 'anthropic', model: 'opus' });
     assert.equal(h.registry.get(ORCH)?.config['orchestrator_model'], 'claude-opus-5');
+  });
+
+  it('writes a class ref to BOTH model keys of the extras plugin', async () => {
+    h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }]);
+    const { status, json } = await assign(h, {
+      pluginId: EXTRAS,
+      provider: 'openai',
+      model: 'class:fast',
+    });
+    assert.equal(status, 200, JSON.stringify(json));
+    const cfg = h.registry.get(EXTRAS)?.config ?? {};
+    assert.equal(cfg['fact_extractor_model'], 'class:fast');
+    assert.equal(cfg['topic_classifier_model'], 'class:fast');
+    assert.equal(json['resolvedModel'], modelForClass('fast', 'openai')?.modelId);
+  });
+
+  it('rejects a class ref the provider cannot serve with any model', async () => {
+    h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }]);
+    const { status, json } = await assign(h, {
+      pluginId: ORCH,
+      provider: 'no-such-provider',
+      model: 'class:frontier',
+    });
+    assert.equal(status, 400, JSON.stringify(json));
+    assert.equal(json['code'], 'providers.model_class_unavailable');
+    assert.equal(h.registry.get(ORCH)?.config['orchestrator_model'], undefined);
+    assert.deepEqual(h.reactivated, []);
   });
 
   it('400 for a non-LLM plugin, 404 for not-installed', async () => {
@@ -833,5 +983,90 @@ describe('admin providers route — live model discovery', () => {
     // fire-and-forget: give the microtask a tick
     await new Promise((r) => setTimeout(r, 10));
     assert.deepEqual(sync.calls, ['openai']);
+  });
+});
+
+/**
+ * #1451 — the route after a provider plugin that SHADOWED a built-in id is
+ * uninstalled. The issue's repro: `GET /api/v1/admin/providers` had no
+ * `anthropic` entry and `POST /anthropic/verify` answered
+ * `404 providers.unknown_provider`, because the catalog entry the plugin had
+ * replaced was simply deleted. The catalog's base layer restores it, so both
+ * endpoints must behave as they did before the install.
+ */
+describe('admin providers route — after a shadowing provider plugin is uninstalled', () => {
+  let h: Harness;
+  afterEach(async () => {
+    if (h) await h.close();
+    clearExternalModels();
+    __clearVerificationCache();
+  });
+
+  /** The `llm_provider` block a plugin like `@omadia/plugin-llm-anthropic`
+   *  ships: the provider id the bundled descriptor already owns. */
+  const SHADOWING_MANIFEST = {
+    kind: 'extension',
+    llm_provider: {
+      id: 'anthropic',
+      label: 'Anthropic (plugin)',
+      wire_format: 'anthropic',
+      default_base_url: 'https://plugin.example/anthropic',
+      models: [
+        {
+          id: 'anthropic:plugin-model-1',
+          model_id: 'plugin-model-1',
+          label: 'Plugin Model 1',
+          class: 'frontier',
+          class_default: true,
+          max_tokens: 8192,
+          context_window: 200_000,
+          vision: false,
+        },
+      ],
+    },
+  };
+
+  it('still lists anthropic with its bundled models, and verify answers 200', async () => {
+    h = await makeHarness([{ id: ORCH }, { id: VERIFIER }, { id: EXTRAS }], {
+      probeStatus: 200,
+    });
+    await h.vault.setMany(ORCH, {
+      [providerApiKeyVaultKey('anthropic')]: 'sk-ant-good',
+    });
+
+    // Install, then uninstall the shadowing plugin — the exact sequence from
+    // the issue, through the same helpers the kernel's install/uninstall path
+    // uses.
+    registerPluginLlmProvider(SHADOWING_MANIFEST, undefined, h.catalog);
+    const listedWhileShadowed = await getProviders(h);
+    assert.equal(
+      listedWhileShadowed.providers
+        .find((p) => p.id === 'anthropic')
+        ?.models.some((m) => m.modelId === 'plugin-model-1'),
+      true,
+      'while installed the plugin legitimately serves the id',
+    );
+
+    unregisterPluginLlmProvider(SHADOWING_MANIFEST, h.catalog);
+
+    const body = await getProviders(h);
+    const anthropic = body.providers.find((p) => p.id === 'anthropic');
+    assert.ok(anthropic, 'the bundled anthropic provider must be listed again');
+    assert.ok(
+      anthropic.models.some((m) => m.modelId === 'claude-opus-5'),
+      'with its bundled models, not the plugin ones',
+    );
+    assert.equal(
+      anthropic.models.some((m) => m.modelId === 'plugin-model-1'),
+      false,
+    );
+
+    const res = await fetch(`${h.baseUrl}/api/v1/admin/providers/anthropic/verify`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+    });
+    const json = (await res.json()) as Record<string, unknown>;
+    assert.equal(res.status, 200, JSON.stringify(json));
+    assert.notEqual(json['code'], 'providers.unknown_provider');
   });
 });

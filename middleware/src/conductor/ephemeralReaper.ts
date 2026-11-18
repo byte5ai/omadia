@@ -5,7 +5,8 @@
 // cancel-request for its still-active runs (honoured at the next step
 // boundary), then the definition is logically reaped (disabled + reaped_at);
 // a physical DELETE only happens for rows no run references — the run history
-// and version graph are the retained audit trace.
+// and version graph are the retained audit trace. Every tick also sweeps
+// durable run state (0012) left behind by a write that raced a reap.
 
 import type { ConductorEphemeralStore, ReapableWorkflow } from './ephemeralStore.js';
 
@@ -50,39 +51,53 @@ export class ConductorEphemeralReaper {
     if (this.ticking) return;
     this.ticking = true;
     try {
-      const now = (this.deps.now ?? (() => new Date()))();
-      let reapable;
-      try {
-        reapable = await this.deps.store.listReapable(now);
-      } catch (err) {
-        this.deps.log?.(`[conductor] ephemeral reaper list failed: ${err instanceof Error ? err.message : String(err)}`);
-        return;
-      }
-
-      for (const wf of reapable) {
-        try {
-          if (wf.expired) {
-            const cancelled = await this.deps.store.requestCancelActiveRuns(wf.id, REAPER_ACTOR);
-            if (cancelled > 0) {
-              this.deps.log?.(`[conductor] ephemeral '${wf.slug}' expired — cancel requested for ${cancelled} active run(s)`);
-            }
-          }
-          if (this.deps.onReaped) {
-            await this.deps.onReaped(wf).catch((err: unknown) => {
-              this.deps.log?.(`[conductor] ephemeral attachment cleanup for '${wf.slug}' failed (reap continues): ${err instanceof Error ? err.message : String(err)}`);
-            });
-          }
-          await this.deps.store.markReaped(wf.id);
-          const deleted = await this.deps.store.hardDeleteUnreferenced(wf.id);
-          this.deps.log?.(
-            `[conductor] ephemeral '${wf.slug}' reaped (${deleted ? 'deleted — no runs referenced it' : 'definition retained as audit trace'})`,
-          );
-        } catch (err) {
-          this.deps.log?.(`[conductor] ephemeral reap of '${wf.slug}' failed: ${err instanceof Error ? err.message : String(err)}`);
-        }
-      }
+      await this.reapDue();
+      await this.sweepReapedRunState();
     } finally {
       this.ticking = false;
+    }
+  }
+
+  private async sweepReapedRunState(): Promise<void> {
+    try {
+      const purged = await this.deps.store.purgeReapedRunState();
+      if (purged > 0) this.deps.log?.(`[conductor] ephemeral reaper purged ${purged} orphaned run-state row(s)`);
+    } catch (err) {
+      this.deps.log?.(`[conductor] ephemeral run-state sweep failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  private async reapDue(): Promise<void> {
+    const now = (this.deps.now ?? (() => new Date()))();
+    let reapable;
+    try {
+      reapable = await this.deps.store.listReapable(now);
+    } catch (err) {
+      this.deps.log?.(`[conductor] ephemeral reaper list failed: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+
+    for (const wf of reapable) {
+      try {
+        if (wf.expired) {
+          const cancelled = await this.deps.store.requestCancelActiveRuns(wf.id, REAPER_ACTOR);
+          if (cancelled > 0) {
+            this.deps.log?.(`[conductor] ephemeral '${wf.slug}' expired — cancel requested for ${cancelled} active run(s)`);
+          }
+        }
+        if (this.deps.onReaped) {
+          await this.deps.onReaped(wf).catch((err: unknown) => {
+            this.deps.log?.(`[conductor] ephemeral attachment cleanup for '${wf.slug}' failed (reap continues): ${err instanceof Error ? err.message : String(err)}`);
+          });
+        }
+        await this.deps.store.markReaped(wf.id);
+        const deleted = await this.deps.store.hardDeleteUnreferenced(wf.id);
+        this.deps.log?.(
+          `[conductor] ephemeral '${wf.slug}' reaped (${deleted ? 'deleted — no runs referenced it' : 'definition retained as audit trace'})`,
+        );
+      } catch (err) {
+        this.deps.log?.(`[conductor] ephemeral reap of '${wf.slug}' failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
   }
 }

@@ -148,17 +148,21 @@ export function shouldRunVerifier(
  * synchronously inside `GET /skills` or any other list-render path. The store
  * lookup is the real dedupe/correctness gate; `shouldRunVerifier` is only an
  * optional in-memory optimization for higher layers.
+ *
+ * `description` (#1219) is scanned with the body; pass the skill row's own,
+ * since `contentHash` covers it (`computeSkillHash`).
  */
 export async function getOrComputeVerdict(
   store: SkillVerdictStore,
   contentHash: string,
   frontmatter: Record<string, unknown>,
   body: string,
+  description?: string | null,
 ): Promise<SkillVerdictRow> {
   const existing = await store.getVerdict(contentHash, CURRENT_VERIFIER_VERSION);
   if (existing) return existing;
 
-  const risks = scanSkillForRisks(frontmatter, body);
+  const risks = scanSkillForRisks(frontmatter, body, description);
   const computed = computeVerdict(contentHash, risks);
   const row: SkillVerdictRow = {
     contentHash,

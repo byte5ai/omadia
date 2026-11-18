@@ -2,11 +2,17 @@ import { createPluginContext } from '../platform/pluginContext.js';
 import { eventEmitIds } from '../platform/eventCatalogRegistry.js';
 import type { EventCatalogRegistry } from '../platform/eventCatalogRegistry.js';
 import type { PluginRouteRegistry } from '../platform/pluginRouteRegistry.js';
+import { claimDeclaredPublicPaths } from '../platform/publicPathClaim.js';
+import type { PublicPathGrantRegistry } from '../platform/publicPathGrants.js';
+import type { PublicPathGrantStore } from '../platform/publicPathGrantStore.js';
 import type { NotificationRouter } from '../platform/notificationRouter.js';
 import type { PluginStatusRegistry } from '../platform/pluginStatusRegistry.js';
 import type { UiRouteCatalog } from '../platform/uiRouteCatalog.js';
 import type { ServiceRegistry } from '../platform/serviceRegistry.js';
-import type { InstalledRegistry } from '../plugins/installedRegistry.js';
+import {
+  recordActivationSuccess,
+  type InstalledRegistry,
+} from '../plugins/installedRegistry.js';
 import type { JobScheduler } from '../plugins/jobScheduler.js';
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
 import type { SecretVault } from '../secrets/vault.js';
@@ -23,8 +29,10 @@ import type {
 import type { ExpressRouteRegistry } from './routeRegistry.js';
 import type { WebSocketRegistry } from './webSocketRegistry.js';
 import type { ConversationRosterRegistry } from './rosterRegistry.js';
+import type { PeopleDirectoryRegistry } from './peopleDirectoryRegistry.js';
 import type { TargetedSendRegistry } from './targetedSendRegistry.js';
 import type { ConversationSendRegistry } from './conversationSendRegistry.js';
+import { describeActivationFailure } from '../plugins/activationFailure.js';
 
 /**
  * Runtime registry for installed channel packages. At middleware startup it
@@ -43,6 +51,12 @@ export interface ChannelRegistryDeps {
   serviceRegistry: ServiceRegistry;
   nativeToolRegistry: NativeToolRegistry;
   pluginRouteRegistry: PluginRouteRegistry;
+  /** Epic #470 C4 / H1 — claims for a channel's `permissions.public_paths`
+   *  (S3-G: Teams' Hub/Tab-Config under `/p/channel-teams`). Optional; absent
+   *  means nothing is claimed and every route stays behind the session gate. */
+  publicPathGrants?: PublicPathGrantRegistry;
+  publicPathGrantStore?: PublicPathGrantStore;
+  corePublicPaths?: readonly RegExp[];
   notificationRouter: NotificationRouter;
   uiRouteCatalog: UiRouteCatalog;
   jobScheduler: JobScheduler;
@@ -72,6 +86,7 @@ export interface ChannelRegistryDeps {
   /** #330 B1 — optional group-conversation registries; deactivation drops the
    *  channel's roster + targeted-send contributions like routes/webSockets. */
   rosterRegistry?: ConversationRosterRegistry;
+  peopleDirectories?: PeopleDirectoryRegistry;
   targetedSends?: TargetedSendRegistry;
   conversationSends?: ConversationSendRegistry;
 }
@@ -87,12 +102,39 @@ export class DefaultChannelRegistry implements ChannelRegistry {
       if (!plugin || plugin.plugin.kind !== 'channel') continue;
       try {
         await this.activate(entry.id);
+        // #1452 — `activate()` warns and returns when the resolver yields no
+        // usable ChannelPlugin, so a normal return is not proof the channel is
+        // up. Ask the handle map instead.
+        if (!this.isActive(entry.id)) {
+          throw new Error(
+            `the package exports no usable ChannelPlugin (resolver returned nothing for ${entry.id})`,
+          );
+        }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         console.error(
           `[channels] failed to activate ${entry.id}:`,
           message,
         );
+        // #1452 — write it down. This runtime used to record nothing at all,
+        // which is why `kind: channel` had no circuit breaker and a dead
+        // channel kept reading `active`. Deliberately `markActivationFailed`
+        // alone, no explicit status flip: at boot the threshold is the right
+        // policy (a transient infra outage must not latch the entry on the
+        // first try), exactly as the tool and dynamic-agent boot loops do it.
+        // The operator-triggered seams flip immediately instead.
+        try {
+          await this.deps.installedRegistry.markActivationFailed(
+            entry.id,
+            describeActivationFailure(err),
+            entry.unresolved_requires,
+          );
+        } catch (regErr) {
+          console.error(
+            `[channels] registry markActivationFailed FAILED for ${entry.id}:`,
+            regErr instanceof Error ? regErr.message : String(regErr),
+          );
+        }
       }
     }
   }
@@ -138,6 +180,32 @@ export class DefaultChannelRegistry implements ChannelRegistry {
     });
 
     const handle = await impl.activate(ctx, this.deps.coreApi);
+    // S3-G — claim the declared public paths AFTER activate(), exactly like the
+    // tool runtime; without the claim a granted `auth:'custom'` route is never
+    // served (the public-path mount only dispatches to claimed prefixes).
+    const grants = this.deps.publicPathGrants;
+    if (grants) {
+      try {
+        await claimDeclaredPublicPaths(
+          agentId,
+          catalogEntry.plugin.permissions_summary?.public_paths ?? [],
+          {
+            grants,
+            store: this.deps.publicPathGrantStore,
+            corePublicPaths: this.deps.corePublicPaths,
+            routeRegistry: this.deps.pluginRouteRegistry,
+            log: (m) => console.log(m),
+            tag: 'channels',
+          },
+        );
+      } catch (err) {
+        grants.releaseBySource(agentId);
+        this.deps.pluginRouteRegistry.disposeBySource(agentId);
+        this.deps.uiRouteCatalog.disposeBySource(agentId);
+        await Promise.resolve(handle.close()).catch(() => undefined);
+        throw err;
+      }
+    }
     this.handles.set(agentId, handle);
     // Register declared event-emit ids (raw manifest `capabilities[].event_emit`) so the channel's
     // `ctx.events.emit(...)` passes the deny-by-default catalog gate and the events surface in the
@@ -149,6 +217,19 @@ export class DefaultChannelRegistry implements ChannelRegistry {
     }
     this.deps.routes.setActive(agentId, true);
     this.deps.webSockets?.setActive(agentId, true);
+    // #1452 — the channel is up; say so in the registry. Mirrors
+    // `toolPluginRuntime.activate`, which has always stamped its own success
+    // here. Lifting a previous `errored` is part of it: a channel the update
+    // seam flipped must stop reading failed once a version comes up. Contained
+    // — a registry write must not undo an activation that already happened.
+    try {
+      await recordActivationSuccess(this.deps.installedRegistry, agentId);
+    } catch (err) {
+      console.error(
+        `[channels] registry markActivationSucceeded FAILED for ${agentId}:`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
     console.log(`[channels] ✓ activated ${agentId}`);
   }
 
@@ -158,6 +239,7 @@ export class DefaultChannelRegistry implements ChannelRegistry {
     this.deps.webSockets?.deactivateChannel(agentId);
     // #330 B1 — drop this channel's roster + targeted-send contributions.
     this.deps.rosterRegistry?.unregisterChannel(agentId);
+    this.deps.peopleDirectories?.unregisterChannel(agentId);
     this.deps.targetedSends?.unregisterChannel(agentId);
     this.deps.conversationSends?.unregisterChannel(agentId);
     // Drop the cached ChannelPlugin implementation BEFORE the rest of
@@ -173,6 +255,8 @@ export class DefaultChannelRegistry implements ChannelRegistry {
     this.deps.uiRouteCatalog.disposeBySource(agentId);
     this.deps.pluginStatusRegistry?.clear(agentId);
     this.deps.eventCatalogRegistry?.unregister(agentId);
+    // S3-G — ownership goes with the plugin; re-activation claims again.
+    this.deps.publicPathGrants?.releaseBySource(agentId);
     if (!handle) return;
     this.handles.delete(agentId);
     try {

@@ -59,3 +59,25 @@ export const INTERN_EXEMPT_TOOLS: ReadonlySet<string> = new Set([
 export function isInternExemptTool(toolName: string): boolean {
   return INTERN_EXEMPT_TOOLS.has(toolName);
 }
+
+/**
+ * What a model gets in place of a tool result the Privacy Shield could not
+ * intern (`internToolResultV4` threw). Every seam that interns fails closed —
+ * the orchestrator's dispatch, `LocalSubAgent`, `ToolDispatchService` and the
+ * MCP input-card replay: the raw result never reaches the model, on a
+ * verifier re-entry's replay neither (`toolReplayLedger.ts`).
+ *
+ * Kernel-authored and PII-free (it names only the tool), with the `Error:`
+ * prefix the tool-result assembly reads to mark the block as an error. The
+ * handler did run, so the notice says so and asks the model not to call the
+ * tool again for the result: a repeat of a write would run the write again.
+ * `query_dataset` keeps its own notice — it reads a dataset page, and a retry
+ * is the right move there (`Orchestrator.dispatchToolDeadlined`).
+ */
+export function internFailedNotice(toolName: string): string {
+  return (
+    `Error: tool \`${toolName}\` ran, but the privacy boundary could not process its result, ` +
+    'so the result was withheld. Do not call the tool again to get it; tell the user that its ' +
+    'result is temporarily unavailable.'
+  );
+}

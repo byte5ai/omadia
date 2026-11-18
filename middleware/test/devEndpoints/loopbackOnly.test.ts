@@ -102,9 +102,11 @@ describe('createLoopbackOnly', () => {
   });
 
   /**
-   * The one mistake that makes this guard decorative. `trust proxy` is on in
-   * index.ts, so `req.ip` reflects `X-Forwarded-For` — a caller could simply
-   * claim to be 127.0.0.1. The guard reads the socket instead.
+   * The one mistake that makes this guard decorative. Wherever
+   * `TRUSTED_PROXY_ADDRESSES` names a hop (§10o), `req.ip` reflects
+   * `X-Forwarded-For` — a caller could simply claim to be 127.0.0.1. The guard
+   * reads the socket instead, and the harness sets `trust proxy` to `true` so
+   * this case runs against the widest setting there is.
    */
   it('is not defeated by a spoofed X-Forwarded-For', () => {
     const handler = createLoopbackOnly({ enabled: true, log: () => {} });

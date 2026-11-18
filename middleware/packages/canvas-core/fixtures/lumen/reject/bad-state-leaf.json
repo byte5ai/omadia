@@ -1,1 +1,0 @@
-{ "type": "lumen", "id": "x", "state": { "n": { "type": "int" } }, "transitions": {}, "view": { "lit": 1 }, "events": [] }

@@ -19,8 +19,10 @@
  * `install.ts`, `runtime.ts`, `runtimeGrants.ts`, `adminProviders.ts`,
  * `store.ts` and `adminSettings.ts`, plus the non-route codes
  * `providers.key_rejected`, `package.id_conflict_bundled` and
- * `cli_install.*`, which their services set rather than a route file. The
- * rest of the middleware's codes are deliberately not covered yet.
+ * `cli_install.*`, which their services set rather than a route file, and a
+ * few single codes from route files outside that set (`auth.*`,
+ * `admin_users.*`). The rest of the middleware's codes are deliberately not
+ * covered yet.
  *
  * `__tests__/errorHelpCoverage.test.ts` holds the scope to that promise. It
  * reads `code: '…'` literals out of the six files, FOLLOWS `install.ts`'s
@@ -40,12 +42,22 @@
  * fails as an orphan.
  */
 export const ERROR_HELP_CODES = [
-  // install.ts — the four it emits as literals, plus the ten its handleError
+  // admin_users.ts — single codes, not the whole file: a password over the
+  // shared maximum (middleware/src/auth/passwordPolicy.ts), which sign-in
+  // would refuse after the admin stored it.
+  'admin_users.password_too_long',
+  // auth.ts — a sign-out the server could not record: the session is still
+  // valid everywhere, and the browser kept its cookie for the retry.
+  'auth.logout_revocation_failed',
+  // authSetup.ts — the first-run wizard's side of the same password maximum.
+  'auth.setup_password_too_long',
+  // install.ts — the four it emits as literals, plus the eleven its handleError
   // re-emits from an InstallError thrown in plugins/installService.ts.
   'install.already_installed',
   'install.blocked',
   'install.capability_already_provided',
   'install.has_dependents',
+  'install.incompatible_core',
   'install.invalid_body',
   'install.invalid_job_id',
   'install.invalid_plugin_id',
@@ -54,6 +66,8 @@ export const ERROR_HELP_CODES = [
   'install.missing_dependencies',
   'install.no_schema',
   'install.not_installed',
+  // #1507 — the last Privacy Shield provider under OMADIA_PRIVACY_FORCE_GUARDED.
+  'install.privacy_guard_required',
   'install.unexpected',
   'install.wrong_state',
   // cli_install.* — set by startCliInstall in
@@ -70,6 +84,7 @@ export const ERROR_HELP_CODES = [
   'providers.discovery_unavailable',
   'providers.invalid_request',
   'providers.key_rejected',
+  'providers.model_class_unavailable',
   'providers.model_provider_mismatch',
   'providers.not_installed',
   'providers.oauth_poll_failed',
@@ -81,6 +96,7 @@ export const ERROR_HELP_CODES = [
   // errored. Also the row's copy for a dependent_rebuild_failed whose
   // envelope says `primaryApplied: false` (ProvidersPanel.tsx).
   'providers.rebuild_failed',
+  'providers.subscription_cli_unsupported',
   'providers.tool_incompatible',
   'providers.unknown_plugin',
   'providers.unknown_provider',
@@ -90,6 +106,9 @@ export const ERROR_HELP_CODES = [
   // `providers.key_rejected` is: the ingest service builds the envelope and
   // routes/packages.ts + builder/installCommit.ts only forward it.
   'package.id_conflict_bundled',
+  // The compat.core check — emitted by packageUploadService.ts as well, so
+  // it is registered in NON_ROUTE_CODES the same way.
+  'package.incompatible_core',
   // runtime.ts
   'runtime.agent_inactive',
   // #1076 — same as providers.dependent_rebuild_failed, on the generic
@@ -132,6 +151,7 @@ export const ERROR_HELP_CODES = [
   'runtime.json_file_unexpected_document',
   'runtime.unknown_json_file_field',
   'runtime.no_options_provider',
+  'runtime.not_active',
   'runtime.not_installed',
   'runtime.not_web_scanner',
   'runtime.options_provider_bad_shape',
@@ -148,10 +168,16 @@ export const ERROR_HELP_CODES = [
   'runtime.vault_read_failed',
   'runtime.vault_unavailable',
   'runtime.vault_write_failed',
-  // adminSettings.ts
+  // #1453 — the operator-triggered connection check.
+  'runtime.verify_failed',
+  // adminSettings.ts — the three `*_key_format` codes are per-field
+  // rejections inside a `settings.invalid_values` envelope (#1330/#1331).
+  'settings.anthropic_key_format',
+  'settings.api_key_format',
   'settings.invalid_request',
   'settings.invalid_values',
   'settings.no_valid_changes',
+  'settings.openai_key_format',
   'settings.read_failed',
   'settings.vault_unavailable',
   'settings.write_failed',
@@ -198,6 +224,18 @@ export function isErrorHelpCode(
   code: string | null | undefined,
 ): code is ErrorHelpCode {
   return typeof code === 'string' && CATALOGUED.has(code);
+}
+
+/**
+ * `what` and `next` as one sentence pair, for screens that show an error as a
+ * single line. `null` when the code has no copy, same as `resolveErrorHelp`.
+ */
+export function errorHelpLine(
+  code: string | null | undefined,
+  t: (key: string) => string,
+): string | null {
+  const help = resolveErrorHelp(code, t);
+  return help ? `${help.what} ${help.next}` : null;
 }
 
 /**

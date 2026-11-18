@@ -1,5 +1,6 @@
 import { strict as assert } from 'node:assert';
 import crypto from 'node:crypto';
+import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { describe, it } from 'node:test';
 
@@ -9,8 +10,10 @@ import {
   createConductorWebhooksInboundRouter,
   type ConductorWebhookInboundDeps,
   type ConductorWebhookEmitResult,
+  type ConductorWebhookInboundEndpoint,
 } from '../src/routes/conductorWebhooksInbound.js';
 import type { WebhookClaimResult, WebhookInboundOutcome } from '../src/conductor/webhookEndpointStore.js';
+import { REDELIVERABLE_OUTCOMES } from '../src/conductor/webhookEndpointStore.js';
 import { listenLoopback } from './_helpers/listenLoopback.js';
 
 // Issue #437 — inbound Conductor webhook route: signature-first verification
@@ -28,6 +31,9 @@ function sign(secret: string, body: string): string {
 
 interface Harness {
   base: string;
+  /** The single known endpoint, by reference — mutate `enabled` mid-test to model an
+   *  operator flipping the endpoint off and on again (issue #1701). */
+  endpoint: ConductorWebhookInboundEndpoint;
   outcomes: Map<string, WebhookInboundOutcome>;
   emitCalls: Array<{ eventId: string; source: string }>;
   close: () => Promise<void>;
@@ -35,35 +41,48 @@ interface Harness {
 
 async function harness(
   over: Partial<ConductorWebhookInboundDeps> = {},
-  opts: { rateLimit?: number; jsonParserFirst?: boolean } = {},
+  opts: { rateLimit?: number; jsonParserFirst?: boolean; endpointEnabled?: boolean } = {},
 ): Promise<Harness> {
   // Keyed `${endpointId}::${deliveryId}` — mirrors the store's composite PK scoping
-  // (finding: a global key would misread endpoint B's id '1' as a dupe of A's).
-  const claimed = new Set<string>();
+  // (finding: a global key would misread endpoint B's id '1' as a dupe of A's). The
+  // VALUE is the row's recorded outcome, because the real claim() decides duplicate
+  // vs. re-claim from it — and this fake asks the PRODUCTION set (not a hand-copied
+  // list), so adding an outcome to REDELIVERABLE_OUTCOMES cannot leave this harness
+  // quietly asserting the old behaviour.
+  const ledger = new Map<string, WebhookInboundOutcome>();
   const perEndpointCount = new Map<string, number>();
   const outcomes = new Map<string, WebhookInboundOutcome>();
   const emitCalls: Array<{ eventId: string; source: string }> = [];
   const rateLimit = opts.rateLimit ?? Number.POSITIVE_INFINITY;
+  const endpoint: ConductorWebhookInboundEndpoint = {
+    eventId: 'orders.created',
+    enabled: opts.endpointEnabled ?? true,
+  };
 
   const deps: ConductorWebhookInboundDeps = {
     enabled: true,
-    getEndpoint: async (endpointId) =>
-      endpointId === ENDPOINT_ID ? { eventId: 'orders.created', enabled: true } : null,
+    getEndpoint: async (endpointId) => (endpointId === ENDPOINT_ID ? endpoint : null),
     getSecret: async (endpointId) => (endpointId === ENDPOINT_ID ? SECRET : undefined),
     claim: async (deliveryId, endpointId): Promise<WebhookClaimResult> => {
       // Dedupe BEFORE the rate check — a redelivery of an id already claimed by
       // this endpoint must never be misreported as rate-limited just because the
       // endpoint is currently busy with other (unique) deliveries.
       const key = `${endpointId}::${deliveryId}`;
-      if (claimed.has(key)) return 'duplicate';
-      const count = perEndpointCount.get(endpointId) ?? 0;
-      if (count >= rateLimit) return 'rate_limited';
-      claimed.add(key);
-      perEndpointCount.set(endpointId, count + 1);
+      const recorded = ledger.get(key);
+      // Issue #1701: a row whose outcome never reached emit() does not consume the
+      // delivery id — the store re-claims it instead of answering 'duplicate'.
+      if (recorded !== undefined && !REDELIVERABLE_OUTCOMES.has(recorded)) return 'duplicate';
+      if (recorded === undefined) {
+        const count = perEndpointCount.get(endpointId) ?? 0;
+        if (count >= rateLimit) return 'rate_limited';
+        perEndpointCount.set(endpointId, count + 1);
+      }
+      ledger.set(key, 'received');
       return 'claimed';
     },
-    setOutcome: async (deliveryId, _endpointId, outcome) => {
+    setOutcome: async (deliveryId, endpointId, outcome) => {
       outcomes.set(deliveryId, outcome);
+      ledger.set(`${endpointId}::${deliveryId}`, outcome);
     },
     emit: async (eventId, _payload, source): Promise<ConductorWebhookEmitResult> => {
       emitCalls.push({ eventId, source });
@@ -84,7 +103,13 @@ async function harness(
   app.use(createConductorWebhooksInboundRouter(() => deps));
   const server = await listenLoopback(app);
   const port = (server.address() as AddressInfo).port;
-  return { base: `http://127.0.0.1:${port}`, outcomes, emitCalls, close: () => new Promise((r) => server.close(() => r())) };
+  return {
+    base: `http://127.0.0.1:${port}`,
+    endpoint,
+    outcomes,
+    emitCalls,
+    close: () => new Promise((r) => server.close(() => r())),
+  };
 }
 
 interface PostOpts {
@@ -101,6 +126,47 @@ async function post(base: string, body: string, opts: PostOpts = {}): Promise<{ 
   const res = await fetch(`${base}/api/hooks/${opts.endpointId ?? ENDPOINT_ID}`, { method: 'POST', headers, body });
   const json = (await res.json().catch(() => ({}))) as Record<string, unknown>;
   return { status: res.status, json };
+}
+
+/** POSTs over `node:http`, because `fetch` ALWAYS sets a `Content-Type` for a
+ *  string body — so `post()` above structurally cannot express the request issue
+ *  #1700 is about: a correctly signed delivery that carries NO content type (or an
+ *  empty one). Pass `contentType: undefined` to omit the header entirely. */
+async function postRaw(
+  base: string,
+  body: string,
+  opts: { contentType?: string; secret?: string; deliveryId: string },
+): Promise<{ status: number; json: Record<string, unknown> }> {
+  const headers: Record<string, string | number> = {
+    'content-length': Buffer.byteLength(body),
+    'x-webhook-signature': sign(opts.secret ?? SECRET, body),
+    'x-webhook-delivery-id': opts.deliveryId,
+  };
+  if (opts.contentType !== undefined) headers['content-type'] = opts.contentType;
+  const { port } = new URL(base);
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      { host: '127.0.0.1', port: Number(port), path: `/api/hooks/${ENDPOINT_ID}`, method: 'POST', headers },
+      (res) => {
+        let text = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk: string) => {
+          text += chunk;
+        });
+        res.on('end', () => {
+          let json: Record<string, unknown> = {};
+          try {
+            json = JSON.parse(text) as Record<string, unknown>;
+          } catch {
+            json = {};
+          }
+          resolve({ status: res.statusCode ?? 0, json });
+        });
+      },
+    );
+    req.on('error', reject);
+    req.end(body);
+  });
 }
 
 describe('conductor webhook inbound route', () => {
@@ -195,6 +261,58 @@ describe('conductor webhook inbound route', () => {
     }
   });
 
+  // Issue #1701 — the reported repro, end to end: a request to a disabled endpoint is
+  // answered 200 {"outcome":"disabled"} and recorded, and the sender's redelivery of
+  // the SAME delivery id after the endpoint is enabled again used to be answered
+  // 'duplicate' with no run started — the event was lost silently.
+  it('a delivery refused while disabled is redeliverable once the endpoint is enabled again', async () => {
+    const h = await harness({}, { endpointEnabled: false });
+    try {
+      const body = JSON.stringify({ orderId: 7 });
+
+      const refused = await post(h.base, body, { deliveryId: 'd7' });
+      assert.equal(refused.status, 200);
+      assert.equal(refused.json['outcome'], 'disabled');
+      assert.equal(h.outcomes.get('d7'), 'disabled', 'the refusal is still recorded for the operator audit');
+      assert.equal(h.emitCalls.length, 0);
+
+      h.endpoint.enabled = true;
+      const retried = await post(h.base, body, { deliveryId: 'd7' });
+
+      assert.equal(retried.status, 202);
+      assert.equal(retried.json['outcome'], 'started');
+      assert.equal(h.emitCalls.length, 1, 'the redelivery must actually start a run');
+      assert.equal(h.outcomes.get('d7'), 'started');
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('a delivery that already started a run stays a duplicate across an endpoint off/on cycle', async () => {
+    const h = await harness();
+    try {
+      const body = JSON.stringify({ orderId: 8 });
+      assert.equal((await post(h.base, body, { deliveryId: 'd8' })).status, 202);
+
+      // Redelivered while the endpoint is OFF: answered from the ledger before the
+      // enabled check, so the 'started' row is never overwritten with 'disabled' —
+      // which would otherwise make the delivery re-runnable after the next enable.
+      h.endpoint.enabled = false;
+      const whileOff = await post(h.base, body, { deliveryId: 'd8' });
+      assert.equal(whileOff.json['outcome'], 'duplicate');
+      assert.equal(h.outcomes.get('d8'), 'started');
+
+      // And enabling it again does not resurrect a delivery that already ran.
+      h.endpoint.enabled = true;
+      const whileOn = await post(h.base, body, { deliveryId: 'd8' });
+
+      assert.equal(whileOn.json['outcome'], 'duplicate');
+      assert.equal(h.emitCalls.length, 1);
+    } finally {
+      await h.close();
+    }
+  });
+
   it('malformed JSON body → 200 invalid_payload, no emit', async () => {
     const h = await harness();
     try {
@@ -243,6 +361,88 @@ describe('conductor webhook inbound route', () => {
       assert.equal(second.status, 200);
       assert.equal(second.json['outcome'], 'duplicate'); // not rate_limited
       assert.equal(h.emitCalls.length, 1);
+    } finally {
+      await h.close();
+    }
+  });
+});
+
+// Issue #1700 — the raw parser's content-type matcher must not decide whether the
+// HMAC ever sees the signed bytes. body-parser's wildcard type STRING (`'*' + '/*'`)
+// runs through `type-is`, which needs a media type to compare against: a request
+// with no `content-type` header — or an empty one — matched nothing, so the parser
+// skipped, `req.body` stayed `{}`, the handler HMAC'd `Buffer.alloc(0)` and a
+// CORRECTLY signed delivery answered 401 `webhook.bad_signature`. The route uses a
+// function matcher for exactly this reason. These tests must go through `node:http`:
+// `fetch` always sets a content type for a string body and so cannot express the case.
+describe('conductor webhook inbound route — content type never gates the signature (#1700)', () => {
+  it('no content-type header at all → the signature verifies (202 started)', async () => {
+    const h = await harness();
+    try {
+      const r = await postRaw(h.base, JSON.stringify({ orderId: 42 }), { deliveryId: 'd-1700-absent' });
+      assert.equal(r.status, 202);
+      assert.equal(r.json['outcome'], 'started');
+      assert.equal(h.emitCalls.length, 1);
+      assert.equal(h.outcomes.get('d-1700-absent'), 'started');
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('empty content-type value → the signature verifies (202 started)', async () => {
+    const h = await harness();
+    try {
+      const r = await postRaw(h.base, JSON.stringify({ orderId: 42 }), {
+        contentType: '',
+        deliveryId: 'd-1700-empty',
+      });
+      assert.equal(r.status, 202);
+      assert.equal(r.json['outcome'], 'started');
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('no content-type and a non-JSON body → invalid_payload, NOT bad_signature', async () => {
+    const h = await harness();
+    try {
+      // The outcome the issue expected for a missing header, and the right one for
+      // unparseable bytes: the signature passed, only the JSON parse failed.
+      const r = await postRaw(h.base, 'not json at all', { deliveryId: 'd-1700-text' });
+      assert.equal(r.status, 200);
+      assert.equal(r.json['outcome'], 'invalid_payload');
+      assert.equal(h.emitCalls.length, 0);
+      assert.equal(h.outcomes.get('d-1700-text'), 'invalid_payload');
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('a WRONG signature without a content-type still answers 401 (the fix widens parsing, not auth)', async () => {
+    const h = await harness();
+    try {
+      const r = await postRaw(h.base, JSON.stringify({ orderId: 42 }), {
+        secret: 'wrong-secret',
+        deliveryId: 'd-1700-wrong',
+      });
+      assert.equal(r.status, 401);
+      assert.equal(r.json['code'], 'webhook.bad_signature');
+      assert.equal(h.emitCalls.length, 0);
+      assert.equal(h.outcomes.size, 0);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('text/plain carries the bytes too — the content type is irrelevant to the HMAC', async () => {
+    const h = await harness();
+    try {
+      const r = await postRaw(h.base, JSON.stringify({ orderId: 42 }), {
+        contentType: 'text/plain',
+        deliveryId: 'd-1700-plain',
+      });
+      assert.equal(r.status, 202);
+      assert.equal(r.json['outcome'], 'started');
     } finally {
       await h.close();
     }

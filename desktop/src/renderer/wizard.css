@@ -64,7 +64,6 @@ input:focus, select:focus { border-color: var(--accent); }
 .toggle span { display: flex; flex-direction: column; gap: 3px; }
 .toggle strong { font-weight: 600; font-size: 14px; }
 .toggle em { font-style: normal; color: var(--muted); font-size: 13px; }
-.soon { font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--accent); border: 1px solid var(--accent); border-radius: 4px; padding: 1px 5px; margin-left: 6px; }
 
 .hint { color: var(--muted); font-size: 13px; margin-top: 8px; }
 .test-result { font-size: 13px; }

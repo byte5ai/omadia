@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
-import { pickLocalized } from '@/app/_lib/localized';
+import { enumOptionLabel, pickLocalized } from '@/app/_lib/localized';
 import type {
   PluginCatalogEntryDto,
   PluginSetupFieldDto,
@@ -248,7 +248,9 @@ function PluginConfigRow(props: {
       ? field.default
       : Array.isArray(field.default)
         ? field.default.join(', ')
-        : undefined;
+        : typeof field.default === 'number'
+          ? String(field.default)
+          : undefined;
 
   return (
     <li className="flex flex-col gap-2 py-4 sm:flex-row sm:items-start sm:gap-6">
@@ -347,6 +349,7 @@ function PluginConfigControl(props: {
   onChange: (value: string | boolean | number | string[]) => void;
 }): React.ReactElement {
   const { field, value, disabled, placeholder, onChange } = props;
+  const locale = useLocale();
 
   if (field.type === 'enum' && (field.enum?.length ?? 0) > 0) {
     return (
@@ -359,7 +362,7 @@ function PluginConfigControl(props: {
         <option value="">{placeholder}</option>
         {field.enum?.map((opt) => (
           <option key={opt.value} value={opt.value}>
-            {opt.label}
+            {enumOptionLabel(opt, locale)}
           </option>
         ))}
       </select>

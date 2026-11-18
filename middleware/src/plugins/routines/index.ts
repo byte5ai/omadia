@@ -33,6 +33,15 @@ export {
   createProactiveSender,
 } from './genericProactiveSender.js';
 
+// #1071 — the browser chat's proactive sender; the kernel registers it.
+export {
+  WEB_ROUTINE_CHANNEL,
+  createWebChatProactiveSender,
+  webChatConversationRef,
+  type WebChatConversationRef,
+  type WebChatProactiveSenderOptions,
+} from './webChatProactiveSender.js';
+
 export {
   ADAPTIVE_CARD_CONTENT_TYPE,
   ROUTINE_CARD_ACTION_KIND,
@@ -52,6 +61,7 @@ export {
 
 export {
   InMemoryProactiveSenderRegistry,
+  ProactiveTargetGoneError,
   type ProactiveSender,
   type ProactiveSenderRegistry,
 } from './proactiveSender.js';
@@ -68,6 +78,7 @@ export {
 export {
   ROUTINES_AGENT_ID,
   RoutineRunner,
+  RoutineNotActiveError,
   RoutineNotFoundError,
   RoutineQuotaExceededError,
   UnknownChannelError,
@@ -104,3 +115,7 @@ export { runRoutineMigrations } from './migrator.js';
 // The kernel publishes the result; channel plugins consume via
 // `ctx.services.get<RoutinesIntegration>(...)` instead of constructor deps.
 export { createRoutinesIntegration } from './integration.js';
+
+// What a smart-card action rejects with when the channel names no principal
+// (#1025 / #1029): a refusal, distinct from `RoutineNotFoundError`.
+export { RoutineActorRequiredError } from './routineCardActor.js';

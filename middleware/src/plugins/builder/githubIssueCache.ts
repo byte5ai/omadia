@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import type { Database as SqliteDatabase } from 'better-sqlite3';
 
 /**
- * GitHub issue cache (concept plan: docs/plans/native-issue-reporting.md).
+ * GitHub issue cache.
  *
  * Two responsibilities:
  *
@@ -21,8 +21,8 @@ import type { Database as SqliteDatabase } from 'better-sqlite3';
  *
  * The cache speaks to GitHub via an injectable `fetch` so unit tests
  * can fully mock the network. The default fetch uses the global
- * `fetch` and adds no auth header (concept plan: v1 is browser-submit
- * only; PAT mode is deferred until vault persistence lands in v1.2b).
+ * `fetch` and adds no auth header — fingerprint lookups need only
+ * public read access, so the cache holds no credentials of its own.
  *
  * Backoff: on a 403 rate-limit response the `Retry-After` (or
  * X-RateLimit-Reset) value is persisted as `backoff_until`. Subsequent

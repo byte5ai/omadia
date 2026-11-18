@@ -1,9 +1,0 @@
-{
-  "type": "pane",
-  "id": "fixture-pane",
-  "kind": "plain",
-  "title": "Inspector",
-  "children": [
-    { "type": "text", "content": "Pane body content." }
-  ]
-}

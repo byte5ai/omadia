@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
-import { isNoReply, logNoReplyDrop } from '@omadia/channel-sdk';
+import { ANSWER_VERBOSITY_LEVELS, isNoReply, logNoReplyDrop } from '@omadia/channel-sdk';
 import { MAX_STEER_LENGTH, steeringBus, today, turnContext } from '@omadia/orchestrator';
 import type {
   AskObserver,
@@ -19,6 +19,10 @@ import {
 } from '../platform/lastTurnOutcome.js';
 import type { ManageRoutineContext } from '../plugins/routines/manageRoutineTool.js';
 import { routineTurnContext } from '../plugins/routines/routineTurnContext.js';
+import {
+  WEB_ROUTINE_CHANNEL,
+  webChatConversationRef,
+} from '../plugins/routines/webChatProactiveSender.js';
 
 const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,80}$/;
 const AGENT_SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
@@ -53,6 +57,12 @@ const ChatRequestSchema = z.object({
     .string()
     .regex(AGENT_SLUG_RE, 'agentSlug must be lowercase-kebab')
     .optional(),
+  /**
+   * Phase 3 — answer-size pick for THIS turn only ("Kürzer" / "Mehr Details"
+   * re-asking the same question). Validated against the closed scale here
+   * and parsed again by the kernel; `null`/absent = the configured level.
+   */
+  answerVerbosity: z.enum(ANSWER_VERBOSITY_LEVELS).optional(),
 });
 
 /**
@@ -159,18 +169,6 @@ function chatTurnContext(req: Request, sessionScope: string): TurnContextValue {
 }
 
 /**
- * OM-82 — the HTTP chat channel identifier for routines.
- *
- * No proactive sender is registered for it (senders come from channel plugins
- * such as Teams), so `manage_routine`'s `create` still refuses here — but with
- * "no proactive sender registered for channel 'web'", which names the actual
- * limitation, instead of the runtime-wiring error the tester saw. `list`,
- * `pause`, `resume` and `delete` work from the web chat once the principal
- * arrives, which is the bulk of what the tool is asked for.
- */
-const HTTP_ROUTINE_CHANNEL = 'web';
-
-/**
  * OM-82 (#993, #1016) — the missing PRODUCER of the routines principal.
  *
  * `#993` taught the loopback dispatch to restore the caller's async context
@@ -198,23 +196,42 @@ const HTTP_ROUTINE_CHANNEL = 'web';
  * the principal on that header would let any caller name a victim and manage
  * their routines. The `#1016` guard cannot catch it either: both sides of its
  * comparison would come from the same forged header and would match.
+ *
+ * #1071 — the channel is `'web'`, which the kernel backs with the web chat's
+ * own proactive sender (`webChatProactiveSender.ts`, registered with the
+ * routines feature when Postgres is configured): a routine created here
+ * delivers its output into the chat it was created in. Without Postgres the
+ * routines feature — and so `manage_routine` — is not wired at all.
+ *
+ * #1598 — `agentSlug` is the orchestrator the turn resolved to (pinned
+ * snapshot, request slug or platform fallback). `manage_routine` refuses
+ * `create` without it whenever an orchestrator registry is wired, which is
+ * every real deployment — so omitting it made web-chat routines impossible.
  */
 function httpRoutineContext(
   req: Request,
-  sessionScope: string,
+  body: z.infer<typeof ChatRequestSchema>,
+  agentSlug: string,
 ): ManageRoutineContext | undefined {
   const userId = req.session?.omadia_user_id;
   if (!userId || !USER_ID_RE.test(userId)) return undefined;
   return {
     tenant: process.env['GRAPH_TENANT_ID'] ?? 'default',
     userId,
-    channel: HTTP_ROUTINE_CHANNEL,
-    // The web chat has no channel-native delivery handle; the session scope is
-    // the closest stable correlation id a later sender could key on.
-    conversationRef: { kind: 'http-chat', sessionScope },
+    channel: WEB_ROUTINE_CHANNEL,
+    // #1071 — the delivery handle names the persisted chat the web sender
+    // appends the routine's output to. The sessionId is captured only when it
+    // IS the turn's scope: under a debug `scope` the turn is bucketed
+    // elsewhere, and without a sessionId there is no chat to deliver into —
+    // the web sender then refuses `create` with a message saying so.
+    conversationRef: webChatConversationRef(
+      resolveScope(body),
+      body.scope ? undefined : body.sessionId,
+    ),
     // Cold-start outreach to OTHER people is a channel-governance decision; the
     // web chat has no such governance source, so it stays closed.
     canTargetOthers: false,
+    agentSlug,
   };
 }
 
@@ -382,13 +399,16 @@ export function createChatRouter(
       // OM-82: the routines principal wraps it on the OUTSIDE, so the CLI
       // bridge's `AsyncLocalStorage.snapshot()` captures both.
       const result = await withRoutinePrincipal(
-        httpRoutineContext(req, sessionScope),
+        httpRoutineContext(req, parsed.data, effectiveSlug),
         () =>
           turnContext.run(chatTurnContext(req, sessionScope), () =>
             chat.chat({
               userMessage: parsed.data.message,
               sessionScope,
               ...(userId ? { userId } : {}),
+              ...(parsed.data.answerVerbosity
+                ? { answerVerbosity: parsed.data.answerVerbosity }
+                : {}),
             }),
           ),
       );
@@ -605,7 +625,7 @@ export function createChatRouter(
       // still exits cleanly. `enterWith` would leave the principal on this
       // request's async chain with no scope exit — a leak the in-process
       // runtime has no owner guard to catch (#1016 guards the CLI agent only).
-      const routinePrincipal = httpRoutineContext(req, resolveScope(parsed.data));
+      const routinePrincipal = httpRoutineContext(req, parsed.data, effectiveSlug);
       // OM-100b: an error EVENT ends the stream normally — neither runtime
       // throws for a failed turn — so the outcome has to be read off the wire.
       let streamError: string | undefined;
@@ -624,6 +644,9 @@ export function createChatRouter(
               userMessage: parsed.data.message,
               sessionScope: resolveScope(parsed.data),
               ...(userId ? { userId } : {}),
+              ...(parsed.data.answerVerbosity
+                ? { answerVerbosity: parsed.data.answerVerbosity }
+                : {}),
             },
             observer,
           ),

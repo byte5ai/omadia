@@ -2,7 +2,7 @@
 
 Du bist ein Agent, der an diesem Repo arbeitet. Dieses Dokument ist **nicht optional**. Lies es vollständig, bevor du Code, Config, Secrets, Skills oder Docs änderst.
 
-Das Projekt wird von **mehreren parallelen Agents** weiterentwickelt (Claude Code in verschiedenen Chats, manchmal mehrere gleichzeitig). Ohne disziplinierte Dokumentation verlieren wir innerhalb von Stunden den Überblick, welcher Zustand produktionswirksam ist. Das ist bereits passiert — siehe `docs/CHANGELOG.md` Eintrag `2026-04-19 — crashloop durch verpasste Schema-Sync`.
+Das Projekt wird von **mehreren parallelen Agents** weiterentwickelt (Claude Code in verschiedenen Chats, manchmal mehrere gleichzeitig). Ohne disziplinierte Dokumentation verlieren wir innerhalb von Stunden den Überblick, welcher Zustand produktionswirksam ist.
 
 ## Kernregel: Dokumentieren ist Teil der Aufgabe, nicht ein Nice-to-have
 
@@ -52,7 +52,7 @@ Alle Skripte in `scripts/*.workflow.mjs` laufen über das `Workflow`-Tool (`Work
 - Plugin-Contract (PluginContext, 10-Punkte-Package-Checklist): `middleware/assets/boilerplate/{agent-integration,agent-pure-llm}/CLAUDE.md` — das ist die kanonische Quelle; `docs/harness-platform/` ist nur lokales, gitignored Scratch und darf nicht als Referenz zitiert werden.
 - i18n-Regeln für Frontend-Komponenten: `web-ui/CLAUDE.md`.
 
-**Bekannte offene Baustelle beim Testen:** `middleware/test/builder/builderPreviewRoutes.test.ts:735` — dokumentierte Cross-File-Test-Pollution (Test ist isoliert grün, im vollen `npm run test`-Lauf liefert er 404 statt 401 wegen State-Leak aus einer anderen Testdatei). Bevor Build-/Test-Caching (z. B. Turborepo) für die 28 `middleware/packages/@omadia/*`-Packages eingeführt wird, sollte diese Bug-Klasse behoben werden — sonst wird nur unzuverlässiges Grün schneller ausgeliefert.
+**Bekannte offene Baustelle beim Testen:** In der Middleware-Suite gibt es Cross-File-Test-Pollution (ein Test ist isoliert grün und scheitert im vollen `npm run test`-Lauf wegen State-Leak aus einer anderen Testdatei). Bevor Build-/Test-Caching (z. B. Turborepo) für die `middleware/packages/*`-Packages eingeführt wird, sollte diese Bug-Klasse behoben werden — sonst wird nur unzuverlässiges Grün schneller ausgeliefert.
 
 ## Working in a multi-session repo
 
@@ -85,9 +85,21 @@ Build artefacts (`target/`, `node_modules/`, etc.) live per worktree — first b
 
 ## Parallele Arbeit — Kollisionen vermeiden
 
-- **Fly-Deploys sind nicht atomar.** Wenn ein anderer Agent gerade deployt, abwarten (30-60s), sonst trittst du ihm auf den Zeh.
+- **Fly-Deploys sind nicht atomar.** Wenn ein anderer Agent gerade deployt, abwarten, sonst trittst du ihm auf den Zeh. Der gemeinsame Lock `/tmp/omadia-fly-deploy.lock` regelt das (siehe unten).
 - **Secrets-Rotation synchronisieren.** Nicht unangekündigt Secrets überschreiben — ein Agent deployt einen Proxy-Token-Rename, ein anderer Agent hält noch den alten im Skill. Kommuniziere solche Änderungen im CHANGELOG, bevor du die `fly secrets set`-Kommandos tippst.
 - **Git-Workflow ernst nehmen.** Das Repo liegt seit `2026-05` öffentlich auf `github.com/byte5ai/omadia`. Keine direkten Pushes auf `main` (lokal vom `.hooks/pre-push`-Guard blockiert, serverseitig von Branch Protection). Alle Änderungen über Feature-Branch + PR. Conventional-Commits-Konvention gilt (siehe unten). Niemals zwei große Änderungen in einem Commit mischen — kleine, verifizierbare Schritte sind weiterhin Pflicht.
+
+### Deploy unserer Fly-Instanz
+
+**Einziger Weg:** `scripts/fly-deploy.sh` aus einem sauberen, verlinkten Worktree, nie aus `~/sources/odoo-bot`. Doku: [`docs/fly-deploy.md`](docs/fly-deploy.md). Das Skript nimmt den Lock, baut aus einem frischen detached Worktree am Ziel-Commit, stempelt `OMADIA_VERSION=sha-<8>`, verweigert bei Config-Diff (`middleware/sidecars`, `fly/`, `middleware/.env.example`) seit dem Live-Sha und verifiziert `/health`-Version, `wss://` und `Secure`-Cookies auf beiden Apps.
+
+```bash
+scripts/fly-deploy.sh --dry-run      # erst ansehen
+scripts/fly-deploy.sh                # origin/main deployen + verifizieren
+scripts/fly-deploy.sh --only-verify  # nur Live-Checks
+```
+
+Handgetippte `fly deploy`-Aufrufe für `odoo-bot-middleware` / `odoo-bot-harness` sind nicht mehr vorgesehen: ohne Build-Arg meldet `/health` `version: "unknown"` (Oktober 2026 mehrfach passiert), und der Build-Log zeigt dann einen `WARNING: OMADIA_VERSION build arg is EMPTY`-Banner.
 
 ## Anti-Pattern, die wir schon bezahlt haben
 
@@ -97,7 +109,7 @@ Build artefacts (`target/`, `node_modules/`, etc.) live per worktree — first b
 
 ## Git Workflow & Engineering Standards
 
-Diese Regeln gelten für alle AI-Agenten (Claude, Codex, Copilot, …) und für menschliche Contributors gleichermaßen. Source of truth: `byte5ai/engineering-standards`. Status dieses Repos: `.github/engineering-standards.yml` (`status: applied`).
+Diese Regeln gelten für alle AI-Agenten (Claude, Codex, Copilot, …) und für menschliche Contributors gleichermaßen. Source of truth: das `engineering-standards`-Repo des Accounts (nicht öffentlich — die hier relevanten Regeln stehen vollständig unten). Status dieses Repos: `.github/engineering-standards.yml` (`status: applied`).
 
 - **Niemals direkt auf `main` pushen.** Feature-Branch + PR. Lokal blockt `.hooks/pre-push`, serverseitig Branch Protection.
 - **Branch-Naming:** `feat/<desc>`, `fix/<desc>`, `refactor/<desc>`, `docs/<desc>`, `chore/<desc>`, `test/<desc>`, `ci/<desc>`, `perf/<desc>`, `release/vX.Y`, `dev/vX.Y.devN`.
@@ -125,7 +137,7 @@ ALLOW_PUSH_TO_MAIN=1 git push origin main
 
 - PR-Titel < 70 Zeichen, Conventional-Prefix.
 - Eine logische Änderung pro PR — kein "While I'm at it…"-Stacking.
-- CI muss grün sein vor Merge. Status-Checks (`middleware`, `web-ui`, `schema`, `audit`) sind Required.
+- CI muss grün sein vor Merge. Required sind die Status-Checks `middleware`, `web-ui`, `schema`, `desktop` und die drei `audit`-Jobs (middleware, web-ui, desktop).
 - Squash-Merge ist Default; der PR-Titel wird zur Commit-Subject-Zeile.
 
 ## Meta

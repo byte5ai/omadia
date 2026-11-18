@@ -1,3 +1,10 @@
+import type {
+  FieldKey,
+  FieldObservation,
+  FieldSampleVerdict,
+  ModelClassificationRequest,
+  ModelClassificationResult,
+} from './privacyFieldClassification.js';
 /**
  * `privacy.redact@1` — capability contract for the Privacy Shield v4
  * Data-Plane Boundary.
@@ -15,6 +22,16 @@
 
 export const PRIVACY_REDACT_SERVICE_NAME = 'privacyRedact';
 export const PRIVACY_REDACT_CAPABILITY = 'privacy.redact@1';
+
+/** #1556 — one field a `non_personal_fields` rule sent to the model in clear. */
+export interface OperatorClearedFieldEntry {
+  readonly toolName: string;
+  /** The field path, e.g. `department_id`. */
+  readonly field: string;
+  /** The scope the rows belonged to — an Odoo model, an uploaded dataset's
+   *  id, or `-` (contract v2). Absent on receipts written before it. */
+  readonly scope?: string;
+}
 
 /**
  * One tool whose raw result the orchestrator passed through UNINTERNED this
@@ -82,6 +99,52 @@ export interface StructuredPayloadEntry {
 }
 
 /**
+ * How a tool error reached a dispatch seam.
+ *
+ *  - `thrown`          — the handler threw. Its message is exception text that
+ *                        nothing sanitized (an ORM echoes the failing row), so
+ *                        it is always withheld from the model.
+ *  - `returned`        — the handler returned an `Error:`-prefixed string (the
+ *                        tool-error convention). It reaches the model through
+ *                        the shield's free-text detectors, or is withheld.
+ *  - `mcp_auth_prompt` — the MCP layer answered an unauthorized call with its
+ *                        connect prompt (`🔒 The MCP server "…`). Kernel-authored
+ *                        and carrying the Connect-card block, so it passes
+ *                        unchanged — recorded because the call did fail.
+ */
+export type ToolErrorCarrier = 'thrown' | 'returned' | 'mcp_auth_prompt';
+
+/**
+ * What the seam let reach the model.
+ *
+ *  - `withheld` — the error text was replaced by a data-free notice (class
+ *                 name, sanitised code, log reference).
+ *  - `redacted` — the text reached the model with every detected PII span
+ *                 replaced by `[masked:<type>]` (possibly none).
+ *  - `passed`   — the text reached the model unchanged.
+ */
+export type ToolErrorOutcome = 'withheld' | 'redacted' | 'passed';
+
+/**
+ * One tool error a dispatch seam handled this turn. Receipted so the user and an
+ * operator auditing the turn see that error text was withheld or redacted before
+ * it reached the model, the same way they see an interned dataset or a bypass.
+ *
+ * MUST stay PII-free — tool name, carrier, outcome, a byte count and the span
+ * TYPES that were masked; never the error text or a masked value.
+ */
+export interface ToolErrorEntry {
+  /** The tool name as it appears in the LLM's `tool_use` block. */
+  readonly toolName: string;
+  readonly carrier: ToolErrorCarrier;
+  readonly outcome: ToolErrorOutcome;
+  /** Byte length of the ORIGINAL error text. For UI transparency only. */
+  readonly bytes: number;
+  /** Span types (+ detector id) masked in a `redacted` text. Absent otherwise. */
+  readonly redactedSpans?: readonly PromptMaskedSpanInfo[];
+}
+
+/**
  * The per-turn user-facing privacy report. Emitted by `finalizeTurn` and
  * attached to the assistant message metadata; channel renderers (Teams
  * card, Web disclosure) consume it to build their collapsible UI.
@@ -120,12 +183,47 @@ export interface PrivacyReceipt {
    */
   readonly bypassedTools?: readonly BypassedToolEntry[];
   /**
-   * #361 — PII spans detected in the user's own prompt and substituted with
-   * pseudonyms before the prompt crossed the LLM wire. Absent when prompt
-   * masking is off (the default) or nothing was detected. PII-free: entries
-   * carry the span TYPE + detector id only, never the value.
+   * #1556 — fields the model received in clear because the operator listed
+   * them as non-personal (privacy-guard setting `non_personal_fields`), one
+   * entry per tool and field. Absent when no such rule applied this turn.
+   * PII-free: tool name and field path only, never a value.
+   */
+  readonly operatorClearedFields?: readonly OperatorClearedFieldEntry[];
+  /**
+   * #361 — PII spans substituted with pseudonyms in the user's OWN text of
+   * this turn (the message, its ingested attachment text, live steering text)
+   * while prompt masking is on. One entry per distinct masked value, however
+   * many of the turn's model calls carried it (#1541). Absent when nothing
+   * was masked — always absent while `mask_user_prompt` is off. PII-free:
+   * entries carry the span TYPE + detector id only, never the value.
    */
   readonly maskedPromptSpans?: readonly PromptMaskedSpanInfo[];
+  /**
+   * #1541 — PII spans substituted with pseudonyms in text from EARLIER
+   * conversations that the turn's own model calls carried: recalled context
+   * (knowledge-graph recall, the session tail), the answers and user messages
+   * a channel replays as chat history. Masked whatever `mask_user_prompt`
+   * says (the answers) or under it (replayed user messages), and booked apart
+   * from {@link maskedPromptSpans} so a receipt never reports values from
+   * earlier turns as masked in the user's message. A value that also occurs
+   * in the user's own text counts there only. Absent when nothing was masked.
+   * PII-free: span TYPE + detector id only.
+   */
+  readonly maskedContextSpans?: readonly PromptMaskedSpanInfo[];
+  /**
+   * #1562 — the C1 name detector during this turn's free-text masking:
+   * `active` (it ran), `unconfigured` (no sidecar URL: only the C0 patterns
+   * ran, which find no person names), `failed` (configured but it failed;
+   * the rest of the turn ran on C0, so names it would have found reached the
+   * model unmasked). Absent when the turn masked no free text.
+   */
+  readonly nameDetector?: PrivacyNameDetectorTurnState;
+  /**
+   * #1557 — a tool of this turn bypassed the shield (the turn's `unprotected`
+   * flag, #1507): its answer rests on values the model saw raw. Set by the
+   * host's turn handle; absent ⇒ no bypass.
+   */
+  readonly unprotected?: boolean;
   /**
    * #547 / #569 — external MCP tools that returned `structuredContent` this
    * turn. Absent / empty when no connected tool emitted structured output.
@@ -135,6 +233,55 @@ export interface PrivacyReceipt {
    * tool name + server name + byte count + schema flag only.
    */
   readonly structuredPayloads?: readonly StructuredPayloadEntry[];
+  /**
+   * The answer verifier's post-turn model requests (claim extraction,
+   * evidence judging), gated by this turn's privacy view. Kept apart from
+   * `maskedPromptSpans`, which covers only the turn's own model calls. Absent
+   * when the verifier sent nothing for this turn. PII-free: a request count
+   * plus span TYPE + detector id, never a value.
+   */
+  readonly verifierEgress?: VerifierEgressSummary;
+  /**
+   * Tool errors a dispatch seam withheld, redacted or passed this turn (see
+   * {@link ToolErrorEntry}). Absent / empty when no tool failed. PII-free:
+   * tool name + carrier + outcome + byte count + masked span types only.
+   */
+  readonly toolErrors?: readonly ToolErrorEntry[];
+}
+
+/** See {@link PrivacyReceipt.nameDetector}. */
+export type PrivacyNameDetectorTurnState = 'active' | 'unconfigured' | 'failed';
+
+/**
+ * #1562 — the C1 name detector as an operator sees it now.
+ *  - `unconfigured` — no sidecar URL (setup field nor env var): person names
+ *    in free text are not detected.
+ *  - `active` — configured, and its health endpoint answered.
+ *  - `unreachable` — configured, but its health endpoint did not answer.
+ */
+export interface PrivacyNameDetectorStatus {
+  readonly state: 'unconfigured' | 'active' | 'unreachable';
+  /** Where the URL comes from: the guard's `c1_detector_url` setup field or
+   *  the `PRIVACY_C1_DETECTOR_URL` env var. `null` while unconfigured. */
+  readonly source: 'setup' | 'env' | null;
+  /** ISO time of the most recent turn in which C1 failed, since the process
+   *  started. `null` when it never failed. */
+  readonly lastFailureAt: string | null;
+  /** Whether `mask_user_prompt` is on: only then are names the user types
+   *  masked at all, C1 or not. */
+  readonly promptMasking: boolean;
+}
+
+/**
+ * Accounting for the answer verifier's model requests on one turn. The
+ * verifier runs after the turn produced its answer but before the receipt
+ * is finalised, so these requests belong to the same receipt.
+ */
+export interface VerifierEgressSummary {
+  /** Model requests the verifier sent under this turn's privacy view. */
+  readonly requests: number;
+  /** Spans replaced with placeholders in verifier-bound text. */
+  readonly maskedSpans: readonly PromptMaskedSpanInfo[];
 }
 
 // ---------------------------------------------------------------------------
@@ -157,6 +304,57 @@ export interface PrivacyToolResultV4Request {
   readonly toolName: string;
   /** The tool's raw text result as the handler returned it. */
   readonly rawResult: string;
+  /**
+   * The tool call input as dispatched to the handler (1.44.0). Optional:
+   * kept server-side, turn-scoped, as the dataset's provenance — so a
+   * consumer can learn WHICH call produced a dataset
+   * ({@link PrivacyGuardService.datasetProvenance}). Never serialized to an
+   * LLM. Absent ⇒ the dataset simply has no provenance.
+   */
+  readonly toolInput?: unknown;
+  /**
+   * #1561 — who reads the returned `digestText`. Absent / `'chat'` ⇒ the
+   * chat model, which is offered the verb tools and `v4_render_answer` the
+   * digest header refers to. `'public-api'` ⇒ an external API caller (the
+   * public MCP endpoint) that has none of those tools: the text then states
+   * what was returned and that masked values are withheld, and names no tool
+   * the caller cannot call. Same masking either way.
+   */
+  readonly audience?: PrivacyDigestAudience;
+}
+
+/** #1561 — the reader of a digest text; see
+ *  {@link PrivacyToolResultV4Request.audience}. */
+export type PrivacyDigestAudience = 'chat' | 'public-api';
+
+/** One verb applied on the way from a tool result to a dataset (1.44.0). */
+export interface PrivacyDatasetVerbStep {
+  /** verb name without the `v4_` prefix (`select`, `filter`, `sort`, …) */
+  readonly verb: string;
+  /** the verb's arguments, dataset ids excluded (e.g. `{ columns }`,
+   *  `{ predicate }`) */
+  readonly args: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * Where a dataset came from (1.44.0): the ONE tool call that produced its
+ * origin dataset and the verbs applied since, in order. The input is the
+ * call's REAL input (it may carry literal filter values) — server-side only,
+ * never for an LLM-bound message.
+ */
+export interface PrivacyDatasetProvenance {
+  readonly tool: string;
+  readonly input: unknown;
+  readonly verbs: ReadonlyArray<PrivacyDatasetVerbStep>;
+  /** the origin result was bounded at intern time */
+  readonly truncated: boolean;
+  /**
+   * The origin result was an envelope (`{ count, truncated, records: [ … ] }`)
+   * and the dataset rows are this field's records — the key a replay of
+   * `tool` reads the records from (a refresh recipe's `itemsPath`). Absent
+   * when the result was a plain record array or a single object.
+   */
+  readonly itemsPath?: string;
 }
 
 export interface PrivacyToolResultV4Result {
@@ -199,6 +397,35 @@ export interface PrivacyV4ToolRequest {
   readonly toolName: string;
   /** The unparsed tool input as received from the LLM. */
   readonly input: unknown;
+  /**
+   * #1559 — a spreadsheet export tool (`create_xlsx`) is offered this turn.
+   * Only then may a truncated render's footer offer the full list as a file.
+   * Absent ⇒ `false`: the footer states the omitted row count, no promise.
+   */
+  readonly fileExportAvailable?: boolean;
+}
+
+/** What `runV4Tool` hands back to the kernel. */
+export interface PrivacyV4ToolResult {
+  /** The text the kernel places in the `tool_result` block — LLM-bound, so
+   *  it never carries a real value. */
+  readonly resultText: string;
+  /**
+   * #1402 — a table render's `_pendingCanvasTree` snapshot for the canvas.
+   * Carries the REAL cell values, so it is user-destined only: the kernel
+   * hands it to the turn's canvas-sentinel sink (the same side channel the
+   * other canvas tools use before interning) and never to the model.
+   */
+  readonly canvasSentinel?: string;
+  /**
+   * #1543 — for a render: where the rendered dataset came from, as a
+   * model-safe note (source tool name, verb chain with field paths, ops and
+   * directions, row counts, column labels — never a row value, never a
+   * filter value). Rows are turn-scoped, so a later turn cannot read the
+   * table again; the kernel persists this note with the turn so a follow-up
+   * can re-run the same query or say that it could not.
+   */
+  readonly renderProvenance?: string;
 }
 
 /** An Anthropic-tool-shaped spec for a v4 verb / render tool. */
@@ -219,6 +446,17 @@ export interface PrivacyRenderedAnswer {
    * boundary. Empty when the rendered answer exposed no masked field.
    */
   readonly maskedValues: readonly string[];
+  /**
+   * The directive's `prose` exactly as the model wrote it — PII-free, in the
+   * turn's masked space — or `''` when it wrote none. A provider sets it on
+   * every rendered answer. The answer verifier checks this, never `text`;
+   * the cell values in `text` are materialized from the turn's interned
+   * tool results (system data). Column labels and a rank header are model
+   * text too, but are not part of it. Absent only from a provider that
+   * predates the field: the kernel then cannot tell prose from rows and
+   * fails closed (the answer is withheld in `enforce`).
+   */
+  readonly prose?: string;
   /**
    * #1097 — true when the materialized text is control flow rather than an
    * answer: a tool error (`Error: …`) or an MCP auth prompt that the model
@@ -340,11 +578,136 @@ export interface PromptMaskedSpanInfo {
   readonly detector: string;
 }
 
+/**
+ * Which model egress a masked text is bound for. `turn` (the default) is the
+ * turn's own model calls; its spans aggregate into
+ * `PrivacyReceipt.maskedPromptSpans`. `verifier` is the answer verifier's
+ * post-turn requests; its spans aggregate into `PrivacyReceipt.verifierEgress`
+ * and every non-blocked call counts as one verifier request.
+ */
+export type PrivacyEgressStage = 'turn' | 'verifier';
+
 export interface PrivacyPromptMaskRequest {
   readonly sessionId: string;
   readonly turnId: string;
   /** The prompt text to mask (user message or ingested attachment tail). */
   readonly text: string;
+  /** Egress the text is bound for. Absent ⇒ `turn`. */
+  readonly stage?: PrivacyEgressStage;
+  /**
+   * Compute the outcome without keeping anything: the turn's surrogate map
+   * is not extended and nothing is recorded in the receipt. For a caller
+   * that must decide whether masking WOULD alter a text before it sends it.
+   */
+  readonly preview?: boolean;
+  /**
+   * #1541 — whose text this is. `message` (the default) is the user's own
+   * text of this turn and books into `PrivacyReceipt.maskedPromptSpans`;
+   * `context` is text from earlier conversations (a user message a channel
+   * replays as chat history) and books into `maskedContextSpans`.
+   */
+  readonly origin?: PrivacyPromptOrigin;
+}
+
+/** See {@link PrivacyPromptMaskRequest.origin}. */
+export type PrivacyPromptOrigin = 'message' | 'context';
+
+/**
+ * Text the answer verifier composed from REAL values (a restored claim plus
+ * the evidence it is judged against), bound for the verifier's model.
+ * Projected through the turn's surrogate map whether or not the operator
+ * enabled `mask_user_prompt`: evidence comes from the knowledge graph, and
+ * the turn itself only ever showed that data to its model as an interned
+ * digest.
+ */
+export interface PrivacyVerifierProjectionRequest {
+  readonly sessionId: string;
+  readonly turnId: string;
+  /** The real, verifier-composed text. */
+  readonly text: string;
+  /**
+   * Values the caller knows identify a person or record (an evidence node's
+   * display name, its free-text fields). Every occurrence is replaced,
+   * whether or not a detector would have found it.
+   */
+  readonly identityValues?: readonly string[];
+}
+
+/**
+ * An assistant answer from an earlier turn that a channel replays as chat
+ * history (`priorTurns`), bound for this turn's model. Masked whether or not
+ * the operator enabled `mask_user_prompt`, which is about the user's own
+ * words: a channel replays the answer it delivered, and an answer
+ * `v4_render_answer` materialized server-side carries real values the turn's
+ * model never saw.
+ */
+export interface PrivacyReplayedAnswerRequest {
+  readonly sessionId: string;
+  readonly turnId: string;
+  /** The replayed answer as the channel stored it. */
+  readonly text: string;
+  /**
+   * Optional partition of `text` into independently stored pieces — the
+   * recalled prior context, one segment per rendered stored turn (plus its
+   * headers). `segments.join('')` MUST equal `text`; a list that does not is
+   * ignored and `text` is detected as a whole. Each segment must be a whole
+   * stored unit, never a cut through one: the C1 transformer detects each
+   * segment on its own (an entity cannot span two segments) and caches the
+   * result by content hash across turns, so a stored turn is not re-scanned
+   * on every turn that recalls it. The C0 baseline always sees `text` whole.
+   */
+  readonly segments?: readonly string[];
+}
+
+/**
+ * One run of a background memory job that sends STORED text (memories, a
+ * session's stored turns, the exchange a channel hands over) to its own model
+ * outside a turn. Stored text holds real values whether or not the operator
+ * enabled `mask_user_prompt`, which is about the user's own words in a turn's
+ * prompt.
+ */
+export interface PrivacyStoredTextScopeRequest {
+  /** PII-free name of the job, logged with every mask call
+   *  (e.g. `topic-clustering`). */
+  readonly job: string;
+  /**
+   * Scheduling lane of the run's C1 (NER sidecar) calls. Default
+   * `background`: memory jobs and learned-example masking run off any
+   * turn's critical path. `interactive` for a mask a turn is waiting on
+   * (the fast-path triage, the canvas skeleton composer, the in-place
+   * planner) — the sidecar serves those first. Results are identical.
+   */
+  readonly priority?: PrivacyStoredTextPriority;
+}
+
+/** Sidecar lane of a stored-text scope ({@link PrivacyStoredTextScopeRequest.priority}). */
+export type PrivacyStoredTextPriority = 'interactive' | 'background';
+
+/**
+ * The privacy scope of one job run
+ * ({@link PrivacyGuardService.openStoredTextScope}). It holds the run's own
+ * surrogate map, so nothing outlives the object and there is nothing to
+ * finalize; no turn receipt books its spans.
+ */
+export interface PrivacyStoredTextScope {
+  /**
+   * Mask stored text bound for the job's model: the identity shapes of the C0
+   * baseline (e-mail, IBAN, phone, address, id number; dates and amounts
+   * stay), the operator deny-list and, when configured, the C1 detector.
+   * Calls of one run share its map, so a value keeps its surrogate. A failing
+   * C1 detector degrades the rest of the run to the baseline
+   * (`degraded: true`). Failure-closed: never `disabled`; `blocked` (a
+   * detector failed, or a detected value survived substitution) means the
+   * text must not be sent and the job skips its model call.
+   */
+  maskStoredText(text: string): Promise<PrivacyPromptMaskResult>;
+  /**
+   * Invert this run's surrogates over the job's model output, so a result a
+   * user reads (a session summary, a cluster name) carries the real values.
+   * Identity when nothing was masked; a surrogate the model reworded stays as
+   * written.
+   */
+  restoreStoredText(text: string): string;
 }
 
 /**
@@ -367,9 +730,67 @@ export type PrivacyPromptMaskResult =
     }
   | { readonly outcome: 'blocked'; readonly reason: string };
 
+// ---------------------------------------------------------------------------
+// Tool-error redaction — `Error:` text on its way to the model.
+//
+// A returned `Error:` string is control flow: the model must read the hint it
+// carries (`requires \`scope\``, `use search_turns instead`), so it is not
+// interned as a dataset. But not every such string is sanitized text — a
+// wrapper that returns `Error: ${err.message}`, or a remote MCP server's own
+// error body, can quote the row it failed on. The dispatch seams therefore run
+// the text through the shield's free-text detectors before the model sees it,
+// and record what they did in the turn receipt.
+// ---------------------------------------------------------------------------
+
+/** Record one tool error a dispatch seam handled this turn. PII-free. */
+export interface PrivacyToolErrorRequest {
+  readonly turnId: string;
+  readonly toolName: string;
+  readonly carrier: ToolErrorCarrier;
+  readonly outcome: ToolErrorOutcome;
+  /** Byte length of the ORIGINAL error text — never the text. */
+  readonly bytes: number;
+  readonly redactedSpans?: readonly PromptMaskedSpanInfo[];
+}
+
+export interface PrivacyToolErrorRedactRequest {
+  readonly turnId: string;
+  readonly toolName: string;
+  /** The error text to redact: the part AFTER the `Error:` prefix, which the
+   *  caller keeps so the `is_error` convention survives any substitution. */
+  readonly text: string;
+}
+
+/**
+ * Failure-closed, like {@link PrivacyPromptMaskResult}: there is no
+ * pass-through-unredacted outcome. `redacted` = every detected span replaced
+ * IRREVERSIBLY by `[masked:<type>]` (no pseudonym, nothing restored into the
+ * answer later; `degraded` when an optional detector failed and only the
+ * baseline ran). `withheld` = redaction could not be guaranteed (a detector
+ * failed outright, or a detected value survived substitution) — the caller
+ * MUST replace the whole text with a data-free notice.
+ */
+export type PrivacyToolErrorRedactResult =
+  | {
+      readonly outcome: 'redacted';
+      readonly text: string;
+      /** PII-free span records (type + detector), also for the receipt. */
+      readonly spans: readonly PromptMaskedSpanInfo[];
+      readonly degraded: boolean;
+    }
+  | { readonly outcome: 'withheld'; readonly reason: string };
+
 /**
  * Service surface published by the `privacy.redact@1` provider plugin.
  */
+/** #1528 — options of `PrivacyGuardService.countUnresolvedSurrogates`. */
+export interface UnresolvedSurrogateCountOptions {
+  /** Count a date or amount literal whose value cannot be read (or a
+   *  placeholder with none) as a hit. Default `true`, fail closed for the
+   *  answer verifier; `false` for a notice to the user. */
+  readonly unreadableLiterals?: boolean;
+}
+
 export interface PrivacyGuardService {
   /**
    * Privacy Shield v4 — intern a raw tool result server-side behind a
@@ -404,12 +825,35 @@ export interface PrivacyGuardService {
     request: PrivacyStructuredPayloadRequest,
   ): Promise<void>;
   /**
+   * Record a tool error a dispatch seam withheld, redacted or passed this turn,
+   * so `finalizeTurn` lists it under `PrivacyReceipt.toolErrors`. PII-free by
+   * contract; every call adds one entry.
+   *
+   * Optional so alternative providers (and test stubs) need not implement it;
+   * the kernel feature-detects and records nothing when absent.
+   */
+  recordToolError?(request: PrivacyToolErrorRequest): Promise<void>;
+  /**
+   * Redact a returned `Error:` text before it reaches the model: run the
+   * shield's free-text detectors (the identity types of the regex baseline,
+   * the operator deny-list, the optional C1 detector) and replace every span
+   * irreversibly. Independent of the `mask_user_prompt` flag — a tool error is
+   * never a channel the user consented to send in clear.
+   *
+   * Optional so a provider that predates it still loads; the kernel then
+   * WITHHOLDS returned `Error:` text rather than forwarding it unchecked.
+   */
+  redactToolErrorText?(
+    request: PrivacyToolErrorRedactRequest,
+  ): Promise<PrivacyToolErrorRedactResult>;
+  /**
    * Privacy Shield v4 — run a v4 verb tool or the terminal render tool the
    * LLM called. Returns the text to place in the `tool_result` block. A
    * `v4_render_answer` call materializes the answer server-side and stashes
-   * it (drained via `takeRenderedAnswerV4`).
+   * it (drained via `takeRenderedAnswerV4`); a table render also returns its
+   * canvas snapshot as `canvasSentinel`, never inside `resultText` (#1402).
    */
-  runV4Tool(request: PrivacyV4ToolRequest): Promise<{ readonly resultText: string }>;
+  runV4Tool(request: PrivacyV4ToolRequest): Promise<PrivacyV4ToolResult>;
   /**
    * Privacy Shield v4 — bridge a sub-agent's result across the data-plane
    * boundary. Given the `datasetId`s the sub-agent interned, returns the
@@ -447,6 +891,17 @@ export interface PrivacyGuardService {
     datasetId: string,
   ): PrivacyResolvedDataset | undefined;
   /**
+   * Privacy Shield v4 — the provenance of a datasetId interned earlier THIS
+   * TURN (1.44.0): originating tool + input + the verb chain applied since.
+   * `undefined` for an unknown/expired id, after `finalizeTurn`, or when the
+   * origin was interned without its tool input. Optional — consumers
+   * feature-detect.
+   */
+  datasetProvenance?(
+    turnId: string,
+    datasetId: string,
+  ): PrivacyDatasetProvenance | undefined;
+  /**
    * #361 — mask PII spans in a free-text prompt before it crosses the LLM
    * wire. Gated on the plugin's default-off `mask_user_prompt` config; when
    * the flag is off the result is `{outcome:'disabled'}` and the caller
@@ -479,6 +934,100 @@ export interface PrivacyGuardService {
     turnId: string,
   ): ((text: string) => string) | undefined;
   /**
+   * #1544 — the inverse direction of `restorePromptPseudonyms`: every real
+   * value of this turn's prompt-surrogate map that occurs in `text` is
+   * replaced by its surrogate. For a tool result the model reads in clear
+   * after the kernel restored the user's values into the tool's input (an
+   * interning-exempt tool can echo them). Identity when the turn masked
+   * nothing. Optional; a provider without it leaves the text as is.
+   */
+  remaskPromptValues?(turnId: string, text: string): string;
+  /**
+   * #1544 — the turn's prompt surrogates in a tool INPUT replaced by the
+   * user's values: whole surrogates only (any letter case), no date or amount
+   * surrogates, so every value it puts in is one `remaskPromptValues` masks
+   * again in what the tool echoes. Identity when the turn masked nothing.
+   * Optional; the kernel restores tool inputs only when a provider has both.
+   */
+  restoreToolInputValues?(turnId: string, text: string): string;
+  /**
+   * Project a verifier-composed text through this turn's surrogate map —
+   * always on, independent of `mask_user_prompt` (see
+   * {@link PrivacyVerifierProjectionRequest}). Never returns `disabled`;
+   * `blocked` means the text must not be sent (a real value in it collides
+   * with a surrogate already minted this turn, detection failed, or a
+   * residual span survived). Recorded under `verifierEgress`.
+   *
+   * Optional so alternative privacy providers (and test stubs) stay
+   * compilable; a caller without it must not send evidence at all.
+   */
+  projectVerifierText?(
+    request: PrivacyVerifierProjectionRequest,
+  ): Promise<PrivacyPromptMaskResult>;
+  /**
+   * Mask an answer a channel replays as chat history (see
+   * {@link PrivacyReplayedAnswerRequest}) before it reaches this turn's model
+   * — always on, independent of `mask_user_prompt`. Detects the identity
+   * shapes of the C0 baseline (e-mail, IBAN, phone, address, id number; not
+   * dates or amounts, which stay as in a v4 digest), the operator deny-list
+   * and, when configured, the C1 detector. Reversible: the spans go through
+   * the turn's surrogate map, so `restorePromptPseudonyms` restores them in
+   * the answer too. Recorded as the turn's own egress, as text from earlier
+   * conversations (`PrivacyReceipt.maskedContextSpans`, #1541), not under
+   * `verifierEgress`.
+   * Failure-closed: never returns `disabled`; `blocked` (a detector failed,
+   * or a detected value survived substitution) means the answer must not be
+   * sent. A failing C1 detector degrades to the baseline, as in
+   * `maskUserPrompt`.
+   *
+   * Optional so a provider that predates it still loads; the kernel then
+   * masks a replayed answer through `maskUserPrompt`, i.e. only while
+   * `mask_user_prompt` is on.
+   */
+  maskReplayedAnswer?(
+    request: PrivacyReplayedAnswerRequest,
+  ): Promise<PrivacyPromptMaskResult>;
+  /**
+   * Open the privacy scope for one run of a background memory job that sends
+   * stored text to its own model outside a turn (see
+   * {@link PrivacyStoredTextScope}) — always on, independent of
+   * `mask_user_prompt`. A job that runs inside a turn masks through the turn's
+   * handle instead (`maskReplayedAnswer`), so its spans are the turn's egress.
+   *
+   * Optional so a provider that predates it still loads. A job that finds a
+   * privacy provider without it must skip its model call (fail-closed), never
+   * send the stored text unmasked; only a host with no privacy provider at
+   * all sends it as stored.
+   */
+  openStoredTextScope?(request: PrivacyStoredTextScopeRequest): PrivacyStoredTextScope;
+  /**
+   * How many of this turn's prompt surrogates still occur in `text` —
+   * verbatim, case-insensitively, with digit separators reformatted, or, for
+   * a date or an amount surrogate, as any literal of the same value in
+   * another spelling ("1970-01-01" for "01.01.1970"). A date or amount
+   * literal whose value cannot be read counts as a hit (fail closed). A
+   * restored answer should carry none; a hit means the model reworded a
+   * placeholder and restore could not map it back. `0` when the turn masked
+   * nothing. Optional; absent ⇒ callers treat the answer as unchecked.
+   *
+   * #1528 — also counts the name read out of an e-mail surrogate when restore
+   * had no real name to put back. `options.unreadableLiterals: false` drops
+   * the fail-closed hits on date/amount literals whose value cannot be read:
+   * what a notice to the user needs, where such a hit is noise.
+   */
+  countUnresolvedSurrogates?(
+    turnId: string,
+    text: string,
+    options?: UnresolvedSurrogateCountOptions,
+  ): Promise<number>;
+  /**
+   * #1562 — the C1 name detector's state now (see
+   * {@link PrivacyNameDetectorStatus}); probes the configured sidecar's
+   * health endpoint with a short timeout. Never throws. Optional: a provider
+   * without a name detector simply does not report one.
+   */
+  nameDetectorStatus?(): Promise<PrivacyNameDetectorStatus>;
+  /**
    * Privacy Shield v4 — the verb + render tool specs to offer the LLM.
    */
   v4ToolSpecs(): ReadonlyArray<PrivacyV4ToolSpec>;
@@ -486,12 +1035,44 @@ export interface PrivacyGuardService {
    * Emit the aggregated user-facing receipt for the turn and drop the
    * turn's Dataset Store. `turnInput` — the requester's own message text —
    * lets the receipt report `identityValuesOnWire`: personal-identity values
-   * the user named themselves. Returns `undefined` when the turn interned no
-   * tool results (nothing to report). Idempotent — a second call with the
-   * same `turnId` returns `undefined`.
+   * the user named themselves. Returns `undefined` when the shield did
+   * nothing this turn — no dataset interned, no bypass, no structured
+   * output, no masked prompt span, no answer-verifier request, no tool error
+   * handled (nothing to report). Idempotent — a second call with the same
+   * `turnId` returns `undefined`.
    */
   finalizeTurn(
     turnId: string,
     turnInput?: string,
   ): Promise<PrivacyReceipt | undefined>;
+  /**
+   * #1556 follow-up — field-classification suggestions. Schema-only
+   * observations of masked fields since the last call, then cleared (the
+   * kernel persists them). Optional; a provider without it yields none.
+   */
+  takeFieldObservations?(): readonly FieldObservation[];
+  /**
+   * Vet the privacy guard's bounded in-memory value sample of a field with
+   * its own detectors (C0 identity shapes + the operator deny-list, C1 when
+   * configured, also at a lower "near-miss" threshold) and drop the sample.
+   * Only the verdict leaves the plugin.
+   */
+  vetFieldSample?(field: FieldKey): Promise<FieldSampleVerdict>;
+  /**
+   * Classify Odoo models as personal / non-personal from their schema only,
+   * with the plugin's own small model (Haiku). Never sends a value. Returns
+   * `uncertain` for every model when no LLM is available or the call fails.
+   */
+  classifyModelsSchemaOnly?(
+    requests: readonly ModelClassificationRequest[],
+  ): Promise<readonly ModelClassificationResult[]>;
+  /**
+   * A shape-masked preview of a field's buffered sample for the admin page —
+   * letters and digits replaced (`R••••••• & D••••••••••`), punctuation and
+   * spacing kept. At most `limit` entries; empty when nothing is buffered.
+   */
+  maskedFieldPreview?(field: FieldKey & { readonly limit?: number }): readonly string[];
+  // The REAL buffered values are NOT on this service: every plugin granted
+  // `privacyRedact` could read them. They live on the kernel-only
+  // `PrivacyFieldSampleService` (`PRIVACY_FIELD_SAMPLES_SERVICE_NAME`).
 }

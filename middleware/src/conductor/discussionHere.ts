@@ -40,12 +40,19 @@ export type OpenerResolver = (channelType: string, botChannelKey: string) => str
 /**
  * No conversation could be attributed to the caller. Distinct from every other
  * refusal because the fix differs: this is not "you may not", it is "I cannot
- * tell where you are" — typically a tool invoked outside a channel turn.
+ * tell where you are".
+ *
+ * #1346 — in practice that means a channel that cannot host one: a discussion
+ * needs a group chat in which every agent has its own bot, which today is
+ * Microsoft Teams only. The web chat, the public API and the other channels do
+ * carry a conversation, so the old text ("this call did not come from one")
+ * blamed a call that had in fact come from a chat. The tools are hidden on such
+ * turns now (`availableHere`); this is what a call that still arrives gets.
  */
 export class DiscussionNoConversationError extends Error {
   constructor() {
     super(
-      'no conversation could be attributed to this turn — a discussion starts in the chat it was requested in, and this call did not come from one',
+      'agent discussions are not available in this chat — they need a group chat where each agent has its own bot (Microsoft Teams), and this conversation is not one',
     );
     this.name = 'DiscussionNoConversationError';
   }
@@ -101,6 +108,15 @@ export type PartnerLister = (
 export interface ConductorDiscussionsCapability {
   startHere(input: StartDiscussionHereInput): Promise<EphemeralRunHandle>;
   partnersHere(): Promise<readonly DiscussionPartner[]>;
+  /**
+   * #1346 — can the CURRENT turn host a discussion at all? True when the turn
+   * names a conversation and the bot that received it belongs to an agent —
+   * the two things `startHere`/`partnersHere` refuse without. Synchronous and
+   * side-effect free, so a plugin can call it once per model round to decide
+   * whether to offer its tools. It does not consult the peer gate: that is an
+   * operator switch with its own refusal, not a property of the channel.
+   */
+  availableHere(): boolean;
 }
 
 /**
@@ -203,6 +219,12 @@ export function createDiscussionsCapability(deps: {
   };
 
   return {
+    availableHere() {
+      const turn = deps.resolveTurn();
+      if (!turn || turn.conversationId.trim().length === 0 || !turn.botChannelKey) return false;
+      return deps.resolveOpener(turn.channelType, turn.botChannelKey) !== undefined;
+    },
+
     async partnersHere() {
       const { turn, opener } = await resolveHere();
       return permittedPartners(turn, opener);

@@ -1,5 +1,5 @@
 /**
- * Issue-body sanitizer (concept plan: docs/plans/native-issue-reporting.md).
+ * Issue-body sanitizer.
  *
  * Runs over the rendered body of a builder-generated GitHub issue before
  * the operator approves submission. Three responsibilities:

@@ -3,8 +3,9 @@ import { z } from 'zod';
 import { analyzePage } from './analyzers/onPage.js';
 import { analyzeTechnical } from './analyzers/technical.js';
 import { crawlAndAudit } from './analyzers/crawler.js';
-import type { createFetcher} from './fetcher.js';
+import type { createFetcher } from './fetcher.js';
 import { extractDocument } from './fetcher.js';
+import { assertFetched } from './refusal.js';
 import type {
   PageReport,
   SiteAuditReport,
@@ -37,17 +38,43 @@ export interface ToolkitOptions {
 }
 
 const analyzePageInput = z.object({
-  url: z.string().url(),
+  url: z.string().url().describe('Vollständige URL der zu prüfenden Seite (https://...).'),
 });
 
 const checkTechnicalInput = z.object({
-  base_url: z.string().url().optional(),
+  base_url: z
+    .string()
+    .url()
+    .optional()
+    .describe('Domain-Root. Weggelassen → die für diesen Agenten konfigurierte Domain.'),
 });
 
 const auditSiteInput = z.object({
-  start_url: z.string().url().optional(),
-  max_pages: z.number().int().min(1).max(100).optional(),
-  max_depth: z.number().int().min(1).max(5).optional(),
+  start_url: z
+    .string()
+    .url()
+    .optional()
+    .describe('Einstiegs-URL des Crawls. Weggelassen → die konfigurierte Domain.'),
+  max_pages: z
+    .number()
+    .int()
+    .min(1)
+    .max(100)
+    .optional()
+    .describe(
+      'Seiten-Obergrenze, 1–100 (ein höherer Wert wird abgelehnt).' +
+        ' Weggelassen → der konfigurierte Wert.',
+    ),
+  max_depth: z
+    .number()
+    .int()
+    .min(1)
+    .max(5)
+    .optional()
+    .describe(
+      'Crawl-Tiefe ab der Einstiegs-URL, 1–5 (ein höherer Wert wird abgelehnt).' +
+        ' Weggelassen → der konfigurierte Wert.',
+    ),
 });
 
 export function createToolkit(opts: ToolkitOptions): Toolkit {
@@ -55,22 +82,18 @@ export function createToolkit(opts: ToolkitOptions): Toolkit {
     {
       id: 'analyze_page',
       description:
-        'Lädt eine URL und liefert einen strukturierten On-Page-SEO-Report (Meta, Headings, Links, Bilder, JSON-LD, Score).',
+        'Lädt eine einzelne URL und liefert einen strukturierten On-Page-SEO-' +
+        'Report (Meta, Headings, Links, Bilder, JSON-LD, Score). Nutze das Tool ' +
+        'für eine konkrete Seite; für eine ganze Domain `audit_site`. Liegt der ' +
+        'Host außerhalb des erlaubten Audit-Modus, schlägt der Call mit einem ' +
+        'Fehler fehl und es wird NICHTS analysiert — dann muss der Operator den ' +
+        'Audit-Modus weiten oder den Host freigeben.',
       input: analyzePageInput as z.ZodType<unknown>,
       async run(raw): Promise<PageReport> {
         const { url } = analyzePageInput.parse(raw);
         opts.log('tool:analyze_page', { url });
         const res = await opts.fetcher.get(url, true);
-        if (res.blocked !== undefined) {
-          throw new Error(
-            `${res.blocked} (audit mode: ${opts.auditMode}). The requested ` +
-              'URL was NOT analysed — ask the operator to widen the audit ' +
-              'mode or add the host to the allow-list.',
-          );
-        }
-        if (res.status === 0) {
-          throw new Error(`fetch failed for ${url}`);
-        }
+        assertFetched(res, url, opts.auditMode);
         const doc = extractDocument(res.body);
         return analyzePage(res, doc);
       },
@@ -78,19 +101,30 @@ export function createToolkit(opts: ToolkitOptions): Toolkit {
     {
       id: 'check_technical_seo',
       description:
-        'Prüft robots.txt, sitemap.xml, HTTPS-Config und Security-Header für die angegebene (oder konfigurierte) Domain.',
+        'Prüft robots.txt, sitemap.xml, HTTPS-Config und Security-Header einer ' +
+        'Domain. Nutze das Tool bei Fragen zu Crawlbarkeit, Indexierung oder ' +
+        'Transport-Sicherheit. Ohne `base_url` läuft die Prüfung gegen die für ' +
+        'diesen Agenten konfigurierte Domain. Ist die Root-URL gesperrt oder ' +
+        'nicht erreichbar, schlägt der Call fehl und es wird NICHTS geprüft.',
       input: checkTechnicalInput as z.ZodType<unknown>,
       async run(raw): Promise<TechnicalReport> {
         const { base_url } = checkTechnicalInput.parse(raw);
         const target = base_url ?? opts.targetBaseUrl;
         opts.log('tool:check_technical_seo', { target });
-        return analyzeTechnical(opts.fetcher, target, opts.userAgent);
+        return analyzeTechnical(opts.fetcher, target, opts.userAgent, opts.auditMode);
       },
     },
     {
       id: 'audit_site',
       description:
-        'Crawlt die Domain (BFS, depth- und count-begrenzt) und aggregiert On-Page-Issues über alle gefundenen Seiten.',
+        'Crawlt eine Domain per BFS und aggregiert die On-Page-Issues über alle ' +
+        'gefundenen Seiten. Nutze das Tool für domainweite Fragen; für eine ' +
+        'einzelne Seite `analyze_page`. `max_pages` muss zwischen 1 und 100 ' +
+        'liegen, `max_depth` zwischen 1 und 5 — höhere Werte werden nicht ' +
+        'gekappt, sondern abgelehnt. Ohne `start_url` startet der Crawl auf der ' +
+        'konfigurierten Domain, ohne die beiden Grenzen auf den für diesen ' +
+        'Agenten konfigurierten Werten. Ist die Einstiegs-URL gesperrt oder ' +
+        'nicht erreichbar, schlägt der Call fehl und es wird NICHTS gecrawlt.',
       input: auditSiteInput as z.ZodType<unknown>,
       async run(raw): Promise<SiteAuditReport> {
         const { start_url, max_pages, max_depth } = auditSiteInput.parse(raw);
@@ -103,6 +137,7 @@ export function createToolkit(opts: ToolkitOptions): Toolkit {
           startUrl: target,
           maxPages,
           maxDepth,
+          auditMode: opts.auditMode,
           log: opts.log,
         });
       },

@@ -462,3 +462,62 @@ describe('ContextRetriever.assembleForBudget', () => {
     assert.deepEqual(ids, sorted);
   });
 });
+
+describe('ContextRetriever.assembleForBudget — tailLimit + per-turn segments', () => {
+  const tail = [1, 2, 3, 4, 5].map((i) => ({
+    time: `2026-05-0${String(i)}T08:00:00Z`,
+    userMessage: `frage-${String(i)}`,
+    assistantAnswer: `antwort-${String(i)}`,
+  }));
+  const assemble = (
+    turns: typeof tail,
+    extra: { tailLimit?: number } = {},
+  ): ReturnType<ContextRetriever['assembleForBudget']> =>
+    new ContextRetriever(makeMockGraph({ tail: turns })).assembleForBudget({
+      userMessage: 'hallo',
+      agentId: 'agent-test',
+      sessionScope: 'chat-active',
+      ...extra,
+    });
+
+  it('tailLimit keeps only the newest N tail turns', async () => {
+    const result = await assemble(tail, { tailLimit: 2 });
+    assert.equal(result.included.filter((h) => h.origin === 'tail').length, 2);
+    assert.ok(result.text.includes('frage-5'));
+    assert.ok(result.text.includes('frage-4'));
+    assert.ok(!result.text.includes('frage-3'));
+  });
+
+  it('tailLimit 0 recalls no tail turn', async () => {
+    const result = await assemble(tail, { tailLimit: 0 });
+    assert.equal(result.included.filter((h) => h.origin === 'tail').length, 0);
+  });
+
+  it('without tailLimit the configured tailSize applies', async () => {
+    const result = await assemble(tail);
+    assert.equal(result.included.filter((h) => h.origin === 'tail').length, 5);
+  });
+
+  it('segments partition the text; every stored turn is one whole segment', async () => {
+    const result = await assemble(tail);
+    assert.ok(result.segments, 'segments are returned');
+    const segments: readonly string[] = result.segments;
+    assert.equal(segments.join(''), result.text);
+    for (const t of tail) {
+      const holding: readonly string[] = segments.filter((s) => s.includes(t.time));
+      assert.equal(holding.length, 1, `${t.time} sits in exactly one segment`);
+      assert.ok(holding[0]!.includes(`Nutzer: ${t.userMessage}`));
+      assert.ok(holding[0]!.includes(`Assistent: ${t.assistantAnswer}`));
+    }
+  });
+
+  it('a stored turn renders to the SAME segment on the next turn (cacheable)', async () => {
+    const before = await assemble(tail.slice(0, 4));
+    const after = await assemble(tail);
+    const shared = (before.segments ?? []).filter((s) => s.includes('frage-'));
+    assert.equal(shared.length, 4);
+    for (const seg of shared) {
+      assert.ok((after.segments ?? []).includes(seg), 'identical segment text next turn');
+    }
+  });
+});

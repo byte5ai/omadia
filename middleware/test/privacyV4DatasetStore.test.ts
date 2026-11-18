@@ -108,19 +108,90 @@ describe('parseToolResult', () => {
     // Detail fields are present...
     assert.equal(r.rows[0]?.employee, 'Alexandra Hochhaus');
     assert.equal(r.rows[0]?.delta_hours, -40);
-    // ...and the scalar summary fields are broadcast onto every row.
+    // ...and the scalar summary fields are broadcast onto every row — they
+    // are business data (the timesheet plugin renders jahr/kw as columns),
+    // not protocol metadata.
     assert.equal(r.rows[0]?.jahr, 2026);
     assert.equal(r.rows[1]?.kw, 22);
     // The detail array key itself is never broadcast as a column.
     assert.equal('abweichungen_pro_ma' in (r.rows[0] ?? {}), false);
+    // No protocol key → empty metadata; the record array is still named.
+    assert.deepEqual(r.envelope, { itemsPath: 'abweichungen_pro_ma', values: {} });
+  });
+
+  it('a mixed envelope: protocol keys become metadata, business scalars stay columns', () => {
+    const r = parseToolResult(
+      {
+        model: 'account.analytic.line',
+        count: 2,
+        truncated: false,
+        jahr: 2026,
+        kw: 22,
+        records: [
+          { id: 1, employee: 'Alexandra Hochhaus', hours: 38 },
+          { id: 2, employee: 'Christian Köhler', hours: 40 },
+        ],
+      },
+      100_000,
+    );
+    assert.equal(r.shape, 'rows');
+    assert.equal(r.rows.length, 2);
+    for (const row of r.rows) {
+      assert.deepEqual(Object.keys(row).sort(), ['employee', 'hours', 'id', 'jahr', 'kw']);
+      assert.equal(row.jahr, 2026);
+      assert.equal(row.kw, 22);
+    }
+    assert.deepEqual(r.envelope, {
+      itemsPath: 'records',
+      values: { model: 'account.analytic.line', count: 2, truncated: false },
+    });
+  });
+
+  it('interns an odoo_query envelope as its records; model/scope/count/truncated are metadata', () => {
+    // The exact odoo_query result shape (omadia-integration-odoo
+    // odooReadTools.ts). v414 bug: the envelope scalars were broadcast onto
+    // every record, so a canvas table published from the dataset showed
+    // `model, scope, count, truncated` as columns.
+    const r = parseToolResult(
+      JSON.stringify({
+        model: 'hr.employee',
+        scope: 'hr',
+        count: 2,
+        truncated: false,
+        records: [
+          { id: 1, name: 'Marvin Vomberg', job_title: 'Dev', work_email: 'm@x.de', active: true },
+          { id: 2, name: 'Anna Rüsche', job_title: 'PM', work_email: 'a@x.de', active: true },
+        ],
+      }),
+      100_000,
+    );
+    assert.equal(r.shape, 'rows');
+    assert.equal(r.rows.length, 2);
+    for (const row of r.rows) {
+      assert.deepEqual(Object.keys(row), ['id', 'name', 'job_title', 'work_email', 'active']);
+    }
+    assert.deepEqual(r.envelope, {
+      itemsPath: 'records',
+      values: { model: 'hr.employee', scope: 'hr', count: 2, truncated: false },
+    });
+  });
+
+  it('a plain array of records has no envelope (unchanged)', () => {
+    const r = parseToolResult([{ id: 1, name: 'A' }], 100_000);
+    assert.equal(r.shape, 'rows');
+    assert.deepEqual(r.rows, [{ id: 1, name: 'A' }]);
+    assert.equal(r.envelope, undefined);
   });
 
   it('leaves an object with two record-arrays untouched (ambiguous)', () => {
     // More than one array-of-records is ambiguous — which is the detail
-    // table? — so the object is kept as a single nested row.
-    const r = parseToolResult({ a: [{ x: 1 }], b: [{ y: 2 }] }, 100_000);
+    // table? — so the object is kept as a single nested row, scalars and
+    // both arrays included, with no envelope metadata.
+    const r = parseToolResult({ total: 2, a: [{ x: 1 }], b: [{ y: 2 }] }, 100_000);
     assert.equal(r.shape, 'nested');
     assert.equal(r.rows.length, 1);
+    assert.deepEqual(Object.keys(r.rows[0] ?? {}), ['total', 'a', 'b']);
+    assert.equal(r.envelope, undefined);
   });
 
   it('a record in the detail wins a key collision over the summary', () => {
@@ -131,6 +202,16 @@ describe('parseToolResult', () => {
     assert.equal(r.rows.length, 1);
     // The detail record's own `name` is kept, not the summary's "Report".
     assert.equal(r.rows[0]?.name, 'Anna');
+  });
+
+  it('an Odoo [id,"label"] sibling stays a column; a nested sibling is dropped; a metadata key never broadcasts', () => {
+    const r = parseToolResult(
+      { total: 1, partner_id: [7, 'ACME'], meta: { y: 1 }, rows: [{ name: 'Anna', n: 1 }] },
+      100_000,
+    );
+    assert.equal(r.rows.length, 1);
+    assert.deepEqual(r.rows[0], { partner_id: [7, 'ACME'], name: 'Anna', n: 1 });
+    assert.deepEqual(r.envelope, { itemsPath: 'rows', values: { total: 1 } });
   });
 
   it('interns an empty array as zero rows', () => {

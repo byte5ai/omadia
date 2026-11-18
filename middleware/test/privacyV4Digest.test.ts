@@ -118,3 +118,61 @@ describe('Digest builder — metadata', () => {
     assert.equal(bounded.digest.truncated, true);
   });
 });
+
+describe('Digest — nested fields and the subject-sentence rule (#1542, #1556)', () => {
+  const PAGE = {
+    id: 98765,
+    title: 'Kontaktliste Testteam',
+    body: { view: { value: '<p>Jonas Weber, jonas.weber@example.com</p>', representation: 'view' } },
+    version: { number: 3, by: { displayName: 'Jonas Weber' } },
+  };
+
+  it('marks a nested-object field "shape":"nested", masked, without any value', () => {
+    const { digest } = newStore().internToolResult('confluence_get_page', [PAGE]);
+    const body = fieldOf(digest, 'body');
+    assert.equal(body.classification, 'sensitive-masked');
+    assert.equal((body as { shape?: string }).shape, 'nested');
+    const text = digestToToolResultText(digest);
+    for (const value of ['Jonas', 'Weber', 'jonas.weber@example.com']) {
+      assert.ok(!text.includes(value), `digest text leaked "${value}"`);
+    }
+    assert.ok(text.includes('"shape":"nested"'));
+    assert.ok(text.includes('Never promise its verbatim'), 'the model is told not to promise content');
+  });
+
+  it('a scalar masked field carries no shape hint', () => {
+    const { digest } = newStore().internToolResult('hr.leave', HR_LEAVE);
+    assert.equal((fieldOf(digest, 'employee') as { shape?: string }).shape, undefined);
+  });
+
+  it('tells the model to point to the table when a masked field is the subject', () => {
+    const { digest } = newStore().internToolResult('hr.leave', HR_LEAVE);
+    const text = digestToToolResultText(digest);
+    assert.ok(text.includes('When a masked field is the SUBJECT of the answer'), text);
+    assert.ok(text.includes('steht in der Tabelle'));
+  });
+});
+
+describe('Digest — public API audience (#1561)', () => {
+  it('names no tool the caller lacks, drops the datasetId, keeps every value masked', () => {
+    const { digest } = newStore().internToolResult('query_odoo_hr', HR_LEAVE);
+    const text = digestToToolResultText(digest, { audience: 'public-api' });
+    for (const banned of ['v4_', 'verb tools', 'datasetId', digest.datasetId, 'Vomberg', 'Rüsche']) {
+      assert.ok(!text.includes(banned), `public text carries "${banned}"`);
+    }
+    assert.ok(text.includes('Returned: 3 rows'), text);
+    assert.ok(text.includes('Withheld: the values of ["employee"'), text);
+  });
+
+  it('says a prose answer is one masked text field, not a record count', () => {
+    const { digest } = newStore().internToolResult('query_odoo_hr', 'Paul Williams and 6 others work in R&D.');
+    const text = digestToToolResultText(digest, { audience: 'public-api' });
+    assert.ok(text.includes('answered in prose'), text);
+    assert.ok(!text.includes('Paul Williams'));
+  });
+
+  it('the chat audience keeps the verb-tool header', () => {
+    const { digest } = newStore().internToolResult('hr.leave', HR_LEAVE);
+    assert.ok(digestToToolResultText(digest, { audience: 'chat' }).includes('v4_render_answer'));
+  });
+});

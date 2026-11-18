@@ -816,8 +816,8 @@ export async function replaceMcpToolAllowlist(
 
 /**
  * Machine codes the agent-builder grant routes emit as `{ error: '<code>' }`
- * (they predate the `{ code }` envelope `ApiError.code` parses, so the code
- * must be read from the body).
+ * (they predate the `{ code }` envelope; `ApiError.code` falls back to `error`
+ * since #1333, this list is what limits the codes a page may translate).
  *
  * i18n HARD RULE: these are NOT user-facing text. Pages map each code to a
  * message-catalogue key and render the localized copy; the raw body string

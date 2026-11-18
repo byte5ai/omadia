@@ -111,6 +111,25 @@ describe('#603 — the wrong file is refused before anything is extracted', () =
     assert.equal(out.ok === false && out.failure.code, 'missing_value');
   });
 
+  it('#1401 — failures carry params for the UI, and never a secret', () => {
+    const wrong = extractFromJsonFile(
+      JSON.stringify({ type: 'authorized_user', client_email: EMAIL, private_key: KEY }),
+      SPEC,
+    );
+    assert.equal(wrong.ok, false);
+    if (wrong.ok) return;
+    assert.equal(wrong.failure.params?.['key'], 'type');
+    assert.equal(wrong.failure.params?.['actual'], '"authorized_user"');
+    assert.ok(wrong.failure.params?.['expected']);
+    assert.ok(!JSON.stringify(wrong.failure.params).includes(KEY), 'a secret leaked into params');
+
+    const missing = extractFromJsonFile(serviceAccount({ private_key: undefined }), SPEC);
+    assert.equal(missing.ok, false);
+    if (missing.ok) return;
+    assert.equal(missing.failure.params?.['target'], 'gw_sa_private_key');
+    assert.ok(missing.failure.params?.['path']?.startsWith('$.'));
+  });
+
   it('refuses a non-string value rather than coercing it', () => {
     const out = extractFromJsonFile(serviceAccount({ private_key: 42 }), SPEC);
     assert.equal(out.ok, false);

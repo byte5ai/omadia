@@ -16,12 +16,21 @@ import {
   type ConductorWebhookSubscription,
 } from '@/app/_lib/api';
 
-import { StatusBadge, card, inputCls, toFriendlyError } from './shared';
+import { OneTimeSecret } from '@/app/_components/OneTimeSecret';
+
+import {
+  StatusBadge,
+  WebhookError,
+  card,
+  inputCls,
+  toFriendlyError,
+  type FriendlyWebhookError,
+} from './shared';
 
 type State =
   | { kind: 'loading' }
   | { kind: 'ready'; subscriptions: ConductorWebhookSubscription[] }
-  | { kind: 'error'; message: string };
+  | { kind: 'error'; error: FriendlyWebhookError };
 
 /**
  * Issue #437 — outbound subscriptions (an operator URL that receives an
@@ -32,9 +41,11 @@ type State =
  */
 export function WebhookSubscriptionsSection(): React.ReactElement {
   const t = useTranslations('adminWebhooks.subscriptions');
+  const tErr = useTranslations('adminWebhooks');
   const format = useFormatter();
   const [state, setState] = useState<State>({ kind: 'loading' });
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<FriendlyWebhookError | null>(null);
+  const [createError, setCreateError] = useState<FriendlyWebhookError | null>(null);
   const [pending, setPending] = useState<string | null>(null);
   const [revealedSecret, setRevealedSecret] = useState<{ id: string; secret: string } | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -50,9 +61,9 @@ export function WebhookSubscriptionsSection(): React.ReactElement {
       const res = await listWebhookSubscriptions();
       setState({ kind: 'ready', subscriptions: res.subscriptions });
     } catch (err) {
-      setState({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
+      setState({ kind: 'error', error: toFriendlyError(err, tErr) });
     }
-  }, []);
+  }, [tErr]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -60,8 +71,8 @@ export function WebhookSubscriptionsSection(): React.ReactElement {
   }, [reload]);
 
   const onCreate = useCallback(async (): Promise<void> => {
-    if (!url.trim() || !event.trim()) return;
-    setActionError(null);
+    if (!url.trim() || !event.trim() || revealedSecret) return;
+    setCreateError(null);
     setCreating(true);
     try {
       const { subscription, secret } = await createWebhookSubscription({
@@ -74,24 +85,25 @@ export function WebhookSubscriptionsSection(): React.ReactElement {
       setRevealedSecret({ id: subscription.id, secret });
       await reload();
     } catch (err) {
-      setActionError(toFriendlyError(err));
+      setCreateError(toFriendlyError(err, tErr));
     } finally {
       setCreating(false);
     }
-  }, [url, event, description, reload]);
+  }, [url, event, description, reload, revealedSecret, tErr]);
 
   const onRotate = useCallback(async (id: string): Promise<void> => {
+    if (revealedSecret) return;
     setActionError(null);
     setPending(id);
     try {
       const { secret } = await rotateWebhookSubscriptionSecret(id);
       setRevealedSecret({ id, secret });
     } catch (err) {
-      setActionError(toFriendlyError(err));
+      setActionError(toFriendlyError(err, tErr));
     } finally {
       setPending(null);
     }
-  }, []);
+  }, [revealedSecret, tErr]);
 
   const onToggle = useCallback(
     async (id: string, enabled: boolean): Promise<void> => {
@@ -101,12 +113,12 @@ export function WebhookSubscriptionsSection(): React.ReactElement {
         await setWebhookSubscriptionEnabled(id, enabled);
         await reload();
       } catch (err) {
-        setActionError(toFriendlyError(err));
+        setActionError(toFriendlyError(err, tErr));
       } finally {
         setPending(null);
       }
     },
-    [reload],
+    [reload, tErr],
   );
 
   const onDelete = useCallback(
@@ -118,12 +130,12 @@ export function WebhookSubscriptionsSection(): React.ReactElement {
         await deleteWebhookSubscription(id);
         await reload();
       } catch (err) {
-        setActionError(toFriendlyError(err));
+        setActionError(toFriendlyError(err, tErr));
       } finally {
         setPending(null);
       }
     },
-    [reload, t],
+    [reload, t, tErr],
   );
 
   const onToggleHistory = useCallback(
@@ -137,10 +149,10 @@ export function WebhookSubscriptionsSection(): React.ReactElement {
         const res = await listWebhookSubscriptionDeliveries(id);
         setDeliveries(res.deliveries);
       } catch (err) {
-        setActionError(toFriendlyError(err));
+        setActionError(toFriendlyError(err, tErr));
       }
     },
-    [expanded],
+    [expanded, tErr],
   );
 
   return (
@@ -151,7 +163,17 @@ export function WebhookSubscriptionsSection(): React.ReactElement {
       <div className={`${card} mb-4 flex flex-wrap items-end gap-3`}>
         <label className="flex flex-col gap-1">
           <span className="text-[11px] uppercase tracking-[0.16em] text-[color:var(--fg-muted)]">{t('fields.url')}</span>
-          <input className={inputCls} value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://example.com/hook" />
+          <input
+            className={inputCls}
+            value={url}
+            onChange={(e) => {
+              setUrl(e.target.value);
+              if (createError?.field === 'url') setCreateError(null);
+            }}
+            placeholder="https://example.com/hook"
+            aria-invalid={createError?.field === 'url'}
+          />
+          {createError?.field === 'url' && <WebhookError error={createError} className="max-w-xs" />}
         </label>
         <label className="flex flex-col gap-1">
           <span className="text-[11px] uppercase tracking-[0.16em] text-[color:var(--fg-muted)]">{t('fields.event')}</span>
@@ -164,15 +186,32 @@ export function WebhookSubscriptionsSection(): React.ReactElement {
           <span className="text-[11px] uppercase tracking-[0.16em] text-[color:var(--fg-muted)]">{t('fields.description')}</span>
           <input className={inputCls} value={description} onChange={(e) => setDescription(e.target.value)} />
         </label>
-        <Button variant="primary" onClick={() => void onCreate()} disabled={!url.trim() || creating}>
+        <Button variant="primary" onClick={() => void onCreate()} disabled={!url.trim() || creating || revealedSecret !== null}>
           {creating ? '…' : t('create')}
         </Button>
       </div>
+      {/* Above the list, not inside the row it belongs to: if that row vanishes
+          (deleted, or the reload after a create failed) the secret and its
+          Dismiss button must stay reachable, or Create and Rotate stay
+          blocked with no way out (#1339). */}
+      {revealedSecret !== null && (
+        <div className="-mt-2 mb-4">
+          <p className="text-[13px] text-[color:var(--fg-muted)]">{t('blockedByReveal')}</p>
+          <OneTimeSecret
+            secret={revealedSecret.secret}
+            heading={t('secretRevealed')}
+            onDismiss={() => setRevealedSecret(null)}
+          />
+        </div>
+      )}
+      {createError !== null && createError.field === undefined && (
+        <WebhookError error={createError} className="-mt-2 mb-4" />
+      )}
 
       {state.kind === 'loading' ? (
         <p className="text-sm opacity-70">{t('loading')}</p>
       ) : state.kind === 'error' ? (
-        <p className="text-sm text-[color:var(--danger)]">{state.message}</p>
+        <WebhookError error={state.error} />
       ) : state.subscriptions.length === 0 ? (
         <p className="text-sm text-[color:var(--fg-muted)]">{t('empty')}</p>
       ) : (
@@ -195,7 +234,7 @@ export function WebhookSubscriptionsSection(): React.ReactElement {
                   <Button variant="secondary" onClick={() => void onToggle(sub.id, !sub.enabled)} disabled={pending === sub.id}>
                     {sub.enabled ? t('disable') : t('enable')}
                   </Button>
-                  <Button variant="secondary" onClick={() => void onRotate(sub.id)} busy={pending === sub.id} busyLabel={t('rotating')}>
+                  <Button variant="secondary" onClick={() => void onRotate(sub.id)} disabled={revealedSecret !== null} busy={pending === sub.id} busyLabel={t('rotating')}>
                     {t('rotateSecret')}
                   </Button>
                   <Button variant="danger" onClick={() => void onDelete(sub.id)} busy={pending === sub.id} busyLabel={t('deleting')}>
@@ -204,15 +243,6 @@ export function WebhookSubscriptionsSection(): React.ReactElement {
                 </div>
               </div>
 
-              {revealedSecret?.id === sub.id && (
-                <div className="mt-3 rounded-md border border-[color:var(--accent)] bg-[color:var(--accent)]/5 p-3">
-                  <p className="mb-1 text-[12px] font-semibold text-[color:var(--fg-strong)]">{t('secretRevealed')}</p>
-                  <code className="block break-all text-[12px] text-[color:var(--fg-strong)]">{revealedSecret.secret}</code>
-                  <Button variant="ghost" onClick={() => setRevealedSecret(null)}>
-                    {t('dismiss')}
-                  </Button>
-                </div>
-              )}
 
               {expanded === sub.id && (
                 <div className="mt-3 border-t border-[color:var(--border)] pt-3">
@@ -251,7 +281,7 @@ export function WebhookSubscriptionsSection(): React.ReactElement {
         </ul>
       )}
 
-      {actionError && <p className="mt-4 text-sm text-[color:var(--danger)]">{actionError}</p>}
+      {actionError && <WebhookError error={actionError} className="mt-4" />}
     </section>
   );
 }

@@ -152,14 +152,17 @@ function forcedTool(req: LlmRequest): ToolSpec | undefined {
   return undefined;
 }
 
-/** Instruction appended to the prompt so `claude -p` emits ONLY the tool's
- *  arguments as JSON — which we parse back into a synthetic tool_call. */
+/** Instruction appended to the prompt so `claude -p` emits the tool's
+ *  arguments as JSON — which we parse back into a synthetic tool_call. The CLI
+ *  has no structured-output channel, so the contract rides in the prompt. #1236
+ *  dropped the stacked emphasis; the schema and "single object, no prose, no
+ *  fences" stay. */
 function structuredSuffix(tool: ToolSpec): string {
   return [
     '',
-    `You MUST produce the arguments for the tool \`${tool.name}\`${tool.description ? ` (${tool.description})` : ''}.`,
-    'Respond with ONLY a single JSON object — no prose, no markdown fences — whose',
-    'shape matches this JSON schema exactly:',
+    `Your reply is parsed as the arguments for the tool \`${tool.name}\`${tool.description ? ` (${tool.description})` : ''}.`,
+    'Reply with a single JSON object that matches this JSON schema, with no prose',
+    'and no markdown fences around it:',
     JSON.stringify(tool.inputSchema),
   ].join('\n');
 }

@@ -4,8 +4,9 @@ import {
   resolveModelRefStrict,
   UnresolvedModelRefError,
 } from '@omadia/llm-provider';
-import type { KnowledgeGraph } from '@omadia/plugin-api';
+import type { DecisionModelService, KnowledgeGraph } from '@omadia/plugin-api';
 import type { PluginContext } from '@omadia/plugin-api';
+import { DECISION_MODEL_SERVICE_NAME } from '@omadia/plugin-api';
 import {
   initUsageRecorder,
   withProviderUsageTracking,
@@ -35,6 +36,7 @@ import { VerifierStore } from './verifierStore.js';
  *     store?:      VerifierStore,
  *     mode:        'shadow' | 'enforce',
  *     maxRetries:  number,
+ *     resampleOnBorderline?: boolean,
  *   }
  *
  * The kernel late-resolves the bundle after `activateAllInstalled` and
@@ -78,6 +80,13 @@ export interface VerifierBundle {
   store?: VerifierStore;
   mode: 'shadow' | 'enforce';
   maxRetries: number;
+  /**
+   * `enforce` draws a second sample of a borderline answer (the setup field
+   * `verifier_resample_on_borderline`, seeded from
+   * `VERIFIER_RESAMPLE_ON_BORDERLINE`). On unless the operator set `false`.
+   * Optional so a bundle built before the field existed keeps the default.
+   */
+  resampleOnBorderline?: boolean;
 }
 
 export interface VerifierPluginHandle {
@@ -112,7 +121,10 @@ export async function activate(
   });
   if (!baseProvider) {
     ctx.log(
-      `[harness-verifier] no API key for provider '${providerId}' — plugin active but verifier@1 capability NOT published`,
+      providerId === 'claude-cli'
+        ? // #1583 — an assignment saved before the UI/API refused it.
+          "[harness-verifier] the verifier cannot run on the subscription CLI ('claude-cli') — assign it a key-based provider under LLM access; verifier@1 capability NOT published"
+        : `[harness-verifier] no API key for provider '${providerId}' — plugin active but verifier@1 capability NOT published`,
     );
     return {
       async close(): Promise<void> {
@@ -185,6 +197,12 @@ export async function activate(
     .toLowerCase();
   const mode: 'shadow' | 'enforce' =
     modeRaw === 'enforce' ? 'enforce' : 'shadow';
+  // Kill switch for the borderline resample: off only for an explicit
+  // `false`, so an install that predates the field keeps today's behaviour.
+  const resampleOnBorderline =
+    (ctx.config.get<string>('verifier_resample_on_borderline') ?? '')
+      .trim()
+      .toLowerCase() !== 'false';
   const tenant =
     (ctx.config.get<string>('graph_tenant_id') ?? '').trim() ||
     DEFAULT_TENANT;
@@ -207,15 +225,35 @@ export async function activate(
     graph: knowledgeGraph,
   });
   const fetcher = new GraphEvidenceFetcher({ graph: knowledgeGraph });
+  // `decisionModel@1` (optional): resolved per checkAll, never here — a
+  // decision-model plugin may activate after the verifier. Kill switch:
+  // off only for an explicit false.
+  const decisionModelEnabled = parseBoolDefaultTrue(
+    ctx.config.get<unknown>('verifier_decision_model'),
+  );
   const judge = new EvidenceJudge({
     llm,
     fetcher,
     model,
+    ...(decisionModelEnabled
+      ? {
+          decide: () =>
+            ctx.services.getOptional?.<DecisionModelService>(DECISION_MODEL_SERVICE_NAME),
+        }
+      : {}),
   });
+  // One cap for both stages. The pipeline checks at most `maxClaims` and keeps
+  // any further claim in the verdict as not checked. The extractor asks the
+  // model for `maxClaims + 1`, so a model that keeps to the limit still shows
+  // when it had more to list: a full list is reported as a coverage gap and
+  // kept in the verdict as not checked, like text beyond the extractor's
+  // window. Neither the cap nor the window can make a partly read answer
+  // `approved`.
   const pipeline = new VerifierPipeline({
     extractor,
     deterministic,
     judge,
+    maxClaims,
   });
   const store = graphPool
     ? new VerifierStore({ pool: graphPool, tenant })
@@ -226,11 +264,12 @@ export async function activate(
     ...(store ? { store } : {}),
     mode,
     maxRetries,
+    resampleOnBorderline,
   };
 
   ctx.services.provide(VERIFIER_SERVICE, bundle);
   ctx.log(
-    `[harness-verifier] verifier@1 published (mode=${mode}, model=${model}, store=${store ? 'on' : 'off'}, odoo=${odooClient ? 'on' : 'off'}, maxRetries=${String(maxRetries)})`,
+    `[harness-verifier] verifier@1 published (mode=${mode}, model=${model}, store=${store ? 'on' : 'off'}, odoo=${odooClient ? 'on' : 'off'}, maxRetries=${String(maxRetries)}, resampleOnBorderline=${String(resampleOnBorderline)}, decisionModel=${decisionModelEnabled ? 'on' : 'off'})`,
   );
 
   return {
@@ -247,6 +286,12 @@ function parseNumberOrDefault(raw: unknown, fallback: number): number {
     if (Number.isFinite(parsed)) return parsed;
   }
   return fallback;
+}
+
+function parseBoolDefaultTrue(value: unknown): boolean {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') return value.trim().toLowerCase() !== 'false';
+  return true;
 }
 
 function clampMaxRetries(n: number): number {

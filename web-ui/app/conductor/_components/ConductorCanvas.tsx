@@ -44,12 +44,18 @@ import {
   type ConductorWorkflow,
 } from '@/app/_lib/api';
 import { KIND_BADGE_FG, KIND_COLOR } from './stepKindColors';
+import { describeActionId } from './actionIdLabel';
+import { PersonPicker } from './PersonPicker';
 
 // ── Node data model ────────────────────────────────────────────────────────
 // node.id is a stable internal id; data.stepId is the user-facing (renameable)
 // step id used in the serialized graph, so renaming never breaks edges.
 
 type StepKind = 'agent' | 'action' | 'human';
+
+/** #1698 — the guards a new edge out of a human step starts with: approval, then rejection. */
+const APPROVED_GUARD = JSON.stringify({ op: 'eq', path: 'stepResult.approved', value: true });
+const REJECTED_GUARD = JSON.stringify({ op: 'eq', path: 'stepResult.approved', value: false });
 
 interface StepNodeData extends Record<string, unknown> {
   stepId: string;
@@ -77,8 +83,10 @@ interface StepNodeData extends Record<string, unknown> {
 type StepNode = Node<StepNodeData>;
 
 function StepNodeView({ data, selected }: NodeProps<StepNode>): React.JSX.Element {
+  const t = useTranslations('conductor');
+  const action = data.kind === 'action' ? describeActionId(data.actionId) : null;
   const primary =
-    data.kind === 'agent' ? data.agentId || '—' : data.kind === 'action' ? data.actionId || '—' : data.human.principalRef || '—';
+    data.kind === 'agent' ? data.agentId || '—' : data.kind === 'action' ? action?.label || '—' : data.human.principalRef || '—';
   return (
     <div
       style={{ borderColor: selected ? 'var(--fg-strong)' : KIND_COLOR[data.kind] }}
@@ -99,7 +107,10 @@ function StepNodeView({ data, selected }: NodeProps<StepNode>): React.JSX.Elemen
         )}
       </div>
       <div className="mt-1 font-mono text-[13px] font-medium">{data.stepId}</div>
-      <div className="font-mono text-[11px] text-[color:var(--fg-muted)]">{primary}</div>
+      <div className="font-mono text-[11px] text-[color:var(--fg-muted)]">
+        {primary}
+        {action?.isMcp ? <span className="ml-1 rounded bg-black/20 px-1 text-[9px] font-semibold uppercase">{t('actionMcpBadge')}</span> : null}
+      </div>
       <Handle type="source" position={Position.Right} />
     </div>
   );
@@ -129,6 +140,12 @@ function emptyData(kind: StepKind, n: number): StepNodeData {
     fallbackTransitionId: '',
     isEntry: n === 1,
   };
+}
+
+/** #1698 — one definition of "this edge leaves a human step", used by the connect handler
+ *  (against a ref) and by the inspector hint (against render-time state). */
+function isHumanNode(ns: StepNode[], id: string | null | undefined): boolean {
+  return ns.some((n) => n.id === id && n.data.kind === 'human');
 }
 
 interface ValidationError {
@@ -173,6 +190,13 @@ function CanvasInner({
   const t = useTranslations('conductor');
   const [nodes, setNodes] = useState<StepNode[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
+  // #1698 — `onConnect` needs the node list to see whether the edge leaves a human step, but
+  // `nodes` changes on every drag; a ref keeps the callback dependency-free like every other
+  // one in this file (the rest reach their state through functional updaters).
+  const nodesRef = useRef<StepNode[]>([]);
+  useEffect(() => {
+    nodesRef.current = nodes;
+  }, [nodes]);
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
   const [selectedEdge, setSelectedEdge] = useState<string | null>(null);
 
@@ -252,7 +276,21 @@ function CanvasInner({
     if (!c.source || !c.target) return;
     nextId.current += 1;
     const id = `t-${String(nextId.current)}`;
-    setEdges((es) => addEdge({ ...c, id, data: { guard: '' } }, es));
+    // #1698 — an edge drawn OUT OF A HUMAN STEP is pre-filled with a guard. An unguarded edge
+    // can no longer carry a rejection (the engine refuses to take it), so an empty guard here
+    // is the shape that leaves a rejected run with nowhere to go. The FIRST such edge gets the
+    // approval guard and the next one the rejection guard — which is the two-edge shape the
+    // inspector hint asks for, and pre-filling `true` twice would instead collide at run time
+    // as `ambiguous_guards`. Everything the author drew stays editable in the inspector; every
+    // edge out of a non-human step keeps starting empty.
+    setEdges((es) => {
+      const guard = isHumanNode(nodesRef.current, c.source)
+        ? es.some((e) => e.source === c.source && (e.data?.guard as string | undefined) === APPROVED_GUARD)
+          ? REJECTED_GUARD
+          : APPROVED_GUARD
+        : '';
+      return addEdge({ ...c, id, data: { guard } }, es);
+    });
   }, []);
 
   const addStep = useCallback((kind: StepKind) => {
@@ -756,23 +794,39 @@ function CanvasInner({
                 <>
                   <div className={lbl}>
                     {t('principalLabel')}
-                    <div className="flex gap-2">
+                    {/* Stacked, not side-by-side: the inspector is narrow and the people picker
+                        needs the full width for its suggestion list (live check 2026-10-30). */}
+                    <div className="grid gap-2">
                       <select
-                        className={`${input} w-24`}
+                        className={input}
                         value={sel.data.human.principalKind}
                         onChange={(e) => patchNode(sel.id, { human: { ...sel.data.human, principalKind: e.target.value as 'user' | 'role' } })}
                       >
                         <option value="role">role</option>
                         <option value="user">user</option>
                       </select>
-                      <div className="flex-1">
-                        <RefPicker
-                          label=""
-                          value={sel.data.human.principalRef}
-                          onChange={(v) => patchNode(sel.id, { human: { ...sel.data.human, principalRef: v } })}
-                          options={sel.data.human.principalKind === 'role' ? roleCatalog : []}
-                          placeholder={sel.data.human.principalKind === 'role' ? 'approver.release' : 'name@firm.com'}
-                        />
+                      <div className="min-w-0">
+                        {sel.data.human.principalKind === 'role' ? (
+                          <RefPicker
+                            label=""
+                            value={sel.data.human.principalRef}
+                            onChange={(v) => patchNode(sel.id, { human: { ...sel.data.human, principalRef: v } })}
+                            options={roleCatalog}
+                            placeholder="approver.release"
+                          />
+                        ) : (
+                          // People directory (channel plugins) — picking a candidate also pins the
+                          // channel it is routable on; free text (an address) stays valid.
+                          <PersonPicker
+                            value={sel.data.human.principalRef}
+                            channel={sel.data.human.channel}
+                            onChange={(ref, candidate) =>
+                              patchNode(sel.id, {
+                                human: { ...sel.data.human, principalRef: ref, ...(candidate ? { channel: candidate.channelType } : {}) },
+                              })
+                            }
+                          />
+                        )}
                       </div>
                     </div>
                   </div>
@@ -851,6 +905,11 @@ function CanvasInner({
                 value={(selEdge.data?.guard as string) ?? ''}
                 onChange={(v) => setEdges((es) => es.map((ed) => (ed.id === selEdge.id ? { ...ed, data: { ...ed.data, guard: v } } : ed)))}
               />
+              {/* #1698 — only for an edge out of a human step: an empty guard here is the
+                  shape that strands a rejected approval, so say so where it is editable. */}
+              {isHumanNode(nodes, selEdge.source) && (
+                <p className="text-[11px] text-[color:var(--fg-muted)]">{t('guardHumanRejectionHint')}</p>
+              )}
             </div>
           )}
         </div>

@@ -6,7 +6,11 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { Clock, LogIn } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 
-import { getSessionStatus, renewSession } from '../_lib/api';
+import {
+  getSessionStatus,
+  renewSession,
+  type SessionEndReason,
+} from '../_lib/api';
 
 /**
  * SessionWatcher — turns the previously *silent* session logout into a
@@ -30,6 +34,9 @@ import { getSessionStatus, renewSession } from '../_lib/api';
  *     only, never silent, and bounded server-side by an absolute cap from
  *     the original sign-in; the card switches to "sign in again" for the
  *     final window (`renewable_until`) and after a refused renewal.
+ *   - A probe that sees a server-side revocation (`auth.revoked`: signed
+ *     out on another device, ended by an admin) shows a distinct "session
+ *     ended" overlay instead of "expired" (#1322).
  *   - At expiry it shows a blocking overlay. An expired session cannot be
  *     renewed, only replaced by a real login.
  *
@@ -94,6 +101,9 @@ export function SessionWatcher(): React.ReactElement | null {
   const [clock, setClock] = useState<SessionClock | null>(null);
   const [warningDismissed, setWarningDismissed] = useState(false);
   const [renewState, setRenewState] = useState<RenewState>('idle');
+  // #1322 — why the session ended; only meaningful once phase is 'expired'.
+  // Local clock expiry leaves it at 'expired'; a probe can report 'revoked'.
+  const [endReason, setEndReason] = useState<SessionEndReason>('expired');
   // Highest server-side `exp` seen (epoch s). A session's expiry only moves
   // forward (login, renewal). A heartbeat sent before a renewal that answers
   // after it carries the OLD exp and must not shrink the clock again.
@@ -149,6 +159,7 @@ export function SessionWatcher(): React.ReactElement | null {
           status.expiresAt === null ||
           status.serverNow === null
         ) {
+          setEndReason(status.reason ?? 'expired');
           advancePhase('expired');
           return;
         }
@@ -233,7 +244,7 @@ export function SessionWatcher(): React.ReactElement | null {
   return (
     <AnimatePresence>
       {phase === 'expired' ? (
-        <SessionExpiredOverlay key="expired" />
+        <SessionExpiredOverlay key="expired" reason={endReason} />
       ) : phase === 'warning' && !warningDismissed && clock !== null ? (
         <SessionWarningCard
           key="warning"
@@ -357,8 +368,15 @@ function SessionWarningCard({
 }
 
 /** Blocking full-screen overlay shown once the session is gone. */
-function SessionExpiredOverlay(): React.ReactElement {
+function SessionExpiredOverlay({
+  reason,
+}: {
+  reason: SessionEndReason;
+}): React.ReactElement {
   const t = useTranslations('session');
+  const revoked = reason === 'revoked';
+  const title = revoked ? t('revokedTitle') : t('expiredTitle');
+  const body = revoked ? t('revokedBody') : t('expiredBody');
   const ctaRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
@@ -369,7 +387,7 @@ function SessionExpiredOverlay(): React.ReactElement {
     <motion.div
       role="alertdialog"
       aria-modal="true"
-      aria-label={t('expiredTitle')}
+      aria-label={title}
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
@@ -388,10 +406,10 @@ function SessionExpiredOverlay(): React.ReactElement {
           {t('expiredKicker')}
         </div>
         <h2 className="font-display mt-1 text-2xl font-medium leading-tight text-[color:var(--ink)]">
-          {t('expiredTitle')}
+          {title}
         </h2>
         <p className="mt-2 text-[13px] leading-relaxed text-[color:var(--muted-ink)]">
-          {t('expiredBody')}
+          {body}
         </p>
         {/* eslint-disable-next-line no-restricted-syntax -- bespoke ink-fill CTA (paper/ink palette + uppercase tracking), not §4.2 primary */}
         <button

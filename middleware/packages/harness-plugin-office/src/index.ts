@@ -36,6 +36,7 @@ export {
   MEDIA_TYPE,
   OfficePostconditionError,
   OfficeRenderError,
+  OfficeUnsafeFormulaError,
 } from './types.js';
 export type {
   DocxDescriptor,

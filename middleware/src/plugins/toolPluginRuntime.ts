@@ -9,6 +9,7 @@ import {
 } from '../platform/pluginHandoffPlan.js';
 import { eventEmitIds } from '../platform/eventCatalogRegistry.js';
 import type { PluginRouteRegistry } from '../platform/pluginRouteRegistry.js';
+import { claimDeclaredPublicPaths } from '../platform/publicPathClaim.js';
 import { PublicPathClaimError } from '../platform/publicPathGrants.js';
 import type { PublicPathGrantRegistry } from '../platform/publicPathGrants.js';
 import type { PublicPathGrantStore } from '../platform/publicPathGrantStore.js';
@@ -29,6 +30,13 @@ import type { BuiltInPackageStore } from './builtInPackageStore.js';
 import type { SelfExtendRegistry } from './selfExtension/selfExtendRegistry.js';
 import type { ExtensionStore } from './selfExtension/extensionStore.js';
 import { resolveEligiblePlugins } from './capabilityResolver.js';
+import {
+  PluginProbeTracker,
+  credentialFingerprint,
+  type BoundProbe,
+  type ConnectionProbeOutcome,
+} from './connectionProbe.js';
+import { describeActivationFailure } from './activationFailure.js';
 import type { InstalledRegistry } from './installedRegistry.js';
 import type { JobScheduler } from './jobScheduler.js';
 import type { PluginCatalog, PluginCatalogEntry } from './manifestLoader.js';
@@ -67,9 +75,12 @@ interface ModuleSelfExtend {
 
 interface ToolPluginModuleShape {
   activate?: (ctx: unknown) => Promise<ToolPluginHandle>;
+  /** Issue #1453 — optional credential check. See `connectionProbe.ts`. */
+  verifyConnection?: (ctx: unknown) => unknown;
   selfExtend?: ModuleSelfExtend;
   default?: {
     activate?: (ctx: unknown) => Promise<ToolPluginHandle>;
+    verifyConnection?: (ctx: unknown) => unknown;
     selfExtend?: ModuleSelfExtend;
   };
 }
@@ -79,6 +90,10 @@ interface ActiveEntry {
   handle: ToolPluginHandle;
   /** Dispose handles from `selfExtend.apply()` of each approved extension. */
   extDisposes: Array<() => void>;
+  /** Issue #1453 — bound connection probe, kept so the operator-triggered
+   *  re-check can run it against the SAME context the plugin activated with.
+   *  Absent for a plugin that exports no `verifyConnection`. */
+  probe?: BoundProbe;
 }
 
 export interface ToolPluginRuntimeDeps {
@@ -149,6 +164,10 @@ export interface ToolPluginRuntimeDeps {
     entry: PluginCatalogEntry,
     packagePath: string,
   ) => void | Promise<void>;
+  /** Fired right before a plugin's own `activate()` runs, i.e. before it reads
+   *  anything (config, the model catalog). Lets the wiring record what the
+   *  activation is about to see (#1359). Synchronous; a throw is logged. */
+  onActivating?: (agentId: string) => void;
   /** Counterpart to `onActivated`: fired after a plugin is removed from the
    *  active set, so the wiring can `unregisterServiceType` its entries. */
   onDeactivated?: (agentId: string) => void | Promise<void>;
@@ -182,7 +201,29 @@ const MIGRATION_TIMEOUT_MS = 60_000;
 export class ToolPluginRuntime {
   private readonly active = new Map<string, ActiveEntry>();
 
-  constructor(private readonly deps: ToolPluginRuntimeDeps) {}
+  /** Issue #1453 — binds and backgrounds each plugin's credential check. The
+   *  sink guard asks `active` on every write, so a verdict cannot outlive the
+   *  plugin it is about. */
+  private readonly probes: PluginProbeTracker;
+
+  constructor(private readonly deps: ToolPluginRuntimeDeps) {
+    // #1453 — built in the body, not as a field initializer: field
+    // initializers run before the parameter property `deps` is assigned.
+    this.probes = new PluginProbeTracker({
+      isActive: (id) => this.active.has(id),
+      log: (msg) => {
+        this.log(msg);
+      },
+    });
+  }
+
+  /** The runtime's own logger, resolved per call so a dep set later still
+   *  wins over the console fallback. */
+  private log(msg: string): void {
+    (this.deps.log ?? ((m: string) => {
+      console.log(m);
+    }))(msg);
+  }
 
   /** Activates every tool- or extension-kind package that the registry
    *  marks as active. Fails per-plugin (logs + circuit-breaker) rather
@@ -245,10 +286,10 @@ export class ToolPluginRuntime {
         // A manifest-mtime reset in retryErroredPlugins is self-correcting:
         // the next resolution drops and blocks the duplicate again, with a
         // fresh error timestamp, without aborting boot or looping here.
-        await this.deps.registry.markActivationBlocked(
-          duplicate.droppedId,
-          duplicate.message,
-        );
+        await this.deps.registry.markActivationBlocked(duplicate.droppedId, {
+          message: duplicate.message,
+          code: 'provider_conflict',
+        });
       } catch (regErr) {
         log(
           `[tool-runtime] registry markActivationBlocked FAILED for ${duplicate.droppedId}: ${regErr instanceof Error ? regErr.message : String(regErr)}`,
@@ -265,7 +306,7 @@ export class ToolPluginRuntime {
         // without re-running the resolver itself (S+8.5 sub-commit 3).
         await this.deps.registry.markActivationFailed(
           u.consumerId,
-          msg,
+          { message: msg, code: 'dependency_unresolved' },
           u.requires,
         );
       } catch (regErr) {
@@ -288,7 +329,10 @@ export class ToolPluginRuntime {
         const msg = err instanceof Error ? err.message : String(err);
         log(`[tool-runtime] activate FAILED for ${id}: ${msg}`);
         try {
-          await this.deps.registry.markActivationFailed(id, msg);
+          await this.deps.registry.markActivationFailed(
+            id,
+            describeActivationFailure(err),
+          );
         } catch (regErr) {
           log(
             `[tool-runtime] registry markActivationFailed FAILED for ${id}: ${regErr instanceof Error ? regErr.message : String(regErr)}`,
@@ -337,6 +381,16 @@ export class ToolPluginRuntime {
     await fs.access(entryAbs).catch(() => {
       throw new Error(`tool-runtime: entry file not readable at ${entryAbs}`);
     });
+
+    if (this.deps.onActivating) {
+      try {
+        this.deps.onActivating(agentId);
+      } catch (err) {
+        log(
+          `[tool-runtime] onActivating hook FAILED for ${agentId}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
 
     const mod = (await import(pathToFileURL(entryAbs).href)) as ToolPluginModuleShape;
     const activateFn = mod.activate ?? mod.default?.activate;
@@ -544,7 +598,9 @@ export class ToolPluginRuntime {
     // mistake as trusting it about authentication.
     //
     // A rejected claim is a hard activation failure with the SAME rollback the
-    // catch above performs. Half-activating a plugin whose public-path
+    // catch above performs. #1465 — "rejected" excludes a declared prefix the
+    // plugin serves nothing under while it is ungranted: that one makes nothing
+    // public, so `claim()` reserves it and reports it instead. Half-activating a plugin whose public-path
     // declaration conflicts with another plugin's is the one outcome worse than
     // refusing it: the operator would see a healthy plugin serving a prefix
     // somebody else owns.
@@ -552,36 +608,14 @@ export class ToolPluginRuntime {
       const declared = catalogEntry.plugin.permissions_summary?.public_paths ?? [];
       if (declared.length > 0) {
         try {
-          const granted =
-            (await this.deps.publicPathGrantStore?.listForPlugin(agentId)) ??
-            new Set<string>();
-          this.deps.publicPathGrants.claim(agentId, declared, {
-            corePublicPaths: this.deps.corePublicPaths ?? [],
-            ownRoutePrefixes: this.deps.pluginRouteRegistry
-              .list()
-              .filter((r) => r.source === agentId && !r.disposed)
-              .map((r) => r.prefix),
-            grantedPrefixes: granted,
+          await claimDeclaredPublicPaths(agentId, declared, {
+            grants: this.deps.publicPathGrants,
+            store: this.deps.publicPathGrantStore,
+            corePublicPaths: this.deps.corePublicPaths,
+            routeRegistry: this.deps.pluginRouteRegistry,
+            log,
+            tag: 'tool-runtime',
           });
-          const ungranted = declared.filter((p) => !granted.has(p));
-          // Epic #470 C16 (#817) — name the remedy, not just the state.
-          //
-          // An ungranted prefix is deliberately NOT an activation failure: the
-          // claim holds (nobody else can take the prefix) and the route simply
-          // falls through to `requireAuth`, which is the fail-closed direction
-          // and the behaviour every already-installed plugin depends on. But
-          // "declared-but-awaiting-consent" told an operator what was wrong
-          // without telling them where to fix it, and the answer used to be
-          // "there is no UI" — which is precisely what C16 changes.
-          log(
-            `[tool-runtime] public paths for ${agentId}: ${String(granted.size)} granted, ` +
-              `${String(ungranted.length)} declared-but-awaiting-consent` +
-              (ungranted.length > 0
-                ? ` (${ungranted.join(', ')}) — these prefixes stay behind requireAuth until an operator consents ` +
-                  `in the admin UI under Plugins \u2192 ${agentId} \u2192 Permissions, or with ` +
-                  `PUT /api/v1/admin/runtime/installed/${encodeURIComponent(agentId)}/grants`
-                : ''),
-          );
         } catch (err) {
           this.deps.publicPathGrants.releaseBySource(agentId);
           this.deps.pluginRouteRegistry.disposeBySource(agentId);
@@ -633,7 +667,27 @@ export class ToolPluginRuntime {
       }
     }
 
-    this.active.set(agentId, { agentId, handle, extDisposes });
+    // Issue #1453 — bind the plugin's own credential check, if it exports one.
+    // The fingerprint keys the verdict cache: a provider write reactivates
+    // every dependent plugin, and re-probing each target system for
+    // credentials that did not change is exactly the waste the cache exists
+    // to avoid. It spans the secrets AND the non-secret config, because a
+    // `PATCH /installed/:id/config` reactivates too — a repaired `url` must
+    // not be served the rejection the wrong one earned.
+    // Unavailable vault ⇒ no fingerprint ⇒ no caching.
+    const fingerprint = await credentialFingerprint(
+      this.deps.vault,
+      agentId,
+      this.deps.registry.get(agentId)?.config,
+    );
+    const probe = this.probes.bind(
+      agentId,
+      mod,
+      ctx,
+      fingerprint !== undefined ? { credentialFingerprint: fingerprint } : {},
+    );
+
+    this.active.set(agentId, { agentId, handle, extDisposes, ...(probe ? { probe } : {}) });
 
     // Event-catalog autodiscovery (US4 / landmine K): static + built-in tool plugins resolve their
     // `event_emit: true` capabilities here — the only place they are picked up (the dynamic runtime
@@ -664,6 +718,44 @@ export class ToolPluginRuntime {
     log(
       `[tool-runtime] ACTIVATED ${agentId} (${catalogEntry.plugin.kind}, entry=${entryRel})`,
     );
+
+    // Issue #1453 — the credential check runs AFTER the plugin is up and is
+    // NOT awaited. Both halves are deliberate: the plugin's own client exists
+    // by now, and an activation must never wait on a third-party system that
+    // may be slow, rate-limiting or gone. The verdict lands in `ctx.status`
+    // whenever it arrives, which is where the badge, the banner and the
+    // orchestrator's tool gate already read from.
+    if (probe) this.probes.start(agentId, probe);
+  }
+
+  /**
+   * Issue #1453 — settle every connection probe this runtime has started.
+   *
+   * Exists for tests and for a caller that genuinely needs the verdict (the
+   * operator-triggered re-check awaits its own probe instead). Nothing on the
+   * boot path calls it: waiting for probes is exactly what activation does not
+   * do.
+   */
+  async whenConnectionProbesSettled(): Promise<void> {
+    await this.probes.settled();
+  }
+
+  /**
+   * Issue #1453 — re-run one active plugin's credential check now, in place.
+   *
+   * Backs `POST /api/v1/admin/runtime/installed/:id/verify`, so an operator who
+   * fixed a key upstream can clear a red badge without saving a field to force
+   * a reactivation. Returns `undefined` when the plugin is not active here or
+   * exports no `verifyConnection` — "no answer", which the route must not
+   * render as a healthy one.
+   */
+  async verifyConnectionNow(
+    agentId: string,
+  ): Promise<ConnectionProbeOutcome | undefined> {
+    const probe = this.active.get(agentId)?.probe;
+    if (!probe) return undefined;
+    // `force`: a "check now" that answers from a cache is not a check.
+    return this.probes.run(agentId, probe, { force: true });
   }
 
   async deactivate(agentId: string): Promise<boolean> {

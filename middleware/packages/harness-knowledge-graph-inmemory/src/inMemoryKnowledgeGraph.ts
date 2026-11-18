@@ -2,7 +2,10 @@ import { randomUUID } from 'node:crypto';
 
 import {
   agentInvocationNodeId,
+  agentScopePrefix,
   channelIdentityNodeId,
+  CONVERSATION_HISTORY_NODE_TYPES,
+  type ConversationHistoryPurgeFilter,
   entityNodeId,
   excerptMergeCandidateNodeId,
   inconsistencyNodeId,
@@ -18,6 +21,8 @@ import {
   topicNodeId,
   turnNodeId,
   userNodeId,
+  canonicalOwners,
+  ownersCoverAudience,
   type ChannelIdentityIngest,
   type CreateMergeCandidateInput,
   type DatasetAggregate,
@@ -98,6 +103,7 @@ import {
   type SessionFilter,
   type SessionSummary,
   type SessionView,
+  type SessionReadOptions,
   type TurnIngest,
   type TurnIngestResult,
   type TurnSearchHit,
@@ -119,6 +125,28 @@ function matchesAgentScopePrefix(
   if (scope.startsWith(prefix)) return true;
   if (prefix === 'default::' && !scope.includes('::')) return true;
   return false;
+}
+
+/**
+ * Member-scoped memory parity with the Neon `properties @> {"owners": …}`
+ * clause: everyone in `audience` must be one of the node's `owners`. A node
+ * without owners, and an empty audience, match nothing.
+ */
+function visibleToAudience(
+  node: GraphNode | undefined,
+  audience: readonly string[],
+): boolean {
+  const owners = node?.props['owners'];
+  return Array.isArray(owners) && ownersCoverAudience(owners as string[], canonicalOwners(audience));
+}
+
+/**
+ * Member-scoped memory parity with Neon: a memorable row an operator wrote,
+ * not one T3 durable auto-promotion marked `manuallyAuthored` — that one came
+ * out of a conversation (`created_by` = `auto:…`) and belongs to its owners.
+ */
+function isOperatorAuthored(node: GraphNode): boolean {
+  return node.manuallyAuthored === true && !String(node.props['created_by'] ?? '').startsWith('auto:');
 }
 
 /** #430 — one `dataset_rows` row's evaluation of a single `DatasetFilter`.
@@ -302,6 +330,13 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
         // unconditionally (see the Neon backend): props are merged on upsert,
         // so an omitted flag could never clear a stale `true`.
         tailOnly: turn.tailOnly === true,
+        // #1507 — only written when set, like `owners`: a re-ingest from the
+        // session transcript (backfill, replay) carries no flag and must not
+        // clear one the live turn recorded.
+        ...(turn.unprotected !== undefined ? { unprotected: turn.unprotected } : {}),
+        // Member-scoped memory — see the Neon backend. Only written when set,
+        // so a re-ingest without it keeps the owners the live turn recorded.
+        ...(turn.owners !== undefined ? { owners: canonicalOwners(turn.owners) } : {}),
       },
       // Palaia (OB-70 / OB-71) — mirror the Neon DB defaults on Turn
       // ingest so the in-memory backend exposes the same axes to consumers.
@@ -442,11 +477,18 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     };
   }
 
-  async getSession(scope: string): Promise<SessionView | null> {
+  async getSession(
+    scope: string,
+    options?: SessionReadOptions,
+  ): Promise<SessionView | null> {
     const sessionId = sessionNodeId(scope);
     const session = this.nodes.get(sessionId);
     if (!session) return null;
-    const turnIds = this.sessionTurns.get(sessionId) ?? [];
+    const audience = options?.audienceOwners;
+    const turnIds = (this.sessionTurns.get(sessionId) ?? []).filter(
+      (turnId) => audience === undefined || visibleToAudience(this.nodes.get(turnId), audience),
+    );
+    if (audience !== undefined && turnIds.length === 0) return null;
     const turns = turnIds.map((turnId) => {
       const turnNode = this.nodes.get(turnId);
       const entityIds: string[] = [];
@@ -709,10 +751,12 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       // #1096 — tail-only turns are conversation, not knowledge: the session
       // tail reads them, recall must not.
       if (node.props['tailOnly'] === true) continue;
+      if (opts.excludeUnprotected === true && node.props['unprotected'] === true) continue;
       const scope = String(node.props['scope'] ?? '');
       if (opts.excludeScope && scope === opts.excludeScope) continue;
       if (!matchesAgentScopePrefix(scope, opts.agentScopePrefix)) continue;
       if (opts.userId && node.props['userId'] !== opts.userId) continue;
+      if (opts.audienceOwners !== undefined && !visibleToAudience(node, opts.audienceOwners)) continue;
 
       const haystack = (
         String(node.props['userMessage'] ?? '') +
@@ -781,9 +825,11 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       if (excludeTurnIds.has(node.id)) continue;
       // #1096 — see searchTurns.
       if (node.props['tailOnly'] === true) continue;
+      if (opts.excludeUnprotected === true && node.props['unprotected'] === true) continue;
       const scope = String(node.props['scope'] ?? '');
       if (opts.excludeScope && scope === opts.excludeScope) continue;
       if (!matchesAgentScopePrefix(scope, opts.agentScopePrefix)) continue;
+      if (opts.audienceOwners !== undefined && !visibleToAudience(node, opts.audienceOwners)) continue;
       if (opts.userId && node.props['userId'] !== opts.userId) continue;
 
       const entryType = (node.entryType ?? 'memory') as 'memory' | 'process' | 'task';
@@ -1076,6 +1122,8 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
           ? { significance: input.significance }
           : {}),
         ...(input.originAgent ? { origin_agent: input.originAgent } : {}),
+        // #1536 — holds values no shield masked; recall under a shield skips it.
+        ...(input.unprotected === true ? { unprotected: true } : {}),
         acl_owners: initialOwners,
         created_at: now,
         created_by: input.createdBy,
@@ -1405,6 +1453,125 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     return { deletedNodes: mkIds.length };
   }
 
+  /**
+   * #1334 — the ONE selection behind {@link countConversationHistory} and
+   * {@link purgeConversationHistory}; mirrors the Neon CTE rule for rule:
+   * roots by scope / user, then the Run, Plan, invocations, tool calls and
+   * steps of a selected Turn by edge, Facts derived only from selected Turns,
+   * and Sessions left without a Turn. This backend keeps scope / user in
+   * props instead of columns.
+   */
+  private conversationHistorySelection(
+    filter: ConversationHistoryPurgeFilter,
+  ): Set<string> {
+    const prefix =
+      filter.agentSlug !== undefined ? agentScopePrefix(filter.agentSlug) : undefined;
+    const edges = [...this.edges.values()];
+    const targets = (from: string, type: string): string[] =>
+      edges.filter((e) => e.from === from && e.type === type).map((e) => e.to);
+    const sources = (to: string, type: string): string[] =>
+      edges.filter((e) => e.to === to && e.type === type).map((e) => e.from);
+
+    const scopeMatches = (node: GraphNode): boolean => {
+      if (prefix === undefined) return true;
+      const scope = node.props['scope'];
+      return typeof scope === 'string' && matchesAgentScopePrefix(scope, prefix);
+    };
+    // The omadia user id plus the AAD ids of its channel identities: a Teams
+    // Turn stores the AAD id, its Run the omadia id.
+    const userNode = filter.userId !== undefined ? userNodeId(filter.userId) : undefined;
+    const userIds = new Set<unknown>();
+    if (filter.userId !== undefined && userNode !== undefined) {
+      userIds.add(filter.userId);
+      for (const identity of sources(userNode, 'IS_IDENTITY_OF')) {
+        const aad = this.nodes.get(identity)?.props['aadObjectId'];
+        if (typeof aad === 'string') userIds.add(aad);
+      }
+    }
+    const userMatches = (node: GraphNode): boolean =>
+      userNode === undefined ||
+      userIds.has(node.props['userId']) ||
+      (node.type === 'Turn' && targets(node.id, 'BELONGS_TO').includes(userNode));
+
+    const directTypes: readonly string[] = CONVERSATION_HISTORY_NODE_TYPES;
+    const roots = new Set<string>();
+    for (const node of this.nodes.values()) {
+      if (directTypes.includes(node.type) && scopeMatches(node) && userMatches(node)) {
+        roots.add(node.id);
+      }
+    }
+
+    const selection = new Set(roots);
+    const rootTurns = [...roots].filter((id) => this.nodes.get(id)?.type === 'Turn');
+    const rootTurnSet = new Set(rootTurns);
+    for (const turn of rootTurns) {
+      for (const run of targets(turn, 'EXECUTED')) selection.add(run);
+      for (const plan of sources(turn, 'PLAN_OF')) selection.add(plan);
+    }
+    // A Plan ingested before its Turn has no PLAN_OF edge, only the prop.
+    for (const node of this.nodes.values()) {
+      if (node.type === 'Plan' && rootTurnSet.has(node.props['turnId'] as string)) {
+        selection.add(node.id);
+      }
+    }
+    const base = [...selection];
+    const invocations = base.flatMap((id) => targets(id, 'INVOKED_AGENT'));
+    for (const id of invocations) selection.add(id);
+    for (const id of [...base, ...invocations]) {
+      for (const call of targets(id, 'INVOKED_TOOL')) selection.add(call);
+    }
+    for (const id of base) {
+      for (const step of sources(id, 'STEP_OF')) selection.add(step);
+    }
+
+    for (const node of this.nodes.values()) {
+      if (node.type === 'Fact') {
+        // Edge, or only the prop when the Fact predates its Turn.
+        const from = targets(node.id, 'DERIVED_FROM');
+        const source = node.props['sourceTurnId'];
+        const derived =
+          from.length > 0 || (typeof source === 'string' && rootTurnSet.has(source));
+        if (derived && from.every((t) => rootTurnSet.has(t))) selection.add(node.id);
+      } else if (node.type === 'Session' && scopeMatches(node)) {
+        const turns = sources(node.id, 'IN_SESSION');
+        if (turns.some((t) => !roots.has(t))) continue;
+        const involved =
+          userNode === undefined ||
+          userIds.has(node.props['userId']) ||
+          turns.some((t) => roots.has(t));
+        if (involved) selection.add(node.id);
+      }
+    }
+    return selection;
+  }
+
+  async countConversationHistory(
+    filter: ConversationHistoryPurgeFilter,
+  ): Promise<{ count: number }> {
+    return { count: this.conversationHistorySelection(filter).size };
+  }
+
+  async purgeConversationHistory(
+    filter: ConversationHistoryPurgeFilter,
+  ): Promise<{ deletedNodes: number }> {
+    const selection = this.conversationHistorySelection(filter);
+    for (const id of selection) {
+      this.nodes.delete(id);
+      this.embeddings.delete(id);
+      this.sessionTurns.delete(id);
+    }
+    for (const [key, edge] of this.edges.entries()) {
+      if (selection.has(edge.from) || selection.has(edge.to)) this.edges.delete(key);
+    }
+    for (const [sessionId, turns] of this.sessionTurns.entries()) {
+      this.sessionTurns.set(
+        sessionId,
+        turns.filter((t) => !selection.has(t)),
+      );
+    }
+    return { deletedNodes: selection.size };
+  }
+
   async updateMemorableKnowledge(
     memorableKnowledgeNodeId: string,
     patch: MemorableKnowledgeUpdate,
@@ -1654,7 +1821,15 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       // while an owner-owned private one cannot slip through the owner branch.
       const sharedOk =
         opts.sharedOnly !== true || ['team', 'public'].includes(node.visibility ?? 'team');
-      if ((!ownerMatch && !teamMatch) || !sharedOk) continue;
+      // Member-scoped memory REPLACES the viewer ACL — see the Neon backend.
+      const admitted =
+        opts.audienceOwners !== undefined
+          ? (ownersCoverAudience(owners, canonicalOwners(opts.audienceOwners)) ||
+              isOperatorAuthored(node)) &&
+            agentMatch
+          : ownerMatch || teamMatch;
+      if (!admitted || !sharedOk) continue;
+      if (opts.excludeUnprotected === true && !this.isProtectedMemory(node)) continue;
       const vector = this.embeddings.get(node.id);
       if (!vector) continue;
       const sim = cosine(opts.queryEmbedding, vector);
@@ -1706,7 +1881,15 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
       // narrowing runs against the PARENT's visibility.
       const sharedOk =
         opts.sharedOnly !== true || ['team', 'public'].includes(parent.visibility ?? 'team');
-      if ((!ownerMatch && !teamMatch) || !sharedOk) continue;
+      // Member-scoped memory: the parent MK's room rule replaces the viewer ACL.
+      const admitted =
+        opts.audienceOwners !== undefined
+          ? (ownersCoverAudience(owners, canonicalOwners(opts.audienceOwners)) ||
+              isOperatorAuthored(parent)) &&
+            agentMatch
+          : ownerMatch || teamMatch;
+      if (!admitted || !sharedOk) continue;
+      if (opts.excludeUnprotected === true && !this.isProtectedMemory(parent)) continue;
       const sim = cosine(opts.queryEmbedding, vector);
       if (!Number.isFinite(sim) || sim < minSimilarity) continue;
       hits.push({
@@ -2871,11 +3054,18 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
 
   async findEntities(opts: FindEntitiesOptions): Promise<GraphNode[]> {
     const limit = Math.max(1, Math.min(opts.limit ?? 25, 200));
+    // Exact-id identity (plugin-api 1.21.0): string-compared, so a numeric
+    // and a string id address the same record. An empty id names no record.
+    const idFilter = opts.id === undefined ? undefined : String(opts.id).trim();
+    if (idFilter !== undefined && idFilter.length === 0) return [];
     const nameLower = opts.nameContains?.trim().toLowerCase();
     const out: GraphNode[] = [];
     for (const node of this.nodes.values()) {
       if (node.type !== 'OdooEntity' && node.type !== 'ConfluencePage') continue;
       if (String(node.props['model'] ?? '') !== opts.model) continue;
+      if (idFilter !== undefined && String(node.props['id'] ?? '') !== idFilter) {
+        continue;
+      }
       if (nameLower && nameLower.length > 0) {
         const hay =
           String(node.props['displayName'] ?? '').toLowerCase() +
@@ -3165,6 +3355,9 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
           // #1096 — see searchTurns. A tail-only ingest carries no entityRefs,
           // so this is belt-and-braces for backfilled or legacy edges.
           if (turnNode.props['tailOnly'] === true) continue;
+          if (opts.excludeUnprotected === true && turnNode.props['unprotected'] === true) {
+            continue;
+          }
           if (opts.userId && turnNode.props['userId'] !== opts.userId) continue;
           if (opts.excludeScope && turnNode.props['scope'] === opts.excludeScope) continue;
           // Entity node stays global; entity-anchored recall is agent-isolated.
@@ -3175,6 +3368,9 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
             )
           )
             continue;
+          if (opts.audienceOwners !== undefined && !visibleToAudience(turnNode, opts.audienceOwners)) {
+            continue;
+          }
           capturingTurns.push(turnNode);
         }
       }
@@ -3362,9 +3558,13 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
     limit?: number;
     openOnly?: boolean;
     agentScopePrefix?: string;
+    excludeUnprotected?: boolean;
   }): Promise<GraphNode[]> {
     const limit = Math.max(1, Math.min(opts.limit ?? 5, 50));
     let plans = [...this.nodes.values()].filter((n) => n.type === 'Plan');
+    if (opts.excludeUnprotected === true) {
+      plans = plans.filter((p) => this.isProtectedPlan(p));
+    }
     if (opts.userId !== undefined) {
       plans = plans.filter((n) => n.props['userId'] === opts.userId);
     }
@@ -3397,6 +3597,33 @@ export class InMemoryKnowledgeGraph implements KnowledgeGraph {
         ),
       )
       .slice(0, limit);
+  }
+
+  /** #1536 — mirror of Neon `mkProtectedSql`: not stamped `unprotected`,
+   *  and derived from no Turn stored `unprotected`. */
+  private isProtectedMemory(mk: GraphNode): boolean {
+    if (mk.props['unprotected'] === true) return false;
+    for (const edge of this.edges.values()) {
+      if (edge.type !== 'DERIVED_FROM' || edge.from !== mk.id) continue;
+      const turn = this.nodes.get(edge.to);
+      if (turn?.type === 'Turn' && turn.props['unprotected'] === true) return false;
+    }
+    return true;
+  }
+
+  /** #1536 — mirror of the Neon plan predicate: the plan's Turns (PLAN_OF,
+   *  or the `turnId` property) exist, and none is stored `unprotected`. */
+  private isProtectedPlan(plan: GraphNode): boolean {
+    const turnIds = new Set<string>();
+    const propTurn = plan.props['turnId'];
+    if (typeof propTurn === 'string') turnIds.add(propTurn);
+    for (const edge of this.edges.values()) {
+      if (edge.type === 'PLAN_OF' && edge.from === plan.id) turnIds.add(edge.to);
+    }
+    const turns = [...turnIds]
+      .map((id) => this.nodes.get(id))
+      .filter((n): n is GraphNode => n !== undefined && n.type === 'Turn');
+    return turns.length > 0 && turns.every((t) => t.props['unprotected'] !== true);
   }
 
   private upsertNode(node: GraphNode): void {

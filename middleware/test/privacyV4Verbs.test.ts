@@ -201,6 +201,34 @@ function twoFiles() {
   return { store, engine, a, b };
 }
 
+describe('Verb API — link keys are never filter targets (#1560)', () => {
+  it('refuses eq/in on a `__k_*` column, like query_dataset does', () => {
+    const { engine, a } = twoFiles();
+    assert.throws(
+      () => engine.filter(a, { op: 'eq', field: '__k_email', value: 'a1f9c2e4b7d80013' }),
+      /link-key field "__k_email"/,
+    );
+    assert.throws(
+      () =>
+        engine.filter(a, {
+          op: 'not',
+          clause: { op: 'in', field: '__k_email', values: ['a1f9c2e4b7d80013'] },
+        }),
+      VerbError,
+    );
+  });
+
+  it('refuses renaming a link key to a plain name in v4_union (filter bypass)', () => {
+    const { engine, a, b } = twoFiles();
+    assert.throws(() => engine.union(a, b, { renameRight: { __k_email: 'k' } }), /link-key field/);
+  });
+
+  it('still takes the key as a v4_distinct key', () => {
+    const { engine, a } = twoFiles();
+    assert.doesNotThrow(() => engine.distinct(a, ['__k_email']));
+  });
+});
+
 describe('Verb API — union', () => {
   it('concatenates both datasets, left rows first', () => {
     const { store, engine, a, b } = twoFiles();

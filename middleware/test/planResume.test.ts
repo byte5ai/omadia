@@ -30,7 +30,15 @@ async function seed(
       goal: `goal ${s.id}`,
       order: i,
       status: s.status,
-      ...(s.resultSummary ? { resultSummary: s.resultSummary } : {}),
+      // A real `done` carries evidence (#1502); `resultSummary: ''` seeds a
+      // pre-#1502 record without any.
+      ...(s.resultSummary !== undefined
+        ? s.resultSummary === ''
+          ? {}
+          : { resultSummary: s.resultSummary }
+        : s.status === 'done'
+          ? { resultSummary: 'query_tool: ok' }
+          : {}),
       ...(s.sideEffecting !== undefined ? { sideEffecting: s.sideEffecting } : {}),
     });
   }
@@ -98,5 +106,30 @@ describe('#133 E5 — buildResumePlan', () => {
     assert.ok(r);
     assert.equal(r.resumeFromStepExternalId, null);
     assert.match(r.resumeContext, /All planned steps are complete/);
+  });
+
+  it('ignores a done step without work evidence (pre-#1502 record)', async () => {
+    const kg = new InMemoryKnowledgeGraph();
+    await seed(kg, [
+      { id: 's0', status: 'done', resultSummary: 'memory: The path /memories does not exist.' },
+      { id: 's1', status: 'done', resultSummary: '' },
+      { id: 's2', status: 'pending' },
+    ]);
+    const r = await buildResumePlan(planNodeId('p1'), kg);
+    assert.ok(r);
+    assert.equal(r.completedSteps.length, 0);
+    assert.equal(r.resumeFromStepExternalId, planStepNodeId('s2'));
+  });
+
+  it('keeps a side-effecting done step without evidence as done (never re-run a write)', async () => {
+    const kg = new InMemoryKnowledgeGraph();
+    await seed(kg, [
+      { id: 's0', status: 'done', resultSummary: '', sideEffecting: true },
+      { id: 's1', status: 'pending' },
+    ]);
+    const r = await buildResumePlan(planNodeId('p1'), kg);
+    assert.ok(r);
+    assert.equal(r.completedSteps.length, 1);
+    assert.equal(r.resumeFromStepExternalId, planStepNodeId('s1'));
   });
 });

@@ -318,7 +318,10 @@ describe('QueryDatasetTool — dataset_id validation (#1093)', () => {
           dataset_id: '11111111-2222-3333-4444-555555555555',
         }),
       );
-      assert.match(out, /^Error: query_dataset failed/);
+      assert.match(out, /^Error: tool `query_dataset` failed with Error \[ref err_[0-9a-f]{12}\]/);
+      // The driver's text is withheld: this tool reads real cells, and a
+      // cast failure can quote one.
+      assert.doesNotMatch(out, new RegExp(PG_UUID_SYNTAX_ERROR));
       assert.equal(calls.length, 1, 'a uuid id must reach the graph');
     });
   }
@@ -363,11 +366,31 @@ describe('QueryDatasetTool — dataset_id validation (#1093)', () => {
   it('reports a list_datasets backend failure as a tool error, not a throw', async () => {
     const graph = {
       listDatasets: (): Promise<never> =>
-        Promise.reject(new Error('connection terminated unexpectedly')),
+        Promise.reject(
+          Object.assign(new Error('connection terminated unexpectedly'), { code: '08006' }),
+        ),
     } as unknown as KnowledgeGraph;
     const tool = new QueryDatasetTool(graph);
     const out = await asUser('user-1', () => tool.handle({ query: 'list_datasets' }));
-    assert.match(out, /^Error: query_dataset failed/);
-    assert.match(out, /connection terminated/);
+    // The SQLSTATE still tells the model what kind of failure it was; the
+    // message stays in the server log.
+    assert.match(out, /^Error: tool `query_dataset` failed with Error \(code 08006\) \[ref /);
+    assert.doesNotMatch(out, /connection terminated/);
+  });
+
+  it('withholds a driver message that quotes a cell value', async () => {
+    const CELL = 'Erika Mustermann';
+    const graph = {
+      listDatasets: (): Promise<never> =>
+        Promise.reject(
+          Object.assign(new Error(`invalid input syntax for type numeric: "${CELL}"`), {
+            code: '22P02',
+          }),
+        ),
+    } as unknown as KnowledgeGraph;
+    const tool = new QueryDatasetTool(graph);
+    const out = await asUser('user-1', () => tool.handle({ query: 'list_datasets' }));
+    assert.equal(out.includes(CELL), false, `a cell value reached the model: ${out}`);
+    assert.match(out, /\(code 22P02\)/);
   });
 });

@@ -14,6 +14,8 @@
  * there the drop was invisible; here it is counted.
  */
 
+import type { KeyObject } from 'node:crypto';
+
 import type { Pool } from 'pg';
 import type {
   TurnReceiptRecordInput,
@@ -26,6 +28,7 @@ import {
   computeEntryHash,
   genesisHash,
 } from './chain.js';
+import { highestValidCheckpointSeq } from './checkpoints.js';
 
 /** Process-wide failure counters, exported for /health-style introspection
  *  and asserted in tests. Mirrors `runTraceObservability.ts`'s "count what
@@ -159,25 +162,32 @@ export class PgTurnReceiptStore implements TurnReceiptStore {
  */
 export function startTurnReceiptReaper(
   pool: Pool,
-  opts: { retentionDays: number; intervalMs?: number },
+  opts: {
+    retentionDays: number;
+    intervalMs?: number;
+    /** Checkpoint public key; bounds the reap by VALID checkpoints only. */
+    publicKey?: KeyObject;
+  },
 ): { stop: () => void } {
   const intervalMs = opts.intervalMs ?? 6 * 60 * 60 * 1000; // 6h
   const tick = async (): Promise<void> => {
     try {
-      // #761 review H2 — chained rows are reaped only up to the greatest
-      // CHECKPOINTED seq, so the surviving suffix always has a signed anchor
-      // and a healthy install never turns "unanchored" just by aging past
-      // retention. Pre-chain rows (seq IS NULL) reap freely; with no
-      // checkpoints at all (no signing key) the COALESCE degrades to the
-      // plain age rule — an operator without a key has no anchor to protect.
+      // #761 review H2 / #1567 — chained rows are reaped only BELOW the
+      // greatest signature-valid CHECKPOINTED seq, so the row that
+      // checkpoint certifies always survives and the surviving suffix keeps
+      // a signed anchor: a healthy install never turns "unanchored" just by
+      // aging past retention. Signature-valid only (security review M2): a
+      // junk checkpoint row at a huge seq must not widen the bound. Pre-chain
+      // rows (seq IS NULL) reap freely; without a key, or before the first
+      // checkpoint, the bound is NULL and the plain age rule applies — an
+      // operator without a key has no anchor to protect, and the verifiers
+      // report that prefix as unsigned, not broken (#1568).
+      const bound = opts.publicKey ? await highestValidCheckpointSeq(pool, opts.publicKey) : 0;
       const result = await pool.query(
         `DELETE FROM turn_receipts
           WHERE created_at < NOW() - make_interval(days => $1)
-            AND (seq IS NULL
-                 OR seq <= COALESCE(
-                      (SELECT MAX(seq) FROM audit_checkpoints WHERE stream_id = 'receipts'),
-                      seq))`,
-        [opts.retentionDays],
+            AND (seq IS NULL OR seq < COALESCE($2::bigint, seq + 1))`,
+        [opts.retentionDays, bound > 0 ? bound : null],
       );
       if ((result.rowCount ?? 0) > 0) {
         console.log(

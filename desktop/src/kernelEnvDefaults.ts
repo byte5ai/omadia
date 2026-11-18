@@ -7,6 +7,8 @@
  * the user's environment always wins, so an operator can still opt back in.
  */
 
+import path from 'node:path';
+
 import { log } from './log';
 
 /** The slice of the kernel env this module decides. */
@@ -37,4 +39,34 @@ export function desktopKernelEnvDefaults(
     );
   }
   return { OMADIA_UI_MDNS_ENABLED: 'false' };
+}
+
+/** What only the packaged app sets; a dev run keeps the kernel's own defaults. */
+export interface PackagedRuntime {
+  readonly packaged: boolean;
+  readonly version: string;
+  readonly kernelCwd: string;
+}
+
+/**
+ * The version the kernel and the web UI report. CI stamps it into the desktop
+ * package only, so without this the update page and `/health` say "unknown".
+ * Dev reports nothing: its package.json carries a placeholder version.
+ */
+export function packagedVersionEnv(runtime: PackagedRuntime): { OMADIA_VERSION?: string } {
+  return runtime.packaged ? { OMADIA_VERSION: `v${runtime.version}` } : {};
+}
+
+/**
+ * Load the built-in plugins from the directory `@omadia/*` imports resolve to.
+ * `stage-runtime.mjs` has to replace the workspace symlinks with real copies,
+ * which leaves each package twice, and Node keys modules by real path. With the
+ * kernel's default `./packages` the orchestrator plugin and the kernel each got
+ * their own module instance, so the kernel never saw the plugin's
+ * AsyncLocalStorage scopes (`turnContext.currentAgentSlug()` was always empty).
+ */
+export function packagedPackagesEnv(runtime: PackagedRuntime): { BUILT_IN_PACKAGES_DIR?: string } {
+  return runtime.packaged
+    ? { BUILT_IN_PACKAGES_DIR: path.join(runtime.kernelCwd, 'node_modules', '@omadia') }
+    : {};
 }

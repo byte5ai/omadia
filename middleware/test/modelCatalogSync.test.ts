@@ -247,3 +247,45 @@ test('a listing where every model has a rule warns about nothing', async () => {
   await sync().refresh('anthropic');
   assert.deepEqual(warns, []);
 });
+
+function syncWithHook(onDefaultsChanged: (providerId: string) => void) {
+  return createModelCatalogSync({
+    catalog,
+    adapters,
+    getSecret: async (k) => (k === 'provider:anthropic/api_key' ? 'sk-ant-test' : undefined),
+    log: (m) => logs.push(m),
+    warn: (m) => warns.push(m),
+    onDefaultsChanged,
+  });
+}
+
+test('onDefaultsChanged fires when a run moves a class default, and not on an identical re-run (#1359)', async () => {
+  adapters.register(
+    adapterListing(
+      async () => [
+        { modelId: 'claude-opus-4-8', label: 'Claude Opus 4.8', createdAt: '2026-05-01T00:00:00Z' },
+        { modelId: 'claude-opus-5', label: 'Claude Opus 5', createdAt: '2026-08-01T00:00:00Z' },
+        { modelId: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5' },
+      ],
+      calls,
+    ),
+  );
+  const changed: string[] = [];
+  const s = syncWithHook((id) => changed.push(id));
+
+  await s.refresh('anthropic'); // seed frontier opus-4-8 → discovered opus-5
+  assert.deepEqual(changed, ['anthropic']);
+  await s.refresh('anthropic'); // same listing → same defaults
+  assert.deepEqual(changed, ['anthropic']);
+});
+
+test('a throwing onDefaultsChanged hook is logged, not propagated', async () => {
+  adapters.register(
+    adapterListing(async () => [{ modelId: 'claude-opus-5', label: 'Claude Opus 5' }], calls),
+  );
+  const result = await syncWithHook(() => {
+    throw new Error('boom');
+  }).refresh('anthropic');
+  assert.equal(result.status, 'discovered');
+  assert.match(warns.join('\n'), /defaults-changed hook failed: boom/);
+});

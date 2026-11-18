@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import type { Express, RequestHandler } from 'express';
 import type { Pool } from 'pg';
 import type { OrchestratorRegistry } from '@omadia/orchestrator';
+import { speakingIdentityFor, type DefaultChannelBotKey } from './channelBotOwnership.js';
 import type { JsonObject, KnownRefs } from '@omadia/conductor-core';
 
 import type { RoleHolderRegistry, RoleHolderSource } from '@omadia/channel-sdk';
@@ -26,12 +27,14 @@ import { ConductorScheduleWorker } from './scheduleWorker.js';
 import { ConductorEventRouter } from './eventRouter.js';
 import { RealStepEffects } from './realStepEffects.js';
 import { ConductorBuilderAgent } from './builderAgent.js';
+import type { ConductorPeopleSearch } from './builderAgent.js';
 import { createCompositeTemplateCatalog, loadTemplateCatalog } from './templateCatalog.js';
 import type { CompositeTemplateCatalog } from './templateCatalog.js';
 import { loadPatternCatalog } from './patternCatalog.js';
 import type { PatternCatalog } from './patternCatalog.js';
 import { ConductorEphemeralStore } from './ephemeralStore.js';
 import { ConductorEphemeralRunService } from './ephemeralRunService.js';
+import { ConductorEphemeralRunStateStore } from './ephemeralRunStateStore.js';
 import { ConductorEphemeralReaper } from './ephemeralReaper.js';
 import { ConductorEphemeralAttachmentsStore } from './ephemeralAttachmentsStore.js';
 import { createTemplateStore } from './templateStore.js';
@@ -64,6 +67,10 @@ async function buildRunEventPayload(run: ConductorRun, workflowStore: ConductorW
     workflowName: workflow?.name ?? null,
     triggerKind: run.triggerKind,
     context: run.context,
+    // #1699 — a `run.failed` subscriber used to learn only THAT a run failed.
+    // Null on a run that failed before migration 0013 ("cause not recorded").
+    errorCode: run.errorCode,
+    errorMessage: run.errorMessage,
   };
 }
 
@@ -113,8 +120,9 @@ export {
   EphemeralQuotaExceededError,
   EphemeralInvalidInputError,
 } from './ephemeralRunService.js';
-export type { CreateEphemeralRunInput, EphemeralRunHandle, EphemeralRunLimits } from './ephemeralRunService.js';
+export type { CreateEphemeralRunInput, EphemeralRunHandle, EphemeralRunLimits, OwnEphemeralRun, CancelOwnRunResult } from './ephemeralRunService.js';
 export { ConductorEphemeralReaper } from './ephemeralReaper.js';
+export { bindEphemeralRunsToCaller } from './ephemeralRunsCapability.js';
 export { ConductorEphemeralAttachmentsStore } from './ephemeralAttachmentsStore.js';
 export type { EphemeralAttachment } from './ephemeralAttachmentsStore.js';
 
@@ -218,10 +226,21 @@ export async function wireConductor(deps: {
   requireAuth: RequestHandler;
   /** resolves an Agent (orchestrator instance) by slug for agent steps. */
   getRegistry: () => OrchestratorRegistry | undefined;
+  /** The deployment's configured default bot per channel type (Teams:
+   *  `28:<appId>` of the Microsoft 365 integration), read per call. Lets a
+   *  run started through that bot reach its agent and speak back through it
+   *  (`channelBotOwnership.ts`). Absent: provisioned bots only. */
+  defaultChannelBotKey?: DefaultChannelBotKey;
   /** invokes a deterministic-action / connector tool by id for action steps. */
   invokeAction?: (toolId: string, input: unknown) => Promise<string | undefined>;
-  /** lists registered deterministic-action / tool ids for the Designer's action-step picker. */
-  listActions?: () => string[];
+  /** lists registered deterministic-action / tool ids (incl. `mcp:<serverId>:<tool>`) for the
+   *  Designer's action-step picker and the builder's capability check. May be async. */
+  listActions?: () => string[] | Promise<string[]>;
+  /** People-directory union (kernel `PeopleDirectoryRegistry.search`) — builder person
+   *  suggestions + `GET /people`. Omit on hosts without channel plugins. */
+  searchPeople?: ConductorPeopleSearch;
+  /** Channel types that currently contribute a people directory. */
+  peopleChannelTypes?: () => readonly string[];
   /** read model of the event-emit catalog (declared `event_emit` capabilities) for the Designer. */
   eventCatalog?: { list(): string[]; byPluginId(): Record<string, string[]> };
   /** resolves a proactive sender for a channel (US5 reminders) — from the routines senderRegistry. */
@@ -358,9 +377,14 @@ export async function wireConductor(deps: {
 
   // Which bot IS this agent. Read live from the registry on every call: a
   // just-provisioned identity has to work without a restart, and a revoked one
-  // has to stop working just as fast.
-  const agentChannelIdentity: AgentChannelIdentityResolver = (agentSlug, channelType) =>
-    deps.getRegistry()?.channelIdentityFor(agentSlug, channelType);
+  // has to stop working just as fast. The configured default bot speaks for
+  // the agent it routes to — the same answer the inbound check gives.
+  const agentChannelIdentity: AgentChannelIdentityResolver = (agentSlug, channelType, conversationId) => {
+    const registry = deps.getRegistry();
+    return registry
+      ? speakingIdentityFor(registry, agentSlug, channelType, deps.defaultChannelBotKey, conversationId)
+      : undefined;
+  };
   // Shared disposal path (terminal-state hook, TTL reaper safety net, and the
   // operator's facilitation terminate — #330 round 4). Idempotent: an already
   // reaped or non-ephemeral workflow is a no-op.
@@ -389,6 +413,7 @@ export async function wireConductor(deps: {
     awaitStore,
     effects: new RealStepEffects({
       getRegistry: deps.getRegistry,
+      ...(deps.defaultChannelBotKey ? { defaultChannelBotKey: deps.defaultChannelBotKey } : {}),
       ...(deps.invokeAction ? { invokeAction: deps.invokeAction } : {}),
       // The agent-dialogue seam: a `say` step's answer reaches the chat through
       // here. Absent providers = silent turns, never a failing run.
@@ -492,6 +517,8 @@ export async function wireConductor(deps: {
     ephemeralStore,
     executor,
     awaitStore,
+    // Durable per-run plugin state (0012) — survives restarts, purged on reap.
+    runState: new ConductorEphemeralRunStateStore(deps.pool),
     limits: {
       defaultTtlMs: deps.ephemeral?.defaultTtlMs ?? 24 * 60 * 60 * 1000,
       maxTtlMs: deps.ephemeral?.maxTtlMs ?? 7 * 24 * 60 * 60 * 1000,
@@ -534,7 +561,7 @@ export async function wireConductor(deps: {
   // — one definition so the two gates can never drift apart.
   const templateKnownRefs = async (): Promise<KnownRefs> => ({
     agentIds: (deps.getRegistry()?.list() ?? []).map((a) => a.agent.slug),
-    actionIds: deps.listActions?.() ?? [],
+    actionIds: (await deps.listActions?.()) ?? [],
     roleKeys: (await roleStore.listRoles()).map((r) => r.key),
     eventIds: deps.eventCatalog?.list() ?? [],
   });
@@ -542,9 +569,15 @@ export async function wireConductor(deps: {
   // Conversational builder agent (US7) — drives draft co-design via a registry Agent turn. Known
   // refs are sourced live from the event catalog so the builder + validate can flag unknown events.
   // #478 B4: the viewer-scoped composite catalog feeds its prompt digest + proposal allowlist.
+  // Known actions/agents feed the PROMPT and the missing-capability signal, deliberately NOT
+  // validate(): an `unknown_action_ref` would make the self-correction retry delete the very
+  // placeholder step the operator needs to see ("connector missing → connect it inline").
   const builderAgent = new ConductorBuilderAgent({
     getRegistry: deps.getRegistry,
     knownRefs: () => ({ eventIds: deps.eventCatalog?.list() ?? [] }),
+    ...(deps.listActions ? { listActions: deps.listActions } : {}),
+    listAgents: () => (deps.getRegistry()?.list() ?? []).map((a) => a.agent.slug),
+    ...(deps.searchPeople ? { searchPeople: deps.searchPeople } : {}),
     templateCatalog,
     templateKnownRefs,
     log,
@@ -581,6 +614,8 @@ export async function wireConductor(deps: {
       // Live agent/action catalogs for the Designer's step pickers (dropdowns).
       agentCatalog: () => (deps.getRegistry()?.list() ?? []).map((a) => ({ slug: a.agent.slug, name: a.agent.name })),
       ...(deps.listActions ? { actionCatalog: deps.listActions } : {}),
+      ...(deps.searchPeople ? { searchPeople: deps.searchPeople } : {}),
+      ...(deps.peopleChannelTypes ? { peopleChannelTypes: deps.peopleChannelTypes } : {}),
       builderAgent,
       // Composite workflow-template catalog (#429 bundled + #478 user/plugin) + DB store.
       templateCatalog,

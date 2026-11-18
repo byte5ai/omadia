@@ -122,7 +122,14 @@ jobs:
     # previous 30-minute cap mid-signing, which then took the update-feed merge
     # down with it. 60 keeps the runaway protection with real headroom, and
     # notarization wait times are set by Apple, not by us.
-    timeout-minutes: 60
+    #
+    # macOS gets more: "Package installers" now retries on Apple network faults
+    # (see that step), and on the slow Intel runner each packaging attempt costs
+    # 10-15 min. 60 would kill the job mid-retry, i.e. turn a recoverable flake
+    # back into the stranded draft the retry exists to prevent.
+    # It covers the usual one-retry case, not a run that needs every retry of
+    # every Apple step (packaging, DMG notarization, ticket checks).
+    timeout-minutes: ${{ startsWith(matrix.os, 'macos') && 100 || 60 }}
     env:
       TAG: ${{ github.event.release.tag_name || inputs.tag }}
       # Undefined for the `release` and `workflow_dispatch` triggers, so those
@@ -144,7 +151,7 @@ jobs:
       APPLE_ASC_KEY_P8_BASE64: ${{ secrets.APPLE_ASC_KEY_P8_BASE64_HIGH5 }}
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID_HIGH5 }}
       # Windows signing — PREFERRED path: Azure Trusted Signing (rebranded Azure
-      # Artifact Signing). electron-builder 25.1.8 supports it natively via
+      # Artifact Signing). electron-builder 26 supports it natively via
       # `win.azureSignOptions` and installs the required TrustedSigning
       # PowerShell module itself. Credentials are read by Azure's
       # EnvironmentCredential, so the three AZURE_* names below are fixed by
@@ -382,6 +389,23 @@ jobs:
           Copy-Item "$env:RUNNER_TEMP\pgvector\sql\vector--*.sql" "$native\share\extension\" -Force
           Write-Host "✓ pgvector built + staged into the embedded PG17 engine (windows-x64)"
 
+      # The embedded Postgres asks every connection for a SCRAM password and the
+      # kernel runs as a role without superuser rights, so pgvector (an
+      # untrusted extension) has to be created by the shell before the
+      # kernel's first migration. This runs that on the engine about to ship,
+      # with the pgvector files just staged: fresh install, trust-era
+      # migration, credential repair, and the kernel's real
+      # 0001_graph_init.sql as the kernel role. OMADIA_EMBEDDED_PG_IT=require
+      # turns a missing engine or pgvector into a failure instead of a skip.
+      # Not on Windows: GitHub's Windows runners are elevated administrators,
+      # and postgres.exe refuses to start under an administrative account.
+      - name: Embedded Postgres authentication with pgvector (integration)
+        if: matrix.os != 'windows-latest'
+        working-directory: desktop
+        env:
+          OMADIA_EMBEDDED_PG_IT: require
+        run: node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --import ./test/helpers/stub-electron.mjs --test test/embeddedDb.integration.test.mts
+
       - name: Stage runtime (middleware + web-ui + Postgres → desktop/runtime)
         working-directory: desktop
         run: npm run stage
@@ -477,7 +501,9 @@ jobs:
       # Azure account. Presence of win.azureSignOptions is what switches
       # electron-builder to the Azure path. Runs when ANY of the six is set, so
       # a partial config (e.g. a deleted AZURE_CLIENT_ID) fails here instead of
-      # silently skipping signing and shipping an unsigned installer.
+      # silently skipping signing and shipping an unsigned installer. The fourth
+      # option electron-builder 26 requires, publisherName, is read from the
+      # signing certificate in the pre-warm step below.
       - name: Prepare Windows signing (Azure Trusted Signing)
         if: ${{ matrix.os == 'windows-latest' && (env.AZURE_CLIENT_ID != '' || env.AZURE_TENANT_ID != '' || env.AZURE_CLIENT_SECRET != '' || env.AZURE_SIGN_ENDPOINT != '' || env.AZURE_SIGN_ACCOUNT != '' || env.AZURE_SIGN_CERT_PROFILE != '') }}
         run: |
@@ -513,14 +539,42 @@ jobs:
       # bootstrap race. Signing one throwaway file here, single-threaded,
       # forces that one-time install to finish before electron-builder's
       # parallel batch starts, so every later call just hits the warm cache.
+      # The module version has to be the one electron-builder installs itself
+      # (app-builder-lib 26: `Install-Module -Name TrustedSigning -MinimumVersion
+      # 0.5.0`); warming another version leaves the one it loads cold.
+      #
+      # The warm-up signature also supplies win.azureSignOptions.publisherName,
+      # which electron-builder 26 requires and writes into the installed app's
+      # app-update.yml: electron-updater then refuses any downloaded Windows
+      # update that is not Authenticode-signed under that name. Reading it from
+      # the certificate that signs this build keeps it exact and keeps forks
+      # generic — no byte5-specific value lives in the workflow.
+      #
+      # The warm-up file is compiled here, not copied from System32. A Windows
+      # system binary is catalog-signed by Microsoft, and an Authenticode hash
+      # leaves out the embedded signature, so after signing the copy
+      # Get-AuthenticodeSignature still matched the catalog and reported
+      # "Microsoft Windows" as the publisher. No catalog lists a freshly
+      # compiled file, and the SignatureType check refuses any answer that does
+      # not come from the signature embedded here.
       - name: Pre-warm Azure Trusted Signing tooling (avoid concurrent-install race)
         if: ${{ matrix.os == 'windows-latest' && env.AZURE_CLIENT_ID != '' }}
         shell: pwsh
         run: |
-          Install-Module -Name TrustedSigning -RequiredVersion 0.4.1 -Force -Scope CurrentUser -AllowClobber
-          $warmupFile = Join-Path $env:RUNNER_TEMP 'trusted-signing-warmup.exe'
-          Copy-Item -Path "$env:SystemRoot\System32\notepad.exe" -Destination $warmupFile
+          Install-Module -Name TrustedSigning -MinimumVersion 0.5.0 -Force -Repository PSGallery -Scope CurrentUser -AllowClobber
+          $warmupFile = Join-Path $env:RUNNER_TEMP 'trusted-signing-warmup.dll'
+          Add-Type -TypeDefinition 'public static class TrustedSigningWarmup { }' -OutputAssembly $warmupFile -OutputType Library
           Invoke-TrustedSigning -Endpoint $env:AZURE_SIGN_ENDPOINT -CodeSigningAccountName $env:AZURE_SIGN_ACCOUNT -CertificateProfileName $env:AZURE_SIGN_CERT_PROFILE -Files $warmupFile -FileDigest SHA256
+          $sig = Get-AuthenticodeSignature -LiteralPath $warmupFile
+          if ($sig.Status -ne 'Valid' -or $null -eq $sig.SignerCertificate -or "$($sig.SignatureType)" -ne 'Authenticode') {
+            throw "FAIL: the warm-up file carries no valid embedded signature (status=$($sig.Status), type=$($sig.SignatureType)), so the publisher name electron-builder needs cannot be read."
+          }
+          $publisher = $sig.SignerCertificate.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)
+          if ([string]::IsNullOrWhiteSpace($publisher)) {
+            throw "FAIL: the signing certificate has no common name (subject: $($sig.SignerCertificate.Subject))."
+          }
+          Add-Content -Path $env:GITHUB_ENV -Value "WIN_PUBLISHER_NAME=$publisher"
+          Write-Host "Windows publisher name (signing certificate CN): $publisher"
           Remove-Item -Path $warmupFile -Force
 
       # --- Windows signing: legacy .pfx (pre-2023 certificates only) ---------
@@ -552,7 +606,42 @@ jobs:
           # times and then reports only the LAST error, which masks the real
           # cause. Re-run this step with `DEBUG=electron-builder` to see the
           # actual command and its stderr.
-          npx electron-builder ${{ matrix.args }} ${EB_NOTARIZE:-} ${EB_WIN_SIGN:-} --publish never
+          #
+          # The Windows publisher name contains a space, so it cannot ride in the
+          # word-split EB_WIN_SIGN; it is passed as one quoted argument instead.
+          set --
+          if [ -n "${WIN_PUBLISHER_NAME:-}" ]; then
+            set -- "--config.win.azureSignOptions.publisherName=$WIN_PUBLISHER_NAME"
+          fi
+
+          # macOS packaging talks to Apple twice: `codesign --timestamp` (Apple's
+          # timestamp server, for every nested binary) and notarytool (upload +
+          # wait). The macos-26-intel runner drops that connection often enough
+          # that it stranded eight releases as drafts in Oct 2026 alone, each
+          # with a different symptom: "A timestamp was expected but was not
+          # found", NSURLErrorDomain -1009 "offline", S3 abortedUpload /
+          # connectTimeout. None was a build fault — the same commit built fine
+          # on arm64. So retry the whole packaging run, but ONLY when the log
+          # carries one of those network signatures: a real signing or build
+          # error still fails on the first attempt instead of costing 3x the time.
+          APPLE_NET_RE='A timestamp was expected but was not found|timestamp service is not available|NSURLErrorDomain Code=-100[13459]\b|HTTPClientError|abortedUpload|connectTimeout|The request timed out|Internet connection appears to be offline'
+          attempts=1
+          case "${{ matrix.os }}" in macos-*) attempts=3 ;; esac
+          log="$RUNNER_TEMP/electron-builder.log"
+          for attempt in $(seq 1 "$attempts"); do
+            if npx electron-builder ${{ matrix.args }} ${EB_NOTARIZE:-} ${EB_WIN_SIGN:-} "$@" --publish never 2>&1 | tee "$log"; then
+              exit 0
+            fi
+            if [ "$attempt" = "$attempts" ] || ! grep -qE "$APPLE_NET_RE" "$log"; then
+              echo "::error::packaging failed (attempt $attempt/$attempts)" >&2
+              exit 1
+            fi
+            echo "::warning::packaging hit an Apple network fault (attempt $attempt/$attempts) — retrying"
+            # Start clean: a half-signed .app from the failed attempt must not be
+            # picked up by the next one or by the verification steps below.
+            rm -rf release
+            sleep 60
+          done
 
       # OM-86 (beta round 5): the update archive is what Squirrel installs, and
       # Squirrel strips the quarantine xattr from EVERY entry before swapping
@@ -696,6 +785,20 @@ jobs:
               # Without a countersignature the signature dies with the cert.
               Write-Error "FAIL: $($exe.Name) has no trusted timestamp."
             }
+            # Installed apps check every later update against the publisher name
+            # pinned in app-update.yml; a mismatch would strand them for good.
+            if ($env:WIN_PUBLISHER_NAME) {
+              $cn = $sig.SignerCertificate.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)
+              if ($cn -ne $env:WIN_PUBLISHER_NAME) {
+                Write-Error "FAIL: $($exe.Name) is signed by '$cn' but app-update.yml pins '$env:WIN_PUBLISHER_NAME'."
+              }
+            }
+          }
+          if ($env:WIN_PUBLISHER_NAME) {
+            $feed = 'release/win-unpacked/resources/app-update.yml'
+            if (-not (Select-String -LiteralPath $feed -SimpleMatch -Quiet -Pattern $env:WIN_PUBLISHER_NAME)) {
+              Write-Error "FAIL: $feed does not pin publisherName, so installed apps would not verify update signatures."
+            }
           }
           Write-Host "✓ Windows installer(s) carry a valid, timestamped Authenticode signature"
 
@@ -739,6 +842,11 @@ jobs:
               sleep 60
             done
           done
+          # Stapling changed the DMGs; the feed still carries their old hashes.
+          # A rebuild of a tag older than this script keeps them.
+          if [ -f scripts/refresh-mac-feed-dmg.mjs ]; then
+            node scripts/refresh-mac-feed-dmg.mjs release/latest-mac.yml
+          fi
 
       - name: Verify macOS signatures (acceptance gate)
         if: ${{ startsWith(matrix.os, 'macos') && env.APPLE_P12_BASE64 != '' && env.NOTARIZE == 'yes' }}
@@ -746,6 +854,18 @@ jobs:
         run: |
           set -e
           shopt -s nullglob
+          # `stapler validate` and `spctl --assess` look the ticket up in Apple's
+          # CloudKit; a timeout there exits 68 ("The validate action failed!")
+          # on a perfectly notarized app — v0.178.3 was stranded exactly so.
+          # Retry those network-bound checks only; the codesign checks are local.
+          apple_net() {
+            for attempt in 1 2 3; do
+              "$@" && return 0
+              [ "$attempt" = 3 ] && return 1
+              echo "::warning::'$*' failed (attempt $attempt/3) — retrying" >&2
+              sleep 30
+            done
+          }
           apps=(release/mac*/*.app)
           if [ ${#apps[@]} -eq 0 ]; then
             echo "FAIL: no .app produced under release/mac*/ — nothing to verify" >&2
@@ -771,11 +891,11 @@ jobs:
                 echo "FAIL: nested binary is ad-hoc signed, not Developer ID: $bin" >&2; exit 1
               fi
             done < <(find "$app/Contents/Resources/omadia" "$app/Contents/Resources/omadia-pg" -type f)
-            xcrun stapler validate "$app"
-            spctl --assess --type execute -vvv "$app"
+            apple_net xcrun stapler validate "$app"
+            apple_net spctl --assess --type execute -vvv "$app"
           done
           for dmg in release/*.dmg; do
-            xcrun stapler validate "$dmg"
+            apple_net xcrun stapler validate "$dmg"
           done
 
       - name: Tear down signing material

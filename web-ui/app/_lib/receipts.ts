@@ -71,3 +71,31 @@ export async function listReceipts(opts?: {
   }
   return (await res.json()) as ReceiptsPageDto;
 }
+
+/**
+ * #1552 — one turn's receipt, for the `/operator/receipts?turn=<turnId>`
+ * deep link (miss reports and the chat's receipt card point there). Resolves
+ * `null` on 404: a turn in which the shield did nothing writes no receipt,
+ * and receipts age out after RECEIPT_RETENTION_DAYS.
+ */
+export async function getReceipt(turnId: string): Promise<TurnReceiptDto | null> {
+  const res = await fetch(
+    botApi(`/v1/operator/receipts/${encodeURIComponent(turnId)}`),
+    {
+      headers: { ...(await forwardCookieHeader()) },
+      // OM-96 — server-side read, so it needs a deadline; see `rscTimeoutSignal`.
+      signal: rscTimeoutSignal(),
+      cache: 'no-store',
+    },
+  );
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    throw new ApiError(res.status, `receipt get failed: ${String(res.status)}`);
+  }
+  return (await res.json()) as TurnReceiptDto;
+}
+
+/** #1552 — the deep link to one turn's receipt on the operator page. */
+export function receiptHref(turnId: string): string {
+  return `/operator/receipts?turn=${encodeURIComponent(turnId)}`;
+}

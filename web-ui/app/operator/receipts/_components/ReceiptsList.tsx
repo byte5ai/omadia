@@ -13,6 +13,8 @@ import {
 
 interface ReceiptsListProps {
   initial: ReceiptsPageDto;
+  /** #1552 — the row rendered expanded (the `?turn=` deep link). */
+  openTurnId?: string;
 }
 
 /**
@@ -21,7 +23,7 @@ interface ReceiptsListProps {
  * headline counts; expanding renders the exact `PrivacyReceiptCard` the
  * user saw in the chat — the record and the UI share one truth.
  */
-export function ReceiptsList({ initial }: ReceiptsListProps): React.ReactElement {
+export function ReceiptsList({ initial, openTurnId }: ReceiptsListProps): React.ReactElement {
   const t = useTranslations('operatorReceipts');
   const format = useFormatter();
   const [items, setItems] = useState<TurnReceiptDto[]>(initial.items);
@@ -60,7 +62,10 @@ export function ReceiptsList({ initial }: ReceiptsListProps): React.ReactElement
             key={item.turnId}
             className="rounded border border-[color:var(--edge)] p-4"
           >
-            <details>
+            <details
+              open={item.turnId === openTurnId}
+              data-testid={`receipt-row-${item.turnId}`}
+            >
               <summary className="flex cursor-pointer flex-wrap items-baseline gap-x-4 gap-y-1 text-sm">
                 <time
                   dateTime={item.createdAt}

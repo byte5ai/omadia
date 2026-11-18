@@ -26,6 +26,14 @@ export {
   type ConversationRoster,
   type ConversationRosterProvider,
 } from './conversationRoster.js';
+// People directory — a channel plugin's searchable "who is <name>?" (Conductor
+// human-step principal resolution). Optional capability like the roster.
+export type {
+  PeopleDirectoryEntry,
+  PeopleDirectoryLookup,
+  PeopleDirectoryProvider,
+  PeopleDirectoryUnavailableCode,
+} from './peopleDirectory.js';
 export type {
   BotAddedEvent,
   ConversationMembershipEvent,
@@ -111,12 +119,20 @@ export type {
 // channel-plugins-final (S+11) and the orchestrator-plugin (S+10-3/4) can
 // consume `ChatAgent` without depending on the concrete Orchestrator class.
 export type {
+  AnswerVerbosityInfo,
+  AnswerVerbosityLevel,
   ChatAgent,
+  ChatAgentToolDefinition,
+  FastPathDecision,
+  FastPathDecisionStep,
+  FastPathDecisionUi,
   ChatStreamObserver,
   ChatTurnInput,
   ChatTurnAttachment,
   ChatTurnResult,
   VerifierResultSummary,
+  VerifierSummaryReason,
+  VerifierWithheldCause,
   RunTracePayload,
   RunStatus,
   RunToolCall,
@@ -131,6 +147,9 @@ export type {
   PendingRoutineList,
   AgentMeta,
 } from './chatAgent.js';
+// Phase 3 — the answer-size scale by VALUE: the orchestrator re-exports it
+// (single definition), channels validate card payloads against it.
+export { ANSWER_VERBOSITY_LEVELS } from './chatAgent.js';
 
 // Conversion helper from kernel-shaped result to channel-agnostic outgoing
 // message — lifted from `services/orchestrator.ts` in S+10-2 so channel
@@ -147,6 +166,10 @@ export { withMcpInputPrompt } from './toSemanticAnswer.js';
 // (web-ui) and non-streaming `toSemanticAnswer` callers (Teams et al.) build
 // the IDENTICAL curated agentsConsulted array from the same run-trace.
 export { deriveAgentsConsulted } from './toSemanticAnswer.js';
+
+// The evidence rule behind every verifier badge: a summary without a checked
+// claim (`skipped`, `unavailable`, or zero claims) is never rendered as a check.
+export { verifierSummaryHasEvidence } from './toSemanticAnswer.js';
 
 // AI-Act Art. 50 channel-agnostic AI disclosure carrier (#643, epic #642). The
 // structured field rides `SemanticAnswer.aiDisclosure`; the same line is folded
@@ -177,6 +200,17 @@ export type {
 // AI-Act marking above; the orchestrator itself emits only a language-free
 // marker and persists that.
 export { composeTurnIncompleteText } from './turnIncomplete.js';
+
+// Wording for an answer the answer verifier withheld in `enforce` mode
+// (`answerSource: 'verifier-blocked'`). Composed at the delivery boundary
+// through the same locale mechanism as the turn-incomplete notice above.
+export {
+  composeVerifierBlockedText,
+  verifierBlockedCause,
+} from './verifierBlocked.js';
+export type { VerifierBlockedCause } from './verifierBlocked.js';
+// `[ref:…]` citation markers are verifier input; every channel strips them.
+export { stripCitationMarkers } from './citationMarkers.js';
 
 // Org security postures + provenance-labelled inbound screening (#579). Shared
 // primitives — the posture model, tighten-only floor math, the provenance

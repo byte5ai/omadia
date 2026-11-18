@@ -20,6 +20,7 @@ import type {
   SortDirection,
   VerbResult,
 } from './types.js';
+import { FILE_EXPORT_EXCEPTION, RENDER_CONTRACT } from './promptText.js';
 import {
   VerbError,
   type AggregateParams,
@@ -52,7 +53,8 @@ export const VERB_TOOL_SPECS: ReadonlyArray<V4ToolSpec> = [
     description:
       'Keep only rows matching a predicate. The predicate is a JSON tree ' +
       'using ops eq/ne/lt/lte/gt/gte/in/between/and/or/not over safe ' +
-      '(non-masked) fields only.',
+      '(non-masked) fields only. Link-key columns (`__k_<column>`) are never ' +
+      'filter targets — use them as keys in v4_join/v4_distinct.',
     inputSchema: {
       type: 'object',
       properties: { datasetId: DATASET_ID, predicate: { type: 'object' } },
@@ -209,9 +211,9 @@ export const VERB_TOOL_SPECS: ReadonlyArray<V4ToolSpec> = [
 export const RENDER_TOOL_SPEC: V4ToolSpec = {
   name: 'v4_render_answer',
   description:
-    'Produce the final answer — ALWAYS end a data question with this call; ' +
-    'never write the data table/list yourself. Provide PII-free prose plus ' +
-    'the datasetId, the columns, and a format (table/list/scalar). Each ' +
+    `${RENDER_CONTRACT} ${FILE_EXPORT_EXCEPTION} ` +
+    'Provide PII-free prose plus the datasetId, the columns, and a format ' +
+    '(table/list/scalar). Each ' +
     'column is an object {field, label}: `field` is the dataset field path, ' +
     '`label` is the human-readable header to display (e.g. "Mitarbeiter", ' +
     '"Summe Tage", "Anzahl Anträge") — always set a clean label, never ship ' +

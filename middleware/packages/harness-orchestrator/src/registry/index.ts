@@ -641,7 +641,10 @@ export class OrchestratorRegistry {
   /**
    * Build a per-session `SessionConfigSnapshot` (US6 / T024) from the
    * registry's current view of the named Agent. The session captures this
-   * on first use and pins it until a `force-invalidate` clears it.
+   * on first use and keeps it until a `force-invalidate` clears it. Only its
+   * `agentSlug` routes turns; `pluginIds` is a start-time record, not a pin
+   * — a plugin change rebuilds the Agent (`plugin_grants`) and the session's
+   * next turn runs on the new set (#1476).
    *
    * Returns `undefined` when the Agent is not active — the caller decides
    * whether to fall back to the legacy default `chatAgent` or refuse.
@@ -664,8 +667,8 @@ export class OrchestratorRegistry {
 
   /**
    * Resolve the `BuiltOrchestrator` that should serve a given session
-   * (US6 / T025). The session's snapshot is the source of truth — the
-   * registry just looks up the snapshot's `agentSlug`. If the snapshot
+   * (US6 / T025) by the snapshot's `agentSlug` — always the Agent's current
+   * build, so a rebuild (e.g. `plugin_grants`) applies from the next turn. If the snapshot
    * points at an Agent that no longer exists (e.g. it was deleted and the
    * session was held open), returns `undefined` and the caller decides.
    */

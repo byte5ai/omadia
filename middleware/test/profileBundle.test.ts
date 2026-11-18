@@ -74,6 +74,7 @@ function makeCatalogStub(): PluginCatalog {
 }
 
 interface IngestRecord {
+  allowDowngrade?: boolean;
   fileBuffer: Buffer;
   originalFilename: string;
   uploadedBy: string;
@@ -332,10 +333,10 @@ describe('Profile-Bundle v1', () => {
     // bundle by computing the inner zip's true sha256 and patching the manifest.
     const corrected = await fixVendoredManifestSha(result.buffer);
 
-    let ingestCalled = false;
+    const ingestInputs: IngestRecord[] = [];
     const uploadService = makeUploadServiceStub({
-      onIngest: () => {
-        ingestCalled = true;
+      onIngest: (input) => {
+        ingestInputs.push(input);
       },
     });
 
@@ -362,7 +363,12 @@ describe('Profile-Bundle v1', () => {
       if (importResult.ok) {
         assert.equal(importResult.pluginsInstalled, 1);
       }
-      assert.equal(ingestCalled, true);
+      assert.equal(ingestInputs.length, 1);
+      // #1455 — a bundle pins an exact version, which may be older than what
+      // this host has installed. The pin is the operator's explicit choice, so
+      // the importer carries the downgrade consent rather than failing the
+      // import on the new guard.
+      assert.equal(ingestInputs[0]!.allowDowngrade, true);
     } finally {
       await fs.rm(freshDir, { recursive: true, force: true });
     }

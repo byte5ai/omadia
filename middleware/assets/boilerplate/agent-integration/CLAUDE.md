@@ -38,7 +38,7 @@ oder **Integration** (reine Credentials/HTTP-Client, kein Toolkit).
   `/data/vault/vault.enc.json`, agentId-namespaced, `VAULT_KEY` als Fly-Secret,
   nightly Tigris-Backup. Platform-Scope `core:auth` hält Session-Signing-Key +
   per-user Refresh-Tokens.
-- **Admin-UI**: `odoo-bot-harness.fly.dev` — Store + Install-Drawer rendern
+- **Admin-UI**: `<your-omadia-host>` — Store + Install-Drawer rendern
   automatisch aus `setup.fields`.
 
 Feld nicht im Schema → **nicht rein**. Lieber kurz fragen.
@@ -134,7 +134,68 @@ Tool-Bridge versteht:
     Tool-Use-UX. Bei den unterstützten Typen bleiben.
 
 ### 9. Lifecycle-Budgets
-- `activate(ctx)`: **10s**. Self-Test = ein GET, kein Vollcrawl, kein Bulk-Sync.
+- `activate(ctx)`: **10s**. Kein Vollcrawl, kein Bulk-Sync. Der Credential-Check
+  gehört **nicht** hierher, sondern in `verifyConnection` (siehe unten) — eine
+  Aktivierung darf an einer Störung des Zielsystems nicht scheitern.
+- `verifyConnection(ctx)` (optional, #1453): **5s**. Ein billiger
+  authentifizierter Request, der beantwortet, ob die Credentials akzeptiert
+  werden. Läuft **nach** `activate()`, bei jeder Aktivierung (Install, Boot,
+  Reaktivierung nach Secret-Edit) und über
+  `POST /api/v1/admin/runtime/installed/:id/verify`. Rückgabe:
+
+  ```ts
+  import {
+    classifyHttpAuthFailure,
+    type PluginConnectionVerdict,
+    type PluginContext,
+  } from '@omadia/plugin-api';
+
+  export async function verifyConnection(
+    ctx: PluginContext,
+  ): Promise<PluginConnectionVerdict> {
+    try {
+      // ctx.http, nicht globales fetch: Allowlist, SSRF-Guard, Rate-Limit.
+      // Der Probe-Host muss in permissions.network.outbound stehen.
+      if (!ctx.http) return { status: 'inconclusive' };
+      const res = await ctx.http.fetch(whoamiUrl, { headers });  // ein GET, kein Sync
+      // HTTP-Fall: Core hält die Regeln, nicht jedes Plugin neu.
+      const cause = classifyHttpAuthFailure(res.status, await res.text());
+      if (cause) {
+        return { status: 'rejected', cause, title: 'Nicht verbunden',
+                 detail: 'Zielsystem hat den API-Key abgelehnt' };
+      }
+      if (!res.ok) return { status: 'inconclusive' };   // 5xx, 429, 404 …
+      return { status: 'connected', title: 'Verbunden' };
+    } catch {
+      // Timeout, DNS, Air-Gap → der Operator behält seinen Status.
+      return { status: 'inconclusive' };
+    }
+  }
+  ```
+
+  **`rejected` braucht ein `cause`.** Der Kernel kann den Austausch nicht
+  selbst sehen (Odoo lehnt mit `authenticate → false` über HTTP 200 ab), also
+  verlangt er, dass das Plugin die konkrete Ablehnung benennt:
+  `http_401`, `http_403_auth` (nur ein 403, dessen Body selbst von
+  Authentifizierung spricht) oder `protocol_auth_failure` (Ablehnung außerhalb
+  des HTTP-Status, z. B. Odoos `false`). Ein `rejected` **ohne** erkanntes
+  `cause` wird zu `inconclusive` degradiert — ein blankes
+  `catch { return { status: 'rejected' } }` kann also keine Störung als toten
+  Key anmalen. Für den HTTP-Fall nimm `classifyHttpAuthFailure` statt eigener
+  Statuslogik.
+
+  Warum so streng: `rejected` färbt das Plugin rot **und** nimmt seine Tools
+  aus dem Orchestrator — eine als `rejected` fehlgedeutete Störung entzieht dem
+  Modell stillschweigend Werkzeuge. `title`/`detail` sind die lokalisierten
+  Strings des Plugins; der Kernel liefert keine eigene Copy.
+
+  Verdicts werden pro Credential-Fingerprint **5 Minuten gecacht** (nur
+  entschiedene, nie `inconclusive`). Der Fingerprint deckt Secrets **und**
+  Nicht-Secret-Setup-Felder ab, also probt jede Reaktivierung nach einer
+  Credential- oder Config-Änderung neu; der Operator-Button probt mit
+  `force`. Wer zur Laufzeit einen 401 sieht (Key upstream widerrufen), meldet
+  ihn zusätzlich selbst per `ctx.status.report({ state: 'error', … })` — die
+  Probe läuft nur bei Aktivierung und auf Anforderung.
 - `close()`: **5s**. Timer, Sockets, Watches, Intervals **wirklich** freigeben —
   wird beim Uninstall aufgerufen; hängende Handles blockieren Hot-Uninstall.
 
@@ -148,6 +209,22 @@ Im Template mitgeliefert. Pipeline:
 
 User-seitig: `node scripts/build-zip.mjs` → `out/<id>-<version>.zip` ist das
 uploadbare Artefakt.
+
+### Sichtbarer Manifest-Text ist `{ en, de }` (#1401)
+
+`identity.description`, `setup.guide`, `setup.fields[].label` / `help` /
+`pattern_hint` und `setup.fields[].enum[].label` werden als Map geschrieben:
+
+```yaml
+label:
+  en: "Public base URL"
+  de: "Öffentliche Basis-URL"
+```
+
+Ein nackter String lädt weiter (wird als Englisch gelesen), erscheint aber in
+jeder UI-Sprache so, wie er geschrieben wurde — der Loader warnt dann einmal pro
+Plugin-Version. `identity.name` bleibt sprachneutral (Produktname). In-Tree-Pakete
+prüft CI (`npm run manifest:i18n:check`).
 
 ---
 
@@ -281,14 +358,48 @@ Plugins.
 
 | Wert | Bedeutung |
 |---|---|
-| `'session'` | Der Kernel prüft die Operator-Session — dieselbe `requireAuth`-Instanz, die Core an `/api` mountet. Unter `/api` ist das Defense-in-Depth, **außerhalb** von `/api` (z.B. `/diagrams`) ist es das einzige Session-Gate. CSRF-Haltung = die von Core: `SameSite=Lax`-Cookie, kein Token-Layer. |
+| `'session'` | Der Kernel prüft die Operator-Session — dieselbe Session-Prüfung wie Core an `/api`, aber **ohne** die statische Public-Path-Ausnahme (#1596): kein Prefix, auch nicht `/p/…`, öffnet eine `'session'`-Route. Eine Teams-Tab-Seite ohne omadia-Session braucht `'teams-sso'` (Daten) + `'public'` (datenfreie Shell) unter einem freigegebenen `public_paths`-Eintrag. Unter `/api` ist das Defense-in-Depth, **außerhalb** von `/api` (z.B. `/diagrams`) ist es das einzige Session-Gate. CSRF-Haltung = die von Core: `SameSite=Lax`-Cookie, kein Token-Layer. |
 | `'public'` | Kein Kernel-Auth. **Registrierung wirft**, wenn das Prefix nicht unterhalb eines in `permissions.public_paths` deklarierten Pfads liegt. Die Route wird **ausschließlich** über den Public-Path-Mount ausgeliefert — also nur, solange die Zustimmung des Operators für dieses Prefix steht. |
 | `'custom'` | Wie `'public'` — gleiche Deklarationspflicht, gleiche Erreichbarkeitsregel —, aber du sagst damit zu, **jeden** Request selbst zu authentifizieren (HMAC, Bearer, mTLS-Header). |
+| `'teams-sso'` | (#1620) Gleiche Deklarationspflicht und gleiche Operator-Freigabe wie `'public'`, aber der **Kernel** authentifiziert: `Authorization: Bearer <Teams-SSO-Token>` (aus `microsoftTeams.authentication.getAuthToken()`), RS256-Signatur gegen Entras Schlüssel, Tenant + App-ID eines Bots der installierten `@omadia/channel-teams`, ausgestellt an einen Teams-/M365-Client, delegiertes User-Token, nicht abgelaufen. Der Handler bekommt den User als `req.teamsSsoUser` (`{ oid, tenantId, appId, upn? }`, Typ `TeamsSsoUser` in `types.ts`). Jeder Fehler ist derselbe 401 ohne Begründung. **Rein:** ein omadia-Session-Cookie öffnet die Route **nicht**. Gast-Konten (B2B, private Microsoft-Konten) werden abgewiesen; jedes **Mitglied** des Tenants kommt durch — autorisiere im Handler auf `oid`, wenn nicht jeder Tenant-User alles sehen darf (oder der Operator setzt in Entra „Zuweisung erforderlich“ an der Bot-App). |
 
 Es gibt kein `'none'`. Ein Plugin kann sich nicht selbst aus der
 Authentifizierung herausdeklarieren — es kann ein Prefix nur **beantragen**
 (`permissions.public_paths` im Manifest) und braucht dafür die Zustimmung des
 Operators.
+
+**Welche Routen brauchen `'custom'`?** Nur solche, die ein Aufrufer **ohne**
+omadia-Session erreichen muss *und* die jeden Request selbst prüfen:
+Webhooks (HMAC), OAuth-Callbacks (`state`), signierte Download-Links. Im
+Builder deklarierst du den Pfad in `spec.permissions.public_paths`; Codegen
+schreibt ihn nach `manifest.permissions.public_paths`. Der Operator muss ihn
+nach dem Install freigeben, vorher antwortet der Pfad 401.
+
+**UI-Routen: Browser per Session, Teams per Teams-SSO (#1620).** Codegen
+mountet jede `spec.ui_routes[i]` zweimal:
+
+| Pfad | Auth | Inhalt |
+|---|---|---|
+| `/p/<slug><path>` | `'session'` | die Seite für Operatoren im Browser |
+| `/p/<slug>/teams<path>` | `'public'` | **datenfreie** Shell: holt per `getAuthToken()` ein Teams-SSO-Token und lädt damit die Seite nach |
+| `/p/<slug>/teams/_data<path>` | `'teams-sso'` | dieselbe Seite, nur mit gültigem Teams-Token |
+
+Ein Teams-Tab lädt seine URL als nackten GET ohne Bearer, deshalb braucht es
+die Shell; die Daten verlassen den Server nur über den `'teams-sso'`-Mount.
+Codegen schreibt `/p/<slug>/teams` selbst nach
+`manifest.permissions.public_paths`, und der `ctx.uiRoutes`-Eintrag zeigt auf
+die Shell. Bis der Operator den Pfad freigibt, antwortet die Shell 401 (sie
+fällt auf die Session-Route zurück). **Nie** eine Daten-Route auf `'public'`
+oder `'custom'` stellen, um einen 401 im Teams-Tab zu „reparieren“ — dafür
+gibt es `'teams-sso'`. `'custom'` ohne eigene Prüfung in jedem Handler macht
+Daten öffentlich.
+
+Handgeschrieben gilt dasselbe Muster: die Shell auf `'public'` darf nur HTML
+ohne Daten ausliefern, jeder Datenpfad liegt unter `'teams-sso'`, beide
+unterhalb **einer** deklarierten und freigegebenen `public_paths`-Zeile. Ein
+Prefix pro Router: der Kernel löst einen freigegebenen Pfad auf **einen**
+Routen-Eintrag auf, mehrere Router unter demselben Prefix also zu einem
+zusammenfassen.
 
 > **Richtung der Prüfung:** Das **registrierte Prefix** muss **innerhalb** eines
 > deklarierten Pfads liegen — nicht umgekehrt. `public_paths:
@@ -373,10 +484,10 @@ ctx.routes.register('/api/<slug>/hooks', hooks, {
 > eine bewusste Entscheidung.
 
 > **KRITISCH — Response-Schema: Frontend prüft IMMER `data.ok`.** Backend
-> und Frontend müssen denselben Vertrag fahren — der Builder hatte in
-> einem Turn (UniFi-Tracker v0.4.0) `res.json({ devices: [...] })` ohne
-> `ok` geschrieben, das Frontend tat `if (!data.ok) throw 'devices-Fehler'`,
-> und beide Slots dachten der jeweils andere sei kaputt.
+> und Frontend müssen denselben Vertrag fahren. Schreibt der Endpoint
+> `res.json({ devices: [...] })` ohne `ok`, wertet das Frontend mit
+> `if (!data.ok) throw ...` jeden Erfolg als Fehler — und jede Seite hält
+> die andere für kaputt.
 >
 > Pflicht-Pattern in jedem Endpoint:
 > ```js
@@ -440,17 +551,20 @@ davon. Stattdessen über die Service-Registry konsumieren.
 >    Method-Signaturen und Code-Snippets.
 > 3. **`fill_slot` `activate-body`**: Code schreiben — Method-Signaturen
 >    1:1 aus `INTEGRATION.md` übernehmen. **NICHT** aus deinem Trainings-
->    Wissen rekonstruieren — Drift garantiert (heute live beobachtet:
+>    Wissen rekonstruieren: rekonstruierte Signaturen driften von der
+>    echten Client-Surface ab, und der Fehler bleibt stumm — das Plugin
+>    baut, läuft an und liefert leere Ergebnisse. Beispiel:
 >    `odoo.execute_kw(...)` existiert nicht, die echte API ist
->    `odoo.execute({ model, method, positionalArgs, kwargs })` — stand
->    nur in `INTEGRATION.md`, nie in dieser CLAUDE.md).
+>    `odoo.execute({ model, method, positionalArgs, kwargs })` — und die
+>    steht nur in `INTEGRATION.md`, nicht in dieser CLAUDE.md.
 >
-> **WICHTIG bei klassischem `activate-body`-Slot**: `return { ... }` lebt
-> AUSSERHALB der activate-body-Marker-Region (Boilerplate-Restructure 2026-05-04).
-> Der Slot deklariert `const toolkit = createToolkit(...)`; das `return`
-> läuft danach automatisch im Boilerplate. NICHT mehr `return` im Slot
-> schreiben — sonst ist der nachfolgende `external-reads-init`-Block
-> unreachable.
+> **WICHTIG bei klassischem `activate-body`-Slot**: Der Slot deklariert
+> nur `const toolkit = createToolkit(...)`. Das `return { ... }` steht
+> AUSSERHALB der activate-body-Marker-Region und gehört dem Boilerplate:
+> Nach dem Slot laufen die Codegen-Blöcke `external-reads-init` und
+> `ui-routes-init`, danach gibt das Boilerplate `{ toolkit, close }` zurück.
+> Schreib im Slot kein eigenes `return` — sonst ist alles danach
+> unreachable, auch der `external-reads-init`-Block.
 
 Skelett (mit dem konkreten Pattern aus `INTEGRATION.md` füllen):
 
@@ -553,11 +667,11 @@ Abgucken.
   gegen den UniFi-Client geht nirgendwohin. Fremde Daten = Service-Registry
   + `depends_on` (siehe "Daten aus anderen Plugins ziehen" oben).
 - **API-Signaturen für fremde Integrationen aus dem Trainings-Wissen
-  rekonstruieren**: das CLAUDE.md hier dokumentiert KEINE konkreten
-  Method-Signaturen für `OdooClient`, `ConfluenceClient`, etc. mehr —
-  driftet bei jedem Integration-Patch. Stattdessen `read_reference` auf
-  `INTEGRATION.md` des Dependency-Plugins. Hardcoded Beispiele in DIESER
-  Datei sind ab sofort verboten (Lessons-learned 2026-05-04).
+  oder aus dieser Datei übernehmen**: dieses CLAUDE.md dokumentiert
+  bewusst keine konkreten Method-Signaturen für `OdooClient`,
+  `ConfluenceClient` etc., denn hier hart kodierte Signaturen driften bei
+  jedem Integration-Patch. Die Signaturen stehen im `INTEGRATION.md` des
+  Dependency-Plugins — lies es per `read_reference`.
 - **Separate `app.js`/`styles.css`-Dateien**: codegen kann nur Marker-
   Regions in vordefinierten Files füllen, keine neuen Files erzeugen.
   Inline `<script>` und `<style>` im `admin-ui-body`-Slot sind die
@@ -613,10 +727,10 @@ User sagt: "Bau mir einen Agent `de.byte5.agent.sharepoint` für Dokument-Suche.
    | `{{CAPABILITY_ID}}` | `search_documents` |
    | `{{ROLE_DESCRIPTION_DE}}` | "ein pragmatischer SharePoint-Recherche-Assistent" |
 
-   > **`identity.description` ist eine Locale-Map, kein einzelner String** (#885).
+   > **`identity.description` ist eine Locale-Map, kein einzelner String.**
    > Ein blanker String wird als Englisch gelesen — deutscher Text darin
    > erscheint im Hub als englische Beschreibung. Die beiden Platzhalter
-   > kommen aus **zwei getrennten Spec-Feldern** (#1022): `spec.description`
+   > kommen aus **zwei getrennten Spec-Feldern**: `spec.description`
    > ist der deutsche Text, `spec.description_en` der englische. Der Builder
    > setzt beide selbst — den englischen formuliert er aus dem deutschen,
    > ohne dafür nachzufragen. Von Hand zu übersetzen ist also nichts. Fehlt
@@ -636,7 +750,7 @@ User sagt: "Bau mir einen Agent `de.byte5.agent.sharepoint` für Dokument-Suche.
    node scripts/build-zip.mjs
    # → out/de.byte5.agent.sharepoint-0.1.0.zip
 
-   # Upload via Admin-UI (odoo-bot-harness.fly.dev → Store → Upload)
+   # Upload via Admin-UI (<your-omadia-host> → Store → Upload)
    # oder via Admin-API POST /api/v1/install/plugins/:id (job-basiert).
    ```
 

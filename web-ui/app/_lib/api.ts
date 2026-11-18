@@ -5,6 +5,7 @@ import type {
   InstallCreateResponse,
   InstallJob,
   ListUploadedPackagesResponse,
+  RegistrySourceStatus,
   StoreGetResponse,
   StoreListResponse,
   UploadPackageResponse,
@@ -119,7 +120,7 @@ function maybeNavigateToLogin(status: number): void {
  * Ceiling for a SERVER-rendered `getJson` (OM-96).
  *
  * A beta tester reported that the DASHBOARD nav item "does not navigate": the
- * page stayed, the active marker stayed. The nav was innocent. `app/page.tsx`
+ * page stayed, the active marker stayed. The nav was innocent. `app/(dashboard)/page.tsx`
  * is `force-dynamic` and awaits six of these calls, and there was no root
  * `loading.tsx` — so with one middleware endpoint accepting the connection and
  * never answering, the RSC payload for `/` never arrived, the soft navigation
@@ -201,23 +202,28 @@ async function postJson<T>(
   }
 }
 
+/** A non-empty string field of a JSON error body, else `null`. */
+function bodyField(body: string, field: 'code' | 'error' | 'message'): string | null {
+  try {
+    const value = (JSON.parse(body) as Record<string, unknown> | null)?.[field];
+    return typeof value === 'string' && value.trim().length > 0 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * The middleware's machine-readable error code, pulled out of a JSON error
- * body (`{ code, message }`). Returns `null` when the body is not JSON, has
- * no `code`, or carries one that is not a non-empty string.
+ * body. Most routes send `{ code, message }`; older ones (the memory purge
+ * among them, #1333) send `{ error, message }`, so `error` is the fallback.
+ * Returns `null` when the body is not JSON or carries neither as a non-empty
+ * string.
  *
  * Pure by construction: no module state is read or written, which is what
  * keeps the constructor invariant documented below intact.
  */
 function parseErrorCode(body: string): string | null {
-  try {
-    const parsed = JSON.parse(body) as { code?: unknown };
-    return typeof parsed.code === 'string' && parsed.code.trim().length > 0
-      ? parsed.code
-      : null;
-  } catch {
-    return null;
-  }
+  return bodyField(body, 'code') ?? bodyField(body, 'error');
 }
 
 /**
@@ -242,6 +248,12 @@ function parseErrorCode(body: string): string | null {
 export class ApiError extends Error {
   /** Machine-readable code from the JSON error body; `null` when absent. */
   public readonly code: string | null;
+  /**
+   * The server's own explanation (`message` of the JSON error body), `null`
+   * when absent (#1333). Usually English — prefer localized copy keyed on
+   * {@link code} and fall back to this before the bare `… failed: <status>`.
+   */
+  public readonly serverMessage: string | null;
 
   constructor(
     public readonly status: number,
@@ -251,6 +263,7 @@ export class ApiError extends Error {
     super(message);
     this.name = 'ApiError';
     this.code = parseErrorCode(body);
+    this.serverMessage = bodyField(body, 'message');
   }
 }
 
@@ -277,7 +290,9 @@ function expectArray<T>(value: unknown, path: string, key: string): T[] {
 }
 
 // -----------------------------------------------------------------------------
-// Admin settings — the .env-based config/vault overview (/api/v1/admin/settings)
+// Admin settings — the cross-plugin provider-key writes (/api/v1/admin/settings).
+// The UI edits these on the LLM access page (ProvidersPanel); the old
+// /admin/settings overview page was removed in #1397.
 // -----------------------------------------------------------------------------
 
 export type SettingValueType =
@@ -304,16 +319,6 @@ export interface ResolvedSetting {
   isSet?: boolean;
 }
 
-export interface SettingsCategory {
-  category: string;
-  settings: ResolvedSetting[];
-}
-
-export interface SettingsResponse {
-  categories: SettingsCategory[];
-  vault_available: boolean;
-}
-
 export interface SettingChange {
   key: string;
   /** New value, or null to clear/delete. */
@@ -322,11 +327,9 @@ export interface SettingChange {
 
 export interface SettingsPatchResponse {
   updated: ResolvedSetting[];
-  errors: Array<{ key: string; message: string }>;
-}
-
-export async function getSettings(): Promise<SettingsResponse> {
-  return getJson<SettingsResponse>('/v1/admin/settings');
+  /** Same shape a rejected (400) PATCH carries; read that one with
+   *  `serverFieldErrors` from `apiErrorMessage.ts`. */
+  errors: Array<{ key: string; message: string; code?: string }>;
 }
 
 export async function patchSettings(
@@ -390,6 +393,13 @@ export type ProviderCredentialStatus =
 export interface AdminProvider {
   id: string;
   label: string;
+  /** #1460 — `false` for a keyless provider (Ollama, vLLM …): it is verified
+   *  by reaching it, and a key is optional (auth proxy). Absent on an older
+   *  middleware. */
+  requiresApiKey?: boolean;
+  /** #1460 — a key is actually stored. `connected` is true for a keyless
+   *  provider without any key, so it cannot gate "Change/Remove key". */
+  hasKey?: boolean;
   /** Credential verdict. Prefer this over `connected` everywhere. */
   status: ProviderCredentialStatus;
   /** ISO timestamp of the last successful probe (`verified` only). */
@@ -451,6 +461,10 @@ export interface AdminProvider {
    *  there are some; absent on older middleware payloads. */
   unclassifiedModels?: string[];
   models: AdminProviderModel[];
+  /** #1083 — the `modelId` each model class resolves to on this provider;
+   *  classes it does not serve are absent. Labels the class options of the
+   *  per-agent model select. Absent on pre-#1083 middleware payloads. */
+  classDefaults?: Partial<Record<ModelClass, string>>;
 }
 
 export interface ProviderAssignment {
@@ -458,12 +472,20 @@ export interface ProviderAssignment {
   label: string;
   installed: boolean;
   provider: string;
+  /** The stored model ref: a concrete id, or a class ref (`class:frontier`)
+   *  that follows the provider's catalog. */
   model: string | null;
+  /** #1083 — the concrete model `model` currently resolves to; `null` when
+   *  nothing is stored or it cannot be resolved. Absent on pre-#1083
+   *  middleware payloads. */
+  resolvedModel?: string | null;
   modelKey: string;
   /** Orchestrator only: per-turn model-routing flag ('true' | 'false'). */
   modelRouting?: string;
   /** This plugin drives a tool loop → a tool-less provider is not assignable. */
   requiresTools?: boolean;
+  /** #1583 — this plugin cannot run on the subscription CLI at all. */
+  rejectsSubscriptionCli?: boolean;
 }
 
 export interface ProvidersResponse {
@@ -482,7 +504,11 @@ export interface AssignProviderResponse {
   ok: boolean;
   pluginId: string;
   provider: string;
+  /** What was stored: a class ref as given, else the bare vendor id. */
   model: string;
+  /** #1083 — the concrete model the stored ref resolves to right now. Absent
+   *  on pre-#1083 middleware payloads. */
+  resolvedModel?: string;
 }
 
 export async function getProviders(): Promise<ProvidersResponse> {
@@ -643,6 +669,14 @@ export async function getCliBackends(force = false): Promise<CliBackendsResponse
   return getJson<CliBackendsResponse>(
     `/v1/admin/cli-backends${force ? '?refresh=1' : ''}`,
   );
+}
+
+/**
+ * The operator's "re-check": a fresh probe, and a CLI already signed in on the
+ * host gets the orchestrator when no provider is configured.
+ */
+export async function recheckCliBackends(): Promise<CliBackendsResponse> {
+  return postJson<CliBackendsResponse>('/v1/admin/cli-backends/recheck', {});
 }
 
 export interface CliLoginStart {
@@ -882,6 +916,426 @@ export async function getInstalledPlugin(
 }
 
 /**
+ * #1507/#1508 — the instance's Privacy Shield posture. `shield_active` is
+ * false while no `privacy.redact@1` provider runs (every turn goes to the LLM
+ * unmasked); `force_guarded` is the org-wide `OMADIA_PRIVACY_FORCE_GUARDED`
+ * clamp that makes every per-plugin bypass ineffective; `provider_ids` are the
+ * installed plugins providing the shield (non-empty while the shield is off
+ * means installed but not running).
+ */
+export interface PrivacyPosture {
+  shield_active: boolean;
+  force_guarded: boolean;
+  provider_ids: string[];
+  /**
+   * #1562 — state of the C1 name detector. null when no shield runs or the
+   * provider cannot report it. Optional: an older backend omits the field,
+   * and the UI then renders nothing about name detection.
+   */
+  name_detector?: PrivacyNameDetector | null;
+  /**
+   * #1556 follow-up — fields an admin has to look at: `needs_clarification`
+   * plus `confirmed_conflict` (a listed field that now points to a person
+   * model or changed since it was confirmed). Optional: an older backend
+   * omits it, and the UI then shows no banner and no nav badge.
+   */
+  fields_needing_clarification?: number;
+  /** Undecided `suggested` fields (same optionality). */
+  fields_suggested_open?: number;
+  /** The `confirmed_conflict` part of `fields_needing_clarification`. */
+  fields_confirmed_conflict?: number;
+  /**
+   * Fields the auto-classifier approved since the requesting admin last
+   * opened the field-classification page (0 when unknown). Optional for an
+   * older backend.
+   */
+  fields_auto_approved_new?: number;
+  /** Open `auto_revoked` fields — also counted in
+   *  `fields_needing_clarification`. Optional for an older backend. */
+  fields_auto_revoked?: number;
+}
+
+/** #1562 — the Privacy Guard's C1 (GLiNER sidecar) name detector. */
+export interface PrivacyNameDetector {
+  state: 'unconfigured' | 'active' | 'unreachable';
+  /** where the sidecar URL comes from: the guard's `c1_detector_url` setup
+   *  field, or the PRIVACY_C1_DETECTOR_URL env var */
+  source: 'setup' | 'env' | null;
+  /** ISO time of the most recent turn in which C1 failed (since process
+   *  start), else null */
+  last_failure_at: string | null;
+  /** `mask_user_prompt`: only while it is on are names the user types
+   *  masked at all. Optional for an older backend. */
+  prompt_masking?: boolean;
+}
+
+export async function getPrivacyPosture(): Promise<PrivacyPosture> {
+  return getJson<PrivacyPosture>('/v1/admin/runtime/privacy-posture');
+}
+
+// -----------------------------------------------------------------------------
+// Privacy field classification (#1556 follow-up) — suggestions for the Privacy
+// Guard's `non_personal_fields` setting. Fields the guard can prove to be
+// non-personal are auto-approved (`auto_approved`, master switch on the
+// guard); everything else waits for an admin. The API never returns a field
+// value in the list; the preview is audited.
+// -----------------------------------------------------------------------------
+
+export const FIELD_CLASSIFICATION_STATUSES = [
+  'suggested',
+  'needs_clarification',
+  'auto_revoked',
+  'personal',
+  'auto_approved',
+  'confirmed',
+  'confirmed_conflict',
+  'rejected',
+  'kept_masked',
+] as const;
+
+export type FieldClassificationStatus = (typeof FIELD_CLASSIFICATION_STATUSES)[number];
+
+export type FieldClassificationAction = 'confirm' | 'reject' | 'keep_masked' | 'revert';
+
+/** Decisions the kernel records itself (`by` is {@link AUTO_CLASSIFIER_ACTOR}). */
+export type FieldClassificationSystemAction = 'auto_approve' | 'auto_revoke';
+
+/** The decision actor of an auto-approval / auto-revocation. */
+export const AUTO_CLASSIFIER_ACTOR = 'system:auto-classifier';
+
+/** Why an auto-approval was allowed: every relation target is a known
+ *  non-personal model, or a schema review (Haiku) above the threshold. */
+export type FieldAutoApprovalBasis = 'known_non_personal' | 'haiku';
+
+/**
+ * Why a field got its status. The UI renders localized text from `code` and
+ * the detail fields; unknown codes fall back to a generic label.
+ */
+export interface FieldClassificationReason {
+  code: string;
+  models?: string[];
+  model?: string;
+  confidence?: number;
+  hitTypes?: string[];
+  sampleCount?: number;
+  /** `legacy_entry`: the legacy entry (as written) that covers the field. */
+  entry?: string;
+  /** `auto_approved`: what the auto-approval rests on (`confidence` is set
+   *  for `haiku`, 0..1). */
+  basis?: FieldAutoApprovalBasis;
+}
+
+export interface FieldClassificationDecision {
+  action: FieldClassificationAction | FieldClassificationSystemAction;
+  by: string | null;
+  at: string;
+}
+
+export interface FieldClassificationItem {
+  id: string;
+  toolName: string;
+  /**
+   * What the field's rows belong to: an Odoo model (`hr.employee`), an
+   * uploaded dataset's id (tool `query_dataset`), or `-` when the source
+   * names no model. One item per tool + scope + field.
+   */
+  scope: string;
+  fieldPath: string;
+  /** The field's schema label where the source has one. */
+  label: string | null;
+  valueShape: 'm2o' | 'text' | 'mixed';
+  relationModels: string[];
+  status: FieldClassificationStatus;
+  reasons: FieldClassificationReason[];
+  /** The scoped entry confirm adds to `non_personal_fields`
+   *  (`<tool>:<scope>/<field>`, `dataset:<id>/<column>`). */
+  configEntry: string;
+  /** Sent back with a decision; a changed candidate answers 409. */
+  fingerprint: string;
+  decision: FieldClassificationDecision | null;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  seenCount: number;
+}
+
+export interface FieldClassificationList {
+  items: FieldClassificationItem[];
+  counts: Record<FieldClassificationStatus, number>;
+  newSinceLastVisit: number;
+  computedAt: string | null;
+}
+
+const FIELD_CLASSIFICATION_BASE = '/v1/admin/privacy/field-classification';
+
+export async function listFieldClassifications(
+  filter: { status?: FieldClassificationStatus; tool?: string } = {},
+): Promise<FieldClassificationList> {
+  const params = new URLSearchParams();
+  if (filter.status) params.set('status', filter.status);
+  if (filter.tool) params.set('tool', filter.tool);
+  const qs = params.toString();
+  const path = qs.length > 0 ? `${FIELD_CLASSIFICATION_BASE}?${qs}` : FIELD_CLASSIFICATION_BASE;
+  const body = await getJson<FieldClassificationList>(path);
+  return { ...body, items: expectArray<FieldClassificationItem>(body.items, path, 'items') };
+}
+
+/**
+ * Record an admin decision. Throws `ApiError` 409 with code
+ * `stale_fingerprint` when the candidate changed since it was loaded,
+ * `stale_decision` when another decision (an admin, the auto-classifier)
+ * landed meanwhile — both shown as "changed, reloaded",
+ * `covered_by_legacy` (body carries `entry`) when a revert targets a field a
+ * legacy entry (`tool:field`, `*:field`, `field`) covers, or `invalid_field`.
+ */
+export async function decideFieldClassification(
+  id: string,
+  action: FieldClassificationAction,
+  fingerprint: string,
+): Promise<{ item: FieldClassificationItem }> {
+  return postJson<{ item: FieldClassificationItem }>(
+    `${FIELD_CLASSIFICATION_BASE}/${encodeURIComponent(id)}/decision`,
+    { action, fingerprint },
+  );
+}
+
+export interface FieldClassificationPreview {
+  /** REAL buffered values — admins only; every call writes an audit row
+   *  (`privacy.field_preview`). Empty when nothing is buffered. */
+  samples: string[];
+  /** Shape-masked strings (no letter or digit), the fallback. */
+  maskedSamples: string[];
+  /** Why no real value is shown at all: an uploaded dataset's rows belong
+   *  to the uploading user (`owner_scoped_dataset`). `null` otherwise. */
+  samplesWithheld: 'owner_scoped_dataset' | null;
+}
+
+/** The field's sample: real values (audited) plus the masked fallback. */
+export async function previewFieldClassification(id: string): Promise<FieldClassificationPreview> {
+  const path = `${FIELD_CLASSIFICATION_BASE}/${encodeURIComponent(id)}/preview`;
+  const body = await getJson<Partial<FieldClassificationPreview>>(path);
+  return {
+    samples: expectArray<string>(body.samples ?? [], path, 'samples'),
+    maskedSamples: expectArray<string>(body.maskedSamples ?? [], path, 'maskedSamples'),
+    samplesWithheld: body.samplesWithheld === 'owner_scoped_dataset' ? 'owner_scoped_dataset' : null,
+  };
+}
+
+/** A field a legacy entry covers, with the scoped entry a conversion writes. */
+export interface LegacyCoveredField {
+  id: string;
+  toolName: string;
+  scope: string;
+  fieldPath: string;
+  configEntry: string;
+  /** The classifier rates the field personal: a conversion does not write
+   *  its scoped entry — it is masked afterwards. */
+  personal: boolean;
+}
+
+/** A legacy `non_personal_fields` entry — it applies to every model. */
+export interface LegacyFieldEntry {
+  entry: string;
+  covers: LegacyCoveredField[];
+}
+
+export async function listLegacyFieldEntries(): Promise<{ entries: LegacyFieldEntry[] }> {
+  const path = `${FIELD_CLASSIFICATION_BASE}/legacy`;
+  const body = await getJson<{ entries: LegacyFieldEntry[] }>(path);
+  return {
+    entries: expectArray<LegacyFieldEntry>(body.entries, path, 'entries').map((e) => ({
+      ...e,
+      covers: (Array.isArray(e.covers) ? e.covers : []).map((c) => ({ ...c, personal: c.personal === true })),
+    })),
+  };
+}
+
+export interface LegacyConversionResult {
+  entry: string;
+  /** Scoped entries written in place of the legacy one. */
+  added: string[];
+  /** Covered fields that could not be written as one scoped entry. */
+  skipped: { toolName: string; scope: string; fieldPath: string }[];
+  /** Covered fields rated personal: not converted, masked from now on. */
+  skippedPersonal: LegacyCoveredField[];
+  /** Ids of covered fields that stay `confirmed_conflict` (not acknowledged). */
+  conflicts: string[];
+}
+
+/**
+ * Replace one legacy entry by scoped entries for every field it covers.
+ * Throws `ApiError` 409 `legacy_entry_not_found` when the entry is gone.
+ */
+export async function convertLegacyFieldEntry(entry: string): Promise<LegacyConversionResult> {
+  const body = await postJson<Partial<LegacyConversionResult>>(
+    `${FIELD_CLASSIFICATION_BASE}/legacy/convert`,
+    { entry },
+  );
+  return {
+    entry: body.entry ?? entry,
+    added: Array.isArray(body.added) ? body.added : [],
+    skipped: Array.isArray(body.skipped) ? body.skipped : [],
+    skippedPersonal: Array.isArray(body.skippedPersonal) ? body.skippedPersonal : [],
+    conflicts: Array.isArray(body.conflicts) ? body.conflicts : [],
+  };
+}
+
+
+// --- Bulk accept (admin) -----------------------------------------------------
+
+/** Which suggestions a bulk accept covers; omitted ⇒ every `suggested` field. */
+export interface FieldBulkFilter {
+  status?: 'suggested';
+  tool?: string;
+  scope?: string;
+}
+
+export interface FieldBulkItem {
+  id: string;
+  toolName: string;
+  scope: string;
+  fieldPath: string;
+  /** The scoped `non_personal_fields` entry the accept writes. */
+  entry: string;
+}
+
+export interface FieldBulkPreviewItem extends FieldBulkItem {
+  /** `known_non_personal` | `haiku` (unknown codes render generically). */
+  reasonCode: string;
+}
+
+export interface FieldBulkPreview {
+  count: number;
+  byReason: Record<string, number>;
+  byTool: Record<string, number>;
+  items: FieldBulkPreviewItem[];
+}
+
+export interface FieldBulkSkip {
+  id: string;
+  /** not_suggested | person_model | detector_hit | conflict | no_scope |
+   *  invalid_field | already_covered | stale (undo: its own codes). */
+  reason: string;
+}
+
+export interface FieldBulkResult {
+  batchId: string | null;
+  applied: FieldBulkItem[];
+  skipped: FieldBulkSkip[];
+  /** Eligible fields left over by the per-call cap. */
+  remaining: number;
+}
+
+export interface FieldBulkBatch {
+  id: string;
+  createdAt: string | null;
+  actorEmail: string | null;
+  count: number;
+}
+
+export interface FieldBulkUndoResult {
+  batchId: string;
+  reverted: FieldBulkItem[];
+  skipped: FieldBulkSkip[];
+}
+
+function bulkQuery(filter: FieldBulkFilter): string {
+  const params = new URLSearchParams({ status: filter.status ?? 'suggested' });
+  if (filter.tool) params.set('tool', filter.tool);
+  if (filter.scope) params.set('scope', filter.scope);
+  return params.toString();
+}
+
+function countRecord(value: unknown): Record<string, number> {
+  if (typeof value !== 'object' || value === null) return {};
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).filter(
+      (e): e is [string, number] => typeof e[1] === 'number' && Number.isFinite(e[1]),
+    ),
+  );
+}
+
+/** What a bulk accept with this filter would apply (same eligibility as confirm). */
+export async function previewFieldBulkConfirm(filter: FieldBulkFilter): Promise<FieldBulkPreview> {
+  const path = `${FIELD_CLASSIFICATION_BASE}/bulk/preview?${bulkQuery(filter)}`;
+  const body = await getJson<Partial<FieldBulkPreview>>(path);
+  const items = expectArray<FieldBulkPreviewItem>(body.items ?? [], path, 'items');
+  return {
+    count: typeof body.count === 'number' ? body.count : items.length,
+    byReason: countRecord(body.byReason),
+    byTool: countRecord(body.byTool),
+    items,
+  };
+}
+
+/**
+ * Accept suggestions in one config write. Exactly one of `ids` / `filter`
+ * (neither ⇒ every `suggested` field); the server re-validates each one.
+ */
+export async function confirmFieldBulk(
+  target: { ids: string[] } | { filter: FieldBulkFilter },
+): Promise<FieldBulkResult> {
+  const body = await postJson<Partial<FieldBulkResult>>(
+    `${FIELD_CLASSIFICATION_BASE}/bulk/confirm`,
+    target,
+  );
+  return {
+    batchId: typeof body.batchId === 'string' ? body.batchId : null,
+    applied: Array.isArray(body.applied) ? body.applied : [],
+    skipped: Array.isArray(body.skipped) ? body.skipped : [],
+    remaining: typeof body.remaining === 'number' ? body.remaining : 0,
+  };
+}
+
+function parseBatch(raw: unknown): FieldBulkBatch | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const b = raw as Record<string, unknown>;
+  const id = typeof b['id'] === 'string' ? b['id'] : typeof b['batchId'] === 'string' ? b['batchId'] : null;
+  if (id === null) return null;
+  const str = (v: unknown): string | null => (typeof v === 'string' ? v : null);
+  const entries = Array.isArray(b['entries']) ? b['entries'].length : 0;
+  return {
+    id,
+    createdAt: str(b['createdAt']) ?? str(b['created_at']),
+    actorEmail: str(b['actorEmail']) ?? str(b['actor_email']),
+    count: typeof b['count'] === 'number' ? b['count'] : entries,
+  };
+}
+
+/** The latest bulk accept that was not undone, or null. */
+export async function getLatestFieldBulk(): Promise<FieldBulkBatch | null> {
+  const body = await getJson<unknown>(`${FIELD_CLASSIFICATION_BASE}/bulk/latest`);
+  if (typeof body === 'object' && body !== null && 'batch' in body) {
+    return parseBatch((body as { batch: unknown }).batch);
+  }
+  return parseBatch(body);
+}
+
+/**
+ * Undo a bulk accept: removes exactly the entries it applied that are still
+ * present. Throws `ApiError` 409 `not_latest_batch` / `already_undone`.
+ */
+export async function undoFieldBulk(batchId: string): Promise<FieldBulkUndoResult> {
+  const body = await postJson<Partial<FieldBulkUndoResult> & { removed?: FieldBulkItem[] }>(
+    `${FIELD_CLASSIFICATION_BASE}/bulk/${encodeURIComponent(batchId)}/undo`,
+    undefined,
+  );
+  const reverted = body.reverted ?? body.removed;
+  return {
+    batchId: typeof body.batchId === 'string' ? body.batchId : batchId,
+    reverted: Array.isArray(reverted) ? reverted : [],
+    skipped: Array.isArray(body.skipped) ? body.skipped : [],
+  };
+}
+
+
+export async function recomputeFieldClassifications(): Promise<{ computedAt: string | null }> {
+  return postJson<{ computedAt: string | null }>(
+    `${FIELD_CLASSIFICATION_BASE}/recompute`,
+    undefined,
+  );
+}
+
+/**
  * Slice 2.5 — PATCH the non-secret config of an installed plugin.
  * Shallow-merges the patch into the existing config: only keys in `patch`
  * are touched, `null` clears a key. Secrets stay in the vault. Used by
@@ -958,11 +1412,18 @@ export async function getInstallJob(jobId: string): Promise<InstallJob> {
  */
 export async function uploadPackage(
   file: File,
-  opts: { signal?: AbortSignal; onProgress?: (loaded: number, total: number) => void } = {},
+  opts: {
+    signal?: AbortSignal;
+    onProgress?: (loaded: number, total: number) => void;
+    /** #1455 — confirm replacing the installed version with an older one.
+     *  Without it the route answers 409 `package.downgrade_blocked`. */
+    allowDowngrade?: boolean;
+  } = {},
 ): Promise<UploadPackageResponse> {
   const forwarded = await forwardCookieHeader();
   const form = new FormData();
   form.append('file', file, file.name);
+  if (opts.allowDowngrade === true) form.append('allow_downgrade', '1');
 
   // fetch() has no upload-progress in the browser; XHR is the only path that
   // exposes xhr.upload.onprogress. We fall back to fetch() in non-DOM
@@ -1165,6 +1626,9 @@ export interface StoredRegistry {
   name: string;
   url: string;
   has_token: boolean;
+  /** #1482 — outcome of the last index fetch; absent when not fetched yet
+   *  (or on an older middleware). */
+  status?: RegistrySourceStatus;
 }
 
 export interface RegistryListResponse {
@@ -1230,10 +1694,27 @@ export interface RegistryInstallResponse {
   plugin_id: string;
   version: string;
   registry: string;
+  /** #1495 — the same version with the same sha256 was already fetched; the
+   *  route skipped the download and the ingest. */
+  already_present?: boolean;
+  /** #1490 — the version this fetch replaced in the upload store. */
+  replaced_version?: string;
+  /** #1455 — set when this fetch replaced another version. */
+  direction?: 'upgrade' | 'downgrade';
   /** C5 — missing `depends_on` parents (already fetched + ingested) the
    *  operator must install before the target. Empty/absent → install the
    *  target directly. Same shape the RequiresWizard consumes. */
   chain?: InstallChainResolution;
+  /** #1452 — the package was ingested and the running plugin did NOT come
+   *  back up; this is the activation error, and the middleware has flipped the
+   *  registry entry to `errored`. Absent on success, on an ingest that
+   *  attempted no activation (fresh install — the install job reports that
+   *  one), and on an older middleware. */
+  activation_error?: string;
+  /** #1497 — the shared activation result; narrow with `parseActivationResult`. */
+  activation?: unknown;
+  /** #1463 — present (true) only when this ingest started the plugin. */
+  activated?: true;
   next: { install: string };
 }
 
@@ -1279,6 +1760,9 @@ export interface VaultStatusResponse {
     last_modified: string | null;
     agent_count: number;
     master_key_source: 'env' | 'dev-file-existed' | 'dev-file-created';
+    /** #1387 — the credential keychain's master key. Absent on older middleware. */
+    keychain_key_source?: 'env' | 'dev-file-existed' | 'dev-file-created';
+    /** Both master keys come from env. */
     production_ready: boolean;
   };
   backup: VaultBackupStatus;
@@ -1331,6 +1815,19 @@ export interface SessionStatus {
    *  unauthenticated or when the server cannot renew; the watcher then
    *  offers only a re-login. */
   renewableUntil: number | null;
+  /** #1322 — why an unauthenticated probe failed: `revoked` when the server
+   *  ended the session (`auth.revoked`: sign-out elsewhere, admin action),
+   *  `expired` for everything else (missing/invalid/expired cookie). Absent
+   *  when authenticated. */
+  reason?: SessionEndReason;
+}
+
+export type SessionEndReason = 'revoked' | 'expired';
+
+/** #1322 — map a 401 body from /auth/me to the reason the session ended.
+ *  Tolerates a non-JSON body (falls back to `expired`). */
+function sessionEndReason(body: string): SessionEndReason {
+  return parseErrorCode(body) === 'auth.revoked' ? 'revoked' : 'expired';
 }
 
 /**
@@ -1364,9 +1861,15 @@ export interface AuthProviderSummary {
 
 export interface AuthProvidersResponse {
   providers: AuthProviderSummary[];
-  /** True iff users-table is empty AND no env-seed values were given.
-   *  The login UI flips into "first-time-setup" mode when this is true. */
+  /** True iff the first-user wizard is open: this boot allowed setup, the
+   *  local provider is active and the users table is still empty. The same
+   *  predicate `POST /setup` enforces. The login UI flips into
+   *  "first-time-setup" mode when this is true. */
   setup_required: boolean;
+  /** True when `POST /setup` demands the operator setup token (every server
+   *  install; the desktop app's loopback kernel is the one exception). The
+   *  middleware prints it to its log at boot unless ADMIN_SETUP_TOKEN is set. */
+  setup_token_required: boolean;
 }
 
 export interface AuthLogoutEntry {
@@ -1409,12 +1912,14 @@ export async function getSessionStatus(): Promise<SessionStatus> {
     credentials: 'include',
   });
   if (res.status === 401) {
+    const body = await res.text().catch(() => '');
     return {
       authenticated: false,
       user: null,
       expiresAt: null,
       serverNow: null,
       renewableUntil: null,
+      reason: sessionEndReason(body),
     };
   }
   if (!res.ok) {
@@ -1502,6 +2007,9 @@ export async function postAuthSetup(body: {
   email: string;
   password: string;
   display_name?: string;
+  /** Operator setup token; required when `/providers` reports
+   *  `setup_token_required`. Refused with 403 `auth.setup_token_invalid`. */
+  setup_token?: string;
   /** OB-61 — operator-supplied Anthropic key, seeded into the
    *  orchestrator/verifier/extras vault on first-user setup. Back-compat
    *  only: the wizard's key field was removed in S4 and this client never
@@ -1664,6 +2172,52 @@ export async function deleteAdminUser(id: string): Promise<void> {
   if (res.status === 204) return;
   const text = await res.text().catch(() => '');
   throw new ApiError(res.status, `DELETE admin/users/${id} failed: ${res.status}`, text);
+}
+
+// -----------------------------------------------------------------------------
+// Admin — audit log (#1315, read-only)
+// -----------------------------------------------------------------------------
+
+export interface AuditEntryDto {
+  id: string;
+  actor_id: string | null;
+  actor_email: string | null;
+  action: string;
+  target: string;
+  before: unknown;
+  after: unknown;
+  /** ISO timestamp. */
+  created_at: string;
+}
+
+export interface AdminAuditListResponse {
+  entries: AuditEntryDto[];
+  limit: number;
+  offset: number;
+  has_more: boolean;
+}
+
+export interface AdminAuditQuery {
+  /** 1..200, server default 50. */
+  limit?: number;
+  offset?: number;
+  /** Exact action (`user.create`) or a prefix ending in `.` (`user.`). */
+  action?: string;
+}
+
+export async function listAdminAudit(
+  query: AdminAuditQuery = {},
+): Promise<AdminAuditListResponse> {
+  const params = new URLSearchParams();
+  if (query.limit !== undefined) params.set('limit', String(query.limit));
+  if (query.offset !== undefined) params.set('offset', String(query.offset));
+  if (query.action !== undefined && query.action.length > 0) {
+    params.set('action', query.action);
+  }
+  const suffix = params.toString() ? `?${params.toString()}` : '';
+  const path = `/v1/admin/audit${suffix}`;
+  const res = await getJson<AdminAuditListResponse>(path);
+  return { ...res, entries: expectArray<AuditEntryDto>(res.entries, path, 'entries') };
 }
 
 // -----------------------------------------------------------------------------
@@ -2501,6 +3055,9 @@ export interface InstalledSecretsState {
   keys: string[];
   config_keys: string[];
   config_values: Record<string, string>;
+  /** #1497 — whether the plugin came back up after the write re-activated it.
+   *  Narrow with `parseActivationResult`; absent on an older middleware. */
+  activation?: unknown;
 }
 
 /**
@@ -2578,7 +3135,7 @@ export async function fetchSetupFieldOptions(
 export async function patchInstalledConfig(
   pluginId: string,
   patch: Record<string, unknown>,
-): Promise<void> {
+): Promise<{ activation?: unknown }> {
   const forwarded = await forwardCookieHeader();
   const res = await fetch(
     botApi(
@@ -2604,6 +3161,9 @@ export async function patchInstalledConfig(
       text,
     );
   }
+  // #1497 — the write re-activated the plugin; `activation` says whether it
+  // came back up.
+  return ((await res.json().catch(() => ({}))) ?? {}) as { activation?: unknown };
 }
 
 /**
@@ -2686,6 +3246,8 @@ export interface PluginGrantsView {
   orphaned_public_paths: string[];
   last_activation_error: string | null;
   last_activation_error_at: string | null;
+  /** #1456 — classified reason; absent on an older middleware. */
+  last_activation_error_code?: string | null;
 }
 
 function grantsUrl(pluginId: string): string {
@@ -4041,32 +4603,6 @@ export async function uploadDataset(
 }
 
 // -----------------------------------------------------------------------------
-// Chat session reset (2026-05-26).
-// -----------------------------------------------------------------------------
-
-export interface ResetChatSessionResponse {
-  sessionId: string;
-  /** New conversation pointer minted by the orchestrator. */
-  newConversationId: string;
-  resetAt: number;
-}
-
-/**
- * Rotates the conversation pointer for a chat session. The backend keeps
- * the session-id stable (so KG / memory references stay valid) but starts
- * a fresh conversation-id so the agent's context window is empty on the
- * next turn. Memory and Knowledge-Graph entries are NOT touched.
- */
-export async function resetChatSession(
-  sessionId: string,
-): Promise<ResetChatSessionResponse> {
-  return postJson<ResetChatSessionResponse>(
-    `/chat/sessions/${encodeURIComponent(sessionId)}/reset`,
-    {},
-  );
-}
-
-// -----------------------------------------------------------------------------
 // Danger Zone — memory purge (destructive). Backed by the admin router at
 // /api/v1/admin/memory/purge{/preview}, surfaced to the browser as
 // /bot-api/v1/admin/memory/purge{/preview}. Two stages:
@@ -4103,22 +4639,45 @@ export async function resetChatSession(
 
 export type MemoryPurgeAxis = 'all' | 'agent' | 'user' | 'team' | 'channel';
 
+/** A server warning as code + params; the page translates it under
+ *  `adminDangerZone.warnings.<code>` (#1333). */
+export interface MemoryPurgeWarning {
+  code: string;
+  params?: Record<string, string>;
+}
+
 export interface MemoryPurgePreviewResult {
+  /** Scratch targets (agent subtrees / context trees / top-level entries). */
   scratchCount: number;
+  /** Knowledge-Graph `MemorableKnowledge` nodes (remembered facts). */
   kgCount: number;
-  warning?: string;
+  /** Knowledge-Graph conversation history: turns, sessions, runs, tool
+   *  calls, plans and derived facts (#1334). */
+  conversationCount: number;
+  /** Top-level entries a re-seed resets and writes back (#1335). */
+  reseedEntries: string[];
+  warnings: MemoryPurgeWarning[];
+  /** Arms a DELETE of exactly this selection for a short while. */
+  previewToken: string;
+  previewExpiresAt: string;
 }
 
 export interface MemoryPurgeResult {
   scratchDeleted: number;
   kgDeleted: number;
-  warning?: string;
+  conversationDeleted: number;
+  /** Files the re-seed wrote back; present only on a re-seed purge. */
+  reseededFiles?: number;
+  /** `memory_purge_audit` row id; absent when the purge was not recorded. */
+  auditId?: string;
+  warnings: MemoryPurgeWarning[];
 }
 
-/** Dry-run: count the rows a purge would delete. Never writes. */
+/** Dry-run: count what a purge would delete. Never writes. */
 export async function previewMemoryPurge(body: {
   axis: MemoryPurgeAxis;
   selector?: string;
+  reseed?: boolean;
 }): Promise<MemoryPurgePreviewResult> {
   return postJson<MemoryPurgePreviewResult>(
     '/v1/admin/memory/purge/preview',
@@ -4128,15 +4687,19 @@ export async function previewMemoryPurge(body: {
 
 /**
  * Irreversible purge. `confirm` must match the phrase the operator typed
- * (`DELETE ALL MEMORY` for axis 'all', otherwise the selector value); the
- * backend re-checks it server-side. `reseed` re-installs the default seed
- * memories after wiping and is only meaningful for axis 'all'.
+ * (`DELETE ALL MEMORY` for axis 'all', otherwise the selector value) and
+ * `previewToken` must come from a preview of the same selection; the backend
+ * checks both. `reseed` (axis 'all' only) resets the entries the bundled seed
+ * contains — today the rules — and writes the bundled versions back right
+ * away; chat sessions, transcripts, brand assets and UI preferences are never
+ * touched.
  */
 export async function purgeMemory(body: {
   axis: MemoryPurgeAxis;
   selector?: string;
   confirm: string;
   reseed?: boolean;
+  previewToken: string;
 }): Promise<MemoryPurgeResult> {
   const forwarded = await forwardCookieHeader();
   const res = await fetch(botApi('/v1/admin/memory/purge'), {
@@ -4175,13 +4738,19 @@ export async function purgeMemory(body: {
 // ONE helper so the path is a single edit if the backend lands elsewhere.
 // -----------------------------------------------------------------------------
 
-export type MemoryContextAxis = 'team' | 'channel' | 'user';
+/**
+ * `members` is the notes tier of one owner set (context-memory mode
+ * `members`): the people present when the notes were written.
+ */
+export type MemoryContextAxis = 'team' | 'channel' | 'user' | 'members';
+/** A members tier is never a promote source — the server refuses it. */
+export type MemoryPromoteSourceAxis = Exclude<MemoryContextAxis, 'members'>;
 export type MemoryPromoteTier = 'agent' | 'team';
 export type MemoryPromoteMode = 'copy' | 'move';
 
 export interface MemoryPromoteRequest {
   /** Source is always a context tier; `path` is relative to that tier root. */
-  source: { axis: MemoryContextAxis; ctxKey: string; path: string };
+  source: { axis: MemoryPromoteSourceAxis; ctxKey: string; path: string };
   /** Target tier; `path` defaults to the source path server-side. */
   target: { tier: MemoryPromoteTier; ctxKey?: string; path?: string };
   mode: MemoryPromoteMode;
@@ -4262,6 +4831,30 @@ export async function listMemoryPromotions(
  * rejection (404 while the resolver is not deployed, 403 for a non-operator)
  * and fall back to the decoded key.
  */
+/** One owner of a `members` notes tier; names are best effort. */
+export interface MemoryMemberOwner {
+  id: string;
+  displayName: string | null;
+  email: string | null;
+}
+
+/** One `members` notes tier: the people it belongs to. */
+export interface MemoryMemberGroup {
+  key: string;
+  path: string;
+  owners: MemoryMemberOwner[];
+}
+
+/** The owner sets of an agent's `members` notes, with who is in each. */
+export async function listMemoryMemberGroups(
+  agentSlug: string,
+): Promise<{ groups: MemoryMemberGroup[] }> {
+  const res = await getJson<{ groups?: unknown }>(
+    `/v1/operator/memory/contexts/members?agent=${encodeURIComponent(agentSlug)}`,
+  );
+  return { groups: Array.isArray(res?.groups) ? (res.groups as MemoryMemberGroup[]) : [] };
+}
+
 export async function listMemoryContextLabels(
   agentSlug: string,
 ): Promise<{ contexts: MemoryContextLabel[] }> {
@@ -4279,9 +4872,9 @@ export async function listMemoryContextLabels(
 //   GET /file?path=/memories/contexts/...    → text/plain
 //
 // This REPLACES `/bot-api/dev/memory/{list,file}` for the memory browser. That
-// dev router is unauthenticated and only mounted when the memory plugin's
-// `dev_memory_endpoints_enabled` flag is truthy, which the kernel forbids in
-// production — so the browser it backed was dead exactly where an operator
+// dev router is dev scaffolding, only mounted when the memory plugin's
+// `dev_memory_endpoints_enabled` flag is truthy, which stays off on deployed
+// environments — so the browser it backed was dead exactly where an operator
 // needs it. The operator router is requireAuth-gated (cookie session JWT, the
 // same gate as the Danger-Zone purge) and is structurally unable to leave
 // `/memories/contexts`.
@@ -5010,6 +5603,10 @@ export interface ConductorRun {
   endedAt: string | null;
   /** #759 — set while an operator cancel is pending on a 'running' run. */
   cancelRequestedAt?: string | null;
+  /** #1699 — why a `failed` run failed, copied from the step that failed. Null
+   *  on a run that failed before migration 0013: "cause not recorded". */
+  errorCode?: string | null;
+  errorMessage?: string | null;
 }
 
 export interface ConductorRunStep {
@@ -5020,6 +5617,17 @@ export interface ConductorRunStep {
   actor: unknown;
   postconditionOutcome: string | null;
   transitionTaken: string | null;
+  /** #1699 — the API has always served these two; the client type simply never
+   *  declared them, so the step duration could not be rendered even once the
+   *  timestamps became meaningful. */
+  startedAt?: string;
+  endedAt?: string | null;
+  /** #1699 — why this step did not complete normally. Also set on a step the run
+   *  recovered from (a human step skipped for want of a holder, an await that
+   *  timed out into its fallback). */
+  errorCode?: string | null;
+  errorMessage?: string | null;
+  errorDetail?: unknown;
 }
 
 export interface ConductorRunResult {
@@ -5510,6 +6118,41 @@ export interface ConductorTemplateProposal {
   prefill: ConductorTemplateSlotMapping;
 }
 
+/** A step reference the builder draft uses that no registered invoker can run —
+ *  an action id outside the action catalog or an agent slug outside the registry.
+ *  Computed beside `validate()` (not as a validation error) so the draft stays
+ *  intact and the UI can offer to connect the missing capability inline. */
+export interface ConductorMissingCapability {
+  stepId: string;
+  kind: 'action' | 'agent';
+  /** the unresolved id as the agent wrote it, e.g. `pleo.list_missing_receipts`. */
+  ref: string;
+  /** registry search seed derived from the ref, e.g. `pleo`. */
+  suggestedQuery: string;
+}
+
+/** One directory hit for a person named in a human step. `principalRef` is the
+ *  channel's binding key (Teams: the user's email) — writing it into
+ *  `human.principal.ref` makes reminders/awaits routable. */
+export interface ConductorPersonCandidate {
+  principalRef: string;
+  displayName: string;
+  channelType: string;
+  email?: string;
+  /** disambiguation shown beside the name (job title, department). */
+  hint?: string;
+}
+
+/** Directory lookups for human steps whose `user` principal still carries a
+ *  display name instead of an address. `partial` means at least one directory
+ *  did not answer — absence of a candidate proves nothing then. */
+export interface ConductorPersonSuggestion {
+  stepId: string;
+  query: string;
+  candidates: ConductorPersonCandidate[];
+  partial: boolean;
+}
+
 export interface ConductorBuilderTurnResult {
   graph: unknown;
   patches: ConductorGraphPatch[];
@@ -5518,6 +6161,29 @@ export interface ConductorBuilderTurnResult {
   applyErrors: string[];
   /** ≤3 template suggestions for this turn (#478) — ADDITIVE: absent when none. */
   templateProposals?: ConductorTemplateProposal[];
+  /** refs no invoker can run — ADDITIVE: absent when the draft is fully backed. */
+  missingCapabilities?: ConductorMissingCapability[];
+  /** people-directory lookups for unresolved `user` principals — ADDITIVE: absent when none. */
+  personSuggestions?: ConductorPersonSuggestion[];
+}
+
+export interface ConductorPeopleSearchResult {
+  people: ConductorPersonCandidate[];
+  partial: boolean;
+  /** channel types that currently contribute a people directory. */
+  channelTypes: string[];
+}
+
+/** Search the channel-plugin people directories (`GET /conductors/people`).
+ *  `q` must be ≥2 chars (the route 400s otherwise). */
+export async function searchConductorPeople(
+  q: string,
+  opts?: { channel?: string; limit?: number; signal?: AbortSignal },
+): Promise<ConductorPeopleSearchResult> {
+  const params = new URLSearchParams({ q });
+  if (opts?.channel) params.set('channel', opts.channel);
+  if (opts?.limit !== undefined) params.set('limit', String(opts.limit));
+  return getJson(`${CONDUCTOR_BASE}/people?${params.toString()}`, opts?.signal ? { signal: opts.signal } : undefined);
 }
 
 export async function conductorBuilderTurn(body: {
@@ -5767,6 +6433,29 @@ export interface ApiKeyPublicView {
   createdAt: number;
   /** Epoch ms. Present iff the key has been revoked. */
   revokedAt?: number;
+  /** #1328 — epoch ms after which the key stops authenticating. Absent = no expiry. */
+  expiresAt?: number;
+  /** #1328 — the operator who minted the key. Absent on keys minted before #1328. */
+  createdBy?: { userId?: string; email: string };
+  /** #1329 — epoch ms of the key's latest authenticated request. Absent = not used yet. */
+  lastUsedAt?: number;
+}
+
+/** #1327 — `GET .../admin/keys/scopes`: every scope a key may be minted with. */
+export interface ApiKeyScopeCatalog {
+  scopes: string[];
+  /** Prefix of the per-tool write scope, `mcp:write:<tool>`. */
+  mcpWritePrefix: string;
+}
+
+/** #1329 — one entry of a key's usage log. */
+export interface ApiKeyUsageEntry {
+  keyId: string;
+  route: string;
+  method: string;
+  /** Epoch ms. */
+  at: number;
+  status: 'ok' | 'rate_limited' | 'forbidden' | 'error' | 'invalid_request';
 }
 
 export interface CreateApiKeyInput {
@@ -5779,6 +6468,8 @@ export interface CreateApiKeyInput {
    * request, never as "use the default". Callers must never pass `[]`.
    */
   scopes?: string[];
+  /** #1328 — epoch ms, in the future. Omit for a key that never expires. */
+  expiresAt?: number;
 }
 
 export interface CreateApiKeyResult {
@@ -5798,6 +6489,19 @@ export async function createApiKey(input: CreateApiKeyInput): Promise<CreateApiK
 
 export async function revokeApiKey(id: string): Promise<{ key: ApiKeyPublicView }> {
   return postJson(`${API_KEYS_BASE}/${encodeURIComponent(id)}/revoke`, {});
+}
+
+/** #1328 — only a revoked or expired key can be deleted (409 otherwise). */
+export async function deleteApiKey(id: string): Promise<void> {
+  return deleteRequest(`${API_KEYS_BASE}/${encodeURIComponent(id)}`);
+}
+
+export async function listApiKeyScopes(): Promise<ApiKeyScopeCatalog> {
+  return getJson(`${API_KEYS_BASE}/scopes`);
+}
+
+export async function listApiKeyUsage(id: string): Promise<{ entries: ApiKeyUsageEntry[] }> {
+  return getJson(`${API_KEYS_BASE}/${encodeURIComponent(id)}/usage`);
 }
 
 // -----------------------------------------------------------------------------
@@ -5876,11 +6580,11 @@ export interface UpdateStatus {
     pinPersisted?: boolean;
   };
   auditAvailable: boolean;
-  /** Where the middleware runs. Only used to make the manual instructions
-   *  concrete — `unknown` on compose and anywhere else, which is the generic
-   *  case, not an error. */
+  /** Where the middleware runs. Picks the manual instructions: concrete on Fly,
+   *  none on the self-updating desktop app, and `unknown` on compose and anywhere
+   *  else, which is the generic case, not an error. */
   platform?: {
-    kind: 'fly' | 'unknown';
+    kind: 'fly' | 'desktop' | 'unknown';
     appName?: string;
     machineId?: string;
   };

@@ -42,4 +42,14 @@ export type ChatPeerAgentsProvider = () => Promise<ChatParticipant[]>;
  * array is a valid "unknown / unavailable" state — callers must degrade
  * gracefully.
  */
-export type ChatParticipantsProvider = () => Promise<ChatParticipant[]>;
+export type ChatParticipantsProvider = (() => Promise<ChatParticipant[]>) & {
+  /**
+   * Member-scoped memory — the adapter's promise that a non-empty roster this
+   * provider returns lists EVERY member of the chat, not a subset (Teams'
+   * paged members are complete; Telegram's administrator list is not). A
+   * group whose roster is not marked complete has no known audience, so it
+   * gets no member-scoped knowledge: a silent member left off the list would
+   * otherwise read what was never theirs. Absent = not complete.
+   */
+  readonly completeRoster?: boolean;
+};

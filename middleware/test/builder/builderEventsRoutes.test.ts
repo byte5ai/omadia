@@ -9,30 +9,49 @@ import type { Express } from 'express';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
+import { SESSION_COOKIE, type SessionEvaluation } from '../../src/auth/requireAuth.js';
+import type { VerifiedSession } from '../../src/auth/sessionJwt.js';
+import { SessionRevocationGuard } from '../../src/auth/sessionRevocation.js';
 import { DraftStore } from '../../src/plugins/builder/draftStore.js';
 import { DraftQuota } from '../../src/plugins/builder/draftQuota.js';
 import { SpecEventBus } from '../../src/plugins/builder/specEventBus.js';
 import { createBuilderRouter } from '../../src/routes/builder.js';
 
-function withSessionEmail(email: string | null): express.RequestHandler {
+const SESSION_TOKEN = 'session-token';
+
+/** What `requireAuth` leaves on the request: the verified claims and the cookie. */
+function withSession(email: string | null, opts: { cookie: boolean }): express.RequestHandler {
   return (req, _res, next) => {
-    (req as unknown as { session: { email: string | null } }).session = { email };
+    const r = req as unknown as {
+      session: Record<string, unknown>;
+      cookies: Record<string, string>;
+    };
+    r.session =
+      email === null
+        ? { email }
+        : { email, sub: email, provider: 'local', exp: Math.floor(Date.now() / 1000) + 3600 };
+    r.cookies = opts.cookie ? { [SESSION_COOKIE]: SESSION_TOKEN } : {};
     next();
   };
 }
+
+const OK: SessionEvaluation = { ok: true, claims: {} as VerifiedSession };
 
 interface TestApp {
   server: Server;
   port: number;
   draftStore: DraftStore;
   bus: SpecEventBus;
+  revocations: SessionRevocationGuard;
   draftId: string;
   userEmail: string;
   tmpRoot: string;
   close: () => Promise<void>;
 }
 
-async function createTestApp(opts: { email?: string | null } = {}): Promise<TestApp> {
+async function createTestApp(
+  opts: { email?: string | null; cookie?: boolean } = {},
+): Promise<TestApp> {
   const tmpRoot = mkdtempSync(path.join(tmpdir(), 'builder-events-routes-'));
   const dbPath = path.join(tmpRoot, 'drafts.db');
   const draftStore = new DraftStore({ dbPath });
@@ -40,17 +59,27 @@ async function createTestApp(opts: { email?: string | null } = {}): Promise<Test
   const userEmail = 'tester@example.com';
   const draft = await draftStore.create(userEmail, 'Test');
   const bus = new SpecEventBus();
+  const revocations = new SessionRevocationGuard();
   const draftQuota = new DraftQuota({ store: draftStore, max: 50 });
 
   const app: Express = express();
   app.use(express.json());
-  app.use(withSessionEmail(opts.email === undefined ? userEmail : opts.email));
+  app.use(
+    withSession(opts.email === undefined ? userEmail : opts.email, {
+      cookie: opts.cookie ?? true,
+    }),
+  );
   app.use(
     '/api/v1/builder',
     createBuilderRouter({
       store: draftStore,
       quota: draftQuota,
-      events: { draftStore, bus, heartbeatMs: 0 },
+      events: {
+        draftStore,
+        bus,
+        heartbeatMs: 0,
+        sessions: { evaluate: () => Promise.resolve(OK), revocations },
+      },
     }),
   );
 
@@ -64,6 +93,7 @@ async function createTestApp(opts: { email?: string | null } = {}): Promise<Test
     port,
     draftStore,
     bus,
+    revocations,
     draftId: draft.id,
     userEmail,
     tmpRoot,
@@ -368,5 +398,36 @@ describe('GET /api/v1/builder/drafts/:id/events', () => {
     // Server-side `res.on('close', close)` fires async on socket close.
     await new Promise((r) => setTimeout(r, 50));
     assert.equal(app.bus.listenerCount(app.draftId), 0);
+  });
+
+  it('rejects with 401 when the request carries no session cookie to bind the stream to', async () => {
+    app = await createTestApp({ cookie: false });
+    const res = await getJson(
+      app.port,
+      `/api/v1/builder/drafts/${app.draftId}/events`,
+    );
+    assert.equal(res.status, 401);
+    assert.equal(res.body['code'], 'auth.missing');
+    assert.equal(app.bus.listenerCount(app.draftId), 0);
+  });
+
+  it('ends the open stream on the wire when the owner signs out on this replica', async () => {
+    app = await createTestApp();
+    const client = openSseClient(
+      app.port,
+      `/api/v1/builder/drafts/${app.draftId}/events`,
+    );
+    openedClients.push(client);
+    const res = await client.rawResponse();
+    const ended = new Promise<void>((resolve) => res.once('end', () => resolve()));
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(app.bus.listenerCount(app.draftId), 1);
+
+    app.revocations.announce({ provider: 'local', sub: app.userEmail });
+    await ended;
+    assert.equal(app.bus.listenerCount(app.draftId), 0);
+
+    app.bus.emit(app.draftId, { type: 'lint_result', issues: [], cause: 'agent' });
+    await assert.rejects(client.consume(1, 100), /SSE timeout/);
   });
 });

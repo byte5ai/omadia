@@ -5,6 +5,7 @@ import {
   isInstalled,
   isOperatorInstalled,
   isReady,
+  storeTab,
 } from '../pluginCounts';
 import type {
   Plugin,
@@ -93,12 +94,12 @@ describe('isInstalled (OM-27)', () => {
 });
 
 describe('store "Lokal" vs "Installiert" bucketing (OM-27)', () => {
-  // Reproduces the store page's partition with the shared predicate.
+  // The store page's partition, through the shared `storeTab`.
   function bucket(plugins: Countable[]) {
     return {
-      hub: plugins.filter((x) => x.source != null),
-      installed: plugins.filter(isInstalled),
-      local: plugins.filter((x) => x.source == null && !isInstalled(x)),
+      hub: plugins.filter((x) => storeTab(x) === 'hub'),
+      installed: plugins.filter((x) => storeTab(x) === 'installed'),
+      local: plugins.filter((x) => storeTab(x) === 'local'),
     };
   }
 
@@ -119,6 +120,18 @@ describe('store "Lokal" vs "Installiert" bucketing (OM-27)', () => {
     ];
     const b = bucket(plugins);
     expect(b.installed.length + b.local.length).toBe(plugins.length);
+  });
+
+  it('an installed plugin the hub also offers counts once, under Installiert (#1469)', () => {
+    const hub = { registry: 'omadia-public', download_url: 'https://h/x.zip', sha256: 'a' };
+    const installedFromHub = p('installed', undefined, hub);
+    const updatable = p('update-available', undefined, hub);
+    const offered = p('available', undefined, hub);
+    const plugins = [installedFromHub, updatable, offered, p('available')];
+    const b = bucket(plugins);
+    expect(b.installed).toEqual([installedFromHub, updatable]);
+    expect(b.hub).toEqual([offered]);
+    expect(b.hub.length + b.local.length + b.installed.length).toBe(plugins.length);
   });
 });
 

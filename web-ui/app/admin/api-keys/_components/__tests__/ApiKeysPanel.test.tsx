@@ -5,16 +5,29 @@ import { renderWithIntl } from '../../../../_lib/test-utils';
 import { ApiKeysPanel } from '../ApiKeysPanel';
 import type { ApiKeyPublicView } from '../../../../_lib/api';
 
-const { mockListApiKeys, mockCreateApiKey, mockRevokeApiKey } = vi.hoisted(() => ({
+const {
+  mockListApiKeys,
+  mockCreateApiKey,
+  mockRevokeApiKey,
+  mockDeleteApiKey,
+  mockListApiKeyScopes,
+  mockListApiKeyUsage,
+} = vi.hoisted(() => ({
   mockListApiKeys: vi.fn(),
   mockCreateApiKey: vi.fn(),
   mockRevokeApiKey: vi.fn(),
+  mockDeleteApiKey: vi.fn(),
+  mockListApiKeyScopes: vi.fn(),
+  mockListApiKeyUsage: vi.fn(),
 }));
 
 vi.mock('../../../../_lib/api', () => ({
   listApiKeys: mockListApiKeys,
   createApiKey: mockCreateApiKey,
   revokeApiKey: mockRevokeApiKey,
+  deleteApiKey: mockDeleteApiKey,
+  listApiKeyScopes: mockListApiKeyScopes,
+  listApiKeyUsage: mockListApiKeyUsage,
   ApiError: class ApiError extends Error {
     constructor(
       public status: number,
@@ -45,6 +58,12 @@ describe('<ApiKeysPanel />', () => {
     // (not its resolved shape) don't hit a destructuring TypeError on an
     // unmocked resolved value.
     mockRevokeApiKey.mockResolvedValue({ key: key() });
+    mockDeleteApiKey.mockResolvedValue(undefined);
+    mockListApiKeyScopes.mockResolvedValue({
+      scopes: ['chat:write', 'mcp:list', 'mcp:invoke', '*'],
+      mcpWritePrefix: 'mcp:write:',
+    });
+    mockListApiKeyUsage.mockResolvedValue({ entries: [] });
   });
   afterEach(() => {
     vi.clearAllMocks();
@@ -81,6 +100,8 @@ describe('<ApiKeysPanel />', () => {
     });
     renderWithIntl(<ApiKeysPanel />);
 
+    // #1328 — inactive keys are hidden until the operator asks for them.
+    fireEvent.click(await screen.findByText(/Show revoked and expired keys/));
     expect(await screen.findByText('Revoked')).toBeTruthy();
     expect(screen.queryByText('Revoke')).toBeNull();
   });
@@ -142,12 +163,12 @@ describe('<ApiKeysPanel />', () => {
     expect(screen.queryByText('sk-live-plaintext-token-value')).toBeNull();
   });
 
-  it('blocks submission and explains why when the only scope checkbox is unchecked', async () => {
+  it('blocks submission and explains why when no scope is selected', async () => {
     mockListApiKeys.mockResolvedValue({ keys: [] });
     renderWithIntl(<ApiKeysPanel />);
 
     await screen.findByText(/No API keys yet/i);
-    fireEvent.click(screen.getByRole('checkbox'));
+    fireEvent.click(await screen.findByRole('checkbox', { name: /chat:write/ }));
 
     expect(screen.getByText('Create key')).toHaveProperty('disabled', true);
     expect(screen.getByText(/at least one scope/i)).toBeTruthy();
@@ -333,5 +354,122 @@ describe('<ApiKeysPanel />', () => {
 
     expect(screen.queryByText('Stale ghost')).toBeNull();
     expect(screen.getByText('Freshly minted')).toBeTruthy();
+  });
+  // #1324 — the hint says "dismiss the token ABOVE", so the token banner must
+  // render before the (locked) create form.
+  it('renders the one-time token banner above the create form', async () => {
+    mockListApiKeys.mockResolvedValue({ keys: [] });
+    mockCreateApiKey.mockResolvedValue({ key: key(), token: 'sk-live-plaintext-token-value' });
+    renderWithIntl(<ApiKeysPanel />);
+
+    await screen.findByText(/No API keys yet/i);
+    fireEvent.click(screen.getByText('Create key'));
+    const token = await screen.findByText('sk-live-plaintext-token-value');
+    const hint = screen.getByText(/Dismiss the token above/i);
+    // DOCUMENT_POSITION_FOLLOWING: the hint comes after the token.
+    expect(token.compareDocumentPosition(hint) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  // #1327 — every catalog scope is offered, including the MCP ones, plus
+  // per-tool write scopes.
+  it('offers every catalog scope and sends MCP scopes and write tools on create', async () => {
+    mockListApiKeys.mockResolvedValue({ keys: [] });
+    mockCreateApiKey.mockResolvedValue({ key: key(), token: 'tok' });
+    renderWithIntl(<ApiKeysPanel />);
+
+    for (const scope of ['chat:write', 'mcp:list', 'mcp:invoke', '*']) {
+      expect(await screen.findByRole('checkbox', { name: new RegExp(scope.replace('*', '\\*')) })).toBeTruthy();
+    }
+    fireEvent.click(screen.getByRole('checkbox', { name: /chat:write/ }));
+    fireEvent.click(screen.getByRole('checkbox', { name: /mcp:list/ }));
+    fireEvent.change(screen.getByLabelText(/^Write tools/), {
+      target: { value: 'create_lead, update_lead' },
+    });
+    fireEvent.click(screen.getByText('Create key'));
+
+    await waitFor(() => expect(mockCreateApiKey).toHaveBeenCalledTimes(1));
+    expect(mockCreateApiKey.mock.calls[0]?.[0].scopes).toEqual([
+      'mcp:list',
+      'mcp:write:create_lead',
+      'mcp:write:update_lead',
+    ]);
+  });
+
+  it('rejects a malformed write-tool name before sending', async () => {
+    mockListApiKeys.mockResolvedValue({ keys: [] });
+    renderWithIntl(<ApiKeysPanel />);
+
+    await screen.findByText(/No API keys yet/i);
+    fireEvent.change(screen.getByLabelText(/^Write tools/), { target: { value: 'Bad Tool' } });
+    expect(screen.getByText('Create key')).toHaveProperty('disabled', true);
+    expect(screen.getByText(/Tool names may contain only/i)).toBeTruthy();
+  });
+
+  it('falls back to chat:write and says so when the scope catalog cannot be loaded', async () => {
+    mockListApiKeys.mockResolvedValue({ keys: [] });
+    mockListApiKeyScopes.mockRejectedValue(new Error('offline'));
+    renderWithIntl(<ApiKeysPanel />);
+
+    expect(await screen.findByText(/scope list could not be loaded/i)).toBeTruthy();
+    expect(screen.getAllByRole('checkbox')).toHaveLength(1);
+  });
+
+  // #1328 — owner, expiry and last-used are shown on the row.
+  it('shows the creator, the expiry and when the key was last used', async () => {
+    mockListApiKeys.mockResolvedValue({
+      keys: [
+        key({
+          createdBy: { email: 'op@example.com' },
+          expiresAt: Date.now() + 86_400_000,
+          lastUsedAt: Date.parse('2026-07-05T00:00:00Z'),
+        }),
+      ],
+    });
+    renderWithIntl(<ApiKeysPanel />);
+
+    const row = (await screen.findByText(/Created by op@example.com/)).closest('li') as HTMLElement;
+    expect(within(row).getByText(/Last used/)).toBeTruthy();
+    expect(within(row).getByText(/Expires/)).toBeTruthy();
+  });
+
+  it('hides revoked and expired keys behind a toggle and lets them be deleted', async () => {
+    mockListApiKeys.mockResolvedValue({
+      keys: [
+        key(),
+        key({ id: 'key-old', label: 'Old bot', expiresAt: Date.now() - 1000 }),
+      ],
+    });
+    renderWithIntl(<ApiKeysPanel />);
+
+    await screen.findByText('CI bot');
+    expect(screen.queryByText('Old bot')).toBeNull();
+    fireEvent.click(screen.getByText(/Show revoked and expired keys \(1\)/));
+
+    const row = (await screen.findByText('Old bot')).closest('li') as HTMLElement;
+    expect(within(row).getByText('Expired')).toBeTruthy();
+    expect(within(row).queryByText('Revoke')).toBeNull();
+    fireEvent.click(within(row).getByText('Delete'));
+    expect(mockDeleteApiKey).not.toHaveBeenCalled();
+    fireEvent.click(within(row).getByText('Confirm delete'));
+
+    await waitFor(() => expect(mockDeleteApiKey).toHaveBeenCalledWith('key-old'));
+    await waitFor(() => expect(screen.queryByText('Old bot')).toBeNull());
+  });
+
+  // #1329 — the per-key usage log is readable from the row.
+  it('loads and shows a key\'s recent activity on demand', async () => {
+    mockListApiKeys.mockResolvedValue({ keys: [key()] });
+    mockListApiKeyUsage.mockResolvedValue({
+      entries: [
+        { keyId: 'key-1', route: '/api/public/v1/chat', method: 'POST', at: Date.now(), status: 'forbidden' },
+      ],
+    });
+    renderWithIntl(<ApiKeysPanel />);
+
+    await screen.findByText('CI bot');
+    fireEvent.click(screen.getByText('Recent activity'));
+    expect(await screen.findByText('Missing scope')).toBeTruthy();
+    expect(screen.getByText(/POST \/api\/public\/v1\/chat/)).toBeTruthy();
+    expect(mockListApiKeyUsage).toHaveBeenCalledWith('key-1');
   });
 });

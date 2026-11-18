@@ -55,9 +55,13 @@ export function RoutineActions({ routine }: Props): React.ReactElement {
         // background — the manual trigger takes ~30 s on a routine
         // with the HR-agent + retry. Surface a notice so the operator
         // knows the click was received; the actual result arrives via
-        // the proactive sender (Teams card / web channel).
+        // the proactive sender — a Teams card, or (#1071) for `web`
+        // routines an assistant message in the chat the routine was
+        // created in.
         await triggerRoutineNow(routine.id);
-        setNotice(t('triggerNotice'));
+        setNotice(
+          t(routine.channel === 'web' ? 'triggerNoticeWeb' : 'triggerNotice'),
+        );
         // Auto-clear after the typical run window so the row doesn't
         // stay decorated for ever.
         setTimeout(() => {
@@ -73,6 +77,12 @@ export function RoutineActions({ routine }: Props): React.ReactElement {
           err.body.includes('routines.chat_unavailable')
         ) {
           setError(t('triggerChatUnavailable'));
+          return;
+        }
+        // #1071 — a paused routine (also one auto-paused because its web
+        // chat was deleted) is refused with 409 instead of a skipped run.
+        if (err instanceof ApiError && err.body.includes('routines.not_active')) {
+          setError(t('triggerNotActive'));
           return;
         }
         setError(err instanceof Error ? err.message : String(err));

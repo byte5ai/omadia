@@ -1961,7 +1961,11 @@ export class AgentGraphStore {
   async upsertSkill(input: SkillInput): Promise<SkillRow> {
     // content_hash is derived here (never caller-supplied) over the same
     // effective values the row stores, so it always matches the content.
-    const contentHash = computeSkillHash(input.frontmatter ?? {}, input.body ?? '');
+    const contentHash = computeSkillHash(
+      input.frontmatter ?? {},
+      input.body ?? '',
+      input.description,
+    );
     const { rows } = await this.pool.query<SkillDbRow>(
       `INSERT INTO skills (slug, name, description, body, frontmatter, source, source_path, content_hash, forked_from)
        VALUES ($1,$2,$3,COALESCE($4,''),COALESCE($5::jsonb,'{}'::jsonb),COALESCE($6,'db'),$7,$8,$9)
@@ -1995,7 +1999,11 @@ export class AgentGraphStore {
    * the race-safe create path for import.
    */
   async insertSkill(input: SkillInput): Promise<SkillRow | undefined> {
-    const contentHash = computeSkillHash(input.frontmatter ?? {}, input.body ?? '');
+    const contentHash = computeSkillHash(
+      input.frontmatter ?? {},
+      input.body ?? '',
+      input.description,
+    );
     const { rows } = await this.pool.query<SkillDbRow>(
       `INSERT INTO skills (slug, name, description, body, frontmatter, source, source_path, content_hash, forked_from)
        VALUES ($1,$2,$3,COALESCE($4,''),COALESCE($5::jsonb,'{}'::jsonb),COALESCE($6,'db'),$7,$8,$9)
@@ -2035,7 +2043,10 @@ export class AgentGraphStore {
       if (!current) throw new ConfigValidationError(`skill ${id} not found`);
       const nextBody = patch.body ?? current.body;
       const nextFrontmatter = patch.frontmatter ?? current.frontmatter;
-      const contentHash = computeSkillHash(nextFrontmatter, nextBody);
+      // The description is hashed too (#1219), so a description-only edit
+      // re-keys the verdict. Same COALESCE semantics as the UPDATE below.
+      const nextDescription = patch.description ?? current.description;
+      const contentHash = computeSkillHash(nextFrontmatter, nextBody, nextDescription);
       const { rows } = await client.query<SkillDbRow>(
         `UPDATE skills SET
            name         = COALESCE($2, name),
@@ -2170,7 +2181,11 @@ export class AgentGraphStore {
         if (i > 999) throw new Error(`could not fork skill ${id}: no free slug`);
       }
 
-      const contentHash = computeSkillHash(origin.frontmatter, origin.body);
+      const contentHash = computeSkillHash(
+        origin.frontmatter,
+        origin.body,
+        origin.description,
+      );
       const { rows: ins } = await client.query<SkillDbRow>(
         `INSERT INTO skills (slug, name, description, body, frontmatter, source, source_path, content_hash, forked_from)
          VALUES ($1,$2,$3,$4,$5::jsonb,'db',$6,$7,$8)

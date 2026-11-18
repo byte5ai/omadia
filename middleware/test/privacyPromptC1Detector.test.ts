@@ -23,11 +23,14 @@ import { describe, it } from 'node:test';
 import type { PromptPiiSpan } from '@omadia/plugin-api';
 import {
   C1_DETECTOR_ID,
+  C1_PRIORITY_HEADER,
   createC1HttpDetector,
   DEFAULT_TIMEOUT_MS as DEFAULT_C1_TIMEOUT_MS,
   resolveTimeoutFromEnv,
+  withC1Priority,
 } from '@omadia/plugin-privacy-guard/dist/c1Detector.js';
 import { createPrivacyGuardService } from '@omadia/plugin-privacy-guard/dist/index.js';
+import { createStoredTextScope } from '@omadia/plugin-privacy-guard/dist/storedTextScope.js';
 import { findIdentityLeaks } from '@omadia/plugin-privacy-guard/dist/v4/onTheWire.js';
 
 type SidecarSpan = {
@@ -39,14 +42,16 @@ type SidecarSpan = {
 };
 
 /** fetch fake answering a canned sidecar response; records calls. */
+type FetchCall = { url: string; body: unknown; headers: Headers };
+
 function fakeFetch(
   respond: (body: string) => Response | Promise<Response>,
-): { fn: typeof fetch; calls: { url: string; body: unknown }[] } {
-  const calls: { url: string; body: unknown }[] = [];
+): { fn: typeof fetch; calls: FetchCall[] } {
+  const calls: FetchCall[] = [];
   const fn = (async (input: unknown, init?: RequestInit) => {
     const url = String(input);
     const body: unknown = JSON.parse(String(init?.body ?? 'null'));
-    calls.push({ url, body });
+    calls.push({ url, body, headers: new Headers(init?.headers) });
     return await respond(String(init?.body ?? ''));
   }) as typeof fetch;
   return { fn, calls };
@@ -404,5 +409,89 @@ describe('C1 detect timeout budget', () => {
       () => detector.detect('Anna Schmidt wohnt in Berlin.'),
       /timed out after 40ms/,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Priority lane — the sidecar serves `X-PII-Priority: interactive` (a turn's
+// prompt / recalled tail, on the critical path) before `background` (memory
+// jobs, skeleton masking via the stored-text scope).
+// ---------------------------------------------------------------------------
+
+describe('createC1HttpDetector — X-PII-Priority', () => {
+  const SIDECAR = 'http://pii-detector:8812';
+
+  it('uses the x-pii-priority header name the sidecar reads', () => {
+    assert.equal(C1_PRIORITY_HEADER, 'x-pii-priority');
+  });
+
+  it('sends interactive by default (the shared detector serves turn masking)', async () => {
+    const { fn, calls } = fakeFetch(() => okResponse([]));
+    await createC1HttpDetector({ resolveUrl: () => SIDECAR, fetchFn: fn }).detect('x');
+    assert.equal(calls[0]!.headers.get('x-pii-priority'), 'interactive');
+    assert.equal(calls[0]!.headers.get('content-type'), 'application/json');
+  });
+
+  it('sends background when constructed with priority: background', async () => {
+    const { fn, calls } = fakeFetch(() => okResponse([]));
+    await createC1HttpDetector({
+      resolveUrl: () => SIDECAR,
+      fetchFn: fn,
+      priority: 'background',
+    }).detect('x');
+    assert.equal(calls[0]!.headers.get('x-pii-priority'), 'background');
+  });
+
+  it('withC1Priority rebinds a copy and leaves the original untouched', async () => {
+    const { fn, calls } = fakeFetch(() => okResponse([]));
+    const original = createC1HttpDetector({ resolveUrl: () => SIDECAR, fetchFn: fn });
+    const background = withC1Priority(original, 'background');
+    assert.notEqual(background, original);
+    assert.equal(background.id, C1_DETECTOR_ID);
+    await background.detect('x');
+    await original.detect('y');
+    assert.deepEqual(
+      calls.map((c) => c.headers.get('x-pii-priority')),
+      ['background', 'interactive'],
+    );
+  });
+
+  it('withC1Priority returns a foreign detector unchanged', () => {
+    const foreign = { id: 'stub', detect: async () => [] as PromptPiiSpan[] };
+    assert.equal(withC1Priority(foreign, 'background'), foreign);
+  });
+
+  it('turn masking (service.maskUserPrompt) goes out as interactive', async () => {
+    const { fn, calls } = fakeFetch(() => okResponse([]));
+    const svc = createPrivacyGuardService({
+      readConfig: () => 'on',
+      c1Detector: createC1HttpDetector({ resolveUrl: () => SIDECAR, fetchFn: fn }),
+    });
+    await svc.maskUserPrompt!({ sessionId: 's', turnId: 't-prio', text: 'Hallo Anna' });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]!.headers.get('x-pii-priority'), 'interactive');
+  });
+
+  it('stored-text masking (memory jobs, skeleton) goes out as background', async () => {
+    const { fn, calls } = fakeFetch(() => okResponse([]));
+    const scope = createStoredTextScope({
+      job: 'test-job',
+      detectors: [],
+      c1Detector: createC1HttpDetector({ resolveUrl: () => SIDECAR, fetchFn: fn }),
+    });
+    await scope.maskStoredText('Hallo Anna');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]!.headers.get('x-pii-priority'), 'background');
+  });
+
+  it('service.openStoredTextScope goes out as background with the shared detector', async () => {
+    const { fn, calls } = fakeFetch(() => okResponse([]));
+    const svc = createPrivacyGuardService({
+      readConfig: () => 'on',
+      c1Detector: createC1HttpDetector({ resolveUrl: () => SIDECAR, fetchFn: fn }),
+    });
+    await svc.openStoredTextScope!({ job: 'test-job' }).maskStoredText('Hallo Anna');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]!.headers.get('x-pii-priority'), 'background');
   });
 });

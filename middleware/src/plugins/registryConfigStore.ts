@@ -8,8 +8,9 @@
 // in plaintext jsonb, never returned in a listing.
 //
 // On first boot the store is seeded: from `REGISTRY_URLS` if the operator set
-// it, otherwise with the public default `hub.omadia.ai`. After seeding the
-// list is fully admin-editable and the env var is no longer consulted.
+// it (`'[]'` = no registry), otherwise with the public default
+// `hub.omadia.ai`. After seeding the list is fully admin-editable and the env
+// var is no longer consulted — a list the admin emptied stays empty (#1483).
 //
 // Backend-agnostic: the same logic runs against Postgres (PlatformSettingsStore
 // structurally satisfies `RegistrySettingsKV`) or an in-memory KV for DB-less
@@ -60,6 +61,11 @@ export class RegistryConfigError extends Error {
 }
 
 export interface RegistryConfigStore {
+  /** #1483 — true once the list was ever written (seeded or edited), also
+   *  when it is empty now. Tells a first boot from a deliberate removal. */
+  isInitialized(): Promise<boolean>;
+  /** Persist the current list as-is, so an empty seed counts as written. */
+  markInitialized(): Promise<void>;
   /** Resolved entries incl. tokens — feeds the RegistryClient. */
   list(): Promise<RegistryConfigEntry[]>;
   /** Non-secret listing for the admin UI (never leaks tokens). */
@@ -93,6 +99,16 @@ export class VaultBackedRegistryConfigStore implements RegistryConfigStore {
 
   private async writeList(list: StoredRegistry[]): Promise<void> {
     await this.deps.settings.set(SETTING_REGISTRY_LIST, list);
+  }
+
+  async isInitialized(): Promise<boolean> {
+    // `readList` maps "never written" and "emptied" to the same [] — the raw
+    // value does not: an emptied list is stored as [], a fresh one is null.
+    return (await this.deps.settings.get(SETTING_REGISTRY_LIST)) !== null;
+  }
+
+  async markInitialized(): Promise<void> {
+    await this.writeList(await this.readList());
   }
 
   async listPublic(): Promise<StoredRegistry[]> {
@@ -185,22 +201,25 @@ export class InMemoryRegistrySettings implements RegistrySettingsKV {
 }
 
 /**
- * Seed the store on first boot. No-op if any registry already exists, so it is
- * safe to call on every boot. `seed` is the parsed `REGISTRY_URLS` (env); when
- * empty, the public default `hub.omadia.ai` is used.
+ * Seed the store on first boot, and only then (#1483). `seed` is the parsed
+ * `REGISTRY_URLS`: `undefined` when the variable is unset (→ the public
+ * default `hub.omadia.ai`), `[]` when the operator set it to `'[]'` (→ no
+ * registry). Once the list has been written — by this seed or by an admin —
+ * this is a no-op, so a list the admin emptied stays empty across restarts.
+ * Safe to call on every boot.
  */
-export async function seedRegistriesIfEmpty(
+export async function seedRegistriesOnFirstBoot(
   store: RegistryConfigStore,
-  seed: RegistryConfigEntry[],
+  seed: RegistryConfigEntry[] | undefined,
   log: (msg: string) => void = (m) => console.log(m),
 ): Promise<void> {
-  const existing = await store.listPublic();
-  if (existing.length > 0) return;
-  const toSeed: RegistryConfigEntry[] =
-    seed.length > 0 ? seed : [{ ...DEFAULT_REGISTRY }];
+  if (await store.isInitialized()) return;
+  const toSeed: RegistryConfigEntry[] = seed ?? [{ ...DEFAULT_REGISTRY }];
+  let added = 0;
   for (const r of toSeed) {
     try {
       await store.add({ name: r.name, url: r.url, token: r.token });
+      added++;
     } catch (err) {
       log(
         `[registry] seed skipped '${r.name}': ${
@@ -209,10 +228,20 @@ export async function seedRegistriesIfEmpty(
       );
     }
   }
+  if (toSeed.length > 0 && added === 0) {
+    // Nothing the operator asked for could be stored (a vault outage, say).
+    // Leave the list unwritten so the next boot tries again, rather than
+    // recording "deliberately empty" and losing the configured registries.
+    log('[registry] seeding failed for every registry — will retry on next boot');
+    return;
+  }
+  await store.markInitialized();
   log(
-    `[registry] seeded ${toSeed.length} default registr${
-      toSeed.length === 1 ? 'y' : 'ies'
-    } (${toSeed.map((r) => r.name).join(', ')})`,
+    toSeed.length === 0
+      ? '[registry] REGISTRY_URLS is empty — starting without a plugin registry'
+      : `[registry] seeded ${toSeed.length} default registr${
+          toSeed.length === 1 ? 'y' : 'ies'
+        } (${toSeed.map((r) => r.name).join(', ')})`,
   );
 }
 

@@ -30,6 +30,9 @@ import type {
   KnowledgeGraph,
   MemorableKnowledgeHit,
 } from '@omadia/plugin-api';
+import { parseLlmJson } from '@omadia/plugin-api';
+
+import type { OpenJobPrivacy } from './jobPrivacy.js';
 
 export interface InconsistencyDetectorDeps {
   graph: KnowledgeGraph;
@@ -51,6 +54,14 @@ export interface InconsistencyDetectorDeps {
   /** Max candidates checked per source MK. Default 5. */
   topK?: number;
   log?: (msg: string) => void;
+  /**
+   * WP-10 — the Privacy Shield route for the memory pairs, which carry stored
+   * real values. One run per `detectFor`; the judgement's reason is restored
+   * before it is persisted. A run that cannot mask skips the pass and leaves
+   * the memory unchecked, so a later sweep retries. Absent ⇒ the pairs go out
+   * as stored.
+   */
+  privacy?: OpenJobPrivacy;
 }
 
 interface JudgementResult {
@@ -88,13 +99,9 @@ function buildUserMessage(a: GraphNode, b: GraphNode): string {
 }
 
 function parseJudgement(raw: string): JudgementResult | null {
-  const trimmed = raw.trim();
-  // Strip code fences if Haiku included them despite the prompt.
-  const stripped = trimmed
-    .replace(/^```(?:json)?\s*/i, '')
-    .replace(/\s*```$/i, '');
-  try {
-    const parsed = JSON.parse(stripped) as Partial<JudgementResult>;
+  // #1527 — tolerates a ```json fence with text around it (shared parser).
+  const parsed = parseLlmJson(raw) as Partial<JudgementResult> | undefined;
+  if (parsed && typeof parsed === 'object') {
     if (
       parsed.compatible === 'yes' ||
       parsed.compatible === 'no' ||
@@ -112,8 +119,6 @@ function parseJudgement(raw: string): JudgementResult | null {
         ...(parsed.severity ? { severity: parsed.severity } : {}),
       };
     }
-  } catch {
-    return null;
   }
   return null;
 }
@@ -191,15 +196,25 @@ export function createInconsistencyDetector(
 
     const filtered = candidates.filter((c) => c.mk.id !== source.id).slice(0, topK);
     let created = 0;
+    const run = deps.privacy?.('inconsistency-detector');
 
     for (const candidate of filtered) {
+      const request = buildUserMessage(source, candidate.mk);
+      const masked = run ? await run.mask(request) : { send: true as const, text: request };
+      if (!masked.send) {
+        // Like a failed embed: no marker, so the bulk sweep retries later.
+        log(
+          `[inconsistency] privacy: ${masked.reason} — pass skipped for ${memorableKnowledgeNodeId}`,
+        );
+        return { candidatesScanned: 0, inconsistenciesCreated: created };
+      }
       let response: LlmResponse;
       try {
         response = await deps.llm.complete({
           model,
           maxTokens: 200,
           system: PROMPT,
-          messages: [textMessage('user', buildUserMessage(source, candidate.mk))],
+          messages: [textMessage('user', masked.text)],
         });
       } catch (err) {
         log(
@@ -218,8 +233,12 @@ export function createInconsistencyDetector(
       if (judgement.compatible !== 'no') continue;
 
       const severity = judgement.severity ?? 'medium';
+      const reason =
+        judgement.reason !== undefined && run
+          ? await run.restore(judgement.reason)
+          : judgement.reason;
       const summary =
-        judgement.reason ??
+        reason ??
         `Inconsistency between two memories (cosine=${candidate.cosineSim.toFixed(2)})`;
 
       try {

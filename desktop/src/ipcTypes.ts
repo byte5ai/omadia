@@ -1,7 +1,10 @@
-/** Shared IPC channel names + payload types between main and the wizard renderer. */
+/**
+ * Shared IPC channel names + payload types between main and the renderer
+ * pages. Which document may use which channel is decided per call in
+ * `ipcSender.ts` (setup channels: the bundled wizard; UI pings: the web UI).
+ */
 
 export const CH = {
-  getState: 'omadia:getState',
   testLlmKey: 'omadia:testLlmKey',
   chooseDataDir: 'omadia:chooseDataDir',
   complete: 'omadia:complete',
@@ -20,12 +23,6 @@ export interface BootLogLine {
   msg: string;
 }
 
-export interface AppState {
-  setupComplete: boolean;
-  encryptionAvailable: boolean;
-  version: string;
-}
-
 export type ApiKeyProvider = 'anthropic' | 'openai';
 
 export interface TestLlmKeyRequest {
@@ -42,9 +39,12 @@ export interface WizardConfig {
   /** `subscription` stores no API key; Claude/Codex CLI is connected after boot. */
   provider: ApiKeyProvider | 'subscription';
   apiKey: string;
+  /**
+   * The capability switches, each of which the supervisor turns into kernel
+   * env (`capabilities.ts`). main checks the shape and persists only these
+   * fields, never the object as sent.
+   */
   capabilities: {
-    embeddings: boolean;
-    diagrams: boolean;
     attachments: boolean;
   };
   /** Optional custom data directory; null = use the default userData location. */

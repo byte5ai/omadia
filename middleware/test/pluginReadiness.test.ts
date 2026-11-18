@@ -410,3 +410,100 @@ test('the LLM readiness probe is skipped for a not_installed plugin', async () =
   assert.equal(r.state, 'not_installed');
   assert.deepEqual(probe.calls, []);
 });
+
+// ---------------------------------------------------------------------------
+// #1453 — a refused credential is its own readiness state.
+//
+// Until this, a plugin whose API key the target system rejects answered
+// `state: 'ready'` with a non-null `verified_at`: the probe verdict lived only
+// in the push-based `action_status`, which readiness never read. The store
+// therefore reported a healthy plugin next to a red "Nicht verbunden" pill.
+// ---------------------------------------------------------------------------
+
+function statusProbeReturning(state: 'ok' | 'needs_action' | 'error' | undefined) {
+  return {
+    get: (): { state: 'ok' | 'needs_action' | 'error' } | undefined =>
+      state === undefined ? undefined : { state },
+  };
+}
+
+test('a reported connection error makes readiness connection_failed', async () => {
+  const registry = await registryWith({
+    config: { client_id: 'abc' },
+    last_activated_at: '2026-02-02T10:00:00.000Z',
+  });
+  const r = await computeReadiness(
+    plugin([field({ key: 'client_id' })]),
+    registry,
+    vaultWith([]),
+    undefined,
+    statusProbeReturning('error'),
+  );
+  assert.equal(r.state, 'connection_failed');
+  assert.deepEqual(r.missing_fields, []);
+  assert.equal(
+    r.verified_at,
+    null,
+    'a plugin whose credentials are refused must not carry a green timestamp',
+  );
+});
+
+test('a pending action is not a connection failure', async () => {
+  // `needs_action` is the spec-004 "finish connecting me" signal (e.g. OAuth
+  // not completed). It has its own amber pill; claiming the credentials were
+  // CHECKED and refused would be a different, wrong statement.
+  const registry = await registryWith({ config: { client_id: 'abc' } });
+  const r = await computeReadiness(
+    plugin([field({ key: 'client_id' })]),
+    registry,
+    vaultWith([]),
+    undefined,
+    statusProbeReturning('needs_action'),
+  );
+  assert.equal(r.state, 'ready');
+});
+
+test('a positive or absent status leaves readiness ready', async () => {
+  const registry = await registryWith({ config: { client_id: 'abc' } });
+  for (const state of ['ok', undefined] as const) {
+    const r = await computeReadiness(
+      plugin([field({ key: 'client_id' })]),
+      registry,
+      vaultWith([]),
+      undefined,
+      statusProbeReturning(state),
+    );
+    assert.equal(r.state, 'ready', String(state));
+  }
+});
+
+test('missing configuration outranks a reported connection error', async () => {
+  // Nothing to connect with yet — sending the operator to a connection
+  // problem when the form is still empty is the wrong instruction.
+  const registry = await registryWith({ config: {} });
+  const r = await computeReadiness(
+    plugin([field({ key: 'client_id' })]),
+    registry,
+    vaultWith([]),
+    undefined,
+    statusProbeReturning('error'),
+  );
+  assert.equal(r.state, 'config_required');
+  assert.deepEqual(r.missing_fields, ['client_id']);
+});
+
+test('a status probe that throws degrades to ready, never to a false alarm', async () => {
+  const registry = await registryWith({ config: { client_id: 'abc' } });
+  const r = await computeReadiness(
+    plugin([field({ key: 'client_id' })]),
+    registry,
+    vaultWith([]),
+    undefined,
+    {
+      get: () => {
+        throw new Error('registry gone');
+      },
+    },
+  );
+  assert.equal(r.state, 'ready');
+});

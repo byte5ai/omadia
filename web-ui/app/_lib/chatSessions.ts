@@ -1,6 +1,10 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { AnswerVerbosityInfo } from './agentIdentity';
+
+import { foldIntoStored, reconcileNewerRemote } from './chatProactiveMerge';
+import { useProactiveRefresh } from './chatProactiveRefresh';
 
 /**
  * Persisted chat-tab sessions. Each tab is a self-contained session —
@@ -10,9 +14,30 @@ import { useCallback, useEffect, useRef, useState } from 'react';
  * Storage is hybrid:
  *   - localStorage: fast sync cache, available offline, source of truth
  *     while the app is running.
- *   - backend (`/bot-api/chat/sessions`): durable store. On mount we merge
- *     local + remote by `updatedAt` (whole-session last-write-wins). After
- *     each turn we PUT the active session so the backend stays in sync.
+ *   - backend (`/bot-api/chat/sessions`): durable store. After each turn we
+ *     PUT the active session; the server MERGES that PUT with the routine
+ *     deliveries it appended meanwhile (#1071) and answers with the stored
+ *     document, whose deliveries are folded in.
+ *
+ * Hydration (once per page load) compares local and remote per chat by
+ * `updatedAt`:
+ *   - server copy newer → `reconcileNewerRemote`: when the server differs
+ *     only by routine deliveries (same turns), the local copy stays and the
+ *     deliveries are folded in — a delivery bumps the server clock, but the
+ *     server copy lacks every client-only field; when the server's turns are
+ *     a prefix of the local ones (a turn's PUT failed), the local copy stays
+ *     and is pushed back (catch-up); anything else (a turn from another
+ *     device, a clear elsewhere, a partial local answer) — the server wins.
+ *   - local copy newer → the local copy stays and is pushed back (catch-up).
+ *   - only one side has the chat → that side's copy (a local-only one is
+ *     pushed).
+ *
+ * The fold rule (`mergeProactiveFromRemote`) is additive: server deliveries
+ * missing locally are inserted before the first later user message; nothing
+ * else of the server copy is taken, and the local clock is kept (a fold is
+ * not a sync). While the app runs, `useProactiveRefresh` re-reads the active
+ * chat (mount, chat switch, visibility, focus) with the same fold, and a fold
+ * persists into its one stored chat only (`persistFoldLocally`).
  */
 
 /**
@@ -230,12 +255,35 @@ export interface PrivacyReceipt {
    */
   bypassedTools?: readonly BypassedToolEntry[];
   /**
-   * #361 — PII spans detected in the user's own prompt and substituted with
-   * pseudonyms before the prompt crossed the LLM wire. Absent when prompt
-   * masking is off (the default) or nothing was detected. PII-free: entries
-   * carry the span TYPE + detector id only, never the value.
+   * #1556 — fields the model received in clear because the operator listed
+   * them as non-personal (`non_personal_fields`). PII-free: tool + field.
+   */
+  operatorClearedFields?: readonly OperatorClearedFieldEntry[];
+  /**
+   * #361 — PII spans detected in the user's own text of this turn and
+   * substituted with pseudonyms before it crossed the LLM wire, one per
+   * distinct value. Absent when prompt masking is off (the default) or
+   * nothing was detected. PII-free: entries carry the span TYPE + detector id
+   * only, never the value.
    */
   maskedPromptSpans?: readonly PromptMaskedSpanInfo[];
+  /**
+   * #1541 — spans masked in text from earlier conversations (recalled
+   * context, replayed answers and user messages). Never part of "your
+   * message". PII-free.
+   */
+  maskedContextSpans?: readonly PromptMaskedSpanInfo[];
+  /**
+   * #1562 — the C1 name detector during this turn's free-text masking.
+   * `unconfigured`: person names are not detected; `failed`: it failed and
+   * names reached the model unmasked. Absent when no free text was masked.
+   */
+  nameDetector?: 'active' | 'unconfigured' | 'failed';
+  /**
+   * #1557 — a tool of this turn bypassed the shield (the turn's
+   * `unprotected` flag): some tool data reached the model raw.
+   */
+  unprotected?: boolean;
   /**
    * #547 / #569 — external MCP tools that returned `structuredContent` this
    * turn. NOT a masking record: the payload is emitted out-of-band and never
@@ -245,6 +293,102 @@ export interface PrivacyReceipt {
    * when no connected tool emitted structured output. PII-free.
    */
   structuredPayloads?: readonly StructuredPayloadEntry[];
+  /**
+   * The answer verifier's model requests for this turn, sent under the turn's
+   * privacy rules and booked apart from `maskedPromptSpans`. Absent when the
+   * verifier sent nothing. PII-free: a request count plus span TYPE +
+   * detector id.
+   */
+  verifierEgress?: VerifierEgressSummary;
+  /**
+   * Tool errors a dispatch seam handled this turn: an exception's text
+   * withheld, a returned error text redacted (or withheld), or an MCP connect
+   * prompt passed. Absent / empty when no tool failed. PII-free: tool name,
+   * carrier, outcome, byte count and masked span TYPES only.
+   */
+  toolErrors?: readonly ToolErrorEntry[];
+}
+
+/** Mirrors `VerifierEgressSummary` from `@omadia/plugin-api`. PII-free. */
+export interface VerifierEgressSummary {
+  /** Model requests the verifier sent under this turn's privacy view. */
+  requests: number;
+  /** Spans replaced with placeholders in verifier-bound text. */
+  maskedSpans: readonly PromptMaskedSpanInfo[];
+}
+
+/** How a tool error reached the dispatch seam. Mirrors `ToolErrorCarrier`. */
+export type ToolErrorCarrier = 'thrown' | 'returned' | 'mcp_auth_prompt';
+
+/** What the seam let reach the model. Mirrors `ToolErrorOutcome`. */
+export type ToolErrorOutcome = 'withheld' | 'redacted' | 'passed';
+
+/** One entry in `PrivacyReceipt.toolErrors`. Mirrors `ToolErrorEntry` from
+ *  `@omadia/plugin-api`. PII-free. */
+export interface ToolErrorEntry {
+  toolName: string;
+  carrier: ToolErrorCarrier;
+  outcome: ToolErrorOutcome;
+  /** Byte length of the ORIGINAL error text. */
+  bytes: number;
+  /** Span types masked in a `redacted` text. */
+  redactedSpans?: readonly PromptMaskedSpanInfo[];
+}
+
+/**
+ * Answer-verifier summary for a turn — the `summary` of the stream's trailing
+ * `verifier` event. Mirrors `VerifierResultSummary` from `@omadia/channel-sdk`.
+ *
+ * A summary is evidence only when a check settled a claim: a contradicted
+ * claim for `blocked`, a confirmed one for `approved` /
+ * `approved_with_disclaimer` (confirmed = `claimCount - contradictionCount -
+ * unverifiedCount`). `skipped` (badge `unverified`: nothing checkable),
+ * `unavailable` (the verifier could not run) and checks that confirmed nothing
+ * carry none. `<VerifierBadge>` renders green only for a `verified` summary
+ * whose every claim was confirmed.
+ */
+export interface VerifierSummary {
+  badge: 'verified' | 'partial' | 'corrected' | 'failed' | 'unverified' | 'unavailable';
+  status: 'approved' | 'approved_with_disclaimer' | 'blocked' | 'skipped' | 'unavailable';
+  /** Why a `skipped` / `unavailable` turn has no evidence. A closed code set;
+   *  `system_data`: an answer Privacy Shield rendered from the source
+   *  system's data with no model prose to check (`<SystemDataBadge>` marks
+   *  it); `privacy_shield`: an answer withheld in `enforce` mode because
+   *  the verifier had no privacy view of it. */
+  reason?:
+    | 'no_trigger'
+    | 'no_claims'
+    | 'no_checkable_claims'
+    | 'incomplete_coverage'
+    | 'system_data'
+    | 'extractor_error'
+    | 'pipeline_error'
+    | 'privacy_shield';
+  claimCount: number;
+  contradictionCount: number;
+  unverifiedCount: number;
+  /** Of `unverifiedCount`, the claims no check ran on (no checker for them,
+   *  or over the per-answer cap). */
+  uncheckedCount?: number;
+  /** Of `uncheckedCount`, entries for a part of the answer the verifier's
+   *  claim extraction did not cover (text beyond its window, claims left out
+   *  at its list limit, or claims it returned that are not in the answer or
+   *  too long to check whole) — the answer was not checked in full. */
+  uncoveredCount?: number;
+  /** Why the answer is not confirmed — on a withheld answer, what the notice
+   *  states; an answer released with the verifier's disclaimer carries it too.
+   *  Only `contradicted` is a refutation by a source; `contradictionCount`
+   *  counts nothing else. Absent on summaries from before the field. */
+  withheldCause?:
+    | 'contradicted'
+    | 'tool_not_called'
+    | 'citation_missing'
+    | 'insufficient_evidence'
+    | 'check_failed'
+    | 'not_checked';
+  retryCount: number;
+  latencyMs: number;
+  mode: 'shadow' | 'enforce';
 }
 
 /** #547 / #569 — one entry in `PrivacyReceipt.structuredPayloads`. Mirrors
@@ -312,6 +456,12 @@ export interface DirectLineSessionState {
   label?: string;
   transition?: 'entered' | 'switched' | 'continued' | 'left' | 'unavailable' | 'refused';
   refusedReason?: 'no-scope' | 'shared-scope' | 'synthetic-scope';
+}
+
+/** #1556 — one entry in `PrivacyReceipt.operatorClearedFields`. */
+export interface OperatorClearedFieldEntry {
+  toolName: string;
+  field: string;
 }
 
 /** Slice 2.5 — one entry in `PrivacyReceipt.bypassedTools`. */
@@ -520,6 +670,38 @@ export interface Message {
    */
   privacyReceipt?: PrivacyReceipt;
   /**
+   * #1573 — the key the receipt is stored under (`GET
+   * /operator/receipts/:id`), from `done.receiptId`. Differs from `turnId`,
+   * the session-log turn id. Absent when no receipt row was written.
+   */
+  receiptId?: string;
+  /**
+   * Answer-verifier summary, folded in from `done.verifier` (enforce mode)
+   * or the `verifier` event that follows `done` when the verifier is
+   * enabled. Rendered by `<VerifierBadge>`. Undefined when the verifier is
+   * off or skipped the turn outright (a clarification card or a degraded
+   * turn). Restored on a local reload — `coerceMessage` spreads unknown
+   * fields through — and by the server-side mirror, whose `MessageSchema`
+   * keeps a summary that fits its shape and drops one that does not.
+   */
+  verifier?: VerifierSummary;
+  /**
+   * `true` when the answer verifier withheld this turn's answer in `enforce`
+   * mode (`done.answerSource === 'verifier-blocked'`): `content` is the
+   * server's notice saying so, never the model's answer. The bubble renders
+   * it under `<VerifierBlockedNotice>`'s UI-localized heading. Kept by the
+   * server-side mirror too.
+   */
+  verifierBlocked?: true;
+  /**
+   * `true` when Privacy Shield v4 rendered this answer server-side from the
+   * turn's tool results (`done.answerSource === 'privacy-render'`, not a
+   * rendered failure): its rows are the source system's data, not text the
+   * model wrote. `<SystemDataBadge>` marks it. Kept by the server-side
+   * mirror too.
+   */
+  systemData?: true;
+  /**
    * Privacy Shield v4 — real values in `content` that the LLM never saw,
    * resolved server-side behind the data-plane boundary. `<Markdown>`
    * highlights their occurrences in violet so the asker sees what was
@@ -533,6 +715,12 @@ export interface Message {
    * footer. Absent when no sub-agent ran this turn.
    */
   agentsConsulted?: AgentConsultation[];
+  /**
+   * The answer-size level this answer was generated under (stream `done`).
+   * Drives the "Kürzer" / "Mehr Details" re-ask buttons; absent on a
+   * middleware that predates the field, which simply hides them.
+   */
+  answerVerbosity?: AnswerVerbosityInfo;
   /**
    * #332 Layer 2 (gap-closure) — the harness-owned, attributed verbatim
    * answer for a Direct-Line turn. Rendered as a visually distinct block,
@@ -571,6 +759,21 @@ export interface Message {
   };
   startedAt: number;
   finishedAt?: number;
+  /**
+   * #1071 — set by the SERVER on a scheduled routine's output it delivered
+   * into this chat (no user turn produced it). Drives the "scheduled
+   * routine" badge. The server keeps these across the client's whole-session
+   * PUT and trusts the marker only from its own copy.
+   */
+  proactive?: {
+    deliveredAt: number;
+    routineId?: string;
+    routineName?: string;
+    /** Attachments the text-only web delivery had to drop. */
+    droppedAttachments?: number;
+    /** Kind of the interactive element the web delivery had to drop. */
+    droppedInteractive?: string;
+  };
   streaming?: boolean;
   /**
    * Theme E0+E1 liveness pulse — last `heartbeat` event from the route.
@@ -614,6 +817,13 @@ export interface Message {
    * routing is off. Rendered as a small badge next to the token counts.
    */
   model?: string;
+  /**
+   * The decision model's verdict for this turn (e.g. TypeSafe Jev), from
+   * the `done` event: decided BEFORE any model call whether a language model
+   * is needed or one data source answers it. Untrusted shape — rendered
+   * through `decisionBadgeView`. Rendered at the top of the assistant card.
+   */
+  fastPathDecision?: unknown;
   /**
    * Per-turn Haiku-triage verdict, from the `turn_routing` event emitted at
    * turn start. Present only when model-routing is enabled. Rendered inline at
@@ -659,6 +869,21 @@ export interface ChatSession {
   updatedAt: number;
   messages: Message[];
   snapshot?: SessionAgentSnapshot;
+  /**
+   * #1071 — server clock of the chat's last explicit clear (`POST …/reset`).
+   * Server-owned (a PUT cannot set it); read from the server copy, and
+   * remembered locally for a clear this browser performed. Lets hydration
+   * tell "cleared on another device, then a routine delivered" apart from
+   * "this browser's turn never reached the server" (`reconcileNewerRemote`).
+   */
+  resetAt?: number;
+  /**
+   * #1071 — local-only (never sent): this browser renamed the chat and no PUT
+   * carrying that title has succeeded yet. A routine delivery can make the
+   * server copy newer while it still holds the OLD title; hydration keeps
+   * (and re-pushes) the local title instead of silently reverting the rename.
+   */
+  titleUnsynced?: true;
 }
 
 interface SessionSummary {
@@ -680,6 +905,29 @@ export function newSessionId(): string {
   const ts = Date.now().toString(36);
   const suffix = Math.random().toString(36).slice(2, 10);
   return `id-${ts}-${suffix}`;
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** `newSessionId`'s shape when `crypto.randomUUID` is unavailable. */
+const WEB_FALLBACK_ID_RE = /^id-[0-9a-z]+-[0-9a-z]+$/;
+const SERVER_MESSAGE_ID_PREFIX = 'srv-';
+
+/**
+ * A session the SERVER created by mirroring a non-web turn (a canvas, routine
+ * or other channel conversation whose scope passed the id regex) — never a
+ * chat made in this UI. Mirrors the backend's `isServerMirroredSession`
+ * (`@omadia/orchestrator`) rule for rule: the id is not one of ours (a UUID
+ * or the `id-…` fallback) AND every message carries the mirror's `srv-` id —
+ * every message written here has its own id, and an empty chat is one of
+ * ours awaiting its first turn. Used by hydration to drop such a cached copy
+ * instead of pushing it back to a server that has purged it.
+ */
+export function isServerMirroredSession(
+  session: Pick<ChatSession, 'id' | 'messages'>,
+): boolean {
+  if (UUID_RE.test(session.id) || WEB_FALLBACK_ID_RE.test(session.id)) return false;
+  if (session.messages.length === 0) return false;
+  return session.messages.every((m) => m.id.startsWith(SERVER_MESSAGE_ID_PREFIX));
 }
 
 export function deriveTitle(firstUserMessage: string | undefined): string {
@@ -772,6 +1020,8 @@ export function coerceSession(v: unknown): ChatSession | null {
   ) {
     session.snapshot = snapshot as SessionAgentSnapshot;
   }
+  if (typeof s['resetAt'] === 'number') session.resetAt = s['resetAt'];
+  if (s['titleUnsynced'] === true) session.titleUnsynced = true;
   return session;
 }
 
@@ -818,6 +1068,34 @@ function writeLocalSessions(sessions: ChatSession[]): void {
   }
 }
 
+/**
+ * #1071 — persist a routine-delivery fold into the ONE stored chat it
+ * belongs to, re-reading localStorage first: another tab may have written
+ * newer turns (or deleted chats) since this tab loaded. A chat that is not
+ * stored (deleted in another tab) stays gone.
+ */
+function persistFoldLocally(id: string, remote: ChatSession): void {
+  try {
+    const raw = window.localStorage.getItem(LS_SESSIONS);
+    if (!raw) return;
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return;
+    const stored: unknown[] = parsed;
+    const at = stored.findIndex(
+      (v) => typeof v === 'object' && v !== null && (v as { id?: unknown }).id === id,
+    );
+    const current = at === -1 ? null : coerceSession(stored[at]);
+    if (!current) return;
+    const folded = foldIntoStored(current, remote);
+    if (!folded) return;
+    const next = [...stored];
+    next[at] = sanitizeForPersist(folded);
+    window.localStorage.setItem(LS_SESSIONS, JSON.stringify(next));
+  } catch (err) {
+    console.warn('[chat-sessions] localStorage fold write failed:', err);
+  }
+}
+
 async function fetchRemoteSummaries(): Promise<SessionSummary[]> {
   const res = await fetch('/bot-api/chat/sessions');
   if (!res.ok) throw new Error(`GET sessions: HTTP ${String(res.status)}`);
@@ -834,8 +1112,14 @@ async function fetchRemoteSession(id: string): Promise<ChatSession | null> {
   return coerceSession(await res.json());
 }
 
-async function putRemoteSession(session: ChatSession): Promise<void> {
-  const payload = sanitizeForPersist(session);
+/**
+ * Upserts a session. Resolves to the document the server stored — since
+ * #1071 the server MERGES (it keeps routine deliveries the body lacks) — or
+ * `null` when the response carries no readable session.
+ */
+async function putRemoteSession(session: ChatSession): Promise<ChatSession | null> {
+  const { titleUnsynced: _localOnly, ...sent } = session;
+  const payload = sanitizeForPersist(sent);
   const res = await fetch(`/bot-api/chat/sessions/${encodeURIComponent(session.id)}`, {
     method: 'PUT',
     headers: { 'content-type': 'application/json' },
@@ -845,7 +1129,60 @@ async function putRemoteSession(session: ChatSession): Promise<void> {
     const text = await res.text().catch(() => '');
     throw new Error(`PUT session: HTTP ${String(res.status)} ${text}`);
   }
+  const body: unknown = await res.json().catch(() => null);
+  if (typeof body !== 'object' || body === null) return null;
+  return coerceSession((body as { session?: unknown }).session);
 }
+
+/**
+ * Resets a chat on the server: drops its messages — turns AND routine
+ * deliveries; since #1071 the only explicit clear — and rotates the
+ * conversation pointer so the agent's next turn starts a fresh turn-chain.
+ * Memory and Knowledge-Graph entries are NOT touched. A chat the server
+ * never stored has nothing to clear (`null`). Otherwise resolves to the
+ * server's `resetAt` stamp, or `null` when the answer carries none.
+ */
+async function resetRemoteSession(id: string): Promise<number | null> {
+  const res = await fetch(`/bot-api/chat/sessions/${encodeURIComponent(id)}/reset`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{}',
+  });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`POST reset: HTTP ${String(res.status)}`);
+  const body: unknown = await res.json().catch(() => null);
+  const resetAt =
+    typeof body === 'object' && body !== null
+      ? (body as { resetAt?: unknown }).resetAt
+      : undefined;
+  return typeof resetAt === 'number' ? resetAt : null;
+}
+
+/** `resetRemoteSession`, retried once; `undefined` when both attempts failed. */
+async function resetRemoteSessionWithRetry(id: string): Promise<number | null | undefined> {
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      return await resetRemoteSession(id);
+    } catch (err) {
+      console.warn(
+        `[chat-sessions] clear reset attempt ${String(attempt)} failed:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+  return undefined;
+}
+
+/**
+ * #1071 — how far a clear reached.
+ * - `'partial'`: the chat is cleared in this browser, but the server reset
+ *   failed. The server may still hold the whole conversation (when the PUT
+ *   that follows failed too) or at least its routine deliveries, which come
+ *   back on the next re-read.
+ * - `'not_loaded'`: this tab holds no such chat — nothing was cleared and
+ *   nothing was sent.
+ */
+export type ClearOutcome = 'cleared' | 'partial' | 'not_loaded';
 
 async function deleteRemoteSession(id: string): Promise<void> {
   const res = await fetch(`/bot-api/chat/sessions/${encodeURIComponent(id)}`, {
@@ -865,12 +1202,18 @@ export interface UseChatSessionsResult {
   deleteSession(id: string): Promise<void>;
   renameSession(id: string, title: string): Promise<void>;
   setActive(id: string): void;
-  clearMessages(id: string): Promise<void>;
+  clearMessages(id: string): Promise<ClearOutcome>;
   mutateById(
     sessionId: string,
     mutator: (session: ChatSession) => ChatSession,
   ): void;
   persistById(sessionId: string): void;
+  /**
+   * #1071 — re-read one chat from the server and fold in routine deliveries
+   * appended since hydration (additive, never PUTs). The chat page calls it on
+   * mount, after hydration and whenever the active chat changes.
+   */
+  refreshProactive(sessionId: string): void;
 }
 
 /**
@@ -883,19 +1226,26 @@ export function useChatSessions(): UseChatSessionsResult {
   const [activeId, setActiveId] = useState<string>('');
   const [hydrating, setHydrating] = useState(true);
 
-  // Debounced localStorage writes. Streaming a long answer triggers many
-  // state updates; we don't need to serialize on every keystroke.
-  const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Latest committed sessions, for async actions that must build a request
+  // body from state (a value captured inside a `setSessions` updater is only
+  // there when React runs the updater eagerly, which it does not guarantee).
+  const sessionsRef = useRef<ChatSession[]>(sessions);
   useEffect(() => {
-    if (hydrating) return;
-    if (persistTimerRef.current !== null) clearTimeout(persistTimerRef.current);
-    persistTimerRef.current = setTimeout(() => {
-      writeLocalSessions(sessions);
-    }, 250);
-    return () => {
-      if (persistTimerRef.current !== null) clearTimeout(persistTimerRef.current);
-    };
-  }, [sessions, hydrating]);
+    sessionsRef.current = sessions;
+  }, [sessions]);
+
+  // #1071 — a PUT carrying `title` succeeded: a rename to that title is on the
+  // server now (`titleUnsynced`). A title changed again since stays unsynced.
+  const settleTitle = useCallback((id: string, title: string): void => {
+    setSessions((prev) => {
+      const at = prev.findIndex(
+        (s) => s.id === id && s.titleUnsynced === true && s.title === title,
+      );
+      if (at === -1) return prev;
+      const { titleUnsynced: _synced, ...settled } = prev[at] as ChatSession;
+      return prev.map((s, i) => (i === at ? settled : s));
+    });
+  }, []);
 
   useEffect(() => {
     if (hydrating) return;
@@ -964,20 +1314,55 @@ export function useChatSessions(): UseChatSessionsResult {
           if (r.updatedAt > l.updatedAt) {
             try {
               const remote = await fetchRemoteSession(id);
-              merged.push(remote ?? l);
-            } catch {
+              // #1071 — a routine delivery makes the server copy newer, but
+              // that copy lacks every client-only message field (and maybe
+              // turns whose PUT failed); fold the delivery into the local
+              // chat instead of replacing it, and heal a lagging backend.
+              if (!remote) {
+                merged.push(l);
+              } else {
+                const { session: reconciled, pushLocal } = reconcileNewerRemote(l, remote);
+                merged.push(reconciled);
+                if (pushLocal) {
+                  // The local copy keeps its older clock so a failed push is
+                  // retried by the next hydration; the pushed copy carries
+                  // the server's, so the catch-up never winds it back.
+                  putRemoteSession({
+                    ...reconciled,
+                    updatedAt: Math.max(reconciled.updatedAt, r.updatedAt),
+                  })
+                    .then(() => {
+                      settleTitle(id, reconciled.title);
+                    })
+                    .catch((err: unknown) => {
+                      console.warn(
+                        '[chat-sessions] backend catch-up put failed:',
+                        err instanceof Error ? err.message : err,
+                      );
+                    });
+                }
+              }
+            } catch (err) {
+              console.warn(
+                `[chat-sessions] failed to read newer server copy of ${id}, keeping the local one:`,
+                err instanceof Error ? err.message : err,
+              );
               merged.push(l);
             }
           } else {
             merged.push(l);
             // Backend is behind — push our copy once (don't block hydration).
             if (l.updatedAt > r.updatedAt) {
-              putRemoteSession(l).catch((err: unknown) => {
-                console.warn(
-                  '[chat-sessions] backend catch-up put failed:',
-                  err instanceof Error ? err.message : err,
-                );
-              });
+              putRemoteSession(l)
+                .then(() => {
+                  settleTitle(id, l.title);
+                })
+                .catch((err: unknown) => {
+                  console.warn(
+                    '[chat-sessions] backend catch-up put failed:',
+                    err instanceof Error ? err.message : err,
+                  );
+                });
             }
           }
         } else if (r) {
@@ -991,6 +1376,11 @@ export function useChatSessions(): UseChatSessionsResult {
             );
           }
         } else if (l) {
+          // A server-mirrored transcript (canvas / routine turns the server
+          // once wrote into the chat store) that this browser cached before
+          // the server purged it: it was never a chat made here — drop it
+          // instead of pushing it back.
+          if (isServerMirroredSession(l)) continue;
           merged.push(l);
           putRemoteSession(l).catch((err: unknown) => {
             console.warn(
@@ -1033,7 +1423,7 @@ export function useChatSessions(): UseChatSessionsResult {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [settleTitle]);
 
   const createSession = useCallback((): ChatSession => {
     const s = emptySession();
@@ -1078,53 +1468,111 @@ export function useChatSessions(): UseChatSessionsResult {
     [],
   );
 
-  const renameSession = useCallback(
-    async (id: string, title: string): Promise<void> => {
-      const trimmed = title.trim().length === 0 ? 'Neuer Chat' : title.trim();
-      let updated: ChatSession | undefined;
-      setSessions((prev) =>
-        prev.map((s) => {
-          if (s.id !== id) return s;
-          updated = { ...s, title: trimmed, updatedAt: Date.now() };
-          return updated;
-        }),
-      );
-      if (updated) {
-        try {
-          await putRemoteSession(updated);
-        } catch (err) {
-          console.warn(
-            '[chat-sessions] rename PUT failed:',
-            err instanceof Error ? err.message : err,
-          );
-        }
-      }
-    },
-    [],
-  );
+  // #1071 — re-read / fold / clear-epoch / visibility logic for routine
+  // deliveries (see `chatProactiveRefresh.ts`).
+  const resolvedActiveId =
+    sessions.find((s) => s.id === activeId)?.id ?? sessions[0]?.id ?? '';
+  const {
+    clearEpochOf,
+    beginClear,
+    endClear,
+    foldProactive,
+    refreshProactive,
+    isFoldOnlyChange,
+  } = useProactiveRefresh({
+    setSessions,
+    hydrating,
+    activeId: resolvedActiveId,
+    fetchSession: fetchRemoteSession,
+    persistFold: persistFoldLocally,
+  });
 
+
+  // Debounced localStorage writes: streaming a long answer triggers many
+  // state updates. `lastSeenRef` is the array this effect last saw,
+  // `localDirtyRef` says a whole-array write (a local edit) is pending.
+  const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastSeenRef = useRef<ChatSession[] | null>(null);
+  const localDirtyRef = useRef(false);
+  useEffect(() => {
+    if (hydrating) return;
+    const prev = lastSeenRef.current;
+    lastSeenRef.current = sessions;
+    // #1071 — a change made of routine-delivery folds alone is already
+    // persisted into its one stored chat (`persistFoldLocally`). Writing the
+    // whole array here would let a stale tab that merely regained focus
+    // overwrite what other tabs stored since, and bring back chats they
+    // deleted. A pending local edit is still written whole, as before.
+    if (prev !== null && !localDirtyRef.current && isFoldOnlyChange(prev, sessions)) return;
+    localDirtyRef.current = true;
+    if (persistTimerRef.current !== null) clearTimeout(persistTimerRef.current);
+    persistTimerRef.current = setTimeout(() => {
+      localDirtyRef.current = false;
+      writeLocalSessions(sessions);
+    }, 250);
+    return () => {
+      if (persistTimerRef.current !== null) clearTimeout(persistTimerRef.current);
+    };
+  }, [sessions, hydrating, isFoldOnlyChange]);
+
+  // #1071 — clearing is EXPLICIT on the server (`POST …/reset`): an empty
+  // `messages` array in a PUT no longer means "clear", since a rename of a
+  // cleared chat or a stale tab's catch-up PUTs exactly that and dropped
+  // routine deliveries the user never saw. The PUT that follows keeps the
+  // server copy in sync with the local one (title, snapshot, …) and creates
+  // it when the server never had it. The body is built from committed state
+  // (`sessionsRef`), not from inside a `setSessions` updater.
+  //
+  // The reset is retried once. When it still fails, the chat is cleared here
+  // but the server keeps its routine deliveries (the PUT that follows replaces
+  // only the turns — and when the server is unreachable, that PUT fails too
+  // and the server keeps the whole conversation). Deliveries come back on the
+  // next re-read — the result says so (`'partial'`) and the chat page tells
+  // the user.
   const clearMessages = useCallback(
-    async (id: string): Promise<void> => {
-      let updated: ChatSession | undefined;
+    async (id: string): Promise<ClearOutcome> => {
+      // Nothing is folded into this chat while the reset runs, and a server
+      // copy requested before it completed is stale (`beginClear`/`endClear`).
+      beginClear(id);
+      const current = sessionsRef.current.find((s) => s.id === id);
+      const updatedAt = Date.now();
       setSessions((prev) =>
-        prev.map((s) => {
-          if (s.id !== id) return s;
-          updated = { ...s, messages: [], updatedAt: Date.now() };
-          return updated;
-        }),
+        prev.map((s) => (s.id === id ? { ...s, messages: [], updatedAt } : s)),
       );
-      if (updated) {
-        try {
-          await putRemoteSession(updated);
-        } catch (err) {
-          console.warn(
-            '[chat-sessions] clear PUT failed:',
-            err instanceof Error ? err.message : err,
-          );
-        }
+      if (!current) {
+        endClear(id);
+        console.warn(`[chat-sessions] clear: session ${id} is not loaded; nothing sent to the server`);
+        return 'not_loaded';
       }
+      let resetAt: number | null | undefined;
+      try {
+        resetAt = await resetRemoteSessionWithRetry(id);
+      } finally {
+        endClear(id);
+      }
+      if (resetAt === undefined) {
+        console.warn(
+          `[chat-sessions] clear: reset of ${id} failed twice; clearing the turns only — routine deliveries stay on the server`,
+        );
+      } else if (resetAt !== null) {
+        // Remember the reset this browser performed: a later hydration then
+        // knows it is not news from another device (`reconcileNewerRemote`).
+        setSessions((prev) =>
+          prev.map((s) => (s.id === id ? { ...s, resetAt } : s)),
+        );
+      }
+      try {
+        await putRemoteSession({ ...current, messages: [], updatedAt });
+        settleTitle(id, current.title);
+      } catch (err) {
+        console.warn(
+          '[chat-sessions] clear PUT failed:',
+          err instanceof Error ? err.message : err,
+        );
+      }
+      return resetAt === undefined ? 'partial' : 'cleared';
     },
-    [],
+    [beginClear, endClear, settleTitle],
   );
 
   // #617 — mutation is addressed by session id, never by "whatever is active".
@@ -1142,6 +1590,35 @@ export function useChatSessions(): UseChatSessionsResult {
       );
     },
     [],
+  );
+
+  const renameSession = useCallback(
+    async (id: string, title: string): Promise<void> => {
+      const trimmed = title.trim().length === 0 ? 'Neuer Chat' : title.trim();
+      const epoch = clearEpochOf(id);
+      const current = sessionsRef.current.find((s) => s.id === id);
+      if (!current) return;
+      const updatedAt = Date.now();
+      setSessions((prev) =>
+        prev.map((s) =>
+          s.id === id ? { ...s, title: trimmed, updatedAt, titleUnsynced: true } : s,
+        ),
+      );
+      try {
+        // #1071 — the server keeps routine deliveries this copy lacks (even
+        // when it holds no messages at all) and answers with the merged
+        // document; fold those deliveries in so the renamed chat shows them.
+        const stored = await putRemoteSession({ ...current, title: trimmed, updatedAt });
+        settleTitle(id, trimmed);
+        if (stored) foldProactive(id, stored, epoch);
+      } catch (err) {
+        console.warn(
+          '[chat-sessions] rename PUT failed:',
+          err instanceof Error ? err.message : err,
+        );
+      }
+    },
+    [clearEpochOf, foldProactive, settleTitle],
   );
 
   // #617 — commit-ordered persistence. A background turn is followed by no
@@ -1171,14 +1648,22 @@ export function useChatSessions(): UseChatSessionsResult {
       // PUT is what keeps a late background turn from resurrecting a session
       // the user already threw away.
       if (!snapshot) continue;
-      putRemoteSession(snapshot).catch((err: unknown) => {
-        console.warn(
-          '[chat-sessions] persistById failed:',
-          err instanceof Error ? err.message : err,
-        );
-      });
+      const epoch = clearEpochOf(id);
+      putRemoteSession(snapshot)
+        .then((stored) => {
+          settleTitle(id, snapshot.title);
+          // #1071 — the server merges the PUT with routine deliveries it
+          // appended meanwhile and answers with the stored document.
+          if (stored) foldProactive(id, stored, epoch);
+        })
+        .catch((err: unknown) => {
+          console.warn(
+            '[chat-sessions] persistById failed:',
+            err instanceof Error ? err.message : err,
+          );
+        });
     }
-  }, [persistTick, sessions]);
+  }, [persistTick, sessions, foldProactive, clearEpochOf, settleTitle]);
 
   // Always return *some* active session so the caller doesn't have to guard.
   // Build an ephemeral empty one during the brief hydrating window.
@@ -1199,5 +1684,6 @@ export function useChatSessions(): UseChatSessionsResult {
     clearMessages,
     mutateById,
     persistById,
+    refreshProactive,
   };
 }

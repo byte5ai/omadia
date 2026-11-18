@@ -101,7 +101,7 @@ Pflicht (per `patch_spec`):
 - **`spec.description_en`** — dieselbe Zeile auf **Englisch**. Nicht
   optional und keine Kopie des deutschen Texts: `identity.description` im
   Manifest ist eine Locale-Map, und deutscher Text im `en:`-Slot erscheint
-  im Hub als englische Beschreibung (#885, vier Beta-Runden lang gemeldet).
+  im Hub als englische Beschreibung.
   Du kannst den englischen Text selbst formulieren — frag den User nicht
   danach, wenn die deutsche Beschreibung schon klar ist.
 - **`spec.category`** — productivity | crm | documents | communication | analysis | other.
@@ -171,11 +171,13 @@ Pflicht (per `patch_spec`):
 Wenn der zu bauende Agent **Daten aus einer anderen Integration**
 konsumieren soll (Beispiele: Mitarbeiterliste aus Odoo HR, Confluence-
 Pages, Outlook-Kalender), gilt ein verbindlicher 3-Schritt-Workflow.
-Überspringen führt zu **silent-wrong**-Bugs (heute live beobachtet:
-Builder schrieb `odoo.execute_kw(...)`, eine Method die nicht existiert,
-weil das Trainings-Wissen vom Public Odoo XML-RPC kam und nicht zur
-internen `OdooClient`-Surface passt — Plugin baute, lief an, lieferte
-leere Listen).
+Überspringen führt zu **silent-wrong**-Bugs: aus dem Trainings-Wissen
+rekonstruierte Method-Signaturen weichen von der echten Client-Surface
+ab, und der Fehler bleibt stumm — das Plugin baut, läuft an und liefert
+leere Ergebnisse. Beispiel: `odoo.execute_kw(...)` stammt aus dem
+Public-Odoo-XML-RPC und existiert auf der internen `OdooClient`-Surface
+nicht; die echte API ist `odoo.execute({ model, method, positionalArgs,
+kwargs })`.
 
 **Schritt 0 — Bevorzugt: deklarative `spec.external_reads` (Theme A).**
 Für simple Reads (Liste-X-aus-Service-Y, ein Method-Call pro Tool) den
@@ -233,8 +235,8 @@ read_reference({
   - Konkrete Code-Snippets pro Top-Use-Case
   - Ein "Was NICHT geht"-Block mit den häufigsten Anti-Patterns
 
-**Wenn `INTEGRATION.md` für eine Integration NICHT existiert** (rare —
-sollte heute überall vorhanden sein), erst `read_reference` auf die
+**Wenn `INTEGRATION.md` für eine Integration NICHT existiert** (selten —
+die Integrationen im Katalog liefern eines mit), erst `read_reference` auf die
 Source-Files (`client.ts`, `plugin.ts`) und nur die dort GESEHENEN
 Methods/Signaturen verwenden. Niemals aus Trainings-Wissen ergänzen.
 
@@ -294,8 +296,8 @@ icon-only, error-Container mit `role="alert"`.
 
 **Wenn das CLAUDE.md und das Trainings-Wissen sich widersprechen, gilt
 das CLAUDE.md. Immer.** Tipp aus dem Doc, dann Code aus dem Trainings-
-Wissen ist eine sichere Falle (UniFi-Tracker-0.6.0-Lehre: hardcoded
-Tailwind-grün `#22c55e` ist genau dieser Fall).
+Wissen ist eine sichere Falle (Beispiel: ein hardcoded Tailwind-Grün
+`#22c55e` statt des im Doc vorgeschriebenen Theme-Tokens).
 
 Falls der Spec **kein** `admin_ui_path` setzt, ist dieser Workflow
 übersprungen — der Slot bleibt mit der Default-„noch nicht angepasst"-
@@ -431,6 +433,49 @@ Beachte: Die **Template-Slots-Checkliste** im Spec-Header zeigt dir die
 erwarteten dynamischen ui-route-Slots als separate Sektion „Dynamic
 ui_routes Slots" — solange dort ✗ missing steht, wirft codegen einen
 `spec_validation`-Error.
+
+### Auth: UI-Routes — Browser per Session, Teams per Teams-SSO (#1596, #1620)
+
+Codegen erledigt die Auth der `ui_routes` komplett, du schreibst dafür
+keinen Code und keine `public_paths`:
+
+- `/p/<slug><path>` — `{ auth: 'session' }`, die Seite für Operatoren im
+  Browser. Ohne Login **401**.
+- `/p/<slug>/teams<path>` — `{ auth: 'public' }`, eine **datenfreie** Shell
+  für den Teams-Tab. Sie holt per `microsoftTeams.authentication.getAuthToken()`
+  ein Teams-SSO-Token und lädt damit die Seite nach.
+- `/p/<slug>/teams/_data<path>` — `{ auth: 'teams-sso' }`: dieselbe Seite,
+  nur mit gültigem Teams-SSO-Token (der Kernel prüft Signatur, Tenant,
+  Bot-App-ID, Teams-Client, delegierten User). Ein Session-Cookie öffnet sie
+  nicht.
+
+Codegen deklariert `/p/<slug>/teams` selbst in
+`manifest.permissions.public_paths` (deshalb höchstens 15 eigene Einträge in
+`spec.permissions.public_paths`, sonst meldet `lint_spec`
+`ui_route_public_paths_full`). Der Operator muss den Pfad nach dem Install
+freigeben, vorher bleibt der Tab bei 401. **Nie** eine UI-Route auf
+`'public'`/`'custom'` stellen, um einen 401 im Teams-Tab zu „reparieren“.
+Interaktive `react-ssr`-Seiten (`interactive: true`) werden im Teams-Tab
+gerendert, aber nicht hydratisiert. `ui_routes[].path` darf nicht mit
+`/teams` beginnen (reserviert). Im Teams-Tab sieht jedes Mitglied des
+Bot-Tenants dieselbe Seite — keine personenbezogenen Daten in eine UI-Route
+legen, die nicht jeder im Tenant sehen darf.
+
+Ohne Session erreichbar sein müssen nur Routen, die sich **selbst**
+authentifizieren — Webhooks (HMAC über `req.rawBody`), OAuth-Callbacks
+(`state` prüfen), signierte Download-Links. Dafür:
+
+1. `spec.permissions.public_paths` deklarieren, z.B.
+   `['/api/plugins/<slug>/webhook']` (≥ 2 Segmente, keine Wildcards, kein
+   `/api/v1/admin` o.ä.).
+2. Im `activate-body`:
+   `ctx.routes.register('/api/plugins/<slug>/webhook', router, { auth: 'custom', body: 'raw' })`
+   — das Prefix muss **innerhalb** eines deklarierten Pfads liegen, sonst
+   wirft `register()` beim Aktivieren.
+3. Jeden Request im Router selbst prüfen; ohne gültige Signatur → 401.
+
+Ausgeliefert wird der Pfad erst, wenn der Operator ihn nach dem Install
+freigibt (Plugin → „Freigaben“).
 
 ## Plattform-Accessoren auf `ctx`
 
@@ -606,9 +651,9 @@ Modell-Whitelist + Per-Call Token-Cap zwingend.
 if (ctx.llm) {
   const out = await ctx.llm.complete({
     // Bevorzugt eine Klasse statt eines Vendor-Modells: der Host löst sie zur
-    // Laufzeit auf das Modell des aktiven Providers auf (Anthropic-Default:
-    // claude-haiku; OpenAI: gpt-5.4-mini). Muss zur `models_allowed`-Klasse
-    // unten passen. Konkrete Vendor-Ids bleiben erlaubt (vendor-gelockt).
+    // Laufzeit auf das Fast-Modell des aktiven Providers auf. Muss zur
+    // `models_allowed`-Klasse unten passen. Konkrete Vendor-Ids bleiben
+    // erlaubt (vendor-gelockt).
     model: 'class:fast',
     system: 'Du extrahierst nur strukturiert genannte Personen-Namen.',
     messages: [{ role: 'user', content: turnText }],
@@ -631,11 +676,11 @@ patch_spec({ patches: [
 
 `models_allowed` nutzt bevorzugt **provider-agnostische Klassen**:
 `'class:fast' | 'class:balanced' | 'class:frontier'`. Eine Klasse wird zur
-Laufzeit gegen den **aktiven** Provider aufgelöst — `class:fast` matcht das
-Fast-Modell des aktiven Providers (Anthropic-Default: `claude-haiku-4-5`;
-OpenAI: `gpt-5.4-mini`). So läuft der Agent auf jedem konfigurierten Provider,
-ohne ihn an einen Vendor zu binden. Konkrete Vendor-Ids und `*`-Suffix-
-Wildcards (`'claude-haiku-4-5*'`) bleiben für Back-Compat erlaubt, locken den
+Laufzeit gegen den **aktiven** Provider aufgelöst — `class:fast` matcht dessen
+Fast-Modell, `class:frontier` dessen stärkstes. Welches Modell das konkret ist,
+entscheidet der Katalog per Live-Discovery, nicht dieses Dokument. So läuft der
+Agent auf jedem konfigurierten Provider, ohne ihn an einen Vendor zu binden.
+Konkrete Vendor-Ids und `*`-Suffix-Wildcards bleiben für Back-Compat erlaubt, locken den
 Agent aber auf einen Vendor — bevorzuge daher Klassen. Defaults bei Auslassung:
 5 calls / 4096 tokens. **Strategie:** `class:fast` für extract/classify
 (billig), `class:balanced`/`class:frontier` nur wenn echte Reasoning-Tiefe
@@ -719,8 +764,9 @@ Frontend (im `admin-ui-body`-Slot):
 ```
 
 **Response-Schema PFLICHT** — `{ ok: true, ...payload }` bei Success,
-`{ ok: false, error: '...' }` bei Failure. Sonst zerlegt sich der
-Frontend-Roundtrip silent (Lessons-learned aus UniFi-Tracker v0.4.0).
+`{ ok: false, error: '...' }` bei Failure. Frontend und Backend müssen
+denselben Vertrag fahren — sonst zerlegt sich der Roundtrip silent, und
+jede Seite hält die andere für kaputt.
 
 ## Self-Correction-Loop (B.7)
 
@@ -832,8 +878,8 @@ packages, Stacktrace landet in `middleware/src/plugins/builder/…` o.ä.),
    `patch_spec` in `builder_settings`. Der Builder-Loop checkt das
    Feld vor jedem Turn und wartet auf Operator-Resume.
 
-PAT-direkte-Issue-Erstellung gibt es in v1 nicht — nur Browser-Submit.
-Das ist Absicht. Kein eigener Versuch, einen PAT zu verwenden oder
-Vault zu konsultieren.
+Issues entstehen ausschließlich über `omadia_report_core_bug`
+(GitHub-App oder Browser-Submit). Verwende keinen PAT und konsultiere
+nicht den Vault.
 
 ---

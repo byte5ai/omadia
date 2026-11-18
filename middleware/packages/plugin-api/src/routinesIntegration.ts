@@ -175,28 +175,27 @@ export interface RoutinesIntegration {
    *
    * SCOPING (#1025, #1029)
    * ----------------------
-   * The card carries only the routine id, so without a principal this
-   * entry point can act on any tenant's routine. Precedence for deciding
-   * whose routine may be touched:
+   * The card carries only the routine id, so the principal has to come from
+   * the channel: `actor` is the tenant and user of the activity behind the
+   * click (Teams: the tenant id and `from.aadObjectId`). The kernel scopes
+   * every action to that pair, so a click carrying another principal's
+   * routine id is answered exactly like an unknown id.
    *
-   *   1. `actor` when supplied — the channel knows who clicked and says so.
-   *   2. the per-turn routine context, when the click happens to arrive
-   *      inside a captured turn.
-   *   3. neither ⇒ the call proceeds UNSCOPED, exactly as it did before
-   *      #1025, and the kernel records an error-level log plus a counter
-   *      naming the action and id.
+   * A call without a usable `actor` — absent, or with a blank `tenant` or
+   * `userId` — is REFUSED: the promise rejects with a German, user-facing
+   * message saying the identity is missing, no routine is read or changed,
+   * and the kernel counts the refusal and logs it at error level. There is
+   * no fallback. Not to the per-turn routine context: card clicks are
+   * dispatched out-of-band, so a context found on this path can only be one
+   * leaked forward from an earlier turn (see
+   * {@link RoutinesIntegration.captureRoutineTurn}). And never to an
+   * unscoped, cross-tenant action: that exists only on the kernel's
+   * authenticated operator routes.
    *
-   * Case 3 is deliberate and temporary. Card clicks are dispatched
-   * out-of-band by the Teams adapter (`handleMessage` returns before
-   * `runOrchestratorTurn`, so `captureRoutineTurn` never fires), which
-   * means refusing here would break Pausieren, Aktivieren, Löschen and
-   * Jetzt auslösen for every user today. Silently scoping to nobody would
-   * be worse than an observable hole, so the hole is counted instead.
-   *
-   * Channel adapters SHOULD pass `actor`; Teams already holds both fields
-   * on the activity (tenant id and `from.aadObjectId`). Once it does, the
-   * unscoped fallback can be deleted — tracked as the adapter-side
-   * follow-up to #1025.
+   * Kernels before this rule ran an identity-less click unscoped. Channel
+   * adapters MUST pass `actor`; channel-teams does since 0.26.1. An adapter
+   * that cannot name the clicking user should refuse the click itself rather
+   * than call this without `actor`.
    */
   handleRoutineAction(input: {
     action: 'pause' | 'resume' | 'trigger_now' | 'delete';
@@ -205,6 +204,11 @@ export interface RoutinesIntegration {
      * Who clicked. Same (tenant, userId) pair `captureRoutineTurn`
      * carries, and the same pair the routine row is scoped by, so the
      * two sources cannot disagree about what "mine" means.
+     *
+     * Required at runtime: omitting it, or sending a blank half, is refused
+     * (see SCOPING above). It stays optional in this TYPE only so that every
+     * 1.x caller keeps compiling. That optional form is deprecated, and
+     * `actor` becomes a required field in plugin-api 2.0.
      */
     actor?: { tenant: string; userId: string };
   }): Promise<string>;

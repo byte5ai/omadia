@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 
+import { requestIsSecure } from '../http/requestTrust.js';
 import { SESSION_COOKIE } from './requireAuth.js';
 
 /**
@@ -11,18 +12,12 @@ import { SESSION_COOKIE } from './requireAuth.js';
  */
 export const SESSION_WINDOW_S = 4 * 60 * 60;
 
-/** True when the request reached us over TLS (Fly terminates TLS and
- *  forwards `x-forwarded-proto`). Drives the cookie `secure` flag. */
-export function isSecureContext(req: Request): boolean {
-  const proto = req.headers['x-forwarded-proto'];
-  if (Array.isArray(proto)) return proto[0] === 'https';
-  return proto === 'https';
-}
-
 /**
  * Write the session cookie. Single place for its attributes so the login
  * paths and `POST /renew` cannot drift apart (httpOnly, sameSite=lax,
- * path=/, secure behind TLS).
+ * path=/, and `Secure` whenever `requestIsSecure` says the request arrived
+ * over TLS — `req.secure` under the default `PUBLIC_SCHEME=auto`, never a raw
+ * `X-Forwarded-Proto` (#1310, §10o)).
  */
 export function setSessionCookie(
   req: Request,
@@ -32,7 +27,7 @@ export function setSessionCookie(
 ): void {
   res.cookie(SESSION_COOKIE, token, {
     httpOnly: true,
-    secure: isSecureContext(req),
+    secure: requestIsSecure(req),
     sameSite: 'lax',
     maxAge: Math.max(0, maxAgeSeconds) * 1000,
     path: '/',

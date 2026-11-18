@@ -45,7 +45,11 @@ export interface PluginContext {
    *  this is a no-op stub that captures the registration but never
    *  serves traffic — the real mount happens at install-time. */
   readonly routes: {
-    register(prefix: string, router: unknown): () => void;
+    register(
+      prefix: string,
+      router: unknown,
+      options?: RouteRegisterOptions,
+    ): () => void;
   };
   /** B.12 — Plugin-served UI surface registry. Plugins call
    *  `ctx.uiRoutes.register({routeId, path, title})` to publish a
@@ -401,4 +405,22 @@ export interface KnowledgeGraphAccessor {
   /** Namespace whitelist passed at construction — useful for choosing a
    *  default `system` when there's only one. */
   readonly entitySystems: readonly string[];
+}
+
+/** Mirror of `@omadia/plugin-api` `RouteRegisterOptions` (see CLAUDE.md
+ *  „Routen-Optionen“). `'public'`, `'custom'` and `'teams-sso'` need a
+ *  `permissions.public_paths` declaration covering the prefix and the
+ *  operator's grant; `'teams-sso'` hands the handler `req.teamsSsoUser`. */
+export interface RouteRegisterOptions {
+  readonly auth?: 'session' | 'public' | 'custom' | 'teams-sso';
+  readonly body?: 'json' | 'raw' | 'none';
+  readonly bodyLimit?: string;
+}
+
+/** The Teams user of an `auth: 'teams-sso'` route — `req.teamsSsoUser`. */
+export interface TeamsSsoUser {
+  readonly oid: string;
+  readonly tenantId: string;
+  readonly appId: string;
+  readonly upn?: string;
 }

@@ -62,8 +62,12 @@ const CORE_OWNED_EXEMPTIONS: ReadonlyArray<{
   readonly path: string;
   readonly why: string;
 }> = [
-  { path: '/api/v1/auth/login', why: 'operator sign-in — there is no session yet' },
-  { path: '/api/v1/setup/status', why: 'first-run setup — there is no operator yet' },
+  {
+    path: '/api/v1/auth/login',
+    why:
+      'operator sign-in and the first-user wizard (/api/v1/auth/setup, gated by the ' +
+      "operator's setup token) — there is no session yet",
+  },
   { path: '/api/auth/callback', why: 'legacy auth prefix' },
   {
     path: '/api/v1/install/oauth/callback',
@@ -92,10 +96,6 @@ const CORE_OWNED_EXEMPTIONS: ReadonlyArray<{
   {
     path: CIMD_METADATA_PATH,
     why: 'MCP client-ID metadata document — an authorization server fetches it uncredentialed',
-  },
-  {
-    path: '/p/example-plugin/index.html',
-    why: 'plugin-served UI, iframed by Teams where only a Teams SSO token exists',
   },
   {
     path: '/api/public/v1/chat',
@@ -144,6 +144,19 @@ describe('publicPaths — the static allowlist is a closed, core-owned set (#470
       CORE_OWNED_EXEMPTIONS.length,
       'one entry per documented exemption',
     );
+  });
+
+  it('does not exempt plugin routes under /p/ (#1596)', () => {
+    // The removed `/p/<pluginId>` entry let `auth: 'session'` plugin routes
+    // serve anonymous callers. Restoring it must fail here, not on a live
+    // instance.
+    for (const path of ['/p/agent-odoo-hr/absences', '/p/agent-odoo-hr', '/p/x?y=1']) {
+      assert.equal(
+        STATIC_PUBLIC_PATHS.some((re) => re.test(path)),
+        false,
+        `${path} must not be a static public path`,
+      );
+    }
   });
 
   it('is what the production accessor returns', () => {
@@ -240,6 +253,9 @@ describe('publicPaths — a path off the closed set 401s before routing (#470 C1
     '/api/v1/plugin-owned/llm/v1/messages',
     '/api/v1/plugin-owned/vcs-app/callback?code=abc&state=xyz',
     '/api/plugins/example/webhook',
+    // A first-run prefix no route was ever mounted under used to sit on the
+    // closed set. The wizard lives at /api/v1/auth/setup; this one must 401.
+    '/api/v1/setup/status',
   ];
 
   for (const path of OFF_LIST) {

@@ -293,6 +293,23 @@ describe('claudeCliAdapter completion (Shape 2)', { skip: IS_WINDOWS ? 'POSIX sh
     );
   });
 
+  it('states the forced-tool contract plainly: tool, description, exact schema, bare JSON (#1236)', async () => {
+    const tool = {
+      name: 'judge',
+      description: 'grade a claim',
+      inputSchema: { type: 'object', properties: { verdict: { type: 'string' } } },
+    };
+    writeFakeClaude({ version: '2.1.300', stdout: okJson('{"verdict":"supported"}') });
+    await provider.complete(request({ tools: [tool], toolChoice: { type: 'tool', name: 'judge' } }));
+    const prompt = readCaptured('stdin.txt');
+    assert.match(prompt, /`judge` \(grade a claim\)/);
+    assert.ok(prompt.includes(JSON.stringify(tool.inputSchema)), 'the exact schema is in the prompt');
+    assert.match(prompt, /single JSON object/);
+    assert.match(prompt, /no prose/);
+    assert.match(prompt, /no markdown fences/);
+    assert.doesNotMatch(prompt, /\bMUST\b|\bONLY\b/, 'no stacked emphasis carries the contract');
+  });
+
   it('streams the one-shot answer as a single delta plus the final response', async () => {
     writeFakeClaude({ version: '2.1.300', stdout: okJson('streamed') });
     const events: unknown[] = [];

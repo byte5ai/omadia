@@ -1,8 +1,9 @@
-import type { LlmProvider } from '@omadia/llm-provider';
+import { isClassRef, type EffortLevel, type LlmProvider } from '@omadia/llm-provider';
 import type { LocalSubAgentTool } from '@omadia/plugin-api';
 
 import { createCliSubAgent } from '../cliSubAgent.js';
 import { LocalSubAgent } from '../localSubAgent.js';
+import { subAgentEffortFor } from '../subAgentEffort.js';
 import { resolveConfiguredModel, resolveModelIdForProvider } from './agentRuntime.js';
 import { sortBySpecName } from '../toolOrdering.js';
 import type {
@@ -49,6 +50,8 @@ export interface SubAgentToolDeps {
   readonly defaultModel: string;
   readonly defaultMaxTokens: number;
   readonly defaultMaxIterations: number;
+  /** `SUB_AGENT_EFFORT` — absent = no effort sent (`subAgentEffort.ts`). */
+  readonly defaultEffort?: EffortLevel;
   /** #309 recursive Shape 3 — when the host provider is the subscription CLI,
    *  run each DB-defined sub-agent through its own CliChatAgent instead of the
    *  in-process LocalSubAgent. Default false → byte-identical legacy path. */
@@ -90,12 +93,12 @@ export function buildSubAgentDomainTools(
   }
 
   const tools: DomainTool[] = [];
+  const effortFor = subAgentEffortFor(deps.defaultEffort);
   for (const sub of graph.subAgents) {
     if (sub.status !== 'enabled') continue;
 
-    const skillBody = sub.skillId
-      ? skillsById.get(sub.skillId)?.body
-      : undefined;
+    const skill = sub.skillId ? skillsById.get(sub.skillId) : undefined;
+    const skillBody = skill?.body;
     const systemPrompt =
       sub.systemPromptOverride?.trim() ||
       skillBody?.trim() ||
@@ -106,16 +109,32 @@ export function buildSubAgentDomainTools(
       deps,
     );
 
+    // Resolve the picker-stored ref to the bare `modelId` — for the CLI branch
+    // BEFORE the `-cli` strip, exactly like the orchestrator main model (issue
+    // #296 BLOCKER). See `resolveCliSubAgentModel`.
+    const subModel = deps.hostIsCliProvider
+      ? (deps.cliModelAlias ?? ((model: string) => model))(
+          resolveCliSubAgentModel(sub.model, deps.defaultModel),
+        )
+      : resolveSubAgentModel(sub.model, deps);
+    // #1451 — both resolvers end in a raw tail, and the parent's default
+    // (`SUBAGENT_DEFAULT_MODEL`) is itself a class ref: with a provider that
+    // serves no model in the registry, `class:balanced` used to be handed to
+    // `LocalSubAgent`, which sends it RAW — a vendor 404 on every delegated
+    // turn. Skipped like an unresolvable tool grant below: the orchestrator
+    // keeps working, this one delegation target is simply not offered.
+    if (isClassRef(subModel)) {
+      deps.log?.(
+        `sub-agent tool: "${sub.name}" model '${sub.model?.trim() || deps.defaultModel}' does not resolve for provider '${deps.provider?.id ?? 'unknown'}' — skipped`,
+      );
+      continue;
+    }
+
     const agent: Askable = deps.hostIsCliProvider
       ? createCliSubAgent({
           name: sub.name,
           systemPrompt,
-          // Resolve the picker-stored ref to the bare `modelId` BEFORE the
-          // `-cli` strip — exactly like the orchestrator main model (issue #296
-          // BLOCKER). See `resolveCliSubAgentModel`.
-          model: (deps.cliModelAlias ?? ((model) => model))(
-            resolveCliSubAgentModel(sub.model, deps.defaultModel),
-          ),
+          model: subModel,
           tools: subTools,
           ...(deps.resolveCliBinary
             ? { resolveCliBinary: deps.resolveCliBinary }
@@ -124,23 +143,89 @@ export function buildSubAgentDomainTools(
       : new LocalSubAgent({
           name: sub.name,
           provider: deps.provider,
-          model: resolveSubAgentModel(sub.model, deps),
+          model: subModel,
           maxTokens: sub.maxTokens ?? deps.defaultMaxTokens,
           maxIterations: sub.maxIterations ?? deps.defaultMaxIterations,
           systemPrompt,
           tools: subTools,
+          ...(effortFor !== undefined ? { effortFor } : {}),
         });
 
     tools.push(
       createDomainTool({
         name: subAgentToolName(sub.name),
-        description: `Delegate a focused question to the "${sub.name}" sub-agent.`,
+        description: subAgentToolDescription(sub.name, skill?.description),
         agent,
         domain: `subagent.${slugifyDomain(sub.name)}`,
       }),
     );
   }
   return tools;
+}
+
+/**
+ * Description of a sub-agent delegation tool.
+ *
+ * Doubles as routing text: the orchestrator renders its Fach-Agenten roster as
+ * one `- \`name\`: description` line per domain tool, so this string is what the
+ * model picks a specialist by. The sub-agent's name alone carries no domain
+ * information; its skill description does, when the skill has one.
+ *
+ * Stays on a single line for that reason, and states the delegation contract —
+ * the sub-agent starts from an empty conversation and answers exactly once, so
+ * a question that leans on context the parent has will come back wrong.
+ *
+ * The skill description is operator- or import-supplied text that lands in
+ * the PARENT's system prompt and tool list, so it goes through
+ * {@link skillDescriptionForRoster} first (#1219 review). The risk scan and
+ * the skill's content hash cover it as well (`scanSkillForRisks`,
+ * `computeSkillHash`).
+ */
+export function subAgentToolDescription(
+  name: string,
+  skillDescription?: string | null,
+): string {
+  const scope = skillDescriptionForRoster(skillDescription);
+  return [
+    `Delegate a focused question to the "${name}" sub-agent.`,
+    ...(scope ? [`Handles: ${scope}`] : []),
+    'It sees none of this conversation and cannot ask follow-up questions, so' +
+      ' send one self-contained question and expect a single answer back.',
+  ].join(' ');
+}
+
+/** Upper bound for a skill description in the roster: a routing hint, not a
+ *  second system prompt smuggled into the parent's. */
+export const MAX_ROSTER_SKILL_DESCRIPTION_CHARS = 300;
+
+/**
+ * Control and invisible format characters (zero-width, bidi overrides, BOM),
+ * plus the characters that could break the roster line's framing: backticks
+ * (the tool name sits in a code span) and angle brackets (tag-shaped text).
+ */
+const UNSAFE_ROSTER_CHARS = /[\p{Cc}\p{Cf}`<>]/gu;
+
+/**
+ * A skill description as it may enter the parent's roster: unsafe characters
+ * replaced, whitespace collapsed to one line, capped at
+ * {@link MAX_ROSTER_SKILL_DESCRIPTION_CHARS} (cut at a word boundary, marked
+ * with `…`) and ending in punctuation. Undefined when nothing is left.
+ */
+export function skillDescriptionForRoster(
+  description?: string | null,
+): string | undefined {
+  if (typeof description !== 'string') return undefined;
+  const plain = description
+    .replace(UNSAFE_ROSTER_CHARS, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (plain.length === 0) return undefined;
+  if (plain.length > MAX_ROSTER_SKILL_DESCRIPTION_CHARS) {
+    const cut = plain.slice(0, MAX_ROSTER_SKILL_DESCRIPTION_CHARS - 1);
+    const atWord = cut.replace(/\s+\S*$/, '');
+    return `${(atWord.length > 0 ? atWord : cut).trimEnd()}…`;
+  }
+  return /[.!?]$/.test(plain) ? plain : `${plain}.`;
 }
 
 /**
@@ -163,6 +248,12 @@ export function resolveSubAgentModel(
   // The parent's default is itself a ref (a class ref since the catalog went
   // live-discovered) — resolve it the same way; a raw class ref must never
   // reach the wire.
+  //
+  // #1451 — the tail can still hand back a class ref when the provider serves
+  // NO model in the registry (reachable: an operator-typed, registry-unknown
+  // `orchestrator_model` activates fine in that state). The caller
+  // (`buildSubAgentDomainTools`) therefore skips a sub-agent whose resolved
+  // model is still a class ref rather than letting it reach the wire.
   return resolveConfiguredModel(deps.defaultModel, providerId) ?? deps.defaultModel;
 }
 

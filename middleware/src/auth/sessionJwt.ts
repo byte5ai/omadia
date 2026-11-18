@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import { SignJWT, jwtVerify } from 'jose';
 
 const ALG = 'HS512';
@@ -32,6 +34,21 @@ export interface SessionClaims {
    *  bounded by an absolute cap. Optional on input: `signSession` stamps
    *  "now" when absent (every login path); renewal passes the old value on. */
   auth_time?: number;
+  /** Server-side session revocation — the account's `users.session_version`
+   *  at mint time. `evaluateSessionToken` refuses the token once the row has
+   *  moved past it (sign-out, admin password reset, disable). Optional on
+   *  input: `signSession` stamps 0 when absent. Renewal carries it over. */
+  sv?: number;
+  /** Random id of this sign-in, minted by `signSession` when absent and
+   *  carried over on renewal. Nothing checks it yet: it exists so a later
+   *  per-sign-in revocation (one device instead of every device) or a
+   *  live-socket close can key off one session without a re-mint cycle. */
+  sid?: string;
+  /** `users.id` of the account at mint time. Binds the token to one
+   *  incarnation of the row: a user deleted and re-created under the same
+   *  identity gets a new id, so a cookie minted for the old row stays dead
+   *  even though the new row starts at version 0 again. */
+  uid?: string;
 }
 
 /**
@@ -51,6 +68,10 @@ export interface VerifiedSession extends SessionClaims {
    *  before #965 carry no `auth_time`; for those it falls back to `iat`
    *  (the moment that pre-renewal token was minted by a real login). */
   auth_time: number;
+  /** Session version the token was minted at. Tokens minted before the claim
+   *  existed read as version 0 — the value every existing row starts at — so
+   *  they stay valid until that user's sessions are first revoked. */
+  sv: number;
 }
 
 /**
@@ -63,7 +84,9 @@ export interface VerifiedSession extends SessionClaims {
  * seconds — the renewal path uses the latter to clamp `exp` to the
  * absolute cap.
  *
- * `auth_time` is stamped with "now" unless the caller carries one over.
+ * `auth_time` is stamped with "now" unless the caller carries one over, `sv`
+ * defaults to 0 and `sid` to a fresh random id (every login path); renewal
+ * passes all three on.
  */
 export async function signSession(
   claims: SessionClaims,
@@ -73,6 +96,8 @@ export async function signSession(
   const payload: SessionClaims = {
     ...claims,
     auth_time: claims.auth_time ?? Math.floor(Date.now() / 1000),
+    sv: claims.sv ?? 0,
+    sid: claims.sid ?? randomUUID(),
   };
   return await new SignJWT(payload as unknown as Record<string, unknown>)
     .setProtectedHeader({ alg: ALG })
@@ -122,6 +147,19 @@ export async function verifySession(
     Number.isFinite(payload['auth_time'])
       ? payload['auth_time']
       : iat;
+  // Server-side revocation: a token minted before `sv` existed is version 0.
+  const sv =
+    typeof payload['sv'] === 'number' && Number.isSafeInteger(payload['sv'])
+      ? payload['sv']
+      : 0;
+  const sid =
+    typeof payload['sid'] === 'string' && payload['sid'].length > 0
+      ? payload['sid']
+      : undefined;
+  const uid =
+    typeof payload['uid'] === 'string' && payload['uid'].length > 0
+      ? payload['uid']
+      : undefined;
   if (!sub || !email || !role) {
     throw new Error('session token missing required claims');
   }
@@ -135,5 +173,8 @@ export async function verifySession(
     exp,
     iat,
     auth_time: authTime,
+    sv,
+    ...(sid ? { sid } : {}),
+    ...(uid ? { uid } : {}),
   };
 }

@@ -7,11 +7,13 @@ interface DevMemoryDeps {
 }
 
 /**
- * Unauthenticated, read-only memory browser for the local Next.js dev UI.
- * Mounted only when the plugin's `dev_memory_endpoints_enabled` config flag
- * resolves truthy — the kernel enforces that the setting is never set in
- * production. Never expose this in production; the whole `/memories` tree
- * is readable without credentials.
+ * Read-only memory browser, dev scaffolding. Mounted only when the plugin's
+ * `dev_memory_endpoints_enabled` config flag resolves truthy (bootstrap copies
+ * DEV_ENDPOINTS_ENABLED into it). The route registry mounts it with
+ * `auth: 'session'`, behind the kernel's `/api` session gate, and the kernel's
+ * `/api/dev` loopback guard applies when DEV_ENDPOINTS_LOOPBACK_ONLY is set. Keep
+ * it off on deployed environments: any logged-in session can read the whole
+ * `/memories` tree, including every user's chat sessions.
  *
  * Endpoints:
  * - GET /list?path=/memories[/...]  → directory listing up to 2 levels deep

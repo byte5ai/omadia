@@ -12,6 +12,8 @@
  *   specs/001-privacy-shield-v4/data-model.md
  */
 
+import type { FieldSource } from '../nonPersonalFields.js';
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -43,11 +45,12 @@ export type FieldType =
   | 'date'
   | 'enum'
   | 'id'
+  | 'label'
   | 'string'
   | 'unknown';
 
 /** The subset of `FieldType` that may ever be `safe-cleartext`. */
-export type SafeType = 'number' | 'boolean' | 'date' | 'enum' | 'id';
+export type SafeType = 'number' | 'boolean' | 'date' | 'enum' | 'id' | 'label';
 
 /** The deny-by-default classification verdict for a field. */
 export type Classification = 'safe-cleartext' | 'sensitive-masked';
@@ -97,6 +100,11 @@ export type DatasetRow = Readonly<Record<string, unknown>>;
 export interface DatasetProvenance {
   /** Originating tool name, or the verb name for a verb-derived dataset. */
   readonly toolName: string;
+  /** #1556 — the sources whose rows this dataset holds (tool + scope, see
+   *  `scopeOf`): the tool itself for an interned result, the union of the
+   *  inputs' sources for a verb-derived one. What an operator's
+   *  `non_personal_fields` rule is matched against. */
+  readonly sources?: readonly FieldSource[];
   readonly turnId: string;
   /** `datasetId` of the input dataset, when produced by a verb. */
   readonly derivedFrom?: string;
@@ -104,6 +112,33 @@ export interface DatasetProvenance {
   readonly truncated: boolean;
   /** ISO-8601 creation timestamp. */
   readonly createdAt: string;
+  /** The tool call input as dispatched, for a tool-interned dataset whose
+   *  caller passed it. Turn-scoped like the rows; never LLM-bound. */
+  readonly toolInput?: unknown;
+  /** The verb arguments (dataset ids excluded), for a verb-derived dataset. */
+  readonly verbArgs?: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * The wrapper around the records of an envelope-shaped tool result — e.g.
+ * odoo_query's `{ model, scope, count, truncated, records: [ … ] }`. The
+ * dataset rows are the record array's objects. The wrapper's PROTOCOL fields
+ * (the explicit `ENVELOPE_METADATA_KEYS` set: count, truncated, model, page,
+ * cursor, …) describe the whole result and are kept here as metadata, never
+ * as a per-row column (v414: broadcasting them made a published canvas table
+ * show `model, scope, count, truncated` as columns). Any other scalar sibling
+ * is business data and stays a column on every row (a timesheet's `jahr`/`kw`).
+ */
+export interface DatasetEnvelope {
+  /** Key of the record array inside the tool result (e.g. `records`) — a
+   *  refresh recipe replaying the tool reads the rows from here. */
+  readonly itemsPath: string;
+  /** The wrapper's protocol metadata fields — real values, server-side.
+   *  May be empty (an envelope of business scalars only). */
+  readonly values: DatasetRow;
+  /** Their classification (as a one-row dataset); the digest masks a
+   *  `sensitive-masked` metadata field exactly like a row field. */
+  readonly schema: DatasetSchema;
 }
 
 /**
@@ -116,6 +151,10 @@ export interface Dataset {
   readonly rows: ReadonlyArray<DatasetRow>;
   readonly schema: DatasetSchema;
   readonly provenance: DatasetProvenance;
+  /** Present only on a tool-interned dataset whose result was an envelope
+   *  (one record array + scalar metadata). Verb-derived datasets carry none:
+   *  the origin's `count`/`truncated` would misdescribe a filtered result. */
+  readonly envelope?: DatasetEnvelope;
 }
 
 /** A pure function that classifies parsed rows into a `DatasetSchema`.
@@ -124,7 +163,22 @@ export interface Dataset {
 export type Classifier = (
   rows: ReadonlyArray<DatasetRow>,
   shape: DatasetShape,
+  context?: ClassifierContext,
 ) => DatasetSchema;
+
+/** #1556 — what the classifier may know about where the rows came from. */
+export interface ClassifierContext {
+  /** The sources (tool + scope) the rows came from (see `DatasetProvenance`). */
+  readonly sources: readonly FieldSource[];
+  /**
+   * For a verb-derived dataset: the only paths an operator rule may clear —
+   * those that were already a `label` in every input holding them, under the
+   * same name. A rename (`v4_union` `renameRight`) is never among them, so a
+   * masked column cannot be renamed onto a listed path and clear. Absent for
+   * a tool result (the rule decides alone).
+   */
+  readonly labelPaths?: ReadonlySet<string>;
+}
 
 /** Return shape of `internToolResult` and of every verb. */
 export interface DigestEnvelope {
@@ -138,7 +192,7 @@ export interface DigestEnvelope {
 export interface DatasetStore {
   /** Intern a raw tool result; store the real rows behind a `datasetId`,
    *  return the identity-free Digest. */
-  internToolResult(toolName: string, rawResult: unknown): DigestEnvelope;
+  internToolResult(toolName: string, rawResult: unknown, toolInput?: unknown): DigestEnvelope;
   /** Register a verb-produced dataset; return its `datasetId` + Digest. */
   put(dataset: Dataset): DigestEnvelope;
   /** Server-side resolution of the real rows. Trusted callers only (verbs,
@@ -181,6 +235,14 @@ export interface MaskedFieldDigest {
   readonly classification: 'sensitive-masked';
   readonly placeholder: string;
   readonly distinctCount: number;
+  /**
+   * #1542 — `nested` when the field holds structures (objects, record
+   * arrays) rather than scalars, e.g. a Confluence page `body`. A structural
+   * hint, never a value: the server renders such a field best-effort as text
+   * and may have to show it as not renderable, so the model must not promise
+   * its verbatim content.
+   */
+  readonly shape?: 'nested';
 }
 
 export type FieldDigest = SafeFieldDigest | MaskedFieldDigest;
@@ -192,6 +254,10 @@ export interface Digest {
   readonly rowCount: number;
   readonly truncated: boolean;
   readonly fields: ReadonlyArray<FieldDigest>;
+  /** The envelope's scalar fields (`count`, `truncated`, …) — they describe
+   *  the WHOLE result, are not row columns, and obey invariant I1 like
+   *  `fields`. Absent when the result had no envelope. */
+  readonly metadata?: ReadonlyArray<FieldDigest>;
 }
 
 // ---------------------------------------------------------------------------

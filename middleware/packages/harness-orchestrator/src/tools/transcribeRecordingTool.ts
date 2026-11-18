@@ -1,6 +1,7 @@
 import {
   TranscriptionQuotaExceededError,
   TranscriptionRealtimeDisabledError,
+  toolErrorFromException,
   type TranscriptionService,
 } from '@omadia/plugin-api';
 import { z } from 'zod';
@@ -140,8 +141,11 @@ export class TranscribeRecordingTool {
       if (err instanceof TranscriptionRealtimeDisabledError) {
         return `Error: ${err.message}`;
       }
-      const msg = err instanceof Error ? err.message : String(err);
-      return `Error: failed to transcribe attachment \`${key}\` — ${msg}.`;
+      // A provider or storage exception: its text (an upstream response body,
+      // a file path) is withheld from the model and logged in full.
+      return toolErrorFromException(TRANSCRIBE_RECORDING_TOOL_NAME, err, {
+        site: 'transcribe',
+      });
     }
 
     // Ingest failures must NOT discard the transcript: the provider call is
@@ -192,6 +196,12 @@ export class TranscribeRecordingTool {
         assistantAnswer: `_(Transkript-Ingest via ${transcript.provider}, Quelle: ${storageKey})_`,
         ...(segment.speaker !== undefined ? { speaker: segment.speaker } : {}),
         ...(userId !== undefined ? { userId } : {}),
+        // #1536 — raw speech of everyone in the recording, which no shield
+        // ever masked (the model saw it only as an interned tool result).
+        // Recall masks only detector-visible spans, so under a shield these
+        // utterances stay out of cross-session recall like any unprotected
+        // turn. The session's own tail keeps them.
+        unprotected: true,
       });
       written += 1;
     }

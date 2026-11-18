@@ -1,4 +1,5 @@
 import type { Pool } from 'pg';
+import { currentDispatchCaller, turnContext } from '@omadia/orchestrator';
 
 import type { JobScheduler } from '../jobScheduler.js';
 import {
@@ -48,6 +49,8 @@ import { routineTurnContext } from './routineTurnContext.js';
 export interface InitRoutinesOptions {
   pool: Pool;
   scheduler: JobScheduler;
+  /** #1598 — see `ManageRoutineToolOptions.requiresAgentSlug`. */
+  requiresAgentSlug?: () => boolean;
   /**
    * Live resolver for the real `Orchestrator` (typically
    * `() => chatAgentBundle?.raw` over the service registry). Resolved per
@@ -57,7 +60,8 @@ export interface InitRoutinesOptions {
    * The structural type keeps this layer free of a hard import on the
    * orchestrator package.
    */
-  getOrchestrator: () => OrchestratorLike | undefined;
+  /** #1598 — see `RoutineRunnerOptions.getOrchestrator`. */
+  getOrchestrator: (agentSlug: string | null) => OrchestratorLike | undefined;
   /**
    * Native-tool registration surface. Production passes the kernel-owned
    * `nativeToolRegistry`. The shape is the minimum used here so a stub
@@ -69,6 +73,8 @@ export interface InitRoutinesOptions {
     options: {
       spec: typeof manageRoutineToolSpec;
       promptDoc?: string;
+      /** #1086/#1346 — per-turn advertisement gate (`isOfferedThisTurn`). */
+      isAvailable?: () => boolean;
     },
   ) => () => void;
   /** Optional proactive senders the runner should know at boot. Channel
@@ -90,6 +96,14 @@ export interface RoutinesHandle {
   /** Compose with kernel shutdown — disposes the tool registration and
    *  stops every running routine. */
   close(): void;
+}
+
+/**
+ * #1086 — is `manage_routine` offered on the current turn? Only when the turn
+ * carries a routines principal; without one every action refuses.
+ */
+export function isManageRoutineOffered(): boolean {
+  return routineTurnContext.current() !== undefined;
 }
 
 export async function initRoutines(
@@ -118,13 +132,31 @@ export async function initRoutines(
 
   const tool = new ManageRoutineTool({
     runner,
-    resolveContext: () => routineTurnContext.current(),
+    ...(opts.requiresAgentSlug ? { requiresAgentSlug: opts.requiresAgentSlug } : {}),
+    // #1598 — plus the orchestrator handling the turn, so the routine runs
+    // with that orchestrator's plugin grants.
+    resolveContext: () => {
+      const ctx = routineTurnContext.current();
+      if (!ctx) return undefined;
+      // The CLI runtime has no orchestrator turn scope, only its dispatcher.
+      const agentSlug = turnContext.currentAgentSlug() ?? currentDispatchCaller()?.agentSlug;
+      return agentSlug ? { ...ctx, agentSlug } : ctx;
+    },
   });
 
   const disposeTool = opts.registerNativeTool(
     MANAGE_ROUTINE_TOOL_NAME,
     (input) => tool.handle(input),
-    { spec: manageRoutineToolSpec },
+    {
+      spec: manageRoutineToolSpec,
+      // #1086 — offered only on a turn that carries a routines principal: the
+      // web chat, every `CoreApi.handleTurnStream` channel, and Teams. An
+      // adapter that calls `chatAgent` directly passes neither a channel nor a
+      // conversation, so the kernel cannot build one for it, and the tool
+      // would refuse every action there. A call that still arrives (a stale
+      // tool list, a replay) gets ROUTINE_NO_CONTEXT_ERROR.
+      isAvailable: isManageRoutineOffered,
+    },
   );
 
   // Note: `runner.start()` is NOT called here. The caller MUST invoke

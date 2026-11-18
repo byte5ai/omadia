@@ -60,6 +60,7 @@ const provider: AuthProvider = {
     providerUserId: OPERATOR,
     email: OPERATOR,
     displayName: 'Operator',
+    account: { id: 'operator-row', sessionVersion: 0 },
   }),
 };
 

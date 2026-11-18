@@ -16,8 +16,10 @@ import type { PluginContext } from '@omadia/plugin-api';
 import type { EmbeddingClient } from '@omadia/embeddings';
 import type {
   AgentPrioritiesStore,
+  DecisionModelService,
   KnowledgeGraph,
   NudgeProvider,
+  PrivacyGuardService,
   ProcessMemoryService,
   Visibility,
 } from '@omadia/plugin-api';
@@ -26,10 +28,12 @@ import {
   BULK_INCONSISTENCY_SERVICE_NAME,
   BULK_MERGE_DETECT_SERVICE_NAME,
   BULK_PROMOTION_SERVICE_NAME,
+  DECISION_MODEL_SERVICE_NAME,
   INCONSISTENCY_DETECTOR_SERVICE_NAME,
   MERGE_CANDIDATE_DETECTOR_SERVICE_NAME,
   NUDGE_PROVIDERS_SERVICE_NAME,
   PALAIA_EXCERPT_SERVICE_NAME,
+  PRIVACY_REDACT_SERVICE_NAME,
   PROCESS_MEMORY_SERVICE_NAME,
   TOPIC_CLUSTERING_SERVICE_NAME,
 } from '@omadia/plugin-api';
@@ -41,6 +45,12 @@ import {
 } from './captureFilter.js';
 import { CaptureFilteringKnowledgeGraph } from './captureFilteringKnowledgeGraph.js';
 import { ContextRetriever } from './contextRetriever.js';
+import {
+  createInTurnJobPrivacy,
+  createJobPrivacy,
+  TURN_CONTEXT_SERVICE_NAME,
+  type TurnPrivacyContext,
+} from './jobPrivacy.js';
 import { createRecallRelevanceJudge } from './recallRelevanceJudge.js';
 import type { Pool } from 'pg';
 import {
@@ -509,6 +519,20 @@ export async function activate(
     llm = withProviderUsageTracking(baseProvider, { source: 'extras' });
   }
 
+  // WP-10 — Privacy Shield for the memory jobs, which send stored real values
+  // through `llm`. Both lookups run per job run (a privacy guard may be
+  // installed after this plugin activated). Jobs outside a turn go through
+  // `outsideTurnPrivacy`; the jobs a turn awaits (the recall relevance judge,
+  // the session briefing) through the turn's handle when there is one.
+  const outsideTurnPrivacy = createJobPrivacy(() =>
+    ctx.services.getOptional<PrivacyGuardService>(PRIVACY_REDACT_SERVICE_NAME),
+  );
+  const inTurnPrivacy = createInTurnJobPrivacy({
+    turnContext: () =>
+      ctx.services.getOptional<TurnPrivacyContext>(TURN_CONTEXT_SERVICE_NAME),
+    outsideTurn: outsideTurnPrivacy,
+  });
+
   // Recall relevance judge (LLM-agnostic). Re-ranks the cross-session recall
   // candidates with the provider's FAST model class: a cosine / lexical score
   // can't separate a specific on-topic fact from a generic note that happens
@@ -528,22 +552,41 @@ export async function activate(
     resolveModelRef('class:fast', {
       defaultProvider: providerId as ProviderId,
     })?.modelId;
+  // `decisionModel@1` (optional) — resolved per call, never at activation: a
+  // decision-model plugin may activate after this one or go away later. Each
+  // site has its own kill switch (setup fields, default on); off ⇒ LLM only.
+  const decisionModel = (): DecisionModelService | undefined =>
+    ctx.services.getOptional<DecisionModelService>(DECISION_MODEL_SERVICE_NAME);
+  const recallDecisionEnabled = parseBoolDefaultTrue(
+    ctx.config.get<unknown>('recall_decision_model'),
+  );
+  const significanceDecisionEnabled = parseBoolDefaultTrue(
+    ctx.config.get<unknown>('significance_decision_model'),
+  );
   const relevanceJudge =
     llm && !recallRelevanceJudgeDisabled && recallJudgeModel
       ? createRecallRelevanceJudge({
           llm,
           model: recallJudgeModel,
           log: ctx.log,
+          privacy: inTurnPrivacy,
+          ...(recallDecisionEnabled ? { decide: decisionModel } : {}),
         })
       : undefined;
 
   // ---------------------------------------------------------------------
   // OB-71 — palaia capture-filter wiring.
   //
-  // The filter ALWAYS runs (default level=minimal: deterministic privacy +
-  // hint stripping, no LLM, no drop). At level=normal/aggressive the Haiku
-  // significance-scorer kicks in — we build it only when an Anthropic key
-  // is configured. The filter wraps `knowledgeGraph` via
+  // The filter ALWAYS runs. At level=minimal it only does deterministic
+  // privacy + hint stripping (no LLM, no drop). At level=normal (the default,
+  // `DEFAULT_CAPTURE_LEVEL`) and level=aggressive the significance scorer
+  // also runs: it is built whenever this plugin's LLM provider resolves, and
+  // it sends each captured turn — the turn's masked view, or the stored turn
+  // when the turn ran without a shield — to that provider. With a privacy
+  // guard installed that text goes through the job's own stored-text scope
+  // (#1540, docs/security-architecture.md §6f).
+  //
+  // The filter wraps `knowledgeGraph` via
   // `CaptureFilteringKnowledgeGraph` and replaces the registry entry, so
   // every consumer that activates AFTER us (orchestrator, channel-plugins,
   // …) sees the filtered KG transparently. The original KG stays live
@@ -570,8 +613,16 @@ export async function activate(
         llm,
         model: factModel,
         log: ctx.log,
+        // #1540 — the live filter, bulk promotion and the scratch reaper all
+        // score outside the turn's map (fire-and-forget or a batch job).
+        privacy: outsideTurnPrivacy,
+        ...(significanceDecisionEnabled ? { decide: decisionModel } : {}),
       })
     : undefined;
+  ctx.log(
+    `[harness-orchestrator-extras] decision model: recall=${recallDecisionEnabled ? 'on' : 'off'}, ` +
+      `significance=${significanceDecisionEnabled ? 'on' : 'off'} (used when a decisionModel@1 provider runs)`,
+  );
 
   const captureFilter = new CaptureFilter({
     captureLevel,
@@ -601,6 +652,9 @@ export async function activate(
     ...(embeddingClient ? { embeddingClient } : {}),
     ...(llm ? { llm, model: factModel } : {}),
     log: (msg) => { console.error(msg); },
+    // Fire-and-forget after a memory write, possibly after the turn that
+    // wrote it finalized its map: never the turn's handle.
+    privacy: outsideTurnPrivacy,
   });
   const disposeInconsistencyDetector = ctx.services.provide(
     INCONSISTENCY_DETECTOR_SERVICE_NAME,
@@ -903,6 +957,7 @@ export async function activate(
     kg: wrappedKg,
     ...(llm ? { llm, model: factModel } : {}),
     log: (msg) => { console.error(msg); },
+    privacy: outsideTurnPrivacy,
   });
   const disposeTopicClustering = ctx.services.provide(
     TOPIC_CLUSTERING_SERVICE_NAME,
@@ -952,6 +1007,9 @@ export async function activate(
       llm,
       model: factModel,
       log: (msg) => { console.error(msg); },
+      // The orchestrator loads the briefing while it assembles the turn's
+      // context, so the summary call runs under the turn's handle.
+      privacy: inTurnPrivacy,
     });
     const graphPool = ctx.services.get<Pool>('graphPool');
     const briefingTenantId =
@@ -977,6 +1035,8 @@ export async function activate(
         upperThreshold,
         lowerThreshold,
         classifierModel,
+        // The channel classifies before it starts the turn.
+        privacy: outsideTurnPrivacy,
       });
       disposeTopicDetector = ctx.services.provide(
         TOPIC_DETECTOR_SERVICE,

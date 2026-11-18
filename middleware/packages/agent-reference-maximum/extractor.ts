@@ -131,13 +131,13 @@ interface LlmExtractionPayload {
  * if the model still writes prose around it, the plugin code parses it
  * out robustly (see parseLlmExtractionPayload).
  */
-const LLM_EXTRACTION_SYSTEM = `Du bist ein NER-Extractor für persönliche Notizen. Liefere AUSSCHLIESSLICH gültiges JSON in diesem Format:
+const LLM_EXTRACTION_SYSTEM = `Du bist ein NER-Extractor für persönliche Notizen. Deine Antwort wird direkt als JSON geparst. Antworte mit genau einem JSON-Objekt in diesem Format:
 
 {"entities":[{"type":"Person|Topic","name":"<display name>"}]}
 
 - Nimm nur Personen (Vornamen, voller Name) und Topics (Themen, Projekte).
-- Wenn keine Entities erkennbar: {"entities":[]}.
-- KEIN Markdown, KEIN Kommentar, NUR das JSON-Objekt.`;
+- Wenn keine Entities erkennbar sind: {"entities":[]}.
+- Schreib keinen Text und keine Markdown-Fences um das Objekt.`;
 
 export async function extractWithLlm(deps: {
   body: string;

@@ -1,4 +1,5 @@
 import { extractFromJsonFile } from './setupJsonFile.js';
+import { booleanSetupDefault, integerSetupDefault } from './setupFieldDefault.js';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
@@ -15,22 +16,34 @@ import type {
   InstallActivationState,
   InstallJob,
   InstallJobState,
+  InstallJobStep,
   InstallSetupField,
   InstallSetupSchema,
+  SetupEnumOption,
 } from '../api/admin-v1.js';
 import type { PluginSqlGrantStore } from '../platform/pluginSqlGrantStore.js';
 import type { PublicPathGrantStore } from '../platform/publicPathGrantStore.js';
 import type { SecretVault } from '../secrets/vault.js';
 import {
+  activationErrorCodeOf,
+  describeActivationFailure,
+  type ActivationFailure,
+} from './activationFailure.js';
+import {
   findActiveProviderCollision,
   walkCapabilityInstallChain,
 } from './capabilityResolver.js';
-import type {
-  InstalledAgent,
-  InstalledRegistry,
+import {
+  recordActivationFailure,
+  recordActivationSuccess,
+  type InstalledAgent,
+  type InstalledRegistry,
 } from './installedRegistry.js';
+import type { BuiltInOptOutStore } from './builtInOptOuts.js';
+import { checkCoreCompat } from './coreCompat.js';
 import { readGrantGap } from './grantGap.js';
 import { extractTemplateDeclarations } from './manifestLoader.js';
+import { uninstallVoidsForceGuarded } from './privacyPosture.js';
 import type { PluginCatalog, PluginCatalogEntry } from './manifestLoader.js';
 import { loadPluginTemplates } from './pluginTemplates.js';
 import type { PluginTemplateRegistrar } from './pluginTemplates.js';
@@ -38,7 +51,7 @@ import {
   checkSetupFieldPattern,
   compileSetupPattern,
 } from './setupFieldPattern.js';
-import { normalizeLocalized, resolveLocalized } from './manifestLocalized.js';
+import { enumOption, normalizeLocalized, resolveLocalized } from './manifestLocalized.js';
 
 export interface AgentPluginBindingStore {
   deleteAgentPluginsForPlugin(pluginId: string): Promise<number>;
@@ -83,12 +96,22 @@ export interface InstallServiceDeps {
   catalog: PluginCatalog;
   registry: InstalledRegistry;
   vault: SecretVault;
+  /** #1507 — process env for the org privacy policy; defaults to
+   *  `process.env`. Injectable for tests. */
+  env?: NodeJS.ProcessEnv;
   /** Called after a successful `configure()` — e.g. to activate an uploaded
    *  agent via DynamicAgentRuntime. Errors in the hook do not cause the
    *  installation to be marked `failed`: registry entries are already
    *  persisted and the agent counts as installed. The caller must handle
    *  hook errors separately. */
-  onInstalled?: (agentId: string) => Promise<void>;
+  onInstalled?: (
+    agentId: string,
+    /** #1491 — `install` for a fresh install, `reactivate` for a runtime
+     *  restart of an installed plugin. Only an install attaches the plugin to
+     *  the default orchestrator; a reactivation must not re-attach a plugin
+     *  the operator detached. */
+    reason: 'install' | 'reactivate',
+  ) => Promise<void>;
   /** Runtime teardown before uninstall or reactivation. The reason keeps
    *  consent-removal hooks from deleting grants during a runtime restart. */
   onUninstall?: (
@@ -128,6 +151,16 @@ export interface InstallServiceDeps {
   /** OM-95 — late-resolved orchestrator config store. Bindings are purged only
    *  on real uninstall; `onUninstall` also runs during `reactivate()`. */
   agentPluginBindingStore?: () => AgentPluginBindingStore | undefined;
+  /** #1481 — uninstalling a package that ships in the image records the id
+   *  here so the boot seeders stop re-installing it; installing it again
+   *  clears the mark. Optional: without it built-ins come back at boot. */
+  builtInOptOuts?: BuiltInOptOutStore;
+  /**
+   * This host's `@omadia/plugin-api` version, which a plugin's `compat.core`
+   * must admit. Default: read from the installed package (coreCompat.ts).
+   * Tests pin it.
+   */
+  hostPluginApiVersion?: string;
 }
 
 /**
@@ -156,6 +189,12 @@ function isInstalledTerminal(state: InstallJobState): boolean {
  * #825 — that terminal state is `active` or `errored` depending on whether the
  * plugin ACTIVATED, not merely on whether the writes landed. See
  * `finishInstall`.
+ *
+ * #1494 — a validation failure (`install.validation_failed`) is NOT terminal.
+ * It is the one refusal the operator fixes in the same form, so the job goes
+ * back to `awaiting_config` with the field errors on `error`, and the
+ * corrected submit configures the same job. It used to `fail()` the job,
+ * which made every corrected submit a 409 `install.wrong_state`.
  */
 export class InstallService {
   private readonly jobs = new Map<string, InstallJob>();
@@ -191,6 +230,18 @@ export class InstallService {
           'plugin is marked incompatible',
         409,
       );
+    }
+
+    // compat.core gate: the plugin links against THIS host's
+    // @omadia/plugin-api at runtime, so a range that excludes it means the
+    // plugin may not even load. Also covers a package uploaded before the
+    // ingest-time check (PackageUploadService) existed.
+    const coreRefusal = checkCoreCompat(entry.plugin, this.deps.hostPluginApiVersion);
+    if (coreRefusal) {
+      throw new InstallError('install.incompatible_core', coreRefusal.message, 409, {
+        compat_core: coreRefusal.compat_core,
+        host_plugin_api: coreRefusal.host_plugin_api,
+      });
     }
 
     // Dependency gate: every parent in depends_on must already be installed.
@@ -257,6 +308,7 @@ export class InstallService {
       plugin_version: entry.plugin.version,
       state: 'awaiting_config',
       current_step: 'Warte auf Konfiguration',
+      step_code: 'awaiting_config',
       error: null,
       setup_schema: setupSchema,
       activation_state: null,
@@ -311,7 +363,9 @@ export class InstallService {
       );
     }
 
-    this.transition(job, 'configuring', 'Validiere Eingaben');
+    // #1494 — the field errors of a previous, rejected submit are stale now.
+    job.error = null;
+    this.transition(job, 'configuring', 'Validiere Eingaben', 'validating');
 
     // #603 (OM-17) — a `json_file` upload submitted WITH the install form. The
     // parse happens HERE, per the platform doctrine on the post-install
@@ -333,11 +387,16 @@ export class InstallService {
           ...(field.expect ? { expect: field.expect } : {}),
         });
         if (!out.ok) {
-          this.fail(job, {
+          this.rejectInput(job, {
             code: 'install.validation_failed',
             message: 'Eingaben enthalten Fehler',
             details: [
-              { key: field.key, code: out.failure.code, message: out.failure.message },
+              {
+                key: field.key,
+                code: out.failure.code,
+                message: out.failure.message,
+                ...(out.failure.params ? { params: { ...out.failure.params } } : {}),
+              },
             ],
           });
           return job;
@@ -351,7 +410,7 @@ export class InstallService {
 
     const validated = await validateValues(schema, values);
     if (validated.errors.length > 0) {
-      this.fail(job, {
+      this.rejectInput(job, {
         code: 'install.validation_failed',
         message: 'Eingaben enthalten Fehler',
         details: validated.errors,
@@ -399,7 +458,7 @@ export class InstallService {
     // hook's failure is swallowed (the install itself completed and must not be
     // rolled back over it), so without this the only surviving trace inside
     // this function would be a console line.
-    let hookError: string | undefined;
+    let hookError: ActivationFailure | undefined;
 
     try {
       if (Object.keys(secrets).length > 0) {
@@ -418,6 +477,8 @@ export class InstallService {
         origin: 'operator',
         config,
       });
+      // #1481 — the operator wants this built-in again; boot may seed it.
+      await this.forgetBuiltInOptOut(job.plugin_id);
       // #825 — NOT `active` yet. The registry row above says `active` because
       // that is what an install intends; whether the plugin actually comes up
       // is decided by the `onInstalled` hook a few lines down, and the job's
@@ -425,7 +486,7 @@ export class InstallService {
       // rather than written optimistically here. Writing `active` at this point
       // is the whole of #825: it made the job disagree with the registry (and
       // with `GET …/grants`) for every install whose activation failed.
-      this.transition(job, 'configuring', 'Aktiviere Plugin');
+      this.transition(job, 'configuring', 'Aktiviere Plugin', 'activating');
 
       // #478 — register the gated template manifests as read-only 'plugin'
       // catalog entries. Registration is in-memory; boot re-registers via
@@ -443,15 +504,16 @@ export class InstallService {
 
       if (this.deps.onInstalled) {
         try {
-          await this.deps.onInstalled(job.plugin_id);
+          await this.deps.onInstalled(job.plugin_id, 'install');
         } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
           // #825 — remember the throw. This is the FIRST-HAND observation of
           // whether the plugin came up; everything below is the recording of it.
-          hookError = message;
+          // #1456 — classified here, while the error object still exists: the
+          // string alone cannot say what the operator can do about it.
+          hookError = describeActivationFailure(err, 'onInstalled threw without a message');
           console.error(
             `[install] onInstalled hook failed for ${job.plugin_id}:`,
-            message,
+            hookError.message,
           );
           // The registry was written `status: 'active'` a few lines above —
           // BEFORE the hook that does the activating. Swallowing the hook's
@@ -460,20 +522,13 @@ export class InstallService {
           // registered: a green status over a plugin serving nothing, with the
           // only trace a console line. Correct it here.
           //
-          // Two writes, because they answer different questions.
-          // `markActivationFailed` records WHY and feeds
-          // `bootstrap.retryErroredPlugins`. It does not flip the status on its
-          // own — `CIRCUIT_BREAKER_THRESHOLD` is 3, which is right for a boot
-          // loop retrying a transient failure and wrong here: an install-time
-          // activation failure is a single definitive event an operator is
-          // watching, not the first of three strikes. So the status is set
-          // explicitly, and only when the entry still reads `active` (the
-          // threshold may already have done it).
-          await this.deps.registry.markActivationFailed(job.plugin_id, message);
-          const entry = this.deps.registry.get(job.plugin_id);
-          if (entry && entry.status === 'active') {
-            await this.deps.registry.register({ ...entry, status: 'errored' });
-          }
+          // Two writes, because they answer different questions — see
+          // `recordActivationFailure` (installedRegistry.ts), which owns the
+          // pair for every seam that activates on an operator's behalf: the
+          // reason via `markActivationFailed`, then the status explicitly,
+          // because `CIRCUIT_BREAKER_THRESHOLD` is 3 and an install-time
+          // failure is one definitive event, not the first of three strikes.
+          await recordActivationFailure(this.deps.registry, job.plugin_id, hookError);
         }
       }
 
@@ -504,21 +559,29 @@ export class InstallService {
    */
   private async finishInstall(
     job: InstallJob,
-    hookError: string | undefined,
+    hookError: ActivationFailure | undefined,
   ): Promise<void> {
     const activation = await this.buildActivationState(job.plugin_id, hookError);
     job.activation_state = activation;
     if (activation.ok) {
-      this.transition(job, 'active', 'Installation abgeschlossen');
+      this.transition(job, 'active', 'Installation abgeschlossen', 'completed');
       return;
     }
-    this.transition(
-      job,
-      'errored',
-      activation.missing.length > 0
-        ? 'Installiert — Berechtigungen fehlen'
-        : 'Installiert — Aktivierung fehlgeschlagen',
-    );
+    if (activation.missing.length > 0) {
+      this.transition(
+        job,
+        'errored',
+        'Installiert — Berechtigungen fehlen',
+        'installed_missing_permissions',
+      );
+    } else {
+      this.transition(
+        job,
+        'errored',
+        'Installiert — Aktivierung fehlgeschlagen',
+        'installed_activation_failed',
+      );
+    }
   }
 
   /**
@@ -556,7 +619,7 @@ export class InstallService {
    */
   private async buildActivationState(
     pluginId: string,
-    hookError: string | undefined,
+    hookError: ActivationFailure | undefined,
   ): Promise<InstallActivationState> {
     const entry = this.deps.registry.get(pluginId);
     const recordedStatus = entry?.status;
@@ -588,7 +651,15 @@ export class InstallService {
       ok: state === 'active',
       // Prefer what the registry recorded (it is what the grants panel shows);
       // fall back to the throw we saw, for registries that record nothing.
-      error: entry?.last_activation_error ?? hookError ?? null,
+      error: entry?.last_activation_error ?? hookError?.message ?? null,
+      // #1456 — the code travels with the reason it explains: the registry's
+      // when it recorded one, the hook's observation otherwise.
+      error_code:
+        state === 'active'
+          ? null
+          : entry?.last_activation_error !== undefined
+            ? activationErrorCodeOf(entry)
+            : (hookError?.code ?? 'unknown'),
       missing,
     };
   }
@@ -642,6 +713,83 @@ export class InstallService {
    *          caller ignores it.
    */
   async reactivate(agentId: string): Promise<InstalledAgent['status'] | undefined> {
+    const status = await this.reactivateOne(agentId);
+    if (status !== undefined) {
+      // The cascade is a consequence of this call, not part of its verdict:
+      // nothing it does may turn the caller's save into a failure.
+      try {
+        await this.reactivateDependents(agentId);
+      } catch (err) {
+        console.error(
+          `[install] re-activating the dependents of ${agentId} failed:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+    return status;
+  }
+
+  /**
+   * #1462 — re-activate every installed plugin that `depends_on` `parentId`,
+   * transitively, parents before children.
+   *
+   * A dependent fetches its parent's service objects (`odoo.client`, a
+   * toolkit closing over it) once, in its own `activate()`. Re-activating
+   * only the parent publishes a NEW client and leaves the dependent on the
+   * old one: a rotated key, a moved host or an updated package never reach
+   * it, and a parent that failed to come back up stays hidden behind a
+   * dependent that keeps answering through the client of the version that is
+   * no longer running. Re-activating the dependent makes it re-resolve —
+   * against the new client, or, when the parent is down, into its own
+   * recorded activation failure instead of stale answers.
+   *
+   * Every installed dependent is re-activated whatever its status except
+   * `inactive` (stood down on purpose): one left `errored` by a broken parent
+   * is exactly the one a fixed parent must bring back. Each one is re-activated alone (no further cascade from inside the
+   * loop), because the walk below already covers the grandchildren once.
+   * Failures are recorded per dependent by `reactivateOne` and never stop the
+   * walk or reach the caller — the same contract `reactivate` has.
+   */
+  async reactivateDependents(parentId: string): Promise<void> {
+    const affected: string[] = [];
+    const seen = new Set<string>([parentId]);
+    for (let i = -1; i < affected.length; i += 1) {
+      const id = i < 0 ? parentId : affected[i]!;
+      for (const dependent of this.findDependents(id)) {
+        if (seen.has(dependent)) continue;
+        seen.add(dependent);
+        affected.push(dependent);
+      }
+    }
+    // Longest-path depth from `parentId`, so a dependent that also depends on
+    // another affected plugin comes after it (diamond: A ← B ← C and A ← C).
+    // Bounded relaxation: a `depends_on` cycle cannot loop forever.
+    const depth = new Map<string, number>([[parentId, 0]]);
+    for (let round = 0; round <= affected.length; round += 1) {
+      for (const id of affected) {
+        const parents = this.deps.catalog.get(id)?.plugin.depends_on ?? [];
+        const d =
+          1 + Math.max(0, ...parents.map((p) => depth.get(p) ?? -1));
+        depth.set(id, Math.min(d, affected.length));
+      }
+    }
+    const order = [...affected].sort(
+      (a, b) => (depth.get(a) ?? 0) - (depth.get(b) ?? 0),
+    );
+    for (const dependent of order) {
+      // `inactive` is a deliberate stand-down (the exclusive embedding /
+      // transcription provider switch); a parent's change must not start it.
+      if (this.deps.registry.get(dependent)?.status === 'inactive') continue;
+      console.log(
+        `[install] re-activating ${dependent} — it depends on ${parentId}, which was re-activated`,
+      );
+      await this.reactivateOne(dependent);
+    }
+  }
+
+  private async reactivateOne(
+    agentId: string,
+  ): Promise<InstalledAgent['status'] | undefined> {
     if (!this.deps.registry.has(agentId)) return undefined;
     if (this.deps.onUninstall) {
       try {
@@ -666,29 +814,23 @@ export class InstallService {
       return this.deps.registry.get(agentId)?.status;
     }
     try {
-      await this.deps.onInstalled(agentId);
+      await this.deps.onInstalled(agentId, 'reactivate');
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const failure = describeActivationFailure(err, 'onInstalled threw without a message');
       console.error(
         `[install] reactivate.onInstalled hook failed for ${agentId}:`,
-        message,
+        failure.message,
       );
-      await this.deps.registry.markActivationFailed(agentId, message);
-      const failed = this.deps.registry.get(agentId);
-      if (failed && failed.status === 'active') {
-        await this.deps.registry.register({ ...failed, status: 'errored' });
-      }
-      await this.refreshInstalledJobs(agentId, message);
+      await recordActivationFailure(this.deps.registry, agentId, failure);
+      await this.refreshInstalledJobs(agentId, failure);
       return this.deps.registry.get(agentId)?.status;
     }
-    // Success. `markActivationSucceeded` clears the failure fields but
-    // deliberately does not lift `errored` — that is `clearActivationError`'s
-    // job — so both run, in that order: lift the circuit breaker, then stamp
-    // `last_activated_at`. A plugin that comes back up after the operator
-    // granted the missing permission must stop reading `errored`, or the
-    // consent flow would appear not to have worked.
-    await this.deps.registry.clearActivationError(agentId);
-    await this.deps.registry.markActivationSucceeded(agentId);
+    // Success. Both writes, in that order (see `recordActivationSuccess`):
+    // lift the circuit breaker, then stamp `last_activated_at`. A plugin that
+    // comes back up after the operator granted the missing permission must
+    // stop reading `errored`, or the consent flow would appear not to have
+    // worked.
+    await recordActivationSuccess(this.deps.registry, agentId);
     await this.refreshInstalledJobs(agentId, undefined);
     return this.deps.registry.get(agentId)?.status;
   }
@@ -699,6 +841,21 @@ export class InstallService {
         'install.not_installed',
         `plugin '${agentId}' is not installed`,
         404,
+      );
+    }
+
+    if (
+      uninstallVoidsForceGuarded({
+        pluginId: agentId,
+        installedRegistry: this.deps.registry,
+        catalog: this.deps.catalog,
+        env: this.deps.env ?? process.env,
+      })
+    ) {
+      throw new InstallError(
+        'install.privacy_guard_required',
+        `cannot uninstall '${agentId}' — it is the only Privacy Shield provider and OMADIA_PRIVACY_FORCE_GUARDED=true requires masking`,
+        409,
       );
     }
 
@@ -756,6 +913,41 @@ export class InstallService {
     // #478 — contributed workflow templates leave the catalog with the plugin.
     this.deps.conductorTemplates?.()?.unregisterPluginTemplates(agentId);
     await this.deps.registry.remove(agentId);
+    await this.recordBuiltInOptOut(agentId);
+  }
+
+  /**
+   * #1481 — make the uninstall of a built-in survive the next boot. Only
+   * packages the image ships are recorded (an uploaded package has nothing
+   * that could re-seed it). A failed write is logged, not thrown: the
+   * uninstall itself completed, and the worst case is the pre-#1481
+   * behaviour (the built-in comes back at the next boot).
+   */
+  private async recordBuiltInOptOut(agentId: string): Promise<void> {
+    const optOuts = this.deps.builtInOptOuts;
+    if (!optOuts) return;
+    if (this.deps.catalog.get(agentId)?.origin !== 'bundled') return;
+    try {
+      await optOuts.add(agentId);
+    } catch (err) {
+      console.error(
+        `[install] recording the built-in uninstall FAILED for ${agentId} — it will be re-installed at the next boot:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  private async forgetBuiltInOptOut(agentId: string): Promise<void> {
+    const optOuts = this.deps.builtInOptOuts;
+    if (!optOuts?.has(agentId)) return;
+    try {
+      await optOuts.remove(agentId);
+    } catch (err) {
+      console.error(
+        `[install] clearing the built-in uninstall mark FAILED for ${agentId}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
   }
 
   /**
@@ -821,7 +1013,7 @@ export class InstallService {
    */
   private async refreshInstalledJobs(
     agentId: string,
-    hookError: string | undefined,
+    hookError: ActivationFailure | undefined,
   ): Promise<void> {
     for (const job of this.jobs.values()) {
       if (job.plugin_id !== agentId || !isInstalledTerminal(job.state)) continue;
@@ -850,7 +1042,7 @@ export class InstallService {
     if (isInstalledTerminal(job.state) || job.state === 'cancelled') {
       return job;
     }
-    this.transition(job, 'cancelled', 'Vom Nutzer abgebrochen');
+    this.transition(job, 'cancelled', 'Vom Nutzer abgebrochen', 'cancelled');
     return job;
   }
 
@@ -862,15 +1054,25 @@ export class InstallService {
     job: InstallJob,
     state: InstallJobState,
     step: string,
+    stepCode: InstallJobStep,
   ): void {
     job.state = state;
     job.current_step = step;
+    job.step_code = stepCode;
     job.updated_at = new Date().toISOString();
+  }
+
+  /** #1494 — the submitted values were refused; the job waits for the
+   *  corrected ones. `error` carries the per-field details for the form. */
+  private rejectInput(job: InstallJob, error: ApiError): void {
+    this.transition(job, 'awaiting_config', 'Warte auf Konfiguration', 'awaiting_config');
+    job.error = error;
   }
 
   private fail(job: InstallJob, error: ApiError): void {
     job.state = 'failed';
     job.current_step = 'Fehlgeschlagen';
+    job.step_code = 'failed';
     job.error = error;
     job.updated_at = new Date().toISOString();
   }
@@ -965,7 +1167,19 @@ export function extractSetupSchema(
       const accept = asString(f['accept']);
       if (accept) field.accept = accept;
     }
-    if (f['default'] !== undefined) field.default = f['default'];
+    if (type === 'boolean') {
+      // #1464 — normalized exactly like the catalog projection (manifestLoader),
+      // so a `default: "true"` pre-checks the box and the missing-value
+      // fallback below stores `true`, not the string.
+      const defaultValue = booleanSetupDefault(f['default']);
+      if (defaultValue !== undefined) field.default = defaultValue;
+    } else if (type === 'integer') {
+      // #1524 — normalized exactly like the catalog projection (manifestLoader).
+      const defaultValue = integerSetupDefault(f['default']);
+      if (defaultValue !== undefined) field.default = defaultValue;
+    } else if (f['default'] !== undefined) {
+      field.default = f['default'];
+    }
     // OM-17 — same load-time compile gate as manifestLoader: an uncompilable or
     // catastrophically-backtracking pattern is dropped (warned once, cached) so
     // it can never reach the request path. Keeps the install-schema projection
@@ -994,16 +1208,13 @@ export function extractSetupSchema(
     if (type === 'enum') {
       const enumRaw = f['enum'];
       if (Array.isArray(enumRaw)) {
-        const options: Array<{ value: string; label: string }> = [];
+        const options: SetupEnumOption[] = [];
         for (const e of enumRaw) {
           if (!e || typeof e !== 'object') continue;
           const obj = e as Record<string, unknown>;
           const value = asString(obj['value']);
           if (!value) continue;
-          options.push({
-            value,
-            label: asString(obj['label']) ?? value,
-          });
+          options.push(enumOption(value, obj['label']));
         }
         field.enum = options;
       }
@@ -1153,7 +1364,7 @@ function privacyModeLabel(value: string): string {
 
 interface ValidationResult {
   values: Record<string, unknown>;
-  errors: Array<{ key: string; code: string; message: string }>;
+  errors: InstallFieldError[];
 }
 
 async function validateValues(
@@ -1161,16 +1372,17 @@ async function validateValues(
   incoming: Record<string, unknown>,
 ): Promise<ValidationResult> {
   const values: Record<string, unknown> = {};
-  const errors: Array<{ key: string; code: string; message: string }> = [];
+  const errors: InstallFieldError[] = [];
 
   for (const field of schema.fields) {
     // #602 (OM-17) — these validation messages are German templates and this
     // path has no request locale, so resolve the localized label to German
     // (falling back to en/any, else the key). A German sentence with a German
     // label beats the mixed-locale message that was a named cause of OM-17.
-    // NB: 'de' is hardcoded because the surrounding templates are German-only;
-    // if they ever localize, thread the request locale here — same root cause
-    // as the server-side always-English pattern hint tracked in #605.
+    // NB: 'de' is hardcoded because the surrounding templates are German-only.
+    // They are a fallback: the web UI renders each error from its catalog by
+    // `code` (+ `params`) in the operator's locale (#1401), so a new error
+    // here needs a code and a catalog key, not a request locale.
     const label = resolveLocalized(field.label, 'de') ?? field.key;
     const raw = incoming[field.key];
     const missing =
@@ -1206,6 +1418,7 @@ async function validateValues(
         key: field.key,
         code: coerced.error.code,
         message: coerced.error.message,
+        ...(coerced.error.params ? { params: coerced.error.params } : {}),
       });
       continue;
     }
@@ -1247,9 +1460,28 @@ async function validateValues(
   return { values, errors };
 }
 
+/**
+ * One field-level install validation error. `message` is German display text
+ * (no request locale here); `code` plus `params` let a client render the error
+ * in the operator's locale instead (#1401). `params` carries only what the
+ * client cannot read from the setup schema it already holds.
+ */
+interface InstallFieldError {
+  key: string;
+  code: string;
+  message: string;
+  params?: Record<string, string>;
+}
+
 type CoerceResult =
   | { value: unknown }
-  | { error: { code: string; message: string } };
+  | {
+      error: {
+        code: string;
+        message: string;
+        params?: Record<string, string>;
+      };
+    };
 
 function coerce(field: InstallSetupField, raw: unknown): CoerceResult {
   // #602 (OM-17) — see validateValues: German templates, no request locale.
@@ -1377,6 +1609,7 @@ function coerce(field: InstallSetupField, raw: unknown): CoerceResult {
             error: {
               code: 'invalid_host',
               message: `"${host}" ist kein gültiger Hostname (kein Protokoll, kein Pfad).`,
+              params: { host },
             },
           };
         }

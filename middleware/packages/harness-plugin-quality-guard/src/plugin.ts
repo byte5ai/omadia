@@ -11,6 +11,7 @@ import {
 import {
   BOUNDARY_SECTION_HEADING,
   expandPresets,
+  partitionPresetIds,
 } from './boundaryPresets.js';
 import {
   AgentOverridesMapSchema,
@@ -47,6 +48,9 @@ export async function activate(
   ctx.log('[quality-guard] activating');
 
   const defaults = readDefaultsFromConfig(ctx);
+  const { unknown: unknownPresets } = partitionPresetIds(
+    defaults.boundaries.presets,
+  );
   const agentOverrides = readAgentOverridesFromConfig(ctx);
 
   const service = createResponseGuardService({
@@ -61,7 +65,9 @@ export async function activate(
 
   ctx.log(
     `[quality-guard] ready (default sycophancy=${defaults.sycophancy}, ` +
-      `default presets=${defaults.boundaries.presets.length}, ` +
+      `default presets=${defaults.boundaries.presets.length - unknownPresets.length}` +
+      (unknownPresets.length > 0 ? ` (+${unknownPresets.length} unknown, ignored)` : '') +
+      ', ' +
       `default customs=${defaults.boundaries.custom.length}, ` +
       `agent overrides=${Object.keys(agentOverrides).length})`,
   );
@@ -180,6 +186,14 @@ function readDefaultsFromConfig(ctx: PluginContext): ResolvedDefaults {
 
   const rawPresets = ctx.config.get<unknown>('default_boundary_presets');
   const presets = parseCsvList(rawPresets);
+  const { unknown } = partitionPresetIds(presets);
+  if (unknown.length > 0) {
+    // Surfaced rather than dropped without a trace (#1104): an id copied from
+    // somewhere that does not share this library would otherwise just vanish.
+    ctx.log(
+      `[quality-guard] config.default_boundary_presets: unknown preset id(s) ${unknown.join(', ')} — ignored`,
+    );
+  }
 
   const rawCustom = ctx.config.get<unknown>('default_boundary_custom');
   const custom = parseLineList(rawCustom);

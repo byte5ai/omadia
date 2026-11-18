@@ -280,7 +280,11 @@ export interface ValidationError {
 
 /** #759 — non-blocking validation findings. A warning never fails `ok`; it
  *  surfaces a legal-but-dangerous shape the designer should consciously keep. */
-export type ValidationWarningCode = 'timeout_equals_approval' | 'approval_fail_open';
+export type ValidationWarningCode =
+  | 'timeout_equals_approval'
+  | 'approval_fail_open'
+  /** #1698 — a human step with an unguarded outgoing edge has no path for a rejection. */
+  | 'rejection_unguarded_edge';
 
 export interface ValidationWarning {
   code: ValidationWarningCode;
@@ -423,7 +427,9 @@ export type StuckCode =
   | 'postcondition_unmet_no_fallback'
   | 'no_transition_no_fallback'
   | 'ambiguous_guards'
-  | 'fallback_transition_missing';
+  | 'fallback_transition_missing'
+  /** #1698 — a human step was rejected and no outgoing guard asks for a rejection. */
+  | 'approval_rejected_no_transition';
 
 export type Decision =
   | {

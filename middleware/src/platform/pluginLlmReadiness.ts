@@ -20,6 +20,7 @@ import {
 import {
   decodeVerifiedRecord,
   getCachedVerification,
+  getKeylessVerification,
   primeVerification,
   providerVerifiedAtVaultKey,
   type ProviderVerification,
@@ -44,11 +45,21 @@ export interface LlmPluginDesc {
    *  silently disable its tools. Tool-less plugins (extractors/classifiers)
    *  omit this. */
   readonly requiresTools?: boolean;
+  /** #1583 — this plugin cannot run on the subscription CLI (`claude-cli`) at
+   *  all, so that provider must NOT be assignable to it: the assignment would
+   *  save and the plugin would then silently not publish its capability. */
+  readonly rejectsSubscriptionCli?: boolean;
   /** The plugin whose `llm_provider` this one falls back to when it has none
    *  of its own. A change to THAT plugin's provider must rebuild this one
    *  (`reactivateAfterProviderWrite` in `providerDependents.ts`), because the
    *  inherited provider is resolved once per `activate()`. */
   readonly inheritsProviderFrom?: string;
+  /** The plugin whose `activate()` captures this plugin's published services
+   *  (`verifier`, `factExtractor`, `contextRetriever`, …) eagerly. Rebuilding
+   *  this plugin must rebuild THAT one afterwards, or it keeps serving the old,
+   *  torn-down instances until a restart (#1394). See `rebuildOrder` in
+   *  `providerDependents.ts`. */
+  readonly capturedBy?: string;
 }
 
 export const LLM_PLUGINS: ReadonlyArray<LlmPluginDesc> = [
@@ -64,9 +75,12 @@ export const LLM_PLUGINS: ReadonlyArray<LlmPluginDesc> = [
     id: '@omadia/verifier',
     label: 'Verifier',
     modelKeys: ['verifier_model'],
-    // The verifier uses FORCED single-tool structured output (claimExtractor /
-    // evidenceJudge), which the claude-cli provider now supports via a
-    // JSON-schema prompt — so the subscription CLI is a valid choice here.
+    // #1583 — the verifier resolves its provider without the provider catalog
+    // and needs an API key; on `claude-cli` it never publishes `verifier@1`
+    // ("no API key for provider 'claude-cli'"). The assignment is refused.
+    rejectsSubscriptionCli: true,
+    // The orchestrator captures the `verifier` bundle in its own activate().
+    capturedBy: '@omadia/orchestrator',
   },
   {
     id: '@omadia/orchestrator-extras',
@@ -76,6 +90,10 @@ export const LLM_PLUGINS: ReadonlyArray<LlmPluginDesc> = [
     // orchestrator's assignment (`INHERITS_PROVIDER_FROM_PLUGIN_ID` in
     // `@omadia/orchestrator-extras`; a drift test keeps the two equal).
     inheritsProviderFrom: '@omadia/orchestrator',
+    // ...and the orchestrator captures extras' `knowledgeGraph` (scorer
+    // wrapper), `factExtractor`, `contextRetriever`, excerpt extractor and
+    // `sessionBriefing` in its own activate() (#1394).
+    capturedBy: '@omadia/orchestrator',
   },
 ];
 
@@ -156,7 +174,8 @@ async function isProviderOAuthConnected(
 /**
  * The provider's credential verdict, WITHOUT touching the network:
  *   - no key in any scope                       → `no_key`
- *   - keyless provider (local/self-hosted)      → `verified`
+ *   - keyless provider (local/self-hosted)      → its last reachability
+ *                                                 check, else `unverified`
  *   - a fresh cached probe for THIS key         → that verdict
  *   - a durable `verified_at` record for THIS key → `verified`
  *   - otherwise                                 → `unverified`
@@ -169,11 +188,20 @@ async function resolveKeyBasedStatus(
   provider: ProviderId,
   descriptor: LlmProviderDescriptorView | undefined,
 ): Promise<ProviderVerification> {
-  // Local / self-hosted providers have no credential to reject.
-  if (descriptor?.policy?.requiresApiKey === false) {
-    return { status: 'verified' };
-  }
   const found = await findProviderKey(vault, provider);
+  // #1460 — a local / self-hosted provider has no credential to reject, but
+  // it can be down. "Verified" means a reachability check ran and succeeded:
+  // the last one this process ran for the key stored now (none → `''`), or
+  // `unverified` before any has. Never probed from here — read paths do not
+  // touch the network.
+  if (descriptor?.policy?.requiresApiKey === false) {
+    return (
+      getKeylessVerification(provider, found?.apiKey ?? '') ?? {
+        status: 'unverified',
+        reason: 'not_checked',
+      }
+    );
+  }
   if (found === undefined) return { status: 'no_key' };
 
   const cached = getCachedVerification(provider, found.apiKey);

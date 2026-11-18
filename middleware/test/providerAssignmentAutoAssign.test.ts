@@ -25,6 +25,7 @@ import { InMemorySecretVault } from '../src/secrets/vault.js';
 import { registerBuiltinLlmProviders } from '../src/platform/builtinLlmProviders.js';
 import {
   autoAssignSubscriptionCli,
+  handOffExistingCliLogin,
   SUBSCRIPTION_CLI_PROVIDER,
   defaultSubscriptionCliModel,
 } from '../src/platform/providerAssignment.js';
@@ -183,10 +184,17 @@ describe('autoAssignSubscriptionCli (OM-79)', () => {
 
     const outcome = await autoAssignSubscriptionCli(deps);
 
-    assert.deepEqual([...outcome.assigned].sort(), [EXTRAS, ORCH, VERIFIER].sort());
+    assert.deepEqual([...outcome.assigned].sort(), [EXTRAS, ORCH].sort());
+    // #1583 — the verifier cannot run on the subscription CLI; the hand-off
+    // leaves it on its own provider instead of silently switching it off.
+    assert.ok(
+      outcome.skipped.some((s) => s.pluginId === VERIFIER && s.reason === 'subscription_cli_unsupported'),
+      JSON.stringify(outcome.skipped),
+    );
+    assert.equal(registry.get(VERIFIER)?.config?.['llm_provider'], undefined);
     const model = defaultSubscriptionCliModel();
     assert.ok(model);
-    for (const id of [ORCH, VERIFIER, EXTRAS]) {
+    for (const id of [ORCH, EXTRAS]) {
       assert.equal(registry.get(id)?.config?.['llm_provider'], SUBSCRIPTION_CLI_PROVIDER, id);
     }
     // Extras has two model keys; both must be set.
@@ -196,8 +204,24 @@ describe('autoAssignSubscriptionCli (OM-79)', () => {
     // cascade (extras, then orchestrator) runs after extras has its own final
     // assignment. The orchestrator therefore ends up holding an extras instance
     // built from extras' final config, not an intermediate one.
-    assert.deepEqual(reactivated, [VERIFIER, EXTRAS, EXTRAS, ORCH]);
+    assert.deepEqual(reactivated, [EXTRAS, EXTRAS, ORCH]);
     assert.equal(reactivated.at(-1), ORCH, 'the orchestrator is rebuilt last');
+  });
+
+  // #1394 — the orchestrator captures extras' services. When the hand-off
+  // switches extras but skips the orchestrator itself (here: an explicit
+  // provider), the orchestrator must still be rebuilt, once, at the end.
+  it('rebuilds a skipped orchestrator once after switching the extras it captures', async () => {
+    const { reactivated, deps } = await makeDeps([
+      { id: ORCH, config: { llm_provider: 'openai' } },
+      { id: EXTRAS, config: {} },
+    ]);
+
+    const outcome = await autoAssignSubscriptionCli(deps);
+
+    assert.deepEqual(outcome.assigned, [EXTRAS]);
+    assert.ok(outcome.skipped.some((s) => s.pluginId === ORCH));
+    assert.deepEqual(reactivated, [EXTRAS, ORCH]);
   });
 
   it('reports a failing reactivate as apply_failed and does not throw', async () => {
@@ -264,5 +288,124 @@ describe('autoAssignSubscriptionCli (OM-79)', () => {
     assert.deepEqual(outcome.assigned, []);
     assert.ok(outcome.skipped.every((s) => s.reason === 'not_installed'));
     assert.equal(reactivated.length, 0);
+  });
+});
+
+describe('handOffExistingCliLogin — a CLI signed in outside omadia', () => {
+  afterEach(() => {
+    clearExternalModels();
+  });
+
+  const snapshot = (loggedIn: 'yes' | 'no') => async () => ({
+    backends: [
+      {
+        id: 'claude',
+        label: 'Claude',
+        bin: 'claude',
+        installed: true,
+        loggedIn,
+        billing: 'subscription',
+        detail: '',
+        installable: true,
+      },
+    ],
+    generatedAt: 0,
+    cliToolsDir: '/tmp',
+  }) as never;
+
+  it('assigns the CLI when it is already signed in and nothing else is configured', async () => {
+    const { registry, deps } = await makeDeps([{ id: ORCH, config: {} }]);
+    const outcome = await handOffExistingCliLogin({
+      ...deps,
+      detectCli: snapshot('yes'),
+      env: {},
+    });
+    assert.deepEqual(outcome?.assigned, [ORCH]);
+    assert.equal(registry.get(ORCH)?.config?.['llm_provider'], SUBSCRIPTION_CLI_PROVIDER);
+  });
+
+  it('leaves everything alone while the CLI is not signed in', async () => {
+    const { registry, reactivated, deps } = await makeDeps([{ id: ORCH, config: {} }]);
+    assert.equal(
+      await handOffExistingCliLogin({ ...deps, detectCli: snapshot('no'), env: {} }),
+      undefined,
+    );
+    assert.equal(registry.get(ORCH)?.config?.['llm_provider'], undefined);
+    assert.deepEqual(reactivated, []);
+  });
+
+  it('leaves everything alone when detection fails', async () => {
+    const { reactivated, deps } = await makeDeps([{ id: ORCH, config: {} }]);
+    const outcome = await handOffExistingCliLogin({
+      ...deps,
+      detectCli: () => Promise.reject(new Error('spawn failed')),
+      env: {},
+    });
+    assert.equal(outcome, undefined);
+    assert.deepEqual(reactivated, []);
+  });
+
+  it('does not move an explicit default: its owner may be about to add a key', async () => {
+    const { registry, reactivated, deps } = await makeDeps([
+      { id: ORCH, config: { llm_provider: 'anthropic' } },
+    ]);
+    const outcome = await handOffExistingCliLogin({
+      ...deps,
+      detectCli: snapshot('yes'),
+      env: {},
+    });
+    assert.deepEqual(outcome?.assigned, []);
+    assert.equal(registry.get(ORCH)?.config?.['llm_provider'], 'anthropic');
+    assert.deepEqual(reactivated, []);
+  });
+
+  for (const name of ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY']) {
+    it(`does nothing when ${name} comes from the environment`, async () => {
+      const { registry, reactivated, deps } = await makeDeps([{ id: ORCH, config: {} }]);
+      const outcome = await handOffExistingCliLogin({
+        ...deps,
+        detectCli: snapshot('yes'),
+        env: { [name]: 'from-env' },
+      });
+      assert.equal(outcome, undefined);
+      assert.equal(registry.get(ORCH)?.config?.['llm_provider'], undefined);
+      assert.deepEqual(reactivated, []);
+    });
+  }
+
+  it('does nothing when another provider has a stored key', async () => {
+    const { vault, reactivated, deps } = await makeDeps([{ id: ORCH, config: {} }]);
+    await vault.setMany(ORCH, { [providerApiKeyVaultKey('openai')]: 'stored-test-key' });
+    const outcome = await handOffExistingCliLogin({
+      ...deps,
+      detectCli: snapshot('yes'),
+      env: {},
+    });
+    assert.equal(outcome, undefined);
+    assert.deepEqual(reactivated, []);
+  });
+
+  it('runs one hand-off at a time', async () => {
+    const { reactivated, deps } = await makeDeps([{ id: ORCH, config: {} }]);
+    const handOff = { ...deps, detectCli: snapshot('yes'), env: {} };
+    await Promise.all([handOffExistingCliLogin(handOff), handOffExistingCliLogin(handOff)]);
+    assert.deepEqual(reactivated, [ORCH]);
+  });
+
+  it('does not take over a provider with a stored API key', async () => {
+    const { vault, registry, reactivated, deps } = await makeDeps([
+      { id: ORCH, config: { llm_provider: 'anthropic' } },
+    ]);
+    await vault.setMany(ORCH, {
+      [providerApiKeyVaultKey('anthropic')]: 'stored-test-key',
+    });
+    const outcome = await handOffExistingCliLogin({
+      ...deps,
+      detectCli: snapshot('yes'),
+      env: {},
+    });
+    assert.equal(outcome, undefined);
+    assert.equal(registry.get(ORCH)?.config?.['llm_provider'], 'anthropic');
+    assert.deepEqual(reactivated, []);
   });
 });

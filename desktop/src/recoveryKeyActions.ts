@@ -7,8 +7,10 @@
  * product running a local database that is a silent data-loss risk.
  *
  * Two affordances live here: showing the key on demand (Help → "Show recovery
- * key…", always available), and a one-time reminder for a boot-verified install
- * that has never displayed it.
+ * key…", once setup is complete), and a one-time reminder for a boot-verified
+ * install that has never displayed it. While setup runs, the key that ends up
+ * active belongs to the data folder the wizard binds, which may not be the
+ * folder the shell holds now, so the menu points to the wizard's own step.
  *
  * KNOWN GAP, and it is not fixable from this side: viewing the key through this
  * path is the only moment the shell can observe. The wizard's own *Reveal*
@@ -25,15 +27,29 @@ import type { BrowserWindow } from 'electron';
 import { exportRecoveryKey } from './secrets';
 import { log, logFile } from './log';
 import { describeError } from './bootFailure';
-import { markRecoveryKeyShown, needsRecoveryKeyReminder } from './setupState';
+import { isSetupComplete, markRecoveryKeyShown, needsRecoveryKeyReminder } from './setupState';
 import {
   showRecoveryKey,
+  showRecoveryKeyDuringSetup,
   showRecoveryKeyUnavailable,
   showRecoveryReminder,
 } from './shellDialogs';
 import type { ShellTranslate } from './shellStrings';
 
-export async function showRecoveryKeyAction(win: BrowserWindow, t: ShellTranslate): Promise<void> {
+/**
+ * Help → "Show recovery key…". `inWizard` reports whether the setup wizard is
+ * on screen; a re-run of setup keeps `completed` set until it finishes, so the
+ * stored flag alone does not cover it.
+ */
+export async function showRecoveryKeyAction(
+  win: BrowserWindow,
+  t: ShellTranslate,
+  inWizard: () => boolean = () => false,
+): Promise<void> {
+  if (inWizard() || !isSetupComplete()) {
+    await showRecoveryKeyDuringSetup(win, t);
+    return;
+  }
   let key: string;
   try {
     key = exportRecoveryKey();

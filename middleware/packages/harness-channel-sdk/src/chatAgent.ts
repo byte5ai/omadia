@@ -1,4 +1,9 @@
-import type { ChannelKind, PrivacyReceipt, RecalledContext } from '@omadia/plugin-api';
+import type {
+  CaptureDisclosure,
+  ChannelKind,
+  PrivacyReceipt,
+  RecalledContext,
+} from '@omadia/plugin-api';
 import type {
   AgentConsultation,
   AiDisclosure,
@@ -11,6 +16,26 @@ import type {
 import type { SurfaceStreamEvent, PendingCanvasSurface } from './surface.js';
 import type { EnvelopeProvenance } from './provenance.js';
 import type { TurnOrigin } from './turnOrigin.js';
+
+/**
+ * The closed answer-size scale. Mirrors `ANSWER_VERBOSITY_LEVELS` in the
+ * orchestrator package (which depends on this one, so the list lives here by
+ * value and there by name); the orchestrator parses, never trusts, the wire.
+ */
+export const ANSWER_VERBOSITY_LEVELS = [
+  'tldr',
+  'brief',
+  'standard',
+  'detailed',
+  'max',
+] as const;
+export type AnswerVerbosityLevel = (typeof ANSWER_VERBOSITY_LEVELS)[number];
+
+/** The level a turn was answered under, and where it came from. */
+export interface AnswerVerbosityInfo {
+  readonly effective: AnswerVerbosityLevel;
+  readonly source: 'turn' | 'configured';
+}
 
 /**
  * Orchestrator surface contract — the duck-typed interface every chat-handling
@@ -65,6 +90,105 @@ export interface ChatAgent {
     input: ChatTurnInput,
     observer?: ChatStreamObserver,
   ): AsyncGenerator<ChatStreamEvent>;
+  /**
+   * `true` when this agent's stream delivers a turn's content only once a
+   * verdict on it is in — the answer verifier in `enforce` mode. Until then
+   * the stream carries liveness, progress and usage events only; a turn
+   * whose content was withheld ends in a `done` marked `answerSource:
+   * 'verifier-blocked'`. A wrapper that adds content of its own to such a
+   * stream must not put model claims in it: the canvas orchestrator sends its
+   * skeleton (built from the user's request only, no figures) immediately and
+   * replaces it with a status tree when the turn ends withheld or failed.
+   * Absent or `false`: the stream delivers content as it is produced.
+   */
+  readonly holdsContentUntilVerdict?: boolean;
+  /**
+   * The tool names this agent offers its model on a turn right now (its own
+   * tool list: kernel tools, the plugin tools that are ready and offered,
+   * its domain tools). A trusted wrapper that runs a tool ON the agent's
+   * behalf without a model turn (the deterministic fast path) must stay
+   * within this set — a per-Agent orchestrator without a tool must not reach
+   * it that way. Absent: the set is unknown, and such a wrapper fails closed.
+   */
+  offeredToolNames?(): ReadonlySet<string>;
+  /**
+   * The model-facing definitions (name, description, JSON input schema) of
+   * the tools among {@link offeredToolNames} that a trusted wrapper can run
+   * outside a model turn, name-ordered: PLUGIN tools (`ctx.tools.invoke`)
+   * and the agent's read-only MCP tools (their own `invoke`). The
+   * deterministic fast path derives planner specs for the read tools among
+   * them. Absent: the wrapper plans only tools it knows itself.
+   */
+  offeredToolDefinitions?(): ReadonlyArray<ChatAgentToolDefinition>;
+}
+
+/**
+ * What a typed decision model (`decisionModel@1`, e.g. TypeSafe Jev) decided
+ * for a turn BEFORE any model call — the fast path's gate (data or a
+ * language model) and, for data, the source. Rides on the terminal `done`
+ * event so a channel can show it. Fixed vocabulary and numbers only.
+ */
+export interface FastPathDecision {
+  /** provider id (`jev`) */
+  readonly provider: string;
+  /** provider model id (`jev-1.13.0`), when reported */
+  readonly model?: string;
+  readonly verdict: 'data' | 'model';
+  /** the agent route of a `model` verdict */
+  readonly route?: 'simple' | 'complex';
+  /** the data source (tool) of a `data` verdict */
+  readonly tool?: string;
+  /** 0..1 */
+  readonly confidence: number;
+  readonly ms: number;
+  /** a learned query ran as stored — no planning model call */
+  readonly direct?: true;
+  /** the turn was answered from data without the agent */
+  readonly answered?: true;
+  /** the gate answered below the confidence bar: a language model routed
+   *  the turn instead (the steps still show what the decision model said) */
+  readonly fallback?: true;
+  /** every decision-model answer of the turn, in call order */
+  readonly steps?: ReadonlyArray<FastPathDecisionStep>;
+  /** canvas only: how the turn's view was built */
+  readonly ui?: FastPathDecisionUi;
+}
+
+/** One decision-model answer — task id, chosen option id, confidence, time. */
+export interface FastPathDecisionStep {
+  /** `fast-path.gate`, `fast-path.source`, `fast-path.direct-plan`, `canvas.layout` */
+  readonly task: string;
+  readonly choice: string;
+  readonly confidence: number;
+  readonly ms: number;
+}
+
+/** How a canvas turn's view was built: `plan` / `cache` = from the query
+ *  plan, no composer model call; `simple` = a plain answer view, no
+ *  composer; `composer` = the skeleton composer model. `layout` is the
+ *  decision model's presentation of the rows. */
+export interface FastPathDecisionUi {
+  readonly skeleton: 'plan' | 'cache' | 'simple' | 'composer';
+  readonly layout?: 'table' | 'bar' | 'line' | 'pie';
+}
+
+/** One tool definition as the agent offers it to its model (Anthropic
+ *  `{name, description, input_schema}`). */
+export interface ChatAgentToolDefinition {
+  readonly name: string;
+  readonly description: string;
+  readonly input_schema: Readonly<Record<string, unknown>>;
+  /** declared read-only by its source (MCP `annotations.readOnlyHint`) */
+  readonly readOnly?: boolean;
+  /** runs the tool on the agent's behalf when `ctx.tools.invoke` cannot
+   *  (an MCP tool lives on the agent, not in the native registry) */
+  readonly invoke?: (input: unknown) => Promise<string>;
+  /** a SUB-AGENT's own tool: the name of the domain tool (`query_<agent>`)
+   *  it belongs to. Offered for the fast path only — the model reaches it
+   *  through that domain tool, so it is permitted exactly when `via` is. */
+  readonly via?: string;
+  /** owning plugin id of a `via` tool (operator allow-lists key on it) */
+  readonly agentId?: string;
 }
 
 /** Inbound channel-supplied attachment (image/file/audio/video). Vision-capable
@@ -208,6 +332,10 @@ export interface RunToolCall {
   postcondition?: {
     issues: readonly string[];
   };
+  /** The call did not run in this pass: a verifier re-entry (resample or
+   *  correction retry) handed back the first run's result. Structural copy
+   *  of KG-side `RunToolCall.replayed`. Absent on every call that ran. */
+  replayed?: boolean;
 }
 
 /** Per-sub-agent invocation entry in a run trace. */
@@ -224,6 +352,9 @@ export interface RunAgentInvocation {
   subIterations: number;
   status: RunStatus;
   toolCalls: RunToolCall[];
+  /** The sub-agent did not run in this pass: a verifier re-entry handed back
+   *  the first run's answer and inner calls (see `RunToolCall.replayed`). */
+  replayed?: boolean;
 }
 
 /**
@@ -264,14 +395,107 @@ export interface RunTracePayload {
   provider?: string;
 }
 
-/** Compact verifier summary attached to `ChatTurnResult` and the streaming
- *  `verifier` event. */
+/**
+ * Why a verifier summary carries no evidence. `no_trigger` / `no_claims` /
+ * `no_checkable_claims` explain a `skipped` turn (nothing checkable), and
+ * `incomplete_coverage` one whose claim extraction covered only part of the
+ * answer and found nothing checkable there, and `system_data` one whose
+ * answer is system data only — rendered by Privacy Shield from the turn's tool
+ * results, with no model prose to check; `extractor_error` /
+ * `pipeline_error` an `unavailable` one (the verifier could not run, or its
+ * pipeline returned no usable verdict), and `privacy_shield` an `unavailable`
+ * one whose answer was never sent to the verifier: in `enforce` mode an
+ * answer behind a shield with no privacy view to verify through is withheld
+ * unverified. A closed code set: the summary is forwarded verbatim on the
+ * stream, so it never carries an error message.
+ */
+export type VerifierSummaryReason =
+  | 'no_trigger'
+  | 'no_claims'
+  | 'no_checkable_claims'
+  | 'incomplete_coverage'
+  | 'system_data'
+  | 'extractor_error'
+  | 'pipeline_error'
+  | 'privacy_shield';
+
+/**
+ * Compact verifier summary attached to `ChatTurnResult` and the streaming
+ * `verifier` event.
+ *
+ * A summary is evidence only when a check settled a claim: a contradicted
+ * claim for `blocked`, a verified one for `approved` /
+ * `approved_with_disclaimer` (verified = `claimCount - contradictionCount -
+ * unverifiedCount`). `skipped` (badge `unverified`), `unavailable` (badge
+ * `unavailable`), summaries whose claims all stayed unverified and summaries
+ * whose counts contradict each other carry none, and a consumer must never
+ * render them as a check — see `verifierSummaryHasEvidence`.
+ * `toSemanticAnswer` forwards a connector badge only when the counts back it.
+ */
+/**
+ * Why the verifier would not release an answer — what the withheld notice
+ * says, and nothing it may overstate:
+ *  - `contradicted`          — a check compared a claim with its source and
+ *                              the source says otherwise (the ONLY cause that
+ *                              may be called a contradiction);
+ *  - `tool_not_called`       — the answer states live data or a failed /
+ *                              missing access, and no call in the turn fetched
+ *                              that data or failed;
+ *  - `citation_missing`      — the answer used knowledge-graph results but
+ *                              named no source for them;
+ *  - `insufficient_evidence` — claims could not be backed by what the turn
+ *                              retrieved (unconfirmed, a cited source the turn
+ *                              never returned, parts not covered);
+ *  - `check_failed`          — a technical fault: the verifier, its checks or
+ *                              a tool's result failed;
+ *  - `not_checked`           — the answer could not be sent to the check at all
+ *                              (Privacy Shield rendered it server-side).
+ * A closed code set: the summary goes out verbatim on the stream.
+ */
+export type VerifierWithheldCause =
+  | 'contradicted'
+  | 'tool_not_called'
+  | 'citation_missing'
+  | 'insufficient_evidence'
+  | 'check_failed'
+  | 'not_checked';
+
 export interface VerifierResultSummary {
-  badge: 'verified' | 'partial' | 'corrected' | 'failed';
-  status: 'approved' | 'approved_with_disclaimer' | 'blocked';
+  badge: 'verified' | 'partial' | 'corrected' | 'failed' | 'unverified' | 'unavailable';
+  status: 'approved' | 'approved_with_disclaimer' | 'blocked' | 'skipped' | 'unavailable';
+  /** Present only for `skipped` / `unavailable`. */
+  reason?: VerifierSummaryReason;
   claimCount: number;
   contradictionCount: number;
+  /** Claims not confirmed: checked without confirmation, failed in their
+   *  checker, or never checked. */
   unverifiedCount: number;
+  /**
+   * Of `unverifiedCount`, the claims no check ran on: no checker accepts them
+   * (e.g. an amount whose source is neither Odoo nor the graph) or they lie
+   * beyond the per-answer claim cap. Optional for summaries built without it.
+   */
+  uncheckedCount?: number;
+  /**
+   * Of `uncheckedCount`, entries that stand for a part of the answer the claim
+   * extraction did not cover rather than for one claim: text beyond the
+   * extractor's window, claims the model left out once its list reached the
+   * request limit, or claims it returned that are not in the answer as
+   * written or too long to check whole. Any such entry means the answer was
+   * not checked in full. Optional for summaries built without it.
+   */
+  uncoveredCount?: number;
+  /**
+   * Why the answer is not confirmed, for every status but `approved` and a
+   * `skipped` with nothing to check. When `enforce` withholds the answer
+   * (`blocked`, `unavailable`) it is what the notice states; an answer
+   * released unconfirmed (`approved_with_disclaimer`, `skipped` with claims no check accepts or
+   * parts not covered) carries it too, as does every answer in `shadow`.
+   * `contradictionCount` counts only claims a source refuted; any other cause
+   * counts its claims as unconfirmed (`unverifiedCount`). Optional for
+   * summaries built without it.
+   */
+  withheldCause?: VerifierWithheldCause;
   retryCount: number;
   latencyMs: number;
   mode: 'shadow' | 'enforce';
@@ -324,7 +548,9 @@ export interface ChatTurnInput {
    * Free-form addendum injected into the system prompt for this turn only.
    * Currently used by the answer-verifier's retry path to hand back a
    * correction hint after contradictions were detected. Callers that don't
-   * need it simply omit.
+   * need it simply omit. It is wire content like `userMessage`: the
+   * orchestrator masks it through the turn's prompt map before the model
+   * sees it, and a turn whose hint cannot be masked fails closed.
    */
   extraSystemHint?: string;
   /**
@@ -347,6 +573,16 @@ export interface ChatTurnInput {
    * `🔄 Fresh Check` button when the user distrusts a cached-memory answer.
    */
   freshCheck?: boolean;
+  /**
+   * Answer-size override for THIS turn only — the level the user picked on a
+   * channel affordance ("Kürzer" / "Mehr Details" on the Teams card) for a
+   * re-run of the same question. Replaces the configured level (Agent, else
+   * installation) for the one turn; the next turn is back on the configured
+   * one. Unknown values are ignored, so a stale button cannot pick a level
+   * the prompt builder does not know. See {@link ChatTurnResult.answerVerbosity}
+   * for the value the channel needs to offer the next step.
+   */
+  answerVerbosity?: AnswerVerbosityLevel;
   /**
    * Teams SSO assertion (JWT) for the calling user. When present, the
    * calendar tools (`find_free_slots` / `book_meeting`) can OBO-exchange
@@ -379,6 +615,30 @@ export interface ChatTurnInput {
    * Tier 1 can correlate them to the right canvas. Never reaches the model prompt.
    */
   canvasSessionId?: string;
+  /**
+   * Fixed, per-turn system directive from a TRUSTED in-process wrapper (the
+   * canvas orchestrator's `[canvas-context]` protocol instructions). MUST be a
+   * compile-time constant: no user text, no model output, no tool data — it
+   * is appended to the system prompt UNMASKED and kept out of `userMessage`,
+   * so the plan gate, the C1 detector, recall and the session log only ever
+   * see what the user actually asked. Never set it from channel input.
+   */
+  fixedSystemHint?: string;
+  /**
+   * Precomputed per-turn model route from a TRUSTED in-process wrapper — the
+   * fast-path triage (`@omadia/fast-path`), whose single fast-model call
+   * already classified the message. With model routing configured the
+   * orchestrator takes it instead of running its own classifier call; with
+   * routing off it is ignored. Never set it from channel input.
+   */
+  routeHint?: 'simple' | 'complex';
+  /**
+   * Precomputed plan-runner verdict from the same TRUSTED wrapper — its
+   * decision model answered whether the turn needs an explicit multi-step
+   * plan. The plan-runner takes it instead of its own gate call. Never set
+   * it from channel input.
+   */
+  planHint?: 'plan' | 'direct';
   /**
    * Structured UI action from an Omadia UI canvas client (button click,
    * choice pick, row action) — the typed field promised in protocol 1.0 §5.1
@@ -465,10 +725,12 @@ export interface ChatTurnResult {
    */
   fileAttachments?: OutgoingFileAttachment[];
   /**
-   * Answer-verifier summary. Populated only when the verifier is configured
-   * AND ran for this turn (trigger router fired). Consumers like the Teams
-   * adapter render a badge based on `badge`; dev UIs can surface the full
-   * claim breakdown. See docs/plans/answer-verifier-agent.md for semantics.
+   * Answer-verifier summary. Populated whenever the verifier is configured
+   * and ran for this turn — including turns it could not check (`skipped`:
+   * nothing checkable; `unavailable`: the verifier failed). Only
+   * `toSemanticAnswer`'s evidence gate decides whether a connector badge
+   * follows from it; dev UIs can surface the full breakdown. State table:
+   * docs/security-architecture.md §7c.
    */
   verifier?: VerifierResultSummary;
   /**
@@ -544,18 +806,21 @@ export interface ChatTurnResult {
   /**
    * #1105 — set to `'privacy-render'` when this turn's `answer` was swapped
    * in from a Privacy-Shield v4 server-side render (i.e. it may diverge from
-   * the streamed `text_delta` preview). Omitted / `'model'` for the ordinary
-   * case where `answer` is the model's own streamed text. See `AnswerSource`.
+   * the streamed `text_delta` preview), and to `'verifier-blocked'` when the
+   * answer verifier withheld the answer in `enforce` mode and `answer` is the
+   * notice saying so. Omitted / `'model'` for the ordinary case where
+   * `answer` is the model's own streamed text. See `AnswerSource`.
    */
   answerSource?: AnswerSource;
   /**
-   * #1097 — `true` when the server-rendered `answer` is control flow rather
-   * than a result: a tool error (`Error: …`) or an MCP auth prompt the model
-   * rendered as if it were data. Channels MAY present the turn as a failure
-   * (and localise around it) instead of showing success prose over an error
-   * string. Only ever set alongside `answerSource: 'privacy-render'`; omitted
-   * for an ordinary answer, so a client that ignores it keeps today's
-   * behaviour.
+   * #1097 — `true` when `answer` is not a result: a server-rendered tool
+   * error (`Error: …`) or MCP auth prompt the model rendered as if it were
+   * data (alongside `answerSource: 'privacy-render'`), or the notice for an
+   * answer the verifier withheld (alongside `answerSource:
+   * 'verifier-blocked'`, always). Channels MAY present the turn as a failure
+   * (and localise around it) instead of showing success prose over it. Never
+   * set without one of those two `answerSource` values; omitted for an
+   * ordinary answer, so a client that ignores it keeps today's behaviour.
    */
   answerIsError?: boolean;
   /**
@@ -596,6 +861,14 @@ export interface ChatTurnResult {
    * Omitted when nothing qualified — a fresh check would then be a no-op.
    */
   memoryUsed?: boolean;
+  /**
+   * The answer-size level this turn was generated under, so a channel can
+   * offer the neighbouring steps ("Kürzer" / "Mehr Details") relative to what
+   * the user just read. `source: 'turn'` when the user picked it for this
+   * turn, `'configured'` when it came from the Agent / installation setting
+   * (or the delivered `standard` when nothing is configured).
+   */
+  answerVerbosity?: AnswerVerbosityInfo;
   /**
    * #332 Layer 2 — Direct Line. The verbatim sub-agent answer for a turn the
    * user directed at a named specialist (`@omadia #strategist …`). Set by the
@@ -709,7 +982,23 @@ export type ChatStreamEvent =
       skillId: string | null;
       skillName: string | null;
     }
+  /**
+   * Answer text as the model streams it — a preview; `done.answer` is
+   * authoritative. Behind the answer verifier in `enforce` mode a turn's text
+   * arrives after the verdict instead, as one `text_delta`: the text of
+   * `done.answer` without the AI-disclosure block, or the withheld-answer
+   * notice.
+   */
   | { type: 'text_delta'; text: string }
+  /**
+   * #1500 — take the last `chars` characters back out of the `text_delta`
+   * preview: the model wrote them as preamble to a data-gathering tool call
+   * ("I'll check my memory directory first."). Carries no text on purpose, so
+   * a hold that re-emits non-delta events (verifier `enforce`) leaks nothing.
+   * `done.answer` stays authoritative and restores the text if no answer
+   * follows it.
+   */
+  | { type: 'text_retract'; chars: number }
   | {
       type: 'tool_use';
       id: string;
@@ -879,6 +1168,11 @@ export type ChatStreamEvent =
       /** Privacy-Proxy aggregate receipt for this turn. PII-free; clients
        *  render it as a collapsible disclosure under the answer. */
       privacyReceipt?: PrivacyReceipt;
+      /** OB-81 — what this turn left in the knowledge graph. PII-free; clients
+       *  render it as a collapsible disclosure under the answer. Absent when
+       *  no capture filter ran, at `capture_level=off`, or when the turn was
+       *  not written. */
+      captureDisclosure?: CaptureDisclosure;
       /** Privacy Shield v4 — real values in `answer` the LLM never saw;
        *  clients MAY highlight their occurrences. */
       maskedValues?: readonly string[];
@@ -886,18 +1180,34 @@ export type ChatStreamEvent =
        * #1105 — `'privacy-render'` when `answer` was materialized server-side
        * by Privacy-Shield v4 this turn, meaning it can diverge from the
        * concatenated `text_delta` preview; `answer` is then authoritative.
-       * Omitted / `'model'` for the ordinary streamed-text case. Additive and
-       * optional — a client that ignores it keeps today's behaviour. See
-       * `AnswerSource`.
+       * `'verifier-blocked'` when the answer verifier withheld the answer in
+       * `enforce` mode: `answer` is the notice, and the stream carried exactly
+       * one `text_delta` (the notice, without the AI-disclosure block that
+       * `answer` may end with) and none of the model's text. Omitted /
+       * `'model'` for the ordinary streamed-text case. Additive and optional —
+       * a client that ignores it keeps today's behaviour. See `AnswerSource`.
        */
       answerSource?: AnswerSource;
       /**
-       * #1097 — `true` when the server-rendered `answer` is control flow (a
-       * tool error, an MCP auth prompt) rather than a result. Additive and
-       * optional; only ever set alongside `answerSource: 'privacy-render'`.
-       * See `ChatTurnResult.answerIsError`.
+       * #1097 — `true` when `answer` is not a result: a server-rendered tool
+       * error or MCP auth prompt (alongside `answerSource: 'privacy-render'`),
+       * or the withheld-answer notice (alongside `answerSource:
+       * 'verifier-blocked'`, always). Additive and optional. See
+       * `ChatTurnResult.answerIsError`.
        */
       answerIsError?: boolean;
+      /**
+       * The answer verifier's verdict on this turn, set by the verifier
+       * wrapper in `enforce` mode, where `done` is released only after the
+       * verdict: the answer and its verdict arrive together. Same summary as
+       * the trailing `verifier` event (which still follows, for clients that
+       * read it there) and as `ChatTurnResult.verifier`. Absent in `shadow`
+       * mode (`done` goes out before the verdict), when the verifier is off,
+       * and on turns it releases without a verdict (choice card, MCP input
+       * form, slot picker, OAuth consent, a degraded turn's turn-incomplete
+       * notice, a bare NO_REPLY).
+       */
+      verifier?: VerifierResultSummary;
       /** #133 — persisted Turn node external id (`turn:<scope>:<time>`); see
        *  ChatTurnResult.turnId. Lets the UI resolve the turn's plan DAG. */
       turnId?: string;
@@ -911,6 +1221,11 @@ export type ChatStreamEvent =
        * recorded activity, so a tool-free turn carries no receipt and no id.
        */
       receiptId?: string;
+      /**
+       * The decision model's verdict for this turn (fast path, before any
+       * model call) — absent when no decision model decided it.
+       */
+      fastPathDecision?: FastPathDecision;
       /**
        * The model this turn actually ran on, resolved once at turn start by
        * the per-turn router (Haiku triage → Sonnet/Opus). Equals the agent's
@@ -971,11 +1286,21 @@ export type ChatStreamEvent =
        * field gives every channel the SAME harness-built array.
        */
       agentsConsulted?: AgentConsultation[];
+      /**
+       * Phase 3 — the answer-size level this turn was generated under (see
+       * {@link ChatTurnResult.answerVerbosity}); the streaming twin so the
+       * web chat can offer "Kürzer" / "Mehr Details" too.
+       */
+      answerVerbosity?: AnswerVerbosityInfo;
     }
   /**
    * Emitted after `done` by the verifier wrapper (only when enabled). The
-   * client can render a badge, hide unverified facts, or simply ignore the
-   * event. Never emitted by the base orchestrator.
+   * client can render a badge or simply ignore the event. `summary.status` may
+   * be `skipped` / `unavailable` — nothing was checked, so it must not render
+   * as a check. In `shadow` mode it arrives after an answer the client already
+   * has; in `enforce` mode `done` itself was held until the verdict and
+   * carries the same summary (`done.verifier`). Never emitted by the base
+   * orchestrator.
    */
   | { type: 'verifier'; summary: VerifierResultSummary }
   /**

@@ -22,8 +22,11 @@ export {
 } from './sycophancyGuard.js';
 
 export {
+  canonicalBoundaryPresetIds,
   expandPresets,
   knownBoundaryPresetIds,
+  legacyBoundaryPresetIds,
+  partitionPresetIds,
   BOUNDARY_SECTION_HEADING,
 } from './boundaryPresets.js';
 

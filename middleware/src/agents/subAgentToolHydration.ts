@@ -16,6 +16,7 @@ import {
   createAnthropicProvider,
   type AnthropicClient,
 } from '@omadia/llm-adapter-anthropic';
+import type { EffortLevel } from '@omadia/llm-provider';
 import type { LocalSubAgentTool } from '@omadia/plugin-api';
 import { resolveClaudeCliBin } from '../platform/cliBinary.js';
 import {
@@ -47,6 +48,11 @@ import {
 /** Minimal structural view of a BuiltOrchestrator's domain-tool surface. */
 interface DomainToolHost {
   readonly orchestrator: {
+    /** #1598 — owner of the deferred native tools registered below. */
+    readonly agentId?: string;
+    /** #1598 — the parent's plugin-assignment check; a sub-agent's `native`
+     *  grant may only name a tool the parent itself is granted. */
+    isToolGranted?(name: string, pluginId: string | undefined, orchestratorScope?: string): boolean;
     hasDomainTool(name: string): boolean;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerDomainTool(tool: any): void;
@@ -67,6 +73,8 @@ export interface HydrateDeps {
   readonly defaultModel: string;
   readonly defaultMaxTokens?: number;
   readonly defaultMaxIterations?: number;
+  /** `SUB_AGENT_EFFORT` — absent = no effort sent. */
+  readonly defaultEffort?: EffortLevel;
   readonly hostIsCliProvider?: boolean;
   readonly cliModelAlias?: (model: string) => string;
   /** Scan-verdict policy gate (issue #454) — see `mcpGrantPolicy.ts`. Applied
@@ -266,6 +274,7 @@ function discoveredDescriptor(
       ...(isPlainObject(hit['outputSchema'])
         ? { outputSchema: hit['outputSchema'] }
         : {}),
+      ...(hit['readOnlyHint'] === true ? { readOnlyHint: true } : {}),
     };
   }
   return { name: toolRef };
@@ -276,6 +285,11 @@ function discoveredDescriptor(
  *  corrupt data rather than a lenient variant. */
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+/** `mcpNativeToolName` before its 64-char cut. */
+function untruncatedMcpName(serverName: string, toolName: string): string {
+  return `mcp__${serverName}__${toolName}`.replace(/[^a-zA-Z0-9_-]/g, '_');
 }
 
 /**
@@ -315,6 +329,11 @@ export function mcpGrantToDomainTool(
     // themselves are read live.
     mcpServerId: cfg.id,
     mcpServerName: cfg.name,
+    // only when the native name kept the WHOLE tool name: a 64-char cut can
+    // drop the verb the fast path's name check relies on
+    ...(descriptor.readOnlyHint === true && spec.name === untruncatedMcpName(cfg.name, descriptor.name)
+      ? { readOnly: true }
+      : {}),
     handle: (input: unknown) => handler(input),
   };
 }
@@ -342,16 +361,34 @@ export function registerDbSubAgentTools(
       : buildSubAgentDomainTools(slice, {
           provider: createAnthropicProvider({ client: deps.client }),
           defaultModel: deps.defaultModel,
-          defaultMaxTokens: deps.defaultMaxTokens ?? 4096,
+          // Mirrors the `SUB_AGENT_MAX_TOKENS` default in `config.ts` for the
+          // callers that pass no budget at all (tests, ad-hoc hydration). Kept
+          // in step with it — see #1210 for why the number is this size.
+          defaultMaxTokens: deps.defaultMaxTokens ?? 16_000,
           defaultMaxIterations: deps.defaultMaxIterations ?? 8,
+          ...(deps.defaultEffort !== undefined ? { defaultEffort: deps.defaultEffort } : {}),
           mcpManager: deps.mcpManager,
           mcpServersById,
-          nativeTool: (ref) =>
-            adaptNativeToolForSubAgent(
+          nativeTool: (ref) => {
+            // #1598 — a Builder `native` grant names any registry tool; the
+            // sub-agent must not reach a plugin its parent is not assigned.
+            const reg = deps.nativeToolRegistry.get(ref);
+            if (
+              reg &&
+              built.orchestrator.isToolGranted &&
+              !built.orchestrator.isToolGranted(ref, reg.agentId, reg.orchestratorScope)
+            ) {
+              deps.log?.(
+                `subAgentToolHydration: native grant "${ref}" refused — its plugin is not assigned to this orchestrator`,
+              );
+              return undefined;
+            }
+            return adaptNativeToolForSubAgent(
               deps.nativeToolRegistry,
               ref,
               turnScopedMemoryResolver,
-            ),
+            );
+          },
           ...(deps.blockedMcpGrant ? { blockedMcpGrant: deps.blockedMcpGrant } : {}),
           ...(deps.hostIsCliProvider !== undefined
             ? { hostIsCliProvider: deps.hostIsCliProvider }
@@ -505,6 +542,11 @@ export function registerDbSubAgentTools(
           handler: r.handler,
           spec: r.spec,
           promptDoc: r.promptDoc,
+          // #1598 — the registry is kernel-wide; only THIS orchestrator may
+          // see or run its deferred sub-agent tools.
+          ...(built.orchestrator.agentId !== undefined
+            ? { orchestratorScope: built.orchestrator.agentId }
+            : {}),
         });
         registeredNew += 1;
       }

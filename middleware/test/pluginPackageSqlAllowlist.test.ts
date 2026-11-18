@@ -244,22 +244,19 @@ describe('PackageUploadService ingest × .sql payloads', () => {
   // Three guards stack here, and the OUTERMOST one wins: yauzl's own
   // `validateFileName` rejects the entry while reading the central directory,
   // so it never reaches the extractor's `zip.path_escape` branch (which stays
-  // as defence in depth) nor the manifest gate. yauzl surfaces that as a plain
-  // `Error` on the zipfile, which `extractZipToDir` re-throws unwrapped and
-  // `ingest` propagates — hence `rejects` rather than an `IngestFailure`. The
-  // security property is the same either way and is what is asserted.
+  // as defence in depth) nor the manifest gate. #1488 — `extractZipToDir`
+  // now wraps yauzl's plain `Error` into `zip.path_escape`, so the refusal is
+  // an `IngestFailure` (422 on the routes) rather than a throw (500).
   it('rejects a .sql entry whose zip path escapes the staging root', async () => {
     const fileBuffer = await zipSlipSqlZip();
-    await assert.rejects(
-      () =>
-        service().ingest({
-          fileBuffer,
-          originalFilename: 'evil.zip',
-          uploadedBy: 'attacker@example.com',
-        }),
-      /invalid relative path/,
-    );
+    const result = await service().ingest({
+      fileBuffer,
+      originalFilename: 'evil.zip',
+      uploadedBy: 'attacker@example.com',
+    });
 
+    assert.equal(result.ok, false);
+    assert.equal((result as { code: string }).code, 'zip.path_escape');
     assert.deepEqual(await sqlFilesUnder(root), untouched());
   });
 });

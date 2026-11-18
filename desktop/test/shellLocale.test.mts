@@ -200,7 +200,8 @@ describe('wiring — the web-ui push reaches every dialog (source contract)', ()
 
   it('carries the value preload → ipcMain → store, and rebuilds the menu on a change', () => {
     assert.match(src('preload.ts'), /setUiLocale: \(locale: string\): void => ipcRenderer\.send\(CH\.uiLocale, locale\)/);
-    assert.match(src('ipc.ts'), /ipcMain\.on\(CH\.uiLocale, \(_e, locale: unknown\) => deps\.onUiLocale\(locale\)\)/);
+    // Registered through the sender check: only the web UI's own origin may set it.
+    assert.match(src('ipc.ts'), /guardedOn\('app', CH\.uiLocale, \(_e, locale: unknown\) => deps\.onUiLocale\(locale\)\)/);
     assert.match(src('main.ts'), /onUiLocale: \(locale\) => \{\s*if \(shellLocale\.setUiLocale\(locale\)\) installApplicationMenu\(menuActions, t\);/);
   });
 

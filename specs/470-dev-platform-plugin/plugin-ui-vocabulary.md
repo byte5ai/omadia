@@ -242,6 +242,37 @@ An iframe is a separate document. Two silent regressions follow
 </script>
 ```
 
+### Live appearance updates (#1480)
+
+The query string is read once, at load. If the bundle stops there, the host
+falls back to changing the `src` on every theme, palette or language switch,
+which reloads the frame and loses its state (hash route, form input, scroll
+position). A bundle that can apply a change in place opts in over
+`postMessage`:
+
+```ts
+// After the initial `?theme=&palette=&locale=` were applied:
+window.addEventListener('message', (event) => {
+  if (event.origin !== window.location.origin) return;
+  if (event.source !== window.parent) return;
+  const data = event.data as { type?: unknown } | null;
+  if (data?.type !== 'omadia:plugin-ui:appearance') return;
+  // `theme`, `palette`, `locale` — validate them exactly like the query params.
+});
+window.parent.postMessage({ type: 'omadia:plugin-ui:ready' }, window.location.origin);
+```
+
+From the first `ready` on, the host keeps the frame's `src` and posts
+`{ type: 'omadia:plugin-ui:appearance', theme, palette, locale }` on every
+change. It also answers every `ready` with the current value, so a bundle
+that reloaded itself (and read an outdated query string) catches up. Register
+the listener before you post `ready`.
+
+`ready` is a commitment for the frame, not for one document: the host does
+not go back to reloading. If the bundle navigates its frame to another
+document, that document has to send `ready` too, or it stays in the
+appearance it loaded with.
+
 ### Appearing in the shell navigation
 
 Use the existing nav contribution API (PR #536) from `activate()`:

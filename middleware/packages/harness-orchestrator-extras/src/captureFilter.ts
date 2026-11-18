@@ -26,7 +26,7 @@
  *     downstream embedding).
  */
 
-import type { EntryType, Visibility } from '@omadia/plugin-api';
+import type { EntryType, TurnMaskedView, Visibility } from '@omadia/plugin-api';
 
 /** Capture-Level controls scorer activation + drop behaviour. */
 export type CaptureLevel = 'off' | 'minimal' | 'normal' | 'aggressive';
@@ -77,6 +77,13 @@ export interface CaptureFilterDecision {
   cleanAssistantAnswer: string;
   /** Marker reasons for observability log. */
   reasons: readonly string[];
+  /** `<private>` blocks removed from both texts. */
+  privacyBlocksStripped: number;
+  /** `<palaia-hint />` tags consumed from both texts. */
+  hintTagsProcessed: number;
+  /** `true` at `level=off`: nothing was decided, so there is nothing to
+   *  disclose (`CaptureDisclosure` is omitted). */
+  passthrough: boolean;
 }
 
 /** Inline marker the operator/agent emits to override classification.
@@ -182,6 +189,12 @@ function mergeHints(hints: readonly ParsedHint[]): ParsedHint {
   return merged;
 }
 
+/** A masked-view text cleaned like the stored texts: `<private>` blocks and
+ *  hint tags removed before it leaves for the scorer. */
+function cleanForScorer(text: string): string {
+  return parseHints(stripPrivacy(text).cleaned).cleaned;
+}
+
 export class CaptureFilter {
   private readonly deps: CaptureFilterDeps;
   private readonly log: (msg: string) => void;
@@ -196,6 +209,10 @@ export class CaptureFilter {
   async classify(input: {
     userMessage: string;
     assistantAnswer: string;
+    /** The turn's masked wire texts (`TurnIngest.maskedView`): when present,
+     *  the scorer sends these, cleaned the same way, instead of the stored
+     *  texts, which hold restored real values; an empty view skips it. */
+    maskedView?: TurnMaskedView;
   }): Promise<CaptureFilterDecision> {
     const { captureLevel, defaultVisibility, significanceThreshold } =
       this.deps;
@@ -215,6 +232,9 @@ export class CaptureFilter {
         cleanUserMessage: input.userMessage,
         cleanAssistantAnswer: input.assistantAnswer,
         reasons: Object.freeze(reasons),
+        privacyBlocksStripped: 0,
+        hintTagsProcessed: 0,
+        passthrough: true,
       };
     }
 
@@ -250,25 +270,37 @@ export class CaptureFilter {
         cleanUserMessage,
         cleanAssistantAnswer,
         reasons: Object.freeze(reasons),
+        privacyBlocksStripped: totalPrivateBlocks,
+        hintTagsProcessed: totalHintTags,
+        passthrough: false,
       };
     }
 
     // ---------- Step 4: Significance-Scorer (normal | aggressive) ----------
     let significance: number | null = null;
     let suggestedEntryType: EntryType | undefined;
+    // Under a Privacy Shield the scorer's provider gets the masked view,
+    // never the stored texts with their restored real values.
+    const scorerInput =
+      input.maskedView === undefined
+        ? `${cleanUserMessage}\n\n${cleanAssistantAnswer}`.trim()
+        : `${cleanForScorer(input.maskedView.userMessage)}\n\n${cleanForScorer(input.maskedView.assistantAnswer)}`.trim();
+    const maskedViewEmpty = input.maskedView !== undefined && scorerInput.length === 0;
     const skipScorer =
-      mergedHint.force === true || this.deps.significanceScorer === undefined;
+      mergedHint.force === true ||
+      this.deps.significanceScorer === undefined ||
+      maskedViewEmpty;
 
     if (skipScorer) {
       reasons.push(
         mergedHint.force
           ? 'force-hint:scorer-skipped'
-          : 'no-scorer:scorer-skipped',
+          : maskedViewEmpty
+            ? 'masked-view-empty:scorer-skipped'
+            : 'no-scorer:scorer-skipped',
       );
     } else {
       try {
-        const scorerInput =
-          `${cleanUserMessage}\n\n${cleanAssistantAnswer}`.trim();
         const result = await this.deps.significanceScorer!.score(scorerInput);
         if (Number.isFinite(result.score)) {
           significance = Math.max(0, Math.min(1, result.score));
@@ -312,6 +344,9 @@ export class CaptureFilter {
       cleanUserMessage,
       cleanAssistantAnswer,
       reasons: Object.freeze(reasons),
+      privacyBlocksStripped: totalPrivateBlocks,
+      hintTagsProcessed: totalHintTags,
+      passthrough: false,
     };
   }
 }

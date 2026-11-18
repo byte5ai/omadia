@@ -5,7 +5,7 @@
 # Final image ~150 MB (node 22 slim + standalone server + static assets).
 
 # --- deps -------------------------------------------------------------------
-FROM node:22.23.2-slim AS deps
+FROM node:22.23.5-slim AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 # npm's registry fetches are retried harder than the default (2 attempts, short
@@ -20,7 +20,7 @@ ENV NPM_CONFIG_FETCH_RETRIES=5 \
 RUN npm ci --no-audit --no-fund
 
 # --- builder ----------------------------------------------------------------
-FROM node:22.23.2-slim AS builder
+FROM node:22.23.5-slim AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
@@ -34,7 +34,7 @@ ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
 # --- runtime ----------------------------------------------------------------
-FROM node:22.23.2-slim AS runtime
+FROM node:22.23.5-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
@@ -44,6 +44,19 @@ ENV NEXT_TELEMETRY_DISABLED=1
 # every release since the version series left 0.2.
 ARG OMADIA_VERSION=
 ENV OMADIA_VERSION=${OMADIA_VERSION}
+# Loud but non-fatal: a local `docker compose build` legitimately has no stamp,
+# but a Fly deploy without it ships `/health` version "unknown" (happened
+# 2026-10, see docs/fly-deploy.md). Placed right after the ARG so it adds no
+# cache invalidation beyond what the ENV line already causes.
+RUN if [ -z "$OMADIA_VERSION" ]; then \
+      printf '%s\n' \
+        '==============================================================' \
+        'WARNING: OMADIA_VERSION build arg is EMPTY (web-ui image).' \
+        '/health will report version "unknown".' \
+        'Fine for a local build. For byte5 Fly use scripts/fly-deploy.sh,' \
+        'otherwise pass --build-arg OMADIA_VERSION=sha-<8>.' \
+        '==============================================================' >&2; \
+    fi
 # Next's standalone server listens on 0.0.0.0 when HOSTNAME is unset or set to 0.0.0.0.
 ENV HOSTNAME=0.0.0.0
 ENV PORT=3000
@@ -51,9 +64,18 @@ ENV PORT=3000
 # The standalone folder contains a trimmed package.json + server.js; static
 # assets are emitted separately under .next/static and public/ — both have to
 # be placed at fixed paths next to server.js for Next to find them.
-COPY --from=builder /app/public ./public
-COPY --from=builder /app/.next/standalone ./
-COPY --from=builder /app/.next/static ./.next/static
+# Owned by `node` so the server can still write under .next/ (cache, ISR)
+# after dropping root below.
+COPY --from=builder --chown=node:node /app/public ./public
+COPY --from=builder --chown=node:node /app/.next/standalone ./
+COPY --from=builder --chown=node:node /app/.next/static ./.next/static
+
+# Run as the base image's unprivileged `node` user (uid 1000). The middleware
+# image drops privileges in its entrypoint via gosu because it must chown a
+# mounted volume first; this image mounts nothing and listens on 3000, so a
+# plain USER is enough. If a volume is ever mounted here, handle its
+# ownership the way the middleware image does.
+USER node
 
 EXPOSE 3000
 CMD ["node", "server.js"]

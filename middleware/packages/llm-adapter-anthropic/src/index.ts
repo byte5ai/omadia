@@ -11,8 +11,14 @@ export { anthropicAdapter, registerAnthropicAdapter } from './adapter.js';
 export {
   createAnthropicProvider,
   classifyAnthropicError,
+  requiresEffortBeta,
+  acceptsEffort,
   supportsForcedToolChoice,
+  supportsStrictTools,
   supportsTemperature,
+  supportsThinkingReplay,
+  EFFORT_BETA,
+  THINKING_BINDING_BETA,
   type AnthropicProviderOptions,
 } from './anthropicProvider.js';
 

@@ -29,36 +29,60 @@ setup:
   fields:
     - key: "api_key"
       type: "secret"
-      label: "API-Key"
-      help: "Bearer-Token für den Embedding-Endpoint. Liegt im Vault, nie in installed.json. Ohne Key aktiviert sich das Plugin, published aber keinen Client (Konsumenten degraden auf no-embedding-Pfade). Der secret-Typ sorgt zusätzlich dafür, dass der Built-in-Katalog dieses Plugin NICHT automatisch installiert — der Operator entscheidet bewusst, welcher Embedding-Provider aktiv ist."
+      label:
+        en: "API key"
+        de: "API-Key"
+      help:
+        en: "Bearer token for the embedding endpoint. Stored in the vault, never in installed.json. Without a key the plugin activates but publishes no client (consumers degrade to no-embedding paths). The secret type also ensures the built-in catalog does NOT install this plugin automatically — the operator deliberately decides which embedding provider is active."
+        de: "Bearer-Token für den Embedding-Endpoint. Liegt im Vault, nie in installed.json. Ohne Key aktiviert sich das Plugin, published aber keinen Client (Konsumenten degraden auf no-embedding-Pfade). Der secret-Typ sorgt zusätzlich dafür, dass der Built-in-Katalog dieses Plugin NICHT automatisch installiert — der Operator entscheidet bewusst, welcher Embedding-Provider aktiv ist."
       required: false
     - key: "base_url"
       type: "string"
-      label: "Base-URL"
-      help: "Basis-URL des Endpoints, mit oder ohne '/v1' (kein trailing slash nötig). Default: https://api.openai.com"
+      label:
+        en: "Base URL"
+        de: "Base-URL"
+      help:
+        en: "Base URL of the endpoint, with or without '/v1' (no trailing slash needed). Default: https://api.openai.com"
+        de: "Basis-URL des Endpoints, mit oder ohne '/v1' (kein trailing slash nötig). Default: https://api.openai.com"
       required: false
       default: "https://api.openai.com"
     - key: "model"
       type: "string"
-      label: "Embedding-Modell"
-      help: "Modellname, den der Endpoint kennt. Default: text-embedding-3-small. ACHTUNG: Der Knowledge-Graph legt seine Vektor-Spalten (graph_nodes.embedding, processes.embedding) als vector(768) an — passend zu nomic-embed-text. Modelle mit anderer Vektorlänge (text-embedding-3-small = 1536, -3-large = 3072, ada-002 = 1536) werden vom Dimensions-Gate blockiert, bis ein Operator die Spalten migriert (Muster: 0005_turn_embeddings_768.sql — Index droppen, Spalte droppen, in neuer Größe neu anlegen, Index neu bauen). Ohne diese Migration sind hier nur 768-dimensionale Modelle nutzbar."
+      label:
+        en: "Embedding model"
+        de: "Embedding-Modell"
+      help:
+        en: "Model name known to the endpoint. Default: text-embedding-3-small. CAUTION: the Knowledge Graph creates its vector columns (graph_nodes.embedding, processes.embedding) as vector(768) — matching nomic-embed-text. Models with a different vector length (text-embedding-3-small = 1536, -3-large = 3072, ada-002 = 1536) are blocked by the dimensions gate until an operator migrates the columns (pattern: 0005_turn_embeddings_768.sql — drop the index, drop the column, recreate it in the new size, rebuild the index). Without that migration only 768-dimensional models are usable here."
+        de: "Modellname, den der Endpoint kennt. Default: text-embedding-3-small. ACHTUNG: Der Knowledge-Graph legt seine Vektor-Spalten (graph_nodes.embedding, processes.embedding) als vector(768) an — passend zu nomic-embed-text. Modelle mit anderer Vektorlänge (text-embedding-3-small = 1536, -3-large = 3072, ada-002 = 1536) werden vom Dimensions-Gate blockiert, bis ein Operator die Spalten migriert (Muster: 0005_turn_embeddings_768.sql — Index droppen, Spalte droppen, in neuer Größe neu anlegen, Index neu bauen). Ohne diese Migration sind hier nur 768-dimensionale Modelle nutzbar."
       required: false
       default: "text-embedding-3-small"
     - key: "dimensions"
       type: "integer"
-      label: "Vektor-Dimensionen des Modells"
-      help: "Wird als Provider-Metadatum veröffentlicht und gegen jede Antwort geprüft. Bewusst OHNE Default: für bekannte Modelle (text-embedding-3-small = 1536, -3-large = 3072, ada-002 = 1536) wird der Wert aus dem Modell abgeleitet, bei unbekanntem Modell ist das Feld zwingend erforderlich — sonst published das Plugin keinen Client. Wenn der Wert dem bekannten Modell widerspricht, published das Plugin ebenfalls nichts: eine ungeprüfte Vektorlänge ist gefährlicher als gar kein Embedding-Provider."
+      label:
+        en: "Model vector dimensions"
+        de: "Vektor-Dimensionen des Modells"
+      help:
+        en: "Published as provider metadata and checked against every response. Deliberately WITHOUT a default: for known models (text-embedding-3-small = 1536, -3-large = 3072, ada-002 = 1536) the value is derived from the model; for an unknown model the field is mandatory — otherwise the plugin publishes no client. If the value contradicts the known model, the plugin publishes nothing either: an unchecked vector length is more dangerous than no embedding provider at all."
+        de: "Wird als Provider-Metadatum veröffentlicht und gegen jede Antwort geprüft. Bewusst OHNE Default: für bekannte Modelle (text-embedding-3-small = 1536, -3-large = 3072, ada-002 = 1536) wird der Wert aus dem Modell abgeleitet, bei unbekanntem Modell ist das Feld zwingend erforderlich — sonst published das Plugin keinen Client. Wenn der Wert dem bekannten Modell widerspricht, published das Plugin ebenfalls nichts: eine ungeprüfte Vektorlänge ist gefährlicher als gar kein Embedding-Provider."
       required: false
     - key: "timeout_ms"
       type: "integer"
-      label: "Embed-Timeout (ms)"
-      help: "Hard-cancel pro embed()-Call. Default 30000."
+      label:
+        en: "Embed timeout (ms)"
+        de: "Embed-Timeout (ms)"
+      help:
+        en: "Hard cancel per embed() call. Default 30000."
+        de: "Hard-cancel pro embed()-Call. Default 30000."
       required: false
       default: 30000
     - key: "max_concurrent"
       type: "integer"
-      label: "Max. parallele Embeddings"
-      help: "FIFO-Limit gegen Rate-Limits und Kostenspitzen (boot replay + backfill + live ingest). Default 4. 0 oder negativ → kein Limit."
+      label:
+        en: "Max. concurrent embeddings"
+        de: "Max. parallele Embeddings"
+      help:
+        en: "FIFO limit against rate limits and cost spikes (boot replay + backfill + live ingest). Default 4. 0 or negative → no limit."
+        de: "FIFO-Limit gegen Rate-Limits und Kostenspitzen (boot replay + backfill + live ingest). Default 4. 0 oder negativ → kein Limit."
       required: false
       default: 4
 

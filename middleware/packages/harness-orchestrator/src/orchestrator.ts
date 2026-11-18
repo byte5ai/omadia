@@ -6,6 +6,13 @@ import {
 } from './mcp/mcpClient.js';
 import { resolveDisclosureLevelForChannel } from './aiDisclosurePosture.js';
 import {
+  buildAnswerVerbosityBlock,
+  buildAnswerVerbosityTurnBlock,
+  DEFAULT_ANSWER_VERBOSITY,
+  parseAnswerVerbosity,
+  type AnswerVerbosity,
+} from './answerVerbosity.js';
+import {
   deriveAgentsConsulted,
   toSemanticAnswer,
   applyAiDisclosure,
@@ -14,6 +21,7 @@ import {
   DEFAULT_AI_DISCLOSURE_POLICY,
   InMemoryDisclosureSeenStore,
   type ChatStreamEvent,
+  type AnswerVerbosityInfo,
   type ChatTurnInput,
   type ChatTurnResult,
   type DelegatedAnswer,
@@ -25,6 +33,7 @@ import {
   type SemanticAnswer,
   type AiDisclosure,
   type AiDisclosureLevel,
+  type ChatAgentToolDefinition,
   type AiDisclosurePolicy,
   type DisclosureSeenStore,
   bundleProvenance,
@@ -68,7 +77,8 @@ import {
   knowledgeGraphToolSpec,
 } from './knowledgeGraphTool.js';
 import type { MemoryToolHandler } from '@omadia/memory';
-import type { MemoryBinder } from './memoryBinder.js';
+import type { BoundTurnMemory, MemoryBinder } from './memoryBinder.js';
+import { memoryIndexHint, prefetchMemoryIndex } from './memoryIndexPrefetch.js';
 import type { ChatParticipantsTool } from './tools/chatParticipantsTool.js';
 import {
   CHAT_PARTICIPANTS_TOOL_NAME,
@@ -91,6 +101,7 @@ import {
   mcpInputReplyLabel,
   parseMcpInputReply,
 } from './mcp/pendingMcpInput.js';
+import { McpAuthPromptMint, runWithMcpAuthPromptMint } from './mcp/mcpAuthPromptMint.js';
 import {
   ASK_USER_CHOICE_TOOL_NAME,
   askUserChoiceToolSpec,
@@ -147,30 +158,53 @@ import type {
   PalaiaExcerptExtractor,
   PrivacyGuardService,
   PrivacyReceipt,
+  PrivacyRenderedAnswer,
+  PrivacyV4ToolResult,
   ProcessMemoryService,
+  ProfileQualityConfig,
   ResponseGuardService,
   SessionBriefingService,
+  TurnMaskedView,
   TurnReceiptStore,
 } from '@omadia/plugin-api';
+import { responseGuardProfileFor } from './agentQuality.js';
 import {
   agentScopePrefix,
-  isControlFlowToolResult,
-  PRIVACY_BYPASS_SCOPES_CONFIG_KEY,
-  PRIVACY_MODE_CONFIG_KEY,
+  isUnknownOutcomeToolErrorNotice,
   resolveEffectivePrivacyMode,
 } from '@omadia/plugin-api';
+import { repeatRefusedNotice } from './subAgentUnknownOutcome.js';
+import {
+  REENTRY_ABANDONED,
+  SubEventRecorder,
+  ToolReplayAbortError,
+  ToolReplayLedger,
+  describeAbandonment,
+  replayMissNotice,
+  replaySubEvents,
+  runHandlerAtMostOnce,
+  type ToolReplayRecord,
+} from './toolReplayLedger.js';
 import {
   createNudgeTurnCounter,
   runNudgePipeline,
   type NudgeTurnCounter,
 } from './nudgePipeline.js';
 import { LoopGuard } from './loopGuard.js';
+import { createPrivacyBypassResolver } from './privacyBypassResolver.js';
+import { isPrivacyForceGuarded } from './privacyPolicy.js';
 import {
   createPrivacyTurnHandle,
   ensureWellFormedParams,
   type PrivacyTurnHandle,
 } from './privacyHandle.js';
-import { RunTraceCollector, type InvocationHandle } from './runTraceCollector.js';
+import {
+  createPrivacyEgressContinuation,
+  PrivacyEgressHandover,
+  type PrivacyEgressContinuation,
+  type TurnWireView,
+} from './privacyEgress.js';
+import { RunTraceCollector, shareEntityRefs, type InvocationHandle } from './runTraceCollector.js';
 import {
   resolveDirectLineTarget,
   directLineLabel,
@@ -187,12 +221,31 @@ import {
   type DirectLineStickyStore,
   type StickyScopeClassification,
 } from './directLineSticky.js';
-import type { NativeToolRegistry } from './nativeToolRegistry.js';
+import { isOfferedThisTurn, type NativeToolRegistry } from './nativeToolRegistry.js';
 // #1102 — type-only, so no runtime cycle: the CLI agent owns the card-drain
 // shape; `drainCliTurnCards` returns it verbatim onto the `done` event.
 import type { CliTurnCards } from './cliChatAgent.js';
-import { isInternExemptTool } from './privacyInternPolicy.js';
+import { CLI_MEMORY_RULES, type CliTurnMemory } from './cliMemoryTool.js';
+import type {
+  CliCompletedTurn,
+  CliRecalledContext,
+  CliTurnRecord,
+} from './cliTurnRecord.js';
+import { internFailedNotice, isInternExemptTool } from './privacyInternPolicy.js';
+import {
+  remaskEchoedValues,
+  restorePromptSurrogatesInToolInput,
+} from './promptSurrogateToolInput.js';
+import {
+  errorClassForLog,
+  guardControlFlowResult,
+  isGuardedControlFlowResult,
+  thrownToolErrorForModel,
+  toolErrorRef,
+  withholdThrownToolError,
+} from './toolErrorRedaction.js';
 import { graphScopeFor, type SessionLogger } from './sessionLogger.js';
+import { TurnRecordWriter, type TurnFacts, type TurnRow } from './turnRecordWriter.js';
 import {
   type ModelRoutingConfig,
   type RoutingBucket,
@@ -248,6 +301,7 @@ import {
   today,
   turnContext,
   type TurnContextValue,
+  type GraphReadScope,
 } from './turnContext.js';
 import {
   crossScopeRecallRefused,
@@ -259,9 +313,48 @@ import {
   knowledgeGraphPrincipalResolver,
 } from './audienceFloorProvider.js';
 import { guardToolCommands } from './commandPolicyGuard.js';
-import { resolveTurnOwnerIdentity } from './resolveTurnOwnerIdentity.js';
+import {
+  resolveRunTraceOwner,
+  resolveTurnOwnerIdentity,
+  runTraceOwnerId,
+} from './resolveTurnOwnerIdentity.js';
+import { resolveTurnAudience, type TurnAudience } from './turnAudience.js';
 import { isMcpServerPrivacyBypassed } from './mcpPrivacyBypass.js';
 import { isMcpServerKgIngest } from './mcpKgIngest.js';
+import { splitV4ToolResult } from './v4RenderSideChannel.js';
+import { afterToolCallPayload, SubToolOutcomeTally } from './toolCallOutcome.js';
+import { AnswerTextAccumulator } from './answerTextAccumulator.js';
+
+/**
+ * The `userId` a `RunTraceCollector` is built with — the canonical cluster id
+ * on a channel turn, see {@link runTraceOwnerId}. Read from the turn context,
+ * where both entry points store the identity they resolved for this turn.
+ */
+function runTraceUserSpread(
+  input: Pick<ChatTurnInput, 'userId' | 'channelIdentity'>,
+): { userId?: string } {
+  const ctx = turnContext.current();
+  const userId = ctx?.runTraceOwner
+    ? ctx.runTraceOwner.userId
+    : runTraceOwnerId(input, ctx?.resolvedOmadiaUserId);
+  return userId ? { userId } : {};
+}
+
+/** A graph-tool view under which nothing is visible (members, unknown room). */
+const NOTHING_VISIBLE = { audienceOwners: null, agentScopePrefix: '' } as const;
+
+/**
+ * Member-scoped memory — the `owners` a turn's log entry carries: everyone
+ * present when the agent runs `members` context memory, `[]` when that room
+ * was not known (the turn then belongs to nobody and is never recalled in
+ * that mode), nothing in every other mode.
+ */
+function turnOwnersField(turnMemory: TurnMemoryBinding | undefined): {
+  owners?: readonly string[];
+} {
+  const isolation = turnMemory?.isolation;
+  return isolation?.kind === 'members' ? { owners: isolation.audience ?? [] } : {};
+}
 
 // S+10-2 back-compat re-exports: kernel-side callers that still
 // `import { … } from './orchestrator.js'` (verifierService.ts, routes/chat.ts,
@@ -323,12 +416,11 @@ export interface KernelNativeInstances {
  * The kernel natives that get a real spec + handler on the loopback/CLI path.
  *
  * `memory` and `get_chat_participants` are deliberately absent:
- *  - `memory` resolves a per-turn `MemoryBinder` handler in the in-process loop
- *    (the axis that keeps team A's notes out of team B, see `dispatchToolInner`);
- *    that binding is not resolved on the loopback path, so advertising the
- *    build-time handler would risk crossing the tenant boundary. Wiring it
- *    safely is a follow-up; until then Stage 1's honesty sentence tells the CLI
- *    model it has no memory here (#1102).
+ *  - `memory` resolves a per-turn `MemoryBinder` handler (the axis that keeps
+ *    team A's notes out of team B, see `dispatchToolInner`), and the registry
+ *    is process-wide, so a registered handler would serve every agent and
+ *    turn alike. The subscription CLI gets `memory` through a per-turn
+ *    dispatch instead (`cliMemoryTool.ts`, `bindCliTurnMemory`, #1102).
  *  - `get_chat_participants` stays channel-bound, as the issue specifies.
  */
 const KERNEL_NATIVE_FULL_FORM: ReadonlyArray<{
@@ -372,6 +464,31 @@ const KERNEL_NATIVE_SPECS: ReadonlySet<unknown> = new Set(
 );
 
 /**
+ * #1585 — true when `reg` is a full-form registration made by
+ * {@link registerKernelNativeTools}, not one a plugin contributed under the
+ * same name.
+ *
+ * The registry is one kernel service shared by every Orchestrator build, and
+ * `registerKernelNativeTools` keeps the FIRST build's handler for the life of
+ * the process. That handler's instance is not the one a later build drains
+ * (`drainPendingChoice`, `drainFollowUps`, …), so a kernel-owned registration
+ * must never be dispatched through: each build dispatches to its own instance.
+ */
+export function isKernelNativeRegistration(
+  reg: { readonly spec?: unknown } | undefined,
+): boolean {
+  return reg?.spec !== undefined && KERNEL_NATIVE_SPECS.has(reg.spec);
+}
+
+/** #1585 — the instance in `instances` that serves kernel native `name`. */
+function pickKernelNative(
+  instances: KernelNativeInstances,
+  name: string,
+): KernelNativeHandleable | undefined {
+  return KERNEL_NATIVE_FULL_FORM.find((f) => f.name === name)?.pick(instances);
+}
+
+/**
  * Register the kernel-native tools into `registry`, giving each of the wired
  * five (see {@link KERNEL_NATIVE_FULL_FORM}) a spec + handler so the loopback
  * MCP server actually advertises AND dispatches it on the subscription-CLI
@@ -380,11 +497,22 @@ const KERNEL_NATIVE_SPECS: ReadonlySet<unknown> = new Set(
  *
  * A name already present in `registry` (a plugin got there first) is left
  * untouched, matching the previous loop's `has()` guard.
+ *
+ * #1585 — the registry outlives every build, so the registered handler is
+ * late-bound: it serves the instances of the MOST RECENT build on `registry`,
+ * not the first build's, which no turn drains any more. The orchestrator's own
+ * loop and the subscription-CLI dispatcher do not go through it at all (they
+ * use the build's own instances, see {@link isKernelNativeRegistration}); this
+ * covers the remaining registry readers (sub-agent tool refs, plugin
+ * `tools.invoke`).
  */
+const latestKernelInstances = new WeakMap<NativeToolRegistry, KernelNativeInstances>();
+
 export function registerKernelNativeTools(
   registry: NativeToolRegistry,
   instances: KernelNativeInstances,
 ): void {
+  latestKernelInstances.set(registry, instances);
   const fullByName = new Map(KERNEL_NATIVE_FULL_FORM.map((f) => [f.name, f]));
   for (const name of KERNEL_NATIVE_TOOL_NAMES) {
     if (registry.has(name)) {
@@ -395,7 +523,12 @@ export function registerKernelNativeTools(
     if (full && instance) {
       registry.register(name, {
         spec: full.spec,
-        handler: (input: unknown) => instance.handle(input),
+        handler: (input: unknown) => {
+          const current = full.pick(latestKernelInstances.get(registry) ?? instances);
+          return current
+            ? current.handle(input)
+            : Promise.resolve(`Error: tool \`${name}\` is unavailable for this agent.`);
+        },
       });
     } else {
       registry.register(name);
@@ -740,6 +873,13 @@ export interface OrchestratorOptions {
    */
   responseGuard?: () => ResponseGuardService | undefined;
   /**
+   * #1569 — this Agent's own response-quality settings
+   * (`agent_identities.quality`). Handed to the `responseGuard` provider so it
+   * resolves per agent; see `responseGuardProfileFor` for why a field the agent
+   * set itself yields no second block from the guard.
+   */
+  agentQuality?: ProfileQualityConfig;
+  /**
    * Optional `privacy.redact@1` provider lookup — Privacy-Proxy Slice 2.1.
    * Late-bound for the same reason as `responseGuard`: the orchestrator
    * plugin generally activates BEFORE most tool plugins, so an at-construct
@@ -759,7 +899,8 @@ export interface OrchestratorOptions {
    * shape as `privacyGuard` (the kernel provides the service once its pg
    * pool resolves; a per-turn lookup needs no restart). When present, every
    * receipt `finalizeTurn` emits is ALSO persisted before the `done` event
-   * is considered flushed; persistence failure is logged + counted by the
+   * is considered flushed — the receipt of a turn that threw or whose stream
+   * ended before `done` too; persistence failure is logged + counted by the
    * store, never fails the turn. Absent ⇒ receipts stay ephemeral
    * (pre-#757 behaviour: UI-only).
    */
@@ -827,7 +968,9 @@ export interface OrchestratorOptions {
    * {kind, summary, rationale?, excerpts[]} suggestion, then ships it
    * to the chat UI via the `done` event so the save-as-memory modal
    * can pre-fill. Absent → no enrichment, the modal falls back to its
-   * 240-char prefix and (Slice 4b) auto-promotion is a no-op.
+   * 240-char prefix and (Slice 4b) auto-promotion stores an answer-prefix
+   * summary. Set but returning `undefined` for a turn → that turn is not
+   * auto-promoted (#1527, the `palaiaExcerpt@1` contract).
    */
   excerptExtractor?: PalaiaExcerptExtractor;
   /**
@@ -886,6 +1029,13 @@ export interface OrchestratorOptions {
    * empty → behaviour is identical to pre-Wave-8 (no classifier call).
    */
   personaSkills?: readonly OrchestratorPersonaSkill[];
+  /**
+   * Operator's target answer size — the `answer_verbosity` setup field. A
+   * prompt contract (what the answer contains), not a token budget. Absent →
+   * `standard`, which emits no block and leaves the system prompt
+   * byte-identical. See `answerVerbosity.ts`.
+   */
+  answerVerbosity?: AnswerVerbosity;
   /**
    * AI-Act Art. 50 (#644) — the operator's resolved disclosure config. Absent →
    * the shipping default (standard, active) on every channel. See
@@ -962,6 +1112,19 @@ type Message = any;
 interface IngestedImageBlock {
   mediaType: string;
   bytesBase64: string;
+}
+
+/** What {@link Orchestrator.ingestAttachments} hands a turn; see there. */
+interface AttachmentIngestion {
+  text: string;
+  images: IngestedImageBlock[];
+  skippedVisionImageCount: number;
+  rejectedImageReasons: string[];
+}
+
+/** No attachment content: the shape of a turn without uploads. */
+function noAttachments(): AttachmentIngestion {
+  return { text: '', images: [], skippedVisionImageCount: 0, rejectedImageReasons: [] };
 }
 
 /**
@@ -1133,21 +1296,126 @@ function buildUserContent(
 // #361 — free-text user-prompt PII masking (wire side).
 // ---------------------------------------------------------------------------
 
-/** Thrown when prompt masking was requested but could not be guaranteed —
- *  failure-closed: the turn is blocked instead of sending PII to the model. */
+/** Thrown on the guard's `blocked` outcome: prompt masking is on and its C0
+ *  pass (pattern baseline plus deny-list) failed, or a detected span survived
+ *  substitution. Failure-closed: the request is not sent to the model. A
+ *  failed C1 detector does not throw — the guard falls back to C0 for the
+ *  rest of the turn (`degraded`), so names only C1 detects go out unmasked. */
 export class PromptMaskBlockedError extends Error {
+  /** #1547 — set when the block came after `onBeforeTurn` had fired: a hook
+   *  (the plan-runner's gate) may already have sent the user's message to a
+   *  model, so the refusal must not say it was not sent. */
+  afterTurnHooks = false;
   constructor(reason: string) {
     super(`[privacy] user-prompt masking failed (${reason}) — turn blocked`);
     this.name = 'PromptMaskBlockedError';
   }
 }
 
-/** User-facing answer for a prompt-mask-blocked turn. Deliberately generic —
- *  it must not echo any detected value. */
-const PROMPT_MASK_BLOCKED_ANSWER =
+const PROMPT_MASK_BLOCKED_ANSWER_DE =
+  'Diese Nachricht konnte nicht verarbeitet werden: Der Datenschutz für ' +
+  'deinen Text war nicht sicherzustellen (die Maskierung ist fehlgeschlagen), ' +
+  'deshalb wurde sie nicht an das Sprachmodell gesendet. Versuche es bitte ' +
+  'erneut oder wende dich an deinen Betreiber.';
+const PROMPT_MASK_BLOCKED_ANSWER_EN =
   'This message could not be processed: privacy protection for your text ' +
   'could not be guaranteed (prompt masking failed), so it was not sent to ' +
   'the language model. Please try again or contact your operator.';
+
+const PROMPT_MASK_BLOCKED_AFTER_HOOKS_ANSWER_DE =
+  'Diese Nachricht konnte nicht verarbeitet werden: Der Datenschutz für ' +
+  'einen Teil des Kontexts (etwa einen Anhang oder eine frühere Unterhaltung) ' +
+  'war nicht sicherzustellen, deshalb wurde der Turn vor dem Antwortmodell ' +
+  'gestoppt. Ein vorbereitender Schritt, etwa die Planerkennung, kann deine ' +
+  'Nachricht bereits so erhalten haben, wie du sie geschrieben hast. Versuche ' +
+  'es bitte erneut oder wende dich an deinen Betreiber.';
+const PROMPT_MASK_BLOCKED_AFTER_HOOKS_ANSWER_EN =
+  'This message could not be processed: privacy protection for part of the ' +
+  "turn's context (such as an attachment or an earlier conversation) could " +
+  'not be guaranteed, so the turn was stopped before the answer model ran. A ' +
+  'preparatory step, such as plan detection, may already have received your ' +
+  'message as you wrote it. Please try again or contact your operator.';
+
+/** #1547 — the refusal of a turn blocked after `onBeforeTurn` fired (see
+ *  {@link PromptMaskBlockedError.afterTurnHooks}). Bilingual, like
+ *  {@link PROMPT_MASK_BLOCKED_ANSWER}. */
+export const PROMPT_MASK_BLOCKED_AFTER_HOOKS_ANSWER = `${PROMPT_MASK_BLOCKED_AFTER_HOOKS_ANSWER_DE} / ${PROMPT_MASK_BLOCKED_AFTER_HOOKS_ANSWER_EN}`;
+
+/** User-facing answer for a prompt-mask-blocked turn. Deliberately generic —
+ *  it must not echo any detected value. Both languages, like
+ *  {@link MODEL_REFUSAL_NOTICE}: the turn persists this form, delivery swaps
+ *  in the turn's language ({@link localizeRefusalNotice}, #1529). Exported for
+ *  the verifier wrapper, which must not treat this refusal as a corrected
+ *  answer ({@link isPromptMaskBlockedNotice}). */
+export const PROMPT_MASK_BLOCKED_ANSWER = `${PROMPT_MASK_BLOCKED_ANSWER_DE} / ${PROMPT_MASK_BLOCKED_ANSWER_EN}`;
+
+/**
+ * #1535 — the org policy `OMADIA_PRIVACY_FORCE_GUARDED` requires the Privacy
+ * Shield, but no `privacy.redact@1` provider is running. Failure-closed like a
+ * blocked mask: the turn is refused before the screener, a Direct Line
+ * dispatch or the model see anything. A subclass, so every seam that already
+ * turns a {@link PromptMaskBlockedError} into a refusal handles this one too.
+ */
+export class PrivacyShieldRequiredError extends PromptMaskBlockedError {
+  constructor() {
+    super('no privacy.redact@1 provider is running and OMADIA_PRIVACY_FORCE_GUARDED=true');
+    this.name = 'PrivacyShieldRequiredError';
+  }
+}
+
+const PRIVACY_SHIELD_REQUIRED_ANSWER_DE =
+  'Diese Nachricht wurde nicht verarbeitet: Die Organisation verlangt den ' +
+  'Datenschutz-Schild, er läuft aber gerade nicht. Deshalb wurde nichts an ' +
+  'das Sprachmodell gesendet. Bitte wende dich an deinen Betreiber.';
+const PRIVACY_SHIELD_REQUIRED_ANSWER_EN =
+  'This message was not processed: your organisation requires the Privacy ' +
+  'Shield, but it is not running right now, so nothing was sent to the ' +
+  'language model. Please contact your operator.';
+
+/** User-facing answer for a turn refused by {@link PrivacyShieldRequiredError}.
+ *  Both languages, like {@link PROMPT_MASK_BLOCKED_ANSWER}. */
+export const PRIVACY_SHIELD_REQUIRED_ANSWER = `${PRIVACY_SHIELD_REQUIRED_ANSWER_DE} / ${PRIVACY_SHIELD_REQUIRED_ANSWER_EN}`;
+
+/** The refusal a blocked turn answers with. */
+function promptMaskBlockedAnswer(err: PromptMaskBlockedError): string {
+  if (err instanceof PrivacyShieldRequiredError) return PRIVACY_SHIELD_REQUIRED_ANSWER;
+  return err.afterTurnHooks ? PROMPT_MASK_BLOCKED_AFTER_HOOKS_ANSWER : PROMPT_MASK_BLOCKED_ANSWER;
+}
+
+/** True when `text` is the prompt-mask refusal or the shield-required refusal
+ *  (#1535), in either delivered language or in the persisted bilingual form. */
+export function isPromptMaskBlockedNotice(text: string): boolean {
+  return (
+    text === PROMPT_MASK_BLOCKED_ANSWER ||
+    text === PROMPT_MASK_BLOCKED_ANSWER_DE ||
+    text === PROMPT_MASK_BLOCKED_ANSWER_EN ||
+    text === PROMPT_MASK_BLOCKED_AFTER_HOOKS_ANSWER ||
+    text === PROMPT_MASK_BLOCKED_AFTER_HOOKS_ANSWER_DE ||
+    text === PROMPT_MASK_BLOCKED_AFTER_HOOKS_ANSWER_EN ||
+    text === PRIVACY_SHIELD_REQUIRED_ANSWER ||
+    text === PRIVACY_SHIELD_REQUIRED_ANSWER_DE ||
+    text === PRIVACY_SHIELD_REQUIRED_ANSWER_EN
+  );
+}
+
+const PSEUDONYM_UNRESOLVED_NOTICE_DE =
+  'Hinweis: Das Sprachmodell hat Platzhalter, die für deine Angaben standen, ' +
+  'umgeschrieben; nicht alle ließen sich auf deine Originalwerte zurückführen. ' +
+  'Namen, E-Mail-Adressen oder Nummern in dieser Antwort können deshalb ' +
+  'Platzhalter statt echter Werte sein.';
+const PSEUDONYM_UNRESOLVED_NOTICE_EN =
+  'Note: the language model rewrote placeholders that stood for your ' +
+  'details, and not all of them could be mapped back to your original ' +
+  'values. Names, e-mail addresses or numbers in this answer may therefore ' +
+  'be placeholders rather than real values.';
+
+/**
+ * #1528 — appended to an answer that still carries a prompt surrogate after
+ * restore (the model rewrote one beyond what restore recognizes). Without it
+ * the user read the placeholder as their own value. Bilingual as persisted,
+ * localized at delivery like the refusals.
+ */
+export const PSEUDONYM_UNRESOLVED_NOTICE = `${PSEUDONYM_UNRESOLVED_NOTICE_DE} / ${PSEUDONYM_UNRESOLVED_NOTICE_EN}`;
 
 /**
  * #1094 — the neutral, language-free stand-in for a degraded turn's answer.
@@ -1188,13 +1456,34 @@ function turnIncompleteMarker(
 async function maskPromptForWire(
   privacy: PrivacyTurnHandle | undefined,
   text: string,
+  origin?: 'context',
 ): Promise<string> {
   if (privacy === undefined || text.length === 0) return text;
-  const result = await privacy.maskUserPrompt(text);
+  // #1541 — a replayed user message is the user's words from an earlier
+  // turn: the receipt books it as earlier context, not as this message.
+  const result = await privacy.maskUserPrompt(text, origin ? { origin } : undefined);
   if (result.outcome === 'blocked') {
     throw new PromptMaskBlockedError(result.reason);
   }
   return result.outcome === 'masked' ? result.maskedText : text;
+}
+
+/**
+ * #1547 — the streaming path's pre-hook mask of the user message: the
+ * {@link PromptMaskBlockedError} a blocked outcome raises, or `undefined`
+ * when the turn may proceed. Every other error propagates.
+ */
+async function preMaskUserMessage(
+  privacy: PrivacyTurnHandle,
+  userMessage: string,
+): Promise<PromptMaskBlockedError | undefined> {
+  try {
+    await maskPromptForWire(privacy, userMessage);
+    return undefined;
+  } catch (err) {
+    if (err instanceof PromptMaskBlockedError) return err;
+    throw err;
+  }
 }
 
 /** `maskPromptForWire` for the #268 ingested attachment tail — skips the
@@ -1207,19 +1496,61 @@ async function maskIngestedForWire(
   return maskPromptForWire(privacy, ingestedText);
 }
 
-/** `maskPromptForWire` for the recalled prior-context block. The recalled
- *  TEXT is injected into the next prompt, so it is LLM-bound wire content:
- *  a raw span recalled from turn N would undo the masking of turn N. Runs
- *  through the SAME turn map, so answer-side restore covers these spans
- *  too. Server-side stores stay raw — only the injected copy is masked. */
+/** What `startPriorContextRecall` resolves to: the retriever's result plus
+ *  the recalled text masked for the wire (`maskRecalledForWire`). */
+interface PriorContextRecall {
+  readonly text: string | undefined;
+  readonly recalled: RecalledContext | undefined;
+  readonly recallUsed?: boolean;
+  readonly segments?: readonly string[];
+  readonly priorContext: string | undefined;
+}
+
+/** The recalled prior-context block (knowledge-graph recall and the session
+ *  tail). The recalled TEXT is injected into the next prompt, so it is
+ *  LLM-bound wire content, and it carries answers that were persisted with
+ *  their real values restored: a span recalled from turn N would undo the
+ *  masking of turn N. So it is masked like a replayed answer
+ *  ({@link maskReplayedAnswerForWire}), whatever `mask_user_prompt` says,
+ *  through the SAME turn map, so answer-side restore covers these spans too.
+ *  Server-side stores stay raw — only the injected copy is masked.
+ *
+ *  `segments` — the block's partition into whole stored turns (from
+ *  `retrievePriorContext`), so the C1 detector scans each stored turn once
+ *  and serves it from its process-wide cache on every later turn. */
 async function maskRecalledForWire(
   privacy: PrivacyTurnHandle | undefined,
   recalledText: string | undefined,
+  segments?: readonly string[],
 ): Promise<string | undefined> {
   if (recalledText === undefined || recalledText.trim().length === 0) {
     return recalledText;
   }
-  return maskPromptForWire(privacy, recalledText);
+  return maskReplayedAnswerForWire(privacy, recalledText, segments);
+}
+
+/**
+ * Mask an assistant answer a channel replays in `priorTurns`, whatever
+ * `mask_user_prompt` says: that flag is about the user's own words, and Teams
+ * and Telegram replay the answer they delivered — after a `v4_render_answer`
+ * turn, real values the turn's model never saw. Through the turn's map, so
+ * answer-side restore covers these spans. A handle without
+ * `maskReplayedAnswer` falls back to {@link maskPromptForWire}. Throws
+ * `PromptMaskBlockedError` on the failure-closed `blocked` outcome.
+ */
+async function maskReplayedAnswerForWire(
+  privacy: PrivacyTurnHandle | undefined,
+  answer: string,
+  segments?: readonly string[],
+): Promise<string> {
+  if (privacy?.maskReplayedAnswer === undefined) {
+    return maskPromptForWire(privacy, answer, 'context');
+  }
+  const result = await privacy.maskReplayedAnswer(answer, segments);
+  if (result.outcome === 'blocked') {
+    throw new PromptMaskBlockedError(result.reason);
+  }
+  return result.outcome === 'masked' ? result.maskedText : answer;
 }
 
 /** #361 second-review fix — live chat history (`input.priorTurns`) is
@@ -1227,8 +1558,10 @@ async function maskRecalledForWire(
  *  by design, and channels replay them verbatim as priorTurns, so turn-N
  *  PII would reach the model raw on turn N+1. Mask every prior userMessage
  *  AND assistant answer through the SAME turn map before message assembly
- *  (answer-side restore covers these spans as well). Empty pairs are
- *  filtered so a failed prior turn can't poison context. */
+ *  (answer-side restore covers these spans as well): a user message under
+ *  `mask_user_prompt`, an answer whatever that flag says
+ *  ({@link maskReplayedAnswerForWire}). Empty pairs are filtered so a failed
+ *  prior turn can't poison context. */
 async function maskPriorTurnsForWire(
   privacy: PrivacyTurnHandle | undefined,
   priorTurns: ChatTurnInput['priorTurns'],
@@ -1238,17 +1571,74 @@ async function maskPriorTurnsForWire(
     if (t.userMessage.trim().length > 0) {
       pairs.push({
         role: 'user',
-        content: await maskPromptForWire(privacy, t.userMessage),
+        content: await maskPromptForWire(privacy, t.userMessage, 'context'),
       });
     }
     if (t.assistantAnswer.trim().length > 0) {
       pairs.push({
         role: 'assistant',
-        content: await maskPromptForWire(privacy, t.assistantAnswer),
+        content: await maskReplayedAnswerForWire(privacy, t.assistantAnswer),
       });
     }
   }
   return pairs;
+}
+
+/**
+ * The provenance bundle the inbound screener receives (#579,
+ * {@link bundleProvenance}), masked the way the turn's model call masks it:
+ * the user message and every user message a channel replays through
+ * {@link maskPromptForWire}, each upload's name through the same mask. One
+ * turn map, so the screener sees the surrogates the model will see. A
+ * replayed answer is not part of the bundle. Throws `PromptMaskBlockedError`
+ * on the failure-closed `blocked` outcome.
+ */
+async function screeningBundleForWire(
+  privacy: PrivacyTurnHandle | undefined,
+  input: ChatTurnInput,
+): Promise<ReturnType<typeof bundleProvenance>> {
+  const priorTurns: NonNullable<ChatTurnInput['priorTurns']> = [];
+  for (const t of input.priorTurns ?? []) {
+    // The bundle reads the user message only; the answer stays out of it.
+    priorTurns.push({
+      userMessage: await maskPromptForWire(privacy, t.userMessage, 'context'),
+      assistantAnswer: '',
+    });
+  }
+  const attachments: NonNullable<ChatTurnInput['attachments']> = [];
+  for (const att of input.attachments ?? []) {
+    attachments.push(
+      att.name === undefined ? att : { ...att, name: await maskPromptForWire(privacy, att.name) },
+    );
+  }
+  return bundleProvenance({
+    userMessage: await maskPromptForWire(privacy, input.userMessage),
+    priorTurns,
+    attachments,
+  });
+}
+
+/**
+ * #361 / #1528 — restore the turn's prompt surrogates over its final answer,
+ * and say so when some could not be restored: the model rewrote a
+ * placeholder beyond what restore recognizes ("1. Januar 1970" for
+ * "01.01.1970", a name read out of an e-mail), and without the note the user
+ * reads it as their own value. Unreadable date/amount literals do not count
+ * (`unreadableLiterals: false`): they are hits only for the fail-closed
+ * verifier, and would put the note under answers that merely name a month.
+ */
+async function restoreAnswerForUser(
+  privacy: PrivacyTurnHandle,
+  answer: string,
+): Promise<string> {
+  const restored = await privacy.restorePromptPseudonyms(answer);
+  const unresolved =
+    (await privacy.countUnresolvedSurrogates?.(restored, { unreadableLiterals: false })) ?? 0;
+  if (unresolved === 0 || restored.includes(PSEUDONYM_UNRESOLVED_NOTICE)) return restored;
+  console.warn(
+    `[orchestrator] answer keeps ${String(unresolved)} unresolved prompt surrogate(s) — notice appended`,
+  );
+  return `${restored}\n\n${PSEUDONYM_UNRESOLVED_NOTICE}`;
 }
 
 /**
@@ -1275,33 +1665,129 @@ async function restorePromptForPersistence(
 }
 
 /**
+ * {@link maskPromptForWire} for the turn's user message. Also keeps the
+ * result on the turn context (`wireView`): a verifier-wrapped turn hands the
+ * verifier exactly this text — the prompt as the model received it — never
+ * the caller's raw message (an MCP input-card reply is still its envelope
+ * there, carrying the values the user typed for a third-party server).
+ */
+async function maskTurnPromptForWire(
+  privacy: PrivacyTurnHandle | undefined,
+  userMessage: string,
+): Promise<string> {
+  const wire = await maskPromptForWire(privacy, userMessage);
+  const box = turnContext.current()?.wireView;
+  if (box) box.userMessage = wire;
+  return wire;
+}
+
+/**
+ * {@link restorePromptForPersistence} for a turn's FINAL answer. Also keeps
+ * the wire variant (the answer exactly as the model wrote it, surrogates and
+ * all) on the turn context: a verifier-wrapped turn hands it to the verifier,
+ * which may see the turn's wire view only — never restored values.
+ */
+async function restoreTurnAnswer(
+  privacy: PrivacyTurnHandle | undefined,
+  answer: string,
+): Promise<string> {
+  const box = turnContext.current()?.wireView;
+  if (box) box.answer = answer;
+  return restorePromptForPersistence(privacy, answer);
+}
+
+/** The wire view this turn recorded — both halves, or nothing to verify. */
+function recordedWireView(): TurnWireView | undefined {
+  const box = turnContext.current()?.wireView;
+  if (box?.userMessage === undefined || box.answer === undefined) return undefined;
+  return { userMessage: box.userMessage, answer: box.answer };
+}
+
+/** What the verifier gets of a turn: its wire view, and whether the answer is
+ *  system data only (nothing model-authored to verify). */
+interface VerifierHandOver {
+  readonly wireView: TurnWireView | undefined;
+  readonly systemDataOnly: boolean;
+}
+
+/**
+ * The verifier's share of a server-rendered v4 answer. The rendered cell
+ * values are system data — materialized from the turn's interned tool
+ * results, never written by the model — so they are not the verifier's to
+ * check. The directive's prose is model text, written in the turn's masked
+ * space: it is verified through the turn's view like any answer. A model that
+ * wrote no prose (`''`) left nothing to verify (`systemDataOnly`). Fails
+ * closed — no view, not system data — for a rendered failure (#1097), which
+ * is control flow, and for a provider that does not report the prose at all.
+ */
+function renderedVerifierHandOver(rendered: PrivacyRenderedAnswer): VerifierHandOver {
+  if (rendered.isError === true || rendered.prose === undefined) {
+    return { wireView: undefined, systemDataOnly: false };
+  }
+  if (rendered.prose.trim() === '') return { wireView: undefined, systemDataOnly: true };
+  const userMessage = turnContext.current()?.wireView?.userMessage;
+  return {
+    wireView: userMessage === undefined ? undefined : { userMessage, answer: rendered.prose },
+    systemDataOnly: false,
+  };
+}
+
+/**
+ * The masked view of a session-log row (`SessionLogEntry.maskedView`) for a
+ * turn under a privacy handle: the row's texts as the turn's model calls
+ * carried them — the prompt as the model received it, the answer as the
+ * model wrote it — the same texts the fact extraction gets. The capture
+ * filter's significance scorer sends these to its provider instead of the
+ * row, whose answer holds restored real values. Nothing without a handle.
+ * Also carries the turn's `unprotected` flag (#1507).
+ */
+function maskedRowView(
+  privacy: PrivacyTurnHandle | undefined,
+  wireUserMessage: string,
+  wireAnswer: string,
+): { readonly maskedView?: TurnMaskedView; readonly unprotected: boolean } {
+  // #1507 — a turn that ran without a shield, or in which a tool bypassed
+  // it, answered from raw values the model saw. Its Turn node is flagged so
+  // a later turn that HAS a shield does not get it back through recall.
+  const unprotected = privacy === undefined || privacy.hasBypassed?.() === true;
+  return privacy === undefined
+    ? { unprotected }
+    : {
+        maskedView: { userMessage: wireUserMessage, assistantAnswer: wireAnswer },
+        unprotected,
+      };
+}
+
+/** What the session log records for a turn that ended on a choice card. */
+function choiceCardLogLine(answer: string, question: string): string {
+  return answer.length > 0 ? `${answer}\n\n[Rückfrage] ${question}` : `[Rückfrage] ${question}`;
+}
+
+/**
  * #361 — restore the string fields of a Palaia excerpt before it is
  * persisted (auto-promotion) or shown in the save-as-memory modal. The
  * excerpt came out of an LLM pass over masked wire text, so its copies may
  * carry surrogates; stored memories must carry real values.
+ *
+ * `restore` is the turn's `snapshotPromptRestorer()`, taken when the excerpt
+ * call started: the call may finish after the pass's privacy handle was
+ * finalized (it overlaps the verifier, see `startPalaiaExcerpt`), and the
+ * snapshot keeps working once `finalize` dropped the live map. Absent ⇒
+ * nothing was masked this turn, the excerpt is already in real values.
  */
-async function restoreExcerptForPersistence(
-  privacy: PrivacyTurnHandle | undefined,
+function restoreExcerptForPersistence(
+  restore: ((text: string) => string) | undefined,
   excerpt: PalaiaExcerpt | undefined,
-): Promise<PalaiaExcerpt | undefined> {
-  if (privacy === undefined || excerpt === undefined) return excerpt;
-  const restored = { ...excerpt };
-  restored.suggestedSummary = await restorePromptForPersistence(
-    privacy,
-    excerpt.suggestedSummary,
-  );
-  if (excerpt.suggestedRationale !== undefined) {
-    restored.suggestedRationale = await restorePromptForPersistence(
-      privacy,
-      excerpt.suggestedRationale,
-    );
-  }
-  const excerpts: string[] = [];
-  for (const span of excerpt.excerpts) {
-    excerpts.push(await restorePromptForPersistence(privacy, span));
-  }
-  restored.excerpts = excerpts;
-  return restored;
+): PalaiaExcerpt | undefined {
+  if (restore === undefined || excerpt === undefined) return excerpt;
+  return {
+    ...excerpt,
+    suggestedSummary: restore(excerpt.suggestedSummary),
+    ...(excerpt.suggestedRationale !== undefined
+      ? { suggestedRationale: restore(excerpt.suggestedRationale) }
+      : {}),
+    excerpts: excerpt.excerpts.map(restore),
+  };
 }
 
 /** #361 — an `ask_user_choice` card (LLM tool call or card-router pass over
@@ -1360,28 +1846,42 @@ async function restoreFollowUpsForUser(
 const MEMORY_TOOL_TYPE = 'memory_20250818';
 const MEMORY_BETA_HEADER = 'context-management-2025-06-27';
 
+/** The orchestrator's cache breakpoints: 1-hour TTL, so the ~50k-token
+ *  tools + stable-prompt prefix survives the 5–60 minute gaps between a
+ *  user's turns (measured: with the 5-minute default nearly every turn's
+ *  first call re-wrote the whole prefix). One TTL for every breakpoint —
+ *  Anthropic requires longer-lived entries before shorter ones. */
+const ORCHESTRATOR_CACHE_CONTROL = { type: 'ephemeral', ttl: '1h' } as const;
+
 /**
  * Build the `system` argument for Anthropic as an array of text blocks:
- *   [0] stable domain prompt — marked cache-eligible
- *   [1] per-turn date header — read from the turn context so every
+ *   [0] stable domain prompt — cache breakpoint (byte-identical across turns)
+ *   [1] prior-context block, when present — cache breakpoint (this turn's
+ *       tool-loop iterations read it)
+ *   [2] per-turn date header — read from the turn context so every
  *       `messages.create` site in a single turn speaks the same "today"
+ *   [3] per-turn hint, when present — uncached
  *
- * Splitting these lets the stable block stay in the prompt cache across
- * turns while the volatile date block invalidates independently (at most
- * once per day). The SDK accepts both string and array forms for `system`.
+ * The prompt cache is a prefix match (tools → system → messages): the stable
+ * prompt must come BEFORE anything that changes per turn, or every turn
+ * re-writes it. The prior-context block used to come first (so the model met
+ * the verbatim tail before the `_rules` memory-read convention); it now
+ * follows the stable prompt and states its precedence over the rules above
+ * explicitly, and chat turns no longer open with a memory read at all (the
+ * kernel prefetches the index, `memoryIndexPrefetch.ts`).
  */
 function buildSystemBlocks(
   stableSystemPrompt: string,
   priorContext?: string,
   extraSystemHint?: string,
 ): ContentBlock[] {
-  // Ordering matters: the prior-context block comes FIRST when present, so
-  // the model sees it before wading through the longer stable prompt + the
-  // `_rules` memory-read convention. Previously it landed last and the bot
-  // reliably read memory rules before noticing the verbatim tail, then
-  // answered by those rules instead of the prior turn (hallucinated a
-  // different time range on follow-ups like "das Gleiche ohne Gutschriften").
-  const blocks: ContentBlock[] = [];
+  const blocks: ContentBlock[] = [
+    {
+      type: 'text',
+      text: stableSystemPrompt,
+      cache_control: ORCHESTRATOR_CACHE_CONTROL,
+    },
+  ];
 
   if (priorContext && priorContext.trim().length > 0) {
     // Trust tiers (important — get this wrong and the bot re-fetches data
@@ -1397,24 +1897,19 @@ function buildSystemBlocks(
     //     re-verify via the domain agent.
     blocks.push({
       type: 'text',
-      text: `# Vorheriger Gesprächskontext — ZUERST lesen
+      text: `# Vorheriger Gesprächskontext — VORRANG vor den allgemeinen Regeln oben
 
-Dieser Block enthält die letzten Turns dieses Chats und relevante Rückbezüge aus früheren Chats des Users. Er hat **Vorrang** vor der allgemeinen Memory-Lese-Konvention weiter unten: wenn die aktuelle Nutzerfrage eine Follow-up auf einen der hier gelisteten Turns ist, brauchst du KEINEN Memory-Read, keine neue Fach-Agent-Query für Basis-Daten, und keinen anderen Zeitraum zu erfinden.
+Dieser Block enthält die letzten Turns dieses Chats und relevante Rückbezüge aus früheren Chats des Users. Er hat **Vorrang** vor der allgemeinen Memory-Lese-Konvention im System-Prompt oben: wenn die aktuelle Nutzerfrage eine Follow-up auf einen der hier gelisteten Turns ist, brauchst du KEINEN Memory-Read, keine neue Fach-Agent-Query für Basis-Daten, und keinen anderen Zeitraum zu erfinden.
 
 **Vertrauensregeln:**
 - \`## Letzte Turns in diesem Chat\` — das sind deine eigenen letzten Antworten in diesem Chat. Vertraue diesen Daten vollständig. Follow-ups wie "das gleiche nochmal als Line", "ohne Gutschriften", "und für Q4?", "zeig das als Chart" beziehen sich DIREKT auf diese Turns. Hole die Basis-Daten NICHT erneut über einen Fach-Agenten. Bereinigungen/Varianten gehen entweder per \`render_diagram\` (Chart-Variante mit angepassten Werten) oder per direkter Neu-Formulierung.
 - \`## Früher besprochene Entitäten\` und \`## Inhaltlich ähnliche Turns\` — aus anderen Chats des gleichen Users. Arbeitshypothese; bei konkreten Zahlen via Fach-Agent verifizieren.
 
 ${priorContext}`,
-      cache_control: { type: 'ephemeral' },
+      cache_control: ORCHESTRATOR_CACHE_CONTROL,
     });
   }
 
-  blocks.push({
-    type: 'text',
-    text: stableSystemPrompt,
-    cache_control: { type: 'ephemeral' },
-  });
   blocks.push({
     type: 'text',
     text: buildDateHeader(turnContext.currentTurnDate()),
@@ -1431,15 +1926,97 @@ ${priorContext}`,
 }
 
 /**
- * Combines the caller-supplied `extraSystemHint` with a turn-scoped
- * fresh-check instruction when the user clicked "🔄 Fresh Check" on the
- * previous card. The fresh-check hint tells the model to bypass the
- * memory-read convention for this turn — both hints (verifier correction
- * + fresh-check bypass) can coexist.
+ * The per-turn system hint as it crosses the wire (#361): the caller's
+ * `extraSystemHint` masked through the turn's prompt map like the user's
+ * message — once, through this turn's map — then composed with the kernel's
+ * own per-turn prose (the fresh-check block, the answer-size pick). The
+ * caller's hint (a verifier correction on a retry,
+ * the screening marker) is wire content, not kernel prose — the verifier's
+ * correction hint quotes claims cut from the RESTORED answer, i.e. the real
+ * values the mask kept from the model — so it gets the message's protection:
+ * the same surrogates (restored in the answer), its masked spans on the
+ * turn's receipt, and a `PromptMaskBlockedError` when masking cannot be
+ * guaranteed. The kernel's own prose (fresh check, answer-size pick) is not
+ * masked: it is static, carries no user data — the size pick interpolates
+ * only a parsed enum label — and masking it could only garble — or, on a
+ * residual-leak `blocked`, fail — a turn with no hint.
  */
-function composeExtraSystemHint(input: ChatTurnInput): string | undefined {
+async function wireExtraSystemHint(
+  privacy: PrivacyTurnHandle | undefined,
+  input: ChatTurnInput,
+  /** Prefetched `/memories` index block (`memoryIndexPrefetch.ts`) — kernel
+   *  prose around an intern-exempt tool result, so not masked. */
+  memoryIndexBlock?: string,
+): Promise<string | undefined> {
+  const callerHint = input.extraSystemHint;
+  const wireHint =
+    callerHint !== undefined && callerHint.trim().length > 0
+      ? // #1541 — the hint quotes claims of the restored answer: tool data,
+        // not the user's words.
+        await maskPromptForWire(privacy, callerHint, 'context')
+      : undefined;
+  // `fixedSystemHint` is NOT masked: it is a compile-time constant from a
+  // trusted in-process wrapper (see its doc on `ChatTurnInput`) — kernel-grade
+  // prose with no user data, so it joins the static blocks, not the caller's.
+  const fixedHint = input.fixedSystemHint?.trim();
+  return composeExtraSystemHint(
+    input.freshCheck,
+    wireHint,
+    parseAnswerVerbosity(input.answerVerbosity),
+    input.canvasSessionId !== undefined,
+    fixedHint !== undefined && fixedHint.length > 0 ? fixedHint : undefined,
+    memoryIndexBlock,
+  );
+}
+
+/**
+ * Canvas turns: suspend the stable prompt's start-of-task `/memories` read.
+ * The canvas is a render surface for one concrete data ask — the directory
+ * listing costs a full main-model round per turn and feeds nothing the
+ * canvas shows. The `memory` tool stays wired: a targeted read or a write
+ * remains possible when the ask genuinely needs it.
+ */
+export const CANVAS_TURN_MEMORY_HINT = `# CANVAS-TURN (Memory-Lese-Konvention ausgesetzt)
+
+Dieser Turn kommt aus einem Canvas-Client. Für diesen EINEN Turn gilt die Konvention „zu Beginn jeder neuen Aufgabe den /memories-Verzeichnisinhalt lesen" aus dem stabilen System-Prompt NICHT: kein einleitender \`memory\`-View auf \`/memories\` und kein vorsorglicher Read unter \`/memories/_rules/\`. Geh direkt zum passenden Fach-Agent-Tool-Call.
+Das \`memory\`-Tool bleibt verfügbar — lies eine konkrete Memory-Datei nur, wenn die Anfrage ausdrücklich darauf angewiesen ist, und schreib, wenn sich ein verifizierter Fakt ergibt.`;
+
+/**
+ * Canvas turns: the most session-tail turns context assembly recalls. A
+ * canvas turn carries its working context in the skeleton, so the verbatim
+ * tail is only conversational glue — and every recalled turn is LLM-bound
+ * text the C1 detector has to scan. Other channels keep the operator's
+ * `context_tail_size`.
+ */
+export const CANVAS_RECALL_TAIL_TURNS = 2;
+
+/**
+ * Combines the caller-supplied hint (already masked for the wire, see
+ * {@link wireExtraSystemHint}) with a turn-scoped fresh-check instruction
+ * when the user clicked "🔄 Fresh Check" on the previous card. The
+ * fresh-check hint tells the model to bypass the memory-read convention for
+ * this turn — both hints (verifier correction + fresh-check bypass) can
+ * coexist. A canvas turn adds {@link CANVAS_TURN_MEMORY_HINT}; a trusted
+ * wrapper's `fixedSystemHint` (unmasked, static) lands before the caller's
+ * hint so a verifier correction stays the last word.
+ */
+function composeExtraSystemHint(
+  freshCheck: ChatTurnInput['freshCheck'],
+  callerHint: string | undefined,
+  turnVerbosity?: AnswerVerbosity,
+  isCanvasTurn = false,
+  fixedHint?: string,
+  memoryIndexBlock?: string,
+): string | undefined {
   const parts: string[] = [];
-  if (input.freshCheck) {
+  // Phase 3 — the user's per-turn answer-size pick. Same home as Fresh
+  // Check (uncached, per turn, static prose that carries no user data), so
+  // the stable prompt and its cache key stay byte-identical. Already parsed:
+  // an unknown wire value arrives here as undefined and adds nothing.
+  if (turnVerbosity) {
+    parts.push(buildAnswerVerbosityTurnBlock(turnVerbosity));
+  }
+  if (freshCheck) {
     parts.push(
       `# FRESH CHECK MODE (von User per Card-Button aktiviert)
 
@@ -1453,8 +2030,17 @@ Stattdessen:
 Der Grund für diesen Modus: der User vermutet, dass dich ein früherer Memory-Eintrag oder ein FTS-Treffer auf eine falsche Antwort gelockt hat. Jetzt ist die Chance, unabhängig von diesem Altlast-Pfad zu antworten.`,
     );
   }
-  if (input.extraSystemHint && input.extraSystemHint.trim().length > 0) {
-    parts.push(input.extraSystemHint);
+  if (isCanvasTurn) {
+    parts.push(CANVAS_TURN_MEMORY_HINT);
+  }
+  if (memoryIndexBlock !== undefined) {
+    parts.push(memoryIndexBlock);
+  }
+  if (fixedHint !== undefined) {
+    parts.push(fixedHint);
+  }
+  if (callerHint !== undefined && callerHint.trim().length > 0) {
+    parts.push(callerHint);
   }
   return parts.length > 0 ? parts.join('\n\n---\n\n') : undefined;
 }
@@ -1521,8 +2107,53 @@ export const SECURITY_QUARANTINE_NOTICE =
  * reply that looked like a platform bug. DE-first with an EN line, same shape
  * as {@link SECURITY_QUARANTINE_NOTICE}.
  */
-export const MODEL_REFUSAL_NOTICE =
-  'Das Modell hat diese Anfrage aus Sicherheitsgründen abgelehnt. Formuliere sie bitte anders oder wähle für diesen Agenten ein anderes Modell. / The model declined this request for safety reasons. Please rephrase it or choose a different model for this agent.';
+const MODEL_REFUSAL_NOTICE_DE =
+  'Das Modell hat diese Anfrage aus Sicherheitsgründen abgelehnt. Formuliere sie bitte anders oder wähle für diesen Agenten ein anderes Modell.';
+const MODEL_REFUSAL_NOTICE_EN =
+  'The model declined this request for safety reasons. Please rephrase it or choose a different model for this agent.';
+
+/**
+ * The refusal notice as the turn produces and PERSISTS it: language-neutral in
+ * the sense of carrying both languages, so the session log and the next turn's
+ * context do not depend on who asked. Delivery swaps it for one language via
+ * {@link localizeRefusalNotice} (#1401).
+ */
+export const MODEL_REFUSAL_NOTICE = `${MODEL_REFUSAL_NOTICE_DE} / ${MODEL_REFUSAL_NOTICE_EN}`;
+
+/** Every notice a turn persists in both languages, as
+ *  `[bilingual, de, en]`. The model refusal (#1401), the prompt-mask refusal
+ *  (#1529), the shield-required refusal (#1535) and the unresolved-placeholder
+ *  note (#1528). */
+const BILINGUAL_NOTICES: ReadonlyArray<readonly [string, string, string]> = [
+  [MODEL_REFUSAL_NOTICE, MODEL_REFUSAL_NOTICE_DE, MODEL_REFUSAL_NOTICE_EN],
+  [PROMPT_MASK_BLOCKED_ANSWER, PROMPT_MASK_BLOCKED_ANSWER_DE, PROMPT_MASK_BLOCKED_ANSWER_EN],
+  [
+    PROMPT_MASK_BLOCKED_AFTER_HOOKS_ANSWER,
+    PROMPT_MASK_BLOCKED_AFTER_HOOKS_ANSWER_DE,
+    PROMPT_MASK_BLOCKED_AFTER_HOOKS_ANSWER_EN,
+  ],
+  [
+    PRIVACY_SHIELD_REQUIRED_ANSWER,
+    PRIVACY_SHIELD_REQUIRED_ANSWER_DE,
+    PRIVACY_SHIELD_REQUIRED_ANSWER_EN,
+  ],
+  [PSEUDONYM_UNRESOLVED_NOTICE, PSEUDONYM_UNRESOLVED_NOTICE_DE, PSEUDONYM_UNRESOLVED_NOTICE_EN],
+];
+
+/**
+ * #1401 — replace the bilingual refusal notices in a delivered answer with the
+ * turn's language. Same locale rule as the AI-Act marking and the
+ * turn-incomplete notice: `en*` → English, anything else (incl. unknown) →
+ * German. An answer without the notice is returned unchanged.
+ */
+export function localizeRefusalNotice(answer: string, locale: string | undefined): string {
+  const en = locale !== undefined && /^en\b/i.test(locale);
+  let out = answer;
+  for (const [bilingual, de, english] of BILINGUAL_NOTICES) {
+    if (out.includes(bilingual)) out = out.split(bilingual).join(en ? english : de);
+  }
+  return out;
+}
 
 /**
  * The turn's final answer text. A refusal is made explicit: an empty answer
@@ -1536,6 +2167,21 @@ export function finalAnswerText(
   const text = textParts.join('\n\n').trim();
   if (stopReason !== 'refusal') return text;
   return text === '' ? MODEL_REFUSAL_NOTICE : `${text}\n\n${MODEL_REFUSAL_NOTICE}`;
+}
+
+/**
+ * #1219 — the refusal clause of the non-`end_turn` finalize log line, so a
+ * declined turn says WHY (`bio`, `cyber`, …; the seam carries the vendor's
+ * category) instead of only that it was declined. Empty for every other
+ * stop reason.
+ */
+function refusalLogClause(message: {
+  readonly stop_reason?: unknown;
+  readonly refusal?: { readonly category?: unknown };
+}): string {
+  if (message.stop_reason !== 'refusal') return '';
+  const category = message.refusal?.category;
+  return ` refusal_category=${typeof category === 'string' ? category : 'none'}`;
 }
 
 /**
@@ -1575,6 +2221,99 @@ const DEFAULT_ASSISTANT_IDENTITY =
 interface TurnMemoryBinding {
   readonly handler: MemoryToolHandler | undefined;
   readonly contextBound: boolean;
+  /**
+   * Set only on a context-bound turn of an agent whose context memory reaches
+   * beyond the memory tree. The tree is partitioned by the binder; graph
+   * recall and `query_knowledge_graph` are not, so they are narrowed here:
+   *
+   *  - `conversation` (`enforce-strict`): the turn's own conversation, by its
+   *    graph scope. `scope: null` = no conversation, so they see nothing.
+   *    Without this, an earlier Teams conversation of the same agent reached a
+   *    Telegram turn through both paths.
+   *  - `members`: knowledge of this agent that everyone present owns.
+   *    `audience: null` = the room is not known, so they see nothing, and what
+   *    the turn learns is owned by nobody (`owners: []`).
+   */
+  readonly isolation?: TurnIsolation;
+  /** Which memory convention the system prompt states; absent = the default. */
+  readonly memoryPrompt?: MemoryPromptKind;
+  /**
+   * #1598 — the binder decided this turn gets NO memory tool (`forAudience`
+   * failed). Dispatch refuses `memory` instead of falling through to the
+   * provider's own handler on the unscoped root store.
+   */
+  readonly memoryDenied?: true;
+}
+
+/**
+ * The memory convention a turn's system prompt states:
+ *  - `context` — the chat-context tiers (`enforce` / `enforce-strict`);
+ *  - `members` — notes of the people present, plus read-only larger groups;
+ *  - `members-unknown` — a `members` turn whose room is unknown: no notes.
+ */
+type MemoryPromptKind = 'context' | 'members' | 'members-unknown';
+
+function memoryPromptFor(bound: BoundTurnMemory): MemoryPromptKind | undefined {
+  if (bound.members) return bound.members.key ? 'members' : 'members-unknown';
+  return bound.axes.isContextFree ? undefined : 'context';
+}
+
+type TurnIsolation =
+  | { readonly kind: 'conversation'; readonly scope: string | null }
+  | { readonly kind: 'members'; readonly audience: readonly string[] | null };
+
+/**
+ * A pass of a request a verifier bound a ledger to (`bindToolReplayLedger`):
+ * the ledger, which holds the request's receipts, and which pass this is.
+ * Taken when the pass starts — a pass the verifier holds is finalized after
+ * the next one began — and offered with the pass's receipt, so the request's
+ * row goes to its earliest pass with a receipt (`requestReceipts.ts`).
+ */
+interface BoundPass {
+  readonly ledger: ToolReplayLedger;
+  /** 0 for the first run, then 1, 2, … (`ToolReplayLedger.pass`). */
+  readonly pass: number;
+}
+
+/**
+ * #1578 — the disclosure seen-store as one verifier request sees it. The
+ * first pass that folds the line marks the conversation seen AND the request
+ * (`ToolReplayLedger.disclosureFolded`); every later pass of that request — a
+ * correction retry, a resample — then folds again, so the answer the user
+ * receives carries the line whichever pass it comes from. Unbound turns use
+ * the store as is.
+ */
+function requestDisclosureSeen(
+  seen: DisclosureSeenStore,
+  ledger: ToolReplayLedger | undefined,
+): DisclosureSeenStore {
+  if (ledger === undefined) return seen;
+  return {
+    hasSeen: (scope) => !ledger.disclosureFolded && seen.hasSeen(scope),
+    markSeen: (scope) => {
+      seen.markSeen(scope);
+      ledger.disclosureFolded = true;
+    },
+  };
+}
+
+/** The pass of `ledger` that starts now, or undefined for an unbound turn. */
+function boundPassOf(ledger: ToolReplayLedger | undefined): BoundPass | undefined {
+  return ledger === undefined ? undefined : { ledger, pass: ledger.pass };
+}
+
+/**
+ * A pass that ends without finalizing or handing its privacy state over — it
+ * threw, or its stream ended before `done` — and what is needed to close it
+ * (`Orchestrator.closeUndeliveredPass`).
+ */
+interface UndeliveredPass {
+  readonly handle: PrivacyTurnHandle;
+  readonly turnId: string;
+  /** The turn's input after normalisation and the screening gate. */
+  readonly input: ChatTurnInput;
+  /** The request pass, when a verifier bound a ledger to the request. */
+  readonly bound: BoundPass | undefined;
 }
 
 /**
@@ -1590,6 +2329,39 @@ const CONTEXT_MEMORY_PROMPT_BLOCK = `**Memory-Kontext (dieser Chat):**
 
 `;
 
+/** The convention of a `members` turn (W3) — notes belong to the people present. */
+const MEMBERS_MEMORY_PROMPT_BLOCK = `**Memory-Kontext (Personen in diesem Chat):**
+- Deine Notizen unter \`/memories/\` gehören den Personen, die gerade in diesem Chat sind. Wieder sichtbar sind sie nur, wenn genau diese Personen oder ein Teil von ihnen mit dir sprechen — sobald jemand Neues dabei ist, nicht.
+- Ordner \`/memories/~g-…/\` (falls vorhanden) sind Notizen aus größeren Runden, zu denen alle hier Anwesenden gehörten — **read-only**. Schreibversuche dorthin schlagen fehl.
+
+`;
+
+/** A `members` turn whose room could not be determined — no notes at all. */
+const MEMBERS_UNKNOWN_MEMORY_PROMPT_BLOCK = `**Memory-Kontext:** In diesem Chat lässt sich nicht feststellen, wer anwesend ist. Notizen unter \`/memories/\` sind deshalb nicht verfügbar — weder lesen noch schreiben. Wenn der Nutzer dich bittet, dir etwas zu merken, sag ihm, dass das in diesem Chat nicht geht.
+
+`;
+
+const MEMORY_PROMPT_BLOCKS: Readonly<Record<MemoryPromptKind, string>> = {
+  context: CONTEXT_MEMORY_PROMPT_BLOCK,
+  members: MEMBERS_MEMORY_PROMPT_BLOCK,
+  'members-unknown': MEMBERS_UNKNOWN_MEMORY_PROMPT_BLOCK,
+};
+
+/** #1559 — the spreadsheet export tool (`@omadia/plugin-office`). Optional:
+ *  a file is only offered on a turn that actually carries it. */
+const FILE_EXPORT_TOOL_NAME = 'create_xlsx';
+
+/**
+ * #1559 — rule a)'s sentence about results above the chat row cap. Offers an
+ * Excel file only when `create_xlsx` is offered this turn; without it the
+ * model states the row count and promises nothing.
+ */
+function privacyRowCapRule(hasFileExport: boolean): string {
+  return hasFileExport
+    ? 'Hat ein Ergebnis mehr Zeilen, sag das im Prosa-Teil und biete die vollständige Liste als Excel an — bzw. erzeuge sie direkt mit `create_xlsx` und derselben `datasetId`, wenn der User erkennbar die ganze Liste will (z.B. „alle", „komplett", „exportieren").'
+    : 'Hat ein Ergebnis mehr Zeilen, sag das im Prosa-Teil (wie viele Zeilen es insgesamt sind). **Biete KEINE Excel- oder andere Datei an** — in dieser Instanz gibt es kein Export-Werkzeug (`create_xlsx` ist nicht verfügbar). Will der User alles sehen, schlag eine engere Abfrage vor (Filter, Sortierung, Top-N).';
+}
+
 function buildSystemPrompt(
   assistantIdentity: string,
   domainTools: DomainTool[],
@@ -1601,11 +2373,17 @@ function buildSystemPrompt(
   hasCalendar: boolean,
   hasPrivacyV4: boolean,
   extraToolDocs: readonly string[] = [],
-  contextBoundMemory = false,
+  memoryPrompt?: MemoryPromptKind,
+  answerVerbosity: AnswerVerbosity = DEFAULT_ANSWER_VERBOSITY,
+  /** #1559 — `create_xlsx` is offered this turn. */
+  hasFileExport = false,
 ): string {
+  // Operator's answer-size contract. `standard` is '' so the delivered state
+  // keeps the prompt (and its cache key) unchanged.
+  const answerVerbosityBlock = buildAnswerVerbosityBlock(answerVerbosity);
   // W5 — off by default, so a turn that is not context-bound produces a
   // byte-identical prompt (and therefore a byte-identical prompt-cache key).
-  const contextMemoryBlock = contextBoundMemory ? CONTEXT_MEMORY_PROMPT_BLOCK : '';
+  const contextMemoryBlock = memoryPrompt ? MEMORY_PROMPT_BLOCKS[memoryPrompt] : '';
   const domainList = domainTools.length
     ? domainTools.map((t) => `- \`${t.name}\`: ${t.spec.description}`).join('\n')
     : '- (keine Fach-Agenten konfiguriert)';
@@ -1614,7 +2392,7 @@ function buildSystemPrompt(
     ? '\n- `ask_user_choice`: Stellt dem User eine Rückfrage mit 2–4 vordefinierten Button-Optionen als Smart Card. Nur aufrufen, wenn die User-Eingabe **genuin mehrdeutig** ist UND es eine **endliche, kleine Menge plausibler Interpretationen** gibt (z.B. zwei Module tracken Umsatz, zwei Kunden haben ähnlichen Namen). **NICHT** nutzen für: offene "was meinst du?"-Fragen, Trivial-Bestätigungen, oder wenn der Kontext die Intention bereits eindeutig macht. Max 1× pro Turn — der Turn endet direkt nach dem Call; die Auswahl kommt im nächsten Turn als normale User-Nachricht.\n'
     : '';
   const calendarBlock = hasCalendar
-    ? '\n- `find_free_slots` + `book_meeting`: **M365-Kalender-Integration.** Wenn der User Termin/Meeting/Sprechstunde/Slot/Zeit-mit-<Person> anfragt — egal wie die Formulierung lautet ("schicke X drei Vorschläge", "wann hat Y Zeit?", "buche Termin mit Z", "finde Slot morgen") — **RUFE `find_free_slots`**. NICHT als Email interpretieren, NICHT nur HR-Kontakt nachschlagen und Prose zurückschreiben. Der Tool-Output liefert klickbare Slot-Buttons; der User wählt, dann folgt automatisch `book_meeting`.\n  **Host-Logik (wichtig):**\n  - Die Slots kommen aus dem Kalender des **Hosts** (Meeting-Organizers). Default = Caller selbst.\n  - Wenn der Caller eigene Zeit anbietet ("schicke Tita 3 Vorschläge", "biete Max Termine", "finde Slot morgen") → **hostEmail NICHT setzen** (Caller ist Host).\n  - Wenn der Caller im Auftrag einer anderen Person sucht ("such bei John Termin", "wann hat die GF Zeit?") → `hostEmail` auf die Ziel-Email setzen.\n  **Pflicht-Schritte bei jedem Termin-Intent:**\n  1. Teilnehmer-Emails resolven (ggf. über einen Personen-/HR-Fach-Agenten nach Vorname/Nachname → email).\n  2. `find_free_slots({durationMinutes, attendees, hostEmail?, windowDays?})` aufrufen — Default 5 Tage, Default 30 min wenn User keine Dauer nennt.\n  3. Die gefundenen Slots im Antwort-Text in **1 Satz** zusammenfassen ("Hier 3 freie Slots für …"). Die Buttons erscheinen automatisch als Card darunter.\n  4. Bei `consent_required` / `sso_unavailable` Fehler: kurz erklären dass einmalig Zustimmung nötig ist — die OAuthCard wird automatisch vom System angehängt.\n  **NICHT nutzen:** wenn der User nach bereits gebuchten Terminen fragt (nicht implementiert).\n'
+    ? '\n- `find_free_slots` + `book_meeting`: M365-Kalender. Nutze sie für Termin-, Meeting-, Slot- und Verfügbarkeitsanfragen, auch wenn der User sie wie eine Nachricht formuliert ("schicke X drei Vorschläge") — nicht stattdessen nur den Kontakt nachschlagen und Prose zurückschreiben. Nennt der User Namen statt Emails, löse sie vorher über einen Personen-/HR-Fach-Agenten auf. Host-Logik, Parameter und Limits stehen in den Tool-Beschreibungen. Fasse gefundene Slots im Antworttext in einem Satz zusammen — die Buttons erscheinen automatisch als Card. Bei `consent_required` / `sso_unavailable` erkläre kurz, dass einmalig eine Zustimmung nötig ist; die OAuthCard hängt das System an.\n'
     : '';
 
   const suggestFollowUpsBlock = hasSuggestFollowUps
@@ -1622,11 +2400,7 @@ function buildSystemPrompt(
     : '';
   const chatParticipantsBlock = hasChatParticipants
     ? '\n- `get_chat_participants`: Liefert die Teilnehmer des aktuellen Teams-Chats. Nur aufrufen, wenn du jemanden im Antworttext **per @-Mention ansprechen** willst — Handoff, Rückfrage, Zuständigkeits-Tag. Max 1× pro Turn. In 1:1-Chats nicht nutzen.\n' +
-      '\n  **PFLICHT nach dem Tool-Call — sonst war der Call umsonst:**\n' +
-      '  1. Den Namen im Antworttext in der Form `<at>EXAKTER_DISPLAY_NAME</at>` schreiben.\n' +
-      '  2. `EXAKTER_DISPLAY_NAME` muss byte-für-byte dem `displayName`-Feld aus der Tool-Response entsprechen — inklusive Firmensuffix, Bindestriche, Großschreibung.\n' +
-      '  3. Ohne diese `<at>…</at>`-Tags wird KEINE Mention gerendert und die Person NICHT benachrichtigt — das Schreiben des Namens allein reicht NICHT.\n' +
-      '  4. Beispiel: wenn der Roster `displayName: "Jane Doe - ACME"` zurückgibt und du sie ansprechen willst, schreibst du `Hey <at>Jane Doe - ACME</at>, kannst du das übernehmen?` — nicht `Hey Jane Doe` und auch nicht `Hey @Jane`.\n'
+      '\n  Die exakte Mention-Syntax steht in der Beschreibung des Tools, und die Tool-Response liefert sie in `usage_example` / `rendering_rule` noch einmal mit einem echten `displayName` aus diesem Chat. Halte dich daran: ohne diese Form wird keine Mention gerendert, die Person nicht benachrichtigt, und der Call war umsonst.\n'
     : '';
 
   const graphBlock = hasGraph
@@ -1652,9 +2426,12 @@ function buildSystemPrompt(
 
 Fach-Agent-Ergebnisse durchlaufen eine Datenschutz-Grenze: statt der Rohdaten erhältst du einen **Digest** (identitätsfreie Strukturbeschreibung). Felder mit \`"classification":"sensitive-masked"\` zeigen dir nur den Platzhalter \`[masked]\` — **nicht weil der User sie nicht sehen darf, sondern nur weil DU sie nicht sehen sollst.** Der angemeldete User IST berechtigt, diese Werte (Namen, E-Mails, …) zu sehen.
 
-a) **Jede Datenantwort (Tabelle, Liste, Ranking, Einzelwert) endet zwingend mit einem \`v4_render_answer\`-Aufruf.** Schreibe die Daten-Tabelle/-Liste NIEMALS selbst in den Antworttext und kopiere NIEMALS \`[masked]\` in eine Antwort. Der Server füllt in \`v4_render_answer\` die echten Werte ein — auch die maskierten — und stellt sie dem User zu. Nimm die Identitäts-Spalte (\`employee\`, \`name\`, …) immer in \`columns\` mit auf. **Chat-Ausgaben sind auf 50 Zeilen begrenzt:** der Server zeigt die ersten 50 und schreibt die Gesamtzahl darunter. Hat ein Ergebnis mehr Zeilen, sag das im Prosa-Teil und biete die vollständige Liste als Excel an — bzw. erzeuge sie direkt mit \`create_xlsx\` und derselben \`datasetId\`, wenn der User erkennbar die ganze Liste will (z.B. „alle", „komplett", „exportieren").
+a) **Jede Datenantwort (Tabelle, Liste, Ranking, Einzelwert) endet zwingend mit einem \`v4_render_answer\`-Aufruf.** Schreibe die Daten-Tabelle/-Liste NIEMALS selbst in den Antworttext und kopiere NIEMALS \`[masked]\` in eine Antwort. Der Server füllt in \`v4_render_answer\` die echten Werte ein — auch die maskierten — und stellt sie dem User zu. Nimm die Identitäts-Spalte (\`employee\`, \`name\`, …) immer in \`columns\` mit auf. **Chat-Ausgaben sind auf 50 Zeilen begrenzt:** der Server zeigt die ersten 50 und schreibt die Gesamtzahl darunter. ${privacyRowCapRule(hasFileExport)}
+
+a2) **Ist ein maskiertes Feld das SUBJEKT der Antwort** (z.B. „Welche Abteilung hat die meisten …?"), kannst du es im Prosa-Teil nicht nennen. Schreib dann einen **vollständigen Satz, der auf die Tabelle verweist**, z.B. „Die Abteilung mit den meisten aktiven Mitarbeitern steht in der Tabelle unten (7 Mitarbeiter)." — nie einen Satz mit einer Lücke, wo der Name stünde, und nie einen Satz ohne Verb.
 
 b) **Behaupte NIEMALS, Daten seien „gefiltert", „maskiert" oder „aus Datenschutzgründen nicht verfügbar".** Kein „⚠️ Datenschutzfilter aktiv", kein „wende dich an einen Administrator". Du siehst \`[masked]\` — der User bekommt den echten Wert. Erfinde maskierte Werte niemals selbst.
+   **Ausnahme — vom Server gemeldet:** Nennt das Ergebnis von \`v4_render_answer\` Spalten unter „Could not be rendered", dann konnte der Server deren Inhalt NICHT darstellen (z.B. einen Confluence-Seiteninhalt) und hat das unter der Tabelle vermerkt. Diese Tatsache darfst du weitergeben: der Inhalt dieser Spalte wurde nicht angezeigt; ein Administrator kann den Datenschutz-Modus des Agenten auf „Bypass" stellen. Ein Feld mit \`"shape":"nested"\` im Digest ist eine verschachtelte Struktur — versprich nie seinen „wörtlichen" Inhalt.
 
 b2) **Aussagen über den Schutz-STATUS von Daten sind Tatsachenbehauptungen — nur belegte sind erlaubt.** Du weißt über den Datenschutz-Status einer Datei oder eines Tool-Ergebnisses **ausschließlich** das, was in einem \`PRIVACY STATUS\`-Satz, einem \`[dataset-imported]\`-, \`[attachment-content]\`- oder \`[attachment-not-ingested]\`-Block oder im Digest steht. Gib genau das wieder — wörtlich, nicht ausgeschmückt.
 
@@ -1676,24 +2453,34 @@ d) **Dateien zusammenführen / Duplikate entfernen (Dedup):** Hochgeladene Tabel
    3. \`v4_distinct\` mit \`by: ["__k_E-Mail"]\` (oder \`["__k_Vorname","__k_Nachname"]\`), \`keep: "first"\`.
    4. Ausgabe über \`v4_render_answer\` bzw. — wenn der User eine Datei will — \`create_xlsx\` mit der Ergebnis-\`datasetId\`. \`__k_*\`-Spalten **nie** in \`columns\` aufnehmen.
    Die Zeilenzahl vor und nach \`v4_distinct\` steht in den Digests — nenne die Differenz als Anzahl entfernter Duplikate. Fehlt einer Datei die \`__k_\`-Spalte (steht im \`[dataset-imported]\`-Block), ist dateiübergreifendes Dedup nicht möglich — sag genau das. **Frag den User nicht, ob er selbst deduplizieren möchte** — das ist deine Aufgabe.
+
+e) **Rückfragen zu einer früher gezeigten Tabelle.** Die Zeilen einer gerenderten Tabelle gelten nur für ihren Turn — im nächsten Turn sind sie weg, und du hast sie nie gesehen. Wie die Tabelle entstand, steht in ihrer \`Table provenance\`-Notiz (im Ergebnis von \`v4_render_answer\` bzw. im früheren Gesprächsverlauf als \`<!-- orchestrator:rendered_table … -->\`): Quell-Tool, Schritte (Filter-Felder und -Operatoren, Sortierung, Top-N, Spalten) und Zeilenzahl — ohne Werte. Bezieht sich der User auf „die Tabelle" („die erste Person aus der Tabelle", „Zeile 3"):
+   1. Führe **dieselbe Quell-Abfrage** erneut aus (derselbe Fach-Agent, gleiche Frage, gleicher Umfang) und wende **dieselben Schritte in derselben Reihenfolge** an (gleiche Filter, gleiche Sortierung und Richtung).
+   2. Weicht die neue Zeilenzahl von der Notiz ab, fehlt die Notiz, oder kannst du einen Schritt nicht nachbilden (z.B. weil seine Filterwerte nicht in der Notiz stehen), dann **sag ausdrücklich, dass deine Antwort auf einer neuen Abfrage beruht** und von der angezeigten Tabelle abweichen kann — und behaupte nicht, du beschreibst „die Tabelle".
 `
     : '';
 
   return `${assistantIdentity}
 
 Sprache: Antworte immer auf Deutsch, außer der Nutzer wechselt explizit die Sprache.
-
+Kündige Tool-Aufrufe nicht mit Zwischentext an (z.B. „Ich prüfe zuerst mein Memory.“) — solcher Text wird dem Nutzer nicht gezeigt. Schreib die Antwort, wenn die Daten da sind.
+${answerVerbosityBlock ? '\n' + answerVerbosityBlock : ''}
 Werkzeuge:
 - \`memory\` (virtuelles /memories-Verzeichnis): Persistiere Domänen-Learnings, Nutzer-Präferenzen, Geschäfts-Konventionen und häufige Anfragen. Der Memory wird über Sessions hinweg geteilt und ist global für diesen Agent. Lies zu Beginn jeder neuen Aufgabe einmal den Verzeichnisinhalt, bevor du antwortest, damit du auf relevante Learnings zurückgreifen kannst. Lege neue Learnings in themenbezogenen Dateien ab (z.B. /memories/customers/kundenname.md, /memories/observations/2026-q2.md).
 ${graphBlock}${chatParticipantsBlock}${askUserChoiceBlock}${suggestFollowUpsBlock}${calendarBlock}${extraToolDocs.length > 0 ? '\n' + extraToolDocs.map((doc) => `- ${doc.trim()}`).join('\n') + '\n' : ''}
 Fach-Agenten (Routing-Regel: wähle anhand der Fragedomäne; bei Mischfragen beide/mehrere aufrufen und Ergebnisse zusammenführen):
 ${domainList}
 
+**Tool-Runden sparen** (jede Runde kostet den Nutzer Sekunden):
+- Voneinander unabhängige Tool-Calls (mehrere Fach-Agenten, Regel-Datei + Fach-Agent, mehrere Abfragen) setzt du im SELBEN Schritt ab — sie laufen parallel.
+- Formuliere eine Delegation vollständig in EINER Frage (Zeitraum, Filter, Gruppierung z. B. „je Monat“, gewünschte Felder), statt erst zu sondieren und dann nachzufassen.
+
 Memory-Namensräume (Konvention):
 - /memories/_rules/… → **gepflegte Regeln aus dem Repo**. Nicht eigenständig überschreiben oder löschen. Nur ergänzen, wenn der Nutzer es ausdrücklich bestätigt.
 - /memories/customers/… → stabile Fakten zu einzelnen Kunden.
 - /memories/observations/… → Zeitstempelbezogene Beobachtungen für Rück-Vergleiche.
-- /memories/sessions/<scope>/YYYY-MM-DD.md → **chronologische Q&A-Transkripte**, von der Middleware geschrieben (nicht von dir). Diese enthalten echte vorangegangene Konversationen. Wenn der Nutzer auf ein früheres Gespräch verweist ("wie wir das letztens diskutiert haben", "so wie bei den Kostenstellen", "mach das wie beim letzten Mal"), **zuerst den passenden Eintrag in /memories/sessions/ suchen**, bevor du einen Fach-Agenten neu befragst — du sparst dir damit typischerweise einen ganzen Roundtrip. Aber: lies nicht standardmäßig alle Sessions, das wäre Token-Verschwendung. Nur auf Rückbezug gezielt nachschlagen.
+- /memories/sessions/<scope>/YYYY-MM-DD.md → **chronologische Q&A-Transkripte**, von der Middleware geschrieben (nicht von dir). Diese enthalten echte vorangegangene Konversationen. Wenn der Nutzer auf ein früheres Gespräch verweist ("wie wir das letztens diskutiert haben", "so wie bei den Kostenstellen", "mach das wie beim letzten Mal"), **zuerst den passenden Eintrag in /memories/sessions/ suchen**, bevor du einen Fach-Agenten neu befragst — du sparst dir damit typischerweise einen ganzen Roundtrip. Aber: lies nicht standardmäßig alle Sessions, das wäre Token-Verschwendung. Nur auf Rückbezug gezielt nachschlagen. Bei aktivem Datenschutz-Schild verweigert das memory-Tool diesen Pfad (die Transkripte tragen echte Werte); frühere Gespräche kommen dann nur über den mitgegebenen Kontext — versuch es dort nicht erneut.
+- Bei aktivem Datenschutz-Schild verweigert das memory-Tool außerdem jede Notiz, die in einem Gespräch ohne Schild geschrieben wurde. Lies sie nicht erneut und ändere sie nicht; lege neue Notizen in einer eigenen Datei ab.
 
 ${contextMemoryBlock}**Regel für /memories/_rules/ lesen:**
 - Bei einer **neuen fachlichen Frage** (Erstfrage zu einer Domäne in dieser Session, oder Wechsel der Domäne) zuerst die relevanten Regel-Dateien unter /memories/_rules/ lesen und die Konventionen strikt befolgen.
@@ -1768,12 +2555,32 @@ interface ParallelSlot {
   readonly subEvents: ChatStreamEvent[];
   readonly invocation: InvocationHandle | undefined;
   readonly promise: Promise<string>;
+  readonly meta: ToolDispatchMeta;
   readonly started: number;
   lastHeartbeat: number;
   settled: boolean;
   output?: string;
   isError?: boolean;
   durationMs?: number;
+}
+
+/**
+ * Per-dispatch facts the tool loops need beyond the result string. Written by
+ * `dispatchToolDeadlined`, read once the dispatch settled.
+ */
+interface ToolDispatchMeta {
+  /** A verifier re-entry handed back the first run's result; the handler did
+   *  not run (`toolReplayLedger.ts`). The run trace flags the call. */
+  replayed: boolean;
+}
+
+/** The call's input asks the memory tool to read (`view`), not to write. */
+function isMemoryViewCall(input: unknown): boolean {
+  return (
+    typeof input === 'object' &&
+    input !== null &&
+    (input as { command?: unknown }).command === 'view'
+  );
 }
 
 /**
@@ -1919,6 +2726,25 @@ function mcpObservationDigest(raw: string): string {
 }
 
 /**
+ * Whether an MCP server's operator `privacy_bypass` is in force for this tool.
+ * The flag is read LIVE by server id (a reload is additive and won't update a
+ * baked marker), then routed through `resolveEffectivePrivacyMode`, so the org
+ * clamp `OMADIA_PRIVACY_FORCE_GUARDED` holds it back to guarded at every seam
+ * that reads it: masking, the input replay and Knowledge-Graph ingestion.
+ */
+function isMcpServerBypassInForce(serverId: string | undefined, toolName: string): boolean {
+  if (!isMcpServerPrivacyBypassed(serverId)) return false;
+  return (
+    resolveEffectivePrivacyMode({
+      storedMode: 'bypass',
+      storedScopes: undefined,
+      toolName,
+      env: process.env,
+    }) === 'bypass'
+  );
+}
+
+/**
  * Per-tool dispatch deadline (W0-2). Every tool of an iteration is dispatched
  * into one `Promise.allSettled` (non-streaming) / race loop (streaming), so a
  * single sub-agent that never returns used to pin the WHOLE parallel batch for
@@ -2024,6 +2850,16 @@ function toolDeadlineError(name: string, timeoutMs: number): string {
 const TOOL_DISPATCH_DISCARDED = '__omadia_tool_dispatch_discarded__';
 
 /**
+ * Per-dispatch provenance for a refusal `dispatchToolInner` authored itself
+ * (unavailable / not granted / unknown tool). Such text names only the tool
+ * and its plugin, so the tool-error redaction in `dispatchToolDeadlined` lets
+ * it through as it is — keyed on this box, never on the text's shape.
+ */
+interface KernelRefusalBox {
+  text?: string;
+}
+
+/**
  * Wrap a slot observer so sub-agent events emitted AFTER the deadline are
  * dropped. A sub-agent that keeps running past its abort would otherwise keep
  * pushing `sub_tool_use`/`sub_tool_result` events into a turn that already
@@ -2118,6 +2954,9 @@ export class Orchestrator {
   private readonly audienceRoleSources: RoleSourceRegistry;
   private readonly sessionBriefing: SessionBriefingService | undefined;
   private readonly factExtractor: FactExtractor | undefined;
+  /** Writes a turn's session-log row and fact extraction — now, or offered to
+   *  the request's record while a verifier may re-enter it (commit-on-delivery). */
+  private readonly turnRecords: TurnRecordWriter;
   /** #133 E0 — optional side-channel turn-hook runner (see OrchestratorOptions). */
   private readonly turnHookRegistry: TurnHookRunner | undefined;
   private readonly askUserChoiceTool: AskUserChoiceTool | undefined;
@@ -2135,6 +2974,7 @@ export class Orchestrator {
   private readonly findFreeSlotsTool: FindFreeSlotsTool | undefined;
   private readonly bookMeetingTool: BookMeetingTool | undefined;
   private readonly responseGuard: (() => ResponseGuardService | undefined) | undefined;
+  private readonly agentQuality: ProfileQualityConfig | undefined;
   private readonly privacyGuard: (() => PrivacyGuardService | undefined) | undefined;
   private readonly turnReceiptStore: (() => TurnReceiptStore | undefined) | undefined;
   /**
@@ -2181,6 +3021,8 @@ export class Orchestrator {
   /** #967 — this Agent's own authored name. See
    *  `OrchestratorOptions.identityName`. */
   private readonly identityName: string | undefined;
+  /** Operator's answer-size contract (see OrchestratorOptions.answerVerbosity). */
+  private readonly answerVerbosity: AnswerVerbosity;
   /** #644 — resolved operator disclosure config (undefined → shipping default
    *  on every channel). See {@link AiDisclosureSetup}. */
   private readonly aiDisclosure: AiDisclosureSetup | undefined;
@@ -2203,6 +3045,20 @@ export class Orchestrator {
    * the public `ChatTurnInput` surface and entries are GC'd with the turn.
    */
   private readonly screeningReentries = new WeakSet<ChatTurnInput>();
+  /**
+   * Turns whose privacy finalisation the verifier wrapper defers until its
+   * own model requests are done (see `privacyEgress.ts`). Weakly keyed on
+   * the caller's input object, like `screeningReentries`.
+   */
+  private readonly privacyEgress = new PrivacyEgressHandover();
+  /**
+   * The tool replay ledger a verifier bound to an input for its request
+   * (`toolReplayLedger.ts`, {@link bindToolReplayLedger}). Same identity
+   * contract as {@link screeningReentries}: keyed on the input OBJECT, read
+   * once at the top of the turn entry point — before the input is re-bound —
+   * and GC'd with it.
+   */
+  private readonly toolReplayLedgers = new WeakMap<ChatTurnInput, ToolReplayLedger>();
   private readonly nativeTools: NativeToolRegistry;
   /**
    * Per-turn scratchpad for the routine list smart-card emitted in-band by
@@ -2288,6 +3144,7 @@ export class Orchestrator {
     this.findFreeSlotsTool = options.findFreeSlotsTool;
     this.bookMeetingTool = options.bookMeetingTool;
     this.responseGuard = options.responseGuard;
+    this.agentQuality = options.agentQuality;
     this.privacyGuard = options.privacyGuard;
     this.turnReceiptStore = options.turnReceiptStore;
     this.pluginConfigGet = options.pluginConfigGet;
@@ -2306,6 +3163,7 @@ export class Orchestrator {
     this.assistantIdentity =
       options.assistantIdentity?.trim() || DEFAULT_ASSISTANT_IDENTITY;
     this.identityName = options.identityName?.trim() || undefined;
+    this.answerVerbosity = options.answerVerbosity ?? DEFAULT_ANSWER_VERBOSITY;
     this.aiDisclosure = options.aiDisclosure;
     this.disclosureSeen =
       options.aiDisclosureSeenStore ?? new InMemoryDisclosureSeenStore();
@@ -2313,6 +3171,10 @@ export class Orchestrator {
     this.securityScreener = options.securityScreener;
     this.securityAuditSink = options.securityAuditSink;
     this.sessionLogger = options.sessionLogger;
+    this.turnRecords = new TurnRecordWriter({
+      sessionLogger: options.sessionLogger,
+      factExtractor: options.factExtractor,
+    });
     this.entityRefBus = options.entityRefBus;
     this.contextRetriever = options.contextRetriever;
     this.audienceGrants = options.audienceGrants;
@@ -2324,13 +3186,44 @@ export class Orchestrator {
     // #1102 — the wired five get a spec + handler so the loopback MCP server
     // advertises and dispatches them on the subscription-CLI path; memory and
     // get_chat_participants stay marker-only (see registerKernelNativeTools).
-    registerKernelNativeTools(this.nativeTools, {
-      knowledgeGraphTool: this.knowledgeGraphTool,
+    registerKernelNativeTools(this.nativeTools, this.kernelNativeInstances());
+  }
+
+  /**
+   * The instances this build's kernel natives dispatch to on a path that
+   * knows no turn (the subscription-CLI loopback, see
+   * {@link kernelNativeHandler}).
+   */
+  private kernelNativeInstances(): KernelNativeInstances {
+    return {
+      // This handler knows no turn. For an agent whose context memory
+      // restricts the graph tool per turn it would read every room of the
+      // tenant, so it sees nothing instead (`unrestrictedGraphToolAllowed`).
+      knowledgeGraphTool:
+        this.knowledgeGraphTool && !this.unrestrictedGraphToolAllowed()
+          ? { handle: (input: unknown) => this.knowledgeGraphTool!.handle(input, NOTHING_VISIBLE) }
+          : this.knowledgeGraphTool,
       askUserChoiceTool: this.askUserChoiceTool,
       suggestFollowUpsTool: this.suggestFollowUpsTool,
       findFreeSlotsTool: this.findFreeSlotsTool,
       bookMeetingTool: this.bookMeetingTool,
-    });
+    };
+  }
+
+  /**
+   * #1585 — the handler THIS build dispatches kernel native `name` to, for a
+   * dispatcher outside the in-process loop (the subscription-CLI
+   * `ToolDispatchService`). The shared registry holds the first build's
+   * handler, whose pending card no later build ever drains; this one writes
+   * to the instance {@link drainCliTurnCards} reads.
+   *
+   * `undefined` when a plugin owns the name (its registered handler wins, as
+   * before) or this build has no instance for it.
+   */
+  public kernelNativeHandler(name: string): ((input: unknown) => Promise<string>) | undefined {
+    if (!isKernelNativeRegistration(this.nativeTools.get(name))) return undefined;
+    const instance = pickKernelNative(this.kernelNativeInstances(), name);
+    return instance ? (input: unknown) => instance.handle(input) : undefined;
   }
 
   /** Fresh {@link LoopGuard} for one turn, wired to this Agent's thresholds. */
@@ -2373,6 +3266,8 @@ export class Orchestrator {
   private async maybePromoteTurn(opts: {
     turnId: string | undefined;
     userId: string | undefined;
+    /** Member-scoped memory — see `PromoteTurnInput.owners`. */
+    owners?: readonly string[];
     palaiaExcerpt: PalaiaExcerpt | undefined;
     fallbackAssistantAnswer: string;
   }): Promise<string | undefined> {
@@ -2387,6 +3282,7 @@ export class Orchestrator {
       turnId: opts.turnId,
       userId: opts.userId,
       threshold: this.autoPromoteThreshold,
+      ...(opts.owners !== undefined ? { owners: opts.owners } : {}),
       fallbackAssistantAnswer: opts.fallbackAssistantAnswer,
       // Per-orchestrator isolation: stamp the producing Agent so auto-promoted
       // MK default-isolates to it (team/public promotion stays cross-agent).
@@ -2401,6 +3297,9 @@ export class Orchestrator {
         ? { durableKinds: this.autoPromoteDurableKinds }
         : {}),
       ...(opts.palaiaExcerpt ? { palaiaExcerpt: opts.palaiaExcerpt } : {}),
+      // #1527 — with an extractor installed, no excerpt means it failed:
+      // skip rather than store the raw answer prefix.
+      excerptRequired: this.excerptExtractor !== undefined,
     };
     try {
       const result = await promoteTurnIfSignificant(promotionInput);
@@ -2415,15 +3314,56 @@ export class Orchestrator {
   }
 
   /**
+   * Starts the save-as-memory excerpt of a streamed answer and returns it as
+   * a promise — restored to real values, never rejecting (a miss is
+   * `undefined`). Started as soon as the answer is known, so its Haiku call
+   * overlaps the row write; under a verifier that may re-enter the request
+   * (`deferringLedger`) nobody awaits it before `done` at all: it runs
+   * alongside the verifier and lands on the `done` that goes out through the
+   * request's commit (`finishRequestDone`). Measured live, awaiting it before
+   * `done` held the verifier back by ~2–5 s on a plain chat turn.
+   *
+   * The restorer is snapshotted synchronously, before the first await: the
+   * call may outlive the pass's privacy handle (finalized after the
+   * verifier), and the snapshot stays valid after `finalize` dropped the map.
+   */
+  private startPalaiaExcerpt(
+    privacy: PrivacyTurnHandle | undefined,
+    wireUserMessage: string,
+    wireAnswer: string,
+  ): Promise<PalaiaExcerpt | undefined> {
+    if (!this.excerptExtractor) return Promise.resolve(undefined);
+    const restore = privacy?.snapshotPromptRestorer();
+    const startedAt = Date.now();
+    return this.maybeExtractExcerpt(wireUserMessage, wireAnswer)
+      .then((excerpt) => {
+        console.log(
+          `[orchestrator] palaia-excerpt ${excerpt ? 'ok' : 'none'} ms=${String(Date.now() - startedAt)}`,
+        );
+        return restoreExcerptForPersistence(restore, excerpt);
+      })
+      .catch((err: unknown) => {
+        console.error(
+          '[orchestrator] palaia-excerpt restore failed (continuing without enrichment):',
+          err instanceof Error ? err.message : err,
+        );
+        return undefined;
+      });
+  }
+
+  /**
    * Slice 4a — fetch a Palaia-Excerpt for the save-as-memory modal. No-op
    * when the extractor isn't installed. All failure paths return
    * `undefined` so the `done` yield never throws on an enrichment miss.
    *
-   * Note: we currently pass the raw user message + assistant answer
-   * directly. Hint precedence (`<palaia-hint type=…>`) is supported by
-   * the extractor API but not yet wired here — that requires surfacing
-   * the capture-filter's parseHints output, which is hidden behind the
-   * sessionLogger.log pipeline today. Slice 4c can revisit when the
+   * Note: the caller passes the turn's WIRE variants (#361): the user
+   * message as `maskTurnPromptForWire` left it (masked only while
+   * `mask_user_prompt` is on) and the answer as the model wrote it, before
+   * restore; it restores the excerpt (`restoreExcerptForPersistence`) before
+   * persisting or showing it. Hint precedence (`<palaia-hint type=…>`) is
+   * supported by the extractor API but not yet wired here — that requires
+   * surfacing the capture-filter's parseHints output, which is hidden behind
+   * the sessionLogger.log pipeline today. Slice 4c can revisit when the
    * decision becomes reachable from this scope.
    */
   private async maybeExtractExcerpt(
@@ -2616,32 +3556,42 @@ export class Orchestrator {
     // drained ONCE per turn (it clears on read), so we partition by kind in
     // this single pass: `diagram` → inline image (render_diagram), `file` →
     // downloadable document (@omadia/plugin-office).
+    //
+    // A verifier re-entry replays the first run's calls without running
+    // them, so their sinks stay empty: the ledger keeps what each tool
+    // attached in the first run and hands it back for the tools this pass
+    // replayed (`toolReplayLedger.ts`) — the same file, built once.
+    const ledger = turnContext.current()?.toolReplayLedger;
+    const collected: Array<{ readonly kind: string; readonly payload: unknown }> = [];
     for (const entry of this.nativeTools.listWithHandler()) {
       if (!entry.attachmentSink) continue;
       const payloads = entry.attachmentSink();
       if (!payloads?.length) continue;
-      for (const p of payloads) {
-        if (p.kind === 'diagram') {
-          diagrams.push(p.payload as DiagramAttachment);
-        } else if (p.kind === 'file') {
-          const f = p.payload as {
-            url: string;
-            altText: string;
-            mediaType: string;
-            sizeBytes?: number;
-            producer?: string;
-          };
-          files.push({
-            kind: 'file',
-            url: f.url,
-            altText: f.altText,
-            mediaType: f.mediaType,
-            ...(f.sizeBytes !== undefined ? { sizeBytes: f.sizeBytes } : {}),
-            ...(f.producer ? { producer: f.producer } : {}),
-          });
-        }
-        // Unknown kinds flow nowhere today — a future adapter can add a branch.
+      ledger?.recordAttachments(entry.name, payloads);
+      collected.push(...payloads);
+    }
+    collected.push(...(ledger?.takeReplayedAttachments() ?? []));
+    for (const p of collected) {
+      if (p.kind === 'diagram') {
+        diagrams.push(p.payload as DiagramAttachment);
+      } else if (p.kind === 'file') {
+        const f = p.payload as {
+          url: string;
+          altText: string;
+          mediaType: string;
+          sizeBytes?: number;
+          producer?: string;
+        };
+        files.push({
+          kind: 'file',
+          url: f.url,
+          altText: f.altText,
+          mediaType: f.mediaType,
+          ...(f.sizeBytes !== undefined ? { sizeBytes: f.sizeBytes } : {}),
+          ...(f.producer ? { producer: f.producer } : {}),
+        });
       }
+      // Unknown kinds flow nowhere today — a future adapter can add a branch.
     }
     return { diagrams, files };
   }
@@ -2783,9 +3733,16 @@ export class Orchestrator {
         'und ruf kein Tool auf.'
       );
     }
+    // The replay is one dispatch: a connect prompt the manager answers it with
+    // is recorded here, and only that exact text skips the shield below.
+    const authPromptMint = new McpAuthPromptMint();
     let result: string | undefined;
     try {
-      result = await replayer.replay(record, reply.inputResponses);
+      result = await runHandlerAtMostOnce(turnContext.current()?.toolReplayLedger, () =>
+        runWithMcpAuthPromptMint(authPromptMint, () =>
+          replayer.replay(record, reply.inputResponses),
+        ),
+      );
     } catch (err) {
       console.error(
         '[orchestrator] MCP input replay failed:',
@@ -2800,7 +3757,7 @@ export class Orchestrator {
         'Sag das dem User und ruf kein Tool auf.'
       );
     }
-    const guardedResult = await this.guardReplayResult(record, result);
+    const guardedResult = await this.guardReplayResult(record, result, authPromptMint);
     // The collected VALUES are deliberately absent from this note: they may be
     // secrets the user typed for the server, and this text goes on the LLM wire
     // and into the session log. Only the outcome travels.
@@ -2825,40 +3782,36 @@ export class Orchestrator {
    * live call where it already does today and applies the SAME privacy boundary
    * here, immediately before the note is put on the LLM wire.
    *
-   * Fail-open is deliberate parity with ordinary dispatch: if receipt recording
-   * or interning throws, we warn and continue with the raw result rather than
-   * breaking the turn after the user already supplied the requested input.
+   * Failure handling is parity with ordinary dispatch. Receipt recording is
+   * best-effort: if `recordBypassedTool` throws for a bypassed server, we warn
+   * and the bypass still applies. Interning fails CLOSED: if
+   * `internToolResultV4` throws, the model gets `internFailedNotice` instead
+   * of the raw result, like at every dispatch seam.
    */
   private async guardReplayResult(
     record: PendingMcpInput,
     rawResult: string,
+    /** The connect prompts the manager produced during this replay. */
+    authPromptMint: McpAuthPromptMint,
   ): Promise<string> {
     const privacy = turnContext.current()?.privacyHandle;
     if (privacy === undefined) return rawResult;
 
-    if (isMcpServerPrivacyBypassed(record.serverId)) {
-      const effective = resolveEffectivePrivacyMode({
-        storedMode: 'bypass',
-        storedScopes: undefined,
-        toolName: record.toolName,
-        env: process.env,
-      });
-      if (effective === 'bypass') {
-        try {
-          await privacy.recordBypassedTool({
-            toolName: record.toolName,
-            pluginId: mcpDomainForServer(record.serverName),
-            reason: 'operator_setting',
-            bytes: Buffer.byteLength(rawResult, 'utf8'),
-          });
-        } catch (err) {
-          console.warn(
-            `[orchestrator.mcpInputReplay:${record.serverId}:${record.toolName}] privacy.recordBypassedTool threw — bypass still applied:`,
-            err,
-          );
-        }
-        return rawResult;
+    if (isMcpServerBypassInForce(record.serverId, record.toolName)) {
+      try {
+        await privacy.recordBypassedTool({
+          toolName: record.toolName,
+          pluginId: mcpDomainForServer(record.serverName),
+          reason: 'operator_setting',
+          bytes: Buffer.byteLength(rawResult, 'utf8'),
+        });
+      } catch (err) {
+        console.warn(
+          `[orchestrator.mcpInputReplay:${record.serverId}:${record.toolName}] privacy.recordBypassedTool threw — bypass still applied:`,
+          err,
+        );
       }
+      return rawResult;
     }
 
     // #1097 — a replay the server answered with `isError`, or that failed in
@@ -2872,16 +3825,25 @@ export class Orchestrator {
     // Not every failed replay looks like that: `handleFailure` answers an
     // auth-shaped failure with the provider's connect prompt instead (`🔒 …`
     // plus the `<mcp-auth-required>` block the chat UI turns into a Connect
-    // card), which carries no `Error:` prefix. `isControlFlowToolResult`
-    // covers both carriers — interning the prompt destroyed the card and left
-    // the model narrating success over a masked digest.
+    // card), which carries no `Error:` prefix. Interning the prompt destroyed
+    // the card and left the model narrating success over a masked digest. It
+    // is recognised by provenance — the manager recorded this exact text in
+    // `authPromptMint` during the replay — because a replayed result whose
+    // text merely STARTS like the prompt is the remote server's data and is
+    // interned below like any other.
     //
-    // Known limit (#1097): the text behind an MCP `Error:` prefix is the
-    // REMOTE server's own body, so this passthrough trusts foreign error
-    // text — the trade-off #1105 already made on the chat path, not a new one
-    // taken here.
-    if (isControlFlowToolResult(rawResult)) {
-      return rawResult;
+    // The text behind an MCP `Error:` prefix is the REMOTE server's own body,
+    // so it is not trusted: it goes through the same tool-error redaction as
+    // on the chat path (redacted, or withheld whole when it is a record dump),
+    // and the connect prompt is receipted — see `toolErrorRedaction.ts`.
+    if (isGuardedControlFlowResult(rawResult, authPromptMint)) {
+      return guardControlFlowResult({
+        toolName: record.toolName,
+        result: rawResult,
+        privacy,
+        site: 'orchestrator.mcpInputReplay',
+        authPromptMint,
+      });
     }
     try {
       const v4 = await privacy.internToolResultV4({
@@ -2890,11 +3852,12 @@ export class Orchestrator {
       });
       return v4.digestText;
     } catch (err) {
+      // Fail closed, like every dispatch seam (`internFailedNotice`). The
+      // provider's error can quote the result it was handed: class and code only.
       console.warn(
-        `[orchestrator.mcpInputReplay:${record.serverId}:${record.toolName}] privacy.internToolResultV4 threw — sending raw replay result:`,
-        err,
+        `[orchestrator.mcpInputReplay:${record.serverId}:${record.toolName}] privacy.internToolResultV4 threw ${errorClassForLog(err)} — replay result WITHHELD`,
       );
-      return rawResult;
+      return internFailedNotice(record.toolName);
     }
   }
 
@@ -3004,7 +3967,11 @@ export class Orchestrator {
 
     let routed: SeamMessage;
     try {
-      routed = fromLlmResponse(await this.provider.complete(toLlmRequest(params)));
+      routed = fromLlmResponse(
+        await this.provider.complete(
+          toLlmRequest(params, undefined, this.provider.id),
+        ),
+      );
     } catch (err) {
       console.error(
         '[orchestrator] card-router pass failed (continuing without card):',
@@ -3111,6 +4078,151 @@ export class Orchestrator {
   }
 
   /**
+   * Issue #1102 — the `memory` handler a subscription-CLI turn may use: the
+   * one this loop's own dispatch would use for the same turn
+   * (`turnMemory.handler`, from `MemoryBinder` — the axis that keeps team A's
+   * notes out of team B), behind the same plugin readiness gate. `undefined`
+   * when there is none (no memory provider, binder refused the turn, plugin
+   * not ready): the CLI then gets no memory tool. Never the registry's own
+   * `memory` entry, which is bound to the raw root store. Like in-process, a
+   * binder that throws for the turn's origin yields the agent-private stack
+   * (`bindTurnMemory`'s fallback), not a refusal.
+   */
+  public async bindCliTurnMemory(input: ChatTurnInput): Promise<CliTurnMemory | undefined> {
+    const memoryAgentId = this.nativeTools.get(MEMORY_TOOL_NAME)?.agentId;
+    if (!this.isToolAvailable(memoryAgentId)) return undefined;
+    const turnMemory = await this.bindTurnMemoryForTurn(input);
+    if (turnMemory.handler === undefined) return undefined;
+    // The tier block the in-process prompt adds for a context-bound turn.
+    const tierBlock = turnMemory.memoryPrompt
+      ? MEMORY_PROMPT_BLOCKS[turnMemory.memoryPrompt].trim()
+      : '';
+    return {
+      handler: turnMemory.handler,
+      instructions: tierBlock.length > 0 ? `${CLI_MEMORY_RULES}\n\n${tierBlock}` : CLI_MEMORY_RULES,
+    };
+  }
+
+  /**
+   * Issue #1391 — the context recall the in-process turn runs before it calls
+   * the model (`retrievePriorContext`: verbatim tail, entity and full-text
+   * hits from the graph, cross-session plans / processes / insights, the
+   * session briefing), for a turn the subscription CLI answers. Same guards
+   * (audience floor, context-memory isolation, fresh check) and the same
+   * `kg_recall` / `kg_graph` annotation events.
+   *
+   * The text goes into the CLI's system prompt unmasked: the CLI path has no
+   * privacy handle (see `CliChatAgent.maskHistory`). Never throws; a turn
+   * without a retriever, scope or user recalls nothing.
+   */
+  public async recallCliContext(input: ChatTurnInput): Promise<CliRecalledContext> {
+    const turnMemory = await this.bindTurnMemoryForTurn(input);
+    const { text, recalled } = await this.retrievePriorContext(
+      input,
+      input.userMessage,
+      turnMemory?.isolation,
+    );
+    const events: ChatStreamEvent[] = [
+      ...this.toRecallAnnotationEvents(recalled),
+      ...(await this.toKgGraphAnnotationEvents(recalled)),
+    ];
+    return {
+      ...(text !== undefined && text.trim().length > 0 ? { text } : {}),
+      ...(events.length > 0 ? { events } : {}),
+    };
+  }
+
+  /**
+   * Issue #1391 — persist a turn the subscription CLI answered, the way the
+   * in-process `done` branch persists its own: the session-log row (markdown
+   * transcript, chat-session mirror and the graph's `Session` / `Turn` / `Run`
+   * / `ToolCall` nodes, with the capture filter on the way in), fact
+   * extraction, the save-as-memory excerpt, auto-promotion, the KG-insert
+   * pulse and the `onAfterTurn` hooks. Before this the CLI path wrote a usage
+   * row and nothing else, so Memory and the session log stayed empty for every
+   * turn on that provider.
+   *
+   * No privacy handle exists on this path (the CLI child gets the turn
+   * unmasked, see `CliChatAgent.maskHistory`), so the row carries the real
+   * texts and no masked view, and the facts are extracted from the same texts.
+   *
+   * Never throws: every step is best-effort, as on the in-process path, and a
+   * turn without a session scope (a CLI sub-agent's single shot) writes nothing.
+   */
+  public async recordCliTurn(
+    input: ChatTurnInput,
+    turn: CliCompletedTurn,
+  ): Promise<CliTurnRecord> {
+    if (!input.sessionScope) return {};
+    const turnMemory = await this.bindTurnMemoryForTurn(input);
+    // The trace's owner as the in-process path resolves it: a channel turn
+    // whose sender arrives only through `origin` carries a raw channel id in
+    // `userId`, and `ingestRun` drops a trace owned by that.
+    const { userId: _rawTraceOwner, ...traceWithoutOwner } = turn.runTrace;
+    const runTrace = { ...traceWithoutOwner, ...runTraceUserSpread(input) };
+    let persistedTurnId: string | undefined;
+    if (this.sessionLogger) {
+      persistedTurnId = await this.turnRecords.writeRow(
+        {
+          scope: input.sessionScope,
+          userMessage: input.userMessage,
+          assistantAnswer: turn.answer,
+          toolCalls: turn.toolCalls,
+          iterations: turn.iterations,
+          ...(input.userId ? { userId: input.userId } : {}),
+          ...turnOwnersField(turnMemory),
+          runTrace,
+          entityRefs: [],
+          // #1507 — a CLI turn runs without the Privacy Shield.
+          unprotected: true,
+        },
+        'cli answer',
+      );
+    }
+    this.turnRecords.startFactExtraction(
+      persistedTurnId,
+      this.factExtractor
+        ? { userMessage: input.userMessage, assistantAnswer: turn.answer }
+        : undefined,
+      [],
+    );
+    const captureDisclosure = this.turnRecords.takeCaptureDisclosure(persistedTurnId);
+    const palaiaExcerpt = await this.maybeExtractExcerpt(input.userMessage, turn.answer);
+    const autoPromotedMkId = await this.maybePromoteTurn({
+      turnId: persistedTurnId,
+      userId: input.userId,
+      ...turnOwnersField(turnMemory),
+      palaiaExcerpt,
+      fallbackAssistantAnswer: turn.answer,
+    });
+    const events: ChatStreamEvent[] = [
+      ...(await this.toKgInsertAnnotationEvents(autoPromotedMkId)),
+      ...this.toAnnotationEvents(
+        await this.runTurnHook(
+          'onAfterTurn',
+          // The CLI turn's own id, the one its cost-ledger row carries. No
+          // `onBeforeTurn` runs on this path, so a hook that keys state on
+          // the turn id finds none — as for any turn it did not plan.
+          turn.turnId,
+          input,
+          {
+            assistantAnswer: turn.answer,
+            ...(persistedTurnId ? { turnExternalId: persistedTurnId } : {}),
+          },
+          2000,
+        ),
+      ),
+    ];
+    return {
+      ...(persistedTurnId ? { turnId: persistedTurnId } : {}),
+      ...(captureDisclosure ? { captureDisclosure } : {}),
+      ...(palaiaExcerpt ? { palaiaExcerpt } : {}),
+      ...(autoPromotedMkId ? { autoPromotedMkId } : {}),
+      ...(events.length > 0 ? { events } : {}),
+    };
+  }
+
+  /**
    * Install the per-turn SSO context on the calendar tools before the tool
    * loop, and remove it after — so a tool invocation on a subsequent turn
    * without an assertion can't accidentally reuse a stale token.
@@ -3135,6 +4247,44 @@ export class Orchestrator {
   }
 
   /**
+   * Starts the prior-context recall — `retrievePriorContext` plus the wire
+   * mask of the recalled text (`maskRecalledForWire`) — WITHOUT awaiting it,
+   * so a caller can let it overlap `onBeforeTurn`. Measured live (#1633
+   * follow-up), the two were the largest serial legs before the first model
+   * call on a chat turn: the recall's C1 scan of the session tail (~3 s cold)
+   * and the plan-runner's two Haiku calls in the hook (~3 s) — and neither
+   * needs the other's result.
+   *
+   * The returned promise is pre-handled: a rejection does not fire
+   * `unhandledRejection` while the hook is still running; the caller's
+   * `await` rethrows it at the point where the sequential code used to throw
+   * (a `blocked` recall mask still refuses the turn, #1547).
+   */
+  private startPriorContextRecall(
+    input: ChatTurnInput,
+    wireUserMessage: string,
+    turnMemory: TurnMemoryBinding | undefined,
+    privacy: PrivacyTurnHandle | undefined,
+  ): Promise<PriorContextRecall> {
+    const recall = (async (): Promise<PriorContextRecall> => {
+      const retrieved = await this.retrievePriorContext(
+        input,
+        wireUserMessage,
+        turnMemory?.isolation,
+      );
+      // #361 — the recalled TEXT is LLM-bound wire content: it carries real
+      // values persisted from earlier turns, so it is masked through the SAME
+      // turn map before injection (answer-side restore covers these spans).
+      // The structured `recalled` payload stays raw — it goes to the UI, not
+      // the model. Its stored-turn segments let C1 skip turns already scanned.
+      const priorContext = await maskRecalledForWire(privacy, retrieved.text, retrieved.segments);
+      return { ...retrieved, priorContext };
+    })();
+    recall.catch(() => undefined);
+    return recall;
+  }
+
+  /**
    * Retrieve conversational context for the current turn. Returns undefined
    * on any retriever failure so a transient graph hiccup never blocks the
    * user-facing answer. Called exactly once per turn; the result is passed
@@ -3147,6 +4297,8 @@ export class Orchestrator {
     // text this returns flows INTO the LLM prompt, so the recall query must
     // not itself carry a raw PII span the mask pass just removed.
     wireUserMessage?: string,
+    // `enforce-strict` — see `TurnMemoryBinding.isolation`.
+    isolation?: TurnMemoryBinding['isolation'],
   ): Promise<{
     text: string | undefined;
     recalled: RecalledContext | undefined;
@@ -3159,6 +4311,13 @@ export class Orchestrator {
      * on tail alone. Absent on every early return — no retrieval, no recall.
      */
     recallUsed?: boolean;
+    /**
+     * `text` partitioned into whole stored units (briefing, recall blocks,
+     * headers, one segment per rendered turn) — `segments.join('') === text`.
+     * Lets the privacy mask scan each stored turn once and cache it across
+     * turns. Absent when the retriever does not report segments.
+     */
+    segments?: readonly string[];
   }> {
     // Use console.error so the trace lands on stderr — Fly's log aggregator
     // has been observed to drop some stdout INFO lines under load, and this
@@ -3193,12 +4352,42 @@ export class Orchestrator {
     // when this turn HAS a scope to be restricted to; without one there is
     // nothing to compare a hit against, so the restriction would silently drop
     // every candidate rather than the cross-session ones.
+    // `enforce-strict` narrows the same way, by the knowledge's owner context:
+    // a context-bound turn recalls only its own conversation, never a
+    // conversation of the same agent that arrived through another channel.
+    // Without a conversation there is nothing it may recall at all.
+    //
+    // `members` replaces the conversation boundary with the owner rule: a turn
+    // recalls this agent's knowledge that everyone present owns, from any
+    // conversation, through any channel. An unknown room recalls nothing.
+    if (isolation?.kind === 'conversation' && isolation.scope === null) {
+      console.error('[context] SKIP context-memory enforce-strict: no conversation scope');
+      return { text: undefined, recalled: undefined };
+    }
+    if (isolation?.kind === 'members' && isolation.audience === null) {
+      console.error('[context] SKIP context-memory members: room audience unknown');
+      return { text: undefined, recalled: undefined };
+    }
+    const audienceOwners = isolation?.kind === 'members' ? isolation.audience ?? undefined : undefined;
     const restrictRecallScope =
-      input.sessionScope !== undefined && (await crossScopeRecallRefused())
-        ? graphScopeFor(this.agentId, input.sessionScope)
-        : undefined;
+      isolation?.kind === 'conversation'
+        ? (isolation.scope ?? undefined)
+        : audienceOwners === undefined &&
+            input.sessionScope !== undefined &&
+            (await crossScopeRecallRefused())
+          ? graphScopeFor(this.agentId, input.sessionScope)
+          : undefined;
     if (restrictRecallScope !== undefined) {
-      console.error('[context] audience-floor: recall restricted to this conversation');
+      console.error(
+        `[context] recall restricted to this conversation (${
+          isolation ? 'context-memory enforce-strict' : 'audience-floor'
+        })`,
+      );
+    }
+    if (audienceOwners !== undefined) {
+      console.error(
+        `[context] recall restricted to knowledge all ${String(audienceOwners.length)} present own (context-memory members)`,
+      );
     }
     try {
       // OB-74 (Palaia Phase 5) — switch to the token-budget assembler. The
@@ -3221,9 +4410,26 @@ export class Orchestrator {
         ...(input.sessionScope
           ? { sessionScope: graphScopeFor(this.agentId, input.sessionScope) }
           : {}),
-        ...(input.userId ? { userId: input.userId } : {}),
+        // `members`: the owner rule replaces the per-user filter — the turn's
+        // `userId` is the sender's channel-native id, and the knowledge a room
+        // may use was spoken by everyone in it, not by the sender alone.
+        ...(input.userId && audienceOwners === undefined ? { userId: input.userId } : {}),
         ...(restrictRecallScope !== undefined
           ? { restrictToScope: restrictRecallScope }
+          : {}),
+        ...(audienceOwners !== undefined ? { audienceOwners } : {}),
+        // #1507 — under a Privacy Shield, cross-session recall skips turns
+        // stored `unprotected`: their answers hold values no shield masked,
+        // and only detector-visible spans (e-mails, not names) would be
+        // masked on the way back in. Without a shield nothing is protected
+        // either way, so recall stays as it was.
+        ...(turnContext.current()?.privacyHandle !== undefined
+          ? { excludeUnprotected: true }
+          : {}),
+        // A canvas turn carries its context in the skeleton: recall only the
+        // last few tail turns (see CANVAS_RECALL_TAIL_TURNS).
+        ...(input.canvasSessionId !== undefined
+          ? { tailLimit: CANVAS_RECALL_TAIL_TURNS }
           : {}),
       });
       console.error(
@@ -3236,7 +4442,9 @@ export class Orchestrator {
       // service short-circuits cheaply when there's no scope, no
       // session, or the existing summary is fresh.
       let briefingText = '';
-      if (this.sessionBriefing && input.sessionScope) {
+      // `members`: the briefing summarises the whole conversation, including
+      // turns from before someone present joined it — not theirs to read.
+      if (this.sessionBriefing && input.sessionScope && audienceOwners === undefined) {
         try {
           const briefing = await this.sessionBriefing.loadSessionBriefing({
             // Qualified scope so the briefing reads THIS Agent's turns only.
@@ -3265,6 +4473,16 @@ export class Orchestrator {
           : briefingText.length > 0
             ? briefingText
             : result.text;
+      // The same composition, kept partitioned: the briefing (with its
+      // separator) is one unit, the assembler's segments follow unchanged.
+      const segments =
+        result.segments === undefined
+          ? undefined
+          : briefingText.length > 0 && result.text.length > 0
+            ? [`${briefingText}\n\n---\n\n`, ...result.segments]
+            : briefingText.length > 0
+              ? [briefingText]
+              : result.segments;
       // Recall vs. tail. `AssembledHit.origin` is the leg that DELIVERED the
       // hit: `'tail'` is the verbatim window of THIS conversation, `'entity'`
       // and `'fts'` are topical recall the retriever went looking for. Only the
@@ -3284,6 +4502,7 @@ export class Orchestrator {
         text: merged.length > 0 ? merged : undefined,
         recalled: result.recalled,
         ...(recallUsed ? { recallUsed: true } : {}),
+        ...(segments !== undefined && merged.length > 0 ? { segments } : {}),
       };
     } catch (err) {
       console.error(
@@ -3395,7 +4614,18 @@ export class Orchestrator {
    * `runTurn()` directly.
    */
   async chat(input: ChatTurnInput): Promise<SemanticAnswer> {
-    const result = await this.runTurn(input);
+    const turn = await this.runTurn(input);
+    // Phase 3 — the level this answer was generated under, on EVERY answer
+    // this path returns (choice cards, direct-line, gate returns included),
+    // so a channel can always offer the neighbouring steps. Resolved here,
+    // once, at the boundary; the inner success path sets the same value.
+    const verbosityResolved: ChatTurnResult = turn.answerVerbosity
+      ? turn
+      : { ...turn, answerVerbosity: this.resolveAnswerVerbosity(input) };
+    const result: ChatTurnResult = {
+      ...verbosityResolved,
+      answer: localizeRefusalNotice(verbosityResolved.answer, this.turnLocale(input)),
+    };
     // #644 — the disclosure resolution rides `result.aiDisclosure` (set by
     // `runTurn`). Thread the scope + shared seen-store ONLY when there is a
     // marker to fold, so `toSemanticAnswer` folds it on the FIRST turn of the
@@ -3414,6 +4644,18 @@ export class Orchestrator {
           }
         : undefined,
     );
+  }
+
+  /**
+   * Phase 3 — the answer-size level a turn runs under: the user's per-turn
+   * pick (parsed, never trusted) over the configured slot (Agent, else
+   * installation, else `standard`).
+   */
+  private resolveAnswerVerbosity(input: ChatTurnInput): AnswerVerbosityInfo {
+    const turnVerbosity = parseAnswerVerbosity(input.answerVerbosity);
+    return turnVerbosity
+      ? { effective: turnVerbosity, source: 'turn' }
+      : { effective: this.answerVerbosity, source: 'configured' };
   }
 
   /**
@@ -3517,11 +4759,24 @@ export class Orchestrator {
   private discloseDoneEvent(
     done: Extract<ChatStreamEvent, { type: 'done' }>,
     input: ChatTurnInput,
+    ledger?: ToolReplayLedger,
   ): Extract<ChatStreamEvent, { type: 'done' }> {
     // #1094 — expand a degraded turn's marker into the localized notice FIRST,
     // so the disclosure line below folds onto readable text (and so the fold's
     // own first-turn bookkeeping sees the same answer every other path sees).
-    const delivered = this.expandDegradedDoneEvent(done, input);
+    // Phase 3 — the level this answer ran under rides every `done` the
+    // stream yields (this is the single funnel), on the disclosure-off path
+    // as well; `chat()` does the same for the non-streaming result.
+    const expanded = this.expandDegradedDoneEvent(done, input);
+    // OB-81 — a row written inside the turn; a deferred row's disclosure comes
+    // with its commit instead (`finishRequestDone`).
+    const captureDisclosure = this.turnRecords.takeCaptureDisclosure(expanded.turnId);
+    const delivered = {
+      ...expanded,
+      answer: localizeRefusalNotice(expanded.answer, this.turnLocale(input)),
+      answerVerbosity: this.resolveAnswerVerbosity(input),
+      ...(captureDisclosure ? { captureDisclosure } : {}),
+    };
     const aiDisclosure = this.resolveTurnDisclosure(input);
     if (!aiDisclosure) return delivered;
     const { text } = applyAiDisclosure(delivered.answer, {
@@ -3529,9 +4784,33 @@ export class Orchestrator {
       ...(input.sessionScope
         ? { scope: this.disclosureFoldScope(input.sessionScope) }
         : {}),
-      seen: this.disclosureSeen,
+      seen: requestDisclosureSeen(this.disclosureSeen, ledger),
     });
     return { ...delivered, answer: text, aiDisclosure };
+  }
+
+  /**
+   * #1582 — the AI disclosure for a subscription-CLI turn (`CliChatAgent`),
+   * which never passes through this class's output paths: the same per-turn
+   * resolution (operator level, per-channel override, locale, assistant name,
+   * note) and the same first-turn fold on the same seen-store as an
+   * API-key turn. Returns the answer unchanged and no carrier for an
+   * operator `'off'`.
+   */
+  discloseCliAnswer(
+    answer: string,
+    input: ChatTurnInput,
+  ): { readonly answer: string; readonly aiDisclosure?: AiDisclosure } {
+    const aiDisclosure = this.resolveTurnDisclosure(input);
+    if (!aiDisclosure) return { answer };
+    const { text } = applyAiDisclosure(answer, {
+      disclosure: aiDisclosure,
+      ...(input.sessionScope
+        ? { scope: this.disclosureFoldScope(input.sessionScope) }
+        : {}),
+      seen: this.disclosureSeen,
+    });
+    return { answer: text, aiDisclosure };
   }
 
   /**
@@ -3556,6 +4835,18 @@ export class Orchestrator {
    * replacing that table with "your question is still unanswered" would drop
    * a real answer. The event stays flagged `degraded` for audit/health/verifier.
    */
+  /** The language a delivered notice is written in: the turn's disclosure
+   *  locale, else the operator's configured one (composers default to `de`). */
+  private turnLocale(input: ChatTurnInput): string | undefined {
+    return this.resolveTurnDisclosure(input)?.locale ?? this.aiDisclosure?.locale;
+  }
+
+  /** {@link turnLocale} for a runtime outside this loop: the subscription
+   *  CLI's refusal under `OMADIA_PRIVACY_FORCE_GUARDED` (#1535). */
+  public noticeLocale(input: ChatTurnInput): string | undefined {
+    return this.turnLocale(input);
+  }
+
   private expandDegradedDoneEvent(
     done: Extract<ChatStreamEvent, { type: 'done' }>,
     input: ChatTurnInput,
@@ -3565,7 +4856,7 @@ export class Orchestrator {
     // `'off'`; the notice is not a disclosure and must still be localized, so
     // it falls back to the operator's configured locale and then to the
     // composer's own `'de'` default.
-    const locale = this.resolveTurnDisclosure(input)?.locale ?? this.aiDisclosure?.locale;
+    const locale = this.turnLocale(input);
     return {
       ...done,
       answer: composeTurnIncompleteText(
@@ -3609,11 +4900,17 @@ export class Orchestrator {
    * — runs the screener. Returns the decision the caller acts on:
    *   - `proceed` with the input to run, possibly augmented with the untrusted
    *     marker on `extraSystemHint` (fail-open evidence);
-   *   - `quarantine` with a refusal answer — the turn must NOT run.
+   *   - `quarantine` with a refusal answer — the turn must NOT run;
+   *   - `blocked` when the text for the screener could not be masked — the
+   *     turn fails closed with the privacy refusal, as a blocked model call
+   *     does, and nothing reaches the screener.
    *
-   * `exempt` short-circuits to `proceed` for an MCP input-card reply: that is a
-   * machine envelope this harness produced, not untrusted inbound content.
-   * Never throws — a screener failure fails open (screenProvenance contract).
+   * The screener gets the turn's masked text: the caller mints the privacy
+   * handle before the gate. `exempt` short-circuits to `proceed` for an MCP
+   * input-card reply: that is a machine envelope this harness produced, not
+   * untrusted inbound content. A screener failure fails open
+   * (screenProvenance contract); only a privacy provider that throws while
+   * masking propagates.
    */
   /**
    * #579 — mark an input object as a re-entry of an already-screened user turn.
@@ -3626,12 +4923,170 @@ export class Orchestrator {
     this.screeningReentries.add(input);
   }
 
+  /**
+   * Verifier wrapper hook: the NEXT turn run with this input object (via
+   * {@link runTurn} or {@link chatStream}) does not finalize its privacy
+   * state. It returns its result without a receipt and hands a
+   * {@link PrivacyEgressContinuation} over instead — collect it with
+   * {@link takePrivacyEgress} and finalize it once the verifier is done. The
+   * mark is one-shot (consumed when the turn starts); set it before every
+   * run. No effect without a privacy provider.
+   */
+  markPrivacyFinalizeHeld(input: ChatTurnInput): void {
+    this.privacyEgress.hold(input);
+  }
+
+  /** The continuation a held turn handed over, once. See
+   *  {@link markPrivacyFinalizeHeld}. */
+  takePrivacyEgress(input: ChatTurnInput): PrivacyEgressContinuation | undefined {
+    return this.privacyEgress.take(input);
+  }
+
+  /** True when a `privacy.redact@1` provider is installed right now. Lets the
+   *  verifier wrapper refuse to verify raw when no continuation came back. */
+  isPrivacyGuardActive(): boolean {
+    return this.privacyGuard?.() !== undefined;
+  }
+
+  /**
+   * #1535 — must a turn be refused because the org policy requires a shield
+   * and `service` (this turn's resolution of the provider) is absent? Read
+   * per turn, so chat resumes the moment the guard is back. The trade-off is
+   * deliberate: while the guard is down (boot before it activates, a failed
+   * reactivation, a tripped breaker) chat answers with a refusal instead of
+   * running unmasked; the instance, the admin UI and the store keep working,
+   * so an operator can repair or reinstall the guard.
+   */
+  private shieldRequiredButMissing(service: PrivacyGuardService | undefined): boolean {
+    return service === undefined && isPrivacyForceGuarded(process.env);
+  }
+
+  /**
+   * Hand a held turn's privacy state to the verifier wrapper instead of
+   * finalizing it. The receipt's model attribution is taken NOW: the
+   * verifier runs for seconds, and the bounded attribution map could evict
+   * the entry before the receipt is persisted.
+   */
+  private stashPrivacyEgress(args: {
+    readonly callerInput: ChatTurnInput;
+    readonly handle: PrivacyTurnHandle;
+    readonly turnId: string;
+    readonly input: ChatTurnInput;
+    /** What the verifier may see; `undefined` ⇒ it verifies nothing. */
+    readonly wireView: TurnWireView | undefined;
+    /** The answer is system data only — nothing for the verifier to check. */
+    readonly systemDataOnly?: boolean;
+    /** The request pass when a verifier may re-enter the request: the
+     *  receipt then joins the request's one row (`requestReceipts.ts`). */
+    readonly bound: BoundPass | undefined;
+  }): void {
+    const ran = this.takeTurnAttribution(args.turnId);
+    this.privacyEgress.stash(
+      args.callerInput,
+      createPrivacyEgressContinuation({
+        handle: args.handle,
+        receiptId: args.turnId,
+        wireView: args.wireView,
+        systemDataOnly: args.systemDataOnly === true,
+        settle: async () => {
+          try {
+            const receipt = await args.handle.finalize(args.input.userMessage);
+            if (receipt) {
+              await this.settleTurnReceipt(args.turnId, args.input, receipt, args.bound, ran);
+            }
+            return receipt;
+          } catch (err) {
+            console.warn(
+              '[orchestrator] privacyGuard.finalizeTurn threw — receipt dropped:',
+              err,
+            );
+            return undefined;
+          }
+        },
+      }),
+    );
+  }
+
+  /**
+   * Closes a pass that neither finalized nor handed its privacy state over:
+   * it threw, its stream ended before `done` (an `error`, or a client that
+   * left), or the inbound screening quarantined it after masking its text
+   * for the screener. Finalizing drops the surrogate map and cached spans — real
+   * values must not outlive the turn — and drains the receipt of what the
+   * pass did put on the wire. That receipt is kept like a delivered pass's
+   * (`settleTurnReceipt`): the turn's own row, or the request's one row when
+   * a verifier bound a ledger. A re-entry closed here offers to own that row
+   * like any pass, as an abandoned re-entry does (`closeAbandonedReentry`):
+   * it keeps it only while no earlier pass had a receipt, so the first run —
+   * whose continuation is often finalized later — still takes it over.
+   */
+  private async closeUndeliveredPass(pass: UndeliveredPass): Promise<void> {
+    const { handle, turnId, input, bound } = pass;
+    const ran = this.takeTurnAttribution(turnId);
+    let receipt: PrivacyReceipt | undefined;
+    try {
+      receipt = await handle.finalize(input.userMessage);
+    } catch (err) {
+      console.warn('[orchestrator] privacyGuard.finalizeTurn threw — receipt dropped:', err);
+      return;
+    }
+    if (receipt === undefined) return;
+    await this.settleTurnReceipt(turnId, input, receipt, bound, ran);
+  }
+
+  /**
+   * Binds a request's tool replay ledger (`toolReplayLedger.ts`) to an input
+   * object. The verifier binds it before the first run of a request it may
+   * re-enter, and again for every re-entry input — a correction retry is a NEW
+   * object. Keyed on object identity: pass the SAME input to {@link runTurn} or
+   * {@link chatStream}.
+   *
+   * A turn whose input carries a ledger records its tool results into it (the
+   * first run) or replays them (a re-entry, after `beginReentry()`): a call
+   * the first run made is replayed, never run again, and a re-entry that
+   * needs a call outside the first run — other than a kernel read — is
+   * abandoned with {@link ToolReplayAbortError}. A re-entry fires
+   * no per-call turn hook of its own. The binder owns the request's record:
+   * every pass — the first run included — offers its session-log row and its
+   * `onAfterTurn` answer to `ledger.turnRecord` instead of writing them, and
+   * its privacy receipt, with an offer to own the request's receipt row, to
+   * `ledger.receipts` — also a pass that threw, was abandoned or was left by
+   * its client; once it delivered, the binder calls
+   * `ledger.turnRecord.commit(pass)` for the pass it delivers and
+   * `ledger.receipts.commit()` (commit-on-delivery, `requestTurnRecord.ts`).
+   *
+   * Returns a function that removes the binding — call it when the request is
+   * over, so an input object a caller reuses never meets a stale ledger.
+   * Binding a ledger to an input that already carries another one is refused
+   * (it throws): two requests sharing one input object would replay each
+   * other's tool results. Re-binding the same ledger (a resample re-enters
+   * with the request's own input) is fine.
+   */
+  bindToolReplayLedger(input: ChatTurnInput, ledger: ToolReplayLedger): () => void {
+    const bound = this.toolReplayLedgers.get(input);
+    if (bound !== undefined && bound !== ledger) {
+      throw new Error(
+        '[orchestrator] a tool replay ledger is already bound to this input — refusing to bind another',
+      );
+    }
+    this.toolReplayLedgers.set(input, ledger);
+    return () => {
+      if (this.toolReplayLedgers.get(input) === ledger) this.toolReplayLedgers.delete(input);
+    };
+  }
+
   private async screenInboundTurn(
     input: ChatTurnInput,
-    opts: { readonly exempt: boolean },
+    opts: {
+      readonly exempt: boolean;
+      /** The turn's privacy handle, minted before the gate: the screener gets
+       *  the bundle masked through it ({@link screeningBundleForWire}). */
+      readonly privacy: PrivacyTurnHandle | undefined;
+    },
   ): Promise<
     | { readonly action: 'proceed'; readonly input: ChatTurnInput }
     | { readonly action: 'quarantine'; readonly answer: string }
+    | { readonly action: 'blocked'; readonly error: PromptMaskBlockedError }
   > {
     if (opts.exempt) return { action: 'proceed', input };
 
@@ -3652,7 +5107,20 @@ export class Orchestrator {
     const screener = this.securityScreener?.();
     let outcome: ScreenOutcome;
     if (screener) {
-      outcome = await screenProvenance(screener, pairs);
+      // The screener is an egress like the model call, so it gets the turn's
+      // masked text — masked only when it is called at all. A blocked mask
+      // fails the turn closed before anything is sent. The audit's
+      // `sourceTags` stay raw: they are a server-side record.
+      let screened = pairs;
+      if (hasScreenableContent(pairs)) {
+        try {
+          screened = await screeningBundleForWire(opts.privacy, input);
+        } catch (err) {
+          if (err instanceof PromptMaskBlockedError) return { action: 'blocked', error: err };
+          throw err;
+        }
+      }
+      outcome = await screenProvenance(screener, screened);
     } else if (hasScreenableContent(pairs)) {
       // Screening is ON and there is non-human content, but no screener is
       // wired → UNSCREENABLE. Fail open with evidence, never silently clear.
@@ -3730,62 +5198,217 @@ export class Orchestrator {
    *    not a hostile input — and dropping the user's turn over it would be the
    *    wrong trade. The fallback is the NARROWER scope, never a wider one.
    */
-  private bindTurnMemory(input: ChatTurnInput): TurnMemoryBinding {
+  /**
+   * May a turn without an isolation use `query_knowledge_graph` unrestricted
+   * (the whole tenant graph, as before)? Not for an agent whose context memory
+   * restricts the tool per turn: there, a turn the restriction cannot reach —
+   * a context-free turn, or the subscription-CLI path whose registered handler
+   * knows no turn — sees nothing.
+   */
+  private unrestrictedGraphToolAllowed(): boolean {
+    const mode = this.memoryBinder?.contextMemoryMode;
+    return mode !== 'enforce-strict' && mode !== 'members';
+  }
+
+  /**
+   * The turn's binding, with the room's audience resolved first when the
+   * agent runs `members` context memory. The audience is async (roster and
+   * identity lookups), the binding itself is not, so this is the one await in
+   * front of it. Only a turn that carries an `origin` can be context-bound, so
+   * no other turn pays for the lookup.
+   */
+  private async bindTurnMemoryForTurn(input: ChatTurnInput): Promise<TurnMemoryBinding> {
+    const binding = await this.resolveTurnMemory(input);
+    // Publish the graph boundary for reads outside the kernel's own recall
+    // (the plugin `KnowledgeGraphAccessor`).
+    const box = turnContext.current()?.graphReadScope;
+    if (box) box.value = this.graphReadScopeFor(binding);
+    return binding;
+  }
+
+  /** What a non-kernel graph read may see in this turn; undefined = unrestricted. */
+  private graphReadScopeFor(binding: TurnMemoryBinding): GraphReadScope | undefined {
+    const isolation = binding.isolation;
+    if (isolation?.kind === 'conversation') return { kind: 'conversation', scope: isolation.scope };
+    if (isolation?.kind === 'members') {
+      return {
+        kind: 'members',
+        audience: isolation.audience,
+        agentScopePrefix: agentScopePrefix(this.agentId),
+      };
+    }
+    return this.unrestrictedGraphToolAllowed() ? undefined : { kind: 'nothing' };
+  }
+
+  private async resolveTurnMemory(input: ChatTurnInput): Promise<TurnMemoryBinding> {
+    if (this.memoryBinder?.contextMemoryMode !== 'members' || !input.origin) {
+      return this.bindTurnMemory(input);
+    }
+    const audience = await resolveTurnAudience(
+      this.knowledgeGraph,
+      input,
+      turnContext.current()?.chatParticipants,
+    );
+    if (audience.kind === 'unknown') {
+      console.warn(
+        `[memory] members context memory: room audience unknown (${audience.reason}) — no member-scoped recall, and this turn's knowledge is owned by nobody`,
+      );
+    }
+    // Notes, too, belong to the people present — resolved before the binding,
+    // which stays synchronous.
+    let members: BoundTurnMemory;
+    try {
+      members = await this.memoryBinder.forAudience(input.origin, audience);
+    } catch (err) {
+      // Never `forOrigin` here: its channel tier is shared with whoever joins
+      // the chat later. No memory tool this turn; recall stays narrowed.
+      console.error('[security-audit] orchestrator: MemoryBinder.forAudience threw — no memory tool this turn:', err);
+      return {
+        handler: undefined,
+        memoryDenied: true,
+        contextBound: true,
+        memoryPrompt: 'members-unknown',
+        isolation: { kind: 'members', audience: audience.kind === 'known' ? audience.members : null },
+      };
+    }
+    return this.bindTurnMemory(input, audience, members);
+  }
+
+  /**
+   * The prefetched `/memories` index for this turn's hint, or undefined when
+   * the model keeps the ordinary read convention (`memoryIndexPrefetch.ts`).
+   * Not for a canvas turn (its hint suspends the read), a Fresh Check (the
+   * user asked to bypass memory) or a turn without memory access.
+   */
+  private async turnMemoryIndexBlock(
+    input: ChatTurnInput,
+    turnMemory: TurnMemoryBinding | undefined,
+  ): Promise<string | undefined> {
+    if (input.canvasSessionId !== undefined || input.freshCheck) return undefined;
+    if (turnMemory?.memoryDenied === true || turnMemory?.memoryPrompt === 'members-unknown') return undefined;
+    // The same readiness gate as offering and dispatching `memory` (#474): a
+    // registering plugin that is not ready means no memory read at all.
+    if (!this.isToolAvailable(this.nativeTools.get(MEMORY_TOOL_NAME)?.agentId)) return undefined;
+    const startedAt = Date.now();
+    const index = await prefetchMemoryIndex(turnMemory ? turnMemory.handler : this.memoryToolHandler);
+    if (!index.ok) {
+      if (index.reason !== 'no-handler') console.log(`[orchestrator] memory-index skipped reason=${index.reason}`);
+      return undefined;
+    }
+    console.log(`[orchestrator] memory-index prefetched chars=${String(index.listing.length)} ms=${String(Date.now() - startedAt)}`);
+    return memoryIndexHint(index.listing);
+  }
+
+  private bindTurnMemory(
+    input: ChatTurnInput,
+    audience?: TurnAudience,
+    membersBound?: BoundTurnMemory,
+  ): TurnMemoryBinding {
     const fallback: TurnMemoryBinding = {
       handler: this.memoryToolHandler,
       contextBound: false,
     };
     if (!this.memoryBinder) return fallback;
+    const mode = this.memoryBinder.contextMemoryMode;
+    const strict = mode === 'enforce-strict' || mode === 'members';
+    const isolation: TurnIsolation =
+      mode === 'members'
+        ? { kind: 'members', audience: audience?.kind === 'known' ? audience.members : null }
+        : {
+            kind: 'conversation',
+            scope: input.sessionScope ? graphScopeFor(this.agentId, input.sessionScope) : null,
+          };
     try {
-      const bound = this.memoryBinder.forOrigin(input.origin);
-      return { handler: bound.handler, contextBound: !bound.axes.isContextFree };
+      const bound = membersBound ?? this.memoryBinder.forOrigin(input.origin);
+      const contextBound = !bound.axes.isContextFree;
+      return {
+        handler: bound.handler,
+        contextBound,
+        memoryPrompt: memoryPromptFor(bound),
+        ...(strict && contextBound ? { isolation } : {}),
+      };
     } catch (err) {
       console.error(
         '[security-audit] orchestrator: MemoryBinder.forOrigin threw — falling back to the agent-private memory stack:',
         err,
       );
-      return fallback;
+      // A strict agent's turn that carried an origin is narrowed for recall
+      // even though its binding failed: the fallback must not be wider there.
+      return strict && input.origin ? { ...fallback, isolation } : fallback;
     }
   }
 
   private async runTurnCore(input: ChatTurnInput): Promise<ChatTurnResult> {
+    // Read on the caller's object, before `input` is re-bound below: a lookup
+    // after the re-binding would silently lose the ledger, and every re-entry
+    // would run its tools again. Without a bound ledger the turn gets one of
+    // its own that keeps no results — it only stops a repeat of a call whose
+    // outcome is unknown (`toolReplayLedger.ts`).
+    const boundLedger = this.toolReplayLedgers.get(input);
+    const toolReplayLedger = boundLedger ?? new ToolReplayLedger({ retainResults: false });
+    // Which pass of the request this is, for its receipt (`BoundPass`).
+    const bound = boundPassOf(boundLedger);
     const turnId = randomUUID();
+    // Verifier hand-over, read on the CALLER's object before `input` is
+    // re-bound below (MCP envelope, screening gate). One-shot.
+    const callerInput = input;
+    const holdPrivacyFinalize = this.privacyEgress.consumeHold(callerInput);
     // W2-1 (#544) — an MCP input card's answer arrives as a machine envelope in
     // `userMessage`. Normalise it HERE, before anything downstream reads the
     // field, so the envelope never reaches the session log, memory, the KG, the
     // privacy receipt or the chat transcript. The replay itself runs inside the
     // turn scope below (it needs the turn context for audit attribution).
     const mcpInputReply = parseMcpInputReply(input.userMessage);
+    if (mcpInputReply && toolReplayLedger.mode === 'replay') {
+      // The parked call is take-once and already ran in the first run: a
+      // re-entry would only learn that the input "no longer exists".
+      throw this.abandonReentryEarly(toolReplayLedger, REENTRY_ABANDONED.mcpInputReply);
+    }
     if (mcpInputReply) {
       input = { ...input, userMessage: mcpInputReplyLabel(mcpInputReply) };
     }
+    // Privacy-Proxy Slice 2.1 hook. When a `privacy.redact@1` provider is
+    // registered, mint a per-turn handle scoped to (sessionScope, turnId)
+    // and thread it through the AsyncLocalStorage so every `messages.create`
+    // / `messages.stream` site in the call tree (main + sub-agents) picks
+    // it up implicitly. After `chatInContext` returns we drain the
+    // turn-aggregated receipt and attach it to the result. Minted before the
+    // screening gate: the screener gets the turn's masked text too.
+    const sessionId = input.sessionScope ?? turnId;
+    const privacyService = this.privacyGuard?.();
+    const privacyHandle = privacyService
+      ? this.buildPrivacyHandle(privacyService, sessionId, turnId)
+      : undefined;
+    const gatePass: UndeliveredPass | undefined = privacyHandle
+      ? { handle: privacyHandle, turnId, input, bound }
+      : undefined;
     // #579 — inbound screening gate. Quarantine short-circuits BEFORE the turn
-    // scope opens, so a quarantined turn never runs the model or any tool.
-    // Proceed may hand back a marker-augmented input (fail-open evidence).
-    const gate = await this.screenInboundTurn(input, {
-      exempt: mcpInputReply !== undefined || this.screeningReentries.has(input),
-    });
+    // scope opens, so a quarantined turn never runs the model or any tool; its
+    // privacy state is closed here. Proceed may hand back a marker-augmented
+    // input (fail-open evidence). A blocked screening mask runs the turn into
+    // the privacy refusal below, the exit a blocked model call takes.
+    // #1535 — the org policy requires the shield and none is running: refuse
+    // before the screener (an egress too) or anything else sees the turn.
+    const gate = this.shieldRequiredButMissing(privacyService)
+      ? ({ action: 'blocked', error: new PrivacyShieldRequiredError() } as const)
+      : await this.closePassOnThrow(gatePass, () =>
+          this.screenInboundTurn(input, {
+            exempt: mcpInputReply !== undefined || this.screeningReentries.has(input),
+            privacy: privacyHandle,
+          }),
+        );
     if (gate.action === 'quarantine') {
+      if (gatePass) await this.closeUndeliveredPass(gatePass);
       return { answer: gate.answer, toolCalls: 0, iterations: 0 };
     }
-    input = gate.input;
+    const screeningBlocked = gate.action === 'blocked' ? gate.error : undefined;
+    if (gate.action === 'proceed') input = gate.input;
     // Inherit optional fields the channel adapter (e.g. Teams bot) set in an
     // outer ALS scope. The new child scope replaces turnId/turnDate for this
     // turn; carry-through fields like `chatParticipants` must be threaded
     // explicitly or the tool handlers would see them as undefined.
     const parent = turnContext.current();
 
-    // Privacy-Proxy Slice 2.1 hook. When a `privacy.redact@1` provider is
-    // registered, mint a per-turn handle scoped to (sessionScope, turnId)
-    // and thread it through the AsyncLocalStorage so every `messages.create`
-    // / `messages.stream` site in the call tree (main + sub-agents) picks
-    // it up implicitly. After `chatInContext` returns we drain the
-    // turn-aggregated receipt and attach it to the result.
-    const sessionId = input.sessionScope ?? turnId;
-    const privacyService = this.privacyGuard?.();
-    const privacyHandle = privacyService
-      ? this.buildPrivacyHandle(privacyService, sessionId, turnId)
-      : undefined;
     // #430 fixup (reviewer round 5) — resolve the canonical omadiaUserId ONCE
     // for the whole turn; see `resolveTurnOwnerIdentity` for the fallback
     // rules. Read by `QueryDatasetTool` and `ingestAttachments` via
@@ -3793,6 +5416,10 @@ export class Orchestrator {
     // re-deriving it independently.
     const turnOwner = await resolveTurnOwnerIdentity(this.knowledgeGraph, input);
     const resolvedOmadiaUserId = turnOwner.omadiaUserId;
+    // The run trace's User-Cluster, resolved before anything ingests it — a
+    // Teams turn names its sender only through `origin` (`resolveRunTraceOwner`).
+    const runTraceUserId = await resolveRunTraceOwner(this.knowledgeGraph, input, resolvedOmadiaUserId);
+    const runTraceOwner = runTraceUserId ? { userId: runTraceUserId } : {};
 
     // ── W4-1 — the missing `mcpUserKey` producer for CHANNEL turns ──────────
     // HTTP routes establish the identity in an outer scope (see
@@ -3843,6 +5470,11 @@ export class Orchestrator {
       (input.channelIdentity
         ? turnOwner.authSubjectKey || resolvedOmadiaUserId
         : undefined);
+    // What a throw out of the turn body closes (`closePassOnThrow`). `input`
+    // is final here: normalised and through the screening gate.
+    const undeliveredPass: UndeliveredPass | undefined = privacyHandle
+      ? { handle: privacyHandle, turnId, input, bound }
+      : undefined;
 
     return turnContext.run(
       {
@@ -3855,6 +5487,7 @@ export class Orchestrator {
         // per-user data with it.
         ...(input.userId ? { userId: input.userId } : {}),
         ...(resolvedOmadiaUserId ? { resolvedOmadiaUserId } : {}),
+        runTraceOwner,
         // W2-1 (#544) — one component of the MCP pending-input store key. Never
         // the whole key; see TurnContextValue.sessionScope.
         sessionScope: sessionId,
@@ -3862,6 +5495,13 @@ export class Orchestrator {
         // BY REFERENCE into every nested per-dispatch scope and a memory read
         // reaches the reader that assembles this turn's result.
         memoryFileRead: { value: false },
+        // The turn's wire view (prompt + answer), for a verifier hand-over.
+        wireView: {},
+        // #1543 — this turn's render provenance notes, for the persisted row.
+        renderProvenance: { notes: [] },
+        graphReadScope: {},
+        // Where this turn's model calls run — the sub-agents' fallback.
+        orchestratorExecution: {},
         ...(parent?.chatParticipants
           ? { chatParticipants: parent.chatParticipants }
           : {}),
@@ -3899,11 +5539,13 @@ export class Orchestrator {
         ...(parent?.canvasSentinelSink
           ? { canvasSentinelSink: parent.canvasSentinelSink }
           : {}),
+        toolReplayLedger,
       },
-      async () => {
+      () => this.closePassOnThrow(undeliveredPass, async () => {
         // W2-1 (#544) — forced replay of the parked MCP tool call, before the
-        // model runs. Writes its outcome onto the live turn context.
-        if (mcpInputReply) {
+        // model runs. Writes its outcome onto the live turn context. A
+        // refused turn (blocked mask, #1535 shield required) runs no tool.
+        if (mcpInputReply && !screeningBlocked) {
           await this.applyMcpInputReplay(mcpInputReply, input, turnId);
         }
         // #332 Layer 2 — Direct Line short-circuit (non-streaming / Teams
@@ -3916,10 +5558,18 @@ export class Orchestrator {
         // `input` is final here: the MCP-envelope normalisation and the
         // inbound-screening gate above have both already re-bound it, so the
         // origin the binding is derived from is the origin the turn ran with.
-        const turnMemory = this.bindTurnMemory(input);
-        const direct = await this.executeDirectLine(input, turnId, turnMemory);
-        let result: ChatTurnResult;
+        const turnMemory = await this.bindTurnMemoryForTurn(input);
+        // Commit-on-delivery: the request's `onAfterTurn` runs in the first
+        // run's hook context, whichever pass the verifier delivers.
+        this.bindRequestAfterTurn(boundLedger, turnId, input);
+        const direct = screeningBlocked
+          ? undefined
+          : await this.executeDirectLine(input, turnId, turnMemory);
+        let result: ChatTurnResult | undefined;
+        let promptMaskBlocked = false;
         try {
+          // The screening gate could not mask: fail closed right here.
+          if (screeningBlocked) throw screeningBlocked;
           result = direct ?? (await this.chatInContext(input, turnId, turnMemory));
           // #445 — an ordinary turn is by definition an UNBOUND turn (a live
           // binding would have produced a sticky dispatch), so stamp the
@@ -3930,20 +5580,40 @@ export class Orchestrator {
         } catch (err) {
           // #361 — failure-closed prompt masking: the prompt never reached
           // the model; answer with a generic privacy error instead of a raw
-          // 500. Audited above by the guard service itself.
+          // 500. Audited above by the guard service itself. A verifier
+          // re-entry is abandoned instead — its prompt (the correction hint
+          // included) never reached the model either, and the first answer's
+          // verdict decides; the privacy error is no answer to judge.
           if (err instanceof PromptMaskBlockedError) {
             console.error(`[orchestrator] ${err.message}`);
-            result = { answer: PROMPT_MASK_BLOCKED_ANSWER, toolCalls: 0, iterations: 0 };
-          } else {
+            if (toolReplayLedger.mode === 'replay') {
+              toolReplayLedger.abort(REENTRY_ABANDONED.promptMaskBlocked);
+            } else {
+              result = { answer: promptMaskBlockedAnswer(err), toolCalls: 0, iterations: 0 };
+              promptMaskBlocked = true;
+            }
+          } else if (!(err instanceof ToolReplayAbortError)) {
             throw err;
           }
         }
+        // The ONE authoritative check that a verifier re-entry stayed inside
+        // the first run's results. The tool loop stops at the first refused
+        // miss (post-batch), but a direct-line dispatch and a sub-agent loop
+        // fold the refusal into an answer of their own — this catches those.
+        // The pass's privacy scope is closed here, exactly once: the abort
+        // below is not closed again by `closePassOnThrow`.
+        if (result === undefined || toolReplayLedger.abortedTool !== undefined) {
+          await this.closeAbandonedReentry(toolReplayLedger, bound, privacyHandle, turnId, input);
+          throw new ToolReplayAbortError(toolReplayLedger.abortedTool ?? 'unknown');
+        }
+        let rendered: VerifierHandOver | undefined;
         // Privacy Shield v4 — when a v4_render_answer call produced the
         // answer this turn it is final and already safe (real values
         // materialized server-side from ground truth). Swap it in.
         if (privacyHandle) {
           const v4Rendered = await privacyHandle.takeRenderedAnswerV4();
           if (v4Rendered !== undefined) {
+            rendered = renderedVerifierHandOver(v4Rendered);
             result = {
               ...result,
               answer: v4Rendered.text,
@@ -3961,6 +5631,19 @@ export class Orchestrator {
             };
           }
         }
+        // What the verifier may see: the prompt exactly as this turn's model
+        // received it and the answer exactly as it wrote it, recorded BEFORE
+        // the answer loop restored the text. For a server-rendered v4 answer
+        // only the prose its model wrote — never the rendered rows, real
+        // values the model never saw (`renderedVerifierHandOver`). Nothing for
+        // a Direct Line relay (restored inside executeDirectLine) or the
+        // privacy refusal. Nothing recorded ⇒ nothing to verify.
+        const verifierWireView =
+          direct !== undefined || promptMaskBlocked
+            ? undefined
+            : rendered !== undefined
+              ? rendered.wireView
+              : recordedWireView();
         // #361 — restore prompt surrogates → real values over the final
         // answer (identity when the turn masked nothing). Must run BEFORE
         // finalize, which drops the turn's surrogate map.
@@ -3968,7 +5651,7 @@ export class Orchestrator {
           try {
             result = {
               ...result,
-              answer: await privacyHandle.restorePromptPseudonyms(result.answer),
+              answer: await restoreAnswerForUser(privacyHandle, result.answer),
             };
           } catch (err) {
             console.warn(
@@ -3977,11 +5660,32 @@ export class Orchestrator {
             );
           }
         }
+        // Verifier-wrapped turn: its requests must run under this turn's map
+        // and land in this turn's receipt, so finalize is handed over.
+        if (privacyHandle && holdPrivacyFinalize) {
+          this.stashPrivacyEgress({
+            callerInput,
+            handle: privacyHandle,
+            turnId,
+            input,
+            wireView: verifierWireView,
+            // A Direct Line relay is the specialist's answer, never system data.
+            systemDataOnly: direct === undefined && rendered?.systemDataOnly === true,
+            bound,
+          });
+          return result;
+        }
         if (privacyHandle) {
           try {
             const receipt = await privacyHandle.finalize(input.userMessage);
             if (receipt) {
-              await this.persistTurnReceipt(turnId, input, receipt);
+              await this.settleTurnReceipt(
+                turnId,
+                input,
+                receipt,
+                bound,
+                this.takeTurnAttribution(turnId),
+              );
               return { ...result, privacyReceipt: receipt };
             }
           } catch (err) {
@@ -3992,8 +5696,294 @@ export class Orchestrator {
           }
         }
         return result;
-      },
+      }),
     );
+  }
+
+  /** Run a turn body; a throw that escapes it never reached the finalize
+   *  block, so the pass is closed before rethrowing — its privacy state
+   *  dropped, its receipt kept (`closeUndeliveredPass`). An abandoned
+   *  verifier re-entry is the exception: it closed its privacy scope
+   *  itself, once, before throwing (`closeAbandonedReentry`). */
+  private async closePassOnThrow<T>(
+    pass: UndeliveredPass | undefined,
+    body: () => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await body();
+    } catch (err) {
+      if (pass && !(err instanceof ToolReplayAbortError)) await this.closeUndeliveredPass(pass);
+      throw err;
+    }
+  }
+
+  /**
+   * Writes the turn's receipt row — unless a verifier bound a ledger to the
+   * request (`requestReceipts.ts`): then the request has ONE row, owned by
+   * the earliest pass that had a receipt (the first run whenever it had one)
+   * and written by the binder once it delivered, with the receipt of every
+   * pass merged in. Every pass offers to own it, so the row exists whenever
+   * any pass had a receipt. A pass whose finalisation the verifier held
+   * (`stashPrivacyEgress`) comes here only once the verifier is done with it,
+   * so its receipt also covers the verifier's requests (`verifierEgress`).
+   * `ran` is the pass's model attribution, taken when the pass ended. Returns
+   * whether a row is (or will be) written under this turn's id — under a
+   * ledger, as far as the passes finalized so far tell.
+   */
+  private async settleTurnReceipt(
+    turnId: string,
+    input: ChatTurnInput,
+    receipt: PrivacyReceipt,
+    bound: BoundPass | undefined,
+    ran: { model: string; provider: string; fallbackUsed: boolean } | undefined,
+  ): Promise<boolean> {
+    if (bound === undefined) {
+      await this.persistTurnReceiptWith(turnId, input, receipt, ran);
+      return true;
+    }
+    return bound.ledger.receipts.add(receipt, {
+      pass: bound.pass,
+      rowId: turnId,
+      write: (merged) => this.persistTurnReceiptWith(turnId, input, merged, ran),
+    });
+  }
+
+  /**
+   * Ends a re-entry pass that needed a call outside the first run. Its
+   * privacy scope is finalized — the model did get the replayed results, so
+   * the receipt joins the request's, with the pass's offer to own the
+   * request's row (`settleTurnReceipt`) — and nothing of the pass is
+   * delivered.
+   */
+  private async closeAbandonedReentry(
+    ledger: ToolReplayLedger,
+    bound: BoundPass | undefined,
+    privacyHandle: PrivacyTurnHandle | undefined,
+    turnId: string,
+    input: ChatTurnInput,
+  ): Promise<void> {
+    console.warn(
+      `[orchestrator] verifier re-entry abandoned (turn ${turnId}): ${describeAbandonment(ledger.abortedTool ?? 'unknown')}`,
+    );
+    const ran = this.takeTurnAttribution(turnId);
+    if (privacyHandle === undefined) return;
+    try {
+      const receipt = await privacyHandle.finalize(input.userMessage);
+      if (receipt) await this.settleTurnReceipt(turnId, input, receipt, bound, ran);
+    } catch (err) {
+      console.warn('[orchestrator] privacyGuard.finalizeTurn threw — receipt dropped:', err);
+    }
+  }
+
+  /** A re-entry the orchestrator refuses before it starts
+   *  (`REENTRY_ABANDONED.mcpInputReply`). */
+  private abandonReentryEarly(ledger: ToolReplayLedger, reason: string): ToolReplayAbortError {
+    ledger.abort(reason);
+    console.warn(`[orchestrator] verifier re-entry abandoned before it started: ${describeAbandonment(reason)}`);
+    return new ToolReplayAbortError(reason);
+  }
+
+  /** True while a verifier re-entry runs: the request's first run already
+   *  fired its turn hooks, and its record is the verifier's to commit. */
+  private isReentryPass(): boolean {
+    return turnContext.current()?.toolReplayLedger?.mode === 'replay';
+  }
+
+  /**
+   * #361 — a direct-line turn's texts for its LLM-bound extra passes (fact
+   * extraction, the capture filter's scorer), masked through the turn's map
+   * (a direct-line turn masked nothing up to here): the user message like the
+   * turn's prompt, the restored specialist answer like a replayed answer —
+   * whatever `mask_user_prompt` says, since it carries real values. Without a
+   * handle, the texts as they are. Undefined when masking is `blocked`: both
+   * passes are then skipped (audited) rather than sent unmasked; the
+   * user-visible answer is unaffected.
+   */
+  private async directLineWireTexts(
+    privacy: PrivacyTurnHandle | undefined,
+    userMessage: string,
+    answer: string,
+  ): Promise<TurnMaskedView | undefined> {
+    try {
+      return {
+        userMessage: await maskPromptForWire(privacy, userMessage),
+        assistantAnswer: await maskReplayedAnswerForWire(privacy, answer),
+      };
+    } catch (err) {
+      if (!(err instanceof PromptMaskBlockedError)) throw err;
+      console.error(
+        `[orchestrator] direct-line fact extraction and scoring skipped — prompt masking blocked: ${err.message}`,
+      );
+      return undefined;
+    }
+  }
+
+  /** #361 — the direct-line fact-extraction prompt over the turn's masked
+   *  texts ({@link directLineWireTexts}), with the restorer snapshot that turns
+   *  extracted facts back into real values. Undefined without a fact
+   *  extractor, or when masking was `blocked`. */
+  private directLineFacts(
+    privacy: PrivacyTurnHandle | undefined,
+    wire: TurnMaskedView | undefined,
+  ): TurnFacts | undefined {
+    if (!this.factExtractor || wire === undefined) return undefined;
+    const restoreFacts = privacy?.snapshotPromptRestorer();
+    return { ...wire, ...(restoreFacts ? { restoreFacts } : {}) };
+  }
+
+  /**
+   * `onAfterTurn` for this pass's answer — or, while the record is deferred
+   * (commit-on-delivery, `requestTurnRecord.ts`), notes the answer: the
+   * verifier's commit fires the request's `onAfterTurn` once, for the pass it
+   * delivers ({@link bindRequestAfterTurn}).
+   */
+  private async afterTurn(
+    turnId: string,
+    input: ChatTurnInput,
+    answer: string,
+    turnExternalId: string | undefined,
+  ): Promise<TurnAnnotation[]> {
+    const ledger = this.turnRecords.deferringLedger();
+    if (ledger !== undefined) {
+      ledger.turnRecord.noteAnswer(ledger.pass, answer);
+      return [];
+    }
+    return this.fireTurnHook(
+      'onAfterTurn',
+      turnId,
+      input,
+      { assistantAnswer: answer, ...(turnExternalId ? { turnExternalId } : {}) },
+      2000,
+    );
+  }
+
+  /**
+   * Binds the request's `onAfterTurn` to the first run's hook context — the
+   * plan-runner keyed what `onBeforeTurn` materialised on this turn id — when
+   * the request's record is deferred to the verifier.
+   */
+  private bindRequestAfterTurn(
+    ledger: ToolReplayLedger | undefined,
+    turnId: string,
+    input: ChatTurnInput,
+  ): void {
+    if (ledger?.defersTurnRecord !== true || ledger.mode !== 'record') return;
+    ledger.turnRecord.bindAfterTurn(async (answer, turnExternalId) =>
+      this.toAnnotationEvents(
+        await this.runTurnHook(
+          'onAfterTurn',
+          turnId,
+          input,
+          { assistantAnswer: answer, ...(turnExternalId ? { turnExternalId } : {}) },
+          2000,
+        ),
+      ),
+    );
+  }
+
+  /**
+   * Post-batch fail-fast of the buffered tool loop: a re-entry that needed a
+   * call outside the first run stops here instead of handing the refusal to
+   * the model. `runTurnCore` re-checks at the end of the turn.
+   */
+  private throwIfReentryAbandoned(): void {
+    const tool = turnContext.current()?.toolReplayLedger?.abortedTool;
+    if (tool !== undefined) throw new ToolReplayAbortError(tool);
+  }
+
+  /** The streaming loop's counterpart of {@link throwIfReentryAbandoned}: the
+   *  event that ends an abandoned re-entry's stream. Only the verifier that
+   *  re-entered sees it; it delivers its first answer's outcome instead. */
+  private abandonedReentryEvent(): Extract<ChatStreamEvent, { type: 'error' }> | undefined {
+    const tool = turnContext.current()?.toolReplayLedger?.abortedTool;
+    if (tool === undefined) return undefined;
+    const correlationId = turnContext.currentTurnId();
+    return {
+      type: 'error',
+      ...(correlationId ? { correlationId } : {}),
+      message: new ToolReplayAbortError(tool).message,
+    };
+  }
+
+  /**
+   * How the replay ledger treats a call (`toolReplayLedger.ts`), in
+   * `dispatchToolInner`'s resolution order:
+   *  - `turn-local` — never recorded or replayed: its only effect is this
+   *    turn's own card state, which every pass sets up again;
+   *  - `read-only` — a kernel tool known not to change data (and a name that
+   *    resolves to the kernel's "unknown tool" refusal): may run on a re-entry
+   *    the first run did not make it on, and may be repeated after it threw;
+   *  - `write` — everything else. Plugin, MCP and domain tools count as writes:
+   *    the plugin contract has no read-only declaration, and a missing
+   *    `writeCapabilities` is not one (`execute` deliberately ships none).
+   */
+  private replayClassOf(
+    name: string,
+    input: unknown,
+    turnMemory: TurnMemoryBinding | undefined,
+  ): 'turn-local' | 'read-only' | 'write' {
+    const memoryHandler = turnMemory ? turnMemory.handler : this.memoryToolHandler;
+    if (name === MEMORY_TOOL_NAME && memoryHandler) {
+      return isMemoryViewCall(input) ? 'read-only' : 'write';
+    }
+    // A plugin's native tool is a write. The kernel's own full-form natives
+    // (#1102 gave them a handler too) are not plugins: they fall through to
+    // their per-name class below. Told apart by spec identity, exactly as
+    // `buildToolsList()` does — before this check ran first, a re-entry's new
+    // `query_knowledge_graph` call counted as a write and abandoned it.
+    const native = this.nativeTools.get(name);
+    if (native?.handler && !KERNEL_NATIVE_SPECS.has(native.spec)) return 'write';
+    if (name === KNOWLEDGE_GRAPH_TOOL_NAME && this.knowledgeGraphTool) return 'read-only';
+    if (name === QUERY_DATASET_TOOL_NAME && this.queryDatasetTool) return 'read-only';
+    if (name === CHAT_PARTICIPANTS_TOOL_NAME && this.chatParticipantsTool) return 'read-only';
+    if (name === ASK_USER_CHOICE_TOOL_NAME && this.askUserChoiceTool) return 'turn-local';
+    if (name === SUGGEST_FOLLOW_UPS_TOOL_NAME && this.suggestFollowUpsTool) return 'turn-local';
+    if (name === READ_ATTACHMENT_TOOL_NAME && this.readAttachmentTool) return 'read-only';
+    if (name === FIND_FREE_SLOTS_TOOL_NAME && this.findFreeSlotsTool) return 'read-only';
+    if (name === BOOK_MEETING_TOOL_NAME && this.bookMeetingTool) return 'write';
+    if (this.domainToolsByName.has(name)) return 'write';
+    return 'read-only';
+  }
+
+  /**
+   * What the replay ledger keeps of one call this pass executed:
+   *  - an MCP input sentinel or connect prompt the dispatch minted is
+   *    unreplayable: its provenance exists only in the dispatch that produced
+   *    it (replayed, it would be interned as data and its card lost), and a
+   *    re-entry that needs it is abandoned;
+   *  - a domain tool whose sub-agent interned datasets or ran a bypassed tool
+   *    under Privacy Shield is RE-RUN on a re-entry: its answer is prose over
+   *    datasets that lived in the first run's privacy scope, which ended with
+   *    that run. Re-run, its inner calls replay at their own seam and are
+   *    interned again in the re-entry's scope, so the bridge still carries
+   *    real rows;
+   *  - anything else is replayed as the raw result, with the sub-agent events
+   *    its dispatch emitted.
+   */
+  private replayRecordFor(
+    name: string,
+    result: string,
+    shielded: boolean,
+    scope: {
+      readonly sink: readonly string[];
+      readonly bypass: { readonly value: boolean };
+      readonly sentinelMint: McpInputSentinelMint;
+      readonly authPromptMint: McpAuthPromptMint;
+      readonly recorder: SubEventRecorder | undefined;
+    },
+  ): ToolReplayRecord {
+    if (isOwnMintedSentinel(scope.sentinelMint, result) || scope.authPromptMint.minted(result)) {
+      return { kind: 'unreplayable' };
+    }
+    if (
+      shielded &&
+      this.domainToolsByName.has(name) &&
+      (scope.sink.length > 0 || scope.bypass.value)
+    ) {
+      return { kind: 'rerun' };
+    }
+    const events = scope.recorder?.events ?? [];
+    return { kind: 'result', value: result, ...(events.length > 0 ? { subEvents: [...events] } : {}) };
   }
 
   /**
@@ -4084,6 +6074,15 @@ export class Orchestrator {
     return { provider, model, ...(effort !== undefined ? { effort } : {}), ...(fallback ? { fallback } : {}) };
   }
 
+  /**
+   * Publish where this turn runs into its context, so a sub-agent whose own
+   * model fails can continue on it (`TurnContextValue.orchestratorExecution`).
+   */
+  private static publishTurnExecution(exec: TurnExecution): void {
+    const box = turnContext.current()?.orchestratorExecution;
+    if (box) box.value = { provider: exec.provider, model: exec.model };
+  }
+
   /** #1033 W3 — after the hop, the fallback IS the execution for the rest of the turn. */
   private static afterFallback(exec: TurnExecution): TurnExecution {
     const fb = exec.fallback;
@@ -4101,11 +6100,30 @@ export class Orchestrator {
     input: ChatTurnInput,
     receipt: PrivacyReceipt,
   ): Promise<void> {
-    const store = this.turnReceiptStore?.();
     // Consume the attribution whether or not a store is wired: the entry has
     // no other reader and must not outlive the turn.
+    const ran = this.takeTurnAttribution(turnId);
+    await this.persistTurnReceiptWith(turnId, input, receipt, ran);
+  }
+
+  /** Read and drop a turn's attribution entry (see `turnAttribution`). */
+  private takeTurnAttribution(
+    turnId: string,
+  ): { model: string; provider: string; fallbackUsed: boolean } | undefined {
     const ran = this.turnAttribution.get(turnId);
     this.turnAttribution.delete(turnId);
+    return ran;
+  }
+
+  /** `persistTurnReceipt` with an attribution taken earlier — a turn whose
+   *  receipt is finalized after the verifier ran snapshots it at hand-over. */
+  private async persistTurnReceiptWith(
+    turnId: string,
+    input: ChatTurnInput,
+    receipt: PrivacyReceipt,
+    ran: { model: string; provider: string; fallbackUsed: boolean } | undefined,
+  ): Promise<void> {
+    const store = this.turnReceiptStore?.();
     if (!store) return;
     try {
       await store.record({
@@ -4292,7 +6310,7 @@ export class Orchestrator {
     // #361 privacy masking above (flag off ⇒ byte-identical verbatim relay).
     const collector = new RunTraceCollector({
       scope: input.sessionScope ?? turnId,
-      ...(input.userId ? { userId: input.userId } : {}),
+      ...runTraceUserSpread(input),
     });
     const handle = collector.beginInvocation(tool.name, candidate.agentId);
     const startedAt = Date.now();
@@ -4314,13 +6332,20 @@ export class Orchestrator {
         turnMemory,
       );
       // `createDomainTool.handle` does not throw on a sub-agent failure — it
-      // returns an `Error …` string. Treat that as a faithful failure too.
+      // returns the `Error:`-prefixed withheld notice — and `dispatchTool`
+      // resolves any other throw the same way. Treat both as a faithful
+      // failure too.
       status = /^error\b/i.test(verbatim.trimStart()) ? 'error' : 'success';
     } catch (err) {
-      // Faithful failure — never a cover-up or a hallucinated answer.
-      verbatim = `${candidate.label} could not respond: ${
-        err instanceof Error ? err.message : String(err)
-      }`;
+      // Backstop only: `dispatchTool` does not reject. Faithful failure —
+      // never a cover-up or a hallucinated answer — but no exception text in
+      // the segment the user sees and the session persists.
+      const ref = toolErrorRef();
+      console.error(
+        `[orchestrator.directLine:${tool.name}] dispatch rejected (ref=${ref}):`,
+        err,
+      );
+      verbatim = `${candidate.label} could not respond [ref ${ref}].`;
       status = 'error';
     }
     handle.finish({ durationMs: Date.now() - startedAt, status });
@@ -4371,62 +6396,42 @@ export class Orchestrator {
     // through the SAME session logger as a normal turn, so the orchestrator
     // sees it on later turns (memory, cross-session recall, KG continuity) —
     // not only via the channel's own prior-turn buffer. Best-effort: a logging
-    // failure must never swallow the already-captured answer.
-    let persistedTurnId: string | undefined;
-    if (this.sessionLogger && input.sessionScope) {
-      try {
-        const logged = await this.sessionLogger.log({
-          scope: input.sessionScope,
-          userMessage: input.userMessage,
-          assistantAnswer: answer,
-          toolCalls: 1,
-          iterations: 1,
-          ...(input.userId ? { userId: input.userId } : {}),
-          runTrace,
-        });
-        persistedTurnId = logged.turnExternalId;
-      } catch (err) {
-        console.error(
-          '[orchestrator] direct-line session log failed (continuing):',
-          err instanceof Error ? err.message : err,
-        );
-      }
-    }
-
+    // failure must never swallow the already-captured answer. While a verifier
+    // may re-enter the request, the row is offered instead and written for the
+    // pass it delivers (`requestTurnRecord.ts`).
+    //
     // Fact extraction parity (#332 review follow-up): a direct-line turn skips
     // chatInContext*, so without this the KG would never learn from a delegated
     // answer. Fire-and-forget against Haiku, after the session log lands so the
     // Fact → Turn edge has an anchor. Never awaited; entityRefs are empty (the
     // relay issues no orchestrator-level tool calls of its own).
-    // #361 — the extraction prompt is LLM-bound, so a direct-line turn (which
-    // never masked anything up to here) masks both texts through the turn map
-    // first; the extracted facts are restored to real values before ingest.
-    // Fail closed on `blocked`: skip fact extraction (audited) rather than
-    // send an unmasked prompt — the user-visible answer is unaffected.
-    if (this.factExtractor && persistedTurnId) {
-      try {
-        const maskedUserMessage = await maskPromptForWire(
-          privacyForPrompt,
-          input.userMessage,
-        );
-        const maskedAnswer = await maskPromptForWire(privacyForPrompt, answer);
-        const restoreFacts = privacyForPrompt?.snapshotPromptRestorer();
-        void this.factExtractor.extractAndIngest({
-          turnId: persistedTurnId,
-          userMessage: maskedUserMessage,
-          assistantAnswer: maskedAnswer,
-          entityRefs: [],
-          ...(restoreFacts ? { restoreFacts } : {}),
+    let persistedTurnId: string | undefined;
+    if (this.sessionLogger && input.sessionScope) {
+      // Masked now: the prompt map belongs to this pass and ends with it. The
+      // fact extraction and the row's masked view (the capture filter's
+      // scorer) get the same texts; a blocked mask leaves both empty-handed.
+      const wire = await this.directLineWireTexts(privacyForPrompt, input.userMessage, answer);
+      const entry = {
+        scope: input.sessionScope,
+        userMessage: input.userMessage,
+        assistantAnswer: answer,
+        toolCalls: 1,
+        iterations: 1,
+        ...(input.userId ? { userId: input.userId } : {}),
+        ...turnOwnersField(turnMemory),
+        runTrace,
+        ...maskedRowView(privacyForPrompt, wire?.userMessage ?? '', wire?.assistantAnswer ?? ''),
+      };
+      const facts = this.directLineFacts(privacyForPrompt, wire);
+      const ledger = this.turnRecords.deferringLedger();
+      if (ledger !== undefined) {
+        this.turnRecords.offerRow(ledger, { entry, entityRefs: [] }, 'direct-line answer', (turnId, refs) => {
+          this.turnRecords.startFactExtraction(turnId, facts, refs);
+          return Promise.resolve({});
         });
-      } catch (err) {
-        if (err instanceof PromptMaskBlockedError) {
-          console.error(
-            '[orchestrator] direct-line fact extraction skipped — ' +
-              `prompt masking blocked: ${err.message}`,
-          );
-        } else {
-          throw err;
-        }
+      } else {
+        persistedTurnId = await this.turnRecords.writeRow(entry, 'direct-line answer');
+        this.turnRecords.startFactExtraction(persistedTurnId, facts, []);
       }
     }
 
@@ -4557,7 +6562,7 @@ export class Orchestrator {
   /** #332 Layer 3 — synthetic reminder pushed when an obligation is unmet. */
   private obligationReminder(toolName: string): string {
     return (
-      `IMPORTANT: Du hast den Turn beendet, ohne den erwarteten Spezialisten ` +
+      `Du hast den Turn beendet, ohne den erwarteten Spezialisten ` +
       `(\`${toolName}\`) zu konsultieren. Dieser Consult ist für diesen Turn ` +
       `verpflichtend. Rufe \`${toolName}\` jetzt auf, bevor du dem Nutzer antwortest.`
     );
@@ -4565,10 +6570,11 @@ export class Orchestrator {
 
   /**
    * #332 Layer 2 (guarded mode) — best-effort, bounded single-shot completion
-   * that lets the orchestrator add a SHORT attributed cross-cutting note to a
-   * specialist's verbatim answer. Additive only: the caller keeps the verbatim
-   * block intact. Fail-open (any error / empty → no note). Mirrors the
-   * self-contained extra-pass shape of `maybeRouteCardsFromText`.
+   * that lets the orchestrator add a two-sentence attributed cross-cutting
+   * note to a specialist's verbatim answer. Additive only: the caller keeps
+   * the verbatim block intact. Fail-open (any error / empty → no note).
+   * Mirrors the self-contained extra-pass shape of `maybeRouteCardsFromText`,
+   * module-level prompt constant included.
    */
   private async maybeDirectLineNote(
     label: string,
@@ -4577,16 +6583,16 @@ export class Orchestrator {
   ): Promise<string | undefined> {
     const params: AnthropicParams = {
       model: this.model,
-      max_tokens: 512,
-      system:
-        'You are the omadia orchestrator. A specialist sub-agent has ALREADY ' +
-        'answered the user directly and their verbatim answer is delivered ' +
-        'independently — you cannot edit or remove it. Your ONLY option is to ' +
-        'OPTIONALLY add a SHORT (max 2 sentences) cross-cutting note when you ' +
-        'see a concrete cross-domain risk, policy concern, or missing prior ' +
-        'context the specialist could not see. If you have nothing material to ' +
-        'add, reply with exactly an empty message. Never restate or contradict ' +
-        'the specialist; only add.',
+      // Headroom, not a length target — the note's length is bounded by the
+      // prompt (two sentences), not by this. A model that reasons before it
+      // answers bills those tokens against `max_tokens`, so a tight cap is
+      // spent before any text is emitted and the empty-text branch below
+      // drops the note on every turn. Clamped to the caller's resolved budget
+      // (see `maxTokens` on the options type): asking for more than the
+      // active model allows would fail the request, and the fail-open `catch`
+      // would swallow that into the same silent no-note.
+      max_tokens: Math.min(this.maxTokens, DIRECT_LINE_NOTE_MAX_TOKENS),
+      system: DIRECT_LINE_NOTE_SYSTEM,
       messages: [
         {
           role: 'user',
@@ -4596,7 +6602,9 @@ export class Orchestrator {
     };
     try {
       const response = fromLlmResponse(
-        await this.provider.complete(toLlmRequest(params)),
+        await this.provider.complete(
+          toLlmRequest(params, undefined, this.provider.id),
+        ),
       );
       const text = response.content
         .filter((b) => b['type'] === 'text')
@@ -4614,11 +6622,28 @@ export class Orchestrator {
   }
 
   /**
-   * Fire a turn-hook side-channel (#133 E0). No-op when no runner is
-   * injected. Never throws — the runner swallows hook errors, and we add a
-   * defensive try/catch so a misbehaving runner cannot abort the turn.
+   * Fire a turn-hook side-channel (#133 E0) for this pass. A verifier
+   * re-entry is the same user turn: its first run fired every hook already (a
+   * plan, a step update), so it fires none — the request's `onAfterTurn` is
+   * fired once, by the verifier's commit ({@link afterTurn}).
    */
   private async fireTurnHook(
+    point: TurnHookPoint,
+    turnId: string,
+    input: ChatTurnInput,
+    payload: TurnHookPayload,
+    timeoutMs?: number,
+  ): Promise<TurnAnnotation[]> {
+    if (this.isReentryPass()) return [];
+    return this.runTurnHook(point, turnId, input, payload, timeoutMs);
+  }
+
+  /**
+   * Run a turn hook (#133 E0). No-op when no runner is injected. Never
+   * throws — the runner swallows hook errors, and we add a defensive
+   * try/catch so a misbehaving runner cannot abort the turn.
+   */
+  private async runTurnHook(
     point: TurnHookPoint,
     turnId: string,
     input: ChatTurnInput,
@@ -4695,20 +6720,20 @@ export class Orchestrator {
     turnMemory: TurnMemoryBinding | undefined,
   ): Promise<ChatTurnResult> {
     this.applyTurnAuthContext(input);
+    // #1547 — whether `onBeforeTurn` fired before a later mask blocked.
+    const progress = { beforeTurnFired: false };
     try {
-      const result = await this.chatInContextInner(input, turnId, turnMemory);
-      await this.fireTurnHook(
-        'onAfterTurn',
-        turnId,
-        input,
-        {
-          assistantAnswer: result.answer,
-          // #133 (E8) — surface the persisted Turn node id so observers can
-          // link to the graph Turn (plan-runner PLAN_OF). Absent if the log failed.
-          ...(result.turnId ? { turnExternalId: result.turnId } : {}),
+      const result = await this.chatInContextInner(input, turnId, turnMemory, progress).catch(
+        (err: unknown) => {
+          if (err instanceof PromptMaskBlockedError && progress.beforeTurnFired) {
+            err.afterTurnHooks = true;
+          }
+          throw err;
         },
-        2000,
       );
+      // #133 (E8) — the persisted Turn node id lets observers link to the
+      // graph Turn (plan-runner PLAN_OF). Absent if the log failed.
+      await this.afterTurn(turnId, input, result.answer, result.turnId);
       return result;
     } finally {
       this.clearTurnAuthContext();
@@ -4722,11 +6747,23 @@ export class Orchestrator {
    * the routing decision (when routing ran) so the streaming path can surface
    * it inline in the UI as soon as the classifier resolves.
    */
-  private async resolveTurnModel(userMessage: string): Promise<{
+  private async resolveTurnModel(
+    userMessage: string,
+    /** the fast-path triage's verdict for this turn (`ChatTurnInput.routeHint`)
+     *  — taken as the routing decision, no second classifier call */
+    routeHint?: 'simple' | 'complex',
+  ): Promise<{
     model: string;
     routing?: { bucket: RoutingBucket; classifierModel: string; model: string };
   }> {
     if (!this.modelRouting) return { model: this.model };
+    if (routeHint !== undefined) {
+      const model = routeHint === 'simple' ? this.modelRouting.simpleModel : this.modelRouting.complexModel;
+      return {
+        model,
+        routing: { bucket: routeHint, classifierModel: this.modelRouting.classifierModel, model },
+      };
+    }
     const r = await routeTurnModel(
       this.provider,
       this.modelRouting,
@@ -4803,18 +6840,21 @@ export class Orchestrator {
     input: ChatTurnInput,
     turnId: string,
     turnMemory: TurnMemoryBinding | undefined,
+    progress: { beforeTurnFired: boolean },
   ): Promise<ChatTurnResult> {
-    await this.fireTurnHook('onBeforeTurn', turnId, input, {
-      userMessage: input.userMessage,
-    });
     // #361 — mask the wire-bound prompt BEFORE anything LLM-adjacent sees
     // it. `wireUserMessage` is the LLM-facing variant (pseudonyms for
     // detected PII spans when the operator flag is on; the original text
     // otherwise). `input.userMessage` stays untouched for memory
     // persistence (sessionLogger / factExtractor) and receipt attribution.
     // Failure-closed: a `blocked` outcome throws and the turn fails.
+    // Recorded on the turn's wire view — the verifier sees this, nothing else.
+    // #1547 — before `onBeforeTurn` as well: the plan-runner's gate and
+    // materialiser send the message to a model from that hook, so a turn
+    // whose mask is blocked must throw before the hook fires, or the refusal
+    // ("not sent to the language model") would be false.
     const privacyForPrompt = turnContext.current()?.privacyHandle;
-    const wireUserMessage = await maskPromptForWire(
+    const wireUserMessage = await maskTurnPromptForWire(
       privacyForPrompt,
       input.userMessage,
     );
@@ -4822,17 +6862,26 @@ export class Orchestrator {
     // structured `recalled` payload rides out on the ChatTurnResult so
     // non-streaming channels (Teams) can render a recall card (the streaming
     // path emits it as a `kg_recall` annotation instead).
-    const { text: rawPriorContext, recalled, recallUsed } =
-      await this.retrievePriorContext(input, wireUserMessage);
-    // #361 — the recalled TEXT is LLM-bound wire content: it carries real
-    // values persisted from earlier turns, so it is masked through the SAME
-    // turn map before injection (answer-side restore covers these spans).
-    // The structured `recalled` payload stays raw — it goes to the UI, not
-    // the model.
-    const priorContext = await maskRecalledForWire(
+    // Started BEFORE `onBeforeTurn` and awaited after it: the recall (graph
+    // reads + the C1 scan of the recalled text) and the hook (the plan-
+    // runner's model calls) are independent, so they overlap instead of
+    // adding up on the critical path. See `startPriorContextRecall`.
+    const recall = this.startPriorContextRecall(
+      input,
+      wireUserMessage,
+      turnMemory,
       privacyForPrompt,
-      rawPriorContext,
     );
+    // A canvas turn skips `onBeforeTurn` (see `chatStream`'s mirror).
+    if (input.canvasSessionId === undefined) {
+      progress.beforeTurnFired = this.turnHookRegistry !== undefined;
+      await this.fireTurnHook('onBeforeTurn', turnId, input, {
+        userMessage: input.userMessage,
+        ...(input.routeHint !== undefined ? { routeHint: input.routeHint } : {}),
+        ...(input.planHint !== undefined ? { planHint: input.planHint } : {}),
+      });
+    }
+    const { recalled, recallUsed, priorContext } = await recall;
     // #268 — pre-fetch + extract any uploaded document text for this turn.
     // #504/#505 — the same pass also resolves image attachments (Teams
     // Tigris storage_key, or a bare url for channels without a pre-fetch)
@@ -4854,12 +6903,21 @@ export class Orchestrator {
       images: ingestedImages,
       skippedVisionImageCount,
       rejectedImageReasons,
-    } = await this.ingestAttachments(input, visionSupported);
+    } = await this.ingestAttachmentsForPass(input, visionSupported);
+    // A verifier re-entry without a first-run ingestion to reuse ends here,
+    // before the model runs (`runTurnCore` closes it).
+    this.throwIfReentryAbandoned();
     const ingestedText = await maskIngestedForWire(
       privacyForPrompt,
       ingestedRawText,
     );
-    const effectiveExtraSystemHint = composeExtraSystemHint(input);
+    // The caller's hint (a verifier correction on a retry) is wire content:
+    // masked through the turn's map like the prompt. Fails closed.
+    const effectiveExtraSystemHint = await wireExtraSystemHint(
+      privacyForPrompt,
+      input,
+      await this.turnMemoryIndexBlock(input, turnMemory),
+    );
     // Palaia Phase 8 (OB-77) — per-turn nudge counter (shared across all
     // tool-call iterations of this turn so NUDGE_MAX_PER_TURN is enforced).
     const nudgeCounter = createNudgeTurnCounter();
@@ -4910,20 +6968,22 @@ export class Orchestrator {
     // Open an EntityRef collection keyed to this turn. Tool handlers that
     // publish during the turn will be matched by turnId via AsyncLocalStorage.
     // Always drain — on success, iteration-overrun throw, or upstream error.
-    const entityCollection = this.entityRefBus?.beginCollection(turnId);
+    const entityCollection = shareEntityRefs(this.entityRefBus?.beginCollection(turnId));
 
     let toolCalls = 0;
     // Claude may emit natural-language text alongside tool_use in the same assistant
-    // turn. We accumulate text across all turns so the final answer isn't truncated to
-    // whatever happens to be in the last response alone.
-    const textParts: string[] = [];
+    // turn. The accumulator joins answer text across iterations and drops the
+    // preamble written before any data arrived (#1500).
+    const answerText = new AnswerTextAccumulator();
     // One forced file-build retry per turn (see fileAnnouncedButNotBuilt).
     let fileForceRetried = false;
 
     const traceCollector = input.sessionScope
       ? new RunTraceCollector({
           scope: input.sessionScope,
-          ...(input.userId ? { userId: input.userId } : {}),
+          ...runTraceUserSpread(input),
+          turnId,
+          ...(entityCollection ? { entityRefs: entityCollection } : {}),
         })
       : undefined;
 
@@ -4957,13 +7017,14 @@ export class Orchestrator {
     // non-streaming path has no event channel, so both decisions are simply
     // applied (channels that want to surface them use chatStream).
     const [turnModelResolved, turnPersonaResolved] = await Promise.all([
-      this.resolveTurnModel(wireUserMessage),
+      this.resolveTurnModel(wireUserMessage, input.routeHint),
       this.resolveTurnPersona(wireUserMessage),
     ]);
     const turnModel = turnModelResolved.model;
     const turnPersonaBody = turnPersonaResolved.skillBody;
     // #1033 W3 — which provider/model this turn runs on and where it may hop.
     let turnExec = await this.resolveTurnExecution(turnModel, messagesCarryImages(messages));
+    Orchestrator.publishTurnExecution(turnExec);
     // #650 — stamp the resolved model on the trace here, once, rather than at
     // each of `finish()`'s call sites. Buffered path.
     traceCollector?.recordModel(turnExec.model, turnExec.provider.id);
@@ -4972,8 +7033,9 @@ export class Orchestrator {
     try {
       for (let iteration = 0; iteration < this.maxIterations; iteration++) {
         // Final pass: the loop guard stopped, the wall-clock budget is spent,
-        // or this is the last allowed iteration. Disable tools so the model
-        // MUST answer in text, and append the finalize directive.
+        // or this is the last allowed iteration. Suppress tool use (#1211, see
+        // `toolParamsFor`) so the model MUST answer in text, and append the
+        // finalize directive to the per-turn system hint.
         const finalizeThisIter =
           forceFinalize ||
           iteration === this.maxIterations - 1 ||
@@ -4982,33 +7044,43 @@ export class Orchestrator {
         // consumed here so a still-mute model only re-escalates within budget.
         const forceObligation = forceObligationNext && !obligationMet;
         forceObligationNext = false;
+        const finalizePass = finalizeThisIter && !forceObligation;
         // #1033 W3 — the system prompt for a given persona: the routed
         // persona skill outranks everything; otherwise the execution's own
         // identity (the fallback family's compiled prompt after a hop).
         const systemFor = (persona: string | undefined) =>
           buildSystemBlocks(
-            this.composeStableSystemPrompt(prependRules, persona, turnMemory?.contextBound === true),
+            this.composeStableSystemPrompt(prependRules, persona, turnMemory?.memoryPrompt),
             priorContext,
-            withFinalizeHint(
-              effectiveExtraSystemHint,
-              finalizeThisIter && !forceObligation,
-            ),
+            withFinalizeHint(effectiveExtraSystemHint, finalizePass),
           );
+        // #1211 — `tools` / `tool_choice` depend on the provider a request
+        // goes to, so the primary request and the fallback below each get
+        // their own pair instead of sharing the primary's.
+        const iterationTools = this.buildToolsList();
+        const toolParamsForProvider = (provider: LlmProvider) =>
+          toolParamsFor({
+            tools: iterationTools,
+            finalizePass,
+            provider,
+            ...(forceObligation && obligationTool
+              ? { forcedChoice: forceObligationFor }
+              : {}),
+          });
         const baseParams = {
           model: turnExec.model,
           ...(turnExec.effort !== undefined ? { effort: turnExec.effort } : {}),
           max_tokens: this.maxTokens,
           system: systemFor(turnPersonaBody ?? turnExec.identity),
-          tools: finalizeThisIter && !forceObligation ? [] : this.buildToolsList(),
-          ...(forceObligation && obligationTool
-            ? { tool_choice: forceObligationFor }
-            : {}),
           messages,
         };
         // Last-resort guard: repair any lone UTF-16 surrogate before the
         // SDK serialises the body — the Anthropic API rejects it as
         // invalid JSON. See ensureWellFormedParams.
-        const safeParams = ensureWellFormedParams(baseParams);
+        const safeParams = ensureWellFormedParams({
+          ...baseParams,
+          ...toolParamsForProvider(turnExec.provider),
+        });
         // #1033 W3 — a hop to ANOTHER provider is only taken before the first
         // model call of the turn: from iteration 1 on the transcript carries
         // tool_use/tool_result pairs and cache markers shaped by the primary's
@@ -5024,7 +7096,11 @@ export class Orchestrator {
 
         const completed = await completeWithFallback({
           provider: turnExec.provider,
-          request: toLlmRequest(safeParams, [MEMORY_BETA_HEADER]),
+          request: toLlmRequest(
+            safeParams,
+            [MEMORY_BETA_HEADER],
+            turnExec.provider.id,
+          ),
           ...(fb
             ? {
                 fallback: {
@@ -5035,8 +7111,10 @@ export class Orchestrator {
                       model: fb.model,
                       ...(fb.effort !== undefined ? { effort: fb.effort } : {}),
                       system: systemFor(turnPersonaBody ?? fb.identity),
+                      ...toolParamsForProvider(fb.provider),
                     }),
                     [MEMORY_BETA_HEADER],
+                    fb.provider.id,
                   ),
                   ...(this.providerPool?.health ? { health: this.providerPool.health } : {}),
                 },
@@ -5046,16 +7124,17 @@ export class Orchestrator {
         });
         if (completed.fallbackUsed) {
           turnExec = Orchestrator.afterFallback(turnExec);
+          Orchestrator.publishTurnExecution(turnExec);
           this.recordTurnAttribution(turnId, completed.fallbackUsed.model, completed.fallbackUsed.providerId, true);
           traceCollector?.recordModel(completed.fallbackUsed.model, completed.fallbackUsed.providerId);
         }
         const response: Message = fromLlmResponse(completed.response);
 
         messages.push({ role: 'assistant', content: response.content });
-        textParts.push(...collectTextBlocks(response.content));
+        answerText.addIteration(collectTextBlocks(response.content), toolNamesOf(response.content));
 
         if (response.stop_reason !== 'tool_use') {
-          const answer = finalAnswerText(textParts, response.stop_reason);
+          const answer = finalAnswerText(answerText.parts(), response.stop_reason);
           const drainedAttachments = this.drainAttachments();
           // Only force a retry on a PURE-TEXT end (no tool_use block). A
           // tool_use present with a non-'tool_use' stop_reason means the model
@@ -5072,7 +7151,7 @@ export class Orchestrator {
           // a normal turn end.
           if (response.stop_reason !== 'end_turn') {
             console.error(
-              `[orchestrator] finalized with stop_reason=${String(response.stop_reason)} ` +
+              `[orchestrator] finalized with stop_reason=${String(response.stop_reason)}${refusalLogClause(response)} ` +
                 `iterations=${iteration + 1}/${this.maxIterations}` +
                 (responseHasToolUse
                   ? ' — response carries tool_use blocks that will NOT run (truncated mid-call?)'
@@ -5081,8 +7160,12 @@ export class Orchestrator {
           }
           // #332 Layer 3 — forced-delegation obligation unmet at a pure-text
           // turn end: escalate ONCE with a forced tool_choice + synthetic
-          // reminder (OB-31). Guarded by `!finalizeThisIter` so a normal
-          // tool-enabled iteration follows within the iteration budget.
+          // reminder (OB-31). On the models that reject a forced choice (see
+          // `supportsForcedToolChoice()` in the Anthropic adapter) it degrades
+          // to `auto`, so the reminder text is what actually steers the call.
+          // Guarded by
+          // `!finalizeThisIter` so a normal tool-enabled iteration follows
+          // within the iteration budget.
           if (
             obligationTool &&
             !obligationMet &&
@@ -5096,7 +7179,7 @@ export class Orchestrator {
               role: 'user',
               content: this.obligationReminder(obligationTool),
             });
-            textParts.length = 0;
+            answerText.reset();
             console.error(
               `[orchestrator] obligation unmet — forcing one consult of \`${obligationTool}\``,
             );
@@ -5110,7 +7193,7 @@ export class Orchestrator {
           ) {
             fileForceRetried = true;
             messages.push({ role: 'user', content: FILE_RETRY_NUDGE });
-            textParts.length = 0;
+            answerText.reset();
             console.error(
               '[orchestrator] file announced but not built — forcing one retry to call create_xlsx/create_docx',
             );
@@ -5134,13 +7217,15 @@ export class Orchestrator {
           // recall would re-surface fabricated surrogate IBANs/addresses as
           // if real. `answer` (the wire variant) stays in scope for the
           // LLM-bound extra passes below (card router, fact extraction).
-          const restoredAnswer = await restorePromptForPersistence(
+          const restoredAnswer = await restoreTurnAnswer(
             privacyForPrompt,
             answer,
           );
           // Hoisted so the return payload can carry the KG turn id back to
           // the chat UI (powers the save-as-memory affordance). Stays
-          // undefined when session-logging is disabled or threw.
+          // undefined when session-logging is disabled or threw, and while
+          // the row is offered to the request's record instead (a verifier
+          // writes it for the pass it delivers, `requestTurnRecord.ts`).
           let persistedTurnId: string | undefined;
           if (this.sessionLogger && input.sessionScope) {
             // Await the log write: previous fire-and-forget let follow-ups
@@ -5149,29 +7234,21 @@ export class Orchestrator {
             // chart / answer. The write is fast (~sub-second against Neon);
             // the latency cost is worth the retrieval guarantee.
             const entityRefs = entityCollection?.drain() ?? [];
-            const answerForGraph = appendToolDigest(
-              restoredAnswer,
-              attachments,
-              fileAttachments,
-            );
-            try {
-              const logged = await this.sessionLogger.log({
-                scope: input.sessionScope,
-                userMessage: input.userMessage,
-                assistantAnswer: answerForGraph,
-                toolCalls,
-                iterations,
-                entityRefs,
-                ...(input.userId ? { userId: input.userId } : {}),
-                ...(runTrace ? { runTrace } : {}),
-              });
-              persistedTurnId = logged.turnExternalId;
-            } catch (err) {
-              console.error(
-                '[orchestrator] session log failed (continuing with answer):',
-                err instanceof Error ? err.message : err,
-              );
-            }
+            const entry = {
+              scope: input.sessionScope,
+              userMessage: input.userMessage,
+              assistantAnswer: appendToolDigest(restoredAnswer, attachments, fileAttachments),
+              toolCalls,
+              iterations,
+              ...(input.userId ? { userId: input.userId } : {}),
+              ...turnOwnersField(turnMemory),
+              ...(runTrace ? { runTrace } : {}),
+              ...maskedRowView(
+                privacyForPrompt,
+                wireUserMessage,
+                appendToolDigest(answer, attachments, fileAttachments),
+              ),
+            };
             // Fact extraction: fire-and-forget against Haiku, after the
             // session log lands in the graph (so the Fact → Turn
             // DERIVED_FROM edge finds its anchor). Never awaited — a slow
@@ -5180,19 +7257,26 @@ export class Orchestrator {
             // MASKED wire variants; the extracted facts are restored to
             // real values before ingest via the snapshot restorer (which
             // stays valid after finalize drops the live map).
-            if (this.factExtractor && persistedTurnId) {
+            const facts = (): TurnFacts => {
               const restoreFacts = privacyForPrompt?.snapshotPromptRestorer();
-              void this.factExtractor.extractAndIngest({
-                turnId: persistedTurnId,
+              return {
                 userMessage: wireUserMessage,
-                assistantAnswer: appendToolDigest(
-                  answer,
-                  attachments,
-                  fileAttachments,
-                ),
-                entityRefs,
+                assistantAnswer: appendToolDigest(answer, attachments, fileAttachments),
                 ...(restoreFacts ? { restoreFacts } : {}),
+              };
+            };
+            const ledger = this.turnRecords.deferringLedger();
+            if (ledger !== undefined) {
+              const passFacts = this.factExtractor ? facts() : undefined;
+              this.turnRecords.offerRow(ledger, { entry, entityRefs }, 'answer', (turnId, refs) => {
+                this.turnRecords.startFactExtraction(turnId, passFacts, refs);
+                return Promise.resolve({});
               });
+            } else {
+              persistedTurnId = await this.turnRecords.writeRow({ ...entry, entityRefs }, 'answer');
+              if (this.factExtractor && persistedTurnId) {
+                this.turnRecords.startFactExtraction(persistedTurnId, facts(), entityRefs);
+              }
             }
           }
           // Non-interleaving providers (Mistral/OpenAI-compatible) emit card
@@ -5232,6 +7316,9 @@ export class Orchestrator {
             answer: restoredAnswer,
             toolCalls,
             iterations,
+            // Phase 3 — see `resolveAnswerVerbosity`; `chat()` fills it on
+            // every other return path too.
+            answerVerbosity: this.resolveAnswerVerbosity(input),
             ...(memoryUsed ? { memoryUsed: true } : {}),
             ...(persistedTurnId ? { turnId: persistedTurnId } : {}),
             ...(runTrace ? { runTrace } : {}),
@@ -5274,11 +7361,21 @@ export class Orchestrator {
               )
             : undefined;
         });
+        const metas: ToolDispatchMeta[] = toolUses.map(() => ({ replayed: false }));
+        // #1502 — counts each sub-agent's inner results for the hook payload.
+        const subToolTally = new SubToolOutcomeTally();
         const settled = await Promise.allSettled(
           toolUses.map((use: ContentBlock, i: number) =>
-            this.dispatchTool(use.name, use.input, invocations[i]?.observer, turnMemory),
+            this.dispatchTool(
+              use.name,
+              use.input,
+              subToolTally.observe(use.id, invocations[i]?.observer),
+              turnMemory,
+              metas[i],
+            ),
           ),
         );
+        this.throwIfReentryAbandoned();
         const toolResults: ContentBlock[] = toolUses.map((use: ContentBlock, i: number) => {
           const r = settled[i]!;
           let output: string;
@@ -5287,23 +7384,40 @@ export class Orchestrator {
             output = r.value;
             isError = output.startsWith('Error:');
           } else {
-            output = `Error: ${r.reason instanceof Error ? r.reason.message : String(r.reason)}`;
+            // Unreachable by construction — `dispatchTool` never rejects; it
+            // resolves a handler exception itself (`withholdThrownToolError`:
+            // the withheld notice under a privacy handle, intern-exempt tools
+            // included). Kept as a backstop that can never put an
+            // exception MESSAGE on the wire: class name, sanitised code and
+            // the log ref only.
+            const ref = toolErrorRef();
+            console.error(
+              `[orchestrator.toolLoop:${String(use.name)}] dispatch rejected (ref=${ref}) — message withheld from the model:`,
+              r.reason,
+            );
+            output = thrownToolErrorForModel(String(use.name), r.reason, ref);
             isError = true;
           }
           const durationMs = Date.now() - startedTimes[i]!;
           const inv = invocations[i];
+          const replayed = metas[i]?.replayed === true ? { replayed: true } : {};
           if (inv) {
             inv.finish({
               durationMs,
               status: isError ? 'error' : 'success',
+              ...replayed,
             });
           } else if (traceCollector) {
-            traceCollector.recordOrchestratorToolCall({
-              callId: use.id,
-              toolName: use.name,
-              durationMs,
-              isError,
-            });
+            traceCollector.recordOrchestratorToolCall(
+              {
+                callId: use.id,
+                toolName: use.name,
+                durationMs,
+                isError,
+                ...replayed,
+              },
+              output,
+            );
           }
           return {
             type: 'tool_result',
@@ -5316,17 +7430,19 @@ export class Orchestrator {
         for (let i = 0; i < toolUses.length; i++) {
           const use = toolUses[i]!;
           const name = (use as { name?: unknown }).name;
-          const resultBlock = toolResults[i] as { content?: unknown };
+          const resultBlock = toolResults[i] as { content?: unknown; is_error?: unknown };
           await this.fireTurnHook(
             'onAfterToolCall',
             turnId,
             input,
-            {
-              ...(typeof name === 'string' ? { toolName: name } : {}),
-              ...(typeof resultBlock.content === 'string'
-                ? { toolResult: resultBlock.content }
-                : {}),
-            },
+            afterToolCallPayload({
+              toolName: typeof name === 'string' ? name : undefined,
+              toolResult:
+                typeof resultBlock.content === 'string' ? resultBlock.content : undefined,
+              isError: resultBlock.is_error === true,
+              innerCallsAllFailed: subToolTally.allFailed(use.id),
+              innerCallsSucceeded: subToolTally.succeeded(use.id),
+            }),
             2000,
           );
         }
@@ -5365,10 +7481,12 @@ export class Orchestrator {
         this.extractToolEmittedRoutineList(toolResults);
         // #361 — the choice card is user-facing AND its question is
         // persisted in the session log; restore surrogates → real values.
+        // The question as the model wrote it goes into the row's masked view.
+        const wireChoice =
+          this.drainPendingChoice() ?? this.extractToolEmittedChoice(toolResults);
         const pendingUserChoice = await restorePendingChoiceForUser(
           privacyForPrompt,
-          this.drainPendingChoice() ??
-            this.extractToolEmittedChoice(toolResults),
+          wireChoice,
         );
         // W2-1 (#544) — the MCP input card rides the SAME short-circuit.
         //
@@ -5402,9 +7520,10 @@ export class Orchestrator {
           // into the next clarification answer. User can ask again after
           // resolving the choice.
           this.drainPendingRoutineList();
-          const answer = textParts.join('\n\n').trim();
+          // #1500 — the card carries its own question; no preamble lead-in.
+          const answer = answerText.keptParts().join('\n\n').trim();
           // #361 — persisted + user-facing: restore surrogates → real values.
-          const restoredAnswer = await restorePromptForPersistence(
+          const restoredAnswer = await restoreTurnAnswer(
             privacyForPrompt,
             answer,
           );
@@ -5415,28 +7534,27 @@ export class Orchestrator {
           });
           let persistedTurnId: string | undefined;
           if (this.sessionLogger && input.sessionScope) {
-            const entityRefs = entityCollection?.drain() ?? [];
-            const loggedAnswer = restoredAnswer.length > 0
-              ? `${restoredAnswer}\n\n[Rückfrage] ${pendingUserChoice.question}`
-              : `[Rückfrage] ${pendingUserChoice.question}`;
-            try {
-              const logged = await this.sessionLogger.log({
-                scope: input.sessionScope,
-                userMessage: input.userMessage,
-                assistantAnswer: loggedAnswer,
-                toolCalls,
-                iterations,
-                entityRefs,
-                ...(input.userId ? { userId: input.userId } : {}),
-                ...(runTrace ? { runTrace } : {}),
-              });
-              persistedTurnId = logged.turnExternalId;
-            } catch (err) {
-              console.error(
-                '[orchestrator] session log failed (continuing with choice card):',
-                err instanceof Error ? err.message : err,
-              );
-            }
+            persistedTurnId = await this.turnRecords.recordRow(
+              {
+                entry: {
+                  scope: input.sessionScope,
+                  userMessage: input.userMessage,
+                  assistantAnswer: choiceCardLogLine(restoredAnswer, pendingUserChoice.question),
+                  toolCalls,
+                  iterations,
+                  ...(input.userId ? { userId: input.userId } : {}),
+                  ...turnOwnersField(turnMemory),
+                  ...(runTrace ? { runTrace } : {}),
+                  ...maskedRowView(
+                    privacyForPrompt,
+                    wireUserMessage,
+                    choiceCardLogLine(answer, wireChoice?.question ?? ''),
+                  ),
+                },
+                entityRefs: entityCollection?.drain() ?? [],
+              },
+              'choice card',
+            );
           }
           return {
             answer: restoredAnswer,
@@ -5456,8 +7574,9 @@ export class Orchestrator {
           this.drainPendingSlotCard();
           this.drainPendingRoutineList();
           const card = toPendingMcpInputCard(pendingMcpInputCard);
-          const answer = textParts.join('\n\n').trim();
-          const restoredAnswer = await restorePromptForPersistence(
+          // #1500 — the card carries its own question; no preamble lead-in.
+          const answer = answerText.keptParts().join('\n\n').trim();
+          const restoredAnswer = await restoreTurnAnswer(
             privacyForPrompt,
             answer,
           );
@@ -5468,26 +7587,27 @@ export class Orchestrator {
           });
           let persistedTurnId: string | undefined;
           if (this.sessionLogger && input.sessionScope) {
-            const entityRefs = entityCollection?.drain() ?? [];
-            const loggedAnswer = mcpInputCardLogLine(restoredAnswer, card);
-            try {
-              const logged = await this.sessionLogger.log({
-                scope: input.sessionScope,
-                userMessage: input.userMessage,
-                assistantAnswer: loggedAnswer,
-                toolCalls,
-                iterations,
-                entityRefs,
-                ...(input.userId ? { userId: input.userId } : {}),
-                ...(runTrace ? { runTrace } : {}),
-              });
-              persistedTurnId = logged.turnExternalId;
-            } catch (err) {
-              console.error(
-                '[orchestrator] session log failed (continuing with MCP input card):',
-                err instanceof Error ? err.message : err,
-              );
-            }
+            persistedTurnId = await this.turnRecords.recordRow(
+              {
+                entry: {
+                  scope: input.sessionScope,
+                  userMessage: input.userMessage,
+                  assistantAnswer: mcpInputCardLogLine(restoredAnswer, card),
+                  toolCalls,
+                  iterations,
+                  ...(input.userId ? { userId: input.userId } : {}),
+                  ...turnOwnersField(turnMemory),
+                  ...(runTrace ? { runTrace } : {}),
+                  ...maskedRowView(
+                    privacyForPrompt,
+                    wireUserMessage,
+                    mcpInputCardLogLine(answer, card),
+                  ),
+                },
+                entityRefs: entityCollection?.drain() ?? [],
+              },
+              'MCP input card',
+            );
           }
           return {
             answer: restoredAnswer,
@@ -5523,21 +7643,58 @@ export class Orchestrator {
     input: ChatTurnInput,
     observer?: AskObserver,
   ): AsyncGenerator<ChatStreamEvent> {
+    // Mirror of `runTurnCore`: the request's replay ledger, read on the
+    // caller's object before `input` is re-bound.
+    const boundLedger = this.toolReplayLedgers.get(input);
+    const toolReplayLedger = boundLedger ?? new ToolReplayLedger({ retainResults: false });
+    const bound = boundPassOf(boundLedger);
     const turnId = randomUUID();
+    // Verifier hand-over — read on the CALLER's object before `input` is
+    // re-bound below; see `runTurnCore`. One-shot.
+    const callerInput = input;
+    const holdPrivacyFinalize = this.privacyEgress.consumeHold(callerInput);
     // W2-1 (#544) — mirror of `runTurn`: normalise the input-card envelope
     // before any downstream reader sees it. See the comment there.
     const mcpInputReply = parseMcpInputReply(input.userMessage);
+    if (mcpInputReply && toolReplayLedger.mode === 'replay') {
+      const abandoned = this.abandonReentryEarly(toolReplayLedger, REENTRY_ABANDONED.mcpInputReply);
+      yield { type: 'error', message: abandoned.message };
+      return;
+    }
     if (mcpInputReply) {
       input = { ...input, userMessage: mcpInputReplyLabel(mcpInputReply) };
     }
+    // Privacy-Proxy Slice 2.1: same handle pattern as `runTurn`. The handle
+    // is bound to the AsyncLocalStorage-scoped context below; every
+    // `streamMessageEvents` site downstream picks it up implicitly. After
+    // `chatStreamInner` yields its `done` event we intercept and decorate
+    // with the aggregated receipt. Minted before the screening gate, as in
+    // `runTurnCore`: the screener gets the turn's masked text.
+    const sessionId = input.sessionScope ?? turnId;
+    const privacyService = this.privacyGuard?.();
+    const privacyHandle = privacyService
+      ? this.buildPrivacyHandle(privacyService, sessionId, turnId)
+      : undefined;
+    const gatePass: UndeliveredPass | undefined = privacyHandle
+      ? { handle: privacyHandle, turnId, input, bound }
+      : undefined;
     // #579 — inbound screening gate (streaming mirror of `runTurnCore`). A
-    // quarantine yields a single terminal `done` and returns — the model and
-    // tools never run — like the prompt-mask refusal path below. `proceed` may
-    // hand back a marker-augmented input (fail-open evidence).
-    const streamGate = await this.screenInboundTurn(input, {
-      exempt: mcpInputReply !== undefined || this.screeningReentries.has(input),
-    });
+    // quarantine closes the turn's privacy state, yields a single terminal
+    // `done` and returns — the model and tools never run — like the
+    // prompt-mask refusal path below. `proceed` may hand back a
+    // marker-augmented input (fail-open evidence); a blocked screening mask
+    // runs into that refusal path.
+    // #1535 — see `runTurnCore`.
+    const streamGate = this.shieldRequiredButMissing(privacyService)
+      ? ({ action: 'blocked', error: new PrivacyShieldRequiredError() } as const)
+      : await this.closePassOnThrow(gatePass, () =>
+          this.screenInboundTurn(input, {
+            exempt: mcpInputReply !== undefined || this.screeningReentries.has(input),
+            privacy: privacyHandle,
+          }),
+        );
     if (streamGate.action === 'quarantine') {
+      if (gatePass) await this.closeUndeliveredPass(gatePass);
       // Fold the AI disclosure the same way the non-streaming quarantine does
       // (chat() folds it via toSemanticAnswer), so both paths deliver the refusal
       // byte-identically.
@@ -5549,10 +7706,12 @@ export class Orchestrator {
           iterations: 0,
         } as Extract<ChatStreamEvent, { type: 'done' }>,
         input,
+        boundLedger,
       );
       return;
     }
-    input = streamGate.input;
+    const screeningBlocked = streamGate.action === 'blocked' ? streamGate.error : undefined;
+    if (streamGate.action === 'proceed') input = streamGate.input;
     // W3-A — this used to be `turnContext.enter` (AsyncLocalStorage.enterWith).
     // That does NOT survive a generator's first `yield`: the generator is
     // resumed in the async context of whoever called `.next()`, so by the time
@@ -5565,16 +7724,6 @@ export class Orchestrator {
     // advance of the inner generator in `storage.run`.
     const parent = turnContext.current();
 
-    // Privacy-Proxy Slice 2.1: same handle pattern as `runTurn`. The handle
-    // is bound to the AsyncLocalStorage-scoped context here; every
-    // `streamMessageEvents` site downstream picks it up implicitly. After
-    // `chatStreamInner` yields its `done` event we intercept and decorate
-    // with the aggregated receipt.
-    const sessionId = input.sessionScope ?? turnId;
-    const privacyService = this.privacyGuard?.();
-    const privacyHandle = privacyService
-      ? this.buildPrivacyHandle(privacyService, sessionId, turnId)
-      : undefined;
     // #430 fixup (reviewer round 5) — same per-turn resolution as `runTurn`
     // above. This streaming entry point is what channel adapters (Teams/
     // Slack/Telegram, via `createOrchestratorDispatcher`) actually call, so
@@ -5582,6 +7731,10 @@ export class Orchestrator {
     // tool dispatch at all — see `resolveTurnOwnerIdentity`.
     const turnOwner = await resolveTurnOwnerIdentity(this.knowledgeGraph, input);
     const resolvedOmadiaUserId = turnOwner.omadiaUserId;
+    // The run trace's User-Cluster, resolved before anything ingests it — a
+    // Teams turn names its sender only through `origin` (`resolveRunTraceOwner`).
+    const runTraceUserId = await resolveRunTraceOwner(this.knowledgeGraph, input, resolvedOmadiaUserId);
+    const runTraceOwner = runTraceUserId ? { userId: runTraceUserId } : {};
 
     // ── W4-1 — the missing `mcpUserKey` producer for CHANNEL turns ──────────
     // HTTP routes establish the identity in an outer scope (see
@@ -5643,8 +7796,14 @@ export class Orchestrator {
       // answer the card, and channel turns (Teams/Telegram) come through here.
       ...(input.userId ? { userId: input.userId } : {}),
       ...(resolvedOmadiaUserId ? { resolvedOmadiaUserId } : {}),
+      runTraceOwner,
       // W2-1 (#544) — see the matching `turnContext.run` above.
       sessionScope: sessionId,
+      // The turn's wire view (prompt + answer), for a verifier hand-over.
+      wireView: {},
+      renderProvenance: { notes: [] },
+      graphReadScope: {},
+      orchestratorExecution: {},
       ...(parent?.chatParticipants
         ? { chatParticipants: parent.chatParticipants }
         : {}),
@@ -5659,6 +7818,7 @@ export class Orchestrator {
       ...(parent?.canvasSentinelSink
         ? { canvasSentinelSink: parent.canvasSentinelSink }
         : {}),
+      toolReplayLedger,
     };
     // `input` is re-bound above (envelope normalisation); capture the final
     // value so the body cannot observe the pre-normalisation message.
@@ -5669,8 +7829,13 @@ export class Orchestrator {
         turnId,
         sessionId,
         mcpInputReply,
+        callerInput,
+        holdPrivacyFinalize,
+        toolReplayLedger,
+        ...(bound ? { bound } : {}),
         ...(privacyHandle ? { privacyHandle } : {}),
         ...(observer ? { observer } : {}),
+        ...(screeningBlocked ? { screeningBlocked } : {}),
       }),
     );
   }
@@ -5686,46 +7851,117 @@ export class Orchestrator {
     readonly turnId: string;
     readonly sessionId: string;
     readonly mcpInputReply: McpInputReply | undefined;
+    /** The object the caller passed — the verifier hand-over key. */
+    readonly callerInput: ChatTurnInput;
+    /** Hand the privacy finalisation to the verifier wrapper. */
+    readonly holdPrivacyFinalize: boolean;
+    /** The ledger the turn scope carries (bound or turn-local). */
+    readonly toolReplayLedger: ToolReplayLedger;
+    /** The request pass, when a verifier bound a ledger to the request. */
+    readonly bound?: BoundPass;
     readonly privacyHandle?: PrivacyTurnHandle;
     readonly observer?: AskObserver;
+    /** The screening gate could not mask the turn's text: the turn fails
+     *  closed with the privacy refusal, as a blocked model call does. */
+    readonly screeningBlocked?: PromptMaskBlockedError;
   }): AsyncGenerator<ChatStreamEvent> {
     const { input, turnId, sessionId, mcpInputReply, privacyHandle, observer } = args;
+    const { toolReplayLedger, bound } = args;
+    // A refused turn: the screening gate could not mask, or (#1547) the
+    // pre-hook mask below was blocked.
+    let screeningBlocked = args.screeningBlocked;
+    let beforeTurnFired = false;
+    // Set once the turn's privacy state was finalized or handed over. A
+    // stream that ends otherwise (thrown, abandoned by the client) drops the
+    // state in `finally` — real values must not outlive the turn.
+    let privacySettled = false;
+    let promptMaskBlocked = false;
+    const handOver = (
+      handle: PrivacyTurnHandle,
+      wireView: TurnWireView | undefined,
+      systemDataOnly = false,
+    ): void => {
+      this.stashPrivacyEgress({
+        callerInput: args.callerInput,
+        handle,
+        turnId,
+        input,
+        wireView,
+        systemDataOnly,
+        bound,
+      });
+      privacySettled = true;
+    };
 
-    this.applyTurnAuthContext(input);
-    // W2-1 (#544) — forced replay before the model runs. Mirror of `runTurn`.
-    if (mcpInputReply) {
-      await this.applyMcpInputReplay(mcpInputReply, input, turnId);
-    }
     // #133 E0 — streaming-path turn hooks. tool_result events carry only the
     // tool-use id, so track id→name from tool_use events to label
     // onAfterToolCall.
     const toolNameById = new Map<string, string>();
-    // #133 (E9) — onBeforeTurn is unbounded, so the plan-runner's plan snapshot
-    // is emitted as the FIRST stream event, before any answer tokens.
-    yield* this.toAnnotationEvents(
-      await this.fireTurnHook('onBeforeTurn', turnId, input, {
-        userMessage: input.userMessage,
-      }),
-    );
-    // Mid-turn steering — register this turn as live so `/chat/steer` can
-    // inject extra user messages keyed by the same session scope. The inner
-    // loop drains them at each iteration boundary; `endTurn` clears the buffer.
-    steeringBus.beginTurn(sessionId);
-    // W5 memory-ACL — the streaming mirror of `runTurnCore`: bind once, thread
-    // explicitly. The streaming path is exactly why this is a parameter and not
-    // an AsyncLocalStorage lookup — a generator is resumed in the async context
-    // of whoever calls `.next()`, which is how `turnContext.enter` was silently
-    // losing the turn context on every streaming turn before W3-A (see the
-    // comment at the top of `chatStream`). A binding lost that way would not
-    // fail; it would quietly fall back to the agent-global tree.
-    const turnMemory = this.bindTurnMemory(input);
+    // #1502 — inner sub-agent results per top-level call, for the hook payload.
+    const subToolTally = new SubToolOutcomeTally();
+    // Set once this turn registered with the steering bus: `finally` ends
+    // only a registration this turn made.
+    let steeringLive = false;
+    // The recall started before `onBeforeTurn` (see below); the `finally`
+    // waits for it on a stream that ends early, so its mask cannot re-create
+    // the turn's prompt map after `closeUndeliveredPass` dropped it.
+    let startedRecall: Promise<PriorContextRecall> | undefined;
+    // The prelude runs inside the `try` as well. A consumer may stop reading
+    // at the stream's first event (the `onBeforeTurn` annotations), and an
+    // MCP input-card replay has interned its result into the turn's privacy
+    // state by then: the `finally` still closes the pass and clears the
+    // turn's auth context.
     try {
+      this.applyTurnAuthContext(input);
+      // Commit-on-delivery — mirror of `runTurnCore`.
+      this.bindRequestAfterTurn(bound?.ledger, turnId, input);
+      // #1547 — mask the user message before `onBeforeTurn`: the plan-runner's
+      // gate and materialiser send it to a model from that hook, ahead of
+      // `chatStreamInner`'s own mask. A blocked mask refuses the turn here, so
+      // no hook, tool or model sees the text and the refusal stays true. The
+      // inner mask later reuses the turn's surrogate map (and C1's per-turn
+      // cache), so it yields the same wire text.
+      if (!screeningBlocked && privacyHandle !== undefined) {
+        screeningBlocked = await preMaskUserMessage(privacyHandle, input.userMessage);
+      }
+      // W2-1 (#544) — forced replay before the model runs. Mirror of `runTurn`.
+      // A refused turn (blocked mask, #1535 shield required) runs no tool.
+      if (mcpInputReply && !screeningBlocked) {
+        await this.applyMcpInputReplay(mcpInputReply, input, turnId);
+      }
+      // W5 memory-ACL — the streaming mirror of `runTurnCore`: bind once,
+      // thread explicitly. The streaming path is exactly why this is a
+      // parameter and not an AsyncLocalStorage lookup — a generator is resumed
+      // in the async context of whoever calls `.next()`, which is how
+      // `turnContext.enter` was silently losing the turn context on every
+      // streaming turn before W3-A (see the comment at the top of
+      // `chatStream`). A binding lost that way would not fail; it would
+      // quietly fall back to the agent-global tree.
+      // Bound before the Direct-Line decision and `onBeforeTurn` (it was
+      // bound between the hook and that decision before the recall below
+      // needed it first).
+      const turnMemory = await this.bindTurnMemoryForTurn(input);
       // #332 Layer 2 — Direct Line short-circuit (streaming / web-ui path).
+      // Decided BEFORE `onBeforeTurn` and the recall, as `runTurnCore` does
+      // on the buffered path: a direct-line turn never runs the orchestrator
+      // model, so neither a plan nor a recall (and its C1 scan on the turn's
+      // privacy receipt) belongs to it.
       // A user-directed specialist turn is dispatched deterministically by the
       // harness; the orchestrator LLM never runs. We synthesize the `done`
       // event and decorate it with the privacy receipt + onAfterTurn hook,
       // exactly like the normal done branch below.
-      const direct = await this.executeDirectLine(input, turnId, turnMemory);
+      const direct = screeningBlocked
+        ? undefined
+        : await this.executeDirectLine(input, turnId, turnMemory);
+      if (direct && toolReplayLedger.abortedTool !== undefined) {
+        // A direct-line dispatch folds a refused re-entry miss into its own
+        // answer; the authoritative check ends the pass here instead.
+        await this.closeAbandonedReentry(toolReplayLedger, bound, privacyHandle, turnId, input);
+        privacySettled = true;
+        const abandoned = this.abandonedReentryEvent();
+        if (abandoned) yield abandoned;
+        return;
+      }
       if (direct) {
         const directAgentsConsulted = deriveAgentsConsulted(direct.runTrace);
         let doneEvent: Extract<ChatStreamEvent, { type: 'done' }> = {
@@ -5747,16 +7983,30 @@ export class Orchestrator {
             ? { directLineSession: direct.directLineSession }
             : {}),
         };
-        if (privacyHandle) {
+        if (privacyHandle && args.holdPrivacyFinalize) {
+          // A Direct Line relay is restored before it gets here: nothing the
+          // verifier may see, but the wrapper still owns the finalisation.
+          handOver(privacyHandle, undefined);
+        } else if (privacyHandle) {
           try {
             const receipt = await privacyHandle.finalize(input.userMessage);
             if (receipt) {
-              await this.persistTurnReceipt(turnId, input, receipt);
+              const rowed = await this.settleTurnReceipt(
+                turnId,
+                input,
+                receipt,
+                bound,
+                this.takeTurnAttribution(turnId),
+              );
               // #1107 — surface the receipt-store key (== turnId) so an API
               // caller can correlate this turn with `GET .../receipts/:id`.
-              // Emitted only inside `if (receipt)`, so the id appears exactly
-              // when a row was written.
-              doneEvent = { ...doneEvent, privacyReceipt: receipt, receiptId: turnId };
+              // Emitted only when a row is written under this turn's id (under
+              // a request ledger: when this pass owns the request's row).
+              doneEvent = {
+                ...doneEvent,
+                privacyReceipt: receipt,
+                ...(rowed ? { receiptId: turnId } : {}),
+              };
             }
           } catch (err) {
             console.warn(
@@ -5764,38 +8014,85 @@ export class Orchestrator {
               err,
             );
           }
+          privacySettled = true;
         }
+        // Parity with the normal done branch — graph-linking observers
+        // (#133 E8) need the persisted Turn id on direct-line turns too.
         yield* this.toAnnotationEvents(
-          await this.fireTurnHook(
-            'onAfterTurn',
-            turnId,
-            input,
-            {
-              assistantAnswer: doneEvent.answer,
-              // Parity with the normal done branch — graph-linking observers
-              // (#133 E8) need the persisted Turn id on direct-line turns too.
-              ...(doneEvent.turnId ? { turnExternalId: doneEvent.turnId } : {}),
-            },
-            2000,
-          ),
+          await this.afterTurn(turnId, input, doneEvent.answer, doneEvent.turnId),
         );
-        yield this.discloseDoneEvent(doneEvent, input);
+        yield this.discloseDoneEvent(doneEvent, input, bound?.ledger);
         return;
       }
+      // The prior-context recall overlaps `onBeforeTurn` (see
+      // `startPriorContextRecall`); `chatStreamInner` awaits it. The user-
+      // message mask here reuses the pre-hook mask's surrogate map, so on a
+      // turn that was not refused it yields the same text and cannot block;
+      // the recall's own mask (new text) can, and that `blocked` surfaces
+      // where `chatStreamInner` awaits the recall (#1547). Not on a refused
+      // turn: no recall is scanned for a message that never reaches the model.
+      startedRecall = screeningBlocked
+        ? undefined
+        : this.startPriorContextRecall(
+            input,
+            await maskTurnPromptForWire(privacyHandle, input.userMessage),
+            turnMemory,
+            privacyHandle,
+          );
+      // #133 (E9) — onBeforeTurn is unbounded, so the plan-runner's plan
+      // snapshot is emitted as the FIRST stream event, before any answer
+      // tokens. Not on a refused turn: the plan-runner's gate and
+      // materialiser are LLM calls on the raw message, and the buffered path
+      // fires the hook only inside `chatInContextInner`, which a refused turn
+      // never reaches (#1535 security review).
+      // Not on a canvas turn either: the plan-runner's Haiku gate +
+      // materialiser (and its KG writes) gate the first token, and the canvas
+      // client discards `plan` annotations. Without a plan record the
+      // plan-runner's onAfterToolCall / onAfterTurn are no-ops.
+      if (!screeningBlocked && input.canvasSessionId === undefined) {
+        // #1547 — a mask that blocks after this point (recall, attachments,
+        // replayed turns) refuses with the notice that does not claim the
+        // message stayed unsent.
+        beforeTurnFired = this.turnHookRegistry !== undefined;
+        yield* this.toAnnotationEvents(
+          await this.fireTurnHook('onBeforeTurn', turnId, input, {
+            userMessage: input.userMessage,
+            ...(input.routeHint !== undefined ? { routeHint: input.routeHint } : {}),
+            ...(input.planHint !== undefined ? { planHint: input.planHint } : {}),
+          }),
+        );
+      }
+      // Mid-turn steering — register this turn as live so `/chat/steer` can
+      // inject extra user messages keyed by the same session scope. The inner
+      // loop drains them at each iteration boundary; `endTurn` clears the
+      // buffer.
+      steeringBus.beginTurn(sessionId);
+      steeringLive = true;
       // #361 — failure-closed prompt masking (streaming path): the inner
       // generator throws before any model call when masking cannot be
       // guaranteed; convert that into a graceful privacy-error `done` event
       // instead of tearing the stream down with a raw 500.
-      const inner = this.chatStreamInner(input, turnId, observer, turnMemory);
+      // A blocked screening mask takes the same exit before the model runs.
+      const inner = screeningBlocked
+        ? undefined
+        : this.chatStreamInner(input, turnId, observer, turnMemory, startedRecall);
       const guardedInner = (async function* () {
         try {
+          if (inner === undefined) throw screeningBlocked;
           yield* inner;
         } catch (err) {
           if (err instanceof PromptMaskBlockedError) {
             console.error(`[orchestrator] ${err.message}`);
+            if (beforeTurnFired && err !== screeningBlocked) err.afterTurnHooks = true;
+            promptMaskBlocked = true;
+            // A verifier re-entry is abandoned instead (see `runTurnCore`):
+            // the check below turns this `done` into the abandonment error.
+            if (toolReplayLedger.mode === 'replay') {
+              toolReplayLedger.abort(REENTRY_ABANDONED.promptMaskBlocked);
+            }
             yield {
               type: 'done',
-              answer: PROMPT_MASK_BLOCKED_ANSWER,
+              answer: promptMaskBlockedAnswer(err),
               toolCalls: 0,
               iterations: 0,
             } as Extract<ChatStreamEvent, { type: 'done' }>;
@@ -5805,20 +8102,39 @@ export class Orchestrator {
         }
       })();
       for await (const event of guardedInner) {
+        if (
+          (event.type === 'done' || event.type === 'error') &&
+          toolReplayLedger.abortedTool !== undefined
+        ) {
+          // The stream's authoritative re-entry check: a pass that needed a
+          // call outside the first run ends as an error, whichever loop folded
+          // the refusal (the tool loop's post-batch check, or a sub-agent's).
+          // Its privacy scope is closed once, here.
+          if (!privacySettled) {
+            await this.closeAbandonedReentry(toolReplayLedger, bound, privacyHandle, turnId, input);
+            privacySettled = true;
+          }
+          yield event.type === 'error' ? event : (this.abandonedReentryEvent() ?? event);
+          continue;
+        }
         if (event.type === 'tool_use') {
           toolNameById.set(event.id, event.name);
+        } else if (event.type === 'sub_tool_result') {
+          subToolTally.record(event.parentId, event.isError);
         } else if (event.type === 'tool_result') {
-          const toolName = toolNameById.get(event.id);
           // Live step updates: emit the refreshed plan snapshot after each tool.
           yield* this.toAnnotationEvents(
             await this.fireTurnHook(
               'onAfterToolCall',
               turnId,
               input,
-              {
-                ...(toolName ? { toolName } : {}),
+              afterToolCallPayload({
+                toolName: toolNameById.get(event.id),
                 toolResult: event.output,
-              },
+                isError: event.isError === true,
+                innerCallsAllFailed: subToolTally.allFailed(event.id),
+                innerCallsSucceeded: subToolTally.succeeded(event.id),
+              }),
               2000,
             ),
           );
@@ -5844,6 +8160,14 @@ export class Orchestrator {
                     : {}),
                 }
               : event;
+          // What the verifier may see — see the buffered twin in runTurnCore.
+          const rendered =
+            v4Rendered !== undefined ? renderedVerifierHandOver(v4Rendered) : undefined;
+          const verifierWireView = promptMaskBlocked
+            ? undefined
+            : rendered !== undefined
+              ? rendered.wireView
+              : recordedWireView();
           // #361 — restore prompt surrogates → real values on the final
           // answer, before finalize drops the turn's surrogate map. Note:
           // streamed text deltas may transiently show a surrogate; the
@@ -5852,7 +8176,7 @@ export class Orchestrator {
           try {
             doneEvent = {
               ...doneEvent,
-              answer: await privacyHandle.restorePromptPseudonyms(doneEvent.answer),
+              answer: await restoreAnswerForUser(privacyHandle, doneEvent.answer),
             };
           } catch (err) {
             console.warn(
@@ -5860,62 +8184,79 @@ export class Orchestrator {
               err,
             );
           }
-          try {
-            const receipt = await privacyHandle.finalize(input.userMessage);
-            if (receipt) {
-              await this.persistTurnReceipt(turnId, input, receipt);
-              // #1107 — surface the receipt-store key (== turnId) so an API
-              // caller can correlate this turn with `GET .../receipts/:id`.
-              // Emitted only inside `if (receipt)`, so the id appears exactly
-              // when a row was written.
-              doneEvent = { ...doneEvent, privacyReceipt: receipt, receiptId: turnId };
+          if (args.holdPrivacyFinalize) {
+            // The wrapper verifies first, then finalizes and attaches the
+            // receipt to the `done` it re-emits.
+            handOver(privacyHandle, verifierWireView, rendered?.systemDataOnly === true);
+          } else {
+            try {
+              const receipt = await privacyHandle.finalize(input.userMessage);
+              if (receipt) {
+                const rowed = await this.settleTurnReceipt(
+                  turnId,
+                  input,
+                  receipt,
+                  bound,
+                  this.takeTurnAttribution(turnId),
+                );
+                // #1107 — surface the receipt-store key (== turnId) so an API
+                // caller can correlate this turn with `GET .../receipts/:id`.
+                // Emitted only when a row is written under this turn's id
+                // (under a request ledger: when this pass owns the request's
+                // row).
+                doneEvent = {
+                  ...doneEvent,
+                  privacyReceipt: receipt,
+                  ...(rowed ? { receiptId: turnId } : {}),
+                };
+              }
+            } catch (err) {
+              console.warn(
+                '[orchestrator] privacyGuard.finalizeTurn threw — receipt dropped:',
+                err,
+              );
             }
-          } catch (err) {
-            console.warn(
-              '[orchestrator] privacyGuard.finalizeTurn threw — receipt dropped:',
-              err,
+            privacySettled = true;
+          }
+          // #133 (E8) — persisted Turn node id for graph-linking observers.
+          // Not for a refused turn (see the branch below).
+          if (!promptMaskBlocked) {
+            yield* this.toAnnotationEvents(
+              await this.afterTurn(turnId, input, doneEvent.answer, doneEvent.turnId),
             );
           }
-          yield* this.toAnnotationEvents(
-            await this.fireTurnHook(
-              'onAfterTurn',
-              turnId,
-              input,
-              {
-                assistantAnswer: doneEvent.answer,
-                // #133 (E8) — persisted Turn node id for graph-linking observers.
-                ...(doneEvent.turnId ? { turnExternalId: doneEvent.turnId } : {}),
-              },
-              2000,
-            ),
-          );
-          yield this.discloseDoneEvent(doneEvent, input);
+          yield this.discloseDoneEvent(doneEvent, input, bound?.ledger);
           continue;
         }
         if (event.type === 'done') {
-          yield* this.toAnnotationEvents(
-            await this.fireTurnHook(
-              'onAfterTurn',
-              turnId,
-              input,
-              {
-                assistantAnswer: event.answer,
-                ...(event.turnId ? { turnExternalId: event.turnId } : {}),
-              },
-              2000,
-            ),
-          );
+          // A refused turn fires no `onAfterTurn`, as on the buffered path,
+          // where only `chatInContextInner` fires it (#1535 security review).
+          if (!promptMaskBlocked) {
+            yield* this.toAnnotationEvents(
+              await this.afterTurn(turnId, input, event.answer, event.turnId),
+            );
+          }
           // #644 — fold the disclosure at the boundary, AFTER the hook (which
           // records the raw answer, matching the non-streaming path where
           // `toSemanticAnswer` folds only after `runTurn` persisted the turn).
-          yield this.discloseDoneEvent(event, input);
+          yield this.discloseDoneEvent(event, input, bound?.ledger);
           continue;
         }
         yield event;
       }
     } finally {
-      steeringBus.endTurn(sessionId);
+      if (steeringLive) steeringBus.endTurn(sessionId);
       this.clearTurnAuthContext();
+      // A stream that ended without `done` (an `error`, a throw, a client
+      // that left — in the prelude too) closes its pass here: state dropped,
+      // receipt kept.
+      if (privacyHandle && !privacySettled) {
+        // A recall still scanning when the client left would re-create the
+        // turn's prompt map (real values) AFTER the pass dropped it, and
+        // nothing would delete that map again — so wait it out first.
+        if (startedRecall !== undefined) await startedRecall.catch(() => undefined);
+        await this.closeUndeliveredPass({ handle: privacyHandle, turnId, input, bound });
+      }
     }
   }
 
@@ -5924,11 +8265,14 @@ export class Orchestrator {
     turnId: string,
     observer: AskObserver | undefined,
     turnMemory: TurnMemoryBinding | undefined,
+    /** The recall `chatStream` started before `onBeforeTurn`; absent when
+     *  the caller did not start one (see `startPriorContextRecall`). */
+    startedRecall?: Promise<PriorContextRecall>,
   ): AsyncGenerator<ChatStreamEvent> {
     // #361 — wire-bound prompt masking; see chatInContextInner for the full
     // rationale. Same seam, streaming path.
     const privacyForPrompt = turnContext.current()?.privacyHandle;
-    const wireUserMessage = await maskPromptForWire(
+    const wireUserMessage = await maskTurnPromptForWire(
       privacyForPrompt,
       input.userMessage,
     );
@@ -5936,14 +8280,8 @@ export class Orchestrator {
     // builds no `memoryUsed`, and its only consumer is the non-streaming Teams
     // card (`toSemanticAnswer`). Wire it through with the flag if a streaming
     // channel ever grows a Fresh-Check affordance.
-    const { text: rawPriorContext, recalled } =
-      await this.retrievePriorContext(input, wireUserMessage);
-    // #361 — the recalled TEXT is LLM-bound wire content; mask through the
-    // same turn map before injection (see chatInContextInner).
-    const priorContext = await maskRecalledForWire(
-      privacyForPrompt,
-      rawPriorContext,
-    );
+    const { recalled, priorContext } = await (startedRecall ??
+      this.startPriorContextRecall(input, wireUserMessage, turnMemory, privacyForPrompt));
     // Cross-session recall probe — surface plans/processes/insights pulled
     // from prior sessions as a visible `kg_recall` card before the answer
     // streams in. No-op when every recall leg was empty.
@@ -5964,12 +8302,25 @@ export class Orchestrator {
       images: ingestedImages,
       skippedVisionImageCount,
       rejectedImageReasons,
-    } = await this.ingestAttachments(input, visionSupported);
+    } = await this.ingestAttachmentsForPass(input, visionSupported);
+    // A verifier re-entry without a first-run ingestion to reuse ends here,
+    // before the model runs (see chatInContextInner).
+    const abandonedAtIngestion = this.abandonedReentryEvent();
+    if (abandonedAtIngestion) {
+      yield abandonedAtIngestion;
+      return;
+    }
     const ingestedText = await maskIngestedForWire(
       privacyForPrompt,
       ingestedRawText,
     );
-    const effectiveExtraSystemHint = composeExtraSystemHint(input);
+    // The caller's hint (a verifier correction on a retry) is wire content:
+    // masked through the turn's map like the prompt. Fails closed.
+    const effectiveExtraSystemHint = await wireExtraSystemHint(
+      privacyForPrompt,
+      input,
+      await this.turnMemoryIndexBlock(input, turnMemory),
+    );
     // Palaia Phase 8 (OB-77) — see chatInContextInner for rationale.
     const nudgeCounter = createNudgeTurnCounter();
     const nudgeTrace: Array<{
@@ -6008,9 +8359,10 @@ export class Orchestrator {
       },
     ];
 
-    const entityCollection = this.entityRefBus?.beginCollection(turnId);
+    const entityCollection = shareEntityRefs(this.entityRefBus?.beginCollection(turnId));
     let toolCalls = 0;
-    const textParts: string[] = [];
+    // #1500 — see the buffered twin in runTurnCore.
+    const answerText = new AnswerTextAccumulator();
     // One forced file-build retry per turn (see fileAnnouncedButNotBuilt).
     let fileForceRetried = false;
     // Issue #506 — generic, tool-agnostic record of which tool(s) already
@@ -6043,7 +8395,9 @@ export class Orchestrator {
     const traceCollector = input.sessionScope
       ? new RunTraceCollector({
           scope: input.sessionScope,
-          ...(input.userId ? { userId: input.userId } : {}),
+          ...runTraceUserSpread(input),
+          turnId,
+          ...(entityCollection ? { entityRefs: entityCollection } : {}),
         })
       : undefined;
 
@@ -6070,13 +8424,14 @@ export class Orchestrator {
     // classifier calls — run in parallel so persona routing adds no serial
     // latency. Resolved once so the whole streamed turn runs on one model.
     const [resolved, resolvedPersona] = await Promise.all([
-      this.resolveTurnModel(wireUserMessage),
+      this.resolveTurnModel(wireUserMessage, input.routeHint),
       this.resolveTurnPersona(wireUserMessage),
     ]);
     const turnModel = resolved.model;
     const turnPersonaBody = resolvedPersona.skillBody;
     // #1033 W3 — which provider/model this turn runs on and where it may hop.
     let turnExec = await this.resolveTurnExecution(turnModel, messagesCarryImages(messages));
+    Orchestrator.publishTurnExecution(turnExec);
     // #650 — streaming mirror of the buffered stamp above. Both paths, or the
     // field is present on some traces and absent on others for no visible
     // reason, which is worse for a provenance record than not having it.
@@ -6119,7 +8474,8 @@ export class Orchestrator {
         }
 
         // Final pass: loop guard stopped, wall-clock budget spent, or last
-        // allowed iteration → answer tools-disabled (best-effort finalize).
+        // allowed iteration → answer with tool use suppressed (#1211, see
+        // `toolParamsFor`) — best-effort finalize.
         const finalizeThisIter =
           forceFinalize ||
           iteration === this.maxIterations - 1 ||
@@ -6162,27 +8518,34 @@ export class Orchestrator {
         }
 
         let finalMessage: Message | undefined;
+        // #1211 — see the buffered path: the finalize directive rides in the
+        // per-turn system hint, and `tools` / `tool_choice` come from the
+        // shared `toolParamsFor`, computed per provider (the fallback gets its
+        // own pair).
+        const finalizePass = finalizeThisIter && !forceObligation;
         // #1033 W3 — see the buffered path: persona skill first, else the
         // execution's own identity (the fallback family's prompt after a hop).
         const systemFor = (persona: string | undefined) =>
           buildSystemBlocks(
-            this.composeStableSystemPrompt(prependRules, persona, turnMemory?.contextBound === true),
+            this.composeStableSystemPrompt(prependRules, persona, turnMemory?.memoryPrompt),
             priorContext,
-            withFinalizeHint(
-              effectiveExtraSystemHint,
-              finalizeThisIter && !forceObligation,
-            ),
+            withFinalizeHint(effectiveExtraSystemHint, finalizePass),
           );
+        const iterationTools = this.buildToolsList();
+        const toolParamsForProvider = (provider: LlmProvider) =>
+          toolParamsFor({
+            tools: iterationTools,
+            finalizePass,
+            provider,
+            ...(forceObligation && obligationTool
+              ? { forcedChoice: forceObligationFor }
+              : {}),
+          });
         const streamParams = {
           model: turnExec.model,
           ...(turnExec.effort !== undefined ? { effort: turnExec.effort } : {}),
           max_tokens: this.maxTokens,
           system: systemFor(turnPersonaBody ?? turnExec.identity),
-          tools:
-            finalizeThisIter && !forceObligation ? [] : this.buildToolsList(),
-          ...(forceObligation && obligationTool
-            ? { tool_choice: forceObligationFor }
-            : {}),
           messages,
         };
         // #1033 W3 — a hop to ANOTHER provider is only taken before the first
@@ -6197,9 +8560,11 @@ export class Orchestrator {
           (iteration === 0 || turnExec.fallback.provider.id === turnExec.provider.id)
             ? turnExec.fallback
             : undefined;
+        // #1500 — preview characters this iteration streamed, for `text_retract`.
+        let streamedChars = 0;
         for await (const ev of streamMessageEvents({
           provider: turnExec.provider,
-          params: streamParams,
+          params: { ...streamParams, ...toolParamsForProvider(turnExec.provider) },
           ...(fb
             ? {
                 fallback: {
@@ -6209,6 +8574,7 @@ export class Orchestrator {
                     model: fb.model,
                     ...(fb.effort !== undefined ? { effort: fb.effort } : {}),
                     system: systemFor(turnPersonaBody ?? fb.identity),
+                    ...toolParamsForProvider(fb.provider),
                   },
                   ...(this.providerPool?.health ? { health: this.providerPool.health } : {}),
                 },
@@ -6220,6 +8586,7 @@ export class Orchestrator {
           betas: [MEMORY_BETA_HEADER],
         })) {
           if (ev.type === 'text_delta') {
+            streamedChars += ev.text.length;
             yield { type: 'text_delta', text: ev.text };
           } else if (ev.type === 'fallback') {
             // The hop happened before any output: the rest of this turn —
@@ -6227,6 +8594,7 @@ export class Orchestrator {
             // names it, and the UI gets a distinct `provider_fallback` chip
             // (never confused with the triage `bucket: 'fallback'`).
             turnExec = Orchestrator.afterFallback(turnExec);
+            Orchestrator.publishTurnExecution(turnExec);
             this.recordTurnAttribution(turnId, ev.model, ev.providerId, true);
             traceCollector?.recordModel(ev.model, ev.providerId);
             yield {
@@ -6247,10 +8615,18 @@ export class Orchestrator {
           );
         }
         messages.push({ role: 'assistant', content: finalMessage.content });
-        textParts.push(...collectTextBlocks(finalMessage.content));
+        const heldBack = answerText.addIteration(
+          collectTextBlocks(finalMessage.content),
+          toolNamesOf(finalMessage.content),
+        );
+        // #1500 — the preview already showed this iteration's preamble; take
+        // it back now. `done.answer` restores it if nothing follows.
+        if (heldBack && streamedChars > 0) {
+          yield { type: 'text_retract', chars: streamedChars };
+        }
 
         if (finalMessage.stop_reason !== 'tool_use') {
-          const answer = finalAnswerText(textParts, finalMessage.stop_reason);
+          const answer = finalAnswerText(answerText.parts(), finalMessage.stop_reason);
           const drainedAttachments = this.drainAttachments();
           // See the non-streaming path: only force a retry on a pure-text end,
           // never when a (possibly truncated) tool_use block is present.
@@ -6261,7 +8637,7 @@ export class Orchestrator {
           // cut mid-tool_use silently drops the calls of this response.
           if (finalMessage.stop_reason !== 'end_turn') {
             console.error(
-              `[orchestrator] finalized with stop_reason=${String(finalMessage.stop_reason)} ` +
+              `[orchestrator] finalized with stop_reason=${String(finalMessage.stop_reason)}${refusalLogClause(finalMessage)} ` +
                 `iterations=${iteration + 1}/${this.maxIterations}` +
                 (responseHasToolUse
                   ? ' — response carries tool_use blocks that will NOT run (truncated mid-call?)'
@@ -6270,8 +8646,12 @@ export class Orchestrator {
           }
           // #332 Layer 3 — forced-delegation obligation unmet at a pure-text
           // turn end: escalate ONCE with a forced tool_choice + synthetic
-          // reminder (OB-31). Guarded by `!finalizeThisIter` so a normal
-          // tool-enabled iteration follows within the iteration budget.
+          // reminder (OB-31). On the models that reject a forced choice (see
+          // `supportsForcedToolChoice()` in the Anthropic adapter) it degrades
+          // to `auto`, so the reminder text is what actually steers the call.
+          // Guarded by
+          // `!finalizeThisIter` so a normal tool-enabled iteration follows
+          // within the iteration budget.
           if (
             obligationTool &&
             !obligationMet &&
@@ -6285,7 +8665,7 @@ export class Orchestrator {
               role: 'user',
               content: this.obligationReminder(obligationTool),
             });
-            textParts.length = 0;
+            answerText.reset();
             console.error(
               `[orchestrator] obligation unmet — forcing one consult of \`${obligationTool}\``,
             );
@@ -6299,7 +8679,7 @@ export class Orchestrator {
           ) {
             fileForceRetried = true;
             messages.push({ role: 'user', content: FILE_RETRY_NUDGE });
-            textParts.length = 0;
+            answerText.reset();
             console.error(
               '[orchestrator] file announced but not built — forcing one retry to call create_xlsx/create_docx',
             );
@@ -6321,42 +8701,59 @@ export class Orchestrator {
             iterations,
             status: 'success',
           });
+          // Slice 4a — the save-as-memory excerpt (a Haiku call), started
+          // now so it overlaps the row write; see `startPalaiaExcerpt` for
+          // why a verifier-wrapped turn does not wait for it before `done`.
+          // #361 — it gets the wire variants in; it restores its output.
+          // Skipped on a canvas turn: the canvas has no save-as-memory modal,
+          // so the Haiku call only delayed `done`. Auto-promotion then skips
+          // with `no-excerpt` (#1527), as it does on any excerpt miss.
+          const excerptPending =
+            input.canvasSessionId === undefined
+              ? this.startPalaiaExcerpt(privacyForPrompt, wireUserMessage, answer)
+              : Promise.resolve(undefined);
           // #361 — restore prompt surrogates → real values BEFORE anything
           // is persisted (session log, auto-promotion). `answer` (the wire
           // variant) stays in scope for the LLM-bound extra passes below
           // (card router, excerpt pass).
-          const restoredAnswer = await restorePromptForPersistence(
+          const restoredAnswer = await restoreTurnAnswer(
             privacyForPrompt,
             answer,
           );
+          // See chat(): we await the session log so the next turn's
+          // verbatim-tail retrieval can see this turn. Streaming callers
+          // are already committed to waiting for the final `done` event,
+          // so the extra ~sub-second is paid by the client already. While a
+          // verifier may re-enter the request, the row is offered to the
+          // request's record further down instead — once the excerpt its
+          // auto-promotion needs is known — and written for the pass the
+          // verifier delivers (`requestTurnRecord.ts`).
+          const deferring = this.turnRecords.deferringLedger();
+          let row: TurnRow | undefined;
           let persistedTurnId: string | undefined;
           if (this.sessionLogger && input.sessionScope) {
-            const entityRefs = entityCollection?.drain() ?? [];
-            // See chat(): we await the session log so the next turn's
-            // verbatim-tail retrieval can see this turn. Streaming callers
-            // are already committed to waiting for the final `done` event,
-            // so the extra ~sub-second is paid by the client already.
-            const answerForGraph = appendToolDigest(
-              restoredAnswer,
-              attachments,
-              fileAttachments,
-            );
-            try {
-              const logged = await this.sessionLogger.log({
+            row = {
+              entry: {
                 scope: input.sessionScope,
                 userMessage: input.userMessage,
-                assistantAnswer: answerForGraph,
+                assistantAnswer: appendToolDigest(restoredAnswer, attachments, fileAttachments),
                 toolCalls,
                 iterations,
-                entityRefs,
                 ...(input.userId ? { userId: input.userId } : {}),
+                ...turnOwnersField(turnMemory),
                 ...(runTrace ? { runTrace } : {}),
-              });
-              persistedTurnId = logged.turnExternalId;
-            } catch (err) {
-              console.error(
-                '[orchestrator] session log failed (continuing with answer):',
-                err instanceof Error ? err.message : err,
+                ...maskedRowView(
+                  privacyForPrompt,
+                  wireUserMessage,
+                  appendToolDigest(answer, attachments, fileAttachments),
+                ),
+              },
+              entityRefs: entityCollection?.drain() ?? [],
+            };
+            if (deferring === undefined) {
+              persistedTurnId = await this.turnRecords.writeRow(
+                { ...row.entry, entityRefs: row.entityRefs },
+                'answer',
               );
             }
           }
@@ -6381,27 +8778,44 @@ export class Orchestrator {
           const pendingSlotCard = this.drainPendingSlotCard();
           const pendingRoutineList = this.drainPendingRoutineList();
           const pendingOAuthConsent = this.drainConsentRequired();
-          // Slice 4a — Haiku-backed enrichment for the save-as-memory
-          // modal. Inline because the `done` event is the natural
-          // carrier and the chat UI wants the suggestion immediately;
-          // accept the 300-800ms latency cost. Failure → undefined,
-          // modal falls back to its 240-char prefill.
-          // #361 — the excerpt pass is a Haiku (LLM) call, so it gets the
-          // wire variants in; its OUTPUT is persisted (auto-promotion) and
-          // user-facing (modal prefill), so surrogates are restored to real
-          // values before either consumer sees it.
-          const palaiaExcerpt = await restoreExcerptForPersistence(
-            privacyForPrompt,
-            await this.maybeExtractExcerpt(wireUserMessage, answer),
-          );
+          // Slice 4a — the excerpt rides the `done` event (the save-as-memory
+          // modal prefill; a miss → the modal's 240-char prefill). Without a
+          // re-entering verifier it is awaited here, as before. Under one
+          // (`deferring`) the row and its promotion wait for it in the
+          // request's commit instead, and the commit hands it to the `done`
+          // that goes out — so the verifier, which starts at this `done`,
+          // no longer waits for the Haiku call. No row to offer (no session
+          // logger) ⇒ no commit to carry it: awaited here as well.
+          const palaiaExcerpt =
+            deferring === undefined || row === undefined ? await excerptPending : undefined;
+          if (deferring !== undefined && row !== undefined) {
+            // Promotion follows the row, so it is the delivered pass's too.
+            this.turnRecords.offerRow(deferring, row, 'answer', async (turnId) => {
+              const committedExcerpt = await excerptPending;
+              const mkId = await this.maybePromoteTurn({
+                turnId,
+                userId: input.userId,
+                ...turnOwnersField(turnMemory),
+                palaiaExcerpt: committedExcerpt,
+                fallbackAssistantAnswer: restoredAnswer,
+              });
+              return {
+                ...(mkId ? { autoPromotedMkId: mkId } : {}),
+                ...(committedExcerpt ? { palaiaExcerpt: committedExcerpt } : {}),
+                events: await this.toKgInsertAnnotationEvents(mkId),
+              };
+            });
+          }
           // Slice 4b/4c — auto-promotion. Awaited so the resulting
           // mkId rides the same `done` event and the UI can render an
           // inline banner immediately. No-op (returns undefined fast)
           // when autoPromote is off / capture-scorer disabled /
-          // threshold not met / required handles missing.
+          // threshold not met / required handles missing — and while the
+          // row is deferred (no turn id yet; the commit promotes).
           const autoPromotedMkId = await this.maybePromoteTurn({
             turnId: persistedTurnId,
             userId: input.userId,
+            ...turnOwnersField(turnMemory),
             palaiaExcerpt,
             fallbackAssistantAnswer: restoredAnswer,
           });
@@ -6549,6 +8963,13 @@ export class Orchestrator {
             if (next) yield next;
           }
         }
+        // Post-batch fail-fast (see `throwIfReentryAbandoned`): a verifier
+        // re-entry that needed a call outside the first run ends here.
+        const abandoned = this.abandonedReentryEvent();
+        if (abandoned) {
+          yield abandoned;
+          return;
+        }
 
         // Submission-order tool_result blocks for the next API request.
         // Anthropic matches by `tool_use_id`, but submission order keeps the
@@ -6614,10 +9035,12 @@ export class Orchestrator {
         this.extractToolEmittedRoutineList(toolResults);
         // #361 — the choice card is user-facing AND its question is
         // persisted in the session log; restore surrogates → real values.
+        // The question as the model wrote it goes into the row's masked view.
+        const wireChoice =
+          this.drainPendingChoice() ?? this.extractToolEmittedChoice(toolResults);
         const pendingUserChoice = await restorePendingChoiceForUser(
           privacyForPrompt,
-          this.drainPendingChoice() ??
-            this.extractToolEmittedChoice(toolResults),
+          wireChoice,
         );
         // W2-1 (#544) — mirror of chatInContextInner, including the
         // deterministic winner rule. See the comment there.
@@ -6633,9 +9056,10 @@ export class Orchestrator {
           // refinements of a non-existent answer would be confusing.
           this.drainFollowUps();
           this.drainPendingSlotCard();
-          const answer = textParts.join('\n\n').trim();
+          // #1500 — the card carries its own question; no preamble lead-in.
+          const answer = answerText.keptParts().join('\n\n').trim();
           // #361 — persisted + user-facing: restore surrogates → real values.
-          const restoredAnswer = await restorePromptForPersistence(
+          const restoredAnswer = await restoreTurnAnswer(
             privacyForPrompt,
             answer,
           );
@@ -6646,28 +9070,27 @@ export class Orchestrator {
           });
           let persistedTurnId: string | undefined;
           if (this.sessionLogger && input.sessionScope) {
-            const entityRefs = entityCollection?.drain() ?? [];
-            const loggedAnswer = restoredAnswer.length > 0
-              ? `${restoredAnswer}\n\n[Rückfrage] ${pendingUserChoice.question}`
-              : `[Rückfrage] ${pendingUserChoice.question}`;
-            try {
-              const logged = await this.sessionLogger.log({
-                scope: input.sessionScope,
-                userMessage: input.userMessage,
-                assistantAnswer: loggedAnswer,
-                toolCalls,
-                iterations,
-                entityRefs,
-                ...(input.userId ? { userId: input.userId } : {}),
-                ...(runTrace ? { runTrace } : {}),
-              });
-              persistedTurnId = logged.turnExternalId;
-            } catch (err) {
-              console.error(
-                '[orchestrator] session log failed (continuing with choice card):',
-                err instanceof Error ? err.message : err,
-              );
-            }
+            persistedTurnId = await this.turnRecords.recordRow(
+              {
+                entry: {
+                  scope: input.sessionScope,
+                  userMessage: input.userMessage,
+                  assistantAnswer: choiceCardLogLine(restoredAnswer, pendingUserChoice.question),
+                  toolCalls,
+                  iterations,
+                  ...(input.userId ? { userId: input.userId } : {}),
+                  ...turnOwnersField(turnMemory),
+                  ...(runTrace ? { runTrace } : {}),
+                  ...maskedRowView(
+                    privacyForPrompt,
+                    wireUserMessage,
+                    choiceCardLogLine(answer, wireChoice?.question ?? ''),
+                  ),
+                },
+                entityRefs: entityCollection?.drain() ?? [],
+              },
+              'choice card',
+            );
           }
           const choiceAgentsConsulted = deriveAgentsConsulted(runTrace);
           yield {
@@ -6694,8 +9117,9 @@ export class Orchestrator {
           this.drainFollowUps();
           this.drainPendingSlotCard();
           const card = toPendingMcpInputCard(pendingMcpInputCard);
-          const answer = textParts.join('\n\n').trim();
-          const restoredAnswer = await restorePromptForPersistence(
+          // #1500 — the card carries its own question; no preamble lead-in.
+          const answer = answerText.keptParts().join('\n\n').trim();
+          const restoredAnswer = await restoreTurnAnswer(
             privacyForPrompt,
             answer,
           );
@@ -6706,26 +9130,27 @@ export class Orchestrator {
           });
           let persistedTurnId: string | undefined;
           if (this.sessionLogger && input.sessionScope) {
-            const entityRefs = entityCollection?.drain() ?? [];
-            const loggedAnswer = mcpInputCardLogLine(restoredAnswer, card);
-            try {
-              const logged = await this.sessionLogger.log({
-                scope: input.sessionScope,
-                userMessage: input.userMessage,
-                assistantAnswer: loggedAnswer,
-                toolCalls,
-                iterations,
-                entityRefs,
-                ...(input.userId ? { userId: input.userId } : {}),
-                ...(runTrace ? { runTrace } : {}),
-              });
-              persistedTurnId = logged.turnExternalId;
-            } catch (err) {
-              console.error(
-                '[orchestrator] session log failed (continuing with MCP input card):',
-                err instanceof Error ? err.message : err,
-              );
-            }
+            persistedTurnId = await this.turnRecords.recordRow(
+              {
+                entry: {
+                  scope: input.sessionScope,
+                  userMessage: input.userMessage,
+                  assistantAnswer: mcpInputCardLogLine(restoredAnswer, card),
+                  toolCalls,
+                  iterations,
+                  ...(input.userId ? { userId: input.userId } : {}),
+                  ...turnOwnersField(turnMemory),
+                  ...(runTrace ? { runTrace } : {}),
+                  ...maskedRowView(
+                    privacyForPrompt,
+                    wireUserMessage,
+                    mcpInputCardLogLine(answer, card),
+                  ),
+                },
+                entityRefs: entityCollection?.drain() ?? [],
+              },
+              'MCP input card',
+            );
           }
           const mcpAgentsConsulted = deriveAgentsConsulted(runTrace);
           yield {
@@ -6815,7 +9240,7 @@ export class Orchestrator {
         // memory of it and could re-invoke the same tool, reintroducing the
         // duplicate-side-effect bug issue #506 exists to prevent. Same
         // call shape as the other sites; best-effort like all of them.
-        const restoredAnswer = await restorePromptForPersistence(
+        const restoredAnswer = await restoreTurnAnswer(
           privacyForPrompt,
           answer,
         );
@@ -6835,25 +9260,23 @@ export class Orchestrator {
         });
         let persistedTurnId: string | undefined;
         if (this.sessionLogger && input.sessionScope) {
-          const entityRefs = entityCollection?.drain() ?? [];
-          try {
-            const logged = await this.sessionLogger.log({
-              scope: input.sessionScope,
-              userMessage: input.userMessage,
-              assistantAnswer: restoredAnswer,
-              toolCalls,
-              iterations,
-              entityRefs,
-              ...(input.userId ? { userId: input.userId } : {}),
-              ...(runTrace ? { runTrace } : {}),
-            });
-            persistedTurnId = logged.turnExternalId;
-          } catch (logErr) {
-            console.error(
-              '[orchestrator] session log failed (continuing with emergency done):',
-              logErr instanceof Error ? logErr.message : logErr,
-            );
-          }
+          persistedTurnId = await this.turnRecords.recordRow(
+            {
+              entry: {
+                scope: input.sessionScope,
+                userMessage: input.userMessage,
+                assistantAnswer: restoredAnswer,
+                toolCalls,
+                iterations,
+                ...(input.userId ? { userId: input.userId } : {}),
+                ...turnOwnersField(turnMemory),
+                ...(runTrace ? { runTrace } : {}),
+                ...maskedRowView(privacyForPrompt, wireUserMessage, answer),
+              },
+              entityRefs: entityCollection?.drain() ?? [],
+            },
+            'emergency done',
+          );
         }
         yield {
           type: 'done',
@@ -6920,35 +9343,24 @@ export class Orchestrator {
     // non-streaming path builds from its `Promise.allSettled` rejections, and
     // the one this loop already reads (`output.startsWith('Error:')`).
     //
-    // The message stays RAW — no masking, no digesting. Same deliberate
-    // divergence from `ToolDispatchService` that the chat path fences in
-    // `test/orchestrator/chatPathToolErrorText.test.ts`: the reader here is the
-    // operator debugging their own tool, and the two chat paths must not drift
-    // apart again in the opposite direction.
-    //
-    // Known consequence, accepted for parity rather than overlooked: a THROWN
-    // message never passes the Privacy Shield (interning in
-    // `dispatchToolDeadlined` only ever sees a RETURNED string), so a driver
-    // error that quotes a row value ships that value to the provider and to
-    // the API caller. That is exactly what the non-streaming path has always
-    // done with the same rejection; narrowing it belongs in one change that
-    // moves BOTH paths, not in a fix that makes them disagree again. A handler
-    // that knows its errors carry data should catch and return its own
-    // data-free `Error:` prose — returned `Error:` strings also reach the
-    // model verbatim, un-interned (#1105, #1097).
-    const promise = this.dispatchTool(use.name, use.input, observer, turnMemory).catch(
+    // A handler exception no longer rejects at all: `dispatchTool` resolves it
+    // through `withholdThrownToolError` (`toolErrorRedaction.ts`; the withheld
+    // notice under a privacy handle, intern-exempt tools included), so
+    // this catch is a backstop for a throw outside that choke point. The
+    // backstop never puts the exception MESSAGE on the wire — the text
+    // streamed as the `tool_result` event, sent to the provider and persisted
+    // in the session carries the class name, a sanitised code and the log ref.
+    const meta: ToolDispatchMeta = { replayed: false };
+    const promise = this.dispatchTool(use.name, use.input, observer, turnMemory, meta).catch(
       (err: unknown) => {
-        // Settling the slot must not cost the operator the STACK. Before this
-        // catch existed, a throwing handler at least reached the turn's catch
-        // and was logged there with its stack; the model-facing string keeps
-        // only `message`, which for the reported trigger (a Postgres 22P02
-        // escaping `QueryDatasetTool.handle`) does not say which call site
-        // threw. Same shape as the deadline warning in `dispatchTool`.
-        console.warn(
-          `[orchestrator.prepareStreamSlot:${use.name}] dispatch rejected — settling the slot as a tool error; the turn continues:`,
+        // Settling the slot must not cost the operator the STACK: the full
+        // error goes to the log under the same ref the notice carries.
+        const ref = toolErrorRef();
+        console.error(
+          `[orchestrator.prepareStreamSlot:${use.name}] dispatch rejected (ref=${ref}) — settling the slot as a tool error; the turn continues:`,
           err,
         );
-        return `Error: ${err instanceof Error ? err.message : String(err)}`;
+        return thrownToolErrorForModel(use.name, err, ref);
       },
     );
     return {
@@ -6957,6 +9369,7 @@ export class Orchestrator {
       subEvents,
       invocation,
       promise,
+      meta,
       started,
       lastHeartbeat: started,
       settled: false,
@@ -7022,33 +9435,38 @@ export class Orchestrator {
   ): void {
     const durationMs = slot.durationMs ?? 0;
     const isError = slot.isError ?? false;
+    const replayed = slot.meta.replayed ? { replayed: true } : {};
     if (slot.invocation) {
       slot.invocation.finish({
         durationMs,
         status: isError ? 'error' : 'success',
+        ...replayed,
       });
     } else if (traceCollector) {
-      traceCollector.recordOrchestratorToolCall({
-        callId: slot.use.id,
-        toolName: slot.use.name,
-        durationMs,
-        isError,
-      });
+      traceCollector.recordOrchestratorToolCall(
+        {
+          callId: slot.use.id,
+          toolName: slot.use.name,
+          durationMs,
+          isError,
+          ...replayed,
+        },
+        slot.output,
+      );
     }
   }
 
   /**
-   * W0-2 — every tool dispatch runs under a per-tool deadline. Without it a
-   * single hung sub-agent (`domainQueryTool` awaits `agent.ask()` with no
-   * abort) blocks the entire `Promise.allSettled` batch for the whole turn.
-   *
-   * On timeout the slot resolves with a structured `Error:` string and the
-   * abandoned dispatch is marked aborted, so when it eventually settles its
-   * result is DISCARDED instead of being written into a turn that moved on
-   * (raw-result capture, privacy interning, KG ingestion, sub-events).
-   *
-   * The deadline is per tool, not per batch: sibling tools in the same
-   * `allSettled` keep running and resolve normally.
+   * The ONE choke point every tool dispatch passes through (the tool loops,
+   * the streaming slots, the direct-line relay). It never rejects: a handler
+   * exception — or any other throw beneath this point — resolves through
+   * `withholdThrownToolError` (`toolErrorRedaction.ts`), so no caller folds an
+   * exception MESSAGE into a tool result on its own. Under the turn's privacy
+   * handle, intern-exempt tools included, that is the withheld notice: the
+   * message is logged with the turn's correlation ref and receipted, and the
+   * model sees the class name, a sanitised code and that ref. Without a
+   * handle the model gets `Error: <message>` (security-architecture §6c
+   * residuals, §6f).
    */
   private async dispatchTool(
     name: string,
@@ -7070,6 +9488,49 @@ export class Orchestrator {
      * Callers with genuinely no binding pass an explicit `undefined`.
      */
     turnMemory: TurnMemoryBinding | undefined,
+    /** Filled with what the loop needs beyond the result (a replay). */
+    meta?: ToolDispatchMeta,
+  ): Promise<string> {
+    // #1544 — whatever the model gets back (a digest's clear-text values, a
+    // bypassed result, an error) never carries a value this turn masked in
+    // the user's prompt: a tool may have been run on it.
+    const privacy = turnContext.current()?.privacyHandle;
+    try {
+      return remaskEchoedValues(
+        privacy,
+        await this.dispatchToolWithDeadline(name, input, observer, turnMemory, meta),
+      );
+    } catch (err) {
+      const outcome = await withholdThrownToolError({
+        toolName: name,
+        err,
+        privacy,
+        site: 'orchestrator.dispatchTool',
+      });
+      return remaskEchoedValues(privacy, outcome.text);
+    }
+  }
+
+  /**
+   * W0-2 — every tool dispatch runs under a per-tool deadline. Without it a
+   * single hung sub-agent (`domainQueryTool` awaits `agent.ask()` with no
+   * abort) blocks the entire `Promise.allSettled` batch for the whole turn.
+   *
+   * On timeout the slot resolves with a structured `Error:` string and the
+   * abandoned dispatch is marked aborted, so when it eventually settles its
+   * result is DISCARDED instead of being written into a turn that moved on
+   * (raw-result capture, privacy interning, KG ingestion, sub-events).
+   *
+   * The deadline is per tool, not per batch: sibling tools in the same
+   * `allSettled` keep running and resolve normally.
+   */
+  private async dispatchToolWithDeadline(
+    name: string,
+    input: unknown,
+    observer: AskObserver | undefined,
+    /** Required position — see {@link Orchestrator.dispatchTool}. */
+    turnMemory: TurnMemoryBinding | undefined,
+    meta?: ToolDispatchMeta,
   ): Promise<string> {
     // #575 — the audience floor's egress guard, at the ONE choke point every
     // tool dispatch passes through. Placed before the deadline machinery so a
@@ -7092,7 +9553,9 @@ export class Orchestrator {
     const timeoutMs = resolveToolDispatchTimeoutMs();
     if (timeoutMs === 0) {
       // Deadline explicitly disabled by the operator — legacy behaviour.
-      return this.dispatchToolDeadlined(name, input, observer, undefined, turnMemory);
+      // `return await`, not a bare `return`: a rejection must surface inside
+      // this frame so `dispatchTool`'s catch withholds its message.
+      return await this.dispatchToolDeadlined(name, input, observer, undefined, turnMemory, meta);
     }
     const controller = new AbortController();
     const work = this.dispatchToolDeadlined(
@@ -7101,6 +9564,7 @@ export class Orchestrator {
       abortGuardedObserver(observer, controller.signal),
       controller.signal,
       turnMemory,
+      meta,
     );
     // A dispatch that rejects AFTER the deadline already resolved the race
     // would otherwise surface as an unhandled rejection and kill the process.
@@ -7124,6 +9588,41 @@ export class Orchestrator {
     }
   }
 
+  /**
+   * #1559 — is the spreadsheet export tool offered on THIS turn? Same gates
+   * as the tool list (`buildToolsList`) and the prompt docs: registered,
+   * its plugin ready, and offered by its per-turn predicate. Only then may a
+   * truncated render or the system prompt offer the full list as a file.
+   */
+  private isFileExportOfferedThisTurn(): boolean {
+    const entry = this.nativeTools.get(FILE_EXPORT_TOOL_NAME);
+    return (
+      entry !== undefined && this.isToolAvailable(entry.agentId) && isOfferedThisTurn(entry)
+    );
+  }
+
+  /**
+   * Run a `v4_*` tool through the turn's privacy handle. Tells the render
+   * whether a file export exists this turn (#1559) and keeps a render's
+   * provenance note — values-free — for the turn's persisted row, so the
+   * next turn knows which query produced the table on screen (#1543).
+   */
+  private async runV4ToolForTurn(
+    privacy: PrivacyTurnHandle,
+    name: string,
+    input: unknown,
+  ): Promise<PrivacyV4ToolResult> {
+    const result = await privacy.runV4Tool({
+      toolName: name,
+      input,
+      fileExportAvailable: this.isFileExportOfferedThisTurn(),
+    });
+    if (result.renderProvenance !== undefined) {
+      turnContext.current()?.renderProvenance?.notes.push(result.renderProvenance);
+    }
+    return result;
+  }
+
   private async dispatchToolDeadlined(
     name: string,
     input: unknown,
@@ -7131,6 +9630,7 @@ export class Orchestrator {
     deadlineSignal: AbortSignal | undefined,
     /** Required position — see {@link Orchestrator.dispatchTool}. */
     turnMemory: TurnMemoryBinding | undefined,
+    meta?: ToolDispatchMeta,
   ): Promise<string> {
     // Privacy Shield v4 — Data-Plane Boundary. The privacy handle is
     // threaded through `turnContext.privacyHandle`; absent ⇒ no privacy
@@ -7138,11 +9638,45 @@ export class Orchestrator {
     const ctx = turnContext.current();
     const privacy = ctx?.privacyHandle;
     // Verb tools + the terminal render tool are served by the privacy
-    // provider's per-turn data-plane engine, not by a tool handler.
+    // provider's per-turn data-plane engine, not by a tool handler. They stay
+    // outside the replay ledger: pure data-plane over THIS pass's datasets.
+    // #1402 — a table render's snapshot carries the real rows: it goes to the
+    // canvas through the sentinel sink, the model gets the shape-only ack.
     if (privacy !== undefined && name.startsWith('v4_')) {
-      const v4Tool = await privacy.runV4Tool({ toolName: name, input });
-      return v4Tool.resultText;
+      const v4Tool = splitV4ToolResult(
+        name,
+        await this.runV4ToolForTurn(privacy, name, input),
+      );
+      if (v4Tool.canvasSentinel !== undefined) {
+        tapCanvasSentinel(name, v4Tool.canvasSentinel);
+      }
+      return v4Tool.llmText;
     }
+    // The request's tool replay ledger (`toolReplayLedger.ts`), asked BEFORE
+    // the handler runs. A verifier re-entry gets the first run's outcome back
+    // instead of running the tool again; a call the first run did not make
+    // runs only when it is a kernel read, any other is refused and ends the
+    // re-entry; and no pass repeats a write whose outcome is unknown. The
+    // notices are kernel-authored and PII-free, so they skip everything below.
+    const ledger = ctx?.toolReplayLedger;
+    const replayClass = this.replayClassOf(name, input, turnMemory);
+    const tracked = ledger !== undefined && replayClass !== 'turn-local' ? ledger : undefined;
+    const decision = tracked?.decide('orchestrator', name, input, {
+      readOnly: replayClass === 'read-only',
+    });
+    if (decision?.action === 'refuse-repeat') {
+      console.warn(
+        `[orchestrator.dispatchTool:${name}] refused an identical repeat: an earlier call with this input ended in an exception, its outcome is unknown`,
+      );
+      return repeatRefusedNotice(name);
+    }
+    if (decision?.action === 'refuse-miss') {
+      console.warn(
+        `[orchestrator.dispatchTool:${name}] not run: a verifier re-entry needed a call outside the first run's results`,
+      );
+      return replayMissNotice(name);
+    }
+    const replay = decision?.action === 'replay' ? decision.record : undefined;
     // Privacy Shield v4 — sub-agent data-plane bridge. A domain tool wraps a
     // LocalSubAgent that runs its own LLM loop behind the SAME v4 boundary:
     // every result it fetches is interned, so its LLM only ever sees
@@ -7166,40 +9700,106 @@ export class Orchestrator {
     // so the extra scope would buy nothing and every guard-less dispatch stays
     // byte-identical to before. See `McpInputSentinelMint`.
     const mcpInputSentinelMint: McpInputSentinelMint = {};
+    // Provenance for the kernel's OWN refusals (`dispatchToolInner`: tool
+    // unavailable, not granted, unknown tool). They name only the tool and
+    // its plugin and carry no tool data, so they skip the tool-error
+    // redaction below: a provider that cannot redact must not blind the
+    // model to its own plumbing. Written only by `dispatchToolInner`, per
+    // dispatch, and compared by exact string — a handler cannot reach it.
+    const kernelRefusal: KernelRefusalBox = {};
+    // Provenance for the MCP connect prompt: `McpManager.handleFailure`
+    // records the exact prompt it returns during THIS dispatch, and only that
+    // text skips the shield below — a result that merely starts like it is
+    // tool data. Same per-dispatch scoping as the sentinel mint; its own
+    // AsyncLocalStorage, so it survives the turn-context re-scopes of the
+    // skill-binding and plugin `ctx.mcp` paths. See `mcpAuthPromptMint.ts`.
+    const mcpAuthPromptMint = new McpAuthPromptMint();
+    // A domain tool's sub-agent events are recorded with its result, so a
+    // replay hands the re-entry's trace the same inner calls and postconditions.
+    const recorder =
+      tracked?.mode === 'record' && tracked.retainsResults && this.domainToolsByName.has(name)
+        ? new SubEventRecorder(observer)
+        : undefined;
+    const dispatchObserver = recorder?.observer ?? observer;
+    // #1544 — a native or MCP tool runs on the values the user wrote, not on
+    // the prompt placeholders the model saw. A domain tool's input is the
+    // question for its sub-agent's model, so it keeps the placeholders; the
+    // sub-agent restores them for its own inner tools (`LocalSubAgent`).
+    // A top-level MCP grant is registered as a domain tool too, but calls its
+    // server directly (`mcpGrantToDomainTool`): only a tool WITHOUT an MCP
+    // server id runs a sub-agent model.
+    const domainTool = this.domainToolsByName.get(name);
+    const asksSubAgentModel = domainTool !== undefined && domainTool.mcpServerId === undefined;
+    const handlerInput =
+      asksSubAgentModel || isInternExemptTool(name)
+        ? input
+      : restorePromptSurrogatesInToolInput(privacy, input);
+    const execute = async (): Promise<string> => {
+      if (
+        privacy !== undefined &&
+        ctx !== undefined &&
+        this.domainToolsByName.has(name)
+      ) {
+        // Slice 2.5 — stash the domain tool's owning agent plugin id so
+        // the sub-agent's inner tool calls can resolve bypass via the
+        // same plugin's `_privacy_mode` setting.
+        const domainToolAgentId = this.domainToolsByName.get(name)?.agentId;
+        return runWithMcpAuthPromptMint(mcpAuthPromptMint, () =>
+          turnContext.run(
+            {
+              ...ctx,
+              subAgentDatasetSink: subAgentSink,
+              subAgentBypassFlag,
+              mcpInputSentinelMint,
+              ...(domainToolAgentId !== undefined
+                ? { subAgentOwnerPluginId: domainToolAgentId }
+                : {}),
+            },
+            () =>
+              this.dispatchToolInner(name, handlerInput, dispatchObserver, turnMemory, kernelRefusal),
+          ),
+        );
+      }
+      if (privacy !== undefined && ctx !== undefined) {
+        // #570 — MCP tools reach dispatch as NATIVE tools (`mcpNativeHandler`),
+        // not as domain tools, so the branch above never covers them. They need
+        // the same per-dispatch scope for the mint box and nothing else: the
+        // sub-agent sinks stay out, so this scope is a plain copy of the turn
+        // context plus the receipt.
+        return runWithMcpAuthPromptMint(mcpAuthPromptMint, () =>
+          turnContext.run(
+            { ...ctx, mcpInputSentinelMint },
+            () =>
+              this.dispatchToolInner(name, handlerInput, dispatchObserver, turnMemory, kernelRefusal),
+          ),
+        );
+      }
+      return this.dispatchToolInner(name, handlerInput, dispatchObserver, turnMemory, kernelRefusal);
+    };
     let result: string;
-    if (
-      privacy !== undefined &&
-      ctx !== undefined &&
-      this.domainToolsByName.has(name)
-    ) {
-      // Slice 2.5 — stash the domain tool's owning agent plugin id so
-      // the sub-agent's inner tool calls can resolve bypass via the
-      // same plugin's `_privacy_mode` setting.
-      const domainToolAgentId = this.domainToolsByName.get(name)?.agentId;
-      result = await turnContext.run(
-        {
-          ...ctx,
-          subAgentDatasetSink: subAgentSink,
-          subAgentBypassFlag,
-          mcpInputSentinelMint,
-          ...(domainToolAgentId !== undefined
-            ? { subAgentOwnerPluginId: domainToolAgentId }
-            : {}),
-        },
-        () => this.dispatchToolInner(name, input, observer, turnMemory),
-      );
-    } else if (privacy !== undefined && ctx !== undefined) {
-      // #570 — MCP tools reach dispatch as NATIVE tools (`mcpNativeHandler`),
-      // not as domain tools, so the branch above never covers them. They need
-      // the same per-dispatch scope for the mint box and nothing else: the
-      // sub-agent sinks stay out, so this scope is a plain copy of the turn
-      // context plus the receipt.
-      result = await turnContext.run(
-        { ...ctx, mcpInputSentinelMint },
-        () => this.dispatchToolInner(name, input, observer, turnMemory),
-      );
+    if (replay !== undefined) {
+      // The first run's outcome, handed back. A thrown handler replays as the
+      // same rejection, which `dispatchTool` withholds for THIS pass.
+      if (meta) meta.replayed = true;
+      replaySubEvents(observer, replay.kind === 'result' ? replay.subEvents : undefined);
+      if (replay.kind === 'rejection') throw replay.error;
+      result = replay.value as string;
+      // Fresh-Check gate: a replayed memory read fed this pass's answer too.
+      if (name === MEMORY_TOOL_NAME && isMemoryFileRead(input, result)) {
+        const box = turnContext.current()?.memoryFileRead;
+        if (box) box.value = true;
+      }
     } else {
-      result = await this.dispatchToolInner(name, input, observer, turnMemory);
+      try {
+        // Inside a request a verifier may re-enter, no call beneath the
+        // handler is re-sent by its transport (`runHandlerAtMostOnce`).
+        result = await runHandlerAtMostOnce(ledger, execute);
+      } catch (err) {
+        if (tracked && deadlineSignal?.aborted !== true) {
+          tracked.record('orchestrator', name, input, { kind: 'rejection', error: err });
+        }
+        throw err;
+      }
     }
     // W0-2 — late-result firewall. The deadline already fired for this slot:
     // the turn took `toolDeadlineError` and moved on. Everything below this
@@ -7229,6 +9829,23 @@ export class Orchestrator {
         `[orchestrator.dispatchTool:${name}] result arrived after the dispatch deadline — discarded.`,
       );
       return TOOL_DISPATCH_DISCARDED;
+    }
+    // Recorded only now, after the late-result firewall: a re-entry must get
+    // exactly what this pass used, never a result the first run discarded.
+    if (tracked && replay === undefined) {
+      tracked.record(
+        'orchestrator',
+        name,
+        input,
+        this.replayRecordFor(name, result, privacy !== undefined, {
+          sink: subAgentSink,
+          bypass: subAgentBypassFlag,
+          sentinelMint: mcpInputSentinelMint,
+          authPromptMint: mcpAuthPromptMint,
+          recorder,
+        }),
+      );
+      if (isUnknownOutcomeToolErrorNotice(result)) tracked.noteUnknownOutcome(name, input);
     }
     // Phase C.2 — Raw tool-result capture. Outer scope (routine runner)
     // may install a callback that stashes the raw result keyed by tool
@@ -7269,25 +9886,50 @@ export class Orchestrator {
       // (memory, stored-process CRUD, self-produced meta output) are never
       // interned — masking them blinds the agent to its own operational
       // state. See `privacyInternPolicy.ts` for the auditable allowlist and
-      // rationale. Checked first so it wins over every other branch.
+      // rationale. Checked first so it wins over every other branch. The
+      // exemption covers the normal result only: an exempt tool's `Error:`
+      // text can quote what it failed on (a memory file, an attachment's
+      // rows), so it takes the same redaction as below.
       if (isInternExemptTool(name)) {
-        return result;
+        if (
+          isGuardedControlFlowResult(result, mcpAuthPromptMint) &&
+          result !== kernelRefusal.text
+        ) {
+          return guardControlFlowResult({
+            toolName: name,
+            result,
+            privacy,
+            site: 'orchestrator.dispatchTool',
+            authPromptMint: mcpAuthPromptMint,
+          });
+        }
+        // #1544 — the handler ran on the user's values; what it echoes goes
+        // back to the model as the placeholders it wrote.
+        return remaskEchoedValues(privacy, result);
       }
       // MCP → Knowledge-Graph ingestion (epic #459, opt-in per server). Runs
       // before masking so it sees the raw result; fire-and-forget so it never
       // affects the tool call. Stores a value-free structural digest by default
-      // and the raw result only when the server is privacy-bypassed; always
+      // and the raw result only when the server's privacy bypass is in force —
+      // decided like masking (`isMcpServerBypassInForce`), so under the org
+      // clamp `OMADIA_PRIVACY_FORCE_GUARDED` only the digest is stored; always
       // ACL-gated to the turn's user.
       const kgTool = this.domainToolsByName.get(name);
+      // A replayed result was ingested by the run that produced it.
       if (
+        replay === undefined &&
         kgTool?.mcpServerId !== undefined &&
         isMcpServerKgIngest(kgTool.mcpServerId) &&
         this.knowledgeGraph !== undefined
       ) {
         const tc = turnContext.current();
         const userId = tc?.userId;
-        if (userId) {
-          const bypassed = isMcpServerPrivacyBypassed(kgTool.mcpServerId);
+        // Member-scoped memory: the room owns what its turn fetched. A room
+        // that was not known owns nothing, so nothing is stored.
+        const members = turnOwnersField(turnMemory).owners;
+        const owners = members ?? (userId ? [userId] : []);
+        if (userId && owners.length > 0) {
+          const bypassed = isMcpServerBypassInForce(kgTool.mcpServerId, name);
           const detail = bypassed
             ? result.slice(0, 8000)
             : mcpObservationDigest(result);
@@ -7297,10 +9939,14 @@ export class Orchestrator {
               summary: `MCP ${kgTool.mcpServerName ?? kgTool.mcpServerId} · ${name}`.slice(0, 2000),
               rationale: detail.slice(0, 10000),
               createdBy: `auto:${userId}`,
-              involvedOmadiaUserIds: [userId],
-              aclOwners: [userId],
+              involvedOmadiaUserIds: [...owners],
+              aclOwners: [...owners],
               ...(tc?.agentSlug ? { originAgent: tc.agentSlug } : {}),
               ...(tc?.turnId ? { derivedFromTurnIds: [tc.turnId] } : {}),
+              // #1536 — the raw result no shield masked: kept out of recall
+              // under a shield. The edge above never finds its Turn (the id is
+              // the per-turn uuid), so the stamp is the only record of it.
+              ...(bypassed ? { unprotected: true } : {}),
             })
             .catch(() => {
               /* KG ingestion is best-effort — never break the tool call */
@@ -7319,20 +9965,26 @@ export class Orchestrator {
         // dispatch knows the sub-agent saw real values.
         const flag = turnContext.current()?.subAgentBypassFlag;
         if (flag) flag.value = true;
-        try {
-          await privacy.recordBypassedTool({
-            toolName: name,
-            pluginId: bypass.pluginId,
-            reason: 'operator_setting',
-            bytes: Buffer.byteLength(result, 'utf8'),
-          });
-        } catch (err) {
-          console.warn(
-            `[orchestrator.dispatchTool:${name}] privacy.recordBypassedTool threw — bypass still applied:`,
-            err,
-          );
+        // A replayed bypass is on the first run's receipt already; the
+        // request's merged receipt lists it once (`requestReceipts.ts`).
+        if (replay === undefined) {
+          try {
+            await privacy.recordBypassedTool({
+              toolName: name,
+              pluginId: bypass.pluginId,
+              reason: 'operator_setting',
+              bytes: Buffer.byteLength(result, 'utf8'),
+            });
+          } catch (err) {
+            console.warn(
+              `[orchestrator.dispatchTool:${name}] privacy.recordBypassedTool threw — bypass still applied:`,
+              err,
+            );
+          }
         }
-        return result;
+        // #1544 — bypass passes the tool's DATA raw; the user's own masked
+        // values it was handed (and may echo) stay masked.
+        return remaskEchoedValues(privacy, result);
       }
       // Sub-agent bridge: the sub-agent interned ≥1 dataset this dispatch —
       // pass those REAL datasets up by reference so the parent agent's
@@ -7345,9 +9997,10 @@ export class Orchestrator {
           });
           return bridged.resultText;
         } catch (err) {
+          // The provider was handed the sub-agent's narration, which its error
+          // can quote: class and code only in the log.
           console.warn(
-            `[orchestrator.dispatchTool:${name}] privacy.subAgentResultV4 threw — interning prose instead:`,
-            err,
+            `[orchestrator.dispatchTool:${name}] privacy.subAgentResultV4 threw ${errorClassForLog(err)} — interning prose instead`,
           );
         }
       }
@@ -7356,32 +10009,38 @@ export class Orchestrator {
       // agent's LLM read them directly), so re-interning the prose would
       // mask the synthesis the user actually asked for. Pass raw.
       if (subAgentBypassFlag.value && subAgentSink.length === 0) {
-        return result;
+        return remaskEchoedValues(privacy, result);
       }
       // Canvas sentinel tap: interning is about the LLM wire — the surface
       // synthesis is server-side and must compose from the RAW directive
       // (incl. dataset rows resolved server-side that the LLM never sees).
       // Tap before interning; the LLM still gets only the digest below.
-      const sentinelSink = turnContext.current()?.canvasSentinelSink;
-      if (sentinelSink !== undefined && result.includes('"_pending')) {
-        try {
-          sentinelSink(name, result);
-        } catch (err) {
-          console.warn(`[orchestrator.dispatchTool:${name}] canvasSentinelSink threw:`, err);
-        }
-      }
+      if (result.includes('"_pending')) tapCanvasSentinel(name, result);
       // #1105 / #1097 — a guarded tool that returned control-flow prose (the
       // orchestrator's `Error:` tool-error convention — the same prefix the
-      // tool-result assembly reads to stamp `is_error` — or an MCP auth
-      // prompt) must reach the model AS that text, not be interned. Interning it would (a) hide the failure
-      // behind a masked digest so the model never learns the call failed, and
-      // (b) register a renderable 1-row dataset that a later `v4_render_answer`
-      // materializes as if the error were data — the divergence reported in
-      // #1105. Pass it through verbatim: the chat path already forwards tool
-      // errors unmasked (see chatPathToolErrorText.test.ts) and the downstream
-      // `is_error` flag is derived from this very prefix.
-      if (isControlFlowToolResult(result)) {
-        return result;
+      // tool-result assembly reads to stamp `is_error` — or the MCP connect
+      // prompt this dispatch produced) must reach the model AS that text, not
+      // be interned. Interning it would (a) hide the failure behind a masked
+      // digest so the model never learns the call failed, and (b) register a
+      // renderable 1-row dataset that a later `v4_render_answer` materializes
+      // as if the error were data — the divergence reported in #1105.
+      //
+      // Not interned is not unchecked: the `Error:` text can quote the record
+      // a plugin wrapper or a remote MCP server failed on, so it goes through
+      // the shield's free-text redactor (or is withheld whole) and is
+      // receipted — see `toolErrorRedaction.ts`. The connect prompt counts
+      // only by provenance (`mcpAuthPromptMint`); text that merely starts like
+      // it falls through to interning. The kernel's own refusals are PII-free
+      // by construction and pass as they are.
+      if (isGuardedControlFlowResult(result, mcpAuthPromptMint)) {
+        if (result === kernelRefusal.text) return result;
+        return guardControlFlowResult({
+          toolName: name,
+          result,
+          privacy,
+          site: 'orchestrator.dispatchTool',
+          authPromptMint: mcpAuthPromptMint,
+        });
       }
       // Intern the raw result server-side and hand the LLM only the
       // identity-free digest — the raw rows never reach the LLM wire.
@@ -7389,24 +10048,23 @@ export class Orchestrator {
         const v4 = await privacy.internToolResultV4({
           toolName: name,
           rawResult: result,
+          toolInput: input,
         });
         return v4.digestText;
       } catch (err) {
-        // `query_dataset` returned REAL cell values precisely because this
-        // interning was about to happen (see QueryDatasetTool). If it did
-        // not, those values must not fall through to the model: fail closed
-        // for this one tool. Every other tool keeps the historical fail-open.
-        if (name === QUERY_DATASET_TOOL_NAME) {
-          console.warn(
-            `[orchestrator.dispatchTool:${name}] privacy.internToolResultV4 threw — rows WITHHELD (real cell values never bypass the shield):`,
-            err,
-          );
-          return 'Error: the privacy boundary could not intern this dataset page — its rows were withheld. Retry; if it persists, tell the user the dataset is temporarily unavailable.';
-        }
+        // Fail closed for every tool: a result the boundary could not intern
+        // never reaches the model raw — on a re-entry's replay neither, so a
+        // result the first pass protected stays protected. `query_dataset`
+        // returned REAL cell values precisely because this interning was
+        // about to happen (see QueryDatasetTool); it keeps its own notice,
+        // since retrying a page read is safe. The provider's error can quote
+        // the result it was handed, so the log line carries class and code only.
         console.warn(
-          `[orchestrator.dispatchTool:${name}] privacy.internToolResultV4 threw — sending raw result:`,
-          err,
+          `[orchestrator.dispatchTool:${name}] privacy.internToolResultV4 threw ${errorClassForLog(err)} — result WITHHELD (it never bypasses the shield)`,
         );
+        return name === QUERY_DATASET_TOOL_NAME
+          ? 'Error: the privacy boundary could not intern this dataset page — its rows were withheld. Retry; if it persists, tell the user the dataset is temporarily unavailable.'
+          : internFailedNotice(name);
       }
     }
     return result;
@@ -7432,93 +10090,24 @@ export class Orchestrator {
   ): ReturnType<typeof createPrivacyTurnHandle> {
     const nativeTools = this.nativeTools;
     const domainTools = this.domainToolsByName;
-    const pluginConfigGet = this.pluginConfigGet;
-
-    // Slice 2.5 — three-tier bypass lookup:
-    //   1. kernel tools (via `ctx.tools.register`) carry their own
-    //      `(agentId, readConfig)` closure on the NativeToolRegistry entry
-    //   2. domain tools (delegation wrappers for sub-agents) carry an
-    //      `agentId` set by `dynamicAgentRuntime` — resolved via
-    //      `pluginConfigGet(agentId, key)` against the kernel registry
-    //   3. sub-agent INNER tool calls (LocalSubAgentTools fetched from a
-    //      `*.toolkit` service) — the orchestrator stashes the owning
-    //      agent plugin id in turnContext before running the sub-agent;
-    //      the resolver reads it back via turnContext and looks up the
-    //      same `_privacy_mode` setting as path #2
-    //
-    // The org-policy override (`OMADIA_PRIVACY_FORCE_GUARDED=true`) is
-    // honoured inside `resolveEffectivePrivacyMode` for all three paths.
-    const lookupByAgentId = (
-      agentId: string,
-      toolName: string,
-    ): { pluginId: string } | undefined => {
-      if (pluginConfigGet === undefined) return undefined;
-      const storedMode = pluginConfigGet(agentId, PRIVACY_MODE_CONFIG_KEY);
-      const storedScopes = pluginConfigGet(
-        agentId,
-        PRIVACY_BYPASS_SCOPES_CONFIG_KEY,
-      );
-      const effective = resolveEffectivePrivacyMode({
-        storedMode,
-        storedScopes,
-        toolName,
-        env: process.env,
-      });
-      return effective === 'bypass' ? { pluginId: agentId } : undefined;
-    };
-
-    const resolveBypass = (
-      toolName: string,
-    ): { pluginId: string } | undefined => {
-      // Path 0 — per-MCP-server operator bypass (epic #459). A server flagged
-      // `privacy_bypass` opts its tool results out of masking regardless of any
-      // owning-agent `_privacy_mode`. The flag is read LIVE by server id (a
-      // reload is additive and won't update a baked marker), then routed through
-      // resolveEffectivePrivacyMode so `OMADIA_PRIVACY_FORCE_GUARDED` can still
-      // clamp it back to guarded org-wide.
-      const bypassTool = domainTools.get(toolName);
-      if (isMcpServerPrivacyBypassed(bypassTool?.mcpServerId)) {
-        const effective = resolveEffectivePrivacyMode({
-          storedMode: 'bypass',
-          storedScopes: undefined,
-          toolName,
-          env: process.env,
-        });
-        if (effective === 'bypass') return { pluginId: bypassTool?.domain ?? toolName };
-      }
-      // Path 1 — kernel tool with attached config closure.
-      const reg = nativeTools.get(toolName);
-      if (reg?.agentId !== undefined && reg.readConfig !== undefined) {
-        const storedMode = reg.readConfig(PRIVACY_MODE_CONFIG_KEY);
-        const storedScopes = reg.readConfig(PRIVACY_BYPASS_SCOPES_CONFIG_KEY);
-        const effective = resolveEffectivePrivacyMode({
-          storedMode,
-          storedScopes,
-          toolName,
-          env: process.env,
-        });
-        if (effective === 'bypass') return { pluginId: reg.agentId };
-        // Kernel tool with explicit guarded — don't fall through to other
-        // paths (kernel registration is authoritative for kernel tools).
-        return undefined;
-      }
-      // Path 2 — domain tool with attached agent plugin id.
-      const domainTool = domainTools.get(toolName);
-      if (domainTool?.agentId !== undefined) {
-        const hit = lookupByAgentId(domainTool.agentId, toolName);
-        if (hit) return hit;
-      }
-      // Path 3 — sub-agent inner tool. The orchestrator's domain-tool
-      // dispatch installs `subAgentOwnerPluginId` in the nested turn
-      // scope before running the sub-agent loop; every inner tool call
-      // reads back here.
-      const subAgentOwner = turnContext.current()?.subAgentOwnerPluginId;
-      if (subAgentOwner !== undefined) {
-        const hit = lookupByAgentId(subAgentOwner, toolName);
-        if (hit) return hit;
-      }
-      return undefined;
-    };
+    // Lookup order and the "an owned tool never falls through" rule live in
+    // `privacyBypassResolver.ts`.
+    const resolveBypass = createPrivacyBypassResolver({
+      mcpBypassInForce: (toolName) => {
+        // Path 0 — per-MCP-server operator bypass (epic #459), clamped by
+        // `OMADIA_PRIVACY_FORCE_GUARDED` inside `isMcpServerBypassInForce`.
+        const tool = domainTools.get(toolName);
+        return isMcpServerBypassInForce(tool?.mcpServerId, toolName)
+          ? { pluginId: tool?.domain ?? toolName }
+          : undefined;
+      },
+      nativeTool: (toolName) => nativeTools.get(toolName),
+      domainToolAgentId: (toolName) => domainTools.get(toolName)?.agentId,
+      isDomainTool: (toolName) => domainTools.has(toolName),
+      pluginConfigGet: this.pluginConfigGet,
+      subAgentOwner: () => turnContext.current()?.subAgentOwnerPluginId,
+      env: process.env,
+    });
     return createPrivacyTurnHandle({
       service,
       sessionId,
@@ -7533,7 +10122,13 @@ export class Orchestrator {
     observer: AskObserver | undefined,
     /** Required position — see {@link Orchestrator.dispatchTool}. */
     turnMemory: TurnMemoryBinding | undefined,
+    /** Receives the exact text of a kernel refusal this call returns. */
+    refusal?: KernelRefusalBox,
   ): Promise<string> {
+    const refuse = (text: string): string => {
+      if (refusal !== undefined) refusal.text = text;
+      return text;
+    };
     // Per-orchestrator memory isolation: when this Agent has a scoped
     // memory-tool handler, it MUST shadow the globally-registered `memory`
     // handler (which wraps the unscoped FilesystemMemoryStore). Checked
@@ -7561,7 +10156,9 @@ export class Orchestrator {
     if (name === MEMORY_TOOL_NAME && memoryHandler) {
       const memoryAgentId = this.nativeTools.get(MEMORY_TOOL_NAME)?.agentId;
       if (!this.isToolAvailable(memoryAgentId)) {
-        return `Error: tool \`${name}\` is unavailable — plugin \`${memoryAgentId}\` has not completed its connection/auth setup.`;
+        return refuse(
+          `Error: tool \`${name}\` is unavailable — plugin \`${memoryAgentId}\` has not completed its connection/auth setup.`,
+        );
       }
       const result = await memoryHandler.handle(input);
       // Arm the Fresh-Check gate only on a read that actually DELIVERED a file.
@@ -7573,12 +10170,47 @@ export class Orchestrator {
       }
       return result;
     }
+    // #1598 — the binder said "no memory tool this turn" (`forAudience`
+    // failed). Deny on loss: falling through would reach the memory PROVIDER's
+    // own handler below, bound to the unscoped root store — every agent's and
+    // context's notes. Never widen.
+    if (name === MEMORY_TOOL_NAME && turnMemory?.memoryDenied === true) {
+      return refuse(`Error: tool \`${name}\` is not available on this turn.`);
+    }
+    // `enforce-strict` — the graph tool sees only this turn's conversation;
+    // `members` — only this agent's knowledge that everyone present owns.
+    // Ahead of the registered-handler branch on purpose: the kernel-native
+    // registration of this tool (`registerKernelNativeTools`) carries a
+    // build-time handler that knows no turn.
+    //
+    // An agent in either mode never reaches the unrestricted tool from here:
+    // a turn with no isolation (context-free — web, API, a turn whose binding
+    // carried no context) sees nothing, rather than every room of the tenant.
+    if (name === KNOWLEDGE_GRAPH_TOOL_NAME && this.knowledgeGraphTool) {
+      const isolation = turnMemory?.isolation;
+      if (isolation) {
+        return this.knowledgeGraphTool.handle(
+          input,
+          isolation.kind === 'conversation'
+            ? { restrictToScope: isolation.scope }
+            : { audienceOwners: isolation.audience, agentScopePrefix: agentScopePrefix(this.agentId) },
+        );
+      }
+      if (!this.unrestrictedGraphToolAllowed()) {
+        return this.knowledgeGraphTool.handle(input, NOTHING_VISIBLE);
+      }
+    }
     // Plugin-contributed handlers win first. Kernel branches below are the
     // legacy path for tools that have not yet been converted to
     // plugin-registration (memory, knowledge_graph, …). As each kernel tool
     // migrates, its hardcoded branch disappears.
+    //
+    // #1585 — a kernel-owned registration is skipped: it carries the handler
+    // of whichever build registered first, and its pending card would land on
+    // an instance this build never drains. The branches below dispatch to this
+    // build's own instances instead.
     const reg = this.nativeTools.get(name);
-    if (reg?.handler) {
+    if (reg?.handler && !isKernelNativeRegistration(reg)) {
       // Issue #474 — re-check readiness at invocation time, not just at
       // list-assembly time: a plugin's connection/auth state can complete
       // or expire between the two, so list-time filtering alone leaves a
@@ -7586,8 +10218,21 @@ export class Orchestrator {
       // matching the `unknown tool` fallback below — both the streaming and
       // non-streaming dispatch loops key `is_error` off that prefix, and
       // both also fold a thrown rejection into the same convention (#1095).
+      // #1598 — THE AUTHORISATION GATE for `ctx.tools.register` tools, the
+      // twin of the domain-tool gate below. Native tools live in ONE
+      // kernel-wide registry, so without this every Agent could call every
+      // plugin's tools, assigned or not. Refused by name, without the owner — and BEFORE the readiness
+      // check, whose message names the plugin.
+      if (!this.isToolGranted(name, reg.agentId, reg.orchestratorScope)) {
+        console.warn(
+          `[orchestrator] agent "${this.agentId}" attempted un-granted plugin tool "${name}" — refused`,
+        );
+        return refuse(`Error: tool \`${name}\` is not available to this agent.`);
+      }
       if (!this.isToolAvailable(reg.agentId)) {
-        return `Error: tool \`${name}\` is unavailable — plugin \`${reg.agentId}\` has not completed its connection/auth setup.`;
+        return refuse(
+          `Error: tool \`${name}\` is unavailable — plugin \`${reg.agentId}\` has not completed its connection/auth setup.`,
+        );
       }
       return reg.handler(input);
     }
@@ -7623,7 +10268,9 @@ export class Orchestrator {
       // Without this, a not-ready plugin's domain tool was still invocable
       // even though its native tools and promptDoc were already hidden.
       if (!this.isToolAvailable(domainTool.agentId)) {
-        return `Error: tool \`${name}\` is unavailable — plugin \`${domainTool.agentId}\` has not completed its connection/auth setup.`;
+        return refuse(
+          `Error: tool \`${name}\` is unavailable — plugin \`${domainTool.agentId}\` has not completed its connection/auth setup.`,
+        );
       }
       // THE AUTHORISATION GATE. Registration decides what this Agent is
       // OFFERED; this decides what it may actually DO, and only the second is
@@ -7638,7 +10285,7 @@ export class Orchestrator {
         console.warn(
           `[orchestrator] agent "${this.agentId}" attempted un-granted domain tool "${name}" — refused`,
         );
-        return `Error: tool \`${name}\` is not available to this agent.`;
+        return refuse(`Error: tool \`${name}\` is not available to this agent.`);
       }
       // #904 — publish THIS turn's scoped memory handler (`memoryHandler`
       // above: the turn-bound stack when one is bound, the build-time
@@ -7663,7 +10310,7 @@ export class Orchestrator {
         Promise.resolve(domainTool.handle(input, observer)),
       );
     }
-    return `Error: unknown tool \`${name}\`.`;
+    return refuse(`Error: unknown tool \`${name}\`.`);
   }
 
   /**
@@ -7679,7 +10326,7 @@ export class Orchestrator {
    */
   private getSystemPrompt(
     personaOverride?: string,
-    contextBoundMemory = false,
+    memoryPrompt?: MemoryPromptKind,
   ): string {
     // Plugin-contributed prompt docs, collected from the registry. The
     // kernel's hardcoded blocks (graph/diagram/…) remain in buildSystemPrompt
@@ -7692,7 +10339,15 @@ export class Orchestrator {
     // has already hidden from its `tools[]` for this same turn.
     const extraDocs = this.nativeTools
       .listWithHandler()
-      .filter((e) => this.isToolAvailable(e.agentId))
+      // #1346 — and the same per-turn gate: a tool hidden from this turn's
+      // tools[] must not be described to the model either.
+      // #1598 — nor described to an Agent its plugin is not granted to.
+      .filter(
+        (e) =>
+          this.isToolAvailable(e.agentId) &&
+          this.isToolGranted(e.name, e.agentId, e.orchestratorScope) &&
+          isOfferedThisTurn(e),
+      )
       .map((e) => e.promptDoc)
       .filter((doc): doc is string => typeof doc === 'string' && doc.length > 0);
     // Issue #474 (round 3) — same isToolAvailable gate as buildToolsList()'s
@@ -7716,7 +10371,9 @@ export class Orchestrator {
       this.findFreeSlotsTool !== undefined && this.bookMeetingTool !== undefined,
       this.privacyGuard?.() !== undefined,
       extraDocs,
-      contextBoundMemory,
+      memoryPrompt,
+      this.answerVerbosity,
+      this.isFileExportOfferedThisTurn(),
     );
   }
 
@@ -7744,9 +10401,14 @@ export class Orchestrator {
         role: m.role as 'user' | 'assistant',
         content: typeof m.content === 'string' ? m.content : '',
       }));
+      // #1569 — without the agent id and its own settings the provider can
+      // only ever answer with its install-wide default.
+      const profileQuality = responseGuardProfileFor(this.agentQuality);
       const result = await provider.getRules({
         systemPrompt: this.getSystemPrompt(),
         messages: flat,
+        agentId: this.agentId,
+        ...(profileQuality ? { profileQuality } : {}),
       });
       const rules = result.prependRules ?? '';
       return rules.trim().length > 0 ? rules : '';
@@ -7768,9 +10430,9 @@ export class Orchestrator {
   private composeStableSystemPrompt(
     prependRules: string,
     personaOverride?: string,
-    contextBoundMemory = false,
+    memoryPrompt?: MemoryPromptKind,
   ): string {
-    const body = this.getSystemPrompt(personaOverride, contextBoundMemory);
+    const body = this.getSystemPrompt(personaOverride, memoryPrompt);
     if (prependRules.length === 0) return body;
     return `${prependRules}\n\n---\n\n${body}`;
   }
@@ -7825,6 +10487,32 @@ export class Orchestrator {
     if (this.grantedPluginIds === undefined) return true;
     if (pluginId === undefined) return true;
     return this.grantedPluginIds.has(pluginId);
+  }
+
+  /**
+   * #1598 — the grant check for a native (`ctx.tools.register`) tool.
+   *
+   * Same rule as {@link isPluginGranted}: kernel-registered tools carry no
+   * `agentId` and stay ungated. The one exception is `memory`: the provider
+   * plugin only backs the store, while what an Agent reads and writes is
+   * scoped per Agent by the kernel (`memoryToolHandler` / the turn binder), so
+   * withholding it would take memory from every Agent the provider was never
+   * attached to rather than close a leak.
+   *
+   * Public because the subscription-CLI dispatcher (`ToolDispatchService`,
+   * wired in `buildOrchestrator.ts`) bypasses `dispatchTool` and must ask the
+   * same question.
+   */
+  isToolGranted(
+    name: string,
+    pluginId: string | undefined,
+    orchestratorScope?: string,
+  ): boolean {
+    // A tool another orchestrator registered for itself (deferred sub-agent
+    // tools) is that orchestrator's alone.
+    if (orchestratorScope !== undefined && orchestratorScope !== this.agentId) return false;
+    if (name === MEMORY_TOOL_NAME) return true;
+    return this.isPluginGranted(pluginId);
   }
 
   hasDomainTool(name: string): boolean {
@@ -7886,22 +10574,15 @@ export class Orchestrator {
    * because vision is unsupported), and `rejectedImageReasons` (reasons for
    * fetched image candidates the vision-embeddability guard rejected).
    * NEVER throws — any failure logs a warning and returns the empty shape.
+   *
+   * A turn calls it through {@link ingestAttachmentsForPass}: once per user
+   * request, however often the verifier re-enters the turn.
    */
   private async ingestAttachments(
     input: ChatTurnInput,
     visionSupported: boolean,
-  ): Promise<{
-    text: string;
-    images: IngestedImageBlock[];
-    skippedVisionImageCount: number;
-    rejectedImageReasons: string[];
-  }> {
-    const empty = {
-      text: '',
-      images: [] as IngestedImageBlock[],
-      skippedVisionImageCount: 0,
-      rejectedImageReasons: [] as string[],
-    };
+  ): Promise<AttachmentIngestion> {
+    const empty = noAttachments();
     if (!this.attachmentReader) return empty;
     try {
       type Candidate = {
@@ -8141,6 +10822,27 @@ export class Orchestrator {
   }
 
   /**
+   * {@link ingestAttachments} once per user request. A verifier re-entry is a
+   * turn of its own, and a tabular upload's import is a write — a new dataset
+   * per call, no dedupe — so the request's ledger keeps the first run's
+   * outcome and hands it to every re-entry
+   * (`ToolReplayLedger.ingestAttachmentsOnce`): the same dataset ids the
+   * replayed first-run results refer to, masked through the re-entry's own
+   * prompt map by the caller. A re-entry with nothing to reuse is marked
+   * abandoned and gets no attachment content; the caller stops it before the
+   * model runs.
+   */
+  private ingestAttachmentsForPass(
+    input: ChatTurnInput,
+    visionSupported: boolean,
+  ): Promise<AttachmentIngestion> {
+    const ingest = (): Promise<AttachmentIngestion> =>
+      this.ingestAttachments(input, visionSupported);
+    const ledger = turnContext.current()?.toolReplayLedger;
+    return ledger ? ledger.ingestAttachmentsOnce(ingest, noAttachments()) : ingest();
+  }
+
+  /**
    * Import one tabular attachment (CSV/XLSX) as queryable dataset(s) and
    * return the text block describing the outcome to the model.
    *
@@ -8321,6 +11023,96 @@ export class Orchestrator {
     );
   }
 
+  /**
+   * The tool names this orchestrator offers its model on a turn now — the
+   * names of {@link buildToolsList} (kernel tools, ready + offered plugin
+   * tools, domain tools). Called outside a turn scope, per-turn extras
+   * (chat roster, Privacy v4 verbs) are simply absent and a per-turn
+   * `isAvailable` that needs the scope hides its tool: the set errs small.
+   * The fast path (fastPathAgent.ts) may only run tools in this set.
+   */
+  offeredToolNames(): ReadonlySet<string> {
+    return new Set(
+      this.buildToolsList()
+        .map((t: { name?: unknown }) => t.name)
+        .filter((n): n is string => typeof n === 'string'),
+    );
+  }
+
+  /**
+   * The definitions of the PLUGIN-contributed native tools among
+   * {@link offeredToolNames} — the ones `ctx.tools.invoke` can run outside a
+   * turn — plus the MCP tools among them whose server declares them
+   * read-only, each with its own `invoke` (the domain tool's handler —
+   * `ctx.tools.invoke` cannot reach a per-agent MCP tool), name-ordered
+   * (`ChatAgent.offeredToolDefinitions`). Kernel tools (no `agentId`) and
+   * tools that declare `writeCapabilities` are left out; the fast path's
+   * read classifier still decides which of the rest it plans for.
+   * Plugin/server-authored text only — no turn data.
+   */
+  offeredToolDefinitions(): ReadonlyArray<ChatAgentToolDefinition> {
+    const offered = this.offeredToolNames();
+    const out: ChatAgentToolDefinition[] = [];
+    for (const entry of this.nativeTools.listWithHandler()) {
+      const spec = entry.spec;
+      if (!spec || entry.agentId === undefined || spec.name !== entry.name || !offered.has(entry.name)) continue;
+      if ((entry.writeCapabilities?.length ?? 0) > 0) continue;
+      out.push({ name: spec.name, description: spec.description, input_schema: spec.input_schema });
+    }
+    for (const tool of this.domainToolsByName.values()) {
+      if (tool.mcpServerId === undefined || tool.readOnly !== true || !offered.has(tool.name)) continue;
+      out.push({
+        name: tool.name,
+        description: tool.spec.description,
+        input_schema: tool.spec.input_schema,
+        readOnly: true,
+        invoke: (input: unknown) => this.invokeFastPathMcpTool(tool, input),
+      });
+    }
+    // a sub-agent's own tools, `via` its domain tool: offered only while the
+    // domain tool is; the fast path's allow-list + read classifier decide
+    const names = new Set(out.map((d) => d.name));
+    for (const tool of this.domainToolsByName.values()) {
+      if (tool.subAgentTools === undefined || tool.mcpServerId !== undefined || !offered.has(tool.name)) continue;
+      for (const inner of tool.subAgentTools()) {
+        if (names.has(inner.name) || offered.has(inner.name)) continue;
+        names.add(inner.name);
+        out.push({
+          name: inner.name,
+          description: inner.description,
+          input_schema: inner.input_schema,
+          via: tool.name,
+          ...(tool.agentId !== undefined ? { agentId: tool.agentId } : {}),
+          invoke: (input: unknown) => inner.handle(input),
+        });
+      }
+    }
+    return sortByToolName(out);
+  }
+
+  /**
+   * Run an offered read-only MCP tool for the deterministic fast path —
+   * outside a model turn, so the per-call checks of `dispatchToolInner` are
+   * repeated here: still THIS instance's tool, still offered, plugin ready
+   * and granted. Only with an attributable caller (`mcpUserKey` of the
+   * surrounding turn scope): without one a per-user server would fail
+   * closed anyway and a shared one would audit `unattributed` — so it
+   * refuses, and the fast path misses to the agent.
+   */
+  private async invokeFastPathMcpTool(tool: DomainTool, input: unknown): Promise<string> {
+    const name = tool.name;
+    if (this.domainToolsByName.get(name) !== tool || !this.offeredToolNames().has(name)) {
+      throw new Error(`fast path: tool ${name} is no longer offered`);
+    }
+    if (!this.isToolAvailable(tool.agentId) || !this.isPluginGranted(tool.agentId)) {
+      throw new Error(`fast path: tool ${name} is not available to this agent`);
+    }
+    if (!turnContext.current()?.mcpUserKey) {
+      throw new Error(`fast path: no attributable caller for ${name}`);
+    }
+    return tool.handle(input);
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private buildToolsList(): any[] {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -8365,7 +11157,16 @@ export class Orchestrator {
       // pushes those above — advertising them again duplicated five names and
       // 400'd every turn (`tools: Tool names must be unique.`).
       if (entry.spec && KERNEL_NATIVE_SPECS.has(entry.spec)) continue;
-      if (entry.spec && this.isToolAvailable(entry.agentId)) {
+      // #1346 — a plugin may declare per turn that it cannot serve this
+      // channel (e.g. a discussion needs a conversation the turn can name).
+      // #1598 — and only when the owning plugin is granted to this Agent, the
+      // same per-orchestrator assignment domain tools already honour.
+      if (
+        entry.spec &&
+        this.isToolAvailable(entry.agentId) &&
+        this.isToolGranted(entry.name, entry.agentId, entry.orchestratorScope) &&
+        isOfferedThisTurn(entry)
+      ) {
         nativeSpecs.push(entry.spec);
       }
     }
@@ -8424,7 +11225,7 @@ export class Orchestrator {
     // `toolOrdering.ts`; a reordered block is a silent, signal-free cache miss.
     const last = unique[unique.length - 1];
     return last
-      ? [...unique.slice(0, -1), { ...last, cache_control: { type: 'ephemeral' } }]
+      ? [...unique.slice(0, -1), { ...last, cache_control: ORCHESTRATOR_CACHE_CONTROL }]
       : unique;
   }
 
@@ -8501,13 +11302,14 @@ const FILE_RETRY_NUDGE =
   'Du hast angekündigt, eine Datei (Excel/Word) zu bauen, aber das Tool `create_xlsx`/`create_docx` NICHT aufgerufen — der User hat dadurch nichts erhalten. Beschreibe den Plan NICHT erneut. Rufe JETZT in diesem Schritt das passende Tool auf und baue die Datei wirklich. Wenn du sie nicht bauen kannst, sag dem User in EINEM Satz klar, dass und warum nicht.';
 
 /**
- * Appended to the per-turn system hint on the FINAL, tools-disabled iteration
- * (iteration cap reached, loop guard stopped, or wall-clock budget exceeded).
- * With no tools offered the model must produce text, so this turns what used to
- * be a raw "exceeded maxToolIterations" error into a best-effort answer.
+ * Appended to the per-turn system hint (see {@link withFinalizeHint}) on the
+ * FINAL iteration (iteration cap reached, loop guard stopped, or wall-clock
+ * budget exceeded). That pass suppresses tool use (see {@link toolParamsFor}),
+ * so the model must produce text — this turns what used to be a raw "exceeded
+ * maxToolIterations" error into a best-effort answer.
  */
 const FINALIZE_DIRECTIVE =
-  'Du hast das Tool-Budget für diesen Turn aufgebraucht und kannst KEINE weiteren Tools aufrufen. Fasse zusammen, was du bereits herausgefunden hast, und gib JETZT die bestmögliche Antwort mit den vorhandenen Informationen. Wenn etwas unklar oder unvollständig bleibt, sag dem User in einem Satz klar, was noch offen ist. Beschreibe keine weiteren geplanten Tool-Aufrufe.';
+  'Das Tool-Budget für diesen Turn ist aufgebraucht: Rufe ab jetzt keine Tools mehr auf. Fasse zusammen, was du bereits herausgefunden hast, und gib jetzt die bestmögliche Antwort mit den vorhandenen Informationen. Wenn etwas unklar oder unvollständig bleibt, sag dem User in einem Satz, was noch offen ist. Beschreibe keine weiteren geplanten Tool-Aufrufe.';
 
 // ---------------------------------------------------------------------------
 // Card-router pass (non-interleaving providers, e.g. Mistral / OpenAI-compatible)
@@ -8541,9 +11343,78 @@ const CARD_ROUTER_SYSTEM =
 const CARD_ROUTER_INSTRUCTION =
   'Entscheide jetzt für die obige Assistenten-Antwort: Rufe genau eines von `ask_user_choice`, `suggest_follow_ups` oder `no_card` auf.';
 
+/**
+ * #332 Layer 2 / #1209 — system prompt of the guarded direct-line note pass
+ * ({@link Orchestrator.maybeDirectLineNote}). Plain register on purpose: the
+ * all-caps imperatives this replaced read as pressure the current models
+ * over-apply, so they withheld notes a cross-domain risk warranted. The
+ * two-sentence bound stays — it is the only thing that keeps an appended note
+ * from competing with the specialist's own answer.
+ */
+const DIRECT_LINE_NOTE_SYSTEM =
+  'You are the omadia orchestrator. A specialist sub-agent has already ' +
+  'answered the user directly and their verbatim answer is delivered ' +
+  'independently — you cannot edit or remove it; you can only append. Add a ' +
+  'cross-cutting note of at most two sentences, and only when you see a ' +
+  'concrete cross-domain risk, policy concern, or missing prior context the ' +
+  'specialist could not see. If you have nothing material to add, reply with ' +
+  'exactly an empty message. Never restate or contradict the specialist; ' +
+  'only add.';
+
+/**
+ * Upper bound for the note pass, clamped against the caller's resolved
+ * `maxTokens` at the call site. See the comment there for why it is this far
+ * above the note's own two-sentence length.
+ */
+const DIRECT_LINE_NOTE_MAX_TOKENS = 4096;
+
+/**
+ * #1211 — the `tools` / `tool_choice` pair for ONE request of either tool
+ * loop, decided for the provider that request goes to (the primary, or the
+ * fallback when one is attached). Kept as a free function so both loops decide
+ * identically.
+ *
+ * Normal iterations (and the forced-obligation pass, which carries its own
+ * `tool_choice`) send `buildToolsList()` unchanged.
+ *
+ * The finalize pass must END the turn in text. A provider that declares
+ * `capabilities.toolChoiceNone === true` keeps the full tool list and gets
+ * `tool_choice: { type: 'none' }`: `tools` comes first in Anthropic's cache
+ * order, so an unchanged list keeps the cached prefix the turn's earlier
+ * requests wrote, while `tools: []` changes its first segment and misses all of
+ * it. Every other provider gets `tools: []`, the pre-#1211 shape. Opt-in,
+ * because an OpenAI-compatible server may accept `tool_choice` and ignore it:
+ * the model would still emit a `tool_use` on the last iteration, the loop would
+ * dispatch it (side effects included), and the turn would end in the raw
+ * "exceeded maxToolIterations" error the finalize pass exists to replace. An
+ * empty tool set never gets a `tool_choice` (a tool choice without tools is
+ * invalid).
+ */
+function toolParamsFor(opts: {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  tools: any[];
+  finalizePass: boolean;
+  provider: LlmProvider;
+  forcedChoice?: { type: 'tool'; name: string } | undefined;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+}): { tools: any[]; tool_choice?: Record<string, unknown> } {
+  if (opts.forcedChoice) {
+    return { tools: opts.tools, tool_choice: opts.forcedChoice };
+  }
+  if (!opts.finalizePass || opts.tools.length === 0) {
+    return { tools: opts.tools };
+  }
+  return opts.provider.capabilities.toolChoiceNone === true
+    ? { tools: opts.tools, tool_choice: { type: 'none' } }
+    : { tools: [] };
+}
+
 /** Compose the per-iteration system hint, appending the finalize directive on
- *  the final tools-disabled pass. Kept as a free function so both tool loops
- *  build the hint identically. */
+ *  the finalize pass. The hint is the last `system` block, after every cache
+ *  breakpoint (see `buildSystemBlocks`), so changing it per iteration costs no
+ *  cache entry, and rebuilding it per iteration means the directive can never
+ *  appear twice. Kept as a free function so both tool loops build the hint
+ *  identically. */
 function withFinalizeHint(baseHint: string | undefined, finalize: boolean): string | undefined {
   if (!finalize) return baseHint;
   return baseHint && baseHint.trim().length > 0
@@ -8569,9 +11440,34 @@ function appendToolDigest(
       `  - kind=file producer=${f.producer ?? 'file'} name=${JSON.stringify(f.altText)} bytes=${String(f.sizeBytes ?? 0)}`,
     );
   }
-  if (lines.length === 0) return answer;
+  const withProvenance = prependRenderProvenance(answer);
+  if (lines.length === 0) return withProvenance;
   const digest = ['', '<!-- orchestrator:rendered_attachments', ...lines, '-->'].join('\n');
-  return `${answer}${digest}`;
+  return `${withProvenance}${digest}`;
+}
+
+/**
+ * #1543 — put this turn's render provenance notes (values-free: source tool,
+ * verb chain, row counts, column labels) in front of the persisted answer.
+ * The rendered rows are turn-scoped, so a follow-up turn can only re-run the
+ * query; this is how it learns which one. In front, not behind: recall
+ * truncates a stored answer from the end.
+ */
+function prependRenderProvenance(answer: string): string {
+  const notes = turnContext.current()?.renderProvenance?.notes ?? [];
+  if (notes.length === 0) return answer;
+  const block = ['<!-- orchestrator:rendered_table', ...notes.map((n) => `  - ${n.replace(/-->/g, '- ->')}`), '-->'].join(
+    '\n',
+  );
+  return answer.length > 0 ? `${block}\n${answer}` : block;
+}
+
+function toolNamesOf(content: ContentBlock[]): string[] {
+  const names: string[] = [];
+  for (const block of content) {
+    if (block?.type === 'tool_use' && typeof block.name === 'string') names.push(block.name);
+  }
+  return names;
 }
 
 function collectTextBlocks(content: ContentBlock[]): string[] {
@@ -8588,3 +11484,16 @@ function collectTextBlocks(content: ContentBlock[]): string[] {
 // It's imported at the top of this file and re-exported via the back-compat
 // barrel so `import { toSemanticAnswer } from '../orchestrator.js'` callers
 // (verifier wrapper today, channel adapters until S+11) keep working.
+
+/** Hand a raw, sentinel-bearing tool result to the turn's canvas-sentinel
+ *  sink (installed by the canvas UI orchestrator), if one is set. The raw
+ *  text is user-destined — callers keep it off the LLM wire. */
+function tapCanvasSentinel(toolName: string, raw: string): void {
+  const sentinelSink = turnContext.current()?.canvasSentinelSink;
+  if (sentinelSink === undefined) return;
+  try {
+    sentinelSink(toolName, raw);
+  } catch (err) {
+    console.warn(`[orchestrator.dispatchTool:${toolName}] canvasSentinelSink threw:`, err);
+  }
+}

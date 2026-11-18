@@ -101,10 +101,31 @@ export async function resolveDependencyParents(
       // A duplicate-version failure means the package is already on disk —
       // treat as present if the catalog now resolves it. Anything else is a
       // genuine ingest error.
+      //
+      // #1455 — this is also where a `package.downgrade_blocked` would land:
+      // the parent is absent from the catalog but a NEWER version of it sits
+      // in the upload store, and the registry's latest is older. The refusal
+      // is the right answer there (the chain must not quietly roll a parent
+      // back under an installed child), so it surfaces as a chain error with
+      // the pipeline's own code rather than being papered over here.
       if (deps.catalog.get(id)) return true;
-      throw new DependencyChainError(res.code, res.message);
+      throw new DependencyChainError(res.code, res.message, {
+        ...(res.params !== undefined ? { params: res.params } : {}),
+        ...(res.details !== undefined ? { details: res.details } : {}),
+      });
     }
     log(`[registry] ingested dependency ${id}@${ver.version} from '${r.registry}'`);
+    // #1452 — reachable when the chain parent is installed and running but its
+    // package file is gone (the case `onPackageReady` exists for): the ingest
+    // re-activates it and that can throw. The registry entry is already
+    // `errored` with the reason, and the chain's own result shape carries no
+    // room for a per-parent activation verdict, so this is where the fact is
+    // kept visible rather than dropped silently.
+    if (res.activation_error !== undefined) {
+      log(
+        `[registry] dependency ${id}@${ver.version} was ingested but did not restart: ${res.activation_error}`,
+      );
+    }
     return true;
   };
 
@@ -157,10 +178,20 @@ export async function resolveDependencyParents(
 
 export class DependencyChainError extends Error {
   readonly code: string;
-  constructor(code: string, message: string) {
+  /** #1477 — the refused parent's ingest `params`/`details`, kept so the Hub
+   *  route answers a parent's refusal with the same body as the target's. */
+  readonly params?: Record<string, string>;
+  readonly details?: unknown;
+  constructor(
+    code: string,
+    message: string,
+    extra: { params?: Record<string, string>; details?: unknown } = {},
+  ) {
     super(message);
     this.name = 'DependencyChainError';
     this.code = code;
+    if (extra.params !== undefined) this.params = extra.params;
+    if (extra.details !== undefined) this.details = extra.details;
   }
 }
 

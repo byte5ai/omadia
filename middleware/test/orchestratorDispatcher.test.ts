@@ -194,7 +194,7 @@ describe('createOrchestratorDispatcher', () => {
         return stubBundle([{ type: 'done', answer: 'singleton', toolCalls: 0, iterations: 1 }]);
       },
       channelTypeFor: (channelId) => channelId.split('.').pop() ?? channelId,
-      resolveBinding: () => undefined, // resolver rejects / no fallback Agent
+      resolveBinding: () => undefined, // no resolver answer (Postgres-less boot)
     });
     const events = await collect(
       dispatcher.streamTurn({
@@ -205,6 +205,30 @@ describe('createOrchestratorDispatcher', () => {
     );
     assert.deepEqual(asked, ['chatAgent']);
     assert.equal((events.at(-1) as { answer?: string }).answer, 'singleton');
+  });
+
+  it('#1598 — an explicit resolver REJECT refuses the turn instead of falling back', async () => {
+    const asked: string[] = [];
+    const dispatcher = createOrchestratorDispatcher({
+      getChannelBlock: () => undefined,
+      getAgentBundle: (service) => {
+        asked.push(service);
+        return stubBundle([{ type: 'done', answer: 'ungated', toolCalls: 0, iterations: 1 }]);
+      },
+      channelTypeFor: (channelId) => channelId.split('.').pop() ?? channelId,
+      resolveBinding: () => null,
+    });
+    const events = await collect(
+      dispatcher.streamTurn({
+        ...turn,
+        channelId: 'de.byte5.channel.teams',
+        channelKey: 'conv-42',
+      }),
+    );
+    assert.deepEqual(asked, [], 'the shared bundle must not be consulted');
+    assert.deepEqual(events, [
+      { type: 'error', message: 'no orchestrator is assigned to this conversation' },
+    ]);
   });
 
   it('never re-routes a channel with an explicit dispatch_service (canvas opt-out)', async () => {

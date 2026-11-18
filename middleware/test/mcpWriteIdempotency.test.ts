@@ -24,6 +24,8 @@ import {
 import { NativeToolRegistry } from '../packages/harness-orchestrator/src/nativeToolRegistry.js';
 import { ToolDispatchService } from '../packages/harness-orchestrator/src/toolDispatchService.js';
 import { ToolIdempotencyStore } from '../packages/harness-orchestrator/src/toolIdempotency.js';
+import { ToolReplayLedger } from '../packages/harness-orchestrator/src/toolReplayLedger.js';
+import { turnContext } from '../packages/harness-orchestrator/src/turnContext.js';
 import type { WriteCapability } from '../packages/plugin-api/src/writeCapabilities.js';
 import { isSandboxListenDenied } from './_helpers/listenLoopback.js';
 
@@ -431,5 +433,49 @@ describe('write-capable MCP tool — duplicate-write protection (#542 prerequisi
     assert.equal(writes.length, 1, 'the caller retry must not produce a second invoice');
     assert.equal(a.content, b.content, 'the retry must receive the original result');
     assert.match(a.content, /invoice #1 created/);
+  });
+
+  /**
+   * The chat path has no idempotency key. Inside a request an answer verifier
+   * may re-enter, the request's replay ledger holds every write to ONE
+   * execution and counts every MCP tool as a write, so the seams send each
+   * call once while that ledger is bound (`runHandlerAtMostOnce`): a lost
+   * response must not be re-sent below the ledger, which sees one call.
+   */
+  async function dispatchInTurn(
+    t: { skip: (reason: string) => void },
+    ledger: ToolReplayLedger,
+  ): Promise<{ writes: string[]; content: string } | undefined> {
+    const writes: string[] = [];
+    const first = await startWriteServer(t, writes);
+    if (!first) return undefined;
+    const second = await startWriteServer(t, writes);
+    if (!second) return undefined;
+    proxy = await startLosingProxy([first, second]);
+
+    manager = new McpManager();
+    const dispatcher = localDispatcher(manager, serverConfig(proxy.url), { declareWrite: true });
+    const result = await turnContext.run(
+      { turnId: 'turn-write-once', turnDate: '2026-10-01', toolReplayLedger: ledger },
+      () => dispatcher.dispatch(LOCAL_TOOL, { amount: 100 }),
+    );
+    return { writes, content: result.content };
+  }
+
+  it('MUTATION CHECK: inside a request with a bound replay ledger, the lost response is not re-sent', async (t) => {
+    const outcome = await dispatchInTurn(t, new ToolReplayLedger());
+    if (!outcome) return;
+
+    assert.equal(outcome.writes.length, 1, 'the write ran twice inside one request');
+    assert.equal(proxy?.toolCallCount(), 1, 'the transport re-sent the call');
+    assert.match(outcome.content, /Error:/, 'the failure is still reported');
+  });
+
+  it('control: a turn without a bound request ledger keeps the once-retry', async (t) => {
+    const outcome = await dispatchInTurn(t, new ToolReplayLedger({ retainResults: false }));
+    if (!outcome) return;
+
+    assert.equal(proxy?.toolCallCount(), 2, 'the turn-local ledger changed the transport retry');
+    assert.equal(outcome.writes.length, 2);
   });
 });

@@ -137,11 +137,24 @@ describe('#470 C4/H1 — public-path declaration validation', () => {
   });
 
   it('rejects a prefix that is already a static core public path', () => {
-    // `/p/<pluginId>` is a live entry in STATIC_PUBLIC_PATHS. Two mechanisms
+    // The CIMD document is a live entry in STATIC_PUBLIC_PATHS. Two mechanisms
     // claiming the same URL is exactly the ambiguity this rejects.
-    const result = validateDeclaredPublicPath('/p/acme/dash', CTX);
+    const result = validateDeclaredPublicPath('/.well-known/omadia-mcp-client', {
+      corePublicPaths: publicPaths(),
+      ownRoutePrefixes: ['/.well-known/omadia-mcp-client'],
+    });
     assert.equal(result.ok, false);
     assert.ok(!result.ok && result.reason.includes('static core public path'));
+  });
+
+  it('accepts a /p/<plugin> prefix the plugin serves, now that core no longer exempts /p/ (#1596)', () => {
+    // The handover: a Teams-tab route that must work without an omadia
+    // session is declared and operator-granted, not statically exempt.
+    const result = validateDeclaredPublicPath('/p/acme/tab', {
+      corePublicPaths: publicPaths(),
+      ownRoutePrefixes: ['/p/acme'],
+    });
+    assert.equal(result.ok, true);
   });
 
   it('rejects a prefix outside both the reserved root and the plugin routes', () => {
@@ -162,6 +175,80 @@ describe('#470 C4/H1 — public-path declaration validation', () => {
 
   it('rejects a one-segment claim as too broad', () => {
     assert.equal(validateDeclaredPublicPath('/api', CTX).ok, false);
+  });
+});
+
+describe('#1465 — a declared prefix the plugin serves nothing under', () => {
+  let grants: PublicPathGrantRegistry;
+  beforeEach(() => {
+    grants = new PublicPathGrantRegistry();
+  });
+  // dev-platform with webhooks off: two routers registered, the webhook one not.
+  const OWN = ['/api/v1/dev-runner', '/api/v1/dev-runner', '/api/v1/dev-platform'];
+  const DECLARED = ['/api/v1/dev-runner', '/api/webhooks/github', '/api/v1/dev-platform'];
+
+  it('is NOT a claim failure while ungranted, and is reported as unserved', () => {
+    const { unserved } = grants.claim('dev', DECLARED, {
+      corePublicPaths: publicPaths(),
+      ownRoutePrefixes: OWN,
+      grantedPrefixes: new Set(),
+    });
+    assert.deepEqual(unserved, ['/api/webhooks/github']);
+    // Still reserved (exclusive) but serves nothing.
+    assert.deepEqual(
+      grants.list().map((c) => [c.prefix, c.granted]),
+      DECLARED.map((p) => [p, false]),
+    );
+    assert.equal(grants.resolve('/api/webhooks/github/push'), null);
+  });
+
+  it('keeps the reservation exclusive against another plugin', () => {
+    grants.claim('dev', DECLARED, {
+      corePublicPaths: publicPaths(),
+      ownRoutePrefixes: OWN,
+      grantedPrefixes: new Set(),
+    });
+    assert.throws(
+      () =>
+        grants.claim('other', ['/api/webhooks/github'], {
+          corePublicPaths: publicPaths(),
+          ownRoutePrefixes: ['/api/webhooks/github'],
+          grantedPrefixes: new Set(),
+        }),
+      /already owned by plugin 'dev'/,
+    );
+  });
+
+  it('still fails when the operator GRANTED the unserved prefix, naming each own prefix once', () => {
+    assert.throws(
+      () =>
+        grants.claim('dev', DECLARED, {
+          corePublicPaths: publicPaths(),
+          ownRoutePrefixes: OWN,
+          grantedPrefixes: new Set(['/api/webhooks/github']),
+        }),
+      (err: unknown) => {
+        assert.ok(err instanceof PublicPathClaimError);
+        assert.ok(
+          err.message.includes('(/api/v1/dev-runner, /api/v1/dev-platform)'),
+          err.message,
+        );
+        return true;
+      },
+    );
+    assert.equal(grants.list().length, 0);
+  });
+
+  it('does not relax manifest errors: a core-reserved root still fails ungranted', () => {
+    assert.throws(
+      () =>
+        grants.claim('dev', ['/api/v1/admin/hook'], {
+          corePublicPaths: publicPaths(),
+          ownRoutePrefixes: [],
+          grantedPrefixes: new Set(),
+        }),
+      /core-reserved/,
+    );
   });
 });
 
@@ -270,6 +357,17 @@ describe('#470 C4/H1 — exclusive prefix ownership', () => {
     // `/api/plugins/acme-evil` starts with `/api/plugins/acme` as a STRING but
     // is a different path segment.
     assert.equal(grants.resolve('/api/plugins/acme-evil/ping'), null);
+  });
+
+  it('#1349 — resolveUngranted names a declared prefix only while it is not granted', () => {
+    grants.claim('acme', [PREFIX], { ...CTX, grantedPrefixes: new Set() });
+    assert.deepEqual(grants.resolveUngranted(`${PREFIX}/ping`), {
+      pluginId: 'acme',
+      prefix: PREFIX,
+    });
+    assert.equal(grants.resolveUngranted('/api/plugins/acme-evil/ping'), null);
+    grants.setGranted('acme', new Set([PREFIX]));
+    assert.equal(grants.resolveUngranted(`${PREFIX}/ping`), null);
   });
 });
 
@@ -566,6 +664,9 @@ async function makeConsentHarness(opts: {
     '/api/v1/admin/runtime',
     createRuntimeRouter({
       installedRegistry: installed,
+      // #1453 — required dependency; this suite does not exercise the verify
+      // endpoint, so it answers "this plugin declares no probe".
+      verifyConnection: async () => undefined,
       serviceRegistry: stub as never,
       turnHookRegistry: stub as never,
       backgroundJobRegistry: stub as never,

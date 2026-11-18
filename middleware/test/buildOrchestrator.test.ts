@@ -22,7 +22,10 @@ import {
   buildOrchestratorForAgent,
   type OrchestratorDeps,
 } from '../packages/harness-orchestrator/src/buildOrchestrator.js';
-import type { NativeToolRegistry } from '../packages/harness-orchestrator/src/nativeToolRegistry.js';
+import {
+  NativeToolRegistry as RealNativeToolRegistry,
+  type NativeToolRegistry,
+} from '../packages/harness-orchestrator/src/nativeToolRegistry.js';
 import { RunTraceOutcomeStats } from '../packages/harness-orchestrator/src/runTraceObservability.js';
 
 /** Minimal NativeToolRegistry — the Orchestrator constructor only calls
@@ -226,6 +229,25 @@ test('a claude-cli agent replays the chat session store as its tail (#1087)', as
     messages: [],
   });
 
+  // #1071 — a cleared chat a routine has since delivered into: its only
+  // message is a proactive delivery, which is not a conversation turn.
+  await built.bundle.chatSessionStore.save({
+    id: 'sess-proactive-only',
+    title: 'Routinen',
+    createdAt: 1,
+    updatedAt: 3,
+    messages: [
+      {
+        id: 'proactive-r1-3',
+        role: 'assistant',
+        content: 'Tagesreport',
+        startedAt: 3,
+        finishedAt: 3,
+        proactive: { deliveredAt: 3, routineId: 'r1', routineName: 'Daily report' },
+      },
+    ],
+  });
+
   const tail = installedSessionTail(built.bundle.agent);
   assert.ok(tail, 'the claude-cli branch must inject a history supplier');
 
@@ -259,6 +281,9 @@ test('a claude-cli agent replays the chat session store as its tail (#1087)', as
   // `undefined`, or every new chat's first turn would carry the missing-history
   // note.
   assert.deepEqual(await tail('sess-empty', 3), []);
+  // Deliveries alone are no history either: `[]`, not the "history could not
+  // be loaded" disclosure.
+  assert.deepEqual(await tail('sess-proactive-only', 3), []);
 });
 
 /**
@@ -356,4 +381,239 @@ test('every built Agent logs into the shared run-trace tally from deps (#1082)',
   );
   assert.ok(bare.bundle.sessionLogger.runTraceStats instanceof RunTraceOutcomeStats);
   assert.notEqual(bare.bundle.sessionLogger.runTraceStats, runTraceStats);
+});
+
+/**
+ * #1391 — the WIRING pin for CLI turn persistence and recall. A CLI turn used
+ * to write a usage row and nothing else: no transcript, no graph Turn/Run, no
+ * `onAfterTurn`, no recall. These drive the hooks the factory installs on the
+ * CliChatAgent through a real Orchestrator and read the effects back out of
+ * the store, the graph double and the hook runner.
+ */
+interface CliRecordHooks {
+  recordTurn?: (input: unknown, turn: unknown) => Promise<{ turnId?: string }>;
+  recallContext?: (input: unknown) => Promise<{ text?: string; events?: readonly unknown[] }>;
+  sessionTailSize?: number;
+}
+
+function installedRecordHooks(agent: unknown): CliRecordHooks {
+  return (agent as { deps?: CliRecordHooks }).deps ?? {};
+}
+
+test('a claude-cli agent records its turns like an in-process turn (#1391)', async () => {
+  const ingestedTurns: Array<Record<string, unknown>> = [];
+  const ingestedRuns: Array<Record<string, unknown>> = [];
+  const hookPoints: string[] = [];
+  const hookTurnIds: string[] = [];
+  const memoryStore = inMemoryMemoryStore();
+  const built = buildOrchestratorForAgent(
+    { agentId: 'cli', model: 'opus-cli', maxTokens: 100, maxToolIterations: 4 },
+    {
+      ...cliDeps(),
+      memoryStore,
+      knowledgeGraph: {
+        ingestTurn: async (turn: Record<string, unknown>) => {
+          ingestedTurns.push(turn);
+          return {};
+        },
+        ingestRun: async (run: Record<string, unknown>) => {
+          ingestedRuns.push(run);
+        },
+      } as unknown as KnowledgeGraph,
+      turnHookRegistry: {
+        run: async (point: string, ctx: { turnId: string }) => {
+          hookPoints.push(point);
+          hookTurnIds.push(ctx.turnId);
+          return [];
+        },
+      },
+    },
+  );
+
+  const { recordTurn } = installedRecordHooks(built.bundle.agent);
+  assert.ok(recordTurn, 'the claude-cli branch must install a turn recorder');
+  // The web client creates the chat (its PUT on create) before the first turn;
+  // the mirror only appends to it, never creates one (#1637).
+  await built.bundle.chatSessionStore.save({
+    id: 'sess-1391',
+    title: 'Neuer Chat',
+    createdAt: 0,
+    updatedAt: 0,
+    messages: [],
+  });
+  const record = await recordTurn(
+    { userMessage: 'Merk dir: Release-Freeze ab Freitag.', sessionScope: 'sess-1391', userId: 'u-1' },
+    {
+      turnId: 'cli-turn-1',
+      answer: 'Notiert: Release-Freeze ab Freitag.',
+      toolCalls: 1,
+      iterations: 2,
+      runTrace: {
+        scope: 'sess-1391',
+        userId: 'u-1',
+        startedAt: new Date(0).toISOString(),
+        finishedAt: new Date(10).toISOString(),
+        durationMs: 10,
+        status: 'success',
+        iterations: 2,
+        orchestratorToolCalls: [
+          { callId: 'tu_1', toolName: 'query_knowledge_graph', durationMs: 5, isError: false, agentContext: 'orchestrator' },
+        ],
+        agentInvocations: [],
+        provider: 'claude-cli',
+      },
+    },
+  );
+
+  assert.equal(ingestedTurns.length, 1, 'one graph Turn per CLI turn');
+  assert.equal(ingestedTurns[0]?.['userMessage'], 'Merk dir: Release-Freeze ab Freitag.');
+  assert.equal(ingestedTurns[0]?.['assistantAnswer'], 'Notiert: Release-Freeze ab Freitag.');
+  assert.equal(ingestedTurns[0]?.['userId'], 'u-1');
+  assert.equal(ingestedRuns.length, 1, 'the run trace becomes a Run with its ToolCalls');
+  assert.equal(
+    (ingestedRuns[0]?.['orchestratorToolCalls'] as unknown[] | undefined)?.length,
+    1,
+  );
+  assert.ok(record.turnId, 'the written Turn id rides the done event');
+  assert.equal(ingestedRuns[0]?.['turnId'], record.turnId);
+  // The owner is resolved like an in-process trace's (`runTraceUserSpread`),
+  // not copied from whatever the CLI agent put on the trace.
+  assert.equal(ingestedRuns[0]?.['userId'], 'u-1');
+  assert.deepEqual(hookPoints, ['onAfterTurn'], 'onAfterTurn fires exactly once');
+  assert.deepEqual(hookTurnIds, ['cli-turn-1'], 'hooks see the CLI turn id');
+  // The markdown transcript — the session log the operator reads.
+  const transcripts = await memoryStore.list('/memories/sessions');
+  assert.equal(transcripts.length, 1, 'one transcript file for the chat');
+  assert.match(
+    await memoryStore.readFile(transcripts[0]!.virtualPath),
+    /Release-Freeze ab Freitag/,
+  );
+  // The chat-session mirror is the other half of the session log — appended to
+  // the chat the client created above.
+  const mirrored = await built.bundle.chatSessionStore.get('sess-1391');
+  assert.deepEqual(
+    mirrored?.messages.map((m) => [m.role, m.content]),
+    [
+      ['user', 'Merk dir: Release-Freeze ab Freitag.'],
+      ['assistant', 'Notiert: Release-Freeze ab Freitag.'],
+    ],
+  );
+});
+
+test('a claude-cli turn without a chat records nothing (#1391)', async () => {
+  let ingested = 0;
+  const built = buildOrchestratorForAgent(
+    { agentId: 'cli', model: 'opus-cli', maxTokens: 100, maxToolIterations: 4 },
+    {
+      ...cliDeps(),
+      memoryStore: inMemoryMemoryStore(),
+      knowledgeGraph: {
+        ingestTurn: async () => {
+          ingested += 1;
+          return {};
+        },
+      } as unknown as KnowledgeGraph,
+    },
+  );
+  const record = await installedRecordHooks(built.bundle.agent).recordTurn!(
+    { userMessage: 'single shot' },
+    {
+      turnId: 'cli-turn-2',
+      answer: 'ok',
+      toolCalls: 0,
+      iterations: 1,
+      runTrace: {
+        scope: 'x',
+        startedAt: '',
+        finishedAt: '',
+        durationMs: 0,
+        status: 'success',
+        iterations: 1,
+        orchestratorToolCalls: [],
+        agentInvocations: [],
+      },
+    },
+  );
+  assert.deepEqual(record, {});
+  assert.equal(ingested, 0);
+});
+
+test('a claude-cli agent recalls through the context retriever and keeps its tail size (#1391, #1087)', async () => {
+  const asked: Array<Record<string, unknown>> = [];
+  const contextRetriever = {
+    tailSize: 7,
+    assembleForBudget: async (input: Record<string, unknown>) => {
+      asked.push(input);
+      return {
+        text: '## Früher besprochene Entitäten\n- Release-Freeze: Freitag',
+        included: [],
+        excluded: [],
+        recalled: { plans: [], processes: [], insights: [] },
+        stats: { candidatePool: 1, compactMode: false, tokensUsed: 10 },
+      };
+    },
+  };
+  const built = buildOrchestratorForAgent(
+    { agentId: 'cli', model: 'opus-cli', maxTokens: 100, maxToolIterations: 4 },
+    {
+      ...cliDeps(),
+      contextRetriever: contextRetriever as unknown as OrchestratorDeps['contextRetriever'],
+    },
+  );
+  const hooks = installedRecordHooks(built.bundle.agent);
+  assert.equal(hooks.sessionTailSize, 7, "the operator's context_tail_size reaches the CLI tail");
+  assert.ok(hooks.recallContext, 'the claude-cli branch must install graph recall');
+
+  const error = mock.method(console, 'error', () => undefined);
+  try {
+    const recalled = await hooks.recallContext(
+      { userMessage: 'Wann ist der Freeze?', sessionScope: 'sess-1391', userId: 'u-1' },
+    );
+    assert.match(recalled.text ?? '', /Release-Freeze: Freitag/);
+  } finally {
+    error.mock.restore();
+  }
+  assert.equal(asked.length, 1);
+  assert.equal(asked[0]?.['userMessage'], 'Wann ist der Freeze?');
+  assert.match(String(asked[0]?.['sessionScope']), /sess-1391/);
+});
+
+/**
+ * #1102 — the WIRING pin for `memory` on the subscription-CLI path. The handler
+ * the factory hands the CLI agent must be this agent's scoped stack (what the
+ * in-process loop dispatches `memory` to), so a note lands in the agent's own
+ * tree — never at the raw root path the memory plugin's registry entry writes.
+ */
+test('a claude-cli agent gets the agent-scoped memory handler for its turns (#1102)', async () => {
+  const memoryStore = inMemoryMemoryStore();
+  const built = buildOrchestratorForAgent(
+    { agentId: 'cli-mem', model: 'opus-cli', maxTokens: 100, maxToolIterations: 4 },
+    { ...cliDeps(), memoryStore, nativeToolRegistry: new RealNativeToolRegistry() },
+  );
+  const bind = (
+    built.bundle.agent as unknown as {
+      deps?: {
+        bindTurnMemory?: (
+          input: unknown,
+        ) => Promise<{ handler: { handle(i: unknown): Promise<string> }; instructions: string } | undefined>;
+      };
+    }
+  ).deps?.bindTurnMemory;
+  assert.ok(bind, 'the claude-cli branch must install a memory binder');
+
+  const bound = await bind({ userMessage: 'Merk dir: pg_dump', sessionScope: 'sess-1102' });
+  assert.ok(bound, 'context memory off still binds the agent-scoped stack');
+  assert.match(bound.instructions, /_rules/);
+  const result = await bound.handler.handle({
+    command: 'create',
+    path: '/memories/backup.md',
+    file_text: 'Lieblingsbackup: pg_dump',
+  });
+  assert.doesNotMatch(result, /^Error/);
+
+  const written = await memoryStore.list('/memories');
+  const paths = written.map((f) => f.virtualPath);
+  assert.equal(paths.length, 1, `one note written, got ${JSON.stringify(paths)}`);
+  assert.notEqual(paths[0], '/memories/backup.md', 'never the raw root path');
+  assert.match(paths[0]!, /cli-mem/, 'inside this agent\'s own tree');
 });

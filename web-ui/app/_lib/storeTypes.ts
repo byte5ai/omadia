@@ -37,11 +37,13 @@ export interface PluginSetupField {
    *  install wizard and the post-install editor; render with `pickLocalized`. */
   help?: LocalizedMarkdown;
   /** Manifest default. The post-install editor pre-selects this value in
-   *  an `enum` dropdown when nothing is stored yet. */
-  default?: string;
+   *  an `enum` dropdown when nothing is stored yet. A `string[]` for
+   *  `type === 'host_list'`, a `boolean` for `type === 'boolean'` (#1464), a
+   *  `number` for `type === 'integer'` (#1524). Mirrors middleware admin-v1. */
+  default?: string | string[] | boolean | number;
   /** Allowed values for `type === 'enum'`. When present, the
    *  post-install editor renders a `<select>` instead of a text input. */
-  enum?: Array<{ value: string; label: string }>;
+  enum?: Array<{ value: string; label: string; label_localized?: LocalizedMarkdown }>;
   /** Spec 005 — `type === 'oauth'`: the `oauth_providers` descriptor id this
    *  field connects through, and the scopes requested. */
   provider?: string;
@@ -54,6 +56,9 @@ export interface PluginSetupField {
   /** Holds multiple selected values (stored as a JSON-encoded `string[]`).
    *  Only meaningful with `options_provider`. */
   multi?: boolean;
+  /** #1525 — `string` / `secret` only: one entry per line, edited in a
+   *  textarea. Mirrors middleware admin-v1. */
+  multiline?: boolean;
   /** OM-16 — required-by-default: a manifest field that omits `required` IS
    *  required. Absent on payloads from a pre-OM-16 middleware. */
   required?: boolean;
@@ -104,6 +109,10 @@ export interface OAuthProviderDescriptor {
 }
 
 export interface PluginPermissionsSummary {
+  /** Epic #470 C7 — the plugin asks to own tables in the operator's database
+   *  (`permissions.sql`). Present only when declared. Rendered on the detail
+   *  page so a hub plugin's request is visible before install (#1457). */
+  sql?: { ledger: string; migrations?: string; handoff?: string };
   memory_reads: string[];
   memory_writes: string[];
   graph_reads: string[];
@@ -211,6 +220,9 @@ export interface PluginActionStatus {
 export type PluginReadinessState =
   | 'not_installed'
   | 'config_required'
+  /** #1453 — fields all filled, plugin up, target system refused the
+   *  credentials (the plugin's own probe verdict). */
+  | 'connection_failed'
   | 'awaiting_llm'
   | 'ready'
   | 'errored';
@@ -219,10 +231,17 @@ export interface PluginReadiness {
   state: PluginReadinessState;
   /** Keys of required setup fields with no stored value. */
   missing_fields: string[];
-  /** ISO8601 of the last successful activation; `null` unless `ready`. */
+  /** ISO8601 of the last successful ACTIVATION; `null` unless `ready`.
+   *  #1453 — not a credential check (nothing contacted the target system), so
+   *  the badge renders it as "active since", never "configured". A checked
+   *  connection arrives as `action_status.checked_at` instead. */
   verified_at: string | null;
-  /** Tail of the last activation error; only for `errored`. */
+  /** Tail of the last activation error; only for `errored`. Developer text —
+   *  shown as a technical detail only (#1456). */
   error_detail?: string;
+  /** #1456 — classified reason for `errored`; narrow with
+   *  `parseActivationErrorCode` (`unknown` for anything else). */
+  error_code?: string;
 }
 
 export interface Plugin {
@@ -255,6 +274,11 @@ export interface Plugin {
    *  middleware that records the field; absent means "this server cannot tell
    *  me", which `isOperatorInstalled` reads as the pre-#1089 behaviour. */
   install_origin?: PluginInstallOrigin;
+  /** #1481 — present only for a package that ships in the middleware image:
+   *  whether an uninstall sticks across restarts (`persistent`) or the boot
+   *  installs it again because it is a provider the host selects at startup
+   *  (`reinstalled_at_boot`). Mirrors middleware admin-v1. */
+  built_in_uninstall?: 'persistent' | 'reinstalled_at_boot';
   incompatibility_reasons?: string[];
   depends_on: string[];
   /** Manifest-declared background jobs. Always present (defaults to []). */
@@ -285,9 +309,12 @@ export interface Plugin {
    *  from a pre-OM-16 middleware, in which case the UI falls back to the old
    *  install-state-only rendering. */
   readiness?: PluginReadiness;
-  /** Present only for entries sourced from a remote registry that are not yet
-   *  ingested locally. Drives the remote-install flow (fetch-then-ingest
-   *  before the normal install job). Mirrors middleware admin-v1. */
+  /** Present when the bytes are (or would be) a remote registry's artifact:
+   *  hub-only entries, which the detail page installs fetch-then-ingest, and
+   *  packages downloaded from that registry. Absent on uploads and built-ins,
+   *  even when the hub lists the same id (#1459). Decides the store tab
+   *  together with `install_state` (`storeTab`, #1469). Mirrors middleware
+   *  admin-v1. */
   source?: {
     registry: string;
     download_url: string;
@@ -296,6 +323,10 @@ export interface Plugin {
   /** C6 — newer version a registry advertises when `install_state ===
    *  'update-available'`. `version` still reflects what is installed. */
   available_version?: string;
+  /** #1490 — the package was uploaded or fetched and the plugin is NOT
+   *  installed: the detail page offers to remove it. Mirrors middleware
+   *  admin-v1. */
+  removable_package?: boolean;
   /** Localized markdown installation guide for the plugin's third-party system,
    *  from the manifest's `setup.guide` as a `{ <locale>: markdown }` map. The
    *  UI picks the active locale (with fallback) and renders it on the detail
@@ -325,10 +356,23 @@ export interface SetupProfile {
   requirement?: LocalizedMarkdown;
 }
 
+/** #1482 — the last index fetch of one configured registry. Mirrors
+ *  `RegistrySourceStatus` in middleware admin-v1. */
+export interface RegistrySourceStatus {
+  name: string;
+  ok: boolean;
+  checked_at: string;
+  plugin_count?: number;
+  error?: { code: string; message: string };
+}
+
 export interface StoreListResponse {
   items: Plugin[];
   next_cursor: string | null;
   total?: number;
+  /** #1458/#1482 — one entry per configured registry; absent when none is
+   *  configured (or on an older middleware). */
+  registries?: RegistrySourceStatus[];
 }
 
 /** Advisory code-scan verdict for an ingested plugin package (issue #453).
@@ -411,6 +455,8 @@ export interface InstallActivationState {
   state: 'active' | 'inactive' | 'errored';
   ok: boolean;
   error: string | null;
+  /** #1456 — classified reason; absent on an older middleware. */
+  error_code?: string | null;
   missing: InstallMissingGrant[];
 }
 
@@ -423,7 +469,7 @@ export interface InstallSetupField {
   help?: LocalizedMarkdown;
   required: boolean;
   default?: unknown;
-  enum?: Array<{ value: string; label: string }>;
+  enum?: Array<{ value: string; label: string; label_localized?: LocalizedMarkdown }>;
   provider?: string;
   scopes?: string[];
   pattern?: string;
@@ -466,6 +512,9 @@ export interface InstallJob {
   plugin_version: string;
   state: InstallJobState;
   current_step: string;
+  /** #1401 — stable code for `current_step` (which is display text in the
+   *  server's language). Rendered from the catalog; absent on older servers. */
+  step_code?: string;
   error: InstallJobError | null;
   setup_schema: InstallSetupSchema | null;
   /** #825 — present once the job reaches a terminal INSTALLED state (`active`
@@ -490,6 +539,8 @@ export interface InstallValidationError {
   key: string;
   code: string;
   message: string;
+  /** #1401 — values the localized text needs that the setup schema lacks. */
+  params?: Record<string, string>;
 }
 
 // ---------------------------------------------------------------------------
@@ -511,6 +562,12 @@ export interface CapabilityProviderRef {
   already_installed: boolean;
   /** True iff status === 'active' (registered + activated). */
   active: boolean;
+  /** #1463 — `registry`: the latest Hub version, offered because the local
+   *  catalog has no provider. Absent/`catalog`: a local catalog entry. */
+  source?: 'catalog' | 'registry';
+  /** #1463 — with `source: 'registry'`: the installed, older version the Hub
+   *  one replaces. */
+  update_from?: string;
 }
 
 export interface UnresolvedCapabilityEntry {
@@ -550,6 +607,17 @@ export interface UploadedPackage {
 
 export interface UploadPackageResponse {
   package: UploadedPackage;
+  /** #1452 — the ZIP was ingested and the re-activation of the running plugin
+   *  threw; the middleware has flipped the registry entry to `errored` with
+   *  this message. Absent on success, on an upload that attempted no
+   *  activation (plugin not installed-and-running), and on an older
+   *  middleware. */
+  activation_error?: string;
+  /** #1490 — the version this upload replaced in the store. Absent on a first
+   *  upload and on an older middleware. */
+  replaced_version?: string;
+  /** #1497 — the shared activation result; narrow with `parseActivationResult`. */
+  activation?: unknown;
 }
 
 export interface ListUploadedPackagesResponse {

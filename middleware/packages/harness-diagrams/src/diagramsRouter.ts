@@ -9,7 +9,7 @@ interface DiagramsRouterDeps {
 }
 
 /**
- * HMAC-signed proxy that serves diagram PNGs from Tigris/MinIO to Teams.
+ * HMAC-signed proxy that serves diagram PNGs from Tigris/SeaweedFS to Teams.
  *
  * The URL format is `/diagrams/<url-encoded-key>?exp=<unix-seconds>&sig=<hex>`
  * where the signature covers `<decoded-key>.<exp>`. Expired or tampered

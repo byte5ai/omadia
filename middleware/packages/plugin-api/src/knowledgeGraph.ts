@@ -133,6 +133,13 @@ export interface KnowledgeGraph {
      * {@link agentScopePrefix} — per-orchestrator KG isolation.
      */
     agentScopePrefix?: string;
+    /**
+     * #1536 — leave out plans that cannot be shown under a Privacy Shield:
+     * one linked (`PLAN_OF`, or its `turnId` property) to a Turn stored
+     * `unprotected`, and one linked to no Turn at all, whose provenance is
+     * unknown. Set by a recall that runs under a shield.
+     */
+    excludeUnprotected?: boolean;
   }): Promise<GraphNode[]>;
   /**
    * Structured run-subgraph for a single Turn: Run node + AgentInvocations
@@ -140,8 +147,12 @@ export interface KnowledgeGraph {
    * Returns `null` when no Run has been ingested yet for the given turn.
    */
   getRunForTurn(turnExternalId: string): Promise<RunTraceView | null>;
-  /** Returns one snapshot of the session, turns in chronological order. */
-  getSession(scope: string): Promise<SessionView | null>;
+  /**
+   * Returns one snapshot of the session, turns in chronological order.
+   * `options.audienceOwners` keeps only the turns that audience may see (see
+   * {@link SessionReadOptions}); a session left with no turn reads as `null`.
+   */
+  getSession(scope: string, options?: SessionReadOptions): Promise<SessionView | null>;
   /**
    * List sessions. When `userId` is provided, only sessions whose Session node
    * carries that userId are returned — legacy sessions without a userId are
@@ -181,9 +192,12 @@ export interface KnowledgeGraph {
     opts: SearchTurnsByEmbeddingOptions,
   ): Promise<TurnSearchHit[]>;
   /**
-   * Lookup of business entities by model + optional name substring. Used by
-   * the sub-agents' `query_graph` tool to resolve stable master data
-   * (journals, departments, partners, etc.) without round-tripping to Odoo.
+   * Lookup of business entities by model + optional exact id and/or name
+   * substring. Used by the sub-agents' `query_graph` tool to resolve stable
+   * master data (journals, departments, partners, etc.) without
+   * round-tripping to Odoo, and by the answer verifier to resolve the exact
+   * record an entity handle names (`FindEntitiesOptions.id`). Covers
+   * `OdooEntity` and `ConfluencePage` nodes only.
    * Scope-filtering is up to the caller — the graph returns every match.
    */
   findEntities(opts: FindEntitiesOptions): Promise<GraphNode[]>;
@@ -294,6 +308,31 @@ export interface KnowledgeGraph {
    */
   purgeMemorableKnowledge(
     filter: MemorableKnowledgePurgeFilter,
+  ): Promise<{ deletedNodes: number }>;
+  /**
+   * Danger-Zone purge (#1334) — count the conversation-history nodes that
+   * {@link purgeConversationHistory} WOULD delete for the same filter.
+   * Read-only. Both methods resolve the selection through ONE shared query,
+   * so the preview count is by construction the number the purge removes.
+   * Optional (plugin-api 1.32.0): a provider without it makes the Danger-Zone
+   * purge report the conversation history as unsupported, never as purged.
+   */
+  countConversationHistory?(
+    filter: ConversationHistoryPurgeFilter,
+  ): Promise<{ count: number }>;
+  /**
+   * Danger-Zone purge (#1334) — hard-delete the conversation history the
+   * filter selects, in ONE transaction: `Turn`, `Run`, `AgentInvocation`,
+   * `ToolCall`, `Plan` and `PlanStep` nodes of the matching scopes / user,
+   * every `Fact` `DERIVED_FROM` a deleted Turn, every `PlanStep` of a deleted
+   * Plan, and each `Session` that is left without a Turn. Incident edges go
+   * with their nodes. `MemorableKnowledge` is NOT touched here — that is
+   * {@link purgeMemorableKnowledge}. Shared nodes (User clusters, channel
+   * identities, Odoo/Confluence/plugin entities) are never deleted.
+   * Optional together with {@link countConversationHistory}.
+   */
+  purgeConversationHistory?(
+    filter: ConversationHistoryPurgeFilter,
   ): Promise<{ deletedNodes: number }>;
   /**
    * Slice 3 — read the ACL audit-log for a single MemorableKnowledge.
@@ -899,6 +938,24 @@ export interface MemorableKnowledgeSearchOptions {
    * Default false.
    */
   manuallyAuthoredOnly?: boolean;
+  /**
+   * Member-scoped memory — REPLACES the viewer ACL above with the room rule:
+   * a row is admitted when its `acl_owners` include every id here (everyone
+   * present owns it), or when an operator authored it (`manually_authored` and
+   * a `created_by` other than `auto:…` — T3 durable auto-promotion also sets
+   * `manually_authored`, but that row came out of a conversation). `visibility` and
+   * `teamVisibility`/`sharedOnly` do not widen it: a team-visible row that
+   * came out of a conversation belongs to that conversation's people.
+   * `viewerAgentSlug` still applies. See {@link TurnIngest.owners}.
+   */
+  audienceOwners?: readonly string[];
+  /**
+   * #1536 — leave out memories that hold values no shield masked: stamped
+   * `unprotected` at write time (see {@link MemorableKnowledgeIngest}), or
+   * derived (`DERIVED_FROM`) from a Turn stored `unprotected`. Set by a recall
+   * that runs under a Privacy Shield.
+   */
+  excludeUnprotected?: boolean;
 }
 
 /** Slice 7 — single MK hit from semantic search. */
@@ -914,6 +971,12 @@ export interface ExcerptSearchOptions {
   viewerOmadiaUserId: string;
   limit?: number;
   minSimilarity?: number;
+  /**
+   * Member-scoped memory — the parent MK rule of
+   * {@link MemorableKnowledgeSearchOptions.audienceOwners}, applied to the
+   * excerpt's parent row.
+   */
+  audienceOwners?: readonly string[];
   /**
    * Opt-in team-scope recall — mirrors
    * {@link MemorableKnowledgeSearchOptions.teamVisibility}. The gate runs
@@ -941,6 +1004,12 @@ export interface ExcerptSearchOptions {
    * owner branch to the parent MK's `origin_agent`. Omit on legacy callers.
    */
   viewerAgentSlug?: string;
+  /**
+   * #1536 — the rule of
+   * {@link MemorableKnowledgeSearchOptions.excludeUnprotected}, applied to the
+   * excerpt's parent MK.
+   */
+  excludeUnprotected?: boolean;
 }
 
 /** Slice 7 — single excerpt hit, carries the parent-MK external_id
@@ -1395,6 +1464,14 @@ export interface MemorableKnowledgeIngest {
    */
   originAgent?: string;
   /**
+   * #1536 — the MK holds values no Privacy Shield masked: it was written in a
+   * turn without a shield or with a bypassed tool, or from a raw (bypassed)
+   * tool result. Stored as a property; a recall with `excludeUnprotected`
+   * skips it. A MK derived from a Turn stored `unprotected` is skipped too,
+   * flag or not.
+   */
+  unprotected?: boolean;
+  /**
    * Slice 3 — cluster-root that triggered the create. Audited as the
    * `actor_omadia_user_id` of the `create` row. Falls back to
    * `aclOwners[0]` when omitted; if both are missing, the actor is
@@ -1545,6 +1622,39 @@ export interface MemorableKnowledgePurgeFilter {
 }
 
 /**
+ * Danger-Zone bulk-purge selector for the conversation history (#1334):
+ * `Turn` and the nodes derived from it. `tenantId` is always required.
+ * `agentSlug` and `userId` are AND-narrowing; omitting both selects the
+ * tenant's whole conversation history.
+ */
+export interface ConversationHistoryPurgeFilter {
+  /** Tenant whose conversation history is in scope. Required. */
+  tenantId: string;
+  /** Restrict to nodes whose scope is qualified with this Agent
+   *  (`<agentSlug>::…`, see {@link agentScopePrefix}). For `default` the
+   *  legacy unqualified scopes are included too — the same rule the recall
+   *  queries use to keep them visible to the default Agent. */
+  agentSlug?: string;
+  /** Restrict to one person by their cluster-root `omadiaUserId`. Matches
+   *  nodes whose `user_id` is that id or the AAD object id of one of their
+   *  channel identities (a Teams Turn stores the AAD id, its Run the omadia
+   *  id), and Turns with a `BELONGS_TO` edge to the user cluster. A `Session`
+   *  goes only once none of its Turns remain. */
+  userId?: string;
+}
+
+/** Node types the conversation-history purge selects directly by scope /
+ *  user. `Fact` and `Session` are added by their relation to these. */
+export const CONVERSATION_HISTORY_NODE_TYPES = [
+  'Turn',
+  'Run',
+  'AgentInvocation',
+  'ToolCall',
+  'Plan',
+  'PlanStep',
+] as const satisfies readonly GraphNodeType[];
+
+/**
  * A single atomic fact extracted from a Turn. Subject-predicate-object triples
  * are the Haiku classifier's output shape — keep them short so they stay
  * composable across sessions. `sourceTurnId` is the external id of the Turn
@@ -1622,6 +1732,49 @@ export interface TurnIngest {
    * that ignore the flag stay correct, just less economical.
    */
   tailOnly?: boolean;
+  /**
+   * #1507 — the turn's answer came from raw values the model saw: it ran
+   * without a Privacy Shield provider, or a tool bypassed the shield. Set by
+   * the kernel on every live turn. A turn search that runs under a shield
+   * (context recall, the `query_knowledge_graph` turn search, a plugin's
+   * `ctx.knowledgeGraph` turn search) passes `excludeUnprotected` and gets no
+   * such turn back. Only written when present, like `owners`: a re-ingest
+   * without it (backfill from transcripts) keeps the recorded value. Stored
+   * as a Turn property.
+   */
+  unprotected?: boolean;
+  /**
+   * Member-scoped memory — the canonical omadia user ids of everyone present
+   * in the room when the turn happened, sorted and de-duplicated. The turn's
+   * knowledge belongs to exactly these people: a later turn may recall it only
+   * when everyone present there is one of them (`audienceOwners` on the read
+   * options). Set by the kernel for a turn of an agent in `members` context
+   * memory whose audience was known; an empty array means the audience was
+   * not known, so the turn belongs to nobody and is never recalled in that
+   * mode. Absent on every other turn. Stored as a Turn property.
+   */
+  owners?: readonly string[];
+  /**
+   * The turn as the Privacy Shield masked it for the turn's own model calls
+   * (see {@link TurnMaskedView}). Set by the kernel for a turn that ran under
+   * a privacy handle, whose `userMessage` / `assistantAnswer` hold restored
+   * real values. A decorator that sends the turn to a model of its own (the
+   * capture filter's significance scorer) sends THESE texts instead, and an
+   * empty view means it may send none. Never stored: backends ignore it.
+   * Absent for a turn without a shield, which has nothing to mask.
+   */
+  maskedView?: TurnMaskedView;
+}
+
+/**
+ * A turn's wire texts under the Privacy Shield: the user message as the
+ * turn's model received it and the answer as the model wrote it, surrogates
+ * in place of the values the shield masked — the same texts the kernel's fact
+ * extraction gets.
+ */
+export interface TurnMaskedView {
+  readonly userMessage: string;
+  readonly assistantAnswer: string;
 }
 
 export interface TurnIngestResult {
@@ -1637,6 +1790,19 @@ export interface TurnIngestResult {
    * the decorator that made the decision does.
    */
   tailOnly?: boolean;
+  /**
+   * `true` when the backend scheduled an embedding for this turn. It is
+   * computed after the write, so the vector may not exist yet. Absent means
+   * none was scheduled: no embedding client, a tail-only turn, or a backend
+   * without vectors.
+   */
+  embeddingScheduled?: boolean;
+  /**
+   * OB-81 — what the capture decorator decided for this turn, for the channels
+   * that show it. Set by the decorator that made the decision, never by a
+   * backend. Absent when no capture filter ran, or at `capture_level=off`.
+   */
+  captureDisclosure?: CaptureDisclosure;
 }
 
 // ---------------------------------------------------------------------------
@@ -1648,9 +1814,10 @@ export interface TurnIngestResult {
 // orchestrator actually persisted into Palaia / the knowledge graph for any
 // given turn.
 //
-// Track-A introduces only the wire shape: every field is optional, so a turn
-// without an active capture-pipeline simply omits the object. Track-B (after
-// OB-71 lands) wires the real Decision through the orchestrator response.
+// `CaptureFilteringKnowledgeGraph` projects its decision onto
+// `TurnIngestResult.captureDisclosure`; the session logger hands it to the
+// orchestrator, which puts it on the stream's `done` event. A turn without an
+// active capture-pipeline simply omits the object.
 // ---------------------------------------------------------------------------
 
 /**
@@ -1689,16 +1856,21 @@ export interface CaptureDisclosure {
    * capture-hint with `force="true"` short-circuited scoring.
    */
   significance: number | null;
-  /** Did the embedding sidecar compute and write a vector for this turn? */
+  /**
+   * Was an embedding scheduled for this turn? It is computed after the turn is
+   * answered, so `true` does not promise the vector exists yet, and a failed
+   * embedding leaves the turn on full-text search only.
+   */
   embedded: boolean;
   /** Number of `<private>...</private>` blocks removed before persistence. */
   privacyBlocksStripped: number;
   /** Number of `<palaia-hint .../>` tags consumed. */
   hintTagsProcessed: number;
   /**
-   * Knowledge-graph identifiers touched by this turn. Optional — exposed
-   * mainly for the inline-chat dev surface (clickable graph deep-links).
-   * Connectors that cannot link out (Teams: no graph UI) MAY omit display.
+   * Knowledge-graph identifiers touched by this turn. Optional — meant for
+   * the inline-chat dev surface (clickable graph deep-links). Not populated
+   * today: `done` also reaches Public API clients, which have no use for
+   * internal node ids. Connectors that cannot link out MAY omit display.
    */
   graphRefs?: {
     sessionId: string;
@@ -1732,6 +1904,10 @@ export interface RunToolCall {
   postcondition?: {
     issues: readonly string[];
   };
+  /** The call did not run in this pass: a verifier re-entry (borderline
+   * resample, correction retry) handed back the first run's result instead
+   * of executing the tool again. Absent on every call that ran. */
+  replayed?: boolean;
 }
 
 export interface RunAgentInvocation {
@@ -1747,6 +1923,9 @@ export interface RunAgentInvocation {
   subIterations: number;
   status: RunStatus;
   toolCalls: RunToolCall[];
+  /** The sub-agent did not run in this pass: a verifier re-entry handed back
+   *  the first run's answer and inner calls (see `RunToolCall.replayed`). */
+  replayed?: boolean;
 }
 
 /**
@@ -1962,8 +2141,19 @@ export interface SearchTurnsOptions {
    * {@link agentScopePrefix} — per-orchestrator KG isolation.
    */
   agentScopePrefix?: string;
+  /**
+   * Member-scoped memory — keep only turns whose `owners` include EVERY id
+   * here (the room's audience ⊆ the turn's owners). A turn without `owners`
+   * never matches. Omit for no owner filter. See {@link TurnIngest.owners}.
+   */
+  audienceOwners?: readonly string[];
   /** Hard cap on returned hits. Defaults to 5. */
   limit?: number;
+  /**
+   * #1507 — leave out turns stored `unprotected` (see `TurnIngest`). Set by a
+   * recall that runs under a Privacy Shield.
+   */
+  excludeUnprotected?: boolean;
 }
 
 export interface TurnSearchHit {
@@ -2000,6 +2190,12 @@ export interface SearchTurnsByEmbeddingOptions {
   agentScopePrefix?: string;
   /** Hard cap on returned hits. Defaults to 5. */
   limit?: number;
+  /**
+   * Member-scoped memory — keep only turns whose `owners` include EVERY id
+   * here (the room's audience ⊆ the turn's owners). A turn without `owners`
+   * never matches. Omit for no owner filter. See {@link TurnIngest.owners}.
+   */
+  audienceOwners?: readonly string[];
   /** Drop matches with cosine similarity below this threshold. Default 0.3. */
   minSimilarity?: number;
 
@@ -2052,6 +2248,20 @@ export interface SearchTurnsByEmbeddingOptions {
    * a no-op but the convention is in place.
    */
   includeCold?: boolean;
+  /**
+   * #1507 — leave out turns stored `unprotected` (see `TurnIngest`). Set by a
+   * recall that runs under a Privacy Shield.
+   */
+  excludeUnprotected?: boolean;
+}
+
+/** Read options for {@link KnowledgeGraph.getSession}. */
+export interface SessionReadOptions {
+  /**
+   * Member-scoped memory — keep only turns whose `owners` include every id
+   * here. See {@link TurnIngest.owners}.
+   */
+  audienceOwners?: readonly string[];
 }
 
 export interface EntityCapturedTurnsOptions {
@@ -2068,16 +2278,45 @@ export interface EntityCapturedTurnsOptions {
    * the legacy cross-agent view. See {@link agentScopePrefix}.
    */
   agentScopePrefix?: string;
+  /**
+   * Member-scoped memory — keep only turns whose `owners` include EVERY id
+   * here (the room's audience ⊆ the turn's owners). A turn without `owners`
+   * never matches. Omit for no owner filter. See {@link TurnIngest.owners}.
+   */
+  audienceOwners?: readonly string[];
   /** Max turns to return per matched entity. Default 2. */
   perEntityLimit?: number;
   /** Hard cap on distinct entities to return. Default 5. */
   entityLimit?: number;
+  /**
+   * #1507 — leave out turns stored `unprotected` (see `TurnIngest`). Set by a
+   * recall that runs under a Privacy Shield.
+   */
+  excludeUnprotected?: boolean;
 }
 
 export interface FindEntitiesOptions {
   /** Odoo/Confluence model name, e.g. `res.partner`, `hr.department`. */
   model: string;
-  /** Optional case-insensitive substring match against `displayName` or `id`. */
+  /**
+   * Exact match on the source-system record id stored in the node's
+   * `props.id` (an Odoo record id, a Confluence page id). Both sides are
+   * compared as strings after trimming, so `7` and `'7'` address the same
+   * record whether it was ingested with a numeric or a string id.
+   *
+   * This is an identity, not a search: an id that is not in the graph — or
+   * an empty one — returns `[]`, never a neighbouring record of the model.
+   * Resolve an entity handle (`hr.employee:7`) through this option; passing
+   * the id as `nameContains` would also match `17`, `70` and every display
+   * name containing it. Combinable with `nameContains` (both must hold).
+   *
+   * @since 1.21.0
+   */
+  id?: string | number;
+  /**
+   * Optional case-insensitive substring match against `displayName` or `id`.
+   * A search, not an identity — use `id` to address one record.
+   */
   nameContains?: string;
   /** Hard cap. Default 25, max 200. */
   limit?: number;
@@ -2146,8 +2385,61 @@ export function planStepNodeId(stepId: string): string {
   return `planstep:${stepId}`;
 }
 
+/** #1502 — evidence the plan-runner records on the step a turn's answer
+ *  completed (the last step, once every step before it is done). */
+export const PLAN_STEP_ANSWER_EVIDENCE = "answer: completed by the turn's answer";
+
+/** #1502 — tools that serve the turn itself (memory directory, rendered
+ *  answer, follow-up and choice cards), not a plan step. The orchestrator
+ *  flags their calls `toolIsBookkeeping`; their evidence never proves work. */
+export const PLAN_BOOKKEEPING_TOOL_NAMES: readonly string[] = [
+  'memory',
+  'v4_render_answer',
+  'suggest_follow_ups',
+  'ask_user_choice',
+];
+
+/**
+ * #1502 — whether a PlanStep is done AND its record shows the work. Before
+ * #1502 the plan-runner closed steps no call worked on: with no evidence (the
+ * turn's end closed the open step) or with a bookkeeping call's evidence
+ * (`memory: …`, `v4_render_answer: …`). Plan recall and resume read this
+ * instead of `status === 'done'`, so such a step is not handed to a later
+ * turn as finished work. Steps closed since carry a work tool's evidence or
+ * {@link PLAN_STEP_ANSWER_EVIDENCE}.
+ */
+export function isEvidencedPlanStepDone(props: Readonly<Record<string, unknown>>): boolean {
+  if (props['status'] !== 'done') return false;
+  const evidence = props['resultSummary'];
+  if (typeof evidence !== 'string' || evidence.trim().length === 0) return false;
+  return !PLAN_BOOKKEEPING_TOOL_NAMES.some((n) => evidence.startsWith(`${n}:`));
+}
+
 export function entityNodeId(ref: EntityRef): string {
   return `${ref.system}:${ref.model}:${String(ref.id)}`;
+}
+
+/**
+ * Member-scoped memory — the one canonical form of an owner set or audience:
+ * trimmed, non-empty, de-duplicated, sorted. Every writer and reader goes
+ * through it, so "the same people" is the same array everywhere.
+ */
+export function canonicalOwners(ids: readonly string[]): string[] {
+  return [...new Set(ids.map((id) => id.trim()).filter((id) => id.length > 0))].sort();
+}
+
+/**
+ * Member-scoped memory — may `audience` see knowledge owned by `owners`?
+ * True when every audience member is an owner. An empty or absent `owners`
+ * matches nothing; an empty audience is not an audience and matches nothing.
+ */
+export function ownersCoverAudience(
+  owners: readonly string[] | undefined,
+  audience: readonly string[],
+): boolean {
+  if (!owners || owners.length === 0 || audience.length === 0) return false;
+  const set = new Set(owners);
+  return audience.every((member) => set.has(member));
 }
 
 /**

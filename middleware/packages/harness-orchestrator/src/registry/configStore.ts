@@ -1,8 +1,11 @@
 import type { Pool } from 'pg';
 
 import { resolveModelRef } from '@omadia/llm-provider';
+import type { ProfileQualityConfig } from '@omadia/plugin-api';
 
+import { parseAgentQuality } from '../agentQuality.js';
 import type { ContextMemoryMode } from '../memoryBinder.js';
+import { parseAnswerVerbosity, type AnswerVerbosity } from '../answerVerbosity.js';
 import {
   parseAgentToAgentMode,
   type AgentChannelPolicyInput,
@@ -144,6 +147,20 @@ export interface AgentRow {
    */
   readonly identityShortDescription?: string | null;
   readonly identityLongDescription?: string | null;
+  /**
+   * The agent's own answer-size level (`agent_identities.verbosity`,
+   * migration 0063), joined in like the other identity columns. A SLOT over
+   * the installation-wide `answer_verbosity` setup field: when set it replaces
+   * that default for this Agent. `null`/absent = inherit.
+   */
+  readonly answerVerbosity?: AnswerVerbosity | null;
+  /**
+   * #1569 — the agent's own response-quality settings
+   * (`agent_identities.quality`, migration 0053), joined in like the other
+   * identity columns and narrowed by `parseAgentQuality`. `null`/absent = the
+   * agent set none.
+   */
+  readonly quality?: ProfileQualityConfig | null;
   readonly createdAt: Date;
   readonly updatedAt: Date;
 }
@@ -369,6 +386,10 @@ interface AgentDbRow {
    *  paths as `identity_instructions`. */
   identity_short_description?: string | null;
   identity_long_description?: string | null;
+  /** `agent_identities.verbosity` (0063), same join / same absence on writes. */
+  identity_verbosity?: string | null;
+  /** #1569 — `agent_identities.quality` (JSONB), same join / same absence on writes. */
+  identity_quality?: unknown;
   created_at: Date;
   updated_at: Date;
 }
@@ -384,7 +405,7 @@ interface AgentDbRow {
  * the safe direction here is the one that changes nothing.
  */
 function parseContextMemoryMode(raw: unknown): ContextMemoryMode {
-  return raw === 'enforce' || raw === 'enforce-strict' ? raw : 'off';
+  return raw === 'enforce' || raw === 'enforce-strict' || raw === 'members' ? raw : 'off';
 }
 
 interface AgentPluginDbRow {
@@ -453,6 +474,11 @@ function mapAgent(row: AgentDbRow): AgentRow {
     identityName: row.identity_display_name ?? null,
     identityShortDescription: row.identity_short_description ?? null,
     identityLongDescription: row.identity_long_description ?? null,
+    // Parsed, not cast: the CHECK keeps the column honest, but a DB that
+    // predates 0063 has no column at all and a hand edit must never become
+    // a level the prompt builder does not know.
+    answerVerbosity: parseAnswerVerbosity(row.identity_verbosity) ?? null,
+    quality: parseAgentQuality(row.identity_quality) ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -515,7 +541,9 @@ const AGENT_SELECT =
   'i.composed_prompts AS identity_composed_prompts, ' +
   'i.display_name AS identity_display_name, ' +
   'i.short_description AS identity_short_description, ' +
-  'i.long_description AS identity_long_description ' +
+  'i.long_description AS identity_long_description, ' +
+  'i.verbosity AS identity_verbosity, ' +
+  'i.quality AS identity_quality ' +
   'FROM agents a LEFT JOIN agent_identities i ON i.agent_id = a.id';
 
 export class ConfigStore {

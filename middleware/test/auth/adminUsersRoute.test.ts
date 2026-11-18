@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert';
+import { randomUUID } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import { after, before, describe, it } from 'node:test';
 
@@ -6,7 +7,8 @@ import express from 'express';
 
 import { AdminAuditLog, type AuditEntry } from '../../src/auth/adminAuditLog.js';
 import { LOCAL_PROVIDER_ID } from '../../src/auth/providers/LocalPasswordProvider.js';
-import { hashPassword } from '../../src/auth/passwordHasher.js';
+import { hashPassword, verifyPassword } from '../../src/auth/passwordHasher.js';
+import type { RevokedPrincipal } from '../../src/auth/sessionRevocation.js';
 import type {
   CreateUserInput,
   UpdateUserInput,
@@ -30,11 +32,17 @@ import { listenLoopback } from '../_helpers/listenLoopback.js';
 
 class InMemoryUserStore {
   rows: UserRecord[] = [];
+  /** Every `update` call, verbatim — the revocation must ride in the SAME call. */
+  patches: Array<{ id: string; patch: UpdateUserInput }> = [];
 
   async count(): Promise<number> {
     return this.rows.length;
   }
   async findById(id: string): Promise<UserRecord | null> {
+    // Postgres rejects a non-UUID against the uuid column with 22P02 (#1318).
+    if (!/^[0-9a-f-]{36}$/i.test(id)) {
+      throw new Error(`invalid input syntax for type uuid: "${id}"`);
+    }
     return this.rows.find((r) => r.id === id) ?? null;
   }
   async findByEmail(provider: string, email: string): Promise<UserRecord | null> {
@@ -62,7 +70,7 @@ class InMemoryUserStore {
   async create(input: CreateUserInput): Promise<UserRecord> {
     const now = new Date();
     const row: UserRecord = {
-      id: `mock-${this.rows.length + 1}`,
+      id: randomUUID(),
       email: input.email,
       provider: input.provider,
       providerUserId: input.providerUserId,
@@ -72,6 +80,7 @@ class InMemoryUserStore {
       createdAt: now,
       updatedAt: now,
       lastLoginAt: null,
+      sessionVersion: 0,
     };
     if (input.passwordHash !== undefined) {
       (row as UserRecord & { passwordHash?: string }).passwordHash = input.passwordHash;
@@ -80,6 +89,7 @@ class InMemoryUserStore {
     return row;
   }
   async update(id: string, patch: UpdateUserInput): Promise<UserRecord | null> {
+    this.patches.push({ id, patch });
     const idx = this.rows.findIndex((r) => r.id === id);
     if (idx === -1) return null;
     const cur = this.rows[idx]!;
@@ -89,6 +99,7 @@ class InMemoryUserStore {
       role: patch.role ?? cur.role,
       status: patch.status ?? cur.status,
       updatedAt: new Date(),
+      sessionVersion: cur.sessionVersion + (patch.revokeSessions ? 1 : 0),
     };
     this.rows[idx] = next;
     return next;
@@ -129,6 +140,8 @@ interface ForgedSession {
   display_name: string;
   role: 'admin';
   provider: string;
+  /** users.id the session was minted for — the audit actor id (#1315). */
+  uid?: string;
 }
 
 describe('/api/v1/admin/users router', () => {
@@ -137,11 +150,20 @@ describe('/api/v1/admin/users router', () => {
   let store: InMemoryUserStore;
   let audit: InMemoryAuditLog;
   let session: ForgedSession | null;
+  /** Whose sessions the router announced as ended. */
+  let announced: RevokedPrincipal[];
+  /** Account keys the router asked the sign-in limiter to forget (§10m unlock). */
+  let clearedAccounts: string[];
+  /** Account keys whose device-cookie epoch the router asked to re-read (§10m revocation). */
+  let forgottenAccounts: string[];
 
   before(async () => {
     store = new InMemoryUserStore();
     audit = new InMemoryAuditLog();
     session = null;
+    announced = [];
+    clearedAccounts = [];
+    forgottenAccounts = [];
 
     // Pre-seed an existing local admin so list/edit/delete tests have a
     // target without exercising create-side every time.
@@ -166,6 +188,21 @@ describe('/api/v1/admin/users router', () => {
       createAdminUsersRouter({
         userStore: store as unknown as UserStore,
         audit: audit as unknown as AdminAuditLog,
+        sessions: {
+          announce: (who) => {
+            announced.push(who);
+          },
+        },
+        loginLimiter: {
+          clearAccount: (accountKey: string) => {
+            clearedAccounts.push(accountKey);
+          },
+        },
+        loginDevices: {
+          forget: (accountKey: string) => {
+            forgottenAccounts.push(accountKey);
+          },
+        },
       }),
     );
     server = await listenLoopback(app);
@@ -205,6 +242,7 @@ describe('/api/v1/admin/users router', () => {
   it('POST / creates a local user, hashes the password, audits', async () => {
     setSession(adminSession());
     const before = audit.entries.length;
+    const forgottenBefore = forgottenAccounts.length;
     const res = await fetch(`${baseUrl}/api/v1/admin/users`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -219,6 +257,11 @@ describe('/api/v1/admin/users router', () => {
     assert.equal(body.user.email, 'new@example.com');
     assert.equal(audit.entries.length, before + 1);
     assert.equal(audit.entries.at(-1)?.action, 'user.create');
+    assert.deepEqual(
+      forgottenAccounts.slice(forgottenBefore),
+      ['local:new@example.com'],
+      'no cached "no such account" outlives the create',
+    );
   });
 
   it('POST / rejects duplicate email with 409', async () => {
@@ -246,6 +289,7 @@ describe('/api/v1/admin/users router', () => {
 
   it('PATCH /:id updates display_name + audits', async () => {
     setSession(adminSession());
+    const forgottenBefore = forgottenAccounts.length;
     const target = store.rows.find((r) => r.email === 'new@example.com')!;
     const res = await fetch(`${baseUrl}/api/v1/admin/users/${target.id}`, {
       method: 'PATCH',
@@ -256,10 +300,17 @@ describe('/api/v1/admin/users router', () => {
     const body = (await res.json()) as { user: { display_name: string } };
     assert.equal(body.user.display_name, 'Renamed');
     assert.equal(audit.entries.at(-1)?.action, 'user.update');
+    // An unrelated profile edit leaves the user's sessions alone.
+    assert.equal(store.patches.at(-1)?.patch.revokeSessions, undefined);
+    assert.equal(store.rows.find((r) => r.id === target.id)?.sessionVersion, 0);
+    assert.deepEqual(announced, []);
+    assert.deepEqual(clearedAccounts, [], 'a rename does not touch the sign-in limiter');
+    assert.equal(forgottenAccounts.length, forgottenBefore, 'nor the device cookies');
   });
 
   it('PATCH /:id refuses to disable yourself with 409 self_lockout', async () => {
     setSession(adminSession());
+    const forgottenBefore = forgottenAccounts.length;
     const self = store.rows.find((r) => r.email === 'admin@example.com')!;
     const res = await fetch(`${baseUrl}/api/v1/admin/users/${self.id}`, {
       method: 'PATCH',
@@ -269,10 +320,12 @@ describe('/api/v1/admin/users router', () => {
     assert.equal(res.status, 409);
     const body = (await res.json()) as { code: string };
     assert.equal(body.code, 'admin_users.self_lockout');
+    assert.equal(forgottenAccounts.length, forgottenBefore, 'a refused change revokes nothing');
   });
 
-  it('PATCH /:id allows disabling someone else', async () => {
+  it('PATCH /:id allows disabling someone else — and ends their sessions', async () => {
     setSession(adminSession());
+    const forgottenBefore = forgottenAccounts.length;
     const other = store.rows.find((r) => r.email === 'new@example.com')!;
     const res = await fetch(`${baseUrl}/api/v1/admin/users/${other.id}`, {
       method: 'PATCH',
@@ -282,11 +335,42 @@ describe('/api/v1/admin/users router', () => {
     assert.equal(res.status, 200);
     const body = (await res.json()) as { user: { status: string } };
     assert.equal(body.user.status, 'disabled');
+    assert.deepEqual(store.patches.at(-1)?.patch, { status: 'disabled', revokeSessions: true });
+    assert.equal(store.rows.find((r) => r.id === other.id)?.sessionVersion, 1);
+    assert.deepEqual(announced, [{ provider: LOCAL_PROVIDER_ID, sub: 'new@example.com' }]);
+    assert.deepEqual(clearedAccounts, [], 'disabling is not an unlock');
+    assert.deepEqual(
+      forgottenAccounts.slice(forgottenBefore),
+      ['local:new@example.com'],
+      'but its device cookies stop counting at once',
+    );
+  });
+
+  it('PATCH /:id re-enabling does not revoke (and cannot revive old cookies) but clears the sign-in backoff', async () => {
+    setSession(adminSession());
+    const other = store.rows.find((r) => r.email === 'new@example.com')!;
+    const res = await fetch(`${baseUrl}/api/v1/admin/users/${other.id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ status: 'active' }),
+    });
+    assert.equal(res.status, 200);
+    assert.deepEqual(store.patches.at(-1)?.patch, { status: 'active' });
+    // Still at the version the disable moved it to: cookies from before the
+    // disable stay dead after the re-enable.
+    assert.equal(store.rows.find((r) => r.id === other.id)?.sessionVersion, 1);
+    assert.equal(announced.length, 1);
+    // The re-enable is also the operator unlock of the account's sign-in
+    // backoff, and makes this process re-read its device-cookie epoch.
+    assert.deepEqual(clearedAccounts, ['local:new@example.com']);
+    assert.equal(forgottenAccounts.at(-1), 'local:new@example.com');
   });
 
   it('POST /:id/reset-password updates the hash + audits without leaking material', async () => {
     setSession(adminSession());
     const before = audit.entries.length;
+    const patchesBefore = store.patches.length;
+    const forgottenBefore = forgottenAccounts.length;
     const target = store.rows.find((r) => r.email === 'new@example.com')!;
     const res = await fetch(
       `${baseUrl}/api/v1/admin/users/${target.id}/reset-password`,
@@ -302,6 +386,150 @@ describe('/api/v1/admin/users router', () => {
     assert.equal(last.action, 'user.reset_password');
     assert.equal(last.before, null);
     assert.equal(last.after, null);
+
+    // The new hash and the end of every session issued under the old one go
+    // out in ONE update call — they can never land apart.
+    const calls = store.patches.slice(patchesBefore);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]?.id, target.id);
+    assert.equal(calls[0]?.patch.revokeSessions, true);
+    assert.match(calls[0]?.patch.passwordHash ?? '', /^\$argon2id\$/);
+    assert.equal(store.rows.find((r) => r.id === target.id)?.sessionVersion, 2);
+    assert.deepEqual(announced.at(-1), { provider: LOCAL_PROVIDER_ID, sub: 'new@example.com' });
+    assert.equal(clearedAccounts.at(-1), 'local:new@example.com');
+    assert.deepEqual(
+      forgottenAccounts.slice(forgottenBefore),
+      ['local:new@example.com'],
+      'the new hash revokes the account’s device cookies',
+    );
+  });
+
+  it('POST /:id/reset-password clears the backoff under the folded (lower-cased) account key', async () => {
+    setSession(adminSession());
+    const mixed = await store.create({
+      email: 'Mixed.Case@Example.com',
+      provider: LOCAL_PROVIDER_ID,
+      providerUserId: 'mixed.case@example.com',
+      passwordHash: await hashPassword('seed-pass-2'),
+      displayName: 'Mixed',
+      role: 'admin',
+    });
+    const res = await fetch(`${baseUrl}/api/v1/admin/users/${mixed.id}/reset-password`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ password: 'pw-resetted-2' }),
+    });
+    assert.equal(res.status, 200);
+    assert.equal(clearedAccounts.at(-1), 'local:mixed.case@example.com');
+  });
+
+  it('POST /:id/reset-password unlocks every spelling but revokes only this account’s cookies', async () => {
+    setSession(adminSession());
+    const accented = await store.create({
+      email: '\u00c9lise.Dupont@Example.com',
+      provider: LOCAL_PROVIDER_ID,
+      providerUserId: '\u00e9lise.dupont@example.com',
+      passwordHash: await hashPassword('seed-pass-3'),
+      displayName: '\u00c9lise',
+      role: 'admin',
+    });
+    const res = await fetch(`${baseUrl}/api/v1/admin/users/${accented.id}/reset-password`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ password: 'pw-resetted-3' }),
+    });
+    assert.equal(res.status, 200);
+    // Two identities (§10m): the limiter's bucket folds the address, the
+    // device cookies are bound to the address as stored, ASCII case aside.
+    assert.equal(clearedAccounts.at(-1), 'local:elise.dupont@example.com');
+    assert.equal(forgottenAccounts.at(-1), 'local:\u00c9lise.dupont@example.com');
+  });
+
+  it('POST /:id/reset-password with a too-short password does not unlock', async () => {
+    setSession(adminSession());
+    const cleared = clearedAccounts.length;
+    const forgotten = forgottenAccounts.length;
+    const target = store.rows.find((r) => r.email === 'new@example.com')!;
+    const res = await fetch(`${baseUrl}/api/v1/admin/users/${target.id}/reset-password`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ password: 'short' }),
+    });
+    assert.equal(res.status, 400);
+    assert.equal(clearedAccounts.length, cleared);
+    assert.equal(forgottenAccounts.length, forgotten, 'nor revokes anything');
+  });
+
+  it('POST / accepts a password of exactly 1024 code units', async () => {
+    setSession(adminSession());
+    const password = 'q'.repeat(1022) + '\u{1F511}';
+    assert.equal(password.length, 1024);
+    const res = await fetch(`${baseUrl}/api/v1/admin/users`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: 'longest@example.com', password }),
+    });
+    assert.equal(res.status, 201);
+    const row = store.rows.find((r) => r.email === 'longest@example.com') as
+      | (UserRecord & { passwordHash?: string })
+      | undefined;
+    assert.ok(row?.passwordHash);
+    assert.equal(await verifyPassword(row.passwordHash, password), true);
+  });
+
+  it('POST / refuses 1025 code units with 400 password_too_long and creates nothing', async () => {
+    setSession(adminSession());
+    const rowsBefore = store.rows.length;
+    const entriesBefore = audit.entries.length;
+    const res = await fetch(`${baseUrl}/api/v1/admin/users`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: 'too-long@example.com', password: 'q'.repeat(1025) }),
+    });
+    assert.equal(res.status, 400);
+    assert.equal(((await res.json()) as { code?: string }).code, 'admin_users.password_too_long');
+    assert.equal(store.rows.length, rowsBefore);
+    assert.equal(audit.entries.length, entriesBefore);
+  });
+
+  it('POST /:id/reset-password accepts a password of exactly 1024 code units', async () => {
+    setSession(adminSession());
+    const target = store.rows.find((r) => r.email === 'new@example.com')!;
+    const patchesBefore = store.patches.length;
+    const res = await fetch(`${baseUrl}/api/v1/admin/users/${target.id}/reset-password`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ password: 'r'.repeat(1024) }),
+    });
+    assert.equal(res.status, 200);
+    const calls = store.patches.slice(patchesBefore);
+    assert.equal(calls.length, 1);
+    assert.equal(
+      await verifyPassword(calls[0]?.patch.passwordHash ?? '', 'r'.repeat(1024)),
+      true,
+    );
+  });
+
+  it('POST /:id/reset-password refuses 1025 code units before any write', async () => {
+    setSession(adminSession());
+    const target = store.rows.find((r) => r.email === 'new@example.com')!;
+    const versionBefore = target.sessionVersion;
+    const patchesBefore = store.patches.length;
+    const announcedBefore = announced.length;
+    const cleared = clearedAccounts.length;
+    const forgotten = forgottenAccounts.length;
+    const res = await fetch(`${baseUrl}/api/v1/admin/users/${target.id}/reset-password`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ password: 'r'.repeat(1025) }),
+    });
+    assert.equal(res.status, 400);
+    assert.equal(((await res.json()) as { code?: string }).code, 'admin_users.password_too_long');
+    assert.equal(store.patches.length, patchesBefore, 'neither hash nor session version written');
+    assert.equal(store.rows.find((r) => r.id === target.id)?.sessionVersion, versionBefore);
+    assert.equal(announced.length, announcedBefore);
+    assert.equal(clearedAccounts.length, cleared);
+    assert.equal(forgottenAccounts.length, forgotten);
   });
 
   it('DELETE /:id refuses self-delete with 409', async () => {
@@ -316,11 +544,137 @@ describe('/api/v1/admin/users router', () => {
   it('DELETE /:id removes another user + audits', async () => {
     setSession(adminSession());
     const other = store.rows.find((r) => r.email === 'new@example.com')!;
+    const announcedBefore = announced.length;
     const res = await fetch(`${baseUrl}/api/v1/admin/users/${other.id}`, {
       method: 'DELETE',
     });
     assert.equal(res.status, 204);
     assert.equal(store.rows.find((r) => r.id === other.id), undefined);
     assert.equal(audit.entries.at(-1)?.action, 'user.delete');
+    // No bump possible (the row is gone) — its absence revokes; still announced.
+    assert.deepEqual(announced.slice(announcedBefore), [
+      { provider: LOCAL_PROVIDER_ID, sub: 'new@example.com' },
+    ]);
+    assert.equal(forgottenAccounts.at(-1), 'local:new@example.com', 'its device cookies with it');
   });
+  // ── #1314 — PATCH refuses what it cannot apply ────────────────────────────
+  it('PATCH /:id refuses an unsupported role with 400 and leaves the user unchanged (#1314)', async () => {
+    setSession(adminSession());
+    const target = store.rows.find((r) => r.email === 'admin@example.com')!;
+    const auditBefore = audit.entries.length;
+    const patchesBefore = store.patches.length;
+    const res = await fetch(`${baseUrl}/api/v1/admin/users/${target.id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ role: 'viewer' }),
+    });
+    assert.equal(res.status, 400);
+    assert.equal(((await res.json()) as { code: string }).code, 'admin_users.invalid_role');
+    assert.equal(store.rows.find((r) => r.id === target.id)?.role, 'admin');
+    assert.equal(store.patches.length, patchesBefore, 'nothing was written');
+    assert.equal(audit.entries.length, auditBefore, 'a refused change is not audited as one');
+  });
+
+  it('PATCH /:id refuses an unknown status, a non-string name and unknown fields (#1314)', async () => {
+    setSession(adminSession());
+    const target = store.rows.find((r) => r.email === 'admin@example.com')!;
+    const cases: Array<[unknown, string]> = [
+      [{ status: 'suspended' }, 'admin_users.invalid_status'],
+      [{ display_name: 42 }, 'admin_users.invalid_display_name'],
+      [{ email: 'other@example.com' }, 'admin_users.unknown_field'],
+      [['status', 'active'], 'admin_users.invalid_body'],
+    ];
+    for (const [body, code] of cases) {
+      const res = await fetch(`${baseUrl}/api/v1/admin/users/${target.id}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      assert.equal(res.status, 400, JSON.stringify(body));
+      assert.equal(((await res.json()) as { code: string }).code, code);
+    }
+  });
+
+  it('PATCH /:id still accepts role "admin" and a valid status', async () => {
+    setSession(adminSession());
+    const target = store.rows.find((r) => r.email === 'admin@example.com')!;
+    const res = await fetch(`${baseUrl}/api/v1/admin/users/${target.id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ role: 'admin', display_name: 'Admin One' }),
+    });
+    assert.equal(res.status, 200);
+  });
+
+  // ── #1321 — one server-side email rule ───────────────────────────────────
+  it('POST / refuses addresses with an empty local part or domain (#1321)', async () => {
+    setSession(adminSession());
+    for (const email of ['a@', '@b', 'a@@b', 'a b@c.de', '@']) {
+      const res = await fetch(`${baseUrl}/api/v1/admin/users`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email, password: 'pw-invalid-mail-1' }),
+      });
+      assert.equal(res.status, 400, email);
+      assert.equal(((await res.json()) as { code: string }).code, 'admin_users.invalid_email');
+    }
+    assert.equal(store.rows.some((r) => r.email === 'a@' || r.email === '@b'), false);
+  });
+
+  // ── #1315 — every user.* row carries the actor's users.id ────────────────
+  it('audits user changes with actor id (users.id from the session) and email (#1315)', async () => {
+    const actorUid = '0f1e2d3c-4b5a-4968-8776-a5b4c3d2e1f0';
+    setSession({ ...adminSession(), uid: actorUid });
+    const auditStart = audit.entries.length;
+    const created = await fetch(`${baseUrl}/api/v1/admin/users`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: 'actor-check@example.com', password: 'pw-actor-check-1' }),
+    });
+    assert.equal(created.status, 201);
+    const { user } = (await created.json()) as { user: { id: string } };
+    await fetch(`${baseUrl}/api/v1/admin/users/${user.id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ display_name: 'Renamed' }),
+    });
+    await fetch(`${baseUrl}/api/v1/admin/users/${user.id}/reset-password`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ password: 'pw-actor-check-2' }),
+    });
+    await fetch(`${baseUrl}/api/v1/admin/users/${user.id}`, { method: 'DELETE' });
+    const rows = audit.entries.slice(auditStart).filter((e) => e.target === `user:${user.id}`);
+    assert.deepEqual(
+      rows.map((e) => [e.action, e.actorId, e.actorEmail]),
+      [
+        ['user.create', actorUid, 'admin@example.com'],
+        ['user.update', actorUid, 'admin@example.com'],
+        ['user.reset_password', actorUid, 'admin@example.com'],
+        ['user.delete', actorUid, 'admin@example.com'],
+      ],
+    );
+  });
+
+
+  // #1318 — a non-UUID id is an unknown user (404), not a Postgres 22P02 (500).
+  for (const [method, suffix, body] of [
+    ['GET', '', undefined],
+    ['PATCH', '', { display_name: 'x' }],
+    ['POST', '/reset-password', { password: 'another-pass-1' }],
+    ['DELETE', '', undefined],
+  ] as const) {
+    it(`${method} /:id${suffix} answers 404 admin_users.not_found for a non-UUID id`, async () => {
+      setSession(adminSession());
+      const res = await fetch(`${baseUrl}/api/v1/admin/users/not-a-uuid${suffix}`, {
+        method,
+        ...(body
+          ? { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }
+          : {}),
+      });
+      assert.equal(res.status, 404);
+      assert.match(res.headers.get('content-type') ?? '', /application\/json/);
+      assert.equal(((await res.json()) as { code?: string }).code, 'admin_users.not_found');
+    });
+  }
 });

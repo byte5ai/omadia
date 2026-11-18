@@ -4,8 +4,12 @@
  *
  * The middleware never speaks to the Docker socket itself, and that separation
  * is the whole security argument for option D: a socket (even a proxied one) is
- * host-root-equivalent, so it is reachable only from a sidecar with no
- * published port, no inbound route from the browser, and a shared bearer token.
+ * host-root-equivalent, so the proxy in front of it sits on an internal network
+ * (`omadia-control`) that only the updater sidecar joins — from here its name
+ * does not resolve and its address does not route. What the middleware can
+ * reach is the sidecar: no
+ * published port, no inbound route from the browser, a shared bearer token,
+ * release tags only (docs/security-architecture.md §10f).
  * If `OMADIA_UPDATER_URL` is unset the product runs in notify-only mode — the
  * admin page still reports versions and flags a newer release, it just cannot
  * execute anything.

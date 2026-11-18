@@ -1,6 +1,8 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
+import { scopeOperatorAuthToPlugin } from '../auth/operatorAuthAccessor.js';
+
 import {
   KgEntityNamespaceError,
   KgServiceUnavailableError,
@@ -88,6 +90,7 @@ import {
   writeStoredTokens,
 } from '../plugins/oauth/tokenStore.js';
 import { createLlmProviderFromNeutral } from './anthropicLlmProvider.js';
+import { pluginLlmUsageSource, recordPluginLlmUsage } from './pluginLlmUsage.js';
 import { builtinClassDefault } from './builtinLlmProviders.js';
 import type { NativeToolRegistry } from '@omadia/orchestrator';
 import type { PluginRouteRegistry } from './pluginRouteRegistry.js';
@@ -103,6 +106,7 @@ import {
   createPluginMemoryToolStore,
 } from './memoryAccessor.js';
 import { SCRATCH_DIR } from './paths.js';
+import { neighborsForPlugin } from './shieldedNeighbors.js';
 import type { ServiceRegistry } from './serviceRegistry.js';
 import {
   createServiceGrantGate,
@@ -239,7 +243,7 @@ export interface CreatePluginContextOptions {
  * may contain ids that aren't installed — that's fine, their vault/registry
  * lookups just return undefined.
  */
-function buildResolutionChain(
+export function buildResolutionChain(
   agentId: string,
   catalog: PluginCatalog,
 ): string[] {
@@ -625,6 +629,11 @@ export function createPluginContext(
         ...(options?.writeCapabilities !== undefined
           ? { writeCapabilities: options.writeCapabilities }
           : {}),
+        // #1346 — per-turn availability; the orchestrator reads it when it
+        // builds the tool list and prompt docs (`isOfferedThisTurn`).
+        ...(options?.isAvailable !== undefined
+          ? { isAvailable: options.isAvailable }
+          : {}),
       });
     },
     registerHandler(name, handler, options) {
@@ -649,6 +658,11 @@ export function createPluginContext(
         // dispatchable by name, so it needs the same protection.
         ...(options?.writeCapabilities !== undefined
           ? { writeCapabilities: options.writeCapabilities }
+          : {}),
+        // #1346 — per-turn availability; the orchestrator reads it when it
+        // builds the tool list and prompt docs (`isOfferedThisTurn`).
+        ...(options?.isAvailable !== undefined
+          ? { isAvailable: options.isAvailable }
           : {}),
       });
     },
@@ -691,7 +705,8 @@ export function createPluginContext(
   // after all plugins have activated.
   //
   // Epic #470 C6 / G2+G3 — this layer, and only this layer, decides whether a
-  // plugin is ALLOWED to ask for `auth: 'public' | 'custom'` OR `body:'raw'`.
+  // plugin is ALLOWED to ask for `auth: 'public' | 'custom' | 'teams-sso'` OR
+  // `body:'raw'`.
   // The route registry is a generic Express concern that must not know about
   // manifests; the grant registry cannot answer yet (claims happen AFTER
   // activate(), by design — see toolPluginRuntime.activate). What exists at
@@ -1066,7 +1081,10 @@ export function createPluginContext(
     ...(flows ? { flows } : {}),
     ...(oauthTokens ? { oauthTokens } : {}),
     ...(events ? { events } : {}),
-    ...(opts.operatorAuth ? { operatorAuth: opts.operatorAuth } : {}),
+    // #1329 — scoped per plugin so every audit row it writes names the plugin.
+    ...(opts.operatorAuth
+      ? { operatorAuth: scopeOperatorAuthToPlugin(opts.operatorAuth, agentId) }
+      : {}),
     status,
     log,
   };
@@ -1518,12 +1536,66 @@ function createKnowledgeGraphAccessor(
       // hardening pass MAY parse out the prefix and assert it's allowed.
       return resolveKg().ingestFacts(facts);
     },
-    searchTurns: (opts2) => resolveKg().searchTurns(opts2),
-    findEntityCapturedTurns: (opts2) =>
-      resolveKg().findEntityCapturedTurns(opts2),
-    getNeighbors: (nodeId) => resolveKg().getNeighbors(nodeId),
+    // A domain tool running inside a turn whose agent restricts the graph
+    // (`enforce-strict`, `members`) searches within that turn's boundary, not
+    // the tenant: otherwise it would be a side door past the recall legs.
+    searchTurns: async (opts2) => {
+      const bounded = boundTurnSearch(opts2);
+      if (bounded === null) return [];
+      const hits = await resolveKg().searchTurns(bounded.options);
+      return hits.filter((h) => bounded.scopeAllowed(h.scope));
+    },
+    findEntityCapturedTurns: async (opts2) => {
+      const bounded = boundTurnSearch(opts2);
+      if (bounded === null) return [];
+      const hits = await resolveKg().findEntityCapturedTurns(bounded.options);
+      return hits
+        .map((hit) => ({ ...hit, turns: hit.turns.filter((t) => bounded.scopeAllowed(t.scope)) }))
+        .filter((hit) => hit.turns.length > 0);
+    },
+    // #1540 — under a shield, as the turn search: no content of a turn
+    // stored `unprotected` (shieldedNeighbors.ts).
+    getNeighbors: (nodeId) =>
+      neighborsForPlugin(resolveKg(), nodeId, turnContext.current()?.privacyHandle !== undefined),
     stats: () => resolveKg().stats(),
   };
+}
+
+/**
+ * The current turn's graph boundary (`TurnContextValue.graphReadScope`)
+ * applied to a plugin's turn search: the options to pass down plus an exact
+ * scope check for the hits (the `agentScopePrefix` pre-filter is a LIKE).
+ * `null` = this turn may see no turns at all. Outside a restricted turn the
+ * options pass through unchanged.
+ */
+export function boundTurnSearch<
+  T extends {
+    agentScopePrefix?: string;
+    audienceOwners?: readonly string[];
+    excludeUnprotected?: boolean;
+  },
+>(
+  rawOptions: T,
+): { options: T; scopeAllowed: (scope: string) => boolean } | null {
+  // #1507 — inside a turn that runs under a Privacy Shield, a plugin's turn
+  // search skips turns stored `unprotected`, like the recall legs do.
+  const options: T =
+    turnContext.current()?.privacyHandle !== undefined
+      ? { ...rawOptions, excludeUnprotected: true }
+      : rawOptions;
+  const bound = turnContext.current()?.graphReadScope?.value;
+  if (!bound) return { options, scopeAllowed: () => true };
+  if (bound.kind === 'nothing') return null;
+  if (bound.kind === 'members') {
+    if (!bound.audience) return null;
+    return {
+      options: { ...options, agentScopePrefix: bound.agentScopePrefix, audienceOwners: bound.audience },
+      scopeAllowed: (scope) => scope.startsWith(bound.agentScopePrefix),
+    };
+  }
+  const only = bound.scope;
+  if (!only) return null;
+  return { options: { ...options, agentScopePrefix: only }, scopeAllowed: (scope) => scope === only };
 }
 
 // ---------------------------------------------------------------------------
@@ -1747,11 +1819,13 @@ function createLlmAccessor(
       });
 
       callsUsed += 1;
-      return provider.complete({
+      const result = await provider.complete({
         ...req,
         model,
         maxTokens: effectiveMaxTokens,
       });
+      recordPluginLlmUsage(pluginLlmUsageSource(callerAgentId), activeProvider, result);
+      return result;
     },
   };
 }

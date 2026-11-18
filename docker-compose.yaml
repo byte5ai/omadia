@@ -8,7 +8,7 @@
 #
 # Optional features are opt-in overlay files, composed with `-f` (each adds
 # its sidecar service AND the env that activates the matching plugin):
-#   -f docker-compose.storage.yaml     object storage (MinIO) — chat attachments
+#   -f docker-compose.storage.yaml     object storage (SeaweedFS) — chat attachments
 #   -f docker-compose.diagrams.yaml    Kroki diagram rendering (needs storage too)
 #   -f docker-compose.embeddings.yaml  in-tenant embeddings (Ollama)
 #   -f docker-compose.skillspector.yaml  advisory plugin code scanning (SkillSpector)
@@ -33,7 +33,10 @@
 # Usage:
 #   cp middleware/.env.example middleware/.env   # set ANTHROPIC_API_KEY
 #   docker compose up -d                         # start the minimal core (pulls)
-#   docker compose logs -f middleware            # tail middleware boot
+#   docker compose logs -f middleware            # tail middleware boot; on a fresh
+#                                                # install it prints the one-time
+#                                                # "setup token" the first-admin
+#                                                # wizard asks for
 #   docker compose down                          # stop (keeps volumes)
 #   docker compose down -v                       # stop + wipe all data
 #
@@ -46,6 +49,13 @@ services:
     image: ghcr.io/byte5ai/omadia-middleware:${OMADIA_VERSION:-latest}
     restart: unless-stopped
     env_file:
+      # Stack defaults (#1317): PUBLIC_BASE_URL and the redirect URIs, set to
+      # the origins this stack actually serves (UI :3333, middleware :8080) —
+      # the middleware's own default, :3979, has nothing listening here. Listed
+      # FIRST so middleware/.env below overrides any of them. They are not under
+      # `environment:` on purpose: that key beats every env_file.
+      - path: middleware/compose.defaults.env
+        required: true
       # Optional: operator copies .env.example → .env and fills in
       # ANTHROPIC_API_KEY (+ any plugin-specific creds). Compose tolerates a
       # missing file when `required: false`, so a fresh clone still validates.
@@ -61,6 +71,18 @@ services:
       # persistence) — fine for tests but not what an operator who just ran
       # `docker compose up` wants.
       DATABASE_URL: postgresql://omadia:omadia@postgres:5432/omadia
+      # Request trust boundary (#1310, docs/security-architecture.md §10o).
+      # Both services are published on 127.0.0.1 over plain HTTP, so the
+      # defaults are right as they stand: TRUSTED_PROXY_ADDRESSES is empty (no
+      # hop may set X-Forwarded-Proto) and PUBLIC_SCHEME is `auto`, which leaves
+      # the auth cookies without Secure — correct, because a browser would
+      # discard a Secure cookie served over http://127.0.0.1. The web-ui proxy
+      # in front is NOT a trusted hop here, deliberately: it declares
+      # WEB_UI_PUBLIC_SCHEME (default http) rather than relaying the browser's
+      # header, so nothing it forwards needs trusting. Put a TLS-terminating
+      # proxy in front of the stack and you set its address here (or `loopback`
+      # when it runs on this host), plus PUBLIC_SCHEME=https if it sets no
+      # X-Forwarded-Proto. See middleware/.env.example.
       # Vault master key. The shipped image bakes `NODE_ENV=production`
       # (see Dockerfile), which would normally make the middleware refuse
       # to boot without VAULT_KEY set — by design, because the dev
@@ -82,15 +104,19 @@ services:
       # separate trust domain — never reuse the VAULT_KEY value.
       CREDENTIAL_KEYCHAIN_KEY: ${CREDENTIAL_KEYCHAIN_KEY:-}
       NODE_ENV: ${NODE_ENV:-development}
-      # NB: `DEV_ENDPOINTS_ENABLED` (the unauthenticated /api/dev/graph +
-      # /api/dev/memory mount) is intentionally NOT hard-coded here. The
-      # admin UI's Graph + Memory viewers depend on it, but it exposes raw
-      # KG + memory state without auth — anyone who reuses this compose file
-      # as a template for a non-local deploy (and accidentally removes the
-      # 127.0.0.1 port-binding above) would otherwise expose internal state.
-      # To enable for local inspection, uncomment `DEV_ENDPOINTS_ENABLED=true`
-      # in `middleware/.env` (already picked up via `env_file` above).
-      # **NEVER set this on a public deployment.**
+      # NB: `DEV_ENDPOINTS_ENABLED` (the session-gated /api/dev/graph +
+      # /api/dev/memory dev mounts) is intentionally NOT hard-coded here. The
+      # admin UI's Graph viewer depends on it. The routes need an operator
+      # login, but they hand raw KG + memory state (every user's chat
+      # sessions included) to any logged-in session — anyone who reuses this
+      # compose file as a template for a non-local deploy would otherwise
+      # publish that. To enable for local inspection, uncomment
+      # `DEV_ENDPOINTS_ENABLED=true` in `middleware/.env` (already picked up
+      # via `env_file` above). `DEV_ENDPOINTS_LOOPBACK_ONLY=true` additionally
+      # refuses every /api/dev request that is not from loopback — note that
+      # requests from the host and from web-ui reach this container from a
+      # Docker bridge address, so that flag closes the routes here entirely.
+      # **NEVER set DEV_ENDPOINTS_ENABLED on a public deployment.**
       # Redirect kernel persistent state (vault, installed.json, builder
       # drafts.db, uploaded plugin packages) to the volume mount below.
       # Without this, the kernel writes under /app/data which lives in the
@@ -136,6 +162,19 @@ services:
     ports:
       - '127.0.0.1:3333:3000'
     networks: [omadia]
+    healthcheck:
+      # Same node-based probe as the middleware (#1382): the runtime image has
+      # neither curl nor wget. /health is static liveness, so this goes red
+      # only when Next itself stops serving, not when the middleware is down.
+      test:
+        - 'CMD'
+        - 'node'
+        - '-e'
+        - "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
 
   # --- Postgres + pgvector (knowledge graph, routines, verifier store) -----
   # Same image as Neon-style production deployments — pgvector pre-installed.
@@ -177,5 +216,8 @@ volumes:
   postgres-data:
 
 networks:
+  # `omadia` is the application network: every service here and in the feature
+  # overlays. The update overlay adds a second, `internal` network,
+  # `omadia-control`, that only `updater` and `docker-socket-proxy` may join.
   omadia:
     driver: bridge

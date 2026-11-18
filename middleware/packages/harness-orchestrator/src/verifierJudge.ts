@@ -1,0 +1,253 @@
+import type { ChatTurnInput, ChatTurnResult } from './orchestrator.js';
+import type { PrivacyEgressContinuation } from './privacyEgress.js';
+import type { RunTracePayload } from './runTraceCollector.js';
+import type {
+  TurnRecord,
+  VerifierPipeline,
+  VerifierPrivacy,
+  VerifierStore,
+  VerifierVerdict,
+} from '@omadia/verifier';
+import { runWithUsageContext } from '@omadia/usage-telemetry';
+import { bindVerdictToClaims } from '@omadia/verifier';
+import { privacyShieldVerdict, systemDataVerdict } from './verifierDelivery.js';
+import {
+  modelFacingUserMessage,
+  verifierGate,
+  type PrivacyEgressHost,
+} from './verifierPrivacyGate.js';
+import {
+  extractFailedToolsCalled,
+  extractKnowledgeGraphRefs,
+  extractKnowledgeGraphToolsCalled,
+  extractPostconditionViolations,
+  extractToolsCalled,
+  extractTurnId,
+  extractTurnRecords,
+} from './verifierTraceEvidence.js';
+
+export interface VerifierJudgeOptions {
+  readonly pipeline: VerifierPipeline;
+  readonly store?: VerifierStore;
+  readonly mode: 'shadow' | 'enforce';
+  /** The orchestrator's privacy hand-over surface (feature-detected). */
+  readonly host: PrivacyEgressHost;
+  readonly log: (msg: string) => void;
+  /** #1571 — the agent whose answers are checked (`verifier_verdicts.agent`). */
+  readonly agent?: string;
+}
+
+/** #1571 — what the judge knows about one verified request across its passes. */
+interface RunState {
+  /** The request's turn id: the first pass's, the key of its receipt row. */
+  turnId?: string;
+  /** #1574 — the Odoo records read by the request's passes. A re-entry
+   *  replays the first run's tool calls, so it reads nothing itself. */
+  records: TurnRecord[];
+}
+
+/** Requests whose state the judge keeps at once — a bound in case a request
+ *  ends without `release`; the oldest is dropped beyond it. */
+const MAX_TRACKED_RUNS = 256;
+
+/**
+ * The part of `VerifierService` that talks to the injected pipeline and
+ * store: the verdict on one turn's answer, bound to its claims, and the one
+ * stored row per verified request.
+ *
+ * Every pipeline request goes through the privacy view of the pass it
+ * verifies — the first run, a borderline resample, a correction retry, the
+ * stream's retry: each hands its own continuation over (`privacyEgress.ts`),
+ * and `verdictFor` takes the view from it (`verifierGate`). Nothing reaches
+ * the verifier's provider unmasked: an answer the verifier may not see is
+ * never sent.
+ */
+export class VerifierJudge {
+  private readonly runs = new Map<string, RunState>();
+
+  constructor(private readonly opts: VerifierJudgeOptions) {}
+
+  /**
+   * #1571 — the request's id for logs: the service's run id plus the turn id
+   * the stored verdict, the receipt and the token-usage rows carry, once a
+   * pass reported it.
+   */
+  runLabel(runId: string): string {
+    const turnId = this.runs.get(runId)?.turnId;
+    return turnId !== undefined ? `${runId} turn=${turnId}` : runId;
+  }
+
+  /** Forget a finished request's state (its turn id and records). */
+  release(runId: string): void {
+    this.runs.delete(runId);
+  }
+
+  /** The request's state with this pass's trace evidence folded in. */
+  private noteRun(runId: string, turn: Pick<ChatTurnResult, 'runTrace'>): RunState {
+    let state = this.runs.get(runId);
+    if (state === undefined) {
+      state = { records: [] };
+      this.runs.set(runId, state);
+      if (this.runs.size > MAX_TRACKED_RUNS) {
+        const oldest = this.runs.keys().next().value;
+        if (oldest !== undefined) this.runs.delete(oldest);
+      }
+    }
+    state.turnId ??= extractTurnId(turn.runTrace);
+    const seen = new Set(state.records.map((r) => `${r.model}#${String(r.id)}`));
+    for (const record of extractTurnRecords(turn.runTrace) ?? []) {
+      const key = `${record.model}#${String(record.id)}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        state.records.push(record);
+      }
+    }
+    return state;
+  }
+
+  /**
+   * The verdict on one pass's answer (a `done` event or a turn result),
+   * through that pass's privacy gate (`verifierGate`). An answer Privacy
+   * Shield rendered server-side is verified by the prose its model wrote;
+   * its rows are system data, and one with no prose is `skipped` /
+   * `system_data` in either mode, released as it is. An answer the verifier
+   * may not see — behind a shield, a pass that handed over no view to verify
+   * through — never reaches the pipeline: `enforce` cannot confirm it and
+   * records `unavailable` / `privacy_shield`, which withholds it; `shadow`
+   * reports nothing (`undefined`).
+   */
+  async verdictFor(
+    runId: string,
+    input: ChatTurnInput,
+    turn: Pick<ChatTurnResult, 'answer' | 'runTrace' | 'answerSource'>,
+    egress: PrivacyEgressContinuation | undefined,
+  ): Promise<VerifierVerdict | undefined> {
+    const run = this.noteRun(runId, turn);
+    const gate = verifierGate(turn.answerSource, egress, this.opts.host);
+    if (!gate.verify) {
+      this.opts.log(
+        `[verifier/service] verification skipped run=${this.runLabel(runId)}: ${gate.reason}`,
+      );
+      if (gate.systemData === true) return systemDataVerdict();
+      return this.opts.mode === 'enforce' ? privacyShieldVerdict() : undefined;
+    }
+    // A server-rendered answer: the pipeline checks the prose its model
+    // wrote, never `turn.answer`, which holds the rendered real values.
+    const answer =
+      gate.renderedProse === true && gate.privacy !== undefined
+        ? await this.restoredProse(gate.privacy)
+        : turn.answer;
+    // #1571 — the verifier's model calls run after the turn's own context
+    // closed; their token-usage rows carry the request's turn id explicitly.
+    const verify = (): Promise<VerifierVerdict> =>
+      this.safeVerify(runId, input, answer, turn.runTrace, gate.privacy, run.records);
+    return run.turnId !== undefined
+      ? runWithUsageContext(
+          {
+            turnId: run.turnId,
+            ...(input.sessionScope !== undefined ? { sessionId: input.sessionScope } : {}),
+          },
+          verify,
+        )
+      : verify();
+  }
+
+  /** The rendered answer's prose with the turn's prompt surrogates restored —
+   *  what the user reads above the rows. The masked prose when restore fails:
+   *  it holds no real value, so the pipeline may still see it. */
+  private async restoredProse(privacy: VerifierPrivacy): Promise<string> {
+    try {
+      return await privacy.restore(privacy.wireAnswer);
+    } catch (err) {
+      this.opts.log(`[verifier/service] prose restore FAIL: ${errMsg(err)}`);
+      return privacy.wireAnswer;
+    }
+  }
+
+  async safeVerify(
+    runId: string,
+    input: ChatTurnInput,
+    answer: string,
+    runTrace: RunTracePayload | undefined,
+    privacy: VerifierPrivacy | undefined,
+    turnRecords?: readonly TurnRecord[],
+  ): Promise<VerifierVerdict> {
+    const domainToolsCalled = extractToolsCalled(runTrace);
+    const toolPostconditionViolations = extractPostconditionViolations(runTrace);
+    const knowledgeGraphToolsCalled = extractKnowledgeGraphToolsCalled(runTrace);
+    const knowledgeGraphRefs = extractKnowledgeGraphRefs(runTrace);
+    const failedToolsCalled = extractFailedToolsCalled(runTrace);
+    let returned: unknown;
+    try {
+      returned = await this.opts.pipeline.verify({
+        runId,
+        // What the turn's model saw — never an MCP input-card envelope.
+        userMessage: modelFacingUserMessage(input.userMessage),
+        answer,
+        ...(domainToolsCalled ? { domainToolsCalled } : {}),
+        ...(toolPostconditionViolations.length > 0
+          ? { toolPostconditionViolations }
+          : {}),
+        ...(knowledgeGraphToolsCalled !== undefined
+          ? { knowledgeGraphToolsCalled }
+          : {}),
+        ...(knowledgeGraphRefs ? { knowledgeGraphRefs } : {}),
+        ...(failedToolsCalled ? { failedToolsCalled } : {}),
+        ...(turnRecords && turnRecords.length > 0 ? { turnRecords } : {}),
+        // The pass's privacy view: every model request of the verifier goes
+        // through it (absent only when no shield is installed).
+        ...(privacy ? { privacy } : {}),
+      });
+    } catch (err) {
+      this.opts.log(`[verifier/service] pipeline FAIL: ${errMsg(err)}`);
+      // Nothing was checked. The reason is a closed code: this verdict is
+      // summarised onto the stream, the message stays in the log line above.
+      return {
+        status: 'unavailable',
+        reason: 'pipeline_error',
+        claims: [],
+        latencyMs: 0,
+      };
+    }
+    // Everything below acts on this verdict, so it is bound once, here: the
+    // status its claims back, a closed reason. What did not hold is logged
+    // with the raw value; the stream only ever sees the bound verdict.
+    const bound = bindVerdictToClaims(returned);
+    if (bound.problem !== undefined) {
+      this.opts.log(`[verifier/service] pipeline verdict not taken as returned: ${bound.problem}`);
+    }
+    return bound.verdict;
+  }
+
+  async persist(
+    runId: string,
+    input: ChatTurnInput,
+    verdict: VerifierVerdict,
+    retryCount: number,
+  ): Promise<void> {
+    const store = this.opts.store;
+    if (!store) return;
+    try {
+      // #1571 — the row carries the request's turn id (the receipt's key and
+      // the token-usage rows' turn id) and the agent that answered.
+      await store.persist({
+        input: {
+          runId: this.runs.get(runId)?.turnId ?? runId,
+          ...(this.opts.agent !== undefined ? { agent: this.opts.agent } : {}),
+          userMessage: input.userMessage,
+          answer: '', // intentionally omitted — no PII beyond what's already
+          // captured in session_logger/graph. The store only uses `runId`.
+        },
+        verdict,
+        mode: this.opts.mode,
+        retryCount,
+      });
+    } catch (err) {
+      this.opts.log(`[verifier/service] persist FAIL: ${errMsg(err)}`);
+    }
+  }
+}
+
+function errMsg(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}

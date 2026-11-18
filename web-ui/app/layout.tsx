@@ -20,6 +20,11 @@ import { fontVariables } from './_fonts';
 import { ChatSessionsProvider } from './_lib/chatSessionsContext';
 import { StreamStoreProvider } from './_lib/streamStore';
 import { fetchNavEntries } from './_lib/navigation';
+import { getPrivacyPosture } from './_lib/api';
+import {
+  FIELD_CLASSIFICATION_HREF,
+  fieldClassificationBadgeCount,
+} from './_components/FieldClassificationBanner';
 import { SESSION_COOKIE, isFreshSessionToken } from './_lib/sessionToken';
 import { UI_PREFS_COOKIE, parseUiPrefsCookie } from './_lib/uiPrefs';
 import './globals.css';
@@ -71,7 +76,17 @@ export default async function RootLayout({
   // the nav is correct on first paint and stays on next-intl's single i18n
   // clock. Never throws — an unauthenticated visitor or an unreachable
   // middleware yields an empty list and the static nav renders alone.
-  const navEntries = await fetchNavEntries(locale);
+  //
+  // The privacy posture feeds the field-classification nav badge (#1556
+  // follow-up). Every session is an admin; a failed read (signed out, older
+  // backend, middleware down) just means no badge.
+  const [navEntries, privacyPosture] = await Promise.all([
+    fetchNavEntries(locale),
+    getPrivacyPosture().catch(() => null),
+  ]);
+  const navBadges = {
+    [FIELD_CLASSIFICATION_HREF]: fieldClassificationBadgeCount(privacyPosture),
+  };
   // Signed-out visitors (only /login and /setup get past the proxy without a
   // session) see the minimal header. Decode-only, same check as the proxy.
   const signedIn = isFreshSessionToken(jar.get(SESSION_COOKIE)?.value);
@@ -108,7 +123,11 @@ export default async function RootLayout({
                       </span>
                     </span>
                   </Link>
-                  <HeaderControls signedIn={signedIn} navEntries={navEntries} />
+                  <HeaderControls
+                    signedIn={signedIn}
+                    navEntries={navEntries}
+                    navBadges={navBadges}
+                  />
                 </div>
               </header>
               <div className="min-h-0 flex-1">{children}</div>

@@ -24,6 +24,7 @@ import type {
   ServiceTypeDecl,
   SetupAudience,
   SetupProfile,
+  SetupEnumOption,
 } from '../api/admin-v1.js';
 import { parseSqlPermission } from '../platform/pluginSqlGrants.js';
 import {
@@ -32,7 +33,9 @@ import {
   publicPathsDeclarationSchema,
 } from '../platform/publicPathGrants.js';
 import { compileSetupPattern } from './setupFieldPattern.js';
-import { normalizeLocalized, resolveLocalized } from './manifestLocalized.js';
+import { booleanSetupDefault, integerSetupDefault } from './setupFieldDefault.js';
+import { auditManifestI18n, describeManifestI18nGaps } from './manifestI18nAudit.js';
+import { enumOption, normalizeLocalized, resolveLocalized } from './manifestLocalized.js';
 
 /**
  * Loads plugin manifests from a single source:
@@ -297,6 +300,30 @@ const PLUGIN_ID_MAX_LENGTH = 214;
 const PLUGIN_VERSION_PATTERN =
   /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
+/** id@version pairs already warned about — a catalog reload re-adapts every
+ *  manifest, and one line per plugin per process is enough. */
+const i18nWarned = new Set<string>();
+const I18N_WARN_MAX_PATHS = 5;
+
+/**
+ * #1401 — a manifest whose visible text is not `{ en, de }` still loads (a
+ * bare string reads as English) but shows in its author's language in every
+ * UI language. Warn once per plugin version; never reject.
+ */
+function warnManifestI18nGaps(id: string, version: string, doc: unknown): void {
+  const key = `${id}@${version}`;
+  if (i18nWarned.has(key)) return;
+  const gaps = auditManifestI18n(doc);
+  if (gaps.length === 0) return;
+  i18nWarned.add(key);
+  const shown = describeManifestI18nGaps(gaps.slice(0, I18N_WARN_MAX_PATHS));
+  const more =
+    gaps.length > I18N_WARN_MAX_PATHS ? ` (+${gaps.length - I18N_WARN_MAX_PATHS} more)` : '';
+  console.warn(
+    `[catalog] plugin '${id}' ${version}: ${gaps.length} visible text(s) are not {en, de} maps and show as written in every UI language: ${shown}${more}. Loaded anyway (#1401).`,
+  );
+}
+
 export function adaptManifestV1(
   doc: Record<string, unknown>,
   reportUnknownPermissions: UnknownPermissionReporter = reportUnknownPermissionKeys,
@@ -396,6 +423,16 @@ export function adaptManifestV1(
           (h): h is string => typeof h === 'string',
         );
       }
+    } else if (type === 'boolean') {
+      // #1464 — `true` and `"true"` both mean true; shared with the install
+      // schema projection so the two never disagree.
+      const defaultValue = booleanSetupDefault(f['default']);
+      if (defaultValue !== undefined) entry.default = defaultValue;
+    } else if (type === 'integer') {
+      // #1524 — a YAML number (`default: 200000`) was dropped by `asString`,
+      // so the catalog, and the bundled-plugin seeding that reads it, lost it.
+      const defaultValue = integerSetupDefault(f['default']);
+      if (defaultValue !== undefined) entry.default = defaultValue;
     } else {
       const defaultValue = asString(f['default']);
       if (defaultValue !== undefined) entry.default = defaultValue;
@@ -431,13 +468,13 @@ export function adaptManifestV1(
     if (type === 'enum') {
       const enumRaw = f['enum'];
       if (Array.isArray(enumRaw)) {
-        const options: Array<{ value: string; label: string }> = [];
+        const options: SetupEnumOption[] = [];
         for (const e of enumRaw) {
           const obj = asRecord(e);
           if (!obj) continue;
           const value = asString(obj['value']);
           if (!value) continue;
-          options.push({ value, label: asString(obj['label']) ?? value });
+          options.push(enumOption(value, obj['label']));
         }
         if (options.length > 0) entry.enum = options;
       }
@@ -459,6 +496,11 @@ export function adaptManifestV1(
     const optionsProvider = asString(f['options_provider']);
     if (optionsProvider) entry.options_provider = optionsProvider;
     if (f['multi'] === true) entry.multi = true;
+    // #1525 — same rule as the install schema (installService): the editor
+    // renders a textarea, so a one-entry-per-line field can hold more than one.
+    if ((type === 'string' || type === 'secret') && f['multiline'] === true) {
+      entry.multiline = true;
+    }
     setupFields.push(entry);
   }
 
@@ -627,6 +669,8 @@ export function adaptManifestV1(
       multi_instance_justification: multiInstanceJustification,
     };
   }
+  // Last, so only a manifest that actually loads is reported (#1401).
+  warnManifestI18nGaps(id, version, doc);
   return result;
 }
 
@@ -853,7 +897,10 @@ function extractChannelBlock(
   };
 }
 
-function extractPermissions(
+/** Exported for the store's hub-only entries (#1457): the registry index ships
+ *  each version's raw `permissions:` block, and it goes through the same parser
+ *  a local manifest does. */
+export function extractPermissions(
   permissions: Record<string, unknown> | undefined,
   pluginId: string,
 ): PluginPermissionsSummary {

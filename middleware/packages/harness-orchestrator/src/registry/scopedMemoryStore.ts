@@ -90,7 +90,13 @@ export type { MemoryAxes, MemoryAxis } from '@omadia/channel-sdk';
  * (the binder hands over the context-free axes and never calls this with a
  * mode), not a second fail-open branch inside the scope resolver.
  */
-export type ContextMemoryEnforcement = 'enforce' | 'enforce-strict';
+/**
+ * `'members'` (member-scoped memory) quarantines a context turn exactly like
+ * `'enforce-strict'` here: no agent tier, no transcript trees. What it adds is
+ * outside the memory tree: graph recall and `query_knowledge_graph` follow the
+ * owner rule (everyone present owns the knowledge) instead of one conversation.
+ */
+export type ContextMemoryEnforcement = 'enforce' | 'enforce-strict' | 'members';
 
 export interface EffectiveMemoryScopeOptions {
   /** Default `'enforce'`. */
@@ -123,7 +129,7 @@ const CONTEXT_AXIS_PATTERN = /^(?:team|channel|user):[^:]+:\*$/;
  * scope = axes.isContextFree
  *   ? ['core',    `orchestrator:${slug}:*`]                       // exactly today
  *   : ['ro:core', `ro:orchestrator:${slug}:*`, …axes.patterns]    // enforce
- *   : ['ro:core',                              …axes.patterns]    // enforce-strict
+ *   : ['ro:core-notes',                        …axes.patterns]    // enforce-strict
  * ```
  *
  * Four properties are the whole point, and each fails in the safe direction:
@@ -167,7 +173,7 @@ export function effectiveMemoryScope(
   axes: MemoryAxes,
   options: EffectiveMemoryScopeOptions = {},
 ): readonly string[] {
-  const strict = options.mode === 'enforce-strict';
+  const strict = options.mode === 'enforce-strict' || options.mode === 'members';
 
   // `agentSlug` is interpolated into `orchestrator:<slug>:*`, whose compiled
   // regex is `[^:]+`. A slug carrying a `:` therefore produces a token that
@@ -228,8 +234,16 @@ export function effectiveMemoryScope(
   // trees stay writable from a context-FREE turn (operator, CLI, pre-W5
   // plugin); new knowledge leaves a context only through the operator promote
   // action (coordinator decision 2).
+  //
+  // `enforce-strict` narrows further to `ro:core-notes`: the shared notes and
+  // `_*` trees stay readable, the transcript trees (`sessions`,
+  // `chat-sessions`) do not. Every session transcript lands in one flat tree,
+  // keyed by conversation and not by context or even agent (decision A3a), so
+  // `ro:core` let a Telegram turn read a Teams conversation word for word —
+  // the opposite of what strict promises. The turn's own conversation still
+  // reaches the model through recall, which strict restricts to it.
   return strict
-    ? ['ro:core', ...patterns]
+    ? ['ro:core-notes', ...patterns]
     : ['ro:core', `ro:orchestrator:${agentSlug}:*`, ...patterns];
 }
 
@@ -253,6 +267,9 @@ const CORE_PREFIXES = [
   '/memories/sessions/',
   '/memories/chat-sessions/',
 ];
+
+/** `core` without the conversation transcripts — the `enforce-strict` grant. */
+const CORE_NOTES_PREFIXES = ['/memories/core/'];
 
 /**
  * Subtrees inside `core` that no agent may ever write, whatever else its scope
@@ -303,6 +320,28 @@ export function contextTierRoot(
   return `${CONTEXTS_ROOT}/${agentSlug}/${axis}/${ctxKey}`;
 }
 
+/**
+ * `members` context memory: one tier per OWNER SET — the people present when
+ * the notes were written — keyed by {@link membersTierKey}. Deliberately not a
+ * {@link ContextAxis}: a channel plugin's axes can never name it, only the
+ * binder grants it, after resolving the room's audience.
+ */
+const MEMBERS_TOKEN = /^members:([a-f0-9]{32}):\*$/;
+
+/** Physical root of one owner set's notes for one Agent. */
+export function membersTierRoot(agentSlug: string, key: string): string {
+  return `${CONTEXTS_ROOT}/${agentSlug}/members/${key}`;
+}
+
+/**
+ * Where the binder records which people a members tier belongs to. A sibling
+ * of the tiers, so no `members:<key>:*` grant ever reaches it: the model can
+ * neither read nor forge who owns what.
+ */
+export function membersIndexRoot(agentSlug: string): string {
+  return `${CONTEXTS_ROOT}/${agentSlug}/members-index`;
+}
+
 interface CompiledPattern {
   match(path: string): boolean;
   source: string;
@@ -337,12 +376,15 @@ function compileAccessPattern(
   pattern: string,
   agentSlug: string,
 ): CompiledPattern | undefined {
-  if (pattern === 'core') {
+  if (pattern === 'core' || pattern === 'core-notes') {
+    // `core-notes` is `core` without the transcript trees — see the strict
+    // branch of `effectiveMemoryScope`.
+    const prefixes = pattern === 'core' ? CORE_PREFIXES : CORE_NOTES_PREFIXES;
     return {
       source: pattern,
       readOnly: false,
       match: (p) => {
-        for (const pre of CORE_PREFIXES) {
+        for (const pre of prefixes) {
           if (p === pre.slice(0, -1) || p.startsWith(pre)) return true;
         }
         // Allow top-level shared `_*` directories used by some plugins for
@@ -371,6 +413,14 @@ function compileAccessPattern(
       source: pattern,
       readOnly: false,
       match: prefixMatcher(`${contextTierRoot(agentSlug, axis, ctxKey)}/`),
+    };
+  }
+  const membersMatch = MEMBERS_TOKEN.exec(pattern);
+  if (membersMatch) {
+    return {
+      source: pattern,
+      readOnly: false,
+      match: prefixMatcher(`${membersTierRoot(agentSlug, membersMatch[1]!)}/`),
     };
   }
   // Per-orchestrator isolation (strict): an Agent's own private tree —

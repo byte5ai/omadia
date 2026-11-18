@@ -24,6 +24,7 @@
     "./plugin.ts",
     "./toolkit.ts",
     "./fetcher.ts",
+    "./refusal.ts",
     "./types.ts",
     "./index.ts",
     "./analyzers/**/*.ts"

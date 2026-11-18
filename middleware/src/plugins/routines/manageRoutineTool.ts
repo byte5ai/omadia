@@ -1,4 +1,8 @@
-import { buildEmailColdStartTarget } from '@omadia/plugin-api';
+import {
+  JobValidationError,
+  buildEmailColdStartTarget,
+  toolErrorFromException,
+} from '@omadia/plugin-api';
 import { z } from 'zod';
 
 import {
@@ -88,6 +92,11 @@ export interface ManageRoutineContext {
    * this flag.
    */
   canTargetOthers?: boolean;
+  /**
+   * #1598 — slug of the orchestrator handling the creating turn. Stored on the
+   * routine so it runs with that orchestrator's plugin grants.
+   */
+  agentSlug?: string;
 }
 
 export type ManageRoutineContextResolver = () =>
@@ -160,6 +169,12 @@ export const manageRoutineToolSpec = {
 export interface ManageRoutineToolOptions {
   runner: RoutineRunner;
   resolveContext: ManageRoutineContextResolver;
+  /**
+   * #1598 — `true` when a routine must name the orchestrator that runs it (an
+   * orchestrator registry exists). A create on a turn whose orchestrator is
+   * unknown is then refused instead of silently running on another one.
+   */
+  requiresAgentSlug?: () => boolean;
 }
 
 /**
@@ -171,10 +186,12 @@ export interface ManageRoutineToolOptions {
 export class ManageRoutineTool {
   private readonly runner: RoutineRunner;
   private readonly resolveContext: ManageRoutineContextResolver;
+  private readonly requiresAgentSlug: () => boolean;
 
   constructor(opts: ManageRoutineToolOptions) {
     this.runner = opts.runner;
     this.resolveContext = opts.resolveContext;
+    this.requiresAgentSlug = opts.requiresAgentSlug ?? (() => false);
   }
 
   async handle(input: unknown): Promise<string> {
@@ -210,6 +227,9 @@ export class ManageRoutineTool {
     if (!ctx) {
       return ROUTINE_NO_CONTEXT_ERROR;
     }
+    if (!ctx.agentSlug && this.requiresAgentSlug()) {
+      return 'Error: a routine cannot be created on this turn — the orchestrator that would run it is unknown.';
+    }
 
     // Cold-start 1:1 outreach: when the caller names another person via
     // `targetEmail`, deliver to that person's (yet-to-be-created) 1:1
@@ -241,6 +261,7 @@ export class ManageRoutineTool {
       channel: ctx.channel,
       conversationRef,
       timeoutMs: args.timeoutMs,
+      ...(ctx.agentSlug ? { agentSlug: ctx.agentSlug } : {}),
     });
     return JSON.stringify({
       action: 'created',
@@ -378,11 +399,12 @@ function formatError(err: unknown): string {
   if (err instanceof UnknownChannelError) {
     return `Error: ${err.message}`;
   }
-  if (err instanceof Error) {
-    // Preserve JobValidationError messages (cron parse failures) and other
-    // unexpected errors. Tag them so the model can distinguish from
-    // success-payload JSON.
+  if (err instanceof JobValidationError) {
+    // Cron / schedule validation: the scheduler's own message about the
+    // model's input — the hint it needs to correct the call.
     return `Error: ${err.message}`;
   }
-  return `Error: ${String(err)}`;
+  // Anything else (a store or database failure, a bug) is exception text
+  // nobody sanitized: withheld from the model, logged in full under a ref.
+  return toolErrorFromException(MANAGE_ROUTINE_TOOL_NAME, err, { site: 'routines' });
 }

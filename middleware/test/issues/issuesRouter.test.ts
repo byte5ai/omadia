@@ -1,13 +1,20 @@
-import { describe, it } from 'node:test';
+import { afterEach, beforeEach, describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 import type { AddressInfo } from 'node:net';
 
 import express from 'express';
-import type { LlmProvider } from '@omadia/llm-provider';
-import { LlmProviderCatalog } from '@omadia/llm-provider';
+import type { LlmAdapter, LlmProvider } from '@omadia/llm-provider';
+import {
+  clearExternalModels,
+  defaultLlmAdapters,
+  LlmProviderCatalog,
+  modelForClass,
+  providerApiKeyVaultKey,
+} from '@omadia/llm-provider';
 
 import { InMemorySecretVault } from '../../src/secrets/vault.js';
 import { InMemoryInstalledRegistry } from '../../src/plugins/installedRegistry.js';
+import { registerBuiltinLlmProviders } from '../../src/platform/builtinLlmProviders.js';
 import { GitHubDeviceFlowProvider } from '../../src/issues/githubOAuthProvider.js';
 import { DeviceFlowStore } from '../../src/issues/deviceFlowStore.js';
 import { GITHUB_CONNECT_AGENT_ID } from '../../src/issues/operatorGithubStore.js';
@@ -590,5 +597,76 @@ describe('issuesRouter (device flow)', () => {
     } finally {
       await h.close();
     }
+  });
+});
+
+// #1083 — the per-agent model select keeps class refs, and bootstrap seeds
+// `class:frontier`. The default reformulation path reads `orchestrator_model`
+// and must hand the adapter a concrete vendor id: adapters send `model` raw,
+// so a class ref would be a vendor 404 on every "Create Issue" preview.
+describe('issuesRouter (default LLM resolution)', () => {
+  beforeEach(() => {
+    clearExternalModels();
+    registerBuiltinLlmProviders(new LlmProviderCatalog());
+  });
+  afterEach(() => {
+    clearExternalModels();
+  });
+
+  async function previewModelFor(orchestratorModel: string): Promise<string | undefined> {
+    const sent: string[] = [];
+    // The test process never boots the app, so the anthropic wire format has
+    // no real adapter here: a capturing fake stands in for it.
+    const adapter: LlmAdapter = {
+      wireFormat: 'anthropic',
+      build: () => {
+        const base = fakeLlm('{"title":"Phrased title","body":"## Summary\\nok"}');
+        return {
+          ...base,
+          complete: (req: { model: string }) => {
+            sent.push(req.model);
+            return base.complete(req as never);
+          },
+        } as unknown as LlmProvider;
+      },
+    };
+    defaultLlmAdapters.register(adapter);
+
+    const vault = new InMemorySecretVault();
+    await vault.set('@omadia/orchestrator', providerApiKeyVaultKey('anthropic'), 'sk-test');
+    const installedRegistry = new InMemoryInstalledRegistry();
+    await installedRegistry.register({
+      id: '@omadia/orchestrator',
+      installed_version: '0.1.0',
+      installed_at: new Date().toISOString(),
+      status: 'active',
+      config: { llm_provider: 'anthropic', orchestrator_model: orchestratorModel },
+    });
+    const h = await boot({ vault, installedRegistry, resolveLlm: undefined });
+    try {
+      const res = await fetch(`${h.base}/api/v1/issues/preview`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text: 'app crashes on save', category: 'bug' }),
+      });
+      assert.equal(res.status, 200);
+      assert.equal(sent.length, 1);
+      return sent[0];
+    } finally {
+      await h.close();
+    }
+  }
+
+  it('resolves a class-ref orchestrator_model to a concrete model id', async () => {
+    const model = await previewModelFor('class:frontier');
+    const expected = modelForClass('frontier', 'anthropic')?.modelId;
+    assert.ok(expected, 'the anthropic built-ins serve a frontier model');
+    assert.equal(model, expected);
+  });
+
+  it('sends a pinned concrete orchestrator_model unchanged', async () => {
+    const pinned = modelForClass('fast', 'anthropic')?.modelId;
+    assert.ok(pinned);
+    assert.equal(await previewModelFor(pinned), pinned);
   });
 });

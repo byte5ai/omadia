@@ -11,12 +11,32 @@
  */
 
 import type {
+  PrivacyEgressStage,
+  PrivacyPromptOrigin,
   PrivacyGuardService,
   PrivacyPromptMaskResult,
   PrivacyReceipt,
   PrivacyRenderedAnswer,
+  PrivacyToolErrorRedactResult,
+  PrivacyV4ToolResult,
+  PrivacyDigestAudience,
   PrivacyV4ToolSpec,
+  PromptMaskedSpanInfo,
+  ToolErrorCarrier,
+  ToolErrorOutcome,
+  UnresolvedSurrogateCountOptions,
 } from '@omadia/plugin-api';
+
+/** Options for {@link PrivacyTurnHandle.maskUserPrompt}. */
+export interface PromptMaskOptions {
+  /** Egress the text is bound for; absent ⇒ the turn's own model calls. */
+  readonly stage?: PrivacyEgressStage;
+  /** Compute the outcome without extending the map or booking anything. */
+  readonly preview?: boolean;
+  /** #1541 — `context` for text from earlier conversations (a replayed user
+   *  message); absent ⇒ the user's own text of this turn. */
+  readonly origin?: PrivacyPromptOrigin;
+}
 
 export interface PrivacyTurnHandle {
   /**
@@ -27,6 +47,10 @@ export interface PrivacyTurnHandle {
   internToolResultV4(input: {
     readonly toolName: string;
     readonly rawResult: string;
+    /** the call input as dispatched — the dataset's provenance */
+    readonly toolInput?: unknown;
+    /** #1561 — who reads the digest text; absent ⇒ the chat model. */
+    readonly audience?: PrivacyDigestAudience;
   }): Promise<{ readonly digestText: string; readonly datasetId: string }>;
   /**
    * Slice 2.5 — record that a tool's raw result was passed through
@@ -52,13 +76,45 @@ export interface PrivacyTurnHandle {
    */
   checkBypass(toolName: string): { readonly pluginId: string } | undefined;
   /**
+   * #1507 — did any tool of this turn bypass the shield (a `checkBypass` hit
+   * or a recorded bypass)? Its answer then carries real values the model saw
+   * raw, so the turn is logged `unprotected` and kept out of later recall.
+   * Optional: a handle without it is read as "no bypass".
+   */
+  hasBypassed?(): boolean;
+  /**
+   * Record a tool error a dispatch seam withheld, redacted or passed this
+   * turn; drained into the receipt's `toolErrors`. A no-op when the provider
+   * predates the contract. PII-free input only.
+   */
+  recordToolError(input: {
+    readonly toolName: string;
+    readonly carrier: ToolErrorCarrier;
+    readonly outcome: ToolErrorOutcome;
+    readonly bytes: number;
+    readonly redactedSpans?: readonly PromptMaskedSpanInfo[];
+  }): Promise<void>;
+  /**
+   * Redact a returned `Error:` text (the part after the prefix) through the
+   * provider's free-text detectors. `undefined` when the provider predates the
+   * contract — the caller must then fail CLOSED (withhold), never forward the
+   * text unchecked. See `toolErrorRedaction.ts`.
+   */
+  redactToolErrorText(input: {
+    readonly toolName: string;
+    readonly text: string;
+  }): Promise<PrivacyToolErrorRedactResult | undefined>;
+  /**
    * Run a v4 verb tool or the terminal render tool the LLM called; returns
-   * the `tool_result` text.
+   * the `tool_result` text and, for a table render, the user-destined canvas
+   * snapshot (`canvasSentinel`, never LLM-bound — #1402).
    */
   runV4Tool(input: {
     readonly toolName: string;
     readonly input: unknown;
-  }): Promise<{ readonly resultText: string }>;
+    /** #1559 — `create_xlsx` is offered this turn; absent ⇒ false. */
+    readonly fileExportAvailable?: boolean;
+  }): Promise<PrivacyV4ToolResult>;
   /**
    * Bridge a sub-agent's result across the data-plane boundary. Given the
    * `datasetId`s the sub-agent interned this dispatch, returns the
@@ -85,9 +141,51 @@ export interface PrivacyTurnHandle {
    * the provider predates the contract — the caller uses the original text
    * (byte-identical legacy behavior). `blocked` = failure-closed: the turn
    * MUST fail instead of sending the prompt. Repeated calls within the
-   * turn share one server-held surrogate map.
+   * turn share one server-held surrogate map. `opts.stage: 'verifier'` books
+   * the call as an answer-verifier request; `opts.preview` asks whether the
+   * text WOULD change without keeping anything.
    */
-  maskUserPrompt(text: string): Promise<PrivacyPromptMaskResult>;
+  maskUserPrompt(
+    text: string,
+    opts?: PromptMaskOptions,
+  ): Promise<PrivacyPromptMaskResult>;
+  /**
+   * Project a verifier-composed text (claim + knowledge-graph evidence)
+   * through this turn's surrogate map, independent of `mask_user_prompt`.
+   * `blocked` when the provider cannot guarantee it — including a provider
+   * that predates the contract: evidence is never sent unprojected.
+   * Optional so hand-built handles (tests, wrappers) stay valid; absent ⇒
+   * callers must treat it as blocked.
+   */
+  projectVerifierText?(
+    text: string,
+    identityValues: readonly string[],
+  ): Promise<PrivacyPromptMaskResult>;
+  /**
+   * Mask an answer a channel replays as chat history (`priorTurns`) through
+   * this turn's surrogate map, independent of `mask_user_prompt` (see
+   * `PrivacyGuardService.maskReplayedAnswer`). `blocked` = the caller must not
+   * send it. A provider that predates the member answers through
+   * `maskUserPrompt` instead, as before it existed. Optional so hand-built
+   * handles (tests, wrappers) stay valid; absent ⇒ callers mask through
+   * `maskUserPrompt` themselves.
+   *
+   * `segments` — optional partition of `text` into whole stored units (the
+   * recalled tail's turns), see `PrivacyReplayedAnswerRequest.segments`.
+   */
+  maskReplayedAnswer?(
+    text: string,
+    segments?: readonly string[],
+  ): Promise<PrivacyPromptMaskResult>;
+  /**
+   * How many of this turn's surrogates still occur in `text` (see
+   * `PrivacyGuardService.countUnresolvedSurrogates`). `0` when the provider
+   * predates the contract. Optional like `projectVerifierText`.
+   */
+  countUnresolvedSurrogates?(
+    text: string,
+    options?: UnresolvedSurrogateCountOptions,
+  ): Promise<number>;
   /**
    * #361 — invert this turn's prompt-surrogate map over the final answer.
    * Identity when nothing was masked. Must run BEFORE `finalize` (which
@@ -103,12 +201,34 @@ export interface PrivacyTurnHandle {
    */
   snapshotPromptRestorer(): ((text: string) => string) | undefined;
   /**
+   * #1544 — replace this turn's masked prompt values in `text` by their
+   * surrogates again (see `PrivacyGuardService.remaskPromptValues`). Optional:
+   * absent when the provider predates the contract.
+   */
+  remaskPromptValues?(text: string): string;
+  /**
+   * #1544 — restore this turn's surrogates in a tool input (see
+   * `PrivacyGuardService.restoreToolInputValues`). Optional like
+   * `remaskPromptValues`.
+   */
+  restoreToolInputValues?(text: string): string;
+  /**
    * Drop the turn's Dataset Store and drain the user-facing receipt.
    * `turnInput` — the requester's own message text — lets the receipt
    * report identity values the user named themselves. Returns `undefined`
    * when the turn interned no tool results.
    */
   finalize(turnInput?: string): Promise<PrivacyReceipt | undefined>;
+  /**
+   * The handle for code running INSIDE a tool call this handle guards: a
+   * domain tool's sub-agent model loop, a plugin tool that asks a sub-agent, a
+   * dispatcher the handler calls. `ToolDispatchService` installs it as the
+   * ambient `turnContext.privacyHandle` while the handler runs. Absent ⇒ the
+   * handle itself. A wrapper that keeps per-result bookkeeping (the public MCP
+   * gate's positive `masked()` signal) returns a variant that guards the same
+   * way without counting toward the outer result.
+   */
+  forNestedCalls?(): PrivacyTurnHandle;
 }
 
 export function createPrivacyTurnHandle(deps: {
@@ -126,6 +246,7 @@ export function createPrivacyTurnHandle(deps: {
    */
   readonly resolveBypass?: (toolName: string) => { pluginId: string } | undefined;
 }): PrivacyTurnHandle {
+  let bypassed = false;
   return {
     async internToolResultV4(input) {
       return deps.service.internToolResultV4({
@@ -133,10 +254,13 @@ export function createPrivacyTurnHandle(deps: {
         turnId: deps.turnId,
         toolName: input.toolName,
         rawResult: input.rawResult,
+        ...(input.toolInput !== undefined ? { toolInput: input.toolInput } : {}),
+        ...(input.audience !== undefined ? { audience: input.audience } : {}),
       });
     },
 
     async recordBypassedTool(input) {
+      bypassed = true;
       return deps.service.recordBypassedTool({
         turnId: deps.turnId,
         toolName: input.toolName,
@@ -147,7 +271,38 @@ export function createPrivacyTurnHandle(deps: {
     },
 
     checkBypass(toolName) {
-      return deps.resolveBypass?.(toolName);
+      const hit = deps.resolveBypass?.(toolName);
+      if (hit !== undefined) bypassed = true;
+      return hit;
+    },
+
+    hasBypassed() {
+      return bypassed;
+    },
+
+    async recordToolError(input) {
+      // Optional on the service contract — a provider that predates it simply
+      // writes no receipt entry.
+      if (deps.service.recordToolError === undefined) return;
+      await deps.service.recordToolError({
+        turnId: deps.turnId,
+        toolName: input.toolName,
+        carrier: input.carrier,
+        outcome: input.outcome,
+        bytes: input.bytes,
+        ...(input.redactedSpans !== undefined ? { redactedSpans: input.redactedSpans } : {}),
+      });
+    },
+
+    async redactToolErrorText(input) {
+      // Optional on the service contract. `undefined` makes the caller
+      // withhold — the failure-closed direction.
+      if (deps.service.redactToolErrorText === undefined) return undefined;
+      return deps.service.redactToolErrorText({
+        turnId: deps.turnId,
+        toolName: input.toolName,
+        text: input.text,
+      });
     },
 
     async runV4Tool(input) {
@@ -156,6 +311,7 @@ export function createPrivacyTurnHandle(deps: {
         turnId: deps.turnId,
         toolName: input.toolName,
         input: input.input,
+        ...(input.fileExportAvailable === true ? { fileExportAvailable: true } : {}),
       });
     },
 
@@ -175,7 +331,7 @@ export function createPrivacyTurnHandle(deps: {
       return deps.service.v4ToolSpecs();
     },
 
-    async maskUserPrompt(text) {
+    async maskUserPrompt(text, opts) {
       // Optional on the service contract — providers (and test stubs) that
       // predate #361 simply never mask.
       if (deps.service.maskUserPrompt === undefined) {
@@ -185,7 +341,43 @@ export function createPrivacyTurnHandle(deps: {
         sessionId: deps.sessionId,
         turnId: deps.turnId,
         text,
+        ...(opts?.stage !== undefined ? { stage: opts.stage } : {}),
+        ...(opts?.preview === true ? { preview: true } : {}),
+        ...(opts?.origin !== undefined ? { origin: opts.origin } : {}),
       });
+    },
+
+    async projectVerifierText(text, identityValues) {
+      if (deps.service.projectVerifierText === undefined) {
+        return {
+          outcome: 'blocked',
+          reason: 'privacy provider cannot project verifier text',
+        };
+      }
+      return deps.service.projectVerifierText({
+        sessionId: deps.sessionId,
+        turnId: deps.turnId,
+        text,
+        identityValues,
+      });
+    },
+
+    async maskReplayedAnswer(text, segments) {
+      const request = { sessionId: deps.sessionId, turnId: deps.turnId, text };
+      // Optional on the service contract. A provider that predates it masks a
+      // replayed answer like any prompt text: only while `mask_user_prompt`
+      // is on, the behaviour before the member existed.
+      if (deps.service.maskReplayedAnswer === undefined) {
+        if (deps.service.maskUserPrompt === undefined) return { outcome: 'disabled' };
+        return deps.service.maskUserPrompt(request);
+      }
+      return deps.service.maskReplayedAnswer(
+        segments !== undefined ? { ...request, segments } : request,
+      );
+    },
+
+    async countUnresolvedSurrogates(text, options) {
+      return (await deps.service.countUnresolvedSurrogates?.(deps.turnId, text, options)) ?? 0;
     },
 
     async restorePromptPseudonyms(text) {
@@ -197,8 +389,25 @@ export function createPrivacyTurnHandle(deps: {
       return deps.service.snapshotPromptRestorer?.(deps.turnId);
     },
 
+    // Only on a provider that implements it: the kernel restores tool inputs
+    // only where echoes can be masked again (`promptSurrogateToolInput.ts`).
+    ...(deps.service.remaskPromptValues !== undefined &&
+    deps.service.restoreToolInputValues !== undefined
+      ? {
+          remaskPromptValues(text: string): string {
+            return deps.service.remaskPromptValues?.(deps.turnId, text) ?? text;
+          },
+          restoreToolInputValues(text: string): string {
+            return deps.service.restoreToolInputValues?.(deps.turnId, text) ?? text;
+          },
+        }
+      : {}),
+
     async finalize(turnInput) {
-      return deps.service.finalizeTurn(deps.turnId, turnInput);
+      const receipt = await deps.service.finalizeTurn(deps.turnId, turnInput);
+      // #1557 — the turn's `unprotected` flag (#1507) rides on the receipt,
+      // so its wording never claims a boundary a bypass went around.
+      return receipt !== undefined && bypassed ? { ...receipt, unprotected: true } : receipt;
     },
   };
 }

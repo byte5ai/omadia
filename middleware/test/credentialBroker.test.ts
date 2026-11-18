@@ -142,6 +142,25 @@ describe('#578 CredentialBroker', () => {
     assert.equal(fetchStub.calls[0]?.headers.Authorization, `Bearer ${SERVICE_SECRET}`);
   });
 
+  it('#778 S3a: a lowercase `authorization` caller header cannot sit next to the injected one', async () => {
+    const cred = await makeServiceCredential(store);
+    await grant(store, { credentialId: cred.id });
+    await broker.request(cred.id, ALICE, {
+      host: 'api.example.com',
+      method: 'GET',
+      path: '/v1/messages',
+      headers: { authorization: 'Bearer forged-value', Accept: 'application/json' },
+    });
+    const sent = fetchStub.calls[0]?.headers ?? {};
+    const authKeys = Object.keys(sent).filter((k) => k.toLowerCase() === 'authorization');
+    assert.deepEqual(authKeys, ['Authorization']);
+    assert.equal(sent.Authorization, `Bearer ${SERVICE_SECRET}`);
+    assert.equal(sent.accept, 'application/json');
+    const allow = audits.find((e) => e.kind === 'allow');
+    assert.deepEqual(allow?.droppedHeaderNames, ['authorization']);
+    assert.ok(!JSON.stringify(allow).includes('forged-value'));
+  });
+
   it('header injection scheme uses the declared injectionKey', async () => {
     const cred = await store.createCredential({
       name: 'header-svc',

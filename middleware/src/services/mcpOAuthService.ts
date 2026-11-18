@@ -11,7 +11,10 @@
  *    store the token in the vault. Called by the OAuth callback route.
  */
 import {
+  DISCOVERY_UNAVAILABLE,
   McpAuthDiscovery,
+  McpAuthDiscoveryError,
+  UNADVERTISED_AUTH_CHALLENGE,
   canonicalIssuer,
   sameIssuer,
   serverOrigin,
@@ -76,6 +79,10 @@ export interface McpAuthDescription {
   /** Why CIMD is unavailable despite the AS advertising it — `null` when it is
    *  available or the AS never advertised it. Drives the UI diagnostic. */
   readonly cimdBlockedReason: CimdBlockedReason | null;
+  /** The metadata could not be read right now, so `protected: true` is the
+   *  cautious reading rather than something the server said: `protected: false`
+   *  would hide the authorization UI of a server that may well need it. */
+  readonly discoveryUnavailable?: boolean;
 }
 
 export interface BeginAuthResult {
@@ -120,6 +127,11 @@ export class McpOAuthIssuerMismatchError extends Error {
 // that binds a metadata document to the issuer it was fetched under. Imported
 // rather than re-declared so the callback's RFC 9207 comparison and discovery's
 // cannot drift apart.
+
+/** True when the row sends headers of its own, typically an API key. */
+function hasStaticHeaders(server: McpServerRow): boolean {
+  return Object.keys(server.headers ?? {}).length > 0;
+}
 
 const DCR_PROBE_TTL_MS = 10 * 60 * 1000;
 
@@ -544,6 +556,8 @@ export class McpOAuthService {
    * `cimdBlockedReason` explains a CIMD-capable issuer we still cannot use
    * (almost always: no inbound https reachability on this install).
    * `issuerHost` is the human-readable host the OAuth actually goes to.
+   * `discoveryUnavailable` flags a `protected: true` that rests on a failed
+   * metadata read, not on anything the server advertised.
    */
   async describeAuth(server: McpServerRow): Promise<McpAuthDescription> {
     const unprotected: McpAuthDescription = {
@@ -562,7 +576,15 @@ export class McpOAuthService {
     let discovered;
     try {
       discovered = await this.discovery.discover(this.resolveEndpoint(server));
-    } catch {
+    } catch (err) {
+      if (err instanceof McpAuthDiscoveryError) {
+        if (err.code === DISCOVERY_UNAVAILABLE) {
+          return { ...unprotected, protected: true, discoveryUnavailable: true };
+        }
+        // The probe sends no configured headers, so a 401 is what an API-key
+        // server answers even when set up correctly. Not an OAuth signal.
+        if (err.code === UNADVERTISED_AUTH_CHALLENGE && hasStaticHeaders(server)) return unprotected;
+      }
       return { ...unprotected, protected: true };
     }
     if (!discovered) return unprotected;

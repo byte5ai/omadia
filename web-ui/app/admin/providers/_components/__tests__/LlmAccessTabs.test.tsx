@@ -16,6 +16,7 @@ vi.mock('../../../../_lib/api', () => ({
   verifyProvider: vi.fn(),
   refreshProviderModels: vi.fn(),
   getCliBackends: mockGetCliBackends,
+  recheckCliBackends: () => mockGetCliBackends(true),
   startCliLogin: vi.fn(),
   submitCliLoginCode: vi.fn(),
   cancelCliLogin: vi.fn(),

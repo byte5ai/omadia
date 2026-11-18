@@ -12,10 +12,48 @@
 //
 // Fail-soft: if no Developer ID identity is available (unsigned/local build), it
 // logs and skips, so dev/ad-hoc builds still work.
+//
+// It also checks the macOS floor of the update feed against the packaged app
+// (see assertUpdateFeedFloor) — that one is never fail-soft — and, on every
+// platform, that the package carries what the kernel and the web UI load at
+// startup (see assertPackagedRuntime).
 
 const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
+const { pathToFileURL } = require('node:url');
+
+/**
+ * latest-mac.yml tells Macs below the runtime's minimum to keep the version they
+ * run (`minimumSystemVersion`, written by scripts/merge-mac-update-feed.mjs from
+ * its MACOS_MINIMUM constant). The real minimum is whatever the packaged
+ * Electron declares, so compare the two on every mac build: an Electron bump
+ * that raises LSMinimumSystemVersion fails here instead of shipping an update
+ * that older Macs install and then cannot start (Electron 44 raised it to 13.0).
+ */
+async function assertUpdateFeedFloor(appPath) {
+  const plist = path.join(appPath, 'Contents', 'Info.plist');
+  const minimum = execFileSync('plutil', ['-extract', 'LSMinimumSystemVersion', 'raw', plist], {
+    encoding: 'utf8',
+  }).trim();
+  const feedScript = path.join(__dirname, '..', 'scripts', 'merge-mac-update-feed.mjs');
+  const { checkAppMinimum } = await import(pathToFileURL(feedScript).href);
+  checkAppMinimum(minimum);
+  console.log(`[afterPack] LSMinimumSystemVersion ${minimum} matches the update feed's macOS floor.`);
+}
+
+/**
+ * A package without the runtime's node_modules installs and then fails at its
+ * first start with ERR_MODULE_NOT_FOUND (electron-builder.yml says how that
+ * happens), so fail the build instead, on every platform. The directory is
+ * electron-builder's own resources dir, the one extraResources were copied to.
+ */
+async function assertPackagedRuntime(context) {
+  const script = path.join(__dirname, '..', 'scripts', 'check-packaged-runtime.mjs');
+  const { assertRuntimeComplete } = await import(pathToFileURL(script).href);
+  assertRuntimeComplete(context.packager.getResourcesDir(context.appOutDir));
+  console.log('[afterPack] the package carries what the kernel and the web UI load at startup.');
+}
 
 /**
  * Resolves the Developer ID Application identity to sign with.
@@ -91,7 +129,12 @@ function collectMachO(dir, found) {
 }
 
 exports.default = async function afterPack(context) {
+  await assertPackagedRuntime(context);
   if (context.electronPlatformName !== 'darwin') return;
+
+  const appName = `${context.packager.appInfo.productFilename}.app`;
+  const appPath = path.join(context.appOutDir, appName);
+  await assertUpdateFeedFloor(appPath);
 
   const developerId = findIdentity();
   // With signing secrets present (MAC_SIGN_EXPECTED=1) a missing identity is a
@@ -122,8 +165,6 @@ exports.default = async function afterPack(context) {
   const identity = developerId ?? '-';
   const adhoc = !developerId;
 
-  const appName = `${context.packager.appInfo.productFilename}.app`;
-  const appPath = path.join(context.appOutDir, appName);
   const resources = path.join(appPath, 'Contents', 'Resources');
   // Sign Mach-O in BOTH staged extraResources trees: the middleware native
   // modules (omadia/) and the bundled Postgres engine (omadia-pg/).

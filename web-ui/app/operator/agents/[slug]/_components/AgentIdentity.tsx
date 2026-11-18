@@ -9,8 +9,10 @@ import { ConflictBanner } from '@/app/_components/persona/ConflictBanner';
 import {
   AVATAR_ACCEPT,
   avatarPreviewUrl,
+  ANSWER_VERBOSITY_LEVELS,
   deleteAgentAvatar,
   getAgentIdentity,
+  isAnswerVerbosity,
   saveAgentIdentity,
   uploadAgentAvatar,
   type AgentIdentityDto,
@@ -55,13 +57,15 @@ interface AgentIdentityProps {
   readonly slug: string;
 }
 
-/** The five authored text fields, as the form holds them (`''` = inherit). */
+/** The authored fields, as the form holds them (`''` = inherit). */
 interface IdentityForm {
   displayName: string;
   shortDescription: string;
   longDescription: string;
   instructions: string;
   accentColor: string;
+  /** One of `ANSWER_VERBOSITY_LEVELS`, or `''` = inherit the installation default. */
+  verbosity: string;
 }
 
 const EMPTY_FORM: IdentityForm = {
@@ -70,6 +74,7 @@ const EMPTY_FORM: IdentityForm = {
   longDescription: '',
   instructions: '',
   accentColor: '',
+  verbosity: '',
 };
 
 const TABS = ['profile', 'character', 'boundaries', 'prompt'] as const;
@@ -85,6 +90,7 @@ function toForm(dto: AgentIdentityDto): IdentityForm {
     longDescription: i.long_description ?? '',
     instructions: i.instructions ?? '',
     accentColor: i.accent_color ?? '',
+    verbosity: i.verbosity ?? '',
   };
 }
 
@@ -100,7 +106,8 @@ function sameForm(a: IdentityForm, b: IdentityForm): boolean {
     a.shortDescription.trim() === b.shortDescription.trim() &&
     a.longDescription.trim() === b.longDescription.trim() &&
     a.instructions.trim() === b.instructions.trim() &&
-    a.accentColor.trim() === b.accentColor.trim()
+    a.accentColor.trim() === b.accentColor.trim() &&
+    a.verbosity === b.verbosity
   );
 }
 
@@ -207,6 +214,9 @@ export function AgentIdentity(props: AgentIdentityProps): React.ReactElement {
       long_description: trimmedOrNull(form.longDescription),
       instructions: trimmedOrNull(form.instructions),
       accent_color: trimmedOrNull(form.accentColor),
+      // The select can only hold a known level or '' (inherit); the guard keeps
+      // the wire type honest without a cast.
+      verbosity: isAnswerVerbosity(form.verbosity) ? form.verbosity : null,
       persona: compact(persona),
       quality: compact(quality),
     }),
@@ -430,6 +440,29 @@ export function AgentIdentity(props: AgentIdentityProps): React.ReactElement {
                       onChange={(e) => editField('accentColor', e.target.value)}
                     />
                     <p className={HINT_CLASS}>{t('fields.accentColorHint')}</p>
+                  </div>
+                  <div>
+                    <label
+                      className={LABEL_CLASS}
+                      htmlFor="agent-identity-verbosity"
+                    >
+                      {t('fields.verbosity')}
+                    </label>
+                    <select
+                      id="agent-identity-verbosity"
+                      className={FIELD_CLASS}
+                      value={form.verbosity}
+                      disabled={disabled}
+                      onChange={(e) => editField('verbosity', e.target.value)}
+                    >
+                      <option value="">{t('fields.verbosityInherit')}</option>
+                      {ANSWER_VERBOSITY_LEVELS.map((level) => (
+                        <option key={level} value={level}>
+                          {t(`fields.verbosityLevels.${level}`)}
+                        </option>
+                      ))}
+                    </select>
+                    <p className={HINT_CLASS}>{t('fields.verbosityHint')}</p>
                   </div>
                   <div className="md:col-span-2">
                     <label

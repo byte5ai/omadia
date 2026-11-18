@@ -895,14 +895,33 @@ export interface ToolRegistrationOptions {
    * a public endpoint, that means a duplicate is possible.
    */
   readonly writeCapabilities?: readonly WriteCapability[];
+  /**
+   * #1346 — per-turn availability. The kernel calls it inside the turn scope
+   * each time it builds the tool list and the system-prompt tool docs; `false`
+   * hides the tool (spec AND `promptDoc`) for that turn. On `registerHandler`
+   * it gates the `promptDoc` only: the wire spec of a handler-only tool is
+   * the kernel's to emit. Use it for a tool
+   * that only some channels can serve — e.g. one that needs a conversation the
+   * turn cannot name — so the model is never offered a call that can only
+   * fail. A throw counts as `false`. Absent ⇒ always offered.
+   *
+   * Advertisement only: dispatch is NOT gated, so the handler must still
+   * answer a call on such a turn with a truthful `Error:` result. Keep it
+   * cheap and synchronous — it runs once per model round — and give the same
+   * answer for the whole turn: the system prompt is built once per turn, the
+   * tool list every round, and a predicate that flips mid-turn would make the
+   * two disagree and break the cached prompt prefix.
+   */
+  readonly isAvailable?: () => boolean;
 }
 
 /**
  * Epic #470 C6 / G2 — how a contributed route is authenticated.
  *
  *  - `'session'` — **the default**. The kernel composes the same operator
- *    session gate core mounts at `/api`, per route. Under `/api` that is
- *    defence-in-depth (the blanket gate already ran); outside `/api`
+ *    session check core mounts at `/api`, per route — WITHOUT core's static
+ *    public-path exemptions (#1596), so no prefix opens it. Under `/api` that
+ *    is defence-in-depth (the blanket gate already ran); outside `/api`
  *    (`/diagrams`, `/documents`, `/p/…`) it is the only session gate there is.
  *    CSRF posture is core's own: a `SameSite=Lax` session cookie, no token
  *    layer — a browser never attaches the session to a cross-site request.
@@ -913,11 +932,43 @@ export interface ToolRegistrationOptions {
  *  - `'custom'` — same registration constraint as `'public'`; the plugin
  *    asserts it authenticates every request itself. A webhook verifying an
  *    HMAC over `req.rawBody` is the canonical case.
+ *  - `'teams-sso'` (#1620) — same registration constraint and the same
+ *    operator grant as `'public'`; the KERNEL authenticates every request
+ *    with a Microsoft Teams tab SSO token (`Authorization: Bearer`, from
+ *    `microsoftTeams.authentication.getAuthToken()`): RS256 signature against
+ *    Entra's keys, the tenant and app id of a bot of the installed
+ *    `@omadia/channel-teams`, issued to a Teams / Microsoft 365 client, a
+ *    delegated token of a tenant member (no guest), within its lifetime.
+ *    The handler finds the user on `req.teamsSsoUser`
+ *    ({@link TeamsSsoUser}). Any failure is the same 401 with no reason. PURE: an omadia session cookie does NOT open it — a
+ *    route that also wants operator access registers a second `'session'`
+ *    router on another prefix. A Teams tab's own page load carries no
+ *    bearer, so the HTML shell lives on a `'public'` route and stays
+ *    data-free; it fetches the data from the `'teams-sso'` route.
  *
  * There is deliberately no `'none'`: a plugin cannot self-declare its way out
  * of authentication, only ask the operator for a prefix and be granted it.
  */
-export type RouteAuthMode = 'session' | 'public' | 'custom';
+export type RouteAuthMode = 'session' | 'public' | 'custom' | 'teams-sso';
+
+/**
+ * #1620 — the Teams user an `auth: 'teams-sso'` route is serving. The kernel
+ * sets it as `req.teamsSsoUser` after the token verified; it is absent on every
+ * other route. Read it as
+ * `(req as { teamsSsoUser?: TeamsSsoUser }).teamsSsoUser`.
+ */
+export interface TeamsSsoUser {
+  /** Entra object id of the signed-in user (`oid`). */
+  readonly oid: string;
+  /** Entra tenant id (`tid`), lower-cased. One of the bots' tenants; guest
+   *  accounts are refused, so this is the user's own tenant. */
+  readonly tenantId: string;
+  /** App id of the bot the token was issued for. */
+  readonly appId: string;
+  /** `preferred_username` / `upn`, when the token carries one. Display and
+   *  logs only — authorise on `oid`, not on this. */
+  readonly upn?: string;
+}
 
 /**
  * Epic #470 C6 / G3 — how the request body reaches the contributed router.
@@ -1066,6 +1117,137 @@ export interface StatusAccessor {
 }
 
 /**
+ * Issue #1453 — WHY a plugin says the target system refused its credentials.
+ *
+ * `rejected` is the only verdict that turns a plugin red and withholds its
+ * tools from the orchestrator, so the kernel does not accept it on the
+ * plugin's word alone: a verdict that names no recognised cause here is
+ * demoted to `inconclusive`. The kernel cannot inspect the exchange itself —
+ * only the plugin knows its wire protocol — but it can insist the plugin
+ * state WHICH explicit refusal it saw, which is what stops a bare
+ * `catch { return { status: 'rejected' } }` from painting an outage as a dead
+ * key.
+ *
+ * - `http_401` — the target answered 401. The unambiguous case.
+ * - `http_403_auth` — a 403 whose body self-identifies as an authentication
+ *   failure. A plain 403 is NOT this: OpenAI answers 403 for "country, region,
+ *   or territory not supported" and Atlassian for permission scopes, neither
+ *   of which means the credential is wrong.
+ * - `protocol_auth_failure` — an auth refusal carried outside the HTTP status,
+ *   which is why this enum cannot be HTTP-only: Odoo answers a wrong API key
+ *   with `authenticate → false` over a 200.
+ *
+ * Timeouts, 5xx, DNS failures and anything the plugin is unsure about have no
+ * cause and must be reported as `inconclusive`.
+ */
+export type ConnectionRejectionCause =
+  | 'http_401'
+  | 'http_403_auth'
+  | 'protocol_auth_failure';
+
+/**
+ * Issue #1453 — core's own rules for the HTTP half of the classification
+ * above, so a plugin does not have to re-derive them (and cannot get them
+ * subtly wrong). Returns the cause for an exchange that is an explicit
+ * authentication refusal, and `undefined` for everything else — including
+ * every 5xx, every network failure and a plain 403.
+ *
+ * The 403 rule mirrors `providerCredentialVerifier.ts` in the middleware,
+ * which pays for it on the LLM side: only a 403 whose body says so is an auth
+ * verdict.
+ *
+ * ```ts
+ * // ctx.http (allow-list, SSRF guard, rate limit), never global fetch.
+ * const res = await ctx.http!.fetch(url, { headers });
+ * const cause = classifyHttpAuthFailure(res.status, await res.text());
+ * return cause
+ *   ? { status: 'rejected', cause, title: 'Nicht verbunden' }
+ *   : res.ok
+ *     ? { status: 'connected', title: 'Verbunden' }
+ *     : { status: 'inconclusive' };
+ * ```
+ */
+export function classifyHttpAuthFailure(
+  status: number,
+  bodyText?: string,
+): ConnectionRejectionCause | undefined {
+  if (status === 401) return 'http_401';
+  if (status !== 403) return undefined;
+  // Deliberately narrow: the body has to name authentication itself. Anything
+  // vaguer (a permission, a region, a plan limit) is not a credential verdict.
+  const body = (bodyText ?? '').toLowerCase();
+  const saysAuth =
+    body.includes('unauthenticated') ||
+    body.includes('authentication') ||
+    body.includes('invalid_token') ||
+    body.includes('invalid api key') ||
+    body.includes('invalid x-api-key');
+  return saysAuth ? 'http_403_auth' : undefined;
+}
+
+/**
+ * Issue #1453 — the verdict of a plugin's own connection check.
+ *
+ * Only the plugin knows its wire protocol, so only the plugin can classify the
+ * answer: Odoo answers a bad API key with `authenticate → false` over a 200,
+ * Confluence with a 401, another target with a 403 that does not mean "wrong
+ * key" at all. The kernel therefore does not inspect responses — it asks for a
+ * verdict and maps it, which is also why the three cases are named rather than
+ * expressed as a boolean.
+ *
+ * - `connected` — the target system accepted the credentials. Carry a `title`
+ *   (e.g. "Verbunden") to have it rendered as a positive badge with the
+ *   kernel-stamped time; without one the probe only clears a previous verdict.
+ * - `rejected` — the target system EXPLICITLY refused the credentials. This is
+ *   the only verdict that turns the plugin red and withholds its tools, so it
+ *   must mean "this key is wrong", never "the call did not succeed" — and it
+ *   MUST carry a `cause`, or the kernel demotes it to `inconclusive`.
+ * - `inconclusive` — anything else: timeout, 5xx, DNS failure, air-gapped
+ *   install, an endpoint that answered something unparseable. The operator
+ *   keeps whatever status they had; an outage must not accuse them of holding
+ *   a broken credential. Returning nothing, throwing, or running past the
+ *   kernel's time budget are all treated as this case.
+ *
+ * `title` and `detail` are rendered verbatim in the admin UI, so a plugin that
+ * supplies them owns their localisation (the kernel ships no copy of its own).
+ */
+export interface PluginConnectionVerdict {
+  readonly status: 'connected' | 'rejected' | 'inconclusive';
+  /**
+   * REQUIRED when `status` is `rejected`, and meaningless otherwise: which
+   * explicit refusal the plugin saw. A `rejected` verdict without a recognised
+   * cause is demoted to `inconclusive` by the kernel — see
+   * {@link ConnectionRejectionCause}. Derive the HTTP cases with
+   * {@link classifyHttpAuthFailure} rather than by hand.
+   */
+  readonly cause?: ConnectionRejectionCause;
+  /** Short label for the badge, in the operator's language. */
+  readonly title?: string;
+  /** One-line detail / next step, in the operator's language. */
+  readonly detail?: string;
+}
+
+/**
+ * Issue #1453 — optional module export, next to `activate`, that answers "do
+ * these credentials actually work?".
+ *
+ * The kernel calls it after a successful `activate()` (so the plugin's own
+ * client is already built), on every activation — fresh install, boot-time
+ * reactivation, and the reactivation that follows a setup-field edit — and
+ * from the operator-triggered `POST /api/v1/admin/runtime/installed/:id/verify`.
+ * It is bounded and its result can never fail the activation: a plugin whose
+ * probe throws or hangs stays up, it just does not get a verdict.
+ *
+ * The verdict is written through the SAME `ctx.status` channel the plugin may
+ * write itself, and it runs after `activate()`, so a probe verdict is the
+ * fresher of the two and wins. A plugin that reports an unrelated
+ * `needs_action` from `activate()` should therefore re-report it from here.
+ */
+export type VerifyConnection = (
+  ctx: PluginContext,
+) => Promise<PluginConnectionVerdict> | PluginConnectionVerdict;
+
+/**
  * Spec 005 — read-side of the kernel OAuth broker. `get(fieldKey)` returns a
  * currently-valid access token for the named `type:oauth` connection,
  * transparently refreshing it within a 5-minute expiry margin. The kernel runs
@@ -1101,6 +1283,52 @@ export interface OperatorAuthAccessor {
    * an email that fell off the admin whitelist all resolve `false`.
    */
   hasValidSession(cookieHeader: string | undefined): Promise<boolean>;
+
+  /**
+   * Issue #1329 — who the session belongs to. Resolves the principal behind a
+   * currently valid operator session (same verification as
+   * `hasValidSession`), or `null` for anything `hasValidSession` would refuse.
+   * Never throws. Optional so a plugin running on an older kernel degrades to
+   * "owner unknown" instead of failing to load.
+   */
+  sessionPrincipal?(cookieHeader: string | undefined): Promise<OperatorPrincipal | null>;
+
+  /**
+   * Issue #1329 — append one row to the kernel's `admin_audit` ledger for a
+   * privileged action the plugin just performed. The KERNEL resolves the actor
+   * from the cookie (a plugin cannot name somebody else as the actor) and
+   * stamps the calling plugin's id into the row. `action` must be one the
+   * kernel admits for the calling plugin and target (today the `api_key.*`
+   * lifecycle events of `@omadia/channel-api`); anything else is refused, as
+   * are payloads over 4 KB.
+   *
+   * Resolves `true` when the row was written, `false` when it was not (no
+   * valid session, action not admitted, no audit store in this deployment,
+   * or the write failed — the kernel logs why). Never throws: the caller has
+   * already performed the action and decides itself how loudly to complain.
+   */
+  recordAdminAction?(
+    cookieHeader: string | undefined,
+    entry: OperatorAdminAuditEntry,
+  ): Promise<boolean>;
+}
+
+/** Issue #1329 — the operator behind a session. `userId` is `users.id` (the
+ *  session's `uid` claim; absent on a session minted before that claim
+ *  existed), `email` the session email. */
+export interface OperatorPrincipal {
+  readonly userId?: string;
+  readonly email: string;
+}
+
+/** Issue #1329 — one plugin-originated `admin_audit` row. `before`/`after`
+ *  are stored verbatim as JSON; never put secrets (tokens, hashes) in them. */
+export interface OperatorAdminAuditEntry {
+  readonly action: string;
+  /** Entity ref, e.g. `api-key:<uuid>`. */
+  readonly target: string;
+  readonly before?: Readonly<Record<string, unknown>>;
+  readonly after?: Readonly<Record<string, unknown>>;
 }
 
 export class OAuthTokenError extends Error {
@@ -1488,6 +1716,16 @@ export interface MemoryAccessor {
   list(relPath: string): Promise<readonly MemoryEntryInfo[]>;
   /** True if the path resolves to an existing file OR directory. */
   exists(relPath: string): Promise<boolean>;
+  /**
+   * The plugin's own AGENT-INDEPENDENT tree — `/memories/agents/<pluginId>/`,
+   * the tree the manifest's `agent:<pluginId>:*` memory permission names.
+   * The accessor itself resolves per Agent (the active turn's slug, else
+   * `default`); this view is the same for every Agent and outside any turn,
+   * so plugin-wide state (a tenant-wide cache, learned data) has ONE
+   * location. Same path rules; no nested `pluginWide`. Absent on hosts that
+   * predate it — callers fall back to the per-Agent view.
+   */
+  readonly pluginWide?: MemoryAccessor;
 }
 
 export interface MemoryEntryInfo {
@@ -1799,6 +2037,67 @@ export interface LlmCompleteRequest {
    *  `permissions.llm.max_tokens_per_call` when manifest sets a smaller cap. */
   readonly maxTokens?: number;
   readonly temperature?: number;
+  /** Reasoning effort (normalized, mirrors `@omadia/llm-provider-api`
+   *  `EffortLevel`). Providers/models without the knob ignore it. */
+  readonly effort?: 'low' | 'medium' | 'high' | 'xhigh';
+  /** `'off'` = no extended reasoning where the model allows it (a hint,
+   *  ignored elsewhere — pair it with `effort: 'low'`). For latency-critical
+   *  single calls. */
+  readonly thinking?: 'off';
+  /**
+   * Ask for a schema-constrained JSON response (#1219) instead of instructing
+   * the model to emit JSON in the prompt.
+   *
+   * `schema` is a JSON Schema object, forwarded to the provider untouched.
+   * Providers that have no such channel IGNORE it rather than failing, so a
+   * plugin must still parse the result tolerantly — this narrows the output,
+   * it does not guarantee it everywhere.
+   *
+   * On Anthropic the call FAILS (HTTP 400) for a model without
+   * structured-output support, and for a schema using keywords the API cannot
+   * compile: `minimum`/`maximum`, `minLength`/`maxLength`, or an object
+   * without `additionalProperties: false`. Nothing validates the schema before
+   * it is sent. And a refusal ({@link LlmCompleteResult.refusal}) still returns
+   * normally — its `text` need not match the schema.
+   */
+  readonly outputFormat?: {
+    readonly type: 'json_schema';
+    readonly schema: Record<string, unknown>;
+  };
+  /**
+   * Tools the model may call (1.44.0). Plugins use them for structured
+   * output: define ONE tool whose `inputSchema` is the wanted shape and force
+   * it with {@link LlmCompleteRequest.toolChoice}; the call's input comes back
+   * parsed in {@link LlmCompleteResult.toolCalls}. Unlike `outputFormat`, a
+   * tool `inputSchema` needs no `additionalProperties: false` — free-form
+   * objects are allowed. The host runs no tool loop: a call is returned, never
+   * executed.
+   */
+  readonly tools?: ReadonlyArray<LlmToolDefinition>;
+  /**
+   * Force a call of the named tool (1.44.0) — the answer is then that tool
+   * call, with no prose. A provider or model that cannot force a tool (on
+   * Anthropic e.g. `claude-opus-5-5`) degrades to "the model may call it",
+   * so a plugin must still accept a text-only answer. Forcing a tool is
+   * incompatible with extended thinking on Anthropic: pair it with
+   * `thinking: 'off'`.
+   */
+  readonly toolChoice?: { readonly name: string };
+}
+
+/** A tool definition for {@link LlmCompleteRequest.tools} (1.44.0). */
+export interface LlmToolDefinition {
+  readonly name: string;
+  readonly description: string;
+  /** JSON Schema of the tool input, forwarded to the provider untouched. */
+  readonly inputSchema: Record<string, unknown>;
+}
+
+/** One tool call of the model's answer (1.44.0). */
+export interface LlmToolCall {
+  readonly name: string;
+  /** the tool input as the provider parsed it (normally a JSON object) */
+  readonly input: unknown;
 }
 
 /** One discovered MCP tool, as the host's manager reports it (issue #458). */
@@ -1859,19 +2158,35 @@ export interface LlmCompleteResult {
   readonly outputTokens: number;
   /** Provider-neutral completion-end signal — branch on THIS, not the legacy
    *  vendor `stopReason`. `end_turn`/`stop_sequence` collapse to `'stop'`;
-   *  `tool_use` → `'tool_calls'`. Always populated by the host. */
+   *  `tool_use` → `'tool_calls'`. A refusal is a `'stop'` too: check
+   *  {@link LlmCompleteResult.refusal} before treating an empty or short
+   *  `text` as the model's answer. Always populated by the host. */
   readonly finishReason: 'stop' | 'tool_calls' | 'max_tokens';
   /**
    * @deprecated Anthropic-specific stop reason, kept for v1 back-compat. Use
    * `finishReason` instead — it is provider-neutral. Still populated by the
    * host (the Anthropic adapter passes its raw value through) and remains
-   * valid for installs pinned to Anthropic.
+   * valid for installs pinned to Anthropic. `'refusal'` (1.22.0) when the
+   * model's safety classifiers declined the request — formerly reported as
+   * `'end_turn'`.
    */
   readonly stopReason:
     | 'end_turn'
     | 'max_tokens'
     | 'stop_sequence'
-    | 'tool_use';
+    | 'tool_use'
+    | 'refusal';
+  /**
+   * Set when the model's safety classifiers declined the request (#1219). The
+   * call still succeeds, but `text` is then empty or only a fragment — not an
+   * answer. `category` is the provider's reason (`bio`, `cyber`, …), an OPEN
+   * set that may be absent: never switch on it exhaustively. Absent on every
+   * other outcome.
+   */
+  readonly refusal?: { readonly category?: string };
+  /** The model's tool calls (1.44.0), present only when the request offered
+   *  {@link LlmCompleteRequest.tools} and the model called at least one. */
+  readonly toolCalls?: ReadonlyArray<LlmToolCall>;
 }
 
 export class LlmServiceUnavailableError extends Error {

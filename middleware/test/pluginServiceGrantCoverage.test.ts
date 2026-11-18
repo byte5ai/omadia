@@ -442,11 +442,32 @@ function gatedServiceCallVerb(
   if (!ts.isPropertyAccessExpression(callee)) return undefined;
   const verb = callee.name.text;
   if (!GATED_SERVICE_VERBS.has(verb)) return undefined;
-  const target = callee.expression;
+  const target = unwrapTypeOnlyExpression(callee.expression);
   if (!ts.isPropertyAccessExpression(target) || target.name.text !== 'services') {
     return undefined;
   }
   return verb as 'get' | 'getOptional' | 'replace';
+}
+
+/**
+ * Strip wrappers that change the static type but not the runtime receiver:
+ * `(ctx.services as X | undefined)?.get(...)` is the same gated call as
+ * `ctx.services.get(...)`. Missing this hid the ui-orchestrator's
+ * `privacyRedact` lookups from the scanner, so the undeclared grant shipped
+ * and every datasetId canvas publish threw at runtime.
+ */
+function unwrapTypeOnlyExpression(expression: ts.Expression): ts.Expression {
+  let current = expression;
+  while (
+    ts.isParenthesizedExpression(current) ||
+    ts.isAsExpression(current) ||
+    ts.isSatisfiesExpression(current) ||
+    ts.isNonNullExpression(current) ||
+    ts.isTypeAssertionExpression(current)
+  ) {
+    current = current.expression;
+  }
+  return current;
 }
 
 function resolveServiceName(

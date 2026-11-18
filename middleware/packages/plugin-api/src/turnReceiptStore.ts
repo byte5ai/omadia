@@ -8,8 +8,10 @@
  * (`turn_receipts`, migration `0039`) for every turn that produces one. The
  * privacy guard's `finalizeTurn()` produces one only when the shield acted in
  * the turn (a dataset was interned, a bypass or a tool's structured payload was
- * recorded, or the prompt was masked); a turn without shield activity has no
- * receipt and leaves no row (#1081).
+ * recorded, the prompt was masked, a tool error's text was withheld or
+ * redacted, or an answer-verifier request was sent under the turn's privacy
+ * view); a turn without shield activity has no receipt and leaves no row
+ * (#1081).
  *
  * Deliberately NOT the RunTrace: the trace is best-effort telemetry behind an
  * optional graph sink (`runTraceObservability.ts` documents why it must not be

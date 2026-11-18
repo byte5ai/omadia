@@ -339,6 +339,34 @@ describe('validateSpecForCodegen — ui_routes cross-checks', () => {
     assert.ok(issues.some((i) => i.code === 'ui_route_free_form_missing_render_slot'));
   });
 
+  it('#1620 — reserves /teams for the Teams-tab surface', () => {
+    for (const path of ['/teams', '/teams/x']) {
+      assert.throws(() =>
+        parseAgentSpec({
+          ...validSpecBase,
+          ui_routes: [{ ...validRouteBase, path, render_mode: 'library', ui_template: 'kpi-tiles' }],
+        }),
+      );
+    }
+    parseAgentSpec({
+      ...validSpecBase,
+      ui_routes: [{ ...validRouteBase, path: '/teamsboard', render_mode: 'library', ui_template: 'kpi-tiles' }],
+    });
+  });
+
+  it('#1620 — flags a full public_paths list: the Teams tab needs one more entry', () => {
+    const full = Array.from({ length: 16 }, (_, i) => `/api/plugins/x/hook${String(i)}`);
+    const route = { ...validRouteBase, render_mode: 'library', ui_template: 'kpi-tiles' };
+    const fullSpec = buildSpec(route, { permissions: { public_paths: full } });
+    assert.ok(
+      validateSpecForCodegen(fullSpec).some((i) => i.code === 'ui_route_public_paths_full'),
+    );
+    const roomSpec = buildSpec(route, { permissions: { public_paths: full.slice(1) } });
+    assert.ok(
+      !validateSpecForCodegen(roomSpec).some((i) => i.code === 'ui_route_public_paths_full'),
+    );
+  });
+
   it('rejects interactive=true for library mode (B.13 only allows react-ssr)', () => {
     const spec = buildSpec({
       ...validRouteBase,

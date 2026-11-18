@@ -18,15 +18,18 @@
  *     `messages/GLOSSARY.md` and `scripts/i18n-identical-allowlist.json`.
  *     Only `translate` is work; the rest is documented non-work.
  *
- * This is a report, not a gate: it always exits 0. The gate is the per-file
- * ratchet in `app/_lib/i18n-structural.test.ts` — a file is added to its list
- * once it is clean, so the category cannot silently grow back.
+ * By default this is a report and exits 0. The per-file gate is the ratchet in
+ * `app/_lib/i18n-structural.test.ts`. `--ceiling <file>` (#1401, run in CI as
+ * `npm run i18n:literals:check`) adds a whole-app ratchet: it fails when a
+ * reason's count exceeds the ceiling in that JSON file, and asks for the
+ * ceiling to be lowered when the count has dropped below it.
  *
  * Usage:
  *   node scripts/i18n-literal-scan.mjs                 # summary + per-file counts
  *   node scripts/i18n-literal-scan.mjs --reason translate   # only real work
  *   node scripts/i18n-literal-scan.mjs --file admin/usage/page.tsx
  *   node scripts/i18n-literal-scan.mjs --json          # machine-readable
+ *   node scripts/i18n-literal-scan.mjs --ceiling scripts/i18n-literal-ceiling.json
  */
 import { readFileSync } from 'node:fs';
 import { globSync } from 'node:fs';
@@ -324,6 +327,7 @@ function main() {
   const asJson = argv.includes('--json');
   const wantReason = flag('reason');
   const wantFile = flag('file');
+  const ceilingPath = flag('ceiling');
 
   const files = globSync('**/*.tsx', { cwd: APP_DIR })
     .filter((f) => !f.includes('.test.') && !f.includes('__tests__'))
@@ -371,6 +375,29 @@ function main() {
       console.log(`  ${h.file}:${String(h.line)}  [${h.reason}/${h.kind}]  ${JSON.stringify(h.text)}`);
     }
   }
+
+  if (ceilingPath !== undefined) checkCeiling(resolve(process.cwd(), ceilingPath), byReason);
+}
+
+/**
+ * #1401 — the ratchet. Counts may only go down: above the ceiling fails; below
+ * it fails too, with the number to write, so the gain is locked in by the PR
+ * that made it rather than silently given back by the next one.
+ */
+function checkCeiling(path, byReason) {
+  const ceiling = JSON.parse(readFileSync(path, 'utf-8'));
+  const problems = [];
+  for (const [reason, max] of Object.entries(ceiling)) {
+    if (reason.startsWith('_')) continue;
+    const n = byReason[reason] ?? 0;
+    if (n > max) problems.push(`${reason}: ${String(n)} > ceiling ${String(max)} — translate the new literal(s) or mark them (see messages/GLOSSARY.md)`);
+    else if (n < max) problems.push(`${reason}: ${String(n)} < ceiling ${String(max)} — lower "${reason}" to ${String(n)} in ${path}`);
+  }
+  if (problems.length > 0) {
+    console.error(`\ni18n-literal ceiling:\n  ${problems.join('\n  ')}`);
+    process.exit(1);
+  }
+  console.log('\ni18n-literal ceiling: OK');
 }
 
 // Only run the report when invoked as a CLI; the test imports `scanFile`.
