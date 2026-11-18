@@ -35,6 +35,7 @@ export type FacilitatorOmission =
   | 'tool_grant'
   | 'memory'
   | 'default_agent'
+  | 'channel_binding'
   | 'persona_skill'
   | 'fast_path'
   | 'agent_to_agent'
@@ -51,6 +52,8 @@ const OMISSION_REASON: Record<FacilitatorOmission, string> = {
     'a facilitator has no general memory; its only memory is the record of each facilitation',
   default_agent:
     'a facilitator cannot be the default agent; it never answers for or as someone',
+  channel_binding:
+    'a facilitator speaks only as its own channel identity; a channel binding would let it answer through another bot',
   persona_skill: 'a facilitator has no persona skills; it never answers as someone else',
   fast_path: 'a facilitator does not use the fast path',
   agent_to_agent:

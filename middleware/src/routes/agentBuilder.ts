@@ -2747,6 +2747,7 @@ async function createEdge(
 
   switch (kind) {
     case 'channel_bind': {
+      assertNotFacilitator(agent, 'channel_binding');
       const { channelType, channelKey } = parseChannel(source);
       await l.config.createChannelBinding(agent.id, { channelType, channelKey });
       return { id: `channel_bind:${channelType}:${channelKey}`, kind, source, target };

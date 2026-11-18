@@ -18,6 +18,7 @@ import type { AgentGraphStore, ConfigStore, OrchestratorRegistry } from '@omadia
 
 import { createAgentBuilderRouter } from '../src/routes/agentBuilder.js';
 import { createOperatorAgentsRouter } from '../src/routes/operatorAgents.js';
+import { createOperatorChannelsRouter } from '../src/routes/operatorChannels.js';
 import { listenLoopback } from './_helpers/listenLoopback.js';
 
 const ENGINE = '@omadia/agent-facilitator';
@@ -76,6 +77,9 @@ describe('facilitator omissions: operator routes', () => {
       listAgentPlugins: () => Promise.resolve([]),
       listAllAgentPlugins: () => Promise.resolve([]),
       listChannelBindings: () => Promise.resolve([]),
+      listChannelBindingsForAgent: () => Promise.resolve([]),
+      listChannelIdentities: () => Promise.resolve([]),
+      resolveBinding: () => Promise.resolve(undefined),
       getAgentChannelPolicy: () => Promise.resolve(undefined),
       createAgent: (input: { slug: string; name: string; kind?: FakeAgent['kind'] }) => {
         const created = agent(input.slug, input.kind ?? 'standard');
@@ -141,6 +145,14 @@ describe('facilitator omissions: operator routes', () => {
             },
           } as never,
         }),
+      }),
+    );
+    app.use(
+      '/channels',
+      createOperatorChannelsRouter({
+        getConfigStore: () => store(),
+        getRegistry: () => registry,
+        getDirectoryRegistry: () => ({ list: () => [], types: () => [] }) as never,
       }),
     );
     app.use(
@@ -373,6 +385,41 @@ describe('facilitator omissions: operator routes', () => {
       ['instructions:partiality', 'persona.axes.sarcasm:persona_axis_above_bound', 'quality.sycophancy:sycophancy_guard_off'],
     );
     assert.equal(identitySaves, 0, 'nothing was stored');
+  });
+
+  it('channel bindings are refused: agent bindings, channel rebind and the canvas edge', async () => {
+    assertRefused(
+      await call('PUT', '/agents/mara/bindings', {
+        bindings: [{ channel_type: 'teams', channel_key: '28:default-bot' }],
+      }),
+      'channel_binding',
+      /speaks only as its own channel identity/,
+    );
+    assertRefused(
+      await call('PUT', '/channels/binding', {
+        channel_type: 'teams',
+        channel_key: '28:default-bot',
+        agent_slug: 'mara',
+      }),
+      'channel_binding',
+      /answer through another bot/,
+    );
+    assertRefused(
+      await call('POST', '/builder/agents/mara/graph/edges', {
+        kind: 'channel_bind',
+        source: 'channel:teams:28:default-bot',
+        target: 'agent:id-mara',
+      }),
+      'channel_binding',
+      /own channel identity/,
+    );
+    // Clearing stale rows stays possible, and a standard agent is unaffected.
+    assert.equal((await call('PUT', '/agents/mara/bindings', { bindings: [] })).status, 200);
+    writes = [];
+    const hr = await call('PUT', '/agents/hr/bindings', {
+      bindings: [{ channel_type: 'teams', channel_key: '28:default-bot' }],
+    });
+    assert.equal(hr.status, 200, JSON.stringify(hr.json));
   });
 
   it('persona skills are refused', async () => {

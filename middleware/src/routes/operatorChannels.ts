@@ -3,6 +3,7 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 
 import {
+  assertNotFacilitator,
   ConfigValidationError,
   type ChannelIdentityRow,
   type ConfigStore,
@@ -10,6 +11,7 @@ import {
 } from '@omadia/orchestrator';
 
 import type { ChannelDirectoryRegistry } from '../channels/channelDirectoryRegistry.js';
+import { respondFacilitatorRefusal } from '../platform/facilitatorGuard.js';
 
 /**
  * Operator-facing channel dashboard (`/operator/channels`).
@@ -111,6 +113,7 @@ export function createOperatorChannelsRouter(
   }
 
   function badRequest(res: Response, err: unknown): void {
+    if (respondFacilitatorRefusal(res, err)) return;
     if (err instanceof ConfigValidationError) {
       res
         .status(409)
@@ -241,6 +244,8 @@ export function createOperatorChannelsRouter(
         res.status(404).json({ error: 'agent_not_found', slug: body.agent_slug });
         return;
       }
+      // #2060 — never a binding to a facilitator; it has its own bot or none.
+      assertNotFacilitator(target, 'channel_binding');
 
       // A PROVISIONED BOT IS NOT A FREE CHANNEL KEY.
       //

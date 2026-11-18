@@ -380,3 +380,34 @@ test('T029: ensureFallbackAgent refuses to invent a fallback when operator left 
   assert.equal(createCalls, 0);
   assert.equal(setFallbackCalls, 0);
 });
+
+test('#2060: a binding to a facilitator is rejected at resolve time, never answered through a foreign bot', async () => {
+  const mara = '00000000-0000-0000-0000-0000000000f1';
+  const registry = await buildRegistry({
+    ...twoAgentSnap,
+    agents: [...twoAgentSnap.agents, agent('mara', mara, { kind: 'facilitator' })],
+    channelBindings: [
+      ...twoAgentSnap.channelBindings,
+      // The default bot's key, bound to the facilitator by hand.
+      { channelType: 'teams', channelKey: '28:default-bot', agentId: mara, createdAt: new Date(0) },
+    ],
+    // …while its OWN bot routes to it.
+    channelIdentities: [{ channelType: 'teams', channelKey: '28:mara-bot', agentId: mara }],
+  } as ConfigSnapshot);
+  const logs: Array<{ msg: string; fields?: Record<string, unknown> }> = [];
+  const resolver = new ChannelResolver({
+    registry,
+    log: (msg, fields) => logs.push({ msg, ...(fields ? { fields } : {}) }),
+  });
+
+  const viaBinding = resolver.resolve('teams', '28:default-bot');
+  assert.equal(viaBinding.decision, 'reject');
+  assert.equal(viaBinding.chatAgent, undefined);
+  assert.equal(logs.at(-1)?.fields?.['match'], 'binding-to-facilitator');
+
+  const viaIdentity = resolver.resolve('teams', '28:mara-bot');
+  assert.equal(viaIdentity.decision, 'bound');
+  assert.equal(viaIdentity.agent?.agent.slug, 'mara');
+  // A standard agent's binding is untouched.
+  assert.equal(resolver.resolve('teams', '28:public-bot').agent?.agent.slug, 'public');
+});

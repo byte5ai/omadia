@@ -3961,6 +3961,9 @@ export function createOperatorAgentsRouter(
         res.status(404).json({ error: 'not_found' });
         return;
       }
+      // #2060 — a facilitator speaks only as its own identity, which is not
+      // a binding. An empty set stays allowed, so stale rows can be cleared.
+      if (body.bindings.length > 0) assertNotFacilitator(existing, 'channel_binding');
       const current = await live.store.listChannelBindingsForAgent(existing.id);
       const desired = new Set(
         body.bindings.map((b) => `${b.channel_type}|${b.channel_key}`),
