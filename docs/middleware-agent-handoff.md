@@ -2717,6 +2717,14 @@ Conversation-Refs kommen aus `conductorWiring.channelBindingStore.getMany`.
 
 ### Zero-Touch-Facilitator-Setup (#330 C2a)
 
+> **Abgelöst durch native Facilitators (#2043, 2026-11-18).** Die Services
+> `agentProvisioning`, `conversationBindings` und `conductorRoleAssignments`
+> sowie `src/platform/agentSetupService.ts` und
+> `src/conductor/scopedRoleAssignments.ts` sind entfernt. Geblieben ist nur
+> der Retry-/Ablauf-Sweep über `conductor_ephemeral_attachments`
+> (`src/platform/ephemeralAttachmentSweep.ts`), den Diskussionen brauchen.
+> Der Text unten beschreibt den früheren Stand.
+
 Drei neue deny-by-default Kernel-Services (Manifest-`optional_requires` ist
 das Gate, kein Katalogeintrag):
 
@@ -2809,6 +2817,12 @@ Privacy-Choke-Points. Tests: `test/transcribeRecordingTool.test.ts`,
 
 ### Facilitation-Admin-Lens (#330 Runde 4)
 
+> **Bleibt (#2043).** Die Lens listet jeden laufenden Ephemeral-Run, also
+> auch Agenten-Diskussionen, und ist deren einziger Stopp-Weg für Operatoren.
+> Native Facilitations erscheinen hier nicht mehr (sie sind keine
+> Conductor-Runs); ihre Ansicht liefert das Engine-Plugin. Name und Routen
+> (`/facilitations`) sind historisch.
+
 Ephemere Workflows sind bewusst aus der Library gefiltert — laufende
 Facilitations waren dadurch im Admin unsichtbar (Feldbefund: zwei Instanzen
 im selben Meeting, nicht stoppbar). Neue Operator-Routen (beide hinter
@@ -2851,6 +2865,11 @@ Model-Paraphrase — der autoritative DoD-Text bleibt daneben stehen. Läufe,
 die vor Pattern v3 gestartet sind, liefern `items: null` → nur DoD-Liste.
 
 ### Timer-Steps + DoD-Loops + conversationSend (#330 C3)
+
+> **Teilweise abgelöst (#2043).** Das Pattern `facilitation.json` ist
+> entfernt, `conversationSend` postet nur noch als eigene Identität des Agents
+> (Berechtigung: Message-Subscription). Timer-Steps und DoD-Loops des
+> Conductors bleiben. Der Text unten beschreibt den früheren Stand.
 
 Neuer Step-Kind **`timer`** (`conductor-core` types/schema/validate;
 Executor parkt via Await-Maschinerie mit `principal_kind='timer'`, Migration
@@ -9380,3 +9399,266 @@ keines mehr bekommen.
 
 Security: `docs/security-architecture.md` §7.
 Tests: `test/conductorReservedContextKeys.test.ts`.
+
+
+## Native Facilitators: Kernel-Seite (Epic #2043, 2026-11-18)
+
+Ein Facilitator ist eine eigene Art von Agent (`agents.kind = 'facilitator'`,
+Migration `0067_agent_kind`), der nur moderiert. Aufteilung nach
+Owner-Entscheidung „plugin-first“: Engine (Tabellen, Lebenszyklus, Zählung,
+Scheduler) im Plugin `omadia-agent-facilitator`, der Kernel bleibt dünn und
+enthält **keine** Facilitation-Tabellen. Spec: `specs/2043-native-facilitators/spec.md`.
+
+### Kind und erzwungene Auslassungen (#2060)
+
+- `packages/harness-orchestrator/src/registry/agentKind.ts`: `AgentKind`,
+  `assertNotFacilitator(agent, omission)` als **der** Seam für „nicht für
+  Facilitators“ (Epic #2042 nutzt ihn für Konsultation in beide Richtungen),
+  `FacilitatorOmissionError` (`code: 'facilitator_omission'`).
+- Die Art ist nach dem Anlegen fix (DB-Trigger). Ein Facilitator ist nie der
+  Default-Agent (DB-Trigger plus Route).
+- **Engine-Bindung per Manifest-Capability, keine Plugin-ID im Kernel:**
+  `src/platform/facilitatorGuard.ts` sucht das eine installierte, nicht
+  fehlerhafte Plugin, das `facilitationEngine@1` unter `provides` deklariert.
+  Kein oder mehr als ein Provider: es lässt sich nichts granten. Die Registry
+  schneidet die Grant-Zeilen eines Facilitators zusätzlich mit diesem Plugin
+  (`PluginCapabilityLookup.facilitatorGrantable`).
+- **Schreibzeit (Routen):** `operatorAgents.ts` und `agentBuilder.ts` lehnen
+  ab: fremde Plugin-Grants, Context-Memory-Modi, Default-Agent,
+  Agent-to-Agent (Schalter und Chat-Policy), Persona-Skills, Sub-Agents,
+  Tool-/MCP-Grants, Schedules. Antwort `409 facilitator_omission`.
+- **Laufzeit (`buildOrchestratorForAgent`, `AgentRuntimeConfig.kind`):** kein
+  Memory-Tool/-Binder, kein Recall (`contextRetriever`, `sessionBriefing`),
+  kein Capture (`sessionLogger`, Knowledge Graph), kein Learning
+  (`factExtractor`, `excerptExtractor`, Auto-Promote), keine Kalender-Tools,
+  keine Persona-Skills, kein Fast Path. `Orchestrator.agentKind` dreht die
+  Grant-Regel um: ein Facilitator bekommt **nur** Tools seiner gegranteten
+  Plugins (kein Owner oder kein Grant-Set = verweigert).
+- **Assistenz-Verweigerung:** `facilitatorAgent.ts` umschließt den
+  `ChatAgent`. Ein Turn erreicht das Modell nur aus einer Gruppenkonversation
+  (`origin.scope.kind` `conversation`/`group`, dort bittet jemand um eine
+  Moderation) oder als Engine-Turn (`runAsEngineTurn`). Alles andere (1:1,
+  Web-Chat, API, Workflow-Step, unbekannte Herkunft) bekommt eine feste,
+  freundliche Absage ohne Modellaufruf.
+- Das Fallback-Onboarding kann Facilitators nicht treffen (Fallback ist nie
+  ein Facilitator); Plugin-getriebenes Provisioning gibt es nicht mehr.
+
+### Neutralitätsvertrag (Spec §2.4)
+
+- Text: `registry/facilitatorNeutrality.ts` (`FACILITATOR_NEUTRALITY_BLOCK`).
+  Er wird an drei Stellen als **letzter** Abschnitt gesetzt:
+  `composeAgentIdentityPrompt` (Save), `recomposeStaleIdentities` (Boot) und
+  beim Bauen des Agents nach Name und Steckbrief. Damit trägt ihn auch ein
+  Facilitator ohne gespeicherte Identität.
+- `src/services/facilitatorContract.ts`: Persona-Grenzen (`sarcasm` ≤ 20,
+  `drama` ≤ 30, `humor` ≤ 60, `risk_tolerance` ≤ 60, `warmth` ≥ 30,
+  Sycophancy-Guard nie `off`) und ein deterministischer Regel-Katalog für
+  Operator-Anweisungen (Deutsch und Englisch, kein Modellaufruf). Verstoß:
+  `422 facilitator_contract_violation` mit `issues[]`. Der Katalog ist eine
+  Hilfe beim Speichern, nicht die Durchsetzung: die leistet der Block.
+
+### Authentifizierte eingehende Nachrichten (`conversationMessages@1`)
+
+Code: `middleware/src/channels/conversationMessages/` (`store.ts` Regeln und
+In-Memory-Store, `pgStore.ts`, `hub.ts`, `service.ts`, `purgeJob.ts`,
+`wiring.ts`). Migration `0068_conversation_messages`. Nur mit Postgres; ohne
+Datenbank sind beide CoreApi-Methoden nicht definiert und das Mention-Gate
+der Adapter gilt immer.
+
+- **Kanal-Seite:** `CoreApi.emitConversationMessage(event)` speichert nur,
+  wenn die empfangende Identität (`receivedByChannelKey`) eine Subscription
+  für die Konversation hält, sonst wird verworfen. Bei N Bots in einem Chat
+  kommt also nur die Kopie der abonnierten Identität in den Store.
+  `CoreApi.isAllMessagesSubscribed(type, conversation, channelKey)` ist ein
+  synchroner Map-Lookup, wirft nie; Channel-Keys werden auf beiden Seiten
+  kleingeschrieben.
+- **Subscribe** lehnt ab mit `not_facilitator`, `no_identity` (eigene
+  Kanal-Identität, nie der Default-Bot), `not_present` (Teams: Bot hat eine
+  Conversation-Reference im Chat, `botPresenceStore`; sonst der Invite-Index
+  `observedConversationInvites`), `not_ready` (Readiness-Provider des Kanals,
+  falls vorhanden; die fehlenden Codes stehen in der Message), `unavailable`.
+  Nur das Engine-Plugin (Capability `facilitationEngine@1`) wird bedient und
+  nur für eigene Subscriptions.
+- **Autorschaft** kommt ausschließlich aus dem Plattform-Event.
+  `author.principalId` ist `user:<channel-user-id kleingeschrieben>`; das ist
+  derselbe Wert, den `targetedSend` als Principal nimmt.
+- **Revisionen vergibt der Kernel** (`created` = 0, jede Bearbeitung oder
+  Löschung = höchste gespeicherte + 1). Der Zähler des Adapters ist nur ein
+  Hinweis (`adapter_revision`), weil er nach einem Neustart wieder bei 1
+  beginnt. Reaktionen und Card-Antworten tragen die Revision, auf die sie sich
+  beziehen, und sind keine Revision der Nachricht.
+- **Idempotenz:** `dedupe_key` pro Plattform-Event; eine erneut zugestellte
+  Nachricht ist kein zweiter Datensatz.
+- **Lesen:** `getEvent` liefert `undefined` für fremde Konversationen und für
+  Nachrichten vor der Subscription (eine neue Subscription ist eine neue Zeile
+  und sieht nichts von der vorigen). `listSince({after})` liefert strikt nach
+  dem Cursor in Speicherreihenfolge, `nextCursor` nur wenn es eine weitere
+  Seite gibt. Live-Zustellung at-least-once (`onMessage`), ein fehlgeschlagener
+  Handler holt über `listSince` auf.
+- **Aufbewahrung:** Die Frist beginnt erst mit `unsubscribe`
+  (`CONVERSATION_MESSAGES_GRACE_MS`), zusätzlich ein Höchstalter je Event
+  (`CONVERSATION_MESSAGES_MAX_AGE_DAYS`). Der Purge-Tick lädt auch den
+  Subscription-Cache neu (mehrere Maschinen).
+- **Kein zweiter Turn:** Hält die Engine die Subscription, unterdrückt der
+  Kernel den vom Kanal gestarteten Turn dieses Agents in dieser Konversation
+  (`facilitatorAgent.ts`, Service `facilitatorConversations@1`): leere Antwort,
+  kein Modellaufruf. Der Adapter sollte den Turn dort gar nicht starten.
+- **Engine-Status:** `GET /api/v1/operator/agents/facilitation-engine`
+  (`src/routes/facilitationEngineStatus.ts`) liest den Zustand, den das
+  Engine-Plugin unter dem Service `facilitationEngine` veröffentlicht.
+
+### Senden als eigene Identität
+
+Code: `middleware/src/channels/ownIdentitySend.ts` (gemeinsame Regeln),
+`conversationSendService.ts` (`asOwnIdentity`), `ownIdentityDirectSend.ts`
+(`targetedSend` mit `asAgentSlug`), `sendServicesWiring.ts` (beide Services
+als Per-Caller-Fassade, damit der Kernel weiß, welches Plugin ruft).
+
+- Die Identität kommt aus `registry.channelIdentityFor(slug, channelType)`,
+  also nur die eigene. Ohne eigene Identität: `no_identity`. Es gibt keinen
+  Rückfall auf den Default-Bot, auch nicht mit Ephemeral-Attachment.
+- **Berechtigung = Message-Subscription** des rufenden Plugins für genau diese
+  Konversation (Gruppenpost) bzw. für irgendeine Konversation, in der der
+  Empfänger vorkommt (DM): Roster des Kanals oder Autor einer gespeicherten
+  Nachricht. Sonst `not_permitted`. Rollen-Principals sind für
+  Eigen-Identitäts-DMs ungültig.
+- **Mentions:** `user` als `user:<id>` oder kanal-native ID; der Kernel löst
+  auf die `ChannelUserRef` des Rosters auf (Teams: Entra-Objekt-ID, auch wenn
+  die bot-spezifische `29:`-ID genannt wurde). Unbekannte Personen bleiben
+  Klartext.
+- **Poll:** `message.poll` wird im Kernel validiert (2 bis 6 Optionen,
+  eindeutige IDs) und durchgereicht; `delivered` trägt `messageId` und
+  `cardMessageId`.
+- **DM-Erstkontakt:** der Provider bekommt `target.userRef` und
+  `opts.asChannelKey`; `app_not_installed` und `blocked` kommen unverändert
+  zurück und werden vom Kernel nicht wiederholt.
+- Ohne die neuen Flags verhalten sich beide Services wie vorher (Diskussionen,
+  Facilitator 0.7.x).
+
+### Tool-Call-Kontext und `agentTurn@1`
+
+- **`NativeToolCallContext`** (zweites Argument jedes Plugin-Tool-Handlers):
+  `agentSlug`, `channelType`, `conversationId` (kanal-nativ, ohne
+  Session-Scope-Präfix), `inboundEventId`, `callerPrincipalId`
+  (`user:<id kleingeschrieben>`), `callerUserRef` (`kind`/`id` wie
+  `record.author`). Alles vom Kernel gesetzt, nie aus Tool-Argumenten.
+  Code: `packages/harness-orchestrator/src/toolCallContext.ts`. Der
+  In-Process-Loop liest es aus `TurnContextValue.toolCall`, die
+  Subscription-CLI bindet es im wiederhergestellten Snapshot
+  (`CliChatAgent.captureTurnContext`). Die Stores sind prozessweit
+  (`processWideStore`), weil das Paket doppelt geladen sein kann.
+- **`agentTurn`** (`src/agents/agentTurnService.ts`, `agentTurnWiring.ts`):
+  nur das Engine-Plugin, nur für einen Facilitator, dem es gegrantet ist.
+  Der Turn läuft über das normale `ChatAgent`-Bundle des Agents
+  (Neutralitätsblock, Model-Policy, Privacy Shield, Receipts, Verifier);
+  `engineContext` ist der `extraSystemHint` des Turns, steht also hinter der
+  Identität und wird maskiert. Rückgabe ist der Text, gepostet wird nichts.
+  Mit `inboundEventId` liest der Kernel das gespeicherte Event; der Aufrufer
+  des Turns ist dessen Autor. Verlauf je `sessionKey` nur im Speicher
+  (20 Turns); der dauerhafte Zustand ist der der Engine.
+  Budget: `AGENT_TURN_MAX_PER_MINUTE`.
+- **Profil:** `agentTurn.getProfile(slug)` liefert Anzeigename, Sprache
+  (`agent_identities.language`, Migration `0069`, sonst Installationssprache)
+  und die Kanaltypen mit eigener Identität.
+- **Engine-Grant automatisch** (`src/platform/facilitatorEngineAttach.ts`):
+  beim Anlegen eines Facilitators, bei Installation oder Austausch der Engine
+  und beim Boot. Insert-if-absent; eine deaktivierte Zeile bleibt die
+  Entscheidung des Operators. Die Engine wird nie per Default an den
+  Standard-Agenten gehängt und lässt sich keinem Standard-Agenten granten.
+
+### Readiness, Session-Capabilities, Meeting-Lifecycle
+
+Code: `middleware/src/channels/sessionCapabilities/` (`providerRegistry.ts`,
+`hub.ts`, `services.ts`, `wiring.ts`). Funktioniert ohne Datenbank; nur die
+Pushes hängen an Message-Subscriptions.
+
+- **Registries:** ein Provider pro Kanaltyp, Eigentümer ist das registrierende
+  Kanal-Plugin, bei Deaktivierung verworfen (wie die Roster-Registry).
+  `CoreApi.registerReadinessProvider` / `registerMeetingSourceProvider`.
+- **`channelReadiness.check`** fragt den Provider mit der eigenen Identität
+  des Agents. Ohne Identität `no_identity`; ohne Provider `ready: true` mit
+  `verified: false`; ein werfender Provider wird `graph_error`, nie „ready“.
+  Der Report entscheidet auch `conversationMessages.subscribe` (`not_ready`).
+  Codes: siehe `ChannelReadinessCode` in plugin-api.
+- **`channelReadiness.repairConsent`** reicht an den Provider durch
+  (`upgraded` | `not_needed` | `failed` mit Code, z. B. `graph_forbidden`);
+  ohne Provider-Methode `failed / unsupported`.
+- **`sessionCapabilities.getSnapshot`** liefert den Snapshot der Meeting-Source
+  oder die Chat-Baseline (Text rein, Text raus). Der Kernel wartet nicht auf
+  einen Push, er liest bei Bedarf.
+- **Pushes:** `CoreApi.emitSessionCapabilities(snapshot)` und
+  `CoreApi.emitSessionEvent(event)` (`session_started`, `session_ended`,
+  `participant_joined`, `participant_left`). Zustellung über `onChange` /
+  `onSessionEvent` nur an die Engine, deren Agent die Konversation abonniert
+  hat; Teilnehmer tragen `principalId`; Duplikate mehrerer Bots werden über ein
+  begrenztes In-Memory-Set entfernt; gespeichert wird nichts.
+- **Teams-App-Paket:** Version `1.<TEMPLATE_REVISION>.<Identity-Revision>`
+  (`src/services/teamsAppPackageAssets.ts`); Graph-Rechte der Instanz-App für
+  Readiness und Reparatur stehen in `docs/teams-multi-agent-identities.md` §2.4.
+
+### Härtungen nach dem Review (2026-11-18)
+
+- **Kein Channel-Binding auf einen Facilitator** (`channel_binding`): die drei
+  Schreibwege lehnen ab, und `ChannelResolver` verwirft `match: 'binding'` auf
+  einen Facilitator (`binding-to-facilitator`). Er antwortet nur über seinen
+  eigenen Bot.
+- **Send-Provider deklarieren, was sie können:**
+  `supports: { asChannelKey, mentions, poll }` auf `ConversationSendProvider`
+  und `TargetedSendProvider`. Ohne `asChannelKey: true` sendet der Kernel
+  nichts als eigene Identität (`no_identity`), ohne `poll` keinen Poll
+  (`channel_error`), ohne `mentions` geht der Text ohne Mentions raus. Ein
+  älteres Kanal-Plugin, das das dritte Argument ignoriert, wird so gar nicht
+  erst gerufen. Mentions werden immer im Kernel aufgelöst, auch wenn ein
+  Plugin ein Objekt übergibt.
+- **Subscription nur bei deklarierter Zustellung:** ohne registrierten
+  Readiness-Provider `not_ready`. **Kernel-seitiges Ende**
+  (`hub.reconcile`, `createSubscriptionGroundCheck`): Engine nicht mehr die
+  gebundene/aktive Engine, Agent deaktiviert oder gelöscht, eigene Identität
+  weg. Erst nach dem Boot scharf (`enableReconcile`), danach alle
+  `CONVERSATION_MESSAGES_RECONCILE_INTERVAL_MS` und bei Install/Uninstall.
+  Eine per Cascade verschwundene Zeile schließt das Gate beim nächsten Event.
+- **Mehrere Maschinen:** NOTIFY-Trigger auf der Subscription-Tabelle,
+  `ReloadBus` mit Kanal `conversation_message_subscriptions_changed`
+  (`CONVERSATION_MESSAGES_LISTEN`). `refresh`, `subscribe` und `unsubscribe`
+  laufen über einen gemeinsamen Mutex im Hub.
+- **Engine = deklariert UND SQL-Grant** (`facilitatorGuard.ts`,
+  `createSqlGrantView`): bis zum Grant ist der Zustand `ungranted`, es wird
+  nichts angehängt. `facilitatorRuntimeService.ts` beantwortet dem
+  Orchestrator `isEngineUsable`; ohne nutzbare Engine sagt ein erwähnter
+  Facilitator fest „nicht eingerichtet“, ohne Modellaufruf.
+- **Gruppen-Turn nur mit positiver Aussage:** `TurnOrigin.conversationType:
+  'group'` (channel-sdk, additiv). Ein `conversation`-Scope allein gilt als
+  privat. **Der Kanal-Adapter muss das Feld setzen.**
+- **Readiness-, Repair- und Capability-Services** nur für einen Facilitator,
+  der an die rufende Engine gebunden ist; Pushes werden bei Zustellung geprüft.
+- **Keine Kernel-Tools für Facilitators** (Choice-Card, Follow-ups, Roster,
+  Attachment), auf beiden Tool-Loops.
+- **CoreApi je Kanal-Plugin gebunden** (`channels/scopedCoreApi.ts`): eigene
+  ID auf Events und Providern, fremder Kanaltyp wird verworfen bzw. abgelehnt.
+- Purge löscht in Batches; Adapter-Revisionen außerhalb 0..1.000.000 werden
+  ignoriert; Index auf `lower(author_id)`.
+
+### Entfernt: der Plugin-Pfad der Facilitation (#2067)
+
+- `conductor/patterns/facilitation.json` (ein Plugin der alten Generation
+  bekommt für `patternId: 'facilitation'` „unknown pattern“).
+- Plugin-Services `agentProvisioning`, `conversationBindings`,
+  `conductorRoleAssignments`; Module `agentSetupService.ts`,
+  `scopedRoleAssignments.ts`.
+- Der Ephemeral-Attachment-Scope von `conversationSend` (Default-Bot).
+- **Geblieben, mit Grund:** Ephemeral Runs, Diskussionen und `say`; die
+  Admin-Lens samt `FacilitationsPanel` im Web-UI (einzige Sicht und einziger
+  Stopp für laufende Diskussionen); die `CONDUCTOR_EPHEMERAL_*`-Quoten
+  (gelten für jeden Ephemeral-Run); die Audit-Aktion
+  `conductor.facilitation_terminate` für historische Zeilen;
+  Rollenhalter-Bereinigung für Attachment-Zeilen, die noch eine Rolle tragen.
+- **Rollout:** `omadia-agent-facilitator` 0.7.x funktioniert gegen diesen
+  Kernel nicht mehr; Kernel-Deploy, Teams-Kanal und Facilitator 1.0.0 gehören
+  in denselben Rollout.
+
+### Offen
+
+- Der allgemeine Orchestrator-System-Prompt (Memory-Konventionen,
+  Fach-Agenten-Liste) wird auch für Facilitators gebaut; die Abschnitte sind
+  ohne die zugehörigen Tools wirkungslos. Ein schlanker Facilitator-Rumpf ist
+  ein Follow-up.

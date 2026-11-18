@@ -584,6 +584,11 @@ export class ToolPluginRuntime {
       this.deps.pluginRouteRegistry.disposeBySource(agentId);
       this.deps.uiRouteCatalog.disposeBySource(agentId);
       this.deps.serviceRegistry.disposeBySource(agentId);
+      // #2043 — and its tools. A plugin that registered tools and then threw
+      // (the facilitation engine registers its tools before its routes) left
+      // them in the registry; the retry after the operator fixed the cause
+      // then failed with "duplicate native-tool name" for good.
+      this.deps.nativeToolRegistry.unregisterBySource(agentId);
       this.deps.jobScheduler.stopForPlugin(agentId);
       this.deps.pluginStatusRegistry?.clear(agentId);
       throw err;
@@ -621,6 +626,7 @@ export class ToolPluginRuntime {
           this.deps.pluginRouteRegistry.disposeBySource(agentId);
           this.deps.uiRouteCatalog.disposeBySource(agentId);
           this.deps.serviceRegistry.disposeBySource(agentId);
+          this.deps.nativeToolRegistry.unregisterBySource(agentId);
           this.deps.jobScheduler.stopForPlugin(agentId);
           this.deps.pluginStatusRegistry?.clear(agentId);
           // The plugin's own close() still has to run — it may hold a socket or
@@ -814,6 +820,9 @@ export class ToolPluginRuntime {
         `[tool-runtime] close FAILED for ${agentId}: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
+    // Same for tools: a close() that forgot (or failed before) its disposers
+    // must not leave the plugin's tools offered and block its next activation.
+    this.deps.nativeToolRegistry.unregisterBySource(agentId);
     // Bulk-stop any background jobs the plugin registered. Belt-and-braces
     // alongside the per-registration dispose handles that the plugin's own
     // close() should already invoke — a leaked dispose still won't outlive

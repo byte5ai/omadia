@@ -36,6 +36,216 @@ changelog.
 
 ## [Unreleased]
 
+### Added — Facilitators in the agent directory (#2066, epic #2043)
+
+2026-11-18. Operator UI for facilitator-kind agents in `web-ui`. The
+facilitations view is not part of it; that is the engine plugin's own UI.
+
+- **Directory**: `/operator/agents` lists "Facilitators" apart from
+  "Orchestrators". A facilitator is not counted as an orchestrator and is not
+  offered as the standard orchestrator. Creating one sends
+  `kind: "facilitator"` and opens its page.
+- **Facilitator page**: tabs Identity, Model, Teams and Facilitation only.
+  Plugins, tools and MCP, conversations with other agents and memory have no
+  tab, and one line says why. The Facilitation tab shows the engine plugin,
+  which the kernel attaches by itself, and offers "attach" only as a repair
+  when the row is missing or switched off.
+- **Identity within bounds**: persona sliders, archetypes and industry presets
+  stop at the facilitator bounds (sarcasm at most 20, drama 30, humour 60, risk
+  tolerance 60, warmth at least 30) and each bounded slider shows its range.
+  The anti-flattery guard has no "off". A refused save
+  (`422 facilitator_contract_violation`) lists every finding and repeats it at
+  the field it is about; `409 facilitator_omission` is shown as a sentence per
+  omission. Both in English and German. A facilitator's profile has a
+  language select (German, English, installation language).
+- **Readiness**: a facilitator is "not ready" without its own installed Teams
+  identity, without a usable engine or without the engine grant, each with a
+  link to the fix. Teams provisioning is the existing per-agent flow.
+- **Engine notice** from `GET /api/v1/operator/agents/facilitation-engine`,
+  one sentence per state and reason code: no engine installed (link to the
+  store), more than one installed, installed without its SQL grant (link to
+  the plugin's grants), bound but inactive, not reported or reporting itself
+  not ready (link to the plugin; the plugin's own words are shown apart, as
+  sent). With a usable engine that contributes a nav entry, the directory
+  links to its facilitations view. The readiness line says what a
+  facilitator answers in a group meanwhile.
+- **No channel binding**: the channels dashboard and the Builder agent picker
+  do not offer facilitators; `409 facilitator_omission` with omission
+  `channel_binding` is shown as a sentence.
+- **Language**: sent only when the operator changed it on a facilitator;
+  standard agents never send it.
+
+### Added — `conversationMessages.isSubscribed` (epic #2043)
+
+plugin-api 1.56.0. The facilitation engine can ask whether it holds an active
+subscription for a scope (`isSubscribed?(scope): Promise<boolean>`, read from
+the store, own subscriptions only), to reconcile its live facilitations after
+a restart, a revoked grant or a disabled agent.
+
+### Fixed — Native facilitators, found by running the real engine against the real kernel (epic #2043)
+
+- A plugin whose `activate()` threw after registering tools kept them registered; the next activation failed with "duplicate native-tool name". Failed activations and deactivations now drop the plugin's tools.
+- `ctx.routes.register` accepts a plain `(req, res[, next])` handler (wrapped into a router); error handlers and non-functions are still refused.
+- The facilitation engine status is current right after a SQL grant or revoke (`ungranted` is reachable through a real install; no 30 s wait).
+- After a restart a facilitator had no engine tools: it was built before the SQL grants could be read and nothing rebuilt it. The registry now rebuilds a facilitator whenever its effective engine grant changes.
+- The mention that opens a facilitation produced two messages (the engine's handshake and the model's own paraphrase). The answer of a channel-started turn is dropped when the engine posted as the facilitator during it.
+- A channel-started facilitator turn tells the model that it comes from a group conversation, that the engine is set up and that it keeps no memory between messages there.
+- Grant views are refreshed before a plugin is re-activated after a consent change, so the engine's re-subscription in `activate()` is no longer refused after a re-grant.
+- The subscription NOTIFY trigger of migration `0068_conversation_messages.sql` is row-level: a statement that touches no row wakes no listener.
+- A channel type belongs to the plugin that first acts for it (no longer derived from the plugin id); `GET /operator/channels` reports each agent's `kind`.
+
+### Added — Native facilitators, kernel side (epic #2043)
+
+2026-11-18. A facilitator is a kind of agent that only moderates. The engine
+(tables, lifecycle, counting, scheduler) lives in the plugin
+`omadia-agent-facilitator`; the kernel adds the kind, its enforced omissions
+and the neutrality contract. No facilitation tables in the kernel.
+
+- **Migration `0067_agent_kind`** (#2060): `agents.kind`
+  (`standard` | `facilitator`, default `standard`, CHECK). Trigger
+  `agents_kind_immutable` refuses any change of the kind after insert; trigger
+  `fallback_agent_not_facilitator` on `multi_orchestrator_settings` refuses a
+  facilitator as the default agent. Existing rows are `standard`.
+- **Operator API**: `POST /api/v1/operator/agents` takes `kind`; list, picker
+  and create answer carry it. Refusals for a facilitator answer
+  `409 { error: "facilitator_omission", omission, message }`: plugin grants
+  other than the installed plugin whose manifest provides
+  `facilitationEngine@1` (none or more than one installed: nothing can be
+  granted), context-memory modes, default-agent designation, agent-to-agent
+  switch and per-chat policy, persona skills, sub-agents, tool and MCP grants,
+  schedules. An identity that conflicts with the neutrality contract answers
+  `422 { error: "facilitator_contract_violation", issues[] }` (persona axis
+  bounds, sycophancy guard off, instructions matched by a deterministic rule
+  list; no model call).
+- **Runtime**: a facilitator is built without memory tool and binder, recall,
+  session capture, fact/excerpt extraction, auto-promote, knowledge-graph and
+  calendar tools, persona skills and fast path. It is offered and may run only
+  the tools of its granted plugins, and the registry intersects its grant rows
+  with the engine plugin. The peer gate is closed for it in both directions and
+  a workflow step cannot run it. Outside a group conversation or an engine-run
+  turn its `ChatAgent` answers with a fixed refusal, without a model call.
+- **Neutrality block**: compiled as the last section of a facilitator's
+  identity prompt at save time, in the boot recompose and again when the agent
+  is built (after name and self-description), so it is present without a
+  stored identity too.
+- **Migration `0068_conversation_messages`**: tables
+  `conversation_message_subscriptions` (agent, channel type, conversation,
+  lower-cased channel key, subscribing plugin; one active row per identity and
+  conversation) and `conversation_message_events` (append-only, kernel-assigned
+  `event_seq` and `revision`, dedupe key per platform event). Postgres only.
+- **`conversationMessages` service** (plugin-api `conversationMessages@1`):
+  `CoreApi.emitConversationMessage` stores an event only when the receiving
+  identity holds a subscription; `CoreApi.isAllMessagesSubscribed` is a
+  synchronous cache lookup. Subscribe refuses unless the agent is a
+  facilitator with its own channel identity whose bot was observed in the
+  conversation and whose channel reports readiness (when it has a readiness
+  provider). Only the facilitation engine plugin is answered. Revisions are
+  assigned by the kernel (an adapter's edit counter restarts with the
+  process); replay by cursor (`listSince`).
+- **Retention**: `CONVERSATION_MESSAGES_GRACE_MS` (default 6 h after the
+  subscription ended), `CONVERSATION_MESSAGES_MAX_AGE_DAYS` (default 30, 0 =
+  off), `CONVERSATION_MESSAGES_PURGE_INTERVAL_MS` (default 10 min).
+- **No second answer**: once the engine holds a facilitator's subscription for
+  a conversation, a channel-started turn of that agent there returns an empty
+  answer without a model call; the engine drives every turn through
+  `agentTurn`.
+- **Send as own identity** (`conversationSend` with `asOwnIdentity`,
+  `targetedSend` with `asAgentSlug`): the agent's own bot or `no_identity`,
+  never the default bot. Permission comes from the agent's message
+  subscription held by the calling plugin; a direct message goes only to a
+  person of a conversation the agent moderates (roster or a stored message),
+  with the channel user reference handed to the provider for a first contact.
+  Mentions are resolved to channel user references; a poll is validated and
+  passed through; the provider's `messageId`, `cardMessageId`,
+  `app_not_installed` and `blocked` are returned as they are. Both services
+  are now per-caller facades; sends without the new flags are unchanged.
+  channel-sdk: `TargetedMessage.poll`, `TargetedPoll`, `cardMessageId` on the
+  delivered outcome, `cardAnswer.answererVerified`.
+- **Tool call context**: a plugin's native tool handler receives
+  `NativeToolCallContext` as its second argument on both tool loops
+  (in-process and subscription CLI): agent slug, channel type, channel-native
+  conversation id, inbound event id, caller principal and caller channel user
+  reference, all stated by the kernel.
+- **`agentTurn` service**: the facilitation engine runs one turn as a
+  facilitator it is granted to, inside the agent's normal envelope (identity
+  with neutrality block, model policy, Privacy Shield, receipts);
+  `engineContext` travels as the turn's system hint after the identity; the
+  text is returned and not posted. `inboundEventId` must be a stored message
+  of the conversation; the caller of the turn is its platform-stated author.
+  Ceiling `AGENT_TURN_MAX_PER_MINUTE` (default 60 per agent, 0 = off).
+  `getProfile` returns display name, language and own-identity channel types.
+- **Migration `0069_agent_identity_language`**: `agent_identities.language`
+  (BCP 47 tag, CHECK). `PUT /:slug/identity` takes `language`, the read
+  returns it; a facilitator's refusal text and the engine's profile read use
+  it, falling back to the installation language.
+- **Engine attach without a manual grant**: a facilitator gets the facilitation
+  engine when it is created, and existing facilitators get it when an engine
+  is installed or replaced (also at boot). The engine is never part of a
+  default attach, cannot be granted to a standard agent (`409
+  config_validation`), and a leftover engine row on a standard agent grants
+  nothing at runtime.
+- **Readiness and session capabilities**: `CoreApi.registerReadinessProvider`,
+  `registerMeetingSourceProvider`, `emitSessionCapabilities` and
+  `emitSessionEvent` (one provider per channel type, owned by its channel,
+  dropped on deactivate). Plugin services `channelReadiness` (`check`,
+  `repairConsent`) and `sessionCapabilities` (`getSnapshot` with the chat
+  baseline when no meeting source knows the conversation, `onChange`,
+  `onSessionEvent`). The readiness report decides a message subscription
+  (`not_ready`). Pushed snapshots and meeting lifecycle events reach the
+  engine only for conversations it holds a subscription for; duplicates from
+  several bots in one chat are removed; nothing is stored.
+- **Teams app package version** is `1.<template revision>.<identity
+  revision>`; the template revision is read from
+  `appPackage/TEMPLATE_REVISION` of the installed channel plugin (absent = 0,
+  versions unchanged), so a changed template is republished for existing
+  agents.
+- **Kernel contract suite** (`middleware/test/facilitatorContract.pg.test.ts`,
+  #2068 kernel half): the facilitator surface end to end on Postgres through
+  the real kernel modules, with a simulated channel, a fixture engine plugin
+  and a scripted model.
+- **Removed — the plugin path of facilitation (#2067)**: the Conductor
+  pattern `facilitation`, the plugin services `agentProvisioning`,
+  `conversationBindings` and `conductorRoleAssignments`, and the
+  ephemeral-attachment scope of `conversationSend` (a call without
+  `asOwnIdentity` now answers `not_permitted`). `omadia-agent-facilitator`
+  0.7.x does not work against this kernel; roll out the kernel, the Teams
+  channel and facilitator 1.0.0 together. Kept: ephemeral runs, agent
+  discussions and `say`; the operator lens over live ephemeral runs
+  (`/api/v1/operator/conductors/facilitations`, the Facilitations panel),
+  which is the only view and stop control for running discussions; the
+  `CONDUCTOR_EPHEMERAL_*` quotas; the audit action
+  `conductor.facilitation_terminate` for existing rows.
+- **`GET /api/v1/operator/agents/facilitation-engine`**: `state` (bound |
+  ungranted | none | ambiguous), `capability`, `plugin_id`, `plugin_ids`,
+  `version`, `available`, `reason_code` (none | ambiguous | ungranted |
+  inactive | not_reported | engine_reported) and `engine_reason` (the engine's
+  own text). Codes, no sentences. The agent slug `facilitation-engine` is
+  reserved.
+- **The engine needs the operator's SQL grant.** A plugin that declares
+  `facilitationEngine@1` is a candidate (`ungranted`): nothing is attached to
+  it and it reads nothing until its SQL ledger is granted.
+- **Upgrade note — the earlier "omadia Facilitator" agent.** The agent the
+  0.7.x plugin provisioned is a `standard` agent, and the kind is fixed at
+  creation. It does not become a facilitator: create a new agent of kind
+  `facilitator`, provision its Teams identity, and delete the old one. The old
+  agent's engine grant row grants nothing any more, and the engine plugin is
+  no longer attached to the default agent.
+- **Review fixes (2026-11-18)**: a channel binding to a facilitator is refused
+  at the three write paths and rejected at resolve time; send providers
+  declare `supports { asChannelKey, mentions, poll }` and the kernel sends as
+  an agent's own identity only through a provider that declares
+  `asChannelKey`; a message subscription needs a channel that registered a
+  readiness provider, and the kernel ends it when the engine plugin is no
+  longer the usable engine, the agent is disabled or deleted, or it lost its
+  identity; subscription changes reach every machine through NOTIFY
+  (`CONVERSATION_MESSAGES_LISTEN`, `CONVERSATION_MESSAGES_RECONCILE_INTERVAL_MS`;
+  `CONVERSATION_MESSAGES_MAX_AGE_DAYS` must be at least 1); without a usable
+  engine a mentioned facilitator answers with a fixed "not set up" text; a
+  group turn needs `origin.conversationType: 'group'` from the channel;
+  readiness, consent repair and session capabilities answer only for a
+  facilitator bound to the calling engine; a facilitator gets none of the
+  kernel's own tools; each channel plugin gets a CoreApi bound to itself.
+
 ### Fixed — Custom-Pattern-Worker: eine laufende Anfrage hält den Prozess offen
 
 2026-11-18. `@omadia/plugin-privacy-guard` 0.16.1. Der Worker, der die

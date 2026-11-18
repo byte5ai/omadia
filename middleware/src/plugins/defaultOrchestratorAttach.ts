@@ -1,4 +1,5 @@
 import type { PluginCatalog } from './manifestLoader.js';
+import { FACILITATION_ENGINE_CAPABILITY } from '@omadia/plugin-api';
 import type { InstalledRegistry } from './installedRegistry.js';
 
 /**
@@ -30,7 +31,14 @@ export function attachablePluginIds(
   pluginIds: readonly string[],
   catalog: Pick<PluginCatalog, 'get'>,
 ): string[] {
-  return pluginIds.filter((id) => catalog.get(id)?.plugin.is_reference_only !== true);
+  return pluginIds.filter((id) => {
+    const plugin = catalog.get(id)?.plugin;
+    if (plugin?.is_reference_only === true) return false;
+    // #2043 — the facilitation engine belongs to facilitators only. A
+    // standard agent with its tools would be an assistant that also counts
+    // votes, which is the sub-role this epic removes.
+    return !(plugin?.provides ?? []).includes(FACILITATION_ENGINE_CAPABILITY);
+  });
 }
 
 /**

@@ -29,6 +29,7 @@ import { isOfferedThisTurn, type NativeToolRegistry } from './nativeToolRegistry
 import { sortByToolName } from './toolOrdering.js';
 import { turnContext } from './turnContext.js';
 import { runHandlerInPrivacyScope } from './handlerPrivacyScope.js';
+import { currentToolCallContext } from './toolCallContext.js';
 import { runWithDispatchCaller } from './toolCallerContext.js';
 import { runWithIdempotencyScope } from './toolIdempotency.js';
 import type { ToolIdempotencyStore } from './toolIdempotency.js';
@@ -379,6 +380,11 @@ export class ToolDispatchService {
     return produced;
   }
 
+  /** The Agent this dispatcher serves, when its build named one. */
+  get agentSlug(): string | undefined {
+    return this.deps.agentSlug;
+  }
+
   private async dispatchInner(
     name: string,
     input: unknown,
@@ -400,7 +406,12 @@ export class ToolDispatchService {
           origin: 'dispatcher',
         };
       }
-      return this.invoke(name, input, () => nativeHandler(input), options);
+      // #2043 — same second argument as the in-process loop; the CLI
+      // runtime restores the turn's stores before it dispatches.
+      const callContext = currentToolCallContext() ?? {
+        ...(this.deps.agentSlug !== undefined ? { agentSlug: this.deps.agentSlug } : {}),
+      };
+      return this.invoke(name, input, () => nativeHandler(input, callContext), options);
     }
 
     const domainTool = this.domainTools().find((t) => t.name === name);

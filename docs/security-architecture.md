@@ -3682,14 +3682,33 @@ explicit here so a deployment can reason about them:
   Facilitator's `bot_added` handshake trigger) stays a channel-adapter
   privilege on the CoreApi, so a granted agent plugin cannot spoof an
   invitation.
-- **Proactive group posting is conversation-scoped (#330 C3b).** The
-  `conversationSend` service (deny-by-default) lets a granted agent plugin
-  post INTO a group — but only into conversations the calling agent holds an
-  ephemeral attachment for (its own auto-bound facilitation, the same rows
-  the reaper disposes of). Everything else — foreign conversations, guessed
-  thread ids, operator-bound chats — is a named `not_permitted` outcome, and
-  without a database the scope authority is absent and the service **fails
-  closed**. The channel-side provider registries enforce first-registrant
+- **Proactive group posting is conversation-scoped and identity-bound
+  (#2043, replaces #330 C3b).** The `conversationSend` service
+  (deny-by-default, per calling plugin) posts INTO a group only as the
+  agent's OWN channel identity and only into a conversation that agent holds
+  a message subscription for, created by the calling plugin. No own identity
+  is `no_identity`; there is no fallback to the default bot. Everything else
+  — foreign conversations, guessed thread ids, a call without
+  `asOwnIdentity` — is a named `not_permitted` outcome, and without a
+  database there are no subscriptions, so the service **fails closed**. The
+  earlier scope (an ephemeral attachment, posted through the default bot)
+  was removed with the plugin-era facilitation.
+- **Native facilitators (#2043).** A facilitator is an agent kind that the
+  kernel keeps impartial by construction. Fixed at creation and never the
+  default agent (database triggers, migration 0067). Its only grant is the
+  one installed plugin whose manifest provides `facilitationEngine@1`; every
+  other plugin, tool or MCP grant, memory, recall and capture, persona
+  skills, the fast path, agent-to-agent talk and consultation are refused at
+  write time and not wired at runtime. Every human message of a conversation
+  it moderates is stored by the kernel with the platform-stated author
+  (`conversationMessages@1`, migration 0068) and handed only to the engine
+  plugin, only for its own subscriptions; a subscription needs the agent's
+  own identity, the bot observed in the conversation and channel readiness.
+  A tool handler learns its conversation and caller from the kernel
+  (`NativeToolCallContext`), never from a model argument. The engine runs
+  turns through `agentTurn@1` inside the agent's normal envelope (neutrality
+  block, model policy, Privacy Shield, receipts). Stored messages are purged
+  a grace period after the subscription ends and after a maximum age. The channel-side provider registries enforce first-registrant
   ownership per channel type, so a second plugin can neither hijack the
   delivery path nor speak through another channel's identity.
 

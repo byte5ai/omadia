@@ -1,4 +1,5 @@
 import { createPluginContext } from '../platform/pluginContext.js';
+import { ChannelTypeClaims, scopeCoreApiToChannel } from './scopedCoreApi.js';
 import { eventEmitIds } from '../platform/eventCatalogRegistry.js';
 import type { EventCatalogRegistry } from '../platform/eventCatalogRegistry.js';
 import type { PluginRouteRegistry } from '../platform/pluginRouteRegistry.js';
@@ -89,10 +90,15 @@ export interface ChannelRegistryDeps {
   peopleDirectories?: PeopleDirectoryRegistry;
   targetedSends?: TargetedSendRegistry;
   conversationSends?: ConversationSendRegistry;
+  /** #2043 — readiness providers and meeting sources, dropped the same way. */
+  readinessProviders?: { unregisterChannel(channelId: string): void };
+  meetingSources?: { unregisterChannel(channelId: string): void };
 }
 
 export class DefaultChannelRegistry implements ChannelRegistry {
   private readonly handles = new Map<string, ChannelHandle>();
+  /** #2043 — which channel plugin acts for which channel type. */
+  private readonly channelTypeClaims = new ChannelTypeClaims();
 
   constructor(private readonly deps: ChannelRegistryDeps) {}
 
@@ -179,7 +185,12 @@ export class DefaultChannelRegistry implements ChannelRegistry {
       operatorAuth: this.deps.operatorAuth,
     });
 
-    const handle = await impl.activate(ctx, this.deps.coreApi);
+    // #2043 — each channel gets the CoreApi bound to itself: what it emits
+    // carries its own id and only its own channel type (`scopedCoreApi.ts`).
+    const coreApi = scopeCoreApiToChannel(this.deps.coreApi, agentId, this.channelTypeClaims, (m) =>
+      console.warn(m),
+    );
+    const handle = await impl.activate(ctx, coreApi);
     // S3-G — claim the declared public paths AFTER activate(), exactly like the
     // tool runtime; without the claim a granted `auth:'custom'` route is never
     // served (the public-path mount only dispatches to claimed prefixes).
@@ -242,6 +253,9 @@ export class DefaultChannelRegistry implements ChannelRegistry {
     this.deps.peopleDirectories?.unregisterChannel(agentId);
     this.deps.targetedSends?.unregisterChannel(agentId);
     this.deps.conversationSends?.unregisterChannel(agentId);
+    this.channelTypeClaims.release(agentId);
+    this.deps.readinessProviders?.unregisterChannel(agentId);
+    this.deps.meetingSources?.unregisterChannel(agentId);
     // Drop the cached ChannelPlugin implementation BEFORE the rest of
     // teardown so an immediately-following re-activate (upgrade flow)
     // can never observe the stale module. Without this, the resolver's

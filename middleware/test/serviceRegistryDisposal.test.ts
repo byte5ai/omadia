@@ -134,7 +134,7 @@ describe('PluginContext — service ownership comes from the kernel', () => {
       registry: { has: () => true, list: () => [], get: () => undefined },
       catalog: { list: () => [], get: () => undefined },
       serviceRegistry: registry,
-      nativeToolRegistry: { register: stub, registerHandler: stub },
+      nativeToolRegistry: { register: stub, registerHandler: stub, unregisterBySource: (): string[] => [] },
       routeRegistry: { register: stub, disposeBySource: () => 0 },
       jobScheduler: { register: stub, stopForPlugin: (): void => {} },
       logger: (): void => {},
@@ -154,6 +154,7 @@ describe('ToolPluginRuntime.deactivate — service disposal', () => {
       pluginRouteRegistry: newTestRouteRegistry(),
       uiRouteCatalog: new UiRouteCatalog(),
       serviceRegistry,
+      nativeToolRegistry: { unregisterBySource: (): string[] => [] },
       jobScheduler: { stopForPlugin: (): void => {} },
       log: (): void => {},
     } as unknown as ToolPluginRuntimeDeps;
@@ -249,6 +250,7 @@ describe('DynamicAgentRuntime.deactivate — service disposal', () => {
       serviceRegistry,
       pluginRouteRegistry: newTestRouteRegistry(),
       uiRouteCatalog: new UiRouteCatalog(),
+      nativeToolRegistry: { unregisterBySource: (): string[] => [] },
       jobScheduler: { stopForPlugin: (): void => {} },
       log: (): void => {},
     } as unknown as DynamicAgentRuntimeDeps;
@@ -287,6 +289,7 @@ describe('PluginRouteRegistry — unchanged behaviour alongside the new call', (
       pluginRouteRegistry: routes,
       uiRouteCatalog: new UiRouteCatalog(),
       serviceRegistry,
+      nativeToolRegistry: { unregisterBySource: (): string[] => [] },
       jobScheduler: { stopForPlugin: (): void => {} },
       log: (): void => {},
     } as unknown as ToolPluginRuntimeDeps;

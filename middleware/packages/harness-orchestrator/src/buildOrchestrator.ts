@@ -94,6 +94,16 @@ import { FindFreeSlotsTool } from './tools/findFreeSlotsTool.js';
 import { SuggestFollowUpsTool } from './tools/suggestFollowUpsTool.js';
 import type { AttachmentReader } from './tools/readAttachmentTool.js';
 import { VerifierService } from './verifierService.js';
+import {
+  wrapFacilitatorAgent,
+  type EngineDrivenConversationLookup,
+  type OwnPostCountLookup,
+} from './facilitatorAgent.js';
+import type { AgentKind } from './registry/agentKind.js';
+import {
+  applyKindContract,
+  withFacilitatorNeutrality,
+} from './registry/facilitatorNeutrality.js';
 
 /**
  * The per-Agent knobs — everything that differs between two Agents built in
@@ -233,6 +243,18 @@ export interface AgentRuntimeConfig {
    * which knows each Agent's rows, passes this.
    */
   readonly grantedPluginIds?: readonly string[];
+  /**
+   * #2060 — the agent's kind (`agents.kind`). For a `facilitator` this
+   * factory wires NONE of what would make a moderator partial: no memory tool
+   * or binder, no recall, capture or learning, no knowledge graph, no
+   * calendar tools, no persona skills, no fast path. Its identity ends with
+   * the neutrality contract, its tools are exactly those of its granted
+   * plugins, and outside a group or an engine-run turn its `ChatAgent`
+   * answers with a fixed refusal. Absent = `standard`.
+   */
+  readonly kind?: AgentKind;
+  /** #2043 — the agent's own language (BCP 47), when its identity names one. */
+  readonly identityLanguage?: string;
 }
 
 /**
@@ -311,6 +333,17 @@ export interface OrchestratorDeps {
    * non-canvas channel gets the one-call triage. Absent → no wrapper.
    */
   readonly fastPath?: () => FastPathTriagePort | undefined;
+  /**
+   * #2043 — does the facilitation engine drive this conversation for this
+   * agent (it holds the agent's message subscription there)? Then a
+   * facilitator's own chat turn is suppressed; see `facilitatorAgent.ts`.
+   */
+  readonly isEngineDrivenConversation?: EngineDrivenConversationLookup;
+  /** #2043 — is the facilitation engine usable for this agent right now?
+   *  Absent = no (then a facilitator says that facilitation is not set up). */
+  readonly isFacilitationEngineUsable?: (agentSlug: string) => boolean;
+  /** #2043 — see `FacilitatorAgentDeps.ownPostCount`. */
+  readonly facilitatorOwnPostCount?: OwnPostCountLookup;
   /**
    * #1018 — resolves the peer AGENTS the calling agent may see in the current
    * chat, merged into `get_chat_participants` as `kind: 'agent'` entries.
@@ -615,9 +648,26 @@ export function buildOrchestratorForAgent(
   // Fast path for every non-canvas channel — outermost, outside the verifier
   // (fastPathAgent.ts says why a hit may bypass it). A hit is recorded
   // through THIS bundle's session logger like any other turn.
-  const fastPathDeps = deps.fastPath;
+  // #2060 — a facilitator takes no fast path (it would answer for someone)
+  // and is wrapped by the refusal gate instead; see `facilitatorAgent.ts`.
+  const isFacilitator = config.kind === 'facilitator';
+  const fastPathDeps = isFacilitator ? undefined : deps.fastPath;
   const withFastPath = (agent: ChatAgent): ChatAgent =>
-    fastPathDeps === undefined
+    isFacilitator
+      ? wrapFacilitatorAgent(agent, {
+          agentSlug: config.agentId,
+          name: config.identityName,
+          locale: config.identityLanguage ?? deps.aiDisclosure?.locale,
+          ...(deps.isEngineDrivenConversation
+            ? { isEngineDriven: deps.isEngineDrivenConversation }
+            : {}),
+          ...(deps.isFacilitationEngineUsable
+            ? { isEngineUsable: deps.isFacilitationEngineUsable }
+            : {}),
+          ...(deps.facilitatorOwnPostCount ? { ownPostCount: deps.facilitatorOwnPostCount } : {}),
+          log: (m) => console.log(m),
+        })
+      : fastPathDeps === undefined
       ? agent
       : wrapChatAgentWithFastPath(agent, {
           fastPath: fastPathDeps,
@@ -719,14 +769,15 @@ export function buildOrchestratorForAgent(
   );
   const askUserChoiceTool = new AskUserChoiceTool();
   const suggestFollowUpsTool = new SuggestFollowUpsTool();
-  const findFreeSlotsTool = deps.microsoft365
+  // #2060 — calendar tools act for a user (delegated tokens); never for a facilitator.
+  const findFreeSlotsTool = deps.microsoft365 && !isFacilitator
     ? new FindFreeSlotsTool(
         deps.microsoft365.obo,
         deps.microsoft365.calendar,
         deps.microsoft365.slots,
       )
     : undefined;
-  const bookMeetingTool = deps.microsoft365
+  const bookMeetingTool = deps.microsoft365 && !isFacilitator
     ? new BookMeetingTool(
         deps.microsoft365.obo,
         deps.microsoft365.calendar,
@@ -762,7 +813,7 @@ export function buildOrchestratorForAgent(
   // append the Steckbrief, then append the name last); see its doc comment for
   // why each field sits where it does and why the accent colour and avatar are
   // deliberately not in it.
-  const assistantIdentityWithName = withAgentIdentity(deps.assistantIdentity, {
+  const layeredIdentity = withAgentIdentity(deps.assistantIdentity, {
     ...(config.identityInstructions !== undefined
       ? { identityInstructions: config.identityInstructions }
       : {}),
@@ -777,6 +828,40 @@ export function buildOrchestratorForAgent(
       : {}),
   });
 
+  // #2060 — the neutrality contract closes a facilitator's identity, AFTER
+  // the name and self-description layered on above, and on every per-family
+  // variant. Applied here as well as at compose time so an agent without a
+  // stored identity (or with one compiled before the kind existed) has it.
+  const assistantIdentityWithName = applyKindContract(config.kind, layeredIdentity);
+  const identityByFamily =
+    isFacilitator && config.identityByFamily
+      ? Object.fromEntries(
+          Object.entries(config.identityByFamily).map(([family, text]) => [
+            family,
+            withFacilitatorNeutrality(text),
+          ]),
+        )
+      : config.identityByFamily;
+  // What a facilitator is built WITHOUT (spec 2043 §2.3). One object so the
+  // list is readable in one place; each key is simply not handed to the
+  // Orchestrator, which treats absence as "not wired".
+  const memoryAndLearning = isFacilitator
+    ? {}
+    : {
+        memoryToolHandler,
+        memoryBinder,
+        sessionLogger,
+        knowledgeGraph: deps.knowledgeGraph,
+        ...(deps.contextRetriever ? { contextRetriever: deps.contextRetriever } : {}),
+        ...(deps.sessionBriefing ? { sessionBriefing: deps.sessionBriefing } : {}),
+        ...(deps.factExtractor ? { factExtractor: deps.factExtractor } : {}),
+        ...(deps.excerptExtractor ? { excerptExtractor: deps.excerptExtractor } : {}),
+        ...(deps.embeddingClient ? { embeddingClient: deps.embeddingClient } : {}),
+        ...(deps.processMemory ? { nudgeProcessMemory: deps.processMemory } : {}),
+        ...(deps.autoPromote !== undefined ? { autoPromote: deps.autoPromote } : {}),
+        ...(deps.graphPool ? { graphPool: deps.graphPool } : {}),
+      };
+
   // domainTools is intentionally empty at construct — sub-agents self-register
   // post-activate via `dynamicAgentRuntime.attachOrchestrator(bundle.raw)`.
   const orchestrator = new Orchestrator({
@@ -789,7 +874,8 @@ export function buildOrchestratorForAgent(
     ...(deps.providerPool ? { providerPool: deps.providerPool } : {}),
     ...(config.primaryRef ? { primaryRef: config.primaryRef } : {}),
     ...(config.fallbackRef ? { fallbackRef: config.fallbackRef } : {}),
-    ...(config.identityByFamily ? { identityByFamily: config.identityByFamily } : {}),
+    ...(identityByFamily ? { identityByFamily } : {}),
+    ...(config.kind !== undefined ? { agentKind: config.kind } : {}),
     ...(config.fallbackVisionSupported !== undefined
       ? { fallbackVisionSupported: config.fallbackVisionSupported }
       : {}),
@@ -797,7 +883,7 @@ export function buildOrchestratorForAgent(
     ...(deps.directLineStickyStore
       ? { directLineStickyStore: deps.directLineStickyStore }
       : {}),
-    ...(config.personaSkills?.length
+    ...(config.personaSkills?.length && !isFacilitator
       ? { personaSkills: config.personaSkills }
       : {}),
     maxTokens: config.maxTokens,
@@ -816,19 +902,12 @@ export function buildOrchestratorForAgent(
       ? { grantedPluginIds: config.grantedPluginIds }
       : {}),
     nativeToolRegistry: deps.nativeToolRegistry,
-    memoryToolHandler,
-    memoryBinder,
-    sessionLogger,
+    ...memoryAndLearning,
     entityRefBus: deps.entityRefBus,
-    knowledgeGraph: deps.knowledgeGraph,
-    ...(deps.contextRetriever
-      ? { contextRetriever: deps.contextRetriever }
-      : {}),
-    ...(deps.sessionBriefing ? { sessionBriefing: deps.sessionBriefing } : {}),
-    ...(deps.factExtractor ? { factExtractor: deps.factExtractor } : {}),
-    ...(deps.excerptExtractor ? { excerptExtractor: deps.excerptExtractor } : {}),
-    chatParticipantsTool,
-    askUserChoiceTool,
+    // #2060 — a facilitator's tools are the engine's and nothing else, on
+    // both tool loops: no choice cards, follow-up chips, roster or attachment
+    // tool of the kernel (the engine has its own, bound to the facilitation).
+    ...(isFacilitator ? {} : { chatParticipantsTool, askUserChoiceTool }),
     // W2-1 (#544) — both or neither: a store with no replayer would park calls
     // the user can answer but nothing can deliver.
     ...(deps.pendingMcpInput && deps.mcpInputReplay
@@ -837,10 +916,9 @@ export function buildOrchestratorForAgent(
           mcpInputReplay: deps.mcpInputReplay,
         }
       : {}),
-    suggestFollowUpsTool,
+    ...(isFacilitator ? {} : { suggestFollowUpsTool }),
     ...(findFreeSlotsTool ? { findFreeSlotsTool } : {}),
     ...(bookMeetingTool ? { bookMeetingTool } : {}),
-    ...(deps.embeddingClient ? { embeddingClient: deps.embeddingClient } : {}),
     responseGuard: deps.responseGuard,
     ...(config.quality ? { agentQuality: config.quality } : {}),
     privacyGuard: deps.privacyGuard,
@@ -855,8 +933,6 @@ export function buildOrchestratorForAgent(
       : {}),
     nudgeRegistry: deps.nudgeRegistry,
     ...(deps.nudgeStateStore ? { nudgeStateStore: deps.nudgeStateStore } : {}),
-    ...(deps.processMemory ? { nudgeProcessMemory: deps.processMemory } : {}),
-    ...(deps.autoPromote !== undefined ? { autoPromote: deps.autoPromote } : {}),
     ...(deps.autoPromoteThreshold !== undefined
       ? { autoPromoteThreshold: deps.autoPromoteThreshold }
       : {}),
@@ -869,7 +945,6 @@ export function buildOrchestratorForAgent(
     ...(deps.autoPromoteDurableKinds !== undefined
       ? { autoPromoteDurableKinds: deps.autoPromoteDurableKinds }
       : {}),
-    ...(deps.graphPool ? { graphPool: deps.graphPool } : {}),
     ...(deps.graphTenantId ? { graphTenantId: deps.graphTenantId } : {}),
     // #914 — the Agent's own behaviour text wins over the platform-wide one.
     // Resolved once, here, so the two call sites below cannot disagree about
@@ -907,7 +982,7 @@ export function buildOrchestratorForAgent(
     ...(deps.turnHookRegistry
       ? { turnHookRegistry: deps.turnHookRegistry }
       : {}),
-    ...(deps.attachmentReader
+    ...(deps.attachmentReader && !isFacilitator
       ? { attachmentReader: deps.attachmentReader }
       : {}),
   });

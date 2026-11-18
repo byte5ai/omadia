@@ -8,7 +8,10 @@ import {
   FALLBACK_AGENT_SLUG,
   mcpToolNameFromRef,
   type AgentGraphStore,
+  AGENT_KINDS,
   AGENT_TO_AGENT_MODES,
+  assertNotFacilitator,
+  isFacilitatorKind,
   DEFAULT_MODEL_POLICY,
   isModelRef,
   parseAgentToAgentMode,
@@ -32,6 +35,15 @@ import {
   type TeamsTargetKind,
 } from '../platform/teamsInstallTarget.js';
 import type { Plugin, PluginSetupField } from '../api/admin-v1.js';
+import {
+  assertEngineOnlyForFacilitators,
+  assertFacilitatorPluginGrants,
+  respondFacilitatorRefusal,
+  type FacilitationEngineSources,
+} from '../platform/facilitatorGuard.js';
+import { attachEngineToFacilitator } from '../platform/facilitatorEngineAttach.js';
+import { assertFacilitatorIdentity } from '../services/facilitatorContract.js';
+import { createFacilitationEngineStatusHandler } from './facilitationEngineStatus.js';
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
 import { attachablePluginIds } from '../plugins/defaultOrchestratorAttach.js';
@@ -164,7 +176,12 @@ const AgentCreateSchema = z.object({
   description: z.string().max(2000).optional(),
   privacy_profile: z.enum(['strict', 'default']).optional(),
   status: z.enum(['enabled', 'disabled']).optional(),
+  // #2060 — only on create: the kind is fixed for the agent's lifetime.
+  kind: z.enum(AGENT_KINDS).optional(),
 });
+
+/** Slugs that collide with a static segment of this router. */
+const RESERVED_AGENT_SLUGS: ReadonlySet<string> = new Set(['facilitation-engine']);
 
 const AgentPatchSchema = z.object({
   name: z.string().min(1).max(120).optional(),
@@ -1476,6 +1493,14 @@ const AgentIdentitySchema = z.object({
   // the manifest enum and the migration's CHECK use. `null` = inherit the
   // installation-wide `answer_verbosity`.
   verbosity: z.enum(ANSWER_VERBOSITY_LEVELS).nullish(),
+  // #2043 — the language this agent speaks (BCP 47: `de`, `en`, `de-CH`).
+  // Absent/null = the installation's language. Same shape as the CHECK of
+  // migration 0069.
+  language: z
+    .string()
+    .trim()
+    .regex(/^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8}){0,2}$/, 'a BCP 47 language tag such as "de" or "en-GB"')
+    .nullish(),
   // The persona and quality blocks are validated by the SPEC's own schemas,
   // not by a second definition here. They are the same documents the Agent
   // Builder writes and `agent.md` frontmatter mirrors; a private copy would
@@ -1526,6 +1551,7 @@ export function projectAgentIdentity(
       instructions: identity?.instructions ?? null,
       accent_color: identity?.accentColor ?? null,
       verbosity: identity?.verbosity ?? null,
+      language: identity?.language ?? null,
       persona: identity?.persona ?? null,
       quality: identity?.quality ?? null,
       revision: identity?.revision ?? 1,
@@ -1601,6 +1627,13 @@ export interface OperatorAgentsRouterOptions {
    *  in tests that build it with a bare config store. */
   readonly getPluginCatalog?: () => PluginCatalog | undefined;
   readonly getInstalledRegistry?: () => InstalledRegistry | undefined;
+  /** #2043 — the state object the facilitation engine plugin publishes
+   *  (`facilitationEngine` service), for `GET /facilitation-engine`. */
+  readonly getFacilitationEngineState?: () => unknown;
+  /** #2043 — has the operator granted this plugin its SQL ledger? The trust
+   *  step that turns a plugin declaring the engine capability into the
+   *  engine. Absent (tests, minimal mounts) = the declaration alone decides. */
+  readonly isSqlGranted?: (pluginId: string) => boolean;
   /** W0c (#861) — grant read model for the agent detail page. Late-bound like
    *  the config store; `GET /:slug/grants` 503s when absent (tests / minimal
    *  mounts, or no DATABASE_URL). Read-only: this router never writes through
@@ -1822,6 +1855,15 @@ export function createOperatorAgentsRouter(
       });
   }
 
+  /** #2060 — where the facilitation engine plugin is looked up. */
+  function engineSources(): FacilitationEngineSources {
+    return {
+      installedRegistry: options.getInstalledRegistry?.(),
+      catalog: options.getPluginCatalog?.(),
+      ...(options.isSqlGranted ? { isSqlGranted: options.isSqlGranted } : {}),
+    };
+  }
+
   function slugParam(req: Request, res: Response): string | undefined {
     const raw = req.params['slug'];
     if (typeof raw !== 'string' || raw.length === 0) {
@@ -1848,6 +1890,8 @@ export function createOperatorAgentsRouter(
   }
 
   function badRequest(res: Response, err: unknown): void {
+    // #2060 — one mapping for every facilitator refusal on this router.
+    if (respondFacilitatorRefusal(res, err)) return;
     if (err instanceof ConfigValidationError) {
       res.status(409).json({ error: 'config_validation', message: err.message });
       return;
@@ -1876,6 +1920,16 @@ export function createOperatorAgentsRouter(
     res.status(500).json({ error: 'internal', message: (err as Error).message });
   }
 
+  // ── facilitation engine state (#2043) ────────────────────────────────
+  // Registered before every `/:slug/...` route; it has no slug of its own.
+  router.get(
+    '/facilitation-engine',
+    createFacilitationEngineStatusHandler({
+      sources: engineSources,
+      reported: () => options.getFacilitationEngineState?.(),
+    }),
+  );
+
   // ── enabled list (chat-picker surface) ──────────────────────────────
   // Phase A — minimal-metadata list of enabled Agents for the chat
   // picker. Does NOT reveal plugin/binding internals; if a future role
@@ -1897,6 +1951,7 @@ export function createOperatorAgentsRouter(
             name: a.name,
             description: a.description,
             privacy_profile: a.privacyProfile,
+            kind: a.kind ?? 'standard',
             is_fallback: a.id === settings.fallbackAgentId,
           })),
         fallback_slug:
@@ -1929,6 +1984,7 @@ export function createOperatorAgentsRouter(
           description: a.description,
           privacy_profile: a.privacyProfile,
           status: a.status,
+          kind: a.kind ?? 'standard',
           created_at: a.createdAt,
           updated_at: a.updatedAt,
           active: active.has(a.id),
@@ -1960,6 +2016,11 @@ export function createOperatorAgentsRouter(
     if (!live) return unavailable(res);
     try {
       const body = AgentCreateSchema.parse(req.body);
+      // A slug that is also a static route of this router could never be
+      // addressed: `/facilitation-engine/...` answers the engine status.
+      if (RESERVED_AGENT_SLUGS.has(body.slug)) {
+        throw new ConfigValidationError(`agent slug "${body.slug}" is reserved`);
+      }
       const created = await live.store.createAgent({
         slug: body.slug,
         name: body.name,
@@ -1970,9 +2031,17 @@ export function createOperatorAgentsRouter(
           ? { privacyProfile: body.privacy_profile }
           : {}),
         ...(body.status ? { status: body.status } : {}),
+        ...(body.kind ? { kind: body.kind } : {}),
       });
+      // #2043 — a facilitator gets the engine with its creation; nobody has
+      // to grant it by hand. No engine bound yet: it is attached on install.
+      await attachEngineToFacilitator(live.store, created, engineSources());
       await live.registry.reload();
-      res.status(201).json({ id: created.id, slug: created.slug });
+      res.status(201).json({
+        id: created.id,
+        slug: created.slug,
+        kind: created.kind ?? 'standard',
+      });
     } catch (err) {
       badRequest(res, err);
     }
@@ -2098,6 +2167,8 @@ export function createOperatorAgentsRouter(
         return;
       }
       const previous = normalizeContextMemoryMode(agent.contextMemory);
+      // #2060 — every mode other than `off` scopes a memory a facilitator does not have.
+      if (body.mode !== 'off') assertNotFacilitator(agent, 'memory');
       await live.store.updateAgent(agent.id, { contextMemory: body.mode });
       // Same reload contract as every other write on this router: the running
       // registry rebuilds the agent's `MemoryBinder` with the new mode, so the
@@ -2153,6 +2224,7 @@ export function createOperatorAgentsRouter(
         return;
       }
       const previous = parseAgentToAgentMode(agent.agentToAgent);
+      if (body.mode === 'on') assertNotFacilitator(agent, 'agent_to_agent');
       await live.store.updateAgent(agent.id, { agentToAgent: body.mode });
       await live.registry.reload();
       if (previous !== body.mode) {
@@ -2253,6 +2325,7 @@ export function createOperatorAgentsRouter(
               instructions: identity.instructions,
               persona: identity.persona,
               quality: identity.quality,
+              ...(updated.kind !== undefined ? { kind: updated.kind } : {}),
             },
             agentPersonaFamilies(updated),
           );
@@ -2343,6 +2416,7 @@ export function createOperatorAgentsRouter(
           channelKey,
           agent.id,
         );
+        if (body.enabled) assertNotFacilitator(agent, 'agent_to_agent');
         const row = await live.store.upsertAgentChannelPolicy({
           channelType,
           channelKey,
@@ -2455,8 +2529,23 @@ export function createOperatorAgentsRouter(
       // against it, so composing against the wrong one would emit the wrong
       // traits.
       // #1033 — one compile per family the policy names (primary first).
+      // #2043 — `language` is newer than most clients of this route. Absent
+      // leaves the stored value alone, so a client that does not know the
+      // field cannot wipe it; an explicit null clears it.
+      const language =
+        body.language === undefined ? (before?.language ?? null) : (body.language ?? null);
+      // #2060 — a facilitator's identity is checked against the neutrality
+      // contract before anything is stored (persona bounds, instructions).
+      if (isFacilitatorKind(agent)) {
+        assertFacilitatorIdentity({ instructions: body.instructions, persona, quality });
+      }
       const compiled = composeForFamilies(
-        { instructions: body.instructions ?? null, persona, quality },
+        {
+          instructions: body.instructions ?? null,
+          persona,
+          quality,
+          ...(agent.kind !== undefined ? { kind: agent.kind } : {}),
+        },
         agentPersonaFamilies(agent),
       );
       const family = compiled.family;
@@ -2468,6 +2557,7 @@ export function createOperatorAgentsRouter(
         instructions: body.instructions ?? null,
         accentColor: body.accent_color ?? null,
         verbosity: body.verbosity ?? null,
+        language,
         persona,
         quality,
         composed: { text: composed.text, family, byFamily: compiled.byFamily },
@@ -2504,11 +2594,15 @@ export function createOperatorAgentsRouter(
       // this Agent), so it is on this list for the same reason as the name.
       const verbosityChanged =
         (before?.verbosity ?? null) !== (body.verbosity ?? null);
+      // #2043 — the language reaches the built agent (its refusal text) and
+      // the engine's profile read, so a change reloads like the name does.
+      const languageChanged = (before?.language ?? null) !== language;
       if (
         (before?.composed.text ?? null) !== (composed.text ?? null) ||
         nameChanged ||
         descriptionChanged ||
-        verbosityChanged
+        verbosityChanged ||
+        languageChanged
       ) {
         await live.registry.reload();
       }
@@ -2733,6 +2827,9 @@ export function createOperatorAgentsRouter(
       // upsertAgentPlugin overwrites config on conflict — pass the existing
       // config through so a toggle never wipes a per-Agent configuration.
       const config = isFallback ? {} : (row?.config ?? {});
+      const toggled = [{ pluginId: body.id, enabled: body.enabled }];
+      assertFacilitatorPluginGrants(existing, toggled, engineSources());
+      assertEngineOnlyForFacilitators(existing, toggled, engineSources());
       await live.store.upsertAgentPlugin(existing.id, {
         pluginId: body.id,
         config,
@@ -3836,6 +3933,10 @@ export function createOperatorAgentsRouter(
       // still smuggle a per-Agent config into the fallback row.
       const settings = await live.store.getPlatformSettings();
       const isFallback = settings.fallbackAgentId === existing.id;
+      // #2060 — checked before the first write, so a refused set changes nothing.
+      const requested = body.plugins.map((p) => ({ pluginId: p.id, enabled: p.enabled }));
+      assertFacilitatorPluginGrants(existing, requested, engineSources());
+      assertEngineOnlyForFacilitators(existing, requested, engineSources());
       const current = await live.store.listAgentPlugins(existing.id);
       const desired = new Set(body.plugins.map((p) => p.id));
       for (const p of current) {
@@ -3871,6 +3972,9 @@ export function createOperatorAgentsRouter(
         res.status(404).json({ error: 'not_found' });
         return;
       }
+      // #2060 — a facilitator speaks only as its own identity, which is not
+      // a binding. An empty set stays allowed, so stale rows can be cleared.
+      if (body.bindings.length > 0) assertNotFacilitator(existing, 'channel_binding');
       const current = await live.store.listChannelBindingsForAgent(existing.id);
       const desired = new Set(
         body.bindings.map((b) => `${b.channel_type}|${b.channel_key}`),
@@ -3920,6 +4024,7 @@ export function createOperatorAgentsRouter(
           res.status(404).json({ error: 'not_found' });
           return;
         }
+        assertNotFacilitator(target, 'default_agent');
         await live.store.setFallbackAgentId(target.id);
       }
       await live.registry.reload();

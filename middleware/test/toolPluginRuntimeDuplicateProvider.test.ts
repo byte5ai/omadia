@@ -170,7 +170,7 @@ async function makeRuntime(
       list: () => [...packages.values()],
     },
     serviceRegistry,
-    nativeToolRegistry: { register: stub, registerHandler: stub },
+    nativeToolRegistry: { register: stub, registerHandler: stub, unregisterBySource: (): string[] => [] },
     pluginRouteRegistry: newTestRouteRegistry(),
     notificationRouter: { dispatch: (): void => {}, registerChannel: stub },
     uiRouteCatalog: new UiRouteCatalog(),
