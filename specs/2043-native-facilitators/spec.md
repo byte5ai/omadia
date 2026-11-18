@@ -242,7 +242,7 @@ borrowing another bot.
 | `facilitation_steps` | facilitation id, position, kind (`open`, `collect`, `discuss`, `cluster`, `prioritise`, `decide`, `assign`, `close`), title, timebox, decision method and options where the step decides, status. The agenda. |
 | `facilitation_participants` | facilitation id, scope (`home` or a session id), principal id (authenticated channel user id), display name, source (`roster`, `declared`, `named`, `posted`, `joined`), status (`active`, `left`), changed at, changed by event. |
 | `facilitation_dod_versions` | facilitation id, version, text, structured criteria where machine-checkable, proposed by, proposal message id, consent state, effective at. |
-| `facilitation_contributions` | facilitation id, step id, participant principal, kind (`idea`, `position`, `concern`, `question`, `proposal`, `vote`, `confirmation`, `objection`, `abstention`, `commitment`), payload validated against the step, source message id (unique per facilitation), status (`valid`, `ambiguous`, `superseded`, `withdrawn`), recorded at. |
+| `facilitation_contributions` | facilitation id, step id, participant principal, kind (`idea`, `position`, `concern`, `question`, `proposal`, `vote`, `confirmation`, `objection`, `abstention`, `commitment`), payload validated against the step, source event key (the kernel's inbound event id from #2089: one per message revision, card answer or reaction) and part index (unique together per facilitation), status (`valid`, `ambiguous`, `superseded`, `withdrawn`), recorded at. |
 | `facilitation_clusters` | step id, label, member contribution ids, proposed by the facilitator, confirmed by the group (yes/no). |
 | `facilitation_decisions` | facilitation id, step id, statement, method, result, rationale, decided at. |
 | `facilitation_action_items` | facilitation id, decision id, description, owner principal (confirmed by the owner), due date, status, follow-up reminders sent. |
@@ -264,7 +264,7 @@ States exist on three levels, each with its own rules:
 | Level | States | Ends when |
 |---|---|---|
 | **Step** (agenda item) | `open` → `closed` (or `extended`) | Its own evaluation (§5.5) or the group closes it; a closed step accepts no further contributions. |
-| **Session** (async phase or live meeting) | `scheduled` → `live` → (`confirming`) → `closed` | Its time slot ends or the group closes it; the session summary is posted. Only where the method or the definition of done requires confirmation, the session stays `confirming` for the consent window (§5.7), in which its conversation accepts consent answers, status requests and stop, nothing else. |
+| **Session** (async phase or live meeting) | `scheduled` → `live` → (`confirming`) → `closed`, or `scheduled` → `cancelled` | Its time slot ends or the group closes it; the session summary is posted. Only where the method or the definition of done requires confirmation, the session stays `confirming` for the consent window (§5.7), in which its conversation accepts consent answers, status requests and stop, nothing else. |
 | **Facilitation** | as above | `concluding` when the definition of done is met; `closed` after the final summary was published (and confirmed where required); `following_up` while agreed action items are open; `ended` when all are done or overdue, or the follow-up deadline passed. |
 
 - **invited:** the facilitator's bot is in a group conversation. Outside a facilitation the
@@ -322,7 +322,15 @@ States exist on three levels, each with its own rules:
   consent windows close, no further consent answers are accepted, an undelivered session
   summary is sent without a consent request and marked `not confirmed` (reason:
   facilitation stopped), and the abort report says so. No consent request is ever sent
-  that can no longer be answered. In the same transaction every `scheduling` scope and
+  that can no longer be answered. **Sessions at every terminal transition** (entering
+  `concluding`, stop, abort, the end of the `configuring` scope, error), in the same
+  transaction: a `scheduled` session becomes `cancelled` with one short note in its
+  conversation; a `live` session is closed and its summary enters the closing procedure
+  (on stop or abort without a consent request); a `confirming` session continues its
+  closing procedure (on stop or abort ended as above). The reservation of every session
+  conversation and the subscriptions bound to it are released as soon as the session is
+  `closed` or `cancelled`, at stop or abort at once; afterwards only its `closing` scope
+  may still deliver its closing documents. In the same transaction every `scheduling` scope and
   follow-up scheduling grant of the facilitation is revoked and pending invitation jobs
   are cancelled: no further free/busy query, no further invitation. Invitations already
   sent stay; the abort report lists them, and cancelling them is a separate request of
@@ -360,9 +368,13 @@ States exist on three levels, each with its own rules:
 - **Conversations:** a facilitation has one home conversation (where it was started).
   A live session may run in another conversation (for example the chat of a scheduled
   Teams meeting): the initiator links it in the home conversation when the session is
-  scheduled (in `configuring` or `active`), and the facilitator confirms the link in
-  both. Linking takes the session conversation's own reservation in the same
-  transaction; if another process (another facilitation or an agent discussion) holds it,
+  scheduled (in `configuring` or `active`). The link request must come from inside the
+  target conversation: a home participant of the facilitation addresses the facilitator
+  there with an authenticated message that names the facilitation; that message proves
+  the person's membership in the target conversation. A request made only from the home
+  conversation, or from someone who is not a home participant, takes nothing and gets
+  one short answer. The facilitator then confirms the link in both conversations.
+  Linking takes the session conversation's own reservation in the same transaction; if another process (another facilitation or an agent discussion) holds it,
   the link fails and the facilitator says so in the home conversation. The session
   conversation's reservation is released when the session reaches `closed`; its closing
   documents then go out under its `closing` scope. Reading a linked conversation needs
@@ -393,7 +405,13 @@ States exist on three levels, each with its own rules:
   facilitation, or because only one process can accept it. If several match, the
   facilitator asks once which one is meant; nothing changes until it is clear.
 - **Authorship and content come only from authenticated inbound events.** A contribution is
-  recorded by `record_contribution(eventId, revision, payload)`: the engine takes the
+  recorded by `record_contribution(eventId, revision, parts)`: one inbound event may yield
+  several contributions (for example three ideas in one message), each with its part
+  index; a repeated call with the same event and revision creates no duplicates; a new
+  revision of a message received before its step closes supersedes all parts of the
+  earlier revision (clusters are only built after the step closed, so no cluster points
+  to a superseded part); free-text parts are confirmed by their author in one question
+  listing all parts. The engine takes the
   authenticated actor, tenant, channel, event id, revision, timestamp **and the original
   event content** from the stored inbound event (#2089), never from model arguments. Event
   kinds: a text message (original text), a card or poll answer (structured value with the
@@ -1035,6 +1053,18 @@ kept compatible.
 47. **Stop before invitations.** A follow-up meeting is agreed, its invitations not yet
     sent; stop and restart: no free/busy query and no invitation follow; the abort report
     is delivered and lists any invitations already sent.
+
+48. **Link authorization.** An initiator who is not a member of the target conversation
+    cannot link it, even with the facilitator's bot installed there: no reservation, no
+    messages; a link requested by a home participant inside the target conversation
+    works, also across a restart and against a concurrent link attempt.
+49. **Sessions at the end.** Stop, the end of the `configuring` scope, an error and the
+    regular close, each with sessions in `scheduled`, `live` and `confirming`: scheduled
+    sessions are cancelled, live ones closed, all session conversations are free again
+    after a restart, and the ended process receives no new messages from them.
+50. **Several contributions per message.** A message with three ideas becomes three
+    contributions that land in different clusters; a retry creates no duplicates; an edit
+    before the step closes replaces exactly that message's parts.
 
 ## 10. Work breakdown
 
