@@ -44,7 +44,7 @@ cannot safely own.
   | Scope | Until | Allowed targets |
   |---|---|---|
   | `active` | the facilitation's deadline | home conversation, linked session conversations in `scheduled`, `live` or `confirming`, private reminders to participants |
-  | `closing` (one per closing event: each session close, entering `concluding`, abort; own id) | all essential messages of that event (session protocol, result, abort report) confirmed, at most 7 days after the event | home conversation, the session conversations of this facilitation, the protocol recipients of §5.8 |
+  | `closing` (one per closing event: each session close, entering `concluding`, abort; own id) | all essential messages of that event (session protocol, result, abort report) delivered **and** a group confirmation the event requires has ended (passed, objected or window over); at most 7 days after the event, extended only by a confirmation window that started before that limit | home conversation, the session conversations of this facilitation, the protocol recipients of §5.8 |
   | `scheduling` | the agreed follow-up meeting's invitations are sent or its date passed | the invitees confirmed by group consent |
   | `follow_up` | the follow-up deadline | the home conversation and the owners of open action items |
 
@@ -191,7 +191,7 @@ the contract at save time (for example "favour the sales team" is refused).
 |---|---|---|
 | **Facilitator** | One facilitator agent per facilitation. | Designs the process with the group, moderates, records, keeps time, leads to decisions, reports and follows up (§2.2). |
 | **Initiator** | The person who starts the facilitation in the group (§5.2). | Sets goal and initial definition of done, agrees format and agenda with the group; may propose changes; receives the report. No extra say over contributions, participants or rules once the facilitation is active. |
-| **Participants** | The humans in the conversation (roster at start, kept current by membership events). | Contribute, change their own contribution while the method allows, object, propose changes, ask for status, stop the facilitation. |
+| **Participants** | The humans in the conversation (platform roster or declared list at start, §5.5, kept current by membership events). | Contribute, change their own contribution while the method allows, object, propose changes, ask for status, stop the facilitation. |
 
 ## 4. Measured ground truth: why it does not work
 
@@ -227,11 +227,11 @@ borrowing another bot.
 
 | Table | Holds |
 |---|---|
-| `facilitations` | id, facilitator agent id, channel type, conversation id, initiator principal, goal, format, phase, `state_version`, deadline, timezone, reminder policy, follow-up policy, created/closed timestamps, close reason. Unique: one active facilitation per conversation. |
+| `facilitations` | id, facilitator agent id, channel type, conversation id, initiator principal, goal, format, phase, `state_version`, deadline, timezone, reminder policy, follow-up policy, electorate source (`platform_roster` or `declared_list`, §5.5), created/closed timestamps, close reason. Unique: one active facilitation per conversation. |
 | `facilitation_sessions` | facilitation id, kind (`async` chat phase, `live` meeting), scheduled start and end, meeting reference (channel meeting id), modality (`chat`, `online`, `hybrid`), capability snapshot (§6.1), consent state for audio and video processing, status. |
 | `facilitation_stakeholders` | facilitation id, principal or address, role (`receives protocol`, `invited to follow-ups`), added by, confirmed by the group. |
 | `facilitation_steps` | facilitation id, position, kind (`open`, `collect`, `discuss`, `cluster`, `prioritise`, `decide`, `assign`, `close`), title, timebox, decision method and options where the step decides, status. The agenda. |
-| `facilitation_participants` | facilitation id, scope (`home` or a session id), principal id (authenticated channel user id), display name, source (`roster`, `joined`), status (`active`, `left`), changed at, changed by event. |
+| `facilitation_participants` | facilitation id, scope (`home` or a session id), principal id (authenticated channel user id), display name, source (`roster`, `declared`, `named`, `posted`, `joined`), status (`active`, `left`), changed at, changed by event. |
 | `facilitation_dod_versions` | facilitation id, version, text, structured criteria where machine-checkable, proposed by, proposal message id, consent state, effective at. |
 | `facilitation_contributions` | facilitation id, step id, participant principal, kind (`idea`, `position`, `concern`, `question`, `proposal`, `vote`, `confirmation`, `objection`, `abstention`, `commitment`), payload validated against the step, source message id (unique per facilitation), status (`valid`, `ambiguous`, `superseded`, `withdrawn`), recorded at. |
 | `facilitation_clusters` | step id, label, member contribution ids, proposed by the facilitator, confirmed by the group (yes/no). |
@@ -274,7 +274,8 @@ States exist on three levels, each with its own rules:
   result is published even after the deadline or a failed send, without re-opening
   moderation. Where the final summary needs confirmation, its consent window (default
   24 h) starts when its delivery is confirmed and lies inside the `closing` scope, also
-  after the deadline. If an objection stands or the window ends without consent, the
+  after the deadline. It follows the group consent procedure of §5.7: without a standing
+  objection at the window's end the result is confirmed; with a standing objection the
   facilitation still closes: `closed` with the result marked "not confirmed" and the
   objection in the report; moderation does not re-open. If delivery still fails when the
   `closing` scope ends, the facilitation closes as `closed` with "not delivered", and the
@@ -469,13 +470,25 @@ tracked per scope: leaving a meeting chat ends only the session membership, neve
 membership.
 
 **Known electorate.** Automatic completeness ("everyone has contributed") and consent
-decisions need a complete, current participant list. At start the roster must be complete;
-if the channel reports it partial or unknown (Teams returns an empty, partial roster on
-errors, `src/teamsRoster.ts:85`, `src/teamsGroupPrimitives.ts:256` in
-`omadia-channel-teams`), the facilitator asks the group to confirm the participant list by
-group consent instead. Before every automatic completeness or consent decision the engine
-refreshes the roster; if it is partial or unknown at that moment, no automatic decision is
-taken and the facilitator asks the group to confirm the list.
+decisions need a complete, current participant list from one of two sources, fixed at start:
+
+- **Platform roster:** the channel's roster query, asked with `fresh: true` (bypassing any
+  cache; Teams caches it for 5 minutes today, `src/teamsRoster.ts:39`) and returning
+  `complete`, `partial` or `unknown` with its time (#2091). Teams today returns an empty or
+  partial list on errors (`src/teamsRoster.ts:85`, `src/teamsGroupPrimitives.ts:256` in
+  `omadia-channel-teams`); that counts as `partial` or `unknown`. Before every automatic
+  completeness or consent decision the engine queries it fresh; if the answer is not
+  `complete`, no automatic decision is taken, the facilitator says so once and retries at
+  the next contribution or reminder.
+- **Declared list:** if the platform roster is not `complete` at start, the initiator names
+  the participants while the facilitation is `configuring`. The facilitator posts the list
+  in the conversation; anyone in it can name a missing person, who is added when that
+  person confirms by an authenticated message; a person who posts an authenticated
+  message in the conversation and is not on the list is added and welcomed. Removal only
+  by the person's own leave (or the platform's leave event). No group consent is needed,
+  because adding is never blocked and nobody is removed by others.
+
+The source never changes during a facilitation.
 
 **Membership changes:** a person who joins the conversation becomes a participant and is
 welcomed with the current state; a person who leaves becomes `left`, their contribution
@@ -539,7 +552,10 @@ participant.
   (the eligible participants of the scope, §5.5), posted in the conversation; it passes
   when no eligible participant objects within its window (set at start, default 12 h,
   never past the deadline; shorter for a live session, default 5 minutes; the confirmation
-  of a final summary uses its own window inside the `closing` scope instead, see §5.2); objections and
+  of a session or final summary uses its own window inside that event's `closing` scope
+  instead and may end after the deadline, see §5.2; the evaluation at the deadline waits for
+  an open session-summary window, at most that window, and accepts only consent answers
+  meanwhile); objections and
   agreements count only from authenticated messages or card answers; an objection blocks
   until it is resolved; withdrawing a consent before the window ends is allowed. A model's
   statement that "the group agrees" never counts. Grants of §5.11 are issued only from a
@@ -862,12 +878,18 @@ kept compatible.
     version changes nothing.
 34. **Final confirmation after the deadline.** A result that needs confirmation is reached
     exactly at the deadline and delivered after a restart: the confirmation window starts
-    after delivery; with consent the facilitation closes confirmed, with an objection or
-    no answer it closes "not confirmed"; moderation never re-opens.
-35. **Unknown roster.** With a partial roster at start, and with a missed membership event
-    later, no automatic completeness or consent decision is taken; after the group
-    confirmed the list (or the roster refresh succeeded), the facilitation continues
-    correctly.
+    after delivery; without a standing objection at its end the facilitation closes
+    confirmed (also when nobody answers), with a standing objection it closes "not
+    confirmed"; moderation never re-opens. The `closing` scope stays valid while the
+    window runs, also when all sends were confirmed at once; a last session ending exactly
+    at the facilitation's deadline gets its summary window; a delivery confirmed one hour
+    before the 7-day limit still gets its full window.
+35. **Unknown roster.** With a partial roster at start the initiator's declared list is
+    used; a missing person named by someone else and confirming is added, a person posting
+    without being on the list is added, and the completeness decision counts both. With
+    the platform roster, a join event missed within the roster cache's lifetime is found
+    by the fresh query before the next automatic decision; a fresh query answering
+    `partial` blocks the automatic decision until a later query is `complete`.
 
 ## 10. Work breakdown
 

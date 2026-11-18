@@ -86,6 +86,10 @@ answers. There is no orchestrator agent.
 | **Archetype plugin** | Archetyp-Plugin | Adds a new agent archetype to the system (manifest kind `archetype`), for example `omadia-agent-facilitator`. The operator then creates agents of that archetype; the kernel runs them under all agent rules. Listed in its own hub category; installing it needs an explicit confirmation. | Not a plugin that is attached to an agent. |
 | **Capability** | Fähigkeit | Something an agent may be granted: a tool, an integration scope (read or write), a skill. | |
 | **Grant** | Freigabe | The permission that gives one agent one capability (or one consultation). | |
+| **Model gateway** | Modell-Gateway | The kernel service through which every model call runs (operations `complete`, `embed`, `transcribe`); only it calls provider plugins, and every call needs an execution context (agent turn, execution scope, inbound processing or maintenance run). | Not a provider plugin. |
+| **Execution scope** | Ausführungsfreigabe | A bounded authorization the kernel issues for the actions of an archetype plugin's process (`active`, `closing`, `scheduling`, `follow_up`), each with a deadline, a budget and the targets it may send to. | Not a grant, not an envelope. |
+| **Reservation** | Reservierung | The exclusive hold of one running process (a facilitation or an agent discussion) on a conversation; at most one per conversation; released by the process itself. | Not a binding; never removes one. |
+| **Follow-up permission** | Nachverfolgungsberechtigung | The non-exclusive permission a facilitation keeps after its reservation is released: remind owners of open action items and post status in its home conversation until `ended`. | Not a reservation; another process may hold the conversation meanwhile. |
 | **Tool** | Werkzeug | A function an agent can call. | |
 | **Integration** | Integration | A connection to a third-party system (ERP, CRM, mail, calendar) with its credentials in the vault; agents never see the secrets. | |
 | **Skill** | Skill | Instructions and knowledge an agent can load; delivered by a skill plugin or authored, imported or forked in the instance. A capability, never an actor. | Not an agent, not a plugin by itself. |
@@ -119,7 +123,8 @@ answers. There is no orchestrator agent.
 |---|---|---|---|
 | **Trigger** | Auslöser | What lets an agent act unasked: a **hook** on an event, a one-shot **wakeup** or a short-lived **timer**. Always with a deadline, limits and a budget enforced by the management layer. | Not a heartbeat; omadia has none. |
 | **Routine** | Routine | A trigger a user asked an agent to run on a schedule; the user stays its owner. | |
-| **Plugin job** | Plugin-Job | Model-free technical maintenance of a plugin (for example a sync). | Not a trigger; never calls a model. |
+| **Plugin job** | Plugin-Job | Technical maintenance of a plugin (for example a sync). Never calls a generative model; a job that keeps an index current may use embeddings as a maintenance run. | Not a trigger. |
+| **Maintenance run** | Wartungslauf | The execution context of a kernel or plugin job that keeps an index current: only embeddings, charged to the instance's maintenance budget, deadline per run, never posts to people. | Not an agent turn. |
 
 ## Facilitation
 

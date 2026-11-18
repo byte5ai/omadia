@@ -445,6 +445,23 @@ sandboxing outbound access (the global `fetch`, `pluginContext.ts:555`) is a pre
 for shipping archetype plugins and for enforcing this for capability plugins (#2088,
 #2053).
 
+The gateway offers three operations: `complete` (text generation), `embed` and
+`transcribe` (batch and realtime). Today's embedding and transcription adapters
+(`middleware/packages/embedding-adapter-openai`, `transcription-adapter-openai`, both kind
+`extension` with their own clients) become `provider` plugins: they keep their
+credentials and clients, and only the gateway calls them. Every call runs in exactly one
+execution context, which decides whose budget it uses:
+
+| Execution context | Used for | Charged to and limited by |
+|---|---|---|
+| Agent turn | an agent's own turn, its internal helpers, capability calls it makes (including embeddings for semantic search or memory writes during the turn) | the agent's envelope |
+| Execution scope | actions of an archetype plugin's process (#2090), including transcription of a live session | the scope's deadline and budget |
+| Inbound processing | transcribing a voice message before the addressed agent's turn | the addressed agent's envelope |
+| Maintenance run | a kernel or plugin job that keeps an index current (for example the embedding backfill, `harness-knowledge-graph-neon/src/embeddingBackfill.ts:475`) | the instance's maintenance budget set by the operator, with a deadline per run; only `embed` is allowed, never `complete` or `transcribe`, and it never posts to people |
+
+Semantic search, re-indexing and transcription keep working with the lock in place; only
+their direct paths to the provider go.
+
 An agent has exactly one archetype, set at creation; it never switches. Uninstalling an
 archetype plugin disables its agents and keeps their records; it never converts them to
 another archetype.
@@ -634,7 +651,7 @@ something that needs judgement). Most firings never reach a model.
 | Mechanism today | Change |
 |---|---|
 | **Routines** (user-owned recurring cron with a prompt, no end date or cost cap) | **Purpose:** a person has an agent do something on a schedule; human owner per tenant, pause, resume, delete, run history, agent assignment, cron calendar semantics, authorised first contact with other people (`middleware/src/plugins/routines/`, #1028, #252). **Adaptation:** become user-requested triggers of this mechanism, **keeping all of that**: the executing agent and the human owner are kept apart, owner rights and controls stay, cron calendar semantics with time zone stay; new are a deadline with a renewal question before it ends, a budget and a pre-check. Output templates (data from the raw tool result, model only for narrative slots) become the default form: `deliver` plus an optional `turn`. |
-| **Plugin jobs** (cron or interval until deactivation, failures keep ticking) | **Purpose:** technical maintenance such as syncs; a transient network error must not end a sync for good (`middleware/src/plugins/jobScheduler.ts`). **Adaptation:** stay, and never call a model. Failures back off with bounded recovery probes instead of a permanent pause; successful "nothing changed" runs never count as failures; operators see last run and error state. |
+| **Plugin jobs** (cron or interval until deactivation, failures keep ticking) | **Purpose:** technical maintenance such as syncs; a transient network error must not end a sync for good (`middleware/src/plugins/jobScheduler.ts`). **Adaptation:** stay, and never call a generative model; a job that keeps an index current may use the gateway's `embed` operation as a maintenance run (§5.10) within the operator's maintenance budget. Failures back off with bounded recovery probes instead of a permanent pause; successful "nothing changed" runs never count as failures; operators see last run and error state. |
 | **Conductor event, webhook and cron triggers** (operator-authored workflows) | Stay for operator-designed processes. Agent hooks use the same event bus (`middleware/src/conductor/eventRouter.ts`); channel and integration plugins publish their events there (plugins emit through `ctx.events.emit`, `middleware/src/platform/pluginContext.ts:1028-1033`, gated by the event catalogue). Model steps of workflows count against the same budgets. |
 | **Facilitation pattern's hourly model tick** | Replaced by hooks and deterministic timers of the facilitation engine (native facilitators spec). |
 | **Periodic learning and consolidation** (for example the scratch-promotion reaper, `middleware/packages/harness-orchestrator-extras/src/scratchPromotionReaper.ts`) | **Purpose:** important insights become durable knowledge. **Adaptation:** due entries are found deterministically; the classification runs as a bounded batch trigger owned by the agent whose memory it is, with budget and deadline; origin labels are kept, nothing is published as team knowledge by default. |
@@ -863,7 +880,10 @@ Each existing element keeps its purpose, moved out of the message body:
     the kill switch on; a test capability plugin trying a direct HTTP or SDK call to a model
     provider is blocked, and its model call through the gateway is charged to and limited
     by the calling agent's envelope; the agent runtime, verifier and fast lane keep working
-    through the gateway.
+    through the gateway. With the lock in place, semantic search, the embedding backfill
+    (as a maintenance run, stopped at its budget) and the transcription of a voice message
+    work through the gateway; the embedding and transcription adapters' direct clients are
+    reachable only from the gateway; a maintenance run calling `complete` is refused.
 38. **Disclosure level none.** Two questions, one about information that exists but is
     withheld at level `none`, one about information that does not exist: the visible
     answers do not allow telling the cases apart.
