@@ -177,7 +177,7 @@ Paths are relative to the kernel repo unless a sister repo is named.
 | G10 | The end-user UIs know no agents: omadia-ui and omadia-ui-mobile talk to one entity "omadia"; the kernel hard-routes canvas turns to one `canvasChatAgent`. | INV-1, INV-4 | omadia-ui `app/src/shared/protocol.ts` (`ClientTurn`), `app/src/renderer/src/App.tsx:981`; kernel `middleware/src/channels/orchestratorDispatcher.ts:142-165` |
 | G11 | The desktop UI's architecture has its own orchestrator: a "Tier 2 UI Orchestrator" (small model) receives every canvas turn, decides between local action, UI composition and content, and delegates content to `chatAgent@1` and its sub-agents. | INV-1, INV-6 | omadia-ui `CONCEPT.md` ("Architecture", "Tier 2 — UI Orchestrator") |
 | G12 | Consultation attribution is uneven: web chat and Teams render the delegated answer and the consulted footer; Telegram renders neither. | INV-4 | `web-ui/app/_components/chat/AgentsConsultedFooter.tsx`; `omadia-channel-teams` `src/teamsCard.ts:755-776`; `middleware/src/config.ts:93-95` |
-| G13 | The default agent is a super-agent by design: first boot attaches every installed plugin to it except the agent runtime itself (`onboarding.ts:113`), and every later kernel install path (Hub install, upload, reinstall, built-ins) attaches each new plugin to it except reference-only plugins (`middleware/src/plugins/defaultOrchestratorAttach.ts:29`). It also receives all unbound traffic. | INV-8 | `middleware/packages/harness-orchestrator/src/registry/onboarding.ts:104-129,155-176`; `middleware/src/index.ts:1797-1803` (#1491, #1498); `middleware/packages/harness-orchestrator/src/routing/channelResolver.ts:40` |
+| G13 | The default agent is a super-agent by design: first boot and every later kernel install path (Hub install, upload, reinstall, built-ins) attach every attachable plugin to it; excluded are only the agent runtime itself (`onboarding.ts:113,169`) and reference-only plugins (`middleware/src/plugins/defaultOrchestratorAttach.ts:29`), at first boot also errored installs (`middleware/src/index.ts:1351`). It also receives all unbound traffic. | INV-8 | `middleware/packages/harness-orchestrator/src/registry/onboarding.ts:104-129,155-176`; `middleware/src/index.ts:1797-1803` (#1491, #1498); `middleware/packages/harness-orchestrator/src/routing/channelResolver.ts:40` |
 | G14 | Agent-to-agent today has two levels: a per-agent switch (`agents.agent_to_agent`) and a per-conversation policy (`agent_channel_policies`, key `(channel_type, channel_key, agent_id)`); the runtime requires both. Neither names a target agent, so neither is a permission for A to consult B. | INV-5 | `middleware/migrations/0058_agent_to_agent.sql:52,83`; `middleware/src/conductor/peerPolicy.ts:105` |
 | G15 | The audience floor is inactive unless a provider is configured: without one the guard returns no restriction. | INV-2, INV-5 | `middleware/packages/harness-orchestrator/src/audienceFloorGuard.ts:272` |
 | G16 | The product calls every configured agent "Orchestrator" (navigation, create form, chat picker, glossary rule "keep in English"). | INV-6 | `web-ui/messages/GLOSSARY.md`; `web-ui/messages/en.json` (`nav.agentsCluster`, `agentPicker.label`) |
@@ -531,7 +531,13 @@ status changes; deletion happens only after that. A process ended this way is `a
 with the reason "agent disabled", "agent deleted" or "archetype plugin removed"; its end
 time starts the retention period; closing documents that still needed the agent's voice
 are not sent, the `system` notice says so instead. Re-enabling an agent never resumes an
-ended process.
+ended process. **Deletion keeps a tombstone:** the agent's row stays with id, display
+name and status `deleted` (today `channel_bindings` cascades on delete,
+`middleware/migrations/0001_multi_orchestrator.sql:34`, so a conversation would lose its
+binding and fall through to a default agent). Bindings, selections and default-agent
+entries that point to it keep pointing to it; a message there gets the INV-7 notice
+"Mira was deleted" and no other agent gets the turn, until a user or operator changes the
+target. The row is purged only when nothing references it any more.
 
 An **agent template** is something else: a preset of identity, personality and
 capabilities for an agent of an existing archetype.

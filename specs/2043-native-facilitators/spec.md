@@ -388,6 +388,11 @@ States exist on three levels, each with its own rules:
   the person's membership in the target conversation. A request made only from the home
   conversation, or from someone who is not a home participant, takes nothing and gets
   one short answer. The facilitator then confirms the link in both conversations.
+  Readiness of the facilitator's identity is checked for the session conversation itself
+  (for Teams the chat-specific permission to read all messages, §6.2) when it is linked
+  and again before the session goes `live`; if it is missing, the session does not go
+  `live`, the facilitator says what is missing in the home conversation, and the home
+  conversation is not affected.
   Linking takes the session conversation's own reservation in the same transaction; if another process (another facilitation or an agent discussion) holds it,
   the link fails and the facilitator says so in the home conversation. The session
   conversation's reservation is released when the session reaches `closed`; its closing
@@ -613,7 +618,13 @@ participant.
 - Action-item follow-up runs in the `following_up` context of §5.2, with its own triggers
   bound to that context, not to the active phase.
 - At the deadline the engine closes with the state at that moment: a result if the
-  definition of done allows it, otherwise an honest abort report. Nothing ends silently:
+  definition of done allows it, otherwise an honest abort report. **Exception, bounded:**
+  if session closings that require confirmation are still open at the deadline, the
+  `active` scope is extended until they have ended (bounded by their own `closing`
+  limits); meanwhile only consent answers to those summaries, status requests and stop
+  are accepted, nothing else changes. Then the definition of done is evaluated once with
+  their outcomes: met → `concluding`; not met (for example a summary `not confirmed`,
+  also for an unverifiable electorate or a failed delivery) → abort report naming it. Nothing ends silently:
   a failed step, an exhausted retry budget or TTL expiry produces an abort report.
 - **Two kinds of outbox entries.** *State-bound messages* (reminders, prompts, status
   posts) carry the required phase and `state_version`; a send re-checks both, and a stale
@@ -666,8 +677,7 @@ participant.
   never past the deadline; shorter for a live session, default 5 minutes; the confirmation
   of a session or final summary uses its own window inside that event's `closing` scope
   instead and may end after the deadline, see §5.2; the evaluation at the deadline waits for
-  an open session-summary window, at most that window, and accepts only consent answers
-  meanwhile); objections and
+  open session closings as defined in §5.6); objections and
   agreements count only from authenticated messages or card answers; an objection blocks
   until it is resolved; withdrawing a consent before the window ends is allowed. A model's
   statement that "the group agrees" never counts. Grants of §5.11 are issued only from a
@@ -700,7 +710,10 @@ participant.
 
 Facilitation records and protocol are deleted after a retention period set per instance
 (default 90 days), counted from `ended` or `aborted`, never from `closed`, so follow-up is
-never cut short. The follow-up horizon is capped by an instance setting (default 90 days
+never cut short. The effective deletion time is the later of that end and the end of
+every scope of the facilitation that is still running (`closing`, `scheduling`,
+`follow_up`); plugin tables, outbox and the kernel's stored events use this same
+computation, and the settings view shows the effective time. The follow-up horizon is capped by an instance setting (default 90 days
 after `closed`); an action item with a due date beyond it is refused visibly when it is
 agreed, not accepted silently; the result summary in the chat stays where the
 channel keeps it.
@@ -1124,6 +1137,19 @@ kept compatible.
     restart and re-enabling: no reservation is left, no model call or invitation follows,
     each process is `aborted` with its reason, the `system` notice appears, and nothing
     resumes.
+
+59. **Definition of done waits for the last session.** The definition of done requires the
+    confirmed protocol of the last session, which ends exactly at the deadline: with
+    consent → result; with an objection, a permanently unknown roster, or a failed
+    delivery → abort report naming it; each also after a restart.
+60. **Session readiness.** The home conversation is ready; the linked meeting chat
+    receives mentions but lacks permission for all messages: the session does not go
+    `live` and the home conversation is told; after the permission is granted, the
+    session runs including contributions without mention. The same per transport
+    adapter (Teams, Slack, Discord, Telegram).
+61. **Retention and open scopes.** Retention of one day, a failed closing send, restart, a
+    later successful attempt inside the `closing` scope: nothing is deleted early; after
+    all scopes ended the data is deleted.
 
 ## 10. Work breakdown
 
