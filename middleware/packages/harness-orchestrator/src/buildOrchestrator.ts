@@ -94,7 +94,10 @@ import { FindFreeSlotsTool } from './tools/findFreeSlotsTool.js';
 import { SuggestFollowUpsTool } from './tools/suggestFollowUpsTool.js';
 import type { AttachmentReader } from './tools/readAttachmentTool.js';
 import { VerifierService } from './verifierService.js';
-import { wrapFacilitatorAgent } from './facilitatorAgent.js';
+import {
+  wrapFacilitatorAgent,
+  type EngineDrivenConversationLookup,
+} from './facilitatorAgent.js';
 import type { AgentKind } from './registry/agentKind.js';
 import {
   applyKindContract,
@@ -327,6 +330,12 @@ export interface OrchestratorDeps {
    * non-canvas channel gets the one-call triage. Absent → no wrapper.
    */
   readonly fastPath?: () => FastPathTriagePort | undefined;
+  /**
+   * #2043 — does the facilitation engine drive this conversation for this
+   * agent (it holds the agent's message subscription there)? Then a
+   * facilitator's own chat turn is suppressed; see `facilitatorAgent.ts`.
+   */
+  readonly isEngineDrivenConversation?: EngineDrivenConversationLookup;
   /**
    * #1018 — resolves the peer AGENTS the calling agent may see in the current
    * chat, merged into `get_chat_participants` as `kind: 'agent'` entries.
@@ -638,8 +647,12 @@ export function buildOrchestratorForAgent(
   const withFastPath = (agent: ChatAgent): ChatAgent =>
     isFacilitator
       ? wrapFacilitatorAgent(agent, {
+          agentSlug: config.agentId,
           name: config.identityName,
           locale: deps.aiDisclosure?.locale,
+          ...(deps.isEngineDrivenConversation
+            ? { isEngineDriven: deps.isEngineDrivenConversation }
+            : {}),
           log: (m) => console.log(m),
         })
       : fastPathDeps === undefined

@@ -5,6 +5,7 @@ import type {
   ChannelSocketHandler,
   ChannelUserRef,
   ConversationMembershipEvent,
+  ConversationMessageEvent,
   ConversationRosterProvider,
   PeopleDirectoryProvider,
   ConversationSendProvider,
@@ -22,6 +23,7 @@ import type { ConversationRosterRegistry } from './rosterRegistry.js';
 import type { PeopleDirectoryRegistry } from './peopleDirectoryRegistry.js';
 import type { ConversationEventHub } from './conversationEventHub.js';
 import type { TargetedSendRegistry } from './targetedSendRegistry.js';
+import type { ConversationMessageHub } from './conversationMessages/hub.js';
 import type { ConversationSendRegistry } from './conversationSendRegistry.js';
 
 /**
@@ -150,6 +152,12 @@ export interface CreateCoreApiOptions {
   conversationEvents?: ConversationEventHub;
   /** #330 C3b — conversation-addressed proactive send (group nudges). */
   conversationSends?: ConversationSendRegistry;
+  /**
+   * #2043 — authenticated inbound messages. Present only with a database
+   * (subscriptions and events are stored); absent leaves both CoreApi methods
+   * undefined, so an adapter's mention gate always applies.
+   */
+  conversationMessages?: Pick<ConversationMessageHub, 'emit' | 'isSubscribed'>;
   /**
    * #1086 — routines principal producer. Present only when the routines
    * feature is wired (requires Postgres); absent leaves turns context-free,
@@ -324,6 +332,25 @@ export function createCoreApi(opts: CreateCoreApiOptions): CoreApi {
     const conversationEvents = opts.conversationEvents;
     api.emitConversationEvent = (event: ConversationMembershipEvent): void => {
       conversationEvents.emit(event);
+    };
+  }
+  if (opts.conversationMessages) {
+    const messages = opts.conversationMessages;
+    api.emitConversationMessage = (event: ConversationMessageEvent): void => {
+      messages.emit(event);
+    };
+    // Asked synchronously for every inbound activity: a cache lookup that
+    // never throws. Anything not positively subscribed is `false`.
+    api.isAllMessagesSubscribed = (
+      channelType: string,
+      conversationId: string,
+      channelKey: string,
+    ): boolean => {
+      try {
+        return messages.isSubscribed(channelType, conversationId, channelKey);
+      } catch {
+        return false;
+      }
     };
   }
   if (opts.conversationSends) {

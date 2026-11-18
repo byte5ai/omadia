@@ -70,6 +70,30 @@ and the neutrality contract. No facilitation tables in the kernel.
   identity prompt at save time, in the boot recompose and again when the agent
   is built (after name and self-description), so it is present without a
   stored identity too.
+- **Migration `0068_conversation_messages`**: tables
+  `conversation_message_subscriptions` (agent, channel type, conversation,
+  lower-cased channel key, subscribing plugin; one active row per identity and
+  conversation) and `conversation_message_events` (append-only, kernel-assigned
+  `event_seq` and `revision`, dedupe key per platform event). Postgres only.
+- **`conversationMessages` service** (plugin-api `conversationMessages@1`):
+  `CoreApi.emitConversationMessage` stores an event only when the receiving
+  identity holds a subscription; `CoreApi.isAllMessagesSubscribed` is a
+  synchronous cache lookup. Subscribe refuses unless the agent is a
+  facilitator with its own channel identity whose bot was observed in the
+  conversation and whose channel reports readiness (when it has a readiness
+  provider). Only the facilitation engine plugin is answered. Revisions are
+  assigned by the kernel (an adapter's edit counter restarts with the
+  process); replay by cursor (`listSince`).
+- **Retention**: `CONVERSATION_MESSAGES_GRACE_MS` (default 6 h after the
+  subscription ended), `CONVERSATION_MESSAGES_MAX_AGE_DAYS` (default 30, 0 =
+  off), `CONVERSATION_MESSAGES_PURGE_INTERVAL_MS` (default 10 min).
+- **No second answer**: once the engine holds a facilitator's subscription for
+  a conversation, a channel-started turn of that agent there returns an empty
+  answer without a model call; the engine drives every turn through
+  `agentTurn`.
+- **`GET /api/v1/operator/agents/facilitation-engine`**: which plugin is the
+  facilitation engine (`state` bound | none | ambiguous) and whether it
+  reports itself usable (`available`, `unavailable_reason`, `version`).
 
 ### Fixed — Custom-Pattern-Worker: eine laufende Anfrage hält den Prozess offen
 

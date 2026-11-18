@@ -58,6 +58,7 @@ describe('facilitator omissions: operator routes', () => {
   let agents: FakeAgent[];
   let installed: { id: string; status: string }[];
   let identitySaves: number;
+  let engineState: unknown;
 
   const provides: Record<string, string[]> = {
     [ENGINE]: ['facilitationEngine@1'],
@@ -127,6 +128,7 @@ describe('facilitator omissions: operator routes', () => {
         getConfigStore: () => store(),
         getRegistry: () => registry,
         getChatSessionStore: () => undefined,
+        getFacilitationEngineState: () => engineState,
         getInstalledRegistry: () => ({ list: () => installed }) as never,
         getPluginCatalog: () =>
           ({ get: (id: string) => (id in provides ? { plugin: { provides: provides[id] } } : undefined) }) as never,
@@ -192,6 +194,41 @@ describe('facilitator omissions: operator routes', () => {
     assert.match(String(res.json['message']), messagePattern);
     assert.deepEqual(writes, [], 'a refusal writes nothing');
   }
+
+  it('reports the facilitation engine state for the directory', async () => {
+    engineState = undefined;
+    assert.deepEqual((await call('GET', '/agents/facilitation-engine')).json, {
+      state: 'bound',
+      capability: 'facilitationEngine@1',
+      plugin_id: ENGINE,
+      plugin_ids: [ENGINE],
+      version: null,
+      available: false,
+      unavailable_reason: 'The facilitation engine plugin is installed but not active.',
+    });
+    engineState = { pluginId: ENGINE, version: '1.0.0', available: false, unavailableReason: 'No SQL grant.' };
+    const noSql = (await call('GET', '/agents/facilitation-engine')).json;
+    assert.equal(noSql['available'], false);
+    assert.equal(noSql['unavailable_reason'], 'No SQL grant.');
+    assert.equal(noSql['version'], '1.0.0');
+    engineState = { pluginId: ENGINE, version: '1.0.0', available: true };
+    const ok = (await call('GET', '/agents/facilitation-engine')).json;
+    assert.deepEqual([ok['state'], ok['available'], ok['unavailable_reason']], ['bound', true, null]);
+    // A report from a plugin that is not the bound engine does not count.
+    engineState = { pluginId: '@acme/other', version: '9', available: true };
+    assert.equal((await call('GET', '/agents/facilitation-engine')).json['available'], false);
+
+    installed = [{ id: ODOO, status: 'active' }];
+    const none = (await call('GET', '/agents/facilitation-engine')).json;
+    assert.deepEqual([none['state'], none['plugin_id'], none['available']], ['none', null, false]);
+    installed = [
+      { id: ENGINE, status: 'active' },
+      { id: '@acme/second-engine', status: 'active' },
+    ];
+    const two = (await call('GET', '/agents/facilitation-engine')).json;
+    assert.equal(two['state'], 'ambiguous');
+    assert.deepEqual(two['plugin_ids'], ['@acme/second-engine', ENGINE]);
+  });
 
   it('creates a facilitator and reports the kind in create, list and picker', async () => {
     const created = await call('POST', '/agents', { slug: 'nora', name: 'Nora', kind: 'facilitator' });

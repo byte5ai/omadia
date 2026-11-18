@@ -79,38 +79,98 @@ export function facilitatorRefusalText(opts: {
   );
 }
 
+/** Does the facilitation engine drive this conversation for this agent? */
+export type EngineDrivenConversationLookup = (
+  agentSlug: string,
+  channelType: string,
+  conversationId: string,
+) => boolean;
+
 export interface FacilitatorAgentDeps {
+  readonly agentSlug?: string | undefined;
   readonly name?: string | undefined;
   readonly locale?: string | undefined;
+  /**
+   * #2043 — once the engine receives every message of a conversation
+   * (`conversationMessages.subscribe` succeeded), it drives every turn there
+   * through `agentTurn`. A turn the CHANNEL starts in that conversation (a
+   * mention) would be a second answer to the same message, so it is
+   * suppressed here, at the one entry every chat surface shares.
+   */
+  readonly isEngineDriven?: EngineDrivenConversationLookup;
   readonly log?: (message: string) => void;
 }
 
+/**
+ * The conversation ids a turn's origin may stand for. Channels fold their own
+ * prefix into the session scope (`teams-<id>`, `<channelId>::<id>`), while a
+ * subscription is keyed by the channel-native id, so all readings are tried.
+ */
+export function conversationIdCandidates(input: ChatTurnInput): readonly string[] {
+  const scope = input.origin?.scope;
+  if (!scope || scope.kind !== 'conversation') return [];
+  const raw = scope.conversationId;
+  const prefix = `${input.origin!.channelType}-`;
+  const separatorAt = raw.indexOf('::');
+  return [
+    raw,
+    ...(raw.startsWith(prefix) ? [raw.slice(prefix.length)] : []),
+    ...(separatorAt >= 0 ? [raw.slice(separatorAt + 2)] : []),
+  ];
+}
+
+type TurnDisposition = 'model' | 'refuse' | 'engine_driven';
+
 export function wrapFacilitatorAgent(inner: ChatAgent, deps: FacilitatorAgentDeps): ChatAgent {
   const refusal = (): string => facilitatorRefusalText(deps);
-  const reachesModel = (input: ChatTurnInput): boolean =>
-    currentEngineTurn() !== undefined || isGroupTurn(input);
-  const note = (input: ChatTurnInput): void => {
-    deps.log?.(
-      `[facilitator] refused a request for assistance (scope=${input.origin?.scope.kind ?? 'none'})`,
-    );
+  const engineDrives = (input: ChatTurnInput): boolean => {
+    const { isEngineDriven, agentSlug } = deps;
+    if (!isEngineDriven || !agentSlug || !input.origin) return false;
+    const channelType = input.origin.channelType;
+    try {
+      return conversationIdCandidates(input).some((id) => isEngineDriven(agentSlug, channelType, id));
+    } catch {
+      return false;
+    }
   };
+  const dispose = (input: ChatTurnInput): TurnDisposition => {
+    if (currentEngineTurn() !== undefined) return 'model';
+    if (!isGroupTurn(input)) {
+      deps.log?.(
+        `[facilitator] refused a request for assistance (scope=${input.origin?.scope.kind ?? 'none'})`,
+      );
+      return 'refuse';
+    }
+    if (engineDrives(input)) {
+      deps.log?.(
+        `[facilitator] '${deps.agentSlug ?? '?'}' channel turn suppressed: the facilitation engine drives this conversation`,
+      );
+      return 'engine_driven';
+    }
+    return 'model';
+  };
+  // An engine-driven conversation gets NO text from this turn: the engine
+  // answers the same message through its own outbox. An empty answer is what
+  // a channel adapter must not post (it should not have started the turn).
+  const textFor = (disposition: Exclude<TurnDisposition, 'model'>): string =>
+    disposition === 'refuse' ? refusal() : '';
   return {
     async chat(input: ChatTurnInput): Promise<SemanticAnswer> {
-      if (reachesModel(input)) return inner.chat(input);
-      note(input);
-      return toSemanticAnswer({ answer: refusal(), toolCalls: 0, iterations: 0 });
+      const disposition = dispose(input);
+      if (disposition === 'model') return inner.chat(input);
+      return toSemanticAnswer({ answer: textFor(disposition), toolCalls: 0, iterations: 0 });
     },
     async *chatStream(
       input: ChatTurnInput,
       observer?: ChatStreamObserver,
     ): AsyncGenerator<ChatStreamEvent> {
-      if (reachesModel(input)) {
+      const disposition = dispose(input);
+      if (disposition === 'model') {
         yield* inner.chatStream(input, observer);
         return;
       }
-      note(input);
-      const text = refusal();
-      yield { type: 'text_delta', text };
+      const text = textFor(disposition);
+      if (text.length > 0) yield { type: 'text_delta', text };
       yield { type: 'done', answer: text, toolCalls: 0, iterations: 0 };
     },
     ...(inner.holdsContentUntilVerdict !== undefined

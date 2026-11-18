@@ -9438,6 +9438,56 @@ enthält **keine** Facilitation-Tabellen. Spec: `specs/2043-native-facilitators/
   `422 facilitator_contract_violation` mit `issues[]`. Der Katalog ist eine
   Hilfe beim Speichern, nicht die Durchsetzung: die leistet der Block.
 
+### Authentifizierte eingehende Nachrichten (`conversationMessages@1`)
+
+Code: `middleware/src/channels/conversationMessages/` (`store.ts` Regeln und
+In-Memory-Store, `pgStore.ts`, `hub.ts`, `service.ts`, `purgeJob.ts`,
+`wiring.ts`). Migration `0068_conversation_messages`. Nur mit Postgres; ohne
+Datenbank sind beide CoreApi-Methoden nicht definiert und das Mention-Gate
+der Adapter gilt immer.
+
+- **Kanal-Seite:** `CoreApi.emitConversationMessage(event)` speichert nur,
+  wenn die empfangende Identität (`receivedByChannelKey`) eine Subscription
+  für die Konversation hält, sonst wird verworfen. Bei N Bots in einem Chat
+  kommt also nur die Kopie der abonnierten Identität in den Store.
+  `CoreApi.isAllMessagesSubscribed(type, conversation, channelKey)` ist ein
+  synchroner Map-Lookup, wirft nie; Channel-Keys werden auf beiden Seiten
+  kleingeschrieben.
+- **Subscribe** lehnt ab mit `not_facilitator`, `no_identity` (eigene
+  Kanal-Identität, nie der Default-Bot), `not_present` (Teams: Bot hat eine
+  Conversation-Reference im Chat, `botPresenceStore`; sonst der Invite-Index
+  `observedConversationInvites`), `not_ready` (Readiness-Provider des Kanals,
+  falls vorhanden; die fehlenden Codes stehen in der Message), `unavailable`.
+  Nur das Engine-Plugin (Capability `facilitationEngine@1`) wird bedient und
+  nur für eigene Subscriptions.
+- **Autorschaft** kommt ausschließlich aus dem Plattform-Event.
+  `author.principalId` ist `user:<channel-user-id kleingeschrieben>`; das ist
+  derselbe Wert, den `targetedSend` als Principal nimmt.
+- **Revisionen vergibt der Kernel** (`created` = 0, jede Bearbeitung oder
+  Löschung = höchste gespeicherte + 1). Der Zähler des Adapters ist nur ein
+  Hinweis (`adapter_revision`), weil er nach einem Neustart wieder bei 1
+  beginnt. Reaktionen und Card-Antworten tragen die Revision, auf die sie sich
+  beziehen, und sind keine Revision der Nachricht.
+- **Idempotenz:** `dedupe_key` pro Plattform-Event; eine erneut zugestellte
+  Nachricht ist kein zweiter Datensatz.
+- **Lesen:** `getEvent` liefert `undefined` für fremde Konversationen und für
+  Nachrichten vor der Subscription (eine neue Subscription ist eine neue Zeile
+  und sieht nichts von der vorigen). `listSince({after})` liefert strikt nach
+  dem Cursor in Speicherreihenfolge, `nextCursor` nur wenn es eine weitere
+  Seite gibt. Live-Zustellung at-least-once (`onMessage`), ein fehlgeschlagener
+  Handler holt über `listSince` auf.
+- **Aufbewahrung:** Die Frist beginnt erst mit `unsubscribe`
+  (`CONVERSATION_MESSAGES_GRACE_MS`), zusätzlich ein Höchstalter je Event
+  (`CONVERSATION_MESSAGES_MAX_AGE_DAYS`). Der Purge-Tick lädt auch den
+  Subscription-Cache neu (mehrere Maschinen).
+- **Kein zweiter Turn:** Hält die Engine die Subscription, unterdrückt der
+  Kernel den vom Kanal gestarteten Turn dieses Agents in dieser Konversation
+  (`facilitatorAgent.ts`, Service `facilitatorConversations@1`): leere Antwort,
+  kein Modellaufruf. Der Adapter sollte den Turn dort gar nicht starten.
+- **Engine-Status:** `GET /api/v1/operator/agents/facilitation-engine`
+  (`src/routes/facilitationEngineStatus.ts`) liest den Zustand, den das
+  Engine-Plugin unter dem Service `facilitationEngine` veröffentlicht.
+
 ### Offen
 
 - Der allgemeine Orchestrator-System-Prompt (Memory-Konventionen,

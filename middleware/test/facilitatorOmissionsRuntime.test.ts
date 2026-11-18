@@ -281,6 +281,70 @@ describe('facilitator assistance refusal', () => {
   });
 });
 
+describe('facilitator: no kernel turn where the engine drives the conversation', () => {
+  it('suppresses a channel turn (even a mention) once the engine holds the subscription', async () => {
+    const turns: ChatTurnInput[] = [];
+    const agent: ChatAgent = {
+      chat: (input) => {
+        turns.push(input);
+        return Promise.resolve({ text: 'model answer' } as never);
+      },
+      async *chatStream(input): AsyncGenerator<ChatStreamEvent> {
+        turns.push(input);
+        yield { type: 'done', answer: 'model answer', toolCalls: 0, iterations: 0 } as ChatStreamEvent;
+      },
+    };
+    const asked: string[] = [];
+    const wrapped = wrapFacilitatorAgent(agent, {
+      agentSlug: 'mara',
+      isEngineDriven: (slug, channelType, conversationId) => {
+        asked.push(`${slug}|${channelType}|${conversationId}`);
+        return conversationId === '19:offsite@thread.v2';
+      },
+    });
+    // Teams folds its prefix into the session scope; the subscription is
+    // keyed by the channel-native id.
+    const mention = (conversationId: string): ChatTurnInput => ({
+      userMessage: '@Mara my vote: A > C > B',
+      origin: { channelType: 'teams', scope: { kind: 'conversation', conversationId } },
+    });
+    for (const id of ['19:offsite@thread.v2', 'teams-19:offsite@thread.v2', '@omadia/channel-teams::19:offsite@thread.v2']) {
+      assert.equal((await wrapped.chat(mention(id))).text, '', `no second answer for ${id}`);
+    }
+    const events: ChatStreamEvent[] = [];
+    for await (const e of wrapped.chatStream(mention('teams-19:offsite@thread.v2'))) events.push(e);
+    assert.deepEqual(events.map((e) => e.type), ['done'], 'no text delta at all');
+    assert.equal(turns.length, 0);
+
+    // First contact in another chat still reaches the model…
+    assert.equal((await wrapped.chat(mention('teams-19:other@thread.v2'))).text, 'model answer');
+    // …and the engine's own turn in the driven chat does too.
+    const engineTurn = await runAsEngineTurn({ pluginId: ENGINE }, () =>
+      wrapped.chat(mention('19:offsite@thread.v2')),
+    );
+    assert.equal(engineTurn.text, 'model answer');
+    assert.equal(turns.length, 2);
+    assert.ok(asked.includes('mara|teams|19:offsite@thread.v2'));
+  });
+
+  it('a lookup that throws suppresses nothing', async () => {
+    const wrapped = wrapFacilitatorAgent(
+      { chat: () => Promise.resolve({ text: 'model answer' } as never), chatStream: (() => undefined) as never },
+      {
+        agentSlug: 'mara',
+        isEngineDriven: () => {
+          throw new Error('registry gone');
+        },
+      },
+    );
+    const answer = await wrapped.chat({
+      userMessage: 'hi',
+      origin: { channelType: 'teams', scope: { kind: 'conversation', conversationId: 'c' } },
+    });
+    assert.equal(answer.text, 'model answer');
+  });
+});
+
 describe('facilitator and other agents', () => {
   const registryWith = (agent: AgentRow): never =>
     ({
