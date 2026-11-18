@@ -60,17 +60,29 @@ facilitator carries memory, grants or loyalties from a former life as a standard
   facilitator never speaks through another agent's identity.
 - Model policy, AI disclosure, audit, speaker stamping, identity guard (AVE §5.5).
 
-### 2.2 Added for moderation
+### 2.2 What a facilitator does
 
-- **Facilitation engine** (§5): durable state per facilitation (participants,
-  contributions, decision method, definition of done with versions, protocol),
-  deterministic evaluation, time-based scheduling, reports.
-- **Group presence:** in a conversation it facilitates, it receives every human message,
-  not only messages that mention it (§6.1).
-- **Decision methods** with deterministic counting (§5.4).
-- **Moderation playbook** as fixed core behaviour: round-robin, inviting silent voices
-  without exposing them, reflective summarising, timeboxing, conflict moderation.
-- **Protocol:** how the result came about and which insights emerged.
+A facilitator leads a group through a process to an outcome the group owns. Counting
+votes is one small tool in that work, not its centre. Its job, like a good human
+facilitator's:
+
+| Mode | What it does |
+|---|---|
+| **Design the process** | Agrees goal, definition of done, format, agenda, participants and timeline with the group; proposes a format that fits the goal (§5.4). |
+| **Moderate** | Opens and closes each step; asks open, systemic questions; uses round-robin for important points; invites silent voices by name, appreciatively and never exposing them; keeps dominant voices in balance; mirrors the state through reflective summaries; separates positions from people in conflicts and makes interests visible before options; brings the discussion back to the goal. |
+| **Diverge and converge** | Collects ideas, positions and concerns; proposes clusters and summaries for the group to confirm; leads the group to a decision with a method that fits (§5.5). |
+| **Keep time** | Holds timeboxes per step and the overall deadline; reminds; proposes to close or extend a step. |
+| **Record** | Keeps the protocol: path to the result, decisions with their rationale, open points, insights, and action items with owner and due date. |
+| **Report and follow up** | Posts the result to the group, reports to the initiator, and, if agreed, reminds owners of action items until their due date. |
+
+To do this it has:
+- the **facilitation engine** (§5): durable state per facilitation (agenda and steps,
+  participants, contributions of every kind, decisions, action items, definition of done
+  with versions, protocol), deterministic evaluation, scheduling and reports;
+- **group presence:** in a conversation it facilitates, it receives every human message,
+  not only messages that mention it (§6.1);
+- the **moderation playbook** as fixed core behaviour (the techniques above), tuned by
+  the facilitator's personality within the neutrality bounds (§2.4).
 
 ### 2.3 Deliberately omitted
 
@@ -82,7 +94,7 @@ facilitator carries memory, grants or loyalties from a former life as a standard
 | Assistance outside a facilitation (questions, tasks, 1:1 help). | It is not an assistant. Such requests get a friendly refusal that names what it does. |
 | Consulting other agents, and being consulted or attached by them (AVE §5.4). | A partial agent behind the facilitator would make it partial; a facilitator inside a partial agent would not be accepted. |
 | Being the default agent, persona skills, the fast path. | Each would let it answer for someone or as someone else. |
-| A private channel to the initiator that the group does not know about. | Everything the initiator receives is disclosed to the group (§5.6). |
+| A private channel to the initiator that the group does not know about. | Everything the initiator receives is disclosed to the group (§5.7). |
 
 The kernel enforces every row: grants and consultation grants to a facilitator are refused
 at write time; the memory tool, recall, capture and learning jobs are not wired for
@@ -97,7 +109,7 @@ persona settings:
 
 - no opinion on content; structure the path, the group decides;
 - never votes, never weights a contribution, treats every participant the same;
-- names who is missing only in neutral form and privately where possible (§5.5);
+- names who is missing only in neutral form and privately where possible (§5.6);
 - discloses the report target and everything sent to the initiator;
 - stops on "stop" from the group as announced.
 
@@ -110,8 +122,8 @@ the contract at save time (for example "favour the sales team" is refused).
 
 | Role | Who | Rights |
 |---|---|---|
-| **Facilitator** | One facilitator agent per facilitation. | Moderates, records, keeps time, counts, reports. |
-| **Initiator** | The person who starts the facilitation in the group (§5.2). | Sets goal, method and initial definition of done; may propose changes; receives the report. No extra say over contributions, participants or rules once the facilitation is active. |
+| **Facilitator** | One facilitator agent per facilitation. | Designs the process with the group, moderates, records, keeps time, leads to decisions, reports and follows up (§2.2). |
+| **Initiator** | The person who starts the facilitation in the group (§5.2). | Sets goal and initial definition of done, agrees format and agenda with the group; may propose changes; receives the report. No extra say over contributions, participants or rules once the facilitation is active. |
 | **Participants** | The humans in the conversation (roster at start, kept current by membership events). | Contribute, change their own contribution while the method allows, object, propose changes, ask for status, stop the facilitation. |
 
 ## 4. Measured ground truth: why it does not work
@@ -148,10 +160,14 @@ borrowing another bot.
 
 | Table | Holds |
 |---|---|
-| `facilitations` | id, facilitator agent id, channel type, conversation id, initiator principal, goal, decision method and options, phase, `state_version`, deadline, timezone, reminder policy, created/closed timestamps, close reason. Unique: one active facilitation per conversation. |
+| `facilitations` | id, facilitator agent id, channel type, conversation id, initiator principal, goal, format, phase, `state_version`, deadline, timezone, reminder policy, follow-up policy, created/closed timestamps, close reason. Unique: one active facilitation per conversation. |
+| `facilitation_steps` | facilitation id, position, kind (`open`, `collect`, `discuss`, `cluster`, `prioritise`, `decide`, `assign`, `close`), title, timebox, decision method and options where the step decides, status. The agenda. |
 | `facilitation_participants` | facilitation id, principal id (authenticated channel user id), display name, source (`roster`, `joined`), status (`active`, `left`), changed at, changed by event. |
 | `facilitation_dod_versions` | facilitation id, version, text, structured criteria where machine-checkable, proposed by, proposal message id, consent state, effective at. |
-| `facilitation_contributions` | facilitation id, participant principal, kind (`vote`, `position`, `confirmation`, `objection`, `abstention`), payload validated against the method, source message id (unique per facilitation), status (`valid`, `ambiguous`, `superseded`, `withdrawn`), recorded at. |
+| `facilitation_contributions` | facilitation id, step id, participant principal, kind (`idea`, `position`, `concern`, `question`, `proposal`, `vote`, `confirmation`, `objection`, `abstention`, `commitment`), payload validated against the step, source message id (unique per facilitation), status (`valid`, `ambiguous`, `superseded`, `withdrawn`), recorded at. |
+| `facilitation_clusters` | step id, label, member contribution ids, proposed by the facilitator, confirmed by the group (yes/no). |
+| `facilitation_decisions` | facilitation id, step id, statement, method, result, rationale, decided at. |
+| `facilitation_action_items` | facilitation id, decision id, description, owner principal (confirmed by the owner), due date, status, follow-up reminders sent. |
 | `facilitation_events` | append-only protocol of messages posted, reminders, changes, decisions, reports. |
 | `facilitation_outbox` | pending channel sends with idempotency key, target, payload, required phase and `state_version`, attempts. |
 
@@ -168,15 +184,15 @@ invited → configuring → active → concluding → closed
 - **invited:** the facilitator's bot is in a group conversation.
 - **configuring:** a person in the group asks the facilitator to start; that person is
   the initiator, and the facilitator says so in the group. The facilitator agrees goal,
-  method, definition of done, participants and deadline **in the group**, checks
-  readiness (§6.1), then posts the opening handshake (§5.6). The conversation id always
+  definition of done, format and agenda, participants and deadline **in the group**, checks
+  readiness (§6.1), then posts the opening handshake (§5.7). The conversation id always
   comes from the inbound turn.
 - **active:** every inbound human message is processed in the facilitation's own session
-  (§5.3); the scheduler handles time-based events (§5.5).
+  (§5.3); the scheduler handles time-based events (§5.6).
 - **concluding:** the definition of done is met. All reminders are cancelled in the same
   transaction.
 - **closed / aborted:** result or honest abort report to the group and the initiator;
-  bindings released; protocol retained per §5.7.
+  bindings released; protocol retained per §5.8.
 
 ### 5.3 One session, authenticated contributions
 
@@ -204,9 +220,38 @@ invited → configuring → active → concluding → closed
 - The model never computes counts, "who is missing" or whether a machine-checkable
   definition of done is met; the engine does, from the tables.
 
-### 5.4 Decision methods (v1)
+### 5.4 Formats and process
 
-All contributions in v1 are **open**: participants can see who contributed what, as in
+A facilitation runs an agenda of steps. The facilitator proposes an agenda that fits the
+goal; the group confirms or adjusts it in the handshake. v1 ships these formats as
+templates; each is an editable agenda, not a fixed script:
+
+| Format | Typical agenda |
+|---|---|
+| Decision | open, collect options and positions, discuss, decide, close |
+| Prioritisation | open, collect items, cluster, prioritise, close |
+| Role or task assignment | open, list items, collect candidates, assign (confirmed by the named person), close (#330 scenario) |
+| Idea collection | open, collect ideas, cluster, prioritise, assign next steps, close |
+| Retrospective | open, collect what went well and what did not, cluster, discuss, decide actions, assign owners, close |
+| Alignment | open, collect positions and concerns, discuss, summarise, confirm by consent, close |
+
+What the engine keeps deterministic, and the model never computes:
+- **Participation balance** per step: who has contributed and who has not, so the
+  facilitator can invite silent voices at the right moment (privately where the channel
+  allows, never exposing anyone) and balance dominant ones.
+- **Step progress and timeboxes:** the facilitator closes or extends a step on time and
+  says so.
+- **Clusters and summaries** are proposals by the facilitator; they become part of the
+  record only after the group confirms them.
+- **Decisions** are evaluated by the methods of §5.5; **action items** need an owner who
+  confirms in their own message and a due date.
+
+### 5.5 Decision methods (v1)
+
+Decision methods are used in steps of kind `decide`, `prioritise` and `assign`. The close
+rules and the evaluation table below apply to such a step; the facilitation as a whole
+concludes when its definition of done is met, usually when its last step is closed. All
+contributions in v1 are **open**: participants can see who contributed what, as in
 the chat itself. Secret ballots are out of scope for v1.
 
 | Method | Valid contribution | Counting | Tie |
@@ -226,7 +271,7 @@ contribution triggers evaluation; the alternative close rule "evaluate at the de
 keeps changes possible until the deadline, and status shows a provisional result.
 
 **Participation complete is not result valid.** When the close rule fires, the engine
-evaluates and moves on by this table. A pending change proposal (§5.6) always takes
+evaluates and moves on by this table. A pending change proposal (§5.7) always takes
 precedence: no evaluation concludes while one is open; the proposal is decided first,
 within its window and never past the deadline.
 
@@ -236,21 +281,26 @@ within its window and never past the deadline.
 | Tie | Runoff round among the tied options with the same method; deadline = the earlier of the original deadline and the runoff window set at start (default 12 h); at the deadline without a decision: abort report naming the tie |
 | Consent with a standing objection | Stays `active`; the facilitator moderates the objection and puts an amended proposal; at the deadline: abort report with the objection |
 | Assignment with an unconfirmed name | Stays `active` until the named person confirms or declines; at the deadline: abort report naming the open items |
-| Free-text definition of done | Group consent on "the definition of done is met" (§5.6), then `concluding` |
+| Free-text definition of done | Group consent on "the definition of done is met" (§5.7), then `concluding` |
 
 **Membership changes:** a person who joins the conversation becomes a participant and is
 welcomed with the current state; a person who leaves becomes `left`, their contribution
 stays counted, and both changes are announced. "Every participant" means every `active`
 participant.
 
-### 5.5 Time, reminders and concurrency
+### 5.6 Time, reminders and concurrency
 
 - The scheduler runs from the facilitation's deadline, not from a round count.
 - Reminder policy default: deadline minus 24 h and minus 2 h; configurable per
   facilitator and per facilitation; announced in the handshake.
-- A reminder goes out only if someone is missing and the phase is `active`. In the group
-  it is neutral ("two contributions are still open"); the people who are missing are
-  reminded by direct message where the channel allows it.
+- A reminder goes out only if a step is waiting for contributions and the phase is
+  `active`. In the group it is neutral ("two contributions are still open"); the people
+  who are missing are reminded by direct message where the channel allows it.
+- Step timeboxes: when a step's timebox ends, the facilitator summarises and proposes to
+  close or extend it; the group decides.
+- Action-item follow-up (if agreed in the handshake): the owner is reminded before the due
+  date; the status of action items is posted to the group at the agreed time. Follow-up
+  runs after `closed` and ends when every item is done or past its due date.
 - At the deadline the engine closes with the state at that moment: a result if the
   definition of done allows it, otherwise an honest abort report. Nothing ends silently:
   a failed step, an exhausted retry budget or TTL expiry produces an abort report.
@@ -269,10 +319,11 @@ participant.
   outcome after a crash is never retried. *Essential* messages (handshake, result, abort
   report) are at-least-once: retried until confirmed, accepting a rare duplicate.
 
-### 5.6 Transparency, reporting and rule changes
+### 5.7 Transparency, reporting and rule changes
 
 - **Opening handshake** in the group: facilitator name, initiator, goal, definition of
-  done, method with its rules (§5.4), participants, deadline, reminder times, who receives
+  done, format and agenda (§5.4), decision methods with their rules (§5.5), participants,
+  deadline, reminder times, follow-up of action items, who receives
   the report, how to ask for status and how to stop.
 - **Status** on request at any time: phase, who has contributed, who is missing, current
   (or provisional) tally where the method has one, deadline, definition-of-done version.
@@ -288,7 +339,7 @@ participant.
   any other. Contributions stay valid unless the change affects them; the facilitator
   names who needs to act again. Owner decision **OD-F2**.
 
-### 5.7 Visibility and retention
+### 5.8 Visibility and retention
 
 | Who | Sees |
 |---|---|
@@ -302,16 +353,18 @@ Facilitation records and protocol are deleted after a retention period set per i
 (proposed default 90 days after close); the result summary in the chat stays where the
 channel keeps it.
 
-### 5.8 Neutrality in the runtime
+### 5.9 Neutrality in the runtime
 
 - Facilitators run without business capabilities and without general memory (§2.3),
   enforced at grant and wiring time.
 - The neutrality block (§2.4) is compiled by the kernel after the operator's sections and
   cannot be shadowed.
-- The facilitator's tools are the engine's tools only: record contribution, ask
-  clarification, post to group, remind, propose and decide changes, status, close, abort.
+- The facilitator's tools are the engine's tools only: propose and adjust the agenda,
+  open and close steps, record contribution, propose cluster or summary for confirmation,
+  ask clarification, invite a silent voice, post to group, remind, record decision,
+  record action item, propose and decide changes, status, close, abort.
 
-### 5.9 Quotas
+### 5.10 Quotas
 
 Quotas are per facilitator and per instance (active facilitations, starts per hour,
 messages per facilitation), configurable, with defaults that let several facilitators
@@ -351,7 +404,7 @@ facilitator says so.
 - **Operator UI:** "Facilitators" next to "Agents" in the agent directory: create, name,
   avatar, personality within bounds, language, default methods and reminder policy,
   Teams identity. The facilitations view shows which facilitator runs each facilitation,
-  its phase and counts; contents only through the audited access of §5.7; terminate.
+  its phase and counts; contents only through the audited access of §5.8; terminate.
 - **Users** see the facilitator as its own colleague in the channel: own name, own icon,
   its own handshake. An initiator starts a facilitation by adding a facilitator to the
   group and asking it there.
@@ -373,7 +426,7 @@ kept compatible.
 
 ## 9. Acceptance criteria
 
-1. **Field scenario.** Facilitator "Mira" in a Teams group with four people, ranked vote
+1. **Field scenario (decision format with a vote).** Facilitator "Mira" in a Teams group with four people, ranked vote
    3/2/1, deadline three days out. All four vote, two without mentioning the bot: every
    vote is recorded and echoed to its author; status names the missing people correctly
    after every vote; the fourth vote concludes the facilitation; no reminder is sent
@@ -393,7 +446,7 @@ kept compatible.
    refused; an edited ballot counts in its latest revision; a ballot interpreted from free
    text counts only after its author confirms the echo.
 5. **Methods and evaluation.** Table-driven tests for every method and every row of the
-   evaluation table in §5.4: full and partial ranking, duplicate option, empty ballot,
+   evaluation table in §5.5: full and partial ranking, duplicate option, empty ballot,
    abstention, change before conclusion, tie with runoff and runoff timeout, consent with
    objection, assignment confirmed and declined, a pending change proposal blocking
    conclusion.
@@ -415,6 +468,17 @@ kept compatible.
 12. **No silent end.** A failed step or reached TTL produces an abort report in the group;
     a reached quota produces a `system` notice.
 13. **Teams contract tests** of §6.1 pass against the real test tenant.
+14. **Retrospective.** A four-person retrospective: ideas collected without mentions,
+    clusters proposed and confirmed by the group, two actions decided, each with an owner
+    who confirmed and a due date; the protocol lists decisions with rationale and the
+    action items; the owner is reminded before the due date.
+15. **Assignment (#330 scenario).** Five roles, each ends with exactly one name confirmed
+    by that person; a declined nomination reopens the role.
+16. **Silent voices and balance.** In a discussion step, a participant who has not
+    contributed is invited (privately where possible) before the step closes; nobody is
+    named in the group as not having contributed.
+17. **Timebox.** When a step's timebox ends, the facilitator summarises and the group
+    decides to close or extend; no step closes silently.
 
 ## 10. Work breakdown
 
@@ -422,21 +486,24 @@ Kernel unless noted. Each item becomes one issue in epic #2043.
 
 1. Agent kind `facilitator`: data model, enforced omissions (grants, memory, assistance,
    consultation, default, persona, fast path), neutrality block and persona bounds (§2).
-2. Facilitation engine: tables, lifecycle, one session, authenticated contributions,
-   protocol (§5.1-5.3).
-3. Decision methods and deterministic counting (§5.4).
-4. Scheduler, outbox and concurrency: deadline-based reminders and close, no silent end
-   (§5.5).
-5. Transparency: handshake, status, results to group and initiator, consent-based rule
-   changes (§5.6).
-6. Visibility, retention and quotas (§5.7, §5.9).
-7. Operator UI for facilitators and the facilitations view (§7).
-8. Removal of the plugin path: Conductor pattern, provisioning, roles (§8).
-9. End-to-end and race acceptance suite (§9).
-10. `omadia-channel-teams`: all messages for an active facilitator, readiness check,
+2. Facilitation engine: tables, lifecycle, one session, authenticated contributions
+   (§5.1-5.3).
+3. Moderation process: formats as agenda templates, steps and timeboxes, participation
+   balance and silent voices, clusters and summaries confirmed by the group, decisions
+   and action items, protocol, action-item follow-up (§2.2, §5.4, §5.6).
+4. Decision methods and deterministic counting (§5.5).
+5. Scheduler, outbox and concurrency: deadline-based reminders and close, no silent end
+   (§5.6).
+6. Transparency: handshake, status, results to group and initiator, consent-based rule
+   changes (§5.7).
+7. Visibility, retention and quotas (§5.8, §5.10).
+8. Operator UI for facilitators and the facilitations view (§7).
+9. Removal of the plugin path: Conductor pattern, provisioning, roles (§8).
+10. End-to-end and race acceptance suite (§9).
+11. `omadia-channel-teams`: all messages for an active facilitator, readiness check,
     proactive posts as own bot with mentions, per-bot DM references, contract tests in a
     test tenant (§6.1).
-11. `omadia-agent-facilitator`: removal from the hub, archive, close of superseded issues
+12. `omadia-agent-facilitator`: removal from the hub, archive, close of superseded issues
     (§8).
 
 ## 11. Owner decisions

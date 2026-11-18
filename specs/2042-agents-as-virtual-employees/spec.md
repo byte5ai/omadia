@@ -65,7 +65,8 @@ The owner's requirement:
 |---|---|
 | **Agent** | A virtual employee: one row in `agents` with its own identity, personality, capabilities, memory, model policy and channel identities. The only entity that speaks to users. **Anything that meets users with a name or a persona is an agent.** |
 | **Agent kind** | `standard` (works for users and teams, may pursue their interests) or `facilitator` (impartial moderator, companion spec). |
-| **Capability** | Something an agent uses: a plugin toolkit, a native tool, an MCP server, a skill. A capability has no name or persona towards users and never speaks to them. A capability may run an internal model loop (today: some plugins of kind `agent`); its output is tool output of the calling agent. |
+| **Plugin** | An installable package that extends what agents can do: integrations, tools, channels, providers, UI extensions, skill packs, agent templates. Never an actor (§5.10). |
+| **Capability** | Something a plugin (or the kernel) offers and an agent may be granted: a tool, an integration scope (read/write), a skill. A capability has no name or persona towards users and never speaks to them; its output is data for the calling agent. |
 | **Consultation** | One agent asking another agent, as a colleague, for a contribution (§5.4). |
 | **Speaker** | Who a user-visible message comes from: an agent, or `system` for notices of the management layer. Stamped by the harness. |
 | **Audience** | The humans who can read a turn's answer. Their rights cap what any agent may disclose (`audienceFloor`, #575). |
@@ -88,7 +89,8 @@ before A to decide how the turn is answered. Deterministic, model-free pre-proce
 configured identity, instructions, personality, boundaries, model policy, skills,
 capability grants and memory scope, capped by the audience's rights.
 - *No more:* no capability A was not granted, no global plugin configuration A does not
-  have, no other agent's memory, no other agent answering in A's place.
+  have, no other agent's memory, no other agent answering in A's place, no access
+  obtained by asking a colleague.
 - *No less:* no path answers for A while skipping A's persona, boundaries, answer size or
   AI disclosure. Deterministic answer paths (for example the fast path) render under A's
   identity and settings.
@@ -110,8 +112,10 @@ decision, never from model output. Every channel renders it: through the agent's
 where one exists, otherwise as a harness-generated name line.
 
 **INV-5 Visible collaboration only.** Agents may work together only as colleagues:
-- A consulted agent B runs in B's envelope (identity, instructions, capabilities,
-  memory, model), capped by the audience of the consulting turn; never widened by A.
+- Consultation is off by default and configured per agent and per pair of agents.
+- A consulted agent B answers with its own identity, instructions, skills and model. Its
+  data access is limited to what both A and B may access, capped by the audience: a
+  consultation adds a colleague's skill and judgement, never access (§5.4).
 - B's contribution reaches the user attributed to B, delivered by the harness from B's
   output. The consulting agent cannot suppress or reword it.
 - A's own text may refer to B only through the harness-provided reference to B's
@@ -178,13 +182,13 @@ capability or a visible colleague.
 
 | Concept today | Target |
 |---|---|
-| **Agent Builder output** ("Build your assistant", plugin of kind `agent` with persona) | The Builder creates **agents**: an `agents` row with identity and personality, plus, where needed, a capability package the agent holds. A Builder specialist like the Strategist is directly addressable and speaks as itself. |
-| **Vendor domain plugins of kind `agent`** (for example HR, accounting) | **Capabilities** (open owner decision **OD-1**, recommendation). Their internal prompts are task instructions, not identities; they carry no name or persona towards users and never appear as "an agent" in the product. A team that wants an "HR colleague" creates an agent holding that capability. |
+| **Agent Builder output** ("Build your assistant", plugin of kind `agent` with persona) | The Builder creates **agents**: an `agents` row with identity and personality, plus, only where needed, a capability plugin the agent holds. A Builder specialist like the Strategist is directly addressable and speaks as itself. |
+| **Vendor domain plugins of kind `agent`** (for example HR, accounting) | Become **capability plugins** that may ship **agent templates** (§5.10). The manifest kind `agent` is removed. A team that wants an "HR colleague" creates an agent from the template or by hand and grants it the capability. |
 | **DB sub-agents** (`agent_subagents`, `ask_<name>`, Builder canvas node "Sub-Agent") | Removed. Specialists are created as agents and consulted as colleagues (§5.4). |
 | **Persona skills** (`agent_persona_skills` as identity candidates, `personaRouter`) | Removed as identity switch. A skill may shape how an agent works; it never changes who speaks. |
 | **Direct Line** (`#token`, sticky mode) | Removed: direct addressing (INV-1) replaces it. `delegatedAnswer` and `agentsConsulted` are kept as the consultation block (§5.4). |
-| **Fast path** (`@omadia/fast-path`) | Runs only inside the addressed agent's envelope. Today its planner and router models (`planQuery`, `routeTurn`) run before the agent (`middleware/packages/harness-plugin-fast-path/src/triageTurn.ts:204`); they become internal helper runs of A (A's model policy, boundaries and grants, §5.6) or the fast path is removed. Its answer renders under A's identity, carries the AI disclosure, respects boundaries and answer size, is switchable per agent and never runs for a facilitator. Open owner decision **OD-3** (recommendation: treat #1876 as a bug). |
-| **Fallback agent** ("Standard Orchestrator") | The special role ends. Unbound traffic goes to an agent the operator designates as default, shown as itself; without a designation it gets a `system` notice asking the user to choose. Owner decision **OD-4**. |
+| **Fast path** (`@omadia/fast-path`) | **Removed as a separate answer path.** It runs a planner and a router model before the agent (`middleware/packages/harness-plugin-fast-path/src/triageTurn.ts:204`) and answers in the agent's place without its persona, boundaries or disclosure (#1876), which INV-1, INV-2 and INV-6 rule out. Not to be confused with Direct Line (the `#token` workaround to talk to a sub-agent past the orchestrator, removed above). Speed comes back inside the agent: its model policy may use a fast model for simple lookups, and deterministic table rendering runs as the agent's own step under its identity. |
+| **Fallback agent** ("Standard Orchestrator") | The special role ends. The operator configures **default agents per human user and channel**, or switches the default off (§5.6). The default agent gets no automatic plugin attachment (INV-8). |
 | **Auto-attach of plugins** (`attachAllPlugins`, `attachNewPluginsToFallbackAgent`, `attachToDefaultOrchestrator`) | Removed. A plugin install offers to attach the plugin to agents the operator picks; nothing is attached without that choice. |
 | **UI orchestrator** of the desktop UI (`canvasChatAgent`, Tier 2) | Becomes the canvas renderer of the selected agent. The agent answers first, in its envelope; UI composition runs afterwards as a presentation step of that answer under the agent's identity. Deterministic local operations (Tier 1) stay. |
 | **Orchestrator** as an agent | Gone. The `Orchestrator` class is the runtime of one agent; registry, router, consultation broker, scheduler and Conductor form the management layer (§5.6). |
@@ -206,19 +210,35 @@ each agent's own post (precedent: `middleware/src/conductor/sayService.ts`).
 
 ### 5.4 Consultation instead of delegation
 
-**Permission.** A new table `agent_consultation_grants (from_agent_id, to_agent_id,
-channel_scope, created_by, created_at)` holds directed grants: A may consult B, optionally
-only in some channels. Grants are operator-managed, audited and revocable; revocation
-takes effect on the next call. Facilitators can neither hold nor be the target of a grant.
+**The rule: consulting adds a colleague's skill and judgement, never access.** A
+consultation must never let A reach data that A cannot reach itself. Agent A without
+access to system X cannot learn anything from X by asking B, who has access to X. Whoever
+needs B's access writes to B directly, where B's own rules apply.
+
+**Configuration per agent, default off.**
+- Per agent: `consultable` (may other agents consult it at all, default off) and
+  `may_consult` (may it consult others at all, default off).
+- Directed grants in `agent_consultation_grants (from_agent_id, to_agent_id,
+  channel_scope, allowed_capabilities, memory_access, max_calls_per_turn,
+  max_calls_per_day, created_by, created_at)`: A may consult B, optionally only in some
+  channels; `allowed_capabilities` lists which of B's capabilities B may use while
+  answering A (default none: B answers from its instructions, skills and general
+  knowledge only); `memory_access` is `none` (default) or `shared` (only memory scopes
+  both A and B can read; B's private memory is never read in a consultation).
+- Grants are operator-managed, audited on both agents and revocable; revocation takes
+  effect on the next call. Facilitators can neither hold nor be the target of a grant.
 
 **Flow.**
 1. A calls the harness tool `consult(agent, request)`. The harness checks the grant, the
    depth (max. 1: B cannot consult further while answering A), a per-turn call budget and
    a timeout. No cycles are possible at depth 1.
-2. The harness runs B in B's envelope (identity, instructions, capabilities, memory,
-   model policy) with the authenticated turn context of A's turn (principals, channel,
-   audience). B's data access is the intersection of B's grants and the audience's
-   rights, never widened by A.
+2. The harness runs B with B's identity, instructions, skills and model policy, and the
+   authenticated turn context of A's turn (principals, channel, audience). B's **data
+   access** in this run is the intersection of: the capabilities the grant allows, B's
+   own grants, **A's own grants**, and the audience's rights. Anything outside that
+   intersection is refused to B in this run exactly as it would be refused to A. B
+   writes nothing to its memory from a consultation, and B's trace records whom it
+   answered.
 3. The harness produces two views of B's output:
    - the **user view**: B's answer after the privacy shield's user-side restoration and a
      second audience check at output time, delivered as B's contribution (step 4);
@@ -273,8 +293,14 @@ requires grants in both directions.
 ### 5.6 Management layer and internal work of one agent
 
 - The management layer routes deterministically: own channel identity, binding, explicit
-  user selection, operator-designated default agent, else a `system` notice. It never
-  runs a model to pick an agent. Suggesting a colleague is an agent's own act, done as a
+  user selection, then the **default-agent table**, else a `system` notice. It never
+  runs a model to pick an agent.
+- **Default-agent table** (operator configuration): entries for (human user, channel),
+  (human user), (channel) and the instance; the most specific entry wins. Each entry
+  names an agent or is `off`. `off` means a message that is not addressed to a defined
+  agent is never answered by any agent; the sender gets a `system` notice how to reach
+  an agent. A fresh installation starts with the instance entry `off` until the operator
+  sets defaults. Suggesting a colleague is an agent's own act, done as a
   visible consultation or a visible hint ("Mira knows this better, write to her"), never
   as hidden re-routing.
 - An agent may split its own work into internal helper runs (parallel research, long
@@ -316,7 +342,37 @@ feedback signal), so the target picture of §1 becomes measurable.
 - Onboarding and marketing describe agents as virtual employees with a name, a
   personality and clear permissions.
 
-## 6. Acceptance criteria
+### 5.10 Agents and plugins: the boundary
+
+**Rule of thumb:** if something needs a name, a personality or should be addressable, it
+is an agent. If it extends what agents can do, it is a plugin.
+
+| | Agent | Plugin |
+|---|---|---|
+| Role | Actor: a virtual colleague who does the work. | Supplier: extends what agents can do. |
+| Identity | Name, avatar, personality, speaks to people. | None. Never speaks to people, never addressable. |
+| Accountability | Appears in audit as the actor of every action. | Appears as the tool or integration an actor used. |
+| Permissions | Holds grants. | Declares what can be granted (capabilities with read/write scopes) and keeps integration credentials in the vault; agents never see secrets. |
+| Memory | Own memory tree, scoped by audience. | Only its own technical state (configuration, caches, sync cursors); no memory of conversations. |
+| Models | Runs its own model loop under its model policy. | May use a model internally to implement a capability, under the calling agent's model policy, budget, grants and audience, recorded in that agent's trace; returns data to the agent, never text to a person. |
+| Origin | Created by the operator, by hand, in the Builder or from a template. | Installed from the hub or uploaded. |
+
+**Plugin kinds after this spec:** `integration` (connection to a third-party system and
+its credentials), `tool` (functions agents can call), `channel` (transport to people),
+`provider` (models, embeddings, storage), `ui` (extensions of the operator or user UI),
+`skill` (instructions and knowledge an agent can load), `agent-template` (a preset of
+identity, personality and suggested capabilities that the operator instantiates as an
+agent; the template itself never runs). The manifest kind `agent` is removed.
+
+**Enforced by the kernel:**
+- a plugin cannot register a persona, a speaker, a channel identity or an addressable
+  endpoint for conversations;
+- a capability's result goes to the calling agent as data (structured result, optionally
+  text the agent may use); only agents and `system` emit to people (§5.5);
+- a capability call runs in the calling agent's envelope: its grants, the audience, its
+  model policy and budget; it never widens them;
+- a plugin's internal model calls appear in the calling agent's trace and usage.
+
 
 1. **Strategist regression.** A Builder-created "Strategist" and a second agent exist.
    Addressed through web chat, Teams and the desktop UI, the Strategist's envelope answers
@@ -358,6 +414,17 @@ feedback signal), so the target picture of §1 becomes measurable.
 11. **Helper envelope.** An internal helper run that calls a capability its agent lacks is
     refused.
 12. **Language.** No user- or operator-facing string says "Orchestrator".
+13. **No access through a colleague.** Agent A without a grant to system X consults B, who
+    has one: B cannot call X in this consultation, does not read its private memory, and
+    nothing from X reaches A or the user through B; asking B directly still works under
+    B's own rules. Consultation is refused when either agent's `consultable`/`may_consult`
+    is off or no grant exists.
+14. **Default-agent table.** For (user U, Teams) → agent M, (Teams) → agent N, instance
+    `off`: U's unaddressed Teams message goes to M, another user's to N, an unaddressed
+    web message gets the `system` notice and no model call.
+15. **Plugin boundary.** A plugin manifest declaring a persona, a speaker or kind `agent`
+    is rejected at install; a capability result never reaches a channel without an agent
+    speaker.
 
 ## 7. Migration and compatibility
 
@@ -392,21 +459,24 @@ Kernel unless noted. Each item becomes one issue in epic #2042.
 1. Speaker on `SemanticAnswer`, single emitter, `system` notices, web chat rendering
    (INV-4, INV-6, INV-7).
 2. Identity guard, mandatory and fail-closed, including streaming (INV-3, §5.5).
-3. Consultation: grants table, `consult` tool, envelope of B, two views,
-   `contributions[]`, audience floor required, limits and cost attribution; the same
-   grants authorize discussions and relays (INV-5, §5.4).
+3. Consultation: per-agent switches and directed grants with allowed capabilities and
+   memory access, access = intersection with A's grants, two views, `contributions[]`,
+   audience floor required, limits and cost attribution; the same grants authorize
+   discussions and relays (INV-5, §5.4).
 4. Audience provider enabled by default (G15).
 5. Agent Builder creates agents instead of persona-bearing plugins (G2).
 6. Remove DB sub-agents and the Builder "Sub-Agent" node (G3).
 7. Remove persona skills as identity switch (G5).
 8. Remove `#token` Direct Line addressing and sticky mode (G6).
-9. Vendor domain plugins as capabilities: no persona towards users, product language (OD-1).
-10. Fast path inside the agent envelope, including its planner and router (#1876, OD-3).
-11. Fail loud instead of silent fallback (#1880, OD-4).
+9. Plugin model: plugin kinds incl. `agent-template`, manifest kind `agent` removed,
+   kernel enforcement of the boundary, capability calls in the caller's envelope (§5.10).
+10. Remove the fast path as a separate answer path; fast lookups via the agent's own
+    model policy (#1876).
+11. Fail loud instead of silent fallback (#1880).
 12. Least privilege by default: no auto-attach, onboarding without a super-agent, reach
     display and confirmation (INV-8, §5.7).
-13. Management layer: deterministic routing without model choice, default agent
-    designation, helper runs inside the envelope (INV-6, §5.6).
+13. Management layer: deterministic routing without model choice, default-agent table per
+    user and channel with `off`, helper runs inside the envelope (INV-6, §5.6).
 14. Default identity text and prompt assembly per agent (G1).
 15. Agent directory, always-visible agent selection and per-message speaker in web chat;
     "Orchestrator" renamed everywhere (G9, G16).
@@ -434,14 +504,14 @@ Kernel unless noted. Each item becomes one issue in epic #2042.
 - No compatibility layers: there are no customer installations yet (§7).
 - Agents are humanised deliberately and transparently, never deceptively (§1).
 
-**Open:**
+- Agents may consult colleagues, configured in detail per agent and default off; a
+  consultation never gives an agent access it does not have itself (§5.4).
+- Direct Line was a workaround and goes; the fast path goes as a separate answer path
+  (§5.2).
+- Default agents are set per human user and channel, and can be switched off so that no
+  message ever reaches an agent that was not exactly defined (§5.6).
 
-| Id | Question | Recommendation |
-|---|---|---|
-| OD-1 | Vendor domain plugins (HR, accounting, …): capabilities of an agent, or agents of their own? | Capabilities. They are software an employee uses; the agent that calls them stays the speaker and is accountable. Builder specialists are agents regardless (§5.2). |
-| OD-2 | Do agents keep model-chosen consultations (A decides to ask B), or only user-requested ones? | Keep them, always visible and attributed (INV-5), limited by grants. |
-| OD-3 | Fast path (#1876): bug or by design? | Bug: it must run inside the agent envelope (INV-2). |
-| OD-4 | Unbound traffic: an operator-designated default agent, or a `system` notice asking the user to choose? | Operator setting; a fresh installation has no default agent until the operator designates one. |
+**For owner sign-off:** the agent/plugin boundary and plugin kinds of §5.10.
 
 ## 10. Not verified
 
