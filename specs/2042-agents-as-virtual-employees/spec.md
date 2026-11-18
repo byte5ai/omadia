@@ -431,7 +431,7 @@ capabilities for an agent of an existing archetype.
 | Models | Runs its own model loop under its model policy. | May use a model internally to implement a capability, under the calling agent's model policy, budget, grants and audience, recorded in that agent's trace; returns data to the agent, never text to a person. |
 | Origin | Created by the operator, by hand, in the Builder or from a template. | Installed from the hub or uploaded. |
 
-**Plugin kinds after this spec:** `integration` (connection to a third-party system and
+**Plugin kinds after this spec**, capability plugins: `integration` (connection to a third-party system and
 its credentials), `tool` (functions agents can call), `channel` (transport to people),
 `provider` (models, embeddings, storage), `extension` (kernel extensions without identity,
 for example the agent runtime, verifier, fast path, plan runner, memory services; their
@@ -441,7 +441,7 @@ authored, imported or forked in the instance itself, `skills` table, migration `
 `middleware/src/routes/agentBuilder.ts:945,977,1104`; either way a skill is a capability an
 agent is granted, never an actor), `agent-template` (a preset of
 identity, personality and suggested capabilities that the operator instantiates as an
-agent; the template itself never runs). The manifest kind `agent` is removed.
+agent; the template itself never runs). Archetype plugins have the manifest kind `archetype`. The manifest kind `agent` is removed.
 
 **Enforced by the kernel:**
 - no plugin is an actor itself: an archetype plugin defines a class whose agents the

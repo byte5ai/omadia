@@ -44,6 +44,20 @@ cannot safely own.
   plus a manual checklist on a real instance whose results are recorded in the release
   issue (§6.2, §9).
 - The data model of §5.1 lives in plugin migrations, except the kernel parts above.
+- **Kernel contracts** (versioned in `@omadia/plugin-api`), each with its own issue:
+  - `conversationMessages`: stored inbound events (author, tenant, channel, message id,
+    revision, timestamp, platform-stated). An archetype plugin reads and subscribes only to
+    conversations its agents hold a reservation or follow-up permission for; foreign
+    conversation or message ids and superseded revisions are refused; access ends with the
+    reservation or permission.
+  - `agentTurn` and execution authorization: the plugin calls the kernel with agent id,
+    process id (facilitation), phase, purpose, emission type and a budget reservation.
+    The kernel verifies that the agent has the plugin's archetype, that the process belongs
+    to it and is in a phase that allows the action, the deadline, the budget (reserved
+    atomically, including helpers and guards) and the kill switch. This covers every
+    action of the plugin's scheduler, not only model calls: model-free posts, deliveries
+    and checks also need a valid execution authorization with deadline and run counter,
+    and stop with the kill switch.
 - Where this section and the rest of the spec disagree, this section holds.
 
 ## 1. Why this exists
@@ -138,8 +152,10 @@ To do this it has:
 
 The kernel enforces every row: grants and consultation grants to a facilitator are refused
 at write time; the memory tool, recall, capture and learning jobs are not wired for
-`archetype = 'facilitator'`; the routes for default agent, persona and fast path reject it;
-outside an active facilitation its runtime only offers the refusal and the setup flow.
+`archetype = 'facilitator'`; the routes for default agent and fast lane reject it; the
+working-mode routes accept moderation modes and refuse any identity replacement. Which
+messages its runtime accepts is decided by the input matrix of §5.3 for each of its
+facilitations; anything outside its facilitations gets the refusal or the setup flow.
 
 ### 2.4 Neutrality contract
 
@@ -228,14 +244,15 @@ States exist on three levels, each with its own rules:
 | Level | States | Ends when |
 |---|---|---|
 | **Step** (agenda item) | `open` → `closed` (or `extended`) | Its own evaluation (§5.5) or the group closes it; a closed step accepts no further contributions. |
-| **Session** (async phase or live meeting) | `scheduled` → `live` → `closed` | Its time slot ends or the group closes it with a confirmed session summary. |
+| **Session** (async phase or live meeting) | `scheduled` → `live` → `closed` | Its time slot ends or the group closes it; the session summary is posted, and confirmed only where the method or the definition of done requires it. |
 | **Facilitation** | as above | `concluding` when the definition of done is met; `closed` after the final summary was published (and confirmed where required); `following_up` while agreed action items are open; `ended` when all are done or overdue, or the follow-up deadline passed. |
 
 - **invited:** the facilitator's bot is in a group conversation.
 - **configuring:** a person in the group asks the facilitator to start; that person is
   the initiator, and the facilitator says so in the group. The facilitator agrees goal,
   definition of done, format and agenda, participants and deadline **in the group**, checks
-  readiness (§6.2), then posts the opening handshake (§5.7). The conversation id always
+  readiness of its identity in this channel and conversation (Teams: §6.2; other channels:
+  §6.4), then posts the opening handshake (§5.7). The conversation id always
   comes from the inbound turn.
 - **active:** every inbound human message is processed in the facilitation's own session
   (§5.3); the scheduler handles time-based events (§5.6).
@@ -245,7 +262,9 @@ States exist on three levels, each with its own rules:
   confirmation is asked only if the method or the agreed definition of done requires it
   (for example consent, a free-text definition of done, or next steps that were not
   confirmed by their owners yet); otherwise the result is published and the facilitation
-  closes automatically, as #2071 established for the plugin. Then `closed`.
+  closes automatically. (#2071 removed confirmation rounds the model added on its own in
+  the plugin's definition-of-done verdict; the old pattern's separate initiator
+  confirmation step still exists and goes with it, §8.) Then `closed`.
 - **following_up:** only if action items with owners were agreed. A bounded follow-up
   context with its own deadline (last due date plus a grace period set at start, default
   7 days) and its own triggers: reminders to owners before due dates, a status post at the
@@ -263,10 +282,11 @@ States exist on three levels, each with its own rules:
   home conversation, tied to its facilitation id, until `ended`. Protocol retained per
   §5.8.
 
-### 5.3 One session, authenticated contributions
+### 5.3 One model context, authenticated contributions
 
-- Moderation runs in the facilitation's own session. There is no separate assess session
-  that sees only a summary.
+- Moderation runs in the facilitation's own model context. There is no separate assess
+  context that sees only a summary. ("Session" in this spec always means an asynchronous
+  phase or a live meeting, §5.2.)
 - **Reservation:** a conversation can host one running process at a time; native
   facilitations and Conductor discussions share one reservation (today
   `conductor_ephemeral_attachments`, unique per conversation). A process releases only its
@@ -297,7 +317,7 @@ States exist on three levels, each with its own rules:
   | Change proposal to the definition of done or method | accepted | accepted | accepted | refused | refused |
   | Status request, stop | accepted | accepted | accepted | accepted | accepted (stop ends follow-up) |
 - **Edits:** an edited message produces a new revision; the latest revision received
-  before conclusion counts, and the facilitator confirms the change to its author.
+  before its step closes counts, and the facilitator confirms the change to its author.
 - **Effect:** a contribution in the announced format counts at once. A contribution the
   facilitator interpreted from free text counts only after its author confirms the short
   reply (a reply or reaction), so a misread can never conclude a facilitation.
@@ -463,7 +483,10 @@ participant.
 | Operator | Facilitation metadata (facilitator, conversation, phase, counts, timestamps). Contents and protocol only through an audited access with a stated reason. |
 
 Facilitation records and protocol are deleted after a retention period set per instance
-(proposed default 90 days after close); the result summary in the chat stays where the
+(default 90 days), counted from `ended` or `aborted`, never from `closed`, so follow-up is
+never cut short. The follow-up horizon is capped by an instance setting (default 90 days
+after `closed`); an action item with a due date beyond it is refused visibly when it is
+agreed, not accepted silently; the result summary in the chat stays where the
 channel keeps it.
 
 ### 5.9 Neutrality in the runtime
@@ -572,8 +595,9 @@ preparation before, follow-up after.
   order, focus moderation with a parking lot, live polls, reflective summaries per step,
   balance between people in the room and people remote (remote voices are asked first
   when a room dominates).
-- **Binding close:** a confirmed summary of decisions, next steps with owner and due date,
-  and open points; then protocol dispatch and follow-up scheduling (§5.11).
+- **Binding close:** a summary of decisions, next steps with owner and due date, and open
+  points, confirmed by the group only where the method or the definition of done requires
+  it; then protocol dispatch and follow-up scheduling (§5.11).
 - **Authorship in live sessions:** a vote or commitment counts when it comes through an
   authenticated input (poll, card, chat message) or when its owner confirms the protocol
   entry. Contributions recognised from speech are recorded as unconfirmed until then.
@@ -633,7 +657,8 @@ kept compatible.
 
 1. **Field scenario (decision format with a vote).** Facilitator "Mira" in a Teams group with four people, ranked vote
    3/2/1, deadline three days out. All four vote, two without mentioning the bot: every
-   vote is recorded and echoed to its author; status names the missing people correctly
+   vote is recorded (a vote in the announced format gets a reaction or nothing; a vote
+   interpreted from free text gets one short confirmation question to its author); status names the missing people correctly
    after every vote; the fourth vote concludes the facilitation; no reminder is sent
    afterwards; the result is posted in the group and sent to the initiator; a middleware
    restart between the second and third vote changes nothing. End-to-end test with a
@@ -697,9 +722,12 @@ kept compatible.
 19. **Adaptation.** The same facilitation gains transcribed audio mid-session (simulated
     capability change): the facilitator announces it, waits for consent, then records
     spoken contributions as unconfirmed until confirmed; no restart.
-20. **Scoped capabilities.** The facilitator cannot read calendar contents or mailboxes,
-    cannot invite people the group did not confirm, and loses the scheduling grant when
-    the follow-up ends.
+20. **Scoped capabilities.** The facilitator cannot read calendar contents or mailboxes and
+    cannot invite people the group did not confirm. Each grant ends at its own revocation
+    event of §5.11, tested directly at that event, also without action items and after a
+    restart: the scheduling grant when the invitations are sent or the date passed, the
+    dispatch grant when sends are confirmed or after 7 days, the reminder grant at
+    `ended`.
 21. **Multi-step and follow-up.** A prioritisation step closes with a winner and the
     agenda continues to an assignment step instead of concluding; after `closed`, a
     restart, and an owner's later completion message in the home conversation, the

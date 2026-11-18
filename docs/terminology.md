@@ -13,8 +13,8 @@ in the same pull request, and the other way round.
 ## In one paragraph
 
 omadia extends a team with **agents**: virtual colleagues with a name, a personality and
-clear permissions. Every agent belongs to exactly one **archetype**: the native default
-agent or an archetype added by an **archetype plugin**, such as the facilitator. What an
+clear permissions. Every agent belongs to exactly one **archetype**: the built-in `standard`
+archetype or an archetype added by an **archetype plugin**, such as the facilitator. What an
 agent can do comes from **capabilities**: tools, integrations, skills and more, delivered
 by **capability plugins** or authored in the instance. People talk to agents in
 **conversations** on **channels** such as Teams, Slack, Discord or Telegram. Below the
@@ -27,8 +27,8 @@ answers. There is no orchestrator agent.
 | Term | German | Definition | Not to be confused with |
 |---|---|---|---|
 | **Agent** | Agent (pl. Agenten) | A virtual colleague: one configured entity with its own identity, personality, capabilities, permissions, memory, model policy and channel identities. The only thing that speaks to people (besides `system` notices). Created by an operator. | Not a plugin, not a tool, not a "bot" (a bot is one channel identity of an agent), not an "assistant" in the sense of one entity serving everyone. |
-| **Archetype** | Archetyp | The class of an agent, fixed when the agent is created; an agent never switches it. `standard` is the native default agent; further archetypes come from archetype plugins (today `facilitator`). The archetype defines what an agent of that class inherits, adds and deliberately omits. | Not an agent template (a preset of one agent), not a working mode. |
-| **Standard agent** | Standard-Agent | An agent of the built-in archetype `standard`: works for people and teams and may pursue their interests. | Not the default agent. |
+| **Archetype** | Archetyp | The class of an agent, fixed when the agent is created; an agent never switches it. `standard` is the built-in archetype; further archetypes come from archetype plugins (today `facilitator`). The archetype defines what an agent of that class inherits, adds and deliberately omits. | Not an agent template (a preset of one agent), not a working mode. |
+| **Standard agent** | Standard-Agent | An agent of the built-in archetype `standard`, omadia's normal agent: works for people and teams and may pursue their interests. | Not the default agent. |
 | **Facilitator** | Facilitator | An agent of the archetype `facilitator`: an impartial moderator of group processes. Serves no particular person, holds no business capabilities and no general memory. | Not a moderation mode of a standard agent, not a capability. |
 | **Default agent** | Standard-Ansprechpartner | The agent that answers a message nobody explicitly addressed, configured per human user and channel, per user, per channel or for the instance; any entry can be `off`. | Not a special super-agent, not the standard archetype. Formerly "fallback agent" / "Standard Orchestrator". |
 | **Operator** | Administrator | The person who runs an omadia instance and configures agents, plugins, permissions and defaults. | Not byte5 (byte5 maintains the software, the operator runs the instance). |
@@ -72,6 +72,9 @@ answers. There is no orchestrator agent.
 | **Orchestrator** | (not used) | **Retired as a product term.** Only a code name of the agent runtime package. Never in UI texts, docs for users or operators, specs or marketing. omadia has no orchestrator agent. | |
 | **Conductor** | Conductor | The kernel's workflow engine for operator-designed processes (triggers, steps, human steps). | Not the management layer as a whole. |
 | **Privacy shield** | Privacy Shield | The kernel component that masks personal and classified data before a model sees it and restores it for permitted readers. | |
+| **Harness** | Harness | The kernel's deterministic machinery around models: routing, permissions, guards, budgets, scheduling and emission. Used in code and developer docs; in product texts say management layer. | Not an agent, not a model. |
+| **Audience floor** | Leserkreis-Grenze | The rule that an answer may contain only what every human who can read it is allowed to know; enforced by the management layer. | |
+| **Model context** | Modellkontext | The conversation history and inputs a model sees in one agent's turns. | Not a session. |
 | **Side channel** | Seitenkanal | The path on which data from a source system reaches people without passing through a model; the agent coordinates and gets a status. | |
 
 ## Plugins and capabilities
@@ -122,7 +125,7 @@ answers. There is no orchestrator agent.
 | Term | German | Definition | Not to be confused with |
 |---|---|---|---|
 | **Facilitation** | Moderation | One moderated process of a facilitator with a group, from preparation to follow-up. | |
-| **Session** | Sitzung | An asynchronous phase in the chat or a live meeting within a facilitation. | |
+| **Session** | Sitzung | An asynchronous phase in the chat or a live meeting within a facilitation. | Not the model context; not a chat session in the UI sense. |
 | **Step** | Schritt | One item of the agenda (collect, discuss, cluster, prioritise, decide, assign …). | |
 | **Format** | Format | An agenda template for a kind of process (decision, prioritisation, assignment, idea collection, retrospective, alignment). | |
 | **Decision method** | Entscheidungsverfahren | How a step decides (ranked vote, single choice, approval, consent, assignment), counted deterministically. | |
