@@ -457,6 +457,8 @@ execution context, which decides whose budget it uses:
 | Agent turn | an agent's own turn, its internal helpers, capability calls it makes (including embeddings for semantic search or memory writes during the turn) | the agent's envelope |
 | Execution scope | actions of an archetype plugin's process (#2090), including transcription of a live session | the scope's deadline and budget |
 | Inbound processing | transcribing a voice message before the addressed agent's turn | the addressed agent's envelope |
+| Operator tool run | the Agent Builder's dialog with an operator in the admin UI (`middleware/src/plugins/builder/builderAgent.ts`) and other model-backed admin tools; never in channels, speaker shown as the tool ("Agent Builder"), not an agent and not addressable | the instance's operator-tools budget and model policy, set by the operator |
+| Draft preview | a test turn of a draft agent in the admin UI (`previewRuntime.ts:807`) | a draft envelope: exactly the grants the draft would hold after creation, capped by the previewing operator's own rights; output only in the admin UI; operator-tools budget |
 | Maintenance run | a kernel or plugin job that keeps an index current (for example the embedding backfill, `harness-knowledge-graph-neon/src/embeddingBackfill.ts:475`) | the instance's maintenance budget set by the operator, with a deadline per run; only `embed` is allowed, never `complete` or `transcribe`, and it never posts to people |
 
 Semantic search, re-indexing and transcription keep working with the lock in place; only

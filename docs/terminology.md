@@ -34,7 +34,7 @@ answers. There is no orchestrator agent.
 | **Operator** | Administrator | The person who runs an omadia instance and configures agents, plugins, permissions and defaults. | Not byte5 (byte5 maintains the software, the operator runs the instance). |
 | **User** | Nutzer | A human who works with agents through a channel. | Not an agent. |
 | **Initiator** | Initiator | The person who starts a facilitation in a group. | Not the facilitator's owner; the group owns the process. |
-| **Participant**, **stakeholder** | Teilnehmer, Stakeholder | In a facilitation: the people who take part; people who only receive the final protocol and next steps. A participant has a scope: **home participant** (the facilitation's home conversation, sees the whole facilitation) or **session participant** (only a linked session; sees that session's agenda, posts and summary). | A session participant is not a home participant. |
+| **Participant**, **stakeholder** | Teilnehmer, Stakeholder | In a facilitation: the people who take part; confirmed recipients outside the process who receive the final protocol and next steps and, where agreed, invitations to follow-up meetings, with no participant or read rights in the running facilitation. A participant has a scope: **home participant** (the facilitation's home conversation, sees the whole facilitation) or **session participant** (only a linked session; sees that session's agenda, posts and summary). | A session participant is not a home participant. |
 
 ## Inside an agent
 

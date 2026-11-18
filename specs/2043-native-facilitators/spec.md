@@ -66,7 +66,11 @@ cannot safely own.
     messages to the facilitator from active participants of a running facilitation,
     limited to status requests and reminder replies (§5.3); foreign
     conversation or message ids and superseded revisions are refused; access ends with the
-    reservation or permission.
+    reservation or permission. Every read path (single event, list, subscription replay,
+    resume, model-context building) is bound to the process id and returns only events
+    received while that process held its reservation or permission in that conversation
+    (for a session conversation: from its link on); events of an earlier process in the
+    same conversation are never returned to a later one.
   - `agentTurn` and execution authorization (#2090): the plugin calls the kernel with agent id,
     process id (facilitation), phase, purpose, emission type and a budget reservation.
     The kernel verifies that the agent has the plugin's archetype, that the process belongs
@@ -236,7 +240,7 @@ borrowing another bot.
 
 | Table | Holds |
 |---|---|
-| `facilitations` | id, facilitator agent id, channel type, conversation id, initiator principal, goal, format, phase, `state_version`, deadline, timezone, reminder policy, follow-up policy, electorate source (`platform_roster` or `declared_list`, §5.5), created/closed timestamps, close reason. Unique: one active facilitation per conversation. |
+| `facilitations` | id, facilitator agent id, channel type, conversation id, initiator principal, goal, format, phase, `state_version`, deadline, timezone, reminder policy, follow-up policy, home electorate source (`platform_roster` or `declared_list`, §5.5; sessions store their own), created/closed timestamps, close reason. Unique: one active facilitation per conversation. |
 | `facilitation_sessions` | facilitation id, kind (`async` chat phase, `live` meeting), scheduled start and end, meeting reference (channel meeting id), modality (`chat`, `online`, `hybrid`), capability snapshot (§6.1), consent state for audio and video processing, status. |
 | `facilitation_stakeholders` | facilitation id, principal or address, role (`receives protocol`, `invited to follow-ups`), added by, confirmed by the group. |
 | `facilitation_steps` | facilitation id, position, kind (`open`, `collect`, `discuss`, `cluster`, `prioritise`, `decide`, `assign`, `close`), title, timebox, decision method and options where the step decides, status. The agenda. |
@@ -329,12 +333,20 @@ States exist on three levels, each with its own rules:
   (on stop or abort without a consent request); a `confirming` session continues its
   closing procedure (on stop or abort ended as above). The reservation of every session
   conversation and the subscriptions bound to it are released as soon as the session is
-  `closed` or `cancelled`, at stop or abort at once; afterwards only its `closing` scope
-  may still deliver its closing documents. In the same transaction every `scheduling` scope and
+  `closed` or `cancelled`; a `confirming` session keeps them at the regular close until
+  its confirmation has ended, and loses them at once on stop or abort. Afterwards only
+  its `closing` scope may still deliver its closing documents.
+  **Only on stop or abort**, in the same transaction, every `scheduling` scope and
   follow-up scheduling grant of the facilitation is revoked and pending invitation jobs
   are cancelled: no further free/busy query, no further invitation. Invitations already
   sent stay; the abort report lists them, and cancelling them is a separate request of
-  the initiator.
+  the initiator. At the regular close agreed follow-up invitations still go out.
+  **Stop after `concluding`** applies the same rule to the facilitation's own closing:
+  an open final consent window ends, no further answers are accepted, the frozen result
+  is delivered (or re-delivered) without a consent request, with result status `not
+  confirmed (facilitation stopped)` where a confirmation was required and `published`
+  otherwise; no separate abort report is created, and the facilitation becomes `closed`.
+  Nothing else about the result changes.
 - **following_up:** only if action items with owners were agreed; without them the
   facilitation goes from `closed` straight to `ended`. A bounded follow-up context with
   its own deadline: the earlier of (last due date plus a grace period set at start,
@@ -571,7 +583,11 @@ decisions need a complete, current participant list from one of two sources, fix
   by the person's own leave (or the platform's leave event). No group consent is needed,
   because adding is never blocked and nobody is removed by others.
 
-The source never changes during a facilitation.
+The source is fixed per participant scope and never changes within it: the home scope
+fixes it at start; every linked session scope fixes its own when it is linked (the session
+conversation's platform roster if `complete`, otherwise a declared session list named by
+the home participant who linked it, posted in the session conversation, with the same
+adding rules). Home participants are never changed by a session's list.
 
 **Membership changes:** a person who joins the conversation becomes a participant and is
 welcomed with the current state; a person who leaves becomes `left`, their contribution
@@ -1065,6 +1081,23 @@ kept compatible.
 50. **Several contributions per message.** A message with three ideas becomes three
     contributions that land in different clusters; a retry creates no duplicates; an edit
     before the step closes replaces exactly that message's parts.
+
+51. **Session confirmation across the close.** A session summary awaits confirmation when
+    the facilitation reaches `concluding`; after a restart an objection in the session
+    conversation counts; only then is that conversation free again.
+52. **Stop during the final closing.** Stop before the final summary is delivered and
+    during its consent window, each followed by a restart: no unanswerable request, no
+    later automatic confirmation, exactly one result document with status `not confirmed
+    (facilitation stopped)` and no abort report next to it; a pending follow-up invitation
+    survives a regular close but not a stop.
+53. **No reading across processes.** Two facilitations one after another in the same
+    conversation with old events still stored: the second gets none of the first's events
+    on any read path; the first can still resume its own closing.
+54. **Session electorate.** A session with an unknown roster is linked during `active`
+    while the home scope uses the platform roster: its declared session list is used for
+    its decisions and confirmation; home participants stay unchanged.
+55. **Stakeholders.** A confirmed stakeholder receives an agreed invitation and the final
+    protocol but no contributions, status or anything else of the running facilitation.
 
 ## 10. Work breakdown
 
