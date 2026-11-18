@@ -272,7 +272,14 @@ States exist on three levels, each with its own rules:
   cancelled, an immutable result record is written, its outbox entries are created and a
   `closing` scope for this result is opened (7 days from entering `concluding`), so the
   result is published even after the deadline or a failed send, without re-opening
-  moderation. The facilitator posts the final
+  moderation. Where the final summary needs confirmation, its consent window (default
+  24 h) starts when its delivery is confirmed and lies inside the `closing` scope, also
+  after the deadline. If an objection stands or the window ends without consent, the
+  facilitation still closes: `closed` with the result marked "not confirmed" and the
+  objection in the report; moderation does not re-open. If delivery still fails when the
+  `closing` scope ends, the facilitation closes as `closed` with "not delivered", and the
+  initiator and operator are told where possible. The reservation is released at
+  `closed`. The facilitator posts the final
   summary (decisions, next steps with owners and due dates, open points). A group
   confirmation is asked only if the method or the agreed definition of done requires it
   (for example consent, a free-text definition of done, or next steps that were not
@@ -306,7 +313,7 @@ States exist on three levels, each with its own rules:
   context that sees only a summary. ("Session" in this spec always means an asynchronous
   phase or a live meeting, §5.2.)
 - **Reservation:** a conversation can host one running process at a time; native
-  facilitations and Conductor discussions share one reservation (today
+  facilitations and agent discussions share one reservation (today
   `conductor_ephemeral_attachments`, unique per conversation). A process releases only its
   own reservation, never an operator binding, and sends only with its own identity to a
   checked target.
@@ -461,6 +468,15 @@ instead. Session-only participants never count as missing for home steps. Member
 tracked per scope: leaving a meeting chat ends only the session membership, never the home
 membership.
 
+**Known electorate.** Automatic completeness ("everyone has contributed") and consent
+decisions need a complete, current participant list. At start the roster must be complete;
+if the channel reports it partial or unknown (Teams returns an empty, partial roster on
+errors, `src/teamsRoster.ts:85`, `src/teamsGroupPrimitives.ts:256` in
+`omadia-channel-teams`), the facilitator asks the group to confirm the participant list by
+group consent instead. Before every automatic completeness or consent decision the engine
+refreshes the roster; if it is partial or unknown at that moment, no automatic decision is
+taken and the facilitator asks the group to confirm the list.
+
 **Membership changes:** a person who joins the conversation becomes a participant and is
 welcomed with the current state; a person who leaves becomes `left`, their contribution
 stays counted, and both changes are announced. "Every participant" means every `active`
@@ -522,7 +538,8 @@ participant.
   changes to the definition of done or method): a versioned proposal with its electorate
   (the eligible participants of the scope, §5.5), posted in the conversation; it passes
   when no eligible participant objects within its window (set at start, default 12 h,
-  never past the deadline; shorter for a live session, default 5 minutes); objections and
+  never past the deadline; shorter for a live session, default 5 minutes; the confirmation
+  of a final summary uses its own window inside the `closing` scope instead, see §5.2); objections and
   agreements count only from authenticated messages or card answers; an objection blocks
   until it is resolved; withdrawing a consent before the window ends is allowed. A model's
   statement that "the group agrees" never counts. Grants of §5.11 are issued only from a
@@ -776,7 +793,7 @@ kept compatible.
     action items; the owner is reminded before the due date.
 15. **Assignment (#330 scenario).** Five roles, each ends with exactly one name confirmed
     by that person; a declined nomination reopens the role.
-16. **Silent voices and balance.** In a discussion step, a participant who has not
+16. **Silent voices and balance.** In a discussion step (`discuss`), a participant who has not
     contributed is invited (privately where possible) before the step closes; nobody is
     named in the group as not having contributed.
 17. **Timebox.** When a step's timebox ends, the facilitator summarises and the group
@@ -843,6 +860,14 @@ kept compatible.
 33. **Structured inputs.** A card answer without text counts; a manipulated answer value is
     refused; another person's reaction confirms nothing; an answer to an outdated proposal
     version changes nothing.
+34. **Final confirmation after the deadline.** A result that needs confirmation is reached
+    exactly at the deadline and delivered after a restart: the confirmation window starts
+    after delivery; with consent the facilitation closes confirmed, with an objection or
+    no answer it closes "not confirmed"; moderation never re-opens.
+35. **Unknown roster.** With a partial roster at start, and with a missed membership event
+    later, no automatic completeness or consent decision is taken; after the group
+    confirmed the list (or the roster refresh succeeded), the facilitation continues
+    correctly.
 
 ## 10. Work breakdown
 

@@ -431,8 +431,19 @@ obtain by declaring them (`serviceRegistry.provide('anthropicClient', client)`,
 provider pools are never granted to plugins; model access for any plugin goes only
 through a kernel-checked execution context: for archetype plugins the agent turn with an
 execution scope, for capability plugins the calling agent's envelope (its model policy,
-privacy shield and budget). Sandboxing outbound access for archetype plugins is a
-prerequisite for shipping one (#2088).
+privacy shield and budget).
+
+**Model gateway.** Only plugins of kind `provider` (the model provider plugins) hold model
+credentials and talk to model APIs, and only the kernel's model gateway calls them. Every
+other plugin, of either class, reaches models only through that gateway inside an
+execution context; its outbound network is limited to its manifest allow-list and never
+includes model provider endpoints. Kernel-internal extensions (agent runtime, verifier,
+fast lane) are the gateway's trusted callers and also run inside an execution context.
+Extensions that build their own provider pool today (for example
+`middleware/packages/harness-orchestrator-extras/src/plugin.ts:222`) move onto the gateway;
+sandboxing outbound access (the global `fetch`, `pluginContext.ts:555`) is a prerequisite
+for shipping archetype plugins and for enforcing this for capability plugins (#2088,
+#2053).
 
 An agent has exactly one archetype, set at creation; it never switches. Uninstalling an
 archetype plugin disables its agents and keeps their records; it never converts them to
@@ -848,8 +859,10 @@ Each existing element keeps its purpose, moved out of the message body:
     `ctx.llm` without a scope, through the `llm`, `anthropicClient` or provider-pool
     services obtained via `ctx.services`, or through a direct HTTP request to a model
     provider makes no model call in any case, none after its budget is spent and none with
-    the kill switch on; a test capability plugin's model call is charged to and limited by
-    the calling agent's envelope.
+    the kill switch on; a test capability plugin trying a direct HTTP or SDK call to a model
+    provider is blocked, and its model call through the gateway is charged to and limited
+    by the calling agent's envelope; the agent runtime, verifier and fast lane keep working
+    through the gateway.
 38. **Disclosure level none.** Two questions, one about information that exists but is
     withheld at level `none`, one about information that does not exist: the visible
     answers do not allow telling the cases apart.

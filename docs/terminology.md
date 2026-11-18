@@ -58,7 +58,7 @@ answers. There is no orchestrator agent.
 | **Contribution** | Beitrag | What a consulted agent answers: delivered unchanged and attributed to it. In a facilitation: what a participant contributes (idea, position, vote, commitment …). | |
 | **Speaker** | Absender | Who a message is from: an agent, or `system`. Stamped by the management layer, never by a model. | |
 | **System notice** | Systemhinweis | A message of the management layer (for example "this agent is not available"), never attributed to an agent. | |
-| **Discussion** | Diskussion | A visible conversation between agents in a chat, run by the Conductor, authorised like a consultation. | |
+| **Agent discussion** | Agentendiskussion | A visible conversation between agents in a chat, run by the Conductor, authorised like a consultation. | Not a discussion step of a facilitation. |
 
 ## Platform
 
@@ -128,6 +128,7 @@ answers. There is no orchestrator agent.
 | **Facilitation** | Moderation | One moderated process of a facilitator with a group, from preparation to follow-up. | |
 | **Session** | Sitzung | An asynchronous phase in the chat or a live meeting within a facilitation. | Not the model context; not a chat session in the UI sense. |
 | **Step** | Schritt | One item of the agenda (collect, discuss, cluster, prioritise, decide, assign …). | |
+| **Discussion step** | Diskussionsschritt | A step of kind `discuss` in which the participants discuss a topic under moderation. | Not an agent discussion. |
 | **Format** | Format | An agenda template for a kind of process (decision, prioritisation, assignment, idea collection, retrospective, alignment). | |
 | **Decision method** | Entscheidungsverfahren | How a step decides (ranked vote, single choice, approval, consent, assignment), counted deterministically. | |
 | **Definition of done** | Definition of Done | When the facilitation has reached its goal; versioned, changed only by group consent. | |
