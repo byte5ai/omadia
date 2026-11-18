@@ -36,6 +36,16 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Privacy Shield maskiert keine Teams-Konversations-IDs mehr
+
+2026-11-18. Der E-Mail-Detektor der C0-Basis hielt Teams/Skype-Konversations-IDs
+(`19:…@thread.skype`, `@thread.v2`, `@thread.tacv2`, `@unq.gbl.spaces`) für
+Adressen und ersetzte sie durch Pseudonyme. Ein Tool, das die ID aus dem Text
+bekam, suchte dann nach `19:felix.hoffmann@example.net` — der Facilitator fand
+keine laufende Facilitation, und eine Stimme ging verloren. Die Domains sind jetzt
+vom E-Mail-Muster ausgenommen; echte Adressen, auch mit `thread` im Namen, werden
+weiter maskiert. `@omadia/plugin-privacy-guard` 0.16.1.
+
 ### Changed — web-ui header: minimal signed-out bar, preferences in the user menu, reordered nav
 
 UI only — no route, API or auth-logic change. Signed out (and always on

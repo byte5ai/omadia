@@ -74,8 +74,14 @@ const MONTH_NAMES = [
 // Order matters only for readability; overlaps are resolved by dedup below.
 const C0_PATTERNS: readonly C0Pattern[] = [
   {
+    // Teams/Skype conversation ids look like addresses ("19:<hex>@thread.skype",
+    // "19:<hex>@thread.v2", "19:<guid>_<guid>@unq.gbl.spaces", "…@thread.tacv2").
+    // They are routing keys, not personal data: masking one hands a tool a
+    // pseudonym it cannot resolve (2026-11-18 — the facilitator looked up
+    // "19:felix.hoffmann@example.net" and found no facilitation, so a vote was
+    // lost). The lookahead sits at the "@", so no shorter domain can slip past.
     type: 'email',
-    re: /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g,
+    re: /[A-Za-z0-9._%+-]+@(?!(?:thread\.(?:skype|v2|tacv2)|unq\.gbl\.spaces)(?![A-Za-z0-9.-]))[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g,
   },
   {
     // IBAN — two letters, two check digits, 11–30 alphanumerics, optionally
