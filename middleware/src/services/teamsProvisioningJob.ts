@@ -757,6 +757,29 @@ function isCatalogReplicationFailure(err: unknown): boolean {
   );
 }
 
+/**
+ * Is the PUBLISHED Teams app version older than the one a run would build?
+ * Versions are `major.minor.patch`, compared position by position as Teams
+ * does (`1.<template revision>.<identity revision>`). Anything that is not
+ * such a version on either side answers `false`: without a comparison the
+ * published package is kept, never replaced on a guess.
+ */
+export function isOlderTeamsAppVersion(published: unknown, wanted: unknown): boolean {
+  const parse = (value: unknown): readonly number[] | undefined => {
+    if (typeof value !== 'string' || !/^\d{1,9}(\.\d{1,9}){0,3}$/.test(value.trim())) return undefined;
+    return value.trim().split('.').map(Number);
+  };
+  const have = parse(published);
+  const want = parse(wanted);
+  if (!have || !want) return false;
+  for (let i = 0; i < Math.max(have.length, want.length); i += 1) {
+    const a = have[i] ?? 0;
+    const b = want[i] ?? 0;
+    if (a !== b) return a < b;
+  }
+  return false;
+}
+
 function isProvisionerUnavailable(err: unknown): boolean {
   return (
     err instanceof Error &&
@@ -1951,66 +1974,9 @@ export class TeamsProvisioningJobRunner {
     if (this.stopped) return { status: 'stopped', agentId };
 
     // Steps 3+4 — app package + catalog upload (idempotent by externalId).
-    if (STATE_RANK[row.state] < STATE_RANK.catalog_uploaded || !row.teamsAppId) {
-      await this.emit(agentId, 'package_built', 'started');
-      const assets = await this.loadPackageAssets(row);
-      if (STATE_RANK[row.state] < STATE_RANK.package_built) {
-        row = await this.store.update(agentId, {
-          state: 'package_built',
-          teamsAppExternalId: assets.externalId,
-          lastError: null,
-        });
-      }
-      await this.emit(agentId, 'package_built', 'succeeded');
-      // The catalog leg is its own step for the operator even though the two
-      // share a guard: it is the one that talks to Graph, so it is the one
-      // that can sit there.
-      await this.emit(agentId, 'catalog_uploaded', 'started');
-      let teamsAppId = row.teamsAppId;
-      if (!teamsAppId) {
-        const existing = await provisioner.getCatalogApp({
-          teamsAppExternalId: assets.externalId,
-        });
-        if (existing.found) {
-          teamsAppId = existing.teamsAppId;
-        } else {
-          const packageZip = provisioner.buildAppPackage({
-            manifestTemplate: assets.manifestTemplate,
-            params: assets.params,
-            icons: assets.icons,
-          });
-          const uploaded = await this.uploadPackage(
-            agentId,
-            provisioner,
-            packageZip,
-            assets.externalId,
-          );
-          // PARKED, not failed: the package is built and every earlier step
-          // is real. The row keeps `package_built`, `last_error` says which
-          // human action is missing, and the next run resumes right here.
-          if (uploaded.kind === 'sign_in_required') return uploaded.result;
-          teamsAppId = uploaded.teamsAppId;
-        }
-      }
-      row = await this.store.update(agentId, {
-        state: 'catalog_uploaded',
-        teamsAppId,
-        lastError: null,
-      });
-      // Gate 3 of isCatalogReplicationFailure: this run just put the entry
-      // there (uploaded it, or resolved one so fresh the lookup was the first
-      // thing that could see it), so an install 400 in the next few seconds is
-      // allowed to be a replication race rather than a verdict.
-      this.catalogPublishedInRun.add(agentId);
-      await this.emit(agentId, 'catalog_uploaded', 'succeeded');
-    } else {
-      await this.emit(agentId, 'package_built', 'succeeded', {
-        detail: SKIPPED_DETAIL,
-      });
-      await this.emit(agentId, 'catalog_uploaded', 'succeeded', {
-        detail: SKIPPED_DETAIL,
-      });
-    }
+    const packaged = await this.ensureCatalogPackage(agentId, provisioner, row, request);
+    if (packaged.kind === 'halted') return packaged.result;
+    row = packaged.row;
 
     if (this.stopped) return { status: 'stopped', agentId };
 
@@ -2341,6 +2307,119 @@ export class TeamsProvisioningJobRunner {
    * operator UI renders as "paste the block by hand, here is why") while the
    * identity stays `installed`.
    */
+  /**
+   * Steps 3+4: make sure the org catalog holds THIS agent's CURRENT package.
+   *
+   * Three cases, decided by what the catalog says, not by how far an earlier
+   * run got:
+   *
+   *   * no entry under the package's external id: build and upload;
+   *   * an entry whose version is OLDER than the one this run would build:
+   *     build and upload again, which updates the entry in place (same
+   *     external id, higher version). This is #2043 D9: a run that failed at
+   *     the install kept its catalog app, and every re-run skipped these two
+   *     steps for good, so a corrected template (a new template revision) or
+   *     a changed identity never reached the catalog. The only way forward
+   *     was a full reset, which deletes the bot and every install users made;
+   *   * an entry that is current (or whose version the connector does not
+   *     report): adopt it and skip, as before.
+   *
+   * The state only ever moves FORWARD here: an `installed` identity whose
+   * package is refreshed on the way to an additional team stays `installed`.
+   */
+  private async ensureCatalogPackage(
+    agentId: string,
+    provisioner: TeamsProvisionerPort,
+    current: TeamsIdentityJobRecord,
+    request: ProvisionTeamsIdentityRequest,
+  ): Promise<
+    | { readonly kind: 'ready'; readonly row: TeamsIdentityJobRecord }
+    | { readonly kind: 'halted'; readonly result: ProvisioningRunResult }
+  > {
+    let row = current;
+    const skip = async (): Promise<{ kind: 'ready'; row: TeamsIdentityJobRecord }> => {
+      await this.emit(agentId, 'package_built', 'succeeded', { detail: SKIPPED_DETAIL });
+      await this.emit(agentId, 'catalog_uploaded', 'succeeded', { detail: SKIPPED_DETAIL });
+      return { kind: 'ready', row };
+    };
+    const reached = STATE_RANK[row.state] >= STATE_RANK.catalog_uploaded && Boolean(row.teamsAppId);
+    // The republish branch above has just uploaded: nothing can be newer.
+    if (reached && request.republish === true) return skip();
+
+    const assets = await this.loadPackageAssets(row);
+    const wanted = String(assets.params['VERSION'] ?? '');
+    let existing: Awaited<ReturnType<TeamsProvisionerPort['getCatalogApp']>> | undefined;
+    if (reached) {
+      // A row that already names its catalog app: one read to learn whether
+      // that app still exists and which version it holds. A failing read is
+      // not a reason to fail a run that had nothing to do here.
+      try {
+        existing = await provisioner.getCatalogApp({ teamsAppExternalId: assets.externalId });
+      } catch (err) {
+        this.log(
+          `[teams-provisioning] ${agentId} could not read the catalog entry to compare versions (${errorMessage(err)}) — keeping the published package`,
+        );
+        return skip();
+      }
+      const published = existing.found
+        ? (existing as { readonly publishedVersion?: unknown }).publishedVersion
+        : undefined;
+      if (existing.found && !isOlderTeamsAppVersion(published, wanted)) return skip();
+      this.log(
+        existing.found
+          ? `[teams-provisioning] ${agentId} catalog app holds version ${String(published)}, this run builds ${wanted} — rebuilding and updating it`
+          : `[teams-provisioning] ${agentId} catalog app '${String(row.teamsAppId)}' is gone from the catalog — uploading again`,
+      );
+    }
+
+    await this.emit(agentId, 'package_built', 'started');
+    if (STATE_RANK[row.state] < STATE_RANK.package_built) {
+      row = await this.store.update(agentId, {
+        state: 'package_built',
+        teamsAppExternalId: assets.externalId,
+        lastError: null,
+      });
+    }
+    await this.emit(agentId, 'package_built', 'succeeded');
+    // The catalog leg is its own step for the operator even though the two
+    // share a guard: it is the one that talks to Graph, so it is the one
+    // that can sit there.
+    await this.emit(agentId, 'catalog_uploaded', 'started');
+    existing ??= await provisioner.getCatalogApp({ teamsAppExternalId: assets.externalId });
+    const stale =
+      existing.found &&
+      isOlderTeamsAppVersion((existing as { readonly publishedVersion?: unknown }).publishedVersion, wanted);
+    let teamsAppId: string;
+    if (existing.found && !stale) {
+      teamsAppId = existing.teamsAppId;
+    } else {
+      const packageZip = provisioner.buildAppPackage({
+        manifestTemplate: assets.manifestTemplate,
+        params: assets.params,
+        icons: assets.icons,
+      });
+      const uploaded = await this.uploadPackage(agentId, provisioner, packageZip, assets.externalId);
+      // PARKED, not failed: the package is built and every earlier step
+      // is real. The row keeps its state, `last_error` says which human
+      // action is missing, and the next run resumes right here.
+      if (uploaded.kind === 'sign_in_required') return { kind: 'halted', result: uploaded.result };
+      teamsAppId = uploaded.teamsAppId;
+    }
+    row = await this.store.update(agentId, {
+      ...(STATE_RANK[row.state] < STATE_RANK.catalog_uploaded ? { state: 'catalog_uploaded' as const } : {}),
+      teamsAppId,
+      teamsAppExternalId: assets.externalId,
+      lastError: null,
+    });
+    // Gate 3 of isCatalogReplicationFailure: this run just put the entry
+    // there (uploaded it, or resolved one so fresh the lookup was the first
+    // thing that could see it), so an install 400 in the next few seconds is
+    // allowed to be a replication race rather than a verdict.
+    this.catalogPublishedInRun.add(agentId);
+    await this.emit(agentId, 'catalog_uploaded', 'succeeded');
+    return { kind: 'ready', row };
+  }
+
   /**
    * The early `teams_bots` write (see the call site). Quiet on purpose: the
    * `config_sync` step of the timeline and the `config_sync_failed` warning

@@ -135,9 +135,21 @@ interface StubBehaviour {
   uploadToCatalog?: () => Promise<void> | void;
   installToTeam?: () => Promise<void> | void;
   catalogAppFound?: string;
+  /** The version the catalog reports for the entry (connector >= 0.6). */
+  publishedVersion?: string;
+  /** The catalog entry the row names was deleted behind our back. */
+  catalogEmpty?: boolean;
 }
 
-function makeProvisioner(behaviour: StubBehaviour = {}): StubProvisioner {
+/**
+ * The stub's catalog behaves like one: an entry exists when the test says so,
+ * when the row under test already names one (`preexisting`, a resume), or
+ * once this run uploaded it.
+ */
+function makeProvisioner(behaviour: StubBehaviour = {}, preexisting?: string | null): StubProvisioner {
+  let inCatalog: string | undefined =
+    behaviour.catalogEmpty === true ? undefined : (behaviour.catalogAppFound ?? preexisting ?? undefined);
+  let version = behaviour.publishedVersion;
   const calls: string[] = [];
   return {
     calls,
@@ -175,12 +187,19 @@ function makeProvisioner(behaviour: StubBehaviour = {}): StubProvisioner {
     async uploadToCatalog(input) {
       calls.push(`uploadToCatalog:${input.externalId}`);
       await behaviour.uploadToCatalog?.();
-      return { outcome: 'created', value: { teamsAppId: 'catalog-77' } };
+      inCatalog ??= 'catalog-77';
+      // An upload publishes what was built: the entry is current afterwards.
+      version = undefined;
+      return { outcome: 'created', value: { teamsAppId: inCatalog } };
     },
     async getCatalogApp(input) {
       calls.push(`getCatalogApp:${input.teamsAppExternalId}`);
-      if (behaviour.catalogAppFound) {
-        return { found: true, teamsAppId: behaviour.catalogAppFound };
+      if (inCatalog !== undefined) {
+        return {
+          found: true,
+          teamsAppId: inCatalog,
+          ...(version !== undefined ? { publishedVersion: version } : {}),
+        };
       }
       return { found: false };
     },
@@ -279,7 +298,7 @@ function makeRunner(opts: {
   resolveTeamName?: (teamId: string) => Promise<string | null>;
 } = {}): RunnerFixture {
   const store = makeStore(opts.storeOverrides);
-  const provisioner = makeProvisioner(opts.behaviour);
+  const provisioner = makeProvisioner(opts.behaviour, opts.storeOverrides?.teamsAppId);
   const timers = immediateTimers();
   const runner = new TeamsProvisioningJobRunner({
     store,
@@ -413,7 +432,12 @@ describe('TeamsProvisioningJobRunner — chain and resume', () => {
     });
     const result = await runner.enqueue(REQUEST);
     assert.equal(result.status, 'installed');
-    assert.deepEqual(provisioner.calls, ['installToTeam:team-42:catalog-known']);
+    // One catalog read first since #2043 D9: is the published package still
+    // the one this run would build? It is, so nothing is rebuilt.
+    assert.deepEqual(provisioner.calls, [
+      'getCatalogApp:external-abc',
+      'installToTeam:team-42:catalog-known',
+    ]);
   });
 
   it('reuses an existing catalog app instead of uploading again', async () => {
@@ -459,7 +483,7 @@ describe('TeamsProvisioningJobRunner — chain and resume', () => {
     const result = await runner.enqueue(REQUEST);
     assert.equal(result.status, 'installed');
     // Exactly the per-team step — nothing re-registered, nothing re-uploaded.
-    assert.deepEqual(provisioner.calls, ['installToTeam:team-42:c']);
+    assert.deepEqual(provisioner.calls, ['getCatalogApp:external-abc', 'installToTeam:team-42:c']);
     // …and the binding is recorded, with the name resolved while we were there.
     assert.deepEqual(
       installs.rows.map((row) => [row.teamId, row.teamDisplayName]),
