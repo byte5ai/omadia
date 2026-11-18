@@ -13,7 +13,7 @@ import type { CoreApi } from '@omadia/channel-sdk';
 import { ConversationEventHub } from '../src/channels/conversationEventHub.js';
 import { createCoreApi } from '../src/channels/coreApi.js';
 import { InMemoryConversationMessageStore } from '../src/channels/conversationMessages/store.js';
-import { scopeCoreApiToChannel } from '../src/channels/scopedCoreApi.js';
+import { ChannelTypeClaims, scopeCoreApiToChannel } from '../src/channels/scopedCoreApi.js';
 import { ChannelProviderRegistry } from '../src/channels/sessionCapabilities/providerRegistry.js';
 import {
   CONVERSATION,
@@ -48,9 +48,27 @@ describe('CoreApi scoped to one channel plugin', () => {
       },
     });
     const logs: string[] = [];
-    const teams: CoreApi = scopeCoreApiToChannel(core, '@omadia/channel-teams', 'teams', (m) => logs.push(m));
-    const rogue: CoreApi = scopeCoreApiToChannel(core, '@acme/channel-slack', 'slack', (m) => logs.push(m));
-    return { messages, membership, readiness, sessionEvents, logs, teams, rogue };
+    const claims = new ChannelTypeClaims();
+    const teams: CoreApi = scopeCoreApiToChannel(core, '@omadia/channel-teams', claims, (m) => logs.push(m));
+    const rogue: CoreApi = scopeCoreApiToChannel(core, '@acme/channel-slack', claims, (m) => logs.push(m));
+    // What the real Teams plugin does while it activates: it registers its
+    // providers, which is what makes `teams` its channel type. Its id-derived
+    // type would be the id itself, so nothing may hang on that.
+    teams.registerReadinessProvider!('@omadia/channel-teams', {
+      channelType: 'teams',
+      check: () => Promise.resolve({} as never),
+    });
+    rogue.emitConversationEvent!({
+      kind: 'bot_present',
+      channelId: 'x',
+      channelType: 'slack',
+      conversationId: 'c',
+      conversationType: 'group',
+      members: [],
+      occurredAt: '2026-11-18T09:00:00Z',
+    });
+    membership.length = 0;
+    return { messages, membership, readiness, sessionEvents, logs, claims, teams, rogue };
   }
 
   it('another channel plugin cannot emit a message event for a channel type it does not serve', async () => {
@@ -59,7 +77,10 @@ describe('CoreApi scoped to one channel plugin', () => {
     s.rogue.emitConversationMessage!(messageEvent({ channelId: '@omadia/channel-teams', messageId: 'forged' }));
     await flush();
     assert.deepEqual((await s.messages.hub.listSince(scopeOf('mara'), ENGINE)).events, []);
-    assert.match(s.logs[0]!, /@acme\/channel-slack tried to emit a message event for channel type 'teams'; it serves 'slack'/);
+    assert.match(
+      s.logs[0]!,
+      /@acme\/channel-slack tried to emit a message event for channel type 'teams', which belongs to @omadia\/channel-teams/,
+    );
 
     s.teams.emitConversationMessage!(messageEvent({ channelId: 'whatever-it-claims', messageId: 'real' }));
     await flush();
@@ -88,8 +109,11 @@ describe('CoreApi scoped to one channel plugin', () => {
     s.teams.emitConversationEvent!(added);
     // The presence signal behind `subscribe`: not forgeable for Teams by Slack.
     s.rogue.emitConversationEvent!({ ...added, channelType: 'teams' });
-    s.rogue.emitConversationEvent!(added);
+    s.teams.emitConversationEvent!({ ...added, channelType: 'teams' });
+    s.rogue.emitConversationEvent!({ ...added, channelType: 'slack' });
     assert.deepEqual(s.membership, [
+      // No channel type stated: passes with the real plugin id, as before.
+      { channelId: '@omadia/channel-teams', kind: 'bot_added' },
       { channelId: '@omadia/channel-teams', kind: 'bot_added', channelType: 'teams' },
       { channelId: '@acme/channel-slack', kind: 'bot_added', channelType: 'slack' },
     ]);
@@ -112,13 +136,12 @@ describe('CoreApi scoped to one channel plugin', () => {
     const provider = { channelType: 'teams', check: () => Promise.resolve({} as never) };
     assert.throws(
       () => s.rogue.registerReadinessProvider!('@omadia/channel-teams', provider),
-      /serves 'slack' and cannot register a readiness provider for 'teams'/,
+      /cannot register a readiness provider for 'teams': the channel type belongs to '@omadia\/channel-teams'/,
     );
     assert.throws(
       () => s.rogue.registerMeetingSourceProvider!('x', { channelType: 'teams', snapshot: () => Promise.resolve(undefined) }),
       /cannot register a meeting source for 'teams'/,
     );
-    assert.deepEqual(s.readiness.types(), []);
     s.teams.registerReadinessProvider!('someone-else', provider);
     assert.deepEqual(s.readiness.types(), ['teams']);
     // Owned by the real plugin id, so that plugin's deactivation drops it.
@@ -128,10 +151,21 @@ describe('CoreApi scoped to one channel plugin', () => {
     assert.deepEqual(s.readiness.types(), []);
   });
 
+  it('a channel type is held by the first plugin that acts for it, until that plugin deactivates', () => {
+    const claims = new ChannelTypeClaims();
+    assert.equal(claims.claim('@omadia/channel-teams', 'teams'), true);
+    assert.equal(claims.claim('@omadia/channel-teams', 'teams'), true, 'its own again');
+    assert.equal(claims.claim('@acme/other', 'teams'), false);
+    assert.equal(claims.claim('@acme/other', 'slack'), true, 'a plugin may serve a type nobody holds');
+    claims.release('@omadia/channel-teams');
+    assert.equal(claims.ownerOf('teams'), undefined);
+    assert.equal(claims.claim('@acme/other', 'teams'), true);
+  });
+
   it('everything else of CoreApi is the shared object', async () => {
     const s = await setup();
     const core = createCoreApi({ dispatcher: {} as never, routes: {} as never });
-    const scoped = scopeCoreApiToChannel(core, 'c', 'teams');
+    const scoped = scopeCoreApiToChannel(core, 'c', new ChannelTypeClaims());
     assert.equal(scoped.handleTurnStream, core.handleTurnStream);
     assert.equal(scoped.registerRoute, core.registerRoute);
     assert.equal(scoped.emitConversationMessage, undefined, 'still feature-detectable');

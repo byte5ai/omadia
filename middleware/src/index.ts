@@ -7152,7 +7152,6 @@ async function main(): Promise<void> {
     eventCatalogRegistry,
     resolver: channelPluginResolver,
     coreApi: channelCoreApi,
-    channelTypeFor,
     routes: routeRegistry,
     webSockets: webSocketRegistry,
     rosterRegistry: conversationRosterRegistry,
