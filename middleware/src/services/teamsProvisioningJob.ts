@@ -918,6 +918,7 @@ export type ProvisioningRunResult =
         | 'rsc_permissions_mismatch'
         | 'rsc_consent_refused'
         | 'bot_rejected'
+        | 'bot_app_id_retired'
         | 'error';
       readonly detail: string;
     }
@@ -1574,6 +1575,15 @@ export class TeamsProvisioningJobRunner {
         reason: 'bot_handle_unavailable',
         detail: failure.lastError,
       };
+    }
+
+    // #2043 D10 — the connector (>= 0.9.2) refuses to create a bot under an
+    // app id whose bot resource was deleted before: the Bot Connector would
+    // reject it for good. TERMINAL, with its own instruction.
+    if (err instanceof Error && err.name === 'BotAppIdRetiredError') {
+      const failure = botAppIdRetiredFailure(errorMessage(err));
+      await this.recordError(agentId, { state: 'failed', ...failure });
+      return { status: 'failed', agentId, reason: 'bot_app_id_retired', detail: failure.lastError };
     }
 
     // #924 — THE FOUR DELEGATED ERRORS, EACH WITH A DIFFERENT INSTRUCTION.
@@ -2747,10 +2757,20 @@ export function rscConsentRefusedDetail(targetKind: TeamsTargetKind, raw: string
  * heal it (26 minutes observed). The way out is a new app registration.
  */
 export const BOT_REJECTED_PREFIX = 'bot_rejected:';
+/** Same wording as the connector's `BotAppIdRetiredError` message prefix. */
+export const BOT_APP_ID_RETIRED_PREFIX = 'bot_app_id_retired:';
 
 export function botRejectedDetail(detail?: string): string {
   const reported = detail?.replace(/\s+/g, ' ').trim();
-  return `${BOT_REJECTED_PREFIX} the Bot Connector does not accept this bot (it answers 401 to the bot's own credentials), so Teams shows it as an invalid bot and delivers nothing. This happens when a bot is created again under an app id that was used before. Delete this Teams identity completely and provision it again, so that it gets a new app registration.${reported ? ` Reported: ${reported}` : ''}`;
+  const tail = reported ? ` Reported: ${reported}` : '';
+  // The connector reports two different refusals as `rejected` (its
+  // `botProbe.ts`): Entra does not accept the stored secret (`token …`,
+  // `invalid_client`), or the Bot Connector does not accept the bot's valid
+  // token (`connector 401`). Different causes, said apart.
+  if (reported !== undefined && /^token\b/i.test(reported)) {
+    return `${BOT_REJECTED_PREFIX} Microsoft Entra does not accept this bot's stored client secret, so the bot cannot authenticate and delivers nothing. Run provisioning again to rotate the secret; if that does not help, delete this Teams identity completely and provision it again.${tail}`;
+  }
+  return `${BOT_REJECTED_PREFIX} the Bot Connector does not accept this bot (it answers 401 to the bot's own credentials), so Teams shows it as an invalid bot and delivers nothing. This happens when a bot is created again under an app id that was used before. Delete this Teams identity completely and provision it again, so that it gets a new app registration.${tail}`;
 }
 
 export function consentMissingDetail(missingScopes: readonly string[]): string {
@@ -2915,6 +2935,8 @@ export type TeamsProvisioningErrorCode =
   | 'rsc_consent_refused'
   /** #2043 D10 — the Bot Connector does not accept the bot's own token. */
   | 'bot_rejected'
+  /** #2043 D10 — the connector refused to re-create a bot under a used app id. */
+  | 'bot_app_id_retired'
   | 'arm_not_configured'
   | 'throttled'
   | 'config_sync_failed'
@@ -3031,6 +3053,9 @@ export function classifyTeamsProvisioningError(
   if (sentence.startsWith(RSC_PERMISSIONS_MISMATCH_PREFIX)) {
     return { code: 'rsc_permissions_mismatch', raw };
   }
+  if (sentence.startsWith(BOT_APP_ID_RETIRED_PREFIX)) {
+    return { code: 'bot_app_id_retired', raw };
+  }
   if (sentence.startsWith(BOT_REJECTED_PREFIX)) {
     return { code: 'bot_rejected', raw };
   }
@@ -3110,6 +3135,7 @@ const TEAMS_PROVISIONING_ERROR_CODE_SET: {
   rsc_permissions_mismatch: true,
   rsc_consent_refused: true,
   bot_rejected: true,
+  bot_app_id_retired: true,
   arm_not_configured: true,
   throttled: true,
   config_sync_failed: true,
@@ -3198,6 +3224,16 @@ export function rscPermissionsMismatchFailure(
 
 export function botRejectedFailure(detail?: string): TeamsProvisioningFailure {
   return failureOf('bot_rejected', botRejectedDetail(detail));
+}
+
+/** The connector's sentence already starts with the code and says what to
+ *  do; it is kept whole (bounded) as the technical detail. */
+export function botAppIdRetiredFailure(connectorMessage: string): TeamsProvisioningFailure {
+  const text = connectorMessage.replace(/\s+/g, ' ').trim();
+  const sentence = text.startsWith(BOT_APP_ID_RETIRED_PREFIX)
+    ? text
+    : `${BOT_APP_ID_RETIRED_PREFIX} ${text}`;
+  return failureOf('bot_app_id_retired', sentence.slice(0, 1200));
 }
 
 export function rscConsentRefusedFailure(

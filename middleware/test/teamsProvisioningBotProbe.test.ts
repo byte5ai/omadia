@@ -15,6 +15,7 @@ import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
 import {
+  botAppIdRetiredFailure,
   botRejectedFailure,
   classifyTeamsProvisioningError,
   TeamsProvisioningJobRunner,
@@ -201,5 +202,138 @@ describe('the bot is probed before an identity becomes installed (#2043 D10)', (
     const failure = botRejectedFailure('401');
     assert.equal(failure.errorCode, 'bot_rejected');
     assert.equal(classifyTeamsProvisioningError(failure.lastError).code, 'bot_rejected');
+  });
+});
+
+/**
+ * Fixtures in the exact form the M365 connector 0.9.2 returns them
+ * (`src/teamsProvisioner/botProbe.ts` on its main): `detail` is
+ * `connector <status>: <body>` or `token <status>: <error_description>`,
+ * redacted and cut at 500 characters. Known = 2xx or 400/403/404/405.
+ */
+describe('probeBot of connector 0.9.2, as it really answers (#2043 D10)', () => {
+  it('known: 403 BadArgument for the probe member is a healthy bot', async () => {
+    const h = setup({
+      probe: async () => ({
+        status: 'known',
+        detail: 'connector 403: {"error":{"code":"BadArgument","message":"Bot is not installed in user\'s personal scope"}}',
+      }),
+    });
+    assert.equal((await h.run()).status, 'installed');
+    assert.equal(h.calls.filter((c) => c.startsWith('probe')).length, 1);
+  });
+
+  it('rejected by the Bot Connector (401): the dead-bot case, with the connector text as the technical detail', async () => {
+    const h = setup({
+      attempts: 2,
+      probe: async () => ({
+        status: 'rejected',
+        httpStatus: 401,
+        detail: 'connector 401: {"message":"Authorization has been denied for this request."}',
+      }),
+    });
+    const result = await h.run();
+    assert.equal((result as { reason?: string }).reason, 'bot_rejected');
+    assert.match(h.row().lastError ?? '', /^bot_rejected: the Bot Connector does not accept this bot/);
+    assert.match(h.row().lastError ?? '', /Reported: connector 401: \{"message":"Authorization has been denied for this request\."\}$/);
+  });
+
+  it('rejected at the token endpoint (invalid_client): said as a secret problem, not as an invalid bot', async () => {
+    const h = setup({
+      attempts: 1,
+      probe: async () => ({
+        status: 'rejected',
+        httpStatus: 401,
+        detail: "token 401: AADSTS7000215: Invalid client secret provided. Ensure the secret being sent in the request is the client secret value",
+      }),
+    });
+    await h.run();
+    assert.equal(h.row().errorCode, 'bot_rejected');
+    assert.match(h.row().lastError ?? '', /^bot_rejected: Microsoft Entra does not accept this bot's stored client secret/);
+    assert.match(h.row().lastError ?? '', /Run provisioning again to rotate the secret/);
+    assert.match(h.row().lastError ?? '', /AADSTS7000215/);
+  });
+
+  it('unverified (no stored secret, a 5xx, a timeout): logged with the connector reason, never blocking', async () => {
+    for (const detail of [
+      "no stored secret for app id 'app-123'",
+      'connector 503: Service Unavailable',
+      'TimeoutError: The operation was aborted due to timeout',
+    ]) {
+      const h = setup({ probe: async () => ({ status: 'unverified', detail }) });
+      assert.equal((await h.run()).status, 'installed', detail);
+      assert.ok(h.logs.join('\n').includes(`could not be verified against the Bot Connector (${detail})`), detail);
+    }
+  });
+});
+
+describe('createBot refuses a retired app id (connector 0.9.2 BotAppIdRetiredError)', () => {
+  it('fails at once with its own code and keeps the connector sentence that says what to do', async () => {
+    const message =
+      "bot_app_id_retired: app id 'e30baf34-9b82-40d5-8a6f-6536c52edc9b' already had an Azure bot resource, which was deleted at 2026-11-18T17:24:49Z. A bot re-created under the same app id is rejected by the Bot Connector (401) although Azure reports it healthy, so 'omadia-mara-test-e30baf34' was not created. Delete this identity completely, including its app registration, and provision it again: it gets a new app id";
+    assert.deepEqual(botAppIdRetiredFailure(message).errorCode, 'bot_app_id_retired');
+    assert.equal(classifyTeamsProvisioningError(botAppIdRetiredFailure(message).lastError).code, 'bot_app_id_retired');
+    assert.match(botAppIdRetiredFailure('something else').lastError, /^bot_app_id_retired: something else$/);
+  });
+});
+
+describe('the run, when createBot throws BotAppIdRetiredError', () => {
+  it('is terminal on the first attempt: state failed, code bot_app_id_retired, no retry', async () => {
+    let row = {
+      agentId: 'agent-1',
+      botSlug: 'mara-test',
+      displayName: 'Mara (Test)',
+      state: 'pending',
+      teamId: 'team-42',
+      appId: null,
+      tenantId: null,
+      teamsAppId: null,
+      teamsAppExternalId: null,
+      lastError: null,
+    } as TeamsIdentityJobRecord;
+    let attempts = 0;
+    const provisioner = {
+      async createAppRegistration() {
+        return { outcome: 'created', value: { appId: 'app-123', registration: { tenantId: 'tenant-9' } } };
+      },
+      async createBot() {
+        attempts += 1;
+        throw Object.assign(
+          new Error(
+            "bot_app_id_retired: app id 'app-123' already had an Azure bot resource, which was deleted. Delete this identity completely, including its app registration, and provision it again: it gets a new app id",
+          ),
+          { name: 'BotAppIdRetiredError', botName: 'omadia-mara-test-app-123', msaAppId: 'app-123' },
+        );
+      },
+    } as unknown as TeamsProvisionerPort;
+    const runner = new TeamsProvisioningJobRunner({
+      store: {
+        getByAgentId: async () => row,
+        update: async (_id: string, patch: Partial<TeamsIdentityJobRecord>) => {
+          row = { ...row, ...patch } as TeamsIdentityJobRecord;
+          return row;
+        },
+      } as never,
+      getProvisioner: () => provisioner,
+      buildMessagingEndpoint: (slug: string) => `https://mw.example.com/api/teams/${slug}/messages`,
+      loadPackageAssets: async () => {
+        throw new Error('not reached');
+      },
+      timers: {
+        setTimeout: (fn: () => void) => {
+          fn();
+          return 0 as never;
+        },
+        clearTimeout: () => undefined,
+      } as never,
+      log: () => undefined,
+    } as never);
+    const result = await runner.enqueue({ agentId: 'agent-1', teamId: 'team-42' });
+    assert.equal(result.status, 'failed');
+    assert.equal((result as { reason?: string }).reason, 'bot_app_id_retired');
+    assert.equal(attempts, 1);
+    assert.equal(row.state, 'failed');
+    assert.equal(row.errorCode, 'bot_app_id_retired');
+    assert.match(row.lastError ?? '', /^bot_app_id_retired: app id 'app-123' already had an Azure bot resource/);
   });
 });

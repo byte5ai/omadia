@@ -2697,7 +2697,8 @@
           "device_code_flow_failed": "Sign-in flow refused",
           "verifying_bot": "checking with Microsoft that the bot is known",
           "bot_rejected": "Microsoft's Bot Connector does not accept this bot",
-          "rsc_consent_refused": "the target refused the app's permissions"
+          "rsc_consent_refused": "the target refused the app's permissions",
+          "bot_app_id_retired": "the application id was already used for a deleted bot"
         }
       },
       "stateSummary": "State: {state}",
@@ -2805,6 +2806,10 @@
         "bot_rejected": {
           "what": "Every provisioning step succeeded in Azure, but Microsoft's Bot Connector does not accept this bot: it answers 401 to the bot's own credentials. In Teams the bot shows as an invalid or unknown bot and receives nothing. The agent is therefore not ready.",
           "next": "This happens when a bot is created again under an application id that was already used, for example after a reset whose deleted app registration was restored. Waiting does not help. Delete this Teams identity completely (\"Delete identity\"), then provision it again so that it gets a new app registration."
+        },
+        "bot_app_id_retired": {
+          "what": "The bot was not created: its application id already belonged to a bot that was deleted. Microsoft's Bot Connector keeps rejecting a bot that is created again under the same application id, although Azure reports it as healthy, so omadia does not create one.",
+          "next": "Delete this Teams identity completely (\"Delete identity\"), including its app registration, and provision it again. It then gets a new application id. Running the same provisioning again changes nothing."
         }
       },
       "teamsBot": {
@@ -2939,7 +2944,10 @@
         "config_unsync_unavailable": "This deployment does not write the teams_bots entry automatically, so there was none for the reset to remove.",
         "config_plugin_not_installed": "The Teams channel is not installed, so there is no configuration to clean up.",
         "tenant_sign_in_expired": "The tenant sign-in expired and could not be renewed automatically. Sign in once more and start the reset again — no extra permission is needed for it.",
-        "app_trace_required": "The identity is kept: the app registration could not be looked up in the recycle bin, and this row is the only trace of it. Use \"reset the run\", or upgrade the connector so the recycle bin can be searched."
+        "app_trace_required": "The identity is kept: the app registration could not be looked up in the recycle bin, and this row is the only trace of it. Use \"reset the run\", or upgrade the connector so the recycle bin can be searched.",
+        "app_purge_unconfirmed": "The app registration was deleted, but its permanent removal from the recycle bin could not be confirmed yet. Start the reset again in a minute to finish it. Do not start a new provisioning before that: it could run into the deleted registration.",
+        "app_purge_recycle_bin_unreadable": "The app registration was deleted and its permanent removal was requested, but this tenant does not let omadia read the recycle bin (that needs the permission Application.ReadWrite.All), so the removal could not be confirmed. If a new provisioning reports a reserved name or a retired application id, grant that permission and reset again.",
+        "app_purge_confirmation_unsupported": "The app registration was deleted and its permanent removal was requested, but the installed M365 connector cannot check the recycle bin, so the removal could not be confirmed. Update the connector to 0.9.2 or newer; until then wait a few minutes before provisioning again."
       },
       "openRun": "Reset the run …",
       "openIdentity": "Delete the identity …",

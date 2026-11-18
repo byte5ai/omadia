@@ -2697,7 +2697,8 @@
           "device_code_flow_failed": "Anmeldevorgang abgelehnt",
           "verifying_bot": "prüfe bei Microsoft, ob der Bot bekannt ist",
           "bot_rejected": "Microsofts Bot Connector akzeptiert diesen Bot nicht",
-          "rsc_consent_refused": "das Ziel hat die Berechtigungen der App abgelehnt"
+          "rsc_consent_refused": "das Ziel hat die Berechtigungen der App abgelehnt",
+          "bot_app_id_retired": "die Anwendungs-ID gehörte bereits zu einem gelöschten Bot"
         }
       },
       "stateSummary": "Status: {state}",
@@ -2805,6 +2806,10 @@
         "bot_rejected": {
           "what": "In Azure sind alle Provisionierungsschritte gelungen, aber Microsofts Bot Connector akzeptiert diesen Bot nicht: Er antwortet auf die eigenen Zugangsdaten des Bots mit 401. In Teams erscheint der Bot als ungültiger oder unbekannter Bot und erhält nichts. Der Agent ist deshalb nicht bereit.",
           "next": "Das passiert, wenn ein Bot unter einer bereits verwendeten Anwendungs-ID erneut angelegt wird, zum Beispiel nach einem Zurücksetzen, dessen gelöschte App-Registrierung wiederhergestellt wurde. Warten hilft nicht. Lösche diese Teams-Identität vollständig („Identität löschen“) und provisioniere sie danach neu, damit sie eine neue App-Registrierung bekommt."
+        },
+        "bot_app_id_retired": {
+          "what": "Der Bot wurde nicht angelegt: Seine Anwendungs-ID gehörte bereits zu einem Bot, der gelöscht wurde. Microsofts Bot Connector lehnt einen Bot, der unter derselben Anwendungs-ID erneut angelegt wird, dauerhaft ab, obwohl Azure ihn als fehlerfrei meldet. Deshalb legt omadia ihn nicht an.",
+          "next": "Lösche diese Teams-Identität vollständig („Identität löschen“), einschließlich der App-Registrierung, und provisioniere sie neu. Sie bekommt dann eine neue Anwendungs-ID. Ein erneuter Lauf derselben Provisionierung ändert nichts."
         }
       },
       "teamsBot": {
@@ -2939,7 +2944,10 @@
         "config_unsync_unavailable": "Diese Installation schreibt den teams_bots-Eintrag nicht automatisch — es gab also auch keinen, den das Zurücksetzen entfernen müsste.",
         "config_plugin_not_installed": "Der Teams-Channel ist nicht installiert, es gibt also keine Konfiguration aufzuräumen.",
         "tenant_sign_in_expired": "Die Tenant-Anmeldung ist abgelaufen und ließ sich nicht automatisch erneuern. Melde dich einmal neu an und starte das Zurücksetzen erneut — eine zusätzliche Berechtigung ist dafür nicht nötig.",
-        "app_trace_required": "Die Identität bleibt bestehen: Die App-Registrierung ließ sich nicht im Papierkorb nachschlagen, und die Zeile ist die einzige Spur zu ihr. Nutze „Lauf zurücksetzen“ oder aktualisiere den Connector, damit der Papierkorb geprüft werden kann."
+        "app_trace_required": "Die Identität bleibt bestehen: Die App-Registrierung ließ sich nicht im Papierkorb nachschlagen, und die Zeile ist die einzige Spur zu ihr. Nutze „Lauf zurücksetzen“ oder aktualisiere den Connector, damit der Papierkorb geprüft werden kann.",
+        "app_purge_unconfirmed": "Die App-Registrierung wurde gelöscht, aber ihr endgültiges Entfernen aus dem Papierkorb ließ sich noch nicht bestätigen. Starte das Zurücksetzen in einer Minute erneut, um es abzuschließen. Starte vorher keine neue Provisionierung: Sie könnte auf die gelöschte Registrierung treffen.",
+        "app_purge_recycle_bin_unreadable": "Die App-Registrierung wurde gelöscht und ihr endgültiges Entfernen angefordert, aber dieser Tenant lässt omadia den Papierkorb nicht lesen (dafür ist die Berechtigung Application.ReadWrite.All nötig), deshalb ließ sich das Entfernen nicht bestätigen. Meldet eine neue Provisionierung einen reservierten Namen oder eine ausgemusterte Anwendungs-ID, erteile diese Berechtigung und setze erneut zurück.",
+        "app_purge_confirmation_unsupported": "Die App-Registrierung wurde gelöscht und ihr endgültiges Entfernen angefordert, aber der installierte M365-Connector kann den Papierkorb nicht prüfen, deshalb ließ sich das Entfernen nicht bestätigen. Aktualisiere den Connector auf 0.9.2 oder neuer; warte bis dahin einige Minuten, bevor du neu provisionierst."
       },
       "openRun": "Lauf zurücksetzen …",
       "openIdentity": "Identität löschen …",
