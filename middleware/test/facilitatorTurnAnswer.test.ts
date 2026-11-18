@@ -139,3 +139,39 @@ describe('facilitator turn answer vs. the engine posting in the same turn', () =
     assert.equal(posts.count('mara', 'teams', CONVERSATION), 1, 'a refused send is not a post');
   });
 });
+
+describe('facilitator group turn: what the model is told', () => {
+  function capture(): { agent: ChatAgent; seen: ChatTurnInput[] } {
+    const seen: ChatTurnInput[] = [];
+    const inner: ChatAgent = {
+      chat: (input) => {
+        seen.push(input);
+        return Promise.resolve({ text: 'ok' } as never);
+      },
+      async *chatStream(input): AsyncGenerator<ChatStreamEvent> {
+        seen.push(input);
+        yield { type: 'done', answer: 'ok', toolCalls: 0, iterations: 0 } as ChatStreamEvent;
+      },
+    };
+    return {
+      agent: wrapFacilitatorAgent(inner, { agentSlug: 'mara', isEngineUsable: () => true, isEngineDriven: () => false }),
+      seen,
+    };
+  }
+
+  it('a channel-started group turn carries the platform statement, before any hint of the caller', async () => {
+    const f = capture();
+    await f.agent.chat(INPUT);
+    await collect(f.agent.chatStream({ ...INPUT, extraSystemHint: 'caller hint' }));
+    assert.match(f.seen[0]?.extraSystemHint ?? '', /A GROUP conversation on teams\. You are present in it under your own identity/);
+    assert.match(f.seen[0]?.extraSystemHint ?? '', /no facilitation is running in this conversation yet/);
+    assert.match(f.seen[1]?.extraSystemHint ?? '', /Never ask to be added to another chat first\.\n\ncaller hint$/);
+    assert.equal(INPUT.extraSystemHint, undefined, 'the input of the caller is not changed');
+  });
+
+  it('an engine turn gets only what the engine said', async () => {
+    const f = capture();
+    await runAsEngineTurn({ pluginId: ENGINE }, () => f.agent.chat({ ...INPUT, extraSystemHint: 'engine state' }));
+    assert.equal(f.seen[0]?.extraSystemHint, 'engine state');
+  });
+});

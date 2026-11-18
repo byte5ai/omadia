@@ -129,6 +129,20 @@ export function facilitatorRefusalText(opts: {
   );
 }
 
+/**
+ * The kernel's statement for a turn a channel started in a group where no
+ * facilitation runs yet. Every sentence is something the kernel checked
+ * before it let the turn reach the model (see `dispose`).
+ */
+export function groupTurnStatement(channelType: string | undefined): string {
+  return [
+    '# Where this message comes from (stated by the platform)',
+    `- A GROUP conversation${channelType ? ` on ${channelType}` : ''}. You are present in it under your own identity; it is not a private chat.`,
+    '- The facilitation engine is set up, and no facilitation is running in this conversation yet.',
+    '- If the group asks for a facilitation, set it up here with your tools. Never ask to be added to another chat first.',
+  ].join('\n');
+}
+
 /** Does the facilitation engine drive this conversation for this agent? */
 export type EngineDrivenConversationLookup = (
   agentSlug: string,
@@ -255,6 +269,20 @@ export function wrapFacilitatorAgent(inner: ChatAgent, deps: FacilitatorAgentDep
       : disposition === 'not_set_up'
         ? facilitationNotSetUpText(deps)
         : '';
+  /**
+   * What the kernel established before the model runs, said to the model.
+   * Without it the model has to guess where it is, and in the integration
+   * run it once answered a group mention with "this is a 1:1 chat, add me to
+   * a group first" and started nothing.
+   */
+  const withGroupStatement = (input: ChatTurnInput): ChatTurnInput => {
+    if (currentEngineTurn() !== undefined) return input;
+    const statement = groupTurnStatement(input.origin?.channelType);
+    return {
+      ...input,
+      extraSystemHint: input.extraSystemHint ? `${statement}\n\n${input.extraSystemHint}` : statement,
+    };
+  };
   const ownPosts = (input: ChatTurnInput): number => {
     const { ownPostCount, agentSlug } = deps;
     if (!ownPostCount || !agentSlug || !input.origin) return 0;
@@ -281,7 +309,7 @@ export function wrapFacilitatorAgent(inner: ChatAgent, deps: FacilitatorAgentDep
       if (disposition === 'model') {
         const watch = watchesEnginePosts();
         const before = watch ? ownPosts(input) : 0;
-        const answer = await inner.chat(input);
+        const answer = await inner.chat(withGroupStatement(input));
         return watch && enginePostedSince(input, before) ? { ...answer, text: '' } : answer;
       }
       return toSemanticAnswer({ answer: textFor(disposition), toolCalls: 0, iterations: 0 });
@@ -295,7 +323,7 @@ export function wrapFacilitatorAgent(inner: ChatAgent, deps: FacilitatorAgentDep
         const watch = watchesEnginePosts();
         const before = watch ? ownPosts(input) : 0;
         let streamed = 0;
-        for await (const event of inner.chatStream(input, observer)) {
+        for await (const event of inner.chatStream(withGroupStatement(input), observer)) {
           if (event.type === 'text_delta') streamed += event.text.length;
           else if (event.type === 'text_retract') streamed = Math.max(0, streamed - event.chars);
           else if (event.type === 'done' && watch && enginePostedSince(input, before)) {
