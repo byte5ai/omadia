@@ -464,6 +464,14 @@ describe('operator agent identity routes (#914)', () => {
     assert.equal(got.identity.language, 'de-CH');
     assert.equal((await send('de-CH')).status, 200);
     assert.equal(reloads, 1, 'unchanged: no reload');
+    // A client that does not know the field (no `language` key) keeps it…
+    const untouched = await fetch(`${baseUrl}/sales/identity`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ display_name: 'Sales' }),
+    });
+    assert.equal(((await untouched.json()) as { identity: { language: string | null } }).identity.language, 'de-CH');
+    // …and only an explicit null clears it.
     const cleared = (await (await send(null)).json()) as { identity: { language: string | null } };
     assert.equal(cleared.identity.language, null);
     for (const bad of ['german', 'd', 'de_CH', 'en-']) {

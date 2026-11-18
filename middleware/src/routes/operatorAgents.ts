@@ -2518,6 +2518,11 @@ export function createOperatorAgentsRouter(
       // against it, so composing against the wrong one would emit the wrong
       // traits.
       // #1033 — one compile per family the policy names (primary first).
+      // #2043 — `language` is newer than most clients of this route. Absent
+      // leaves the stored value alone, so a client that does not know the
+      // field cannot wipe it; an explicit null clears it.
+      const language =
+        body.language === undefined ? (before?.language ?? null) : (body.language ?? null);
       // #2060 — a facilitator's identity is checked against the neutrality
       // contract before anything is stored (persona bounds, instructions).
       if (isFacilitatorKind(agent)) {
@@ -2541,7 +2546,7 @@ export function createOperatorAgentsRouter(
         instructions: body.instructions ?? null,
         accentColor: body.accent_color ?? null,
         verbosity: body.verbosity ?? null,
-        language: body.language ?? null,
+        language,
         persona,
         quality,
         composed: { text: composed.text, family, byFamily: compiled.byFamily },
@@ -2580,7 +2585,7 @@ export function createOperatorAgentsRouter(
         (before?.verbosity ?? null) !== (body.verbosity ?? null);
       // #2043 — the language reaches the built agent (its refusal text) and
       // the engine's profile read, so a change reloads like the name does.
-      const languageChanged = (before?.language ?? null) !== (body.language ?? null);
+      const languageChanged = (before?.language ?? null) !== language;
       if (
         (before?.composed.text ?? null) !== (composed.text ?? null) ||
         nameChanged ||
