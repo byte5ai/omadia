@@ -36,6 +36,23 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Custom-Pattern-Worker: eine laufende Anfrage hält den Prozess offen
+
+2026-11-18. `@omadia/plugin-privacy-guard` 0.16.1. Der Worker, der die
+Operator-Patterns abseits des Main-Threads ausführt (#1553), war immer
+`unref()`ed; offen hielt den Event-Loop nur der Budget-Timer einer Anfrage.
+Feuerte dieser Timer genau dann, wenn der Worker die Anfrage schon als fertig
+markiert, die Antwort aber noch nicht gepostet hatte, trat der Timer ab („die
+Antwort ist unterwegs“) — und ohne weiteren Handle lief der Event-Loop leer,
+bevor die Antwort ankam. Die Anfrage settled nie. Im CI-Lauf unter Last
+meldete `node:test` deshalb jeden Test in
+`test/privacyCustomTermsAndIdnum.test.ts` als „Promise resolution is still
+pending but the event loop has already resolved“. Jetzt ist der Worker
+ge-`ref()`t, solange er eine Anfrage hält, und wird erst im Leerlauf wieder
+`unref()`ed: Antwort, `error` oder `exit` kommen immer an, ein Runaway beendet
+weiterhin der Budget-Timer. Ein Regressionstest erzwingt das Zeitfenster in
+einem Kindprozess.
+
 ### Fixed — Setup-Felder des Knowledge Graph speichern ohne Crash-Loop (#1860)
 
 2026-11-17. orchestrator-extras legt mit `replace` einen Wrapper über den
