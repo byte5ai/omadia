@@ -787,27 +787,23 @@ test('legacy plugin wrapper reports a refusal as refusal, with its category only
 });
 
 /**
- * Regression: `temperature` is a hard 400 on some models, and the adapter is
- * the layer that knows the wire contract.
+ * Regression: `temperature` is a hard 400, and the adapter is the layer that
+ * knows the wire contract.
  *
- * Found when the adversarial eval ran for the first time (its API key had only
- * just been set) and crashed with "`temperature` is deprecated for this
- * model". The eval was the loud symptom; the quiet one is
- * `LlmScreener.screen()`, which sends `temperature: 0` on every inbound turn
- * and whose caller turns any exception into `unscreenable` — fail-open. With
- * the repo's own `DEFAULT_ORCHESTRATOR_MODEL` (`claude-opus-4-8`), #579's
- * inbound screening was therefore a no-op that reported no error.
- *
- * The table in `supportsTemperature` is measured, not inferred: `opus-4-6`
- * accepts the parameter and `opus-4-7` rejects it, so "newer than X" is a
- * plausible and wrong rule.
+ * Found when the adversarial eval first ran and crashed with "`temperature` is
+ * deprecated for this model" — the quiet symptom was `LlmScreener.screen()`,
+ * which sends `temperature: 0` on every inbound turn and turns any exception
+ * into `unscreenable` (fail-open). Up to API version 2023-06-01 only some
+ * models (Opus 4.7+, Sonnet 5, Fable) rejected it; on 2026-10-21 (SDK 1.x)
+ * every model rejects `temperature`, `top_p` and `top_k`, even at the default.
  */
-test('complete() drops temperature for models that reject it', async () => {
+test('complete() never sends temperature (API 2026-10-21 rejects it on every model)', async () => {
   for (const model of [
-    'claude-opus-4-7',
+    'claude-opus-4-6',
+    'claude-sonnet-4-6',
+    'claude-haiku-4-5-20251001',
     'claude-opus-4-8',
     'claude-opus-5',
-    'claude-sonnet-5',
     'claude-sonnet-5-20260101',
     'claude-fable-5-1',
     'claude-mythos-5',
@@ -825,36 +821,9 @@ test('complete() drops temperature for models that reject it', async () => {
       messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
     });
 
-    assert.equal(
-      captured.params?.['temperature'],
-      undefined,
-      `${model} must not receive a temperature`,
-    );
-  }
-});
-
-test('complete() still sends temperature for models that honour it', async () => {
-  // The other direction: a gate that dropped the parameter everywhere would
-  // pass the test above while silently removing determinism from the models
-  // that still support it.
-  for (const model of [
-    'claude-opus-4-6',
-    'claude-sonnet-4-6',
-    'claude-haiku-4-5-20251001',
-  ]) {
-    const captured: Captured = {};
-    const provider = createAnthropicProvider({
-      client: mockClient(captured, textResponse()),
-    });
-
-    await provider.complete({
-      model,
-      maxTokens: 16,
-      temperature: 0,
-      messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
-    });
-
-    assert.equal(captured.params?.['temperature'], 0, `${model} lost its temperature`);
+    for (const key of ['temperature', 'top_p', 'top_k']) {
+      assert.equal(key in (captured.params ?? {}), false, `${model} must not receive ${key}`);
+    }
   }
 });
 
