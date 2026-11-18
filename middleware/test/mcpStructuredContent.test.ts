@@ -43,7 +43,8 @@ import {
 
 // ── 1. renderToolResult golden suite ────────────────────────────────────────
 
-/** Captured from the implementation BEFORE the sidecar work. Each entry is
+/** Captured from the implementation BEFORE the sidecar work; the entries
+ *  marked #1946 were changed on purpose. Each entry is
  *  [label, result, exact expected string]. */
 const RENDER_GOLDENS: ReadonlyArray<readonly [string, unknown, string]> = [
   ['text-only', { content: [{ type: 'text', text: 'hello world' }] }, 'hello world'],
@@ -65,11 +66,27 @@ const RENDER_GOLDENS: ReadonlyArray<readonly [string, unknown, string]> = [
   ],
   ['empty content array', { content: [] }, '[]'],
   [
-    // The content-array branch wins even when structuredContent is present —
-    // an empty array renders as "[]", NOT as the structured payload.
+    // #1946 — deliberate behaviour change: content that yields no text falls
+    // back to the structured payload. This used to render as "[]", so a
+    // server returning `structuredContent` alone gave the model nothing.
     'empty content array + structuredContent',
     { content: [], structuredContent: { a: 1 } },
+    '{"a":1}',
+  ],
+  [
+    'whitespace-only text + structuredContent — structuredContent wins',
+    { content: [{ type: 'text', text: '   ' }], structuredContent: { a: 1 } },
+    '{"a":1}',
+  ],
+  [
+    'empty content array + null structuredContent — null counts as absent',
+    { content: [], structuredContent: null },
     '[]',
+  ],
+  [
+    'isError with structuredContent only keeps the Error: prefix',
+    { content: [], structuredContent: { reason: 'quota' }, isError: true },
+    'Error: {"reason":"quota"}',
   ],
   [
     // Off-spec: the MCP spec requires an object here, but hosted proxies (e.g.

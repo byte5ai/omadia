@@ -131,4 +131,81 @@ describe('ConductorWebhookRetryWorker.tick — reconcile-before-claimDue orderin
     assert.ok(claimDueCalled, 'claimDue must still run even if reconcile throws');
     assert.ok(logs.some((l) => l.includes('reconciliation pass failed')), JSON.stringify(logs));
   });
+  // --- #1704: the retry path drives attempts 2..N, so it has to be diagnosable too.
+
+  it('logs the terminal "subscription no longer exists" outcome instead of recording it silently', async () => {
+    const logs: string[] = [];
+    const failures: Array<{ id: string; error: string; nextAttemptAt: Date | null }> = [];
+    const store = {
+      claimDue: async () => [delivery('d-1', 'sub-gone')],
+      get: async () => null, // the subscription was deleted under the pending delivery
+      recordFailure: async (id: string, error: string, nextAttemptAt: Date | null) => {
+        failures.push({ id, error, nextAttemptAt });
+      },
+    } as unknown as ConductorWebhookSubscriptionStore;
+    const dispatcher = { attempt: async () => undefined } as unknown as ConductorWebhookDispatcher;
+
+    const worker = new ConductorWebhookRetryWorker({ store, dispatcher, log: (msg) => logs.push(msg) });
+    await worker.tick();
+
+    assert.equal(failures.length, 1);
+    assert.equal(failures[0]?.nextAttemptAt, null); // terminal — nothing will ever retry it
+    // The dispatcher never sees this row, so without a line here the delivery dies unlogged.
+    assert.equal(logs.length, 1, JSON.stringify(logs));
+    assert.match(logs[0] ?? '', /d-1/);
+    assert.match(logs[0] ?? '', /sub-gone/);
+    assert.match(logs[0] ?? '', /subscription no longer exists/);
+  });
+
+  it('names the undici cause in its own log lines, not a bare "fetch failed"', async () => {
+    const logs: string[] = [];
+    const transportError = new TypeError('fetch failed', {
+      cause: Object.assign(new Error('getaddrinfo ENOTFOUND doesnotexist.invalid'), { code: 'ENOTFOUND' }),
+    });
+
+    // (1) the claimDue path
+    const claimFails = {
+      claimDue: async () => {
+        throw transportError;
+      },
+    } as unknown as ConductorWebhookSubscriptionStore;
+    const w1 = new ConductorWebhookRetryWorker({
+      store: claimFails,
+      dispatcher: {} as unknown as ConductorWebhookDispatcher,
+      log: (msg) => logs.push(msg),
+    });
+    await w1.tick();
+
+    // (2) the reconcile path
+    const w2 = new ConductorWebhookRetryWorker({
+      store: { claimDue: async () => [] } as unknown as ConductorWebhookSubscriptionStore,
+      dispatcher: {} as unknown as ConductorWebhookDispatcher,
+      reconcile: async () => {
+        throw transportError;
+      },
+      log: (msg) => logs.push(msg),
+    });
+    await w2.tick();
+
+    // (3) the attempt-crashed path
+    const w3 = new ConductorWebhookRetryWorker({
+      store: {
+        claimDue: async () => [delivery('d-2', 'sub-1')],
+        get: async () => ({ id: 'sub-1', url: 'https://doesnotexist.invalid/', enabled: true }),
+      } as unknown as ConductorWebhookSubscriptionStore,
+      dispatcher: {
+        attempt: async () => {
+          throw transportError;
+        },
+      } as unknown as ConductorWebhookDispatcher,
+      log: (msg) => logs.push(msg),
+    });
+    await w3.tick();
+
+    assert.equal(logs.length, 3, JSON.stringify(logs));
+    for (const line of logs) {
+      assert.match(line, /ENOTFOUND/, `every retry-worker log must name the cause, got: ${line}`);
+      assert.match(line, /doesnotexist\.invalid/);
+    }
+  });
 });
