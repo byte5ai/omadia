@@ -672,7 +672,14 @@ participant.
   until it is resolved; withdrawing a consent before the window ends is allowed. A model's
   statement that "the group agrees" never counts. Grants of §5.11 are issued only from a
   passed consent record.
-- **Changes to the definition of done or the method:** anyone may propose. The
+- **Changes to the definition of done or the method:** anyone may propose. A proposal
+  names the steps it affects. A closed step is never re-opened: if the change affects
+  it, the group decides with the change whether that step is repeated; a repeat is a new
+  step linked to the old one, with the new method and fresh contributions, while the old
+  step and its protocol stay unchanged and its old contributions never count in the new
+  step. Results derived from the old step (decisions, assignments, action items) are
+  marked "pending repeat" and are replaced by the new step's outcome when it closes;
+  owners of items that no longer hold are told. The
   facilitator puts the proposal to the group as a consent decision: it takes effect when
   no active participant objects within the window set at start (default 12 h, never past
   the deadline), and it is announced with its new version. An objection is moderated like
@@ -1107,6 +1114,16 @@ kept compatible.
 56. **Stop with action items.** Confirmed action items exist, stop arrives during
     `concluding`, restart, clock moved past every reminder time: the result is delivered,
     no follow-up starts, no reminder is sent, the facilitation is `ended`.
+
+57. **Change after a closed vote.** The vote is closed and assignment runs; the group
+    changes the voting method: a linked repeat step opens without a restart, old votes do
+    not count, the decision and assignments derived from it are "pending repeat" until the
+    repeat closes and are then replaced; affected owners are told.
+58. **Agent disabled or deleted.** A facilitator is disabled, and another deleted, while
+    processes are in `configuring`, `active`, `concluding` and `following_up`; after a
+    restart and re-enabling: no reservation is left, no model call or invitation follows,
+    each process is `aborted` with its reason, the `system` notice appears, and nothing
+    resumes.
 
 ## 10. Work breakdown
 
