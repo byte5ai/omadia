@@ -17,6 +17,7 @@
 import { formatPrincipal, makePrincipal, type ChatTurnInput } from '@omadia/channel-sdk';
 import type { NativeToolCallContext } from '@omadia/plugin-api';
 
+import { channelConversationId } from './channelConversationId.js';
 import { currentEngineTurn, processWideStore } from './facilitatorAgent.js';
 import { turnContext } from './turnContext.js';
 
@@ -25,21 +26,6 @@ const toolCalls = processWideStore<NativeToolCallContext>('omadia.toolCallContex
 /** The context of the turn this code runs in, if it runs in one. */
 export function currentToolCallContext(): NativeToolCallContext | undefined {
   return toolCalls.getStore() ?? turnContext.current()?.toolCall;
-}
-
-/**
- * The channel-native conversation id of a turn. Channels fold their own
- * prefix into the session scope (`<channelId>::<id>`, `teams-<id>`); a tool
- * needs the id the channel itself uses.
- */
-export function channelConversationId(input: ChatTurnInput): string | undefined {
-  const scope = input.origin?.scope;
-  if (!scope || scope.kind !== 'conversation') return undefined;
-  const raw = scope.conversationId;
-  const separatorAt = raw.indexOf('::');
-  if (separatorAt >= 0) return raw.slice(separatorAt + 2);
-  const prefix = `${input.origin!.channelType}-`;
-  return raw.startsWith(prefix) ? raw.slice(prefix.length) : raw;
 }
 
 function principalOf(input: ChatTurnInput): string | undefined {

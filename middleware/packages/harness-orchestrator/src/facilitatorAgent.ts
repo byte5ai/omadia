@@ -21,6 +21,7 @@
  * logged as a session and not captured; nothing was learned.
  */
 
+import { conversationIdCandidates } from './channelConversationId.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 
 import {
@@ -198,24 +199,6 @@ export interface FacilitatorAgentDeps {
    */
   readonly ownPostCount?: OwnPostCountLookup;
   readonly log?: (message: string) => void;
-}
-
-/**
- * The conversation ids a turn's origin may stand for. Channels fold their own
- * prefix into the session scope (`teams-<id>`, `<channelId>::<id>`), while a
- * subscription is keyed by the channel-native id, so all readings are tried.
- */
-export function conversationIdCandidates(input: ChatTurnInput): readonly string[] {
-  const scope = input.origin?.scope;
-  if (!scope || scope.kind !== 'conversation') return [];
-  const raw = scope.conversationId;
-  const prefix = `${input.origin!.channelType}-`;
-  const separatorAt = raw.indexOf('::');
-  return [
-    raw,
-    ...(raw.startsWith(prefix) ? [raw.slice(prefix.length)] : []),
-    ...(separatorAt >= 0 ? [raw.slice(separatorAt + 2)] : []),
-  ];
 }
 
 type TurnDisposition = 'model' | 'refuse' | 'engine_driven' | 'not_set_up';

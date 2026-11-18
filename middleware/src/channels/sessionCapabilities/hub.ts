@@ -69,6 +69,8 @@ function isText(value: unknown, max = MAX_ID_LENGTH): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= max;
 }
 
+const MAX_REFUSALS_REMEMBERED = 500;
+
 function notReady(code: string, message: string): ChannelReadinessReport {
   return {
     ready: false,
@@ -83,6 +85,7 @@ export class SessionCapabilityHub {
   private snapshotListeners: Listener<SessionCapabilitySnapshot>[] = [];
   private eventListeners: Listener<SessionEventRecord>[] = [];
   private readonly seen = new Set<string>();
+  private readonly refusalsLogged = new Set<string>();
   private readonly log: (message: string) => void;
   private readonly now: () => Date;
 
@@ -102,7 +105,9 @@ export class SessionCapabilityHub {
     const provider = this.deps.readiness.get(channelType);
     if (!provider) return undefined;
     try {
-      return await provider.check(conversationId, { asChannelKey: channelKey });
+      const report = await provider.check(conversationId, { asChannelKey: channelKey });
+      this.logRefusal(channelType, conversationId, channelKey, report);
+      return report;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.log(`[readiness] ${channelType} check for ${conversationId} threw: ${message}`);
@@ -129,6 +134,32 @@ export class SessionCapabilityHub {
     return notReady(
       'unsupported_conversation',
       `channel '${request.channelType}' does not declare delivery of all messages (it registered no readiness provider)`,
+    );
+  }
+
+  /**
+   * A refused readiness check says why, once (#2043 D13). The engine turns
+   * "not ready" into a sentence for the group; without this line the cause
+   * (at the rollout: a Graph 400 for an id that was not a conversation id)
+   * existed nowhere an operator could read it. Once per conversation and set
+   * of codes, so a facilitator that is asked again does not fill the log.
+   */
+  private logRefusal(
+    channelType: string,
+    conversationId: string,
+    channelKey: string,
+    report: ChannelReadinessReport,
+  ): void {
+    if (report.ready) return;
+    const missing = report.missing ?? [];
+    const codes = missing.map((entry) => entry.code).join(',') || 'not_ready';
+    const key = `${channelType}\n${conversationId}\n${channelKey}\n${codes}`;
+    if (this.refusalsLogged.has(key)) return;
+    if (this.refusalsLogged.size >= MAX_REFUSALS_REMEMBERED) this.refusalsLogged.clear();
+    this.refusalsLogged.add(key);
+    const detail = missing.map((entry) => `${entry.code}: ${entry.message}`).join('; ') || 'no cause given';
+    this.log(
+      `[readiness] ${channelType} conversation '${conversationId}' is not ready for identity '${channelKey}' (${detail})`,
     );
   }
 
