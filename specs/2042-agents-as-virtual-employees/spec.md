@@ -423,8 +423,15 @@ enforced technically, not by convention: the plugin's model accessor (`ctx.llm`)
 call only with a valid execution scope and routes it through the agent turn; an archetype
 plugin's outbound network is limited to its manifest allow-list and never includes model
 provider endpoints. Today the global `fetch` is still reachable from plugins
-(`middleware/src/platform/pluginContext.ts:555`) and `ctx.llm` calls the provider directly
-(`pluginContext.ts:1822`); sandboxing outbound access for archetype plugins is therefore a
+(`middleware/src/platform/pluginContext.ts:555`), `ctx.llm` calls the provider directly
+(`pluginContext.ts:1822`), and the kernel publishes raw model services that a plugin can
+obtain by declaring them (`serviceRegistry.provide('anthropicClient', client)`,
+`middleware/src/index.ts:863`; the `llm` service; granted on declaration,
+`middleware/src/platform/pluginServiceGrants.ts:442`). Therefore: raw model clients and
+provider pools are never granted to plugins; model access for any plugin goes only
+through a kernel-checked execution context: for archetype plugins the agent turn with an
+execution scope, for capability plugins the calling agent's envelope (its model policy,
+privacy shield and budget). Sandboxing outbound access for archetype plugins is a
 prerequisite for shipping one (#2088).
 
 An agent has exactly one archetype, set at creation; it never switches. Uninstalling an
@@ -838,8 +845,11 @@ Each existing element keeps its purpose, moved out of the message body:
     user V selects C: U's unaddressed messages reach B, V's reach C, everyone else's reach
     A, also after a restart.
 37. **Enforcement boundary.** A test archetype plugin that tries a model call through
-    `ctx.llm` without a scope, and one through a direct HTTP request to a model provider,
-    makes no model call in either case, and none with the kill switch on.
+    `ctx.llm` without a scope, through the `llm`, `anthropicClient` or provider-pool
+    services obtained via `ctx.services`, or through a direct HTTP request to a model
+    provider makes no model call in any case, none after its budget is spent and none with
+    the kill switch on; a test capability plugin's model call is charged to and limited by
+    the calling agent's envelope.
 38. **Disclosure level none.** Two questions, one about information that exists but is
     withheld at level `none`, one about information that does not exist: the visible
     answers do not allow telling the cases apart.

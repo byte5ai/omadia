@@ -44,7 +44,7 @@ cannot safely own.
   | Scope | Until | Allowed targets |
   |---|---|---|
   | `active` | the facilitation's deadline | home conversation, linked session conversations in `scheduled`, `live` or `confirming`, private reminders to participants |
-  | `closing` (one per closing event: each session close, the facilitation's close or abort; own id) | all essential messages of that event (session protocol, result, abort report) confirmed, at most 7 days after the event | home conversation, the session conversations of this facilitation, the protocol recipients of §5.8 |
+  | `closing` (one per closing event: each session close, entering `concluding`, abort; own id) | all essential messages of that event (session protocol, result, abort report) confirmed, at most 7 days after the event | home conversation, the session conversations of this facilitation, the protocol recipients of §5.8 |
   | `scheduling` | the agreed follow-up meeting's invitations are sent or its date passed | the invitees confirmed by group consent |
   | `follow_up` | the follow-up deadline | the home conversation and the owners of open action items |
 
@@ -267,8 +267,12 @@ States exist on three levels, each with its own rules:
   comes from the inbound turn.
 - **active:** every inbound human message is processed in the facilitation's own model
   context (§5.3); the scheduler handles time-based events (§5.6).
-- **concluding:** the definition of done is met. Contribution and reminder triggers of
-  the active phase are cancelled in the same transaction. The facilitator posts the final
+- **concluding:** the definition of done is met (also when it is evaluated exactly at the
+  deadline). In one transaction: contribution and reminder triggers of the active phase are
+  cancelled, an immutable result record is written, its outbox entries are created and a
+  `closing` scope for this result is opened (7 days from entering `concluding`), so the
+  result is published even after the deadline or a failed send, without re-opening
+  moderation. The facilitator posts the final
   summary (decisions, next steps with owners and due dates, open points). A group
   confirmation is asked only if the method or the agreed definition of done requires it
   (for example consent, a free-text definition of done, or next steps that were not
@@ -336,10 +340,17 @@ States exist on three levels, each with its own rules:
   facilitation, or because only one process can accept it. If several match, the
   facilitator asks once which one is meant; nothing changes until it is clear.
 - **Authorship and content come only from authenticated inbound events.** A contribution is
-  recorded by `record_contribution(messageId, revision, payload)`: the engine takes author,
-  tenant, channel, message id, revision, timestamp **and the original text** from the stored
-  inbound event, never from model arguments. For the announced format the engine parses
-  the original text deterministically and refuses a payload that differs from the parse.
+  recorded by `record_contribution(eventId, revision, payload)`: the engine takes the
+  authenticated actor, tenant, channel, event id, revision, timestamp **and the original
+  event content** from the stored inbound event (#2089), never from model arguments. Event
+  kinds: a text message (original text), a card or poll answer (structured value with the
+  card, the proposal id and its version), a reaction (emoji with its target message). For
+  text in the announced format the engine parses the original text deterministically; for
+  card and poll answers it uses the stored structured value; it refuses a payload that
+  differs, never synthesises text from a structured answer, and ignores an answer to an
+  outdated proposal version. A reaction confirms an interpretation only if it is the
+  author's own reaction on the facilitator's confirmation question for exactly that
+  interpretation.
   A payload the model interpreted from free text is stored as `ambiguous` with the
   message's revision and counts only after its author confirms exactly that
   interpretation; a confirmation of an outdated revision is refused. Which messages are accepted in which phase is defined by the input matrix
@@ -826,6 +837,12 @@ kept compatible.
     issued. Two sessions close during the same active facilitation: each protocol is sent
     under its own `closing` scope with its own 7-day limit, independently, also across a
     restart.
+32. **Result at the deadline.** A valid result evaluated exactly at the deadline, and a
+    failed send shortly before the deadline followed by a restart after it: the result is
+    published, no moderation re-opens, no abort is needed.
+33. **Structured inputs.** A card answer without text counts; a manipulated answer value is
+    refused; another person's reaction confirms nothing; an answer to an outdated proposal
+    version changes nothing.
 
 ## 10. Work breakdown
 
