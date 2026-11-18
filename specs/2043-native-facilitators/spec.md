@@ -44,7 +44,7 @@ cannot safely own.
   | Scope | Until | Allowed targets |
   |---|---|---|
   | `configuring` | the handshake is posted (atomic switch to `active`), at most 72 h after the start request (configurable); then `aborted` with a short note | home conversation, direct replies to the initiator |
-  | `active` | the facilitation's deadline | home conversation, linked session conversations in `scheduled`, `live` or `confirming`, private reminders to participants |
+  | `active` | the facilitation's deadline | home conversation, linked session conversations in `scheduled`, `live` or `confirming`, private reminders to participants, private answers to a participant's status request |
   | `closing` (one per closing event: each session close, entering `concluding`, abort; own id) | three bounded parts, all inside one scope: (1) delivery of the event's essential message (session summary, result, abort report), at most 7 days after the event; (2) a group confirmation the event requires, starting at confirmed delivery, for its window; (3) protocol dispatch of the then final protocol (§5.11), at most 7 days after it became final; the scope ends when the last part is done; absolute limit: event + 14 days + one confirmation window | home conversation, the session conversations of this facilitation, the protocol recipients of §5.8 |
   | `scheduling` | the agreed follow-up meeting's invitations are sent or its date passed | the invitees confirmed by group consent |
   | `follow_up` | the follow-up deadline | the home conversation and the owners of open action items |
@@ -389,6 +389,14 @@ States exist on three levels, each with its own rules:
   | Completion message of an action-item owner: in the home conversation, by card, or as a direct reply to that owner's reminder (bound to the owner, the reminder and the facilitation) | refused | refused | refused | refused | accepted |
   | Change proposal to the definition of done or method | accepted | accepted | accepted | refused | refused |
   | Status request, stop | accepted | accepted | accepted | accepted | accepted in the home conversation and as a reply to a reminder; stop ends only this facilitation's follow-up |
+  | Status request in a private chat with the facilitator, from an active participant | accepted | accepted | accepted | accepted | accepted |
+
+  A private message to the facilitator reaches a facilitation only if its author is an
+  active participant of exactly one running facilitation of this facilitator (otherwise
+  one question which one is meant); only a status request or a reply to a reminder is
+  processed there, answered in that private chat with that facilitation's status only.
+  Anything else in the private chat is an ordinary agent turn outside the facilitation
+  (§5.2 `invited`). A person who is not an active participant gets no status.
 - **Edits:** an edited message produces a new revision; the latest revision received
   before its step closes counts, and the facilitator confirms the change to its author.
 - **Effect:** a contribution in the announced format counts at once. A contribution the
@@ -441,8 +449,9 @@ What the engine keeps deterministic, and the model never computes:
   confirms the account of the result, never a person's acceptance of a task: a nomination
   the named person has not accepted stays an open point ("proposed for Anna, not
   accepted"), gets no reminders and starts no follow-up; only that person's own
-  authenticated acceptance turns it into an action item, also later while the
-  facilitation is `following_up`.
+  authenticated acceptance turns it into an action item, and only until the result is
+  frozen at `concluding`. After that the nomination stays an open point in the protocol;
+  the facilitation does not track it (people can start a new facilitation for it).
 
 ### 5.5 Decision methods (v1)
 
@@ -533,6 +542,13 @@ participant.
 - At the deadline the engine closes with the state at that moment: a result if the
   definition of done allows it, otherwise an honest abort report. Nothing ends silently:
   a failed step, an exhausted retry budget or TTL expiry produces an abort report.
+- **Two kinds of outbox entries.** *State-bound messages* (reminders, prompts, status
+  posts) carry the required phase and `state_version`; a send re-checks both, and a stale
+  entry is dropped or recomputed from the current state, never sent. *Closing documents*
+  (session summary or protocol, result, abort report) are immutable: they carry their
+  closing event id, document version and `closing` scope instead, and are retried while
+  that scope is valid, whatever the moderation's current `state_version`; recipients are
+  re-checked at every send (§5.8).
 - **Concurrency:** contribution, phase and definition-of-done changes are atomic
   transactions that bump `state_version`. Inbound messages are idempotent by message id
   and revision. Scheduler jobs run under a lease.
@@ -597,7 +613,7 @@ participant.
 | Participants who left | What was posted while they were members; nothing after. |
 | Initiator | The same as participants, plus the report, as long as they are an active participant. Leaving the conversation ends the initiator role: later contributions and the report are no longer sent to them; the group is told. |
 | Session-only participants | The session agenda and what was posted in the linked session conversation; the session summary. |
-| Confirmed stakeholders | Only the confirmed protocol and next steps sent to them (§5.11), filtered per recipient by discretion (AVE §5.11): the filter works on whole, separately labelled parts of the protocol (decisions, next steps, contributions, summaries); a model-written summary carries all labels of its turn, so if the recipient may not know one of them, the summary is withheld as a whole or regenerated from permitted parts only. A note that something was left out appears only where the recipient's disclosure level is at least `existence`; with `none` there is neither content nor a hint. Recipients are re-checked at every send; a participant who left is no longer a recipient. |
+| Confirmed stakeholders | Only the final protocol with its result status and next steps sent to them (§5.11), filtered per recipient by discretion (AVE §5.11): the filter works on whole, separately labelled parts of the protocol (decisions, next steps, contributions, summaries); a model-written summary carries all labels of its turn, so if the recipient may not know one of them, the summary is withheld as a whole or regenerated from permitted parts only. A note that something was left out appears only where the recipient's disclosure level is at least `existence`; with `none` there is neither content nor a hint. Recipients are re-checked at every send; a participant who left is no longer a recipient. |
 | Other users | Nothing. |
 | Operator | Facilitation metadata (facilitator, conversation, phase, counts, timestamps). Contents and protocol only through an audited access with a stated reason. |
 
@@ -633,8 +649,14 @@ one facilitation:
 
 | Capability | Allowed | Never |
 |---|---|---|
-| **Protocol dispatch** | Send the confirmed protocol and the agreed next steps of this facilitation to its participants and confirmed stakeholders, through the channel or mail. | Send anything else, to anyone else; read mailboxes. |
+| **Protocol dispatch** | Send the final protocol of this facilitation, visibly marked with its result status (published, confirmed, not confirmed with the objection, or abort report), and its agreed next steps to its participants and confirmed stakeholders, through the channel or mail. | Send anything else, to anyone else; read mailboxes. |
 | **Follow-up scheduling** | Read free/busy (no event details) of participants and confirmed stakeholders for the follow-up meetings the group agreed; create the invitations with agenda and protocol link. | Read calendar contents; change or cancel other events; invite people the group did not agree on. |
+
+**Result status** of a final protocol: `published` (no confirmation required), `confirmed`
+(consent window passed without a standing objection), `not confirmed` (standing objection,
+named in the protocol) or `aborted` (abort report). A protocol is *final* when its status is
+set; *dispatchable* means final and inside its `closing` scope. All four are sent to the
+same recipients (§5.8), each visibly marked; nothing is ever marked confirmed that was not.
 
 Both run on the instance's existing integrations (for Microsoft 365 the M365 connector)
 under facilitation-scoped grants with an explicit lifecycle, independent of whether action
@@ -817,7 +839,7 @@ kept compatible.
     facilitator is refused; a 1:1 request for help gets the refusal; the same person in
     two facilitations is never referred to across them.
 11. **Visibility.** A user who is neither participant nor confirmed stakeholder cannot read
-    a protocol; a stakeholder receives only the confirmed protocol, filtered by
+    a protocol; a stakeholder receives only the final protocol with its result status, filtered by
     discretion; a participant who left receives nothing sent after leaving; operator
     content access is audited.
 12. **No silent end.** A failed step or reached TTL produces an abort report in the group;
@@ -924,7 +946,19 @@ kept compatible.
     taking a reservation.
 37. **Acceptance stays personal.** The group confirms a final summary (or stays silent)
     while a named owner has not accepted their task: the task stays an open point without
-    reminders; the owner's later authenticated acceptance turns it into an action item.
+    reminders, also after a restart; an acceptance by that owner before `concluding` turns
+    it into an action item; an acceptance after the result is frozen changes nothing and
+    the facilitator says so once; with only unaccepted nominations the facilitation goes
+    from `closed` to `ended`.
+
+38. **Closing documents survive later changes.** A session protocol send fails at
+    `state_version` 10; contributions and a phase change follow; after a restart the same
+    protocol version is delivered; a reminder computed before the changes is not sent.
+39. **Private status and result status.** An active participant asks for the status in a
+    private chat without a prior reminder and gets it; a non-participant gets nothing; a
+    participant of two running facilitations is asked which one. Stakeholders receive a
+    published, a confirmed, a not-confirmed and an aborted protocol, each marked with
+    its status.
 
 ## 10. Work breakdown
 

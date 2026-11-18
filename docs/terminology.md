@@ -34,7 +34,7 @@ answers. There is no orchestrator agent.
 | **Operator** | Administrator | The person who runs an omadia instance and configures agents, plugins, permissions and defaults. | Not byte5 (byte5 maintains the software, the operator runs the instance). |
 | **User** | Nutzer | A human who works with agents through a channel. | Not an agent. |
 | **Initiator** | Initiator | The person who starts a facilitation in a group. | Not the facilitator's owner; the group owns the process. |
-| **Participant**, **stakeholder** | Teilnehmer, Stakeholder | In a facilitation: the people who take part; people who only receive the confirmed protocol and next steps. | |
+| **Participant**, **stakeholder** | Teilnehmer, Stakeholder | In a facilitation: the people who take part; people who only receive the final protocol and next steps. | |
 
 ## Inside an agent
 
@@ -86,7 +86,7 @@ answers. There is no orchestrator agent.
 | **Archetype plugin** | Archetyp-Plugin | Adds a new agent archetype to the system (manifest kind `archetype`), for example `omadia-agent-facilitator`. The operator then creates agents of that archetype; the kernel runs them under all agent rules. Listed in its own hub category; installing it needs an explicit confirmation. | Not a plugin that is attached to an agent. |
 | **Capability** | Fähigkeit | Something an agent may be granted: a tool, an integration scope (read or write), a skill. | |
 | **Grant** | Freigabe | The permission that gives one agent one capability (or one consultation). | |
-| **Model gateway** | Modell-Gateway | The kernel service through which every model call runs (operations `complete`, `embed`, `transcribe`); only it calls provider plugins, and every call needs an execution context (agent turn, execution scope, inbound processing or maintenance run). | Not a provider plugin. |
+| **Model gateway** | Modell-Gateway | The kernel service through which every model call runs (operations `complete`, `embed`, `transcribe`, `run_loop`); only it calls provider plugins, and every call needs an execution context (agent turn, execution scope, inbound processing or maintenance run). | Not a provider plugin. |
 | **Execution scope** | Ausführungsfreigabe | A bounded authorization the kernel issues for the actions of an archetype plugin's process (`configuring`, `active`, `closing`, `scheduling`, `follow_up`), each with a deadline, a budget and the targets it may send to. | Not a grant, not an envelope. |
 | **Reservation** | Reservierung | The exclusive hold of one running process (a facilitation or an agent discussion) on a conversation; at most one per conversation; released by the process itself. | Not a binding; never removes one. |
 | **Follow-up permission** | Nachverfolgungsberechtigung | The non-exclusive permission a facilitation keeps after its reservation is released: remind owners of open action items and post status in its home conversation until `ended`. | Not a reservation; another process may hold the conversation meanwhile. |
@@ -136,6 +136,7 @@ answers. There is no orchestrator agent.
 | **Discussion step** | Diskussionsschritt | A step of kind `discuss` in which the participants discuss a topic under moderation. | Not an agent discussion. |
 | **Format** | Format | An agenda template for a kind of process (decision, prioritisation, assignment, idea collection, retrospective, alignment). | |
 | **Decision method** | Entscheidungsverfahren | How a step decides (ranked vote, single choice, approval, consent, assignment), counted deterministically. | |
+| **Result status** | Ergebnisstatus | How a facilitation's final protocol ended: `published` (no confirmation required), `confirmed`, `not confirmed` (standing objection) or `aborted`. Always shown with the protocol. | "Final" means the status is set; it does not mean confirmed. |
 | **Definition of done** | Definition of Done | When the facilitation has reached its goal; versioned, changed only by group consent. | |
 
 ## Retired terms

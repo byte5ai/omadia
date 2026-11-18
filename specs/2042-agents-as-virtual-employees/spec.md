@@ -445,8 +445,8 @@ sandboxing outbound access (the global `fetch`, `pluginContext.ts:555`) is a pre
 for shipping archetype plugins and for enforcing this for capability plugins (#2088,
 #2053).
 
-The gateway offers three operations: `complete` (text generation), `embed` and
-`transcribe` (batch and realtime). Today's embedding and transcription adapters
+The gateway offers the operations `complete` (text generation), `embed`,
+`transcribe` (batch and realtime) and `run_loop` (below). Today's embedding and transcription adapters
 (`middleware/packages/embedding-adapter-openai`, `transcription-adapter-openai`, both kind
 `extension` with their own clients) become `provider` plugins: they keep their
 credentials and clients, and only the gateway calls them. Every call runs in exactly one
@@ -461,6 +461,23 @@ execution context, which decides whose budget it uses:
 
 Semantic search, re-indexing and transcription keep working with the lock in place; only
 their direct paths to the provider go.
+
+**Provider-run loops.** The `claude-cli` provider runs the model and tool loop inside the
+CLI (`middleware/packages/harness-orchestrator/src/cliChatAgent.ts`, chosen in
+`buildOrchestrator.ts:924`); its purpose is running agents on a Claude subscription with
+the CLI's own loop. It stays, as the gateway's fourth operation `run_loop`, which only a
+provider plugin may offer and only the agent runtime may call inside an agent turn. Its
+controls are today's spawn gate, made mandatory: built-in CLI tools off and only the
+kernel's loopback MCP server allowed (`cliSpawnGate.ts`: `--tools ""`,
+`--disallowedTools`, `--strict-mcp-config`), so every tool call goes through the kernel's
+tool dispatch with the agent's grants and the privacy shield
+(`toolDispatchService.ts`); the prompt and replayed context are masked before spawn
+(`maskUserPrompt`); the agent's model policy must allow the provider; the turn reserves
+its budget before spawn (a turn that cannot reserve it does not start) and is killed at
+its deadline, on idle timeout or on the kill switch; reported usage is settled against the
+reservation afterwards. A CLI that
+starts without the loopback server, or with any other tool, is refused (as today,
+`cliChatAgent.ts:503`).
 
 An agent has exactly one archetype, set at creation; it never switches. Uninstalling an
 archetype plugin disables its agents and keeps their records; it never converts them to
@@ -883,7 +900,9 @@ Each existing element keeps its purpose, moved out of the message body:
     through the gateway. With the lock in place, semantic search, the embedding backfill
     (as a maintenance run, stopped at its budget) and the transcription of a voice message
     work through the gateway; the embedding and transcription adapters' direct clients are
-    reachable only from the gateway; a maintenance run calling `complete` is refused.
+    reachable only from the gateway; a maintenance run calling `complete` is refused; an
+    agent on `claude-cli` uses its granted tools through `run_loop`, a tool it lacks is
+    refused, a turn without budget does not start, and a running turn stops at its deadline and the kill switch.
 38. **Disclosure level none.** Two questions, one about information that exists but is
     withheld at level `none`, one about information that does not exist: the visible
     answers do not allow telling the cases apart.
