@@ -6,6 +6,9 @@ import type {
   ChannelUserRef,
   ConversationMembershipEvent,
   ConversationMessageEvent,
+  ChannelReadinessProvider,
+  MeetingSourceProvider,
+  SessionEvent,
   ConversationRosterProvider,
   PeopleDirectoryProvider,
   ConversationSendProvider,
@@ -23,7 +26,11 @@ import type { ConversationRosterRegistry } from './rosterRegistry.js';
 import type { PeopleDirectoryRegistry } from './peopleDirectoryRegistry.js';
 import type { ConversationEventHub } from './conversationEventHub.js';
 import type { TargetedSendRegistry } from './targetedSendRegistry.js';
+import type { SessionCapabilitySnapshot } from '@omadia/plugin-api';
+
 import type { ConversationMessageHub } from './conversationMessages/hub.js';
+import type { SessionCapabilityHub } from './sessionCapabilities/hub.js';
+import type { ChannelProviderRegistry } from './sessionCapabilities/providerRegistry.js';
 import type { ConversationSendRegistry } from './conversationSendRegistry.js';
 
 /**
@@ -158,6 +165,11 @@ export interface CreateCoreApiOptions {
    * undefined, so an adapter's mention gate always applies.
    */
   conversationMessages?: Pick<ConversationMessageHub, 'emit' | 'isSubscribed'>;
+  /** #2043 — readiness providers and meeting sources, same lifecycle as the
+   *  roster registry; and where pushed snapshots and session events go. */
+  readinessProviders?: ChannelProviderRegistry<ChannelReadinessProvider>;
+  meetingSources?: ChannelProviderRegistry<MeetingSourceProvider>;
+  sessionCapabilities?: Pick<SessionCapabilityHub, 'emitSnapshot' | 'emitSessionEvent'>;
   /**
    * #1086 — routines principal producer. Present only when the routines
    * feature is wired (requires Postgres); absent leaves turns context-free,
@@ -351,6 +363,28 @@ export function createCoreApi(opts: CreateCoreApiOptions): CoreApi {
       } catch {
         return false;
       }
+    };
+  }
+  if (opts.readinessProviders) {
+    const readiness = opts.readinessProviders;
+    api.registerReadinessProvider = (channelId: string, provider: ChannelReadinessProvider): void => {
+      readiness.register(channelId, provider);
+    };
+  }
+  if (opts.meetingSources) {
+    const meetingSources = opts.meetingSources;
+    api.registerMeetingSourceProvider = (channelId: string, provider: MeetingSourceProvider): void => {
+      meetingSources.register(channelId, provider);
+    };
+  }
+  if (opts.sessionCapabilities) {
+    const capabilities = opts.sessionCapabilities;
+    // Fire-and-forget by contract: a malformed push is logged and dropped.
+    api.emitSessionCapabilities = (snapshot: SessionCapabilitySnapshot): void => {
+      capabilities.emitSnapshot(snapshot);
+    };
+    api.emitSessionEvent = (event: SessionEvent): void => {
+      capabilities.emitSessionEvent(event);
     };
   }
   if (opts.conversationSends) {

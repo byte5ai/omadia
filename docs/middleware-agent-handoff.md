@@ -9547,6 +9547,36 @@ als Per-Caller-Fassade, damit der Kernel weiß, welches Plugin ruft).
   Entscheidung des Operators. Die Engine wird nie per Default an den
   Standard-Agenten gehängt und lässt sich keinem Standard-Agenten granten.
 
+### Readiness, Session-Capabilities, Meeting-Lifecycle
+
+Code: `middleware/src/channels/sessionCapabilities/` (`providerRegistry.ts`,
+`hub.ts`, `services.ts`, `wiring.ts`). Funktioniert ohne Datenbank; nur die
+Pushes hängen an Message-Subscriptions.
+
+- **Registries:** ein Provider pro Kanaltyp, Eigentümer ist das registrierende
+  Kanal-Plugin, bei Deaktivierung verworfen (wie die Roster-Registry).
+  `CoreApi.registerReadinessProvider` / `registerMeetingSourceProvider`.
+- **`channelReadiness.check`** fragt den Provider mit der eigenen Identität
+  des Agents. Ohne Identität `no_identity`; ohne Provider `ready: true` mit
+  `verified: false`; ein werfender Provider wird `graph_error`, nie „ready“.
+  Der Report entscheidet auch `conversationMessages.subscribe` (`not_ready`).
+  Codes: siehe `ChannelReadinessCode` in plugin-api.
+- **`channelReadiness.repairConsent`** reicht an den Provider durch
+  (`upgraded` | `not_needed` | `failed` mit Code, z. B. `graph_forbidden`);
+  ohne Provider-Methode `failed / unsupported`.
+- **`sessionCapabilities.getSnapshot`** liefert den Snapshot der Meeting-Source
+  oder die Chat-Baseline (Text rein, Text raus). Der Kernel wartet nicht auf
+  einen Push, er liest bei Bedarf.
+- **Pushes:** `CoreApi.emitSessionCapabilities(snapshot)` und
+  `CoreApi.emitSessionEvent(event)` (`session_started`, `session_ended`,
+  `participant_joined`, `participant_left`). Zustellung über `onChange` /
+  `onSessionEvent` nur an die Engine, deren Agent die Konversation abonniert
+  hat; Teilnehmer tragen `principalId`; Duplikate mehrerer Bots werden über ein
+  begrenztes In-Memory-Set entfernt; gespeichert wird nichts.
+- **Teams-App-Paket:** Version `1.<TEMPLATE_REVISION>.<Identity-Revision>`
+  (`src/services/teamsAppPackageAssets.ts`); Graph-Rechte der Instanz-App für
+  Readiness und Reparatur stehen in `docs/teams-multi-agent-identities.md` §2.4.
+
 ### Offen
 
 - Der allgemeine Orchestrator-System-Prompt (Memory-Konventionen,

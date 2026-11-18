@@ -8,7 +8,11 @@ import type { ConversationMembershipEvent } from './membershipEvent.js';
 import type { TargetedSendProvider } from './targetedSend.js';
 import type { ConversationSendProvider } from './conversationSend.js';
 import type { ConversationMessageEvent } from './conversationMessage.js';
-import type { ChannelReadinessProvider, MeetingSourceProvider } from './sessionCapabilities.js';
+import type {
+  ChannelReadinessProvider,
+  MeetingSourceProvider,
+  SessionEvent,
+} from './sessionCapabilities.js';
 import type { SessionCapabilitySnapshot } from '@omadia/plugin-api';
 
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH';
@@ -263,4 +267,11 @@ export interface CoreApi {
    * available). Optional — feature-detect. Fire-and-forget.
    */
   emitSessionCapabilities?(snapshot: SessionCapabilitySnapshot): void;
+
+  /**
+   * Report a meeting lifecycle event: started, ended, a participant joined or
+   * left (#2043). Optional — feature-detect. Fire-and-forget; emit every
+   * event, the kernel drops what no subscribed engine listens for.
+   */
+  emitSessionEvent?(event: SessionEvent): void;
 }

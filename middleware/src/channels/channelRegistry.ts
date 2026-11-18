@@ -89,6 +89,9 @@ export interface ChannelRegistryDeps {
   peopleDirectories?: PeopleDirectoryRegistry;
   targetedSends?: TargetedSendRegistry;
   conversationSends?: ConversationSendRegistry;
+  /** #2043 — readiness providers and meeting sources, dropped the same way. */
+  readinessProviders?: { unregisterChannel(channelId: string): void };
+  meetingSources?: { unregisterChannel(channelId: string): void };
 }
 
 export class DefaultChannelRegistry implements ChannelRegistry {
@@ -242,6 +245,8 @@ export class DefaultChannelRegistry implements ChannelRegistry {
     this.deps.peopleDirectories?.unregisterChannel(agentId);
     this.deps.targetedSends?.unregisterChannel(agentId);
     this.deps.conversationSends?.unregisterChannel(agentId);
+    this.deps.readinessProviders?.unregisterChannel(agentId);
+    this.deps.meetingSources?.unregisterChannel(agentId);
     // Drop the cached ChannelPlugin implementation BEFORE the rest of
     // teardown so an immediately-following re-activate (upgrade flow)
     // can never observe the stale module. Without this, the resolver's

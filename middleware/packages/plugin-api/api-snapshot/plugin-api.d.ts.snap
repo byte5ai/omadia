@@ -2847,8 +2847,9 @@ loadSessionBriefing(input: LoadSessionBriefingInput): Promise<SessionBriefingRes
 // ===== sessionCapabilities.d.ts =====
 export declare const CHANNEL_READINESS_SERVICE_NAME = "channelReadiness";
 export declare const SESSION_CAPABILITIES_SERVICE_NAME = "sessionCapabilities";
+export type ChannelReadinessCode = 'no_identity' | 'app_not_installed' | 'consent_missing' | 'cannot_post' | 'graph_forbidden' | 'graph_error' | 'graph_unavailable' | 'team_unknown' | 'unsupported_conversation' | 'package_outdated';
 export interface ChannelReadinessIssue {
-code: string;
+code: ChannelReadinessCode | (string & {});
 message: string;
 }
 export interface ChannelReadinessReport {
@@ -2857,13 +2858,27 @@ installed: boolean;
 canReadAllMessages: boolean;
 canPost: boolean;
 missing: readonly ChannelReadinessIssue[];
+verified?: boolean;
 }
-export interface ChannelReadinessService {
-check(request: {
+export interface ChannelReadinessRequest {
 agentSlug: string;
 channelType: string;
 conversationId: string;
-}): Promise<ChannelReadinessReport>;
+}
+export type ChannelConsentRepairOutcome = {
+outcome: 'upgraded';
+installationId?: string;
+permissions?: readonly string[];
+} | {
+outcome: 'not_needed';
+} | {
+outcome: 'failed';
+code: ChannelReadinessCode | 'unsupported' | (string & {});
+message: string;
+};
+export interface ChannelReadinessService {
+check(request: ChannelReadinessRequest): Promise<ChannelReadinessReport>;
+repairConsent?(request: ChannelReadinessRequest): Promise<ChannelConsentRepairOutcome>;
 }
 export type SessionInputCapability = 'text' | 'message_edits' | 'reactions' | 'card_answers' | 'presence' | 'hand_raise' | 'transcribed_speech' | 'shared_documents';
 export type SessionOutputCapability = 'text' | 'mentions' | 'cards' | 'polls' | 'private_messages' | 'pinned_surface' | 'voice' | 'screen';
@@ -2884,6 +2899,22 @@ conversationId: string;
 sessionRef?: string;
 }): Promise<SessionCapabilitySnapshot>;
 onChange(agentSlug: string, handler: (snapshot: SessionCapabilitySnapshot) => void | Promise<void>): () => void;
+onSessionEvent?(agentSlug: string, handler: (event: SessionEventRecord) => void | Promise<void>): () => void;
+}
+export type SessionEventKind = 'session_started' | 'session_ended' | 'participant_joined' | 'participant_left';
+export interface SessionEventParticipant {
+kind: string;
+id: string;
+displayName?: string;
+principalId?: string;
+}
+export interface SessionEventRecord {
+channelType: string;
+conversationId: string;
+sessionRef: string;
+kind: SessionEventKind;
+participants?: readonly SessionEventParticipant[];
+occurredAt: string;
 }
 
 // ===== targetRef.d.ts =====

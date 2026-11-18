@@ -417,6 +417,8 @@ import {
 import { facilitatorGrantablePluginIds } from './platform/facilitatorGuard.js';
 import { publishSendServices } from './channels/sendServicesWiring.js';
 import { publishAgentTurnService } from './agents/agentTurnWiring.js';
+import { ChannelProviderRegistry } from './channels/sessionCapabilities/providerRegistry.js';
+import { wireSessionCapabilities } from './channels/sessionCapabilities/wiring.js';
 import { attachEngineToFacilitators } from './platform/facilitatorEngineAttach.js';
 import {
   wireConversationMessages,
@@ -568,6 +570,7 @@ import { createAgentSetupServices } from './platform/agentSetupService.js';
 import { createScopedRoleAssignments } from './conductor/scopedRoleAssignments.js';
 import { DefaultChannelRegistry } from './channels/channelRegistry.js';
 import type { AggregateHolderLookup, ChannelRegistry, ChannelBindingResolver } from '@omadia/channel-sdk';
+import type { ChannelReadinessProvider, MeetingSourceProvider } from '@omadia/channel-sdk';
 import { DynamicChannelPluginResolver } from './channels/dynamicChannelResolver.js';
 import type { TurnDispatcher } from './channels/coreApi.js';
 import { createOrchestratorDispatcher } from './channels/orchestratorDispatcher.js';
@@ -812,6 +815,15 @@ async function main(): Promise<void> {
   const targetedSendRegistry = new TargetedSendRegistry(registryLog);
   const conversationSendRegistry = new ConversationSendRegistry(registryLog);
   const conversationEventHub = new ConversationEventHub(registryLog);
+  // #2043 — channel readiness providers and meeting sources (same lifecycle).
+  const readinessProviderRegistry = new ChannelProviderRegistry<ChannelReadinessProvider>(
+    'readiness',
+    registryLog,
+  );
+  const meetingSourceRegistry = new ChannelProviderRegistry<MeetingSourceProvider>(
+    'meetingSource',
+    registryLog,
+  );
   // #330 C2a — kernel-side invite index: subscribes directly at the hub (before
   // any plugin) and is the scope guard for plugin auto-binds. A plugin can only
   // bind conversations the transport actually reported a group bot_added for.
@@ -4672,6 +4684,17 @@ async function main(): Promise<void> {
   // #2043 — authenticated inbound messages; needs the database, so it stays
   // undefined on the in-memory backend (adapters then keep their mention gate).
   let conversationMessages: ConversationMessagesWiring | undefined;
+  // #2043 — readiness and session capabilities work without a database; only
+  // their pushes follow message subscriptions.
+  const sessionCapabilityHub = wireSessionCapabilities({
+    serviceRegistry,
+    readiness: readinessProviderRegistry,
+    meetingSources: meetingSourceRegistry,
+    getRegistry,
+    getMessages: () => conversationMessages?.hub,
+    engineSources: () => ({ installedRegistry, catalog: pluginCatalog }),
+    log: (m) => console.log(m),
+  });
   if (graphPool) {
     await runAuthMigrations(graphPool, (m) => console.log(m));
     await runProfileStorageMigrations(graphPool, (m) => console.log(m));
@@ -4817,6 +4840,8 @@ async function main(): Promise<void> {
       invites: observedInvites,
       botPresence,
       engineSources: () => ({ installedRegistry, catalog: pluginCatalog }),
+      checkReadiness: (channelType, conversationId, channelKey) =>
+        sessionCapabilityHub.checkIdentity(channelType, conversationId, channelKey),
       graceMs: config.CONVERSATION_MESSAGES_GRACE_MS,
       maxAgeDays: config.CONVERSATION_MESSAGES_MAX_AGE_DAYS,
       purgeIntervalMs: config.CONVERSATION_MESSAGES_PURGE_INTERVAL_MS,
@@ -7059,6 +7084,9 @@ async function main(): Promise<void> {
     conversationEvents: conversationEventHub,
     conversationSends: conversationSendRegistry,
     ...(conversationMessages ? { conversationMessages: conversationMessages.hub } : {}),
+    readinessProviders: readinessProviderRegistry,
+    meetingSources: meetingSourceRegistry,
+    sessionCapabilities: sessionCapabilityHub,
     // #1086 — the channel-agnostic producer of the routines principal, for
     // every channel that drives its turn through `handleTurnStream` (in-tree:
     // public API, canvas). Adapters that call the `chatAgent` capability
@@ -7117,6 +7145,8 @@ async function main(): Promise<void> {
     peopleDirectories: peopleDirectoryRegistry,
     targetedSends: targetedSendRegistry,
     conversationSends: conversationSendRegistry,
+    readinessProviders: readinessProviderRegistry,
+    meetingSources: meetingSourceRegistry,
   });
   channelRegistryRef = channelRegistry;
   await channelRegistry.activateAllInstalled();

@@ -155,6 +155,21 @@ and the neutrality contract. No facilitation tables in the kernel.
   default attach, cannot be granted to a standard agent (`409
   config_validation`), and a leftover engine row on a standard agent grants
   nothing at runtime.
+- **Readiness and session capabilities**: `CoreApi.registerReadinessProvider`,
+  `registerMeetingSourceProvider`, `emitSessionCapabilities` and
+  `emitSessionEvent` (one provider per channel type, owned by its channel,
+  dropped on deactivate). Plugin services `channelReadiness` (`check`,
+  `repairConsent`) and `sessionCapabilities` (`getSnapshot` with the chat
+  baseline when no meeting source knows the conversation, `onChange`,
+  `onSessionEvent`). The readiness report decides a message subscription
+  (`not_ready`). Pushed snapshots and meeting lifecycle events reach the
+  engine only for conversations it holds a subscription for; duplicates from
+  several bots in one chat are removed; nothing is stored.
+- **Teams app package version** is `1.<template revision>.<identity
+  revision>`; the template revision is read from
+  `appPackage/TEMPLATE_REVISION` of the installed channel plugin (absent = 0,
+  versions unchanged), so a changed template is republished for existing
+  agents.
 - **`GET /api/v1/operator/agents/facilitation-engine`**: which plugin is the
   facilitation engine (`state` bound | none | ambiguous) and whether it
   reports itself usable (`available`, `unavailable_reason`, `version`).

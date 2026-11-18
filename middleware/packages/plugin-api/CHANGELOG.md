@@ -45,6 +45,12 @@ sending; lifecycle, state and counting live in the engine plugin.
 - **`AgentTurnService.getProfile?`** (`AgentProfile`) — display name,
   language and own-identity channel types of an agent bound to the calling
   engine.
+- **`ChannelReadinessCode`**, `ChannelReadinessReport.verified?`,
+  **`ChannelReadinessService.repairConsent?`**
+  (`ChannelConsentRepairOutcome`) — the readiness codes in use, whether a
+  channel made the statement at all, and a consent repair.
+- **`SessionCapabilitiesService.onSessionEvent?`** (`SessionEventRecord`) —
+  meeting lifecycle: started, ended, participant joined / left.
 - **`FACILITATION_ENGINE_CAPABILITY`** and the **`facilitation.followup`
   service contract** (`FacilitationFollowupService`) — free/busy, invitation
   and mail, each call bounded by an allow-list.

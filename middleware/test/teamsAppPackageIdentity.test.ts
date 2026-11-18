@@ -31,6 +31,7 @@ import { describe, it } from 'node:test';
 import {
   createTeamsAppPackageAssetLoader,
   type TeamsAppPackageIdentity,
+  teamsAppVersion,
 } from '../src/services/teamsAppPackageAssets.js';
 import type { TeamsIdentityJobRecord } from '../src/services/teamsProvisioningJob.js';
 
@@ -172,5 +173,62 @@ describe('teams app package — authored identity (#914)', () => {
       )(ROW),
       /database is down/,
     );
+  });
+});
+
+describe('teams app package — template revision in the version (#2043)', () => {
+  /** Numeric position-by-position comparison, the way Teams orders versions. */
+  function higher(a: string, b: string): boolean {
+    const [x, y] = [a, b].map((v) => v.split('.').map(Number));
+    for (let i = 0; i < 3; i += 1) {
+      if (x![i]! !== y![i]!) return x![i]! > y![i]!;
+    }
+    return false;
+  }
+  const identity = (revision: number): TeamsAppPackageIdentity => ({
+    displayName: 'Mara',
+    shortDescription: null,
+    longDescription: null,
+    accentColor: null,
+    revision,
+  });
+  async function versionFor(templateRevision: string | undefined, revision?: number): Promise<string> {
+    const root = await packageRoot();
+    if (templateRevision !== undefined) {
+      await writeFile(path.join(root, 'appPackage', 'TEMPLATE_REVISION'), templateRevision, 'utf8');
+    }
+    const assets = await loaderFor(
+      root,
+      revision === undefined ? undefined : () => Promise.resolve(identity(revision)),
+    )(ROW);
+    return String(assets.params['VERSION']);
+  }
+
+  it('a channel plugin without the file keeps the versions it always had', async () => {
+    assert.equal(await versionFor(undefined), '1.0.0');
+    assert.equal(await versionFor(undefined, 4), '1.0.4');
+    assert.equal(teamsAppVersion(0, undefined, '2.3.4'), '2.3.4');
+  });
+
+  it('a template bump outranks every version of the previous template', async () => {
+    const before = await versionFor(undefined, 37); // identity edited 37 times
+    const bumped = await versionFor('2\n', 37); // same identity, new template
+    const freshAgent = await versionFor('2', 1);
+    const noIdentity = await versionFor('2');
+    assert.equal(bumped, '1.2.37');
+    assert.equal(freshAgent, '1.2.1');
+    assert.equal(noIdentity, '1.2.0');
+    assert.ok(higher(bumped, before), 'unchanged identity, new template: republished');
+    assert.ok(higher(freshAgent, before), 'even a lower identity revision wins after the bump');
+    assert.ok(higher(await versionFor('3', 1), bumped), 'the next template again');
+    assert.ok(higher(await versionFor('2', 38), bumped), 'identity edits still order within a template');
+    assert.ok(higher(noIdentity, '1.0.999'));
+  });
+
+  it('refuses a revision file that is not a non-negative integer', async () => {
+    for (const bad of ['two', '-1', '1.5', '']) {
+      await assert.rejects(versionFor(bad, 1), /TEMPLATE_REVISION must hold a non-negative integer/, bad);
+    }
+    assert.equal(await versionFor('0', 3), '1.0.3');
   });
 });

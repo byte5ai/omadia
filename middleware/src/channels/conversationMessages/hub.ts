@@ -154,6 +154,13 @@ export class ConversationMessageHub {
     return undefined;
   }
 
+  /** Every active subscription for a conversation, whichever agent holds it. */
+  subscriptionsIn(channelType: string, conversationId: string): readonly MessageSubscription[] {
+    return [...this.byIdentity.values()].filter(
+      (s) => s.channelType === channelType && s.conversationId === conversationId,
+    );
+  }
+
   /** Every active subscription of an agent on a channel type. */
   subscriptionsOf(agentSlug: string, channelType: string): readonly MessageSubscription[] {
     return [...this.byIdentity.values()].filter(
