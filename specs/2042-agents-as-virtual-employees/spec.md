@@ -623,6 +623,24 @@ deterministic layer first (§5.5); routing and discretion are model-free (§5.6,
 
 ### 5.14 Natural, uncluttered answers
 
+**The chat is the primary UI.** For now, people work with omadia agents in the chat of
+their existing channels (Teams, Slack, Discord, Telegram and others); the omadia UI comes
+later. That chat must feel like chatting with a colleague: tidy, precise, on point and
+compact. No walls of text, no incomprehensible extra options, no bureaucracy. Answers are
+short by default and get longer only when the content needs it or the person asks.
+
+**Channel parity.** Every agent capability is fully usable through plain text in every
+supported channel. Rich elements (cards, buttons, polls, tabs) are optional enhancements
+where a channel renders them, never the only way to do something. Nothing may work only in
+Microsoft Teams.
+
+**Every decoration is justified.** A hard-coded status line, chip, footer or button above or
+below an agent's answer exists only with a written justification: a legal requirement, or
+a concrete, likely next action whose button saves the user typing. Decorations are declared
+in one registry with their justification and the channels that render them; the channel
+SDK refuses undeclared decorations, and a test fails when a new one appears without an
+entry.
+
 An ideal colleague answers with what matters, not with status lines and buttons. Answers
 today already carry too much: in Teams a "✨ AI-generated" chip, a verifier badge, a
 system-data chip, "💬 Direkte Antwort von …", a "🔎 Konsultiert: …" footer, "🔽 Kürzer / 🔼
@@ -751,6 +769,11 @@ Each existing element keeps its purpose, moved out of the message body:
     disclosure in its most discreet form, with no status chips, footers or buttons; the
     same answer in Telegram is plain text; the trace, verification and consulted agents
     are reachable in details or by asking.
+30. **Channel parity.** Every capability of an agent, including choosing an agent, giving
+    a contribution in a facilitation and answering a poll, works through plain text in
+    Telegram as well as in Teams; a test drives each through the plain-text path.
+31. **Justified decorations.** An undeclared status line or button above or below an
+    answer fails the decoration-registry test.
 
 ## 7. Migration and compatibility
 
@@ -833,7 +856,8 @@ Kernel unless noted. Each item becomes one issue in epic #2042.
 24. Plugin kind `extension` kept without identity; routines keep human ownership,
     controls and calendar semantics; plugin jobs recover with bounded probes; learning
     and consolidation as bounded agent batch triggers (§5.10, §5.12).
-25. Natural, uncluttered answers: status chips, footers, verification and consultation
+25. Chat-first, natural, uncluttered answers (channel parity, decoration registry with
+    justification, compact answers by default): status chips, footers, verification and consultation
     markers and default buttons move from the message body into structured fields and
     on-demand details; name lines only where the speaker would be unclear; buttons only
     for a concrete likely next action in channels that render them (§5.14).

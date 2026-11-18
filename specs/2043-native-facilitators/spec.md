@@ -522,9 +522,20 @@ preparation before, follow-up after.
 
 ### 6.4 Other channels
 
-Telegram, Slack and Discord follow once they support one identity per agent (AVE §5.3)
-and full group-message delivery. Until then, facilitation is unavailable there and the
-facilitator says so.
+Facilitation must not work only in Microsoft Teams (AVE §5.14, channel parity). Slack,
+Discord and Telegram are part of the same release scope as Teams, each with its own issue:
+- one identity (bot or app) per facilitator, so the facilitator appears as its own
+  colleague;
+- delivery of every human message in a facilitated group to the facilitator's bot;
+- every function through plain text: contributions and votes as chat messages, polls as
+  native polls where the channel has them, otherwise as text ballots; reactions where
+  available.
+
+Which platform setting delivers all group messages (for example a bot's privacy mode in
+Telegram, message-content access in Discord, event scopes in Slack) is evaluated in each
+channel issue and not assumed here. Where a channel cannot meet a requirement, the gap is
+documented there with the closest available behaviour, and the facilitator says in the
+chat what it cannot do.
 
 ## 7. Operator and user surfaces
 
@@ -597,7 +608,8 @@ kept compatible.
     content access is audited.
 12. **No silent end.** A failed step or reached TTL produces an abort report in the group;
     a reached quota produces a `system` notice.
-13. **Teams contract tests** of §6.2 pass against the real test tenant.
+13. **Teams contract tests** of §6.2 pass against the real test tenant; the field scenario
+    (criterion 1) also passes in Slack, Discord and Telegram through plain text.
 14. **Retrospective.** A four-person retrospective: ideas collected without mentions,
     clusters proposed and confirmed by the group, two actions decided, each with an owner
     who confirmed and a due date; the protocol lists decisions with rationale and the
