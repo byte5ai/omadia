@@ -36,6 +36,33 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Conductor `webhook.post` reported a refused delivery as a successful step (#1703)
+
+2026-11-16. A workflow step that delivered nothing looked exactly like one that
+delivered: the run completed, the history showed no error, and the refusal was
+visible only to someone who read the run context out of Postgres.
+
+- **A non-2xx response now fails the step.** `webhook.post` still reports the
+  refusal in its result (`{ ok, status }`) — what changed is that the engine no
+  longer reads that as success. A `webhook.post` step that declares no postcondition
+  of its own now gets `stepResult.data.ok == true`, so a receiver answering 500, or a
+  429 from one out of quota, is an `unmet` postcondition. Keyed on the action id: a
+  plugin tool that happens to answer `{ok:false}` keeps its current meaning.
+- **A graph can take its error path.** `unmet` fires the step's
+  `fallbackTransitionId` (FR-024) like any other postcondition failure, so a
+  workflow can route a failed delivery to a retry or an escalation step. With no
+  fallback declared it surfaces as the `postcondition_unmet_no_fallback` stuck
+  decision and the run ends `failed`.
+- **The history carries it.** The step's recorded `postcondition_outcome` is
+  `unmet` with no transition taken, next to the `status` the result leaves in the
+  run context. Nothing is only in the log.
+- **A step that declares its own postcondition is untouched** — tolerate a 404, or
+  branch on `status`, exactly as before. The default fills an absence; it never
+  overrides.
+- `nextStep` takes an optional `NextStepOptions.defaultPostcondition` for this
+  (`@omadia/conductor-core`). Omitted, the engine's "absent ≡ always met" rule is
+  unchanged, so every other step kind and action behaves as it did.
+
 ### Fixed — Conductor: a failed webhook delivery says why, and says it per attempt (#1704)
 
 2026-11-16. Every transport failure of an outbound delivery was stored as the

@@ -106,7 +106,7 @@ export { ConductorWebhookSubscriptionStore } from './webhookSubscriptionStore.js
 export type { ConductorWebhookSubscription, ConductorWebhookDelivery, WebhookDeliveryStatus } from './webhookSubscriptionStore.js';
 export { ConductorWebhookDispatcher } from './webhookDispatcher.js';
 export { ConductorWebhookRetryWorker } from './webhookRetryWorker.js';
-export { WEBHOOK_POST_ACTION_ID, invokeWebhookPostAction } from './webhookPostAction.js';
+export { WEBHOOK_POST_ACTION_ID, WEBHOOK_POST_DEFAULT_POSTCONDITION, invokeWebhookPostAction } from './webhookPostAction.js';
 export { assertOutboundUrlAllowed, WebhookUrlNotAllowedError } from './webhookOutbound.js';
 export { loadPatternCatalog } from './patternCatalog.js';
 export type { PatternCatalog } from './patternCatalog.js';

@@ -1376,6 +1376,22 @@ Retries (überlebt Prozess-Restart). Zusätzlich: ein Built-in-Action
 `invokeAction`-Wiring VOR dem `dynamicAgentRuntime`-Dispatch, kein Plugin
 nötig) für Ad-hoc-Outbound-POST aus einem Workflow-Step.
 
+**Non-2xx = fehlgeschlagener Step (#1703).** Die Action *meldet* die Absage
+weiterhin im Ergebnis (`{ ok, status }`) und wirft NICHT — ein Throw wird vom
+`ConductorRunExecutor` gefangen, bevor die Engine läuft, der Run endet dann
+ohne Transition und ein Graph könnte seinen Error-Pfad nie nehmen. Stattdessen
+hängt `RealStepEffects.runActionStep` dem Step die Default-Postcondition
+`WEBHOOK_POST_DEFAULT_POSTCONDITION` (`stepResult.data.ok == true`) an, falls
+der Autor keine eigene deklariert hat; der Executor reicht sie als
+`NextStepOptions.defaultPostcondition` an `nextStep` weiter (Default, nie
+Override — eine eigene Postcondition gewinnt immer). Ein 500 des Receivers oder
+ein 429 (Quota) ist damit `unmet`: `fallbackTransitionId` feuert (FR-024, der
+Error-Pfad des Graphen), sonst `postcondition_unmet_no_fallback` → Run `failed`.
+`postcondition_outcome` steht als `unmet` in der History, `status` im
+Run-Context. Vorher galt "keine Postcondition ≡ immer erfüllt", also war eine
+nicht erfolgte Zustellung in UI und API nicht von einer echten zu
+unterscheiden.
+
 **Diagnose eines fehlgeschlagenen Outbound-Versuchs (#1704).** `last_error`
 trug bis dahin nur `err.message` — und undici meldet *jeden* Transportfehler als
 blankes `fetch failed` und legt den Grund in `err.cause`, also lasen DNS-Miss,
