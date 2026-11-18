@@ -16,16 +16,43 @@ import type { Principal } from './principal.js';
 export interface TargetedMessage {
   text: string;
   attachments?: OutgoingAttachment[];
+  /** People to @mention (#2043). Each `text` occurs in `text`; the provider
+   *  turns that occurrence into a platform mention. A provider without
+   *  mentions leaves the text as it is. */
+  mentions?: readonly TargetedMention[];
+}
+
+export interface TargetedMention {
+  user: ChannelUserRef;
+  /** The display text standing in the message (e.g. '@Anna Köhler'). */
+  text: string;
+}
+
+/** Options for a user-addressed send (#2043). */
+export interface TargetedSendOptions {
+  /** Identity the DM must come from (Teams: `28:<appId>`). Same contract as
+   *  `ConversationSendOptions.asChannelKey`: a provider that implements it
+   *  returns `unreachable` rather than substituting another identity. */
+  asChannelKey?: string;
 }
 
 /** Per-delivery outcome. Providers RETURN unreachability (like holdersFor in
  *  roleHolderSource.ts) — they never throw for it, so one unreachable holder
  *  cannot abort the remaining fan-out deliveries. */
 export type TargetedDeliveryOutcome =
-  | { outcome: 'delivered' }
+  /** `messageId` is the platform id of the sent message when known. */
+  | { outcome: 'delivered'; messageId?: string }
   | {
       outcome: 'unreachable';
-      code: 'no_binding' | 'user_not_found' | 'channel_error' | 'not_permitted';
+      /** 'app_not_installed': first contact is impossible because the user
+       *  never installed this identity's app. 'blocked': the user blocked it. */
+      code:
+        | 'no_binding'
+        | 'user_not_found'
+        | 'channel_error'
+        | 'not_permitted'
+        | 'app_not_installed'
+        | 'blocked';
       message: string;
     };
 
@@ -43,6 +70,7 @@ export interface TargetedSendProvider {
   sendToUser(
     target: { principalId: string; conversationRef?: unknown; userRef?: ChannelUserRef },
     message: TargetedMessage,
+    opts?: TargetedSendOptions,
   ): Promise<TargetedDeliveryOutcome>;
 }
 

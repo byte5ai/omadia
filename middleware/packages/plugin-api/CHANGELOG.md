@@ -8,6 +8,35 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.55.0 — 2026-11-18
+
+Additive. Contracts for native facilitators with the engine in a plugin
+(epic #2043): the kernel owns identity, authenticated inbound messages and
+sending; lifecycle, state and counting live in the engine plugin.
+
+### Added
+
+- **`conversationMessages` service** (`ConversationMessagesService`,
+  `ConversationMessageRecord`) — every human message of a subscribed group
+  conversation, stored by the kernel with platform-stated author, message id
+  and revision. Subscribe, live delivery, lookup by message id, replay.
+- **`agentTurn` service** (`AgentTurnService`) — run one turn as a named agent
+  for a stored inbound event and get the text back without it being posted.
+- **`channelReadiness` and `sessionCapabilities` services**
+  (`ChannelReadinessReport`, `SessionCapabilitySnapshot`) — whether an agent's
+  own identity can moderate a conversation, and what a session offers as
+  inputs and outputs.
+- **`NativeToolCallContext`** — optional second argument of
+  `NativeToolHandler`: agent, channel, conversation, inbound event and caller,
+  stated by the kernel.
+- **`ConversationSendRequest.asOwnIdentity?`, `message.mentions?`** and
+  **`TargetedSendRequest.asAgentSlug?`** — send as the agent's own identity,
+  refused with `no_identity` instead of falling back to another bot.
+  `delivered` outcomes carry an optional `messageId`.
+- **`FACILITATION_ENGINE_CAPABILITY`** and the **`facilitation.followup`
+  service contract** (`FacilitationFollowupService`) — free/busy, invitation
+  and mail, each call bounded by an allow-list.
+
 ## 1.54.0 — 2026-11-04
 
 Additive. The capture disclosure gets a producer.

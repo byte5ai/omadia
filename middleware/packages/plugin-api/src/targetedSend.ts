@@ -22,10 +22,15 @@ export interface TargetedSendRequest {
   message: {
     text: string;
   };
+  /** Send as this agent's OWN channel identity (#2043). The kernel refuses
+   *  with code 'no_identity' when the agent has none; no default-bot
+   *  fallback. A user who never installed that bot yields
+   *  'app_not_installed', a user who blocked it 'blocked'. */
+  asAgentSlug?: string;
 }
 
 export type TargetedSendDeliveryOutcome =
-  | { outcome: 'delivered' }
+  | { outcome: 'delivered'; messageId?: string }
   | { outcome: 'unreachable'; code: string; message: string };
 
 export interface TargetedSendResultDiagnostic {

@@ -21,11 +21,30 @@ export interface ConversationSendRequest {
   conversationId: string;
   message: {
     text: string;
+    /** People to @mention. Each `text` must occur in `message.text`; the
+     *  channel turns that occurrence into a real mention. Ignored by channels
+     *  without mentions. */
+    mentions?: readonly ConversationSendMention[];
   };
+  /** Post as the agent's OWN channel identity (#2043). The kernel resolves the
+   *  agent's bot and refuses with code 'no_identity' when it has none; it
+   *  never falls back to another bot. Permission then comes from the agent's
+   *  message subscription for the conversation ('conversationMessages@1')
+   *  instead of an ephemeral attachment. */
+  asOwnIdentity?: boolean;
+}
+
+export interface ConversationSendMention {
+  /** Canonical principal ('user:<id>') or channel-native user id. */
+  user: string;
+  /** The display text standing in `message.text` (e.g. '@Anna Köhler'). */
+  text: string;
 }
 
 export type ConversationSendOutcome =
-  | { outcome: 'delivered' }
+  /** `messageId` is the platform id of the posted message when the channel
+   *  reports one. */
+  | { outcome: 'delivered'; messageId?: string }
   | { outcome: 'unreachable'; code: string; message: string };
 
 export interface ConversationSendService {

@@ -807,7 +807,28 @@ export function validatePluginDomain(
 /** Handler a plugin hands the kernel together with the tool spec. Must return
  *  a string — the tool-use reply sent back to Claude. Kernel wraps thrown
  *  errors into `Error: <message>` for symmetry with built-in tools. */
-export type NativeToolHandler = (input: unknown) => Promise<string>;
+export type NativeToolHandler = (
+  input: unknown,
+  context?: NativeToolCallContext,
+) => Promise<string>;
+
+/**
+ * Where a tool call comes from (#2043). Passed by the kernel as the handler's
+ * second argument; absent on kernels that predate it and for calls outside a
+ * turn. Every field is kernel-stated, never model-supplied, so a handler can
+ * key state on the conversation without trusting a tool argument.
+ */
+export interface NativeToolCallContext {
+  /** Slug of the agent whose turn dispatched the tool. */
+  readonly agentSlug?: string;
+  readonly channelType?: string;
+  /** Channel-native conversation the turn runs in. */
+  readonly conversationId?: string;
+  /** Stored inbound event the turn answers ('conversationMessages@1'). */
+  readonly inboundEventId?: string;
+  /** Canonical principal of the person the turn answers. */
+  readonly callerPrincipalId?: string;
+}
 
 /**
  * Optional per-turn attachment sink. Called once at the end of each orchestrator

@@ -144,6 +144,33 @@ upsert(_record: AgentPriorityUpsert): Promise<void>;
 remove(_agentId: string, _entryExternalId: string): Promise<void>;
 }
 
+// ===== agentTurn.d.ts =====
+export declare const AGENT_TURN_SERVICE_NAME = "agentTurn";
+export interface AgentTurnRequest {
+agentSlug: string;
+sessionKey: string;
+channelType: string;
+conversationId: string;
+inboundEventId?: string;
+input: string;
+engineContext?: string;
+}
+export type AgentTurnOutcome = {
+outcome: 'completed';
+text: string;
+turnId?: string;
+} | {
+outcome: 'refused';
+code: 'unknown_agent' | 'not_bound' | 'budget_exceeded' | 'unavailable';
+message: string;
+} | {
+outcome: 'failed';
+message: string;
+};
+export interface AgentTurnService {
+runTurn(request: AgentTurnRequest): Promise<AgentTurnOutcome>;
+}
+
 // ===== boundaryPresets.d.ts =====
 export type BoundaryPresetCategory = 'data' | 'scope' | 'authority' | 'communication';
 export interface BoundaryPreset {
@@ -241,6 +268,67 @@ assistantAnswer: string;
 at: number;
 }
 
+// ===== conversationMessages.d.ts =====
+export declare const CONVERSATION_MESSAGES_SERVICE_NAME = "conversationMessages";
+export type ConversationMessageKind = 'created' | 'edited' | 'deleted' | 'reaction' | 'card_answer';
+export interface ConversationMessageAuthor {
+kind: string;
+id: string;
+displayName?: string;
+principalId?: string;
+}
+export interface ConversationMessageRecord {
+eventId: string;
+channelType: string;
+conversationId: string;
+messageId: string;
+revision: number;
+kind: ConversationMessageKind;
+author: ConversationMessageAuthor;
+tenantId?: string;
+receivedByChannelKey: string;
+text?: string;
+replyToMessageId?: string;
+quoted?: boolean;
+forwarded?: boolean;
+reaction?: {
+name: string;
+removed: boolean;
+};
+cardAnswer?: {
+cardId: string;
+value: unknown;
+};
+occurredAt: string;
+receivedAt: string;
+}
+export interface ConversationMessageScope {
+agentSlug: string;
+channelType: string;
+conversationId: string;
+}
+export type ConversationMessageSubscribeOutcome = {
+outcome: 'subscribed';
+} | {
+outcome: 'refused';
+code: 'no_identity' | 'not_facilitator' | 'not_present' | 'not_ready' | 'unavailable';
+message: string;
+};
+export interface ConversationMessagePage {
+events: readonly ConversationMessageRecord[];
+nextCursor?: string;
+}
+export interface ConversationMessagesService {
+subscribe(scope: ConversationMessageScope): Promise<ConversationMessageSubscribeOutcome>;
+unsubscribe(scope: ConversationMessageScope): Promise<void>;
+onMessage(agentSlug: string, handler: (record: ConversationMessageRecord) => void | Promise<void>): () => void;
+getEvent(scope: ConversationMessageScope, messageId: string, revision?: number): Promise<ConversationMessageRecord | undefined>;
+listSince(scope: ConversationMessageScope, opts?: {
+after?: string;
+limit?: number;
+}): Promise<ConversationMessagePage>;
+}
+
 // ===== conversationSend.d.ts =====
 export declare const CONVERSATION_SEND_SERVICE_NAME = "conversationSend";
 export interface ConversationSendRequest {
@@ -249,10 +337,18 @@ channelType: string;
 conversationId: string;
 message: {
 text: string;
+mentions?: readonly ConversationSendMention[];
 };
+asOwnIdentity?: boolean;
 }
-export type ConversationSendOutcome = {
+export interface ConversationSendMention {
+user: string;
+text: string;
+}
+export type ConversationSendOutcome =
+{
 outcome: 'delivered';
+messageId?: string;
 } | {
 outcome: 'unreachable';
 code: string;
@@ -424,6 +520,55 @@ run(options?: BulkExcerptMergeDetectRunOptions): Promise<BulkExcerptMergeDetectR
 export declare const BULK_EXCERPT_MERGE_DETECT_SERVICE_NAME = "bulkExcerptMergeDetect";
 export declare const BULK_EXCERPT_MERGE_DETECT_CAPABILITY = "bulkExcerptMergeDetect@1";
 
+// ===== facilitation.d.ts =====
+export declare const FACILITATION_ENGINE_CAPABILITY = "facilitationEngine@1";
+export declare const FACILITATION_FOLLOWUP_SERVICE_NAME = "facilitation.followup";
+export interface FollowupGrant {
+facilitationId: string;
+allowed: readonly string[];
+}
+export type FollowupRefusal = {
+outcome: 'refused';
+code: 'recipient_not_allowed' | 'not_configured' | 'provider_error';
+message: string;
+rejected?: readonly string[];
+};
+export interface FacilitationFollowupService {
+freeBusy(grant: FollowupGrant, request: {
+attendees: readonly string[];
+from: string;
+to: string;
+}): Promise<{
+outcome: 'ok';
+busy: readonly {
+attendee: string;
+intervals: readonly {
+start: string;
+end: string;
+}[];
+}[];
+} | FollowupRefusal>;
+createInvitation(grant: FollowupGrant, request: {
+attendees: readonly string[];
+subject: string;
+start: string;
+end: string;
+body: string;
+online?: boolean;
+}): Promise<{
+outcome: 'created';
+eventId: string;
+joinUrl?: string;
+} | FollowupRefusal>;
+sendMail(grant: FollowupGrant, request: {
+recipients: readonly string[];
+subject: string;
+body: string;
+}): Promise<{
+outcome: 'sent';
+} | FollowupRefusal>;
+}
+
 // ===== inconsistency.d.ts =====
 export type InconsistencyStatus = 'open' | 'resolved' | 'dismissed';
 export type InconsistencyResolution =
@@ -511,6 +656,10 @@ export * from './transcription.js';
 export * from './transcriptionGuardrails.js';
 export * from './decisionModel.js';
 export * from './conversationSend.js';
+export * from './conversationMessages.js';
+export * from './agentTurn.js';
+export * from './sessionCapabilities.js';
+export * from './facilitation.js';
 
 // ===== knowledgeGraph.d.ts =====
 import type { EntityRef } from './entityRef.js';
@@ -1676,7 +1825,14 @@ domain: string;
 ok: false;
 message: string;
 };
-export type NativeToolHandler = (input: unknown) => Promise<string>;
+export type NativeToolHandler = (input: unknown, context?: NativeToolCallContext) => Promise<string>;
+export interface NativeToolCallContext {
+readonly agentSlug?: string;
+readonly channelType?: string;
+readonly conversationId?: string;
+readonly inboundEventId?: string;
+readonly callerPrincipalId?: string;
+}
 export type NativeToolAttachmentSink = () => NativeToolAttachment[] | undefined;
 export interface NativeToolAttachment {
 readonly kind: string;
@@ -2663,6 +2819,48 @@ export interface SessionBriefingService {
 loadSessionBriefing(input: LoadSessionBriefingInput): Promise<SessionBriefingResult>;
 }
 
+// ===== sessionCapabilities.d.ts =====
+export declare const CHANNEL_READINESS_SERVICE_NAME = "channelReadiness";
+export declare const SESSION_CAPABILITIES_SERVICE_NAME = "sessionCapabilities";
+export interface ChannelReadinessIssue {
+code: string;
+message: string;
+}
+export interface ChannelReadinessReport {
+ready: boolean;
+installed: boolean;
+canReadAllMessages: boolean;
+canPost: boolean;
+missing: readonly ChannelReadinessIssue[];
+}
+export interface ChannelReadinessService {
+check(request: {
+agentSlug: string;
+channelType: string;
+conversationId: string;
+}): Promise<ChannelReadinessReport>;
+}
+export type SessionInputCapability = 'text' | 'message_edits' | 'reactions' | 'card_answers' | 'presence' | 'hand_raise' | 'transcribed_speech' | 'shared_documents';
+export type SessionOutputCapability = 'text' | 'mentions' | 'cards' | 'polls' | 'private_messages' | 'pinned_surface' | 'voice' | 'screen';
+export interface SessionCapabilitySnapshot {
+channelType: string;
+conversationId: string;
+sessionRef?: string;
+modality: 'chat' | 'online' | 'hybrid';
+inputs: readonly SessionInputCapability[];
+outputs: readonly SessionOutputCapability[];
+capturedAt: string;
+}
+export interface SessionCapabilitiesService {
+getSnapshot(request: {
+agentSlug: string;
+channelType: string;
+conversationId: string;
+sessionRef?: string;
+}): Promise<SessionCapabilitySnapshot>;
+onChange(agentSlug: string, handler: (snapshot: SessionCapabilitySnapshot) => void | Promise<void>): () => void;
+}
+
 // ===== targetRef.d.ts =====
 export type TargetRef = {
 kind: 'canvas';
@@ -2747,9 +2945,11 @@ principal: string;
 message: {
 text: string;
 };
+asAgentSlug?: string;
 }
 export type TargetedSendDeliveryOutcome = {
 outcome: 'delivered';
+messageId?: string;
 } | {
 outcome: 'unreachable';
 code: string;

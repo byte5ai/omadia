@@ -7,6 +7,9 @@ import type { PeopleDirectoryProvider } from './peopleDirectory.js';
 import type { ConversationMembershipEvent } from './membershipEvent.js';
 import type { TargetedSendProvider } from './targetedSend.js';
 import type { ConversationSendProvider } from './conversationSend.js';
+import type { ConversationMessageEvent } from './conversationMessage.js';
+import type { ChannelReadinessProvider, MeetingSourceProvider } from './sessionCapabilities.js';
+import type { SessionCapabilitySnapshot } from '@omadia/plugin-api';
 
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH';
 
@@ -222,4 +225,42 @@ export interface CoreApi {
    * lifecycle as {@link registerTargetedSendProvider}.
    */
   registerConversationSendProvider?(channelId: string, provider: ConversationSendProvider): void;
+
+  /**
+   * Emit an inbound conversation message (#2043): every human message, edit,
+   * deletion, reaction and card answer in a conversation an agent moderates.
+   * Optional — feature-detect. Fire-and-forget; the kernel stores the event
+   * only when the receiving identity holds a subscription for the
+   * conversation and drops it otherwise, so an adapter may emit without
+   * asking first.
+   */
+  emitConversationMessage?(event: ConversationMessageEvent): void;
+
+  /**
+   * Does the identity `channelKey` receive EVERY message of this conversation
+   * (#2043)? Synchronous and kernel-cached, because the adapter asks it on
+   * the hot path to decide whether its mention gate applies. `false` for
+   * anything not positively subscribed. Optional — feature-detect; absent
+   * means the mention gate always applies.
+   */
+  isAllMessagesSubscribed?(channelType: string, conversationId: string, channelKey: string): boolean;
+
+  /**
+   * Register the channel's readiness check (#2043): installed, may read all
+   * messages, can post. Optional — same feature-detect + deactivate lifecycle
+   * as {@link registerRosterProvider}.
+   */
+  registerReadinessProvider?(channelId: string, provider: ChannelReadinessProvider): void;
+
+  /**
+   * Register a meeting source (#2077): what a session offers as inputs and
+   * outputs. Optional — same lifecycle as {@link registerRosterProvider}.
+   */
+  registerMeetingSourceProvider?(channelId: string, provider: MeetingSourceProvider): void;
+
+  /**
+   * Report that a session's capabilities changed (audio joined, cards became
+   * available). Optional — feature-detect. Fire-and-forget.
+   */
+  emitSessionCapabilities?(snapshot: SessionCapabilitySnapshot): void;
 }
