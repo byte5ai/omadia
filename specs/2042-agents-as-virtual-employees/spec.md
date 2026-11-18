@@ -481,21 +481,13 @@ tool dispatch with the agent's grants and the privacy shield
 (`maskUserPrompt`); the agent's model policy must allow the provider.
 
 New work for `run_loop`:
-- **Budget before every model call.** The budget unit is reference cost (for
-  subscription providers the price the same tokens would cost on the API, today's
-  `referenceCostUsd`; otherwise the real cost). The checkpoint is a kernel model proxy:
-  the CLI is started with `ANTHROPIC_BASE_URL` pointing to it (documented by Claude Code
-  as the way to "route requests through a proxy or gateway"), so every model request of
-  the CLI, including automatic compaction and retries, passes the kernel before it is
-  forwarded. Each request is admitted only if the remaining reservation covers its
-  worst-case cost (its context plus maximum output at the model's price); otherwise it
-  is refused and the turn ends. Actual usage from the response replaces the worst case.
-  An omadia helper called through a loopback tool reserves its own part of the same
-  reservation atomically before it runs. The sum therefore never exceeds the
-  reservation. The turn is also ended at its deadline, on idle timeout and on the kill
-  switch. Unverified: whether the CLI keeps using the subscription login with a custom
-  base URL; this is the first task of #2053. If it does not, the issue goes back to the
-  owner before any implementation; until then `run_loop` is not offered.
+- **Runaway protection, not cost metering.** The purpose is that no bug (for example a
+  faulty trigger firing in a loop) can run up costs unattended. A CLI turn therefore keeps
+  today's limits: a deadline (`OMADIA_CLI_SPAWN_TIMEOUT_MS`, default 10 minutes), the idle
+  timeout and the kill switch. Unattended work (triggers, routines, operator jobs,
+  maintenance runs, archetype process scopes) is additionally bounded by its caps and
+  circuit breaker (§5.12), whichever path its model calls take. No per-call budget gate
+  is put into the CLI loop.
 - **Isolated profile for every CLI spawn.** Every start of the CLI, for `run_loop` and
   for `complete` (summaries, extraction, classification, verifier;
   `middleware/src/platform/claudeCliAdapter.ts:246`), uses a kernel-managed profile
@@ -710,7 +702,8 @@ something that needs judgement). Most firings never reach a model.
 - **Limits.** Minimum interval per kind (proposed: 1 minute during a live meeting,
   15 minutes otherwise); maximum number of active triggers per agent.
 - **Budget.** A cost cap per firing and per trigger, and a monthly cap per agent and per
-  instance, enforced before each model call. Reaching a cap suspends the trigger and
+  instance, checked before every firing and settled with the actual usage after it; a
+  firing that would exceed a cap does not start. Reaching a cap suspends the trigger and
   sends a `system` notice to the operator; an instance-wide kill switch stops all
   triggers at once.
 - **Cheap first.** A firing first runs a deterministic pre-check (anything new since the
@@ -974,12 +967,7 @@ Each existing element keeps its purpose, moved out of the message body:
     work through the gateway; the embedding and transcription adapters' direct clients are
     reachable only from the gateway; a maintenance run calling `complete` is refused; a SQL-granted test archetype plugin reads and writes its own schema and resumes its processes, but reaches no inbound events, other processes' data, scopes or grants, also not through its migrations; every model call site in the code is listed in #2053 with its context, and a call without a context is refused by the gateway; the operator jobs issue preview, skill verification, topic regrouping and bulk promotion work with direct clients blocked, share one budget per job and stop at budget, deadline or cancel without further effects; a plugin in `public-web` mode scans a previously unknown public domain while private addresses and model provider endpoints stay blocked; with the Agent Builder declined, drafts and previews still work; the Agent Builder answers as an agent through the emitter (no direct output), a draft preview speaks as the draft marked "preview" and gets no right the draft or the operator lacks; uninstalling an archetype plugin with processes in `configuring`, `active`, `concluding` and `following_up`, with a failing `onUninstall` and a restart, leaves no reservation, no later model call or invitation, and a `system` notice in each home conversation; an
     agent on `claude-cli` uses its granted tools through `run_loop`, a tool it lacks is
-    refused, a turn without budget does not start, a running loop that reaches its budget
-    before the deadline makes no further model call, the total stays within the
-    reservation also when the remaining budget is below the next call's possible cost,
-    with parallel helpers, with an automatic compaction between two tool calls and with
-    a retried request, and a running turn stops at its
-    deadline and the kill switch; a planted `~/.claude/CLAUDE.md` in the test profile has
+    refused, and a running turn stops at its deadline, on idle timeout and on the kill switch; a planted `~/.claude/CLAUDE.md` in the test profile has
     no effect on `run_loop` or `complete` while login and allowed tools work; a CLI reporting an extra tool, an
     omadia tool not offered this turn or a disconnected loopback server is refused.
 38. **Disclosure level none.** Two questions, one about information that exists but is
