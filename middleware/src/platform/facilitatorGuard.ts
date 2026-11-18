@@ -47,18 +47,32 @@ export interface FacilitationEngineSources {
   readonly isSqlGranted?: (pluginId: string) => boolean;
 }
 
-/** Installed, non-errored plugins whose manifest provides the engine capability. */
-export function facilitationEnginePluginIds(sources: FacilitationEngineSources): string[] {
+function declaredEngines(sources: FacilitationEngineSources): { id: string; errored: boolean }[] {
   const { installedRegistry, catalog } = sources;
   if (!installedRegistry || !catalog) return [];
   return installedRegistry
     .list()
-    .filter((entry) => entry.status !== 'errored')
-    .map((entry) => entry.id)
-    .filter((id) =>
-      (catalog.get(id)?.plugin.provides ?? []).includes(FACILITATION_ENGINE_CAPABILITY),
+    .filter((entry) =>
+      (catalog.get(entry.id)?.plugin.provides ?? []).includes(FACILITATION_ENGINE_CAPABILITY),
     )
-    .sort();
+    .map((entry) => ({ id: entry.id, errored: entry.status === 'errored' }))
+    .sort((a, b) => a.id.localeCompare(b.id));
+}
+
+/**
+ * The installed plugins that count as engine candidates.
+ *
+ * A healthy candidate outranks an errored one, so a broken leftover does not
+ * make a working engine ambiguous. But when the ONLY plugin that declares the
+ * capability is errored, it still counts: an engine installed without its SQL
+ * grant ends its install as `errored` (`installed_missing_permissions`), and
+ * dropping it would report "no engine installed" for exactly the case where
+ * the operator has to be told "grant it".
+ */
+export function facilitationEnginePluginIds(sources: FacilitationEngineSources): string[] {
+  const declared = declaredEngines(sources);
+  const healthy = declared.filter((entry) => !entry.errored);
+  return (healthy.length > 0 ? healthy : declared).map((entry) => entry.id);
 }
 
 export type FacilitationEngineResolution =

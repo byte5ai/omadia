@@ -203,7 +203,10 @@ export function createOperatorChannelsRouter(
         channels,
         agents: agents
           .filter((a) => a.status === 'enabled')
-          .map((a) => ({ slug: a.slug, name: a.name })),
+          // #2043 — `kind` rides along so the dashboard can leave
+          // facilitators out of the binding picker without a second request
+          // (a binding to one is refused anyway).
+          .map((a) => ({ slug: a.slug, name: a.name, kind: a.kind ?? 'standard' })),
         fallback_slug,
         directory_types: live.directory.types(),
       });

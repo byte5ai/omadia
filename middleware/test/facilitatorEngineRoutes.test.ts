@@ -64,6 +64,32 @@ describe('facilitation engine: operator routes', () => {
     assert.equal(JSON.stringify(two).includes('installed'), false, 'no English sentence in the answer');
   });
 
+  it('an engine installed without its grant is errored, and is still reported as waiting for the grant', async () => {
+    const status = async (): Promise<Record<string, unknown>> => (await h.call('GET', '/agents/facilitation-engine')).json;
+    // What a real install without the SQL grant leaves behind: the install job
+    // ends `installed_missing_permissions` and the registry entry is errored.
+    h.installed = [{ id: ENGINE, status: 'errored' }];
+    h.sqlGranted = false;
+    assert.deepEqual(
+      [(await status())['state'], (await status())['plugin_id'], (await status())['reason_code']],
+      ['ungranted', ENGINE, 'ungranted'],
+      'not "none": the operator has to be told to grant it',
+    );
+    // Granted, but still errored for another reason: bound, and not usable.
+    h.sqlGranted = true;
+    assert.deepEqual(
+      [(await status())['state'], (await status())['available'], (await status())['reason_code']],
+      ['bound', false, 'inactive'],
+    );
+    // A healthy engine beside an errored leftover is not ambiguous.
+    h.installed = [
+      { id: ENGINE, status: 'active' },
+      { id: '@acme/second-engine', status: 'errored' },
+    ];
+    h.engineState = { pluginId: ENGINE, version: '1.0.0', available: true };
+    assert.deepEqual([(await status())['state'], (await status())['plugin_id']], ['bound', ENGINE]);
+  });
+
   it('a plugin that only declares the capability is not the engine until the operator grants it SQL', async () => {
     h.sqlGranted = false;
     // Nothing is attached at create…
