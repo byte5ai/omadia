@@ -7,7 +7,9 @@ import type {
 import { toSemanticAnswer } from '@omadia/channel-sdk';
 import { turnContext, today } from '@omadia/orchestrator';
 import type { JobHandler, JobSpec } from '@omadia/plugin-api';
-import { Cron } from 'croner';
+import type { Cron } from 'croner';
+
+import { createCron } from '../../scheduler/cronerCompat.js';
 
 import {
   buildSlotDirective,
@@ -306,7 +308,7 @@ export class RoutineRunner {
     const reference = routine.lastRunAt ?? routine.createdAt;
     let probe: Cron | undefined;
     try {
-      probe = new Cron(routine.cron, { paused: true });
+      probe = createCron(routine.cron, { paused: true });
       const next = probe.nextRun(reference);
       if (!next) return false;
       return next.getTime() <= Date.now();
