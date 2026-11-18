@@ -75,6 +75,17 @@ facilitations view is not part of it; that is the engine plugin's own UI.
 - **Language**: sent only when the operator changed it on a facilitator;
   standard agents never send it.
 
+### Fixed — Native facilitators, found by running the real engine against the real kernel (epic #2043)
+
+- A plugin whose `activate()` threw after registering tools kept them registered; the next activation failed with "duplicate native-tool name". Failed activations and deactivations now drop the plugin's tools.
+- `ctx.routes.register` accepts a plain `(req, res[, next])` handler (wrapped into a router); error handlers and non-functions are still refused.
+- The facilitation engine status is current right after a SQL grant or revoke (`ungranted` is reachable through a real install; no 30 s wait).
+- After a restart a facilitator had no engine tools: it was built before the SQL grants could be read and nothing rebuilt it. The registry now rebuilds a facilitator whenever its effective engine grant changes.
+- The mention that opens a facilitation produced two messages (the engine's handshake and the model's own paraphrase). The answer of a channel-started turn is dropped when the engine posted as the facilitator during it.
+- A channel-started facilitator turn tells the model that it comes from a group conversation and that the engine is set up.
+- The subscription NOTIFY trigger of migration `0068_conversation_messages.sql` is row-level: a statement that touches no row wakes no listener.
+- A channel type belongs to the plugin that first acts for it (no longer derived from the plugin id); `GET /operator/channels` reports each agent's `kind`.
+
 ### Added — Native facilitators, kernel side (epic #2043)
 
 2026-11-18. A facilitator is a kind of agent that only moderates. The engine
