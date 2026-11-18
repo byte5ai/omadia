@@ -40,6 +40,9 @@ import { ChoiceCard } from '../../../../_components/ChoiceCard';
 import { BuilderMarkdown } from './BuilderMarkdown';
 import { isSendKey } from '../../../../_lib/composerKeys';
 
+/** Heartbeat activity gap after which an in-flight turn reads as stuck. */
+const LIKELY_STUCK_AFTER_MS = 30_000;
+
 type ChatItem =
   | { kind: 'message'; key: string; role: 'user' | 'assistant'; text: string; ts: number }
   | {
@@ -546,6 +549,16 @@ export function BuilderChatPane({
     ],
   );
 
+  // #1738 — while an `ask_user_choice` card is open the turn is blocked on
+  // the operator, not on the model, so a growing activity gap is expected
+  // and must not read as "likely stuck — press Stop?" (Stop would abort the
+  // open question).
+  const awaitingChoice = inflight && pendingUserChoice != null;
+  const likelyStuck =
+    !awaitingChoice &&
+    liveness !== null &&
+    liveness.sinceLastActivityMs > LIKELY_STUCK_AFTER_MS;
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="relative min-h-0 flex-1">
@@ -603,9 +616,11 @@ export function BuilderChatPane({
             onKeyDown={onKeyDown}
             rows={2}
             placeholder={
-              inflight
-                ? t('placeholder.thinking')
-                : t('placeholder.idle')
+              awaitingChoice
+                ? t('placeholder.awaitingChoice')
+                : inflight
+                  ? t('placeholder.thinking')
+                  : t('placeholder.idle')
             }
             className="min-h-[44px] flex-1 resize-none rounded-md border border-[color:var(--border)] bg-[color:var(--bg)] px-3 py-2 text-[13px] leading-snug text-[color:var(--fg-strong)] placeholder:text-[color:var(--fg-subtle)] focus:border-[color:var(--accent)] focus:outline-none disabled:opacity-60"
           />
@@ -633,7 +648,7 @@ export function BuilderChatPane({
         {inflight ? (
           <p
             className={
-              liveness && liveness.sinceLastActivityMs > 30000
+              likelyStuck
                 ? 'font-mono-num mt-2 inline-flex flex-wrap items-center gap-2 text-[10px] uppercase tracking-[0.18em] text-[color:var(--danger)]'
                 : 'font-mono-num mt-2 inline-flex flex-wrap items-center gap-2 text-[10px] uppercase tracking-[0.18em] text-[color:var(--fg-subtle)]'
             }
@@ -672,9 +687,11 @@ export function BuilderChatPane({
                 {liveness.toolCallsThisIter > 0
                   ? ` · ${String(liveness.toolCallsThisIter)} tools this iter`
                   : ''}
-                {liveness.sinceLastActivityMs > 30000
-                  ? ` · ${t('liveness.likelyStuck')}`
-                  : ''}
+                {awaitingChoice
+                  ? ` · ${t('liveness.awaitingChoice')}`
+                  : likelyStuck
+                    ? ` · ${t('liveness.likelyStuck')}`
+                    : ''}
               </span>
             ) : null}
           </p>

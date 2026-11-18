@@ -494,8 +494,8 @@
     "openLabel": "open"
   },
   "nav": {
-    "dashboard": "Dashboard",
-    "chat": "Chat",
+    "chatCluster": "Chat",
+    "debug": "Debug",
     "store": "Hub",
     "builder": "Builder",
     "memory": "Memory",
@@ -512,6 +512,7 @@
     "agentsOverview": "Overview",
     "channels": "Channels",
     "pluginsCluster": "Plugins",
+    "setupCluster": "Setup",
     "adminCluster": "Admin",
     "help": "Help",
     "teamsSignIn": "Teams sign-in",
@@ -551,6 +552,29 @@
     "colStep": "Step",
     "colPostcondition": "Postcondition",
     "colTransition": "Transition",
+    "colDuration": "Duration",
+    "colReason": "Reason",
+    "runReasonLabel": "Reason",
+    "runReasonUnknown": "Cause not recorded",
+    "durationMs": "{value} ms",
+    "durationSeconds": "{value} s",
+    "durationMinutes": "{min} min {sec} s",
+    "runErrorCodes": {
+      "max_steps_exceeded": "Step budget exceeded",
+      "step_not_in_graph": "Step is not in the published graph",
+      "timer_misconfigured": "Timer step is misconfigured",
+      "no_role_holder": "No reachable holder for the human step",
+      "await_timed_out": "Deadline passed with no response",
+      "effect_threw": "Step failed with an error",
+      "step_timeout": "Step exceeded its time budget",
+      "resume_no_current_step": "Resume found no next step",
+      "unknown_step": "Transition target is not a known step",
+      "postcondition_unmet_no_fallback": "Postcondition unmet and no fallback declared",
+      "no_transition_no_fallback": "No transition matched and no fallback declared",
+      "ambiguous_guards": "Several transitions matched at once",
+      "fallback_transition_missing": "Declared fallback transition does not exist",
+      "approval_rejected_no_transition": "Rejected, and no transition handles the rejection"
+    },
     "resultContext": "Result context",
     "loadError": "Could not load workflows",
     "publishError": "Publish failed",
@@ -563,7 +587,7 @@
     "cancelRunFailed": "The run could not be cancelled",
     "cancelPendingHint": "Cancellation requested — the run stops at the next step boundary.",
     "strictApprovalLabel": "Strict approval",
-    "strictApprovalHint": "Only an explicit approve advances; a missing or malformed response counts as a rejection. Recommended when this step gates an irreversible action.",
+    "strictApprovalHint": "Only an explicit approve counts as approval; a missing or malformed response counts as a rejection. A rejection never advances on an unguarded transition — guard the outgoing transitions on stepResult.approved so the refusal has a path of its own. Recommended when this step gates an irreversible action.",
     "designerHeading": "Visual designer",
     "designerHint": "Add steps, drag between them to wire transitions, edit a step in the inspector, then Save. Mark one step as the entry.",
     "chatHeading": "Conversational builder",
@@ -628,6 +652,7 @@
     "entryLabel": "Entry step",
     "transitionLabel": "Transition",
     "guardLabel": "Guard (JSON, optional)",
+    "guardHumanRejectionHint": "A transition out of a human step is never taken on a rejection unless its guard asks for one. Guard the approval path on stepResult.approved = true and give the rejection its own transition.",
     "awaitsHeading": "Pending human steps",
     "approve": "Approve",
     "reject": "Reject",
@@ -973,7 +998,6 @@
   "themeControls": {
     "paletteAriaLabel": "Accent palette",
     "appearanceAriaLabel": "Appearance",
-    "menuAriaLabel": "Palette and appearance",
     "palette": {
       "lagoon": "Lagoon (teal)",
       "petrol": "Petrol (blue)",
@@ -983,7 +1007,9 @@
       "system": "Automatic",
       "light": "Light",
       "dark": "Dark"
-    }
+    },
+    "switchToDark": "Switch to dark mode",
+    "switchToLight": "Switch to light mode"
   },
   "login": {
     "title": "Sign in to omadia",
@@ -1071,13 +1097,16 @@
     "streamErrorAnnounce": "{title}: response failed"
   },
   "authBadge": {
-    "loginLink": "Login",
     "authError": "auth err",
     "signedInAs": "Signed in as",
     "signOut": "Sign out everywhere",
     "signOutHint": "Signs you out on all your devices, not just this one.",
     "signOutFailed": "Sign-out did not go through. You are still signed in.",
-    "signOutRetry": "Try signing out again"
+    "signOutRetry": "Try signing out again",
+    "preferences": "Preferences",
+    "palette": "Palette",
+    "appearance": "Appearance",
+    "language": "Language"
   },
   "error": {
     "title": "Something went wrong",
@@ -3147,6 +3176,7 @@
       "scrollToBottomAriaLabel": "Jump to latest message",
       "placeholder": {
         "thinking": "Builder is thinking …",
+        "awaitingChoice": "Builder is waiting for your choice above …",
         "idle": "Describe what the agent should do. Enter to send, Shift+Enter for a line break."
       },
       "button": {
@@ -3156,7 +3186,8 @@
       "liveness": {
         "streamLive": "Stream live · {elapsed} · model {model}",
         "iterActivity": "Iter {iteration} · last activity {gap}",
-        "likelyStuck": "likely stuck — press Stop?"
+        "likelyStuck": "likely stuck — press Stop?",
+        "awaitingChoice": "waiting for your choice"
       },
       "turnStats": {
         "live": "Turn live",
@@ -4480,6 +4511,7 @@
       "save": "Save",
       "saveWithCount": "Save ({count})",
       "savedCheck": "✓ Saved",
+      "savedRestartPending": "✓ Saved — the plugin keeps running and uses the new values after the next restart.",
       "savedNotStarted": "Saved — but the plugin did not start with the new values.",
       "connected": "Connected",
       "notConnected": "Not connected",
@@ -5253,7 +5285,9 @@
       "calls": "Calls",
       "cacheHitRate": "Cache hit rate",
       "cacheHitHint": "Share of input served from the warm cache",
-      "tokens": "Tokens (in / out)"
+      "tokens": "Tokens (in / out)",
+      "cacheSavings": "Cache savings",
+      "cacheSavingsHint": "Without the cache: {uncached}"
     },
     "panels": {
       "costOverTime": "Cost over time",
@@ -5264,6 +5298,11 @@
     "barTitle": "{date} · {cost} · {calls, plural, one {# call} other {# calls}}",
     "rowStats": "{calls} calls · {input} in · {output} out · {cacheRead} cache read · {cacheWrite} cache write",
     "rowReference": " · subscription calls ≈ {reference} API equivalent",
+    "rowCacheSavings": " · cache saved {saving}",
+    "currency": {
+      "label": "Currency",
+      "converted": "{usd} · ECB rate of {date}"
+    },
     "groups": {
       "builder": "Builder ({count, plural, one {# draft} other {# drafts}})",
       "other": "Other ({count, plural, one {# source} other {# sources}})"

@@ -524,6 +524,7 @@ function buildPrompt(
     "If unsure of an Agent slug, use 'fallback' (the standard orchestrator).",
     'If the user needs a capability that is NOT in KNOWN ACTION IDS (e.g. a system like Pleo, Jira, Odoo), STILL add the action step with a short descriptive actionId of the form <system>.<verb> (e.g. pleo.list_missing_receipts) and say in your reply that this connector is not connected yet — the operator can connect it inline. Never ask the user for connector details.',
     "For a human step with principal kind 'user' whose address you do not know, put the person's NAME exactly as the user wrote it into ref (e.g. 'Teresita Biel'); the system resolves names against the company directory. Never ask the user for a Teams or email address.",
+    '#1698 — EVERY transition out of a human step needs a guard, and the rejection needs a path of its own: guard the approval path with {"op":"eq","path":"stepResult.approved","value":true} and add a second transition guarded on value:false that leads somewhere sensible (a notifying agent step, or a terminal step). A transition with no guard is never taken on a rejection, so an approval step with only an unguarded transition leaves a refused run stuck. Use {"op":"always"} only when BOTH outcomes deliberately go to the same step.',
     '',
     ...templateBlock,
     'CURRENT DRAFT GRAPH:',

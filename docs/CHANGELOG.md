@@ -53,6 +53,294 @@ failed with `reason=tsc`.
   status the same way it already applied `ok`, so `BuildStatusStrip` and
   "Fix with Builder" render correctly again after a reload.
 
+### Fixed — Custom-Pattern-Worker: eine laufende Anfrage hält den Prozess offen
+
+2026-11-18. `@omadia/plugin-privacy-guard` 0.16.1. Der Worker, der die
+Operator-Patterns abseits des Main-Threads ausführt (#1553), war immer
+`unref()`ed; offen hielt den Event-Loop nur der Budget-Timer einer Anfrage.
+Feuerte dieser Timer genau dann, wenn der Worker die Anfrage schon als fertig
+markiert, die Antwort aber noch nicht gepostet hatte, trat der Timer ab („die
+Antwort ist unterwegs“) — und ohne weiteren Handle lief der Event-Loop leer,
+bevor die Antwort ankam. Die Anfrage settled nie. Im CI-Lauf unter Last
+meldete `node:test` deshalb jeden Test in
+`test/privacyCustomTermsAndIdnum.test.ts` als „Promise resolution is still
+pending but the event loop has already resolved“. Jetzt ist der Worker
+ge-`ref()`t, solange er eine Anfrage hält, und wird erst im Leerlauf wieder
+`unref()`ed: Antwort, `error` oder `exit` kommen immer an, ein Runaway beendet
+weiterhin der Budget-Timer. Ein Regressionstest erzwingt das Zeitfenster in
+einem Kindprozess.
+
+### Fixed — Setup-Felder des Knowledge Graph speichern ohne Crash-Loop (#1860)
+
+2026-11-17. orchestrator-extras legt mit `replace` einen Wrapper über den
+`knowledgeGraph`-Service. Ein Hot-Restart des Graph-Plugins nach dem Speichern
+von Setup-Feldern ließ den Wrapper stehen, die neue Instanz scheiterte an
+„duplicate provider“, das Plugin wurde `errored` gespeichert, und der nächste
+Boot brach ohne `knowledgeGraph` ab. Jetzt wird ein Plugin, dessen Service ein
+anderes Plugin wrappt, nicht mehr im laufenden Prozess neu gestartet: die
+Werte werden gespeichert, der Status bleibt `active`, und der Store sagt, dass
+sie nach dem nächsten Neustart gelten (`activation.restart_pending`). Bereits
+hängende Einträge mit diesem Fehler setzt `retryErroredPlugins` beim Boot
+zurück, so dass betroffene Instanzen ohne Handarbeit an `installed.json`
+wieder starten.
+
+### Changed — croner 11 mit 9.x-Kompatibilität für gespeicherte Crons
+
+2026-11-18. croner springt von 9.1.0 auf 11.0.0 (#1693). Damit gespeicherte
+Routinen und Plugin-Job-Schedules ihre Bedeutung behalten, läuft jeder
+`new Cron(...)` jetzt über `createCron()` (`src/scheduler/cronerCompat.ts`):
+Schrittweiten mit Zahlen-Präfix (`0/15`, `5/15`, `/10`), die croner 11
+standardmäßig ablehnt, bleiben über `sloppyRanges` gültig und feuern wie
+bisher. `?` wird wie in 9.x beim Anlegen des Jobs durch den aktuellen Wert
+des Feldes ersetzt, statt wie in croner 11 als `*` zu gelten (`0 9 ? * *`
+bleibt monatlich und wird nicht täglich). Ein Differenztest mit 80 000
+Zufallsmustern gegen croner 9.1.0 ergab außerhalb von Sommerzeit-Wechseln
+keine Abweichung; croner 11 akzeptiert lediglich zusätzlich Muster, die 9.x
+abgelehnt hat. Geändert ist nur das DST-Verhalten auf Hosts mit lokaler
+Zeitzone (croner 11: Festzeit-Jobs in einer Sommerzeit-Lücke laufen zur
+ersten gültigen Zeit danach); die Container laufen in UTC.
+
+### Fixed — Conductor `webhook.post` reported a refused delivery as a successful step (#1703)
+
+2026-11-16. A workflow step that delivered nothing looked exactly like one that
+delivered: the run completed, the history showed no error, and the refusal was
+visible only to someone who read the run context out of Postgres.
+
+- **A non-2xx response now fails the step.** `webhook.post` still reports the
+  refusal in its result (`{ ok, status }`) — what changed is that the engine no
+  longer reads that as success. A `webhook.post` step that declares no postcondition
+  of its own now gets `stepResult.data.ok == true`, so a receiver answering 500, or a
+  429 from one out of quota, is an `unmet` postcondition. Keyed on the action id: a
+  plugin tool that happens to answer `{ok:false}` keeps its current meaning.
+- **A graph can take its error path.** `unmet` fires the step's
+  `fallbackTransitionId` (FR-024) like any other postcondition failure, so a
+  workflow can route a failed delivery to a retry or an escalation step. With no
+  fallback declared it surfaces as the `postcondition_unmet_no_fallback` stuck
+  decision and the run ends `failed`.
+- **The history carries it.** The step's recorded `postcondition_outcome` is
+  `unmet` with no transition taken, next to the `status` the result leaves in the
+  run context. Nothing is only in the log.
+- **A step that declares its own postcondition is untouched** — tolerate a 404, or
+  branch on `status`, exactly as before. The default fills an absence; it never
+  overrides.
+- `nextStep` takes an optional `NextStepOptions.defaultPostcondition` for this
+  (`@omadia/conductor-core`). Omitted, the engine's "absent ≡ always met" rule is
+  unchanged, so every other step kind and action behaves as it did.
+
+### Fixed — Conductor: a failed webhook delivery says why, and says it per attempt (#1704)
+
+2026-11-16. Every transport failure of an outbound delivery was stored as the
+same four words. `webhookDispatcher.ts` recorded `err.message`, and undici
+reports a DNS miss, a refused connection and a protocol mismatch all as a bare
+`fetch failed`, keeping the actual reason in `err.cause` — so `last_error` read
+`fetch failed` for an unresolvable host and for a connection to a Postgres port
+alike. There was also no log line per failed attempt, only the final
+`exhausted after 6 attempts`, up to half an hour after the delivery first failed.
+
+- **`last_error` carries the cause chain**: `fetch failed (getaddrinfo ENOTFOUND
+  doesnotexist.invalid)`, `fetch failed (connect ECONNREFUSED 172.18.0.2:5432)`.
+  The rendering moved to `middleware/src/platform/describeError.ts`, shared with
+  the registry client's own one-level version from #1482 (`registryClient.ts`
+  re-exports it, so nothing imported from there breaks).
+- **One log line per failed attempt**, naming the target and the schedule:
+  `[conductor] webhook delivery <id> to subscription <sub-id> (<origin>) attempt 2/6 failed: <cause>;
+  retrying in 60s`. A subscription that can never succeed (`subscription
+  disabled`, `subscription secret missing`) logs too — before, it recorded
+  silently — and is reported as `abandoned`, not as `exhausted after 1 attempts`:
+  no attempt budget was spent, and a grep for the real exhaustion line must not
+  also land on these.
+- **The retry worker is covered too**, not just the inline first attempt — it is
+  what drives attempts 2..6, so it is where most of the issue's missing lines
+  were. Its three catch blocks (reconcile pass, `claimDue`, a crashed attempt)
+  now name the cause via `describeError` instead of `err.message`, and the one
+  terminal outcome it records without going through the dispatcher — a delivery
+  whose subscription has since been deleted — leaves a log line instead of
+  dying silently.
+- **`last_error` is one bounded line.** `postWebhook` passes up to 64 KiB of
+  response body through, and the operator UI renders the value verbatim; it is
+  now whitespace-collapsed and truncated to 500 characters. An empty body gives
+  `http 500` instead of the dangling `http 500: `.
+- **Not changed, deliberately:** the backoff schedule (30s doubling, ≈31 minutes
+  to exhaust) and the SSRF pre-check at subscription-creation time, which only
+  inspects literal addresses. A hostname that resolves to a private address is
+  still accepted at creation and still refused by the guarded undici `Agent` at
+  connect time — that refusal is simply now legible in `last_error` instead of
+  reading as `fetch failed`.
+
+### Changed — web-ui header: minimal signed-out bar, preferences in the user menu, reordered nav
+
+UI only — no route, API or auth-logic change. Signed out (and always on
+`/login` + `/setup`) the header shows no nav and no "Login" link, only a flag
+language menu, a sun/moon light↔dark toggle and the GitHub issue button.
+Signed in, palette, appearance and language moved out of the bar into the user
+chip's menu (new "Preferences" section); the GitHub issue button sits at the
+far right in both shapes. Nav order is now Skills · Chat · Setup · Admin ·
+Plugins · Help: Dashboard was dropped (the logo already links to `/`). Chat is
+now a cluster (`nav.chatCluster`) holding Channels (`/operator/channels`, back
+in the nav after #385 dropped it) and Debug (`/chat`, `nav.debug`; `nav.chat`
+removed). The old
+Admin cluster was split — new Setup cluster (`nav.setupCluster`) holds LLM
+access, Orchestrators, Teams sign-in, Conductor and Routines (moved out of the
+top level); Admin keeps Admin, System, Receipts, Privacy reports and Field classification. Plugin nav
+entries targeting `adminCluster` still land in Admin. Wordmark and tagline sit side by side. The layout
+decides signed-in vs. signed-out from the session cookie with the proxy's
+decode-only check, now shared via `web-ui/app/_lib/sessionToken.ts`. New
+component `HeaderControls`; `ThemeControls` became `useThemePrefs` +
+`AppearanceToggle`/`PaletteSelect`/`AppearanceSelect`. i18n: removed
+`authBadge.loginLink`, `themeControls.menuAriaLabel`, `nav.dashboard`; added
+`authBadge.{preferences,palette,appearance,language}` and
+`themeControls.{switchToDark,switchToLight}`.
+
+### Fixed — Node-Aktivierung nach Amp-Snapshot-Restore
+
+2026-11-16. Neue Orbs hatten die Node-22-/24-Toolchains und alle Pakete,
+starteten aber Shells mit Node 26: Amp verwirft Setup-Änderungen an den
+Shell-Profilen beim Aktivieren eines gemeinsamen Snapshots. Das Setup
+hinterlegt jetzt einen direkten Node-22-PATH für den Snapshot; Resume
+registriert den vorbereiteten Root-/Desktop-Selektor nach der Aktivierung
+idempotent erneut. Ein CI-Regressionstest setzt die Profile wie beim Restore
+zurück und prüft Aktivierung, wiederholtes Resume und erhaltene Profileinträge.
+Keine Pakete werden beim Resume installiert.
+
+### Added — Reproduzierbare Amp-Orb-Umgebung
+
+2026-11-10. `.agents/setup` installiert die gepinnten Node-Toolchains
+(Kernel/Web-UI aus `.nvmrc`, Desktop Node 24), die drei npm-Lockfile-Bäume
+inklusive nativer Addons sowie Docker Compose/Buildx und baut die Middleware-
+Workspace-Exports. Beide Runtimes installieren mit dem npm der Node-22-Toolchain,
+damit Desktop-Install-Skripte nicht still übersprungen werden. Ein ausschließlich an
+Loopback gebundener PostgreSQL-16/pgvector-Container stellt getrennte lokale
+App- und Testdatenbanken bereit; seine Durability ist für Wegwerfdaten reduziert.
+Login-Shells wählen die Toolchain passend zum Checkout-Verzeichnis.
+`.agents/resume` repariert nur den Datenbankstart, ohne Pakete neu zu installieren.
+ENV-Vorlagen werden nur bei fehlenden Dateien kopiert, keine Benutzeranmeldung
+oder Produktions-Credentials werden im Snapshot abgelegt. Portal-Manifeste sind
+jetzt auch im versionierten `.gitignore` ausgeschlossen. Betriebsdetails und
+Test-DSNs stehen im Handoff §14.
+
+### Security — Node 22.23.5 in every shipped image
+
+2026-11-16. The middleware, web-ui and updater images move to Node 22.23.5,
+a security release with eight high-severity fixes in `http`, `http2` and
+`tls` (among them CVE-2026-123864, nested parser execution from empty writes,
+which reaches the updater's `node:http` control plane). The updater sidecar
+was still on 22.23.2 because Dependabot did not watch its Dockerfile. It now
+does, in `.github/dependabot.yml`. The same rollup moves `docx` from 9.7.1 to
+9.15.4. Generated `.docx` files now include a theme part and the TOC1–TOC9
+styles, express table widths in fiftieths of a percent, and drop the control
+characters XML 1.0 forbids. Before this change those characters made Word
+refuse the file.
+
+### Fixed — Conductor: a rejected approval no longer takes an unguarded transition (#1698)
+
+2026-11-10. The approval gate computed the decision and then ignored it: the
+executor normalised `stepResult.approved`, the engine chose the path, and nothing
+on the path read the flag. An outgoing edge without a guard matches
+unconditionally, so a human step with one unguarded edge ran the action it was
+meant to gate on an explicit `{"approved": false}` — and `strictApproval: true`
+did not change that, it only silenced the one warning (`approval_fail_open`) that
+mentioned the shape. Counterpart to #759, which shipped the flag, the
+normalisation and the lint but never touched the transition path.
+
+- **A rejected human step may only leave on a transition whose guard asks for the
+  rejection.** Unguarded happy-path edges are excluded, the declared deadline
+  fallback included — firing it would report an explicit "no" as a missed
+  deadline. Nothing matching ends the run `failed` with the new stuck code
+  `approval_rejected_no_transition`; a terminal rejected step is reported the same
+  way instead of `completed`, which read as an approval everywhere.
+- **An absent or non-boolean `approved` is deliberately not a rejection.** In
+  fail-open mode that case is approval by definition, and under `strictApproval`
+  the executor has already turned it into a literal `false`, so no path changes
+  for a step nobody rejected. Agent and action steps are untouched.
+- **New publish warning `rejection_unguarded_edge`**, raised whenever a human step
+  has an unguarded happy-path edge — regardless of `strictApproval` (the flag
+  never decided the path) and regardless of the target step's kind.
+  `approval_fail_open` is unchanged.
+- **Designer:** an edge drawn out of a human step is pre-filled with the approval
+  guard, the next one with the rejection guard; the checkbox hint for "strict
+  approval" stated the opposite of the behaviour and is corrected in both locales.
+- **Bundled content:** `onboarding-checklist` guards its edges and gains a
+  `halted` step (rejecting the HR step used to open the IT await reading "HR
+  onboarding … is done"); `expense-approval` and `notify-and-escalate` state
+  `{"op":"always"}` on the escalation edge where both outcomes deliberately share
+  a target; the builder agent's prompt now requires a guard per human edge.
+- **Migration, for already-published versions too** (graphs are stored per
+  version and run by the current engine): a graph that routed a rejection through
+  an unguarded edge needs that edge guarded. `{"op":"ne","path":"stepResult.approved","value":true}`
+  on a timeout fallback makes it serve rejections as well (the timeout path itself
+  is fired directly by `expireAwait` and never consults guards);
+  `{"op":"always"}` states "both outcomes, same step".
+
+### Fixed — Conductor: a failed run records why it failed
+
+2026-11-10. #1699. The reason a run failed reached the container log and nothing
+else: neither table had an error column, the run context held only
+`stepAttempts`, and the API served exactly those fields — so "Verlauf" could
+render a red badge and no cause.
+
+- **Every failure path carries its own code.** `step_not_in_graph`,
+  `timer_misconfigured`, `no_role_holder`, `await_timed_out`, `effect_threw`,
+  `step_timeout`, `resume_no_current_step`, `max_steps_exceeded` — plus the
+  engine's own `StuckCode` values (`ambiguous_guards`,
+  `postcondition_unmet_no_fallback`, …), which `@omadia/conductor-core` always
+  produced and the executor always dropped.
+- **A run that exhausted the step budget no longer hangs silently** (US2-AS4):
+  the driver's `MAX_STEPS` exit wrote no step row at all and left the run
+  `running` for ever. It now records `max_steps_exceeded`; a dry run that hits
+  the same budget reports it instead of reading as a clean pass.
+- **Stored on the step and mirrored on the run** (conductor migration `0013`):
+  `error_code`, a redacted and truncated `error_message`, and `error_detail`
+  (the code's typed arguments). The run-level copy is what the run list renders.
+  No backfill: a pre-`0013` row reads "cause not recorded", never a guess — and
+  so does a stored code this build has no vocabulary for, with the message kept
+  beside it as detail.
+- **Recorded on the recovered path too** — a human step skipped for want of a
+  holder, an await that timed out into its fallback. A ticking timer and an
+  operator cancel record none; neither is a fault.
+- **Messages are safe to persist:** credentials and provider correlation handles
+  (`request_id`, `cf-ray`, `sk-…`) are stripped and the text is capped at 2 000
+  characters. Never a stack trace. Credentials, not PII.
+- **Step duration works at all now.** Every step row was written with
+  `started_at == ended_at` (both from the same transaction), so no step ever had
+  a duration. The driver passes the real start; the await paths pass the await's
+  `created_at`.
+- **`run.failed` webhooks carry `errorCode`/`errorMessage`**, a dry run reports
+  its reason (and a throwing agent step no longer 500s the preview route), and
+  the trace shows "Duration" and "Reason" columns plus the boolean actor
+  qualifiers (`noHolder`, `timedOut`, …) it used to swallow. Only the boolean
+  ones: `operator_cancel` carries the requesting principal, which does not
+  belong in the trace table.
+
+### Fixed — Conductor inbound webhook: a disabled endpoint no longer eats the delivery id
+
+2026-11-11. A request to a disabled inbound endpoint was answered
+`200 {"outcome":"disabled"}` and written to `conductor_webhook_inbound_deliveries`.
+The dedupe check looked only at `(endpoint_id, delivery_id)`, so the sender's honest
+redelivery after the endpoint was enabled again was answered
+`200 {"outcome":"duplicate"}`, no run started, and the event was lost silently —
+without a log line, because both answers are plain 200s (#1701).
+
+- **A `'disabled'` row is re-claimable.** `ConductorWebhookEndpointStore.claim()`
+  treats an outcome in the new exported `REDELIVERABLE_OUTCOMES` set as an attempt
+  that never reached `emit()`, re-claims the existing row (no second row is inserted)
+  and answers `'claimed'`. Unlike the abandoned-in-flight recovery there is no
+  staleness window: the endpoint can come back a second after the refusal.
+- **Outcomes that did process the event stay terminal.** `'started'` and
+  `'no_subscribers'` both ran `emit()`, so re-claiming them would re-route a handled
+  event; `'invalid_payload'` is sender-side and the body is covered by the HMAC.
+  `'rate_limited'` already inserts no row. A redelivery arriving while the endpoint is
+  off is answered from the ledger before the enabled check, so a `'started'` row is
+  never overwritten with `'disabled'`.
+- **Two deliberate limits.** The ledger holds one row per
+  `(endpoint_id, delivery_id)`, so a successful redelivery overwrites the `'disabled'`
+  outcome: `conductor_webhook_inbound_deliveries` shows a refusal only while nobody
+  has redelivered that id — the refusals that still matter. And a refusal keeps
+  occupying a rate-limit slot for the rolling window (a re-claim bumps `received_at`),
+  because that is what bounds ledger growth while an endpoint is off; the redelivery
+  of an already-refused id is never throttled, it short-circuits before the window
+  count.
+- No migration, no API change.
+
 ### Added — `captureDisclosure` on the chat stream
 
 2026-11-04. OB-81 declared the field and the chat renders it, but nothing ever
@@ -71,6 +359,57 @@ produced a value, so no turn carried one.
   `TurnIngestResult.embeddingScheduled`.
 - `graphRefs` stays unset: `done` also reaches Public API clients, which have no
   use for internal node ids. Non-streaming replies are unchanged.
+### Fixed — raw-body webhooks: a missing `Content-Type` no longer fails the HMAC
+
+2026-11-10. Reported as #1700: a correctly signed inbound delivery sent without a
+`Content-Type` header answered `401 webhook.bad_signature`, pointing the sender at
+its signing code instead of at the header.
+
+- **The raw parsers now use a FUNCTION content-type matcher.** body-parser's
+  wildcard type *string* goes through `type-is`, which needs a media type to
+  compare against: a request with no `Content-Type` (or an empty one) matched
+  nothing, was never parsed, and the handler HMAC'd an empty buffer. An HMAC is
+  over bytes, so the sender's media type must not decide whether verification
+  sees them. Fixed for `POST /api/hooks/:endpointId`
+  (`routes/conductorWebhooksInbound.ts`) and for every plugin `body: 'raw'` route
+  (`platform/pluginRouteRegistry.ts`, `rawBodyCapture`), whose own doc comment
+  already promised the "sends nothing at all" case worked.
+- **Parsing widened, authorisation unchanged.** A wrong signature still answers
+  the same `401`, an unknown endpoint id still answers byte-for-byte that same
+  `401`, and the 256 kb limit is untouched. With no header, only the JSON parse
+  decides the outcome: valid JSON starts the run, unparseable bytes end as
+  `invalid_payload`.
+
+### Fixed — Conductor: a webhook payload could steer a workflow's loop budget
+
+2026-11-11. The event router handed an inbound payload to the executor as the
+run's initial context untouched, while the ephemeral path stripped the
+executor-owned keys — the two disagreed.
+
+- **Reserved run-context keys are stripped at one gate.** `steps`,
+  `stepAttempts`, `transcript` and `transcriptText` now live in
+  `conductor/runContext.ts` and are removed in `startRun` and `previewRun`, so
+  every trigger kind (event/webhook, manual, cron, agent) is treated alike. A
+  signed `{"stepAttempts":{"a":-5}}` made a step guarded by
+  `lt ctx.stepAttempts.a 3` run eight times and `{"a":99}` made it run once;
+  both now run the designed three. A seeded `steps` map can no longer present
+  results for steps that never ran.
+- **A trigger `filter` is evaluated against the sanitized context** the run
+  will actually see, not against keys the sender added. Behaviour change worth
+  a look before upgrading: a published workflow whose trigger `filter`
+  references `ctx.steps`, `ctx.stepAttempts` or `ctx.transcriptText` stops
+  matching, and the inbound webhook reports `no_subscribers` instead of
+  `started`. Such a filter could only ever have matched on sender-supplied
+  values, which is the bug.
+- **`ctx.stepAttempts` counts only non-negative integers.** Anything else
+  restarts at 0 — the one hardening that also covers run rows persisted before
+  this fix. The resume paths keep trusting their stored context (it legitimately
+  holds `steps`/`transcript` from the first step on), so a run started before
+  the upgrade keeps whatever it was seeded with until it ends.
+- Nested keys of the same name are untouched; only the top level is executor-owned.
+- `ctx.speaker` stays caller-settable on purpose: seeding it picks who speaks
+  first, which a start payload may decide, not what was said.
+
 ### Fixed — Admin API: excerpt duplicates, skill ack, workflow version number
 
 2026-11-04. Found while building the admin interface against the Admin API.

@@ -86,3 +86,190 @@ describe('nextStep — US1 acceptance', () => {
     expect(a).toEqual(b);
   });
 });
+
+// #1703 — a caller may supply the postcondition for a step that declares none, so a
+// result carrying its own success flag (`webhook.post`'s `{ ok: false, status }`)
+// stops advancing the graph like a successful one.
+describe('nextStep — defaultPostcondition', () => {
+  const opts = { defaultPostcondition: { op: 'eq' as const, path: 'stepResult.data.ok', value: true } };
+  // s2 declares no postcondition; t2_ok is its only happy path, t2_fail its fallback.
+  const g: WorkflowGraph = {
+    entryStepId: 's2',
+    steps: [
+      { id: 's2', kind: 'action', actionId: 'act.post', fallbackTransitionId: 't2_fail' },
+      { id: 'next', kind: 'action', actionId: 'act.done' },
+      { id: 'recover', kind: 'action', actionId: 'act.recover' },
+    ],
+    transitions: [
+      { id: 't2_ok', source: 's2', target: 'next' },
+      { id: 't2_fail', source: 's2', target: 'recover' },
+    ],
+  };
+
+  it('fills an absent postcondition — unmet takes the fallback', () => {
+    expect(nextStep(g, 's2', { data: { ok: false } }, noCtx, opts)).toEqual({
+      kind: 'advance', transitionId: 't2_fail', targetStepId: 'recover', reason: 'postcondition_unmet_fallback', postcondition: 'unmet',
+    });
+  });
+
+  it('met leaves the happy path untouched', () => {
+    const d = nextStep(g, 's2', { data: { ok: true } }, noCtx, opts);
+    expect(d).toEqual({ kind: 'advance', transitionId: 't2_ok', targetStepId: 'next', reason: 'guard_matched', postcondition: 'met' });
+  });
+
+  it("never overrides the step's own postcondition", () => {
+    const own: WorkflowGraph = {
+      ...g,
+      steps: [{ ...g.steps[0]!, postcondition: { op: 'exists', path: 'stepResult.data' } }, ...g.steps.slice(1)],
+    };
+    // The default would say unmet; the step's own says met, and the step's own wins.
+    expect(nextStep(own, 's2', { data: { ok: false } }, noCtx, opts).postcondition).toBe('met');
+  });
+
+  it('omitting it keeps "absent ≡ always met"', () => {
+    expect(nextStep(g, 's2', { data: { ok: false } }, noCtx).postcondition).toBe('n/a');
+  });
+});
+
+// #1698 — a rejected human approval must not leave the step on an edge that never asked
+// about the answer. These assert the TRANSITION, which is where the bug lived: the approval
+// flag was always computed correctly and then ignored by the path decision.
+describe('nextStep — #1698 rejected human step', () => {
+  const humanGraph = (
+    transitions: WorkflowGraph['transitions'],
+    fallbackTransitionId?: string,
+  ): WorkflowGraph => ({
+    entryStepId: 'h1',
+    steps: [
+      {
+        id: 'h1',
+        kind: 'human',
+        human: { principal: { kind: 'role', ref: 'approvers' }, channel: 'teams', message: 'ok?' },
+        ...(fallbackTransitionId !== undefined ? { fallbackTransitionId } : {}),
+      },
+      { id: 'act', kind: 'action', actionId: 'webhook.post' },
+      { id: 'nope', kind: 'action', actionId: 'act.rejected' },
+    ],
+    transitions,
+  });
+
+  const unguarded = humanGraph([{ id: 't2', source: 'h1', target: 'act' }]);
+
+  it('does NOT take the unguarded transition on {approved:false} — the whole bug', () => {
+    const d = nextStep(unguarded, 'h1', { approved: false }, noCtx);
+    expect(d.kind).toBe('stuck');
+    if (d.kind === 'stuck') {
+      expect(d.code).toBe('approval_rejected_no_transition');
+      expect(d.nodeIds).toEqual(['h1', 't2']);
+    }
+  });
+
+  it('still takes the unguarded transition on an approval', () => {
+    const d = nextStep(unguarded, 'h1', { approved: true }, noCtx);
+    expect(d).toEqual({ kind: 'advance', transitionId: 't2', targetStepId: 'act', reason: 'guard_matched', postcondition: 'n/a' });
+  });
+
+  it('an absent `approved` is not a rejection — fail-open graphs keep their path', () => {
+    const d = nextStep(unguarded, 'h1', { comment: 'looks fine' }, noCtx);
+    expect(d).toEqual({ kind: 'advance', transitionId: 't2', targetStepId: 'act', reason: 'guard_matched', postcondition: 'n/a' });
+  });
+
+  it('a guard that asks for the rejection fires', () => {
+    const g = humanGraph([
+      { id: 't-ok', source: 'h1', target: 'act', guard: { op: 'eq', path: 'stepResult.approved', value: true } },
+      { id: 't-no', source: 'h1', target: 'nope', guard: { op: 'eq', path: 'stepResult.approved', value: false } },
+    ]);
+    const d = nextStep(g, 'h1', { approved: false }, noCtx);
+    expect(d).toEqual({ kind: 'advance', transitionId: 't-no', targetStepId: 'nope', reason: 'guard_matched', postcondition: 'n/a' });
+  });
+
+  // The deadline fallback is an unguarded edge too, and firing it on a rejection reports an
+  // explicit "no" as a missed deadline (expense-approval's escalation step would tell the
+  // operator the request "was not decided within 48 hours").
+  it('an UNGUARDED fallback is not taken on a rejection either', () => {
+    const g = humanGraph(
+      [
+        { id: 't2', source: 'h1', target: 'act' },
+        { id: 't-fb', source: 'h1', target: 'nope' },
+      ],
+      't-fb',
+    );
+    const d = nextStep(g, 'h1', { approved: false }, noCtx);
+    expect(d.kind).toBe('stuck');
+    if (d.kind === 'stuck') expect(d.code).toBe('approval_rejected_no_transition');
+  });
+
+  it('a fallback whose guard asks for the rejection IS taken', () => {
+    const g = humanGraph(
+      [
+        { id: 't2', source: 'h1', target: 'act' },
+        { id: 't-fb', source: 'h1', target: 'nope', guard: { op: 'eq', path: 'stepResult.approved', value: false } },
+      ],
+      't-fb',
+    );
+    const d = nextStep(g, 'h1', { approved: false }, noCtx);
+    expect(d).toEqual({ kind: 'advance', transitionId: 't-fb', targetStepId: 'nope', reason: 'no_transition_matched_fallback', postcondition: 'n/a' });
+  });
+
+  it('a timeout fallback is untouched for every answer that is not a rejection', () => {
+    const g = humanGraph(
+      [
+        { id: 't-ok', source: 'h1', target: 'act', guard: { op: 'eq', path: 'stepResult.approved', value: true } },
+        { id: 't-fb', source: 'h1', target: 'nope' },
+      ],
+      't-fb',
+    );
+    const d = nextStep(g, 'h1', { comment: 'no flag at all' }, noCtx);
+    expect(d).toEqual({ kind: 'advance', transitionId: 't-fb', targetStepId: 'nope', reason: 'no_transition_matched_fallback', postcondition: 'n/a' });
+  });
+
+  it('an unmet postcondition does not route a rejection through the unguarded fallback', () => {
+    const g: WorkflowGraph = {
+      entryStepId: 'h1',
+      steps: [
+        {
+          id: 'h1',
+          kind: 'human',
+          human: { principal: { kind: 'role', ref: 'approvers' }, channel: 'teams', message: 'ok?' },
+          postcondition: { op: 'exists', path: 'stepResult.note' },
+          fallbackTransitionId: 't-fb',
+        },
+        { id: 'act', kind: 'action', actionId: 'webhook.post' },
+      ],
+      transitions: [{ id: 't-fb', source: 'h1', target: 'act' }],
+    };
+    const d = nextStep(g, 'h1', { approved: false }, noCtx);
+    expect(d.kind).toBe('stuck');
+    if (d.kind === 'stuck') {
+      expect(d.code).toBe('approval_rejected_no_transition');
+      expect(d.postcondition).toBe('unmet');
+    }
+  });
+
+  // A terminal human step gates nothing, but ending the run `complete` makes a refusal
+  // indistinguishable from an approval in the run list and in every run-ended webhook.
+  it('a rejected TERMINAL human step is reported, not completed', () => {
+    const d = nextStep(humanGraph([]), 'h1', { approved: false }, noCtx);
+    expect(d.kind).toBe('stuck');
+    if (d.kind === 'stuck') {
+      expect(d.code).toBe('approval_rejected_no_transition');
+      expect(d.message).toContain('no outgoing transition at all');
+      expect(d.nodeIds).toEqual(['h1']);
+    }
+  });
+
+  it('an APPROVED terminal human step still completes', () => {
+    const d = nextStep(humanGraph([]), 'h1', { approved: true }, noCtx);
+    expect(d).toEqual({ kind: 'complete', postcondition: 'n/a' });
+  });
+
+  it('only human steps are affected — an agent step reporting approved:false still advances', () => {
+    const g: WorkflowGraph = {
+      entryStepId: 's1',
+      steps: [{ id: 's1', kind: 'agent', agentId: 'a1' }, { id: 'act', kind: 'action', actionId: 'x' }],
+      transitions: [{ id: 't1', source: 's1', target: 'act' }],
+    };
+    const d = nextStep(g, 's1', { approved: false }, noCtx);
+    expect(d.kind).toBe('advance');
+  });
+});

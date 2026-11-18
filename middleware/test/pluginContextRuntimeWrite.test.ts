@@ -4,7 +4,8 @@
  * Verifies that `ctx.secrets.set/delete` and `ctx.config.set` are present
  * ONLY when the manifest declares `permissions.secrets.runtime_write`, write
  * to the plugin's OWN namespace, and that config.set refuses keys that aren't
- * declared non-secret setup fields.
+ * declared non-secret setup fields. Also covers `ctx.config.get` handing the
+ * declared type back for values an older build stored as strings (#1958).
  */
 
 import { strict as assert } from 'node:assert';
@@ -84,6 +85,8 @@ function makeStubs() {
 const SETUP_FIELDS: PluginSetupField[] = [
   { key: 'app_id', label: { en: 'App ID' }, type: 'string' },
   { key: 'private_key', label: { en: 'Key' }, type: 'secret' },
+  { key: 'ttl_sec', label: { en: 'TTL' }, type: 'integer' },
+  { key: 'card_trace', label: { en: 'Trace' }, type: 'boolean' },
 ];
 
 function makeCatalog(runtimeWrite: boolean): PluginCatalog {
@@ -201,5 +204,41 @@ describe('Spec 004 — config.set validates the key', () => {
       /use ctx\.secrets\.set/,
     );
     assert.equal(h.configWrites.length, 0);
+  });
+});
+
+describe('#1958 — config.get returns the declared type of a typed setup field', () => {
+  let h: ReturnType<typeof makeCtx>;
+  beforeEach(() => {
+    h = makeCtx(false);
+  });
+
+  it('reads an integer stored as a string as a number', async () => {
+    await h.registry.updateConfig('caller', { ttl_sec: '1800' });
+    const ttl = h.ctx.config.get<number>('ttl_sec');
+    // A real number: `now + ttl` adds instead of concatenating.
+    assert.equal(ttl, 1800);
+    assert.equal(typeof ttl, 'number');
+  });
+
+  it("reads a boolean stored as 'false' as false", async () => {
+    await h.registry.updateConfig('caller', { card_trace: 'false' });
+    assert.equal(h.ctx.config.get<boolean>('card_trace'), false);
+  });
+
+  it('leaves string fields, undeclared keys and unparseable values unchanged', async () => {
+    await h.registry.updateConfig('caller', {
+      app_id: '123456',
+      undeclared: '42',
+      ttl_sec: 'lots',
+    });
+    assert.equal(h.ctx.config.get('app_id'), '123456');
+    assert.equal(h.ctx.config.get('undeclared'), '42');
+    assert.equal(h.ctx.config.get('ttl_sec'), 'lots');
+  });
+
+  it('passes values already stored as numbers through', async () => {
+    await h.registry.updateConfig('caller', { ttl_sec: 900 });
+    assert.equal(h.ctx.config.get<number>('ttl_sec'), 900);
   });
 });

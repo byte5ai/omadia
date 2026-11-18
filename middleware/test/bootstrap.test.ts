@@ -383,6 +383,25 @@ describe('retryErroredPlugins — transient-error path', () => {
     assert.equal(reg.get('b')?.status, 'active');
   });
 
+  // #1860 — a duplicate registration only exists in the process that hit it;
+  // left latched it kept the required KG off and crash-looped every boot.
+  it('resets a duplicate-provider error (process-local, #1860)', async () => {
+    const reg = new InMemoryInstalledRegistry();
+    await reg.register(
+      erroredWithMessage(
+        '@omadia/knowledge-graph-neon',
+        "ServiceRegistry: duplicate provider for 'knowledgeGraph' — uninstall the existing provider first",
+      ),
+    );
+    const cat = makeCatalog([
+      { id: '@omadia/knowledge-graph-neon', provides: [], requires: [], depends_on: [] },
+    ]);
+
+    await retryErroredPlugins({ catalog: cat, registry: reg, log: () => {} });
+
+    assert.equal(reg.get('@omadia/knowledge-graph-neon')?.status, 'active');
+  });
+
   it('does NOT reset a non-transient (code/config) error', async () => {
     const reg = new InMemoryInstalledRegistry();
     await reg.register(

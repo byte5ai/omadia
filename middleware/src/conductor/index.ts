@@ -67,6 +67,10 @@ async function buildRunEventPayload(run: ConductorRun, workflowStore: ConductorW
     workflowName: workflow?.name ?? null,
     triggerKind: run.triggerKind,
     context: run.context,
+    // #1699 — a `run.failed` subscriber used to learn only THAT a run failed.
+    // Null on a run that failed before migration 0013 ("cause not recorded").
+    errorCode: run.errorCode,
+    errorMessage: run.errorMessage,
   };
 }
 
@@ -102,7 +106,7 @@ export { ConductorWebhookSubscriptionStore } from './webhookSubscriptionStore.js
 export type { ConductorWebhookSubscription, ConductorWebhookDelivery, WebhookDeliveryStatus } from './webhookSubscriptionStore.js';
 export { ConductorWebhookDispatcher } from './webhookDispatcher.js';
 export { ConductorWebhookRetryWorker } from './webhookRetryWorker.js';
-export { WEBHOOK_POST_ACTION_ID, invokeWebhookPostAction } from './webhookPostAction.js';
+export { WEBHOOK_POST_ACTION_ID, WEBHOOK_POST_DEFAULT_POSTCONDITION, invokeWebhookPostAction } from './webhookPostAction.js';
 export { assertOutboundUrlAllowed, WebhookUrlNotAllowedError } from './webhookOutbound.js';
 export { loadPatternCatalog } from './patternCatalog.js';
 export type { PatternCatalog } from './patternCatalog.js';
