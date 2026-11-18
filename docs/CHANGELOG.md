@@ -36,6 +36,22 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — croner 11 mit 9.x-Kompatibilität für gespeicherte Crons
+
+2026-11-18. croner springt von 9.1.0 auf 11.0.0 (#1693). Damit gespeicherte
+Routinen und Plugin-Job-Schedules ihre Bedeutung behalten, läuft jeder
+`new Cron(...)` jetzt über `createCron()` (`src/scheduler/cronerCompat.ts`):
+Schrittweiten mit Zahlen-Präfix (`0/15`, `5/15`, `/10`), die croner 11
+standardmäßig ablehnt, bleiben über `sloppyRanges` gültig und feuern wie
+bisher. `?` wird wie in 9.x beim Anlegen des Jobs durch den aktuellen Wert
+des Feldes ersetzt, statt wie in croner 11 als `*` zu gelten (`0 9 ? * *`
+bleibt monatlich und wird nicht täglich). Ein Differenztest mit 80 000
+Zufallsmustern gegen croner 9.1.0 ergab außerhalb von Sommerzeit-Wechseln
+keine Abweichung; croner 11 akzeptiert lediglich zusätzlich Muster, die 9.x
+abgelehnt hat. Geändert ist nur das DST-Verhalten auf Hosts mit lokaler
+Zeitzone (croner 11: Festzeit-Jobs in einer Sommerzeit-Lücke laufen zur
+ersten gültigen Zeit danach); die Container laufen in UTC.
+
 ### Fixed — Node-Aktivierung nach Amp-Snapshot-Restore
 
 2026-11-16. Neue Orbs hatten die Node-22-/24-Toolchains und alle Pakete,
