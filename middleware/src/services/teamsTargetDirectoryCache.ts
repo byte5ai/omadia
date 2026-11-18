@@ -6,18 +6,24 @@
 // showed "loading …" for the whole session, and every reload started the same
 // enumeration again.
 //
-// This puts three things in front of the directory:
+// What stands in front of the directory now:
 //
-//   * ONE enumeration at a time, shared by every caller, and its result kept
-//     for a few minutes (a picker is opened, closed and reopened);
+//   * the TEAM list and the CHAT list are loaded and kept independently: the
+//     team list is short and app-only, the chat list is the slow one;
+//   * the chats are enumerated ONLY when asked for (a search, or an explicit
+//     full list). Opening the picker asks for teams and for the chats the
+//     instance's bots are already in (`teamsRecentTargets.ts`), nothing more;
+//   * ONE enumeration per half at a time, shared by every caller, its result
+//     kept for fifteen minutes;
 //   * a BOUNDED WAIT: a caller gets the result if it arrives within
-//     `waitMs`, otherwise each half answers `loading` at once while the
-//     enumeration goes on, and the next call (the UI asks again) picks it up;
+//     `waitMs`, otherwise the half answers `loading` at once while the
+//     enumeration goes on, and the next call picks it up;
 //   * SEARCH AND A SIZE LIMIT on the server: `q` filters by name, topic and
 //     member names, `limit` caps what is sent, and each half says how many
 //     there are in total, so a truncated list is never mistaken for all of it.
 //
-// A failed half is not kept: the next call looks again.
+// A failed half is not kept: the next call looks again. The cache is ONE
+// object per router (see `createTeamsTargetDirectoryCache`).
 
 import type { TeamsChatSummary, TeamsTeamSummary } from '../platform/teamsTargetDirectory.js';
 
@@ -28,7 +34,8 @@ import type {
 
 export const TEAMS_TARGETS_DEFAULT_LIMIT = 1000;
 export const TEAMS_TARGETS_MAX_LIMIT = 2000;
-const DEFAULT_TTL_MS = 5 * 60_000;
+// A chat enumeration costs a minute of Graph paging in a large tenant.
+const DEFAULT_TTL_MS = 15 * 60_000;
 const DEFAULT_WAIT_MS = 8_000;
 
 /** One half as the route answers it. */
@@ -62,8 +69,9 @@ export type TeamsTargetPage<T> =
     }
   | {
       readonly available: false;
-      /** `loading`: the enumeration is still running; ask again shortly. */
-      readonly reason: TeamsTargetListingUnavailable | 'loading';
+      /** `loading`: the enumeration is still running; ask again shortly.
+       *  `not_requested`: this half was not asked for (see `chats`). */
+      readonly reason: TeamsTargetListingUnavailable | 'loading' | 'not_requested';
     };
 
 export interface TeamsTargetDirectoryPage {
@@ -76,10 +84,21 @@ export interface TeamsTargetQuery {
   readonly limit?: number;
   /** Ignore a kept result and enumerate again. */
   readonly refresh?: boolean;
+  /**
+   * Whether the CHATS of the tenant are wanted at all. `false`: the chat
+   * half answers `not_requested` and nothing is enumerated for it. A picker
+   * does not need every chat of a tenant to pick one target (#2043 D8: 4,560
+   * chats took a minute per opening), so the route asks for them only for a
+   * search or on explicit request. Default `true`.
+   */
+  readonly chats?: boolean;
 }
 
 export interface TeamsTargetDirectoryCacheOptions {
-  readonly load: () => Promise<TeamsTargetDirectory>;
+  /** The two halves, loaded and kept independently: the team list is short
+   *  and app-only, the chat list is the slow one. */
+  readonly loadTeams: () => Promise<TeamsTargetDirectory['teams']>;
+  readonly loadChats: () => Promise<TeamsTargetDirectory['chats']>;
   readonly ttlMs?: number;
   readonly waitMs?: number;
   readonly now?: () => number;
@@ -87,11 +106,6 @@ export interface TeamsTargetDirectoryCacheOptions {
   readonly sleep?: (ms: number) => Promise<void>;
   readonly log?: (msg: string) => void;
 }
-
-const LOADING: TeamsTargetDirectoryPage = {
-  teams: { available: false, reason: 'loading' },
-  chats: { available: false, reason: 'loading' },
-};
 
 const fold = (value: string): string => value.normalize('NFKD').toLowerCase();
 
@@ -159,40 +173,42 @@ export interface TeamsTargetDirectoryCache {
   get(query?: TeamsTargetQuery): Promise<TeamsTargetDirectoryPage>;
 }
 
-export function createTeamsTargetDirectoryCache(
-  opts: TeamsTargetDirectoryCacheOptions,
-): TeamsTargetDirectoryCache {
-  const now = opts.now ?? Date.now;
-  const ttlMs = opts.ttlMs ?? DEFAULT_TTL_MS;
-  const waitMs = opts.waitMs ?? DEFAULT_WAIT_MS;
-  const sleep =
-    opts.sleep ??
-    ((ms: number): Promise<void> =>
-      new Promise((resolve) => {
-        const timer = setTimeout(resolve, ms);
-        timer.unref?.();
-      }));
-  let kept: { readonly at: number; readonly directory: TeamsTargetDirectory } | undefined;
-  let inFlight: Promise<TeamsTargetDirectory | undefined> | undefined;
+type Listing<T> = { readonly available: true; readonly items: readonly T[] } | { readonly available: false; readonly reason: TeamsTargetListingUnavailable };
 
-  const enumerate = (): Promise<TeamsTargetDirectory | undefined> => {
+/**
+ * ONE half: a single enumeration at a time, shared by every caller, its
+ * result kept for `ttlMs`. `read` resolves with the listing, or with
+ * `'loading'` when the enumeration outlasts `waitMs` (it goes on, and the
+ * next `read` joins it or finds its result).
+ */
+function createHalf<L extends Listing<unknown>>(
+  name: string,
+  load: () => Promise<L>,
+  opts: {
+    readonly ttlMs: number;
+    readonly waitMs: number;
+    readonly now: () => number;
+    readonly sleep: (ms: number) => Promise<void>;
+    readonly log?: (msg: string) => void;
+  },
+): { read(refresh: boolean): Promise<L | 'loading' | 'failed'> } {
+  let kept: { readonly at: number; readonly listing: L } | undefined;
+  let inFlight: Promise<L | undefined> | undefined;
+  const enumerate = (): Promise<L | undefined> => {
     inFlight ??= (async () => {
-      const started = now();
+      const started = opts.now();
       try {
-        const directory = await opts.load();
-        // Only a directory with at least one readable half is worth keeping;
-        // a failure must be looked at again on the next call.
-        if (directory.teams.available || directory.chats.available) {
-          kept = { at: now(), directory };
-        }
+        const listing = await load();
+        // Only a readable listing is kept; a failure is looked at again.
+        if (listing.available) kept = { at: opts.now(), listing };
         opts.log?.(
-          `[teams-targets] enumerated in ${String(now() - started)}ms: teams=${
-            directory.teams.available ? String(directory.teams.items.length) : directory.teams.reason
-          } chats=${directory.chats.available ? String(directory.chats.items.length) : directory.chats.reason}`,
+          `[teams-targets] ${name} enumerated in ${String(opts.now() - started)}ms: ${
+            listing.available ? String(listing.items.length) : listing.reason
+          }`,
         );
-        return directory;
+        return listing;
       } catch (err) {
-        opts.log?.(`[teams-targets] enumeration failed: ${err instanceof Error ? err.message : String(err)}`);
+        opts.log?.(`[teams-targets] ${name} enumeration failed: ${err instanceof Error ? err.message : String(err)}`);
         return undefined;
       } finally {
         inFlight = undefined;
@@ -200,24 +216,79 @@ export function createTeamsTargetDirectoryCache(
     })();
     return inFlight;
   };
+  return {
+    async read(refresh) {
+      if (!refresh && kept !== undefined && opts.now() - kept.at <= opts.ttlMs) return kept.listing;
+      const settled = await Promise.race([
+        enumerate().then((listing) => ({ listing })),
+        opts.sleep(opts.waitMs).then(() => undefined),
+      ]);
+      if (settled === undefined) return 'loading';
+      return settled.listing ?? 'failed';
+    },
+  };
+}
+
+/**
+ * The directory behind `GET /:slug/teams/targets`. Create ONE per router and
+ * keep it: the cache is the object. (#2043 D14: the first version was looked
+ * up in a WeakMap keyed by an object the route builds anew for every request,
+ * so every request got an empty cache, started its own enumeration and
+ * answered `loading` for ever.)
+ */
+export function createTeamsTargetDirectoryCache(
+  opts: TeamsTargetDirectoryCacheOptions,
+): TeamsTargetDirectoryCache {
+  const shared = {
+    ttlMs: opts.ttlMs ?? DEFAULT_TTL_MS,
+    waitMs: opts.waitMs ?? DEFAULT_WAIT_MS,
+    now: opts.now ?? Date.now,
+    sleep:
+      opts.sleep ??
+      ((ms: number): Promise<void> =>
+        new Promise((resolve) => {
+          const timer = setTimeout(resolve, ms);
+          timer.unref?.();
+        })),
+    ...(opts.log ? { log: opts.log } : {}),
+  };
+  const teams = createHalf('teams', opts.loadTeams, shared);
+  const chats = createHalf('chats', opts.loadChats, shared);
+  const settle = <L extends Listing<unknown>>(
+    read: L | 'loading' | 'failed',
+  ): L | { available: false; reason: 'loading' | 'lookup_failed' } =>
+    read === 'loading'
+      ? { available: false, reason: 'loading' }
+      : read === 'failed'
+        ? { available: false, reason: 'lookup_failed' }
+        : read;
 
   return {
     async get(query = {}) {
-      if (query.refresh !== true && kept !== undefined && now() - kept.at <= ttlMs) {
-        return pageOfTeamsTargets(kept.directory, query);
-      }
-      const settled = await Promise.race([
-        enumerate().then((directory) => ({ directory })),
-        sleep(waitMs).then(() => undefined),
+      const refresh = query.refresh === true;
+      const wantChats = query.chats !== false;
+      const [teamHalf, chatHalf] = await Promise.all([
+        teams.read(refresh),
+        wantChats ? chats.read(refresh) : Promise.resolve(undefined),
       ]);
-      if (settled === undefined) return LOADING;
-      if (settled.directory === undefined) {
-        return {
-          teams: { available: false, reason: 'lookup_failed' },
-          chats: { available: false, reason: 'lookup_failed' },
-        };
-      }
-      return pageOfTeamsTargets(settled.directory, query);
+      const teamListing = settle(teamHalf);
+      const chatListing = chatHalf === undefined ? undefined : settle(chatHalf);
+      const pageOf = pageOfTeamsTargets(
+        {
+          teams: teamListing.available ? teamListing : { available: true, items: [] },
+          chats: chatListing?.available ? chatListing : { available: true, items: [] },
+        },
+        query,
+      );
+      return {
+        teams: teamListing.available ? pageOf.teams : { available: false, reason: teamListing.reason },
+        chats:
+          chatListing === undefined
+            ? { available: false, reason: 'not_requested' }
+            : chatListing.available
+              ? pageOf.chats
+              : { available: false, reason: chatListing.reason },
+      };
     },
   };
 }

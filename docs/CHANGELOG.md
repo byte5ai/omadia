@@ -38,6 +38,26 @@ changelog.
 
 ### Fixed — Rollout defects of native facilitators (epic #2043)
 
+- The team/chat picker served `loading` for ever on the live instance: its
+  cache was looked up by an object the route builds anew per request, so every
+  request started its own enumeration. One cache per router now. The picker
+  no longer enumerates the tenant to be opened: it shows teams and the chats
+  the instance's bots are already in (`recent`), searches the tenant's chats
+  on the server on demand (`q`, or `chats=all`), and turns a pasted Teams
+  link into its id.
+- "Reset run" really frees the identity: an app registration whose permanent
+  delete Entra did not confirm is looked up in the recycle bin and purged
+  within a bound, and the reset stays incomplete when that cannot be
+  confirmed. A new provisioning run no longer revives the old application.
+- A provisioned bot is checked against the Bot Connector before it counts as
+  installed (`probeBot` on `teamsProvisioner@1`, M365 connector >= 0.9.2). A
+  bot the connector rejects fails the run with `bot_rejected` instead of
+  showing as ready.
+- "Run provisioning again" rebuilds and re-publishes the Teams app package
+  when the catalog holds an older version than the current template and
+  identity yield, instead of skipping both steps once a catalog app exists.
+- An install answered 404 right after the catalog upload is waited out like
+  the 400 was.
 - A facilitator with its own Teams identity could not start a facilitation:
   its tools were told a conversation id that still carried the bot key
   (`28:<appId>-19:…`), taken from the session scope. A channel now states its

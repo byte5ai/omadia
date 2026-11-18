@@ -46,6 +46,12 @@ export interface BotPresenceStore {
    * for any other chat would be accepted and then never used.
    */
   conversationsOf(botAppId: string): Promise<readonly BotConversation[]>;
+  /**
+   * #2043 D8 — the conversations ANY of the instance's bots holds a
+   * reference in, most recently seen first. The default list of the Teams
+   * target picker: what the instance already knows, without asking Graph.
+   */
+  recentConversations(limit: number): Promise<readonly BotConversation[]>;
 }
 
 export function createBotPresenceStore(pool: Pool, log?: (msg: string) => void): BotPresenceStore {
@@ -88,6 +94,42 @@ export function createBotPresenceStore(pool: Pool, log?: (msg: string) => void):
           `[conductor] bot-conversation lookup for '${wanted}' failed: ${err instanceof Error ? err.message : String(err)}`,
         );
         return [];
+      }
+    },
+    async recentConversations(limit) {
+      const bounded = Math.min(Math.max(1, Math.trunc(limit)), 1000);
+      try {
+        const { rows } = await pool.query<{
+          conversation_id: string;
+          teams_type: string | null;
+          name: string | null;
+          updated_at: Date;
+          bot_app_ids: string[] | null;
+        }>(
+          `SELECT conversation_id,
+                  (array_agg(teams_type ORDER BY updated_at DESC))[1] AS teams_type,
+                  (array_agg(ref #>> '{conversation,name}' ORDER BY updated_at DESC)
+                     FILTER (WHERE coalesce(ref #>> '{conversation,name}', '') <> ''))[1] AS name,
+                  max(updated_at) AS updated_at,
+                  array_agg(DISTINCT lower(bot_app_id)) FILTER (WHERE bot_app_id <> '') AS bot_app_ids
+             FROM teams_conversation_refs
+            GROUP BY conversation_id
+            ORDER BY max(updated_at) DESC
+            LIMIT $1`,
+          [bounded],
+        );
+        return rows.map((r) => ({
+          conversationId: r.conversation_id,
+          teamsType: r.teams_type,
+          name: r.name && r.name.trim().length > 0 ? r.name : null,
+          updatedAt: r.updated_at,
+          botAppIds: (r.bot_app_ids ?? []).filter((id) => id.length > 0),
+        }));
+      } catch (err) {
+        log?.(
+          `[conductor] recent conversations lookup failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        throw err;
       }
     },
     async botAppIdsIn(conversationId) {

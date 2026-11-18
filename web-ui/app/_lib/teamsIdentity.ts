@@ -412,6 +412,12 @@ export const TEAMS_PROVISIONING_EVENT_DETAILS = [
   'delegated_consent_required',
   'delegated_token_expired',
   'device_code_flow_failed',
+  // #2043 — the bot is checked against the Bot Connector before the identity
+  // counts as installed, and the two verdicts that check and the install
+  // itself can end in.
+  'verifying_bot',
+  'bot_rejected',
+  'rsc_consent_refused',
 ] as const;
 
 const EVENT_DETAIL_SET: ReadonlySet<string> = new Set(

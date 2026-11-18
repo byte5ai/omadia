@@ -98,7 +98,8 @@ function runnerWith(installError: () => Error) {
     }),
     timers: { setTimeout: (fn: () => void) => { fn(); return 0 as never; }, clearTimeout: () => undefined } as never,
     catalogReplicationDelayMs: 1,
-    events: { append: async (e: { step: string; status: string; detail?: string | null }) => { events.push(`${e.step}:${e.status}:${e.detail ?? ''}`); } } as never,
+    events: { clearForAgent: async () => undefined,
+      record: async (e: { step: string; status: string; detail?: string | null }) => { events.push(`${e.step}:${e.status}:${e.detail ?? ''}`); } } as never,
     log: (m: string) => logs.push(m),
   } as never);
   return { runner, row: () => row, installs: () => installs, logs, events };

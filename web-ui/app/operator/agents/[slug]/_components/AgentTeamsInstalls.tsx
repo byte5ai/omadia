@@ -499,6 +499,7 @@ export function AgentTeamsInstalls({
                 Teams identity panel, which asks the same question when a
                 target-less identity needs one before a run can start. */}
             <TeamsTargetField
+              slug={slug}
               targets={targets}
               targetsLoading={targetsLoading}
               value={teamId}

@@ -2515,7 +2515,8 @@
       "targetUnrecognised": "Diese Eingabe ist kein Teams-Installationsziel. Erwartet wird eine Team-Gruppen-ID, eine Gruppenchat-ID (19:…@thread.v2, bei älteren Chats 19:…@thread.skype) oder eine 1:1-Chat-ID (19:…@unq.gbl.spaces).",
       "chatInstallUnsupported": "Die Installation in einen Chat braucht den Microsoft-365-Connector 0.7.0 oder neuer. Der hier installierte Connector ist älter — aktualisiere das Plugin, oder wähle ein Team als Ziel.",
       "pendingHintTyped": "Ein Provisionierungslauf zielt auf {kind} {teamId}. Als Installation zählt das erst, wenn die Kette den Installationsschritt erreicht.",
-      "chatNameUnavailable": "Für Chats liefert der Connector keinen Namen — angezeigt wird die ID."
+      "chatNameUnavailable": "Für Chats liefert der Connector keinen Namen — angezeigt wird die ID.",
+      "fieldTargetLinkHint": "Oder füge einen Teams-Link ein („Link kopieren“ an einem Chat, einem Team oder einem Kanal): Er wird in die ID umgewandelt. Ein Kanal-Link wählt sein Team."
     },
     "identity": {
       "heading": "Identität",
@@ -2693,7 +2694,10 @@
           "delegated_sign_in_required": "Wartet auf die Teams-Anmeldung",
           "delegated_consent_required": "Wartet auf die Zustimmung einer Administration",
           "delegated_token_expired": "Anmeldung abgelaufen",
-          "device_code_flow_failed": "Anmeldevorgang abgelehnt"
+          "device_code_flow_failed": "Anmeldevorgang abgelehnt",
+          "verifying_bot": "prüfe bei Microsoft, ob der Bot bekannt ist",
+          "bot_rejected": "Microsofts Bot Connector akzeptiert diesen Bot nicht",
+          "rsc_consent_refused": "das Ziel hat die Berechtigungen der App abgelehnt"
         }
       },
       "stateSummary": "Status: {state}",
@@ -2797,6 +2801,10 @@
           "what": "Teams hat es abgelehnt, die ressourcenspezifischen Berechtigungen dieser App im Ziel-Team bzw. Ziel-Chat zu erteilen, deshalb wurde die App dort nicht installiert. Das ist eine dauerhafte Ablehnung und keine Replikationsverzögerung: Ein erneuter Lauf ändert nichts.",
           "reported": "Von Microsoft gemeldet: {codes}",
           "next": "Prüfe zwei Dinge: ob der Tenant ressourcenspezifische Zustimmung für Teams und Chats erlaubt (Teams Admin Center und Zustimmungseinstellungen in Entra) und ob jede Berechtigung, die das Teams-App-Paket anfordert, für diese Art von Ziel zulässig ist. Die vollständige Antwort von Microsoft steht unten im technischen Detail. Der Bot selbst ist veröffentlicht und antwortet in persönlichen Chats bereits."
+        },
+        "bot_rejected": {
+          "what": "In Azure sind alle Provisionierungsschritte gelungen, aber Microsofts Bot Connector akzeptiert diesen Bot nicht: Er antwortet auf die eigenen Zugangsdaten des Bots mit 401. In Teams erscheint der Bot als ungültiger oder unbekannter Bot und erhält nichts. Der Agent ist deshalb nicht bereit.",
+          "next": "Das passiert, wenn ein Bot unter einer bereits verwendeten Anwendungs-ID erneut angelegt wird, zum Beispiel nach einem Zurücksetzen, dessen gelöschte App-Registrierung wiederhergestellt wurde. Warten hilft nicht. Lösche diese Teams-Identität vollständig („Identität löschen“) und provisioniere sie danach neu, damit sie eine neue App-Registrierung bekommt."
         }
       },
       "teamsBot": {
@@ -2850,7 +2858,8 @@
           "consent_required": "Dem Tenant fehlt die Zustimmung zum Auflisten von Teams. Bis dahin trage die ID unten ein.",
           "lookup_failed": "Die Teamliste konnte gerade nicht geladen werden. Lade die Seite neu oder trage die ID unten ein.",
           "sign_in_expired": "Die Tenant-Anmeldung ist abgelaufen und ließ sich nicht automatisch erneuern. Melde dich einmal neu an oder trage die ID unten ein.",
-          "loading": "Die Team-Liste wird noch von Microsoft geladen. Sie erscheint hier von selbst; bis dahin kannst du die ID unten eintippen."
+          "loading": "Die Team-Liste wird noch von Microsoft geladen. Sie erscheint hier von selbst; bis dahin kannst du die ID unten eintippen.",
+          "not_requested": "Die Team-Liste wurde nicht angefordert."
         },
         "chats": {
           "connector_unavailable": "Ohne aktiven M365-Connector gibt es keine Chatliste — trage die ID unten von Hand ein.",
@@ -2860,7 +2869,8 @@
           "consent_required": "Dem Tenant fehlt die Zustimmung zum Auflisten von Chats. Bis dahin trage die Chat-ID unten ein.",
           "lookup_failed": "Die Chatliste konnte gerade nicht geladen werden. Lade die Seite neu oder trage die Chat-ID unten ein.",
           "sign_in_expired": "Die Tenant-Anmeldung ist abgelaufen und ließ sich nicht automatisch erneuern — das ist keine fehlende Anmeldung, sondern eine, die nicht mehr gilt. Melde dich einmal neu an oder trage die Chat-ID unten ein.",
-          "loading": "Die Chat-Liste wird noch von Microsoft geladen, das dauert in einem Tenant mit vielen Chats eine Weile. Sie erscheint hier von selbst; bis dahin kannst du die Chat-ID unten eintippen."
+          "loading": "Die Chat-Liste wird noch von Microsoft geladen, das dauert in einem Tenant mit vielen Chats eine Weile. Sie erscheint hier von selbst; bis dahin kannst du die Chat-ID unten eintippen.",
+          "not_requested": "Chats werden aufgelistet, wenn du nach einem suchst."
         }
       },
       "filter": "Tippen zum Filtern …",
@@ -2872,7 +2882,20 @@
         "untitled_only": "Der Filter findet Chats über ihren Namen. Nach Mitgliedern lässt sich nur bei Chats ohne Namen suchen.",
         "none": "Der Filter findet Chats über ihren Namen; Mitgliedernamen liegen für diese Liste nicht vor."
       },
-      "withoutMemberNames": "{count, plural, one {Ein Chat ohne Namen hat keine Mitgliedernamen und lässt sich nur über die ID unterscheiden.} other {# Chats ohne Namen haben keine Mitgliedernamen und lassen sich nur über die ID unterscheiden.}}"
+      "withoutMemberNames": "{count, plural, one {Ein Chat ohne Namen hat keine Mitgliedernamen und lässt sich nur über die ID unterscheiden.} other {# Chats ohne Namen haben keine Mitgliedernamen und lassen sich nur über die ID unterscheiden.}}",
+      "recent": {
+        "label": "Chats, in denen deine Bots bereits sind",
+        "empty": "Noch ist kein Bot dieser Instanz in einem Chat. Suche unten oder füge einen Link oder eine ID ein.",
+        "thisBot": "dieser Bot ist dabei"
+      },
+      "search": {
+        "label": "Alle Chats des Tenants durchsuchen",
+        "placeholder": "Name des Chats …",
+        "hint": "Gib mindestens zwei Zeichen des Chat-Namens ein. Die Chats des Tenants werden nur gelesen, wenn du suchst.",
+        "searching": "Suche nach „{query}“ … Die erste Suche in einem großen Tenant kann eine Minute dauern, weitere gehen sofort.",
+        "results": "Chats passend zu „{query}“",
+        "none": "Kein Chat heißt „{query}“. Chats ohne Namen werden nur über ihre Mitglieder gefunden. Du kannst unten auch einen Link oder eine ID einfügen."
+      }
     },
     "teamsReset": {
       "heading": "Provisionierung zurücksetzen",

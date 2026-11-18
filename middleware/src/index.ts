@@ -4249,6 +4249,10 @@ async function main(): Promise<void> {
           runner: provisioningRunner,
           resolveTeamName,
           isProvisionerInstalled: () => serviceRegistry.has('teamsProvisioner'),
+          // #2043 D8 — the picker's default list: what the bots already know.
+          ...(peerChatDirectory
+            ? { recentConversations: (limit: number) => peerChatDirectory.recentConversations(limit) }
+            : {}),
           // Resolved per call, never cached: the connector can be installed,
           // upgraded or removed while the process runs, and the team-uninstall
           // capability (#900) has to follow it.
