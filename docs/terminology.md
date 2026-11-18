@@ -26,7 +26,7 @@ answers. There is no orchestrator agent.
 
 | Term | German | Definition | Not to be confused with |
 |---|---|---|---|
-| **Agent** | Agent (pl. Agenten) | A virtual colleague: one configured entity with its own identity, personality, capabilities, permissions, memory, model policy and channel identities. The only thing that speaks to people (besides `system` notices). Created by an operator. | Not a plugin, not a tool, not a "bot" (a bot is one channel identity of an agent), not an "assistant" in the sense of one entity serving everyone. |
+| **Agent** | Agent (pl. Agenten) | A virtual colleague: one configured entity with its own identity, personality, capabilities, permissions, memory, model policy and channel identities. The only thing that speaks to people in conversations (besides `system` notices). Created by an operator. | Not a plugin, not a tool, not a "bot" (a bot is one channel identity of an agent), not an "assistant" in the sense of one entity serving everyone. |
 | **Archetype** | Archetyp | The class of an agent, fixed when the agent is created; an agent never switches it. `standard` is the built-in archetype; further archetypes come from archetype plugins (today `facilitator`). The archetype defines what an agent of that class inherits, adds and deliberately omits. | Not an agent template (a preset of one agent), not a working mode. |
 | **Standard agent** | Standard-Agent | An agent of the built-in archetype `standard`, omadia's normal agent: works for people and teams and may pursue their interests. | Not the default agent. |
 | **Facilitator** | Facilitator | An agent of the archetype `facilitator`: an impartial moderator of group processes. Serves no particular person, holds no business capabilities and no general memory. | Not a moderation mode of a standard agent, not a capability. |
@@ -93,6 +93,7 @@ answers. There is no orchestrator agent.
 | **Tool** | Werkzeug | A function an agent can call. | |
 | **Integration** | Integration | A connection to a third-party system (ERP, CRM, mail, calendar) with its credentials in the vault; agents never see the secrets. | |
 | **Skill** | Skill | Instructions and knowledge an agent can load; delivered by a skill plugin or authored, imported or forked in the instance. A capability, never an actor. | Not an agent, not a plugin by itself. |
+| **Agent Builder** | Agent Builder | An admin tool in the web UI with which an operator creates and edits agent drafts; a model proposes, the operator decides. | Not an agent: no identity, no grants, never in a channel. |
 | **Agent template** | Agentenvorlage | A preset of identity, personality and suggested capabilities from which an operator creates an agent of an existing archetype. Never runs itself. | Not an archetype. |
 | **MCP server** | MCP-Server | An external tool provider connected through the Model Context Protocol; its tools are capabilities. | |
 

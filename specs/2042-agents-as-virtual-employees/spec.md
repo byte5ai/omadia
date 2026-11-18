@@ -459,10 +459,10 @@ execution context, which decides whose budget it uses:
 
 | Execution context | Used for | Charged to and limited by |
 |---|---|---|
-| Agent turn | an agent's own turn, its internal helpers, capability calls it makes (including embeddings for semantic search or memory writes during the turn); also the Agent Builder's dialog and a draft preview, see below | the agent's envelope |
+| Agent turn | an agent's own turn, its internal helpers, capability calls it makes (including embeddings for semantic search or memory writes during the turn); also a draft preview, see below | the agent's envelope |
 | Execution scope | actions of an archetype plugin's process (#2090), including transcription of a live session | the scope's deadline and budget |
 | Inbound processing | transcribing a voice message before the addressed agent's turn | the addressed agent's envelope |
-| Operator job | an admin function an operator starts explicitly in the admin UI, bounded and with exactly the effects that function declares, under the starting operator's rights; several model calls share one job budget, a deadline and a cancel button. Today: issue preview (`middleware/src/issues/issueReformulator.ts:62`, result is a draft in a form), skill verification (`middleware/src/services/skillVerdictLlmVerifier.ts:350`, stores the verdict), topic regrouping (`harness-orchestrator-extras/src/topicClustering.ts:205`, creates topics) and bulk promotion (`harness-orchestrator-extras/src/bulkPromotion.ts:169`, updates significance). Never a chat message | the instance's operator-tools budget and model policy |
+| Operator job | an admin function an operator starts explicitly in the admin UI (including the Agent Builder's dialog), bounded and with exactly the effects that function declares, under the starting operator's rights; several model calls share one job budget, a deadline and a cancel button. Today: issue preview (`middleware/src/issues/issueReformulator.ts:62`, result is a draft in a form), skill verification (`middleware/src/services/skillVerdictLlmVerifier.ts:350`, stores the verdict), topic regrouping (`harness-orchestrator-extras/src/topicClustering.ts:205`, creates topics) and bulk promotion (`harness-orchestrator-extras/src/bulkPromotion.ts:169`, updates significance). Never a chat message | the instance's operator-tools budget and model policy |
 | Maintenance run | a kernel or plugin job that keeps an index current (for example the embedding backfill, `harness-knowledge-graph-neon/src/embeddingBackfill.ts:475`) | the instance's maintenance budget set by the operator, with a deadline per run; only `embed` is allowed, never `complete` or `transcribe`, and it never posts to people |
 
 Semantic search, re-indexing and transcription keep working with the lock in place; only
@@ -499,19 +499,19 @@ New work for `run_loop`:
   Today `checkCliInit` (`cliChatAgent.ts:497-503`) accepts any list that contains one
   omadia tool and does not check the server status.
 
-**Agent Builder and preview.** Only agents and `system` speak to people, also in the admin
-UI. The Agent Builder becomes an agent of the built-in archetype ("Agent Builder"),
-created in the first-run flow when the operator confirms it (§7 Onboarding), reachable only in the admin UI's builder chat, holding only the builder
-capabilities (create and edit drafts, read the capability catalogue); the operator can
-rename or disable it. Its answers go through the emitter, identity guard and AI
-disclosure like any agent's; the direct `chat_message` output of today's builder
-(`middleware/src/plugins/builder/builderAgent.ts:793`) goes. A draft preview is a turn of
-the draft itself: the draft is an `agents` row with status `draft`, not addressable in
-any channel, speaking as itself marked "preview", in a draft envelope (exactly the grants
-it would hold after creation, capped by the previewing operator's own rights), output only
-in the admin UI, charged to the instance's operator-tools budget. If the operator declined
-the Agent Builder, drafts are edited in the admin UI's forms, and previews and operator
-jobs keep working.
+**Agent Builder and preview.** The Agent Builder is an admin tool, never an agent: no
+identity, no persona, no grants, not in the agent directory, not reachable in any channel
+(today only behind the admin session, `middleware/src/routes/builder.ts:71`). Its dialog
+runs as an operator job (table above): the model proposes drafts (identity, personality,
+capabilities, skills) and explains them in the builder view; the operator accepts or
+discards them; nothing takes effect without the operator. The rule that only agents and
+`system` speak to people applies to channels and conversations with team members; the
+builder speaks only to the operator inside the admin tool, shown as the tool, never under
+a name or persona. A draft preview is a turn of the draft itself: the draft is an
+`agents` row with status `draft`, not addressable in any channel, speaking as itself
+marked "preview", in a draft envelope (exactly the grants it would hold after creation,
+capped by the previewing operator's own rights), output only in the admin UI, charged to
+the instance's operator-tools budget.
 
 An agent has exactly one archetype, set at creation; it never switches. Uninstalling an
 archetype plugin disables its agents and keeps their records; it never converts them to
@@ -965,7 +965,7 @@ Each existing element keeps its purpose, moved out of the message body:
     through the gateway. With the lock in place, semantic search, the embedding backfill
     (as a maintenance run, stopped at its budget) and the transcription of a voice message
     work through the gateway; the embedding and transcription adapters' direct clients are
-    reachable only from the gateway; a maintenance run calling `complete` is refused; a SQL-granted test archetype plugin reads and writes its own schema and resumes its processes, but reaches no inbound events, other processes' data, scopes or grants, also not through its migrations; every model call site in the code is listed in #2053 with its context, and a call without a context is refused by the gateway; the operator jobs issue preview, skill verification, topic regrouping and bulk promotion work with direct clients blocked, share one budget per job and stop at budget, deadline or cancel without further effects; a plugin in `public-web` mode scans a previously unknown public domain while private addresses and model provider endpoints stay blocked; with the Agent Builder declined, drafts and previews still work; the Agent Builder answers as an agent through the emitter (no direct output), a draft preview speaks as the draft marked "preview" and gets no right the draft or the operator lacks; uninstalling an archetype plugin with processes in `configuring`, `active`, `concluding` and `following_up`, with a failing `onUninstall` and a restart, leaves no reservation, no later model call or invitation, and a `system` notice in each home conversation; an
+    reachable only from the gateway; a maintenance run calling `complete` is refused; a SQL-granted test archetype plugin reads and writes its own schema and resumes its processes, but reaches no inbound events, other processes' data, scopes or grants, also not through its migrations; every model call site in the code is listed in #2053 with its context, and a call without a context is refused by the gateway; the operator jobs issue preview, skill verification, topic regrouping and bulk promotion work with direct clients blocked, share one budget per job and stop at budget, deadline or cancel without further effects; a plugin in `public-web` mode scans a previously unknown public domain while private addresses and model provider endpoints stay blocked;  the Agent Builder runs as an operator job and appears nowhere as an agent, a draft preview speaks as the draft marked "preview" and gets no right the draft or the operator lacks; uninstalling an archetype plugin with processes in `configuring`, `active`, `concluding` and `following_up`, with a failing `onUninstall` and a restart, leaves no reservation, no later model call or invitation, and a `system` notice in each home conversation; an
     agent on `claude-cli` uses its granted tools through `run_loop`, a tool it lacks is
     refused, and a running turn stops at its deadline, on idle timeout and on the kill switch; a planted `~/.claude/CLAUDE.md` in the test profile has
     no effect on `run_loop` or `complete` while login and allowed tools work; a CLI reporting an extra tool, an
@@ -1003,10 +1003,7 @@ paths**. Internal test and demo instances are re-seeded.
   SDK name line covers channels without native per-agent identity.
 - **Onboarding:** a fresh installation starts with no agent holding any capability; the
   first-run flow creates the first agent with an explicit choice of capabilities. The
-  same flow offers the Agent Builder (§5.10) with its exact builder grants listed; the
-  operator confirms or declines it. Before that confirmation no agent holds any
-  capability; afterwards the Builder holds exactly the confirmed builder grants, and later
-  plugin installs never extend them.
+  Agent Builder is an admin tool (§5.10) and is not an agent.
 - **Docs:** `docs/middleware-agent-handoff.md`, `docs/architecture.md`,
   `docs/teams-multi-agent-identities.md` and `docs/creating-plugins.md` describe this
   model in the same release.
