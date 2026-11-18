@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { renderWithIntl } from '../../../../_lib/test-utils';
 import type { AgentIdentityDto } from '../../../../_lib/agentIdentity';
+import { getPersonaTemplate } from '../../../../_lib/personaTemplates';
 import { AgentIdentity } from '../_components/AgentIdentity';
 
 /**
@@ -111,6 +112,32 @@ describe('AgentIdentity — character (#914)', () => {
       screen.getByTestId('agent-persona-template-badge').textContent,
     ).toContain('Customer Service');
     expect(mockSave).not.toHaveBeenCalled();
+  });
+
+  it('replaces the axes when switching to another archetype (#1897)', async () => {
+    mockGet.mockResolvedValue(dto());
+    mockSave.mockResolvedValue({ ...dto(), republish: 'not_needed' });
+    renderWithIntl(<AgentIdentity slug="sales" />);
+    await openTab('character');
+
+    await userEvent.click(screen.getByTestId('agent-persona-template-toggle'));
+    await userEvent.click(
+      screen.getByTestId('agent-persona-template-research-analyst'),
+    );
+    await userEvent.click(screen.getByTestId('agent-persona-template-toggle'));
+    await userEvent.click(
+      screen.getByTestId('agent-persona-template-customer-service'),
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Save identity' }));
+
+    await waitFor(() => expect(mockSave).toHaveBeenCalledTimes(1));
+    const payload = mockSave.mock.calls[0]?.[1] as {
+      persona: { template?: string; axes?: Record<string, number> } | null;
+    };
+    expect(payload.persona?.template).toBe('customer-service');
+    expect(payload.persona?.axes).toEqual(
+      getPersonaTemplate('customer-service')?.axes,
+    );
   });
 
   it('keeps an edit made on another tab in the single save', async () => {
