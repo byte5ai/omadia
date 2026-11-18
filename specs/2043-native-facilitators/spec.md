@@ -43,8 +43,9 @@ cannot safely own.
 
   | Scope | Until | Allowed targets |
   |---|---|---|
+  | `configuring` | the handshake is posted (atomic switch to `active`), at most 72 h after the start request (configurable); then `aborted` with a short note | home conversation, direct replies to the initiator |
   | `active` | the facilitation's deadline | home conversation, linked session conversations in `scheduled`, `live` or `confirming`, private reminders to participants |
-  | `closing` (one per closing event: each session close, entering `concluding`, abort; own id) | all essential messages of that event (session protocol, result, abort report) delivered **and** a group confirmation the event requires has ended (passed, objected or window over); at most 7 days after the event, extended only by a confirmation window that started before that limit | home conversation, the session conversations of this facilitation, the protocol recipients of §5.8 |
+  | `closing` (one per closing event: each session close, entering `concluding`, abort; own id) | three bounded parts, all inside one scope: (1) delivery of the event's essential message (session summary, result, abort report), at most 7 days after the event; (2) a group confirmation the event requires, starting at confirmed delivery, for its window; (3) protocol dispatch of the then final protocol (§5.11), at most 7 days after it became final; the scope ends when the last part is done; absolute limit: event + 14 days + one confirmation window | home conversation, the session conversations of this facilitation, the protocol recipients of §5.8 |
   | `scheduling` | the agreed follow-up meeting's invitations are sent or its date passed | the invitees confirmed by group consent |
   | `follow_up` | the follow-up deadline | the home conversation and the owners of open action items |
 
@@ -92,8 +93,11 @@ Two things are broken today, and both must be fixed for the next release:
 1. **Facilitators are not entities of their own.** From the user's view they are a
    sub-role: a plugin of kind `agent` that the kernel attaches to an agent as the tool
    `query_facilitation`, auto-provisioned as one fixed agent named "omadia Facilitator",
-   speaking through the instance's default Teams bot. Nobody can create a named
-   facilitator with its own personality, let alone several.
+   speaking through the instance's default Teams bot. An operator can configure standard
+   agents with their own name and personality and attach the facilitation plugin to them
+   (the manifest allows several instances), but they stay standard agents with a
+   moderation tool: no archetype of their own, no enforced neutrality boundaries and no
+   reliable own sender for proactive messages.
 2. **They do not work in practice.** In a field test (November 2026: four people, ranked
    vote 3/2/1 points, deadline, Teams group chat) the result was right, but the way there
    broke trust: wrong "still missing" messages, reminders after completion, a restart
@@ -258,9 +262,20 @@ States exist on three levels, each with its own rules:
 | **Session** (async phase or live meeting) | `scheduled` → `live` → (`confirming`) → `closed` | Its time slot ends or the group closes it; the session summary is posted. Only where the method or the definition of done requires confirmation, the session stays `confirming` for the consent window (§5.7), in which its conversation accepts consent answers, status requests and stop, nothing else. |
 | **Facilitation** | as above | `concluding` when the definition of done is met; `closed` after the final summary was published (and confirmed where required); `following_up` while agreed action items are open; `ended` when all are done or overdue, or the follow-up deadline passed. |
 
-- **invited:** the facilitator's bot is in a group conversation.
+- **invited:** the facilitator's bot is in a group conversation. Outside a facilitation the
+  facilitator answers questions addressed to it (what it does, how to start) in ordinary
+  kernel agent turns under its envelope; these turns hold no process, no reservation and
+  no facilitation tools except starting one.
 - **configuring:** a person in the group asks the facilitator to start; that person is
-  the initiator, and the facilitator says so in the group. The facilitator agrees goal,
+  the initiator, and the facilitator says so in the group. The authenticated request
+  creates the facilitation in `configuring` and, in the same transaction, takes the
+  conversation's reservation and opens a `configuring` execution scope (provisional
+  deadline 72 h, configurable, with its budget), so preparation that needs several turns
+  survives restarts. A request without goal or deadline is enough: agreeing them is the
+  work of this phase. Posting the handshake switches atomically to `active`: phase change,
+  the `active` scope with the agreed deadline, and the end of the `configuring` scope. If
+  the `configuring` scope runs out, the facilitation ends as `aborted` with one short note
+  and releases the reservation. The facilitator agrees goal,
   definition of done, format and agenda, participants and deadline **in the group**, checks
   readiness of its identity in this channel and conversation (Teams: §6.2; other channels:
   §6.4), then posts the opening handshake (§5.7). The conversation id always
@@ -283,8 +298,7 @@ States exist on three levels, each with its own rules:
   `closed`. The facilitator posts the final
   summary (decisions, next steps with owners and due dates, open points). A group
   confirmation is asked only if the method or the agreed definition of done requires it
-  (for example consent, a free-text definition of done, or next steps that were not
-  confirmed by their owners yet); otherwise the result is published and the facilitation
+  (for example consent or a free-text definition of done); otherwise the result is published and the facilitation
   closes automatically. (#2071 removed confirmation rounds the model added on its own in
   the plugin's definition-of-done verdict; the old pattern's separate initiator
   confirmation step still exists and goes with it, §8.) Then `closed`.
@@ -423,7 +437,12 @@ What the engine keeps deterministic, and the model never computes:
   conditional rule of §5.2: confirmed only where the method or the definition of done
   requires it, otherwise published.
 - **Decisions** are evaluated by the methods of §5.5; **action items** need an owner who
-  confirms in their own message and a due date.
+  confirms in their own message and a due date. A group confirmation of a summary
+  confirms the account of the result, never a person's acceptance of a task: a nomination
+  the named person has not accepted stays an open point ("proposed for Anna, not
+  accepted"), gets no reminders and starts no follow-up; only that person's own
+  authenticated acceptance turns it into an action item, also later while the
+  facilitation is `following_up`.
 
 ### 5.5 Decision methods (v1)
 
@@ -539,8 +558,11 @@ participant.
   who receives the result, and that anyone can ask for the rules or the status or stop it
   at any time. The full rules (definition of done, tie rule, reminder times, follow-up)
   are given on request or where they matter, not as a block of status.
-- **Status** on request at any time: phase, who has contributed, who is missing, current
-  (or provisional) tally where the method has one, deadline, definition-of-done version.
+- **Status** on request at any time: phase, how many contributions are open, current (or
+  provisional) tally where the method has one, deadline, definition-of-done version. In
+  the group the facilitator never names who is missing, also on request; a participant
+  who asks in a private chat with the facilitator gets the names. Who has contributed is
+  shown only where the method's visibility makes contributions public anyway.
 - **Result** goes to the group first, then to the initiator with the protocol (only if
   the initiator is still an active participant at send time). The
   initiator receives nothing the group was not told about. A machine-checkable result
@@ -620,7 +642,7 @@ items exist:
 
 | Grant | Issued when | Allows | Revoked when |
 |---|---|---|---|
-| Protocol dispatch | A session closes or the facilitation closes or aborts | Sending that session's or the final confirmed protocol to the recipients of §5.8 | All sends of that protocol are confirmed, or 7 days passed (a failed send is reported to the initiator) |
+| Protocol dispatch | That session's or the facilitation's protocol becomes final (published, or its confirmation window ended), or the facilitation aborts | Sending that protocol to the recipients of §5.8, within the `closing` scope of the same event | All sends of that protocol are confirmed, or 7 days after it became final (a failed send is reported to the initiator) |
 | Follow-up scheduling | The group agreed a follow-up meeting | Free/busy and invitations for exactly that meeting | The invitations are sent, or the agreed date passed |
 | Follow-up reminders | The facilitation enters `following_up` | Reminders to owners and status posts | `ended` or stop |
 
@@ -811,7 +833,8 @@ kept compatible.
     by that person; a declined nomination reopens the role.
 16. **Silent voices and balance.** In a discussion step (`discuss`), a participant who has not
     contributed is invited (privately where possible) before the step closes; nobody is
-    named in the group as not having contributed.
+    named in the group as not having contributed, also not when someone asks for the
+    status in the group; the same question in a private chat gets the names.
 17. **Timebox.** When a step's timebox ends, the facilitator summarises and the group
     decides to close or extend; no step closes silently.
 18. **Online meeting with chat and cards only.** Agenda drafted and sent before the meeting,
@@ -883,13 +906,25 @@ kept compatible.
     confirmed"; moderation never re-opens. The `closing` scope stays valid while the
     window runs, also when all sends were confirmed at once; a last session ending exactly
     at the facilitation's deadline gets its summary window; a delivery confirmed one hour
-    before the 7-day limit still gets its full window.
+    before the 7-day limit still gets its full window, and the protocol dispatch to
+    stakeholders after the window's end still runs, including a retry after a failed first
+    send and a restart in between; nothing is sent after the absolute limit.
 35. **Unknown roster.** With a partial roster at start the initiator's declared list is
     used; a missing person named by someone else and confirming is added, a person posting
     without being on the list is added, and the completeness decision counts both. With
     the platform roster, a join event missed within the roster cache's lifetime is found
     by the fresh query before the next automatic decision; a fresh query answering
     `partial` blocks the automatic decision until a later query is `complete`.
+
+36. **Preparation.** A first request without goal or deadline ("help us prepare a
+    retrospective") opens `configuring` with reservation and scope; a preparation over
+    several turns survives a restart; the handshake switches to `active` atomically; an
+    abandoned preparation ends `aborted` with one note after its 72 h and frees the
+    conversation; a question to the facilitator outside a facilitation is answered without
+    taking a reservation.
+37. **Acceptance stays personal.** The group confirms a final summary (or stays silent)
+    while a named owner has not accepted their task: the task stays an open point without
+    reminders; the owner's later authenticated acceptance turns it into an action item.
 
 ## 10. Work breakdown
 
