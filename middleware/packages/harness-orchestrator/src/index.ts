@@ -144,6 +144,7 @@ export type {
   EngineDrivenConversationLookup,
   EngineTurnScope,
   FacilitatorRuntimeLookup,
+  OwnPostCountLookup,
 } from './facilitatorAgent.js';
 export {
   buildToolCallContext,

@@ -141,7 +141,17 @@ export type EngineDrivenConversationLookup = (
 export interface FacilitatorRuntimeLookup {
   isEngineDriven: EngineDrivenConversationLookup;
   isEngineUsable(agentSlug: string): boolean;
+  /** How many messages went out to this conversation as the agent's OWN
+   *  identity so far (a counter, only ever compared with itself). Optional:
+   *  an older kernel does not count. */
+  ownPostCount?: OwnPostCountLookup;
 }
+
+export type OwnPostCountLookup = (
+  agentSlug: string,
+  channelType: string,
+  conversationId: string,
+) => number;
 
 export interface FacilitatorAgentDeps {
   readonly agentSlug?: string | undefined;
@@ -163,6 +173,15 @@ export interface FacilitatorAgentDeps {
    * with.
    */
   readonly isEngineUsable?: (agentSlug: string) => boolean;
+  /**
+   * The engine posts as the facilitator. When it did so DURING a turn the
+   * channel started (the mention that opens a facilitation: the engine posts
+   * the handshake from inside the tool call), the turn's own answer would be
+   * a second message about the same thing, in the model's words instead of
+   * the engine's. That answer is dropped. A turn in which the engine posted
+   * nothing (the setup is still being agreed) keeps its answer.
+   */
+  readonly ownPostCount?: OwnPostCountLookup;
   readonly log?: (message: string) => void;
 }
 
@@ -236,10 +255,35 @@ export function wrapFacilitatorAgent(inner: ChatAgent, deps: FacilitatorAgentDep
       : disposition === 'not_set_up'
         ? facilitationNotSetUpText(deps)
         : '';
+  const ownPosts = (input: ChatTurnInput): number => {
+    const { ownPostCount, agentSlug } = deps;
+    if (!ownPostCount || !agentSlug || !input.origin) return 0;
+    const channelType = input.origin.channelType;
+    try {
+      return conversationIdCandidates(input).reduce((sum, id) => sum + ownPostCount(agentSlug, channelType, id), 0);
+    } catch {
+      return 0;
+    }
+  };
+  /** Only a turn the CHANNEL started: an engine turn's text is the engine's
+   *  to post or not. */
+  const watchesEnginePosts = (): boolean => currentEngineTurn() === undefined;
+  const enginePostedSince = (input: ChatTurnInput, before: number): boolean => {
+    if (ownPosts(input) <= before) return false;
+    deps.log?.(
+      `[facilitator] '${deps.agentSlug ?? '?'}' turn answer dropped: the facilitation engine posted in this turn`,
+    );
+    return true;
+  };
   return {
     async chat(input: ChatTurnInput): Promise<SemanticAnswer> {
       const disposition = dispose(input);
-      if (disposition === 'model') return inner.chat(input);
+      if (disposition === 'model') {
+        const watch = watchesEnginePosts();
+        const before = watch ? ownPosts(input) : 0;
+        const answer = await inner.chat(input);
+        return watch && enginePostedSince(input, before) ? { ...answer, text: '' } : answer;
+      }
       return toSemanticAnswer({ answer: textFor(disposition), toolCalls: 0, iterations: 0 });
     },
     async *chatStream(
@@ -248,7 +292,19 @@ export function wrapFacilitatorAgent(inner: ChatAgent, deps: FacilitatorAgentDep
     ): AsyncGenerator<ChatStreamEvent> {
       const disposition = dispose(input);
       if (disposition === 'model') {
-        yield* inner.chatStream(input, observer);
+        const watch = watchesEnginePosts();
+        const before = watch ? ownPosts(input) : 0;
+        let streamed = 0;
+        for await (const event of inner.chatStream(input, observer)) {
+          if (event.type === 'text_delta') streamed += event.text.length;
+          else if (event.type === 'text_retract') streamed = Math.max(0, streamed - event.chars);
+          else if (event.type === 'done' && watch && enginePostedSince(input, before)) {
+            if (streamed > 0) yield { type: 'text_retract', chars: streamed };
+            yield { ...event, answer: '' };
+            continue;
+          }
+          yield event;
+        }
         return;
       }
       const text = textFor(disposition);

@@ -572,6 +572,7 @@ import { TargetedSendRegistry } from './channels/targetedSendRegistry.js';
 import { createTargetedDeliveryService } from './channels/targetedDeliveryService.js';
 import { ConversationSendRegistry } from './channels/conversationSendRegistry.js';
 import { createConversationSendService } from './channels/conversationSendService.js';
+import { createOwnIdentityPostLog } from './channels/ownIdentityPostLog.js';
 import { ObservedConversationInvites } from './platform/observedConversationInvites.js';
 import { PgObservedInvitePersistence } from './platform/observedInvitePersistence.js';
 import { startEphemeralAttachmentSweep } from './platform/ephemeralAttachmentSweep.js';
@@ -1131,6 +1132,7 @@ async function main(): Promise<void> {
   // #2043 — which plugin is the facilitation engine: the one that declares
   // the capability AND that the operator granted its SQL ledger (the trust
   // step). One helper, so every consumer resolves the engine the same way.
+  const ownIdentityPostLog = createOwnIdentityPostLog();
   const facilitationSqlGrants = createSqlGrantView({
     listGranted: async () => (await sqlGrantStore.listAll()).map((row) => row.pluginId),
     log: (m) => console.log(m),
@@ -4719,6 +4721,7 @@ async function main(): Promise<void> {
       getMessages: () => conversationMessages?.hub,
       engineSources: facilitationEngineSources,
       reportedEngineState: () => serviceRegistry.get<unknown>('facilitationEngine'),
+      ownPosts: ownIdentityPostLog,
     }),
   );
   const sessionCapabilityHub = wireSessionCapabilities({
@@ -7081,6 +7084,7 @@ async function main(): Promise<void> {
     conversation: createConversationSendService({
       providers: conversationSendRegistry,
       ownIdentity: ownIdentitySend,
+      onOwnIdentityDelivered: ownIdentityPostLog.record,
       log: (m) => console.log(m),
     }),
   });

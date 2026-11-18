@@ -1222,6 +1222,10 @@ export async function activate(
       ctx.services
         .getOptional<FacilitatorRuntimeLookup>(FACILITATOR_CONVERSATIONS_SERVICE)
         ?.isEngineUsable(agentSlug) ?? false,
+    facilitatorOwnPostCount: (agentSlug, channelType, conversationId) =>
+      ctx.services
+        .getOptional<FacilitatorRuntimeLookup>(FACILITATOR_CONVERSATIONS_SERVICE)
+        ?.ownPostCount?.(agentSlug, channelType, conversationId) ?? 0,
     ...(contextRetriever ? { contextRetriever } : {}),
     ...(sessionBriefing ? { sessionBriefing } : {}),
     ...(factExtractor ? { factExtractor } : {}),

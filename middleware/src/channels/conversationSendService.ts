@@ -45,6 +45,8 @@ export function createConversationSendService(deps: {
   providers: ConversationSendRegistry;
   /** Own-identity sends. Absent (no registry) → every send is refused. */
   ownIdentity?: OwnIdentityDeps;
+  /** Told about every message that went out as an agent's own identity. */
+  onOwnIdentityDelivered?: (agentSlug: string, channelType: string, conversationId: string) => void;
   log?: (msg: string) => void;
 }): ConversationSendService {
   const log = deps.log ?? (() => undefined);
@@ -128,7 +130,11 @@ export function createConversationSendService(deps: {
       ...(mentions.length > 0 ? { mentions } : {}),
       ...(poll ? { poll } : {}),
     };
-    return deliver(input, message, identity.channelKey);
+    const outcome = await deliver(input, message, identity.channelKey);
+    if (outcome.outcome === 'delivered') {
+      deps.onOwnIdentityDelivered?.(input.agentSlug, input.channelType, input.conversationId);
+    }
+    return outcome;
   }
 
   return {

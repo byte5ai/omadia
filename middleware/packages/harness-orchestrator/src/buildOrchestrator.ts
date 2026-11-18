@@ -97,6 +97,7 @@ import { VerifierService } from './verifierService.js';
 import {
   wrapFacilitatorAgent,
   type EngineDrivenConversationLookup,
+  type OwnPostCountLookup,
 } from './facilitatorAgent.js';
 import type { AgentKind } from './registry/agentKind.js';
 import {
@@ -341,6 +342,8 @@ export interface OrchestratorDeps {
   /** #2043 — is the facilitation engine usable for this agent right now?
    *  Absent = no (then a facilitator says that facilitation is not set up). */
   readonly isFacilitationEngineUsable?: (agentSlug: string) => boolean;
+  /** #2043 — see `FacilitatorAgentDeps.ownPostCount`. */
+  readonly facilitatorOwnPostCount?: OwnPostCountLookup;
   /**
    * #1018 — resolves the peer AGENTS the calling agent may see in the current
    * chat, merged into `get_chat_participants` as `kind: 'agent'` entries.
@@ -661,6 +664,7 @@ export function buildOrchestratorForAgent(
           ...(deps.isFacilitationEngineUsable
             ? { isEngineUsable: deps.isFacilitationEngineUsable }
             : {}),
+          ...(deps.facilitatorOwnPostCount ? { ownPostCount: deps.facilitatorOwnPostCount } : {}),
           log: (m) => console.log(m),
         })
       : fastPathDeps === undefined

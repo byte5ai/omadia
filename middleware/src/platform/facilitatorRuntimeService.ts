@@ -17,6 +17,7 @@
 import type { FacilitatorRuntimeLookup, OrchestratorRegistry } from '@omadia/orchestrator';
 
 import type { ConversationMessageHub } from '../channels/conversationMessages/hub.js';
+import type { OwnIdentityPostLog } from '../channels/ownIdentityPostLog.js';
 import {
   resolveFacilitationEngine,
   type FacilitationEngineSources,
@@ -83,8 +84,11 @@ export function createFacilitatorRuntimeLookup(deps: {
   engineSources: () => FacilitationEngineSources;
   /** The state object the engine plugin publishes, or `undefined`. */
   reportedEngineState: () => unknown;
+  /** Counts own-identity posts per agent and conversation. */
+  ownPosts?: OwnIdentityPostLog;
 }): FacilitatorRuntimeLookup {
   return {
+    ...(deps.ownPosts ? { ownPostCount: deps.ownPosts.count } : {}),
     isEngineDriven: (agentSlug, channelType, conversationId) =>
       deps.getMessages()?.subscriptionFor({ agentSlug, channelType, conversationId }) !== undefined,
     isEngineUsable: (agentSlug) => {
