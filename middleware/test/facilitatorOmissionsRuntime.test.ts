@@ -241,6 +241,47 @@ describe('facilitator runtime omissions', () => {
     assert.deepEqual(grantsFor(make([ENGINE]), row({ kind: 'standard' })), [ODOO]);
     assert.deepEqual(grantsFor(make(undefined), row({ kind: 'standard' })), [ENGINE, ODOO], 'no lookup: unchanged');
   });
+
+  it('plugin grants: a reload rebuilds a facilitator when the engine binding changed, rows unchanged', async () => {
+    // Found in the integration run: at boot the facilitators are built before
+    // the operator's SQL grants can be read, so the engine row was dropped;
+    // the rows never change afterwards, the diff stayed empty and the
+    // facilitator had no tools until the next restart (which repeated it).
+    const { deps } = setup();
+    const agent = row();
+    const snapshot = {
+      agents: [agent],
+      agentPlugins: [{ agentId: agent.id, pluginId: ENGINE, config: {}, enabled: true, createdAt: new Date(0) }],
+      channelBindings: [],
+      platformSettings: { fallbackAgentId: null, updatedAt: new Date(0) },
+    };
+    let grantable: readonly string[] = [];
+    const reg = new OrchestratorRegistry({ loadSnapshot: () => Promise.resolve(snapshot) } as never, deps, {
+      defaultRuntimeConfig: RUNTIME,
+      pluginLookup: { isMultiInstance: () => true, facilitatorGrantable: () => grantable },
+    } as never);
+    const offers = (): boolean => {
+      const active = reg.get('mara');
+      assert.ok(active);
+      return probe(active.built).offeredToolNames().has('facilitation_start');
+    };
+    await reg.reload();
+    assert.equal(offers(), false, 'boot: the grants are not readable yet');
+
+    grantable = [ENGINE];
+    const granted = await reg.reload();
+    assert.deepEqual(
+      granted.actions.map((a) => (a.kind === 'rebuild' ? `${a.kind}:${a.agent.slug}:${a.reason}` : a.kind)),
+      ['rebuild:mara:facilitation_engine'],
+    );
+    assert.equal(offers(), true, 'the engine is bound: the facilitator has its tools');
+
+    assert.deepEqual((await reg.reload()).actions, [], 'nothing changed: nothing is rebuilt');
+
+    grantable = [];
+    await reg.reload();
+    assert.equal(offers(), false, 'grant revoked or engine gone: the tools go with it');
+  });
 });
 
 describe('facilitator assistance refusal', () => {

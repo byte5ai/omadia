@@ -187,6 +187,9 @@ export class OrchestratorRegistry {
     updatedAt: new Date(0),
   };
   private snapshot: ConfigSnapshot | undefined;
+  /** #2043 — the grants each active facilitator was BUILT with (see
+   *  `withEngineGrantDrift`), by slug. */
+  private readonly facilitatorGrants = new Map<string, string>();
   /**
    * Provisioned channel identities from the last snapshot. Flat, not indexed
    * per agent: the lookup is always key → agent and the list is one row per
@@ -238,7 +241,7 @@ export class OrchestratorRegistry {
     const snap = await this.store.loadSnapshot();
     const safe = this.quarantineUnsatisfiablePlugins(snap);
     validateSnapshot(safe, this.options.pluginLookup);
-    const plan = diffSnapshots(this.snapshot, safe);
+    const plan = this.withEngineGrantDrift(diffSnapshots(this.snapshot, safe), safe);
     if (plan.actions.length === 0 && !plan.platformChanged) {
       // Identities are NOT part of the diff: an agent whose bot finished
       // provisioning has the same row, plugins and bindings it had a minute
@@ -364,19 +367,57 @@ export class OrchestratorRegistry {
     agent: AgentRow,
     plugins: readonly AgentPluginRow[],
   ): string[] {
+    const { granted, dropped } = this.effectiveGrants(agent, plugins);
+    if (isFacilitatorKind(agent)) {
+      this.facilitatorGrants.set(agent.slug, granted.join('\n'));
+      if (dropped.length > 0) {
+        this.log(`registry: facilitator grants ignored (not the facilitation engine)`, {
+          slug: agent.slug,
+          dropped,
+        });
+      }
+    }
+    return granted;
+  }
+
+  private effectiveGrants(
+    agent: AgentRow,
+    plugins: readonly AgentPluginRow[],
+  ): { granted: string[]; dropped: string[] } {
     const enabled = plugins.filter((p) => p.enabled).map((p) => p.pluginId);
     const grantable = new Set(this.options.pluginLookup?.facilitatorGrantable?.() ?? []);
     // The engine's tools are for facilitators only; a row on a standard agent
     // (left over from the plugin era, or hand-written) grants nothing.
-    if (!isFacilitatorKind(agent)) return enabled.filter((id) => !grantable.has(id));
-    const dropped = enabled.filter((id) => !grantable.has(id));
-    if (dropped.length > 0) {
-      this.log(`registry: facilitator grants ignored (not the facilitation engine)`, {
-        slug: agent.slug,
-        dropped,
-      });
+    if (!isFacilitatorKind(agent)) {
+      return { granted: enabled.filter((id) => !grantable.has(id)), dropped: [] };
     }
-    return enabled.filter((id) => grantable.has(id));
+    return {
+      granted: enabled.filter((id) => grantable.has(id)),
+      dropped: enabled.filter((id) => !grantable.has(id)),
+    };
+  }
+
+  /**
+   * #2043 — what a facilitator is built with depends on which plugin is the
+   * facilitation engine RIGHT NOW (declared, and granted its SQL ledger by the
+   * operator), and that is not in the snapshot. At boot the facilitators are
+   * built before the grants can be read, a grant can be given or revoked, an
+   * engine can be replaced: the rows stay the same, so the diff is empty and
+   * the facilitator kept (or never got) the engine's tools. Every reload
+   * therefore re-derives the effective grants of the facilitators it would
+   * otherwise leave alone and rebuilds those whose set changed.
+   */
+  private withEngineGrantDrift(plan: DiffPlan, snap: ConfigSnapshot): DiffPlan {
+    const touched = new Set(plan.actions.map((action) => actionSlug(action)));
+    const pluginsByAgent = groupBy(snap.agentPlugins, (p) => p.agentId);
+    const drifted: DiffAction[] = [];
+    for (const agent of snap.agents) {
+      if (!isFacilitatorKind(agent) || touched.has(agent.slug) || !this.active.has(agent.slug)) continue;
+      const { granted } = this.effectiveGrants(agent, pluginsByAgent.get(agent.id) ?? []);
+      if (this.facilitatorGrants.get(agent.slug) === granted.join('\n')) continue;
+      drifted.push({ kind: 'rebuild', agent, reason: 'facilitation_engine' });
+    }
+    return drifted.length === 0 ? plan : { ...plan, actions: [...plan.actions, ...drifted] };
   }
 
   private runAction(
@@ -430,6 +471,7 @@ export class OrchestratorRegistry {
         // so dropping the map entry is enough. The per-(Agent × plugin)
         // PluginContext lifecycle is US8 / future work.
         this.active.delete(action.slug);
+        this.facilitatorGrants.delete(action.slug);
         this.log(`registry: agent removed`, {
           slug: action.slug,
           agentId: before.agent.id,

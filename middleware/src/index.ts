@@ -1896,14 +1896,10 @@ async function main(): Promise<void> {
       // The operator's SQL grant is what makes a declared engine THE engine;
       // read it fresh, since this runs right after an install or a grant.
       await facilitationSqlGrants.refresh();
-      const changed = await attachEngineToFacilitators(
-        store,
-        facilitationEngineSources(),
-        (m) => console.log(m),
-      );
-      if (changed.length > 0) {
-        await serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry')?.reload();
-      }
+      await attachEngineToFacilitators(store, facilitationEngineSources(), (m) => console.log(m));
+      // Always: the registry rebuilds the facilitators whose effective engine
+      // grant changed, with or without a new row (boot, grant, revoke).
+      await serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry')?.reload();
     } catch (err) {
       console.error(
         '[middleware] facilitation engine attach FAILED:',
