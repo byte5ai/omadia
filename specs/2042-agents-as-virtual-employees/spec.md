@@ -924,7 +924,7 @@ Each existing element keeps its purpose, moved out of the message body:
     through the gateway. With the lock in place, semantic search, the embedding backfill
     (as a maintenance run, stopped at its budget) and the transcription of a voice message
     work through the gateway; the embedding and transcription adapters' direct clients are
-    reachable only from the gateway; a maintenance run calling `complete` is refused; an
+    reachable only from the gateway; a maintenance run calling `complete` is refused; the Agent Builder dialog and a draft preview work through the gateway in their own contexts, and a preview gets no right the draft or the operator lacks; an
     agent on `claude-cli` uses its granted tools through `run_loop`, a tool it lacks is
     refused, a turn without budget does not start, a running loop that reaches its budget
     before the deadline makes no further model call, the total stays within the
