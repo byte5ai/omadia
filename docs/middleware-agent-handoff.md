@@ -3010,7 +3010,15 @@ danach alle installierten `depends_on`-Abhängigen (`reactivateDependents`,
 transitiv, Eltern zuerst, unabhängig vom Status), und der Upload-Seam ruft
 dasselbe über `onDependentsStale`, nachdem er das Urteil des Elternteils
 gebucht hat — ein Agent hält sonst den Client, den er in seinem eigenen
-`activate()` geholt hat. `recordActivationFailure` gibt die vorhandene
+`activate()` geholt hat. Seit #1860 fragt `reactivateOne` vorher
+`reactivationBlocker` (Host: `serviceRegistry.shadowedServicesOf`): Hält ein
+anderes Plugin einen `replace` über einen `provide` des Plugins (heute
+orchestrator-extras um `knowledgeGraph`), wird nichts abgebaut, der Status
+bleibt `active`, und `restartPending` meldet der Setup-Route
+`activation.restart_pending: true` — die neuen Werte greifen beim nächsten
+Start. Ein Hot-Restart scheiterte dort an „duplicate provider“ und hinterließ
+`errored`; `retryErroredPlugins` setzt diesen prozesslokalen Fehler beim Boot
+jetzt zurück. `recordActivationFailure` gibt die vorhandene
 `unresolved_requires`-Liste weiter, weil ein weggelassenes Argument sie löscht
 und `bootstrap.retryErroredPlugins` genau diese Liste braucht, um ein Plugin
 nach dem Nachinstallieren des Providers automatisch zurückzusetzen. Der

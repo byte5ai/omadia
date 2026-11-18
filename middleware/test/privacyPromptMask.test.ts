@@ -50,6 +50,30 @@ describe('createBaselineDetector (C0)', () => {
     }
   });
 
+  it('does not take a Teams conversation id for an e-mail address', async () => {
+    // Field report 2026-11-18: the group chat's id was masked as an e-mail and
+    // the surrogate reached a plugin tool as conversationId.
+    for (const id of [
+      '19:9cdb0cd5c91049ad99667e30b0795de6@thread.skype',
+      '19:328d16de-4575-437b-94d2-1086a4904fd7_72e41d28-6a37-4dfc-95fb-2591bc1034cd@unq.gbl.spaces',
+    ]) {
+      const spans = await createBaselineDetector().detect(`Konversation teams/${id} — bitte den Status abfragen.`);
+      assert.deepEqual(
+        spans.filter((s) => s.type === 'email'),
+        [],
+        `'${id}' must not be detected as an e-mail`,
+      );
+    }
+    // A real address next to it is still caught.
+    const mixed = await createBaselineDetector().detect(
+      'conv 19:9cdb0cd5c91049ad99667e30b0795de6@thread.skype, Kontakt anna.schmidt@firma.de',
+    );
+    assert.equal(mixed.filter((s) => s.type === 'email').length, 1);
+    // …and so is a mailbox on a domain that merely looks similar.
+    const lookalike = await createBaselineDetector().detect('schreib an team@thread.skype.example.com');
+    assert.equal(lookalike.filter((s) => s.type === 'email').length, 1);
+  });
+
   it('detects IBAN and DOB-style dates', async () => {
     const spans = await createBaselineDetector().detect(
       'Konto DE89 3704 0044 0532 0130 00, geboren am 24.12.1987.',
