@@ -140,6 +140,15 @@ export const UNRENDERABLE_CELL = '[Inhalt hier nicht darstellbar]';
 /** A nested value with no readable rendering, inside its parent's. */
 const ELIDED_CELL = '…';
 
+/**
+ * What a cell shows for a list of records it cannot name: a count, never raw
+ * JSON. German like {@link UNRENDERABLE_CELL}, and reported the same way.
+ */
+function recordCountCell(count: number): string {
+  return `[${String(count)} ${count === 1 ? 'Eintrag' : 'Einträge'}]`;
+}
+const RECORD_COUNT_CELL_RE = /^\[\d+ (?:Eintrag|Einträge)\]$/;
+
 /** Longest text a single cell shows before it is cut with an ellipsis. */
 export const MAX_TEXT_CELL_CHARS = 1500;
 
@@ -349,7 +358,7 @@ function cell(value: unknown, depth = 0): string {
       const joined = labels.join(', ');
       if (joined.length <= MAX_PAIRS_CHARS) return joined;
     }
-    return `[${String(value.length)} records]`;
+    return recordCountCell(value.length);
   }
   if (isPlainObject(value)) {
     const rendered = renderObject(value, depth);
@@ -360,7 +369,7 @@ function cell(value: unknown, depth = 0): string {
 
 /** A top-level cell that shows a marker instead of the value's content. */
 function isUnrenderedCell(text: string): boolean {
-  return text === UNRENDERABLE_CELL || /^\[\d+ records\]$/.test(text);
+  return text === UNRENDERABLE_CELL || RECORD_COUNT_CELL_RE.test(text);
 }
 
 /** Escape a value for a Markdown table cell. */
