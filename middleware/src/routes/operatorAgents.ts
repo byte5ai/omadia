@@ -67,6 +67,10 @@ import type { ChannelDirectoryRegistry } from '../channels/channelDirectoryRegis
 import type { ConversationRosterRegistry } from '../channels/rosterRegistry.js';
 import { loadTeamsTargetDirectory } from '../services/teamsTargetDirectoryService.js';
 import {
+  createTeamsTargetDirectoryCache,
+  type TeamsTargetDirectoryCache,
+} from '../services/teamsTargetDirectoryCache.js';
+import {
   resetTeamsIdentity,
   TEAMS_RESET_SCOPES,
   TeamsIdentityResetNotFoundError,
@@ -3336,6 +3340,26 @@ export function createOperatorAgentsRouter(
     },
   );
 
+  // One cache per identity deps object (it is what names the tenant's
+  // connector and the delegated tokens), created on first use.
+  const teamsTargetCaches = new WeakMap<object, TeamsTargetDirectoryCache>();
+  const teamsTargetCache = (deps: OperatorTeamsIdentityDeps): TeamsTargetDirectoryCache => {
+    let cache = teamsTargetCaches.get(deps);
+    if (!cache) {
+      cache = createTeamsTargetDirectoryCache({
+        load: () =>
+          loadTeamsTargetDirectory({
+            getProvisioner: () => deps.getProvisioner?.(),
+            ...(deps.delegatedTokens ? { delegatedTokens: deps.delegatedTokens } : {}),
+            log: (m) => console.log(m),
+          }),
+        log: (m) => console.log(m),
+      });
+      teamsTargetCaches.set(deps, cache);
+    }
+    return cache;
+  };
+
   /**
    * GET /:slug/teams/targets — what the operator can PICK instead of type.
    *
@@ -3370,9 +3394,14 @@ export function createOperatorAgentsRouter(
         res.status(404).json({ error: 'not_found' });
         return;
       }
-      const directory = await loadTeamsTargetDirectory({
-        getProvisioner: () => deps.getProvisioner?.(),
-        ...(deps.delegatedTokens ? { delegatedTokens: deps.delegatedTokens } : {}),
+      // #2043 D8 — one enumeration shared by every caller, kept for a few
+      // minutes, answered within a bounded wait (`reason: 'loading'` when the
+      // tenant is large) and searchable/limited on the server.
+      const limit = Number(req.query['limit']);
+      const directory = await teamsTargetCache(deps).get({
+        ...(typeof req.query['q'] === 'string' ? { q: req.query['q'].slice(0, 200) } : {}),
+        ...(Number.isFinite(limit) && limit > 0 ? { limit } : {}),
+        ...(req.query['refresh'] === '1' ? { refresh: true } : {}),
       });
       res.json({
         ok: true,

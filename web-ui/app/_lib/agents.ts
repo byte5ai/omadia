@@ -1490,6 +1490,8 @@ export function parseTeamsAssignmentCapabilities(
  * machine codes, each with its own sentence in `messages/*.json`.
  */
 export const TEAMS_TARGET_LISTING_UNAVAILABLE = [
+  /** #2043 — the server is still enumerating a large tenant; ask again. */
+  'loading',
   'connector_unavailable',
   'connector_unsupported',
   /** NOBODY is signed in — and since #949 nothing else. */
@@ -1538,7 +1540,13 @@ export function isTeamsTargetListingUnavailable(
  * about their tenant and sends them looking in the wrong place.
  */
 export type TeamsTargetListingDto<T> =
-  | { available: true; items: readonly T[] }
+  | {
+      available: true;
+      items: readonly T[];
+      /** #2043 — how many the tenant has; set when the server sent fewer. */
+      total?: number;
+      truncated?: boolean;
+    }
   | { available: false; reason: TeamsTargetListingUnavailable };
 
 export interface TeamsTeamOptionDto {
@@ -1593,7 +1601,15 @@ function parseTargetListing<T>(
     const parsed = parseItem(entry);
     if (parsed !== null) items.push(parsed);
   }
-  return { available: true, items };
+  const total = record['total'];
+  const truncated = record['truncated'] === true;
+  return {
+    available: true,
+    items,
+    ...(truncated && typeof total === 'number' && Number.isFinite(total)
+      ? { total, truncated: true }
+      : {}),
+  };
 }
 
 function parseTeamOption(raw: unknown): TeamsTeamOptionDto | null {
@@ -1647,6 +1663,68 @@ export async function getAgentTeamsTargets(
     teams: parseTargetListing(dto.teams, parseTeamOption),
     chats: parseTargetListing(dto.chats, parseChatOption),
   };
+}
+
+const TARGETS_UNREADABLE: Pick<AgentTeamsTargetsDto, 'teams' | 'chats'> = {
+  teams: { available: false, reason: 'lookup_failed' },
+  chats: { available: false, reason: 'lookup_failed' },
+};
+
+export interface LoadTeamsTargetsOptions {
+  /** Called with every answer, including the intermediate `loading` ones. */
+  readonly onUpdate: (dto: AgentTeamsTargetsDto) => void;
+  readonly isCancelled: () => boolean;
+  readonly delayMs?: number;
+  readonly maxPolls?: number;
+  /** Injectable for tests. */
+  readonly fetchTargets?: (slug: string) => Promise<AgentTeamsTargetsDto>;
+  readonly sleep?: (ms: number) => Promise<void>;
+}
+
+/**
+ * Load the team/chat directory until it is there (#2043).
+ *
+ * A large tenant takes longer to enumerate than one request should wait, so
+ * the server answers `reason: 'loading'` and keeps going. This asks again
+ * until both halves have settled, and ALWAYS ends in a state the picker can
+ * show: a request that fails, or a server that never finishes, becomes
+ * `lookup_failed` ("could not be loaded, type the id below") instead of the
+ * endless "loading …" the panel used to sit in.
+ */
+export async function loadAgentTeamsTargets(
+  slug: string,
+  opts: LoadTeamsTargetsOptions,
+): Promise<void> {
+  const fetchTargets = opts.fetchTargets ?? getAgentTeamsTargets;
+  const sleep =
+    opts.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const maxPolls = opts.maxPolls ?? 40;
+  const isLoading = (listing: TeamsTargetListingDto<unknown>): boolean =>
+    !listing.available && listing.reason === 'loading';
+  let last: AgentTeamsTargetsDto = {
+    ok: false,
+    agent: slug,
+    provisioner_installed: false,
+    ...TARGETS_UNREADABLE,
+  };
+  for (let poll = 0; poll < maxPolls; poll += 1) {
+    try {
+      last = await fetchTargets(slug);
+    } catch {
+      if (!opts.isCancelled()) opts.onUpdate({ ...last, ...TARGETS_UNREADABLE });
+      return;
+    }
+    if (opts.isCancelled()) return;
+    opts.onUpdate(last);
+    if (!isLoading(last.teams) && !isLoading(last.chats)) return;
+    await sleep(opts.delayMs ?? 3000);
+    if (opts.isCancelled()) return;
+  }
+  opts.onUpdate({
+    ...last,
+    teams: isLoading(last.teams) ? TARGETS_UNREADABLE.teams : last.teams,
+    chats: isLoading(last.chats) ? TARGETS_UNREADABLE.chats : last.chats,
+  });
 }
 
 /**

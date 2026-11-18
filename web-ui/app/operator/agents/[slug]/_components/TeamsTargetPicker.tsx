@@ -128,6 +128,7 @@ export function TeamsTargetPicker({
         onSelect={onSelect}
         noMatchText={(query) => t('noMatch', { query })}
         matchCountText={(count) => t('matchCount', { count })}
+        truncatedText={(shown, total) => t('truncated', { shown, total })}
         optionsOf={(items: readonly TeamsTeamOptionDto[]) =>
           items.map((team) => ({ id: team.id, label: team.displayName }))
         }
@@ -151,6 +152,7 @@ export function TeamsTargetPicker({
         onSelect={onSelect}
         noMatchText={(query) => t('noMatch', { query })}
         matchCountText={(count) => t('matchCount', { count })}
+        truncatedText={(shown, total) => t('truncated', { shown, total })}
         optionsOf={(items: readonly TeamsChatOptionDto[]) =>
           items.map((chat) => ({
             id: chat.id,
@@ -197,6 +199,7 @@ interface TargetSelectProps<T> {
   readonly unavailableText: (reason: string) => string;
   readonly noMatchText: (query: string) => string;
   readonly matchCountText: (count: number) => string;
+  readonly truncatedText: (shown: number, total: number) => string;
 }
 
 /**
@@ -223,6 +226,7 @@ function TargetSelect<T>({
   unavailableText,
   noMatchText,
   matchCountText,
+  truncatedText,
 }: TargetSelectProps<T>): React.JSX.Element {
   if (!listing.available) {
     return (
@@ -245,15 +249,22 @@ function TargetSelect<T>({
   // marks a matching row as selected and otherwise marks none. It must never
   // claim a choice the operator did not make.
   return (
-    <SearchableSelect
-      label={label}
-      placeholder={placeholder}
-      options={options}
-      value={value}
-      disabled={disabled}
-      onSelect={(id) => onSelect(id, kindOf(id))}
-      noMatchText={noMatchText}
-      matchCountText={matchCountText}
-    />
+    <>
+      <SearchableSelect
+        label={label}
+        placeholder={placeholder}
+        options={options}
+        value={value}
+        disabled={disabled}
+        onSelect={(id) => onSelect(id, kindOf(id))}
+        noMatchText={noMatchText}
+        matchCountText={matchCountText}
+      />
+      {listing.truncated === true && listing.total !== undefined ? (
+        <p role="note" className="text-[11px] text-[color:var(--fg-muted)]">
+          {truncatedText(options.length, listing.total)}
+        </p>
+      ) : null}
+    </>
   );
 }

@@ -12,6 +12,7 @@ import {
   parseTeamsIdentityErrorCode,
   parseTeamsIdentityLastErrorDetail,
   getAgentTeamsTargets,
+  loadAgentTeamsTargets,
   provisionAgentTeamsIdentity,
   type AgentTeamsTargetsDto,
   type TeamsIdentityStatusDto,
@@ -160,19 +161,16 @@ export function AgentTeamsIdentity(
     if (!needsTargetDirectory) return;
     let cancelled = false;
     setTargetsLoading(true);
-    void getAgentTeamsTargets(props.slug)
-      .then((dto) => {
-        if (!cancelled) setTargets(dto);
-      })
-      .catch(() => {
-        // Swallowed like the other callers: the text field still works, and an
-        // error banner for a failed convenience would read as though
-        // provisioning itself were broken.
-        if (!cancelled) setTargets(null);
-      })
-      .finally(() => {
-        if (!cancelled) setTargetsLoading(false);
-      });
+    // #2043 — asks again while the server is still enumerating a large
+    // tenant, and always ends in a state the picker shows (never `null`).
+    void loadAgentTeamsTargets(props.slug, {
+      isCancelled: () => cancelled,
+      fetchTargets: getAgentTeamsTargets,
+      onUpdate: (dto) => {
+        setTargets(dto);
+        setTargetsLoading(false);
+      },
+    });
     return () => {
       cancelled = true;
     };

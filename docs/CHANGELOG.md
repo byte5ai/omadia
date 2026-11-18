@@ -38,6 +38,17 @@ changelog.
 
 ### Fixed — Rollout defects of native facilitators (epic #2043)
 
+- A provisioned Teams bot is served as soon as its app is published in the
+  org catalog, before the team/chat install. A refused install no longer
+  leaves a bot users can add personally and that never answers.
+- A team or chat that refuses the app's resource-specific permissions is a
+  permanent failure with its own code (`rsc_consent_refused`), not a
+  "replication" retry; the whole Graph answer is stored, returned by the API
+  and shown under the technical detail (en + de).
+- The team/chat picker no longer waits for the whole tenant: the list is
+  enumerated once for all callers, kept for five minutes, answered within
+  eight seconds (`loading` otherwise, the UI asks again), and
+  `GET /operator/agents/:slug/teams/targets` takes `q`, `limit` and `refresh`.
 - The Teams template revision is read from `appPackage/TEMPLATE_REVISION.txt`
   (the extension-less `TEMPLATE_REVISION` is still read as a fallback). The
   plugin zip ingest refuses an extension-less file there, so channel-teams
