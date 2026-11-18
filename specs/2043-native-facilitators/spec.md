@@ -227,6 +227,10 @@ invited → configuring → active → concluding → closed
   contribution stays `ambiguous` and does not count until resolved.
 - The model never computes counts, "who is missing" or whether a machine-checkable
   definition of done is met; the engine does, from the tables.
+- Deterministic first (AVE INV-11): reminders, time-keeping posts, status, tallies,
+  handshake and protocol assembly are templates filled by the engine without a model; the
+  model is used for moderation language, summaries, cluster proposals and understanding
+  free text.
 
 ### 5.4 Formats and process
 

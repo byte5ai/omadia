@@ -151,6 +151,13 @@ within harness procedures and without bothering users, whether to wait for an ev
 wake itself at a time. Every such trigger has a deadline, limits and a budget that the
 deterministic harness enforces, so no trigger can ever run on blindly (§5.12).
 
+**INV-11 Deterministic first.** Whatever the deterministic harness can do, it does:
+faster, cheaper, more reliable and uncritical for data protection. A model runs only where
+judgement, language or open-ended reasoning is needed. Data from a source system reaches
+the user through a side channel past the model; the agent coordinates and receives a
+status. When the agent itself needs data, it gets exactly that data, masked by the
+privacy shield where required. This holds for every part of omadia (§5.13).
+
 ## 4. Measured ground truth on `main`
 
 Paths are relative to the kernel repo unless a sister repo is named.
@@ -201,7 +208,7 @@ capability or a visible colleague.
 | **DB sub-agents** (`agent_subagents`, `ask_<name>`, Builder canvas node "Sub-Agent") | Removed. Specialists are created as agents and consulted as colleagues (§5.4). |
 | **Persona skills** (`agent_persona_skills` as identity candidates, `personaRouter`) | Removed as identity switch. A skill may shape how an agent works; it never changes who speaks. |
 | **Direct Line** (`#token`, sticky mode) | Removed: direct addressing (INV-1) replaces it. `delegatedAnswer` and `agentsConsulted` are kept as the consultation block (§5.4). |
-| **Fast path** (`@omadia/fast-path`) | **Removed as a separate answer path.** It runs a planner and a router model before the agent (`middleware/packages/harness-plugin-fast-path/src/triageTurn.ts:204`) and answers in the agent's place without its persona, boundaries or disclosure (#1876), which INV-1, INV-2 and INV-6 rule out. Not to be confused with Direct Line (the `#token` workaround to talk to a sub-agent past the orchestrator, removed above). Speed comes back inside the agent: its model policy may use a fast model for simple lookups, and deterministic table rendering runs as the agent's own step under its identity. |
+| **Fast path** (`@omadia/fast-path`) | **Its deterministic half becomes the standard data path (§5.13); its model half goes.** Today a planner and a router model run before the agent (`middleware/packages/harness-plugin-fast-path/src/triageTurn.ts:204`) and the answer skips the agent's persona, boundaries and disclosure (#1876). In the target, the agent decides in its own turn (or through a deterministic recipe it owns) which data action runs; the harness executes it and renders the data through the side channel under the agent's identity with AI disclosure; the agent gets a status. Not to be confused with Direct Line, which goes. |
 | **Fallback agent** ("Standard Orchestrator") | The special role ends. The operator configures **default agents per human user and channel**, or switches the default off (§5.6). The default agent gets no automatic plugin attachment (INV-8). |
 | **Auto-attach of plugins** (`attachAllPlugins`, `attachNewPluginsToFallbackAgent`, `attachToDefaultOrchestrator`) | Removed. A plugin install offers to attach the plugin to agents the operator picks; nothing is attached without that choice. |
 | **UI orchestrator** of the desktop UI (`canvasChatAgent`, Tier 2) | Becomes the canvas renderer of the selected agent. The agent answers first, in its envelope; UI composition runs afterwards as a presentation step of that answer under the agent's identity. Deterministic local operations (Tier 1) stay. |
@@ -467,6 +474,19 @@ Examples: a facilitator in a meeting subscribes to new messages and sets a 5-min
 for time-keeping, both ending with the meeting; an agent watching expense reports sets
 itself a one-shot wakeup before month end.
 
+**What a firing does: deterministic action first.** Every trigger names its action, and
+the harness picks the cheapest one that serves the purpose (INV-11):
+
+| Action | Model call | Examples |
+|---|---|---|
+| `check` | none | Is the meeting still live? Did anything change since the last firing? Is the expense report still open? |
+| `post` | none | Templated message with values from the engine: "5 minutes left for this step", "two contributions are still open", "reminder: your action item is due tomorrow". |
+| `deliver` | none | A data action whose result goes through the side channel to the recipients (a list of open expense reports, a status table). |
+| `turn` | yes, under the agent's model policy and budget | Only where judgement or language is needed: summarise a stalled discussion, weigh what is worth telling the owner, write a narrative overview around delivered data. |
+
+A trigger may chain them (`check` then `deliver`, and a `turn` only if the check finds
+something that needs judgement). Most firings never reach a model.
+
 **Harness guarantees (deterministic, not overridable by any prompt or plugin):**
 - **Mandatory deadline.** No trigger without `until`; instance caps bound it (proposed:
   one-shot within 90 days, recurring and hooks within 30 days). A recurring trigger also
@@ -495,10 +515,55 @@ itself a one-shot wakeup before month end.
   deadline and cost so far; a user can ask an agent what it is currently watching for
   them; every creation, firing and end is audited.
 
-**Routines** become user-requested triggers of the same mechanism: they get a deadline,
-and before it runs out the agent asks the user whether to continue, as a colleague would.
-**Plugin jobs** stay for technical maintenance without model calls; a plugin job never
-calls a model outside an agent's trigger.
+**Changes to today's mechanisms:**
+
+| Mechanism today | Change |
+|---|---|
+| **Routines** (user-owned recurring cron with a prompt, no end date or cost cap) | Become user-requested triggers of this mechanism, owned by the agent that serves the user: mandatory deadline with a renewal question before it ends, budget, pre-check. The existing output templates (data from the raw tool result, model only for narrative slots) become the default form: `deliver` plus an optional `turn` for the narrative. |
+| **Plugin jobs** (cron or interval until deactivation, failures keep ticking) | Stay for technical maintenance (sync, cleanup) and never call a model. Failures back off and trip a breaker after repeated errors; jobs are listed per plugin in the operator UI with last run and error state. |
+| **Conductor event, webhook and cron triggers** (operator-authored workflows) | Stay for operator-designed processes. Agent hooks use the same event bus (`middleware/src/conductor/eventRouter.ts`); channel and integration plugins publish their events there (`ctx.events.emit` for plugins, today a follow-up). Model steps of workflows count against the same budgets. |
+| **Facilitation pattern's hourly model tick** | Replaced by hooks and deterministic timers of the facilitation engine (native facilitators spec). |
+| **Fixed heartbeats** | None. Nothing in omadia polls a model on a fixed schedule without a context, deadline and pre-check. |
+
+
+### 5.13 Deterministic first and side channels
+
+Harnesses like Claude Code or OpenClaw route nearly everything through a model. omadia
+does not: it combines the best of classic deterministic software and of agents into a
+hybrid, progressive agentic OS. The agent is the colleague who decides and coordinates;
+the harness does everything that can be done without a model.
+
+**Decision rule, for every component:** before a step uses a model, the design states why a
+deterministic path is not enough. Deterministic by default: routing, permissions,
+discretion checks, counting and evaluation, scheduling and pre-checks, templated
+messages, data retrieval, formatting and rendering, protocol assembly, delivery. Model
+only for: understanding free text, judgement, open-ended reasoning, language that has to
+fit a situation.
+
+**Side channel for data.** When a user needs data from a source system (ERP, CRM,
+knowledge graph, files):
+1. The agent decides in its turn which data action runs (or a deterministic recipe it
+   owns decides).
+2. The harness executes the action under the agent's grants, applies discretion (INV-9)
+   and the audience floor, and renders the result into the answer through the side
+   channel, under the agent's identity and with AI disclosure.
+3. The agent's model receives a status (success, row count, columns, any refusal), not
+   the rows.
+4. Only if the agent needs the content itself to reason (for example to compare two
+   figures), it requests exactly those fields; they reach the model masked by the privacy
+   shield where required.
+
+omadia already does this in places: the privacy shield's table render hands real rows to
+the canvas sink and gives the model only a shape acknowledgement
+(`docs/security-architecture.md`, "canvas-sentinel side channel"); routine output
+templates fill data sections from the raw tool result and use the model only for
+narrative slots (`middleware/src/plugins/routines/routineOutputTemplate.ts`); the fast
+path renders tables without a model. This spec makes the pattern the default for every
+channel and every data answer.
+
+**Consequences in this spec:** the facilitation engine computes all state; triggers
+prefer `check`, `post` and `deliver` over `turn` (§5.12); the identity guard runs its
+deterministic layer first (§5.5); routing and discretion are model-free (§5.6, §5.11).
 
 ## 6. Acceptance criteria
 
@@ -577,6 +642,12 @@ calls a model outside an agent's trigger.
     an overview, and is gone; after a restart in between it fires exactly once.
 24. **Proactive discretion.** A proactive message created in an HR context never reaches a
     sales chat, and none goes out during the recipient's quiet hours.
+25. **Side channel.** A user asks an agent for the open invoices of a customer: the table
+    reaches the user under the agent's identity with AI disclosure, and the model's
+    trace contains the status (row count, columns) but none of the rows.
+26. **Deterministic firings.** In a 60-minute meeting with a 5-minute time-keeping timer
+    and a message hook, the time-keeping posts and reminders cause no model call; model
+    calls happen only for summaries and moderation that need language.
 
 ## 7. Migration and compatibility
 
@@ -622,8 +693,9 @@ Kernel unless noted. Each item becomes one issue in epic #2042.
 8. Remove `#token` Direct Line addressing and sticky mode (G6).
 9. Plugin model: plugin kinds incl. `agent-template`, manifest kind `agent` removed,
    kernel enforcement of the boundary, capability calls in the caller's envelope (§5.10).
-10. Remove the fast path as a separate answer path; fast lookups via the agent's own
-    model policy (#1876).
+10. Fast path: remove the planner and router models before the agent; keep its
+    deterministic recipes and rendering as the agent's side-channel data path (#1876,
+    §5.13).
 11. Fail loud instead of silent fallback (#1880).
 12. Least privilege by default: no auto-attach, onboarding without a super-agent, reach
     display and confirmation (INV-8, §5.7).
@@ -649,6 +721,10 @@ Kernel unless noted. Each item becomes one issue in epic #2042.
     catalogue, mandatory deadline, limits, budgets with kill switch, pre-check, circuit
     breaker, durable exactly-once firing, operator view; routines migrated onto it
     (INV-10, §5.12).
+23. Deterministic first: side-channel data delivery for every channel under the agent's
+    identity, status to the model, targeted masked fields on request; data actions and
+    recipes as agent capabilities; trigger action types `check`, `post`, `deliver`,
+    `turn` (INV-11, §5.12, §5.13).
 
 ## 9. Owner decisions
 
@@ -667,8 +743,12 @@ Kernel unless noted. Each item becomes one issue in epic #2042.
 - Discretion is a core virtue of an ideal colleague: the context rules of the memory
   system extend to every flow of information, including capability and interface calls
   and agent-to-agent communication (INV-9, §5.11).
-- Direct Line was a workaround and goes; the fast path goes as a separate answer path
-  (§5.2).
+- Direct Line was a workaround and goes (§5.2).
+- Deterministic first: everything the harness can do runs without a model; data reaches
+  users through side channels past the model, the agent coordinates and gets a status,
+  and gets data itself only targeted and masked. This holds for every part of omadia
+  (INV-11, §5.13). The fast path's deterministic half becomes the standard data path; its
+  pre-agent models go (§5.2).
 - Default agents are set per human user and channel, and can be switched off so that no
   message ever reaches an agent that was not exactly defined (§5.6).
 - The agent/plugin boundary and plugin kinds of §5.10; skills are capabilities, from
