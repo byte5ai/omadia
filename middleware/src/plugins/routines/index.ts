@@ -78,6 +78,7 @@ export {
 export {
   ROUTINES_AGENT_ID,
   RoutineRunner,
+  RoutineCronTooFrequentError,
   RoutineNotActiveError,
   RoutineNotFoundError,
   RoutineQuotaExceededError,

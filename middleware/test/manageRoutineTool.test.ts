@@ -8,6 +8,7 @@ import {
   type ManageRoutineContext,
 } from '../src/plugins/routines/manageRoutineTool.js';
 import {
+  RoutineCronTooFrequentError,
   RoutineNotFoundError,
   RoutineQuotaExceededError,
   UnknownChannelError,
@@ -347,6 +348,17 @@ describe('ManageRoutineTool — error mapping', () => {
       id: '00000000-0000-0000-0000-000000000000',
     });
     assert.match(result, /^Error: routine '00000000-0000-0000-0000-000000000000' not found/);
+  });
+
+  it('formats RoutineCronTooFrequentError (#1742)', async () => {
+    const { runner } = stubRunner({
+      createImpl: async () => {
+        throw new RoutineCronTooFrequentError('*/20 * * * * *');
+      },
+    });
+    const tool = new ManageRoutineTool({ runner, resolveContext: () => ctx });
+    const result = await tool.handle({ ...baseArgs, cron: '*/20 * * * * *' });
+    assert.match(result, /^Error: cron '\*\/20 \* \* \* \* \*'/);
   });
 
   it('returns Error: <message> for a JobValidationError (the cron hint about the model input)', async () => {

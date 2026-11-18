@@ -17,12 +17,15 @@ import type {
   RoutineRun,
   RoutineRunsStore,
 } from '../src/plugins/routines/routineRunsStore.js';
+import { ManageRoutineTool } from '../src/plugins/routines/manageRoutineTool.js';
 import {
   ROUTINES_AGENT_ID,
+  RoutineCronTooFrequentError,
   RoutineNotFoundError,
   RoutineQuotaExceededError,
   RoutineRunner,
   UnknownChannelError,
+  assertRoutineCronInterval,
   type JobSchedulerLike,
   type OrchestratorLike,
   type RoutineActorScope,
@@ -183,6 +186,20 @@ class InMemoryRoutineStore implements RoutineStore {
       return null;
     }
     const updated: Routine = { ...existing, status, updatedAt: new Date() };
+    this.rows.set(id, updated);
+    return updated;
+  }
+
+  async pauseWithError(id: string, error: string): Promise<Routine | null> {
+    const existing = this.rows.get(id);
+    if (!existing) return null;
+    const updated: Routine = {
+      ...existing,
+      status: 'paused',
+      lastRunStatus: 'error',
+      lastRunError: error,
+      updatedAt: new Date(),
+    };
     this.rows.set(id, updated);
     return updated;
   }
@@ -1499,3 +1516,129 @@ describe('#1598 — a routine runs on the orchestrator that created it', () => {
   });
 });
 
+// #1742 — croner accepts an optional sixth (seconds) field, so a routine
+// could be scheduled every few seconds and run a full paid agent turn each
+// time. Every path that schedules a routine refuses a cron that can fire
+// more than once per minute.
+describe('#1742 — a routine fires at most once per minute', () => {
+  const SUB_MINUTE = ['*/20 * * * * *', '* * * * * *', '0,30 * * * * *', '0/30 * * * * *', '5-6 0 9 * * *'];
+  const ALLOWED = ['* * * * *', '0 9 * * 1-5', '*/30 * * * *', '0 */5 * * * *', '30 0 9 * * 1', '@hourly'];
+
+  for (const cron of SUB_MINUTE) {
+    it(`assertRoutineCronInterval rejects '${cron}'`, () => {
+      assert.throws(() => assertRoutineCronInterval(cron), RoutineCronTooFrequentError);
+    });
+  }
+  for (const cron of ALLOWED) {
+    it(`assertRoutineCronInterval accepts '${cron}'`, () => {
+      assert.doesNotThrow(() => assertRoutineCronInterval(cron));
+    });
+  }
+
+  it('createRoutine refuses a seconds-field cron and leaves no row or schedule behind', async () => {
+    const h = makeHarness();
+    for (const cron of ['*/20 * * * * *', '* * * * * *']) {
+      await assert.rejects(
+        () => h.runner.createRoutine({ ...baseInput, cron }),
+        RoutineCronTooFrequentError,
+      );
+    }
+    assert.equal(h.store.rows.size, 0);
+    assert.equal(h.scheduler.list().length, 0);
+  });
+
+  it('createRoutine accepts every-minute and weekday-morning crons', async () => {
+    const h = makeHarness();
+    await h.runner.createRoutine({ ...baseInput, name: 'every-minute', cron: '* * * * *' });
+    await h.runner.createRoutine({ ...baseInput, name: 'weekdays', cron: '0 9 * * 1-5' });
+    assert.equal(h.scheduler.list().length, 2);
+  });
+
+  it('boot does not schedule a persisted sub-minute routine but still schedules the rest', async () => {
+    const h = makeHarness();
+    // Rows written before the check existed: seeded through the store,
+    // bypassing the runner.
+    await h.store.create({ ...baseInput, name: 'legacy', cron: '*/20 * * * * *' });
+    const ok = await h.store.create({ ...baseInput, name: 'fine', cron: VALID_CRON });
+
+    await h.runner.start();
+
+    assert.deepEqual(
+      h.scheduler.list().map((entry) => entry.name),
+      [ok.id],
+    );
+    assert.equal(h.store.rows.get(ok.id)?.status, 'active');
+  });
+
+  it('boot pauses a refused sub-minute routine and records the reason in last_run_error', async () => {
+    const h = makeHarness();
+    const legacy = await h.store.create({ ...baseInput, name: 'legacy', cron: '*/20 * * * * *' });
+
+    await h.runner.start();
+
+    const row = h.store.rows.get(legacy.id);
+    assert.equal(row?.status, 'paused');
+    assert.equal(row?.lastRunStatus, 'error');
+    assert.match(row?.lastRunError ?? '', /'\*\/20 \* \* \* \* \*'.*once per minute/);
+    assert.equal(row?.lastRunAt, null, 'nothing ran, so last_run_at stays empty');
+    assert.equal(await h.store.countActiveForUser(TENANT, USER), 0, 'no longer counts toward the quota');
+    assert.equal(h.store.recordRunCalls.length, 0, 'no catch-up run for a refused routine');
+
+    // A resume returns the same explanation and leaves the routine paused.
+    await assert.rejects(
+      () => h.runner.resumeRoutine(legacy.id, OWNER_SCOPE),
+      RoutineCronTooFrequentError,
+    );
+    assert.equal(h.store.rows.get(legacy.id)?.status, 'paused');
+    assert.equal(h.scheduler.list().length, 0);
+  });
+
+  it('boot keeps logging other registration failures without pausing the routine', async () => {
+    const h = makeHarness({
+      registerThrows: new Error("cron 'not a cron' is invalid"),
+    });
+    const broken = await h.store.create({ ...baseInput, name: 'broken', cron: 'not a cron' });
+
+    await h.runner.start();
+
+    assert.equal(h.store.rows.get(broken.id)?.status, 'active');
+    assert.equal(h.store.rows.get(broken.id)?.lastRunError, null);
+    assert.equal(h.scheduler.list().length, 0);
+  });
+
+  it('resume refuses a persisted sub-minute routine and leaves it paused', async () => {
+    const h = makeHarness();
+    const legacy = await h.store.create({ ...baseInput, cron: '*/20 * * * * *' });
+    await h.store.setStatus(legacy.id, 'paused');
+
+    await assert.rejects(
+      () => h.runner.resumeRoutine(legacy.id, OWNER_SCOPE),
+      RoutineCronTooFrequentError,
+    );
+    assert.equal(h.store.rows.get(legacy.id)?.status, 'paused');
+    assert.equal(h.scheduler.list().length, 0);
+  });
+
+  it('manage_routine returns the refusal to the model as an Error: string', async () => {
+    const h = makeHarness();
+    const tool = new ManageRoutineTool({
+      runner: h.runner,
+      resolveContext: () => ({
+        tenant: TENANT,
+        userId: USER,
+        channel: 'teams',
+        conversationRef: { conversation: { id: 'conv-1' } },
+      }),
+    });
+
+    const result = await tool.handle({
+      action: 'create',
+      name: 'every-20s',
+      cron: '*/20 * * * * *',
+      prompt: 'Sag hallo',
+    });
+
+    assert.match(result, /^Error: .*'\*\/20 \* \* \* \* \*'.*once per minute/);
+    assert.equal(h.store.rows.size, 0);
+  });
+});

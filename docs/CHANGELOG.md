@@ -36,6 +36,17 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Routinen feuern höchstens einmal pro Minute (#1742)
+
+2026-11-18. croner akzeptiert ein optionales Sekundenfeld, eine Routine
+konnte deshalb alle paar Sekunden laufen, jedes Mal ein voller, bezahlter
+Agent-Turn. Anlegen, Fortsetzen und der Boot-Scan lehnen jetzt jeden Cron
+ab, der mehr als einmal pro Minute feuern kann: ein Sekundenfeld muss eine
+einzelne Zahl sein. Eine schon gespeicherte aktive Routine mit so einem Cron
+wird beim Start pausiert, der Grund steht in `last_run_error`. Damit zeigt
+die UI sie nicht mehr als aktiv an, sie zählt nicht mehr gegen das
+Aktiv-Kontingent, und ein Fortsetzen liefert dieselbe Begründung.
+
 ### Fixed — Node-Aktivierung nach Amp-Snapshot-Restore
 
 2026-11-16. Neue Orbs hatten die Node-22-/24-Toolchains und alle Pakete,
