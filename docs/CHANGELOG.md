@@ -1,9 +1,5 @@
 # Changelog
 
-## 2026-11-11
-
-- Builder chat turns now continue draining after a client disconnects, preserving transcript persistence and replaying terminal events on reconnect.
-
 All notable changes to omadia are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
@@ -71,6 +67,16 @@ produced a value, so no turn carried one.
 - **Workflows carry their version number.** `GET /conductors` and
   `GET /conductors/:slug` return `activeVersionNumber` next to `activeVersionId`,
   null when nothing is published. Additive, no migration.
+### Fixed — Builder turn keeps running after the browser disconnects (#1812)
+
+2026-11-11. `POST /drafts/:id/turn` stopped the builder turn as soon as the
+HTTP client went away (tab reload, network drop), so the agent never wrote
+its answer to the draft transcript and the turn's replay buffer never got the
+terminal frames. The turn now runs to its end or to the turn timeout after a
+disconnect; writes to the closed response stop, while the ring buffer keeps
+recording and is finalised, so `GET /drafts/:id/turn/:turnId/resume` replays
+the finished turn.
+
 ### Fixed — MCP auth discovery: a failed read is not "not protected"
 
 2026-11-04. Found on Figma in the new admin: the Authorization section vanished

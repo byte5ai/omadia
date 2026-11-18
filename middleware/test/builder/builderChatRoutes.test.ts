@@ -505,6 +505,13 @@ describe('GET /api/v1/builder/drafts/:id/turn/:turnId/resume', () => {
       holdAsk: true,
       finalText: 'answer after reconnect',
     });
+    // Resolves once the server side of the turn's connection is closed, so
+    // the agent is only released after the route has seen the disconnect.
+    const serverSocketClosed = new Promise<void>((resolve) => {
+      app.server.once('connection', (socket) => {
+        socket.once('close', () => resolve());
+      });
+    });
     const controller = new AbortController();
     const response = await fetch(
       `${app.baseUrl}/api/v1/builder/drafts/${app.draftId}/turn`,
@@ -519,12 +526,13 @@ describe('GET /api/v1/builder/drafts/:id/turn/:turnId/resume', () => {
     const reader = response.body?.getReader();
     assert.ok(reader);
     const first = await reader.read();
-    const firstLine = new TextDecoder().decode(first.value).trim().split('\n')[0];
+    const firstLine = new TextDecoder().decode(first.value).trim().split('\n')[0] ?? '';
     const start = JSON.parse(firstLine) as FrameOnWire & { turnId: string };
     assert.equal(start.type, 'turn_started');
 
     await app.askStarted;
     controller.abort();
+    await serverSocketClosed;
     await new Promise<void>((resolve) => setImmediate(resolve));
     app.releaseAsk();
 
@@ -551,5 +559,4 @@ describe('GET /api/v1/builder/drafts/:id/turn/:turnId/resume', () => {
     assert.ok(draft);
     assert.equal(draft.transcript.at(-1)?.content, 'answer after reconnect');
   });
-
 });
