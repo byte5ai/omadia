@@ -989,6 +989,10 @@ export interface PluginActivationResult {
   /** #1456 — what kind of failure it was, for operator-facing copy. `null` on
    *  success; `unknown` for a failure recorded without a code. */
   error_code: ActivationErrorCode | null;
+  /** #1860 — the values were saved, but the plugin keeps running on its
+   *  current instance until the next restart (another plugin wraps one of
+   *  its services, so it cannot be restarted in place). Omitted: false. */
+  restart_pending?: boolean;
 }
 
 /**

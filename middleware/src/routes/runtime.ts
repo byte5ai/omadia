@@ -16,14 +16,14 @@ import {
   isEffectiveProviderChange,
   reactivateAfterProviderWrite,
 } from '../platform/providerDependents.js';
-import type { InstallSetupField, SetupOption } from '../api/admin-v1.js';
+import type { InstallSetupField, PluginActivationResult, SetupOption } from '../api/admin-v1.js';
 import {
   SetupOptionsResolveError,
   withTimeout,
 } from '../plugins/dynamicAgentRuntime.js';
 import type { ConnectionProbeOutcome } from '../plugins/connectionProbe.js';
 import { coerceSetupFieldValue, extractSetupSchema } from '../plugins/installService.js';
-import type { InstalledRegistry } from '../plugins/installedRegistry.js';
+import type { InstalledAgent, InstalledRegistry } from '../plugins/installedRegistry.js';
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
 import {
   buildPrivacyPosture,
@@ -92,6 +92,8 @@ interface RuntimeDeps {
    *  current runtime instance and re-activates it so the plugin reads
    *  the fresh values — most plugins cache config at activate-time. */
   reactivate?: (agentId: string) => Promise<void>;
+  /** #1860 — did the last reactivation of `agentId` wait for a restart? */
+  restartPending?: (agentId: string) => boolean;
   /** Live-plugin tool invoker for dynamic setup-field options (post-install).
    *  Optional so existing test wiring keeps compiling — the setup-options
    *  endpoint 503s when absent, and PATCH /config falls back to opaque-id
@@ -378,7 +380,7 @@ export function createRuntimeRouter(deps: RuntimeDeps): Router {
               }
             : null,
           // #1497 — did the plugin come back up on the new values?
-          activation: activationResultOf(updated),
+          activation: activationWithRestart(deps, updated),
         });
       } catch (err) {
         if (err instanceof ProviderDependentRebuildError) {
@@ -1155,7 +1157,7 @@ async function applySetupValues(
       // back up. Without it the store rendered "✓ Saved" over a plugin that
       // had just failed to start on the new values (or had just recovered),
       // and the page kept the old badge until a reload.
-      activation: activationResultOf(updated),
+      activation: activationWithRestart(deps, updated),
     });
   } catch (err) {
     if (err instanceof ProviderDependentRebuildError) {
@@ -1441,4 +1443,15 @@ async function auditPrivacyChange(
       err instanceof Error ? err.message : err,
     );
   }
+}
+
+/** #1497 activation result, plus #1860's note when the new values wait for
+ *  the next restart instead of a hot reactivation. */
+function activationWithRestart(
+  deps: Pick<RuntimeDeps, 'restartPending'>,
+  entry: InstalledAgent | undefined,
+): PluginActivationResult | null {
+  const result = activationResultOf(entry);
+  if (result === null || entry === undefined) return result;
+  return deps.restartPending?.(entry.id) === true ? { ...result, restart_pending: true } : result;
 }
