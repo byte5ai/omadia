@@ -236,6 +236,20 @@ answers only as itself. Bots never see each other's posts (Teams blocks bot-to-b
 design); agent-to-agent work runs server-side and becomes visible as a consultation or as
 each agent's own post (precedent: `middleware/src/conductor/sayService.ts`).
 
+**Availability.** Every agent has an availability, set by the operator in the Agent
+Builder: which users may use it (named people, groups, or everyone in the tenant) and in
+which channels (all or selected ones). The management layer checks it deterministically
+before every turn, also for explicit addressing, selections, bindings and the
+default-agent table: a message from a user outside the availability, or in a channel
+outside it, gets a `system` notice that names the agent (INV-7), never another agent's
+answer. Selection pickers and the agent directory show a user only the agents available
+to them in that channel; a default-agent entry or binding may only name an agent
+available there. Availability decides who may use an agent; what the agent may do comes
+from its grants, and what it may tell whom from discretion (§5.11). For a facilitator,
+availability decides who may start a facilitation; taking part is open to the
+conversation's members (spec B §5.5). A fresh agent is available to nobody until the
+operator sets it.
+
 ### 5.4 Consultation instead of delegation
 
 **The rule: consulting adds a colleague's skill and judgement, never access.** A
@@ -993,6 +1007,10 @@ Each existing element keeps its purpose, moved out of the message body:
     is B, a stored selection points to A; A is deleted and the instance restarts: the
     next message there gets the notice that A was deleted, B gets no turn; the same for
     the selection; after the target is changed, routing follows it.
+40. **Availability.** Agent A is available to Anna in Teams only. Ben addresses A in
+    Teams, and Anna addresses A in Slack: each gets the notice naming A, no other agent
+    answers; Anna in Teams gets A's answer; Ben's agent directory and picker do not list
+    A; a default-agent entry naming A for Ben is refused at save time.
 
 ## 7. Migration and compatibility
 

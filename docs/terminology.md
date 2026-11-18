@@ -47,6 +47,7 @@ answers. There is no orchestrator agent.
 | **Internal helper** | interner Helfer | A run inside one agent's envelope that does part of its work: sub-agent helper, fast lane, model router, mode selection, presentation helper. Has no name towards people; its work is the agent's own. | Not an agent, not a consultation. Formerly "sub-agent" for the configured kind. |
 | **Fast lane** | Schnellspur | The agent's internal helper that answers simple data questions without the full model loop, rendering data without a model seeing it. | Formerly "fast path" as a separate answer path. |
 | **Envelope** | Rahmen | Everything an agent may use in a turn: its identity, instructions, personality, boundaries, model policy, skills, capability grants and memory scope, capped by the audience's rights. "No more, no less." | |
+| **Availability** | Verfügbarkeit | Which users (named people, groups or everyone in the tenant) may use an agent, and in which channels (all or selected). Set by the operator in the Agent Builder, checked by the management layer before every turn. | Not grants (what the agent can do), not reach (which systems), not discretion (what it may tell whom), not the default agent (routing preference), not a channel identity (how it appears). |
 | **Reach** | Reichweite | Every connected system an agent can read or write through its grants. Shown on its page. | |
 | **Model policy** | Modellrichtlinie | Which models an agent may use, including cheaper ones for internal helpers. | |
 
