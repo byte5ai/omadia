@@ -752,6 +752,17 @@ export function teamsIdentityErrorMessages(
     });
   }
 
+  // #2043 — what Microsoft named, on its own line; the full answer is the
+  // technical detail below.
+  if (detail.code === 'rsc_consent_refused') {
+    const named = [detail.backendRequest, detail.graphCode, detail.innerCode].filter(
+      (part): part is string => part !== undefined,
+    );
+    if (named.length > 0) {
+      messages.push({ key: `${base}.reported`, values: { codes: named.join(', ') } });
+    }
+  }
+
   if (detail.code === 'throttled' && detail.retryAfterSeconds !== undefined) {
     messages.push({
       key: `${base}.retryAfter`,

@@ -748,6 +748,9 @@ export const TEAMS_IDENTITY_LAST_ERROR_CODES = [
   // because reporting it as a generic bad request sends the operator back to
   // re-check an id that was correct all along
   'rsc_permissions_mismatch',
+  // #2043 — the target's own resource-specific consent check refused the
+  // install: permanent, and neither a wrong id nor a missing role
+  'rsc_consent_refused',
   'unknown',
 ] as const;
 
@@ -778,7 +781,26 @@ export interface TeamsIdentityLastErrorDetailDto {
    *  before the sentence is written AND again when it is decoded, so the panel
    *  may render it as a link without a third check. */
   adminConsentUrl?: string;
+  /** #2043 — what Microsoft named in an `rsc_consent_refused` answer: Graph's
+   *  error code, its inner code and the Teams backend request it relayed.
+   *  Identifiers, shown as ICU arguments. */
+  graphCode?: string;
+  innerCode?: string;
+  backendRequest?: string;
   raw: string;
+}
+
+/** Short identifier-shaped strings only: these are rendered next to copy. */
+function identifierFields<K extends string>(
+  obj: Record<string, unknown> | null,
+  keys: readonly K[],
+): Partial<Record<K, string>> {
+  const out: Partial<Record<K, string>> = {};
+  for (const key of keys) {
+    const value = obj?.[key];
+    if (typeof value === 'string' && /^[\w.-]{1,120}$/.test(value)) out[key] = value;
+  }
+  return out;
 }
 
 function stringList(value: unknown): string[] | undefined {
@@ -830,6 +852,7 @@ export function parseTeamsIdentityLastErrorDetail(
       ? { retryAfterSeconds: retry }
       : {}),
     ...(typeof reason === 'string' && reason !== '' ? { reason } : {}),
+    ...identifierFields(obj, ['graphCode', 'innerCode', 'backendRequest']),
     raw: typeof rawText === 'string' && rawText !== '' ? rawText : lastError,
   };
 }

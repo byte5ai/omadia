@@ -2792,6 +2792,11 @@
         "rsc_permissions_mismatch": {
           "what": "Microsoft Graph refused the install: this orchestrator’s Teams app package declares resource-specific permissions the installing identity may not consent to. The target id is correct — a role is missing.",
           "next": "Grant the M365 connector’s Entra app the role TeamsAppInstallation.ReadWriteAndConsentForTeam.All (team) or …ForChat.All (chat), admin-consent it, then re-run provisioning."
+        },
+        "rsc_consent_refused": {
+          "what": "Teams refused to grant this app’s resource-specific permissions in the target team or chat, so the app was not installed there. This is a permanent refusal, not a replication delay: running the provisioning again changes nothing.",
+          "reported": "Reported by Microsoft: {codes}",
+          "next": "Check two things: whether the tenant allows resource-specific consent for teams and chats (Teams admin center and Entra consent settings), and whether every permission the Teams app package declares is allowed for this kind of target. The full answer from Microsoft is in the technical detail below. The bot itself is published and already answers in personal chats."
         }
       },
       "teamsBot": {

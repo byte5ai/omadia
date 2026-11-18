@@ -2792,6 +2792,11 @@
         "rsc_permissions_mismatch": {
           "what": "Microsoft Graph hat die Installation abgelehnt: Das Teams-App-Paket dieses Orchestrators fordert ressourcenspezifische Berechtigungen, die die installierende Identität nicht erteilen darf. Die Ziel-ID ist korrekt — es fehlt eine Rolle.",
           "next": "Weise der Entra-App des M365-Connectors die Rolle TeamsAppInstallation.ReadWriteAndConsentForTeam.All (Team) bzw. …ForChat.All (Chat) zu, erteile die Admin-Zustimmung und starte die Provisionierung erneut."
+        },
+        "rsc_consent_refused": {
+          "what": "Teams hat es abgelehnt, die ressourcenspezifischen Berechtigungen dieser App im Ziel-Team bzw. Ziel-Chat zu erteilen, deshalb wurde die App dort nicht installiert. Das ist eine dauerhafte Ablehnung und keine Replikationsverzögerung: Ein erneuter Lauf ändert nichts.",
+          "reported": "Von Microsoft gemeldet: {codes}",
+          "next": "Prüfe zwei Dinge: ob der Tenant ressourcenspezifische Zustimmung für Teams und Chats erlaubt (Teams Admin Center und Zustimmungseinstellungen in Entra) und ob jede Berechtigung, die das Teams-App-Paket anfordert, für diese Art von Ziel zulässig ist. Die vollständige Antwort von Microsoft steht unten im technischen Detail. Der Bot selbst ist veröffentlicht und antwortet in persönlichen Chats bereits."
         }
       },
       "teamsBot": {
