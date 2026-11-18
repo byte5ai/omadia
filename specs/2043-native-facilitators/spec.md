@@ -325,6 +325,10 @@ States exist on three levels, each with its own rules:
 
   Contributions to steps are accepted only from `live` sessions and the home conversation,
   as the input matrix below says.
+- **One action item per completion.** Within one facilitation, a completion message must
+  also map to exactly one action item: through its reply to that item's reminder, an
+  explicit reference, or because its author owns only one open item. Otherwise the
+  facilitator asks once which item is meant; nothing changes until it is clear.
 - **One process per message.** In a conversation where several processes of the same
   facilitator exist (a new facilitation while older ones are in `following_up`), a message
   that changes state ("erledigt", "stop", a consent answer) must map to exactly one
@@ -526,7 +530,7 @@ participant.
 | Participants who left | What was posted while they were members; nothing after. |
 | Initiator | The same as participants, plus the report, as long as they are an active participant. Leaving the conversation ends the initiator role: later contributions and the report are no longer sent to them; the group is told. |
 | Session-only participants | The session agenda and what was posted in the linked session conversation; the session summary. |
-| Confirmed stakeholders | Only the confirmed protocol and next steps sent to them (§5.11), filtered per recipient by discretion (AVE §5.11): content whose labels the recipient may not know is left out and the protocol says that something was left out. Recipients are re-checked at every send; a participant who left is no longer a recipient. |
+| Confirmed stakeholders | Only the confirmed protocol and next steps sent to them (§5.11), filtered per recipient by discretion (AVE §5.11): the filter works on whole, separately labelled parts of the protocol (decisions, next steps, contributions, summaries); a model-written summary carries all labels of its turn, so if the recipient may not know one of them, the summary is withheld as a whole or regenerated from permitted parts only. A note that something was left out appears only where the recipient's disclosure level is at least `existence`; with `none` there is neither content nor a hint. Recipients are re-checked at every send; a participant who left is no longer a recipient. |
 | Other users | Nothing. |
 | Operator | Facilitation metadata (facilitator, conversation, phase, counts, timestamps). Contents and protocol only through an audited access with a stated reason. |
 
@@ -611,10 +615,13 @@ with it, without changes to the facilitator itself.
 - **Own identity required:** a facilitator needs its own Teams identity (#860
   provisioning); without one it cannot start a facilitation and says so. No default-bot
   fallback.
-- **All messages:** in the home conversation and in live linked session conversations of an
-  active facilitation, the facilitator's bot receives every human message; the mention
-  gate is lifted for that bot in those conversations only. In `following_up` the gate is
-  back on; owners reach the facilitator by mention, card button or direct reply. This needs the app installed in that chat with RSC
+- **Message delivery** follows the input matrix and the session-state table of §5.3: in
+  the home conversation the facilitator's bot receives every human message while the
+  facilitation is `configuring`, `active` or `concluding`; in linked session conversations
+  as the session state says (`scheduled`: messages addressed to it; `live` and
+  `confirming`: every human message; `closed`: none). The mention gate is lifted for that
+  bot in exactly these cases. In `following_up` the gate is back on; owners reach the
+  facilitator by mention, card button or direct reply to a reminder. This needs the app installed in that chat with RSC
   `ChatMessage.Read.Chat` consented there; the manifest request alone is not enough.
 - **Readiness check at start:** the facilitator verifies installation and RSC consent in
   the chat and its ability to post; if something is missing it says exactly what and
@@ -808,6 +815,11 @@ kept compatible.
     refused; stop works during `confirming`. With two facilitations in `following_up` and a
     new one active in the same conversation, an unreferenced "stop" or "erledigt" gets one
     question and changes nothing until answered.
+30. **Stakeholder filter and completion mapping.** A mixed protocol is sent to stakeholders
+    with disclosure levels `full`, `existence` and `none`: `full` gets all parts it may
+    know, `existence` gets a note that something was left out, `none` gets neither content,
+    derived summaries nor a hint. One owner with two open action items writes an
+    unreferenced "erledigt": neither item closes, one question is asked.
 
 ## 10. Work breakdown
 

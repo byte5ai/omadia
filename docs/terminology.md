@@ -99,7 +99,8 @@ answers. There is no orchestrator agent.
 | **Channel** | Kanal | A messaging platform through which people reach agents: Teams, Slack, Discord, Telegram, WhatsApp, iMessage, web chat, the public API. Provided by a channel plugin. Every capability must work through plain text in every channel. | Not a Teams "channel" inside a team (that is a conversation). |
 | **Channel identity** | Kanalidentität | The bot or account through which one agent appears in a channel. | |
 | **Conversation** | Gespräch | A 1:1 chat, group chat, channel thread or meeting chat. | |
-| **Binding** | Zuordnung | A configured link from a conversation to an agent. Explicit addressing always wins over a binding. | |
+| **Binding** | Zuordnung | A configured link from a whole conversation to one agent. Explicit addressing and a user's selection come before it. | Not a selection. |
+| **Selection** | Auswahl | A user's stored choice of an agent for one conversation, made in channels without one identity per agent (for example `/agent Mira`); per user, so people in one group can each keep their own agent. | Not a binding. |
 | **Explicit addressing** | direkte Ansprache | Reaching an agent through its own channel identity, a mention, an explicit selection, or the agent slug of an API conversation. | |
 
 ## Memory and discretion
