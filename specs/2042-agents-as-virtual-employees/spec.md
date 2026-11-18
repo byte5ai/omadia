@@ -138,6 +138,13 @@ access to every connected system: whoever reaches such an agent holds the master
 every third-party system behind it. An operator who wants an agent with broad rights
 creates one deliberately; the product shows every agent's reach (§5.7).
 
+**INV-9 Discretion.** Like an ideal colleague, an agent always knows whom it may tell
+what, and how much. Every piece of information an agent holds or obtains carries the
+context it came from; it may flow only to recipients who are all allowed to know it, in
+the permitted level of detail. This holds for every path information can take: answers
+to people, memory, capability and interface calls, and communication with other agents
+(§5.11).
+
 ## 4. Measured ground truth on `main`
 
 Paths are relative to the kernel repo unless a sister repo is named.
@@ -223,8 +230,9 @@ needs B's access writes to B directly, where B's own rules apply.
   max_calls_per_day, created_by, created_at)`: A may consult B, optionally only in some
   channels; `allowed_capabilities` lists which of B's capabilities B may use while
   answering A (default none: B answers from its instructions, skills and general
-  knowledge only); `memory_access` is `none` (default) or `shared` (only memory scopes
-  both A and B can read; B's private memory is never read in a consultation).
+  knowledge only); `memory_access` is `none` (default) or `discreet` (B may draw on its
+  memory, but only on entries whose origin context allows the flow to A and A's audience
+  under §5.11).
 - Grants are operator-managed, audited on both agents and revocable; revocation takes
   effect on the next call. Facilitators can neither hold nor be the target of a grant.
 
@@ -236,9 +244,10 @@ needs B's access writes to B directly, where B's own rules apply.
    authenticated turn context of A's turn (principals, channel, audience). B's **data
    access** in this run is the intersection of: the capabilities the grant allows, B's
    own grants, **A's own grants**, and the audience's rights. Anything outside that
-   intersection is refused to B in this run exactly as it would be refused to A. B
-   writes nothing to its memory from a consultation, and B's trace records whom it
-   answered.
+   intersection is refused to B in this run exactly as it would be refused to A. On top,
+   every piece of information in B's answer must pass the discretion rule of §5.11 for
+   the recipients A and A's audience. B writes nothing to its memory from a consultation,
+   and B's trace records whom it answered.
 3. The harness produces two views of B's output:
    - the **user view**: B's answer after the privacy shield's user-side restoration and a
      second audience check at output time, delivered as B's contribution (step 4);
@@ -374,6 +383,60 @@ agent; the template itself never runs). The manifest kind `agent` is removed.
 - a plugin's internal model calls appear in the calling agent's trace and usage.
 
 
+### 5.11 Discretion: who may learn what, and how much
+
+Employees who never talk to each other are never as effective as a team that shares what
+it knows; but every exchange can leak. Confidentiality and discretion are core business
+virtues of an ideal colleague, so omadia turns them into mechanics. The memory system
+already does this for recall: an agent can only retrieve memory if the current context
+allows it (context-memory ACL, `docs/teams-multi-agent-identities.md` §8; migrations
+`0050`, `0062`). This section extends the same idea to every flow of information,
+including capability and interface calls and agent-to-agent communication.
+
+**Labels.** Every piece of information carries a label, attached where it enters an
+agent's turn:
+
+| Source | Label |
+|---|---|
+| Memory entry | Its context tier and key (team, channel, user, members), as today. |
+| Capability or interface result | Source system, the grant used, the principals whose rights allowed the read, and the field classification of the privacy shield (migrations `0065`, `0066`). |
+| Message from a person | The conversation context and its members. |
+| Contribution of another agent | The labels of everything that agent used to produce it. |
+
+**Turn label set.** The harness tracks, per turn, the union of labels of everything read in
+that turn. Model output cannot be traced token by token, so every output of the turn
+carries the whole set: the strictest label wins.
+
+**Flow rule.** Every egress of a turn is checked against its label set before it happens:
+
+| Egress | Allowed only if |
+|---|---|
+| Answer or post to people | Every reader of the target conversation may know it (audience floor). |
+| Contribution to another agent (consultation, discussion, relay) | The receiving agent's own grants cover it and every reader of the receiving agent's current conversation may know it. |
+| Memory write | It is written to a context tier whose readers may all know it (today's write rules of the context-memory ACL). |
+| Outbound capability or interface call carrying data (write to CRM, send mail, create ticket) | The target system's declared readership covers it. Operators declare a readership per integration; without a declaration, data from restricted contexts or classified fields is not sent. |
+
+**How much.** A grant (capability grant or consultation grant) carries a disclosure level per
+data classification:
+
+| Level | Meaning |
+|---|---|
+| `full` | The information itself. |
+| `redacted` | Classified fields masked by the privacy shield. |
+| `aggregate` | Only results of deterministic aggregate operations (counts, sums), never records; never computed by a model. |
+| `existence` | Only that a colleague or system knows something, with whom to ask ("Mira can help with this"). |
+| `none` | Nothing, not even existence. |
+
+A blocked flow is never silent towards the agent: it receives a structured refusal and
+answers honestly that it cannot share this here, without revealing what it withholds.
+
+**Defaults.** The context-memory ACL is on for every agent (today the column defaults to
+`off`, migration `0050`); consultation grants default to `none`; integrations without a
+declared readership receive no data from restricted contexts. Every blocked and every
+allowed cross-context flow is audited with its labels, never with the content.
+
+## 6. Acceptance criteria
+
 1. **Strategist regression.** A Builder-created "Strategist" and a second agent exist.
    Addressed through web chat, Teams and the desktop UI, the Strategist's envelope answers
    (trace shows its agent id); the second agent never answers in its place, and the
@@ -425,6 +488,17 @@ agent; the template itself never runs). The manifest kind `agent` is removed.
 15. **Plugin boundary.** A plugin manifest declaring a persona, a speaker or kind `agent`
     is rejected at install; a capability result never reaches a channel without an agent
     speaker.
+16. **Discretion across agents.** Agent B learned in an HR group chat that person P is
+    leaving (memory entry with that context). Agent A consults B from a sales chat: B's
+    answer contains nothing about it; with disclosure level `existence` it says only that
+    HR can help.
+17. **Discretion towards systems.** In a 1:1 turn with an HR manager, A reads an HR record
+    through its grant and then tries to write a CRM note containing it: the call is
+    refused because the CRM's declared readership does not cover the label; A says so
+    without quoting the record.
+18. **Strictest label wins.** A turn that read one classified field answers into a group
+    with a member lacking the right: the field is redacted in the answer.
+19. **Default on.** A fresh agent has the context-memory ACL enabled.
 
 ## 7. Migration and compatibility
 
@@ -490,6 +564,9 @@ Kernel unless noted. Each item becomes one issue in epic #2042.
     new semantics (G12).
 20. Remaining channels (Telegram, Slack, Discord, WhatsApp, iMessage): one identity per
     agent where possible, else the SDK name line; consultation rendering (G12).
+21. Discretion: labels at every entry point, turn label set, flow rule at every egress
+    (people, agents, memory, outbound calls), disclosure levels per grant, integration
+    readership, audit; context-memory ACL on by default (INV-9, §5.11).
 
 ## 9. Owner decisions
 
@@ -506,6 +583,9 @@ Kernel unless noted. Each item becomes one issue in epic #2042.
 
 - Agents may consult colleagues, configured in detail per agent and default off; a
   consultation never gives an agent access it does not have itself (§5.4).
+- Discretion is a core virtue of an ideal colleague: the context rules of the memory
+  system extend to every flow of information, including capability and interface calls
+  and agent-to-agent communication (INV-9, §5.11).
 - Direct Line was a workaround and goes; the fast path goes as a separate answer path
   (§5.2).
 - Default agents are set per human user and channel, and can be switched off so that no

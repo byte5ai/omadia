@@ -24,6 +24,7 @@ import {
   type PersonaConfig,
 } from '../../../../_lib/personaTypes';
 import {
+  axesForTemplate,
   getPersonaTemplate,
   PERSONA_TEMPLATES,
 } from '../../../../_lib/personaTemplates';
@@ -99,10 +100,10 @@ export function AgentPersonaEditor(
     props.onChange({
       ...props.value,
       template: templateId,
-      // The archetype supplies the axes; anything the operator already tuned
-      // stays on top of it, which is the same precedence the Builder's
-      // server-side merge applies.
-      axes: { ...template.axes, ...(props.value.axes ?? {}) },
+      // The archetype supplies the axes; only sliders the operator moved away
+      // from the previous archetype stay on top — the same rule the Builder's
+      // template gallery applies.
+      axes: axesForTemplate(props.value, template),
     });
     setGalleryOpen(false);
   };

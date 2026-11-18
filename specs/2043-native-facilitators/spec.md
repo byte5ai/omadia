@@ -68,19 +68,22 @@ facilitator's:
 
 | Mode | What it does |
 |---|---|
-| **Design the process** | Agrees goal, definition of done, format, agenda, participants and timeline with the group; proposes a format that fits the goal (§5.4). |
+| **Prepare** | Agrees goal, definition of done, format, participants, stakeholders and timeline; drafts the agenda; collects topics and pre-reads from participants ahead of a meeting; sends the agenda in time (§5.4, §6.3). |
+| **Design the process** | Proposes a format and agenda that fit the goal; the group confirms or adjusts it (§5.4). |
 | **Moderate** | Opens and closes each step; asks open, systemic questions; uses round-robin for important points; invites silent voices by name, appreciatively and never exposing them; keeps dominant voices in balance; mirrors the state through reflective summaries; separates positions from people in conflicts and makes interests visible before options; brings the discussion back to the goal. |
 | **Diverge and converge** | Collects ideas, positions and concerns; proposes clusters and summaries for the group to confirm; leads the group to a decision with a method that fits (§5.5). |
-| **Keep time** | Holds timeboxes per step and the overall deadline; reminds; proposes to close or extend a step. |
+| **Keep time and focus** | Holds timeboxes per step, the meeting slot and the overall deadline; parks off-topic points in a visible parking lot and brings the group back to the current step; proposes to close or extend a step. |
+| **Run live sessions** | Moderates online and hybrid meetings with whatever the channel offers: live polls, speaking order, hand raises, a visible agenda and timer, balance between people in the room and people remote (§6.3). |
 | **Record** | Keeps the protocol: path to the result, decisions with their rationale, open points, insights, and action items with owner and due date. |
-| **Report and follow up** | Posts the result to the group, reports to the initiator, and, if agreed, reminds owners of action items until their due date. |
+| **Close bindingly** | Ends every session and the facilitation with a confirmed summary: decisions, next steps with owner and due date, open points; the group confirms before closing. |
+| **Report and follow up** | Posts the result to the group, sends the protocol to participants and named stakeholders, schedules agreed follow-up meetings, reports to the initiator, and reminds owners of action items until their due date. |
 
 To do this it has:
 - the **facilitation engine** (§5): durable state per facilitation (agenda and steps,
   participants, contributions of every kind, decisions, action items, definition of done
   with versions, protocol), deterministic evaluation, scheduling and reports;
 - **group presence:** in a conversation it facilitates, it receives every human message,
-  not only messages that mention it (§6.1);
+  not only messages that mention it (§6.2);
 - the **moderation playbook** as fixed core behaviour (the techniques above), tuned by
   the facilitator's personality within the neutrality bounds (§2.4).
 
@@ -88,7 +91,7 @@ To do this it has:
 
 | Omitted | Why |
 |---|---|
-| Business capabilities: plugin, MCP and native tool grants to company data (ERP, CRM, knowledge graph, mail, files). | Information power makes a moderator partial. Only facilitation tools and the roster are available. |
+| Business capabilities: plugin, MCP and native tool grants to company data (ERP, CRM, knowledge graph, mail, files). | Information power makes a moderator partial. Only facilitation tools, the roster and the narrow facilitation-scoped capabilities of §5.11 are available. |
 | Acting for a user: delegated per-user tokens, "on behalf of" actions. | It serves no one. |
 | General memory: cross-session recall, automatic capture, learning jobs, the agent memory tree. | A moderator who remembers who argued what last time is not neutral. Its only memory is the state and protocol of each facilitation, bound to that facilitation. |
 | Assistance outside a facilitation (questions, tasks, 1:1 help). | It is not an assistant. Such requests get a friendly refusal that names what it does. |
@@ -161,6 +164,8 @@ borrowing another bot.
 | Table | Holds |
 |---|---|
 | `facilitations` | id, facilitator agent id, channel type, conversation id, initiator principal, goal, format, phase, `state_version`, deadline, timezone, reminder policy, follow-up policy, created/closed timestamps, close reason. Unique: one active facilitation per conversation. |
+| `facilitation_sessions` | facilitation id, kind (`async` chat phase, `live` meeting), scheduled start and end, meeting reference (channel meeting id), modality (`chat`, `online`, `hybrid`), capability snapshot (§6.1), consent state for audio and video processing, status. |
+| `facilitation_stakeholders` | facilitation id, principal or address, role (`receives protocol`, `invited to follow-ups`), added by, confirmed by the group. |
 | `facilitation_steps` | facilitation id, position, kind (`open`, `collect`, `discuss`, `cluster`, `prioritise`, `decide`, `assign`, `close`), title, timebox, decision method and options where the step decides, status. The agenda. |
 | `facilitation_participants` | facilitation id, principal id (authenticated channel user id), display name, source (`roster`, `joined`), status (`active`, `left`), changed at, changed by event. |
 | `facilitation_dod_versions` | facilitation id, version, text, structured criteria where machine-checkable, proposed by, proposal message id, consent state, effective at. |
@@ -185,12 +190,15 @@ invited → configuring → active → concluding → closed
 - **configuring:** a person in the group asks the facilitator to start; that person is
   the initiator, and the facilitator says so in the group. The facilitator agrees goal,
   definition of done, format and agenda, participants and deadline **in the group**, checks
-  readiness (§6.1), then posts the opening handshake (§5.7). The conversation id always
+  readiness (§6.2), then posts the opening handshake (§5.7). The conversation id always
   comes from the inbound turn.
 - **active:** every inbound human message is processed in the facilitation's own session
   (§5.3); the scheduler handles time-based events (§5.6).
 - **concluding:** the definition of done is met. All reminders are cancelled in the same
   transaction.
+- **Sessions:** within `configuring` and `active`, a facilitation can run asynchronous
+  phases in the chat and live sessions (meetings) with their own time slot (§6.3);
+  preparation happens before a live session, follow-up after the close.
 - **closed / aborted:** result or honest abort report to the group and the initiator;
   bindings released; protocol retained per §5.8.
 
@@ -370,9 +378,49 @@ Quotas are per facilitator and per instance (active facilitations, starts per ho
 messages per facilitation), configurable, with defaults that let several facilitators
 work in parallel. Reaching a quota produces a `system` notice in the conversation.
 
-## 6. Channels
+### 5.11 Facilitation-scoped capabilities
 
-### 6.1 Teams (first channel)
+A facilitator holds no business capabilities (§2.3). Closing and following up still need
+two narrow capabilities, granted by the kernel to `kind = 'facilitator'` only and bound to
+one facilitation:
+
+| Capability | Allowed | Never |
+|---|---|---|
+| **Protocol dispatch** | Send the confirmed protocol and the agreed next steps of this facilitation to its participants and confirmed stakeholders, through the channel or mail. | Send anything else, to anyone else; read mailboxes. |
+| **Follow-up scheduling** | Read free/busy (no event details) of participants and confirmed stakeholders for the follow-up meetings the group agreed; create the invitations with agenda and protocol link. | Read calendar contents; change or cancel other events; invite people the group did not agree on. |
+
+Both run on the instance's existing integrations (for Microsoft 365 the M365 connector)
+under a facilitation-scoped grant that the kernel issues at close and revokes when the
+follow-up ends. Every use is audited and listed in the protocol.
+
+## 6. Channels, meetings and media
+
+### 6.1 Media-adaptive moderation
+
+What a facilitator can perceive and do is limited by the channels and media the instance
+offers, not by the facilitator. It uses what is technically available and adapts its
+moderation to it; when access to channels or media grows, its active moderation grows
+with it, without changes to the facilitator itself.
+
+- Every session has a **capability snapshot**, declared by the channel and media plugins
+  through one contract (the `MeetingSource` abstraction of #330 and #584), and refreshed
+  when it changes during a session:
+
+  | Inputs | Outputs |
+  |---|---|
+  | text messages with author; reactions; poll and card answers; presence and join/leave; hand raise; transcribed speech with speaker attribution; shared documents | text posts; cards and live polls; private messages; a visible agenda, timer or parking lot (pinned message, tab or whiteboard); spoken voice; screen or whiteboard content |
+
+- The playbook maps each moderation technique to the best available means, for example:
+  live vote as a poll card if cards exist, otherwise as chat ballots; time-keeping as a
+  spoken cue if voice output exists, otherwise as a post and a visible timer; speaking
+  order through hand raises if available, otherwise through a round-robin list in the
+  chat.
+- The facilitator states in the handshake what it can perceive in this session (for
+  example "I read the chat and the polls; I do not hear the call") so nobody assumes more.
+- A missing capability is never an error of the facilitator: it chooses the next best
+  means and says what it cannot do.
+
+### 6.2 Teams (first channel)
 
 - **Own identity required:** a facilitator needs its own Teams identity (#860
   provisioning); without one it cannot start a facilitation and says so. No default-bot
@@ -393,7 +441,33 @@ work in parallel. Reaching a quota produces a `system` notice in the conversatio
   mention, missing consent, first-contact DM, blocked DM, restart, two facilitator bots in
   one chat.
 
-### 6.2 Other channels
+### 6.3 Online and hybrid meetings
+
+A facilitation can contain live sessions (meetings) between asynchronous phases:
+preparation before, follow-up after.
+
+- **Preparation:** the facilitator drafts the agenda, collects topics and pre-reads in the
+  chat, proposes timeboxes, and sends the agenda before the meeting.
+- **During the session:** visible agenda and timer, opening with goal and rules, speaking
+  order, focus moderation with a parking lot, live polls, reflective summaries per step,
+  balance between people in the room and people remote (remote voices are asked first
+  when a room dominates).
+- **Binding close:** a confirmed summary of decisions, next steps with owner and due date,
+  and open points; then protocol dispatch and follow-up scheduling (§5.11).
+- **Authorship in live sessions:** a vote or commitment counts when it comes through an
+  authenticated input (poll, card, chat message) or when its owner confirms the protocol
+  entry. Contributions recognised from speech are recorded as unconfirmed until then.
+- **Consent for audio and video:** processing of a call's audio or video starts only after
+  the facilitator announced it in the session and no participant objected; anyone can
+  stop it at any time. Raw audio and video are not stored; only the protocol is kept.
+  Operators can require explicit consent per participant (for example for works-council
+  agreements).
+- **Teams first:** meeting chat and cards are the baseline; presence, hand raises,
+  in-meeting surfaces and real-time audio follow as the Teams plugin supports them (#584
+  for audio). Which Teams APIs deliver which input or output is evaluated in the Teams
+  issue and not assumed here.
+
+### 6.4 Other channels
 
 Telegram, Slack and Discord follow once they support one identity per agent (AVE §5.3)
 and full group-message delivery. Until then, facilitation is unavailable there and the
@@ -416,7 +490,7 @@ kept compatible.
 
 - The plugin `@omadia/agent-facilitator` is removed from the hub when the kernel release
   ships; its repository is archived on the owner's decision.
-- Everything only the plugin needed goes: the `facilitation` Conductor pattern v5, the
+- Everything only the plugin needed goes: the `facilitation` Conductor pattern (v6 since #2071), the
   facilitator use of `agentProvisioning.ensureAgent`, the `facilitation-` scoped roles.
   Kernel services other features use (ephemeral runs, discussions, `say`) stay.
 - Internal test instances drop their auto-provisioned facilitator agent and create
@@ -467,7 +541,7 @@ kept compatible.
     content access is audited.
 12. **No silent end.** A failed step or reached TTL produces an abort report in the group;
     a reached quota produces a `system` notice.
-13. **Teams contract tests** of §6.1 pass against the real test tenant.
+13. **Teams contract tests** of §6.2 pass against the real test tenant.
 14. **Retrospective.** A four-person retrospective: ideas collected without mentions,
     clusters proposed and confirmed by the group, two actions decided, each with an owner
     who confirmed and a due date; the protocol lists decisions with rationale and the
@@ -479,6 +553,17 @@ kept compatible.
     named in the group as not having contributed.
 17. **Timebox.** When a step's timebox ends, the facilitator summarises and the group
     decides to close or extend; no step closes silently.
+18. **Online meeting with chat and cards only.** Agenda drafted and sent before the meeting,
+    topics collected in the chat, a live poll as a card during the session, time-keeping
+    posts and a parking lot, a binding close with next steps confirmed by the group, the
+    protocol sent to participants and two stakeholders, a follow-up meeting created from
+    free/busy; the handshake says the facilitator does not hear the call.
+19. **Adaptation.** The same facilitation gains transcribed audio mid-session (simulated
+    capability change): the facilitator announces it, waits for consent, then records
+    spoken contributions as unconfirmed until confirmed; no restart.
+20. **Scoped capabilities.** The facilitator cannot read calendar contents or mailboxes,
+    cannot invite people the group did not confirm, and loses the scheduling grant when
+    the follow-up ends.
 
 ## 10. Work breakdown
 
@@ -502,9 +587,16 @@ Kernel unless noted. Each item becomes one issue in epic #2043.
 10. End-to-end and race acceptance suite (§9).
 11. `omadia-channel-teams`: all messages for an active facilitator, readiness check,
     proactive posts as own bot with mentions, per-bot DM references, contract tests in a
-    test tenant (§6.1).
+    test tenant (§6.2).
 12. `omadia-agent-facilitator`: removal from the hub, archive, close of superseded issues
     (§8).
+13. Meetings: sessions, preparation, live moderation, binding close (§6.3).
+14. Media-adaptive moderation: capability snapshot contract and playbook mapping (§6.1,
+    with #584 for audio).
+15. Facilitation-scoped capabilities: protocol dispatch and follow-up scheduling (§5.11);
+    M365 connector scopes in `omadia-m365-connector`.
+16. `omadia-channel-teams`: Teams meetings for facilitators (meeting chat, cards and live
+    polls, presence, later audio) (§6.3).
 
 ## 11. Owner decisions
 
@@ -524,6 +616,6 @@ Kernel unless noted. Each item becomes one issue in epic #2043.
 
 ## 13. Related
 
-#330 (original facilitator epic, plugin model), #584 (facilitator step 2, audio), #860
+#330 (original facilitator epic, plugin model, `MeetingSource` abstraction), #584 (audio meetings and transcription, part of this epic), #860
 (per-agent Teams identity), #1018 (agent-to-agent in chats), #1035 (communication
 profile), `discussionService` (native precedent), `omadia-agent-facilitator` #8 to #16.
