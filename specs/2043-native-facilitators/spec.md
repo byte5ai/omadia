@@ -44,7 +44,7 @@ cannot safely own.
   | Scope | Until | Allowed targets |
   |---|---|---|
   | `configuring` | the handshake is posted (atomic switch to `active`), at most 72 h after the start request (configurable); then `aborted` with a short note | home conversation, linked session conversations in `scheduled`, direct replies to the initiator, private status answers |
-  | `active` | the facilitation's deadline | home conversation, linked session conversations in `scheduled`, `live` or `confirming`, private reminders to participants, private answers to a participant's status request |
+  | `active` | the facilitation's deadline; extended only by the bounded deadline wait of §5.6 (then only consent answers to open session summaries, status requests and stop) | home conversation, linked session conversations in `scheduled`, `live` or `confirming`, private reminders to participants, private answers to a participant's status request |
   | `closing` (one per closing event: each session close, entering `concluding`, abort; own id) | the closing procedure of §5.2 (waiting, delivery, confirmation, dispatch), each part with its own limit; absolute limit 30 days after the event | home conversation, the session conversations of this facilitation, the protocol recipients of §5.8, private status answers |
   | `scheduling` | the agreed follow-up meeting's invitations are sent, its date passed, or the facilitation is stopped or aborted | the invitees confirmed by group consent |
   | `follow_up` | the follow-up deadline | the home conversation, the owners of open action items, private status answers |
@@ -433,7 +433,12 @@ States exist on three levels, each with its own rules:
   listing all parts. The engine takes the
   authenticated actor, tenant, channel, event id, revision, timestamp **and the original
   event content** from the stored inbound event (#2089), never from model arguments. Event
-  kinds: a text message (original text), a card or poll answer (structured value with the
+  kinds: a transcript segment from a live session (authenticated media source of that
+  session, session id, stable segment id and revision, transcribed text; the recognised
+  speaker is only a hint and never authorship: the part is stored unattributed and
+  `ambiguous` and counts only when a participant confirms exactly that segment revision
+  as theirs by an authenticated message or card; a confirmation by another person or of
+  an older revision counts nothing), a text message (original text), a card or poll answer (structured value with the
   card, the proposal id and its version), a reaction (emoji with its target message). For
   text in the announced format the engine parses the original text deterministically; for
   card and poll answers it uses the stored structured value; it refuses a payload that
@@ -618,8 +623,10 @@ participant.
 - Action-item follow-up runs in the `following_up` context of §5.2, with its own triggers
   bound to that context, not to the active phase.
 - At the deadline the engine closes with the state at that moment: a result if the
-  definition of done allows it, otherwise an honest abort report. **Exception, bounded:**
-  if session closings that require confirmation are still open at the deadline, the
+  definition of done allows it, otherwise an honest abort report. Order at the deadline:
+  first every `live` session is closed and its closing procedure opened; then the engine
+  decides whether to wait. **Exception, bounded:**
+  if session closings that require confirmation are still open at that point, the
   `active` scope is extended until they have ended (bounded by their own `closing`
   limits); meanwhile only consent answers to those summaries, status requests and stop
   are accepted, nothing else changes. Then the definition of done is evaluated once with
@@ -746,7 +753,14 @@ one facilitation:
 | **Protocol dispatch** | Send the final protocol of this facilitation, visibly marked with its result status (published, confirmed, not confirmed with the objection, or abort report), and its agreed next steps to its participants and confirmed stakeholders, through the channel or mail. | Send anything else, to anyone else; read mailboxes. |
 | **Follow-up scheduling** | Read free/busy (no event details) of participants and confirmed stakeholders for the follow-up meetings the group agreed; create the invitations with agenda and protocol link. | Read calendar contents; change or cancel other events; invite people the group did not agree on. |
 
-**Result status** of a final protocol: `published` (no confirmation required), `confirmed`
+**Two kinds of protocol.** A *session protocol* covers one session; its recipients are
+that session's participants and the home participants; stakeholders never receive it. The
+*facilitation protocol* is the final protocol of the whole facilitation; its recipients
+are the home participants and the confirmed stakeholders, and it is dispatched only at the
+facilitation's close or abort. Protocol dispatch (above) sends each kind only to its own
+recipients.
+
+**Result status** of a final protocol (either kind): `published` (no confirmation required), `confirmed`
 (consent window passed without a standing objection, with a verified electorate), `not
 confirmed` (with its reason: standing objection, participants could not be verified, not
 delivered, or facilitation stopped) or `aborted` (abort report). **Delivery status** is
@@ -1117,7 +1131,11 @@ kept compatible.
     survives a regular close but not a stop.
 53. **No reading across processes.** Two facilitations one after another in the same
     conversation with old events still stored: the second gets none of the first's events
-    on any read path; the first can still resume its own closing.
+    on any read path; the first can still resume its own closing. Overlap: F1 is in
+    `following_up` while F2 runs in the same conversation; a completion message or status
+    request clearly bound to F1 changes only F1 and appears neither in F2's event list,
+    replay nor model context, also after a restart. The process mapping applies before
+    delivery, replay and model-context building.
 54. **Session electorate.** A session with an unknown roster is linked during `active`
     while the home scope uses the platform roster: its declared session list is used for
     its decisions and confirmation; home participants stay unchanged.
@@ -1150,6 +1168,14 @@ kept compatible.
 61. **Retention and open scopes.** Retention of one day, a failed closing send, restart, a
     later successful attempt inside the `closing` scope: nothing is deleted early; after
     all scopes ended the data is deleted.
+
+62. **Spoken contributions.** A transcript segment attributed by speaker recognition to
+    the wrong person does not count when that person or someone else confirms it; a
+    confirmation of an older segment revision counts nothing; the right person's
+    confirmation creates exactly one valid contribution, also after replay and restart.
+63. **Session protocol vs facilitation protocol.** A first session closes while the
+    facilitation continues: its participants get the session protocol, stakeholders get
+    nothing; only the facilitation's close dispatches the facilitation protocol to them.
 
 ## 10. Work breakdown
 

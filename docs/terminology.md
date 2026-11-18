@@ -136,6 +136,7 @@ answers. There is no orchestrator agent.
 | **Discussion step** | Diskussionsschritt | A step of kind `discuss` in which the participants discuss a topic under moderation. | Not an agent discussion. |
 | **Format** | Format | An agenda template for a kind of process (decision, prioritisation, assignment, idea collection, retrospective, alignment). | |
 | **Decision method** | Entscheidungsverfahren | How a step decides (ranked vote, single choice, approval, consent, assignment), counted deterministically. | |
+| **Session protocol**, **facilitation protocol** | Sitzungsprotokoll, Moderationsprotokoll | The protocol of one session (to its participants and the home participants) and the final protocol of the whole facilitation (to home participants and confirmed stakeholders, only at close or abort). | Stakeholders never receive session protocols. |
 | **Result status** | Ergebnisstatus | How a facilitation's final protocol ended: `published` (no confirmation required), `confirmed`, `not confirmed` (with its reason: objection, participants not verifiable, not delivered, stopped) or `aborted`. Always shown with the protocol. | "Final" means the status is set; it does not mean confirmed. Not the delivery status. |
 | **Delivery status** | Zustellstatus | Whether a closing document reached its recipients: `delivered` or `not delivered`. | Not the result status. |
 | **Definition of done** | Definition of Done | When the facilitation has reached its goal; versioned, changed only by group consent. | |
