@@ -9596,6 +9596,48 @@ Pushes hängen an Message-Subscriptions.
   (`src/services/teamsAppPackageAssets.ts`); Graph-Rechte der Instanz-App für
   Readiness und Reparatur stehen in `docs/teams-multi-agent-identities.md` §2.4.
 
+### Härtungen nach dem Review (2026-11-18)
+
+- **Kein Channel-Binding auf einen Facilitator** (`channel_binding`): die drei
+  Schreibwege lehnen ab, und `ChannelResolver` verwirft `match: 'binding'` auf
+  einen Facilitator (`binding-to-facilitator`). Er antwortet nur über seinen
+  eigenen Bot.
+- **Send-Provider deklarieren, was sie können:**
+  `supports: { asChannelKey, mentions, poll }` auf `ConversationSendProvider`
+  und `TargetedSendProvider`. Ohne `asChannelKey: true` sendet der Kernel
+  nichts als eigene Identität (`no_identity`), ohne `poll` keinen Poll
+  (`channel_error`), ohne `mentions` geht der Text ohne Mentions raus. Ein
+  älteres Kanal-Plugin, das das dritte Argument ignoriert, wird so gar nicht
+  erst gerufen. Mentions werden immer im Kernel aufgelöst, auch wenn ein
+  Plugin ein Objekt übergibt.
+- **Subscription nur bei deklarierter Zustellung:** ohne registrierten
+  Readiness-Provider `not_ready`. **Kernel-seitiges Ende**
+  (`hub.reconcile`, `createSubscriptionGroundCheck`): Engine nicht mehr die
+  gebundene/aktive Engine, Agent deaktiviert oder gelöscht, eigene Identität
+  weg. Erst nach dem Boot scharf (`enableReconcile`), danach alle
+  `CONVERSATION_MESSAGES_RECONCILE_INTERVAL_MS` und bei Install/Uninstall.
+  Eine per Cascade verschwundene Zeile schließt das Gate beim nächsten Event.
+- **Mehrere Maschinen:** NOTIFY-Trigger auf der Subscription-Tabelle,
+  `ReloadBus` mit Kanal `conversation_message_subscriptions_changed`
+  (`CONVERSATION_MESSAGES_LISTEN`). `refresh`, `subscribe` und `unsubscribe`
+  laufen über einen gemeinsamen Mutex im Hub.
+- **Engine = deklariert UND SQL-Grant** (`facilitatorGuard.ts`,
+  `createSqlGrantView`): bis zum Grant ist der Zustand `ungranted`, es wird
+  nichts angehängt. `facilitatorRuntimeService.ts` beantwortet dem
+  Orchestrator `isEngineUsable`; ohne nutzbare Engine sagt ein erwähnter
+  Facilitator fest „nicht eingerichtet“, ohne Modellaufruf.
+- **Gruppen-Turn nur mit positiver Aussage:** `TurnOrigin.conversationType:
+  'group'` (channel-sdk, additiv). Ein `conversation`-Scope allein gilt als
+  privat. **Der Kanal-Adapter muss das Feld setzen.**
+- **Readiness-, Repair- und Capability-Services** nur für einen Facilitator,
+  der an die rufende Engine gebunden ist; Pushes werden bei Zustellung geprüft.
+- **Keine Kernel-Tools für Facilitators** (Choice-Card, Follow-ups, Roster,
+  Attachment), auf beiden Tool-Loops.
+- **CoreApi je Kanal-Plugin gebunden** (`channels/scopedCoreApi.ts`): eigene
+  ID auf Events und Providern, fremder Kanaltyp wird verworfen bzw. abgelehnt.
+- Purge löscht in Batches; Adapter-Revisionen außerhalb 0..1.000.000 werden
+  ignoriert; Index auf `lower(author_id)`.
+
 ### Entfernt: der Plugin-Pfad der Facilitation (#2067)
 
 - `conductor/patterns/facilitation.json` (ein Plugin der alten Generation

@@ -132,7 +132,7 @@ describe('CoreApi scoped to one channel plugin', () => {
     const s = await setup();
     const core = createCoreApi({ dispatcher: {} as never, routes: {} as never });
     const scoped = scopeCoreApiToChannel(core, 'c', 'teams');
-    assert.equal(scoped.handleTurn, core.handleTurn);
+    assert.equal(scoped.handleTurnStream, core.handleTurnStream);
     assert.equal(scoped.registerRoute, core.registerRoute);
     assert.equal(scoped.emitConversationMessage, undefined, 'still feature-detectable');
     assert.ok(s.teams.emitConversationMessage);

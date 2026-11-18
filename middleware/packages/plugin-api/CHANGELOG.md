@@ -55,6 +55,23 @@ sending; lifecycle, state and counting live in the engine plugin.
   service contract** (`FacilitationFollowupService`) — free/busy, invitation
   and mail, each call bounded by an allow-list.
 
+### Changed (meaning, no type change)
+
+- **`conversationSend` without `asOwnIdentity` is refused** (`not_permitted`).
+  The scope it used to have, an ephemeral attachment posted through the
+  channel's default bot, belonged to the plugin-era facilitation and is gone.
+  `asOwnIdentity` stays optional in the type so older callers compile.
+- **Three kernel services are no longer published**: `agentProvisioning`,
+  `conversationBindings` and `conductorRoleAssignments`. A plugin that
+  declares them under `optional_requires` gets `undefined`; one that requires
+  them does not activate. Their types never were part of this package.
+- **`ChannelReadinessReport.verified`**: a channel type without a readiness
+  provider is not ready (`unsupported_conversation`); it is no longer reported
+  as ready with `verified: false`.
+- **A facilitation engine needs the operator's SQL grant.** Declaring
+  `facilitationEngine@1` makes a plugin a candidate; the kernel treats it as
+  the engine only once its `permissions.sql` ledger was granted.
+
 ## 1.54.0 — 2026-11-04
 
 Additive. The capture disclosure gets a producer.

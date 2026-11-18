@@ -23,24 +23,20 @@
 import type { ConversationMessageEvent } from '@omadia/channel-sdk';
 import type {
   ChannelReadinessReport,
-  ConversationMessageKind,
   ConversationMessagePage,
   ConversationMessageRecord,
   ConversationMessageScope,
   ConversationMessageSubscribeOutcome,
 } from '@omadia/plugin-api';
 
+import { isBoundedText, MAX_ID_LENGTH, toStoredEvent, validateMessageEvent } from './eventIntake.js';
 import {
   normalizeChannelKey,
   type ConversationMessageStore,
   type MessageSubscription,
-  type NewMessageEvent,
   type StoredAuthor,
 } from './store.js';
 
-const KINDS: readonly ConversationMessageKind[] = ['created', 'edited', 'deleted', 'reaction', 'card_answer'];
-const MAX_ID_LENGTH = 512;
-const MAX_TEXT_LENGTH = 100_000;
 const DEFAULT_PAGE_SIZE = 100;
 const MAX_PAGE_SIZE = 500;
 
@@ -95,32 +91,6 @@ interface LiveRegistration {
 
 function lookupKey(channelType: string, conversationId: string, channelKey: string): string {
   return `${channelType}\u0000${conversationId}\u0000${normalizeChannelKey(channelKey)}`;
-}
-
-/**
- * The answer as stored. `answererVerified` is taken from the explicit field,
- * or from inside `value` (where an adapter that predates the field put it),
- * so the engine reads ONE place.
- */
-function readCardAnswer(answer: NonNullable<ConversationMessageEvent['cardAnswer']>): NonNullable<
-  NewMessageEvent['cardAnswer']
-> {
-  const nested = (answer.value as { answererVerified?: unknown } | null)?.answererVerified;
-  const verified =
-    typeof answer.answererVerified === 'boolean'
-      ? answer.answererVerified
-      : typeof nested === 'boolean'
-        ? nested
-        : undefined;
-  return {
-    cardId: answer.cardId,
-    value: answer.value,
-    ...(verified !== undefined ? { answererVerified: verified } : {}),
-  };
-}
-
-function isBoundedText(value: unknown, max: number): value is string {
-  return typeof value === 'string' && value.length > 0 && value.length <= max;
 }
 
 export class ConversationMessageHub {
@@ -253,7 +223,7 @@ export class ConversationMessageHub {
   /** Store one event and deliver it. Resolves the stored record, or
    *  `undefined` when it was dropped (no subscription, invalid, redelivery). */
   ingest(event: ConversationMessageEvent): Promise<ConversationMessageRecord | undefined> {
-    const invalid = this.validate(event);
+    const invalid = validateMessageEvent(event);
     if (invalid) {
       this.log(`[conversation-messages] dropped an invalid event: ${invalid}`);
       return Promise.resolve(undefined);
@@ -274,23 +244,6 @@ export class ConversationMessageHub {
     return next;
   }
 
-  private validate(event: ConversationMessageEvent): string | undefined {
-    if (event === null || typeof event !== 'object') return 'not an object';
-    if (!isBoundedText(event.channelType, 64)) return 'channelType';
-    if (!isBoundedText(event.conversationId, MAX_ID_LENGTH)) return 'conversationId';
-    if (!isBoundedText(event.receivedByChannelKey, MAX_ID_LENGTH)) return 'receivedByChannelKey';
-    if (!isBoundedText(event.messageId, MAX_ID_LENGTH)) return 'messageId';
-    if (!KINDS.includes(event.kind)) return 'kind';
-    if (!event.author || !isBoundedText(event.author.id, MAX_ID_LENGTH) || !isBoundedText(event.author.kind, 64)) {
-      return 'author';
-    }
-    if (typeof event.occurredAt !== 'string' || Number.isNaN(Date.parse(event.occurredAt))) return 'occurredAt';
-    if (event.text !== undefined && typeof event.text !== 'string') return 'text';
-    if (event.kind === 'reaction' && !isBoundedText(event.reaction?.name, 128)) return 'reaction';
-    if (event.kind === 'card_answer' && !isBoundedText(event.cardAnswer?.cardId, MAX_ID_LENGTH)) return 'cardAnswer';
-    return undefined;
-  }
-
   private async store(
     subscription: MessageSubscription,
     event: ConversationMessageEvent,
@@ -305,29 +258,7 @@ export class ConversationMessageHub {
     } catch {
       principalId = undefined; // unknown is an honest answer; the platform id is the authority
     }
-    const stored: NewMessageEvent = {
-      messageId: event.messageId,
-      ...(Number.isInteger(event.revision) ? { adapterRevision: event.revision } : {}),
-      kind: event.kind,
-      author: {
-        kind: event.author.kind,
-        id: event.author.id,
-        ...(typeof event.author.displayName === 'string' ? { displayName: event.author.displayName.slice(0, 256) } : {}),
-        ...(principalId !== undefined ? { principalId } : {}),
-      },
-      ...(typeof event.tenantId === 'string' ? { tenantId: event.tenantId } : {}),
-      ...(typeof event.text === 'string' ? { text: event.text.slice(0, MAX_TEXT_LENGTH) } : {}),
-      ...(typeof event.replyToMessageId === 'string' ? { replyToMessageId: event.replyToMessageId } : {}),
-      ...(event.quoted === true ? { quoted: true } : {}),
-      ...(event.forwarded === true ? { forwarded: true } : {}),
-      ...(event.kind === 'reaction' && event.reaction
-        ? { reaction: { name: event.reaction.name, removed: event.reaction.removed === true } }
-        : {}),
-      ...(event.kind === 'card_answer' && event.cardAnswer
-        ? { cardAnswer: readCardAnswer(event.cardAnswer) }
-        : {}),
-      occurredAt: new Date(event.occurredAt).toISOString(),
-    };
+    const stored = toStoredEvent(event, principalId);
     let record: ConversationMessageRecord | undefined;
     try {
       record = await this.deps.store.insertEvent(subscription, stored);

@@ -23,13 +23,9 @@ import type { Pool } from 'pg';
 
 import type {
   ChannelReadinessProvider,
-  ConversationRoster,
-  CoreApi,
   MeetingSourceProvider,
   TargetedDeliveryOutcome,
-  TargetedMessage,
 } from '@omadia/channel-sdk';
-import type { LlmProvider, LlmRequest, LlmResponse } from '@omadia/llm-provider';
 import {
   ConfigStore,
   AgentGraphStore,
@@ -47,7 +43,6 @@ import {
   InMemoryNudgeRegistry,
   SESSION_CAPABILITIES_SERVICE_NAME,
   type AgentTurnService,
-  type ChannelReadinessReport,
   type ChannelReadinessService,
   type ConversationMessagesService,
   type ConversationSendService as PluginConversationSendService,
@@ -82,103 +77,17 @@ import { ServiceRegistry } from '../../src/platform/serviceRegistry.js';
 import { createAgentBuilderRouter } from '../../src/routes/agentBuilder.js';
 import { createOperatorAgentsRouter } from '../../src/routes/operatorAgents.js';
 import { listenLoopback } from './listenLoopback.js';
+import { scriptedModel, type ScriptedModel } from './scriptedModel.js';
+
+import type { FixtureEngine, SimulatedChannel } from './facilitatorKernelTypes.js';
+
+export { systemText, type ModelStep, type ScriptedModel } from './scriptedModel.js';
+export type { FixtureEngine, RecordedSend, SimulatedChannel } from './facilitatorKernelTypes.js';
 
 export const ENGINE_PLUGIN = '@fixture/facilitation-engine';
 export const BUSINESS_PLUGIN = '@fixture/crm';
 export const CHANNEL_PLUGIN = '@fixture/channel-teams';
 export const CHANNEL_TYPE = 'teams';
-
-// ── scripted model ─────────────────────────────────────────────────────────
-
-export type ModelStep =
-  | { readonly text: string }
-  | { readonly tool: string; readonly input?: unknown };
-
-export interface ScriptedModel {
-  readonly provider: LlmProvider;
-  readonly requests: LlmRequest[];
-  /** Queue the model's next answers, in order. */
-  script(...steps: ModelStep[]): void;
-}
-
-export function systemText(request: LlmRequest): string {
-  const system = request.system;
-  if (system === undefined) return '';
-  return typeof system === 'string' ? system : system.map((block) => block.text).join('\n\n');
-}
-
-export function scriptedModel(): ScriptedModel {
-  const requests: LlmRequest[] = [];
-  const queue: ModelStep[] = [];
-  let callId = 0;
-  const next = (request: LlmRequest): LlmResponse => {
-    requests.push(request);
-    const step = queue.shift();
-    if (!step) throw new Error(`scripted model: no answer scripted for request ${String(requests.length)}`);
-    callId += 1;
-    const usage = { inputTokens: 1, outputTokens: 1 };
-    return 'text' in step
-      ? { content: [{ type: 'text', text: step.text }], finishReason: 'stop', model: 'm', usage }
-      : {
-          content: [{ type: 'tool_call', id: `call-${String(callId)}`, name: step.tool, input: step.input ?? {} }],
-          finishReason: 'tool_calls',
-          model: 'm',
-          usage,
-        };
-  };
-  const provider = {
-    id: 'anthropic',
-    capabilities: {
-      tools: true,
-      vision: false,
-      streaming: true,
-      promptCaching: false,
-      forcedToolChoice: true,
-      parallelToolCalls: false,
-    },
-    complete: (request: LlmRequest): Promise<LlmResponse> => Promise.resolve(next(request)),
-    stream: (): never => {
-      throw new Error('scripted model: stream() is not scripted');
-    },
-  } as unknown as LlmProvider;
-  return { provider, requests, script: (...steps) => void queue.push(...steps) };
-}
-
-// ── simulated channel ──────────────────────────────────────────────────────
-
-export interface RecordedSend {
-  readonly kind: 'conversation' | 'direct';
-  readonly target: string;
-  /** The identity the message went out as; `undefined` = the channel's default bot. */
-  readonly asChannelKey: string | undefined;
-  readonly message: TargetedMessage;
-  readonly userRef?: unknown;
-}
-
-export interface SimulatedChannel {
-  readonly core: CoreApi;
-  readonly sent: RecordedSend[];
-  rosters: Map<string, ConversationRoster>;
-  readiness: ChannelReadinessReport | undefined;
-  /** What the next send answers; reset to `delivered` after each send. */
-  nextOutcome: TargetedDeliveryOutcome | undefined;
-  /** A bot was added to a group conversation. */
-  botAdded(conversationId: string): void;
-}
-
-// ── fixture engine plugin ──────────────────────────────────────────────────
-
-export interface FixtureEngine {
-  readonly pluginId: string;
-  readonly messages: ConversationMessagesService;
-  readonly agentTurn: AgentTurnService;
-  readonly conversationSend: PluginConversationSendService;
-  readonly targetedSend: TargetedSendService;
-  readonly readiness: ChannelReadinessService;
-  readonly capabilities: SessionCapabilitiesService;
-  /** Every tool call the engine's tools received, with the kernel's context. */
-  readonly toolCalls: { tool: string; input: unknown; context: NativeToolCallContext | undefined }[];
-}
 
 // ── the kernel ─────────────────────────────────────────────────────────────
 
@@ -296,12 +205,13 @@ export async function bootFacilitatorKernel(options: HarnessOptions): Promise<Fa
   const readinessProviders = new ChannelProviderRegistry<ChannelReadinessProvider>('readiness');
   const meetingSources = new ChannelProviderRegistry<MeetingSourceProvider>('meetingSource');
 
-  let messagesWiring: ConversationMessagesWiring | undefined;
+  // A holder: the services wired first ask for the message hub lazily.
+  const wiring: { messages?: ConversationMessagesWiring } = {};
   services.provide(
     FACILITATOR_CONVERSATIONS_SERVICE,
     createFacilitatorRuntimeLookup({
       getRegistry,
-      getMessages: () => messagesWiring?.hub,
+      getMessages: () => wiring.messages?.hub,
       engineSources,
       reportedEngineState: () => kernel.engineState,
     }),
@@ -311,11 +221,11 @@ export async function bootFacilitatorKernel(options: HarnessOptions): Promise<Fa
     readiness: readinessProviders,
     meetingSources,
     getRegistry,
-    getMessages: () => messagesWiring?.hub,
+    getMessages: () => wiring.messages?.hub,
     engineSources,
     log,
   });
-  messagesWiring = await wireConversationMessages({
+  const messagesWiring = await wireConversationMessages({
     pool,
     serviceRegistry: services,
     getRegistry,
@@ -330,6 +240,7 @@ export async function bootFacilitatorKernel(options: HarnessOptions): Promise<Fa
     purgeIntervalMs: 3_600_000,
     log,
   });
+  wiring.messages = messagesWiring;
   publishAgentTurnService({
     serviceRegistry: services,
     getRegistry,
@@ -546,7 +457,7 @@ export async function bootFacilitatorKernel(options: HarnessOptions): Promise<Fa
         ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
       });
       const text = await res.text();
-      let json: Record<string, unknown> = {};
+      let json: Record<string, unknown>;
       try {
         json = text ? (JSON.parse(text) as Record<string, unknown>) : {};
       } catch {
@@ -559,7 +470,7 @@ export async function bootFacilitatorKernel(options: HarnessOptions): Promise<Fa
       if (changed.length > 0) await registry.reload();
     },
     async stop() {
-      await messagesWiring!.stop();
+      await messagesWiring.stop();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     },
   };

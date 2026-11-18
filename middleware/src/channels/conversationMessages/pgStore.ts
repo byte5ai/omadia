@@ -57,6 +57,10 @@ const EVENT_COLUMNS =
   'author_principal_id, tenant_id, body, reply_to_message_id, quoted, forwarded, reaction, ' +
   'card_answer, occurred_at, received_at';
 
+/** Rows one purge statement removes, and how many statements one tick runs. */
+const PURGE_BATCH = 5_000;
+const PURGE_MAX_BATCHES = 200;
+
 /** Attempts at a revision another writer took in the same instant. */
 const REVISION_RETRIES = 3;
 
@@ -271,32 +275,57 @@ export class PgConversationMessageStore implements ConversationMessageStore {
     };
   }
 
+  /**
+   * Batched: a subscription that ran for weeks can hold a great many events,
+   * and one DELETE over all of them would hold its locks (and bloat the WAL)
+   * for the whole run. Each statement removes at most `PURGE_BATCH` rows; a
+   * tick stops after `PURGE_MAX_BATCHES` and the next tick continues, so the
+   * job stays bounded whatever it finds.
+   */
   async purge(cutoffs: { endedBefore: Date; receivedBefore?: Date }): Promise<PurgeResult> {
-    const ended = await this.pool.query<{ events: string; subscriptions: string }>(
-      `WITH dead AS (
+    let events = 0;
+    let batches = 0;
+    const drain = async (where: string, param: Date): Promise<boolean> => {
+      for (; batches < PURGE_MAX_BATCHES; batches += 1) {
+        const res = await this.pool.query(
+          `DELETE FROM conversation_message_events
+            WHERE event_seq IN (
+              SELECT e.event_seq FROM conversation_message_events e
+               WHERE ${where}
+               ORDER BY e.event_seq
+               LIMIT ${String(PURGE_BATCH)}
+            )`,
+          [param],
+        );
+        const removed = res.rowCount ?? 0;
+        events += removed;
+        if (removed < PURGE_BATCH) return true;
+      }
+      return false; // budget spent; the next tick goes on
+    };
+
+    const endedDrained = await drain(
+      `e.subscription_id IN (
          SELECT id FROM conversation_message_subscriptions
           WHERE ended_at IS NOT NULL AND ended_at < $1
-       ), counted AS (
-         SELECT COUNT(*) AS n FROM conversation_message_events
-          WHERE subscription_id IN (SELECT id FROM dead)
-       ), removed AS (
-         DELETE FROM conversation_message_subscriptions
-          WHERE id IN (SELECT id FROM dead) RETURNING id
-       )
-       SELECT (SELECT n FROM counted) AS events, (SELECT COUNT(*) FROM removed) AS subscriptions`,
-      [cutoffs.endedBefore],
+       )`,
+      cutoffs.endedBefore,
     );
-    let aged = 0;
-    if (cutoffs.receivedBefore) {
-      const res = await this.pool.query(
-        'DELETE FROM conversation_message_events WHERE received_at < $1',
-        [cutoffs.receivedBefore],
+    let subscriptions = 0;
+    if (endedDrained) {
+      // Only rows whose events are gone: the row is what the next tick finds
+      // the remaining events by.
+      const removed = await this.pool.query(
+        `DELETE FROM conversation_message_subscriptions s
+          WHERE s.ended_at IS NOT NULL AND s.ended_at < $1
+            AND NOT EXISTS (
+              SELECT 1 FROM conversation_message_events e WHERE e.subscription_id = s.id
+            )`,
+        [cutoffs.endedBefore],
       );
-      aged = res.rowCount ?? 0;
+      subscriptions = removed.rowCount ?? 0;
     }
-    return {
-      events: Number(ended.rows[0]?.events ?? 0) + aged,
-      subscriptions: Number(ended.rows[0]?.subscriptions ?? 0),
-    };
+    if (cutoffs.receivedBefore) await drain('e.received_at < $1', cutoffs.receivedBefore);
+    return { events, subscriptions };
   }
 }

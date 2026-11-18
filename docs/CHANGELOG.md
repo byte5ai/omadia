@@ -188,9 +188,36 @@ and the neutrality contract. No facilitation tables in the kernel.
   which is the only view and stop control for running discussions; the
   `CONDUCTOR_EPHEMERAL_*` quotas; the audit action
   `conductor.facilitation_terminate` for existing rows.
-- **`GET /api/v1/operator/agents/facilitation-engine`**: which plugin is the
-  facilitation engine (`state` bound | none | ambiguous) and whether it
-  reports itself usable (`available`, `unavailable_reason`, `version`).
+- **`GET /api/v1/operator/agents/facilitation-engine`**: `state` (bound |
+  ungranted | none | ambiguous), `capability`, `plugin_id`, `plugin_ids`,
+  `version`, `available`, `reason_code` (none | ambiguous | ungranted |
+  inactive | not_reported | engine_reported) and `engine_reason` (the engine's
+  own text). Codes, no sentences. The agent slug `facilitation-engine` is
+  reserved.
+- **The engine needs the operator's SQL grant.** A plugin that declares
+  `facilitationEngine@1` is a candidate (`ungranted`): nothing is attached to
+  it and it reads nothing until its SQL ledger is granted.
+- **Upgrade note — the earlier "omadia Facilitator" agent.** The agent the
+  0.7.x plugin provisioned is a `standard` agent, and the kind is fixed at
+  creation. It does not become a facilitator: create a new agent of kind
+  `facilitator`, provision its Teams identity, and delete the old one. The old
+  agent's engine grant row grants nothing any more, and the engine plugin is
+  no longer attached to the default agent.
+- **Review fixes (2026-11-18)**: a channel binding to a facilitator is refused
+  at the three write paths and rejected at resolve time; send providers
+  declare `supports { asChannelKey, mentions, poll }` and the kernel sends as
+  an agent's own identity only through a provider that declares
+  `asChannelKey`; a message subscription needs a channel that registered a
+  readiness provider, and the kernel ends it when the engine plugin is no
+  longer the usable engine, the agent is disabled or deleted, or it lost its
+  identity; subscription changes reach every machine through NOTIFY
+  (`CONVERSATION_MESSAGES_LISTEN`, `CONVERSATION_MESSAGES_RECONCILE_INTERVAL_MS`;
+  `CONVERSATION_MESSAGES_MAX_AGE_DAYS` must be at least 1); without a usable
+  engine a mentioned facilitator answers with a fixed "not set up" text; a
+  group turn needs `origin.conversationType: 'group'` from the channel;
+  readiness, consent repair and session capabilities answer only for a
+  facilitator bound to the calling engine; a facilitator gets none of the
+  kernel's own tools; each channel plugin gets a CoreApi bound to itself.
 
 ### Fixed — Custom-Pattern-Worker: eine laufende Anfrage hält den Prozess offen
 
