@@ -345,8 +345,10 @@ States exist on three levels, each with its own rules:
   an open final consent window ends, no further answers are accepted, the frozen result
   is delivered (or re-delivered) without a consent request, with result status `not
   confirmed (facilitation stopped)` where a confirmation was required and `published`
-  otherwise; no separate abort report is created, and the facilitation becomes `closed`.
-  Nothing else about the result changes.
+  otherwise; no separate abort report is created. A stopped facilitation never enters
+  `following_up`: its follow-up grants and reminder jobs are revoked in the same
+  transaction, and it goes to `ended` once the result's delivery part has ended. Nothing
+  else about the result changes.
 - **following_up:** only if action items with owners were agreed; without them the
   facilitation goes from `closed` straight to `ended`. A bounded follow-up context with
   its own deadline: the earlier of (last due date plus a grace period set at start,
@@ -1074,10 +1076,13 @@ kept compatible.
     cannot link it, even with the facilitator's bot installed there: no reservation, no
     messages; a link requested by a home participant inside the target conversation
     works, also across a restart and against a concurrent link attempt.
-49. **Sessions at the end.** Stop, the end of the `configuring` scope, an error and the
-    regular close, each with sessions in `scheduled`, `live` and `confirming`: scheduled
-    sessions are cancelled, live ones closed, all session conversations are free again
-    after a restart, and the ended process receives no new messages from them.
+49. **Sessions at the end.** With sessions in `scheduled`, `live` and `confirming`, each
+    followed by a restart: on stop, the end of the `configuring` scope or an error,
+    scheduled sessions are cancelled, live ones closed and every session conversation is
+    free at once; at the regular close, scheduled ones are cancelled, live ones closed,
+    and a `confirming` session's conversation becomes free only after its confirmation
+    has ended (criterion 51). In all cases the ended process receives no new messages
+    after the release.
 50. **Several contributions per message.** A message with three ideas becomes three
     contributions that land in different clusters; a retry creates no duplicates; an edit
     before the step closes replaces exactly that message's parts.
@@ -1098,6 +1103,10 @@ kept compatible.
     its decisions and confirmation; home participants stay unchanged.
 55. **Stakeholders.** A confirmed stakeholder receives an agreed invitation and the final
     protocol but no contributions, status or anything else of the running facilitation.
+
+56. **Stop with action items.** Confirmed action items exist, stop arrives during
+    `concluding`, restart, clock moved past every reminder time: the result is delivered,
+    no follow-up starts, no reminder is sent, the facilitation is `ended`.
 
 ## 10. Work breakdown
 

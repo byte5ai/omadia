@@ -454,11 +454,9 @@ execution context, which decides whose budget it uses:
 
 | Execution context | Used for | Charged to and limited by |
 |---|---|---|
-| Agent turn | an agent's own turn, its internal helpers, capability calls it makes (including embeddings for semantic search or memory writes during the turn) | the agent's envelope |
+| Agent turn | an agent's own turn, its internal helpers, capability calls it makes (including embeddings for semantic search or memory writes during the turn); also the Agent Builder's dialog and a draft preview, see below | the agent's envelope |
 | Execution scope | actions of an archetype plugin's process (#2090), including transcription of a live session | the scope's deadline and budget |
 | Inbound processing | transcribing a voice message before the addressed agent's turn | the addressed agent's envelope |
-| Operator tool run | the Agent Builder's dialog with an operator in the admin UI (`middleware/src/plugins/builder/builderAgent.ts`) and other model-backed admin tools; never in channels, speaker shown as the tool ("Agent Builder"), not an agent and not addressable | the instance's operator-tools budget and model policy, set by the operator |
-| Draft preview | a test turn of a draft agent in the admin UI (`previewRuntime.ts:807`) | a draft envelope: exactly the grants the draft would hold after creation, capped by the previewing operator's own rights; output only in the admin UI; operator-tools budget |
 | Maintenance run | a kernel or plugin job that keeps an index current (for example the embedding backfill, `harness-knowledge-graph-neon/src/embeddingBackfill.ts:475`) | the instance's maintenance budget set by the operator, with a deadline per run; only `embed` is allowed, never `complete` or `transcribe`, and it never posts to people |
 
 Semantic search, re-indexing and transcription keep working with the lock in place; only
@@ -503,9 +501,27 @@ New work for `run_loop`:
   Today `checkCliInit` (`cliChatAgent.ts:497-503`) accepts any list that contains one
   omadia tool and does not check the server status.
 
+**Agent Builder and preview.** Only agents and `system` speak to people, also in the admin
+UI. The Agent Builder becomes an agent of the built-in archetype ("Agent Builder"),
+created at setup, reachable only in the admin UI's builder chat, holding only the builder
+capabilities (create and edit drafts, read the capability catalogue); the operator can
+rename or disable it. Its answers go through the emitter, identity guard and AI
+disclosure like any agent's; the direct `chat_message` output of today's builder
+(`middleware/src/plugins/builder/builderAgent.ts:793`) goes. A draft preview is a turn of
+the draft itself: the draft is an `agents` row with status `draft`, not addressable in
+any channel, speaking as itself marked "preview", in a draft envelope (exactly the grants
+it would hold after creation, capped by the previewing operator's own rights), output only
+in the admin UI, charged to the instance's operator-tools budget.
+
 An agent has exactly one archetype, set at creation; it never switches. Uninstalling an
 archetype plugin disables its agents and keeps their records; it never converts them to
-another archetype.
+another archetype. **Uninstall is kernel-guarded:** before the plugin is unloaded the kernel
+itself, independent of the plugin's `onUninstall` (whose failure is caught today,
+`middleware/src/plugins/installService.ts:916`), ends every running process of that
+archetype's agents: it marks them terminated ("archetype plugin removed"), releases all
+their reservations and subscriptions, revokes their execution scopes, grants and scheduled
+jobs, and posts one registered `system` notice in each affected home conversation. The
+plugin's tables keep their last state for the operator.
 
 An **agent template** is something else: a preset of identity, personality and
 capabilities for an agent of an existing archetype.
@@ -924,7 +940,7 @@ Each existing element keeps its purpose, moved out of the message body:
     through the gateway. With the lock in place, semantic search, the embedding backfill
     (as a maintenance run, stopped at its budget) and the transcription of a voice message
     work through the gateway; the embedding and transcription adapters' direct clients are
-    reachable only from the gateway; a maintenance run calling `complete` is refused; the Agent Builder dialog and a draft preview work through the gateway in their own contexts, and a preview gets no right the draft or the operator lacks; an
+    reachable only from the gateway; a maintenance run calling `complete` is refused; the Agent Builder answers as an agent through the emitter (no direct output), a draft preview speaks as the draft marked "preview" and gets no right the draft or the operator lacks; uninstalling an archetype plugin with processes in `configuring`, `active`, `concluding` and `following_up`, with a failing `onUninstall` and a restart, leaves no reservation, no later model call or invitation, and a `system` notice in each home conversation; an
     agent on `claude-cli` uses its granted tools through `run_loop`, a tool it lacks is
     refused, a turn without budget does not start, a running loop that reaches its budget
     before the deadline makes no further model call, the total stays within the
