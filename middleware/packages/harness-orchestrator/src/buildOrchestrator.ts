@@ -338,6 +338,9 @@ export interface OrchestratorDeps {
    * facilitator's own chat turn is suppressed; see `facilitatorAgent.ts`.
    */
   readonly isEngineDrivenConversation?: EngineDrivenConversationLookup;
+  /** #2043 — is the facilitation engine usable for this agent right now?
+   *  Absent = no (then a facilitator says that facilitation is not set up). */
+  readonly isFacilitationEngineUsable?: (agentSlug: string) => boolean;
   /**
    * #1018 — resolves the peer AGENTS the calling agent may see in the current
    * chat, merged into `get_chat_participants` as `kind: 'agent'` entries.
@@ -655,6 +658,9 @@ export function buildOrchestratorForAgent(
           ...(deps.isEngineDrivenConversation
             ? { isEngineDriven: deps.isEngineDrivenConversation }
             : {}),
+          ...(deps.isFacilitationEngineUsable
+            ? { isEngineUsable: deps.isFacilitationEngineUsable }
+            : {}),
           log: (m) => console.log(m),
         })
       : fastPathDeps === undefined
@@ -894,8 +900,10 @@ export function buildOrchestratorForAgent(
     nativeToolRegistry: deps.nativeToolRegistry,
     ...memoryAndLearning,
     entityRefBus: deps.entityRefBus,
-    chatParticipantsTool,
-    askUserChoiceTool,
+    // #2060 — a facilitator's tools are the engine's and nothing else, on
+    // both tool loops: no choice cards, follow-up chips, roster or attachment
+    // tool of the kernel (the engine has its own, bound to the facilitation).
+    ...(isFacilitator ? {} : { chatParticipantsTool, askUserChoiceTool }),
     // W2-1 (#544) — both or neither: a store with no replayer would park calls
     // the user can answer but nothing can deliver.
     ...(deps.pendingMcpInput && deps.mcpInputReplay
@@ -904,7 +912,7 @@ export function buildOrchestratorForAgent(
           mcpInputReplay: deps.mcpInputReplay,
         }
       : {}),
-    suggestFollowUpsTool,
+    ...(isFacilitator ? {} : { suggestFollowUpsTool }),
     ...(findFreeSlotsTool ? { findFreeSlotsTool } : {}),
     ...(bookMeetingTool ? { bookMeetingTool } : {}),
     responseGuard: deps.responseGuard,
@@ -970,7 +978,7 @@ export function buildOrchestratorForAgent(
     ...(deps.turnHookRegistry
       ? { turnHookRegistry: deps.turnHookRegistry }
       : {}),
-    ...(deps.attachmentReader
+    ...(deps.attachmentReader && !isFacilitator
       ? { attachmentReader: deps.attachmentReader }
       : {}),
   });

@@ -8,7 +8,7 @@ import {
   type GrantStore,
   type SecurityPosture,
 } from '@omadia/channel-sdk';
-import type { EngineDrivenConversationLookup } from './facilitatorAgent.js';
+import type { FacilitatorRuntimeLookup } from './facilitatorAgent.js';
 import type {
   SecurityPostureSetup,
   SecurityScreenMode,
@@ -1212,14 +1212,16 @@ export async function activate(
     // inside its database block, possibly after this plugin activated).
     chatPeerAgents: async () =>
       (await ctx.services.getOptional<ChatPeerAgentsProvider>(CHAT_PEER_AGENTS_SERVICE)?.()) ?? [],
-    // #2043 — resolved PER TURN for the same reason; absent (no database) =
-    // no conversation is engine-driven.
+    // #2043 — resolved PER TURN for the same reason. Absent (older kernel):
+    // no conversation is engine-driven and no engine is usable.
     isEngineDrivenConversation: (agentSlug, channelType, conversationId) =>
-      ctx.services.getOptional<EngineDrivenConversationLookup>(FACILITATOR_CONVERSATIONS_SERVICE)?.(
-        agentSlug,
-        channelType,
-        conversationId,
-      ) ?? false,
+      ctx.services
+        .getOptional<FacilitatorRuntimeLookup>(FACILITATOR_CONVERSATIONS_SERVICE)
+        ?.isEngineDriven(agentSlug, channelType, conversationId) ?? false,
+    isFacilitationEngineUsable: (agentSlug) =>
+      ctx.services
+        .getOptional<FacilitatorRuntimeLookup>(FACILITATOR_CONVERSATIONS_SERVICE)
+        ?.isEngineUsable(agentSlug) ?? false,
     ...(contextRetriever ? { contextRetriever } : {}),
     ...(sessionBriefing ? { sessionBriefing } : {}),
     ...(factExtractor ? { factExtractor } : {}),

@@ -65,6 +65,16 @@ export interface TurnOrigin {
    * the two disagree. See {@link memoryAxesForOrigin}.
    */
   readonly principal?: Principal;
+  /**
+   * Is this a group conversation, as the PLATFORM reports it (#2043)? A
+   * positive statement, not something to infer: a `conversation` scope is
+   * also what a 1:1 on most channels looks like, and member count says
+   * nothing (a two-person chat with a bot app is a group to Teams). Absent =
+   * unknown, and consumers treat unknown as `direct`, the same rule as
+   * `IncomingTurn.conversationType`. A facilitator answers a request to
+   * start a moderation only where this says `group`.
+   */
+  readonly conversationType?: 'direct' | 'group';
 }
 
 /** The memory axes a turn may reach, in the scope grammar of design §3. */

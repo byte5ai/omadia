@@ -81,6 +81,8 @@ describe('native facilitators: kernel contract (pg)', { skip: !pgAvailable }, ()
     origin: {
       channelType: CHANNEL_TYPE,
       scope: { kind: 'conversation' as const, conversationId: `teams-${conversationId}` },
+      // The platform's own statement; without it the turn is a private one.
+      conversationType: 'group' as const,
     },
   });
 

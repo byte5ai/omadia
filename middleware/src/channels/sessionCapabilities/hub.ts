@@ -60,6 +60,8 @@ interface Listener<T> {
   readonly agentSlug: string;
   /** `undefined` = the kernel itself. */
   readonly pluginId: string | undefined;
+  /** Asked at every delivery. */
+  readonly allowed: () => boolean;
   readonly handler: (value: T) => void | Promise<void>;
 }
 
@@ -201,8 +203,9 @@ export class SessionCapabilityHub {
     agentSlug: string,
     pluginId: string | undefined,
     handler: (snapshot: SessionCapabilitySnapshot) => void | Promise<void>,
+    allowed: () => boolean = () => true,
   ): () => void {
-    const listener = { agentSlug, pluginId, handler };
+    const listener = { agentSlug, pluginId, handler, allowed };
     this.snapshotListeners = [...this.snapshotListeners, listener];
     return () => {
       this.snapshotListeners = this.snapshotListeners.filter((l) => l !== listener);
@@ -213,8 +216,9 @@ export class SessionCapabilityHub {
     agentSlug: string,
     pluginId: string | undefined,
     handler: (event: SessionEventRecord) => void | Promise<void>,
+    allowed: () => boolean = () => true,
   ): () => void {
-    const listener = { agentSlug, pluginId, handler };
+    const listener = { agentSlug, pluginId, handler, allowed };
     this.eventListeners = [...this.eventListeners, listener];
     return () => {
       this.eventListeners = this.eventListeners.filter((l) => l !== listener);
@@ -307,7 +311,7 @@ export class SessionCapabilityHub {
           s.agentSlug === listener.agentSlug &&
           (listener.pluginId === undefined || s.pluginId === listener.pluginId),
       );
-      if (!entitled) continue;
+      if (!entitled || !listener.allowed()) continue;
       void Promise.resolve()
         .then(() => listener.handler(value))
         .catch((err: unknown) => {

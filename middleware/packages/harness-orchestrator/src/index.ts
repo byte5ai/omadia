@@ -134,11 +134,17 @@ export type { AgentKind, FacilitatorOmission } from './registry/agentKind.js';
 export {
   conversationIdCandidates,
   currentEngineTurn,
+  facilitationNotSetUpText,
   facilitatorRefusalText,
+  isGroupTurn,
   runAsEngineTurn,
   wrapFacilitatorAgent,
 } from './facilitatorAgent.js';
-export type { EngineDrivenConversationLookup, EngineTurnScope } from './facilitatorAgent.js';
+export type {
+  EngineDrivenConversationLookup,
+  EngineTurnScope,
+  FacilitatorRuntimeLookup,
+} from './facilitatorAgent.js';
 export {
   buildToolCallContext,
   channelConversationId,

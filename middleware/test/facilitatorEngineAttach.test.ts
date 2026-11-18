@@ -11,7 +11,12 @@ import {
   attachEngineToFacilitator,
   attachEngineToFacilitators,
 } from '../src/platform/facilitatorEngineAttach.js';
-import { assertEngineOnlyForFacilitators } from '../src/platform/facilitatorGuard.js';
+import { createSubscriptionGroundCheck } from '../src/channels/conversationMessages/wiring.js';
+import {
+  assertEngineOnlyForFacilitators,
+  createSqlGrantView,
+  resolveFacilitationEngine,
+} from '../src/platform/facilitatorGuard.js';
 import { attachablePluginIds } from '../src/plugins/defaultOrchestratorAttach.js';
 
 const ENGINE = '@omadia/agent-facilitator';
@@ -98,6 +103,94 @@ describe('facilitation engine auto-attach', () => {
     const two = world([ENGINE, '@acme/engine-2']);
     assert.deepEqual(await attachEngineToFacilitators(two.store, two.sources), []);
     assert.deepEqual(two.rows, []);
+  });
+
+  it('a declared engine is attached only once the operator granted it SQL (the trust step)', async () => {
+    const w = world([ENGINE]);
+    let granted = false;
+    const sources = { ...w.sources, isSqlGranted: (id: string) => granted && id === ENGINE };
+    assert.deepEqual(resolveFacilitationEngine(sources), { state: 'ungranted', pluginId: ENGINE });
+    assert.deepEqual(await attachEngineToFacilitators(w.store, sources), [], 'declaring is not enough');
+    assert.equal(await attachEngineToFacilitator(w.store, w.agents[0]!, sources), undefined);
+    assert.deepEqual(w.rows, []);
+    granted = true;
+    assert.deepEqual(resolveFacilitationEngine(sources), { state: 'bound', pluginId: ENGINE });
+    assert.deepEqual(await attachEngineToFacilitators(w.store, sources), ['mara', 'nora']);
+  });
+
+  it('the SQL grant view is synchronous, refreshes itself when stale and keeps the last state on failure', async () => {
+    let now = 0;
+    let rows: string[] | Error = [];
+    const logs: string[] = [];
+    const view = createSqlGrantView({
+      listGranted: () => (rows instanceof Error ? Promise.reject(rows) : Promise.resolve(rows)),
+      maxAgeMs: 1_000,
+      now: () => now,
+      log: (m) => logs.push(m),
+    });
+    assert.equal(view.isGranted(ENGINE), false, 'unknown is not granted');
+    await view.refresh(); // the read above started one; overlapping refreshes coalesce
+    rows = [ENGINE];
+    await view.refresh();
+    assert.equal(view.isGranted(ENGINE), true);
+    // Revoked in the operator UI: noticed by the next stale read, no restart.
+    rows = [];
+    now = 2_000;
+    assert.equal(view.isGranted(ENGINE), true, 'the stale read still answers, and triggers a refresh');
+    await view.refresh();
+    assert.equal(view.isGranted(ENGINE), false);
+    rows = [ENGINE];
+    await view.refresh();
+    rows = new Error('pool exhausted');
+    await view.refresh();
+    assert.equal(view.isGranted(ENGINE), true, 'a failed lookup changes nothing');
+    assert.match(logs[0]!, /SQL grant lookup failed/);
+  });
+
+  it('the ground of a subscription: engine, agent, identity', async () => {
+    const w = world([ENGINE]);
+    let status = 'active';
+    let agent: { id: string; status: string; kind: string } | undefined = { id: 'a-mara', status: 'enabled', kind: 'facilitator' };
+    let identities = [{ agentId: 'a-mara', channelType: 'teams', channelKey: '28:AAAA-MARA' }];
+    const ground = createSubscriptionGroundCheck({
+      engineSources: () => ({
+        ...w.sources,
+        installedRegistry: { list: () => w.state.installed.map((id) => ({ id, status })) } as never,
+      }),
+      getConfigStore: () =>
+        ({
+          getAgentById: () => Promise.resolve(agent),
+          listChannelIdentities: () => Promise.resolve(identities),
+        }) as never,
+    });
+    const subscription = {
+      id: 's1',
+      agentId: 'a-mara',
+      agentSlug: 'mara',
+      channelType: 'teams',
+      conversationId: 'c',
+      channelKey: '28:aaaa-mara',
+      pluginId: ENGINE,
+      createdAt: new Date(0),
+    };
+    assert.equal(await ground(subscription), undefined, 'stands');
+    status = 'inactive';
+    assert.match((await ground(subscription))!, /engine plugin is inactive/);
+    status = 'active';
+    w.state.installed = [ENGINE, '@acme/engine-2'];
+    assert.match((await ground(subscription))!, /no longer the facilitation engine/);
+    w.state.installed = [];
+    assert.match((await ground(subscription))!, /no longer the facilitation engine/);
+    w.state.installed = [ENGINE];
+    agent = { id: 'a-mara', status: 'disabled', kind: 'facilitator' };
+    assert.equal(await ground(subscription), 'the agent is disabled');
+    agent = undefined;
+    assert.equal(await ground(subscription), 'the agent was deleted');
+    agent = { id: 'a-mara', status: 'enabled', kind: 'facilitator' };
+    identities = [{ agentId: 'a-mara', channelType: 'teams', channelKey: '28:another-app' }];
+    assert.match((await ground(subscription))!, /no longer has the teams identity/);
+    identities = [];
+    assert.match((await ground(subscription))!, /no longer has the teams identity/);
   });
 
   it('the engine is never part of a default attach, and cannot be granted to a standard agent', () => {

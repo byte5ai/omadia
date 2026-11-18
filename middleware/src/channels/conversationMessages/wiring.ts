@@ -25,9 +25,6 @@ import { startConversationMessagePurge, type ConversationMessagePurgeJob } from 
 import { createConversationMessagesService } from './service.js';
 import { normalizeChannelKey, type MessageSubscription } from './store.js';
 
-/** Service the orchestrator asks whether the engine drives a conversation. */
-export const FACILITATOR_CONVERSATIONS_SERVICE = 'facilitatorConversations';
-
 /** NOTIFY channel of the subscriptions table (migration 0068). */
 export const SUBSCRIPTIONS_NOTIFY_CHANNEL = 'conversation_message_subscriptions_changed';
 
@@ -195,14 +192,6 @@ export async function wireConversationMessages(
       });
     }),
   );
-  // Asked by the orchestrator on every group turn of a facilitator: once the
-  // engine receives the conversation's messages, it drives every turn there.
-  deps.serviceRegistry.provide(
-    FACILITATOR_CONVERSATIONS_SERVICE,
-    (agentSlug: string, channelType: string, conversationId: string): boolean =>
-      hub.subscriptionFor({ agentSlug, channelType, conversationId }) !== undefined,
-  );
-
   const purge = startConversationMessagePurge(store, {
     graceMs: deps.graceMs,
     maxAgeDays: deps.maxAgeDays,

@@ -35,6 +35,7 @@ import {
   AgentGraphStore,
   NativeToolRegistry,
   OrchestratorRegistry,
+  type FacilitatorRuntimeLookup,
   type OrchestratorDeps,
 } from '@omadia/orchestrator';
 import {
@@ -58,10 +59,13 @@ import {
 import { publishAgentTurnService } from '../../src/agents/agentTurnWiring.js';
 import { ConversationEventHub } from '../../src/channels/conversationEventHub.js';
 import {
-  FACILITATOR_CONVERSATIONS_SERVICE,
   wireConversationMessages,
   type ConversationMessagesWiring,
 } from '../../src/channels/conversationMessages/wiring.js';
+import {
+  createFacilitatorRuntimeLookup,
+  FACILITATOR_CONVERSATIONS_SERVICE,
+} from '../../src/platform/facilitatorRuntimeService.js';
 import { ConversationSendRegistry } from '../../src/channels/conversationSendRegistry.js';
 import { createConversationSendService } from '../../src/channels/conversationSendService.js';
 import { createCoreApi } from '../../src/channels/coreApi.js';
@@ -186,6 +190,8 @@ export interface HarnessOptions {
   readonly listen?: boolean;
   /** Plugin statuses other than `active` (`inactive`, `errored`). */
   readonly statuses?: Record<string, string>;
+  /** Plugins holding a SQL grant. Default: the engine. */
+  readonly sqlGranted?: readonly string[];
 }
 
 export interface FacilitatorKernel {
@@ -201,6 +207,10 @@ export interface FacilitatorKernel {
   installed: string[];
   /** Set a plugin's status (`active`, `inactive`, `errored`). */
   setStatus(pluginId: string, status: string): void;
+  /** Grant or revoke a plugin's SQL ledger. */
+  setSqlGrant(pluginId: string, granted: boolean): void;
+  /** What the engine plugin reports about itself (`undefined` = nothing). */
+  setEngineState(state: unknown): void;
   /** A plugin other than the engine asking for the same services. */
   servicesAs(pluginId: string): {
     messages: ConversationMessagesService;
@@ -228,6 +238,10 @@ export async function bootFacilitatorKernel(options: HarnessOptions): Promise<Fa
   const kernel = {
     installed: [...(options.installed ?? [ENGINE_PLUGIN, BUSINESS_PLUGIN])],
     statuses: { ...(options.statuses ?? {}) } as Record<string, string>,
+    /** Plugins the operator granted a SQL ledger (the engine's trust step). */
+    sqlGranted: new Set<string>(options.sqlGranted ?? [ENGINE_PLUGIN]),
+    /** What the engine plugin reports about itself; `undefined` = nothing. */
+    engineState: { pluginId: ENGINE_PLUGIN, version: '1.0.0', available: true } as unknown,
   };
 
   const engineSources = () => ({
@@ -237,9 +251,12 @@ export async function bootFacilitatorKernel(options: HarnessOptions): Promise<Fa
     catalog: {
       get: (id: string) => (PROVIDES[id] ? { plugin: { ...PROVIDES[id], id } } : undefined),
     } as never,
+    isSqlGranted: (id: string) => kernel.sqlGranted.has(id),
   });
 
   const services = new ServiceRegistry();
+  const runtimeLookup = (): FacilitatorRuntimeLookup =>
+    services.get<FacilitatorRuntimeLookup>(FACILITATOR_CONVERSATIONS_SERVICE)!;
   const store = new ConfigStore(pool);
   const nativeTools = new NativeToolRegistry();
   const model = scriptedModel();
@@ -255,11 +272,8 @@ export async function bootFacilitatorKernel(options: HarnessOptions): Promise<Fa
     privacyGuard: () => undefined,
     assistantIdentity: 'You are the platform assistant.',
     isEngineDrivenConversation: (slug: string, channelType: string, conversationId: string) =>
-      services.get<(a: string, b: string, c: string) => boolean>(FACILITATOR_CONVERSATIONS_SERVICE)?.(
-        slug,
-        channelType,
-        conversationId,
-      ) ?? false,
+      runtimeLookup().isEngineDriven(slug, channelType, conversationId),
+    isFacilitationEngineUsable: (slug: string) => runtimeLookup().isEngineUsable(slug),
   } as unknown as OrchestratorDeps;
   const registry = new OrchestratorRegistry(store, deps, {
     defaultRuntimeConfig: { model: 'm', maxTokens: 512, maxToolIterations: 6 },
@@ -283,6 +297,15 @@ export async function bootFacilitatorKernel(options: HarnessOptions): Promise<Fa
   const meetingSources = new ChannelProviderRegistry<MeetingSourceProvider>('meetingSource');
 
   let messagesWiring: ConversationMessagesWiring | undefined;
+  services.provide(
+    FACILITATOR_CONVERSATIONS_SERVICE,
+    createFacilitatorRuntimeLookup({
+      getRegistry,
+      getMessages: () => messagesWiring?.hub,
+      engineSources,
+      reportedEngineState: () => kernel.engineState,
+    }),
+  );
   const capabilityHub = wireSessionCapabilities({
     serviceRegistry: services,
     readiness: readinessProviders,
@@ -466,6 +489,8 @@ export async function bootFacilitatorKernel(options: HarnessOptions): Promise<Fa
       getChatSessionStore: () => undefined,
       getInstalledRegistry: () => engineSources().installedRegistry,
       getPluginCatalog: () => engineSources().catalog,
+      isSqlGranted: (id: string) => kernel.sqlGranted.has(id),
+      getFacilitationEngineState: () => kernel.engineState,
     }),
   );
   app.use(
@@ -493,6 +518,13 @@ export async function bootFacilitatorKernel(options: HarnessOptions): Promise<Fa
     },
     setStatus(pluginId: string, status: string): void {
       kernel.statuses[pluginId] = status;
+    },
+    setSqlGrant(pluginId: string, granted: boolean): void {
+      if (granted) kernel.sqlGranted.add(pluginId);
+      else kernel.sqlGranted.delete(pluginId);
+    },
+    setEngineState(state: unknown): void {
+      kernel.engineState = state;
     },
     servicesAs: servicesFor,
     async provisionIdentity(agentSlug, appId) {

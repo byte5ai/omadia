@@ -414,7 +414,15 @@ import {
   createPendingDefaultAttach,
   withInstalledParents,
 } from './plugins/defaultOrchestratorAttach.js';
-import { facilitatorGrantablePluginIds } from './platform/facilitatorGuard.js';
+import {
+  createSqlGrantView,
+  facilitatorGrantablePluginIds,
+  type FacilitationEngineSources,
+} from './platform/facilitatorGuard.js';
+import {
+  createFacilitatorRuntimeLookup,
+  FACILITATOR_CONVERSATIONS_SERVICE,
+} from './platform/facilitatorRuntimeService.js';
 import { publishSendServices } from './channels/sendServicesWiring.js';
 import { publishAgentTurnService } from './agents/agentTurnWiring.js';
 import { ChannelProviderRegistry } from './channels/sessionCapabilities/providerRegistry.js';
@@ -1120,6 +1128,18 @@ async function main(): Promise<void> {
     INSTALLED_REGISTRY_PATH,
   );
   await installedRegistry.load();
+  // #2043 — which plugin is the facilitation engine: the one that declares
+  // the capability AND that the operator granted its SQL ledger (the trust
+  // step). One helper, so every consumer resolves the engine the same way.
+  const facilitationSqlGrants = createSqlGrantView({
+    listGranted: async () => (await sqlGrantStore.listAll()).map((row) => row.pluginId),
+    log: (m) => console.log(m),
+  });
+  const facilitationEngineSources = (): FacilitationEngineSources => ({
+    installedRegistry,
+    catalog: pluginCatalog,
+    isSqlGranted: (pluginId) => facilitationSqlGrants.isGranted(pluginId),
+  });
   // #1620 — Teams SSO for `auth: 'teams-sso'` plugin routes. One verifier for
   // the process, so the per-tenant JWKS cache and its refetch throttle are
   // shared by every route; audiences = the bots of the active channel-teams.
@@ -1373,7 +1393,7 @@ async function main(): Promise<void> {
     },
     // #2060 — the one plugin a facilitator-kind agent may be granted.
     facilitatorGrantable(): readonly string[] {
-      return facilitatorGrantablePluginIds({ installedRegistry, catalog: pluginCatalog });
+      return facilitatorGrantablePluginIds(facilitationEngineSources());
     },
     listInstalled(): readonly string[] {
       // Include `active` AND `inactive` plugins (the latter may simply
@@ -1873,9 +1893,12 @@ async function main(): Promise<void> {
     const store = serviceRegistry.get<MultiOrchestratorConfigStore>('configStore');
     if (!store) return;
     try {
+      // The operator's SQL grant is what makes a declared engine THE engine;
+      // read it fresh, since this runs right after an install or a grant.
+      await facilitationSqlGrants.refresh();
       const changed = await attachEngineToFacilitators(
         store,
-        { installedRegistry, catalog: pluginCatalog },
+        facilitationEngineSources(),
         (m) => console.log(m),
       );
       if (changed.length > 0) {
@@ -4174,6 +4197,7 @@ async function main(): Promise<void> {
         serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry'),
       getChatSessionStore,
       getFacilitationEngineState: () => serviceRegistry.get<unknown>('facilitationEngine'),
+      isSqlGranted: (pluginId: string) => facilitationSqlGrants.isGranted(pluginId),
       getPluginCatalog: () => pluginCatalog,
       getInstalledRegistry: () => installedRegistry,
       getPeerChatDirectory: peerChatDirectoryFor,
@@ -4691,13 +4715,23 @@ async function main(): Promise<void> {
   let conversationMessages: ConversationMessagesWiring | undefined;
   // #2043 — readiness and session capabilities work without a database; only
   // their pushes follow message subscriptions.
+  // Asked by the orchestrator on every group turn of a facilitator.
+  serviceRegistry.provide(
+    FACILITATOR_CONVERSATIONS_SERVICE,
+    createFacilitatorRuntimeLookup({
+      getRegistry,
+      getMessages: () => conversationMessages?.hub,
+      engineSources: facilitationEngineSources,
+      reportedEngineState: () => serviceRegistry.get<unknown>('facilitationEngine'),
+    }),
+  );
   const sessionCapabilityHub = wireSessionCapabilities({
     serviceRegistry,
     readiness: readinessProviderRegistry,
     meetingSources: meetingSourceRegistry,
     getRegistry,
     getMessages: () => conversationMessages?.hub,
-    engineSources: () => ({ installedRegistry, catalog: pluginCatalog }),
+    engineSources: facilitationEngineSources,
     log: (m) => console.log(m),
   });
   if (graphPool) {
@@ -4838,7 +4872,7 @@ async function main(): Promise<void> {
       getRegistry,
       invites: observedInvites,
       botPresence,
-      engineSources: () => ({ installedRegistry, catalog: pluginCatalog }),
+      engineSources: facilitationEngineSources,
       getConfigStore: () => serviceRegistry.get<MultiOrchestratorConfigStore>('configStore'),
       listen: config.CONVERSATION_MESSAGES_LISTEN,
       reconcileIntervalMs: config.CONVERSATION_MESSAGES_RECONCILE_INTERVAL_MS,
@@ -7028,7 +7062,7 @@ async function main(): Promise<void> {
     serviceRegistry,
     getRegistry,
     ...(conversationMessages ? { messages: conversationMessages.hub } : {}),
-    engineSources: () => ({ installedRegistry, catalog: pluginCatalog }),
+    engineSources: facilitationEngineSources,
     maxTurnsPerMinute: config.AGENT_TURN_MAX_PER_MINUTE,
     language: () => {
       const raw = installedRegistry.get('@omadia/orchestrator')?.config?.['ai_disclosure_locale'];

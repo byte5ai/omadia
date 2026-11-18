@@ -18,7 +18,9 @@ import type { EntityRefBus, KnowledgeGraph, MemoryStore } from '@omadia/plugin-a
 
 import type { OrchestratorDeps } from '../packages/harness-orchestrator/src/buildOrchestrator.js';
 import {
+  facilitationNotSetUpText,
   facilitatorRefusalText,
+  isGroupTurn,
   runAsEngineTurn,
   wrapFacilitatorAgent,
 } from '../packages/harness-orchestrator/src/facilitatorAgent.js';
@@ -191,6 +193,24 @@ describe('facilitator runtime omissions', () => {
     assert.deepEqual(calls, ['facilitation_start']);
   });
 
+  it('kernel tools: no choice card, follow-up chips, roster or attachment tool on either tool loop', () => {
+    const { deps } = setup();
+    const withReader = { ...deps, attachmentReader: {} } as OrchestratorDeps;
+    const fac = buildForAgent(row(), withReader, RUNTIME, undefined, [ENGINE]);
+    const std = buildForAgent(row({ slug: 'hr', kind: 'standard' }), withReader, RUNTIME, undefined, []);
+    for (const name of ['askUserChoiceTool', 'suggestFollowUpsTool', 'chatParticipantsTool', 'attachmentReader', 'readAttachmentTool']) {
+      assert.equal(field(fac, name), undefined, `${name} must not exist for a facilitator`);
+      assert.notEqual(field(std, name), undefined, `${name} stays for a standard agent`);
+    }
+    const offered = [...probe(fac).offeredToolNames()];
+    assert.deepEqual(offered, ['facilitation_start'], 'exactly the engine plugin tools');
+    // What the subscription-CLI loop could dispatch: no kernel-native handler.
+    const cli = fac.orchestrator as unknown as { kernelNativeHandler(name: string): unknown };
+    for (const name of ['ask_user_choice', 'suggest_follow_ups']) {
+      assert.equal(cli.kernelNativeHandler(name), undefined, name);
+    }
+  });
+
   it('plugin grants: a facilitator built without a grant set gets nothing (fail closed)', () => {
     const { deps } = setup();
     const fac = buildForAgent(row(), deps, RUNTIME);
@@ -244,7 +264,11 @@ describe('facilitator assistance refusal', () => {
   };
   const group: ChatTurnInput = {
     userMessage: 'Mara, please run a vote on the offsite date.',
-    origin: { channelType: 'teams', scope: { kind: 'conversation', conversationId: '19:abc@thread.v2' } },
+    origin: {
+      channelType: 'teams',
+      scope: { kind: 'conversation', conversationId: '19:abc@thread.v2' },
+      conversationType: 'group',
+    },
   };
 
   it('a 1:1 request for help gets the friendly refusal, in chat and stream', async () => {
@@ -273,9 +297,53 @@ describe('facilitator assistance refusal', () => {
     assert.equal(turns.length, 0);
   });
 
+  it('a conversation scope alone is not a group: the platform has to say so', async () => {
+    const { agent, turns } = inner();
+    const wrapped = wrapFacilitatorAgent(agent, { agentSlug: 'mara', isEngineUsable: () => true });
+    for (const origin of [
+      // What a 1:1 looks like on most channels, and a personal Teams chat
+      // whose user id was blank.
+      { channelType: 'telegram', scope: { kind: 'conversation', conversationId: '@x::4711' } },
+      { channelType: 'teams', scope: { kind: 'conversation', conversationId: 'teams-a:1' }, conversationType: 'direct' },
+    ] as ChatTurnInput['origin'][]) {
+      const answer = await wrapped.chat({ userMessage: 'help me', ...(origin ? { origin } : {}) });
+      assert.match(answer.text, /facilitator, not an assistant/);
+    }
+    assert.equal(turns.length, 0);
+    assert.equal(isGroupTurn(group), true);
+    assert.equal(isGroupTurn({ userMessage: 'x', origin: { channelType: 'c', scope: { kind: 'group', groupRef: 'g' } } }), true);
+  });
+
+  it('without a usable engine a group mention gets the fixed "not set up" answer, no model call', async () => {
+    const { agent, turns } = inner();
+    for (const deps of [
+      { agentSlug: 'mara', name: 'Mara' }, // no lookup wired at all
+      { agentSlug: 'mara', name: 'Mara', isEngineUsable: () => false },
+      {
+        agentSlug: 'mara',
+        name: 'Mara',
+        isEngineUsable: (): boolean => {
+          throw new Error('registry gone');
+        },
+      },
+    ]) {
+      const wrapped = wrapFacilitatorAgent(agent, deps);
+      assert.equal((await wrapped.chat(group)).text, facilitationNotSetUpText({ name: 'Mara' }));
+      const events: ChatStreamEvent[] = [];
+      for await (const e of wrapped.chatStream(group)) events.push(e);
+      assert.deepEqual(events.map((e) => e.type), ['text_delta', 'done']);
+    }
+    assert.match(facilitationNotSetUpText({ locale: 'de' }), /noch nicht eingerichtet/);
+    assert.match(facilitationNotSetUpText({}), /Facilitation is not set up on this instance yet/);
+    // A private request still gets the assistant refusal, not this one.
+    const wrapped = wrapFacilitatorAgent(agent, { agentSlug: 'mara' });
+    assert.match((await wrapped.chat(personal)).text, /not an assistant/);
+    assert.equal(turns.length, 0);
+  });
+
   it('a group turn and an engine-run turn reach the model', async () => {
     const { agent, turns } = inner();
-    const wrapped = wrapFacilitatorAgent(agent, {});
+    const wrapped = wrapFacilitatorAgent(agent, { agentSlug: 'mara', isEngineUsable: () => true });
     assert.equal((await wrapped.chat(group)).text, 'model answer');
     const viaEngine = await runAsEngineTurn({ pluginId: ENGINE }, () => wrapped.chat(personal));
     assert.equal(viaEngine.text, 'model answer');
@@ -299,6 +367,7 @@ describe('facilitator: no kernel turn where the engine drives the conversation',
     const asked: string[] = [];
     const wrapped = wrapFacilitatorAgent(agent, {
       agentSlug: 'mara',
+      isEngineUsable: () => true,
       isEngineDriven: (slug, channelType, conversationId) => {
         asked.push(`${slug}|${channelType}|${conversationId}`);
         return conversationId === '19:offsite@thread.v2';
@@ -308,7 +377,7 @@ describe('facilitator: no kernel turn where the engine drives the conversation',
     // keyed by the channel-native id.
     const mention = (conversationId: string): ChatTurnInput => ({
       userMessage: '@Mara my vote: A > C > B',
-      origin: { channelType: 'teams', scope: { kind: 'conversation', conversationId } },
+      origin: { channelType: 'teams', scope: { kind: 'conversation', conversationId }, conversationType: 'group' },
     });
     for (const id of ['19:offsite@thread.v2', 'teams-19:offsite@thread.v2', '@omadia/channel-teams::19:offsite@thread.v2']) {
       assert.equal((await wrapped.chat(mention(id))).text, '', `no second answer for ${id}`);
@@ -334,6 +403,7 @@ describe('facilitator: no kernel turn where the engine drives the conversation',
       { chat: () => Promise.resolve({ text: 'model answer' } as never), chatStream: (() => undefined) as never },
       {
         agentSlug: 'mara',
+        isEngineUsable: () => true,
         isEngineDriven: () => {
           throw new Error('registry gone');
         },
@@ -341,7 +411,7 @@ describe('facilitator: no kernel turn where the engine drives the conversation',
     );
     const answer = await wrapped.chat({
       userMessage: 'hi',
-      origin: { channelType: 'teams', scope: { kind: 'conversation', conversationId: 'c' } },
+      origin: { channelType: 'teams', scope: { kind: 'conversation', conversationId: 'c' }, conversationType: 'group' },
     });
     assert.equal(answer.text, 'model answer');
   });

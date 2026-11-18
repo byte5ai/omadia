@@ -14,30 +14,46 @@ export interface SessionServiceCaller {
   /** `undefined` for the kernel itself. */
   readonly callerPluginId: string | undefined;
   readonly isEngine: () => boolean;
+  /**
+   * Is this agent a facilitator the calling engine is granted to? The same
+   * binding `conversationMessages.subscribe` and `agentTurn` require: an
+   * engine learns nothing about (and repairs nothing for) a standard agent's
+   * bot, nor a facilitator it does not run. Not asked for the kernel itself.
+   */
+  readonly isBoundFacilitator: (agentSlug: string) => boolean;
 }
 
 const NOT_ENGINE = 'only the facilitation engine plugin may use this service';
+const NOT_BOUND = 'the agent is not a facilitator bound to the calling engine';
+
+function permitted(caller: SessionServiceCaller, agentSlug: unknown): string | undefined {
+  if (caller.callerPluginId === undefined) return undefined;
+  if (!caller.isEngine()) return NOT_ENGINE;
+  if (typeof agentSlug !== 'string' || !caller.isBoundFacilitator(agentSlug)) return NOT_BOUND;
+  return undefined;
+}
 
 export function createChannelReadinessService(
   hub: SessionCapabilityHub,
   caller: SessionServiceCaller,
 ): ChannelReadinessService {
-  const allowed = (): boolean => caller.callerPluginId === undefined || caller.isEngine();
   return {
     async check(request) {
-      if (!allowed()) {
+      const refusal = permitted(caller, request?.agentSlug);
+      if (refusal !== undefined) {
         return {
           ready: false,
           installed: false,
           canReadAllMessages: false,
           canPost: false,
-          missing: [{ code: 'unsupported_conversation', message: NOT_ENGINE }],
+          missing: [{ code: 'unsupported_conversation', message: refusal }],
         };
       }
       return hub.check(request);
     },
     async repairConsent(request) {
-      if (!allowed()) return { outcome: 'failed', code: 'unsupported', message: NOT_ENGINE };
+      const refusal = permitted(caller, request?.agentSlug);
+      if (refusal !== undefined) return { outcome: 'failed', code: 'unsupported', message: refusal };
       return hub.repairConsent(request);
     },
   };
@@ -47,21 +63,24 @@ export function createSessionCapabilitiesService(
   hub: SessionCapabilityHub,
   caller: SessionServiceCaller,
 ): SessionCapabilitiesService {
-  const allowed = (): boolean => caller.callerPluginId === undefined || caller.isEngine();
+  // Pushes are decided at DELIVERY, like live messages: a plugin that stops
+  // being the engine, or an agent that stops being its facilitator, gets
+  // nothing more; registering early is harmless.
+  const mayReceive = (agentSlug: string) => (): boolean => permitted(caller, agentSlug) === undefined;
   return {
     async getSnapshot(request) {
-      // The baseline is no secret; a caller that is not the engine gets it
-      // without the channel being asked.
-      if (!allowed()) return hub.baseline(request.channelType, request.conversationId, request.sessionRef);
+      // The baseline is no secret; anybody else gets it without the channel
+      // being asked.
+      if (permitted(caller, request?.agentSlug) !== undefined) {
+        return hub.baseline(request.channelType, request.conversationId, request.sessionRef);
+      }
       return hub.getSnapshot(request);
     },
     onChange(agentSlug, handler) {
-      if (!allowed()) return () => undefined;
-      return hub.onSnapshot(agentSlug, caller.callerPluginId, handler);
+      return hub.onSnapshot(agentSlug, caller.callerPluginId, handler, mayReceive(agentSlug));
     },
     onSessionEvent(agentSlug, handler) {
-      if (!allowed()) return () => undefined;
-      return hub.onSessionEvent(agentSlug, caller.callerPluginId, handler);
+      return hub.onSessionEvent(agentSlug, caller.callerPluginId, handler, mayReceive(agentSlug));
     },
   };
 }

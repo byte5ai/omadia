@@ -8,9 +8,10 @@
  *
  *   - a turn the facilitation ENGINE runs (`runAsEngineTurn`, the `agentTurn`
  *     service) always does: it is the moderation itself;
- *   - a turn from a GROUP conversation does: that is where a person asks the
- *     facilitator to start, and the model only has the engine's tools and the
- *     neutrality contract to answer with;
+ *   - a turn from a GROUP conversation does, when the facilitation engine is
+ *     usable: that is where a person asks the facilitator to start, and the
+ *     model only has the engine's tools and the neutrality contract to answer
+ *     with. Without a usable engine it gets a fixed "not set up" answer;
  *   - everything else — a personal chat, the web chat, an API call, a
  *     workflow step, a turn whose origin nobody stated — gets a fixed,
  *     friendly refusal that says what the facilitator does.
@@ -73,10 +74,38 @@ export function currentEngineTurn(): EngineTurnScope | undefined {
   return engineTurns.getStore();
 }
 
-/** A turn from a conversation with more than one human in it. */
+/**
+ * A turn from a group conversation, by the platform's own statement.
+ *
+ * Not inferred: a `conversation` scope is what a 1:1 looks like on most
+ * channels, and a personal Teams chat without a user id falls back to it.
+ * Only `origin.conversationType === 'group'` (or the `group` scope kind)
+ * counts; unknown is treated as a private request.
+ */
 export function isGroupTurn(input: ChatTurnInput): boolean {
-  const kind = input.origin?.scope.kind;
-  return kind === 'conversation' || kind === 'group';
+  const origin = input.origin;
+  if (!origin) return false;
+  if (origin.scope.kind === 'group') return true;
+  return origin.scope.kind === 'conversation' && origin.conversationType === 'group';
+}
+
+/** Said in a group when facilitation is not set up on the instance (spec
+ *  2043 §0): the facilitator says so and does nothing else. */
+export function facilitationNotSetUpText(opts: {
+  readonly name?: string | undefined;
+  readonly locale?: string | undefined;
+}): string {
+  const name = opts.name?.trim();
+  if (opts.locale?.toLowerCase().startsWith('de')) {
+    return (
+      `${name ? `Ich bin ${name}. ` : ''}Moderationen sind auf dieser Instanz noch nicht eingerichtet, ` +
+      'deshalb kann ich hier gerade nichts tun. Bitte wendet euch an eure Administration.'
+    );
+  }
+  return (
+    `${name ? `I am ${name}. ` : ''}Facilitation is not set up on this instance yet, ` +
+    'so there is nothing I can do here right now. Please contact your administrator.'
+  );
 }
 
 export function facilitatorRefusalText(opts: {
@@ -107,6 +136,13 @@ export type EngineDrivenConversationLookup = (
   conversationId: string,
 ) => boolean;
 
+/** What the kernel answers the orchestrator about a facilitator at turn
+ *  time (service `facilitatorConversations`). */
+export interface FacilitatorRuntimeLookup {
+  isEngineDriven: EngineDrivenConversationLookup;
+  isEngineUsable(agentSlug: string): boolean;
+}
+
 export interface FacilitatorAgentDeps {
   readonly agentSlug?: string | undefined;
   readonly name?: string | undefined;
@@ -119,6 +155,14 @@ export interface FacilitatorAgentDeps {
    * suppressed here, at the one entry every chat surface shares.
    */
   readonly isEngineDriven?: EngineDrivenConversationLookup;
+  /**
+   * Can the facilitation engine run a facilitation for this agent right now
+   * (bound, trusted, active, reporting itself available, granted to the
+   * agent)? Absent or `false` = no: a group turn then gets the fixed "not set
+   * up" answer and never reaches the model, which would have no tool to act
+   * with.
+   */
+  readonly isEngineUsable?: (agentSlug: string) => boolean;
   readonly log?: (message: string) => void;
 }
 
@@ -140,7 +184,7 @@ export function conversationIdCandidates(input: ChatTurnInput): readonly string[
   ];
 }
 
-type TurnDisposition = 'model' | 'refuse' | 'engine_driven';
+type TurnDisposition = 'model' | 'refuse' | 'engine_driven' | 'not_set_up';
 
 export function wrapFacilitatorAgent(inner: ChatAgent, deps: FacilitatorAgentDeps): ChatAgent {
   const refusal = (): string => facilitatorRefusalText(deps);
@@ -154,6 +198,13 @@ export function wrapFacilitatorAgent(inner: ChatAgent, deps: FacilitatorAgentDep
       return false;
     }
   };
+  const engineUsable = (): boolean => {
+    try {
+      return deps.agentSlug !== undefined && deps.isEngineUsable?.(deps.agentSlug) === true;
+    } catch {
+      return false;
+    }
+  };
   const dispose = (input: ChatTurnInput): TurnDisposition => {
     if (currentEngineTurn() !== undefined) return 'model';
     if (!isGroupTurn(input)) {
@@ -161,6 +212,12 @@ export function wrapFacilitatorAgent(inner: ChatAgent, deps: FacilitatorAgentDep
         `[facilitator] refused a request for assistance (scope=${input.origin?.scope.kind ?? 'none'})`,
       );
       return 'refuse';
+    }
+    if (!engineUsable()) {
+      deps.log?.(
+        `[facilitator] '${deps.agentSlug ?? '?'}' answered "not set up": no usable facilitation engine`,
+      );
+      return 'not_set_up';
     }
     if (engineDrives(input)) {
       deps.log?.(
@@ -174,7 +231,11 @@ export function wrapFacilitatorAgent(inner: ChatAgent, deps: FacilitatorAgentDep
   // answers the same message through its own outbox. An empty answer is what
   // a channel adapter must not post (it should not have started the turn).
   const textFor = (disposition: Exclude<TurnDisposition, 'model'>): string =>
-    disposition === 'refuse' ? refusal() : '';
+    disposition === 'refuse'
+      ? refusal()
+      : disposition === 'not_set_up'
+        ? facilitationNotSetUpText(deps)
+        : '';
   return {
     async chat(input: ChatTurnInput): Promise<SemanticAnswer> {
       const disposition = dispose(input);

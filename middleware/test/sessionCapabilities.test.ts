@@ -343,8 +343,8 @@ describe('plugin-facing services', () => {
     const s = await setup();
     await s.messages.hub.subscribe(scopeOf('mara'), ENGINE);
     s.readiness.register('c', { channelType: 'teams', check: () => Promise.resolve(READY) });
-    const engine = { callerPluginId: ENGINE, isEngine: () => true };
-    const other = { callerPluginId: '@acme/crm', isEngine: () => false };
+    const engine = { callerPluginId: ENGINE, isEngine: () => true, isBoundFacilitator: (slug: string) => slug === 'mara' };
+    const other = { callerPluginId: '@acme/crm', isEngine: () => false, isBoundFacilitator: () => true };
     assert.deepEqual(await createChannelReadinessService(s.hub, engine).check(request), READY);
     const refused = await createChannelReadinessService(s.hub, other).check(request);
     assert.equal(refused.ready, false);
@@ -367,5 +367,63 @@ describe('plugin-facing services', () => {
     assert.deepEqual(got, ['engine:session_started']);
     const baseline = await createSessionCapabilitiesService(s.hub, other).getSnapshot(request);
     assert.deepEqual([baseline.modality, baseline.inputs], ['chat', ['text']]);
+  });
+
+  it('are scoped to a facilitator bound to the calling engine, and decided at delivery', async () => {
+    const s = await setup();
+    await s.messages.hub.subscribe(scopeOf('mara'), ENGINE);
+    const asked: string[] = [];
+    s.readiness.register('c', {
+      channelType: 'teams',
+      check: (_conversation, opts) => {
+        asked.push(`check:${opts.asChannelKey}`);
+        return Promise.resolve(READY);
+      },
+      repairConsent: (_conversation, opts) => {
+        asked.push(`repair:${opts.asChannelKey}`);
+        return Promise.resolve({ outcome: 'not_needed' });
+      },
+    });
+    s.meetingSources.register('c', {
+      channelType: 'teams',
+      snapshot: () => {
+        asked.push('snapshot');
+        return Promise.resolve(undefined);
+      },
+    });
+    let bound = new Set(['mara']);
+    const engine = { callerPluginId: ENGINE, isEngine: () => true, isBoundFacilitator: (slug: string) => bound.has(slug) };
+    const readiness = createChannelReadinessService(s.hub, engine);
+    const capabilities = createSessionCapabilitiesService(s.hub, engine);
+
+    // `nora` has an identity, but is not a facilitator this engine runs (a
+    // standard agent's bot, or another engine's facilitator).
+    const foreign = { ...request, agentSlug: 'nora' };
+    const check = await readiness.check(foreign);
+    assert.deepEqual([check.ready, check.missing[0]!.message], [false, 'the agent is not a facilitator bound to the calling engine']);
+    const repair = await readiness.repairConsent!(foreign);
+    assert.deepEqual([repair.outcome, repair.outcome === 'failed' && repair.code], ['failed', 'unsupported']);
+    assert.equal((await capabilities.getSnapshot(foreign)).modality, 'chat');
+    assert.deepEqual(asked, [], 'the channel was not asked about a foreign bot');
+
+    assert.equal((await readiness.check(request)).ready, true);
+    assert.equal((await readiness.repairConsent!(request)).outcome, 'not_needed');
+    await capabilities.getSnapshot(request);
+    assert.deepEqual(asked, [`check:${MARA_KEY}`, `repair:${MARA_KEY}`, 'snapshot']);
+
+    // Pushes: registered while bound, stopped the moment the binding ends.
+    const got: string[] = [];
+    capabilities.onSessionEvent!('mara', (e) => void got.push(e.occurredAt));
+    const emit = (occurredAt: string): void =>
+      s.hub.emitSessionEvent({ channelId: 'c', channelType: 'teams', conversationId: CONVERSATION, sessionRef: 'm', kind: 'session_started', occurredAt });
+    emit('2026-11-18T10:00:00Z');
+    await flush();
+    bound = new Set();
+    emit('2026-11-18T10:01:00Z');
+    await flush();
+    bound = new Set(['mara']);
+    emit('2026-11-18T10:02:00Z');
+    await flush();
+    assert.deepEqual(got, ['2026-11-18T10:00:00.000Z', '2026-11-18T10:02:00.000Z']);
   });
 });

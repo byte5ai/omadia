@@ -11,6 +11,15 @@
  * anywhere in the kernel. More than one provider is not "pick the first": a
  * facilitator with two engines would have two sources of truth about a vote,
  * so every grant is refused until the operator removes one.
+ *
+ * DECLARING IS NOT ENOUGH. A manifest line costs a plugin nothing, and being
+ * the engine means reading every message of a moderated conversation and
+ * speaking as the facilitator. So a plugin that declares the capability is a
+ * CANDIDATE; it becomes the engine (`bound`) only once the operator has
+ * granted it its database ledger — the same explicit, audited step the engine
+ * cannot work without anyway. Until then the state is `ungranted`: nothing is
+ * attached, nothing is answered, and the status endpoint says which plugin is
+ * waiting for the grant.
  */
 
 import type { Response } from 'express';
@@ -30,6 +39,12 @@ import type { FacilitatorContractError } from '../services/facilitatorContract.j
 export interface FacilitationEngineSources {
   readonly installedRegistry: Pick<InstalledRegistry, 'list'> | undefined;
   readonly catalog: Pick<PluginCatalog, 'get'> | undefined;
+  /**
+   * Has the operator granted this plugin its SQL ledger? The trust step.
+   * Absent = no grant store on this host (minimal mounts, unit tests): the
+   * declaration alone decides. The kernel always passes it.
+   */
+  readonly isSqlGranted?: (pluginId: string) => boolean;
 }
 
 /** Installed, non-errored plugins whose manifest provides the engine capability. */
@@ -48,6 +63,8 @@ export function facilitationEnginePluginIds(sources: FacilitationEngineSources):
 
 export type FacilitationEngineResolution =
   | { readonly state: 'bound'; readonly pluginId: string }
+  /** One plugin declares the capability; the operator has not granted it SQL. */
+  | { readonly state: 'ungranted'; readonly pluginId: string }
   | { readonly state: 'none' }
   | { readonly state: 'ambiguous'; readonly pluginIds: readonly string[] };
 
@@ -57,7 +74,55 @@ export function resolveFacilitationEngine(
   const ids = facilitationEnginePluginIds(sources);
   if (ids.length === 0) return { state: 'none' };
   if (ids.length > 1) return { state: 'ambiguous', pluginIds: ids };
-  return { state: 'bound', pluginId: ids[0]! };
+  const pluginId = ids[0]!;
+  if (sources.isSqlGranted && !sources.isSqlGranted(pluginId)) {
+    return { state: 'ungranted', pluginId };
+  }
+  return { state: 'bound', pluginId };
+}
+
+/**
+ * A synchronous view of "which plugins hold a SQL grant", for the callers
+ * that resolve the engine on a hot path. Refreshed explicitly where a change
+ * must take effect at once (install, activation, boot) and by itself when a
+ * read finds it older than `maxAgeMs`, so a grant given or revoked in the
+ * operator UI is noticed without a restart. Unknown = not granted.
+ */
+export function createSqlGrantView(deps: {
+  listGranted: () => Promise<readonly string[]>;
+  maxAgeMs?: number;
+  now?: () => number;
+  log?: (message: string) => void;
+}): { isGranted(pluginId: string): boolean; refresh(): Promise<void> } {
+  const now = deps.now ?? Date.now;
+  const maxAgeMs = deps.maxAgeMs ?? 30_000;
+  let granted: ReadonlySet<string> = new Set();
+  let loadedAt = Number.NEGATIVE_INFINITY;
+  let inFlight: Promise<void> | undefined;
+  const refresh = (): Promise<void> => {
+    inFlight ??= deps
+      .listGranted()
+      .then((ids) => {
+        granted = new Set(ids);
+        loadedAt = now();
+      })
+      .catch((err: unknown) => {
+        deps.log?.(
+          `[facilitator] SQL grant lookup failed, keeping the last known state: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      })
+      .finally(() => {
+        inFlight = undefined;
+      });
+    return inFlight;
+  };
+  return {
+    isGranted(pluginId: string): boolean {
+      if (now() - loadedAt > maxAgeMs) void refresh();
+      return granted.has(pluginId);
+    },
+    refresh,
+  };
 }
 
 /** The grants a facilitator may hold: the engine's, or nothing. */
@@ -77,7 +142,9 @@ export class FacilitatorGrantRefusedError extends FacilitatorOmissionError {
     const detail =
       engine.state === 'bound'
         ? `only '${engine.pluginId}' (the facilitation engine) can be granted`
-        : engine.state === 'none'
+        : engine.state === 'ungranted'
+          ? `'${engine.pluginId}' declares the facilitation engine but has no database grant yet; grant it on the plugin page first`
+          : engine.state === 'none'
           ? 'no facilitation engine plugin is installed, so nothing can be granted yet'
           : `more than one facilitation engine is installed (${engine.pluginIds.join(', ')}); remove all but one`;
     this.message = `${this.message}. Refused: ${refusedPluginIds.join(', ')} — ${detail}`;

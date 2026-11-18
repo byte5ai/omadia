@@ -39,6 +39,7 @@ import {
   assertEngineOnlyForFacilitators,
   assertFacilitatorPluginGrants,
   respondFacilitatorRefusal,
+  type FacilitationEngineSources,
 } from '../platform/facilitatorGuard.js';
 import { attachEngineToFacilitator } from '../platform/facilitatorEngineAttach.js';
 import { assertFacilitatorIdentity } from '../services/facilitatorContract.js';
@@ -178,6 +179,9 @@ const AgentCreateSchema = z.object({
   // #2060 — only on create: the kind is fixed for the agent's lifetime.
   kind: z.enum(AGENT_KINDS).optional(),
 });
+
+/** Slugs that collide with a static segment of this router. */
+const RESERVED_AGENT_SLUGS: ReadonlySet<string> = new Set(['facilitation-engine']);
 
 const AgentPatchSchema = z.object({
   name: z.string().min(1).max(120).optional(),
@@ -1626,6 +1630,10 @@ export interface OperatorAgentsRouterOptions {
   /** #2043 — the state object the facilitation engine plugin publishes
    *  (`facilitationEngine` service), for `GET /facilitation-engine`. */
   readonly getFacilitationEngineState?: () => unknown;
+  /** #2043 — has the operator granted this plugin its SQL ledger? The trust
+   *  step that turns a plugin declaring the engine capability into the
+   *  engine. Absent (tests, minimal mounts) = the declaration alone decides. */
+  readonly isSqlGranted?: (pluginId: string) => boolean;
   /** W0c (#861) — grant read model for the agent detail page. Late-bound like
    *  the config store; `GET /:slug/grants` 503s when absent (tests / minimal
    *  mounts, or no DATABASE_URL). Read-only: this router never writes through
@@ -1848,13 +1856,11 @@ export function createOperatorAgentsRouter(
   }
 
   /** #2060 — where the facilitation engine plugin is looked up. */
-  function engineSources(): {
-    installedRegistry: InstalledRegistry | undefined;
-    catalog: PluginCatalog | undefined;
-  } {
+  function engineSources(): FacilitationEngineSources {
     return {
       installedRegistry: options.getInstalledRegistry?.(),
       catalog: options.getPluginCatalog?.(),
+      ...(options.isSqlGranted ? { isSqlGranted: options.isSqlGranted } : {}),
     };
   }
 
@@ -2010,6 +2016,11 @@ export function createOperatorAgentsRouter(
     if (!live) return unavailable(res);
     try {
       const body = AgentCreateSchema.parse(req.body);
+      // A slug that is also a static route of this router could never be
+      // addressed: `/facilitation-engine/...` answers the engine status.
+      if (RESERVED_AGENT_SLUGS.has(body.slug)) {
+        throw new ConfigValidationError(`agent slug "${body.slug}" is reserved`);
+      }
       const created = await live.store.createAgent({
         slug: body.slug,
         name: body.name,
