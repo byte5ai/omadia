@@ -77,6 +77,12 @@ export interface GrantRouteDeps {
    *  reads the resulting state from — this route never infers success from the
    *  absence of a throw. */
   reactivate?: (agentId: string) => Promise<unknown>;
+  /** #2043 — runs after a consent change was written and the plugin was
+   *  re-activated, for kernel state that is DERIVED from grants (which plugin
+   *  is the facilitation engine). Without it that state waited for a cache to
+   *  age out, so the operator granted SQL and was still told "not granted".
+   *  Must not throw; a throw is logged and never fails the consent. */
+  onGrantsChanged?: (agentId: string) => Promise<void>;
   /** #1347 — every consent change writes one `plugin.grants_change` row with
    *  the granted set before and after, so the record of who opened an
    *  unauthenticated path survives the revoke that DELETEs its grant row. */
@@ -633,6 +639,17 @@ async function commitGrantsExclusively(
     } catch (err) {
       console.error(
         `[grants] re-activation after a consent change failed for '${id}':`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  if (deps.onGrantsChanged) {
+    try {
+      await deps.onGrantsChanged(id);
+    } catch (err) {
+      console.error(
+        `[grants] follow-up after a consent change failed for '${id}':`,
         err instanceof Error ? err.message : err,
       );
     }

@@ -5902,6 +5902,8 @@ async function main(): Promise<void> {
       vault: secretVault,
       catalog: pluginCatalog,
       reactivate: reactivateAgent,
+      // #2043 — a SQL grant is what makes a declared engine THE engine.
+      onGrantsChanged: () => attachFacilitationEngine(),
       restartPending: (agentId) => installService.restartPending(agentId),
       dynamicAgentRuntime,
       // #1453 — the operator-facing half of the credential check: `GET

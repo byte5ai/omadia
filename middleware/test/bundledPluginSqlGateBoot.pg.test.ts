@@ -290,6 +290,7 @@ describe('#794 — real boot: memory-postgres activates against a real pool', ()
           return () => undefined;
         },
         registerHandler: () => () => undefined,
+        unregisterBySource: (): string[] => [],
       },
       pluginRouteRegistry: newTestRouteRegistry(),
       uiRouteCatalog: new UiRouteCatalog(),
@@ -378,6 +379,7 @@ describe('#794 — real boot: memory-postgres activates against a real pool', ()
       nativeToolRegistry: {
         register: () => () => undefined,
         registerHandler: () => () => undefined,
+        unregisterBySource: (): string[] => [],
       },
       pluginRouteRegistry: newTestRouteRegistry(),
       uiRouteCatalog: new UiRouteCatalog(),

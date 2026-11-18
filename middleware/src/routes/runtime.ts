@@ -92,6 +92,8 @@ interface RuntimeDeps {
    *  current runtime instance and re-activates it so the plugin reads
    *  the fresh values — most plugins cache config at activate-time. */
   reactivate?: (agentId: string) => Promise<void>;
+  /** #2043 — see `GrantRouteDeps.onGrantsChanged`. */
+  onGrantsChanged?: (agentId: string) => Promise<void>;
   /** #1860 — did the last reactivation of `agentId` wait for a restart? */
   restartPending?: (agentId: string) => boolean;
   /** Live-plugin tool invoker for dynamic setup-field options (post-install).

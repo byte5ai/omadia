@@ -272,6 +272,15 @@ export class PluginRouteRegistry {
     source: string,
     options?: PluginRouteOptions,
   ): () => void {
+    // A plain request handler `(req, res[, next])` is accepted and wrapped:
+    // a plugin package ships unbundled and need not import Express to serve a
+    // handful of routes. Everything else about the mount (auth gate, prefix
+    // ownership, disposal) is the same.
+    if (isPlainRequestHandler(router)) {
+      const wrapped = createRouter();
+      wrapped.use(router);
+      router = wrapped;
+    }
     if (!isExpressRouter(router)) {
       throw new Error(
         `PluginRouteRegistry: '${source}' registered a non-Express router at '${prefix}' — got ${typeof router}`,
@@ -600,6 +609,16 @@ function isUnderPrefix(child: string, parent: string): boolean {
 /** Path segments that carry a name — `/` is 0, `/api` is 1, `/api/x` is 2. */
 function countNonEmptySegments(path: string): number {
   return path.split('/').filter((segment) => segment.length > 0).length;
+}
+
+/** A function that is not a router and takes at most (req, res, next). Four
+ *  parameters would be an Express error handler, which is not a route. */
+function isPlainRequestHandler(value: unknown): value is RequestHandler {
+  return (
+    typeof value === 'function' &&
+    typeof (value as { use?: unknown }).use !== 'function' &&
+    value.length <= 3
+  );
 }
 
 function isExpressRouter(value: unknown): value is Router {

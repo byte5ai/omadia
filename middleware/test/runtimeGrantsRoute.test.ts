@@ -187,6 +187,8 @@ async function makeHarness(
     /** #1347 — collects `plugin.grants_change` rows when given. */
     auditRows?: AuditEntryInput[];
     logLines?: string[];
+    /** #2043 — the kernel follow-up for state derived from grants. */
+    onGrantsChanged?: (agentId: string) => Promise<void>;
   } = {},
 ): Promise<Harness> {
   const declareSql = opts.declareSql ?? true;
@@ -294,6 +296,7 @@ async function makeHarness(
           }
         : {}),
       ...(opts.logLines ? { log: (m: string) => opts.logLines?.push(m) } : {}),
+      ...(opts.onGrantsChanged ? { onGrantsChanged: opts.onGrantsChanged } : {}),
     }),
   );
 
@@ -458,6 +461,31 @@ void describe('#470 C16 — the grant takes effect in-process', () => {
         'the stale failure must be cleared, or the panel keeps showing a fixed problem',
       );
       assert.equal(h.registry.get(PLUGIN)?.status, 'active');
+    } finally {
+      await h.close();
+    }
+  });
+
+  void it('#2043 — tells the kernel after the re-activation, and a failing follow-up does not fail the consent', async () => {
+    // What is derived from a grant (which plugin is the facilitation engine)
+    // must be current when the answer goes out: the operator granted SQL and
+    // the engine status still said `ungranted` until a cache aged out.
+    const seen: string[] = [];
+    const h = await makeHarness({
+      declarePaths: [],
+      onGrantsChanged: (agentId) => {
+        seen.push(`${agentId}:${h.registry.get(agentId)?.status ?? '?'}:${String(h.activations)}`);
+        return Promise.reject(new Error('follow-up broke'));
+      },
+    });
+    try {
+      const before = h.activations ?? 0;
+      const res = await putGrants(h, { sql: true });
+      assert.equal(res.status, 200, 'the grant was written; the follow-up is not the consent');
+      assert.deepEqual(seen, [`${PLUGIN}:active:${String(before + 1)}`], 'once, after the re-activation');
+      const revoke = await putGrants(h, { sql: false });
+      assert.equal(revoke.status, 200);
+      assert.equal(seen.length, 2, 'a revoke changes the derived state too');
     } finally {
       await h.close();
     }
