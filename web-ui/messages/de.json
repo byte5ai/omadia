@@ -2589,6 +2589,10 @@
         "notes": {
           "label": "Eigene Notizen",
           "hint": "Freitext, der wörtlich in den Charakter-Block wandert — für alles, wofür kein Regler existiert."
+        },
+        "bounds": {
+          "note": "Der Charakter eines Facilitators bleibt innerhalb der Grenzen des Neutralitätsvertrags. Regler, Archetypen und Branchen-Presets enden an diesen Grenzen.",
+          "axisRange": "Für einen Facilitator erlaubt: {min} bis {max}"
         }
       },
       "boundaries": {
@@ -2612,7 +2616,13 @@
           "low": "Leicht",
           "medium": "Mittel",
           "high": "Stark"
-        }
+        },
+        "sycophancyFacilitatorHint": "Für einen Facilitator ist die Bremse immer aktiv: Ein Moderator, der einer Stimme schmeichelt, ist parteiisch."
+      },
+      "facilitator": {
+        "issueOnTab": "{tab}: {issue}",
+        "instructionsHint": "Eröffnungsabschnitt des Facilitator-Prompts. Wird beim Speichern gegen den Neutralitätsvertrag geprüft: Text, der Parteinahme, eine Meinung, eine Stimmabgabe oder einen verdeckten Kanal verlangt, wird abgelehnt.",
+        "promptNote": "Der Neutralitätsvertrag wird nach diesen Abschnitten einkompiliert und lässt sich von hier aus weder entfernen noch überschreiben."
       }
     },
     "teamsIdentity": {
@@ -2906,7 +2916,84 @@
       "teams": "Teams",
       "plugins": "Plugins",
       "tools": "Werkzeuge",
-      "memory": "Memory"
+      "memory": "Memory",
+      "engine": "Facilitation"
+    },
+    "facilitator": {
+      "heading": "Facilitatoren",
+      "intro": "Ein Facilitator moderiert ausschließlich: Entscheidungen, Abstimmungen, Priorisierungen, Retrospektiven. Er arbeitet für keine einzelne Person, hat keine inhaltliche Meinung und tritt in Teams unter eigenem Namen auf.",
+      "empty": "Noch keine Facilitatoren. Oben lässt sich einer anlegen.",
+      "createHeading": "Facilitator anlegen",
+      "createHint": "Die Art steht nach dem Anlegen fest. Avatar, Persönlichkeit und Teams-Identität werden auf der Seite des Facilitators eingestellt, die sich danach öffnet.",
+      "createSubmit": "Facilitator anlegen",
+      "cardSummary": "Status: {status} · Laufzeit: {runtime}",
+      "deleteConfirm": "Facilitator „{slug}\" wirklich löschen?",
+      "omittedNote": "Keine Plugins, Tools, MCP-Server, kein Gedächtnis, keine Sub-Agenten, Persona-Skills, Zeitpläne oder Gespräche mit anderen Agenten, und nie der Standard-Orchestrator: Zugriff auf Unternehmensdaten oder auf die Interessen einer Person würde einen Moderator parteiisch machen.",
+      "contractRejected": "Nicht gespeichert: {count, plural, one {eine Einstellung widerspricht} other {# Einstellungen widersprechen}} dem Neutralitätsvertrag eines Facilitators.",
+      "omissionWithPlugins": "{reason} Abgelehnt: {plugins}.",
+      "omissions": {
+        "plugin_grant": "Ein Facilitator erhält nur die Tools der Facilitation-Engine. Fachliche Plugins würden ihn parteiisch machen.",
+        "tool_grant": "Ein Facilitator erhält nur die Tools der Facilitation-Engine. Weitere Tool-Freigaben würden ihn parteiisch machen.",
+        "memory": "Ein Facilitator hat kein allgemeines Gedächtnis. Er kennt nur das Protokoll der jeweiligen Facilitation.",
+        "default_agent": "Ein Facilitator kann nicht der Standard-Orchestrator sein. Er antwortet nie für oder als jemand.",
+        "persona_skill": "Ein Facilitator hat keine Persona-Skills. Er antwortet nie als jemand anderes.",
+        "fast_path": "Ein Facilitator nutzt den Fast Path nicht.",
+        "agent_to_agent": "Ein Facilitator spricht nicht mit anderen Agenten und wird von ihnen nicht angesprochen.",
+        "consultation": "Ein Facilitator konsultiert keine anderen Agenten und wird von ihnen nicht konsultiert.",
+        "sub_agent": "Ein Facilitator hat keine Sub-Agenten und lässt sich an keinen anderen Agenten anhängen.",
+        "assistance": "Ein Facilitator ist kein Assistent. Er moderiert ausschließlich.",
+        "unknown": "Das steht für einen Facilitator nicht zur Verfügung."
+      },
+      "issues": {
+        "persona_axis_above_bound": "{axis}: für einen Facilitator höchstens {bound}.",
+        "persona_axis_below_bound": "{axis}: für einen Facilitator mindestens {bound}.",
+        "sycophancy_guard_off": "Die Schmeichel-Bremse lässt sich für einen Facilitator nicht abschalten.",
+        "partiality": "Verlangt vom Facilitator, jemanden zu bevorzugen oder zu benachteiligen.",
+        "takes_sides": "Verlangt vom Facilitator, Partei zu ergreifen.",
+        "votes_or_decides": "Verlangt vom Facilitator, selbst abzustimmen, zu entscheiden oder ein Patt aufzulösen.",
+        "gives_opinion": "Verlangt vom Facilitator eine eigene inhaltliche Meinung.",
+        "hidden_channel": "Verlangt vom Facilitator, der Gruppe etwas vorzuenthalten.",
+        "lifts_contract": "Versucht, den Neutralitätsvertrag aufzuheben oder zu überschreiben.",
+        "ignores_stop": "Verlangt vom Facilitator, nach einem Stopp der Gruppe weiterzumachen.",
+        "acts_as_assistant": "Macht den Facilitator zum Assistenten einer Person.",
+        "withExcerpt": "{reason} Textstelle: „{excerpt}“",
+        "unknown": "Widerspricht dem Neutralitätsvertrag: {detail}"
+      },
+      "readiness": {
+        "checking": "Bereitschaft wird geprüft",
+        "ready": "Bereit",
+        "notReady": "Nicht bereit",
+        "teams": {
+          "missing": "Noch keine eigene Teams-Identität.",
+          "provisioning": "Die Teams-Identität wird noch eingerichtet.",
+          "failed": "Das Einrichten der Teams-Identität ist fehlgeschlagen.",
+          "unknown": "Die Teams-Identität ließ sich nicht prüfen."
+        },
+        "teamsLink": "Teams-Einrichtung öffnen",
+        "engineNotReady": "Auf dieser Instanz läuft keine Facilitation-Engine.",
+        "engineNotGranted": "Die Facilitation-Engine ist diesem Facilitator noch nicht freigegeben.",
+        "engineLink": "Engine freigeben"
+      },
+      "engine": {
+        "heading": "Facilitation-Engine",
+        "hint": "Das Engine-Plugin führt die Facilitations aus. Es ist das einzige Plugin, das ein Facilitator erhalten darf.",
+        "loading": "Facilitation-Engine wird geprüft",
+        "loadFailed": "Die Facilitation-Engine ließ sich nicht prüfen. Der Plugin-Store hat nicht geantwortet.",
+        "none": "Es ist keine Facilitation-Engine installiert. Facilitatoren lassen sich anlegen, können aber erst moderieren, wenn das Engine-Plugin installiert ist.",
+        "ambiguous": "Es sind mehrere Facilitation-Engines installiert ({plugins}). Solange nicht alle bis auf eine entfernt sind, erhält kein Facilitator eine Engine.",
+        "errored": "Die Facilitation-Engine „{plugin}“ ist installiert, aber nicht gestartet.",
+        "sqlGrantMissing": "Die Facilitation-Engine „{plugin}“ hat noch keinen Datenbankzugriff. Ohne diese Freigabe kann sie keine Facilitations speichern.",
+        "openStore": "Plugin-Store öffnen",
+        "openPlugin": "Plugin öffnen",
+        "openGrants": "Datenbankzugriff freigeben",
+        "nothingToGrant": "Es gibt noch keine Engine, die sich freigeben lässt.",
+        "granted": "Diesem Facilitator freigegeben",
+        "grant": "Diesem Facilitator freigeben",
+        "granting": "Wird freigegeben"
+      },
+      "detail": {
+        "kindHeading": "Facilitator"
+      }
     }
   },
   "builder": {

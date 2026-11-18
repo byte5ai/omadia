@@ -2589,6 +2589,10 @@
         "notes": {
           "label": "Own notes",
           "hint": "Free text carried into the character block verbatim — for everything no slider covers."
+        },
+        "bounds": {
+          "note": "A facilitator's character stays inside the bounds of the neutrality contract. Sliders, archetypes and industry presets stop at those bounds.",
+          "axisRange": "Allowed for a facilitator: {min} to {max}"
         }
       },
       "boundaries": {
@@ -2612,7 +2616,13 @@
           "low": "Light",
           "medium": "Medium",
           "high": "Strong"
-        }
+        },
+        "sycophancyFacilitatorHint": "The guard is always on for a facilitator: a moderator who flatters one voice is partial."
+      },
+      "facilitator": {
+        "issueOnTab": "{tab}: {issue}",
+        "instructionsHint": "Opening section of the facilitator's prompt. Checked against the neutrality contract when saved: text that asks for partiality, an opinion, a vote or a hidden channel is refused.",
+        "promptNote": "The neutrality contract is compiled in after these sections and cannot be removed or overridden from here."
       }
     },
     "teamsIdentity": {
@@ -2906,7 +2916,84 @@
       "teams": "Teams",
       "plugins": "Plugins",
       "tools": "Tools",
-      "memory": "Memory"
+      "memory": "Memory",
+      "engine": "Facilitation"
+    },
+    "facilitator": {
+      "heading": "Facilitators",
+      "intro": "A facilitator only moderates: decisions, votes, prioritisations, retrospectives. It works for no single person, holds no opinion on the content and speaks in Teams under its own name.",
+      "empty": "No facilitators yet. Create one above.",
+      "createHeading": "Create facilitator",
+      "createHint": "The kind is fixed once created. Avatar, personality and the Teams identity are set on the facilitator's page, which opens next.",
+      "createSubmit": "Create facilitator",
+      "cardSummary": "status: {status} · runtime: {runtime}",
+      "deleteConfirm": "Delete facilitator \"{slug}\"?",
+      "omittedNote": "No plugins, tools, MCP servers, memory, sub-agents, persona skills, schedules or conversations with other agents, and never the standard orchestrator: access to company data or to one person's interests would make a moderator partial.",
+      "contractRejected": "Not saved: {count, plural, one {one setting conflicts} other {# settings conflict}} with the neutrality contract of a facilitator.",
+      "omissionWithPlugins": "{reason} Refused: {plugins}.",
+      "omissions": {
+        "plugin_grant": "A facilitator only gets the tools of the facilitation engine. Business plugins would make it partial.",
+        "tool_grant": "A facilitator only gets the tools of the facilitation engine. Other tool grants would make it partial.",
+        "memory": "A facilitator has no general memory. Its only memory is the record of each facilitation.",
+        "default_agent": "A facilitator cannot be the standard orchestrator. It never answers for or as someone.",
+        "persona_skill": "A facilitator has no persona skills. It never answers as someone else.",
+        "fast_path": "A facilitator does not use the fast path.",
+        "agent_to_agent": "A facilitator neither talks to other agents nor is addressed by them.",
+        "consultation": "A facilitator neither consults other agents nor is consulted by them.",
+        "sub_agent": "A facilitator has no sub-agents and cannot be attached to another agent.",
+        "assistance": "A facilitator is not an assistant. It only moderates.",
+        "unknown": "This is not available for a facilitator."
+      },
+      "issues": {
+        "persona_axis_above_bound": "{axis}: at most {bound} for a facilitator.",
+        "persona_axis_below_bound": "{axis}: at least {bound} for a facilitator.",
+        "sycophancy_guard_off": "The anti-flattery guard cannot be switched off for a facilitator.",
+        "partiality": "Asks the facilitator to favour or disadvantage someone.",
+        "takes_sides": "Asks the facilitator to take sides.",
+        "votes_or_decides": "Asks the facilitator to vote, decide or break ties itself.",
+        "gives_opinion": "Asks the facilitator for its own opinion on the content.",
+        "hidden_channel": "Asks the facilitator to keep something from the group.",
+        "lifts_contract": "Tries to lift or override the neutrality contract.",
+        "ignores_stop": "Asks the facilitator to continue after the group said stop.",
+        "acts_as_assistant": "Makes the facilitator an assistant for one person.",
+        "withExcerpt": "{reason} Passage: “{excerpt}”",
+        "unknown": "Conflicts with the neutrality contract: {detail}"
+      },
+      "readiness": {
+        "checking": "Checking readiness",
+        "ready": "Ready",
+        "notReady": "Not ready",
+        "teams": {
+          "missing": "No Teams identity of its own yet.",
+          "provisioning": "Its Teams identity is still being provisioned.",
+          "failed": "Provisioning its Teams identity failed.",
+          "unknown": "Its Teams identity could not be checked."
+        },
+        "teamsLink": "Open Teams provisioning",
+        "engineNotReady": "No facilitation engine is running on this instance.",
+        "engineNotGranted": "The facilitation engine is not granted to this facilitator yet.",
+        "engineLink": "Grant the engine"
+      },
+      "engine": {
+        "heading": "Facilitation engine",
+        "hint": "The engine plugin runs the facilitations. It is the only plugin a facilitator may hold.",
+        "loading": "Checking the facilitation engine",
+        "loadFailed": "The facilitation engine could not be checked. The plugin store did not answer.",
+        "none": "No facilitation engine is installed. Facilitators can be created, but they cannot run a facilitation until the engine plugin is installed.",
+        "ambiguous": "More than one facilitation engine is installed ({plugins}). Until all but one are removed, no facilitator gets an engine.",
+        "errored": "The facilitation engine “{plugin}” is installed but did not start.",
+        "sqlGrantMissing": "The facilitation engine “{plugin}” has no database access yet. Without that grant it cannot store facilitations.",
+        "openStore": "Open the plugin store",
+        "openPlugin": "Open the plugin",
+        "openGrants": "Grant database access",
+        "nothingToGrant": "There is no engine to grant yet.",
+        "granted": "Granted to this facilitator",
+        "grant": "Grant to this facilitator",
+        "granting": "Granting"
+      },
+      "detail": {
+        "kindHeading": "Facilitator"
+      }
     }
   },
   "builder": {

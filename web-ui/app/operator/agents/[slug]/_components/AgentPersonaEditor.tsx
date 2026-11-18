@@ -29,6 +29,12 @@ import {
   PERSONA_TEMPLATES,
 } from '../../../../_lib/personaTemplates';
 import type { PersonaConflictWarning } from '../../../../_lib/personaConflicts';
+import {
+  clampFacilitatorAxes,
+  clampFacilitatorAxis,
+  facilitatorAxisBound,
+  facilitatorAxisDisplayValue,
+} from '../../../../_lib/facilitators';
 
 /**
  * The character half of an agent's identity (#914 follow-up): the same
@@ -55,10 +61,28 @@ export interface AgentPersonaEditorProps {
    *  detector — rendered per axis, next to the slider that caused them. */
   readonly warnings: readonly PersonaConflictWarning[];
   readonly disabled?: boolean;
+  /**
+   * #2066 — edit a FACILITATOR's character: every axis stays inside the
+   * bounds of the neutrality contract (spec 2043 §2.4). Sliders, archetypes
+   * and culture presets are clamped here, so what the operator sees is what
+   * the kernel will accept; the kernel still validates on save.
+   */
+  readonly facilitatorBounds?: boolean;
+  /** Server findings of the last refused save, already localized, per axis. */
+  readonly axisErrors?: Readonly<Partial<Record<PersonaAxisKey, string>>>;
+  /** Server finding for the free-text notes, already localized. */
+  readonly notesError?: string;
 }
 
-function axisValue(persona: PersonaConfig, axis: PersonaAxisKey): number {
-  return persona.axes?.[axis] ?? PERSONA_AXIS_NEUTRAL;
+function axisValue(
+  persona: PersonaConfig,
+  axis: PersonaAxisKey,
+  bounded: boolean,
+): number {
+  const value = persona.axes?.[axis];
+  return bounded
+    ? facilitatorAxisDisplayValue(axis, value)
+    : (value ?? PERSONA_AXIS_NEUTRAL);
 }
 
 export function AgentPersonaEditor(
@@ -87,11 +111,33 @@ export function AgentPersonaEditor(
     return out;
   }, [props.warnings]);
 
+  const bounded = props.facilitatorBounds === true;
+  /** Presets and archetypes move many axes at once; a facilitator gets the
+   *  same result pulled into its bounds rather than a save that is refused. */
+  const withinBounds = (axes: PersonaConfig['axes']): PersonaConfig['axes'] =>
+    bounded ? clampFacilitatorAxes(axes) : axes;
+
   const setAxis = (axis: PersonaAxisKey, next: number): void => {
     props.onChange({
       ...props.value,
-      axes: { ...(props.value.axes ?? {}), [axis]: next },
+      axes: {
+        ...(props.value.axes ?? {}),
+        [axis]: bounded ? clampFacilitatorAxis(axis, next) : next,
+      },
     });
+  };
+
+  const sliderExtras = (
+    axis: PersonaAxisKey,
+  ): { hint?: string; error?: string } => {
+    const bound = bounded ? facilitatorAxisBound(axis) : null;
+    const error = props.axisErrors?.[axis];
+    return {
+      ...(bound
+        ? { hint: t('bounds.axisRange', { min: bound.min, max: bound.max }) }
+        : {}),
+      ...(error ? { error } : {}),
+    };
   };
 
   const applyTemplate = (templateId: string): void => {
@@ -103,7 +149,7 @@ export function AgentPersonaEditor(
       // The archetype supplies the axes; only sliders the operator moved away
       // from the previous archetype stay on top — the same rule the Builder's
       // template gallery applies.
-      axes: axesForTemplate(props.value, template),
+      axes: withinBounds(axesForTemplate(props.value, template)),
     });
     setGalleryOpen(false);
   };
@@ -123,6 +169,14 @@ export function AgentPersonaEditor(
 
   return (
     <div className="space-y-5" data-testid="agent-persona-editor">
+      {bounded && (
+        <p
+          data-testid="agent-persona-bounds-note"
+          className="rounded border border-[color:var(--border)] bg-[color:var(--bg-soft)]/40 p-3 text-[11px] text-[color:var(--fg-muted)]"
+        >
+          {t('bounds.note')}
+        </p>
+      )}
       {/* ── archetype ─────────────────────────────────────────────── */}
       <div className="rounded border border-[color:var(--border)] bg-[color:var(--bg-soft)]/40 p-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
@@ -214,7 +268,9 @@ export function AgentPersonaEditor(
                 onClick={() =>
                   props.onChange({
                     ...props.value,
-                    axes: applyCulturePreset(props.value.axes, preset.id),
+                    axes: withinBounds(
+                      applyCulturePreset(props.value.axes, preset.id),
+                    ),
                   })
                 }
                 data-testid={`agent-persona-culture-${preset.id}`}
@@ -241,8 +297,9 @@ export function AgentPersonaEditor(
               labelLeft={PERSONA_AXIS_LABELS[axis].left}
               labelRight={PERSONA_AXIS_LABELS[axis].right}
               description={tAxes(`${axis}.description`)}
-              value={axisValue(props.value, axis)}
+              value={axisValue(props.value, axis, bounded)}
               onChange={(next) => setAxis(axis, next)}
+              {...sliderExtras(axis)}
               {...(warningByAxis.get(axis)
                 ? { warning: warningByAxis.get(axis)?.severity }
                 : {})}
@@ -273,8 +330,9 @@ export function AgentPersonaEditor(
                 labelLeft={PERSONA_AXIS_LABELS[axis].left}
                 labelRight={PERSONA_AXIS_LABELS[axis].right}
                 description={tAxes(`${axis}.description`)}
-                value={axisValue(props.value, axis)}
+                value={axisValue(props.value, axis, bounded)}
                 onChange={(next) => setAxis(axis, next)}
+                {...sliderExtras(axis)}
                 {...(warningByAxis.get(axis)
                   ? { warning: warningByAxis.get(axis)?.severity }
                   : {})}
@@ -305,6 +363,15 @@ export function AgentPersonaEditor(
         <p className="mt-1 text-[11px] text-[color:var(--fg-muted)]">
           {t('notes.hint')}
         </p>
+        {props.notesError && (
+          <p
+            role="alert"
+            data-testid="agent-persona-notes-error"
+            className="mt-1 text-[11px] text-[color:var(--danger)]"
+          >
+            {props.notesError}
+          </p>
+        )}
       </div>
     </div>
   );

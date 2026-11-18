@@ -24,6 +24,7 @@ import {
   setFallbackAgent,
   triggerAgentReload,
   FALLBACK_AGENT_SLUG,
+  isFacilitatorAgent,
   isModelRef,
   type OperatorAgentDto,
   type OperatorAgentsListDto,
@@ -31,7 +32,9 @@ import {
   type ResolveChannelResponse,
 } from '../../../_lib/agents';
 
+import { FacilitatorsSection } from './FacilitatorsSection';
 import { PluginsDnd } from './PluginsDnd';
+import { useFacilitatorRefusalMessage } from './useFacilitatorCopy';
 
 interface AgentsDashboardProps {
   initial: OperatorAgentsListDto;
@@ -79,6 +82,20 @@ export function AgentsDashboard({
     };
   }, []);
 
+  const refusalMessage = useFacilitatorRefusalMessage();
+
+  // #2066 — two kinds, two lists. A facilitator is never routed to, never the
+  // standard orchestrator and never gets plugins, so it does not appear in
+  // the orchestrator list, its count or the fallback picker.
+  const standardAgents = useMemo(
+    () => initial.agents.filter((a) => !isFacilitatorAgent(a)),
+    [initial.agents],
+  );
+  const facilitators = useMemo(
+    () => initial.agents.filter((a) => isFacilitatorAgent(a)),
+    [initial.agents],
+  );
+
   const fallbackSlug =
     initial.agents.find((a) => a.id === initial.fallback_agent_id)?.slug ??
     null;
@@ -103,7 +120,9 @@ export function AgentsDashboard({
         startTransition(() => router.refresh());
       })
       .catch((err: unknown) => {
-        setError(humanizeApiError(err));
+        // A facilitator refusal has its own sentence in the catalogue; the
+        // generic path would print the machine code and the server's English.
+        setError(refusalMessage(err) ?? humanizeApiError(err));
       })
       .finally(() => setBusy(null));
   }
@@ -156,7 +175,7 @@ export function AgentsDashboard({
           </div>
         </div>
         <FallbackPicker
-          agents={initial.agents}
+          agents={standardAgents}
           currentSlug={fallbackSlug}
           disabled={pending || !!busy}
           onChange={(slug) => run('fallback', () => setFallbackAgent(slug))}
@@ -177,13 +196,13 @@ export function AgentsDashboard({
         <h2 className="text-lg font-medium">
           {t('agentsHeading')}{' '}
           <span className="text-sm font-normal text-[color:var(--fg-muted)]">
-            ({initial.agents.length})
+            ({standardAgents.length})
           </span>
         </h2>
-        {initial.agents.length === 0 ? (
+        {standardAgents.length === 0 ? (
           <p className="text-sm text-[color:var(--fg-muted)]">{t('agentsEmpty')}</p>
         ) : (
-          initial.agents.map((agent) => (
+          standardAgents.map((agent) => (
             <AgentCard
               key={agent.id}
               agent={agent}
@@ -226,6 +245,32 @@ export function AgentsDashboard({
           ))
         )}
       </section>
+
+      <FacilitatorsSection
+        facilitators={facilitators}
+        disabled={pending || !!busy}
+        onCreate={(input) =>
+          run('create-facilitator', async () => {
+            const created = await createOperatorAgent({
+              ...input,
+              kind: 'facilitator',
+            });
+            // Avatar, personality and the Teams identity are set on the
+            // facilitator's own page — that is the rest of "create".
+            router.push(`/operator/agents/${encodeURIComponent(created.slug)}`);
+          })
+        }
+        onToggleStatus={(agent) =>
+          run(`patch:${agent.slug}`, () =>
+            patchOperatorAgent(agent.slug, {
+              status: agent.status === 'enabled' ? 'disabled' : 'enabled',
+            }),
+          )
+        }
+        onDelete={(agent) =>
+          run(`delete:${agent.slug}`, () => deleteOperatorAgent(agent.slug))
+        }
+      />
     </div>
   );
 }
