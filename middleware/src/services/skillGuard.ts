@@ -36,11 +36,37 @@ interface Pattern {
   readonly re: RegExp;
 }
 
+/**
+ * `[\s\S]{0,max}?token`, committed to the nearest `token` (lookahead plus
+ * backreference emulates an atomic group). Chaining plain bounded gaps
+ * backtracks through every combination of token occurrences in each window,
+ * which on an MCP tool description stuffed with the trigger words costs
+ * seconds per 256 KB; committing keeps each start position to one pass per gap.
+ */
+function atomicGap(name: string, max: number, token: string): string {
+  return String.raw`(?=(?<${name}>[\s\S]{0,${String(max)}}?${token}))\k<${name}>`;
+}
+
 const CREDENTIAL_HARVEST_RE = new RegExp(
   [
     String.raw`\b(collect|gather|harvest|extract|copy|capture|sammle|extrahiere|kopiere|erfasse)\b[^.\n]{0,40}\b(api[ _-]?keys?|secrets?|tokens?|passwords?|credentials?|passwörter|passwort|geheimnisse?|zugangsdaten)\b`,
     String.raw`\b(api[ _-]?keys?|secrets?|tokens?|passwords?|credentials?|passwörter|passwort|geheimnisse?|zugangsdaten)\b[^.\n]{0,32}\b(collect|gather|harvest|extract|copy|capture|sammle|extrahiere|kopiere|erfasse)\b`,
-    String.raw`(?<![\p{L}\p{N}_])(?:read|open|access|load|cat|copy|inspect|retrieve|lies|lese|lesen|öffne|öffnen|auslesen|abrufen|lade|kopiere)(?![\p{L}\p{N}_])[\s\S]{0,96}(?:(?:\.cursor[\\/]+)?mcp\.json|\.ssh(?:[\\/](?:id_[\w.-]+|config|known_hosts))?|\.aws[\\/]credentials|(?<![\w.-])\.env(?:\.[\w-]+)?(?![\w-]))[\s\S]{0,96}(?<![\p{L}\p{N}_])(?:pass|provide|supply|send|forward|include|share|weitergeben|gib|reiche|übermittle|leite)(?![\p{L}\p{N}_])[\s\S]{0,48}\b(?:content|contents|data|inhalt|daten)\b[\s\S]{0,32}\b(?:as|into|to|in|als)\b[\s\S]{0,24}\b(?:arguments?|parameters?|note|sidenote)\b`,
+    // Local-file forwarding: verb, sensitive path, forward verb, content noun,
+    // preposition, argument noun — each within a bounded distance of the last.
+    String.raw`(?<![\p{L}\p{N}_])(?:read|open|access|load|cat|copy|inspect|retrieve|lies|lese|lesen|öffne|öffnen|auslesen|abrufen|lade|kopiere)(?![\p{L}\p{N}_])` +
+      atomicGap(
+        'cfPath',
+        96,
+        String.raw`(?:(?:\.cursor[\\/]+)?mcp\.json|\.ssh(?:[\\/](?:id_[\w.-]+|config|known_hosts))?|\.aws[\\/]credentials|(?<![\w.-])\.env(?:\.[\w-]+)?(?![\w-]))`,
+      ) +
+      atomicGap(
+        'cfVerb',
+        96,
+        String.raw`(?<![\p{L}\p{N}_])(?:pass|provide|supply|send|forward|include|share|weitergeben|gib|reiche|übermittle|leite)(?![\p{L}\p{N}_])`,
+      ) +
+      atomicGap('cfNoun', 48, String.raw`\b(?:content|contents|data|inhalt|daten)\b`) +
+      atomicGap('cfPrep', 32, String.raw`\b(?:as|into|to|in|als)\b`) +
+      atomicGap('cfArg', 24, String.raw`\b(?:arguments?|parameters?|note|sidenote)\b`),
   ].join('|'),
   'iu',
 );
@@ -61,8 +87,11 @@ const SILENT_PERMISSION_ESCALATION_RE = new RegExp(
   'iu',
 );
 
+// The pseudo-tag body is bounded: an unbounded `[^>]*` rescans to the end of
+// the text from every unclosed `<system ` and goes quadratic on attacker-
+// controlled MCP tool text (up to 256 KB, scanned synchronously).
 const HIDDEN_CONTENT_RE = new RegExp(
-  String.raw`<!--|<\/?\s*(?:important|system|developer)\b[^>]*>|[\u200B-\u200D\uFEFF\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069\u{E0000}-\u{E007F}]|[A-Za-z0-9+/]{200,}={0,2}`,
+  String.raw`<!--|<\/?\s*(?:important|system|developer)\b[^>]{0,200}>|[\u200B-\u200D\uFEFF\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069\u{E0000}-\u{E007F}]|[A-Za-z0-9+/]{200,}={0,2}`,
   'iu',
 );
 

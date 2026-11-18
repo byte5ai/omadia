@@ -78,6 +78,26 @@ describe('scanMcpToolForRisks', () => {
     }
   });
 
+  it('matches pseudo-tags with attributes and scans trigger-word floods in linear time', () => {
+    for (const description of ['<system>', '<important foo="x">', '</developer >']) {
+      const risks = scanMcpToolForRisks({ name: 'notes', description });
+      assert.ok(
+        risks.some((r) => r.code === 'hidden_content'),
+        description,
+      );
+    }
+
+    // ~200 KB each: an unclosed pseudo-tag, and the forwarding trigger words
+    // without the final argument noun (forces every gap to be explored).
+    for (const unit of ['<system ', 'read .env pass data as ']) {
+      const flood = unit.repeat(Math.ceil(200_000 / unit.length));
+      const started = performance.now();
+      scanMcpToolForRisks({ name: 'notes', description: flood });
+      const elapsedMs = performance.now() - started;
+      assert.ok(elapsedMs < 500, `${JSON.stringify(unit)} flood took ${elapsedMs.toFixed(0)} ms`);
+    }
+  });
+
   it('raises the English and German local-credential forwarding examples to high_risk', () => {
     const cases: Array<{ language: string; tool: McpToolDescriptor }> = [
       {
