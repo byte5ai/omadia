@@ -43,7 +43,7 @@ cannot safely own.
 
   | Scope | Until | Allowed targets |
   |---|---|---|
-  | `active` | the facilitation's deadline | home conversation, live linked session conversations, private reminders to participants |
+  | `active` | the facilitation's deadline | home conversation, linked session conversations in `scheduled`, `live` or `confirming`, private reminders to participants |
   | `closing` | all essential messages (result, abort report, session or final protocol) confirmed, at most 7 days after `closed` or `aborted` | home conversation, the session conversations of this facilitation, the protocol recipients of §5.8 |
   | `scheduling` | the agreed follow-up meeting's invitations are sent or its date passed | the invitees confirmed by group consent |
   | `follow_up` | the follow-up deadline | the home conversation and the owners of open action items |
@@ -155,7 +155,7 @@ To do this it has:
 |---|---|
 | Business capabilities: plugin, MCP and native tool grants to company data (ERP, CRM, knowledge graph, mail, files). | Information power makes a moderator partial. Only facilitation tools, the roster and the narrow facilitation-scoped capabilities of §5.11 are available. |
 | Acting for a user: delegated per-user tokens, "on behalf of" actions. | It serves no one. |
-| General memory: cross-session recall, automatic capture, learning jobs, the agent memory tree. | A moderator who remembers who argued what last time is not neutral. Its only memory is the state and protocol of each facilitation, bound to that facilitation. |
+| General memory: recall across facilitations, automatic capture, learning jobs, the agent memory tree (the state and protocol of the same facilitation, including its earlier sessions, stay available). | A moderator who remembers who argued what last time is not neutral. Its only memory is the state and protocol of each facilitation, bound to that facilitation. |
 | Assistance outside a facilitation (questions, tasks, 1:1 help). | It is not an assistant. Such requests get a friendly refusal that names what it does. Preparation, facilitation and follow-up messages of its own facilitations are not assistance. |
 | Consulting other agents, and being consulted or attached by them (AVE §5.4). | A partial agent behind the facilitator would make it partial; a facilitator inside a partial agent would not be accepted. |
 | Being the default agent, identity switching, the fast lane. | Each would let it answer for someone or as someone else. Working modes that add moderation methods (AVE §5.2) are allowed; they never change who speaks. |
@@ -255,7 +255,7 @@ States exist on three levels, each with its own rules:
 | Level | States | Ends when |
 |---|---|---|
 | **Step** (agenda item) | `open` → `closed` (or `extended`) | Its own evaluation (§5.5) or the group closes it; a closed step accepts no further contributions. |
-| **Session** (async phase or live meeting) | `scheduled` → `live` → (`confirming`) → `closed` | Its time slot ends or the group closes it; the session summary is posted. Only where the method or the definition of done requires confirmation, the session stays `confirming` for the consent window (§5.7), in which its conversation accepts consent answers and nothing else. |
+| **Session** (async phase or live meeting) | `scheduled` → `live` → (`confirming`) → `closed` | Its time slot ends or the group closes it; the session summary is posted. Only where the method or the definition of done requires confirmation, the session stays `confirming` for the consent window (§5.7), in which its conversation accepts consent answers, status requests and stop, nothing else. |
 | **Facilitation** | as above | `concluding` when the definition of done is met; `closed` after the final summary was published (and confirmed where required); `following_up` while agreed action items are open; `ended` when all are done or overdue, or the follow-up deadline passed. |
 
 - **invited:** the facilitator's bot is in a group conversation.
@@ -312,8 +312,25 @@ States exist on three levels, each with its own rules:
   scheduled, and the facilitator confirms the link in both. People in the linked
   conversation who are not participants are added as session participants only; they
   see the session agenda and what is posted in that conversation, never the home
-  conversation's history or protocol (§5.8). Contributions are accepted from the home
-  conversation and from linked session conversations while the session is `live`.
+  conversation's history or protocol (§5.8).
+- **Linked session conversations by session state** (delivery, reading and sending follow the
+  same table):
+
+  | Session state | Delivered to and read by the facilitator | Facilitator may send |
+  |---|---|---|
+  | `scheduled` | Messages addressed to it (link confirmation, questions) | Link confirmation, agenda, preparation |
+  | `live` | Every human message | Moderation |
+  | `confirming` | Every human message; only consent answers, status and stop take effect | Consent request, status |
+  | `closed` | Nothing | Session protocol under the `closing` scope only |
+
+  Contributions to steps are accepted only from `live` sessions and the home conversation,
+  as the input matrix below says.
+- **One process per message.** In a conversation where several processes of the same
+  facilitator exist (a new facilitation while older ones are in `following_up`), a message
+  that changes state ("erledigt", "stop", a consent answer) must map to exactly one
+  process: through its reply reference, its card, an explicit reference to the
+  facilitation, or because only one process can accept it. If several match, the
+  facilitator asks once which one is meant; nothing changes until it is clear.
 - **Authorship and content come only from authenticated inbound events.** A contribution is
   recorded by `record_contribution(messageId, revision, payload)`: the engine takes author,
   tenant, channel, message id, revision, timestamp **and the original text** from the stored
@@ -785,13 +802,19 @@ kept compatible.
 28. **Follow-up replies.** One facilitator follows up two facilitations for the same
     person; each direct reply completes only the action item of its reminder, and a stop
     in reply to one reminder ends only that facilitation's follow-up.
+29. **Session paths and process correlation.** In each of Teams, Slack, Discord and
+    Telegram: the link is confirmed in the session conversation before the session starts;
+    a consent answer without a mention after the slot ended counts; a late vote is
+    refused; stop works during `confirming`. With two facilitations in `following_up` and a
+    new one active in the same conversation, an unreferenced "stop" or "erledigt" gets one
+    question and changes nothing until answered.
 
 ## 10. Work breakdown
 
 Each item becomes one issue in epic #2043; the owner (kernel or plugin) of each part is
 given in §0.
 
-1. Agent kind `facilitator`: data model, enforced omissions (grants, memory, assistance,
+1. Facilitator archetype (`agents.archetype = 'facilitator'`): data model, enforced omissions (grants, memory, assistance,
    consultation, default, persona, fast path), neutrality block and persona bounds (§2).
 2. Facilitation engine: tables, lifecycle, one model context, authenticated contributions
    (§5.1-5.3).
