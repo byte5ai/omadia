@@ -91,6 +91,18 @@ and the neutrality contract. No facilitation tables in the kernel.
   a conversation, a channel-started turn of that agent there returns an empty
   answer without a model call; the engine drives every turn through
   `agentTurn`.
+- **Send as own identity** (`conversationSend` with `asOwnIdentity`,
+  `targetedSend` with `asAgentSlug`): the agent's own bot or `no_identity`,
+  never the default bot. Permission comes from the agent's message
+  subscription held by the calling plugin; a direct message goes only to a
+  person of a conversation the agent moderates (roster or a stored message),
+  with the channel user reference handed to the provider for a first contact.
+  Mentions are resolved to channel user references; a poll is validated and
+  passed through; the provider's `messageId`, `cardMessageId`,
+  `app_not_installed` and `blocked` are returned as they are. Both services
+  are now per-caller facades; sends without the new flags are unchanged.
+  channel-sdk: `TargetedMessage.poll`, `TargetedPoll`, `cardMessageId` on the
+  delivered outcome, `cardAnswer.answererVerified`.
 - **`GET /api/v1/operator/agents/facilitation-engine`**: which plugin is the
   facilitation engine (`state` bound | none | ambiguous) and whether it
   reports itself usable (`available`, `unavailable_reason`, `version`).

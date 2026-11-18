@@ -415,6 +415,7 @@ import {
   withInstalledParents,
 } from './plugins/defaultOrchestratorAttach.js';
 import { facilitatorGrantablePluginIds } from './platform/facilitatorGuard.js';
+import { publishSendServices } from './channels/sendServicesWiring.js';
 import {
   wireConversationMessages,
   type ConversationMessagesWiring,
@@ -6979,22 +6980,32 @@ async function main(): Promise<void> {
   // Constructed after the conductor block so the role resolver + binding
   // lookup are already set when Postgres is available; deny-by-default for
   // plugins like every other kernel service.
-  const targetedDeliveryService = createTargetedDeliveryService({
-    providers: targetedSendRegistry,
-    ...(targetedRoleResolver ? { resolveRoleHolders: targetedRoleResolver } : {}),
-    ...(targetedBindingLookup ? { lookupConversationRefs: targetedBindingLookup } : {}),
-    log: (m) => console.log(m),
-  });
-  serviceRegistry.provide('targetedSend', targetedDeliveryService);
-  // #330 C3b — conversation-addressed proactive send (Facilitator group nudges).
-  serviceRegistry.provide(
-    'conversationSend',
-    createConversationSendService({
-      providers: conversationSendRegistry,
-      ...(conversationSendScope ? { isPermitted: conversationSendScope } : {}),
+  // #2043 — sending as an agent's OWN identity: identity from the registry
+  // (never the default bot), permission from its message subscription.
+  const ownIdentitySend = {
+    identityFor: (agentSlug: string, channelType: string) =>
+      getRegistry()?.channelIdentityFor(agentSlug, channelType),
+    ...(conversationMessages ? { subscriptions: conversationMessages.hub } : {}),
+    getRoster: (channelType: string, conversationId: string) =>
+      conversationRosterRegistry.getRoster(channelType, conversationId),
+  };
+  publishSendServices({
+    serviceRegistry,
+    targeted: createTargetedDeliveryService({
+      providers: targetedSendRegistry,
+      ...(targetedRoleResolver ? { resolveRoleHolders: targetedRoleResolver } : {}),
+      ...(targetedBindingLookup ? { lookupConversationRefs: targetedBindingLookup } : {}),
+      ownIdentity: ownIdentitySend,
       log: (m) => console.log(m),
     }),
-  );
+    // #330 C3b — conversation-addressed proactive send (group nudges).
+    conversation: createConversationSendService({
+      providers: conversationSendRegistry,
+      ...(conversationSendScope ? { isPermitted: conversationSendScope } : {}),
+      ownIdentity: ownIdentitySend,
+      log: (m) => console.log(m),
+    }),
+  });
 
   const channelCoreApi = createCoreApi({
     dispatcher: orchestratorDispatcher,

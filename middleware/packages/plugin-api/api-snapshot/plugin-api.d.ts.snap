@@ -298,6 +298,7 @@ removed: boolean;
 cardAnswer?: {
 cardId: string;
 value: unknown;
+answererVerified?: boolean;
 };
 occurredAt: string;
 receivedAt: string;
@@ -338,8 +339,18 @@ conversationId: string;
 message: {
 text: string;
 mentions?: readonly ConversationSendMention[];
+poll?: SendPoll;
 };
 asOwnIdentity?: boolean;
+}
+export interface SendPoll {
+pollId: string;
+question: string;
+options: readonly {
+id: string;
+label: string;
+}[];
+hint?: string;
 }
 export interface ConversationSendMention {
 user: string;
@@ -349,6 +360,7 @@ export type ConversationSendOutcome =
 {
 outcome: 'delivered';
 messageId?: string;
+cardMessageId?: string;
 } | {
 outcome: 'unreachable';
 code: string;
@@ -2946,6 +2958,10 @@ message: {
 text: string;
 };
 asAgentSlug?: string;
+userRef?: {
+kind: string;
+id: string;
+};
 }
 export type TargetedSendDeliveryOutcome = {
 outcome: 'delivered';

@@ -16,15 +16,24 @@ import type {
 } from '@omadia/channel-sdk';
 import { parsePrincipal } from '@omadia/channel-sdk';
 
+import { sendDirectAsOwnIdentity } from './ownIdentityDirectSend.js';
+import type { OwnIdentityDeps } from './ownIdentitySend.js';
 import type { TargetedSendRegistry } from './targetedSendRegistry.js';
 
 export interface TargetedDeliveryService {
   /** `principal` is the wire form: 'user:<id>' | 'role:<key>'. */
-  sendToPrincipal(input: {
-    channelType: string;
-    principal: string;
-    message: TargetedMessage;
-  }): Promise<TargetedSendReport>;
+  sendToPrincipal(
+    input: {
+      channelType: string;
+      principal: string;
+      message: TargetedMessage;
+      /** #2043 — send as this agent's OWN identity (`ownIdentityDirectSend.ts`). */
+      asAgentSlug?: string;
+      userRef?: { kind: string; id: string };
+    },
+    /** Set by the per-plugin facade; absent = the kernel. */
+    callerPluginId?: string,
+  ): Promise<TargetedSendReport>;
 }
 
 export function createTargetedDeliveryService(deps: {
@@ -37,6 +46,8 @@ export function createTargetedDeliveryService(deps: {
    *  conductor channel-binding store). Absent = providers materialize 1:1
    *  conversations themselves (Teams proactive messaging can). */
   lookupConversationRefs?: (principalIds: string[], channelType: string) => Promise<Map<string, unknown>>;
+  /** #2043 — own-identity sends. Absent → `asAgentSlug` answers `no_identity`. */
+  ownIdentity?: OwnIdentityDeps;
   log?: (msg: string) => void;
 }): TargetedDeliveryService {
   const log = deps.log ?? (() => undefined);
@@ -108,7 +119,26 @@ export function createTargetedDeliveryService(deps: {
   }
 
   return {
-    async sendToPrincipal(input) {
+    async sendToPrincipal(input, callerPluginId) {
+      // #2043 — a different scope and a different sender; nothing below runs.
+      if (typeof input.asAgentSlug === 'string' && input.asAgentSlug.trim().length > 0) {
+        return sendDirectAsOwnIdentity(
+          {
+            providers: deps.providers,
+            ...(deps.ownIdentity ? { ownIdentity: deps.ownIdentity } : {}),
+            ...(deps.lookupConversationRefs ? { lookupConversationRefs: deps.lookupConversationRefs } : {}),
+            log,
+          },
+          {
+            channelType: input.channelType,
+            principal: input.principal,
+            message: input.message,
+            asAgentSlug: input.asAgentSlug.trim(),
+            ...(input.userRef ? { userRef: input.userRef } : {}),
+          },
+          callerPluginId,
+        );
+      }
       const principal = parsePrincipal(input.principal);
       if (!principal) {
         // No fabricated empty principal — its absence plus the diagnostic IS

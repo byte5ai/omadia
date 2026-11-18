@@ -35,6 +35,7 @@ import {
   type ConversationMessageStore,
   type MessageSubscription,
   type NewMessageEvent,
+  type StoredAuthor,
 } from './store.js';
 
 const KINDS: readonly ConversationMessageKind[] = ['created', 'edited', 'deleted', 'reaction', 'card_answer'];
@@ -85,6 +86,28 @@ function lookupKey(channelType: string, conversationId: string, channelKey: stri
   return `${channelType}\u0000${conversationId}\u0000${normalizeChannelKey(channelKey)}`;
 }
 
+/**
+ * The answer as stored. `answererVerified` is taken from the explicit field,
+ * or from inside `value` (where an adapter that predates the field put it),
+ * so the engine reads ONE place.
+ */
+function readCardAnswer(answer: NonNullable<ConversationMessageEvent['cardAnswer']>): NonNullable<
+  NewMessageEvent['cardAnswer']
+> {
+  const nested = (answer.value as { answererVerified?: unknown } | null)?.answererVerified;
+  const verified =
+    typeof answer.answererVerified === 'boolean'
+      ? answer.answererVerified
+      : typeof nested === 'boolean'
+        ? nested
+        : undefined;
+  return {
+    cardId: answer.cardId,
+    value: answer.value,
+    ...(verified !== undefined ? { answererVerified: verified } : {}),
+  };
+}
+
 function isBoundedText(value: unknown, max: number): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= max;
 }
@@ -129,6 +152,19 @@ export class ConversationMessageHub {
       }
     }
     return undefined;
+  }
+
+  /** Every active subscription of an agent on a channel type. */
+  subscriptionsOf(agentSlug: string, channelType: string): readonly MessageSubscription[] {
+    return [...this.byIdentity.values()].filter(
+      (s) => s.agentSlug === agentSlug && s.channelType === channelType,
+    );
+  }
+
+  /** Who wrote under this id in a subscription (kernel-internal: the send
+   *  services resolve a mention or a DM recipient with it). */
+  findAuthor(subscription: MessageSubscription, userId: string): Promise<StoredAuthor | undefined> {
+    return this.deps.store.findAuthor(subscription, userId.trim().toLowerCase());
   }
 
   // ── channel side ─────────────────────────────────────────────────────────
@@ -214,7 +250,7 @@ export class ConversationMessageHub {
         ? { reaction: { name: event.reaction.name, removed: event.reaction.removed === true } }
         : {}),
       ...(event.kind === 'card_answer' && event.cardAnswer
-        ? { cardAnswer: { cardId: event.cardAnswer.cardId, value: event.cardAnswer.value } }
+        ? { cardAnswer: readCardAnswer(event.cardAnswer) }
         : {}),
       occurredAt: new Date(event.occurredAt).toISOString(),
     };

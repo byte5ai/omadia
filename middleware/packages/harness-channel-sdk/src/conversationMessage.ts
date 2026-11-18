@@ -39,7 +39,9 @@ export interface ConversationMessageEvent {
   quoted?: boolean;
   forwarded?: boolean;
   reaction?: { name: string; removed: boolean };
-  cardAnswer?: { cardId: string; value: unknown };
+  /** `answererVerified: false` when the platform did not state who clicked
+   *  (no verified user id on the activity). */
+  cardAnswer?: { cardId: string; value: unknown; answererVerified?: boolean };
   /** ISO 8601 timestamp of the platform event. */
   occurredAt: string;
   /** The original platform event, opaque to the kernel and not stored. */

@@ -15,6 +15,7 @@ import {
   type NewMessageEvent,
   type NewSubscription,
   type PurgeResult,
+  type StoredAuthor,
 } from './store.js';
 
 interface SubscriptionRow {
@@ -43,7 +44,7 @@ interface EventRow {
   quoted: boolean;
   forwarded: boolean;
   reaction: { name: string; removed: boolean } | null;
-  card_answer: { cardId: string; value: unknown } | null;
+  card_answer: { cardId: string; value: unknown; answererVerified?: boolean } | null;
   occurred_at: Date;
   received_at: Date;
 }
@@ -245,6 +246,29 @@ export class PgConversationMessageStore implements ConversationMessageStore {
       [subscription.id, cursor, limit],
     );
     return rows.map((row) => mapEvent(subscription, row));
+  }
+
+  async findAuthor(
+    subscription: MessageSubscription,
+    userIdLowerCase: string,
+  ): Promise<StoredAuthor | undefined> {
+    const { rows } = await this.pool.query<{
+      author_kind: string;
+      author_id: string;
+      author_display_name: string | null;
+    }>(
+      `SELECT author_kind, author_id, author_display_name FROM conversation_message_events
+        WHERE subscription_id = $1 AND lower(author_id) = $2
+        ORDER BY event_seq DESC LIMIT 1`,
+      [subscription.id, userIdLowerCase],
+    );
+    const row = rows[0];
+    if (!row) return undefined;
+    return {
+      kind: row.author_kind,
+      id: row.author_id,
+      ...(row.author_display_name !== null ? { displayName: row.author_display_name } : {}),
+    };
   }
 
   async purge(cutoffs: { endedBefore: Date; receivedBefore?: Date }): Promise<PurgeResult> {

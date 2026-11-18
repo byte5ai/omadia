@@ -65,9 +65,20 @@ export interface NewMessageEvent {
   readonly quoted?: boolean;
   readonly forwarded?: boolean;
   readonly reaction?: { readonly name: string; readonly removed: boolean };
-  readonly cardAnswer?: { readonly cardId: string; readonly value: unknown };
+  readonly cardAnswer?: {
+    readonly cardId: string;
+    readonly value: unknown;
+    readonly answererVerified?: boolean;
+  };
   /** ISO 8601, platform time. */
   readonly occurredAt: string;
+}
+
+export interface StoredAuthor {
+  readonly kind: string;
+  /** As the platform stated it (original case). */
+  readonly id: string;
+  readonly displayName?: string;
 }
 
 export interface PurgeResult {
@@ -103,6 +114,12 @@ export interface ConversationMessageStore {
     after: string | undefined,
     limit: number,
   ): Promise<readonly ConversationMessageRecord[]>;
+  /** The channel user who wrote in this subscription, matched on the
+   *  lower-cased id; the most recent record wins. */
+  findAuthor(
+    subscription: MessageSubscription,
+    userIdLowerCase: string,
+  ): Promise<StoredAuthor | undefined>;
   /** Remove events (and the rows) of subscriptions that ended before
    *  `endedBefore`, and any event received before `receivedBefore`. */
   purge(cutoffs: { endedBefore: Date; receivedBefore?: Date }): Promise<PurgeResult>;
@@ -185,7 +202,17 @@ export function toRecord(
     ...(event.quoted ? { quoted: true } : {}),
     ...(event.forwarded ? { forwarded: true } : {}),
     ...(event.reaction ? { reaction: { name: event.reaction.name, removed: event.reaction.removed } } : {}),
-    ...(event.cardAnswer ? { cardAnswer: { cardId: event.cardAnswer.cardId, value: event.cardAnswer.value } } : {}),
+    ...(event.cardAnswer
+      ? {
+          cardAnswer: {
+            cardId: event.cardAnswer.cardId,
+            value: event.cardAnswer.value,
+            ...(event.cardAnswer.answererVerified !== undefined
+              ? { answererVerified: event.cardAnswer.answererVerified }
+              : {}),
+          },
+        }
+      : {}),
     occurredAt: event.occurredAt,
     receivedAt: receivedAt.toISOString(),
   };
@@ -290,6 +317,17 @@ export class InMemoryConversationMessageStore implements ConversationMessageStor
         .slice(0, limit)
         .map((e) => e.record),
     );
+  }
+
+  findAuthor(subscription: MessageSubscription, userIdLowerCase: string): Promise<StoredAuthor | undefined> {
+    const match = [...this.events]
+      .reverse()
+      .find(
+        (e) => e.subscriptionId === subscription.id && e.record.author.id.toLowerCase() === userIdLowerCase,
+      );
+    if (!match) return Promise.resolve(undefined);
+    const { kind, id, displayName } = match.record.author;
+    return Promise.resolve({ kind, id, ...(displayName !== undefined ? { displayName } : {}) });
   }
 
   purge(cutoffs: { endedBefore: Date; receivedBefore?: Date }): Promise<PurgeResult> {

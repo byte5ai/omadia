@@ -58,8 +58,12 @@ export interface ConversationMessageRecord {
   forwarded?: boolean;
   /** 'reaction': the reaction name and whether it was added or removed. */
   reaction?: { name: string; removed: boolean };
-  /** 'card_answer': the card the kernel/plugin posted and the submitted value. */
-  cardAnswer?: { cardId: string; value: unknown };
+  /** 'card_answer': the card the kernel/plugin posted and the submitted value.
+   *  `answererVerified` is `false` when the platform could not state who
+   *  clicked (Teams: an anonymous meeting participant without an Entra id);
+   *  such an answer must not count as that person's contribution. Absent =
+   *  the channel made no statement (treat as verified by `author`). */
+  cardAnswer?: { cardId: string; value: unknown; answererVerified?: boolean };
   /** ISO 8601, platform time of the event. */
   occurredAt: string;
   /** ISO 8601, when the kernel stored it. */

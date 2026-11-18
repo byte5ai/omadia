@@ -44,6 +44,7 @@ export type {
   TargetedDeliveryOutcome,
   TargetedMention,
   TargetedMessage,
+  TargetedPoll,
   TargetedSendOptions,
   TargetedSendDiagnostic,
   TargetedSendProvider,

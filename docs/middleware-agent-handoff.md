@@ -9488,6 +9488,34 @@ der Adapter gilt immer.
   (`src/routes/facilitationEngineStatus.ts`) liest den Zustand, den das
   Engine-Plugin unter dem Service `facilitationEngine` veröffentlicht.
 
+### Senden als eigene Identität
+
+Code: `middleware/src/channels/ownIdentitySend.ts` (gemeinsame Regeln),
+`conversationSendService.ts` (`asOwnIdentity`), `ownIdentityDirectSend.ts`
+(`targetedSend` mit `asAgentSlug`), `sendServicesWiring.ts` (beide Services
+als Per-Caller-Fassade, damit der Kernel weiß, welches Plugin ruft).
+
+- Die Identität kommt aus `registry.channelIdentityFor(slug, channelType)`,
+  also nur die eigene. Ohne eigene Identität: `no_identity`. Es gibt keinen
+  Rückfall auf den Default-Bot, auch nicht mit Ephemeral-Attachment.
+- **Berechtigung = Message-Subscription** des rufenden Plugins für genau diese
+  Konversation (Gruppenpost) bzw. für irgendeine Konversation, in der der
+  Empfänger vorkommt (DM): Roster des Kanals oder Autor einer gespeicherten
+  Nachricht. Sonst `not_permitted`. Rollen-Principals sind für
+  Eigen-Identitäts-DMs ungültig.
+- **Mentions:** `user` als `user:<id>` oder kanal-native ID; der Kernel löst
+  auf die `ChannelUserRef` des Rosters auf (Teams: Entra-Objekt-ID, auch wenn
+  die bot-spezifische `29:`-ID genannt wurde). Unbekannte Personen bleiben
+  Klartext.
+- **Poll:** `message.poll` wird im Kernel validiert (2 bis 6 Optionen,
+  eindeutige IDs) und durchgereicht; `delivered` trägt `messageId` und
+  `cardMessageId`.
+- **DM-Erstkontakt:** der Provider bekommt `target.userRef` und
+  `opts.asChannelKey`; `app_not_installed` und `blocked` kommen unverändert
+  zurück und werden vom Kernel nicht wiederholt.
+- Ohne die neuen Flags verhalten sich beide Services wie vorher (Diskussionen,
+  Facilitator 0.7.x).
+
 ### Offen
 
 - Der allgemeine Orchestrator-System-Prompt (Memory-Konventionen,

@@ -20,6 +20,19 @@ export interface TargetedMessage {
    *  turns that occurrence into a platform mention. A provider without
    *  mentions leaves the text as it is. */
   mentions?: readonly TargetedMention[];
+  /** Post the message as a poll (#2043). A provider without polls returns
+   *  `unreachable` (`channel_error`) instead of posting plain text; an
+   *  invalid poll is refused the same way and nothing is posted. */
+  poll?: TargetedPoll;
+}
+
+export interface TargetedPoll {
+  /** 1..128 characters; round-tripped as `cardAnswer.cardId`. */
+  pollId: string;
+  question: string;
+  /** 2..6 options, ids unique. */
+  options: readonly { id: string; label: string }[];
+  hint?: string;
 }
 
 export interface TargetedMention {
@@ -40,8 +53,10 @@ export interface TargetedSendOptions {
  *  roleHolderSource.ts) — they never throw for it, so one unreachable holder
  *  cannot abort the remaining fan-out deliveries. */
 export type TargetedDeliveryOutcome =
-  /** `messageId` is the platform id of the sent message when known. */
-  | { outcome: 'delivered'; messageId?: string }
+  /** `messageId` is the platform id of the sent message when known. A poll
+   *  may go out as two messages (text, then card): `cardMessageId` is the
+   *  card, and the `messageId` of every `card_answer` event for it. */
+  | { outcome: 'delivered'; messageId?: string; cardMessageId?: string }
   | {
       outcome: 'unreachable';
       /** 'app_not_installed': first contact is impossible because the user

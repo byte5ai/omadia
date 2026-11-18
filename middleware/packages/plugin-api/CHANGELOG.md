@@ -33,6 +33,13 @@ sending; lifecycle, state and counting live in the engine plugin.
   **`TargetedSendRequest.asAgentSlug?`** — send as the agent's own identity,
   refused with `no_identity` instead of falling back to another bot.
   `delivered` outcomes carry an optional `messageId`.
+- **`SendPoll`** on `ConversationSendRequest.message.poll?` — post a poll;
+  the conversation outcome carries `cardMessageId?` next to `messageId?`
+  (text and card can be two messages; answers refer to the card).
+- **`TargetedSendRequest.userRef?`** — the recipient's channel user reference
+  for a first-contact direct message as the agent's own identity.
+- **`ConversationMessageRecord.cardAnswer.answererVerified?`** — `false` when
+  the platform could not state who clicked.
 - **`FACILITATION_ENGINE_CAPABILITY`** and the **`facilitation.followup`
   service contract** (`FacilitationFollowupService`) — free/busy, invitation
   and mail, each call bounded by an allow-list.
