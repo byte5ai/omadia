@@ -121,8 +121,13 @@ export class SessionCapabilityHub {
     }
     const report = await this.checkIdentity(request.channelType, request.conversationId, identity.channelKey);
     if (report) return report;
-    // Nobody checked. Not an obstacle, and not a verified state either.
-    return { ready: true, installed: true, canReadAllMessages: true, canPost: true, missing: [], verified: false };
+    // No readiness provider: the channel never declared that it can hand
+    // over messages that do not mention the bot. That is not "ready" — a
+    // subscription there would silence the agent and deliver nothing.
+    return notReady(
+      'unsupported_conversation',
+      `channel '${request.channelType}' does not declare delivery of all messages (it registered no readiness provider)`,
+    );
   }
 
   async repairConsent(request: ChannelReadinessRequest): Promise<ChannelConsentRepairOutcome> {

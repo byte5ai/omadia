@@ -814,6 +814,10 @@ async function main(): Promise<void> {
   const targetedSendRegistry = new TargetedSendRegistry(registryLog);
   const conversationSendRegistry = new ConversationSendRegistry(registryLog);
   const conversationEventHub = new ConversationEventHub(registryLog);
+  // #2043 — set once the message hub is wired (database block, further down).
+  // A holder, because the plugin install / uninstall hooks defined before
+  // that block ask it to re-check subscriptions.
+  const conversationMessagesRef: { current?: ConversationMessagesWiring } = {};
   // #2043 — channel readiness providers and meeting sources (same lifecycle).
   const readinessProviderRegistry = new ChannelProviderRegistry<ChannelReadinessProvider>(
     'readiness',
@@ -1909,6 +1913,7 @@ async function main(): Promise<void> {
     // #2043 — an engine installed (or replaced) while facilitators exist is
     // attached to them; nothing else ever is.
     await attachFacilitationEngine();
+    void conversationMessagesRef.current?.reconcileNow();
     // No-op for non-agent plugins (no DomainTool).
     reconcileRuntimeDomainTool(pluginId);
     console.log(`[middleware] runtime plugin install propagated: ${pluginId}`);
@@ -1919,6 +1924,8 @@ async function main(): Promise<void> {
     removedToolName?: string,
   ): Promise<void> => {
     if (pluginId === ORCHESTRATOR_PLUGIN_ID) return;
+    // #2043 — an uninstalled engine ends its message subscriptions at once.
+    void conversationMessagesRef.current?.reconcileNow();
     const store =
       serviceRegistry.get<MultiOrchestratorConfigStore>('configStore');
     const reg =
@@ -4832,6 +4839,9 @@ async function main(): Promise<void> {
       invites: observedInvites,
       botPresence,
       engineSources: () => ({ installedRegistry, catalog: pluginCatalog }),
+      getConfigStore: () => serviceRegistry.get<MultiOrchestratorConfigStore>('configStore'),
+      listen: config.CONVERSATION_MESSAGES_LISTEN,
+      reconcileIntervalMs: config.CONVERSATION_MESSAGES_RECONCILE_INTERVAL_MS,
       checkReadiness: (channelType, conversationId, channelKey) =>
         sessionCapabilityHub.checkIdentity(channelType, conversationId, channelKey),
       graceMs: config.CONVERSATION_MESSAGES_GRACE_MS,
@@ -4839,6 +4849,7 @@ async function main(): Promise<void> {
       purgeIntervalMs: config.CONVERSATION_MESSAGES_PURGE_INTERVAL_MS,
       log: (m) => console.log(m),
     });
+    conversationMessagesRef.current = conversationMessages;
     // #1018 W1 — THE peer gate: the agent's own switch AND the pair's policy
     // row (migration 0058), evaluated in one place for the discussion start,
     // every relayed utterance, and the roster the calling agent sees.
@@ -7118,6 +7129,11 @@ async function main(): Promise<void> {
   });
   channelRegistryRef = channelRegistry;
   await channelRegistry.activateAllInstalled();
+  // #2043 — every plugin had its chance to activate: from here on the kernel
+  // may end message subscriptions whose ground is gone (engine plugin not
+  // active or replaced, agent disabled or deleted, identity lost).
+  conversationMessagesRef.current?.enableReconcile();
+  void conversationMessagesRef.current?.reconcileNow();
   console.log(
     `[middleware] channel runtime ready (${channelRegistry.activeIds().length} active via dynamic-resolver)`,
   );

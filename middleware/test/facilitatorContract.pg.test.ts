@@ -548,6 +548,98 @@ describe('native facilitators: kernel contract (pg)', { skip: !pgAvailable }, ()
     assert.equal((await k.api('GET', '/agents/facilitation-engine')).json['state'], 'bound');
   });
 
+  it('the kernel ends a subscription when its ground is gone: engine, agent, identity', async () => {
+    const maraKey = await facilitator('mara', 'aaaa-mara');
+    const noraKey = await facilitator('nora', 'bbbb-nora');
+    const idaKey = await facilitator('ida', 'cccc-ida');
+    for (const slug of ['mara', 'nora', 'ida']) {
+      assert.deepEqual(await k.engine.messages.subscribe(scope(slug)), { outcome: 'subscribed' });
+    }
+    const subscribed = (key: string): boolean => k.channel.core.isAllMessagesSubscribed!(CHANNEL_TYPE, CHAT, key);
+    k.messagesWiring.enableReconcile();
+    await k.messagesWiring.reconcileNow();
+    assert.deepEqual([maraKey, noraKey, idaKey].map(subscribed), [true, true, true], 'all three stand');
+
+    // The agent is disabled; another loses its own identity.
+    await k.api('PATCH', '/agents/nora', { status: 'disabled' });
+    await pool.query(`DELETE FROM agent_teams_identities WHERE bot_slug = 'ida'`);
+    await k.messagesWiring.reconcileNow();
+    assert.deepEqual([maraKey, noraKey, idaKey].map(subscribed), [true, false, false]);
+    k.channel.core.emitConversationMessage!(event({ messageId: 'for-nora' }, noraKey));
+    await flush();
+    assert.equal(
+      (await pool.query(`SELECT 1 FROM conversation_message_events WHERE message_id = 'for-nora'`)).rows.length,
+      0,
+      'nothing is stored for an ended subscription',
+    );
+
+    // The engine plugin stops being usable (deactivated), with a live subscription.
+    k.setStatus(ENGINE_PLUGIN, 'inactive');
+    await k.messagesWiring.reconcileNow();
+    assert.equal(subscribed(maraKey), false, 'the mention gate applies again');
+    const ended = await pool.query<{ agent_slug: string }>(
+      'SELECT agent_slug FROM conversation_message_subscriptions WHERE ended_at IS NOT NULL ORDER BY agent_slug',
+    );
+    assert.deepEqual(ended.rows.map((r) => r.agent_slug), ['ida', 'mara', 'nora']);
+    assert.ok(k.logs.some((l) => /ended the subscription of 'mara'.*facilitation engine plugin is inactive/.test(l)));
+    // Sending as the agent went with the subscription.
+    k.setStatus(ENGINE_PLUGIN, 'active');
+    const late = await k.engine.conversationSend.sendToConversation({
+      agentSlug: 'mara',
+      channelType: CHANNEL_TYPE,
+      conversationId: CHAT,
+      asOwnIdentity: true,
+      message: { text: 'still here?' },
+    });
+    assert.equal(late.outcome === 'unreachable' && late.code, 'not_permitted');
+  });
+
+  it('a deleted agent leaves no silenced conversation behind, and an uninstalled engine ends everything', async () => {
+    const maraKey = await facilitator('mara', 'aaaa-mara');
+    const noraKey = await facilitator('nora', 'bbbb-nora');
+    await k.engine.messages.subscribe(scope('mara'));
+    await k.engine.messages.subscribe(scope('nora'));
+    k.messagesWiring.enableReconcile();
+
+    // Deleted straight in the database: the cascade takes the subscription
+    // while this process still has it cached.
+    await pool.query(`DELETE FROM agents WHERE slug = 'mara'`);
+    assert.equal(k.channel.core.isAllMessagesSubscribed!(CHANNEL_TYPE, CHAT, maraKey), true, 'stale cache, before any event');
+    k.channel.core.emitConversationMessage!(event({}, maraKey));
+    await flush();
+    assert.equal(k.channel.core.isAllMessagesSubscribed!(CHANNEL_TYPE, CHAT, maraKey), false, 'closed by the first event');
+    assert.equal(k.logs.some((l) => /storing an event failed/.test(l)), false, 'not an error loop');
+
+    // The engine is uninstalled while nora's subscription is live.
+    k.installed = [BUSINESS_PLUGIN];
+    await k.messagesWiring.reconcileNow();
+    assert.equal(k.channel.core.isAllMessagesSubscribed!(CHANNEL_TYPE, CHAT, noraKey), false);
+    assert.equal(
+      (await pool.query('SELECT 1 FROM conversation_message_subscriptions WHERE ended_at IS NULL')).rows.length,
+      0,
+    );
+  });
+
+  it('a second machine learns of a subscribe and an unsubscribe through NOTIFY', async () => {
+    const maraKey = await facilitator('mara', 'aaaa-mara');
+    const other = await bootFacilitatorKernel({ pool, listen: true });
+    try {
+      const seenThere = (): boolean => other.channel.core.isAllMessagesSubscribed!(CHANNEL_TYPE, CHAT, maraKey);
+      assert.equal(seenThere(), false);
+      await k.engine.messages.subscribe(scope('mara'));
+      const until = async (want: boolean): Promise<void> => {
+        for (let i = 0; i < 80 && seenThere() !== want; i += 1) await flush();
+      };
+      await until(true);
+      assert.equal(seenThere(), true, 'no restart, no polling interval (it is one hour in this harness)');
+      await k.engine.messages.unsubscribe(scope('mara'));
+      await until(false);
+      assert.equal(seenThere(), false);
+    } finally {
+      await other.stop();
+    }
+  });
+
   it('meeting lifecycle events reach the engine only for a moderated conversation', async () => {
     await facilitator('mara', 'aaaa-mara');
     const seen: string[] = [];

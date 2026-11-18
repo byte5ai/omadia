@@ -17,8 +17,21 @@ export interface HubFixture {
   readonly hub: ConversationMessageHub;
   readonly logs: string[];
   present: Set<string>;
+  /** What the channel's readiness provider reports; `undefined` = ready. */
   readiness: ChannelReadinessReport | undefined;
+  /** `false` = the channel type registered no readiness provider. */
+  hasReadinessProvider: boolean;
+  /** Agent slug → why its subscriptions lost their ground (for `reconcile`). */
+  lostGround: Map<string, string>;
 }
+
+const READY: ChannelReadinessReport = {
+  ready: true,
+  installed: true,
+  canReadAllMessages: true,
+  canPost: true,
+  missing: [],
+};
 
 export interface FixtureAgent {
   readonly id: string;
@@ -43,6 +56,8 @@ export function hubFixture(
     logs,
     present: new Set([MARA_KEY.toLowerCase(), NORA_KEY.toLowerCase()]),
     readiness: undefined,
+    hasReadinessProvider: true,
+    lostGround: new Map(),
     hub: new ConversationMessageHub({
       store,
       resolveAgent: (slug) => agents.find((a) => a.slug === slug),
@@ -51,7 +66,9 @@ export function hubFixture(
         return key ? { channelKey: key } : undefined;
       },
       isBotPresent: (_type, _conversation, channelKey) => Promise.resolve(fixture.present.has(channelKey)),
-      checkReadiness: () => Promise.resolve(fixture.readiness),
+      // `undefined` = the channel registered no readiness provider.
+      checkReadiness: () => Promise.resolve(fixture.hasReadinessProvider ? (fixture.readiness ?? READY) : undefined),
+      groundFor: (subscription) => Promise.resolve(fixture.lostGround.get(subscription.agentSlug)),
       resolvePrincipal: (_type, author) => Promise.resolve(`user:${author.id.toLowerCase()}`),
       log: (m) => logs.push(m),
     }),

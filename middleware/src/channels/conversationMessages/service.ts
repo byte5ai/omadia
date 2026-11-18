@@ -42,10 +42,11 @@ export function createConversationMessagesService(
       await hub.unsubscribe(scope, callerPluginId);
     },
     onMessage(agentSlug, handler) {
-      // Registered either way, filtered at delivery: only records of the
-      // caller's own subscriptions reach the handler.
-      if (!allowed()) return () => undefined;
-      return hub.onMessage(agentSlug, callerPluginId, handler);
+      // Always registered, decided at DELIVERY: only records of the caller's
+      // own subscriptions reach the handler, and only while the caller is the
+      // engine. A plugin that registers before it is bound starts receiving
+      // once it is; one that stops being the engine receives nothing more.
+      return hub.onMessage(agentSlug, callerPluginId, handler, allowed);
     },
     async getEvent(scope, messageId, revision) {
       if (!allowed()) return undefined;

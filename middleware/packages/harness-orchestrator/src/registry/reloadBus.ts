@@ -29,7 +29,13 @@ export interface ReloadBusOptions {
   readonly pool: Pool;
   /** Called once per coalesced trigger. Should return the diff plan that
    *  was executed (for logging). */
-  readonly reload: () => Promise<DiffPlan>;
+  /** What a notification (or the periodic reconcile) runs. The registry's
+   *  bus returns its diff plan; any other consumer returns nothing. */
+  readonly reload: () => Promise<DiffPlan | void>;
+  /** NOTIFY channel to LISTEN on. Default `agents_changed` (the registry's);
+   *  other kernel caches reuse this bus with their own channel (#2043). A
+   *  plain identifier — it is interpolated into `LISTEN`. */
+  readonly channel?: string;
   /** Periodic reconcile interval. Default 60s. Set to 0 to disable the
    *  fallback (tests that drive the bus by hand). */
   readonly reconcileIntervalMs?: number;
@@ -47,7 +53,8 @@ export interface ReloadBusOptions {
 const DEFAULT_RECONCILE_MS = 60_000;
 const DEFAULT_RECONNECT_MS = 5_000;
 const MAX_RECONNECT_MS = 30_000;
-const NOTIFY_CHANNEL = 'agents_changed';
+const DEFAULT_NOTIFY_CHANNEL = 'agents_changed';
+const CHANNEL_NAME_RE = /^[a-z_][a-z0-9_]{0,62}$/;
 
 export class ReloadBus {
   private client: PoolClient | undefined;
@@ -58,7 +65,14 @@ export class ReloadBus {
   private inFlight: Promise<void> | undefined;
   private pending = false;
 
+  private readonly channel: string;
+
   constructor(private readonly options: ReloadBusOptions) {
+    const channel = options.channel ?? DEFAULT_NOTIFY_CHANNEL;
+    if (!CHANNEL_NAME_RE.test(channel)) {
+      throw new Error(`ReloadBus: '${channel}' is not a valid NOTIFY channel name`);
+    }
+    this.channel = channel;
     this.reconnectDelayMs =
       options.reconnectInitialMs ?? DEFAULT_RECONNECT_MS;
   }
@@ -129,7 +143,7 @@ export class ReloadBus {
       this.scheduleReconnect();
     });
     client.on('notification', (msg) => {
-      if (msg.channel !== NOTIFY_CHANNEL) return;
+      if (msg.channel !== this.channel) return;
       this.log(`reloadBus: notify received`, {
         channel: msg.channel,
         payload: msg.payload ?? null,
@@ -137,11 +151,11 @@ export class ReloadBus {
       void this.fire('notify');
     });
 
-    await client.query(`LISTEN ${NOTIFY_CHANNEL}`);
+    await client.query(`LISTEN ${this.channel}`);
     this.client = client;
     this.reconnectDelayMs =
       this.options.reconnectInitialMs ?? DEFAULT_RECONNECT_MS;
-    this.log(`reloadBus: subscribed`, { channel: NOTIFY_CHANNEL });
+    this.log(`reloadBus: subscribed`, { channel: this.channel });
   }
 
   private scheduleReconnect(): void {
@@ -210,8 +224,8 @@ export class ReloadBus {
       const plan = await this.options.reload();
       this.log(`reloadBus: reload applied`, {
         source,
-        actions: plan.actions.length,
-        platformChanged: plan.platformChanged,
+        channel: this.channel,
+        ...(plan ? { actions: plan.actions.length, platformChanged: plan.platformChanged } : {}),
       });
     } catch (err) {
       this.log(`reloadBus: reload FAILED`, {

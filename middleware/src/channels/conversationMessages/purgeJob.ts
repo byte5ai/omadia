@@ -4,7 +4,6 @@
 // its own protocol, and never longer than a maximum age. The engine plugin
 // keeps what it needs in its own tables.
 
-import type { ConversationMessageHub } from './hub.js';
 import type { ConversationMessageStore } from './store.js';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -12,7 +11,7 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
 export interface ConversationMessagePurgeOptions {
   /** How long events outlive the end of their subscription. */
   readonly graceMs: number;
-  /** Maximum age of any stored event in days; 0 disables the age limit. */
+  /** Maximum age of any stored event in days. Always applied. */
   readonly maxAgeDays: number;
   readonly intervalMs: number;
   readonly now?: () => number;
@@ -26,7 +25,6 @@ export interface ConversationMessagePurgeJob {
 
 export function startConversationMessagePurge(
   store: ConversationMessageStore,
-  hub: ConversationMessageHub | undefined,
   options: ConversationMessagePurgeOptions,
 ): ConversationMessagePurgeJob {
   const now = options.now ?? Date.now;
@@ -40,17 +38,13 @@ export function startConversationMessagePurge(
       const at = now();
       const result = await store.purge({
         endedBefore: new Date(at - options.graceMs),
-        ...(options.maxAgeDays > 0
-          ? { receivedBefore: new Date(at - options.maxAgeDays * MS_PER_DAY) }
-          : {}),
+        receivedBefore: new Date(at - Math.max(1, options.maxAgeDays) * MS_PER_DAY),
       });
       if (result.events > 0 || result.subscriptions > 0) {
         log(
           `[conversation-messages] purged ${String(result.events)} event(s) of ${String(result.subscriptions)} ended subscription(s)`,
         );
       }
-      // Pick up subscriptions another machine wrote or ended.
-      await hub?.refresh();
     } catch (err) {
       log(`[conversation-messages] purge failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {

@@ -54,9 +54,11 @@ export interface ChannelReadinessReport {
   canPost: boolean;
   /** Empty when `ready`. One entry per thing that is missing. */
   missing: readonly ChannelReadinessIssue[];
-  /** `false` when no channel checked: the channel type has no readiness
-   *  provider, so the report states the absence of a known obstacle, not a
-   *  verified state. Absent or `true` = the channel made the statement. */
+  /** `false` when the channel declares that it delivers every message but
+   *  could not check this conversation (the report then states the absence
+   *  of a known obstacle, not a verified state). Absent or `true` = checked.
+   *  A channel type that registered no readiness provider at all is NOT
+   *  ready: it reports `unsupported_conversation`. */
   verified?: boolean;
 }
 

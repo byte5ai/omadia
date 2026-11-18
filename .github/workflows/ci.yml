@@ -334,7 +334,9 @@ jobs:
           # agentIdentityStore.pg, 1 test).
           # 434 → 444 with the facilitator kernel contract suite (#2068,
           # facilitatorContract.pg, 10 tests).
-          PG_TEST_FLOOR: '444'
+          # 444 → 447 with the kernel-side end of subscriptions and NOTIFY
+          # (facilitatorContract.pg, 3 tests).
+          PG_TEST_FLOOR: '447'
         run: |
           set -eo pipefail
           npm run test:pg 2>&1 | tee pg-test.out

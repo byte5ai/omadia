@@ -78,12 +78,17 @@ describe('conversationMessages: subscribe', () => {
     });
   }
 
-  it('readiness ok, and no readiness provider at all, both subscribe', async () => {
-    const ready = hubFixture(new InMemoryConversationMessageStore());
-    ready.readiness = { ready: true, installed: true, canReadAllMessages: true, canPost: true, missing: [] };
-    assert.equal((await ready.hub.subscribe(scopeOf('mara'), ENGINE)).outcome, 'subscribed');
-    const none = hubFixture(new InMemoryConversationMessageStore());
-    assert.equal((await none.hub.subscribe(scopeOf('mara'), ENGINE)).outcome, 'subscribed');
+  it('refuses a channel that never declared delivery of all messages', async () => {
+    // Without a readiness provider a subscription would silence every mention
+    // (the kernel suppresses the turn) while no message event ever arrives.
+    const undeclared = hubFixture(new InMemoryConversationMessageStore());
+    undeclared.hasReadinessProvider = false;
+    const outcome = await undeclared.hub.subscribe(scopeOf('mara'), ENGINE);
+    assert.equal(outcome.outcome === 'refused' && outcome.code, 'not_ready');
+    assert.match(outcome.outcome === 'refused' ? outcome.message : '', /does not declare delivery of all messages/);
+    assert.equal(undeclared.hub.isSubscribed('teams', CONVERSATION, MARA_KEY), false);
+    undeclared.hasReadinessProvider = true;
+    assert.equal((await undeclared.hub.subscribe(scopeOf('mara'), ENGINE)).outcome, 'subscribed');
   });
 
   it('a second plugin cannot take over or read a subscription', async () => {
@@ -326,7 +331,117 @@ describe('conversationMessages: reading', () => {
   });
 });
 
+describe('conversationMessages: the kernel ends a subscription whose ground is gone', () => {
+  it('engine removed with live subscriptions: the gate closes, nothing more is stored, the other agent is untouched', async () => {
+    const store = new InMemoryConversationMessageStore();
+    const f = hubFixture(store);
+    await f.hub.subscribe(scopeOf('mara'), ENGINE);
+    await f.hub.subscribe(scopeOf('nora', '19:other@thread.v2'), ENGINE);
+    await f.hub.ingest(messageEvent());
+    assert.deepEqual(await f.hub.reconcile(), [], 'nothing lost its ground yet');
+
+    f.lostGround.set('mara', "plugin '@omadia/agent-facilitator' is no longer the facilitation engine of this instance");
+    const ended = await f.hub.reconcile();
+    assert.deepEqual(ended.map((e) => [e.subscription.agentSlug, e.reason]), [
+      ['mara', "plugin '@omadia/agent-facilitator' is no longer the facilitation engine of this instance"],
+    ]);
+    // The mention gate applies again, so the agent is no longer silenced…
+    assert.equal(f.hub.isSubscribed('teams', CONVERSATION, MARA_KEY), false);
+    assert.equal(f.hub.subscriptionFor(scopeOf('mara')), undefined);
+    // …and nothing more is stored.
+    assert.equal(await f.hub.ingest(messageEvent({ messageId: 'after' })), undefined);
+    assert.deepEqual(await store.listActiveSubscriptions().then((l) => l.map((x) => x.agentSlug)), ['nora']);
+    assert.equal(f.hub.isSubscribed('teams', '19:other@thread.v2', NORA_KEY), true);
+    assert.ok(f.logs.some((l) => /ended the subscription of 'mara'/.test(l)));
+    assert.deepEqual(await f.hub.reconcile(), [], 'idempotent');
+  });
+
+  it('a ground check that throws ends nothing', async () => {
+    const f = hubFixture(new InMemoryConversationMessageStore());
+    await f.hub.subscribe(scopeOf('mara'), ENGINE);
+    f.lostGround.get = () => {
+      throw new Error('config store unreachable');
+    };
+    assert.deepEqual(await f.hub.reconcile(), []);
+    assert.equal(f.hub.isSubscribed('teams', CONVERSATION, MARA_KEY), true);
+  });
+
+  it('a subscription row that vanished (agent deleted) closes the gate on the next event instead of failing forever', async () => {
+    const store = new InMemoryConversationMessageStore();
+    const f = hubFixture(store);
+    await f.hub.subscribe(scopeOf('mara'), ENGINE);
+    // The cascade removed the row on another connection; this cache still has it.
+    store.insertEvent = () => Promise.reject(Object.assign(new Error('violates foreign key constraint'), { code: '23503' }));
+    assert.equal(await f.hub.ingest(messageEvent()), undefined);
+    assert.equal(f.hub.isSubscribed('teams', CONVERSATION, MARA_KEY), false);
+    assert.ok(f.logs.some((l) => /no longer exists; the gate is closed/.test(l)));
+  });
+
+  it('a refresh never overwrites a subscribe that ran while it was reading, nor resurrects one being ended', async () => {
+    const store = new InMemoryConversationMessageStore();
+    const f = hubFixture(store);
+    // The refresh reads the table BEFORE the subscribe below writes to it,
+    // and returns only afterwards.
+    const list = store.listActiveSubscriptions.bind(store);
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((r) => (release = r));
+    store.listActiveSubscriptions = async () => {
+      const snapshot = await list();
+      await held;
+      return snapshot;
+    };
+    const refreshing = f.hub.refresh();
+    const subscribing = f.hub.subscribe(scopeOf('mara'), ENGINE);
+    release();
+    await Promise.all([refreshing, subscribing]);
+    assert.equal(f.hub.isSubscribed('teams', CONVERSATION, MARA_KEY), true, 'the stale snapshot did not win');
+
+    store.listActiveSubscriptions = list;
+    await Promise.all([f.hub.unsubscribe(scopeOf('mara'), ENGINE), f.hub.refresh()]);
+    assert.equal(f.hub.isSubscribed('teams', CONVERSATION, MARA_KEY), false, 'not resurrected');
+  });
+
+  it('a subscribe on another machine is picked up by refresh', async () => {
+    const store = new InMemoryConversationMessageStore();
+    const here = hubFixture(store);
+    const there = hubFixture(store);
+    await there.hub.subscribe(scopeOf('mara'), ENGINE);
+    assert.equal(here.hub.isSubscribed('teams', CONVERSATION, MARA_KEY), false);
+    await here.hub.refresh();
+    assert.equal(here.hub.isSubscribed('teams', CONVERSATION, MARA_KEY), true);
+    await there.hub.unsubscribe(scopeOf('mara'), ENGINE);
+    await here.hub.refresh();
+    assert.equal(here.hub.isSubscribed('teams', CONVERSATION, MARA_KEY), false);
+  });
+});
+
 describe('conversationMessages: plugin-facing service', () => {
+  it('live delivery is decided at delivery, in both directions', async () => {
+    const f = hubFixture(new InMemoryConversationMessageStore());
+    let engine = false;
+    const service = createConversationMessagesService({ hub: f.hub, callerPluginId: ENGINE, isEngine: () => engine });
+    const seen: string[] = [];
+    // Registered BEFORE the plugin is the bound engine (activation order).
+    const dispose = service.onMessage('mara', (r) => void seen.push(r.messageId));
+    engine = true;
+    await service.subscribe(scopeOf('mara'));
+    f.hub.emit(messageEvent({ messageId: 'a' }));
+    await flush();
+    await flush();
+    assert.deepEqual(seen, ['a'], 'a handler registered early starts receiving once the plugin is the engine');
+    engine = false; // replaced or deactivated
+    f.hub.emit(messageEvent({ messageId: 'b' }));
+    await flush();
+    await flush();
+    assert.deepEqual(seen, ['a'], 'and stops at once when it is not');
+    engine = true;
+    f.hub.emit(messageEvent({ messageId: 'c' }));
+    await flush();
+    await flush();
+    assert.deepEqual(seen, ['a', 'c']);
+    dispose();
+  });
+
   it('answers only the facilitation engine', async () => {
     const f = hubFixture(new InMemoryConversationMessageStore());
     let engine = true;
@@ -385,7 +500,7 @@ describe('conversationMessages: CoreApi and retention', () => {
     const store = new InMemoryConversationMessageStore(() => new Date(now));
     const f = hubFixture(store);
     const HOUR = 60 * 60 * 1000;
-    const job = startConversationMessagePurge(store, f.hub, {
+    const job = startConversationMessagePurge(store, {
       graceMs: 6 * HOUR,
       maxAgeDays: 30,
       intervalMs: 3_600_000,

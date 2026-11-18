@@ -182,6 +182,10 @@ export interface HarnessOptions {
   readonly pool: Pool;
   readonly installed?: readonly string[];
   readonly graceMs?: number;
+  /** LISTEN for subscription changes of other kernels on the same database. */
+  readonly listen?: boolean;
+  /** Plugin statuses other than `active` (`inactive`, `errored`). */
+  readonly statuses?: Record<string, string>;
 }
 
 export interface FacilitatorKernel {
@@ -195,6 +199,8 @@ export interface FacilitatorKernel {
   readonly messagesWiring: ConversationMessagesWiring;
   readonly logs: string[];
   installed: string[];
+  /** Set a plugin's status (`active`, `inactive`, `errored`). */
+  setStatus(pluginId: string, status: string): void;
   /** A plugin other than the engine asking for the same services. */
   servicesAs(pluginId: string): {
     messages: ConversationMessagesService;
@@ -219,10 +225,15 @@ export async function bootFacilitatorKernel(options: HarnessOptions): Promise<Fa
   const { pool } = options;
   const logs: string[] = [];
   const log = (m: string): void => void logs.push(m);
-  const kernel = { installed: [...(options.installed ?? [ENGINE_PLUGIN, BUSINESS_PLUGIN])] };
+  const kernel = {
+    installed: [...(options.installed ?? [ENGINE_PLUGIN, BUSINESS_PLUGIN])],
+    statuses: { ...(options.statuses ?? {}) } as Record<string, string>,
+  };
 
   const engineSources = () => ({
-    installedRegistry: { list: () => kernel.installed.map((id) => ({ id, status: 'active' })) } as never,
+    installedRegistry: {
+      list: () => kernel.installed.map((id) => ({ id, status: kernel.statuses[id] ?? 'active' })),
+    } as never,
     catalog: {
       get: (id: string) => (PROVIDES[id] ? { plugin: { ...PROVIDES[id], id } } : undefined),
     } as never,
@@ -287,6 +298,9 @@ export async function bootFacilitatorKernel(options: HarnessOptions): Promise<Fa
     getRegistry,
     invites,
     engineSources,
+    getConfigStore: () => store,
+    listen: options.listen ?? false,
+    reconcileIntervalMs: 3_600_000,
     checkReadiness: (type, conversation, key) => capabilityHub.checkIdentity(type, conversation, key),
     graceMs: options.graceMs ?? 60_000,
     maxAgeDays: 30,
@@ -477,6 +491,9 @@ export async function bootFacilitatorKernel(options: HarnessOptions): Promise<Fa
     set installed(next: string[]) {
       kernel.installed = next;
     },
+    setStatus(pluginId: string, status: string): void {
+      kernel.statuses[pluginId] = status;
+    },
     servicesAs: servicesFor,
     async provisionIdentity(agentSlug, appId) {
       const agent = await store.getAgentBySlug(agentSlug);
@@ -510,7 +527,7 @@ export async function bootFacilitatorKernel(options: HarnessOptions): Promise<Fa
       if (changed.length > 0) await registry.reload();
     },
     async stop() {
-      messagesWiring!.purge.stop();
+      await messagesWiring!.stop();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     },
   };

@@ -125,8 +125,11 @@ describe('channel readiness', () => {
     const s = await setup();
     const none = await s.hub.check({ ...request, agentSlug: 'ida' });
     assert.deepEqual([none.ready, none.missing[0]!.code], [false, 'no_identity']);
-    // No provider: nothing stands in the way, and nobody verified it.
-    assert.deepEqual(await s.hub.check(request), { ...READY, verified: false });
+    // No provider: the channel never declared that it delivers every message.
+    const undeclared = await s.hub.check(request);
+    assert.equal(undeclared.ready, false);
+    assert.equal(undeclared.missing[0]!.code, 'unsupported_conversation');
+    assert.match(undeclared.missing[0]!.message, /does not declare delivery of all messages/);
     assert.equal(await s.hub.checkIdentity('teams', CONVERSATION, MARA_KEY), undefined);
     s.readiness.register('c', { channelType: 'teams', check: () => Promise.reject(new Error('503 from Graph')) });
     const failed = await s.hub.check(request);

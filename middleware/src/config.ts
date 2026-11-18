@@ -430,10 +430,20 @@ export const ConfigSchema = z.object({
   RECEIPT_RETENTION_DAYS: z.coerce.number().int().positive().default(90),
   // #2043 — retention of stored inbound conversation messages
   // ('conversationMessages@1'). Events outlive the END of their subscription
-  // by the grace period and are removed after the maximum age regardless
-  // (0 = no age limit). The engine plugin keeps its own record.
+  // by the grace period and are removed after the maximum age regardless.
+  // The engine plugin keeps its own record.
   CONVERSATION_MESSAGES_GRACE_MS: z.coerce.number().int().nonnegative().default(6 * 60 * 60 * 1000),
-  CONVERSATION_MESSAGES_MAX_AGE_DAYS: z.coerce.number().int().nonnegative().default(30),
+  // Always bounded: there is no "keep forever" (a subscription that is never
+  // ended would grow without limit).
+  CONVERSATION_MESSAGES_MAX_AGE_DAYS: z.coerce.number().int().positive().default(30),
+  // How other machines learn of a subscribe / unsubscribe: LISTEN on the
+  // table's NOTIFY (one pooled connection) plus a periodic reconcile, which is
+  // also where the kernel ends subscriptions whose ground is gone.
+  CONVERSATION_MESSAGES_LISTEN: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
+  CONVERSATION_MESSAGES_RECONCILE_INTERVAL_MS: z.coerce.number().int().positive().default(60_000),
   CONVERSATION_MESSAGES_PURGE_INTERVAL_MS: z.coerce.number().int().positive().default(10 * 60 * 1000),
   // #2043 — ceiling on kernel-run turns ('agentTurn@1') per agent and minute;
   // a loop in an engine plugin must not spend without bound. 0 = no ceiling.

@@ -58,13 +58,20 @@ export interface ConversationMessageHubDeps {
     conversationId: string,
     channelKey: string,
   ) => Promise<boolean>;
-  /** The channel's readiness check; resolves `undefined` when the channel
-   *  registered none (then readiness is not a condition). */
+  /** The channel's readiness check. Resolves `undefined` when the channel
+   *  type registered no readiness provider — which means the channel has not
+   *  DECLARED that it can deliver every message, so nothing is subscribed. */
   readonly checkReadiness?: (
     channelType: string,
     conversationId: string,
     channelKey: string,
   ) => Promise<ChannelReadinessReport | undefined>;
+  /**
+   * Is this subscription still standing on its ground? Asked by
+   * {@link ConversationMessageHub.reconcile}; a reason ends the subscription.
+   * `undefined` = fine, or not decidable right now (never end on doubt).
+   */
+  readonly groundFor?: (subscription: MessageSubscription) => Promise<string | undefined>;
   /** Canonical principal ('user:<id>') for a channel user, when known. */
   readonly resolvePrincipal?: (
     channelType: string,
@@ -79,6 +86,10 @@ interface LiveRegistration {
   readonly agentSlug: string;
   /** `undefined` = the kernel itself; it sees every subscription. */
   readonly pluginId: string | undefined;
+  /** Asked at EVERY delivery: a plugin that stopped being the engine gets
+   *  nothing more, and one that became it again gets events again, without
+   *  registering anew. */
+  readonly allowed: () => boolean;
   readonly handler: LiveHandler;
 }
 
@@ -116,19 +127,75 @@ export class ConversationMessageHub {
   private byIdentity = new Map<string, MessageSubscription>();
   private live: LiveRegistration[] = [];
   private readonly queues = new Map<string, Promise<unknown>>();
+  /** Serialises everything that reads the table into the cache or changes
+   *  both: a refresh must not overwrite a subscribe that finished while its
+   *  SELECT was on the wire, nor resurrect a subscription being ended. */
+  private sync: Promise<unknown> = Promise.resolve();
   private readonly log: (message: string) => void;
 
   constructor(private readonly deps: ConversationMessageHubDeps) {
     this.log = deps.log ?? (() => undefined);
   }
 
-  /** Load the active subscriptions. Called at boot and again by the purge
-   *  job, so a subscription written by another machine is picked up. */
-  async refresh(): Promise<void> {
-    const active = await this.deps.store.listActiveSubscriptions();
-    this.byIdentity = new Map(
-      active.map((s) => [lookupKey(s.channelType, s.conversationId, s.channelKey), s]),
-    );
+  private exclusive<T>(work: () => Promise<T>): Promise<T> {
+    const run = this.sync.then(work, work);
+    this.sync = run.catch(() => undefined);
+    return run;
+  }
+
+  /** Load the active subscriptions. Called at boot, on a change notification
+   *  from the database (another machine subscribed or ended one) and by the
+   *  periodic reconcile. Never interleaves with a local subscribe/unsubscribe. */
+  refresh(): Promise<void> {
+    return this.exclusive(async () => {
+      const active = await this.deps.store.listActiveSubscriptions();
+      this.byIdentity = new Map(
+        active.map((s) => [lookupKey(s.channelType, s.conversationId, s.channelKey), s]),
+      );
+    });
+  }
+
+  /**
+   * End every subscription whose ground is gone: the engine plugin is no
+   * longer the usable engine, the agent was disabled or deleted, or it lost
+   * the identity the subscription was made for. From then on nothing is
+   * stored and the channel's mention gate applies again.
+   */
+  async reconcile(): Promise<readonly { subscription: MessageSubscription; reason: string }[]> {
+    const groundFor = this.deps.groundFor;
+    if (!groundFor) return [];
+    const ended: { subscription: MessageSubscription; reason: string }[] = [];
+    for (const subscription of [...this.byIdentity.values()]) {
+      let reason: string | undefined;
+      try {
+        reason = await groundFor(subscription);
+      } catch {
+        reason = undefined; // not decidable: never end on doubt
+      }
+      if (reason === undefined) continue;
+      await this.end(subscription);
+      ended.push({ subscription, reason });
+      this.log(
+        `[conversation-messages] ended the subscription of '${subscription.agentSlug}' for ${subscription.channelType}/${subscription.conversationId}: ${reason}`,
+      );
+    }
+    return ended;
+  }
+
+  /** Close the gate, then end the row. */
+  private end(subscription: MessageSubscription): Promise<void> {
+    return this.exclusive(async () => {
+      this.forget(subscription);
+      await this.deps.store.endSubscription(subscription.id);
+    });
+  }
+
+  private forget(subscription: MessageSubscription): void {
+    const key = lookupKey(subscription.channelType, subscription.conversationId, subscription.channelKey);
+    if (this.byIdentity.get(key)?.id !== subscription.id) return;
+    const next = new Map(this.byIdentity);
+    next.delete(key);
+    this.byIdentity = next;
   }
 
   // ── hot path ─────────────────────────────────────────────────────────────
@@ -261,7 +328,22 @@ export class ConversationMessageHub {
         : {}),
       occurredAt: new Date(event.occurredAt).toISOString(),
     };
-    const record = await this.deps.store.insertEvent(subscription, stored);
+    let record: ConversationMessageRecord | undefined;
+    try {
+      record = await this.deps.store.insertEvent(subscription, stored);
+    } catch (err) {
+      // The row is gone (the agent was deleted and the cascade took its
+      // subscription) while this process still had it cached. Close the gate
+      // here instead of failing every event until the next refresh.
+      if ((err as { code?: string } | null)?.code === '23503') {
+        this.forget(subscription);
+        this.log(
+          `[conversation-messages] the subscription of '${subscription.agentSlug}' for ${subscription.channelType}/${subscription.conversationId} no longer exists; the gate is closed`,
+        );
+        return undefined;
+      }
+      throw err;
+    }
     if (record) this.deliver(subscription, record);
     return record;
   }
@@ -270,6 +352,7 @@ export class ConversationMessageHub {
     for (const registration of this.live) {
       if (registration.agentSlug !== subscription.agentSlug) continue;
       if (registration.pluginId !== undefined && registration.pluginId !== subscription.pluginId) continue;
+      if (!registration.allowed()) continue;
       // At-least-once: a handler that fails catches up through `listSince`.
       void Promise.resolve()
         .then(() => registration.handler(record))
@@ -340,20 +423,39 @@ export class ConversationMessageHub {
       } catch (err) {
         return refused('not_ready', `the readiness check failed: ${err instanceof Error ? err.message : String(err)}`);
       }
-      if (report && !report.ready) {
+      if (!report) {
+        // No readiness provider = the channel never declared that it can
+        // hand over messages that do not mention the bot. Subscribing would
+        // silence the agent's ordinary turns and deliver nothing instead.
+        return refused(
+          'not_ready',
+          `channel '${scope.channelType}' does not declare delivery of all messages (it registered no readiness provider)`,
+        );
+      }
+      if (!report.ready) {
         const reasons = report.missing.map((m) => `${m.code}: ${m.message}`).join('; ');
         return refused('not_ready', reasons || 'the channel reported it cannot deliver all messages');
       }
+    } else {
+      return refused('not_ready', 'no channel readiness is wired on this host');
     }
-    let created: MessageSubscription;
+    let created: MessageSubscription | undefined;
     try {
-      created = await this.deps.store.createSubscription({
-        agentId: agent.id,
-        agentSlug: agent.slug,
-        channelType: scope.channelType,
-        conversationId: scope.conversationId,
-        channelKey,
-        pluginId,
+      created = await this.exclusive(async () => {
+        const row = await this.deps.store.createSubscription({
+          agentId: agent.id,
+          agentSlug: agent.slug,
+          channelType: scope.channelType,
+          conversationId: scope.conversationId,
+          channelKey,
+          pluginId,
+        });
+        if (row.pluginId === pluginId) {
+          const next = new Map(this.byIdentity);
+          next.set(lookupKey(row.channelType, row.conversationId, row.channelKey), row);
+          this.byIdentity = next;
+        }
+        return row;
       });
     } catch (err) {
       this.log(`[conversation-messages] subscribe failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -362,9 +464,6 @@ export class ConversationMessageHub {
     if (created.pluginId !== pluginId) {
       return refused('unavailable', 'another plugin already holds the subscription for this conversation');
     }
-    const next = new Map(this.byIdentity);
-    next.set(lookupKey(created.channelType, created.conversationId, created.channelKey), created);
-    this.byIdentity = next;
     this.log(`[conversation-messages] '${created.agentSlug}' receives all messages of ${created.channelType}/${created.conversationId}`);
     return { outcome: 'subscribed' };
   }
@@ -372,15 +471,16 @@ export class ConversationMessageHub {
   async unsubscribe(scope: ConversationMessageScope, pluginId: string | undefined): Promise<void> {
     const subscription = this.owned(scope, pluginId);
     if (!subscription) return;
-    // The gate closes first: no event is accepted while the row is ended.
-    const next = new Map(this.byIdentity);
-    next.delete(lookupKey(subscription.channelType, subscription.conversationId, subscription.channelKey));
-    this.byIdentity = next;
-    await this.deps.store.endSubscription(subscription.id);
+    await this.end(subscription);
   }
 
-  onMessage(agentSlug: string, pluginId: string | undefined, handler: LiveHandler): () => void {
-    const registration: LiveRegistration = { agentSlug, pluginId, handler };
+  onMessage(
+    agentSlug: string,
+    pluginId: string | undefined,
+    handler: LiveHandler,
+    allowed: () => boolean = () => true,
+  ): () => void {
+    const registration: LiveRegistration = { agentSlug, pluginId, allowed, handler };
     this.live = [...this.live, registration];
     return () => {
       this.live = this.live.filter((r) => r !== registration);

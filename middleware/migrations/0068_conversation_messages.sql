@@ -24,6 +24,11 @@
 --   so its number is a hint, kept in `adapter_revision`. `dedupe_key` makes a
 --   redelivered platform event a no-op instead of a second record.
 --
+-- A subscription does not only end when the engine says so. The kernel ends
+-- it when its ground is gone: the engine plugin is no longer the one usable
+-- engine, the agent is disabled or deleted, or the agent lost the identity
+-- the subscription was made for.
+--
 -- Retention: events are removed a short grace period after the subscription
 -- ends, and after a maximum age regardless (kernel job, see
 -- CONVERSATION_MESSAGES_* in .env.example). The engine keeps what it needs for
@@ -96,6 +101,31 @@ CREATE INDEX IF NOT EXISTS conversation_message_events_replay_idx
 CREATE INDEX IF NOT EXISTS conversation_message_events_received_idx
   ON conversation_message_events (received_at);
 
+-- "Who wrote under this id here?" — the send services resolve a mention or a
+-- direct-message recipient against the authors of a subscription.
+CREATE INDEX IF NOT EXISTS conversation_message_events_author_idx
+  ON conversation_message_events (subscription_id, lower(author_id), event_seq DESC);
+
+-- Every machine keeps the active subscriptions in memory (the adapter asks on
+-- the hot path). A change on one machine reaches the others through NOTIFY;
+-- the payload is only a wake-up, the listener re-reads the table. Fires for a
+-- cascade from `agents` as well, which is how a deleted agent's subscription
+-- leaves every cache.
+CREATE OR REPLACE FUNCTION notify_conversation_message_subscriptions_changed() RETURNS trigger AS $$
+BEGIN
+  PERFORM pg_notify('conversation_message_subscriptions_changed', '');
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS conversation_message_subscriptions_notify
+  ON conversation_message_subscriptions;
+CREATE TRIGGER conversation_message_subscriptions_notify
+  AFTER INSERT OR UPDATE OR DELETE ON conversation_message_subscriptions
+  FOR EACH STATEMENT EXECUTE FUNCTION notify_conversation_message_subscriptions_changed();
+
 -- rollback:
+--   DROP TRIGGER IF EXISTS conversation_message_subscriptions_notify ON conversation_message_subscriptions;
+--   DROP FUNCTION IF EXISTS notify_conversation_message_subscriptions_changed();
 --   DROP TABLE IF EXISTS conversation_message_events;
 --   DROP TABLE IF EXISTS conversation_message_subscriptions;
