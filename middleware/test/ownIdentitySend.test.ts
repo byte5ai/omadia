@@ -54,6 +54,10 @@ describe('own-identity sends', () => {
   let targetedSend: ReturnType<typeof createTargetedDeliveryService>;
   let attachmentOwner: string | undefined;
 
+  /** Read through a call, so an earlier "nothing was sent" assertion does not
+   *  narrow the array's type for the rest of the test. */
+  const recorded = (): Sent[] => sent;
+
   beforeEach(async () => {
     f = hubFixture(new InMemoryConversationMessageStore());
     sent = [];
@@ -323,7 +327,7 @@ describe('own-identity sends', () => {
       assert.equal((await dm()).deliveries[0]!.outcome.outcome, 'unreachable');
       await f.hub.ingest(messageEvent({ author: { kind: 'teams-aad', id: ANNA.toUpperCase() } }));
       assert.equal((await dm()).deliveries[0]!.outcome.outcome, 'delivered');
-      assert.deepEqual(sent[0]!.userRef, { kind: 'teams-aad', id: ANNA.toUpperCase() });
+      assert.deepEqual(recorded()[0]!.userRef, { kind: 'teams-aad', id: ANNA.toUpperCase() });
     });
 
     it('maps app_not_installed and blocked from the provider', async () => {

@@ -332,7 +332,9 @@ jobs:
           # conversationMessages.pg, 6 tests).
           # 433 → 434 with the agent language column (#2043,
           # agentIdentityStore.pg, 1 test).
-          PG_TEST_FLOOR: '434'
+          # 434 → 444 with the facilitator kernel contract suite (#2068,
+          # facilitatorContract.pg, 10 tests).
+          PG_TEST_FLOOR: '444'
         run: |
           set -eo pipefail
           npm run test:pg 2>&1 | tee pg-test.out

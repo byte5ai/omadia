@@ -74,7 +74,7 @@ describe('facilitation engine auto-attach', () => {
     const logs: string[] = [];
     assert.deepEqual(await attachEngineToFacilitators(w.store, w.sources, (m) => logs.push(m)), ['mara', 'nora']);
     assert.deepEqual(
-      w.rows.map((r) => `${r.agentId}:${r.pluginId}`),
+      (w.rows as Row[]).map((r) => `${r.agentId}:${r.pluginId}`),
       [`a-mara:${ENGINE}`, `a-nora:${ENGINE}`],
     );
     assert.match(logs[0]!, /facilitation engine attached to: mara, nora/);

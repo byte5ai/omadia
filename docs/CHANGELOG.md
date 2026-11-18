@@ -172,6 +172,10 @@ and the neutrality contract. No facilitation tables in the kernel.
   `appPackage/TEMPLATE_REVISION` of the installed channel plugin (absent = 0,
   versions unchanged), so a changed template is republished for existing
   agents.
+- **Kernel contract suite** (`middleware/test/facilitatorContract.pg.test.ts`,
+  #2068 kernel half): the facilitator surface end to end on Postgres through
+  the real kernel modules, with a simulated channel, a fixture engine plugin
+  and a scripted model.
 - **`GET /api/v1/operator/agents/facilitation-engine`**: which plugin is the
   facilitation engine (`state` bound | none | ambiguous) and whether it
   reports itself usable (`available`, `unavailable_reason`, `version`).

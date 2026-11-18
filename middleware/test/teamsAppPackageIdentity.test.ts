@@ -191,6 +191,7 @@ describe('teams app package — template revision in the version (#2043)', () =>
     longDescription: null,
     accentColor: null,
     revision,
+    icons: null,
   });
   async function versionFor(templateRevision: string | undefined, revision?: number): Promise<string> {
     const root = await packageRoot();
