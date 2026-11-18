@@ -434,7 +434,8 @@
         "riskWarning": "Heuristic scan flagged this skill: {codes}. As a persona it drives the top-level agent with full tool access — review before relying on it.",
         "confirmAttachAction": "Attach anyway",
         "confirmAttachHighRisk": "This skill's heuristic scan is at high risk ({codes}). As a persona it drives the top-level agent with full tool access. Confirm you've reviewed it before attaching."
-      }
+      },
+      "facilitatorsNote": "Facilitators are not listed here: channels, sub-agents, tools, MCP servers and schedules cannot be wired to them."
     }
   },
   "selfExtension": {
@@ -2949,7 +2950,8 @@
         "consultation": "A facilitator neither consults other agents nor is consulted by them.",
         "sub_agent": "A facilitator has no sub-agents and cannot be attached to another agent.",
         "assistance": "A facilitator is not an assistant. It only moderates.",
-        "unknown": "This is not available for a facilitator."
+        "unknown": "This is not available for a facilitator.",
+        "channel_binding": "A facilitator cannot be bound to a channel. It joins a conversation under its own Teams identity and is never routed to."
       },
       "issues": {
         "persona_axis_above_bound": "{axis}: at most {bound} for a facilitator.",

@@ -88,6 +88,7 @@ export const FACILITATOR_OMISSIONS = [
   'tool_grant',
   'memory',
   'default_agent',
+  'channel_binding',
   'persona_skill',
   'fast_path',
   'agent_to_agent',

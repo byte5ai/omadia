@@ -434,7 +434,8 @@
         "riskWarning": "Heuristischer Scan hat diesen Skill markiert: {codes}. Als Persona steuert er den Top-Level-Agent mit vollem Tool-Zugriff — vor Verwendung prüfen.",
         "confirmAttachAction": "Trotzdem anhängen",
         "confirmAttachHighRisk": "Der heuristische Scan dieses Skills zeigt hohes Risiko ({codes}). Als Persona steuert er den Top-Level-Agent mit vollem Tool-Zugriff. Bestätige, dass du ihn geprüft hast, bevor du ihn anhängst."
-      }
+      },
+      "facilitatorsNote": "Facilitatoren sind hier nicht aufgeführt: Channels, Sub-Agenten, Tools, MCP-Server und Zeitpläne lassen sich mit ihnen nicht verdrahten."
     }
   },
   "selfExtension": {
@@ -2949,7 +2950,8 @@
         "consultation": "Ein Facilitator konsultiert keine anderen Agenten und wird von ihnen nicht konsultiert.",
         "sub_agent": "Ein Facilitator hat keine Sub-Agenten und lässt sich an keinen anderen Agenten anhängen.",
         "assistance": "Ein Facilitator ist kein Assistent. Er moderiert ausschließlich.",
-        "unknown": "Das steht für einen Facilitator nicht zur Verfügung."
+        "unknown": "Das steht für einen Facilitator nicht zur Verfügung.",
+        "channel_binding": "Ein Facilitator lässt sich an keinen Channel binden. Er nimmt unter eigener Teams-Identität an einer Unterhaltung teil und wird nie per Routing angesprochen."
       },
       "issues": {
         "persona_axis_above_bound": "{axis}: für einen Facilitator höchstens {bound}.",

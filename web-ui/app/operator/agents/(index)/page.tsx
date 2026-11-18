@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import { getLocale, getTranslations } from 'next-intl/server';
 
 import { redirectIfUnauthorized } from '../../../_lib/authRedirect';
-import { listOperatorAgents } from '../../../_lib/agents';
+import { isFacilitatorAgent, listOperatorAgents } from '../../../_lib/agents';
 import { listOperatorChannels } from '../../../_lib/channels';
 import { fetchNavEntries } from '../../../_lib/navigation';
 import { runtimeUnavailableCause } from '../../../_lib/runtimeReadiness';
@@ -104,7 +104,14 @@ export default async function OperatorAgentsPage(): Promise<React.ReactElement> 
           </p>
         </header>
         {channels.status === 'fulfilled' ? (
-          <ChannelsDashboard initial={channels.value} />
+          <ChannelsDashboard
+            initial={channels.value}
+            facilitatorSlugs={
+              agents.status === 'fulfilled'
+                ? agents.value.agents.filter(isFacilitatorAgent).map((a) => a.slug)
+                : []
+            }
+          />
         ) : channelsAwaitSetup ? (
           <p
             data-testid="channels-await-setup"

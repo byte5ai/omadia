@@ -11,9 +11,17 @@ import {
   type ChannelsListDto,
   type OperatorChannelDto,
 } from '../../../_lib/channels';
+import { useFacilitatorRefusalMessage } from '../../agents/_components/useFacilitatorCopy';
 
 interface Props {
   initial: ChannelsListDto;
+  /**
+   * #2066 — slugs of facilitator-kind agents. A facilitator is never routed
+   * to: it joins a conversation under its own Teams identity, and the kernel
+   * refuses a binding with 409 `facilitator_omission`. So it is not offered
+   * as a target. The channels route does not report `kind`, hence the prop.
+   */
+  facilitatorSlugs?: readonly string[];
 }
 
 /**
@@ -27,13 +35,20 @@ interface Props {
  * the channel plugin no longer reports it (uninstalled, config drift).
  * The operator can clear them with one click.
  */
-export function ChannelsDashboard({ initial }: Props): React.ReactElement {
+export function ChannelsDashboard({
+  initial,
+  facilitatorSlugs,
+}: Props): React.ReactElement {
   const t = useTranslations('operatorChannels');
   const format = useFormatter();
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const refusalMessage = useFacilitatorRefusalMessage();
+  const bindableAgents = initial.agents.filter(
+    (a) => a.kind !== 'facilitator' && !(facilitatorSlugs ?? []).includes(a.slug),
+  );
 
   function run(label: string, op: () => Promise<unknown>): void {
     setError(null);
@@ -43,7 +58,7 @@ export function ChannelsDashboard({ initial }: Props): React.ReactElement {
         startTransition(() => router.refresh());
       })
       .catch((err: unknown) => {
-        setError(humanizeApiError(err));
+        setError(refusalMessage(err) ?? humanizeApiError(err));
       })
       .finally(() => setBusy(null));
   }
@@ -164,7 +179,7 @@ export function ChannelsDashboard({ initial }: Props): React.ReactElement {
                         fallback: initial.fallback_slug ?? '—',
                       })}
                     </option>
-                    {initial.agents.map((a) => (
+                    {bindableAgents.map((a) => (
                       <option key={a.slug} value={a.slug}>
                         {a.slug}
                       </option>

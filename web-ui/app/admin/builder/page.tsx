@@ -5,6 +5,7 @@ import { useTranslations } from 'next-intl';
 import { useEffect, useState } from 'react';
 
 import {
+  isFacilitatorAgent,
   listOperatorAgents,
   type OperatorAgentDto,
 } from '../../_lib/agents';
@@ -20,7 +21,7 @@ const BuilderCanvas = dynamic(() => import('./BuilderCanvas'), {
 
 type State =
   | { kind: 'loading' }
-  | { kind: 'ready'; agents: OperatorAgentDto[] }
+  | { kind: 'ready'; agents: OperatorAgentDto[]; hasFacilitators: boolean }
   | { kind: 'error'; message: string };
 
 /**
@@ -40,8 +41,16 @@ export default function BuilderPage(): React.ReactElement {
       try {
         const res = await listOperatorAgents();
         if (!alive) return;
-        setState({ kind: 'ready', agents: res.agents });
-        const first = res.agents.length > 0 ? res.agents[0] : undefined;
+        // #2066 — a facilitator has nothing to wire on the canvas: channel
+        // bindings, sub-agents, tools, MCP servers and schedules are each
+        // refused by the kernel for the kind. It is not offered here.
+        const wireable = res.agents.filter((a) => !isFacilitatorAgent(a));
+        setState({
+          kind: 'ready',
+          agents: wireable,
+          hasFacilitators: wireable.length < res.agents.length,
+        });
+        const first = wireable.length > 0 ? wireable[0] : undefined;
         if (first) setSlug(first.slug);
       } catch (err) {
         if (!alive) return;
@@ -93,6 +102,14 @@ export default function BuilderPage(): React.ReactElement {
         {state.kind === 'error' && (
           <p className="px-6 py-6 text-sm text-[color:var(--danger)]">
             {t('loadError')}: {state.message}
+          </p>
+        )}
+        {state.kind === 'ready' && state.hasFacilitators && (
+          <p
+            data-testid="builder-facilitators-note"
+            className="border-b border-[color:var(--border)] px-6 py-2 text-xs text-[color:var(--fg-muted)]"
+          >
+            {t('facilitatorsNote')}
           </p>
         )}
         {state.kind === 'ready' && slug && <BuilderCanvas slug={slug} />}
