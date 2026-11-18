@@ -64,6 +64,7 @@ logs/
 CLAUDE.local.md
 .aider*
 .cursor/
+.amp/portals/
 
 # ─── Coverage / test artifacts ────────────────────────────────────────────
 coverage/

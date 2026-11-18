@@ -57,6 +57,14 @@ Benefits:
 Pattern: thin proxy handler → typed client → upstream API. Document the
 proxy contract next to the handler, not in the agent prompt.
 
+One outbound call is not agent-initiated: the cost dashboard fetches the ECB's
+public daily exchange-rate file
+(`https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml`) for its EUR
+view (`harness-usage-telemetry/src/exchangeRate.ts`). It is an unauthenticated
+GET to a fixed URL; it sends no credentials and no install data, and it runs at
+most every 6 h (10 min after a failure). Air-gapped or egress-restricted
+installs set `USAGE_FX_DISABLED=true`; the dashboard then stays in USD.
+
 ## 3. Scope-locked sub-agent tools
 
 Sub-agents operate with a `sessionScope` that constrains what they can read
