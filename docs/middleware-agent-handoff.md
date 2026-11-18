@@ -5493,6 +5493,15 @@ abgelehnt (Sub-Agent kriegt `Error: hr_red_line_field — field \`wage\``
 
 ## 13. Offene Roadmap
 
+- **Agenten als virtuelle Mitarbeiter, kein Orchestrator (#2042), native
+  Facilitators (#2043): Specs im Entwurf.** `specs/2042-agents-as-virtual-employees/`
+  und `specs/2043-native-facilitators/` legen das Zielmodell fest: nur Agenten plus
+  eine deterministische Verwaltungsebene, kein Orchestrator-Agent, keine versteckten
+  Sub-Agents, kein Super-Agent ab Werk, Facilitator als eigene Agent-Art statt Plugin.
+  Ohne Kompatibilitätsschicht, weil es noch keine Kundeninstallationen gibt. Die
+  Abschnitte dieses Dokuments zu Sub-Agents, Direct Line, Persona-Skills und
+  Fallback-Agent beschreiben den Stand vor dem Umbau.
+
 - **Teams-SSO für Plugin-Routen (#1620): Kernel-Modus erledigt.** Offen:
   channel-teams auf den Kernel-Verifier umstellen (eigene Kopie in
   `teamsTabAuth.ts`); Hydration interaktiver `react-ssr`-Seiten im Teams-Tab
