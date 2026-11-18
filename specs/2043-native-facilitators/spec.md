@@ -711,7 +711,7 @@ participant.
 | Participants who left | What was posted while they were members; nothing after. |
 | Initiator | The same as participants, plus the report, as long as they are an active participant. Leaving the conversation ends the initiator role: later contributions and the report are no longer sent to them; the group is told. |
 | Session-only participants | The session agenda and what was posted in the linked session conversation; the session summary. |
-| Confirmed stakeholders | Only the final protocol with its result status and next steps sent to them (§5.11), filtered per recipient by discretion (AVE §5.11): the filter works on whole, separately labelled parts of the protocol (decisions, next steps, contributions, summaries); a model-written summary carries all labels of its turn, so if the recipient may not know one of them, the summary is withheld as a whole or regenerated from permitted parts only. A note that something was left out appears only where the recipient's disclosure level is at least `existence`; with `none` there is neither content nor a hint. Recipients are re-checked at every send; a participant who left is no longer a recipient. |
+| Confirmed stakeholders | Only the facilitation protocol with its result status and next steps sent to them (§5.11), filtered per recipient by discretion (AVE §5.11): the filter works on whole, separately labelled parts of the protocol (decisions, next steps, contributions, summaries); a model-written summary carries all labels of its turn, so if the recipient may not know one of them, the summary is withheld as a whole or regenerated from permitted parts only. A note that something was left out appears only where the recipient's disclosure level is at least `existence`; with `none` there is neither content nor a hint. Recipients are re-checked at every send; a participant who left is no longer a recipient. |
 | Other users | Nothing. |
 | Operator | Facilitation metadata (facilitator, conversation, phase, counts, timestamps). Contents and protocol only through an audited access with a stated reason. |
 
@@ -750,7 +750,7 @@ one facilitation:
 
 | Capability | Allowed | Never |
 |---|---|---|
-| **Protocol dispatch** | Send the final protocol of this facilitation, visibly marked with its result status (published, confirmed, not confirmed with the objection, or abort report), and its agreed next steps to its participants and confirmed stakeholders, through the channel or mail. | Send anything else, to anyone else; read mailboxes. |
+| **Protocol dispatch** | Send the session protocols and the facilitation protocol of this facilitation, each only to its own recipients and visibly marked with its result status (published, confirmed, not confirmed with the objection, or abort report), and its agreed next steps to its participants and confirmed stakeholders, through the channel or mail. | Send anything else, to anyone else; read mailboxes. |
 | **Follow-up scheduling** | Read free/busy (no event details) of participants and confirmed stakeholders for the follow-up meetings the group agreed; create the invitations with agenda and protocol link. | Read calendar contents; change or cancel other events; invite people the group did not agree on. |
 
 **Two kinds of protocol.** A *session protocol* covers one session; its recipients are
