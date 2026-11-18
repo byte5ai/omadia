@@ -31,11 +31,11 @@ describe('bundled pattern catalog', () => {
     );
   });
 
-  it('facilitation v5 hands the conversationId to every tool-calling step', () => {
+  it('facilitation v6 hands the conversationId to every tool-calling step', () => {
     const catalog = loadPatternCatalog({ log: () => undefined });
     const facilitation = catalog.get('facilitation');
     assert.ok(facilitation);
-    assert.equal((facilitation as { version?: number }).version, 5);
+    assert.equal((facilitation as { version?: number }).version, 6);
     // A restarted plugin resolves the facilitation by conversationId; without it
     // in the prompt the tick falls back to "latest" and can hit the wrong one.
     const prompts = new Map(
