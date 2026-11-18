@@ -75,6 +75,21 @@ export interface TurnOrigin {
    * start a moderation only where this says `group`.
    */
   readonly conversationType?: 'direct' | 'group';
+  /**
+   * The channel-native id of the conversation this turn came from, exactly
+   * as the adapter uses it for conversation references, message
+   * subscriptions (`isAllMessagesSubscribed`, `emitConversationMessage`) and
+   * posts (#2043). STATED by the channel so that nobody has to take the
+   * session scope apart: {@link scope} folds in adapter-specific parts (a
+   * channel prefix, a bot key) that are not part of the id.
+   *
+   * Opaque to the kernel: never parsed, trimmed or re-cased. Where the
+   * platform has one id per thread (a Teams channel:
+   * `19:…@thread.tacv2;messageid=<root>`), that per-thread id is the
+   * conversation. Absent = the adapter predates the field, and consumers
+   * fall back to reading the scope.
+   */
+  readonly channelConversationId?: string;
 }
 
 /** The memory axes a turn may reach, in the scope grammar of design §3. */

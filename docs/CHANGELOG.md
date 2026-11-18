@@ -58,6 +58,13 @@ changelog.
   identity yield, instead of skipping both steps once a catalog app exists.
 - An install answered 404 right after the catalog upload is waited out like
   the 400 was.
+- A facilitator with its own Teams identity could not start a facilitation:
+  its tools were told a conversation id that still carried the bot key
+  (`28:<appId>-19:…`), taken from the session scope. A channel now states its
+  native conversation id on the turn origin (`TurnOrigin.channelConversationId`,
+  channel-sdk 0.3.1) and the kernel uses it as given, per thread in a Teams
+  channel; reading the scope remains as a fallback and handles the bot-key
+  form. A refused readiness check logs its cause and the id once.
 - A provisioned Teams bot is served as soon as its app is published in the
   org catalog, before the team/chat install. A refused install no longer
   leaves a bot users can add personally and that never answers.
