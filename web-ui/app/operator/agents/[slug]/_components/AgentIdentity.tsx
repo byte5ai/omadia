@@ -32,6 +32,7 @@ import type { PersonaAxisKey } from '../../../../_lib/personaTypes';
 import type { QualityConfig } from '../../../../_lib/builderTypes';
 import { detectPersonaConflicts } from '../../../../_lib/personaConflicts';
 import type { PersonaConfig } from '../../../../_lib/personaTypes';
+import { LOCALES } from '@/i18n/locales';
 import { humanizeApiError } from '../../_components/AgentsDashboard';
 import {
   useFacilitatorIssueText,
@@ -97,6 +98,8 @@ interface IdentityForm {
   accentColor: string;
   /** One of `ANSWER_VERBOSITY_LEVELS`, or `''` = inherit the installation default. */
   verbosity: string;
+  /** BCP 47 tag, or `''` = the installation language. */
+  language: string;
 }
 
 const EMPTY_FORM: IdentityForm = {
@@ -106,6 +109,7 @@ const EMPTY_FORM: IdentityForm = {
   instructions: '',
   accentColor: '',
   verbosity: '',
+  language: '',
 };
 
 const TABS = ['profile', 'character', 'boundaries', 'prompt'] as const;
@@ -122,6 +126,7 @@ function toForm(dto: AgentIdentityDto): IdentityForm {
     instructions: i.instructions ?? '',
     accentColor: i.accent_color ?? '',
     verbosity: i.verbosity ?? '',
+    language: i.language ?? '',
   };
 }
 
@@ -138,7 +143,8 @@ function sameForm(a: IdentityForm, b: IdentityForm): boolean {
     a.longDescription.trim() === b.longDescription.trim() &&
     a.instructions.trim() === b.instructions.trim() &&
     a.accentColor.trim() === b.accentColor.trim() &&
-    a.verbosity === b.verbosity
+    a.verbosity === b.verbosity &&
+    a.language === b.language
   );
 }
 
@@ -281,6 +287,9 @@ export function AgentIdentity(props: AgentIdentityProps): React.ReactElement {
       // The select can only hold a known level or '' (inherit); the guard keeps
       // the wire type honest without a cast.
       verbosity: isAnswerVerbosity(form.verbosity) ? form.verbosity : null,
+      // Sent for every agent, also where the control is not shown: the PUT
+      // replaces the document, and an absent language would clear it.
+      language: trimmedOrNull(form.language),
       persona: compact(persona),
       quality: compact(quality),
     }),
@@ -546,6 +555,38 @@ export function AgentIdentity(props: AgentIdentityProps): React.ReactElement {
                     </select>
                     <p className={HINT_CLASS}>{t('fields.verbosityHint')}</p>
                   </div>
+                  {isFacilitator && (
+                    <div>
+                      <label
+                        className={LABEL_CLASS}
+                        htmlFor="agent-identity-language"
+                      >
+                        {t('fields.language')}
+                      </label>
+                      <select
+                        id="agent-identity-language"
+                        className={FIELD_CLASS}
+                        value={form.language}
+                        disabled={disabled}
+                        onChange={(e) => editField('language', e.target.value)}
+                      >
+                        <option value="">{t('fields.languageInherit')}</option>
+                        {LOCALES.map((locale) => (
+                          <option key={locale} value={locale}>
+                            {t(`fields.languageOptions.${locale}`)}
+                          </option>
+                        ))}
+                        {/* A tag set through the API that this UI has no name
+                            for (`de-CH`) stays selectable, so a save does not
+                            silently replace it. */}
+                        {form.language !== '' &&
+                          !(LOCALES as readonly string[]).includes(form.language) && (
+                            <option value={form.language}>{form.language}</option>
+                          )}
+                      </select>
+                      <p className={HINT_CLASS}>{t('fields.languageHint')}</p>
+                    </div>
+                  )}
                   <div className="md:col-span-2">
                     <label
                       className={LABEL_CLASS}

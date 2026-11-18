@@ -27,8 +27,10 @@ import {
  *     `facilitationEngine@1` and reports itself available (which it does not
  *     without its SQL grant). The kernel answers this on
  *     `GET /v1/operator/agents/facilitation-engine`.
- *  3. THAT ENGINE IS GRANTED TO THIS FACILITATOR — the only plugin grant the
- *     kernel accepts for the kind.
+ *  3. THAT ENGINE IS ATTACHED TO THIS FACILITATOR. The kernel attaches it by
+ *     itself (at create, when an engine is installed or replaced, at boot),
+ *     so a missing or switched-off row is a fault to repair, not a step the
+ *     operator normally takes.
  */
 
 /** How often an unready facilitator is re-checked while the page is open:
@@ -107,17 +109,27 @@ export function useFacilitationEngine(revision = 0): FacilitationEngineLoad {
   return load;
 }
 
-/** Is the instance's engine granted (enabled) to this facilitator? */
-export function isEngineGranted(
+/**
+ * The facilitator's grant row for the instance's engine.
+ *
+ *  - `attached`: the row exists and is enabled — the normal case.
+ *  - `disabled`: the row exists but was switched off. The kernel leaves an
+ *    existing row alone, so it stays off until someone repairs it.
+ *  - `missing`: no row, although an engine is installed.
+ *  - `no_engine`: there is no single engine to attach (or it is not known).
+ */
+export type EngineGrantState = 'attached' | 'disabled' | 'missing' | 'no_engine';
+
+export function engineGrantState(
   agent: Pick<OperatorAgentDto, 'plugins'>,
   engine: FacilitationEngineLoad,
-): boolean {
-  if (engine.phase !== 'loaded') return false;
+): EngineGrantState {
+  if (engine.phase !== 'loaded') return 'no_engine';
   const pluginId = facilitationEnginePluginId(engine.status);
-  return (
-    pluginId !== null &&
-    agent.plugins.some((p) => p.id === pluginId && p.enabled)
-  );
+  if (pluginId === null) return 'no_engine';
+  const row = agent.plugins.find((p) => p.id === pluginId);
+  if (!row) return 'missing';
+  return row.enabled ? 'attached' : 'disabled';
 }
 
 const NOTICE_CLASS =
@@ -218,8 +230,8 @@ export function FacilitatorReadiness(
   }
 
   const engineReady = engine.phase === 'loaded' && engine.status.state === 'ready';
-  const granted = isEngineGranted(agent, engine);
-  const ready = teams === 'ready' && engineReady && granted;
+  const grant = engineGrantState(agent, engine);
+  const ready = teams === 'ready' && engineReady && grant === 'attached';
 
   if (ready) {
     return (
@@ -252,9 +264,9 @@ export function FacilitatorReadiness(
         {!engineReady && (
           <li data-testid="facilitator-readiness-engine">{t('engineNotReady')}</li>
         )}
-        {engineReady && !granted && (
-          <li data-testid="facilitator-readiness-grant">
-            {t('engineNotGranted')}{' '}
+        {engineReady && (grant === 'missing' || grant === 'disabled') && (
+          <li data-testid="facilitator-readiness-grant" data-grant-state={grant}>
+            {t(grant === 'disabled' ? 'engineDisabled' : 'engineMissing')}{' '}
             <Link href={facilitatorEngineHref(agent.slug)} className="underline">
               {t('engineLink')}
             </Link>

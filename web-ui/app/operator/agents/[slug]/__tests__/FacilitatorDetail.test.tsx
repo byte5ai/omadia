@@ -14,8 +14,9 @@ import { AgentDetail } from '../_components/AgentDetail';
  *      with other agents, memory. One line says why. None of their read
  *      models are fetched.
  *   2. IDENTITY RUNS IN FACILITATOR MODE, Teams provisioning is reused.
- *   3. THE ENGINE IS THE ONE GRANT: granted with a replace-set of exactly
- *      that plugin; a refusal is shown as its catalogue sentence.
+ *   3. THE ENGINE IS ATTACHED BY THE KERNEL: the page shows the state and
+ *      has no call to action in the normal case. A missing or switched-off
+ *      row gets a repair, a replace-set of exactly that plugin.
  *   4. A STANDARD AGENT KEEPS EVERY TAB and gets no engine tab.
  */
 
@@ -159,34 +160,63 @@ describe('AgentDetail — facilitator (#2066)', () => {
     expect(screen.getByTestId('agent-teams-installs')).toBeTruthy();
   });
 
-  it('grants the engine as the only plugin', async () => {
+  const ATTACHED = { id: ENGINE.id, enabled: true, config: {} };
+
+  it('shows the automatically attached engine without a call to action', async () => {
+    mockEngine.mockResolvedValue({ state: 'ready', pluginId: ENGINE.id });
+    mockTeams.mockResolvedValue({ state: 'installed' });
+    renderWithIntl(<AgentDetail agent={agent({ plugins: [ATTACHED] })} isFallback={false} />);
+    await waitFor(() =>
+      expect(screen.getByTestId('facilitator-readiness').getAttribute('data-ready')).toBe('true'),
+    );
+    await userEvent.click(screen.getByTestId('agent-detail-tab-engine'));
+    const state = await screen.findByTestId('facilitator-engine-grant-state');
+    expect(state.getAttribute('data-grant-state')).toBe('attached');
+    expect(state.textContent).toBe('Attached');
+    expect(screen.queryByTestId('facilitator-engine-repair')).toBeNull();
+    expect(screen.getByTestId('facilitator-engine-panel').textContent).toContain(
+      'attached automatically',
+    );
+  });
+
+  it('offers a repair when the engine row is missing', async () => {
     mockEngine.mockResolvedValue({ state: 'ready', pluginId: ENGINE.id });
     mockTeams.mockResolvedValue({ state: 'installed' });
     mockReplace.mockResolvedValue(undefined);
     renderWithIntl(<AgentDetail agent={agent()} isFallback={false} />);
+    const reason = await screen.findByTestId('facilitator-readiness-grant');
+    expect(reason.getAttribute('data-grant-state')).toBe('missing');
     await userEvent.click(screen.getByTestId('agent-detail-tab-engine'));
-    await userEvent.click(await screen.findByTestId('facilitator-engine-grant'));
+    expect(
+      (await screen.findByTestId('facilitator-engine-grant-state')).getAttribute('data-grant-state'),
+    ).toBe('missing');
+    await userEvent.click(screen.getByTestId('facilitator-engine-repair'));
     await waitFor(() =>
       expect(mockReplace).toHaveBeenCalledWith('mona', [{ id: ENGINE.id, enabled: true }]),
     );
     await waitFor(() => expect(mockRefresh).toHaveBeenCalled());
   });
 
-  it('shows the engine as granted when its row is enabled', async () => {
+  it('offers a repair when the engine row is switched off', async () => {
     mockEngine.mockResolvedValue({ state: 'ready', pluginId: ENGINE.id });
     mockTeams.mockResolvedValue({ state: 'installed' });
     renderWithIntl(
       <AgentDetail
-        agent={agent({ plugins: [{ id: ENGINE.id, enabled: true, config: {} }] })}
+        agent={agent({ plugins: [{ ...ATTACHED, enabled: false }] })}
         isFallback={false}
       />,
     );
+    const reason = await screen.findByTestId('facilitator-readiness-grant');
+    expect(reason.getAttribute('data-grant-state')).toBe('disabled');
+    expect(reason.textContent).toContain('switched off');
     await userEvent.click(screen.getByTestId('agent-detail-tab-engine'));
-    expect(await screen.findByTestId('facilitator-engine-granted')).toBeTruthy();
-    expect(screen.queryByTestId('facilitator-engine-grant')).toBeNull();
+    expect((await screen.findByTestId('facilitator-engine-grant-state')).textContent).toBe(
+      'Switched off for this facilitator',
+    );
+    expect(screen.getByTestId('facilitator-engine-repair')).toBeTruthy();
   });
 
-  it('shows a refused grant as its catalogue sentence', async () => {
+  it('shows a refused repair as its catalogue sentence', async () => {
     mockEngine.mockResolvedValue({ state: 'ready', pluginId: ENGINE.id });
     mockTeams.mockResolvedValue({ state: 'installed' });
     mockReplace.mockRejectedValue(
@@ -203,7 +233,7 @@ describe('AgentDetail — facilitator (#2066)', () => {
     );
     renderWithIntl(<AgentDetail agent={agent()} isFallback={false} />);
     await userEvent.click(screen.getByTestId('agent-detail-tab-engine'));
-    await userEvent.click(await screen.findByTestId('facilitator-engine-grant'));
+    await userEvent.click(await screen.findByTestId('facilitator-engine-repair'));
     const alert = await screen.findByRole('alert');
     expect(alert.textContent).toContain('only gets the tools of the facilitation engine');
     expect(alert.textContent).toContain(ENGINE.id);

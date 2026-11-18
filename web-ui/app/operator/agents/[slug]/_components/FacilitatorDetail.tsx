@@ -16,7 +16,7 @@ import { humanizeApiError } from '../../_components/AgentsDashboard';
 import {
   FacilitationEngineNotice,
   FacilitatorReadiness,
-  isEngineGranted,
+  engineGrantState,
   useFacilitationEngine,
   useFacilitatorTeamsState,
   type FacilitationEngineLoad,
@@ -39,8 +39,10 @@ import { AgentTeamsInstalls } from './AgentTeamsInstalls';
  * time, so offering the control would only offer a refusal. One line says
  * why, so the missing tabs read as a decision and not as a bug.
  *
- * In place of the plugin editor there is ONE grant to make: the facilitation
- * engine, the single plugin a facilitator may hold.
+ * In place of the plugin editor there is ONE grant to look at: the
+ * facilitation engine, the single plugin a facilitator may hold. The kernel
+ * attaches it by itself; this page shows the state and offers a repair only
+ * when the row is missing or switched off.
  */
 interface FacilitatorDetailProps {
   readonly agent: OperatorAgentDto;
@@ -51,7 +53,7 @@ export function FacilitatorDetail(
 ): React.ReactElement {
   const t = useTranslations('operatorAgents.facilitator');
   const { agent } = props;
-  // Bumped after the engine grant is written, so the status is read again.
+  // Bumped after the engine grant is repaired, so the status is read again.
   const [engineRevision, setEngineRevision] = useState(0);
   const engine = useFacilitationEngine(engineRevision);
   const teams = useFacilitatorTeamsState(agent.slug);
@@ -87,7 +89,7 @@ export function FacilitatorDetail(
             <FacilitatorEnginePanel
               agent={agent}
               engine={engine}
-              onGranted={() => setEngineRevision((r) => r + 1)}
+              onRepaired={() => setEngineRevision((r) => r + 1)}
             />
           ),
         }}
@@ -99,7 +101,7 @@ export function FacilitatorDetail(
 function FacilitatorEnginePanel(props: {
   readonly agent: OperatorAgentDto;
   readonly engine: FacilitationEngineLoad;
-  readonly onGranted: () => void;
+  readonly onRepaired: () => void;
 }): React.ReactElement {
   const t = useTranslations('operatorAgents.facilitator.engine');
   const tError = useTranslations('operatorAgents');
@@ -112,16 +114,18 @@ function FacilitatorEnginePanel(props: {
 
   const pluginId =
     engine.phase === 'loaded' ? facilitationEnginePluginId(engine.status) : null;
-  const granted = isEngineGranted(agent, engine);
+  const grant = engineGrantState(agent, engine);
 
-  function grant(pluginId: string): void {
+  function repair(pluginId: string): void {
     setError(null);
     setBusy(true);
     // The engine is the ONLY grant a facilitator may hold, so the replace-set
-    // is exactly that one row — any other row would be refused anyway.
+    // is exactly that one row — any other row would be refused anyway. It
+    // covers both faults: it inserts a missing row and re-enables a
+    // switched-off one.
     replaceAgentPlugins(agent.slug, [{ id: pluginId, enabled: true }])
       .then(() => {
-        props.onGranted();
+        props.onRepaired();
         startTransition(() => router.refresh());
       })
       .catch((err: unknown) => {
@@ -173,27 +177,36 @@ function FacilitatorEnginePanel(props: {
           >
             {t('openPlugin')}
           </Link>
-          <span className="ml-auto">
-            {granted ? (
-              <span
-                data-testid="facilitator-engine-granted"
-                className="text-xs font-medium text-[color:var(--success)]"
-              >
-                {t('granted')}
-              </span>
-            ) : (
+          <span
+            data-testid="facilitator-engine-grant-state"
+            data-grant-state={grant}
+            className={`ml-auto text-xs font-medium ${
+              grant === 'attached'
+                ? 'text-[color:var(--success)]'
+                : 'text-[color:var(--warning)]'
+            }`}
+          >
+            {grant === 'attached' && t('attached')}
+            {grant === 'disabled' && t('disabled')}
+            {grant === 'missing' && t('missing')}
+          </span>
+          {(grant === 'missing' || grant === 'disabled') && (
+            <div className="flex w-full flex-wrap items-center gap-3">
+              <p className="flex-1 text-xs text-[color:var(--fg-muted)]">
+                {t('repairHint')}
+              </p>
               <Button
                 type="button"
-                variant="primary"
+                variant="secondary"
                 size="sm"
                 disabled={busy || pending}
-                onClick={() => grant(pluginId)}
-                data-testid="facilitator-engine-grant"
+                onClick={() => repair(pluginId)}
+                data-testid="facilitator-engine-repair"
               >
-                {busy ? t('granting') : t('grant')}
+                {busy ? t('repairing') : t('repair')}
               </Button>
-            )}
-          </span>
+            </div>
+          )}
         </div>
       )}
     </section>

@@ -2548,6 +2548,13 @@
           "standard": "Standard — Auslieferungszustand",
           "detailed": "Ausführlich — mit Begründung, Quellen und Annahmen",
           "max": "Maximal — alle Zwischenschritte, Rohwerte und Unsicherheiten"
+        },
+        "language": "Sprache",
+        "languageInherit": "Sprache der Installation",
+        "languageHint": "In dieser Sprache spricht der Facilitator. Ohne Auswahl gilt die Sprache der Installation.",
+        "languageOptions": {
+          "de": "Deutsch",
+          "en": "Englisch"
         }
       },
       "republish": {
@@ -2971,12 +2978,13 @@
         },
         "teamsLink": "Teams-Einrichtung öffnen",
         "engineNotReady": "Auf dieser Instanz läuft keine Facilitation-Engine.",
-        "engineNotGranted": "Die Facilitation-Engine ist diesem Facilitator noch nicht freigegeben.",
-        "engineLink": "Engine freigeben"
+        "engineLink": "Beheben",
+        "engineMissing": "Die Facilitation-Engine ist diesem Facilitator nicht angehängt, obwohl das normalerweise automatisch geschieht.",
+        "engineDisabled": "Die Facilitation-Engine ist für diesen Facilitator abgeschaltet."
       },
       "engine": {
         "heading": "Facilitation-Engine",
-        "hint": "Das Engine-Plugin führt die Facilitations aus. Es ist das einzige Plugin, das ein Facilitator erhalten darf.",
+        "hint": "Das Engine-Plugin führt die Facilitations aus. Es ist das einzige Plugin, das ein Facilitator erhalten darf, und wird automatisch angehängt.",
         "loading": "Facilitation-Engine wird geprüft",
         "loadFailed": "Die Facilitation-Engine ließ sich nicht prüfen. Der Server hat die Statusabfrage nicht beantwortet.",
         "none": "Es ist keine Facilitation-Engine installiert. Facilitatoren lassen sich anlegen, können aber erst moderieren, wenn das Engine-Plugin installiert ist.",
@@ -2984,12 +2992,15 @@
         "openStore": "Plugin-Store öffnen",
         "openPlugin": "Plugin öffnen",
         "openGrants": "Datenbankzugriff freigeben",
-        "nothingToGrant": "Es gibt noch keine Engine, die sich freigeben lässt.",
-        "granted": "Diesem Facilitator freigegeben",
-        "grant": "Diesem Facilitator freigeben",
-        "granting": "Wird freigegeben",
+        "nothingToGrant": "Es gibt noch keine einzelne Engine zum Anhängen. Sobald genau eine installiert ist, wird sie automatisch angehängt.",
         "unavailable": "Die Facilitation-Engine „{plugin}“ ist installiert, kann aber noch keine Facilitations ausführen. Meist fehlt die Freigabe für den Datenbankzugriff.",
-        "reportedReason": "Die Engine meldet: {detail}"
+        "reportedReason": "Die Engine meldet: {detail}",
+        "attached": "Angehängt",
+        "disabled": "Für diesen Facilitator abgeschaltet",
+        "missing": "Nicht angehängt",
+        "repairHint": "Die Engine wird normalerweise ohne Zutun angehängt. Hier ist das nicht geschehen oder wurde rückgängig gemacht; erneutes Anhängen behebt das.",
+        "repair": "Engine anhängen",
+        "repairing": "Wird angehängt"
       },
       "detail": {
         "kindHeading": "Facilitator"
