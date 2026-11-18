@@ -2993,14 +2993,20 @@
         "openPlugin": "Plugin öffnen",
         "openGrants": "Datenbankzugriff freigeben",
         "nothingToGrant": "Es gibt noch keine einzelne Engine zum Anhängen. Sobald genau eine installiert ist, wird sie automatisch angehängt.",
-        "unavailable": "Die Facilitation-Engine „{plugin}“ ist installiert, kann aber noch keine Facilitations ausführen. Meist fehlt die Freigabe für den Datenbankzugriff.",
-        "reportedReason": "Die Engine meldet: {detail}",
         "attached": "Angehängt",
         "disabled": "Für diesen Facilitator abgeschaltet",
         "missing": "Nicht angehängt",
         "repairHint": "Die Engine wird normalerweise ohne Zutun angehängt. Hier ist das nicht geschehen oder wurde rückgängig gemacht; erneutes Anhängen behebt das.",
         "repair": "Engine anhängen",
-        "repairing": "Wird angehängt"
+        "repairing": "Wird angehängt",
+        "ungranted": "Das Plugin „{plugin}“ kann die Facilitation-Engine sein, sein Datenbankzugriff ist aber nicht freigegeben. Bis dahin ist es nicht die Engine, und kein Facilitator kann moderieren.",
+        "unusable": {
+          "inactive": "Die Facilitation-Engine „{plugin}“ ist installiert, aber nicht aktiv.",
+          "not_reported": "Die Facilitation-Engine „{plugin}“ ist aktiv, hat aber noch nicht gemeldet, dass sie bereit ist.",
+          "engine_reported": "Die Facilitation-Engine „{plugin}“ meldet, dass sie nicht bereit ist.",
+          "unknown": "Die Facilitation-Engine „{plugin}“ kann gerade keine Facilitations ausführen."
+        },
+        "engineReasonLabel": "Meldung des Plugins im Wortlaut:"
       },
       "detail": {
         "kindHeading": "Facilitator"

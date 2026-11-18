@@ -2993,14 +2993,20 @@
         "openPlugin": "Open the plugin",
         "openGrants": "Grant database access",
         "nothingToGrant": "There is no single engine to attach yet. Once exactly one is installed, it is attached automatically.",
-        "unavailable": "The facilitation engine “{plugin}” is installed but cannot run facilitations yet. Usually its database access has not been granted.",
-        "reportedReason": "The engine reports: {detail}",
         "attached": "Attached",
         "disabled": "Switched off for this facilitator",
         "missing": "Not attached",
         "repairHint": "The engine is normally attached without anyone doing anything. Here that did not happen or was undone; attaching it again repairs this.",
         "repair": "Attach engine",
-        "repairing": "Attaching"
+        "repairing": "Attaching",
+        "ungranted": "The plugin “{plugin}” can be the facilitation engine, but its database access has not been granted. Until then it is not the engine and no facilitator can moderate.",
+        "unusable": {
+          "inactive": "The facilitation engine “{plugin}” is installed but not active.",
+          "not_reported": "The facilitation engine “{plugin}” is active but has not reported that it is ready.",
+          "engine_reported": "The facilitation engine “{plugin}” reports that it is not ready.",
+          "unknown": "The facilitation engine “{plugin}” cannot run facilitations right now."
+        },
+        "engineReasonLabel": "Message from the plugin, as it sent it:"
       },
       "detail": {
         "kindHeading": "Facilitator"

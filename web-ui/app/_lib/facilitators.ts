@@ -208,34 +208,56 @@ export function issueAxis(path: string): PersonaAxisKey | null {
 // ── facilitation engine ──────────────────────────────────────────────────
 
 /**
+ * Why a bound engine cannot run facilitations — `EngineUnusableReason` in
+ * `middleware/src/platform/facilitatorRuntimeService.ts`, without the three
+ * codes that are states of their own here. `unknown` is a code this client
+ * has no copy for yet.
+ */
+export const FACILITATION_ENGINE_UNUSABLE_REASONS = [
+  'inactive',
+  'not_reported',
+  'engine_reported',
+] as const;
+
+export type FacilitationEngineUnusableReason =
+  | (typeof FACILITATION_ENGINE_UNUSABLE_REASONS)[number]
+  | 'unknown';
+
+/**
  * Whether this instance can run a facilitation at all, as the kernel reports
  * it on `GET /v1/operator/agents/facilitation-engine`
- * (`middleware/src/routes/facilitationEngineStatus.ts`).
+ * (`middleware/src/routes/facilitationEngineStatus.ts`). The route answers
+ * with CODES; the sentences are this app's catalogue.
  *
- *  - `none`: no installed plugin provides `facilitationEngine@1`.
- *  - `ambiguous`: more than one does; the kernel refuses every grant until
- *    all but one are removed.
- *  - `unavailable`: one engine is installed but cannot run facilitations —
- *    typically the operator has not granted the database access its tables
- *    need. `reason` is the engine's own English sentence: detail, never the
- *    primary text.
- *  - `ready`: installed and usable.
+ *  - `none`: no installed plugin declares `facilitationEngine@1`.
+ *  - `ambiguous`: more than one does; nothing takes effect until all but one
+ *    are removed.
+ *  - `ungranted`: one plugin declares it but the operator has not granted its
+ *    SQL access. It is not the engine yet: nothing is attached to it.
+ *  - `unusable`: the engine is bound but cannot run facilitations. `reason`
+ *    is the kernel's code; `engineReason` is the plugin's own untranslated
+ *    sentence (only with `engine_reported`) and is shown on its own, never
+ *    inside a translated sentence.
+ *  - `ready`: bound and usable.
  */
 export type FacilitationEngineStatus =
   | { readonly state: 'none' }
   | { readonly state: 'ambiguous'; readonly pluginIds: readonly string[] }
+  | { readonly state: 'ungranted'; readonly pluginId: string }
   | {
-      readonly state: 'unavailable';
+      readonly state: 'unusable';
       readonly pluginId: string;
-      readonly reason: string | null;
+      readonly reason: FacilitationEngineUnusableReason;
+      readonly engineReason: string | null;
     }
   | { readonly state: 'ready'; readonly pluginId: string };
 
-/** The engine plugin's id, when exactly one is installed. */
+/** The BOUND engine's id — the plugin the kernel attaches to facilitators.
+ *  An ungranted candidate is not bound, so it has none. */
 export function facilitationEnginePluginId(
   status: FacilitationEngineStatus,
 ): string | null {
-  return status.state === 'ready' || status.state === 'unavailable'
+  return status.state === 'ready' || status.state === 'unusable'
     ? status.pluginId
     : null;
 }
@@ -256,15 +278,26 @@ export function parseFacilitationEngineStatus(
       : [];
     return { state: 'ambiguous', pluginIds: ids };
   }
-  if (body.state !== 'bound' || typeof body.plugin_id !== 'string') return null;
+  if (typeof body.plugin_id !== 'string') return null;
+  if (body.state === 'ungranted') {
+    return { state: 'ungranted', pluginId: body.plugin_id };
+  }
+  if (body.state !== 'bound') return null;
   if (body.available === true) return { state: 'ready', pluginId: body.plugin_id };
+  const reason = (FACILITATION_ENGINE_UNUSABLE_REASONS as readonly string[]).includes(
+    String(body.reason_code),
+  )
+    ? (body.reason_code as FacilitationEngineUnusableReason)
+    : 'unknown';
   return {
-    state: 'unavailable',
+    state: 'unusable',
     pluginId: body.plugin_id,
-    reason:
-      typeof body.unavailable_reason === 'string' &&
-      body.unavailable_reason.trim().length > 0
-        ? body.unavailable_reason
+    reason,
+    engineReason:
+      reason === 'engine_reported' &&
+      typeof body.engine_reason === 'string' &&
+      body.engine_reason.trim().length > 0
+        ? body.engine_reason
         : null,
   };
 }

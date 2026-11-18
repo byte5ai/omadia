@@ -188,24 +188,56 @@ describe('AgentsDashboard — facilitators (#2066)', () => {
     expect(notice.querySelector('a')?.getAttribute('href')).toBe('/store');
   });
 
-  it('says that the installed engine is not usable and links to its grants', async () => {
+  it('asks for the SQL grant of an ungranted candidate and links to its grants', async () => {
+    mockEngine.mockResolvedValue({ state: 'ungranted', pluginId: ENGINE.id });
+    mockTeams.mockRejectedValue(teamsMissing());
+    renderWithIntl(<AgentsDashboard initial={list(FALLBACK, MONA)} />);
+    const notice = await screen.findByTestId('facilitation-engine-notice');
+    expect(notice.textContent).toContain('database access has not been granted');
+    expect(notice.querySelector('a')?.getAttribute('href')).toBe(
+      `/store/${encodeURIComponent(ENGINE.id)}#grants`,
+    );
+    expect(screen.getByTestId('facilitator-readiness-engine')).toBeTruthy();
+    // Nothing is attached to a candidate, so no repair is offered for it.
+    expect(screen.queryByTestId('facilitator-readiness-grant')).toBeNull();
+  });
+
+  it.each([
+    ['inactive', 'installed but not active'],
+    ['not_reported', 'has not reported that it is ready'],
+    ['unknown', 'cannot run facilitations right now'],
+  ] as const)('has a sentence for the reason code %s', async (reason, text) => {
     mockEngine.mockResolvedValue({
-      state: 'unavailable',
+      state: 'unusable',
       pluginId: ENGINE.id,
-      reason: 'The operator has not granted SQL access.',
+      reason,
+      engineReason: null,
     });
     mockTeams.mockRejectedValue(teamsMissing());
     renderWithIntl(<AgentsDashboard initial={list(FALLBACK, MONA)} />);
     const notice = await screen.findByTestId('facilitation-engine-notice');
-    expect(notice.textContent).toContain('cannot run facilitations yet');
+    expect(notice.textContent).toContain(text);
     expect(notice.querySelector('a')?.getAttribute('href')).toBe(
-      `/store/${encodeURIComponent(ENGINE.id)}#grants`,
+      `/store/${encodeURIComponent(ENGINE.id)}`,
     );
-    // The engine's own sentence is detail behind the catalogue text.
+    expect(screen.queryByTestId('facilitation-engine-reason')).toBeNull();
+  });
+
+  it('shows the engine plugin\'s own words apart from the translated sentence', async () => {
+    mockEngine.mockResolvedValue({
+      state: 'unusable',
+      pluginId: ENGINE.id,
+      reason: 'engine_reported',
+      engineReason: 'migrations not run',
+    });
+    mockTeams.mockRejectedValue(teamsMissing());
+    renderWithIntl(<AgentsDashboard initial={list(FALLBACK, MONA)} />, { locale: 'de' });
+    const notice = await screen.findByTestId('facilitation-engine-notice');
+    expect(notice.textContent).toContain('meldet, dass sie nicht bereit ist');
+    // Verbatim, in an element of its own.
     expect(screen.getByTestId('facilitation-engine-reason').textContent).toBe(
-      'The engine reports: The operator has not granted SQL access.',
+      'migrations not run',
     );
-    expect(screen.getByTestId('facilitator-readiness-engine')).toBeTruthy();
   });
 
   it('names the engines when more than one is installed', async () => {
@@ -234,7 +266,7 @@ describe('AgentsDashboard — facilitators (#2066)', () => {
   });
 
   it('offers no facilitations link while the engine is not usable', async () => {
-    mockEngine.mockResolvedValue({ state: 'unavailable', pluginId: ENGINE.id, reason: null });
+    mockEngine.mockResolvedValue({ state: 'ungranted', pluginId: ENGINE.id });
     mockTeams.mockRejectedValue(teamsMissing());
     renderWithIntl(
       <AgentsDashboard
