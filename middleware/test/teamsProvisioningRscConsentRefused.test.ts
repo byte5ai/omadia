@@ -89,7 +89,7 @@ function runnerWith(installError: () => Error) {
       },
     } as never,
     getProvisioner: () => provisioner,
-    buildMessagingEndpoint: (slug) => `https://mw.example.com/api/teams/${slug}/messages`,
+    buildMessagingEndpoint: (slug: string) => `https://mw.example.com/api/teams/${slug}/messages`,
     loadPackageAssets: async () => ({
       manifestTemplate: '{"id":"{{APP_ID}}"}',
       params: { APP_ID: 'app-123' },
