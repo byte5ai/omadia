@@ -35,7 +35,8 @@ Two consequences hold for every section below:
   personalities all break that feeling.
 - "Forgetting they are agents" describes the quality of the experience, never deception.
   Agents never claim to be human, and the AI disclosure of EU AI Act Art. 50
-  (`docs/ai-act-transparency.md`) stays on every answer.
+  (`docs/ai-act-transparency.md`) stays as the law requires, in the most discreet form the
+  channel offers (§5.14).
 
 omadia is a **team-first** AI OS, and a native orchestrator contradicts that by
 construction. An orchestrator is the single-assistant paradigm: one entity stands between
@@ -111,8 +112,11 @@ strength, stated honestly:
 
 **INV-4 Deterministic attribution.** Every user-visible message carries its speaker
 (agent id, display name, avatar; or `system`), stamped by the harness from the routing
-decision, never from model output. Every channel renders it: through the agent's own bot
-where one exists, otherwise as a harness-generated name line.
+decision, never from model output. It is always in the structured answer; it is shown to
+people the natural way: through the agent's own bot or account, or the name and avatar a
+chat UI shows anyway. A text name line appears only where the speaker would otherwise be
+unclear: a channel without per-agent identity in a conversation where more than one
+agent speaks, or the first answer after the speaker changed (§5.14).
 
 **INV-5 Visible collaboration only.** Agents may work together only as colleagues:
 - Consultation is off by default and configured per agent and per pair of agents.
@@ -214,7 +218,7 @@ audit (Codex, 2026-11-18) checked every change against the code and its history.
 | **Agent Builder output** ("Build your assistant", plugin of kind `agent` with persona) | The Builder creates **agents**: an `agents` row with identity and personality, plus, only where needed, a capability plugin the agent holds. A Builder specialist like the Strategist is directly addressable and speaks as itself. |
 | **Vendor domain plugins of kind `agent`** (for example HR, accounting) | Become **capability plugins** that may ship **agent templates** (§5.10). The manifest kind `agent` is removed. A team that wants an "HR colleague" creates an agent from the template or by hand and grants it the capability. |
 | **DB sub-agents** (`agent_subagents`, `ask_<name>`, Builder canvas node "Sub-Agent") | **Purpose:** helpers of one agent with their own (often cheaper) model, token and step budgets, a skill as prompt and a subset of the agent's tools, without the full conversation; this isolates context and cost (`middleware/packages/harness-orchestrator/src/registry/subAgentTools.ts`). **Conflict:** only where users meet them as a named specialist (the Strategist). **Adaptation:** kept as the agent's **internal helpers** (§5.6): no name or persona towards users, shown in the trace as the agent's own work, tool and memory access a subset of the agent's, the agent's budget covers all helpers, a cheaper model allowed by the agent's policy. The Builder node stays as "helper". A specialist users want to address is created as an agent. |
-| **Persona skills** (`agent_persona_skills`, `personaRouter`) | **Purpose:** per turn, a cheap classifier picks the fitting answering mode from short skill descriptions and only then loads the skill body, saving context and a delegation run (`middleware/packages/harness-orchestrator/src/personaRouter.ts`). **Conflict:** the chosen body replaces the agent's identity and the UI says "Answering as X". **Adaptation:** kept as **working modes**: the same selection, but the skill is added beneath the agent's fixed identity, personality and boundaries (it never replaces the system prompt's identity part); the UI shows "mode: X"; selection runs as the agent's internal helper. |
+| **Persona skills** (`agent_persona_skills`, `personaRouter`) | **Purpose:** per turn, a cheap classifier picks the fitting answering mode from short skill descriptions and only then loads the skill body, saving context and a delegation run (`middleware/packages/harness-orchestrator/src/personaRouter.ts`). **Conflict:** the chosen body replaces the agent's identity and the UI says "Answering as X". **Adaptation:** kept as **working modes**: the same selection, but the skill is added beneath the agent's fixed identity, personality and boundaries (it never replaces the system prompt's identity part); the mode is visible in the answer's details and the trace, not in the message; selection runs as the agent's internal helper. |
 | **Direct Line** (`#token`, sticky mode) | Removed (owner decision): direct addressing (INV-1) replaces it. Its advantage, a verbatim, attributed answer block the asking agent cannot alter, lives on in `contributions[]` (§5.4); `agentsConsulted` stays as trace summary. |
 | **Fast path** (`@omadia/fast-path`) | **Purpose:** simple data questions without the full agent loop (about 15 s and, in one documented case, a sub-agent run of 88,000 input tokens avoided): a fast model plans one read query, the plugin runs it and renders the rows; no model sees the rows; learned plans, a cache and confidence thresholds; any miss falls back to the agent unchanged (`middleware/packages/harness-plugin-fast-path/src/fastPath.ts`, `triageTurn.ts`). It already embodies INV-11. **Conflict:** its answer skips the agent's persona, boundaries and AI disclosure, there is no per-agent switch, and it may use sub-agents' read tools (#1876). **Adaptation:** kept entirely, as the addressed agent's **fast lane**: the agent is fixed first (deterministically); triage, planner, learned plans and cache run as the agent's internal helpers under its model policy, only with its own read tools, with discretion labels on learned plans; the answer renders under its identity with AI disclosure; a miss returns to the same agent; switchable per agent; never for facilitators. |
 | **Fallback agent** ("Standard Orchestrator") | The special role ends. The operator configures **default agents per human user and channel**, or switches the default off (§5.6). The default agent gets no automatic plugin attachment (INV-8). |
@@ -227,7 +231,7 @@ audit (Codex, 2026-11-18) checked every change against the code and its history.
 | Channel | How the user addresses an agent | Speaker rendering |
 |---|---|---|
 | Teams | The agent's own bot (#860). | Native: bot name and icon. |
-| Telegram, Slack, Discord, WhatsApp, iMessage | One bot or account per agent where the platform allows it. Otherwise explicit selection: a channel-native command or menu (for example `/agent Mira`) that the management layer stores as a binding for this user and conversation, confirmed by a `system` message and shown in every answer's speaker line until changed. | Native where one identity per agent exists, else the SDK name line. |
+| Telegram, Slack, Discord, WhatsApp, iMessage | One bot or account per agent where the platform allows it. Otherwise explicit selection: a channel-native command or menu (for example `/agent Mira`) that the management layer stores as a binding for this user and conversation, confirmed once by a short `system` message. | Native where one identity per agent exists; otherwise the SDK name line only when the speaker would be unclear (INV-4). |
 | Web chat (kernel `web-ui`) | Agent directory with name and avatar; the picker is always shown; the choice stays visible for the whole conversation. | Name and avatar on every message. |
 | Desktop and mobile UI (`omadia-ui`, `omadia-ui-mobile`) | Agent selection per conversation; `ClientTurn` carries the agent id; the kernel dispatches per agent instead of the single `canvasChatAgent`. | Name and avatar on every message. |
 | Public API | Agent slug required when a conversation starts and fixed for it; a missing or unknown slug, a disabled agent or a slug the API key may not use is refused with a typed error, never routed to another agent. | `speaker` field in the response. |
@@ -280,8 +284,9 @@ needs B's access writes to B directly, where B's own rules apply.
 4. **Delivery of B's contribution.** `SemanticAnswer` carries an ordered list
    `contributions: [{ id, speaker, text, status }]` replacing the singular
    `delegatedAnswer`. If B has its own identity present in the conversation (for example
-   B's Teams bot is a member), B's contribution is posted by B's identity; otherwise it is
-   rendered as an attributed block inside A's message. A may add its own text, attributed
+   B's Teams bot is a member), B's contribution is posted by B's identity; otherwise A's
+   message carries it with a plain, natural attribution ("Mira: …"), no chips, footers or
+   buttons. A may add its own text, attributed
    to A; it cannot remove or rewrite a contribution and refers to it only by its `id`. A
    failed delivery is shown as failed, never dropped.
 5. **Audience floor required.** A consultation runs only when the audience floor is
@@ -371,14 +376,15 @@ to work with. Each is owned by the agent runtime, not left to a prompt alone.
 |---|---|
 | Consistent personality | The same name, voice and personality in every channel and over time; personality changes only through the operator, never per turn. |
 | Continuity | The agent remembers its own past work with a person and a team, within its memory scope and the audience's rights, and refers to it the way a colleague would. |
-| Pace | Immediate acknowledgement of a request; visible progress for longer work (typing indicator, short status); a follow-up message when long work finishes instead of a timeout. |
+| Pace | The typing indicator where the channel has one; a short acknowledgement only when work will clearly take longer than a normal answer; a follow-up message when long work finishes instead of a timeout. No progress chatter. |
 | Honest limits | When something lies outside its capabilities or rights, the agent says so plainly and names who can help (a colleague agent or a person), instead of guessing. |
 | Communication and emotion | Tone, warmth, humour and empathy follow the configured personality and the situation; it reacts to frustration, praise and urgency like a good colleague. It never claims to be human. |
 | Team etiquette | In group chats it speaks when addressed or when its role calls for it, never chimes in on every message (#1035 communication profile). |
 | Quality | Claims are checked before they ship (verifier), and the agent says how sure it is when it matters. |
 
-Operators can see per agent how people rate the collaboration (a lightweight in-product
-feedback signal), so the target picture of §1 becomes measurable.
+Operators can see per agent how people rate the collaboration, so the target picture of §1
+becomes measurable. The signal comes from natural reactions where the channel has them and
+from occasional, explicit asks outside answers; answers carry no rating buttons.
 
 ### 5.9 Product language
 
@@ -614,6 +620,36 @@ channel and every data answer.
 prefer `check`, `post` and `deliver` over `turn` (§5.12); the identity guard runs its
 deterministic layer first (§5.5); routing and discretion are model-free (§5.6, §5.11).
 
+
+### 5.14 Natural, uncluttered answers
+
+An ideal colleague answers with what matters, not with status lines and buttons. Answers
+today already carry too much: in Teams a "✨ AI-generated" chip, a verifier badge, a
+system-data chip, "💬 Direkte Antwort von …", a "🔎 Konsultiert: …" footer, "🔽 Kürzer / 🔼
+Mehr Details", "💡 Nächste Varianten" and Direct-Line buttons (`omadia-channel-teams`
+`src/teamsCard.ts`); most channels (Telegram, for example) cannot show such elements at
+all. Answers become long, complex and hard to read, and the colleague feeling breaks.
+
+**Rule:** the message body contains what a good colleague would say. Everything else lives
+in the structured answer and in on-demand details (a collapsed "details" view where the
+channel has one, the trace in the operator UI, or simply by asking the agent "how do you
+know?"). A button or card appears only when it replaces typing for a concrete, likely next
+action that the user would otherwise have to type (for example confirming a decision, a
+poll), and only in channels that render it. Channels without rich elements get plain,
+natural text.
+
+Each existing element keeps its purpose, moved out of the message body:
+
+| Element today | Purpose | Target |
+|---|---|---|
+| AI disclosure | EU AI Act Art. 50 | Stays as the law requires, in the most discreet form the channel offers. How often it must appear (every answer or per conversation) is a compliance decision, not a design choice (OD-5). |
+| Verifier badge, system-data chip | Show that facts were checked or come from a system | In details; the agent says how sure it is in words when it matters (§5.8). |
+| "Konsultiert" footer, "Direkte Antwort von" chip | Tamper-evident attribution (#332) | Contributions of other agents appear with a plain attribution in the text or as that agent's own post (§5.4); the full trace stays in details. |
+| "Kürzer / Mehr Details" buttons | Change answer length without retyping | Not on every answer; the user just asks ("kürzer bitte"), the agent's verbosity setting covers the default. |
+| "Nächste Varianten" follow-up buttons | Suggest next steps | Only when the agent actually proposes options it expects the user to pick; otherwise the agent offers next steps in words if useful. |
+| Direct-Line buttons | Talk to a sub-agent directly | Gone with Direct Line. |
+| Speaker name line, mode, consulted agents, verification, privacy receipt | Transparency and audit | Structured fields and details, shown in text only where INV-4 requires it. |
+
 ## 6. Acceptance criteria
 
 1. **Strategist regression.** A Builder-created "Strategist" and a second agent exist.
@@ -634,7 +670,7 @@ deterministic layer first (§5.5); routing and discretion are model-free (§5.6,
    runs without an active audience floor; a `discussion_start` between agents without
    mutual grants is refused; two consultations of the same B in one turn produce two
    contributions with distinct ids; a failed delivery is shown as failed.
-5. **Speaker everywhere.** Every user-visible message in every channel of the §5.3 matrix
+5. **Speaker everywhere.** The structured answer of every user-visible message in every channel of the §5.3 matrix
    (Teams, Telegram, Slack, Discord, WhatsApp, iMessage, web chat, desktop UI, mobile UI,
    public API) carries a speaker (agent or `system`); a test enumerates every emitter and
    fails on a new one without a speaker.
@@ -711,6 +747,10 @@ deterministic layer first (§5.5); routing and discretion are model-free (§5.6,
     is never named to the user; a working mode changes the answer's approach but not the
     agent's name or personality; a routine stays pausable by its human owner; a plugin
     sync recovers after a transient network error.
+29. **Uncluttered answers.** A normal answer in Teams consists of the text and the AI
+    disclosure in its most discreet form, with no status chips, footers or buttons; the
+    same answer in Telegram is plain text; the trace, verification and consulted agents
+    are reachable in details or by asking.
 
 ## 7. Migration and compatibility
 
@@ -793,6 +833,10 @@ Kernel unless noted. Each item becomes one issue in epic #2042.
 24. Plugin kind `extension` kept without identity; routines keep human ownership,
     controls and calendar semantics; plugin jobs recover with bounded probes; learning
     and consolidation as bounded agent batch triggers (§5.10, §5.12).
+25. Natural, uncluttered answers: status chips, footers, verification and consultation
+    markers and default buttons move from the message body into structured fields and
+    on-demand details; name lines only where the speaker would be unclear; buttons only
+    for a concrete likely next action in channels that render them (§5.14).
 
 ## 9. Owner decisions
 
@@ -826,6 +870,11 @@ Kernel unless noted. Each item becomes one issue in epic #2042.
 - Agents and facilitators act proactively through agent-owned hooks and wakeups that the
   agent picks itself; every trigger has a deadline, limits and a budget enforced by the
   deterministic harness; hooks are preferred over timers (INV-10, §5.12).
+
+**Open (compliance):**
+- OD-5: how often the AI disclosure must appear in a conversation (every answer or once per
+  conversation and on speaker change) under EU AI Act Art. 50; the form stays as discreet
+  as the channel allows either way (§5.14).
 
 ## 10. Not verified
 

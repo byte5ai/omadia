@@ -249,14 +249,16 @@ States exist on three levels, each with its own rules:
 - **Edits:** an edited message produces a new revision; the latest revision received
   before conclusion counts, and the facilitator confirms the change to its author.
 - **Effect:** a contribution in the announced format counts at once. A contribution the
-  facilitator interpreted from free text counts only after its author confirms the echo
-  (a reply or reaction), so a misread can never conclude a facilitation.
+  facilitator interpreted from free text counts only after its author confirms the short
+  reply (a reply or reaction), so a misread can never conclude a facilitation.
 - A participant can only make their own contribution. "Anna agrees too", quoted ballots
   and forwarded messages are not Anna's contribution. Contributions on behalf of others
   (for example older votes from a screenshot) count only after the person confirms them
   in their own message.
-- After recording, the facilitator echoes the recorded contribution to its author
-  ("Recorded for you: A > C > B"), so a misread can be corrected at once.
+- Recording is quiet: a contribution in the announced format gets a reaction (for example
+  👍) where the channel supports reactions, otherwise nothing. Only a contribution the
+  facilitator interpreted from free text gets a short reply to its author to confirm
+  ("A > C > B, right?"). No public echo of every vote.
 - Ambiguous input triggers exactly one clarifying question to that person; the
   contribution stays `ambiguous` and does not count until resolved.
 - The model never computes counts, "who is missing" or whether a machine-checkable
@@ -373,10 +375,11 @@ participant.
 
 ### 5.7 Transparency, reporting and rule changes
 
-- **Opening handshake** in the group: facilitator name, initiator, goal, definition of
-  done, format and agenda (§5.4), decision methods with their rules (§5.5), participants,
-  deadline, reminder times, follow-up of action items, who receives
-  the report, how to ask for status and how to stop.
+- **Opening handshake** in the group, short and natural, like a human facilitator opening
+  a meeting: who it is, the goal, how the group will get there (format, method, deadline),
+  who receives the result, and that anyone can ask for the rules or the status or stop it
+  at any time. The full rules (definition of done, tie rule, reminder times, follow-up)
+  are given on request or where they matter, not as a block of status.
 - **Status** on request at any time: phase, who has contributed, who is missing, current
   (or provisional) tally where the method has one, deadline, definition-of-done version.
 - **Result** goes to the group first, then to the initiator with the protocol (only if
@@ -461,8 +464,9 @@ with it, without changes to the facilitator itself.
   spoken cue if voice output exists, otherwise as a post and a visible timer; speaking
   order through hand raises if available, otherwise through a round-robin list in the
   chat.
-- The facilitator states in the handshake what it can perceive in this session (for
-  example "I read the chat and the polls; I do not hear the call") so nobody assumes more.
+- Where it matters for the session, the facilitator says in one natural sentence what it
+  can perceive (for example "I follow the chat and the polls, not the call itself"), so
+  nobody assumes more.
 - A missing capability is never an error of the facilitator: it chooses the next best
   means and says what it cannot do.
 
@@ -495,7 +499,9 @@ preparation before, follow-up after.
 
 - **Preparation:** the facilitator drafts the agenda, collects topics and pre-reads in the
   chat, proposes timeboxes, and sends the agenda before the meeting.
-- **During the session:** visible agenda and timer, opening with goal and rules, speaking
+- **During the session:** agenda and timer where the channel has a native place for them
+  (pinned message, meeting tab), otherwise mentioned naturally in the moderation; opening
+  with goal and rules in a few sentences, speaking
   order, focus moderation with a parking lot, live polls, reflective summaries per step,
   balance between people in the room and people remote (remote voices are asked first
   when a room dominates).
