@@ -157,6 +157,33 @@ describe('dedupSpans', () => {
     assert.equal(resolved[0]!.value, 'anna.schmidt@firma.de');
   });
 
+  it('#1868 — leaves a full stop or dash after the value outside the span', () => {
+    const text = 'Mail anna.schmidt@firma.de. Danke, Ruf 030 1234567 an - oder 030 1234567...';
+    const resolved = dedupSpans(text, [
+      { span: { start: 5, end: 26, type: 'email', confidence: 1 }, detector: 'c0-regex' },
+      { span: { start: 39, end: 50, type: 'phone', confidence: 1 }, detector: 'c0-regex' },
+      { span: { start: 61, end: 72, type: 'phone', confidence: 1 }, detector: 'c0-regex' },
+    ]);
+    assert.deepEqual(
+      resolved.map((s) => s.value),
+      ['anna.schmidt@firma.de', '030 1234567', '030 1234567'],
+    );
+  });
+
+  it('#1868 — does not mask a full stop a winning span left outside itself', () => {
+    const text = 'Mail anna.schmidt@firma.de. Danke';
+    const resolved = dedupSpans(text, [
+      // A lower-confidence span that took the full stop along…
+      { span: { start: 5, end: 27, type: 'person', confidence: 0.4 }, detector: 'c1' },
+      // …loses to the email, whose span ends before the stop.
+      { span: { start: 5, end: 26, type: 'email', confidence: 1 }, detector: 'c0-regex' },
+    ]);
+    assert.deepEqual(
+      resolved.map((s) => [s.type, s.value]),
+      [['email', 'anna.schmidt@firma.de']],
+    );
+  });
+
   it('keeps the uncovered remainder of a losing lower-confidence span (review finding)', () => {
     // A long C1 free-form-address span (score < 1) brushing a short
     // confidence-1 C0 hit inside it must NOT be dropped wholesale — the
@@ -380,6 +407,26 @@ describe('maskPrompt', () => {
     const text = `Mail ${email}. I repeat: ${email}`;
     const result = await maskPrompt(text, [createBaselineDetector()]);
     assert.equal(findIdentityLeaks(result.maskedText, [email]).length, 0);
+  });
+
+  it('#1868 — gives a value one pseudonym with or without a full stop after it', async () => {
+    const email = 'gerlinde.prochaska@beispiel.de';
+    const text = `Mein Kontakt ist ${email}. Kannst du ${email} bitte anrufen?`;
+    const result = await maskPrompt(text, [createBaselineDetector()]);
+    assert.deepEqual(
+      result.spans.map((s) => s.value),
+      [email, email],
+    );
+    const pseudonyms = new Set(
+      [...result.maskedText.matchAll(/[\w.+-]+@[\w.-]+\.[a-z]{2,}/g)].map((m) => m[0]),
+    );
+    assert.equal(pseudonyms.size, 1, `expected one pseudonym, got ${[...pseudonyms].join(', ')}`);
+    const [pseudonym] = [...pseudonyms];
+    assert.ok(
+      result.maskedText.includes(`${pseudonym!}. Kannst`),
+      `full stop lost: ${result.maskedText}`,
+    );
+    assert.equal(resolvePseudonyms(result.maskedText, result.map), text);
   });
 
   it('is a no-op on PII-free text', async () => {
