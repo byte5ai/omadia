@@ -27,8 +27,12 @@ vi.mock('next-intl/server', async () => {
   return {
     getTranslations: async (namespace: string) =>
       createTranslator({ locale: 'en', messages, namespace: namespace as never }),
+    getLocale: async () => 'en',
   };
 });
+
+// #2066 — the page reads the plugin nav for the facilitations-view link.
+vi.mock('../../../_lib/navigation', () => ({ fetchNavEntries: async () => [] }));
 
 vi.mock('next/link', () => ({
   default: ({ children, href }: { children: React.ReactNode; href: string }) => (

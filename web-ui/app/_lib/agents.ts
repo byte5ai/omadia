@@ -40,6 +40,8 @@ async function forwardCookieHeader(): Promise<Record<string, string>> {
 
 export type PrivacyProfile = 'strict' | 'default';
 export type AgentStatus = 'enabled' | 'disabled';
+/** #2060 — fixed at creation; an agent never switches kind. */
+export type AgentKind = 'standard' | 'facilitator';
 
 export interface OperatorAgentPluginDto {
   id: string;
@@ -61,6 +63,9 @@ export interface OperatorAgentDto {
    *  runtime path — `strict` behaves like `default`. */
   privacy_profile: PrivacyProfile;
   status: AgentStatus;
+  /** #2060 — absent on a middleware that predates facilitators; read it
+   *  through `isFacilitatorAgent`, which treats absent as `standard`. */
+  kind?: AgentKind;
   created_at: string;
   updated_at: string;
   active: boolean;
@@ -156,11 +161,19 @@ export interface CreateAgentInput {
    *  runtime path — `strict` behaves like `default`. */
   privacy_profile?: PrivacyProfile;
   status?: AgentStatus;
+  /** #2060 — only on create. Omitted = `standard`. */
+  kind?: AgentKind;
+}
+
+/** A facilitator only moderates (spec 2043 §2). Absent `kind` = standard. */
+export function isFacilitatorAgent(agent: { kind?: AgentKind }): boolean {
+  return agent.kind === 'facilitator';
 }
 
 export async function createOperatorAgent(input: CreateAgentInput): Promise<{
   id: string;
   slug: string;
+  kind?: AgentKind;
 }> {
   return callJson('/v1/operator/agents', {
     method: 'POST',

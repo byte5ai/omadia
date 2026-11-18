@@ -7,6 +7,7 @@ import {
   findUnknownBoundaryPresets,
   type BoundaryCategory,
 } from '../../../../_lib/boundaryPresets';
+import { FACILITATOR_DEFAULT_SYCOPHANCY } from '../../../../_lib/facilitators';
 import type {
   QualityConfig,
   SycophancyLevel,
@@ -31,6 +32,14 @@ export interface AgentBoundariesEditorProps {
   readonly value: QualityConfig;
   readonly onChange: (next: QualityConfig) => void;
   readonly disabled?: boolean;
+  /**
+   * #2066 — a FACILITATOR's limits: the sycophancy guard cannot be switched
+   * off (spec 2043 §2.4), so `off` is not offered and an unset level shows
+   * what the kernel compiles it to.
+   */
+  readonly facilitator?: boolean;
+  /** Server finding for the sycophancy guard, already localized. */
+  readonly sycophancyError?: string;
 }
 
 const CATEGORY_ORDER: readonly BoundaryCategory[] = [
@@ -58,6 +67,16 @@ export function AgentBoundariesEditor(
   const presets = props.value.boundaries?.presets ?? [];
   const custom = props.value.boundaries?.custom ?? [];
   const unknown = findUnknownBoundaryPresets(presets);
+  const isFacilitator = props.facilitator === true;
+  const sycophancyLevels = isFacilitator
+    ? SYCOPHANCY_LEVELS.filter((level) => level !== 'off')
+    : SYCOPHANCY_LEVELS;
+  const storedSycophancy = props.value.sycophancy;
+  const sycophancyValue = isFacilitator
+    ? storedSycophancy === undefined || storedSycophancy === 'off'
+      ? FACILITATOR_DEFAULT_SYCOPHANCY
+      : storedSycophancy
+    : (storedSycophancy ?? 'off');
 
   const setBoundaries = (
     nextPresets: readonly string[],
@@ -167,7 +186,8 @@ export function AgentBoundariesEditor(
         <select
           id="agent-sycophancy"
           className="rounded border border-[color:var(--border)] bg-[color:var(--bg-soft)]/40 px-3 py-2 text-sm"
-          value={props.value.sycophancy ?? 'off'}
+          value={sycophancyValue}
+          {...(props.sycophancyError ? { 'aria-invalid': true } : {})}
           disabled={props.disabled}
           onChange={(e) =>
             props.onChange({
@@ -176,15 +196,24 @@ export function AgentBoundariesEditor(
             })
           }
         >
-          {SYCOPHANCY_LEVELS.map((level) => (
+          {sycophancyLevels.map((level) => (
             <option key={level} value={level}>
               {t(`sycophancyLevels.${level}`)}
             </option>
           ))}
         </select>
         <p className="mt-1 text-[11px] text-[color:var(--fg-muted)]">
-          {t('sycophancyHint')}
+          {isFacilitator ? t('sycophancyFacilitatorHint') : t('sycophancyHint')}
         </p>
+        {props.sycophancyError && (
+          <p
+            role="alert"
+            data-testid="agent-sycophancy-error"
+            className="mt-1 text-[11px] text-[color:var(--danger)]"
+          >
+            {props.sycophancyError}
+          </p>
+        )}
       </div>
     </div>
   );

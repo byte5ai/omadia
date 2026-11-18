@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useTranslations } from 'next-intl';
 
 import {
+  isFacilitatorAgent,
   listAgentPluginCatalog,
   parseOperatorAgentErrorCode,
   replaceAgentPlugins,
@@ -13,6 +14,7 @@ import {
   type PluginCatalogEntryDto,
 } from '../../../../_lib/agents';
 import { humanizeApiError } from '../../_components/AgentsDashboard';
+import { useFacilitatorRefusalMessage } from '../../_components/useFacilitatorCopy';
 import { PluginsDnd } from '../../_components/PluginsDnd';
 import { AgentContextMemory } from './AgentContextMemory';
 import { AgentDetailTabs } from './AgentDetailTabs';
@@ -23,6 +25,7 @@ import { AgentPeers } from './AgentPeers';
 import { AgentTeamsIdentity } from './AgentTeamsIdentity';
 import { AgentTeamsInstalls } from './AgentTeamsInstalls';
 import { AgentToolGrants } from './AgentToolGrants';
+import { FacilitatorDetail } from './FacilitatorDetail';
 
 /**
  * #914 — the Agent Builder deep link that used to live here is GONE, along
@@ -75,6 +78,17 @@ interface AgentDetailProps {
  * to the tool that authored one of its plugins.
  */
 export function AgentDetail(props: AgentDetailProps): React.ReactElement {
+  // #2066 — a facilitator is a different page, not this one with holes: it
+  // has no plugin editor, grants, peers or memory, so none of their read
+  // models are fetched for it.
+  return isFacilitatorAgent(props.agent) ? (
+    <FacilitatorDetail agent={props.agent} />
+  ) : (
+    <StandardAgentDetail {...props} />
+  );
+}
+
+function StandardAgentDetail(props: AgentDetailProps): React.ReactElement {
   const t = useTranslations('operatorAgents');
   const router = useRouter();
   const [pending, startTransition] = useTransition();
@@ -127,7 +141,13 @@ export function AgentDetail(props: AgentDetailProps): React.ReactElement {
 
   const disabled = pending || busy !== null;
 
+  const refusalMessage = useFacilitatorRefusalMessage();
+
   function localizeError(err: unknown): string {
+    // #2066 — attaching a facilitator as a sub-agent, or any other write the
+    // kernel refuses for the kind, answers 409 `facilitator_omission`.
+    const refusal = refusalMessage(err);
+    if (refusal !== null) return refusal;
     const code = parseOperatorAgentErrorCode(err);
     return code !== null
       ? t(`detailErrors.${code}`)

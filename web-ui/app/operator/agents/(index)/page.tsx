@@ -1,9 +1,10 @@
 import type { Metadata } from 'next';
-import { getTranslations } from 'next-intl/server';
+import { getLocale, getTranslations } from 'next-intl/server';
 
 import { redirectIfUnauthorized } from '../../../_lib/authRedirect';
 import { listOperatorAgents } from '../../../_lib/agents';
 import { listOperatorChannels } from '../../../_lib/channels';
+import { fetchNavEntries } from '../../../_lib/navigation';
 import { runtimeUnavailableCause } from '../../../_lib/runtimeReadiness';
 import { AgentsDashboard } from '../_components/AgentsDashboard';
 import { OrchestratorSetupState } from '../_components/OrchestratorSetupState';
@@ -55,10 +56,17 @@ export default async function OperatorAgentsPage(): Promise<React.ReactElement> 
   const t = await getTranslations('operatorAgents');
   const tc = await getTranslations('operatorChannels');
 
-  const [agents, channels] = await Promise.allSettled([
+  const [agents, channels, navEntries] = await Promise.allSettled([
     listOperatorAgents(),
     listOperatorChannels(),
+    // #2066 — the same list the shell nav renders (shared via `cache()`);
+    // never rejects, an unreachable middleware yields [].
+    getLocale().then(fetchNavEntries),
   ]);
+  const pluginNav =
+    navEntries.status === 'fulfilled'
+      ? navEntries.value.map(({ pluginId, href, label }) => ({ pluginId, href, label }))
+      : [];
   if (agents.status === 'rejected') await redirectIfUnauthorized(agents.reason);
   if (channels.status === 'rejected') await redirectIfUnauthorized(channels.reason);
 
@@ -81,7 +89,7 @@ export default async function OperatorAgentsPage(): Promise<React.ReactElement> 
         </p>
       </header>
       {agents.status === 'fulfilled' ? (
-        <AgentsDashboard initial={agents.value} />
+        <AgentsDashboard initial={agents.value} pluginNav={pluginNav} />
       ) : setupCause !== null ? (
         <OrchestratorSetupState cause={setupCause} />
       ) : (

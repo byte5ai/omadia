@@ -19,11 +19,24 @@ import {
   type AgentIdentityInput,
   type AgentIdentityRepublishOutcome,
 } from '../../../../_lib/agentIdentity';
-import { parseOperatorAgentErrorCode } from '../../../../_lib/agents';
+import {
+  parseOperatorAgentErrorCode,
+  type AgentKind,
+} from '../../../../_lib/agents';
+import {
+  issueAxis,
+  parseFacilitatorRefusal,
+  type FacilitatorContractIssue,
+} from '../../../../_lib/facilitators';
+import type { PersonaAxisKey } from '../../../../_lib/personaTypes';
 import type { QualityConfig } from '../../../../_lib/builderTypes';
 import { detectPersonaConflicts } from '../../../../_lib/personaConflicts';
 import type { PersonaConfig } from '../../../../_lib/personaTypes';
 import { humanizeApiError } from '../../_components/AgentsDashboard';
+import {
+  useFacilitatorIssueText,
+  useFacilitatorRefusalMessage,
+} from '../../_components/useFacilitatorCopy';
 import { AgentBoundariesEditor } from './AgentBoundariesEditor';
 import { AgentPersonaEditor } from './AgentPersonaEditor';
 
@@ -55,6 +68,24 @@ import { AgentPersonaEditor } from './AgentPersonaEditor';
 interface AgentIdentityProps {
   /** Slug of the agent whose identity is edited. */
   readonly slug: string;
+  /**
+   * #2066 — `facilitator` constrains the editor to the neutrality contract
+   * (spec 2043 §2.4): persona axes within bounds, sycophancy guard never off,
+   * and the kernel's findings of a refused save shown at the field they are
+   * about. Absent = a standard agent, exactly as before.
+   */
+  readonly kind?: AgentKind;
+}
+
+/** Issue paths of a 422 `facilitator_contract_violation` that are not axes. */
+const ISSUE_PATH_INSTRUCTIONS = 'instructions';
+const ISSUE_PATH_NOTES = 'persona.custom_notes';
+const ISSUE_PATH_SYCOPHANCY = 'quality.sycophancy';
+const ISSUE_PATH_AXES = 'persona.axes.';
+
+/** Which identity tab holds the field an issue path points at. */
+function issueTab(path: string): IdentityTab {
+  return path === ISSUE_PATH_SYCOPHANCY ? 'boundaries' : 'character';
 }
 
 /** The authored fields, as the form holds them (`''` = inherit). */
@@ -143,16 +174,48 @@ export function AgentIdentity(props: AgentIdentityProps): React.ReactElement {
   const [republish, setRepublish] =
     useState<AgentIdentityRepublishOutcome | null>(null);
   const [droppedPresets, setDroppedPresets] = useState<readonly string[]>([]);
+  const isFacilitator = props.kind === 'facilitator';
+  /** Findings of the last refused save. An edit to a field drops the
+   *  findings for that field: the text they were about is gone. */
+  const [issues, setIssues] = useState<readonly FacilitatorContractIssue[]>([]);
+  const refusalMessage = useFacilitatorRefusalMessage();
+  const issueText = useFacilitatorIssueText();
+
+  const dropIssues = useCallback((matches: (path: string) => boolean): void => {
+    setIssues((prev) =>
+      prev.some((i) => matches(i.path)) ? prev.filter((i) => !matches(i.path)) : prev,
+    );
+  }, []);
+
+  /** First finding for a path, as the sentence to print under its field. */
+  const issueFor = useCallback(
+    (path: string): string | undefined => {
+      const found = issues.filter((i) => i.path === path).map(issueText);
+      return found.length > 0 ? found.join(' ') : undefined;
+    },
+    [issues, issueText],
+  );
+
+  const axisErrors = useMemo(() => {
+    const out: Partial<Record<PersonaAxisKey, string>> = {};
+    for (const issue of issues) {
+      const axis = issueAxis(issue.path);
+      if (axis && out[axis] === undefined) out[axis] = issueText(issue);
+    }
+    return out;
+  }, [issues, issueText]);
   const fileInput = useRef<HTMLInputElement>(null);
 
   const localizeError = useCallback(
     (err: unknown): string => {
+      const refusal = refusalMessage(err);
+      if (refusal !== null) return refusal;
       const code = parseOperatorAgentErrorCode(err);
       return code !== null
         ? tError(`detailErrors.${code}`)
         : tError('detailErrors.unknown', { detail: humanizeApiError(err) });
     },
-    [tError],
+    [tError, refusalMessage],
   );
 
   const apply = useCallback((next: AgentIdentityDto): void => {
@@ -204,6 +267,7 @@ export function AgentIdentity(props: AgentIdentityProps): React.ReactElement {
     value: string,
   ): void {
     setRepublish(null);
+    if (key === 'instructions') dropIssues((p) => p === ISSUE_PATH_INSTRUCTIONS);
     setForm((prev) => ({ ...prev, [key]: value }));
   }
 
@@ -231,9 +295,12 @@ export function AgentIdentity(props: AgentIdentityProps): React.ReactElement {
       setRepublish(res.republish);
       setDroppedPresets(res.dropped_boundary_presets ?? []);
       setError(null);
+      setIssues([]);
     } catch (err: unknown) {
       // The operator's edits stay in the form: re-reading the server value
       // here would erase the change the failed write was for.
+      const refusal = parseFacilitatorRefusal(err);
+      setIssues(refusal?.kind === 'contract' ? refusal.issues : []);
       setError(localizeError(err));
     } finally {
       setBusy(null);
@@ -293,7 +360,22 @@ export function AgentIdentity(props: AgentIdentityProps): React.ReactElement {
           role="alert"
           className="mb-3 rounded border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 p-3 text-sm text-[color:var(--danger)]"
         >
-          {error}
+          <p>{error}</p>
+          {issues.length > 0 && (
+            <ul
+              data-testid="agent-identity-contract-issues"
+              className="mt-2 list-disc space-y-1 pl-5 text-xs"
+            >
+              {issues.map((issue, idx) => (
+                <li key={`${issue.path}:${issue.rule}:${String(idx)}`}>
+                  {t('facilitator.issueOnTab', {
+                    tab: t(`tabs.${issueTab(issue.path)}`),
+                    issue: issueText(issue),
+                  })}
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       )}
 
@@ -524,15 +606,38 @@ export function AgentIdentity(props: AgentIdentityProps): React.ReactElement {
                     disabled={disabled}
                     onChange={(e) => editField('instructions', e.target.value)}
                   />
-                  <p className={HINT_CLASS}>{t('fields.instructionsHint')}</p>
+                  <p className={HINT_CLASS}>
+                    {isFacilitator
+                      ? t('facilitator.instructionsHint')
+                      : t('fields.instructionsHint')}
+                  </p>
+                  {issueFor(ISSUE_PATH_INSTRUCTIONS) && (
+                    <p
+                      role="alert"
+                      data-testid="agent-identity-instructions-error"
+                      className="mt-1 text-[11px] text-[color:var(--danger)]"
+                    >
+                      {issueFor(ISSUE_PATH_INSTRUCTIONS)}
+                    </p>
+                  )}
                 </div>
                 <AgentPersonaEditor
                   value={persona}
                   onChange={(next) => {
                     setRepublish(null);
+                    // Which axis moved is not worth tracking: any change to
+                    // the character makes the axis and notes findings stale.
+                    dropIssues(
+                      (p) => p.startsWith(ISSUE_PATH_AXES) || p === ISSUE_PATH_NOTES,
+                    );
                     setPersona(next);
                   }}
                   warnings={warnings}
+                  {...(isFacilitator ? { facilitatorBounds: true } : {})}
+                  axisErrors={axisErrors}
+                  {...(issueFor(ISSUE_PATH_NOTES) !== undefined
+                    ? { notesError: issueFor(ISSUE_PATH_NOTES) }
+                    : {})}
                   {...(disabled ? { disabled: true } : {})}
                 />
               </div>
@@ -543,14 +648,27 @@ export function AgentIdentity(props: AgentIdentityProps): React.ReactElement {
                 value={quality}
                 onChange={(next) => {
                   setRepublish(null);
+                  dropIssues((p) => p === ISSUE_PATH_SYCOPHANCY);
                   setQuality(next);
                 }}
+                {...(isFacilitator ? { facilitator: true } : {})}
+                {...(issueFor(ISSUE_PATH_SYCOPHANCY) !== undefined
+                  ? { sycophancyError: issueFor(ISSUE_PATH_SYCOPHANCY) }
+                  : {})}
                 {...(disabled ? { disabled: true } : {})}
               />
             )}
 
             {tab === 'prompt' && (
               <div className="space-y-2">
+                {isFacilitator && (
+                  <p
+                    data-testid="agent-identity-neutrality-note"
+                    className="text-xs text-[color:var(--fg-muted)]"
+                  >
+                    {t('facilitator.promptNote')}
+                  </p>
+                )}
                 <p className="text-xs text-[color:var(--fg-muted)]">
                   {dto.composed_family
                     ? t('prompt.hintWithFamily', {
