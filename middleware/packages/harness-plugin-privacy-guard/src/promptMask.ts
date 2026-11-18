@@ -67,6 +67,19 @@ function isConversationIdHost(match: string): boolean {
   return CONVERSATION_ID_HOSTS.includes(host);
 }
 
+// The phone regex below only fixes the SHAPE of a number (prefix, then digit
+// groups); on its own it accepts a zero-led run of four digits. Customer
+// numbers ("K-0001"), postcodes with a leading zero ("01067") and short codes
+// ("0815") were masked as phone numbers, and a dataset import encrypted those
+// cells at rest, which took them out of every filter and grouping. Seven
+// digits, trunk zero or country code included, is the shortest number the
+// pattern is meant for.
+const PHONE_MIN_DIGITS = 7;
+
+function isTooShortForPhone(match: string): boolean {
+  return match.replace(/\D/g, '').length < PHONE_MIN_DIGITS;
+}
+
 // Written-out month names across the six shipped locales (de/en/es/fr/it/nl),
 // deduplicated. Feeds the written-date branch below; matched case-insensitively
 // so a sentence-initial capitalised month ("Le 17 Septembre 1984") is caught.
@@ -104,10 +117,12 @@ const C0_PATTERNS: readonly C0Pattern[] = [
     re: /\b[A-Z]{2}\d{2}(?:\s?[A-Z0-9]{4}){2,7}(?:\s?[A-Z0-9]{1,4})?\b/g,
   },
   {
-    // Phone — international (+49 30 …) or local (030 / 0171 …) forms with
-    // ≥7 digits total, tolerant of space/dash/paren grouping.
+    // Phone — international (+49 30 …) or local (030 / 0171 …) forms,
+    // tolerant of space/dash/slash grouping. The ≥7-digit minimum is not in
+    // the regex; `isTooShortForPhone` enforces it on the match.
     type: 'phone',
     re: /(?:\+\d{1,3}[\s-]?|\b0)\d{1,4}(?:[\s\-/]?\d{2,6}){1,4}\b/g,
+    isFalsePositive: isTooShortForPhone,
   },
   {
     // Spanish local mobile/landline: nine digits grouped 3-3-3 with no

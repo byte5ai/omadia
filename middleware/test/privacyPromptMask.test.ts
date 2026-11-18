@@ -19,6 +19,7 @@ import type { PrivacyGuardService, PromptPiiDetector } from '@omadia/plugin-api'
 import { createPrivacyTurnHandle } from '@omadia/orchestrator/dist/privacyHandle.js';
 import { createPrivacyGuardService } from '@omadia/plugin-privacy-guard/dist/index.js';
 import {
+  baselineHasIdentityPii,
   createBaselineDetector,
   createC1StubDetector,
   dedupSpans,
@@ -72,6 +73,48 @@ describe('createBaselineDetector (C0)', () => {
     // …and so is a mailbox on a domain that merely looks similar.
     const lookalike = await createBaselineDetector().detect('schreib an team@thread.skype.example.com');
     assert.equal(lookalike.filter((s) => s.type === 'email').length, 1);
+  });
+
+  it('#1865 — takes a zero-led number for a phone only from seven digits on', async () => {
+    // The pattern's own comment said "≥7 digits total", the regex accepted
+    // four: customer numbers, postcodes with a leading zero and short codes
+    // were masked as phone numbers — and encrypted at rest in a dataset.
+    const phoneSpans = async (text: string) =>
+      (await createBaselineDetector().detect(text)).filter((s) => s.type === 'phone');
+    for (const text of [
+      'K-0001',
+      'A-0120',
+      '01067',
+      '04109',
+      'Bestellung 0042',
+      'Fehlercode 0815',
+      '0049',
+      '0611 12', // six digits: one short of the minimum
+    ]) {
+      assert.deepEqual(await phoneSpans(text), [], `'${text}' must not be detected as a phone`);
+      const masked = await maskPrompt(text, [createBaselineDetector()]);
+      assert.equal(masked.maskedText, text, `'${text}' must reach the model unchanged`);
+    }
+    // Real numbers are still caught — down to exactly seven digits.
+    for (const text of [
+      '030 8688401',
+      '0171 1234567',
+      '+49 30 1234567',
+      '0301234567',
+      'Ruf bitte 0611 123 an.',
+      '+290 2234',
+    ]) {
+      assert.equal((await phoneSpans(text)).length, 1, `'${text}' must be detected as a phone`);
+    }
+  });
+
+  it('#1865 — a short zero-led code does not make a column personal data', () => {
+    // The v4 shape classifier asks this booster per value; a postcode or
+    // customer-number column must keep its filterable verdict.
+    for (const value of ['K-0001', '01067', '0815']) {
+      assert.equal(baselineHasIdentityPii(value), false, `'${value}' is not identity PII`);
+    }
+    assert.equal(baselineHasIdentityPii('0171 1234567'), true);
   });
 
   it('detects IBAN and DOB-style dates', async () => {
