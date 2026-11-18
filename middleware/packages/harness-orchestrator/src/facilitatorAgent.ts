@@ -26,6 +26,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 
 import {
   toSemanticAnswer,
+  type AiDisclosure,
   type ChatAgent,
   type ChatStreamEvent,
   type ChatStreamObserver,
@@ -198,6 +199,16 @@ export interface FacilitatorAgentDeps {
    * nothing (the setup is still being agreed) keeps its answer.
    */
   readonly ownPostCount?: OwnPostCountLookup;
+  /**
+   * The AI disclosure of this agent's turn answers (resolution and first-turn
+   * fold of its orchestrator). The fixed texts below never reach the model or
+   * the orchestrator's output path, so without this they were the one kind of
+   * turn answer that went out unmarked. Absent = the text as it is.
+   */
+  readonly disclose?: (
+    answer: string,
+    input: ChatTurnInput,
+  ) => { readonly answer: string; readonly aiDisclosure?: AiDisclosure };
   readonly log?: (message: string) => void;
 }
 
@@ -253,6 +264,23 @@ export function wrapFacilitatorAgent(inner: ChatAgent, deps: FacilitatorAgentDep
       : disposition === 'not_set_up'
         ? facilitationNotSetUpText(deps)
         : '';
+  /** A fixed text as a turn answer: marked like every other answer of this
+   *  agent. An empty text (engine-driven) stays empty and unmarked. */
+  const fixedAnswer = (
+    disposition: Exclude<TurnDisposition, 'model'>,
+    input: ChatTurnInput,
+  ): { readonly answer: string; readonly aiDisclosure?: AiDisclosure } => {
+    const answer = textFor(disposition);
+    if (answer.length === 0 || !deps.disclose) return { answer };
+    try {
+      return deps.disclose(answer, input);
+    } catch (err) {
+      deps.log?.(
+        `[facilitator] AI disclosure of a fixed answer failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return { answer };
+    }
+  };
   /**
    * What the kernel established before the model runs, said to the model.
    * Without it the model has to guess where it is, and in the integration
@@ -296,7 +324,11 @@ export function wrapFacilitatorAgent(inner: ChatAgent, deps: FacilitatorAgentDep
         const answer = await inner.chat(withGroupStatement(input));
         return watch && enginePostedSince(input, before) ? { ...answer, text: '' } : answer;
       }
-      return toSemanticAnswer({ answer: textFor(disposition), toolCalls: 0, iterations: 0 });
+      const fixed = fixedAnswer(disposition, input);
+      return {
+        ...toSemanticAnswer({ answer: fixed.answer, toolCalls: 0, iterations: 0 }),
+        ...(fixed.aiDisclosure ? { aiDisclosure: fixed.aiDisclosure } : {}),
+      };
     },
     async *chatStream(
       input: ChatTurnInput,
@@ -319,9 +351,15 @@ export function wrapFacilitatorAgent(inner: ChatAgent, deps: FacilitatorAgentDep
         }
         return;
       }
-      const text = textFor(disposition);
-      if (text.length > 0) yield { type: 'text_delta', text };
-      yield { type: 'done', answer: text, toolCalls: 0, iterations: 0 };
+      const fixed = fixedAnswer(disposition, input);
+      if (fixed.answer.length > 0) yield { type: 'text_delta', text: fixed.answer };
+      yield {
+        type: 'done',
+        answer: fixed.answer,
+        toolCalls: 0,
+        iterations: 0,
+        ...(fixed.aiDisclosure ? { aiDisclosure: fixed.aiDisclosure } : {}),
+      };
     },
     ...(inner.holdsContentUntilVerdict !== undefined
       ? { holdsContentUntilVerdict: inner.holdsContentUntilVerdict }

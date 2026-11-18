@@ -17,6 +17,7 @@ import type { TargetedDeliveryOutcome, TargetedMessage } from '@omadia/channel-s
 
 import type { ConversationSendRegistry } from './conversationSendRegistry.js';
 import {
+  markOwnIdentityMessage,
   readPoll,
   resolveMentions,
   unreachable,
@@ -80,10 +81,16 @@ export function createConversationSendService(deps: {
     }
     // Mentions degrade by contract: a channel without them shows plain text.
     const { mentions, ...withoutMentions } = message;
-    const outgoing: TargetedMessage =
-      mentions && provider.supports.mentions !== true ? withoutMentions : message;
+    const marked = markOwnIdentityMessage(
+      deps.ownIdentity?.disclosure,
+      { agentSlug: input.agentSlug, channelType: input.channelType, target: input.conversationId },
+      mentions && provider.supports.mentions !== true ? withoutMentions : message,
+      provider.supports,
+    );
     try {
-      return await provider.sendToConversation(input.conversationId, outgoing, { asChannelKey });
+      const outcome = await provider.sendToConversation(input.conversationId, marked.message, { asChannelKey });
+      if (outcome.outcome === 'delivered') marked.delivered();
+      return outcome;
     } catch (err) {
       const text = err instanceof Error ? err.message : String(err);
       log(`[channels] conversation send to ${input.channelType}/${input.conversationId} threw: ${text}`);

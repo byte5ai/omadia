@@ -4691,8 +4691,18 @@ export class Orchestrator {
    * branded or human-sounding persona cannot suppress it (AC2 regression).
    */
   private resolveTurnDisclosure(input: ChatTurnInput): AiDisclosure | undefined {
+    return this.disclosureForChannel(input.channelIdentity?.channelKind);
+  }
+
+  /**
+   * #2043 — the same resolution for a message that is not a turn answer: what
+   * this Agent posts as itself on `channelKind` (an own-identity send by the
+   * facilitation engine). One derivation, so a posted message and a turn
+   * answer of the same Agent on the same channel can never be marked by
+   * different rules.
+   */
+  disclosureForChannel(channelKind: string | undefined): AiDisclosure | undefined {
     const setup = this.aiDisclosure;
-    const channelKind = input.channelIdentity?.channelKind;
     // #648 — the precedence lives in ONE place now. `/health`, the boot log and
     // the operator dashboard project the same function over every channel; a
     // second copy of these rules here would let the reported posture disagree

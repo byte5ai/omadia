@@ -21,6 +21,7 @@ import type {
 import { parsePrincipal } from '@omadia/channel-sdk';
 
 import {
+  markOwnIdentityMessage,
   resolveChannelUser,
   unreachable,
   type OwnIdentityDeps,
@@ -148,13 +149,20 @@ export async function sendDirectAsOwnIdentity(
     ? await deps.lookupConversationRefs([principalId], input.channelType).catch(() => new Map<string, unknown>())
     : new Map<string, unknown>();
   const conversationRef = refs.get(principalId);
+  const marked = markOwnIdentityMessage(
+    own.disclosure,
+    { agentSlug: input.asAgentSlug, channelType: input.channelType, target: `user:${principalId}` },
+    input.message,
+    provider.supports,
+  );
   let outcome: TargetedDeliveryOutcome;
   try {
     outcome = await provider.sendToUser(
       { principalId, userRef, ...(conversationRef !== undefined ? { conversationRef } : {}) },
-      input.message,
+      marked.message,
       { asChannelKey: identity.channelKey },
     );
+    if (outcome.outcome === 'delivered') marked.delivered();
   } catch (err) {
     outcome = unreachable('channel_error', err instanceof Error ? err.message : String(err));
   }

@@ -581,6 +581,7 @@ import { startEphemeralAttachmentSweep } from './platform/ephemeralAttachmentSwe
 import { DefaultChannelRegistry } from './channels/channelRegistry.js';
 import type { AggregateHolderLookup, ChannelRegistry, ChannelBindingResolver } from '@omadia/channel-sdk';
 import type { ChannelReadinessProvider, MeetingSourceProvider } from '@omadia/channel-sdk';
+import { InMemoryDisclosureSeenStore } from '@omadia/channel-sdk';
 import { DynamicChannelPluginResolver } from './channels/dynamicChannelResolver.js';
 import type { TurnDispatcher } from './channels/coreApi.js';
 import { createOrchestratorDispatcher } from './channels/orchestratorDispatcher.js';
@@ -7080,6 +7081,13 @@ async function main(): Promise<void> {
       conversationId: string,
       opts?: { readonly asChannelKey?: string },
     ) => conversationRosterRegistry.getRoster(channelType, conversationId, opts),
+    // The AI marking of own-identity posts, by the rule of the agent's turn
+    // answers; folded only where the channel has no AI label of its own.
+    disclosure: {
+      disclosureFor: (agentSlug: string, channelType: string) =>
+        getRegistry()?.get(agentSlug)?.built.orchestrator.disclosureForChannel(channelType),
+      seen: new InMemoryDisclosureSeenStore(),
+    },
   };
   // #2043 — 'agentTurn@1': the engine runs a turn as a facilitator and gets
   // the text back unposted.

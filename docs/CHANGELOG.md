@@ -49,6 +49,16 @@ changelog.
   another bot's view), and mention resolution, the recipient check of a
   direct message and the partner-chat names of an agent ask as the agent's
   own bot. Without the option nothing changes.
+- One AI marking on everything a facilitator posts, never two. A turn
+  answer carried the instance's disclosure sentence (which a labelling
+  channel swaps for its label), a model-written engine post carried the
+  sentence and no label, and a fixed engine text or a fixed refusal carried
+  nothing. Now: `agentTurn` returns its text without the sentence; an
+  own-identity send is marked at the send, by the channel's own AI label
+  where the channel declares one (`supports.aiLabel`, channel-sdk 0.3.2) and
+  by the instance's disclosure line on the first post to a conversation or a
+  person otherwise; the facilitator's fixed answers (refusal, "not set up")
+  follow the agent's disclosure rule like a model answer.
 - A tool call knows the caller's name: `callerUserRef.displayName`
   (plugin-api 1.57.0), from the new `TurnOrigin.speaker` a channel states and
   from the author of the message an engine turn answers.
