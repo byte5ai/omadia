@@ -1929,6 +1929,16 @@ async function main(): Promise<void> {
     sqlGrantStore,
     agentPluginBindingStore,
     builtInOptOuts,
+    // #1860 — orchestrator-extras wraps `knowledgeGraph` with `replace`; a hot
+    // restart of the graph plugin then fails with "duplicate provider" and
+    // leaves it `errored`, which crash-loops the next boot. Its new values
+    // wait for the restart instead.
+    reactivationBlocker: (agentId) => {
+      const shadowed = serviceRegistry.shadowedServicesOf(agentId);
+      return shadowed.length > 0
+        ? `another plugin wraps its service(s) ${shadowed.map((n) => `'${String(n)}'`).join(', ')}`
+        : undefined;
+    },
     onInstalled: async (agentId, reason) => {
       const attach = { attach: reason === 'install' };
       // A plugin may contribute an `llm_provider` block regardless of its kind
@@ -5799,6 +5809,7 @@ async function main(): Promise<void> {
       vault: secretVault,
       catalog: pluginCatalog,
       reactivate: reactivateAgent,
+      restartPending: (agentId) => installService.restartPending(agentId),
       dynamicAgentRuntime,
       // #1453 — the operator-facing half of the credential check: `GET
       // /installed` reports what a plugin pushed through `ctx.status`, and

@@ -112,6 +112,14 @@ export interface InstallServiceDeps {
      *  the operator detached. */
     reason: 'install' | 'reactivate',
   ) => Promise<void>;
+  /**
+   * #1860 — why `agentId` cannot be restarted in this process, or `undefined`
+   * when it can. Asked before every reactivation; when it answers, the
+   * plugin keeps running on its current instance, the reactivation is
+   * recorded as pending a restart ({@link InstallService.restartPending}),
+   * and nothing is torn down. Omitted: every plugin can be restarted.
+   */
+  reactivationBlocker?: (agentId: string) => string | undefined;
   /** Runtime teardown before uninstall or reactivation. The reason keeps
    *  consent-removal hooks from deleting grants during a runtime restart. */
   onUninstall?: (
@@ -198,6 +206,9 @@ function isInstalledTerminal(state: InstallJobState): boolean {
  */
 export class InstallService {
   private readonly jobs = new Map<string, InstallJob>();
+  /** #1860 — plugins whose reactivation was deferred to the next start.
+   *  Process-local on purpose: the restart that applies the values clears it. */
+  private readonly deferredUntilRestart = new Set<string>();
 
   constructor(private readonly deps: InstallServiceDeps) {}
 
@@ -714,7 +725,8 @@ export class InstallService {
    */
   async reactivate(agentId: string): Promise<InstalledAgent['status'] | undefined> {
     const status = await this.reactivateOne(agentId);
-    if (status !== undefined) {
+    // A deferred plugin is still the instance its dependents resolved.
+    if (status !== undefined && !this.deferredUntilRestart.has(agentId)) {
       // The cascade is a consequence of this call, not part of its verdict:
       // nothing it does may turn the caller's save into a failure.
       try {
@@ -787,10 +799,25 @@ export class InstallService {
     }
   }
 
+  /** #1860 — did a reactivation of `agentId` wait for the next restart? */
+  restartPending(agentId: string): boolean {
+    return this.deferredUntilRestart.has(agentId);
+  }
+
   private async reactivateOne(
     agentId: string,
   ): Promise<InstalledAgent['status'] | undefined> {
     if (!this.deps.registry.has(agentId)) return undefined;
+    // #1860 — a hot restart would fail half-way (the old service stays
+    // registered under the wrapper) and record the plugin `errored`. Leave
+    // the running instance alone; the saved values apply at the next start.
+    const blocker = this.deps.reactivationBlocker?.(agentId);
+    if (blocker !== undefined) {
+      this.deferredUntilRestart.add(agentId);
+      console.log(`[install] ${agentId} not re-activated until the next restart — ${blocker}`);
+      return this.deps.registry.get(agentId)?.status;
+    }
+    this.deferredUntilRestart.delete(agentId);
     if (this.deps.onUninstall) {
       try {
         await this.deps.onUninstall(agentId, 'reactivate');

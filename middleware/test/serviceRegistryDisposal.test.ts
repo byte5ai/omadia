@@ -300,3 +300,30 @@ describe('PluginRouteRegistry — unchanged behaviour alongside the new call', (
     assert.equal(routes.list().every((e) => e.disposed), true);
   });
 });
+
+// #1860 — a plugin whose provide another plugin wrapped with `replace` cannot
+// be restarted in place: its dispose leaves the wrapper, so the fresh provide
+// throws "duplicate provider".
+describe('ServiceRegistry.shadowedServicesOf (#1860)', () => {
+  it('names a provide that another owner wrapped, and stops once the wrapper is gone', () => {
+    const reg = new ServiceRegistry();
+    reg.provide('knowledgeGraph', { v: 'kg' }, 'kg-plugin');
+    reg.provide('graphPool', { v: 'pool' }, 'kg-plugin');
+    assert.deepEqual(reg.shadowedServicesOf('kg-plugin'), []);
+
+    const unwrap = reg.replace('knowledgeGraph', { v: 'wrapped' }, 'extras');
+    assert.deepEqual(reg.shadowedServicesOf('kg-plugin'), ['knowledgeGraph']);
+    assert.deepEqual(reg.shadowedServicesOf('extras'), []);
+
+    unwrap();
+    assert.deepEqual(reg.shadowedServicesOf('kg-plugin'), []);
+  });
+
+  it('forgets a provide that was disposed', () => {
+    const reg = new ServiceRegistry();
+    reg.provide('knowledgeGraph', { v: 'kg' }, 'kg-plugin');
+    reg.disposeBySource('kg-plugin');
+    reg.provide('knowledgeGraph', { v: 'other' });
+    assert.deepEqual(reg.shadowedServicesOf('kg-plugin'), []);
+  });
+});
