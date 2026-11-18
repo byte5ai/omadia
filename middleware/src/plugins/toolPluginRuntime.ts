@@ -37,6 +37,7 @@ import {
   type ConnectionProbeOutcome,
 } from './connectionProbe.js';
 import { describeActivationFailure } from './activationFailure.js';
+import { assertStartable, PluginNotStartableError } from './coreCompat.js';
 import type { InstalledRegistry } from './installedRegistry.js';
 import type { JobScheduler } from './jobScheduler.js';
 import type { PluginCatalog, PluginCatalogEntry } from './manifestLoader.js';
@@ -329,6 +330,12 @@ export class ToolPluginRuntime {
         const msg = err instanceof Error ? err.message : String(err);
         log(`[tool-runtime] activate FAILED for ${id}: ${msg}`);
         try {
+          // A version this core refuses to start is not a transient failure:
+          // record it once, terminally, instead of counting three boots.
+          if (err instanceof PluginNotStartableError) {
+            await this.deps.registry.markActivationBlocked(id, describeActivationFailure(err));
+            continue;
+          }
           await this.deps.registry.markActivationFailed(
             id,
             describeActivationFailure(err),
@@ -356,6 +363,7 @@ export class ToolPluginRuntime {
     if (!catalogEntry) {
       throw new Error(`tool-runtime: ${agentId} not in plugin catalog`);
     }
+    assertStartable(catalogEntry.plugin);
 
     // Issue #474 (round 5) — refresh the automatic OAuth-connection signal
     // BEFORE the plugin's own activate() runs, so a plugin that separately

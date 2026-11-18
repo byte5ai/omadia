@@ -42,6 +42,12 @@ changelog.
   (the extension-less `TEMPLATE_REVISION` is still read as a fallback). The
   plugin zip ingest refuses an extension-less file there, so channel-teams
   0.36.0 could not be installed; 0.36.1 ships the `.txt`.
+- Installing a version by number right after its publish no longer answers
+  `version_not_found` from the cached Hub index: the index is read once more.
+- `@omadia/agent-facilitator` before 1.0.0 is not started on this core, also
+  when it is already installed: it is shown as errored with the reason and
+  "install 1.0.0 or newer", and `query_facilitator` leaves the agents. It
+  could no longer start a facilitation but still told the group it had.
 
 ### Added — Facilitators in the agent directory (#2066, epic #2043)
 
