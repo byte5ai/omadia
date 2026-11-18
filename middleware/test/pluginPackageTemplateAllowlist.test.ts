@@ -23,6 +23,7 @@ import path from 'node:path';
 
 import { PackageUploadService } from '../src/plugins/packageUploadService.js';
 import { extractZipToDir, ZipExtractionError } from '../src/plugins/zipExtractor.js';
+import { readTemplateRevision } from '../src/services/teamsAppPackageAssets.js';
 import {
   buildZip,
   fakeCatalog,
@@ -139,6 +140,24 @@ describe('zipExtractor × .template', () => {
   // are the four entries the 0.21.0 artifact actually carries under
   // `appPackage/` (verified against the hub zip's central directory), and
   // `teamsAppPackageAssets` requires the first three by name.
+  // #2043 rollout: channel-teams 0.36.0 shipped `appPackage/TEMPLATE_REVISION`
+  // (no extension), the kernel read exactly that name, and the ingest refused
+  // the whole package. Producer and consumer agreed; the gate was never asked.
+  // The name is now `TEMPLATE_REVISION.txt`; the bare name stays refused, so a
+  // package that ships it fails here and not at a customer's install.
+  it('accepts appPackage/TEMPLATE_REVISION.txt and still refuses the extension-less name', async () => {
+    assert.deepEqual(await extract({ 'appPackage/TEMPLATE_REVISION.txt': '2\n' }), [
+      'appPackage/TEMPLATE_REVISION.txt',
+    ]);
+    await assert.rejects(
+      () => extract({ 'appPackage/TEMPLATE_REVISION': '2\n' }),
+      (err: unknown) =>
+        err instanceof ZipExtractionError &&
+        err.code === 'zip.forbidden_extension' &&
+        /appPackage\/TEMPLATE_REVISION has a disallowed extension \(<none>\)/.test(err.message),
+    );
+  });
+
   it('accepts the published channel-teams appPackage/ layout as a whole', async () => {
     const files = await extract({
       'appPackage/manifest.json.template': MANIFEST_TEMPLATE,
@@ -208,5 +227,49 @@ describe('PackageUploadService ingest × the Teams app-package layout', () => {
       ),
       MANIFEST_TEMPLATE,
     );
+  });
+
+  // The file list of the real `omadia-channel-teams-0.36.x.zip` (central
+  // directory of the artifact, dist/ reduced to one module with every kind of
+  // file tsc emits). Every entry the real package carries passes the real
+  // ingest, and the kernel finds what it reads there by name.
+  it('installs a package shaped exactly like channel-teams 0.36.1, and the kernel reads its template revision', async () => {
+    const result = await service().ingest({
+      fileBuffer: await packageZip('@omadia/channel-teams', '0.36.1', {
+        LICENSE: 'MIT\n',
+        'README.md': '# channel-teams\n',
+        'package.json': '{"name":"@omadia/channel-teams","version":"0.36.1"}\n',
+        'appPackage/README.md': '# app package\n',
+        'appPackage/TEMPLATE_REVISION.txt': '2\n',
+        'appPackage/color.png': 'PNG',
+        'appPackage/outline.png': 'PNG',
+        'appPackage/manifest.json.template': MANIFEST_TEMPLATE,
+        'dist/plugin.js.map': '{}',
+        'dist/plugin.d.ts': 'export {};\n',
+        'dist/plugin.d.ts.map': '{}',
+        'dist/teamsMeetingSource.js': 'export {};\n',
+        'dist/teamsMeetingSource.js.map': '{}',
+        'dist/teamsMeetingSource.d.ts': 'export {};\n',
+        'dist/teamsMeetingSource.d.ts.map': '{}',
+      }),
+      originalFilename: 'omadia-channel-teams-0.36.1.zip',
+      uploadedBy: 'operator@example.com',
+    });
+    assert.equal(result.ok, true, JSON.stringify(result));
+    const appPackage = path.join(packagesDir, '@omadia', 'channel-teams', '0.36.1', 'appPackage');
+    assert.equal(await readTemplateRevision(appPackage), 2);
+  });
+
+  it('refuses the 0.36.0 shape (extension-less TEMPLATE_REVISION) with the entry named', async () => {
+    const result = await service().ingest({
+      fileBuffer: await packageZip('@omadia/channel-teams', '0.36.0', {
+        'appPackage/manifest.json.template': MANIFEST_TEMPLATE,
+        'appPackage/TEMPLATE_REVISION': '2\n',
+      }),
+      originalFilename: 'omadia-channel-teams-0.36.0.zip',
+      uploadedBy: 'operator@example.com',
+    });
+    assert.equal(result.ok, false);
+    assert.match(JSON.stringify(result), /appPackage\/TEMPLATE_REVISION/);
   });
 });

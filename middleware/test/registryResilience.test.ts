@@ -443,3 +443,76 @@ describe('registry install router · a registry that cannot be read (#1482)', ()
     );
   });
 });
+
+describe('registry install router · a version published after the index was cached (#2043 rollout)', () => {
+  /** An index whose plugin gains version 1.1.0 from the second read on. */
+  function republishingHub(): { fetchImpl: RegistryClientDeps['fetchImpl']; indexReads: () => number } {
+    let indexReads = 0;
+    return {
+      indexReads: () => indexReads,
+      fetchImpl: async (url) => {
+        if (!String(url).endsWith('.zip')) {
+          indexReads++;
+          const index = JSON.parse(indexJson(REG.url)) as {
+            plugins: { latest_version: string; versions: { version: string; sha256: string; download_url: string }[] }[];
+          };
+          if (indexReads > 1) {
+            const plugin = index.plugins[0]!;
+            plugin.latest_version = '1.1.0';
+            plugin.versions.push({ ...plugin.versions[0]!, version: '1.1.0' });
+          }
+          return new Response(JSON.stringify(index));
+        }
+        return new Response('not the artifact', { status: 200 });
+      },
+    };
+  }
+
+  async function install(
+    query: string,
+  ): Promise<{ status: number; code: string | undefined; indexReads: number }> {
+    const hub = republishingHub();
+    const client = new RegistryClient({ registries: [REG], log: silent, fetchImpl: hub.fetchImpl });
+    await client.listAll(); // the cache every store page fills
+    assert.equal(hub.indexReads(), 1);
+    const packageUpload = { ingest: async () => ({ ok: true }) } as unknown as PackageUploadService;
+    let out: { status: number; code: string | undefined; indexReads: number } | undefined;
+    await withApp(
+      (app) =>
+        app.use(
+          '/install/registry',
+          createRegistryInstallRouter({ client, packageUpload, catalog, registry: noneInstalled }),
+        ),
+      async (base) => {
+        const res = await fetch(`${base}/install/registry/${encodeURIComponent('@x/remote')}${query}`, {
+          method: 'POST',
+        });
+        const body = (await res.json()) as { code?: string };
+        out = { status: res.status, code: body.code, indexReads: hub.indexReads() };
+      },
+    );
+    assert.ok(out);
+    return out;
+  }
+
+  it('reads the index once more instead of answering version_not_found', async () => {
+    const result = await install('?version=1.1.0');
+    assert.notEqual(result.code, 'registry_install.version_not_found');
+    // It went on to the download (which this fake fails on the checksum).
+    assert.notEqual(result.status, 404);
+    assert.ok(result.indexReads >= 2, 'the index was read again');
+  });
+
+  it('a version that does not exist is still 404, after exactly one more read', async () => {
+    const result = await install('?version=9.9.9');
+    assert.equal(result.status, 404);
+    assert.equal(result.code, 'registry_install.version_not_found');
+    assert.equal(result.indexReads, 2);
+  });
+
+  it('a version the cached index lists costs no extra read', async () => {
+    const result = await install('?version=1.0.0');
+    assert.notEqual(result.code, 'registry_install.version_not_found');
+    assert.equal(result.indexReads, 1);
+  });
+});
