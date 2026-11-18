@@ -81,7 +81,7 @@ export { ConductorWorkflowStore } from './workflowStore.js';
 export { ConductorRunStore } from './runStore.js';
 export { ConductorAwaitStore } from './awaitStore.js';
 export { ConductorRoleStore } from './roleStore.js';
-export { ConductorRunExecutor, AwaitNotPendingError, AwaitResponderNotHolderError } from './runExecutor.js';
+export { ConductorRunExecutor, AwaitNotFoundError, AwaitNotPendingError, AwaitResponderNotHolderError } from './runExecutor.js';
 export { ConductorAwaitWorker } from './awaitWorker.js';
 export { ConductorRunResumeWorker } from './runResumeWorker.js';
 export { ConductorScheduleWorker } from './scheduleWorker.js';

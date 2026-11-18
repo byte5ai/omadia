@@ -523,6 +523,12 @@ describe('#759 routes: cancel endpoint + role-holder audit', () => {
     return { baseUrl: `http://127.0.0.1:${String(port)}/api/v1/operator/conductors`, holderCalls };
   }
 
+  // Run ids here are uuid-shaped because `conductor_runs.id` is a uuid column
+  // and the router refuses any other shape with a 400 (#1706).
+  const RUN_UUID = '11111111-1111-4111-8111-111111111111';
+  const ENDED_RUN_UUID = '22222222-2222-4222-8222-222222222222';
+  const MISSING_RUN_UUID = '33333333-3333-4333-8333-333333333333';
+
   it('POST /:slug/runs/:runId/cancel returns the run and threads the session actor', async () => {
     const calls: Array<[string, string]> = [];
     const { baseUrl } = await serve({
@@ -531,22 +537,22 @@ describe('#759 routes: cancel endpoint + role-holder audit', () => {
         return { id: runId, status: 'cancelled' };
       },
     });
-    const res = await fetch(`${baseUrl}/wf/runs/run1/cancel`, { method: 'POST' });
+    const res = await fetch(`${baseUrl}/wf/runs/${RUN_UUID}/cancel`, { method: 'POST' });
     assert.equal(res.status, 200);
-    assert.deepEqual(calls, [['run1', 'op-1']]);
+    assert.deepEqual(calls, [[RUN_UUID, 'op-1']]);
   });
 
   it('maps RunAlreadyEndedError to 409 and WorkflowNotFoundError to 404', async () => {
     const { baseUrl } = await serve({
       cancelRun: async (runId) => {
-        if (runId === 'ended') throw new RunAlreadyEndedError('already completed');
+        if (runId === ENDED_RUN_UUID) throw new RunAlreadyEndedError('already completed');
         throw new WorkflowNotFoundError('nope');
       },
     });
-    const ended = await fetch(`${baseUrl}/wf/runs/ended/cancel`, { method: 'POST' });
+    const ended = await fetch(`${baseUrl}/wf/runs/${ENDED_RUN_UUID}/cancel`, { method: 'POST' });
     assert.equal(ended.status, 409);
     assert.equal(((await ended.json()) as { code: string }).code, 'conductor.run_already_ended');
-    const missing = await fetch(`${baseUrl}/wf/runs/missing/cancel`, { method: 'POST' });
+    const missing = await fetch(`${baseUrl}/wf/runs/${MISSING_RUN_UUID}/cancel`, { method: 'POST' });
     assert.equal(missing.status, 404);
   });
 

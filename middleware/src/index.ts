@@ -78,7 +78,7 @@ import {
 } from './services/teamsAppPackageAssets.js';
 import { createBotPresenceStore } from './conductor/botPresenceStore.js';
 import { createChatPeerAgentsProvider, createPeerGate } from './conductor/peerPolicy.js';
-import { wireConductor, AwaitNotPendingError, AwaitResponderNotHolderError, ConductorRoleStore, ConductorEphemeralAttachmentsStore, ambientTurnFrom, createDiscussionsCapability, bindEphemeralRunsToCaller } from './conductor/index.js';
+import { wireConductor, AwaitNotFoundError, AwaitNotPendingError, AwaitResponderNotHolderError, ConductorRoleStore, ConductorEphemeralAttachmentsStore, ambientTurnFrom, createDiscussionsCapability, bindEphemeralRunsToCaller } from './conductor/index.js';
 import { createMissReportRoutes } from './privacy/missReportRoutes.js';
 import { readNonPersonalFieldsConfig } from './privacy/fieldClassification/guardConfig.js';
 import {
@@ -4912,7 +4912,10 @@ async function main(): Promise<void> {
           return run.status === 'waiting' ? 'recorded' : 'resumed';
         } catch (err) {
           if (err instanceof AwaitResponderNotHolderError) return 'not_a_holder';
-          if (err instanceof AwaitNotPendingError) return 'already_resolved'; // stale card / double-click
+          // stale card / double-click. #1706 split the "no such await row" case out
+          // of AwaitNotPendingError for the operator route's 404; from a card button
+          // both still mean "nothing left to answer here".
+          if (err instanceof AwaitNotFoundError || err instanceof AwaitNotPendingError) return 'already_resolved';
           throw err;
         }
       },
