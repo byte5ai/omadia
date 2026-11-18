@@ -45,7 +45,7 @@ cannot safely own.
   |---|---|---|
   | `configuring` | the handshake is posted (atomic switch to `active`), at most 72 h after the start request (configurable); then `aborted` with a short note | home conversation, direct replies to the initiator, private status answers |
   | `active` | the facilitation's deadline | home conversation, linked session conversations in `scheduled`, `live` or `confirming`, private reminders to participants, private answers to a participant's status request |
-  | `closing` (one per closing event: each session close, entering `concluding`, abort; own id) | three bounded parts, all inside one scope: (1) delivery of the event's essential message (session summary, result, abort report), at most 7 days after the event; (2) a group confirmation the event requires, starting at confirmed delivery, for its window; (3) protocol dispatch of the then final protocol (§5.11), at most 7 days after it became final; the scope ends when the last part is done; absolute limit: event + 14 days + one confirmation window | home conversation, the session conversations of this facilitation, the protocol recipients of §5.8, private status answers |
+  | `closing` (one per closing event: each session close, entering `concluding`, abort; own id) | the closing procedure of §5.2 (waiting, delivery, confirmation, dispatch), each part with its own limit; absolute limit 30 days after the event | home conversation, the session conversations of this facilitation, the protocol recipients of §5.8, private status answers |
   | `scheduling` | the agreed follow-up meeting's invitations are sent or its date passed | the invitees confirmed by group consent |
   | `follow_up` | the follow-up deadline | the home conversation, the owners of open action items, private status answers |
 
@@ -289,28 +289,40 @@ States exist on three levels, each with its own rules:
   context (§5.3); the scheduler handles time-based events (§5.6).
 - **concluding:** the definition of done is met (also when it is evaluated exactly at the
   deadline). In one transaction: contribution and reminder triggers of the active phase are
-  cancelled, an immutable result record is written, its outbox entries are created and a
-  `closing` scope for this result is opened (7 days from entering `concluding`), so the
-  result is published even after the deadline or a failed send, without re-opening
-  moderation. Where the final summary needs confirmation, its consent window (default
-  24 h) starts when its delivery is confirmed and lies inside the `closing` scope, also
-  after the deadline. It follows the group consent procedure of §5.7: without a standing
-  objection at the window's end the result is confirmed; with a standing objection the
-  facilitation still closes: `closed` with the result marked "not confirmed" and the
-  objection in the report; moderation does not re-open. If delivery still fails when the
-  `closing` scope ends, the facilitation closes as `closed` with "not delivered", and the
-  initiator and operator are told where possible. The reservation is released at
-  `closed`. The facilitation leaves `concluding` only when every session closing that
-  requires confirmation has ended (confirmed, not confirmed, or not delivered when its
-  `closing` scope ended); until then it keeps the reservation, accepts only consent
-  answers to those session summaries, status requests and stop, and posts nothing but
-  those closing documents. The facilitator then posts the final
-  summary (decisions, next steps with owners and due dates, open points). A group
-  confirmation is asked only if the method or the agreed definition of done requires it
-  (for example consent or a free-text definition of done); otherwise the result is published and the facilitation
-  closes automatically. (#2071 removed confirmation rounds the model added on its own in
+  cancelled, an immutable result record is written and a `closing` scope for it is opened;
+  moderation never re-opens. The closing then runs the closing procedure below. The final
+  summary contains decisions, next steps with owners and due dates, and open points. A
+  group confirmation is asked only if the method or the agreed definition of done
+  requires it (for example consent or a free-text definition of done); otherwise the
+  result is published. (#2071 removed confirmation rounds the model added on its own in
   the plugin's definition-of-done verdict; the old pattern's separate initiator
-  confirmation step still exists and goes with it, §8.) Then `closed`.
+  confirmation step still exists and goes with it, §8.) The facilitation becomes `closed`
+  when the closing procedure has set the result status; the reservation is released then.
+- **Closing procedure** (for each closing event: a session close, entering `concluding`,
+  abort; each in its own `closing` scope, §0). Every part has its own limit, counted from
+  the part's start:
+  1. *Waiting* (only for the result of `concluding`): until every session closing of this
+     facilitation that requires confirmation has ended. Meanwhile the facilitation keeps
+     the reservation and accepts only consent answers to those session summaries, status
+     requests and stop. Bounded by those session closings' own limits.
+  2. *Delivery* of the closing document: at most 7 days.
+  3. *Confirmation*, only where required: the consent window (default 24 h, at most 72 h)
+     starts when delivery is confirmed, also after the deadline, and follows the group
+     consent procedure of §5.7. The consent decision needs a `complete` electorate
+     (§5.5): with the platform roster it is queried fresh at the window's end and then
+     hourly, at most 24 h; if it never becomes `complete`, the result is `not confirmed`
+     with the reason "participants could not be verified".
+  4. *Dispatch* of the final protocol to the recipients of §5.8: at most 7 days.
+
+  The result status and the delivery status are separate (§5.11). If delivery fails at
+  the end of part 2, the delivery status is `not delivered`, the result status is
+  `published` where no confirmation was required and `not confirmed` (reason: not
+  delivered) where it was; initiator and operator are told where possible.
+  **Stop or abort** ends the closing procedure of every open session atomically: open
+  consent windows close, no further consent answers are accepted, an undelivered session
+  summary is sent without a consent request and marked `not confirmed` (reason:
+  facilitation stopped), and the abort report says so. No consent request is ever sent
+  that can no longer be answered.
 - **following_up:** only if action items with owners were agreed; without them the
   facilitation goes from `closed` straight to `ended`. A bounded follow-up context with
   its own deadline: the earlier of (last due date plus a grace period set at start,
@@ -662,10 +674,13 @@ one facilitation:
 | **Follow-up scheduling** | Read free/busy (no event details) of participants and confirmed stakeholders for the follow-up meetings the group agreed; create the invitations with agenda and protocol link. | Read calendar contents; change or cancel other events; invite people the group did not agree on. |
 
 **Result status** of a final protocol: `published` (no confirmation required), `confirmed`
-(consent window passed without a standing objection), `not confirmed` (standing objection,
-named in the protocol) or `aborted` (abort report). A protocol is *final* when its status is
-set; *dispatchable* means final and inside its `closing` scope. All four are sent to the
-same recipients (§5.8), each visibly marked; nothing is ever marked confirmed that was not.
+(consent window passed without a standing objection, with a verified electorate), `not
+confirmed` (with its reason: standing objection, participants could not be verified, not
+delivered, or facilitation stopped) or `aborted` (abort report). **Delivery status** is
+separate: `delivered` or `not delivered`, per document. A protocol is *final* when its
+result status is set; *dispatchable* means final and inside its `closing` scope. All
+statuses are sent to the same recipients (§5.8), each visibly marked with its reason;
+nothing is ever marked confirmed that was not.
 
 Both run on the instance's existing integrations (for Microsoft 365 the M365 connector)
 under facilitation-scoped grants with an explicit lifecycle, independent of whether action
@@ -977,6 +992,20 @@ kept compatible.
 41. **Private status in every phase.** A participant who is neither initiator nor owner of
     an action item asks privately in `configuring`, `active`, `concluding` and
     `following_up` and gets the status each time.
+
+42. **Closing limits.** A session summary is delivered one hour before its 7-day limit
+    while the facilitation is already `concluding`; its full window runs; afterwards the
+    final summary is delivered and dispatched within its own limits, also with a restart
+    in between.
+43. **Stop during closing.** Session close, failed send, stop, restart: the session summary
+    goes out without a consent request, marked "not confirmed (facilitation stopped)"; the
+    same with a window already open: later answers are refused; nothing is ever
+    confirmed automatically after a stop.
+44. **Unverifiable electorate and failed delivery.** Complete roster at start, roster
+    permanently `partial` at the end of a final window without objection: result `not
+    confirmed` (participants could not be verified) after the bounded retries. A result
+    that never gets delivered has delivery status `not delivered` and result status
+    `published` or `not confirmed (not delivered)`.
 
 ## 10. Work breakdown
 

@@ -475,22 +475,26 @@ tool dispatch with the agent's grants and the privacy shield
 (`maskUserPrompt`); the agent's model policy must allow the provider.
 
 New work for `run_loop`:
-- **Budget inside the loop.** The budget unit is reference cost (for subscription
-  providers the price the same tokens would cost on the API, today's `referenceCostUsd`;
-  otherwise the real cost). The turn reserves the agent's per-turn limit before spawn (a
-  turn that cannot reserve it does not start). The kernel counts every model response of
-  the stream (each `assistant` event) with the usage it reports and kills the process as
-  soon as the counted cost reaches the reservation; where a CLI version reports no
-  per-response usage, the turn is limited to a number of model responses derived from the
-  reservation and the model's maximum cost per response. Built-in CLI helpers are off
-  with the built-in tools; omadia helpers called through the loopback tools run in the
-  kernel and are charged to the same reservation. At most the response in flight can
-  overshoot. The turn is also killed at its deadline, on idle timeout and on the kill
-  switch; the final usage is settled against the reservation.
-- **Isolated profile.** The CLI starts with a kernel-managed profile directory as `HOME`
-  and `CLAUDE_CONFIG_DIR` that contains only the subscription login, so no global
-  `~/.claude/CLAUDE.md` or other instruction file is read (today a residual,
-  `cliSpawnGate.ts:66`, `HOME` and `CLAUDE_CONFIG_DIR` passed through, `:320`).
+- **Budget before every model call.** The budget unit is reference cost (for
+  subscription providers the price the same tokens would cost on the API, today's
+  `referenceCostUsd`; otherwise the real cost). Every model call of the loop is gated
+  before it starts, with its worst-case cost (the model's maximum context and output at
+  its price): the first call by the reservation made before spawn, every later call at the
+  point where the kernel returns tool results through the loopback server (the CLI makes
+  its next model call only after receiving them); if the remaining reservation is below
+  the worst-case cost of one more call, the kernel does not return the results and ends
+  the process. Actual usage reported per response replaces the worst case where present;
+  without it the worst case is charged. Built-in CLI helpers are off with the built-in
+  tools; an omadia helper called through a loopback tool reserves its own part of the
+  same reservation atomically before it runs. The sum therefore never exceeds the
+  reservation. The turn is also ended at its deadline, on idle timeout and on the kill
+  switch.
+- **Isolated profile for every CLI spawn.** Every start of the CLI, for `run_loop` and
+  for `complete` (summaries, extraction, classification, verifier;
+  `middleware/src/platform/claudeCliAdapter.ts:246`), uses a kernel-managed profile
+  directory as `HOME` and `CLAUDE_CONFIG_DIR` that contains only the subscription login,
+  so no global `~/.claude/CLAUDE.md` or other instruction file is read (today a residual,
+  `cliSpawnGate.ts:66`; `HOME` and `CLAUDE_CONFIG_DIR` are passed through, `:320`).
 - **Exact tool set.** The CLI's reported tool list must equal the loopback tools offered
   for this turn, and the loopback server must be connected; otherwise the turn is refused.
   Today `checkCliInit` (`cliChatAgent.ts:497-503`) accepts any list that contains one
@@ -920,9 +924,11 @@ Each existing element keeps its purpose, moved out of the message body:
     reachable only from the gateway; a maintenance run calling `complete` is refused; an
     agent on `claude-cli` uses its granted tools through `run_loop`, a tool it lacks is
     refused, a turn without budget does not start, a running loop that reaches its budget
-    before the deadline makes no further model response, and a running turn stops at its
+    before the deadline makes no further model call, the total stays within the
+    reservation also when the remaining budget is below the next call's possible cost,
+    with parallel helpers and without per-response usage, and a running turn stops at its
     deadline and the kill switch; a planted `~/.claude/CLAUDE.md` in the test profile has
-    no effect while login and allowed tools work; a CLI reporting an extra tool, an
+    no effect on `run_loop` or `complete` while login and allowed tools work; a CLI reporting an extra tool, an
     omadia tool not offered this turn or a disconnected loopback server is refused.
 38. **Disclosure level none.** Two questions, one about information that exists but is
     withheld at level `none`, one about information that does not exist: the visible
