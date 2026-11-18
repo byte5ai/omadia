@@ -2979,7 +2979,7 @@
           "unknown": "Die Teams-Identität ließ sich nicht prüfen."
         },
         "teamsLink": "Teams-Einrichtung öffnen",
-        "engineNotReady": "Auf dieser Instanz läuft keine Facilitation-Engine.",
+        "engineNotReady": "Auf dieser Instanz gibt es keine nutzbare Facilitation-Engine. In einer Gruppe angesprochen, antwortet dieser Facilitator nur, dass Moderationen auf dieser Instanz noch nicht eingerichtet sind und man sich an die Administration wenden soll.",
         "engineLink": "Beheben",
         "engineMissing": "Die Facilitation-Engine ist diesem Facilitator nicht angehängt, obwohl das normalerweise automatisch geschieht.",
         "engineDisabled": "Die Facilitation-Engine ist für diesen Facilitator abgeschaltet."

@@ -2979,7 +2979,7 @@
           "unknown": "Its Teams identity could not be checked."
         },
         "teamsLink": "Open Teams provisioning",
-        "engineNotReady": "No facilitation engine is running on this instance.",
+        "engineNotReady": "No usable facilitation engine on this instance. Asked in a group, this facilitator only answers that facilitation is not set up on this instance yet and that people should contact their administrator.",
         "engineLink": "Repair",
         "engineMissing": "The facilitation engine is not attached to this facilitator, although that normally happens automatically.",
         "engineDisabled": "The facilitation engine is switched off for this facilitator."

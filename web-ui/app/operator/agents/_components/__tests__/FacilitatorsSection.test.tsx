@@ -186,6 +186,11 @@ describe('AgentsDashboard — facilitators (#2066)', () => {
     const notice = await screen.findByTestId('facilitation-engine-notice');
     expect(notice.textContent).toContain('No facilitation engine is installed');
     expect(notice.querySelector('a')?.getAttribute('href')).toBe('/store');
+    // What people in a group get from this facilitator meanwhile — the
+    // kernel's fixed answer (`facilitationNotSetUpText`), in the UI's words.
+    expect(screen.getByTestId('facilitator-readiness-engine').textContent).toContain(
+      'only answers that facilitation is not set up on this instance yet',
+    );
   });
 
   it('asks for the SQL grant of an ungranted candidate and links to its grants', async () => {
