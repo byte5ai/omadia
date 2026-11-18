@@ -335,7 +335,7 @@ export function registerBuilderPreviewRoutes(
   // message even if the cache is warm from earlier work.
   router.get(
     '/drafts/:id/preview/status',
-    (req: Request, res: Response) => {
+    async (req: Request, res: Response) => {
       const email = readEmail(req);
       if (!email) {
         sendJson(res, 401, { code: 'auth.missing', message: 'no session' });
@@ -353,9 +353,29 @@ export function registerBuilderPreviewRoutes(
           buildN: handle.rev,
           agentId: handle.agentId,
         });
-      } else {
-        sendJson(res, 200, { phase: 'idle' });
+        return;
       }
+      // Issue #1737 — a failed build never populates the preview cache, so a
+      // cache miss used to be reported as bare `idle` even when the last
+      // build actually failed. Fall back to BuildPipeline's in-memory
+      // last-outcome record (Issue #227) so a page reload after a failed
+      // build still shows `failed` instead of silently reverting to idle.
+      // The last-outcome record is keyed by draft id alone, so check the
+      // draft belongs to the caller before reporting from it.
+      const last = deps.buildPipeline.getLastBuildStatus(draftId);
+      if (
+        last?.status === 'failed' &&
+        (await deps.draftStore.load(email, draftId)) !== null
+      ) {
+        sendJson(res, 200, {
+          phase: 'failed',
+          buildN: last.buildN,
+          errorCount: last.errorCount,
+          reason: last.reason,
+        });
+        return;
+      }
+      sendJson(res, 200, { phase: 'idle' });
     },
   );
 

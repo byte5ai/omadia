@@ -2618,16 +2618,21 @@ export async function refreshPreview(draftId: string): Promise<{
 
 /** Read-only probe of the current preview-cache state. Used on Workspace
  *  mount to re-hydrate buildStatus after a page reload — never triggers
- *  a build. */
+ *  a build. `failed` is reported from BuildPipeline's last-outcome record
+ *  even when the preview cache itself is cold (Issue #1737). */
 export async function getPreviewStatus(draftId: string): Promise<{
   phase: 'idle' | 'ok' | 'failed';
   buildN?: number;
   agentId?: string;
+  errorCount?: number;
+  reason?: string;
 }> {
   return getJson<{
     phase: 'idle' | 'ok' | 'failed';
     buildN?: number;
     agentId?: string;
+    errorCount?: number;
+    reason?: string;
   }>(`/v1/builder/drafts/${encodeURIComponent(draftId)}/preview/status`);
 }
 
