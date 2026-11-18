@@ -112,8 +112,10 @@ if [[ -z "\${OMADIA_ORB_ENV_LOADED:-}" ]]; then
   unset omadia_root
 fi
 EOF
-profile_marker='# Omadia orb toolchains and disposable test database'
+# Amp snapshots retain PATH additions, but discard other setup-time profile
+# edits. Declare the default runtime directly; resume restores the selector.
+profile_marker='# Omadia orb default Node runtime'
 if ! grep -Fqx "$profile_marker" "$HOME/.bash_profile" 2>/dev/null; then
-  printf '\n%s\nsource "$HOME/.config/omadia/orb-env.sh"\n' "$profile_marker" >> "$HOME/.bash_profile"
+  printf '\n%s\nif [[ -z "${OMADIA_ORB_ENV_LOADED:-}" ]]; then\n  export PATH="%s:$PATH"\nfi\n' "$profile_marker" "$toolchains/node-v$node_version/bin" >> "$HOME/.bash_profile"
 fi
 printf '\nOrb setup completed in %ss\n' "$((SECONDS - started))"
