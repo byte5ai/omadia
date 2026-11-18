@@ -179,9 +179,9 @@ export interface AgentIdentityInput {
   instructions: string | null;
   accent_color: string | null;
   verbosity: AnswerVerbosity | null;
-  /** A PUT replaces the document wholesale: an absent `language` is stored
-   *  as `null`, so every save sends the value it loaded. */
-  language: string | null;
+  /** Absent = keep the stored language; `null` = clear it (installation
+   *  language). The one field of this PUT that is not replaced wholesale. */
+  language?: string | null;
   persona: PersonaConfig | null;
   quality: QualityConfig | null;
 }
