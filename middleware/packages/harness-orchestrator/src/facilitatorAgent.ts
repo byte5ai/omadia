@@ -30,14 +30,35 @@ import {
   type ChatTurnInput,
   type SemanticAnswer,
 } from '@omadia/channel-sdk';
+import type { NativeToolCallContext } from '@omadia/plugin-api';
 
 
 export interface EngineTurnScope {
   /** The engine plugin that asked for the turn. */
   readonly pluginId: string;
+  /** What the engine's own tools are told about this turn (#2043): the
+   *  conversation, the stored inbound event and the caller, as the kernel
+   *  established them. See `toolCallContext.ts`. */
+  readonly toolContext?: Omit<NativeToolCallContext, 'agentSlug'>;
 }
 
-const engineTurns = new AsyncLocalStorage<EngineTurnScope>();
+/**
+ * One store per PROCESS, not per module instance. This package can be loaded
+ * twice (the kernel imports the build, a bundled plugin may resolve another
+ * copy); a scope entered through one copy must be visible through the other,
+ * or an engine turn would be refused as a private request.
+ */
+export function processWideStore<T>(key: string): AsyncLocalStorage<T> {
+  const registry = globalThis as unknown as Record<symbol, AsyncLocalStorage<T> | undefined>;
+  const symbol = Symbol.for(key);
+  const existing = registry[symbol];
+  if (existing) return existing;
+  const created = new AsyncLocalStorage<T>();
+  registry[symbol] = created;
+  return created;
+}
+
+const engineTurns = processWideStore<EngineTurnScope>('omadia.facilitator.engineTurn');
 
 /**
  * Run `fn` as a turn of the facilitation engine. Kernel-only: the `agentTurn`

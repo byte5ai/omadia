@@ -9516,6 +9516,37 @@ als Per-Caller-Fassade, damit der Kernel weiß, welches Plugin ruft).
 - Ohne die neuen Flags verhalten sich beide Services wie vorher (Diskussionen,
   Facilitator 0.7.x).
 
+### Tool-Call-Kontext und `agentTurn@1`
+
+- **`NativeToolCallContext`** (zweites Argument jedes Plugin-Tool-Handlers):
+  `agentSlug`, `channelType`, `conversationId` (kanal-nativ, ohne
+  Session-Scope-Präfix), `inboundEventId`, `callerPrincipalId`
+  (`user:<id kleingeschrieben>`), `callerUserRef` (`kind`/`id` wie
+  `record.author`). Alles vom Kernel gesetzt, nie aus Tool-Argumenten.
+  Code: `packages/harness-orchestrator/src/toolCallContext.ts`. Der
+  In-Process-Loop liest es aus `TurnContextValue.toolCall`, die
+  Subscription-CLI bindet es im wiederhergestellten Snapshot
+  (`CliChatAgent.captureTurnContext`). Die Stores sind prozessweit
+  (`processWideStore`), weil das Paket doppelt geladen sein kann.
+- **`agentTurn`** (`src/agents/agentTurnService.ts`, `agentTurnWiring.ts`):
+  nur das Engine-Plugin, nur für einen Facilitator, dem es gegrantet ist.
+  Der Turn läuft über das normale `ChatAgent`-Bundle des Agents
+  (Neutralitätsblock, Model-Policy, Privacy Shield, Receipts, Verifier);
+  `engineContext` ist der `extraSystemHint` des Turns, steht also hinter der
+  Identität und wird maskiert. Rückgabe ist der Text, gepostet wird nichts.
+  Mit `inboundEventId` liest der Kernel das gespeicherte Event; der Aufrufer
+  des Turns ist dessen Autor. Verlauf je `sessionKey` nur im Speicher
+  (20 Turns); der dauerhafte Zustand ist der der Engine.
+  Budget: `AGENT_TURN_MAX_PER_MINUTE`.
+- **Profil:** `agentTurn.getProfile(slug)` liefert Anzeigename, Sprache
+  (`agent_identities.language`, Migration `0069`, sonst Installationssprache)
+  und die Kanaltypen mit eigener Identität.
+- **Engine-Grant automatisch** (`src/platform/facilitatorEngineAttach.ts`):
+  beim Anlegen eines Facilitators, bei Installation oder Austausch der Engine
+  und beim Boot. Insert-if-absent; eine deaktivierte Zeile bleibt die
+  Entscheidung des Operators. Die Engine wird nie per Default an den
+  Standard-Agenten gehängt und lässt sich keinem Standard-Agenten granten.
+
 ### Offen
 
 - Der allgemeine Orchestrator-System-Prompt (Memory-Konventionen,

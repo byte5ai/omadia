@@ -826,8 +826,14 @@ export interface NativeToolCallContext {
   readonly conversationId?: string;
   /** Stored inbound event the turn answers ('conversationMessages@1'). */
   readonly inboundEventId?: string;
-  /** Canonical principal of the person the turn answers. */
+  /** Canonical principal of the person the turn answers ('user:<id>', the
+   *  lower-cased channel user id; the same value as
+   *  `ConversationMessageRecord.author.principalId`). */
   readonly callerPrincipalId?: string;
+  /** The caller in the channel's own namespace, as the platform stated it
+   *  (the same `kind` / `id` as `ConversationMessageRecord.author` and roster
+   *  participants). Absent when the turn has no channel user. */
+  readonly callerUserRef?: { readonly kind: string; readonly id: string };
 }
 
 /**

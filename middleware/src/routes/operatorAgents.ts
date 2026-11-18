@@ -36,9 +36,11 @@ import {
 } from '../platform/teamsInstallTarget.js';
 import type { Plugin, PluginSetupField } from '../api/admin-v1.js';
 import {
+  assertEngineOnlyForFacilitators,
   assertFacilitatorPluginGrants,
   respondFacilitatorRefusal,
 } from '../platform/facilitatorGuard.js';
+import { attachEngineToFacilitator } from '../platform/facilitatorEngineAttach.js';
 import { assertFacilitatorIdentity } from '../services/facilitatorContract.js';
 import { createFacilitationEngineStatusHandler } from './facilitationEngineStatus.js';
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
@@ -1487,6 +1489,14 @@ const AgentIdentitySchema = z.object({
   // the manifest enum and the migration's CHECK use. `null` = inherit the
   // installation-wide `answer_verbosity`.
   verbosity: z.enum(ANSWER_VERBOSITY_LEVELS).nullish(),
+  // #2043 — the language this agent speaks (BCP 47: `de`, `en`, `de-CH`).
+  // Absent/null = the installation's language. Same shape as the CHECK of
+  // migration 0069.
+  language: z
+    .string()
+    .trim()
+    .regex(/^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8}){0,2}$/, 'a BCP 47 language tag such as "de" or "en-GB"')
+    .nullish(),
   // The persona and quality blocks are validated by the SPEC's own schemas,
   // not by a second definition here. They are the same documents the Agent
   // Builder writes and `agent.md` frontmatter mirrors; a private copy would
@@ -1537,6 +1547,7 @@ export function projectAgentIdentity(
       instructions: identity?.instructions ?? null,
       accent_color: identity?.accentColor ?? null,
       verbosity: identity?.verbosity ?? null,
+      language: identity?.language ?? null,
       persona: identity?.persona ?? null,
       quality: identity?.quality ?? null,
       revision: identity?.revision ?? 1,
@@ -2011,6 +2022,9 @@ export function createOperatorAgentsRouter(
         ...(body.status ? { status: body.status } : {}),
         ...(body.kind ? { kind: body.kind } : {}),
       });
+      // #2043 — a facilitator gets the engine with its creation; nobody has
+      // to grant it by hand. No engine bound yet: it is attached on install.
+      await attachEngineToFacilitator(live.store, created, engineSources());
       await live.registry.reload();
       res.status(201).json({
         id: created.id,
@@ -2527,6 +2541,7 @@ export function createOperatorAgentsRouter(
         instructions: body.instructions ?? null,
         accentColor: body.accent_color ?? null,
         verbosity: body.verbosity ?? null,
+        language: body.language ?? null,
         persona,
         quality,
         composed: { text: composed.text, family, byFamily: compiled.byFamily },
@@ -2563,11 +2578,15 @@ export function createOperatorAgentsRouter(
       // this Agent), so it is on this list for the same reason as the name.
       const verbosityChanged =
         (before?.verbosity ?? null) !== (body.verbosity ?? null);
+      // #2043 — the language reaches the built agent (its refusal text) and
+      // the engine's profile read, so a change reloads like the name does.
+      const languageChanged = (before?.language ?? null) !== (body.language ?? null);
       if (
         (before?.composed.text ?? null) !== (composed.text ?? null) ||
         nameChanged ||
         descriptionChanged ||
-        verbosityChanged
+        verbosityChanged ||
+        languageChanged
       ) {
         await live.registry.reload();
       }
@@ -2792,11 +2811,9 @@ export function createOperatorAgentsRouter(
       // upsertAgentPlugin overwrites config on conflict — pass the existing
       // config through so a toggle never wipes a per-Agent configuration.
       const config = isFallback ? {} : (row?.config ?? {});
-      assertFacilitatorPluginGrants(
-        existing,
-        [{ pluginId: body.id, enabled: body.enabled }],
-        engineSources(),
-      );
+      const toggled = [{ pluginId: body.id, enabled: body.enabled }];
+      assertFacilitatorPluginGrants(existing, toggled, engineSources());
+      assertEngineOnlyForFacilitators(existing, toggled, engineSources());
       await live.store.upsertAgentPlugin(existing.id, {
         pluginId: body.id,
         config,
@@ -3901,11 +3918,9 @@ export function createOperatorAgentsRouter(
       const settings = await live.store.getPlatformSettings();
       const isFallback = settings.fallbackAgentId === existing.id;
       // #2060 — checked before the first write, so a refused set changes nothing.
-      assertFacilitatorPluginGrants(
-        existing,
-        body.plugins.map((p) => ({ pluginId: p.id, enabled: p.enabled })),
-        engineSources(),
-      );
+      const requested = body.plugins.map((p) => ({ pluginId: p.id, enabled: p.enabled }));
+      assertFacilitatorPluginGrants(existing, requested, engineSources());
+      assertEngineOnlyForFacilitators(existing, requested, engineSources());
       const current = await live.store.listAgentPlugins(existing.id);
       const desired = new Set(body.plugins.map((p) => p.id));
       for (const p of current) {

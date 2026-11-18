@@ -248,6 +248,27 @@ describe('facilitator omissions: operator routes', () => {
     assert.equal((enabled.json['agents'] as { slug: string; kind: string }[])[0]!.kind, 'facilitator');
   });
 
+  it('create attaches the engine to a facilitator, and only to a facilitator', async () => {
+    await call('POST', '/agents', { slug: 'nora', name: 'Nora', kind: 'facilitator' });
+    assert.equal(writes.length, 1);
+    assert.match(writes[0]!, /^upsertAgentPlugin\(\["id-nora",\{"pluginId":"@omadia\/agent-facilitator","enabled":true\}/);
+    writes = [];
+    await call('POST', '/agents', { slug: 'sales', name: 'Sales' });
+    assert.deepEqual(writes, []);
+    // No engine installed: the facilitator is created, the engine follows on install.
+    installed = [{ id: ODOO, status: 'active' }];
+    assert.equal((await call('POST', '/agents', { slug: 'ida', name: 'Ida', kind: 'facilitator' })).status, 201);
+    assert.deepEqual(writes, []);
+  });
+
+  it('the engine cannot be granted to a standard agent', async () => {
+    const res = await call('PATCH', '/agents/hr/plugins', { id: ENGINE, enabled: true });
+    assert.equal(res.status, 409);
+    assert.equal(res.json['error'], 'config_validation');
+    assert.match(String(res.json['message']), /can only be granted to a facilitator/);
+    assert.deepEqual(writes, []);
+  });
+
   it('the kind cannot be patched', async () => {
     const res = await call('PATCH', '/agents/hr', { kind: 'facilitator', name: 'HR' });
     assert.equal(res.status, 200);

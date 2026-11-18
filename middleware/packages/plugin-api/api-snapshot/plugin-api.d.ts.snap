@@ -167,8 +167,17 @@ message: string;
 outcome: 'failed';
 message: string;
 };
+export interface AgentProfile {
+agentSlug: string;
+kind: 'standard' | 'facilitator';
+displayName: string;
+shortDescription?: string;
+language?: string;
+ownIdentityChannelTypes: readonly string[];
+}
 export interface AgentTurnService {
 runTurn(request: AgentTurnRequest): Promise<AgentTurnOutcome>;
+getProfile?(agentSlug: string): Promise<AgentProfile | undefined>;
 }
 
 // ===== boundaryPresets.d.ts =====
@@ -1844,6 +1853,10 @@ readonly channelType?: string;
 readonly conversationId?: string;
 readonly inboundEventId?: string;
 readonly callerPrincipalId?: string;
+readonly callerUserRef?: {
+readonly kind: string;
+readonly id: string;
+};
 }
 export type NativeToolAttachmentSink = () => NativeToolAttachment[] | undefined;
 export interface NativeToolAttachment {

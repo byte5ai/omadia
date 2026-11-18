@@ -86,6 +86,12 @@ export interface AgentIdentityText {
    * (Teams republish, tests) keep compiling; the store always maps it.
    */
   readonly verbosity?: AnswerVerbosity | null;
+  /**
+   * #2043 — the language this agent speaks, a BCP 47 tag (migration 0069).
+   * `null`/absent = the installation's language. Optional in the type for the
+   * same reason as `verbosity`.
+   */
+  readonly language?: string | null;
 }
 
 /** What the record says about the avatar without carrying it. */
@@ -221,7 +227,7 @@ function nonEmpty(value: string | null | undefined): string | null {
 
 /** Everything except the three BYTEA columns. */
 const META_COLUMNS =
-  'agent_id, display_name, short_description, long_description, instructions, accent_color, verbosity, persona, quality, composed_prompt, composed_family, composed_prompts, avatar_etag, revision, created_at, updated_at';
+  'agent_id, display_name, short_description, long_description, instructions, accent_color, verbosity, language, persona, quality, composed_prompt, composed_family, composed_prompts, avatar_etag, revision, created_at, updated_at';
 
 interface AgentIdentityMetaRow {
   agent_id: string;
@@ -231,6 +237,8 @@ interface AgentIdentityMetaRow {
   instructions: string | null;
   accent_color: string | null;
   verbosity: AnswerVerbosity | null;
+  /** #2043 — absent on a DB that predates migration 0069. */
+  language?: string | null;
   persona: PersonaConfig | null;
   quality: QualityConfig | null;
   composed_prompt: string | null;
@@ -260,6 +268,7 @@ function mapRow(row: AgentIdentityMetaRow): AgentIdentityRecord {
     instructions: row.instructions,
     accentColor: row.accent_color,
     verbosity: row.verbosity,
+    language: row.language ?? null,
     persona: row.persona,
     quality: row.quality,
     composed: {
@@ -302,6 +311,7 @@ function sameContent(
     nonEmpty(a.instructions) === nonEmpty(b.instructions) &&
     nonEmpty(a.accentColor) === nonEmpty(b.accentColor) &&
     (a.verbosity ?? null) === (b.verbosity ?? null) &&
+    nonEmpty(a.language ?? null) === nonEmpty(b.language ?? null) &&
     JSON.stringify(a.persona ?? null) === JSON.stringify(b.persona ?? null) &&
     JSON.stringify(a.quality ?? null) === JSON.stringify(b.quality ?? null)
   );
@@ -427,13 +437,14 @@ export class AgentIdentityStore {
       input.composed.text,
       input.composed.family,
       input.composed.byFamily ? JSON.stringify(input.composed.byFamily) : null,
+      nonEmpty(input.language ?? null),
     ];
     const res = await this.pool.query<AgentIdentityMetaRow>(
       `INSERT INTO agent_identities (
          agent_id, display_name, short_description, long_description,
          instructions, accent_color, verbosity, persona, quality,
-         composed_prompt, composed_family, composed_prompts
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb)
+         composed_prompt, composed_family, composed_prompts, language
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13)
        ON CONFLICT (agent_id) DO UPDATE SET
          display_name      = EXCLUDED.display_name,
          short_description = EXCLUDED.short_description,
@@ -441,6 +452,7 @@ export class AgentIdentityStore {
          instructions      = EXCLUDED.instructions,
          accent_color      = EXCLUDED.accent_color,
          verbosity         = EXCLUDED.verbosity,
+         language          = EXCLUDED.language,
          persona           = EXCLUDED.persona,
          quality           = EXCLUDED.quality,
          composed_prompt   = EXCLUDED.composed_prompt,

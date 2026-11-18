@@ -217,7 +217,9 @@ describe('facilitator runtime omissions', () => {
     assert.deepEqual(grantsFor(make([ENGINE]), row()), [ENGINE]);
     assert.deepEqual(grantsFor(make([]), row()), [], 'no engine installed');
     assert.deepEqual(grantsFor(make(undefined), row()), [], 'no lookup wired');
-    assert.deepEqual(grantsFor(make([ENGINE]), row({ kind: 'standard' })), [ENGINE, ODOO]);
+    // The other direction: the engine's tools are for facilitators only.
+    assert.deepEqual(grantsFor(make([ENGINE]), row({ kind: 'standard' })), [ODOO]);
+    assert.deepEqual(grantsFor(make(undefined), row({ kind: 'standard' })), [ENGINE, ODOO], 'no lookup: unchanged');
   });
 });
 

@@ -103,6 +103,29 @@ and the neutrality contract. No facilitation tables in the kernel.
   are now per-caller facades; sends without the new flags are unchanged.
   channel-sdk: `TargetedMessage.poll`, `TargetedPoll`, `cardMessageId` on the
   delivered outcome, `cardAnswer.answererVerified`.
+- **Tool call context**: a plugin's native tool handler receives
+  `NativeToolCallContext` as its second argument on both tool loops
+  (in-process and subscription CLI): agent slug, channel type, channel-native
+  conversation id, inbound event id, caller principal and caller channel user
+  reference, all stated by the kernel.
+- **`agentTurn` service**: the facilitation engine runs one turn as a
+  facilitator it is granted to, inside the agent's normal envelope (identity
+  with neutrality block, model policy, Privacy Shield, receipts);
+  `engineContext` travels as the turn's system hint after the identity; the
+  text is returned and not posted. `inboundEventId` must be a stored message
+  of the conversation; the caller of the turn is its platform-stated author.
+  Ceiling `AGENT_TURN_MAX_PER_MINUTE` (default 60 per agent, 0 = off).
+  `getProfile` returns display name, language and own-identity channel types.
+- **Migration `0069_agent_identity_language`**: `agent_identities.language`
+  (BCP 47 tag, CHECK). `PUT /:slug/identity` takes `language`, the read
+  returns it; a facilitator's refusal text and the engine's profile read use
+  it, falling back to the installation language.
+- **Engine attach without a manual grant**: a facilitator gets the facilitation
+  engine when it is created, and existing facilitators get it when an engine
+  is installed or replaced (also at boot). The engine is never part of a
+  default attach, cannot be granted to a standard agent (`409
+  config_validation`), and a leftover engine row on a standard agent grants
+  nothing at runtime.
 - **`GET /api/v1/operator/agents/facilitation-engine`**: which plugin is the
   facilitation engine (`state` bound | none | ambiguous) and whether it
   reports itself usable (`available`, `unavailable_reason`, `version`).

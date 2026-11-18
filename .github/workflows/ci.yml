@@ -330,7 +330,9 @@ jobs:
           # 4 tests).
           # 427 → 433 with stored conversation messages (#2043,
           # conversationMessages.pg, 6 tests).
-          PG_TEST_FLOOR: '433'
+          # 433 → 434 with the agent language column (#2043,
+          # agentIdentityStore.pg, 1 test).
+          PG_TEST_FLOOR: '434'
         run: |
           set -eo pipefail
           npm run test:pg 2>&1 | tee pg-test.out

@@ -435,6 +435,9 @@ export const ConfigSchema = z.object({
   CONVERSATION_MESSAGES_GRACE_MS: z.coerce.number().int().nonnegative().default(6 * 60 * 60 * 1000),
   CONVERSATION_MESSAGES_MAX_AGE_DAYS: z.coerce.number().int().nonnegative().default(30),
   CONVERSATION_MESSAGES_PURGE_INTERVAL_MS: z.coerce.number().int().positive().default(10 * 60 * 1000),
+  // #2043 — ceiling on kernel-run turns ('agentTurn@1') per agent and minute;
+  // a loop in an engine plugin must not spend without bound. 0 = no ceiling.
+  AGENT_TURN_MAX_PER_MINUTE: z.coerce.number().int().nonnegative().default(60),
 
   // #758 — Ed25519 checkpoint signing for the receipt hash chain. The
   // private key (base64 PKCS#8 DER; generate with

@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import type { NativeToolCallContext } from '@omadia/plugin-api';
 import type { LlmProvider } from '@omadia/llm-provider';
 import type { AudienceFloorProvider } from './audienceFloorGuard.js';
 import type { CommandPolicyProvider } from './commandPolicyGuard.js';
@@ -57,6 +58,12 @@ export type GraphReadScope =
 export interface TurnContextValue {
   turnId: string;
   turnDate: string;
+  /**
+   * #2043 — where a tool call of this turn comes from, handed to a plugin's
+   * tool handler as its second argument. Built once at turn start from the
+   * turn input (see `toolCallContext.ts`); kernel-stated, never model-supplied.
+   */
+  toolCall?: NativeToolCallContext;
   /**
    * Per-orchestrator isolation — slug of the Agent (orchestrator) handling
    * this turn. Set by the orchestrator at turn start (= `this.agentId`).

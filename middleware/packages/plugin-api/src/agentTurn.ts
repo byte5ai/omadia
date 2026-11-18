@@ -35,6 +35,23 @@ export type AgentTurnOutcome =
     }
   | { outcome: 'failed'; message: string };
 
+/** What an engine may know about the agent it runs (#2043). Per-agent
+ *  defaults of the engine live in the engine's own tables. */
+export interface AgentProfile {
+  agentSlug: string;
+  kind: 'standard' | 'facilitator';
+  /** The name the agent wears (its identity's display name, else its label). */
+  displayName: string;
+  shortDescription?: string;
+  /** BCP 47 language the instance answers in, when the operator set one. */
+  language?: string;
+  /** Channel types the agent has an identity of its own on. */
+  ownIdentityChannelTypes: readonly string[];
+}
+
 export interface AgentTurnService {
   runTurn(request: AgentTurnRequest): Promise<AgentTurnOutcome>;
+  /** The profile of an agent bound to the calling engine; `undefined` for
+   *  any other agent. Optional — feature-detect on older kernels. */
+  getProfile?(agentSlug: string): Promise<AgentProfile | undefined>;
 }

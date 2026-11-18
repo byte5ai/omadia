@@ -416,6 +416,8 @@ import {
 } from './plugins/defaultOrchestratorAttach.js';
 import { facilitatorGrantablePluginIds } from './platform/facilitatorGuard.js';
 import { publishSendServices } from './channels/sendServicesWiring.js';
+import { publishAgentTurnService } from './agents/agentTurnWiring.js';
+import { attachEngineToFacilitators } from './platform/facilitatorEngineAttach.js';
 import {
   wireConversationMessages,
   type ConversationMessagesWiring,
@@ -1851,6 +1853,27 @@ async function main(): Promise<void> {
     return true;
   };
 
+  /** #2043 — see `platform/facilitatorEngineAttach.ts`. Never throws. */
+  const attachFacilitationEngine = async (): Promise<void> => {
+    const store = serviceRegistry.get<MultiOrchestratorConfigStore>('configStore');
+    if (!store) return;
+    try {
+      const changed = await attachEngineToFacilitators(
+        store,
+        { installedRegistry, catalog: pluginCatalog },
+        (m) => console.log(m),
+      );
+      if (changed.length > 0) {
+        await serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry')?.reload();
+      }
+    } catch (err) {
+      console.error(
+        '[middleware] facilitation engine attach FAILED:',
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  };
+
   const propagatePluginInstall = async (
     pluginId: string,
     opts: { attach: boolean } = { attach: true },
@@ -1872,6 +1895,9 @@ async function main(): Promise<void> {
         err instanceof Error ? err.message : String(err),
       );
     }
+    // #2043 — an engine installed (or replaced) while facilitators exist is
+    // attached to them; nothing else ever is.
+    await attachFacilitationEngine();
     // No-op for non-agent plugins (no DomainTool).
     reconcileRuntimeDomainTool(pluginId);
     console.log(`[middleware] runtime plugin install propagated: ${pluginId}`);
@@ -2389,6 +2415,8 @@ async function main(): Promise<void> {
   // agent runtime activates, so the per-Agent hydration below already sees
   // the new rows.
   await pendingDefaultAttach.flush();
+  // #2043 — and the facilitation engine to facilitators that predate it.
+  await attachFacilitationEngine();
 
   // OB-61 fix (boot path) — when the operator completed /setup in a PRIOR
   // session, the anthropic key lives in the orchestrator's VAULT, not in ENV.
@@ -6989,6 +7017,20 @@ async function main(): Promise<void> {
     getRoster: (channelType: string, conversationId: string) =>
       conversationRosterRegistry.getRoster(channelType, conversationId),
   };
+  // #2043 — 'agentTurn@1': the engine runs a turn as a facilitator and gets
+  // the text back unposted.
+  publishAgentTurnService({
+    serviceRegistry,
+    getRegistry,
+    ...(conversationMessages ? { messages: conversationMessages.hub } : {}),
+    engineSources: () => ({ installedRegistry, catalog: pluginCatalog }),
+    maxTurnsPerMinute: config.AGENT_TURN_MAX_PER_MINUTE,
+    language: () => {
+      const raw = installedRegistry.get('@omadia/orchestrator')?.config?.['ai_disclosure_locale'];
+      return typeof raw === 'string' && raw.trim().length > 0 ? raw.trim() : undefined;
+    },
+    log: (m) => console.log(m),
+  });
   publishSendServices({
     serviceRegistry,
     targeted: createTargetedDeliveryService({

@@ -162,6 +162,11 @@ export interface AgentRow {
    */
   readonly answerVerbosity?: AnswerVerbosity | null;
   /**
+   * #2043 — the language the agent speaks (`agent_identities.language`,
+   * migration 0069), a BCP 47 tag. `null`/absent = the installation's.
+   */
+  readonly identityLanguage?: string | null;
+  /**
    * #1569 — the agent's own response-quality settings
    * (`agent_identities.quality`, migration 0053), joined in like the other
    * identity columns and narrowed by `parseAgentQuality`. `null`/absent = the
@@ -399,6 +404,8 @@ interface AgentDbRow {
   identity_long_description?: string | null;
   /** `agent_identities.verbosity` (0063), same join / same absence on writes. */
   identity_verbosity?: string | null;
+  /** #2043 — `agent_identities.language` (0069), same join / same absence. */
+  identity_language?: string | null;
   /** #1569 — `agent_identities.quality` (JSONB), same join / same absence on writes. */
   identity_quality?: unknown;
   created_at: Date;
@@ -490,6 +497,7 @@ function mapAgent(row: AgentDbRow): AgentRow {
     // predates 0063 has no column at all and a hand edit must never become
     // a level the prompt builder does not know.
     answerVerbosity: parseAnswerVerbosity(row.identity_verbosity) ?? null,
+    identityLanguage: row.identity_language?.trim() || null,
     quality: parseAgentQuality(row.identity_quality) ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -555,6 +563,9 @@ const AGENT_SELECT =
   'i.short_description AS identity_short_description, ' +
   'i.long_description AS identity_long_description, ' +
   'i.verbosity AS identity_verbosity, ' +
+  // to_jsonb, not the bare column: a database that predates migration 0069
+  // has no `language`, and this SELECT runs before any migration check.
+  "to_jsonb(i) ->> 'language' AS identity_language, " +
   'i.quality AS identity_quality ' +
   'FROM agents a LEFT JOIN agent_identities i ON i.agent_id = a.id';
 

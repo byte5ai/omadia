@@ -102,6 +102,7 @@ class FakeIdentityStore implements OperatorAgentIdentityStore {
       instructions: norm(input.instructions),
       accentColor: norm(input.accentColor),
       verbosity: input.verbosity ?? null,
+      language: input.language ?? null,
       persona: input.persona,
       quality: input.quality,
       composed: input.composed,
@@ -118,6 +119,7 @@ class FakeIdentityStore implements OperatorAgentIdentityStore {
       existing.instructions === next.instructions &&
       existing.accentColor === next.accentColor &&
       (existing.verbosity ?? null) === (next.verbosity ?? null) &&
+      (existing.language ?? null) === (next.language ?? null) &&
       JSON.stringify(existing.persona ?? null) ===
         JSON.stringify(next.persona ?? null) &&
       JSON.stringify(existing.quality ?? null) ===
@@ -441,6 +443,32 @@ describe('operator agent identity routes (#914)', () => {
     });
     const clearedBody = (await cleared.json()) as { identity: { verbosity: string | null } };
     assert.equal(clearedBody.identity.verbosity, null);
+  });
+
+  it('PUT stores the agent language (BCP 47), reloads on a change, and null clears it (#2043)', async () => {
+    const send = (language: unknown): Promise<Response> =>
+      fetch(`${baseUrl}/sales/identity`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ language }),
+      });
+    const put = await send('de-CH');
+    assert.equal(put.status, 200);
+    const body = (await put.json()) as { identity: { language: string | null } };
+    assert.equal(body.identity.language, 'de-CH');
+    assert.equal(identityStore.rows.get('agent-1')?.language, 'de-CH');
+    assert.equal(reloads, 1, 'the language reaches the built agent');
+    const got = (await (await fetch(`${baseUrl}/sales/identity`)).json()) as {
+      identity: { language: string | null };
+    };
+    assert.equal(got.identity.language, 'de-CH');
+    assert.equal((await send('de-CH')).status, 200);
+    assert.equal(reloads, 1, 'unchanged: no reload');
+    const cleared = (await (await send(null)).json()) as { identity: { language: string | null } };
+    assert.equal(cleared.identity.language, null);
+    for (const bad of ['german', 'd', 'de_CH', 'en-']) {
+      assert.equal((await send(bad)).status, 400, bad);
+    }
   });
 
   it('rejects an answer-size level outside the closed scale', async () => {

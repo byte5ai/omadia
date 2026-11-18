@@ -129,6 +129,22 @@ export {
   parseAgentKind,
 } from './registry/agentKind.js';
 export type { AgentKind, FacilitatorOmission } from './registry/agentKind.js';
+// #2043 — kernel-side seams of the facilitator runtime. `runAsEngineTurn` is
+// for the kernel's `agentTurn` service only; it is not a plugin surface.
+export {
+  conversationIdCandidates,
+  currentEngineTurn,
+  facilitatorRefusalText,
+  runAsEngineTurn,
+  wrapFacilitatorAgent,
+} from './facilitatorAgent.js';
+export type { EngineDrivenConversationLookup, EngineTurnScope } from './facilitatorAgent.js';
+export {
+  buildToolCallContext,
+  channelConversationId,
+  currentToolCallContext,
+  runWithToolCallContext,
+} from './toolCallContext.js';
 export {
   FACILITATOR_NEUTRALITY_BLOCK,
   FACILITATOR_NEUTRALITY_HEADING,

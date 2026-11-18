@@ -16,6 +16,7 @@
 import type { Response } from 'express';
 
 import {
+  ConfigValidationError,
   FacilitatorOmissionError,
   isFacilitatorKind,
   type AgentKind,
@@ -101,6 +102,26 @@ export function assertFacilitatorPluginGrants(
     .map((g) => g.pluginId);
   if (refused.length > 0) {
     throw new FacilitatorGrantRefusedError(agent.slug, refused, engine);
+  }
+}
+
+/**
+ * The other direction: the engine's tools are for facilitators only. A
+ * standard agent that could start and count a vote would be the partial
+ * moderator this kind exists to replace.
+ */
+export function assertEngineOnlyForFacilitators(
+  agent: { readonly slug: string; readonly kind?: AgentKind },
+  grants: readonly { readonly pluginId: string; readonly enabled?: boolean | undefined }[],
+  sources: FacilitationEngineSources,
+): void {
+  if (isFacilitatorKind(agent)) return;
+  const engines = new Set(facilitationEnginePluginIds(sources));
+  const refused = grants.filter((g) => g.enabled !== false && engines.has(g.pluginId)).map((g) => g.pluginId);
+  if (refused.length > 0) {
+    throw new ConfigValidationError(
+      `agent "${agent.slug}" is not a facilitator: the facilitation engine (${refused.join(', ')}) can only be granted to a facilitator`,
+    );
   }
 }
 

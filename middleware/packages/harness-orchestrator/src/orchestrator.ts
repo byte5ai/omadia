@@ -79,6 +79,7 @@ import {
 import type { MemoryToolHandler } from '@omadia/memory';
 import type { BoundTurnMemory, MemoryBinder } from './memoryBinder.js';
 import { memoryIndexHint, prefetchMemoryIndex } from './memoryIndexPrefetch.js';
+import { buildToolCallContext, currentToolCallContext } from './toolCallContext.js';
 import type { ChatParticipantsTool } from './tools/chatParticipantsTool.js';
 import {
   CHAT_PARTICIPANTS_TOOL_NAME,
@@ -5493,6 +5494,8 @@ export class Orchestrator {
       {
         turnId,
         turnDate: today(),
+        // #2043 — what this turn's tool handlers are told about their caller.
+        toolCall: buildToolCallContext(this.agentId, input),
         // Per-orchestrator isolation: expose THIS Agent's identity to the
         // per-call MemoryAccessor (plugin/sub-agent memory namespacing).
         agentSlug: this.agentId,
@@ -7802,6 +7805,7 @@ export class Orchestrator {
     const context: TurnContextValue = {
       turnId,
       turnDate: today(),
+      toolCall: buildToolCallContext(this.agentId, input),
       // Per-orchestrator isolation: see the matching `turnContext.run` above.
       agentSlug: this.agentId,
       // The streaming path never set `userId` — W2-1 needs it, because the MCP
@@ -10247,7 +10251,9 @@ export class Orchestrator {
           `Error: tool \`${name}\` is unavailable — plugin \`${reg.agentId}\` has not completed its connection/auth setup.`,
         );
       }
-      return reg.handler(input);
+      // #2043 — the second argument tells the handler where the call comes
+      // from; kernel-stated, never from `input`.
+      return reg.handler(input, currentToolCallContext() ?? { agentSlug: this.agentId });
     }
     if (name === KNOWLEDGE_GRAPH_TOOL_NAME && this.knowledgeGraphTool) {
       return this.knowledgeGraphTool.handle(input);

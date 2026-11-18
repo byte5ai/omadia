@@ -252,6 +252,8 @@ export interface AgentRuntimeConfig {
    * answers with a fixed refusal. Absent = `standard`.
    */
   readonly kind?: AgentKind;
+  /** #2043 — the agent's own language (BCP 47), when its identity names one. */
+  readonly identityLanguage?: string;
 }
 
 /**
@@ -649,7 +651,7 @@ export function buildOrchestratorForAgent(
       ? wrapFacilitatorAgent(agent, {
           agentSlug: config.agentId,
           name: config.identityName,
-          locale: deps.aiDisclosure?.locale,
+          locale: config.identityLanguage ?? deps.aiDisclosure?.locale,
           ...(deps.isEngineDrivenConversation
             ? { isEngineDriven: deps.isEngineDrivenConversation }
             : {}),

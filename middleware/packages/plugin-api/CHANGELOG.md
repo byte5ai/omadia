@@ -40,6 +40,11 @@ sending; lifecycle, state and counting live in the engine plugin.
   for a first-contact direct message as the agent's own identity.
 - **`ConversationMessageRecord.cardAnswer.answererVerified?`** — `false` when
   the platform could not state who clicked.
+- **`NativeToolCallContext.callerUserRef?`** — the caller in the channel's
+  own namespace (`kind`, `id`), next to the canonical `callerPrincipalId`.
+- **`AgentTurnService.getProfile?`** (`AgentProfile`) — display name,
+  language and own-identity channel types of an agent bound to the calling
+  engine.
 - **`FACILITATION_ENGINE_CAPABILITY`** and the **`facilitation.followup`
   service contract** (`FacilitationFollowupService`) — free/busy, invitation
   and mail, each call bounded by an allow-list.

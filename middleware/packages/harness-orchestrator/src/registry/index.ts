@@ -365,8 +365,10 @@ export class OrchestratorRegistry {
     plugins: readonly AgentPluginRow[],
   ): string[] {
     const enabled = plugins.filter((p) => p.enabled).map((p) => p.pluginId);
-    if (!isFacilitatorKind(agent)) return enabled;
     const grantable = new Set(this.options.pluginLookup?.facilitatorGrantable?.() ?? []);
+    // The engine's tools are for facilitators only; a row on a standard agent
+    // (left over from the plugin era, or hand-written) grants nothing.
+    if (!isFacilitatorKind(agent)) return enabled.filter((id) => !grantable.has(id));
     const dropped = enabled.filter((id) => !grantable.has(id));
     if (dropped.length > 0) {
       this.log(`registry: facilitator grants ignored (not the facilitation engine)`, {
@@ -635,6 +637,17 @@ export class OrchestratorRegistry {
       (i) => i.channelType === channelType && i.agentId === entry.agent.id,
     );
     return match ? { channelType: match.channelType, channelKey: match.channelKey } : undefined;
+  }
+
+  /** #2043 — the channel types an active agent has an identity of its own on. */
+  channelTypesWithIdentity(slug: string): string[] {
+    const entry = [...this.active.values()].find((e) => e.agent.slug === slug);
+    if (!entry) return [];
+    return [
+      ...new Set(
+        this.channelIdentities.filter((i) => i.agentId === entry.agent.id).map((i) => i.channelType),
+      ),
+    ].sort();
   }
 
   /** The currently-held snapshot. Useful for diffing in US5. */
