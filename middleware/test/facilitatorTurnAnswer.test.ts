@@ -165,7 +165,8 @@ describe('facilitator group turn: what the model is told', () => {
     await collect(f.agent.chatStream({ ...INPUT, extraSystemHint: 'caller hint' }));
     assert.match(f.seen[0]?.extraSystemHint ?? '', /A GROUP conversation on teams\. You are present in it under your own identity/);
     assert.match(f.seen[0]?.extraSystemHint ?? '', /no facilitation is running in this conversation yet/);
-    assert.match(f.seen[1]?.extraSystemHint ?? '', /Never ask to be added to another chat first\.\n\ncaller hint$/);
+    assert.match(f.seen[0]?.extraSystemHint ?? '', /You keep no memory between messages[^\n]*Record it with your tools in this same turn/);
+    assert.match(f.seen[1]?.extraSystemHint ?? '', /then ask the group to confirm or adjust\.\n\ncaller hint$/);
     assert.equal(INPUT.extraSystemHint, undefined, 'the input of the caller is not changed');
   });
 

@@ -140,6 +140,7 @@ export function groupTurnStatement(channelType: string | undefined): string {
     `- A GROUP conversation${channelType ? ` on ${channelType}` : ''}. You are present in it under your own identity; it is not a private chat.`,
     '- The facilitation engine is set up, and no facilitation is running in this conversation yet.',
     '- If the group asks for a facilitation, set it up here with your tools. Never ask to be added to another chat first.',
+    '- You keep no memory between messages of this conversation: the next message reaches you without this one and without your answer. A setup you only describe is lost. Record it with your tools in this same turn, then ask the group to confirm or adjust.',
   ].join('\n');
 }
 
