@@ -2717,6 +2717,14 @@ Conversation-Refs kommen aus `conductorWiring.channelBindingStore.getMany`.
 
 ### Zero-Touch-Facilitator-Setup (#330 C2a)
 
+> **Abgelöst durch native Facilitators (#2043, 2026-11-18).** Die Services
+> `agentProvisioning`, `conversationBindings` und `conductorRoleAssignments`
+> sowie `src/platform/agentSetupService.ts` und
+> `src/conductor/scopedRoleAssignments.ts` sind entfernt. Geblieben ist nur
+> der Retry-/Ablauf-Sweep über `conductor_ephemeral_attachments`
+> (`src/platform/ephemeralAttachmentSweep.ts`), den Diskussionen brauchen.
+> Der Text unten beschreibt den früheren Stand.
+
 Drei neue deny-by-default Kernel-Services (Manifest-`optional_requires` ist
 das Gate, kein Katalogeintrag):
 
@@ -2809,6 +2817,12 @@ Privacy-Choke-Points. Tests: `test/transcribeRecordingTool.test.ts`,
 
 ### Facilitation-Admin-Lens (#330 Runde 4)
 
+> **Bleibt (#2043).** Die Lens listet jeden laufenden Ephemeral-Run, also
+> auch Agenten-Diskussionen, und ist deren einziger Stopp-Weg für Operatoren.
+> Native Facilitations erscheinen hier nicht mehr (sie sind keine
+> Conductor-Runs); ihre Ansicht liefert das Engine-Plugin. Name und Routen
+> (`/facilitations`) sind historisch.
+
 Ephemere Workflows sind bewusst aus der Library gefiltert — laufende
 Facilitations waren dadurch im Admin unsichtbar (Feldbefund: zwei Instanzen
 im selben Meeting, nicht stoppbar). Neue Operator-Routen (beide hinter
@@ -2851,6 +2865,11 @@ Model-Paraphrase — der autoritative DoD-Text bleibt daneben stehen. Läufe,
 die vor Pattern v3 gestartet sind, liefern `items: null` → nur DoD-Liste.
 
 ### Timer-Steps + DoD-Loops + conversationSend (#330 C3)
+
+> **Teilweise abgelöst (#2043).** Das Pattern `facilitation.json` ist
+> entfernt, `conversationSend` postet nur noch als eigene Identität des Agents
+> (Berechtigung: Message-Subscription). Timer-Steps und DoD-Loops des
+> Conductors bleiben. Der Text unten beschreibt den früheren Stand.
 
 Neuer Step-Kind **`timer`** (`conductor-core` types/schema/validate;
 Executor parkt via Await-Maschinerie mit `principal_kind='timer'`, Migration
@@ -9421,8 +9440,8 @@ enthält **keine** Facilitation-Tabellen. Spec: `specs/2043-native-facilitators/
   Moderation) oder als Engine-Turn (`runAsEngineTurn`). Alles andere (1:1,
   Web-Chat, API, Workflow-Step, unbekannte Herkunft) bekommt eine feste,
   freundliche Absage ohne Modellaufruf.
-- `agentSetupService.ensureAgent` überspringt Facilitators; das
-  Fallback-Onboarding kann sie nicht treffen (Fallback ist nie ein Facilitator).
+- Das Fallback-Onboarding kann Facilitators nicht treffen (Fallback ist nie
+  ein Facilitator); Plugin-getriebenes Provisioning gibt es nicht mehr.
 
 ### Neutralitätsvertrag (Spec §2.4)
 
@@ -9576,6 +9595,24 @@ Pushes hängen an Message-Subscriptions.
 - **Teams-App-Paket:** Version `1.<TEMPLATE_REVISION>.<Identity-Revision>`
   (`src/services/teamsAppPackageAssets.ts`); Graph-Rechte der Instanz-App für
   Readiness und Reparatur stehen in `docs/teams-multi-agent-identities.md` §2.4.
+
+### Entfernt: der Plugin-Pfad der Facilitation (#2067)
+
+- `conductor/patterns/facilitation.json` (ein Plugin der alten Generation
+  bekommt für `patternId: 'facilitation'` „unknown pattern“).
+- Plugin-Services `agentProvisioning`, `conversationBindings`,
+  `conductorRoleAssignments`; Module `agentSetupService.ts`,
+  `scopedRoleAssignments.ts`.
+- Der Ephemeral-Attachment-Scope von `conversationSend` (Default-Bot).
+- **Geblieben, mit Grund:** Ephemeral Runs, Diskussionen und `say`; die
+  Admin-Lens samt `FacilitationsPanel` im Web-UI (einzige Sicht und einziger
+  Stopp für laufende Diskussionen); die `CONDUCTOR_EPHEMERAL_*`-Quoten
+  (gelten für jeden Ephemeral-Run); die Audit-Aktion
+  `conductor.facilitation_terminate` für historische Zeilen;
+  Rollenhalter-Bereinigung für Attachment-Zeilen, die noch eine Rolle tragen.
+- **Rollout:** `omadia-agent-facilitator` 0.7.x funktioniert gegen diesen
+  Kernel nicht mehr; Kernel-Deploy, Teams-Kanal und Facilitator 1.0.0 gehören
+  in denselben Rollout.
 
 ### Offen
 

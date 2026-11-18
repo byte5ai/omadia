@@ -9,11 +9,10 @@
 export const CONVERSATION_SEND_SERVICE_NAME = 'conversationSend';
 
 export interface ConversationSendRequest {
-  /** The calling agent's slug — attribution AND scope key: the kernel only
-   *  delivers into conversations this agent holds an ephemeral attachment
-   *  for (its own auto-bound facilitations). Everything else is a named
-   *  'not_permitted' outcome — a granted plugin cannot post into arbitrary
-   *  or foreign conversations. */
+  /** The agent to post as — attribution AND scope key: the kernel only
+   *  delivers into conversations this agent holds a message subscription for
+   *  ('conversationMessages@1'). Everything else is a named 'not_permitted'
+   *  outcome — a plugin cannot post into arbitrary or foreign conversations. */
   agentSlug: string;
   /** The `channel_bindings.channel_type` to deliver on (e.g. 'teams'). */
   channelType: string;
@@ -33,9 +32,10 @@ export interface ConversationSendRequest {
   };
   /** Post as the agent's OWN channel identity (#2043). The kernel resolves the
    *  agent's bot and refuses with code 'no_identity' when it has none; it
-   *  never falls back to another bot. Permission then comes from the agent's
-   *  message subscription for the conversation ('conversationMessages@1')
-   *  instead of an ephemeral attachment. */
+   *  never falls back to another bot. REQUIRED in effect: since the
+   *  plugin-era facilitation was removed, a request without it is refused
+   *  with 'not_permitted' (the field stays optional in the type so older
+   *  callers keep compiling). */
   asOwnIdentity?: boolean;
 }
 

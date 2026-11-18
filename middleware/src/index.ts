@@ -566,8 +566,7 @@ import { ConversationSendRegistry } from './channels/conversationSendRegistry.js
 import { createConversationSendService } from './channels/conversationSendService.js';
 import { ObservedConversationInvites } from './platform/observedConversationInvites.js';
 import { PgObservedInvitePersistence } from './platform/observedInvitePersistence.js';
-import { createAgentSetupServices } from './platform/agentSetupService.js';
-import { createScopedRoleAssignments } from './conductor/scopedRoleAssignments.js';
+import { startEphemeralAttachmentSweep } from './platform/ephemeralAttachmentSweep.js';
 import { DefaultChannelRegistry } from './channels/channelRegistry.js';
 import type { AggregateHolderLookup, ChannelRegistry, ChannelBindingResolver } from '@omadia/channel-sdk';
 import type { ChannelReadinessProvider, MeetingSourceProvider } from '@omadia/channel-sdk';
@@ -4680,7 +4679,6 @@ async function main(): Promise<void> {
   // #330 C3b (review H1) — conversationSend scope authority: an agent may only
   // post into conversations it holds an ephemeral attachment for. Stays
   // undefined without Postgres → the service fails closed.
-  let conversationSendScope: ((agentSlug: string, channelType: string, conversationId: string) => Promise<boolean>) | undefined;
   // #2043 — authenticated inbound messages; needs the database, so it stays
   // undefined on the in-memory backend (adapters then keep their mention gate).
   let conversationMessages: ConversationMessagesWiring | undefined;
@@ -4710,10 +4708,10 @@ async function main(): Promise<void> {
     // is pool-backed or lazily resolved, so no wiring output is needed.
     const ephemeralAttachmentsStore = new ConductorEphemeralAttachmentsStore(graphPool);
     // #330 follow-up — the invite index survives restarts: a deploy between
-    // the Teams invite and the facilitation start must not force a re-invite.
-    // Hydration is awaited (cheap, one bounded SELECT) so the scope guard is
-    // warm before the conversationBindings service below can serve its first
-    // bind; writes stay fire-and-forget.
+    // the Teams invite and the start of a moderation must not force a
+    // re-invite. Hydration is awaited (cheap, one bounded SELECT) so the
+    // presence check is warm before the first message subscription asks;
+    // writes stay fire-and-forget.
     observedInvites.attachPersistence(new PgObservedInvitePersistence(graphPool));
     try {
       await observedInvites.hydrate();
@@ -4726,21 +4724,6 @@ async function main(): Promise<void> {
       );
     }
     const facilitationRoleStore = new ConductorRoleStore(graphPool);
-    const scopedRoleAssignments = createScopedRoleAssignments({
-      roleStore: facilitationRoleStore,
-      auditRoleChange: async (entry) => {
-        await adminAudit?.record({
-          // #775 class — a system label (the ephemeral reaper) in the uuid
-          // column made this INSERT fail; only a uuid goes to actor_id.
-          actor: auditActorFromLabel(entry.actor),
-          action: 'conductor.role_holders_change',
-          target: `conductor-role:${entry.roleKey}`,
-          before: { action: entry.action, holderId: entry.holderId },
-          after: { holders: entry.holdersAfter },
-        });
-      },
-      log: (m) => console.log(m),
-    });
     const auditBindingChange = async (entry: {
       actor: string;
       action: 'bind' | 'unbind';
@@ -4770,10 +4753,23 @@ async function main(): Promise<void> {
       }
       await lateConfigStore.removeChannelBinding(attachment.channelType, attachment.channelKey);
       await lateRegistry.reload();
+      // A row written by the plugin-era facilitation may still name a role
+      // (nothing creates one any more). Its holders are closed with it, and
+      // the change is audited like before.
       if (attachment.roleKey) {
-        const holders = await scopedRoleAssignments.holders(attachment.roleKey);
-        for (const holderId of holders) {
-          await scopedRoleAssignments.removeHolder({ roleKey: attachment.roleKey, holderId, actor });
+        const roleKey = attachment.roleKey;
+        for (const holderId of await facilitationRoleStore.resolve(roleKey)) {
+          await facilitationRoleStore.removeHolder(roleKey, holderId);
+          await adminAudit
+            ?.record({
+              // #775 class — a system label (the reaper) is not a uuid.
+              actor: auditActorFromLabel(actor),
+              action: 'conductor.role_holders_change',
+              target: `conductor-role:${roleKey}`,
+              before: { action: 'remove', holderId },
+              after: { holders: await facilitationRoleStore.resolve(roleKey) },
+            })
+            .catch(() => undefined);
         }
       }
       await ephemeralAttachmentsStore.delete(attachment.id);
@@ -4785,10 +4781,6 @@ async function main(): Promise<void> {
         agentSlug: attachment.agentSlug,
       }).catch(() => undefined);
       console.log(`[conductor] disposed ephemeral attachment ${attachment.channelType}/${attachment.channelKey}${attachment.roleKey ? ` (role ${attachment.roleKey})` : ''} by ${actor}`);
-    };
-    conversationSendScope = async (agentSlug, channelType, conversationId) => {
-      const row = await ephemeralAttachmentsStore.getByConversation(channelType, conversationId);
-      return row !== undefined && row.agentSlug === agentSlug;
     };
     const onEphemeralReaped = async (workflow: { id: string; slug: string }): Promise<void> => {
       const rows = await ephemeralAttachmentsStore.getByWorkflow(workflow.id);
@@ -5042,36 +5034,13 @@ async function main(): Promise<void> {
         log: (msg: string) => console.log(msg),
       }),
     );
-    // #330 C2a — the three zero-touch-setup services (all deny-by-default via
-    // the manifest grant gate). Constructed above, BEFORE wireConductor.
-    serviceRegistry.provide('conductorRoleAssignments', scopedRoleAssignments);
-    const agentSetup = createAgentSetupServices({
-      pool: graphPool,
-      getConfigStore: () => serviceRegistry.get<MultiOrchestratorConfigStore>('configStore'),
-      getRegistry: () => serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry'),
-      invites: observedInvites,
+    // The retry + expiry sweep over ephemeral attachments (discussions). The
+    // plugin-era setup services that lived beside it are gone (#2043).
+    startEphemeralAttachmentSweep({
       attachments: ephemeralAttachmentsStore,
       disposeAttachment: disposeEphemeralAttachment,
-      auditBindingChange,
-      // #330 field report — rehydration payload: the workflow's newest still
-      // active run, so a restarted facilitator plugin can keep poking its
-      // timer await. Read-only, newest-first, absent run → null.
-      resolveActiveRun: async (workflowId: string) => {
-        const r = await graphPool.query<{ id: string }>(
-          `SELECT r.id FROM conductor_runs r
-             JOIN conductor_workflow_versions v ON r.workflow_version_id = v.id
-            WHERE v.workflow_id = $1 AND r.status IN ('running', 'waiting')
-            ORDER BY r.started_at DESC
-            LIMIT 1`,
-          [workflowId],
-        );
-        return r.rows[0]?.id ?? null;
-      },
       log: (m) => console.log(m),
     });
-    serviceRegistry.provide('agentProvisioning', agentSetup.agentProvisioning);
-    serviceRegistry.provide('conversationBindings', agentSetup.conversationBindings);
-    agentSetup.startAttachmentSweep();
     // #330 B3 — role fan-out + cached 1:1 conversation refs for targeted sends.
     // Deliberately THE SAME holder registry the executor resolves approvals
     // through: "who gets the report" and "who may approve" come from one
@@ -7068,7 +7037,6 @@ async function main(): Promise<void> {
     // #330 C3b — conversation-addressed proactive send (group nudges).
     conversation: createConversationSendService({
       providers: conversationSendRegistry,
-      ...(conversationSendScope ? { isPermitted: conversationSendScope } : {}),
       ownIdentity: ownIdentitySend,
       log: (m) => console.log(m),
     }),

@@ -2,9 +2,9 @@
  * #2043 — sending as an agent's OWN channel identity.
  *
  * A facilitator never speaks through another bot. These tests pin the two
- * send services' `asOwnIdentity` / `asAgentSlug` branches and, just as
- * important, that the path WITHOUT the new flags behaves as before
- * (discussions and the pre-1.0 facilitation run on it).
+ * send services' `asOwnIdentity` / `asAgentSlug` branches, that a
+ * conversation send has no other scope any more, and that a targeted send
+ * without `asAgentSlug` behaves as before.
  */
 
 import { strict as assert } from 'node:assert';
@@ -52,7 +52,6 @@ describe('own-identity sends', () => {
   let identities: Record<string, string | undefined>;
   let conversationSend: ReturnType<typeof createConversationSendService>;
   let targetedSend: ReturnType<typeof createTargetedDeliveryService>;
-  let attachmentOwner: string | undefined;
 
   /** Read through a call, so an earlier "nothing was sent" assertion does not
    *  narrow the array's type for the rest of the test. */
@@ -72,7 +71,6 @@ describe('own-identity sends', () => {
       ],
     };
     identities = { mara: MARA_KEY, nora: '28:bbbb-nora' };
-    attachmentOwner = undefined;
     const ownIdentity = {
       identityFor: (slug: string) => (identities[slug] ? { channelKey: identities[slug]! } : undefined),
       subscriptions: f.hub,
@@ -102,7 +100,6 @@ describe('own-identity sends', () => {
     });
     conversationSend = createConversationSendService({
       providers: conversationProviders,
-      isPermitted: (slug) => Promise.resolve(slug === attachmentOwner),
       ownIdentity,
     });
     targetedSend = createTargetedDeliveryService({
@@ -140,10 +137,6 @@ describe('own-identity sends', () => {
       assert.equal(outcome.outcome === 'unreachable' && outcome.code, 'no_identity');
       assert.match(outcome.outcome === 'unreachable' ? outcome.message : '', /does not post through another agent's bot/);
       assert.deepEqual(sent, [], 'nothing was posted, under any identity');
-      // An ephemeral attachment does not turn an own-identity send into a default-bot send.
-      attachmentOwner = 'mara';
-      assert.equal((await post()).outcome, 'unreachable');
-      assert.deepEqual(sent, []);
     });
 
     it('takes its permission from the message subscription, of the calling plugin', async () => {
@@ -153,9 +146,6 @@ describe('own-identity sends', () => {
       assert.equal(otherAgent.outcome === 'unreachable' && otherAgent.code, 'not_permitted');
       const otherPlugin = await post({}, '@acme/snoop');
       assert.equal(otherPlugin.outcome === 'unreachable' && otherPlugin.code, 'not_permitted');
-      // An ephemeral attachment is not that permission either.
-      attachmentOwner = 'nora';
-      assert.equal((await post({ agentSlug: 'nora' })).outcome, 'unreachable');
       assert.deepEqual(sent, []);
       await f.hub.unsubscribe(scopeOf('mara'), ENGINE);
       const after = await post();
@@ -254,16 +244,11 @@ describe('own-identity sends', () => {
       assert.deepEqual(outcome, { outcome: 'unreachable', code: 'channel_error', message: 'socket hang up' });
     });
 
-    it('without the flag nothing changes: attachment scope, default sender, message as given', async () => {
+    it('without the flag the send is refused: there is no other scope', async () => {
       const refused = await post({ asOwnIdentity: undefined });
       assert.equal(refused.outcome === 'unreachable' && refused.code, 'not_permitted');
-      assert.match(refused.outcome === 'unreachable' ? refused.message : '', /holds no ephemeral attachment/);
-      attachmentOwner = 'mara';
-      const message = { text: 'Nudge.', attachments: [] };
-      assert.deepEqual(await post({ asOwnIdentity: false, message }), { outcome: 'delivered', messageId: 'msg-1' });
-      assert.equal(sent.length, 1);
-      assert.equal(sent[0]!.message, message, 'the very same object reaches the provider');
-      assert.equal(sent[0]!.opts, undefined, 'no asChannelKey: the channel picks its sender as before');
+      assert.match(refused.outcome === 'unreachable' ? refused.message : '', /set asOwnIdentity/);
+      assert.deepEqual(sent, []);
     });
   });
 

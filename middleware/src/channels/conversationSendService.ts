@@ -1,18 +1,17 @@
-// Conversation-addressed proactive send (#330 C3b) — the kernel service a
-// granted agent plugin reaches as 'conversationSend'. Deliberately thin next
-// to targetedDeliveryService: no principal resolution, one conversation, one
-// delivery — and like every delivery path here, unreachability is a named
-// outcome, never a throw.
+// Conversation-addressed proactive send — the kernel service a plugin reaches
+// as 'conversationSend'. Deliberately thin next to targetedDeliveryService: no
+// principal resolution, one conversation, one delivery — and like every
+// delivery path here, unreachability is a named outcome, never a throw.
 //
-// Two scopes, chosen by the caller:
+// ONE scope (#2043): the message is posted as the agent's OWN bot
+// (`asOwnIdentity`). No identity → `no_identity`, never another bot.
+// Permission comes from the agent's message subscription for the
+// conversation, held by the calling plugin.
 //
-//   - default (#330): the calling agent holds an EPHEMERAL ATTACHMENT for the
-//     conversation and the channel posts as it always did. Unchanged; the
-//     discussion relay and the pre-1.0 facilitation run on it.
-//   - `asOwnIdentity` (#2043): the message is posted as the agent's OWN bot.
-//     No identity → `no_identity`, never another bot. Permission comes from
-//     the agent's message subscription for the conversation, held by the
-//     calling plugin.
+// The earlier scope — an ephemeral attachment, posted through the channel's
+// default bot (#330 C3b) — existed for the plugin-era facilitation and went
+// with it. A call without `asOwnIdentity` is refused and says so. Agent
+// discussions never used this service; they speak through `sayService`.
 
 import type { TargetedDeliveryOutcome, TargetedMessage } from '@omadia/channel-sdk';
 
@@ -44,12 +43,7 @@ export interface ConversationSendService {
 
 export function createConversationSendService(deps: {
   providers: ConversationSendRegistry;
-  /** Scope authority (review H1): true iff the calling agent holds an
-   *  ephemeral attachment for this conversation (its own auto-bound
-   *  facilitation). Absent (no database) → FAIL CLOSED: without a scope
-   *  authority nobody gets to post into groups proactively. */
-  isPermitted?: (agentSlug: string, channelType: string, conversationId: string) => Promise<boolean>;
-  /** #2043 — own-identity sends. Absent → `asOwnIdentity` is refused. */
+  /** Own-identity sends. Absent (no registry) → every send is refused. */
   ownIdentity?: OwnIdentityDeps;
   log?: (msg: string) => void;
 }): ConversationSendService {
@@ -58,7 +52,7 @@ export function createConversationSendService(deps: {
   async function deliver(
     input: ConversationSendInput,
     message: TargetedMessage,
-    asChannelKey?: string,
+    asChannelKey: string,
   ): Promise<TargetedDeliveryOutcome> {
     const provider = deps.providers.get(input.channelType);
     if (!provider) {
@@ -68,9 +62,7 @@ export function createConversationSendService(deps: {
       );
     }
     try {
-      return asChannelKey === undefined
-        ? await provider.sendToConversation(input.conversationId, message)
-        : await provider.sendToConversation(input.conversationId, message, { asChannelKey });
+      return await provider.sendToConversation(input.conversationId, message, { asChannelKey });
     } catch (err) {
       const text = err instanceof Error ? err.message : String(err);
       log(`[channels] conversation send to ${input.channelType}/${input.conversationId} threw: ${text}`);
@@ -126,20 +118,15 @@ export function createConversationSendService(deps: {
         return { outcome: 'unreachable', code: 'not_permitted', message: 'agentSlug is required' };
       }
       if (input.asOwnIdentity === true) return sendAsOwnIdentity(input, callerPluginId);
-
-      const permitted = deps.isPermitted
-        ? await deps.isPermitted(input.agentSlug, input.channelType, input.conversationId).catch(() => false)
-        : false;
-      if (!permitted) {
-        log(`[channels] conversation send by '${input.agentSlug}' to ${input.channelType}/${input.conversationId} refused (no owned ephemeral attachment)`);
-        return {
-          outcome: 'unreachable',
-          code: 'not_permitted',
-          message: `agent '${input.agentSlug}' holds no ephemeral attachment for this conversation — proactive group posting is scoped to own facilitations`,
-        };
-      }
-      // Unchanged: the message goes to the provider exactly as it was given.
-      return deliver(input, input.message as TargetedMessage);
+      log(
+        `[channels] conversation send by '${input.agentSlug}' to ${input.channelType}/${input.conversationId} refused (asOwnIdentity not set)`,
+      );
+      return {
+        outcome: 'unreachable',
+        code: 'not_permitted',
+        message:
+          'conversationSend posts as the agent\'s own identity only: set asOwnIdentity and hold a message subscription for the conversation',
+      };
     },
   };
 }

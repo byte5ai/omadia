@@ -176,6 +176,18 @@ and the neutrality contract. No facilitation tables in the kernel.
   #2068 kernel half): the facilitator surface end to end on Postgres through
   the real kernel modules, with a simulated channel, a fixture engine plugin
   and a scripted model.
+- **Removed — the plugin path of facilitation (#2067)**: the Conductor
+  pattern `facilitation`, the plugin services `agentProvisioning`,
+  `conversationBindings` and `conductorRoleAssignments`, and the
+  ephemeral-attachment scope of `conversationSend` (a call without
+  `asOwnIdentity` now answers `not_permitted`). `omadia-agent-facilitator`
+  0.7.x does not work against this kernel; roll out the kernel, the Teams
+  channel and facilitator 1.0.0 together. Kept: ephemeral runs, agent
+  discussions and `say`; the operator lens over live ephemeral runs
+  (`/api/v1/operator/conductors/facilitations`, the Facilitations panel),
+  which is the only view and stop control for running discussions; the
+  `CONDUCTOR_EPHEMERAL_*` quotas; the audit action
+  `conductor.facilitation_terminate` for existing rows.
 - **`GET /api/v1/operator/agents/facilitation-engine`**: which plugin is the
   facilitation engine (`state` bound | none | ambiguous) and whether it
   reports itself usable (`available`, `unavailable_reason`, `version`).
