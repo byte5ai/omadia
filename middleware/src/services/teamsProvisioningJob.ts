@@ -415,6 +415,14 @@ export type TeamsAppPackageParams = Readonly<
   Record<string, string | readonly string[]>
 >;
 
+export type TeamsBotProbeResult =
+  | { readonly status: 'known'; readonly detail?: string }
+  | { readonly status: 'rejected'; readonly httpStatus?: number; readonly detail?: string }
+  | { readonly status: 'unverified'; readonly detail?: string };
+
+/** `detail` of the `progress` event while the run verifies the bot. */
+export const VERIFYING_BOT_DETAIL = 'verifying_bot';
+
 /** The accessor methods the runner drives — one per chain step. */
 export interface TeamsProvisionerPort {
   createAppRegistration(input: {
@@ -484,6 +492,24 @@ export interface TeamsProvisionerPort {
   getCatalogApp(input: {
     readonly teamsAppExternalId: string;
   }): Promise<{ readonly found: false } | { readonly found: true; readonly teamsAppId: string }>;
+
+  /**
+   * #2043 D10 — does the Bot Connector know this bot? The connector
+   * authenticates AS THE BOT (its own app id and secret) and makes one call
+   * that only a registered, Teams-enabled bot is allowed to make.
+   *
+   *   `known`       the Bot Connector accepted the bot's token: any 2xx, or a
+   *                 4xx about the REQUEST (403 `BadArgument` "not installed in
+   *                 user's personal scope" is the usual answer);
+   *   `rejected`    401: the Bot Connector does not accept this bot. Azure
+   *                 can report such a bot as healthy; Teams shows "invalid
+   *                 bot" and delivers nothing;
+   *   `unverified`  the question could not be asked (no token, no network).
+   *
+   * Optional (connector >= 0.9.2): feature-detect it. Without it the run
+   * cannot verify the bot and says so in the log.
+   */
+  probeBot?(input: { readonly appId: string }): Promise<TeamsBotProbeResult>;
 
   installToTeam(input: {
     readonly teamId: string;
@@ -891,6 +917,7 @@ export type ProvisioningRunResult =
          *  does not. */
         | 'rsc_permissions_mismatch'
         | 'rsc_consent_refused'
+        | 'bot_rejected'
         | 'error';
       readonly detail: string;
     }
@@ -974,6 +1001,11 @@ export interface TeamsProvisioningJobOptions {
   /** Delay between those attempts (default 4s), capped by
    *  {@link maxRetryDelayMs} like every other delay in this runner. */
   readonly catalogReplicationDelayMs?: number;
+  /** #2043 D10 — how often and how far apart a `rejected` bot probe is
+   *  repeated before the run fails (a bot created seconds ago can need a
+   *  moment). Defaults: 6 probes, 10 s apart. */
+  readonly botProbeAttempts?: number;
+  readonly botProbeDelayMs?: number;
   /** Test seam — defaults to real timers. */
   readonly timers?: TimerSeam;
   /** #910 — the finishing move that makes the bot live. Absent means the
@@ -1020,6 +1052,8 @@ const DEFAULT_MAX_RETRY_DELAY_MS = 300_000;
  *  by hand, i.e. tens of seconds later, always succeeded) and against the
  *  opposite risk: a genuinely misconfigured install must still reach the
  *  operator quickly, so this is bounded in seconds, not minutes. */
+const DEFAULT_BOT_PROBE_ATTEMPTS = 6;
+const DEFAULT_BOT_PROBE_DELAY_MS = 10_000;
 const DEFAULT_CATALOG_REPLICATION_ATTEMPTS = 4;
 const DEFAULT_CATALOG_REPLICATION_DELAY_MS = 4_000;
 /** Node's setTimeout ceiling (2^31 − 1 ms) — a longer delay would overflow
@@ -1044,6 +1078,8 @@ export class TeamsProvisioningJobRunner {
   private readonly maxRetryDelayMs: number;
   private readonly catalogReplicationAttempts: number;
   private readonly catalogReplicationDelayMs: number;
+  private readonly botProbeAttempts: number;
+  private readonly botProbeDelayMs: number;
   private readonly timers: TimerSeam;
   private readonly syncBotConfig: TeamsBotsConfigSyncPort | undefined;
   private readonly installs: TeamsInstallJobStore | undefined;
@@ -1136,6 +1172,8 @@ export class TeamsProvisioningJobRunner {
       opts.catalogReplicationDelayMs ?? DEFAULT_CATALOG_REPLICATION_DELAY_MS,
       this.maxRetryDelayMs,
     );
+    this.botProbeAttempts = Math.max(1, opts.botProbeAttempts ?? DEFAULT_BOT_PROBE_ATTEMPTS);
+    this.botProbeDelayMs = Math.min(opts.botProbeDelayMs ?? DEFAULT_BOT_PROBE_DELAY_MS, this.maxRetryDelayMs);
     this.timers = opts.timers ?? REAL_TIMERS;
     this.syncBotConfig = opts.syncBotConfig;
     this.installs = opts.installs;
@@ -1808,6 +1846,11 @@ export class TeamsProvisioningJobRunner {
       for (const step of SKIPPABLE_CHAIN_STEPS) {
         await this.emit(agentId, step, 'succeeded', { detail: SKIPPED_DETAIL });
       }
+      // #2043 D10 — "run provisioning again" on an installed identity is
+      // also how an operator asks "is this bot alive?". A bot the Bot
+      // Connector rejects is not installed in any useful sense.
+      const dead = await this.verifyBot(agentId, this.getProvisioner(), row);
+      if (dead) return dead;
       await this.syncTeamsBotsConfig(row);
       return { status: 'installed', agentId };
     }
@@ -2065,6 +2108,14 @@ export class TeamsProvisioningJobRunner {
       }
       throw err;
     }
+    // #2043 D10 — the install went through, but is the BOT alive? Azure
+    // reports a bot resource as healthy that the Bot Connector rejects (a bot
+    // re-created under an app id that was used before). Such an identity must
+    // not become `installed`, or the operator sees "ready" for a bot Teams
+    // calls invalid.
+    const dead = await this.verifyBot(agentId, provisioner, row);
+    if (dead) return dead;
+
     // Same ordering rule as recordError (#915): the chain is finished, so the
     // run stops calling itself running BEFORE the terminal state becomes
     // readable. Everything past this line — the binding write, the
@@ -2421,6 +2472,53 @@ export class TeamsProvisioningJobRunner {
   }
 
   /**
+   * Ask the connector whether the Bot Connector knows this bot (#2043 D10).
+   * Returns a terminal `failed` result when it does not, `undefined` when
+   * the run may go on: the bot is known, or the question could not be asked
+   * (an older connector, no network), which is logged and never blocks.
+   */
+  private async verifyBot(
+    agentId: string,
+    provisioner: TeamsProvisionerPort,
+    row: TeamsIdentityJobRecord,
+  ): Promise<ProvisioningRunResult | undefined> {
+    const probe = provisioner.probeBot;
+    if (typeof probe !== 'function' || !row.appId) {
+      this.log(
+        `[teams-provisioning] ${agentId} bot not verified against the Bot Connector: the installed connector publishes no probeBot (upgrade @omadia/integration-microsoft365)`,
+      );
+      return undefined;
+    }
+    await this.emit(agentId, 'installed', 'progress', { detail: VERIFYING_BOT_DETAIL });
+    let last: TeamsBotProbeResult = { status: 'unverified' };
+    for (let attempt = 1; attempt <= this.botProbeAttempts; attempt += 1) {
+      try {
+        last = await probe.call(provisioner, { appId: row.appId });
+      } catch (err) {
+        last = { status: 'unverified', detail: errorMessage(err) };
+      }
+      if (last.status === 'known') return undefined;
+      if (last.status === 'unverified') {
+        this.log(
+          `[teams-provisioning] ${agentId} bot could not be verified against the Bot Connector (${last.detail ?? 'no detail'}) — continuing`,
+        );
+        return undefined;
+      }
+      if (attempt < this.botProbeAttempts) {
+        this.log(
+          `[teams-provisioning] ${agentId} the Bot Connector rejects the bot (probe ${String(attempt)}/${String(this.botProbeAttempts)}); asking again in ${String(this.botProbeDelayMs)}ms`,
+        );
+        await this.sleep(this.botProbeDelayMs);
+        if (this.stopped) return { status: 'stopped', agentId };
+      }
+    }
+    const failure = botRejectedFailure(last.status === 'rejected' ? last.detail : undefined);
+    this.log(`[teams-provisioning] ${agentId} ${failure.lastError}`);
+    await this.recordError(agentId, { state: 'failed', ...failure });
+    return { status: 'failed', agentId, reason: 'bot_rejected', detail: failure.lastError };
+  }
+
+  /**
    * The early `teams_bots` write (see the call site). Quiet on purpose: the
    * `config_sync` step of the timeline and the `config_sync_failed` warning
    * belong to the sync that ends the run, which still runs after a successful
@@ -2641,6 +2739,20 @@ export function rscConsentRefusedDetail(targetKind: TeamsTargetKind, raw: string
   return `${RSC_CONSENT_REFUSED_PREFIX} Teams refused to grant this app's resource-specific permissions in the target ${where} (its consent check rejected the request), so the app was not installed. This is permanent, not a replication delay: re-running changes nothing. Check the tenant's resource-specific consent settings and whether every permission the app package declares is allowed for a ${where}. Reported by Microsoft: ${raw}`;
 }
 
+/**
+ * #2043 D10 — the Bot Connector answers 401 to the bot's own credentials.
+ * Seen when a bot resource is deleted and created again under an app id that
+ * was used before (an app registration restored from the recycle bin): Azure
+ * reports the resource as healthy, Teams says "invalid bot". Waiting did not
+ * heal it (26 minutes observed). The way out is a new app registration.
+ */
+export const BOT_REJECTED_PREFIX = 'bot_rejected:';
+
+export function botRejectedDetail(detail?: string): string {
+  const reported = detail?.replace(/\s+/g, ' ').trim();
+  return `${BOT_REJECTED_PREFIX} the Bot Connector does not accept this bot (it answers 401 to the bot's own credentials), so Teams shows it as an invalid bot and delivers nothing. This happens when a bot is created again under an app id that was used before. Delete this Teams identity completely and provision it again, so that it gets a new app registration.${reported ? ` Reported: ${reported}` : ''}`;
+}
+
 export function consentMissingDetail(missingScopes: readonly string[]): string {
   return `consent_missing: admin consent required for scopes [${missingScopes.join(', ')}] — grant them in the customer tenant, then re-run provisioning`;
 }
@@ -2801,6 +2913,8 @@ export type TeamsProvisioningErrorCode =
   | 'rsc_permissions_mismatch'
   /** #2043 D7 — the target's own RSC consent check refused the install. */
   | 'rsc_consent_refused'
+  /** #2043 D10 — the Bot Connector does not accept the bot's own token. */
+  | 'bot_rejected'
   | 'arm_not_configured'
   | 'throttled'
   | 'config_sync_failed'
@@ -2917,6 +3031,9 @@ export function classifyTeamsProvisioningError(
   if (sentence.startsWith(RSC_PERMISSIONS_MISMATCH_PREFIX)) {
     return { code: 'rsc_permissions_mismatch', raw };
   }
+  if (sentence.startsWith(BOT_REJECTED_PREFIX)) {
+    return { code: 'bot_rejected', raw };
+  }
   if (sentence.startsWith(RSC_CONSENT_REFUSED_PREFIX)) {
     return { code: 'rsc_consent_refused', ...graphErrorFactsOf(new Error(sentence)), raw };
   }
@@ -2992,6 +3109,7 @@ const TEAMS_PROVISIONING_ERROR_CODE_SET: {
   consent_missing: true,
   rsc_permissions_mismatch: true,
   rsc_consent_refused: true,
+  bot_rejected: true,
   arm_not_configured: true,
   throttled: true,
   config_sync_failed: true,
@@ -3076,6 +3194,10 @@ export function rscPermissionsMismatchFailure(
   targetKind: TeamsTargetKind,
 ): TeamsProvisioningFailure {
   return failureOf('rsc_permissions_mismatch', rscPermissionsMismatchDetail(targetKind));
+}
+
+export function botRejectedFailure(detail?: string): TeamsProvisioningFailure {
+  return failureOf('bot_rejected', botRejectedDetail(detail));
 }
 
 export function rscConsentRefusedFailure(

@@ -2693,7 +2693,10 @@
           "delegated_sign_in_required": "Wartet auf die Teams-Anmeldung",
           "delegated_consent_required": "Wartet auf die Zustimmung einer Administration",
           "delegated_token_expired": "Anmeldung abgelaufen",
-          "device_code_flow_failed": "Anmeldevorgang abgelehnt"
+          "device_code_flow_failed": "Anmeldevorgang abgelehnt",
+          "verifying_bot": "prüfe bei Microsoft, ob der Bot bekannt ist",
+          "bot_rejected": "Microsofts Bot Connector akzeptiert diesen Bot nicht",
+          "rsc_consent_refused": "das Ziel hat die Berechtigungen der App abgelehnt"
         }
       },
       "stateSummary": "Status: {state}",
@@ -2797,6 +2800,10 @@
           "what": "Teams hat es abgelehnt, die ressourcenspezifischen Berechtigungen dieser App im Ziel-Team bzw. Ziel-Chat zu erteilen, deshalb wurde die App dort nicht installiert. Das ist eine dauerhafte Ablehnung und keine Replikationsverzögerung: Ein erneuter Lauf ändert nichts.",
           "reported": "Von Microsoft gemeldet: {codes}",
           "next": "Prüfe zwei Dinge: ob der Tenant ressourcenspezifische Zustimmung für Teams und Chats erlaubt (Teams Admin Center und Zustimmungseinstellungen in Entra) und ob jede Berechtigung, die das Teams-App-Paket anfordert, für diese Art von Ziel zulässig ist. Die vollständige Antwort von Microsoft steht unten im technischen Detail. Der Bot selbst ist veröffentlicht und antwortet in persönlichen Chats bereits."
+        },
+        "bot_rejected": {
+          "what": "In Azure sind alle Provisionierungsschritte gelungen, aber Microsofts Bot Connector akzeptiert diesen Bot nicht: Er antwortet auf die eigenen Zugangsdaten des Bots mit 401. In Teams erscheint der Bot als ungültiger oder unbekannter Bot und erhält nichts. Der Agent ist deshalb nicht bereit.",
+          "next": "Das passiert, wenn ein Bot unter einer bereits verwendeten Anwendungs-ID erneut angelegt wird, zum Beispiel nach einem Zurücksetzen, dessen gelöschte App-Registrierung wiederhergestellt wurde. Warten hilft nicht. Lösche diese Teams-Identität vollständig („Identität löschen“) und provisioniere sie danach neu, damit sie eine neue App-Registrierung bekommt."
         }
       },
       "teamsBot": {

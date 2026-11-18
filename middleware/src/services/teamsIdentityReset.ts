@@ -265,6 +265,9 @@ export const TEAMS_RESET_DETAILS = {
   configPluginNotInstalled: 'config_plugin_not_installed',
 } as const;
 
+const DEFAULT_PURGE_CONFIRM_ATTEMPTS = 12;
+const DEFAULT_PURGE_CONFIRM_DELAY_MS = 5_000;
+
 /** Prefixes for the failure details, mirroring the runner's convention of a
  *  `code:` prefix in front of a message. */
 export const TEAMS_RESET_FAILURE_PREFIXES = {
@@ -416,6 +419,12 @@ export interface TeamsIdentityResetOptions {
    * bot under a name that was never created.
    */
   readonly buildBotHandle: (botSlug: string, appId: string) => string;
+  /** #2043 D10 — how often and how long the recycle bin is asked for the
+   *  tombstone of an application this reset just deleted (defaults: 12 looks,
+   *  5 s apart). `sleep` is injectable so tests do not wait. */
+  readonly purgeConfirmAttempts?: number;
+  readonly purgeConfirmDelayMs?: number;
+  readonly sleep?: (ms: number) => Promise<void>;
   readonly installs?: TeamsResetInstallStore;
   /**
    * The tenant sign-in the catalog removal rides on (#924/#949).
@@ -1010,16 +1019,20 @@ async function deleteAndPurgeRegistration(
     };
   }
 
-  const purge = async (id: string): Promise<void> => {
-    await (
+  /** `true` when Entra confirmed the permanent delete (it removed an entry
+   *  that was in the recycle bin); `false` for "nothing there to purge". */
+  const purge = async (id: string): Promise<boolean> => {
+    const result = await (
       provisioner.purgeDeletedAppRegistration as NonNullable<
         TeamsResetProvisionerPort['purgeDeletedAppRegistration']
       >
     ).call(provisioner, { objectId: id });
+    return (result as { readonly outcome?: unknown } | undefined)?.outcome === 'purged';
   };
 
+  let purged: boolean;
   try {
-    await purge(objectId);
+    purged = await purge(objectId);
   } catch (err) {
     // ONE retry, and only for the one error a retry can fix: the connector
     // says we handed it an `appId` where a directory object id belongs. A
@@ -1046,7 +1059,7 @@ async function deleteAndPurgeRegistration(
       const corrected = correctedObjectIdOf(err) ?? (await searchRecycleBin());
       if (typeof corrected !== 'string') throw err;
       await remember(corrected);
-      await purge(corrected);
+      purged = await purge(corrected);
     } catch (retryErr) {
       // The dangerous half-state, and the row is deliberately left ALONE: it
       // still carries `app_id`, which is what lets a second call search the
@@ -1056,6 +1069,64 @@ async function deleteAndPurgeRegistration(
         step,
         outcome: 'failed',
         detail: `${TEAMS_RESET_FAILURE_PREFIXES.appPurge}${errorMessage(retryErr)}`,
+      };
+    }
+  }
+
+  // #2043 D10 — "NOTHING TO PURGE" RIGHT AFTER OUR OWN DELETE IS NOT A PURGE.
+  //
+  // The delete above only moves the application into the recycle bin, and
+  // that move is itself replicated: a purge sent milliseconds later is
+  // answered 404, which the connector reports as `already-absent`. The reset
+  // then read "deleted and removed from the recycle bin", cleared the row,
+  // and the next provisioning run found the tombstone, RESTORED it (same
+  // client id) and re-created the bot under the app id it had just deleted.
+  // Teams then knew the bot as invalid for good.
+  //
+  // So an unconfirmed purge is confirmed against the recycle bin: look until
+  // the tombstone shows up and purge it, within a bound. If it never shows
+  // up although we deleted the application ourselves, the reset says so and
+  // stays incomplete (the row keeps `app_id`, so running it again finishes
+  // the purge) instead of promising a freed identity it cannot prove.
+  if (!purged && supportsDeletedAppRegistrationLookup(provisioner)) {
+    const attempts = opts.purgeConfirmAttempts ?? DEFAULT_PURGE_CONFIRM_ATTEMPTS;
+    const delayMs = opts.purgeConfirmDelayMs ?? DEFAULT_PURGE_CONFIRM_DELAY_MS;
+    const sleep =
+      opts.sleep ??
+      ((ms: number): Promise<void> =>
+        new Promise((resolve) => {
+          setTimeout(resolve, ms);
+        }));
+    const weDeletedIt = deleted.outcome !== 'already-deleted' && deleted.outcome !== 'already-absent';
+    try {
+      for (let attempt = 1; attempt <= attempts && !purged; attempt += 1) {
+        const tombstone = await searchRecycleBin();
+        if (typeof tombstone === 'string') {
+          if (tombstone !== objectId) await remember(tombstone);
+          purged = await purge(tombstone);
+          if (purged) break;
+        } else if (!weDeletedIt) {
+          // It was already gone before this call and the bin is empty (or
+          // cannot be read): there is nothing a wait could make appear.
+          break;
+        }
+        if (attempt < attempts) await sleep(delayMs);
+      }
+    } catch (err) {
+      return {
+        step,
+        outcome: 'failed',
+        detail: `${TEAMS_RESET_FAILURE_PREFIXES.appPurge}${errorMessage(err)}`,
+      };
+    }
+    if (!purged && weDeletedIt) {
+      return {
+        step,
+        outcome: 'failed',
+        detail:
+          `${TEAMS_RESET_FAILURE_PREFIXES.appPurge}the application was deleted, but its entry did not appear in the ` +
+          `recycle bin within ${String(Math.round((attempts * delayMs) / 1000))}s, so the permanent delete could not be ` +
+          `confirmed — run the reset again to finish it; until then a new provisioning run would revive the old app`,
       };
     }
   }

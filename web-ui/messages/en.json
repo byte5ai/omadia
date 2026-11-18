@@ -2693,7 +2693,10 @@
           "delegated_sign_in_required": "Waiting for the Teams sign-in",
           "delegated_consent_required": "Waiting for an admin to consent",
           "delegated_token_expired": "Sign-in expired",
-          "device_code_flow_failed": "Sign-in flow refused"
+          "device_code_flow_failed": "Sign-in flow refused",
+          "verifying_bot": "checking with Microsoft that the bot is known",
+          "bot_rejected": "Microsoft's Bot Connector does not accept this bot",
+          "rsc_consent_refused": "the target refused the app's permissions"
         }
       },
       "stateSummary": "State: {state}",
@@ -2797,6 +2800,10 @@
           "what": "Teams refused to grant this app’s resource-specific permissions in the target team or chat, so the app was not installed there. This is a permanent refusal, not a replication delay: running the provisioning again changes nothing.",
           "reported": "Reported by Microsoft: {codes}",
           "next": "Check two things: whether the tenant allows resource-specific consent for teams and chats (Teams admin center and Entra consent settings), and whether every permission the Teams app package declares is allowed for this kind of target. The full answer from Microsoft is in the technical detail below. The bot itself is published and already answers in personal chats."
+        },
+        "bot_rejected": {
+          "what": "Every provisioning step succeeded in Azure, but Microsoft's Bot Connector does not accept this bot: it answers 401 to the bot's own credentials. In Teams the bot shows as an invalid or unknown bot and receives nothing. The agent is therefore not ready.",
+          "next": "This happens when a bot is created again under an application id that was already used, for example after a reset whose deleted app registration was restored. Waiting does not help. Delete this Teams identity completely (\"Delete identity\"), then provision it again so that it gets a new app registration."
         }
       },
       "teamsBot": {

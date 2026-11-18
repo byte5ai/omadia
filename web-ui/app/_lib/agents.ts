@@ -751,6 +751,9 @@ export const TEAMS_IDENTITY_LAST_ERROR_CODES = [
   // #2043 — the target's own resource-specific consent check refused the
   // install: permanent, and neither a wrong id nor a missing role
   'rsc_consent_refused',
+  // #2043 — the Bot Connector answers 401 to the bot's own credentials: the
+  // run was green in Azure and the bot is invalid in Teams
+  'bot_rejected',
   'unknown',
 ] as const;
 
