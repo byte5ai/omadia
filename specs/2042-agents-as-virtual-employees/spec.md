@@ -293,9 +293,10 @@ needs B's access writes to B directly, where B's own rules apply.
 **One authorization for every agent-to-agent path.** Consultation, Conductor discussions
 (`discussion_start`, `say`) and any relay between agents are authorized by the same
 directed grants, audience check, facilitator exclusion and budgets. Today the discussion
-peer gate checks only the per-conversation relay switch
-(`middleware/src/conductor/peerPolicy.ts:105`); a discussion between agents X and Y
-requires grants in both directions.
+peer gate combines the per-agent switch and the per-conversation policy
+(`middleware/src/conductor/peerPolicy.ts:105`) but names no target agent; both stay, and a
+discussion between agents X and Y additionally requires consultation grants in both
+directions.
 
 ### 5.5 Enforcement in the harness
 

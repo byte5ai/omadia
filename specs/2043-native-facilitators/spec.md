@@ -38,10 +38,18 @@ cannot safely own.
 - **Bounded timing from the first version:** the plugin runs its own leased scheduler for
   the facilitator's triggers (agent triggers in the sense of AVE §5.12, not plugin jobs).
   Every action needs the kernel's execution authorization (#2090), which carries one of
-  three bounded scopes, each with its own deadline and budget: `active` (until the
-  facilitation's deadline), `closing` (delivery of essential messages such as the result
-  or abort report, at most 7 days after `closed` or `aborted`), `follow_up` (until the
-  follow-up deadline). An expired scope never re-opens moderation. The scheduler can move onto
+  bounded scopes. Each scope carries its own deadline, budget **and** the targets it may
+  send to, so an action is authorised and addressed by the same scope:
+
+  | Scope | Until | Allowed targets |
+  |---|---|---|
+  | `active` | the facilitation's deadline | home conversation, live linked session conversations, private reminders to participants |
+  | `closing` | all essential messages (result, abort report, session or final protocol) confirmed, at most 7 days after `closed` or `aborted` | home conversation, the session conversations of this facilitation, the protocol recipients of §5.8 |
+  | `scheduling` | the agreed follow-up meeting's invitations are sent or its date passed | the invitees confirmed by group consent |
+  | `follow_up` | the follow-up deadline | the home conversation and the owners of open action items |
+
+  The scopes exist independently of the reservation and of whether action items exist. An
+  expired scope never re-opens moderation. The scheduler can move onto
   agent triggers (#2082) later without changing these guarantees.
 - No Teams test tenant is available: contract tests run against a simulated transport,
   plus a manual checklist on a real instance whose results are recorded in the release
@@ -247,7 +255,7 @@ States exist on three levels, each with its own rules:
 | Level | States | Ends when |
 |---|---|---|
 | **Step** (agenda item) | `open` → `closed` (or `extended`) | Its own evaluation (§5.5) or the group closes it; a closed step accepts no further contributions. |
-| **Session** (async phase or live meeting) | `scheduled` → `live` → `closed` | Its time slot ends or the group closes it; the session summary is posted, and confirmed only where the method or the definition of done requires it. |
+| **Session** (async phase or live meeting) | `scheduled` → `live` → (`confirming`) → `closed` | Its time slot ends or the group closes it; the session summary is posted. Only where the method or the definition of done requires confirmation, the session stays `confirming` for the consent window (§5.7), in which its conversation accepts consent answers and nothing else. |
 | **Facilitation** | as above | `concluding` when the definition of done is met; `closed` after the final summary was published (and confirmed where required); `following_up` while agreed action items are open; `ended` when all are done or overdue, or the follow-up deadline passed. |
 
 - **invited:** the facilitator's bot is in a group conversation.
@@ -322,10 +330,11 @@ States exist on three levels, each with its own rules:
   |---|---|---|---|---|---|
   | Preparation input (topics, pre-reads, agenda remarks) | accepted | accepted | refused | refused | refused |
   | Contribution or change of one's own contribution | refused | accepted (until the step closes) | refused | refused | refused |
+  | Consent answer to an open proposal (§5.7), including a session summary in `confirming` | accepted | accepted | accepted | accepted | refused |
   | Confirmation of the final summary | refused | refused | refused | accepted (where required) | refused |
-  | Completion message of an action-item owner | refused | refused | refused | refused | accepted |
+  | Completion message of an action-item owner: in the home conversation, by card, or as a direct reply to that owner's reminder (bound to the owner, the reminder and the facilitation) | refused | refused | refused | refused | accepted |
   | Change proposal to the definition of done or method | accepted | accepted | accepted | refused | refused |
-  | Status request, stop | accepted | accepted | accepted | accepted | accepted (stop ends follow-up) |
+  | Status request, stop | accepted | accepted | accepted | accepted | accepted in the home conversation and as a reply to a reminder; stop ends only this facilitation's follow-up |
 - **Edits:** an edited message produces a new revision; the latest revision received
   before its step closes counts, and the facilitator confirms the change to its author.
 - **Effect:** a contribution in the announced format counts at once. A contribution the
@@ -769,6 +778,13 @@ kept compatible.
 26. **Follow-up horizon.** Without action items the facilitation goes from `closed` to
     `ended`; a due date beyond the horizon minus the grace period is refused when agreed;
     a due date just inside it is followed up and retention starts at `ended`.
+27. **Closing and session confirmation.** An abort without action items still delivers the
+    abort report to the home conversation in `closing`, also after a restart; a session
+    summary that needs consent is confirmed in its linked conversation after the slot
+    ended while the facilitation stays `active`, and a late vote there is refused.
+28. **Follow-up replies.** One facilitator follows up two facilitations for the same
+    person; each direct reply completes only the action item of its reminder, and a stop
+    in reply to one reminder ends only that facilitation's follow-up.
 
 ## 10. Work breakdown
 
@@ -777,7 +793,7 @@ given in §0.
 
 1. Agent kind `facilitator`: data model, enforced omissions (grants, memory, assistance,
    consultation, default, persona, fast path), neutrality block and persona bounds (§2).
-2. Facilitation engine: tables, lifecycle, one session, authenticated contributions
+2. Facilitation engine: tables, lifecycle, one model context, authenticated contributions
    (§5.1-5.3).
 3. Moderation process: formats as agenda templates, steps and timeboxes, participation
    balance and silent voices, clusters and summaries confirmed by the group, decisions
