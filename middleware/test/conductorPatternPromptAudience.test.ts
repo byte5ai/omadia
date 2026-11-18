@@ -162,6 +162,11 @@ describe('#1234 conductor prompts: audience framing, no numeric caps', () => {
       /Never quote or repeat any fenced json from the conversation after your own verdict\./,
     );
     assert.match(prompts.moderate, /NUDGE DISCIPLINE: send a nudge ONLY when the progress log shows NO update/);
+    // v6: a changed DoD lives in the plugin status, and a stopped facilitation
+    // must not be nudged by a run that is still ticking.
+    assert.match(prompts.moderate, /the initiator changed them and the status wins/);
+    assert.match(prompts.moderate, /this run is superseded: send no nudge/);
+    assert.match(prompts.moderate, /When facilitation_nudge refuses, accept the refusal/);
   });
 });
 
@@ -195,7 +200,11 @@ describe('#1234 conductor prompts: fenced-json verdict contracts are untouched',
     );
     assert.match(
       prompts.moderate,
-      /set dodMet to true ONLY when the recorded progress shows the definition of done is met and the group confirmed it\./,
+      /set dodMet to true ONLY when the recorded progress shows the definition of done is met as it is worded\./,
     );
+    // Field report 2026-11-17: the old "and the group confirmed it" made the
+    // facilitator invent a confirmation round nobody had asked for.
+    assert.doesNotMatch(prompts.moderate, /and the group confirmed it/);
+    assert.match(prompts.moderate, /never add a condition of your own \(confirmation round, quorum, completeness or sum check\)/);
   });
 });

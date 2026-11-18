@@ -6,9 +6,9 @@ import express from 'express';
 import {
   MAX_INDEX_TIMEOUT_MS,
   RegistryClient,
-  describeError,
   type RegistryClientDeps,
 } from '../src/plugins/registryClient.js';
+import { describeError } from '../src/platform/describeError.js';
 import { createStoreRouter } from '../src/routes/store.js';
 import { createRegistryInstallRouter } from '../src/routes/registryInstall.js';
 import type { Plugin, StoreListResponse } from '../src/api/admin-v1.js';

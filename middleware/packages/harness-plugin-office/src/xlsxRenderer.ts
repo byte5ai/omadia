@@ -1,6 +1,5 @@
 import ExcelJS from 'exceljs';
 import {
-  DETERMINISTIC_EPOCH,
   MEDIA_TYPE,
   OfficeRenderError,
   isFormulaCell,
@@ -148,8 +147,8 @@ function formulaFor(
 
 /**
  * Render an {@link XlsxDescriptor} to .xlsx bytes. Deterministic: the same
- * descriptor yields the same logical workbook (metadata timestamps are pinned
- * to a fixed epoch; no wall-clock leakage). Only `inline` sheet sources are
+ * descriptor yields the same bytes (`normalizeOoxml` removes every wall-clock
+ * timestamp). Only `inline` sheet sources are
  * supported in this phase — a `dataset` source throws so the caller can
  * surface a clear "not yet wired" error rather than silently emit an empty
  * sheet.
@@ -157,8 +156,6 @@ function formulaFor(
 export async function renderXlsx(descriptor: XlsxDescriptor): Promise<RenderResult> {
   const workbook = new ExcelJS.Workbook();
   workbook.creator = PROVENANCE_GENERATOR;
-  workbook.created = DETERMINISTIC_EPOCH;
-  workbook.modified = DETERMINISTIC_EPOCH;
   // Static AI-Act Art. 50 provenance marking (#645). exceljs has no reliable
   // custom-property API, so .xlsx gets a coarser core-property marker than the
   // structured customProperties .docx carries — a documented limitation (see
@@ -232,10 +229,9 @@ export async function renderXlsx(descriptor: XlsxDescriptor): Promise<RenderResu
   if (wroteFormula) workbook.calcProperties = { fullCalcOnLoad: true };
 
   const raw = Buffer.from((await workbook.xlsx.writeBuffer()) as unknown as Uint8Array);
-  // exceljs pins the core-property timestamps to DETERMINISTIC_EPOCH but still
-  // stamps each zip entry's mtime from the wall clock; normalize so re-renders
-  // are byte-identical and the content-addressed cache hits (#645). Core dates
-  // are already the epoch, so no core.xml rewrite is needed here.
+  // exceljs stamps each zip entry's mtime and the dcterms:created/modified
+  // core properties from the wall clock; normalize both so re-renders are
+  // byte-identical and the content-addressed cache hits (#645).
   const buffer = await normalizeOoxml(raw);
 
   return {

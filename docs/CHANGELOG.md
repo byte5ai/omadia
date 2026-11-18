@@ -50,6 +50,113 @@ hängende Einträge mit diesem Fehler setzt `retryErroredPlugins` beim Boot
 zurück, so dass betroffene Instanzen ohne Handarbeit an `installed.json`
 wieder starten.
 
+### Changed — croner 11 mit 9.x-Kompatibilität für gespeicherte Crons
+
+2026-11-18. croner springt von 9.1.0 auf 11.0.0 (#1693). Damit gespeicherte
+Routinen und Plugin-Job-Schedules ihre Bedeutung behalten, läuft jeder
+`new Cron(...)` jetzt über `createCron()` (`src/scheduler/cronerCompat.ts`):
+Schrittweiten mit Zahlen-Präfix (`0/15`, `5/15`, `/10`), die croner 11
+standardmäßig ablehnt, bleiben über `sloppyRanges` gültig und feuern wie
+bisher. `?` wird wie in 9.x beim Anlegen des Jobs durch den aktuellen Wert
+des Feldes ersetzt, statt wie in croner 11 als `*` zu gelten (`0 9 ? * *`
+bleibt monatlich und wird nicht täglich). Ein Differenztest mit 80 000
+Zufallsmustern gegen croner 9.1.0 ergab außerhalb von Sommerzeit-Wechseln
+keine Abweichung; croner 11 akzeptiert lediglich zusätzlich Muster, die 9.x
+abgelehnt hat. Geändert ist nur das DST-Verhalten auf Hosts mit lokaler
+Zeitzone (croner 11: Festzeit-Jobs in einer Sommerzeit-Lücke laufen zur
+ersten gültigen Zeit danach); die Container laufen in UTC.
+
+### Fixed — Conductor `webhook.post` reported a refused delivery as a successful step (#1703)
+
+2026-11-16. A workflow step that delivered nothing looked exactly like one that
+delivered: the run completed, the history showed no error, and the refusal was
+visible only to someone who read the run context out of Postgres.
+
+- **A non-2xx response now fails the step.** `webhook.post` still reports the
+  refusal in its result (`{ ok, status }`) — what changed is that the engine no
+  longer reads that as success. A `webhook.post` step that declares no postcondition
+  of its own now gets `stepResult.data.ok == true`, so a receiver answering 500, or a
+  429 from one out of quota, is an `unmet` postcondition. Keyed on the action id: a
+  plugin tool that happens to answer `{ok:false}` keeps its current meaning.
+- **A graph can take its error path.** `unmet` fires the step's
+  `fallbackTransitionId` (FR-024) like any other postcondition failure, so a
+  workflow can route a failed delivery to a retry or an escalation step. With no
+  fallback declared it surfaces as the `postcondition_unmet_no_fallback` stuck
+  decision and the run ends `failed`.
+- **The history carries it.** The step's recorded `postcondition_outcome` is
+  `unmet` with no transition taken, next to the `status` the result leaves in the
+  run context. Nothing is only in the log.
+- **A step that declares its own postcondition is untouched** — tolerate a 404, or
+  branch on `status`, exactly as before. The default fills an absence; it never
+  overrides.
+- `nextStep` takes an optional `NextStepOptions.defaultPostcondition` for this
+  (`@omadia/conductor-core`). Omitted, the engine's "absent ≡ always met" rule is
+  unchanged, so every other step kind and action behaves as it did.
+
+### Fixed — Conductor: a failed webhook delivery says why, and says it per attempt (#1704)
+
+2026-11-16. Every transport failure of an outbound delivery was stored as the
+same four words. `webhookDispatcher.ts` recorded `err.message`, and undici
+reports a DNS miss, a refused connection and a protocol mismatch all as a bare
+`fetch failed`, keeping the actual reason in `err.cause` — so `last_error` read
+`fetch failed` for an unresolvable host and for a connection to a Postgres port
+alike. There was also no log line per failed attempt, only the final
+`exhausted after 6 attempts`, up to half an hour after the delivery first failed.
+
+- **`last_error` carries the cause chain**: `fetch failed (getaddrinfo ENOTFOUND
+  doesnotexist.invalid)`, `fetch failed (connect ECONNREFUSED 172.18.0.2:5432)`.
+  The rendering moved to `middleware/src/platform/describeError.ts`, shared with
+  the registry client's own one-level version from #1482 (`registryClient.ts`
+  re-exports it, so nothing imported from there breaks).
+- **One log line per failed attempt**, naming the target and the schedule:
+  `[conductor] webhook delivery <id> to subscription <sub-id> (<origin>) attempt 2/6 failed: <cause>;
+  retrying in 60s`. A subscription that can never succeed (`subscription
+  disabled`, `subscription secret missing`) logs too — before, it recorded
+  silently — and is reported as `abandoned`, not as `exhausted after 1 attempts`:
+  no attempt budget was spent, and a grep for the real exhaustion line must not
+  also land on these.
+- **The retry worker is covered too**, not just the inline first attempt — it is
+  what drives attempts 2..6, so it is where most of the issue's missing lines
+  were. Its three catch blocks (reconcile pass, `claimDue`, a crashed attempt)
+  now name the cause via `describeError` instead of `err.message`, and the one
+  terminal outcome it records without going through the dispatcher — a delivery
+  whose subscription has since been deleted — leaves a log line instead of
+  dying silently.
+- **`last_error` is one bounded line.** `postWebhook` passes up to 64 KiB of
+  response body through, and the operator UI renders the value verbatim; it is
+  now whitespace-collapsed and truncated to 500 characters. An empty body gives
+  `http 500` instead of the dangling `http 500: `.
+- **Not changed, deliberately:** the backoff schedule (30s doubling, ≈31 minutes
+  to exhaust) and the SSRF pre-check at subscription-creation time, which only
+  inspects literal addresses. A hostname that resolves to a private address is
+  still accepted at creation and still refused by the guarded undici `Agent` at
+  connect time — that refusal is simply now legible in `last_error` instead of
+  reading as `fetch failed`.
+
+### Changed — web-ui header: minimal signed-out bar, preferences in the user menu, reordered nav
+
+UI only — no route, API or auth-logic change. Signed out (and always on
+`/login` + `/setup`) the header shows no nav and no "Login" link, only a flag
+language menu, a sun/moon light↔dark toggle and the GitHub issue button.
+Signed in, palette, appearance and language moved out of the bar into the user
+chip's menu (new "Preferences" section); the GitHub issue button sits at the
+far right in both shapes. Nav order is now Skills · Chat · Setup · Admin ·
+Plugins · Help: Dashboard was dropped (the logo already links to `/`). Chat is
+now a cluster (`nav.chatCluster`) holding Channels (`/operator/channels`, back
+in the nav after #385 dropped it) and Debug (`/chat`, `nav.debug`; `nav.chat`
+removed). The old
+Admin cluster was split — new Setup cluster (`nav.setupCluster`) holds LLM
+access, Orchestrators, Teams sign-in, Conductor and Routines (moved out of the
+top level); Admin keeps Admin, System, Receipts, Privacy reports and Field classification. Plugin nav
+entries targeting `adminCluster` still land in Admin. Wordmark and tagline sit side by side. The layout
+decides signed-in vs. signed-out from the session cookie with the proxy's
+decode-only check, now shared via `web-ui/app/_lib/sessionToken.ts`. New
+component `HeaderControls`; `ThemeControls` became `useThemePrefs` +
+`AppearanceToggle`/`PaletteSelect`/`AppearanceSelect`. i18n: removed
+`authBadge.loginLink`, `themeControls.menuAriaLabel`, `nav.dashboard`; added
+`authBadge.{preferences,palette,appearance,language}` and
+`themeControls.{switchToDark,switchToLight}`.
+
 ### Fixed — Node-Aktivierung nach Amp-Snapshot-Restore
 
 2026-11-16. Neue Orbs hatten die Node-22-/24-Toolchains und alle Pakete,
