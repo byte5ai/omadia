@@ -1,4 +1,5 @@
 import { createPluginContext } from '../platform/pluginContext.js';
+import { scopeCoreApiToChannel } from './scopedCoreApi.js';
 import { eventEmitIds } from '../platform/eventCatalogRegistry.js';
 import type { EventCatalogRegistry } from '../platform/eventCatalogRegistry.js';
 import type { PluginRouteRegistry } from '../platform/pluginRouteRegistry.js';
@@ -80,6 +81,10 @@ export interface ChannelRegistryDeps {
   eventCatalogRegistry?: EventCatalogRegistry;
   resolver: ChannelPluginResolver;
   coreApi: CoreApi;
+  /** #2043 — the channel type a channel plugin serves (manifest
+   *  `channel_type`, else derived from its id). With it every plugin gets a
+   *  CoreApi view bound to itself; absent (tests) = the shared object. */
+  channelTypeFor?: (channelId: string) => string;
   routes: ExpressRouteRegistry;
   /** Optional — WebSocket lifecycle mirror of `routes` (Omadia UI canvas). */
   webSockets?: WebSocketRegistry;
@@ -182,7 +187,14 @@ export class DefaultChannelRegistry implements ChannelRegistry {
       operatorAuth: this.deps.operatorAuth,
     });
 
-    const handle = await impl.activate(ctx, this.deps.coreApi);
+    // #2043 — each channel gets the CoreApi bound to itself: what it emits
+    // carries its own id and only its own channel type (`scopedCoreApi.ts`).
+    const coreApi = this.deps.channelTypeFor
+      ? scopeCoreApiToChannel(this.deps.coreApi, agentId, this.deps.channelTypeFor(agentId), (m) =>
+          console.warn(m),
+        )
+      : this.deps.coreApi;
+    const handle = await impl.activate(ctx, coreApi);
     // S3-G — claim the declared public paths AFTER activate(), exactly like the
     // tool runtime; without the claim a granted `auth:'custom'` route is never
     // served (the public-path mount only dispatches to claimed prefixes).
