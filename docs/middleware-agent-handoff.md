@@ -1376,6 +1376,46 @@ Retries (überlebt Prozess-Restart). Zusätzlich: ein Built-in-Action
 `invokeAction`-Wiring VOR dem `dynamicAgentRuntime`-Dispatch, kein Plugin
 nötig) für Ad-hoc-Outbound-POST aus einem Workflow-Step.
 
+**Diagnose eines fehlgeschlagenen Outbound-Versuchs (#1704).** `last_error`
+trug bis dahin nur `err.message` — und undici meldet *jeden* Transportfehler als
+blankes `fetch failed` und legt den Grund in `err.cause`, also lasen DNS-Miss,
+Connection-Refused und Protokoll-Mismatch identisch. Drei Punkte dagegen:
+
+- `platform/describeError.ts` (gemeinsam mit dem `RegistryClient`, dessen
+  Ein-Ebenen-Variante aus #1482 dorthin gewandert ist — `registryClient.ts`
+  re-exportiert sie nur noch) hängt die `cause`-Kette an die Message:
+  `fetch failed (getaddrinfo ENOTFOUND doesnotexist.invalid)` bzw.
+  `fetch failed (connect ECONNREFUSED 172.18.0.2:5432)`. Maximal drei Ebenen,
+  Dubletten übersprungen, `code:`-Präfix nur wenn die Message ihn nicht schon
+  nennt.
+- **Eine Logzeile pro fehlgeschlagenem Versuch**, nicht nur beim finalen
+  Exhaust (der bis zu einer halben Stunde nach dem ersten Fehler kommt):
+  `[conductor] webhook delivery <id> to subscription <sub-id> (<origin>) attempt 2/6 failed: <grund>;
+  retrying in 60s`. Eine Subscription, die nie erfolgreich sein kann
+  (`subscription disabled`, `subscription secret missing`), loggt jetzt ebenfalls
+  — als `abandoned: <grund>`, nicht als `exhausted after 1 attempts`: dort wurde
+  kein Attempt-Budget verbraucht, und ein Grep auf die echte Exhaust-Zeile darf
+  diese Fälle nicht mittreffen.
+- **Auch der `ConductorWebhookRetryWorker`**, nicht nur der inline erste
+  Versuch: er fährt die Attempts 2..6, dort fehlten also die meisten Zeilen.
+  Seine drei Catch-Blöcke (Reconcile-Pass, `claimDue`, abgestürzter Attempt)
+  nennen jetzt die Ursache über `describeError`; und das eine terminale
+  Ergebnis, das er **ohne** den Dispatcher schreibt — eine Delivery, deren
+  Subscription inzwischen gelöscht wurde — loggt jetzt
+  `[conductor] webhook delivery <id> for subscription <sub> abandoned:
+  subscription no longer exists` statt lautlos `recordFailure` zu rufen.
+- `last_error` ist einzeilig und auf 500 Zeichen begrenzt (`condense`), weil die
+  Operator-UI den Wert wörtlich rendert und `postWebhook` bis zu 64 KiB
+  Response-Body durchreicht; ein leerer Body ergibt `http 500` statt des
+  abgeschnittenen `http 500: `.
+
+Unverändert bleiben dabei bewusst zwei Beobachtungen aus demselben Issue: das
+Backoff-Schema (30s verdoppelnd, ≈31 min bis Exhaust) und der SSRF-Precheck beim
+Anlegen einer Subscription, der nur Literal-Adressen prüft — ein Hostname, der
+erst zur Connect-Zeit auf eine private Adresse auflöst, wird weiterhin
+angenommen und dann vom guarded `Agent` abgelehnt (sichtbar jetzt als
+benannter Connect-Fehler im `last_error`).
+
 **Security:** Secrets (Inbound-Endpoint + Outbound-Subscription) leben
 ausschließlich im Vault (`core:conductor`, Split Metadata-in-Postgres /
 Secret-in-Vault nach `DevGithubAppStore`-Vorbild) — nie in Graph-JSON, nie in
