@@ -23,7 +23,7 @@ cannot safely own.
 
 | Part | Owner |
 |---|---|
-| Archetype registry, `agents.archetype`, enforced omissions, neutrality block, persona bounds (#2060) | Kernel |
+| Archetype registry, `agents.archetype` (#2088), enforced omissions, neutrality block, persona bounds (#2060) | Kernel |
 | Stored inbound message events with platform-stated author, message id and revision | Kernel, `conversationMessages` service |
 | Delivery of every group message for an active facilitation | Kernel subscription and the channel plugins |
 | Posting and direct messages as the facilitator's own identity, `no_identity` instead of another bot | Kernel |
@@ -45,12 +45,12 @@ cannot safely own.
   issue (§6.2, §9).
 - The data model of §5.1 lives in plugin migrations, except the kernel parts above.
 - **Kernel contracts** (versioned in `@omadia/plugin-api`), each with its own issue:
-  - `conversationMessages`: stored inbound events (author, tenant, channel, message id,
+  - `conversationMessages` (#2089): stored inbound events (author, tenant, channel, message id,
     revision, timestamp, platform-stated). An archetype plugin reads and subscribes only to
     conversations its agents hold a reservation or follow-up permission for; foreign
     conversation or message ids and superseded revisions are refused; access ends with the
     reservation or permission.
-  - `agentTurn` and execution authorization: the plugin calls the kernel with agent id,
+  - `agentTurn` and execution authorization (#2090): the plugin calls the kernel with agent id,
     process id (facilitation), phase, purpose, emission type and a budget reservation.
     The kernel verifies that the agent has the plugin's archetype, that the process belongs
     to it and is in a phase that allows the action, the deadline, the budget (reserved
