@@ -204,9 +204,11 @@ States exist on three levels, each with its own rules:
   (§5.3); the scheduler handles time-based events (§5.6).
 - **concluding:** the definition of done is met. Contribution and reminder triggers of
   the active phase are cancelled in the same transaction. The facilitator posts the final
-  summary (decisions, next steps with owners and due dates, open points); the group
-  confirms it through authenticated messages or a card, which is the last kind of
-  contribution the engine accepts. Then `closed`.
+  summary (decisions, next steps with owners and due dates, open points). A group
+  confirmation is asked only if the method or the agreed definition of done requires it
+  (for example consent, a free-text definition of done, or next steps that were not
+  confirmed by their owners yet); otherwise the result is published and the facilitation
+  closes automatically, as #2071 established for the plugin. Then `closed`.
 - **following_up:** only if action items with owners were agreed. A bounded follow-up
   context with its own deadline (last due date plus a grace period set at start, default
   7 days) and its own triggers: reminders to owners before due dates, a status post at the
@@ -224,6 +226,11 @@ States exist on three levels, each with its own rules:
 
 - Moderation runs in the facilitation's own session. There is no separate assess session
   that sees only a summary.
+- **Reservation:** a conversation can host one running process at a time; native
+  facilitations and Conductor discussions share one reservation (today
+  `conductor_ephemeral_attachments`, unique per conversation). A process releases only its
+  own reservation, never an operator binding, and sends only with its own identity to a
+  checked target.
 - **Conversations:** a facilitation has one home conversation (where it was started).
   A live session may run in another conversation (for example the chat of a scheduled
   Teams meeting): the initiator links it in the home conversation when the session is

@@ -81,9 +81,12 @@ package and disappears from the product surface (§5.9).
 **INV-1 Direct addressing.** Every agent is directly addressable in every channel where it
 is deployed: through its own channel identity where the platform supports one, and
 through explicit selection elsewhere (web chat, desktop and mobile UI, public API). A
-turn addressed to agent A is executed in A's envelope. No model other than A's runs
-before A to decide how the turn is answered. Deterministic, model-free pre-processing
-(authentication, privacy shield, routing, rate limits) is allowed.
+turn addressed to agent A is executed in A's envelope. Which agent answers is decided
+deterministically, never by a model. Once A is fixed, A's internal helpers (model router,
+fast lane, mode selection, sub-agent helpers, presentation helper) may run under A's model
+policy and grants; they choose a model, a tool, a mode or a data path, never a different
+speaker. Deterministic, model-free pre-processing (authentication, privacy shield,
+routing, rate limits) is allowed.
 
 **INV-2 Exact capability envelope ("no more, no less").** A answers with exactly its own
 configured identity, instructions, personality, boundaries, model policy, skills,
@@ -189,6 +192,11 @@ capability or a visible colleague.
 
 ## 5. Target model
 
+**Rule for every change in this section:** an existing mechanism is only changed after its
+purpose is established; what conflicts with the new concept is adapted, its advantages are
+kept. Each row of §5.2 states purpose, conflict and adaptation; an independent regression
+audit (Codex, 2026-11-18) checked every change against the code and its history.
+
 ### 5.1 One entity: the agent
 
 - `agents` gains `kind` (`standard` | `facilitator`, default `standard`). The companion
@@ -205,13 +213,13 @@ capability or a visible colleague.
 |---|---|
 | **Agent Builder output** ("Build your assistant", plugin of kind `agent` with persona) | The Builder creates **agents**: an `agents` row with identity and personality, plus, only where needed, a capability plugin the agent holds. A Builder specialist like the Strategist is directly addressable and speaks as itself. |
 | **Vendor domain plugins of kind `agent`** (for example HR, accounting) | Become **capability plugins** that may ship **agent templates** (§5.10). The manifest kind `agent` is removed. A team that wants an "HR colleague" creates an agent from the template or by hand and grants it the capability. |
-| **DB sub-agents** (`agent_subagents`, `ask_<name>`, Builder canvas node "Sub-Agent") | Removed. Specialists are created as agents and consulted as colleagues (§5.4). |
-| **Persona skills** (`agent_persona_skills` as identity candidates, `personaRouter`) | Removed as identity switch. A skill may shape how an agent works; it never changes who speaks. |
+| **DB sub-agents** (`agent_subagents`, `ask_<name>`, Builder canvas node "Sub-Agent") | **Purpose:** helpers of one agent with their own (often cheaper) model, token and step budgets, a skill as prompt and a subset of the agent's tools, without the full conversation; this isolates context and cost (`middleware/packages/harness-orchestrator/src/registry/subAgentTools.ts`). **Conflict:** only where users meet them as a named specialist (the Strategist). **Adaptation:** kept as the agent's **internal helpers** (§5.6): no name or persona towards users, shown in the trace as the agent's own work, tool and memory access a subset of the agent's, the agent's budget covers all helpers, a cheaper model allowed by the agent's policy. The Builder node stays as "helper". A specialist users want to address is created as an agent. |
+| **Persona skills** (`agent_persona_skills`, `personaRouter`) | **Purpose:** per turn, a cheap classifier picks the fitting answering mode from short skill descriptions and only then loads the skill body, saving context and a delegation run (`middleware/packages/harness-orchestrator/src/personaRouter.ts`). **Conflict:** the chosen body replaces the agent's identity and the UI says "Answering as X". **Adaptation:** kept as **working modes**: the same selection, but the skill is added beneath the agent's fixed identity, personality and boundaries (it never replaces the system prompt's identity part); the UI shows "mode: X"; selection runs as the agent's internal helper. |
 | **Direct Line** (`#token`, sticky mode) | Removed (owner decision): direct addressing (INV-1) replaces it. Its advantage, a verbatim, attributed answer block the asking agent cannot alter, lives on in `contributions[]` (§5.4); `agentsConsulted` stays as trace summary. |
-| **Fast path** (`@omadia/fast-path`) | **Its deterministic half becomes the standard data path (§5.13); its model half goes.** Today a planner and a router model run before the agent (`middleware/packages/harness-plugin-fast-path/src/triageTurn.ts:204`) and the answer skips the agent's persona, boundaries and disclosure (#1876). In the target, the agent decides in its own turn (or through a deterministic recipe it owns) which data action runs; the harness executes it and renders the data through the side channel under the agent's identity with AI disclosure; the agent gets a status. Not to be confused with Direct Line, which goes. |
+| **Fast path** (`@omadia/fast-path`) | **Purpose:** simple data questions without the full agent loop (about 15 s and, in one documented case, a sub-agent run of 88,000 input tokens avoided): a fast model plans one read query, the plugin runs it and renders the rows; no model sees the rows; learned plans, a cache and confidence thresholds; any miss falls back to the agent unchanged (`middleware/packages/harness-plugin-fast-path/src/fastPath.ts`, `triageTurn.ts`). It already embodies INV-11. **Conflict:** its answer skips the agent's persona, boundaries and AI disclosure, there is no per-agent switch, and it may use sub-agents' read tools (#1876). **Adaptation:** kept entirely, as the addressed agent's **fast lane**: the agent is fixed first (deterministically); triage, planner, learned plans and cache run as the agent's internal helpers under its model policy, only with its own read tools, with discretion labels on learned plans; the answer renders under its identity with AI disclosure; a miss returns to the same agent; switchable per agent; never for facilitators. |
 | **Fallback agent** ("Standard Orchestrator") | The special role ends. The operator configures **default agents per human user and channel**, or switches the default off (§5.6). The default agent gets no automatic plugin attachment (INV-8). |
 | **Auto-attach of plugins** (`attachAllPlugins`, `attachNewPluginsToFallbackAgent`, `attachToDefaultOrchestrator`) | Removed. A plugin install offers to attach the plugin to agents the operator picks; nothing is attached without that choice. |
-| **UI orchestrator** of the desktop UI (`canvasChatAgent`, Tier 2) | Becomes the canvas renderer of the selected agent. The agent answers first, in its envelope; UI composition runs afterwards as a presentation step of that answer under the agent's identity. Deterministic local operations (Tier 1) stay. |
+| **UI orchestrator** of the desktop UI (`canvasChatAgent`, Tier 2) | **Purpose:** fast layout changes and local operations, early skeletons, targeted data requests and incremental patches while slow content work runs (omadia-ui `CONCEPT.md`). **Conflict:** it receives every canvas turn before any agent and delegates content to sub-agents. **Adaptation:** becomes the selected agent's **presentation helper**: the agent is fixed first; the helper keeps its parallelism (early skeleton, local operations, incremental patches) inside the agent's envelope and identity; content comes from the agent. |
 | **Orchestrator** as an agent | Gone. The `Orchestrator` class is the runtime of one agent; registry, router, consultation broker, scheduler and Conductor form the management layer (§5.6). |
 
 ### 5.3 Addressing in every channel
@@ -340,8 +348,10 @@ requires grants in both directions.
   visible consultation or a visible hint ("Mira knows this better, write to her"), never
   as hidden re-routing.
 - An agent may split its own work into internal helper runs (parallel research, long
-  documents). Helpers run strictly inside that agent's envelope: same identity, grants,
-  memory scope and model policy, nothing added. Their output is the agent's own work and
+  documents, sub-agent helpers, model router, fast lane, mode selection, presentation
+  helper). Helpers run strictly inside that agent's envelope: same identity, grants and
+  memory scope or a subset of them, a model the agent's policy allows (it may be cheaper),
+  the agent's budget, nothing added. Their output is the agent's own work and
   appears in its trace. Anything that needs another envelope is a consultation (§5.4).
 
 ### 5.7 Reach of an agent
@@ -395,7 +405,9 @@ is an agent. If it extends what agents can do, it is a plugin.
 
 **Plugin kinds after this spec:** `integration` (connection to a third-party system and
 its credentials), `tool` (functions agents can call), `channel` (transport to people),
-`provider` (models, embeddings, storage), `ui` (extensions of the operator or user UI),
+`provider` (models, embeddings, storage), `extension` (kernel extensions without identity,
+for example the agent runtime, verifier, fast path, plan runner, memory services; their
+service contracts stay), `ui` (extensions of the operator or user UI),
 `skill` (skill packs: instructions and knowledge an agent can load; skills can also be
 authored, imported or forked in the instance itself, `skills` table, migration `0003`,
 `middleware/src/routes/agentBuilder.ts:945,977,1104`; either way a skill is a capability an
@@ -542,9 +554,11 @@ something that needs judgement). Most firings never reach a model.
   unknown outcome; essential effects are retried until confirmed, accepting a rare
   duplicate (channels give no exactly-once delivery).
 - **Same rules as any turn.** A firing runs in the agent's envelope and carries the
-  discretion labels of the context it was created in (INV-9); proactive messages go only
-  to that context's audience and respect the communication profile, quiet hours and a
-  rate limit per recipient (#1035).
+  discretion labels of the context it was created in (INV-9); proactive messages go to
+  that context's audience, or to an explicit target (for example a reminder a user asked
+  the agent to send to a colleague) that is allowed by a recipient grant and passes the
+  discretion check for the recipient at send time; they respect the communication
+  profile, quiet hours and a rate limit per recipient (#1035).
 - **Visible.** Operators see every active trigger per agent with purpose, context,
   deadline and cost so far; a user can ask an agent what it is currently watching for
   them; every creation, firing and end is audited.
@@ -553,10 +567,11 @@ something that needs judgement). Most firings never reach a model.
 
 | Mechanism today | Change |
 |---|---|
-| **Routines** (user-owned recurring cron with a prompt, no end date or cost cap) | Become user-requested triggers of this mechanism, owned by the agent that serves the user: mandatory deadline with a renewal question before it ends, budget, pre-check. The existing output templates (data from the raw tool result, model only for narrative slots) become the default form: `deliver` plus an optional `turn` for the narrative. |
-| **Plugin jobs** (cron or interval until deactivation, failures keep ticking) | Stay for technical maintenance (sync, cleanup) and never call a model. Failures back off and trip a breaker after repeated errors; jobs are listed per plugin in the operator UI with last run and error state. |
+| **Routines** (user-owned recurring cron with a prompt, no end date or cost cap) | **Purpose:** a person has an agent do something on a schedule; human owner per tenant, pause, resume, delete, run history, agent assignment, cron calendar semantics, authorised first contact with other people (`middleware/src/plugins/routines/`, #1028, #252). **Adaptation:** become user-requested triggers of this mechanism, **keeping all of that**: the executing agent and the human owner are kept apart, owner rights and controls stay, cron calendar semantics with time zone stay; new are a deadline with a renewal question before it ends, a budget and a pre-check. Output templates (data from the raw tool result, model only for narrative slots) become the default form: `deliver` plus an optional `turn`. |
+| **Plugin jobs** (cron or interval until deactivation, failures keep ticking) | **Purpose:** technical maintenance such as syncs; a transient network error must not end a sync for good (`middleware/src/plugins/jobScheduler.ts`). **Adaptation:** stay, and never call a model. Failures back off with bounded recovery probes instead of a permanent pause; successful "nothing changed" runs never count as failures; operators see last run and error state. |
 | **Conductor event, webhook and cron triggers** (operator-authored workflows) | Stay for operator-designed processes. Agent hooks use the same event bus (`middleware/src/conductor/eventRouter.ts`); channel and integration plugins publish their events there (plugins emit through `ctx.events.emit`, `middleware/src/platform/pluginContext.ts:1028-1033`, gated by the event catalogue). Model steps of workflows count against the same budgets. |
 | **Facilitation pattern's hourly model tick** | Replaced by hooks and deterministic timers of the facilitation engine (native facilitators spec). |
+| **Periodic learning and consolidation** (for example the scratch-promotion reaper, `middleware/packages/harness-orchestrator-extras/src/scratchPromotionReaper.ts`) | **Purpose:** important insights become durable knowledge. **Adaptation:** due entries are found deterministically; the classification runs as a bounded batch trigger owned by the agent whose memory it is, with budget and deadline; origin labels are kept, nothing is published as team knowledge by default. |
 | **Fixed heartbeats** | None. Nothing in omadia polls a model on a fixed schedule without a context, deadline and pre-check. |
 
 
@@ -690,6 +705,12 @@ deterministic layer first (§5.5); routing and discretion are model-free (§5.6,
 27. **Labels persist.** Agent A reads an HR record in a 1:1, the turn is summarised into
     memory; weeks later a consultation or a CRM write that would carry that summary is
     refused, because the summary kept the HR label.
+28. **Kept advantages.** The fast lane answers a simple data question without the full
+    agent loop, under the agent's identity and with disclosure, and a miss reaches the
+    same agent; a sub-agent helper runs on a cheaper model within the agent's budget and
+    is never named to the user; a working mode changes the answer's approach but not the
+    agent's name or personality; a routine stays pausable by its human owner; a plugin
+    sync recovers after a transient network error.
 
 ## 7. Migration and compatibility
 
@@ -699,12 +720,14 @@ the target model directly, **without compatibility layers, deprecation periods o
 paths**. Internal test and demo instances are re-seeded.
 
 - **Migrations:** `agents.kind` (default `standard`); `agent_consultation_grants`;
-  dropping `agent_subagents`, `agent_persona_skills` (identity use) and Direct Line state.
-  No dead schema is kept.
-- **Removed outright:** DB sub-agents and the Builder canvas node "Sub-Agent"; per-turn
-  persona switching; `#token` Direct Line addressing and sticky mode; the orchestrator
-  default identity text; every auto-attach of plugins; the fallback agent's special role;
-  the Builder's persona-bearing plugin output (replaced by agent creation).
+  dropping Direct Line state. `agent_subagents` and `agent_persona_skills` stay (internal
+  helpers, working modes).
+- **Removed** (owner decisions, advantages carried over as stated): `#token` Direct Line
+  addressing and sticky mode; every auto-attach of plugins; the fallback agent's special
+  role and its first-boot seeding; the per-turn identity switch of persona skills (the
+  selection stays); the orchestrator default identity text; the Builder's persona-bearing
+  plugin output (replaced by agent creation); the fast path's answer outside the agent's
+  identity (the fast path itself stays).
 - **Kept and repurposed:** `agentsConsulted` stays as trace summary; `delegatedAnswer` is
   replaced by `contributions[]` (§5.4); `agent_to_agent` stays the per-conversation switch
   that lets agents speak in a chat, while authorization comes only from consultation
@@ -730,14 +753,14 @@ Kernel unless noted. Each item becomes one issue in epic #2042.
    discussions and relays (INV-5, §5.4).
 4. Audience provider enabled by default (G15).
 5. Agent Builder creates agents instead of persona-bearing plugins (G2).
-6. Remove DB sub-agents and the Builder "Sub-Agent" node (G3).
-7. Remove persona skills as identity switch (G5).
+6. DB sub-agents as internal helpers: no identity towards users, trace as the agent's own work, budgets under the agent (G3, §5.2).
+7. Persona skills as working modes: selection kept, skill added beneath the fixed identity, UI "mode: X" (G5, §5.2).
 8. Remove `#token` Direct Line addressing and sticky mode (G6).
 9. Plugin model: plugin kinds incl. `agent-template`, manifest kind `agent` removed,
    kernel enforcement of the boundary, capability calls in the caller's envelope (§5.10).
-10. Fast path: remove the planner and router models before the agent; keep its
-    deterministic recipes and rendering as the agent's side-channel data path (#1876,
-    §5.13).
+10. Fast path as the agent's fast lane: agent fixed first, triage, planner, learned plans
+    and cache as its helpers, answer under its identity with disclosure, per-agent switch
+    (#1876, §5.2, §5.13).
 11. Fail loud instead of silent fallback (#1880).
 12. Least privilege by default: no auto-attach, onboarding without a super-agent, reach
     display and confirmation (INV-8, §5.7).
@@ -767,6 +790,9 @@ Kernel unless noted. Each item becomes one issue in epic #2042.
     identity, status to the model, targeted masked fields on request; data actions and
     recipes as agent capabilities; trigger action types `check`, `post`, `deliver`,
     `turn` (INV-11, §5.12, §5.13).
+24. Plugin kind `extension` kept without identity; routines keep human ownership,
+    controls and calendar semantics; plugin jobs recover with bounded probes; learning
+    and consolidation as bounded agent batch triggers (§5.10, §5.12).
 
 ## 9. Owner decisions
 
@@ -789,8 +815,10 @@ Kernel unless noted. Each item becomes one issue in epic #2042.
 - Deterministic first: everything the harness can do runs without a model; data reaches
   users through side channels past the model, the agent coordinates and gets a status,
   and gets data itself only targeted and masked. This holds for every part of omadia
-  (INV-11, §5.13). The fast path's deterministic half becomes the standard data path; its
-  pre-agent models go (§5.2).
+  (INV-11, §5.13).
+- Nothing existing is thrown out hastily: purpose first, then conflicts, then an adaptation
+  that keeps the advantages. Direct Line goes; the fast path, DB sub-agents and persona
+  skills stay in adapted form (§5.2).
 - Default agents are set per human user and channel, and can be switched off so that no
   message ever reaches an agent that was not exactly defined (§5.6).
 - The agent/plugin boundary and plugin kinds of §5.10; skills are capabilities, from
