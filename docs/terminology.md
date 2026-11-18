@@ -93,7 +93,8 @@ answers. There is no orchestrator agent.
 | **Tool** | Werkzeug | A function an agent can call. | |
 | **Integration** | Integration | A connection to a third-party system (ERP, CRM, mail, calendar) with its credentials in the vault; agents never see the secrets. | |
 | **Skill** | Skill | Instructions and knowledge an agent can load; delivered by a skill plugin or authored, imported or forked in the instance. A capability, never an actor. | Not an agent, not a plugin by itself. |
-| **Agent Builder** | Agent Builder | An admin tool in the web UI with which an operator creates and edits agent drafts; a model proposes, the operator decides. | Not an agent: no identity, no grants, never in a channel. |
+| **Agent Builder** | Agent Builder | The admin tool in which an operator creates and configures agents (identity, personality, capabilities, skills, helpers, triggers); a model proposes, the operator decides. | Not an agent. Not the Plugin Builder: it never creates code or plugins. |
+| **Plugin Builder** | Plugin Builder | The admin tool in which an operator generates capability plugins as code. | Not an agent. Not the Agent Builder: it never creates agents or personas. Not the Conductor's workflow designer. |
 | **Agent template** | Agentenvorlage | A preset of identity, personality and suggested capabilities from which an operator creates an agent of an existing archetype. Never runs itself. | Not an archetype. |
 | **MCP server** | MCP-Server | An external tool provider connected through the Model Context Protocol; its tools are capabilities. | |
 
