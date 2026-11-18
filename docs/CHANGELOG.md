@@ -50,7 +50,7 @@ in the nav after #385 dropped it) and Debug (`/chat`, `nav.debug`; `nav.chat`
 removed). The old
 Admin cluster was split — new Setup cluster (`nav.setupCluster`) holds LLM
 access, Orchestrators, Teams sign-in, Conductor and Routines (moved out of the
-top level); Admin keeps Admin, System, Receipts and Privacy reports. Plugin nav
+top level); Admin keeps Admin, System, Receipts, Privacy reports and Field classification. Plugin nav
 entries targeting `adminCluster` still land in Admin. Wordmark and tagline sit side by side. The layout
 decides signed-in vs. signed-out from the session cookie with the proxy's
 decode-only check, now shared via `web-ui/app/_lib/sessionToken.ts`. New

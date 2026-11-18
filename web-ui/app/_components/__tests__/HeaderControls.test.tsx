@@ -86,4 +86,16 @@ describe('<HeaderControls /> signed in', () => {
     expect(screen.queryByRole('button', { name: /Switch to (dark|light) mode/ })).toBeNull();
     expect(lastChildTestId(container)).toBe('issue-button');
   });
+
+  it('passes the server-fetched nav badges through to the nav', () => {
+    renderWithIntl(
+      <HeaderControls
+        signedIn
+        navEntries={[]}
+        navBadges={{ '/admin/privacy-fields': 3 }}
+      />,
+    );
+    // The Admin cluster header repeats its children's total.
+    expect(screen.getByTestId('nav-count-badge').textContent).toBe('3');
+  });
 });

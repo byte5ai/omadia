@@ -179,7 +179,13 @@ describe('<Nav /> cluster dropdown', () => {
       'Conductor',
       'Routines',
     ]);
-    expect(labelsOf('admin')).toEqual(['Admin', 'System', 'Receipts', 'Privacy reports']);
+    expect(labelsOf('admin')).toEqual([
+      'Admin',
+      'System',
+      'Receipts',
+      'Privacy reports',
+      'Field classification',
+    ]);
   });
 
   it('opens on keyboard focus and on Enter (no pointer involved)', () => {
