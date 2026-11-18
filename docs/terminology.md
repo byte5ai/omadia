@@ -82,7 +82,7 @@ answers. There is no orchestrator agent.
 
 | Term | German | Definition | Not to be confused with |
 |---|---|---|---|
-| **Plugin** | Plugin | An installable package that extends agents. Exactly one of two classes: capability plugin or archetype plugin. A plugin is never an actor: it never speaks to people and has no identity of its own. | Not an agent. |
+| **Plugin** | Plugin | An installable package that extends agents. Exactly one of two classes: capability plugin or archetype plugin. A plugin is never an actor: it never speaks to people and has no identity of its own. | Not an agent, not a system module. |
 | **Capability plugin** | Fähigkeits-Plugin | Extends what agents can do. Kinds: `integration`, `tool`, `channel`, `provider`, `extension`, `ui`, `skill`, `agent-template`. Installing it attaches it to no agent. | Formerly plugins of kind `agent`; that kind is retired. |
 | **Archetype plugin** | Archetyp-Plugin | Adds a new agent archetype to the system (manifest kind `archetype`), for example `omadia-agent-facilitator`. The operator then creates agents of that archetype; the kernel runs them under all agent rules. Listed in its own hub category; installing it needs an explicit confirmation. | Not a plugin that is attached to an agent. |
 | **Capability** | Fähigkeit | Something an agent may be granted: a tool, an integration scope (read or write), a skill. | |
