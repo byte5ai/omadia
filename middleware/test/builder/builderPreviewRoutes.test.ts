@@ -714,6 +714,26 @@ describe('builder preview routes', () => {
         'failed',
         `expected status to report the last failed build, got phase=${body.phase}`,
       );
+      assert.equal(body.errorCount, 1);
+    });
+
+    it("does not report another user's failed build", async () => {
+      harness = await startHarness({ tmpDir: tmp, pipelineFail: 'tsc' });
+      harness.setSession('alice@example.com');
+      const draft = await harness.store.create('alice@example.com', 'Bad');
+      const refresh = await fetch(
+        `${harness.baseUrl}/api/v1/builder/drafts/${draft.id}/preview/refresh`,
+        { method: 'POST' },
+      );
+      assert.equal(refresh.status, 500);
+
+      harness.setSession('mallory@example.com');
+      const res = await fetch(
+        `${harness.baseUrl}/api/v1/builder/drafts/${draft.id}/preview/status`,
+      );
+      assert.equal(res.status, 200);
+      const body = (await res.json()) as { phase: string; errorCount?: number };
+      assert.deepEqual(body, { phase: 'idle' });
     });
   });
 
