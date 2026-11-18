@@ -410,24 +410,50 @@ from occasional, explicit asks outside answers; answers carry no rating buttons.
 
 ### 5.10 Agents and plugins: the boundary
 
-**Rule of thumb:** if something needs a name, a personality or should be addressable, it
-is an agent. If it extends what agents can do, it is a capability plugin. If it adds a new
-class of agent to the system, it is an archetype plugin.
-If it is a part of omadia itself that provides platform functions to all agents and
-operators, it is a **system module**: for example Conductor (workflows), omadia UI
-(desktop canvas), omadia Proof (provable actions) and the memory system. A system module
-is neither an agent nor a plugin attached to agents: it has no identity, never speaks to
-people as an actor, and agents use it only through kernel services and their grants.
+**The building blocks, explained in one sentence each** (owner decision, 2026-11-18; the
+same table opens `docs/terminology.md`):
 
-**Two classes of plugins, clearly distinguished:**
-
-| | Capability plugin | Archetype plugin |
+| Term | What it is | Examples |
 |---|---|---|
-| Adds | Tools, integrations, channels, providers, extensions, UI, skills, agent templates: what agents can do | A new agent archetype: a class of agent the system did not have (today the facilitator; later others) |
-| Manifest kind | `integration`, `tool`, `channel`, `provider`, `extension`, `ui`, `skill`, `agent-template` | `archetype` |
-| Hub and install | Listed as capabilities; installing attaches it to no agent (INV-8) | Own hub category "agent archetypes"; installing asks for an explicit confirmation that a new kind of agent is added |
-| Operator UI | Capability grants on an agent's page | Its own section in the agent directory, where the operator creates agents of that archetype |
-| Holds | Only technical state | The process state of its archetype's work (for example facilitations), bound to its agents' processes, with discretion labels and retention; never general conversation memory |
+| **Agent** | A virtual colleague with a name, a role and a personality. | "Mira, sales" |
+| **Archetype** | The job profile of an agent, fixed when it is created and never switched; it sets what this kind of colleague fundamentally is and may do. | standard agent, facilitator |
+| **Capability** | What an agent is given: access to a system (integration), a tool, or know-how (skill). | Odoo access, Jira, web search, skill "write offers" |
+| **Channel** | Where people reach agents. | Teams, Slack, Telegram, web chat |
+| **Model** | The AI an agent thinks with. | Claude, GPT, Mistral, Ollama |
+| **System module** | Infrastructure of omadia itself that serves all agents and operators. | Conductor (workflows), memory system, omadia Proof, omadia UI, dev platform, agent runtime, verifier, fast lane |
+| **Builder** | Admin tools for setting things up. | Agent Builder (agents), Plugin Builder (new plugins as code) |
+| **Plugin** | Only the delivery form: an installable package from the hub. | `omadia-integration-odoo`, `omadia-channel-teams`, `omadia-llm-mistral` |
+
+In one breath: agents are virtual colleagues; they are given capabilities, people reach
+them through channels, a model makes them think; system modules are the infrastructure
+behind them; plugins are only the boxes all of this is delivered in. Skills can also be
+written, imported or forked in the instance itself, without a plugin.
+
+**What a plugin delivers.** Every plugin delivers exactly one of the following; its
+manifest `kind` says which:
+
+| Delivers | Manifest `kind` | Attached to agents? | Hub and install |
+|---|---|---|---|
+| Capabilities | `integration`, `tool`, `skill` | Granted per agent; installing attaches it to no agent (INV-8) | Category "capabilities" |
+| A channel | `channel` | No; agents are reached through it according to their availability | Category "channels" |
+| A model | `model` (also embeddings and transcription) | No; agents use it according to their model policy, only through the model gateway | Category "models" |
+| An archetype | `archetype` | The operator creates agents of it in its own section of the agent directory | Category "archetypes"; installing asks for an explicit confirmation that a new kind of agent is added |
+| A system module | `system-module` | No | Category "system modules"; installing asks for an explicit confirmation |
+| Agent templates | `agent-template` | No; presets the operator turns into agents in the Agent Builder | Category "templates" |
+
+Retired manifest kinds: `agent` (persona-bearing plugins), `extension` (becomes
+`system-module`; today it also covers the model plugins, for example `omadia-llm-anthropic`,
+which become `model`), `provider` and `ui` (a user interface is a part any plugin may
+bring, not a kind). Where this spec says **capability plugin** it means a plugin that
+delivers capabilities; **archetype plugin** means a plugin that delivers an archetype.
+
+What a plugin may hold: a capability plugin only technical state (configuration, caches,
+sync cursors); an archetype plugin additionally the process state of its archetype's work
+(for example facilitations), bound to its agents' processes, with discretion labels and
+retention, never general conversation memory. A capability plugin may use a model
+internally to implement a capability, under the calling agent's model policy, budget,
+grants and audience, recorded in that agent's trace; it returns data to the agent, never
+text to a person.
 
 **Archetype contract.** An archetype plugin declares a descriptor the kernel enforces:
 what the archetype inherits from the agent model, what it adds, what it deliberately
@@ -452,7 +478,7 @@ through a kernel-checked execution context: for archetype plugins the agent turn
 execution scope, for capability plugins the calling agent's envelope (its model policy,
 privacy shield and budget).
 
-**Model gateway.** Only plugins of kind `provider` (the model provider plugins) hold model
+**Model gateway.** Only model plugins (kind `model`) hold model
 credentials and talk to model APIs, and only the kernel's model gateway calls them. Every
 other plugin, of either class, reaches models only through that gateway inside an
 execution context. Its **effective network permission** is what it has today, minus
@@ -472,7 +498,7 @@ for shipping archetype plugins and for enforcing this for capability plugins (#2
 The gateway offers the operations `complete` (text generation), `embed`,
 `transcribe` (batch and realtime) and `run_loop` (below). Today's embedding and transcription adapters
 (`middleware/packages/embedding-adapter-openai`, `transcription-adapter-openai`, both kind
-`extension` with their own clients) become `provider` plugins: they keep their
+`extension` with their own clients) become model plugins (kind `model`): they keep their
 credentials and clients, and only the gateway calls them. Every call runs in exactly one
 execution context, which decides whose budget it uses:
 
@@ -491,7 +517,7 @@ their direct paths to the provider go.
 CLI (`middleware/packages/harness-orchestrator/src/cliChatAgent.ts`, chosen in
 `buildOrchestrator.ts:924`); its purpose is running agents on a Claude subscription with
 the CLI's own loop. It stays, as the gateway's fourth operation `run_loop`, which only a
-provider plugin may offer and only the agent runtime may call inside an agent turn. Its
+model plugin may offer and only the agent runtime may call inside an agent turn. Its
 controls are today's spawn gate, made mandatory: built-in CLI tools off and only the
 kernel's loopback MCP server allowed (`cliSpawnGate.ts`: `--tools ""`,
 `--disallowedTools`, `--strict-mcp-config`), so every tool call goes through the kernel's
@@ -589,18 +615,6 @@ capabilities for an agent of an existing archetype.
 | Memory and state | Own memory tree, scoped by audience. | Capability plugins: only technical state (configuration, caches, sync cursors), no memory of conversations. Archetype plugins: additionally the process state of their archetype's work (see below), never general conversation memory. |
 | Models | Runs its own model loop under its model policy. | May use a model internally to implement a capability, under the calling agent's model policy, budget, grants and audience, recorded in that agent's trace; returns data to the agent, never text to a person. |
 | Origin | Created by the operator, by hand, in the Agent Builder or from a template. | Installed from the hub or uploaded. |
-
-**Plugin kinds after this spec**, capability plugins: `integration` (connection to a third-party system and
-its credentials), `tool` (functions agents can call), `channel` (transport to people),
-`provider` (models, embeddings, storage), `extension` (kernel extensions without identity,
-for example the agent runtime, verifier, fast path, plan runner, memory services; their
-service contracts stay), `ui` (extensions of the operator or user UI),
-`skill` (skill packs: instructions and knowledge an agent can load; skills can also be
-authored, imported or forked in the instance itself, `skills` table, migration `0003`,
-`middleware/src/routes/agentBuilder.ts:945,977,1104`; either way a skill is a capability an
-agent is granted, never an actor), `agent-template` (a preset of
-identity, personality and suggested capabilities that the operator instantiates as an
-agent; the template itself never runs). Archetype plugins have the manifest kind `archetype`. The manifest kind `agent` is removed.
 
 **Enforced by the kernel:**
 - no plugin is an actor itself: an archetype plugin defines a class whose agents the
@@ -1092,7 +1106,7 @@ Kernel unless noted. Each item becomes one issue in epic #2042.
     identity, status to the model, targeted masked fields on request; data actions and
     recipes as agent capabilities; trigger action types `check`, `post`, `deliver`,
     `turn` (INV-11, §5.12, §5.13).
-24. Plugin kind `extension` kept without identity; routines keep human ownership,
+24. Kernel extensions kept without identity as system modules (kind `system-module`, formerly `extension`); routines keep human ownership,
     controls and calendar semantics; plugin jobs recover with bounded probes; learning
     and consolidation as bounded agent batch triggers (§5.10, §5.12).
 25. Chat-first, natural, uncluttered answers (channel parity, decoration registry with
