@@ -53,6 +53,10 @@ import { PersonPicker } from './PersonPicker';
 
 type StepKind = 'agent' | 'action' | 'human';
 
+/** #1698 — the guards a new edge out of a human step starts with: approval, then rejection. */
+const APPROVED_GUARD = JSON.stringify({ op: 'eq', path: 'stepResult.approved', value: true });
+const REJECTED_GUARD = JSON.stringify({ op: 'eq', path: 'stepResult.approved', value: false });
+
 interface StepNodeData extends Record<string, unknown> {
   stepId: string;
   kind: StepKind;
@@ -138,6 +142,12 @@ function emptyData(kind: StepKind, n: number): StepNodeData {
   };
 }
 
+/** #1698 — one definition of "this edge leaves a human step", used by the connect handler
+ *  (against a ref) and by the inspector hint (against render-time state). */
+function isHumanNode(ns: StepNode[], id: string | null | undefined): boolean {
+  return ns.some((n) => n.id === id && n.data.kind === 'human');
+}
+
 interface ValidationError {
   code: string;
   message: string;
@@ -180,6 +190,13 @@ function CanvasInner({
   const t = useTranslations('conductor');
   const [nodes, setNodes] = useState<StepNode[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
+  // #1698 — `onConnect` needs the node list to see whether the edge leaves a human step, but
+  // `nodes` changes on every drag; a ref keeps the callback dependency-free like every other
+  // one in this file (the rest reach their state through functional updaters).
+  const nodesRef = useRef<StepNode[]>([]);
+  useEffect(() => {
+    nodesRef.current = nodes;
+  }, [nodes]);
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
   const [selectedEdge, setSelectedEdge] = useState<string | null>(null);
 
@@ -259,7 +276,21 @@ function CanvasInner({
     if (!c.source || !c.target) return;
     nextId.current += 1;
     const id = `t-${String(nextId.current)}`;
-    setEdges((es) => addEdge({ ...c, id, data: { guard: '' } }, es));
+    // #1698 — an edge drawn OUT OF A HUMAN STEP is pre-filled with a guard. An unguarded edge
+    // can no longer carry a rejection (the engine refuses to take it), so an empty guard here
+    // is the shape that leaves a rejected run with nowhere to go. The FIRST such edge gets the
+    // approval guard and the next one the rejection guard — which is the two-edge shape the
+    // inspector hint asks for, and pre-filling `true` twice would instead collide at run time
+    // as `ambiguous_guards`. Everything the author drew stays editable in the inspector; every
+    // edge out of a non-human step keeps starting empty.
+    setEdges((es) => {
+      const guard = isHumanNode(nodesRef.current, c.source)
+        ? es.some((e) => e.source === c.source && (e.data?.guard as string | undefined) === APPROVED_GUARD)
+          ? REJECTED_GUARD
+          : APPROVED_GUARD
+        : '';
+      return addEdge({ ...c, id, data: { guard } }, es);
+    });
   }, []);
 
   const addStep = useCallback((kind: StepKind) => {
@@ -874,6 +905,11 @@ function CanvasInner({
                 value={(selEdge.data?.guard as string) ?? ''}
                 onChange={(v) => setEdges((es) => es.map((ed) => (ed.id === selEdge.id ? { ...ed, data: { ...ed.data, guard: v } } : ed)))}
               />
+              {/* #1698 — only for an edge out of a human step: an empty guard here is the
+                  shape that strands a rejected approval, so say so where it is editable. */}
+              {isHumanNode(nodes, selEdge.source) && (
+                <p className="text-[11px] text-[color:var(--fg-muted)]">{t('guardHumanRejectionHint')}</p>
+              )}
             </div>
           )}
         </div>

@@ -5603,6 +5603,10 @@ export interface ConductorRun {
   endedAt: string | null;
   /** #759 — set while an operator cancel is pending on a 'running' run. */
   cancelRequestedAt?: string | null;
+  /** #1699 — why a `failed` run failed, copied from the step that failed. Null
+   *  on a run that failed before migration 0013: "cause not recorded". */
+  errorCode?: string | null;
+  errorMessage?: string | null;
 }
 
 export interface ConductorRunStep {
@@ -5613,6 +5617,17 @@ export interface ConductorRunStep {
   actor: unknown;
   postconditionOutcome: string | null;
   transitionTaken: string | null;
+  /** #1699 — the API has always served these two; the client type simply never
+   *  declared them, so the step duration could not be rendered even once the
+   *  timestamps became meaningful. */
+  startedAt?: string;
+  endedAt?: string | null;
+  /** #1699 — why this step did not complete normally. Also set on a step the run
+   *  recovered from (a human step skipped for want of a holder, an await that
+   *  timed out into its fallback). */
+  errorCode?: string | null;
+  errorMessage?: string | null;
+  errorDetail?: unknown;
 }
 
 export interface ConductorRunResult {

@@ -5,8 +5,8 @@
  * BEFORE the global `app.use(express.json(...))`. HMAC verification needs the RAW
  * request bytes; once `express.json` has parsed and re-serialised the body, those
  * bytes are gone and every signature check fails. The router attaches its OWN
- * `express.raw` parser (type any, 256kb limit) at the route level, so it consumes
- * only this one path. There is NO `requireAuth` — the per-endpoint HMAC signature
+ * `express.raw` parser (ANY content type — see the matcher note at the route, 256kb
+ * limit) at the route level, so it consumes only this one path. There is NO `requireAuth` — the per-endpoint HMAC signature
  * IS the authentication.
  *
  * `getDeps` is a lazy accessor (not a plain deps object) because this router is
@@ -27,10 +27,18 @@
  *      how many workflow runs one endpoint can start — a request over the cap gets
  *      429 and consumes no delivery id (nothing is recorded, so it costs the sender
  *      nothing to retry once the window rolls forward).
- *   3. From there every branch finalizes exactly one terminal outcome — a silent
- *      drop is impossible — and noise (disabled endpoint, malformed JSON, no
- *      subscribed workflow) always answers 2xx so a well-behaved sender's retry
- *      policy never turns an ignorable delivery into a redelivery storm.
+ *   3. From there every branch finalizes exactly one outcome — a silent drop is
+ *      impossible — and noise (disabled endpoint, malformed JSON, no subscribed
+ *      workflow) always answers 2xx so a well-behaved sender's retry policy never
+ *      turns an ignorable delivery into a redelivery storm.
+ *
+ * Not every recorded outcome is terminal for dedupe (issue #1701): a delivery refused
+ * because the endpoint is disabled is written to the ledger, but it is in the store's
+ * `REDELIVERABLE_OUTCOMES`, so `claim()` hands that row out again and the sender's
+ * redelivery of the SAME id after the endpoint is enabled actually starts a run
+ * instead of being answered `'duplicate'` with the event dropped. The re-claim
+ * overwrites the `'disabled'` outcome, so the ledger shows a refusal only while it is
+ * still the delivery's latest state.
  */
 
 import crypto from 'node:crypto';
@@ -89,7 +97,20 @@ export function createConductorWebhooksInboundRouter(getDeps: () => ConductorWeb
 
   router.post(
     '/api/hooks/:endpointId',
-    express.raw({ type: '*/*', limit: RAW_BODY_LIMIT }),
+    // The content-type matcher is a FUNCTION, not `'*/*'`, and that is load-bearing
+    // (issue #1700). A string matcher goes through `type-is`, which needs a media type
+    // to compare against: a request with NO `content-type` header — or an empty one —
+    // matches nothing, not even `'*/*'`. body-parser then skips parsing, `req.body`
+    // stays Express's default `{}`, the `Buffer.isBuffer` fallback in `handle()` HMACs
+    // `Buffer.alloc(0)`, and a CORRECTLY signed delivery answers 401
+    // `webhook.bad_signature` — the sender gets pointed at its signing code when the
+    // real cause is a missing header. A function matcher skips the type check
+    // altogether, which is the only shape that keeps verification independent of the
+    // sender's content type: an HMAC is over bytes, not over a media type. A request
+    // with no body at all (no `content-length`/`transfer-encoding`) still skips the
+    // parser via body-parser's own `hasBody` guard, and `Buffer.alloc(0)` is then the
+    // correct raw byte string for it, so signing `''` keeps verifying.
+    express.raw({ type: () => true, limit: RAW_BODY_LIMIT }),
     (req: Request, res: Response) => {
       void handle(getDeps, req, res).catch((err: unknown) => {
         getDeps()?.log?.(`[conductor] webhook inbound handler error: ${err instanceof Error ? err.message : String(err)}`);
