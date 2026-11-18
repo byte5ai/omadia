@@ -260,11 +260,20 @@ async function maybeMtimeReason(
 const TRANSIENT_ACTIVATION_ERROR_RE =
   /ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|getaddrinfo|Connection terminated|connection refused|the database system is starting up|timed out/i;
 
+// #1860 — a duplicate service registration only exists inside the process
+// that recorded it: a fresh boot starts with an empty service registry. Left
+// latched, it kept the required knowledge-graph plugin off and crash-looped
+// every following boot.
+const PROCESS_LOCAL_ACTIVATION_ERROR_RE = /ServiceRegistry: duplicate provider for /;
+
 function maybeTransientErrorReason(entry: InstalledAgent): string | null {
   const err = entry.last_activation_error;
   if (!err) return null;
   if (TRANSIENT_ACTIVATION_ERROR_RE.test(err)) {
     return `last_activation_error looks transient (infra dependency unreachable): "${err}"`;
+  }
+  if (PROCESS_LOCAL_ACTIVATION_ERROR_RE.test(err)) {
+    return `last_activation_error was process-local (service registry starts empty): "${err}"`;
   }
   return null;
 }
