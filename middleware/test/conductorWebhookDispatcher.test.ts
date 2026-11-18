@@ -312,16 +312,22 @@ describe('ConductorWebhookDispatcher', () => {
       sendRequest: async () => ({ ok: false, status: 500, bodySnippet: 'boom' }),
     });
 
-    await dispatcher.attempt(delivery({ attempts: 0 }), subscription());
-    await dispatcher.attempt(delivery({ attempts: 1 }), subscription());
-    await dispatcher.attempt(delivery({ attempts: 2 }), subscription());
+    // A receiver whose credential lives in the path, like a Slack incoming webhook.
+    const sub = subscription({ url: 'https://hooks.example.com/services/T000/B000/s3cr3t?token=abc' });
+    await dispatcher.attempt(delivery({ attempts: 0 }), sub);
+    await dispatcher.attempt(delivery({ attempts: 1 }), sub);
+    await dispatcher.attempt(delivery({ attempts: 2 }), sub);
 
     assert.equal(fake.logs.length, 3); // one per attempt, not just the exhaustion
     assert.match(fake.logs[0] ?? '', /attempt 1\/3 failed: http 500: boom; retrying in 30s/);
     assert.match(fake.logs[1] ?? '', /attempt 2\/3 failed/);
     assert.match(fake.logs[2] ?? '', /exhausted after 3 attempts/);
-    // Every line names the target, so the log alone identifies the broken subscription.
-    for (const line of fake.logs) assert.match(line, /https:\/\/example\.com\/hook/);
+    // Every line names the target, so the log alone identifies the broken subscription,
+    // but only by id and origin: path and query can hold the receiver's credential.
+    for (const line of fake.logs) {
+      assert.match(line, /subscription sub-1 \(https:\/\/hooks\.example\.com\)/);
+      assert.doesNotMatch(line, /s3cr3t|token=/);
+    }
   });
 
   it('does not leave a dangling "http 500: " when the response body is empty', async () => {

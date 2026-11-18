@@ -52,7 +52,7 @@ alike. There was also no log line per failed attempt, only the final
   the registry client's own one-level version from #1482 (`registryClient.ts`
   re-exports it, so nothing imported from there breaks).
 - **One log line per failed attempt**, naming the target and the schedule:
-  `[conductor] webhook delivery <id> to <url> attempt 2/6 failed: <cause>;
+  `[conductor] webhook delivery <id> to subscription <sub-id> (<origin>) attempt 2/6 failed: <cause>;
   retrying in 60s`. A subscription that can never succeed (`subscription
   disabled`, `subscription secret missing`) logs too — before, it recorded
   silently — and is reported as `abandoned`, not as `exhausted after 1 attempts`:

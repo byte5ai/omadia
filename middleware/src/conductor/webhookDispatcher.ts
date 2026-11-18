@@ -124,7 +124,7 @@ export class ConductorWebhookDispatcher {
   private async abandon(delivery: ConductorWebhookDelivery, subscription: ConductorWebhookSubscription, error: string): Promise<void> {
     const reason = condense(error);
     await this.deps.store.recordFailure(delivery.id, reason, null);
-    this.log(`[conductor] webhook delivery ${delivery.id} to ${subscription.url} abandoned: ${reason}`);
+    this.log(`[conductor] webhook delivery ${delivery.id} to ${receiverOf(subscription)} abandoned: ${reason}`);
   }
 
   /** A failed attempt: retried with backoff while budget is left, terminal once the
@@ -135,7 +135,7 @@ export class ConductorWebhookDispatcher {
     if (attemptNumber >= this.maxAttempts) {
       await this.deps.store.recordFailure(delivery.id, reason, null);
       this.log(
-        `[conductor] webhook delivery ${delivery.id} to ${subscription.url} exhausted after ${String(attemptNumber)} attempts: ${reason}`,
+        `[conductor] webhook delivery ${delivery.id} to ${receiverOf(subscription)} exhausted after ${String(attemptNumber)} attempts: ${reason}`,
       );
       return;
     }
@@ -144,9 +144,22 @@ export class ConductorWebhookDispatcher {
     // One line per failed attempt — without it the first visible sign of trouble is
     // the exhaustion line, up to half an hour after the delivery first failed.
     this.log(
-      `[conductor] webhook delivery ${delivery.id} to ${subscription.url} attempt ${String(attemptNumber)}/${String(this.maxAttempts)} failed: ${reason}; retrying in ${String(Math.round(backoffMs / 1000))}s`,
+      `[conductor] webhook delivery ${delivery.id} to ${receiverOf(subscription)} attempt ${String(attemptNumber)}/${String(this.maxAttempts)} failed: ${reason}; retrying in ${String(Math.round(backoffMs / 1000))}s`,
     );
   }
+}
+
+/** How a log line names the receiver: subscription id plus the URL's ORIGIN only.
+ *  Many receivers carry their credential in the path or query (Slack/Teams incoming
+ *  webhooks, `?token=`), and the full URL would copy that secret into every log line. */
+function receiverOf(subscription: ConductorWebhookSubscription): string {
+  let origin = '<invalid url>';
+  try {
+    origin = new URL(subscription.url).origin;
+  } catch {
+    // keep the placeholder; the id still identifies the subscription
+  }
+  return `subscription ${subscription.id} (${origin})`;
 }
 
 /** One line, bounded length — `last_error` is rendered in the operator UI and

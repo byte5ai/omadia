@@ -1390,7 +1390,7 @@ Connection-Refused und Protokoll-Mismatch identisch. Drei Punkte dagegen:
   nennt.
 - **Eine Logzeile pro fehlgeschlagenem Versuch**, nicht nur beim finalen
   Exhaust (der bis zu einer halben Stunde nach dem ersten Fehler kommt):
-  `[conductor] webhook delivery <id> to <url> attempt 2/6 failed: <grund>;
+  `[conductor] webhook delivery <id> to subscription <sub-id> (<origin>) attempt 2/6 failed: <grund>;
   retrying in 60s`. Eine Subscription, die nie erfolgreich sein kann
   (`subscription disabled`, `subscription secret missing`), loggt jetzt ebenfalls
   — als `abandoned: <grund>`, nicht als `exhausted after 1 attempts`: dort wurde
