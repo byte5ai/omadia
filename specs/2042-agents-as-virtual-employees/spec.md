@@ -167,7 +167,7 @@ Paths are relative to the kernel repo unless a sister repo is named.
 | G1 | The default identity of every agent is "an AI assistant that answers requests by delegating to specialised domain agents". | INV-6 | `middleware/packages/harness-orchestrator/src/orchestrator.ts:2210` |
 | G2 | **Builder specialists are hidden plugins.** The Agent Builder ("Build your assistant") generates a plugin of kind `agent` with a persona (`AGENT.md`); at runtime it becomes the tool `query_<short>` of whatever agent it is attached to. No channel can address it. This is the most likely mechanism of the Strategist incident. | INV-1, INV-3 | `middleware/src/plugins/builder/buildPipeline.ts:246-252`; `middleware/assets/boilerplate/agent-pure-llm/manifest.yaml:19`; `middleware/src/plugins/dynamicAgentRuntime.ts:458-463,600` |
 | G3 | **DB sub-agents** (`agent_subagents`, Builder canvas node "Sub-Agent") have a name and their own system prompt, but no identity towards users, no channel presence and no own conversation: each call is one self-contained question, and a memory grant resolves to the calling agent's turn-bound scope. | INV-1, INV-5 | `middleware/packages/harness-orchestrator/src/registry/subAgentTools.ts:102,153-157,338`; `middleware/packages/harness-orchestrator/src/localSubAgent.ts:143-146`; `middleware/packages/harness-orchestrator/src/registry/subAgentMemoryTool.ts` |
-| G4 | Nothing prevents an agent from answering "as" another agent without calling it: no prompt rule, no harness guard. The fact verifier checks claims against tool traces, not speakers, and runs in `shadow` mode by default. | INV-3 | `middleware/packages/harness-orchestrator/src/verifierJudge.ts`; `middleware/src/config.ts:688` (`VERIFIER_MODE … default('shadow')`) |
+| G4 | Nothing prevents an agent from answering "as" another agent without calling it: no prompt rule, no harness guard. The fact verifier checks claims against tool traces, not speakers; it is disabled by default and, when enabled, runs in `shadow` mode unless configured otherwise. | INV-3 | `middleware/packages/harness-orchestrator/src/verifierJudge.ts`; `middleware/src/config.ts:684-688` (`VERIFIER_ENABLED … default(false)`, `VERIFIER_MODE … default('shadow')`) |
 | G5 | Persona skills swap an agent's identity per turn: a classifier picks a skill whose body replaces the agent's identity, with no call to anyone. The web UI shows "Answering as X". | INV-3 | `middleware/packages/harness-orchestrator/src/personaRouter.ts:1-20`; `web-ui/app/chat/page.tsx:1489-1525` |
 | G6 | Direct Line (#332, #445) patches addressing on top of the orchestrator: an unknown `#token` silently falls through to the orchestrator; sticky mode is off by default and held in memory with a 2 h idle TTL; the Claude-CLI path has no Direct Line. | INV-1, INV-7 | `middleware/packages/harness-orchestrator/src/directLineSticky.ts:53,196-198,312-324`; `middleware/src/config.ts:96-99`; `middleware/packages/harness-orchestrator/src/cliChatAgent.ts` |
 | G7 | The fast path answers data questions without running the agent: no persona, boundaries, answer size, kernel AI disclosure or Direct Line (#1876, open). Channels that add their own fixed AI chip (Teams) still mark the message as AI, but not as coming from the agent. | INV-2 | #1876; `omadia-channel-teams` `src/teamsCard.ts:1016` |
@@ -207,7 +207,7 @@ capability or a visible colleague.
 | **Vendor domain plugins of kind `agent`** (for example HR, accounting) | Become **capability plugins** that may ship **agent templates** (§5.10). The manifest kind `agent` is removed. A team that wants an "HR colleague" creates an agent from the template or by hand and grants it the capability. |
 | **DB sub-agents** (`agent_subagents`, `ask_<name>`, Builder canvas node "Sub-Agent") | Removed. Specialists are created as agents and consulted as colleagues (§5.4). |
 | **Persona skills** (`agent_persona_skills` as identity candidates, `personaRouter`) | Removed as identity switch. A skill may shape how an agent works; it never changes who speaks. |
-| **Direct Line** (`#token`, sticky mode) | Removed: direct addressing (INV-1) replaces it. `delegatedAnswer` and `agentsConsulted` are kept as the consultation block (§5.4). |
+| **Direct Line** (`#token`, sticky mode) | Removed (owner decision): direct addressing (INV-1) replaces it. Its advantage, a verbatim, attributed answer block the asking agent cannot alter, lives on in `contributions[]` (§5.4); `agentsConsulted` stays as trace summary. |
 | **Fast path** (`@omadia/fast-path`) | **Its deterministic half becomes the standard data path (§5.13); its model half goes.** Today a planner and a router model run before the agent (`middleware/packages/harness-plugin-fast-path/src/triageTurn.ts:204`) and the answer skips the agent's persona, boundaries and disclosure (#1876). In the target, the agent decides in its own turn (or through a deterministic recipe it owns) which data action runs; the harness executes it and renders the data through the side channel under the agent's identity with AI disclosure; the agent gets a status. Not to be confused with Direct Line, which goes. |
 | **Fallback agent** ("Standard Orchestrator") | The special role ends. The operator configures **default agents per human user and channel**, or switches the default off (§5.6). The default agent gets no automatic plugin attachment (INV-8). |
 | **Auto-attach of plugins** (`attachAllPlugins`, `attachNewPluginsToFallbackAgent`, `attachToDefaultOrchestrator`) | Removed. A plugin install offers to attach the plugin to agents the operator picks; nothing is attached without that choice. |
@@ -219,10 +219,10 @@ capability or a visible colleague.
 | Channel | How the user addresses an agent | Speaker rendering |
 |---|---|---|
 | Teams | The agent's own bot (#860). | Native: bot name and icon. |
-| Telegram, Slack, Discord, WhatsApp, iMessage | One bot or account per agent where the platform allows it; otherwise explicit selection. | Native where one identity per agent exists, else the SDK name line. |
+| Telegram, Slack, Discord, WhatsApp, iMessage | One bot or account per agent where the platform allows it. Otherwise explicit selection: a channel-native command or menu (for example `/agent Mira`) that the management layer stores as a binding for this user and conversation, confirmed by a `system` message and shown in every answer's speaker line until changed. | Native where one identity per agent exists, else the SDK name line. |
 | Web chat (kernel `web-ui`) | Agent directory with name and avatar; the picker is always shown; the choice stays visible for the whole conversation. | Name and avatar on every message. |
 | Desktop and mobile UI (`omadia-ui`, `omadia-ui-mobile`) | Agent selection per conversation; `ClientTurn` carries the agent id; the kernel dispatches per agent instead of the single `canvasChatAgent`. | Name and avatar on every message. |
-| Public API | Agent slug required per conversation. | `speaker` field in the response. |
+| Public API | Agent slug required when a conversation starts and fixed for it; a missing or unknown slug, a disabled agent or a slug the API key may not use is refused with a typed error, never routed to another agent. | `speaker` field in the response. |
 
 In a group chat several agents can be present, each through its own identity. Each one
 answers only as itself. Bots never see each other's posts (Teams blocks bot-to-bot by
@@ -295,11 +295,19 @@ requires grants in both directions.
   displayName, avatarUrl? } | { kind: 'system' }`, set in `toSemanticAnswer` from the
   routing decision. A channel SDK helper `speakerLine()` gives channels without per-agent
   identity a plain-text name line.
-- **Single emitter.** Every path that produces user-visible text (model loop, fast path,
-  deterministic actions, Conductor `say`, notices, errors) goes through one emitter that
-  stamps the speaker. A path that cannot name its speaker cannot emit.
-- **Identity guard (mandatory, fail-closed).** Before publication, an agent's text passes
-  a guard that is independent of `VERIFIER_MODE`:
+- **Single emitter, typed.** Every path that produces user-visible output (model loop, fast
+  path, deterministic actions, Conductor `say`, notices, errors) goes through one emitter
+  that stamps the speaker. A path that cannot name its speaker cannot emit. Every emission
+  declares its type, and the checks follow the type:
+
+  | Type | Content | Checks before publication |
+  |---|---|---|
+  | `prose` | Model-generated text | Identity guard, deterministic layer and model layer (model layer runs on the masked text) |
+  | `template` | A registered template filled with typed engine values | Template id and value types checked deterministically; no model call |
+  | `data` | Side-channel data (§5.13) | Discretion and audience checks only; no model call, never seen by a model |
+  | `system` | Management-layer notice | Template rules; speaker `system` |
+- **Identity guard (mandatory, fail-closed).** Before publication, every `prose` emission
+  passes a guard that is independent of the fact verifier and its settings:
   - deterministic checks against the directory of agent names and aliases: the agent
     calling itself by another agent's name, first-person self-identification as another
     agent, attributed quotes or paraphrases of another agent ("X says", "according to X")
@@ -315,11 +323,16 @@ requires grants in both directions.
 
 ### 5.6 Management layer and internal work of one agent
 
-- The management layer routes deterministically: own channel identity, binding, explicit
-  user selection, then the **default-agent table**, else a `system` notice. It never
-  runs a model to pick an agent.
+- The management layer routes deterministically. **Explicit addressing always wins:** the
+  addressed agent's own channel identity (its bot, its mention in a group), an explicit
+  selection in the conversation, or the agent slug of an API conversation. Without
+  explicit addressing: a binding of the conversation, then the **default-agent table**,
+  else a `system` notice. A binding never overrides an explicit address; if the explicitly
+  addressed agent may not serve this conversation, the user gets a `system` notice, never
+  another agent's answer. It never runs a model to pick an agent.
 - **Default-agent table** (operator configuration): entries for (human user, channel),
-  (human user), (channel) and the instance; the most specific entry wins. Each entry
+  (human user), (channel) and the instance, evaluated in exactly this order; the first
+  entry that exists wins, including an `off` entry. Each entry
   names an agent or is `off`. `off` means a message that is not addressed to a defined
   agent is never answered by any agent; the sender gets a `system` notice how to reach
   an agent. A fresh installation starts with the instance entry `off` until the operator
@@ -391,8 +404,12 @@ identity, personality and suggested capabilities that the operator instantiates 
 agent; the template itself never runs). The manifest kind `agent` is removed.
 
 **Enforced by the kernel:**
-- a plugin cannot register a persona, a speaker, a channel identity or an addressable
-  endpoint for conversations;
+- a plugin cannot register an actor: no persona, speaker or identity of its own and no
+  conversation endpoint that answers on its own behalf. Channel plugins transport
+  messages for kernel-managed agent identities (for example the Teams bot the kernel
+  provisions for an agent) and may expose the endpoints that transport needs; agent
+  templates may carry identity and personality as inactive metadata that only the
+  operator turns into an agent;
 - a capability's result goes to the calling agent as data (structured result, optionally
   text the agent may use); only agents and `system` emit to people (§5.5);
 - a capability call runs in the calling agent's envelope: its grants, the audience, its
@@ -415,14 +432,26 @@ agent's turn:
 
 | Source | Label |
 |---|---|
-| Memory entry | Its context tier and key (team, channel, user, members), as today. |
+| Memory entry, conversation history, summary, knowledge-graph node | Its context tier and key (team, channel, user, members) **plus every label of the information it was written from** (source system, grant, classification), persisted with the entry. |
 | Capability or interface result | Source system, the grant used, the principals whose rights allowed the read, and the field classification of the privacy shield (migrations `0065`, `0066`). |
 | Message from a person | The conversation context and its members. |
 | Contribution of another agent | The labels of everything that agent used to produce it. |
+| Instructions and skills | A classification set by the operator (default: public); knowledge-bearing skills carry the labels of their sources. |
 
 **Turn label set.** The harness tracks, per turn, the union of labels of everything read in
 that turn. Model output cannot be traced token by token, so every output of the turn
-carries the whole set: the strictest label wins.
+carries the whole set: the strictest label wins. Labels are **persisted transitively**:
+whatever a turn writes (memory, history, summary, protocol) keeps the turn's label set,
+and reusing it later adds those labels to the new turn. A conversation history therefore
+carries the labels of everything that was ever read into it.
+
+**Mask at entry, not at exit.** A label can only be lowered by a named deterministic
+transformation: the privacy shield masking classified fields before they reach the model,
+or a deterministic aggregate operation. Once unmasked content reached the model, every
+paraphrase or conclusion is treated as that content. So the harness masks, before the
+model sees anything, every field the turn's audience may not know; and if an egress fails
+the flow rule anyway, the output is refused as a whole (or regenerated from permitted
+context only), never redacted afterwards.
 
 **Flow rule.** Every egress of a turn is checked against its label set before it happens:
 
@@ -447,8 +476,10 @@ data classification:
 A blocked flow is never silent towards the agent: it receives a structured refusal and
 answers honestly that it cannot share this here, without revealing what it withholds.
 
-**Defaults.** The context-memory ACL is on for every agent (today the column defaults to
-`off`, migration `0050`); consultation grants default to `none`; integrations without a
+**Defaults.** The context-memory ACL is on for every agent in mode `members` (recall uses
+only knowledge everyone present owns, migration `0062`; today the column defaults to
+`off`, migration `0050`); operators may choose `enforce` or `enforce-strict`, never `off`
+for an agent with access to classified data; consultation grants default to `none`; integrations without a
 declared readership receive no data from restricted contexts. Every blocked and every
 allowed cross-context flow is audited with its labels, never with the content.
 
@@ -505,8 +536,11 @@ something that needs judgement). Most firings never reach a model.
   happens when there is nothing to do.
 - **Circuit breaker.** Consecutive failures or consecutive no-op firings pause the trigger;
   unlike today's plugin jobs, failures never keep a trigger running.
-- **Durable and exactly-once.** Triggers survive restarts and fire under a lease, never
-  twice for the same occurrence.
+- **Durable, once per occurrence.** Triggers survive restarts. Every occurrence has a
+  persisted id; it is claimed under a lease and fired at most once. Its effects follow
+  delivery classes: droppable effects (reminders, nudges) are never retried after an
+  unknown outcome; essential effects are retried until confirmed, accepting a rare
+  duplicate (channels give no exactly-once delivery).
 - **Same rules as any turn.** A firing runs in the agent's envelope and carries the
   discretion labels of the context it was created in (INV-9); proactive messages go only
   to that context's audience and respect the communication profile, quiet hours and a
@@ -521,7 +555,7 @@ something that needs judgement). Most firings never reach a model.
 |---|---|
 | **Routines** (user-owned recurring cron with a prompt, no end date or cost cap) | Become user-requested triggers of this mechanism, owned by the agent that serves the user: mandatory deadline with a renewal question before it ends, budget, pre-check. The existing output templates (data from the raw tool result, model only for narrative slots) become the default form: `deliver` plus an optional `turn` for the narrative. |
 | **Plugin jobs** (cron or interval until deactivation, failures keep ticking) | Stay for technical maintenance (sync, cleanup) and never call a model. Failures back off and trip a breaker after repeated errors; jobs are listed per plugin in the operator UI with last run and error state. |
-| **Conductor event, webhook and cron triggers** (operator-authored workflows) | Stay for operator-designed processes. Agent hooks use the same event bus (`middleware/src/conductor/eventRouter.ts`); channel and integration plugins publish their events there (`ctx.events.emit` for plugins, today a follow-up). Model steps of workflows count against the same budgets. |
+| **Conductor event, webhook and cron triggers** (operator-authored workflows) | Stay for operator-designed processes. Agent hooks use the same event bus (`middleware/src/conductor/eventRouter.ts`); channel and integration plugins publish their events there (plugins emit through `ctx.events.emit`, `middleware/src/platform/pluginContext.ts:1028-1033`, gated by the event catalogue). Model steps of workflows count against the same budgets. |
 | **Facilitation pattern's hourly model tick** | Replaced by hooks and deterministic timers of the facilitation engine (native facilitators spec). |
 | **Fixed heartbeats** | None. Nothing in omadia polls a model on a fixed schedule without a context, deadline and pre-check. |
 
@@ -615,9 +649,10 @@ deterministic layer first (§5.5); routing and discretion are model-free (§5.6,
 14. **Default-agent table.** For (user U, Teams) → agent M, (Teams) → agent N, instance
     `off`: U's unaddressed Teams message goes to M, another user's to N, an unaddressed
     web message gets the `system` notice and no model call.
-15. **Plugin boundary.** A plugin manifest declaring a persona, a speaker or kind `agent`
-    is rejected at install; a capability result never reaches a channel without an agent
-    speaker.
+15. **Plugin boundary.** A plugin manifest declaring a persona or speaker of its own, or
+    kind `agent`, is rejected at install; a channel plugin transporting two agents' bots
+    and an agent template with a personality load successfully; a capability result never
+    reaches a channel without an agent speaker.
 16. **Discretion across agents.** Agent B learned in an HR group chat that person P is
     leaving (memory entry with that context). Agent A consults B from a sales chat: B's
     answer contains nothing about it; with disclosure level `existence` it says only that
@@ -626,9 +661,13 @@ deterministic layer first (§5.5); routing and discretion are model-free (§5.6,
     through its grant and then tries to write a CRM note containing it: the call is
     refused because the CRM's declared readership does not cover the label; A says so
     without quoting the record.
-18. **Strictest label wins.** A turn that read one classified field answers into a group
-    with a member lacking the right: the field is redacted in the answer.
-19. **Default on.** A fresh agent has the context-memory ACL enabled.
+18. **Mask at entry.** In a group with a member lacking the right to a classified field,
+    the model never receives that field unmasked, and an answer whose label set still
+    exceeds the group's rights is refused as a whole; a test asks the model to paraphrase
+    the field and checks that nothing of it reaches the group.
+19. **Default on.** A fresh agent has the context-memory ACL in mode `members`; a recall
+    in a conversation where someone present does not own the knowledge returns nothing
+    of it, and the same recall works when only owners are present.
 20. **Bounded triggers.** A trigger without deadline, a recurring trigger without
     `max_runs`, or an interval below the minimum is refused. Over 30 simulated days with a
     scripted model that always fails or always answers, no trigger exceeds its budget, a
@@ -648,6 +687,9 @@ deterministic layer first (§5.5); routing and discretion are model-free (§5.6,
 26. **Deterministic firings.** In a 60-minute meeting with a 5-minute time-keeping timer
     and a message hook, the time-keeping posts and reminders cause no model call; model
     calls happen only for summaries and moderation that need language.
+27. **Labels persist.** Agent A reads an HR record in a 1:1, the turn is summarised into
+    memory; weeks later a consultation or a CRM write that would carry that summary is
+    refused, because the summary kept the HR label.
 
 ## 7. Migration and compatibility
 

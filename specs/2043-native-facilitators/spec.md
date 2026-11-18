@@ -182,9 +182,17 @@ restarts because it lives in these tables.
 ### 5.2 Lifecycle
 
 ```
-invited → configuring → active → concluding → closed
+invited → configuring → active → concluding → closed → following_up → ended
                               ↘ aborted (stop, deadline without result, error)
 ```
+
+States exist on three levels, each with its own rules:
+
+| Level | States | Ends when |
+|---|---|---|
+| **Step** (agenda item) | `open` → `closed` (or `extended`) | Its own evaluation (§5.5) or the group closes it; a closed step accepts no further contributions. |
+| **Session** (async phase or live meeting) | `scheduled` → `live` → `closed` | Its time slot ends or the group closes it with a confirmed session summary. |
+| **Facilitation** | as above | `concluding` when the definition of done is met; `closed` after the group confirmed the final summary; `following_up` while agreed action items are open; `ended` when all are done or overdue, or the follow-up deadline passed. |
 
 - **invited:** the facilitator's bot is in a group conversation.
 - **configuring:** a person in the group asks the facilitator to start; that person is
@@ -194,22 +202,41 @@ invited → configuring → active → concluding → closed
   comes from the inbound turn.
 - **active:** every inbound human message is processed in the facilitation's own session
   (§5.3); the scheduler handles time-based events (§5.6).
-- **concluding:** the definition of done is met. All reminders are cancelled in the same
-  transaction.
+- **concluding:** the definition of done is met. Contribution and reminder triggers of
+  the active phase are cancelled in the same transaction. The facilitator posts the final
+  summary (decisions, next steps with owners and due dates, open points); the group
+  confirms it through authenticated messages or a card, which is the last kind of
+  contribution the engine accepts. Then `closed`.
+- **following_up:** only if action items with owners were agreed. A bounded follow-up
+  context with its own deadline (last due date plus a grace period set at start, default
+  7 days) and its own triggers: reminders to owners before due dates, a status post at the
+  agreed time, and acceptance of completion messages from owners (authenticated message in
+  the facilitation's home conversation, a card button or a direct reply to the reminder).
+  It accepts nothing else, holds only the follow-up grants of §5.11, and revokes them at
+  `ended`.
 - **Sessions:** within `configuring` and `active`, a facilitation can run asynchronous
   phases in the chat and live sessions (meetings) with their own time slot (§6.3);
   preparation happens before a live session, follow-up after the close.
-- **closed / aborted:** result or honest abort report to the group and the initiator;
-  bindings released; protocol retained per §5.8.
+- **closed / ended / aborted:** result or honest abort report to the group and the
+  initiator; bindings released at `ended` or `aborted`; protocol retained per §5.8.
 
 ### 5.3 One session, authenticated contributions
 
-- Moderation runs in the facilitation's own conversation session. There is no separate
-  assess session that sees only a summary.
+- Moderation runs in the facilitation's own session. There is no separate assess session
+  that sees only a summary.
+- **Conversations:** a facilitation has one home conversation (where it was started).
+  A live session may run in another conversation (for example the chat of a scheduled
+  Teams meeting): the initiator links it in the home conversation when the session is
+  scheduled, and the facilitator confirms the link in both. People in the linked
+  conversation who are not participants are added as session participants only; they
+  see the session agenda and what is posted in that conversation, never the home
+  conversation's history or protocol (§5.8). Contributions are accepted from the home
+  conversation and from linked session conversations while the session is `live`.
 - **Authorship comes only from authenticated inbound events.** A contribution is recorded
   by `record_contribution(messageId, payload)`: the engine takes author, tenant, channel,
   message id, revision and timestamp from the stored inbound event, never from model
-  arguments. Refused: a message from another conversation, a message received before
+  arguments. Refused: a message from a conversation that is neither the home conversation
+  nor a live linked session conversation, a message received before
   this facilitation became `active` (for example from an earlier facilitation), a message
   whose author is not a participant, and any message after the facilitation concluded.
 - **Edits:** an edited message produces a new revision; the latest revision received
@@ -282,18 +309,18 @@ the default close rule ("evaluate when every participant has contributed"), the 
 contribution triggers evaluation; the alternative close rule "evaluate at the deadline"
 keeps changes possible until the deadline, and status shows a provisional result.
 
-**Participation complete is not result valid.** When the close rule fires, the engine
-evaluates and moves on by this table. A pending change proposal (§5.7) always takes
+**Participation complete is not result valid.** When a step's close rule fires, the engine
+evaluates the step and moves on by this table. A pending change proposal (§5.7) always takes
 precedence: no evaluation concludes while one is open; the proposal is decided first,
 within its window and never past the deadline.
 
 | Evaluation outcome | Next state |
 |---|---|
-| Clear result (ranked, single, approval) | `concluding` |
+| Clear result (ranked, single, approval) | The step closes with this result; the agenda continues with the next step. The facilitation reaches `concluding` only when its definition of done is met. |
 | Tie | Runoff round among the tied options with the same method; deadline = the earlier of the original deadline and the runoff window set at start (default 12 h); at the deadline without a decision: abort report naming the tie |
 | Consent with a standing objection | Stays `active`; the facilitator moderates the objection and puts an amended proposal; at the deadline: abort report with the objection |
 | Assignment with an unconfirmed name | Stays `active` until the named person confirms or declines; at the deadline: abort report naming the open items |
-| Free-text definition of done | Group consent on "the definition of done is met" (§5.7), then `concluding` |
+| Free-text definition of done | Group consent on "the definition of done is met" (§5.7), then the facilitation goes to `concluding` |
 
 **Membership changes:** a person who joins the conversation becomes a participant and is
 welcomed with the current state; a person who leaves becomes `left`, their contribution
@@ -314,9 +341,8 @@ participant.
   who are missing are reminded by direct message where the channel allows it.
 - Step timeboxes: when a step's timebox ends, the facilitator summarises and proposes to
   close or extend it; the group decides.
-- Action-item follow-up (if agreed in the handshake): the owner is reminded before the due
-  date; the status of action items is posted to the group at the agreed time. Follow-up
-  runs after `closed` and ends when every item is done or past its due date.
+- Action-item follow-up runs in the `following_up` context of §5.2, with its own triggers
+  bound to that context, not to the active phase.
 - At the deadline the engine closes with the state at that moment: a result if the
   definition of done allows it, otherwise an honest abort report. Nothing ends silently:
   a failed step, an exhausted retry budget or TTL expiry produces an abort report.
@@ -326,8 +352,11 @@ participant.
 - **Serialisation point:** every state change and every send of a facilitation runs under
   a per-facilitation lock (database advisory lock on the facilitation id). A send
   re-checks phase and `state_version` under the lock and holds it until the channel call
-  returns; a contribution arriving meanwhile waits. So a reminder computed before the last
-  vote is never sent after it.
+  returns; a contribution arriving meanwhile waits. The guarantee is therefore exact: a
+  reminder is never sent **after** the contribution that makes it obsolete was committed.
+  If the send took the lock first, the reminder goes out and the contribution is processed
+  right after it; the facilitator then confirms the contribution, so nobody is left
+  confused.
 - **Delivery classes:** channels give no exactly-once guarantee (the Teams adapter
   reports `delivered` once `sendActivity` returns, `src/teamsGroupPrimitives.ts:285-287`
   in `omadia-channel-teams`). Every send is recorded in `facilitation_outbox` before the
@@ -362,6 +391,8 @@ participant.
 | Active participants | Everything of the facilitation: handshake, contributions, status, protocol. |
 | Participants who left | What was posted while they were members; nothing after. |
 | Initiator | The same as participants, plus the report, as long as they are an active participant. Leaving the conversation ends the initiator role: later contributions and the report are no longer sent to them; the group is told. |
+| Session-only participants | The session agenda and what was posted in the linked session conversation; the session summary. |
+| Confirmed stakeholders | Only the confirmed protocol and next steps sent to them (§5.11), filtered per recipient by discretion (AVE §5.11): content whose labels the recipient may not know is left out and the protocol says that something was left out. Recipients are re-checked at every send; a participant who left is no longer a recipient. |
 | Other users | Nothing. |
 | Operator | Facilitation metadata (facilitator, conversation, phase, counts, timestamps). Contents and protocol only through an audited access with a stated reason. |
 
@@ -433,9 +464,10 @@ with it, without changes to the facilitator itself.
 - **Own identity required:** a facilitator needs its own Teams identity (#860
   provisioning); without one it cannot start a facilitation and says so. No default-bot
   fallback.
-- **All messages:** in a conversation with an active facilitation, the facilitator's bot
-  receives every human message; the mention gate is lifted for that bot in that
-  conversation only. This needs the app installed in that chat with RSC
+- **All messages:** in the home conversation and in live linked session conversations of an
+  active facilitation, the facilitator's bot receives every human message; the mention
+  gate is lifted for that bot in those conversations only. In `following_up` the gate is
+  back on; owners reach the facilitator by mention, card button or direct reply. This needs the app installed in that chat with RSC
   `ChatMessage.Read.Chat` consented there; the manifest request alone is not enough.
 - **Readiness check at start:** the facilitator verifies installation and RSC consent in
   the chat and its ability to post; if something is missing it says exactly what and
@@ -498,7 +530,7 @@ kept compatible.
 
 - The plugin `@omadia/agent-facilitator` is removed from the hub when the kernel release
   ships; its repository is archived on the owner's decision.
-- Everything only the plugin needed goes: the `facilitation` Conductor pattern (v6 since #2071), the
+- Everything only the plugin needed goes: the `facilitation` Conductor pattern (whatever its version, v6 since #2071), the
   facilitator use of `agentProvisioning.ensureAgent`, the `facilitation-` scoped roles.
   Kernel services other features use (ephemeral runs, discussions, `say`) stay.
 - Internal test instances drop their auto-provisioned facilitator agent and create
@@ -518,8 +550,9 @@ kept compatible.
 2. **Deadline.** Same setup with three votes: one reminder at deadline minus 24 h (the
    missing person addressed privately, the group neutrally), one at minus 2 h, honest
    close at the deadline; no abort before.
-3. **Races and delivery.** The last vote and a due reminder in the same second: no
-   reminder is delivered. A crash after commit and before send: an essential message is
+3. **Races and delivery.** Both orders of the last vote and a due reminder are tested: vote
+   committed first, no reminder is sent; reminder sent first, the vote is processed right
+   after and confirmed to its author. A crash after commit and before send: an essential message is
    sent after restart, a reminder is not. A lost send confirmation: the result is retried,
    a reminder is not. Last vote and deadline at the same time: one evaluation, one report.
 4. **Authorship and currency.** "Anna agrees too" from Bert records nothing for Anna; a
@@ -545,7 +578,9 @@ kept compatible.
 10. **Omissions.** Granting a business plugin, a consultation grant or a memory tool to a
     facilitator is refused; a 1:1 request for help gets the refusal; the same person in
     two facilitations is never referred to across them.
-11. **Visibility.** A user outside the conversation cannot read a protocol; operator
+11. **Visibility.** A user who is neither participant nor confirmed stakeholder cannot read
+    a protocol; a stakeholder receives only the confirmed protocol, filtered by
+    discretion; a participant who left receives nothing sent after leaving; operator
     content access is audited.
 12. **No silent end.** A failed step or reached TTL produces an abort report in the group;
     a reached quota produces a `system` notice.
@@ -572,6 +607,13 @@ kept compatible.
 20. **Scoped capabilities.** The facilitator cannot read calendar contents or mailboxes,
     cannot invite people the group did not confirm, and loses the scheduling grant when
     the follow-up ends.
+21. **Multi-step and follow-up.** A prioritisation step closes with a winner and the
+    agenda continues to an assignment step instead of concluding; after `closed`, a
+    restart, and an owner's later completion message in the home conversation, the
+    owner's pending reminder is not sent and the status post shows the item done.
+22. **Meeting chat.** Preparation in group chat A, live session in meeting chat B linked
+    from A, follow-up in A: contributions from B count during the session only; a person
+    only in B never sees A's history.
 
 ## 10. Work breakdown
 
