@@ -46,6 +46,25 @@ import {
 interface C0Pattern {
   readonly type: string;
   readonly re: RegExp;
+  /** True for a match that has the pattern's shape but is known not to be
+   *  the PII it looks like. Kept per pattern so every exemption stays next to
+   *  the regex it narrows. */
+  readonly isFalsePositive?: (match: string) => boolean;
+}
+
+// Teams / Skype conversation ids end in a host-like suffix
+// ("19:9cdb…de6@thread.skype", "19:<aad>_<aad>@unq.gbl.spaces") and so have
+// the shape of an e-mail address. They are routing handles, not mailboxes.
+// Field report 2026-11-18: the id of a group chat was masked as an e-mail,
+// the model passed the surrogate ("19:felix.hoffmann@example.net") to a
+// plugin tool as conversationId, the lookup missed, and the surrogate's
+// first name later surfaced in the chat as a person nobody knew.
+// `thread.v2` / `thread.tacv2` never matched (their last label carries a digit).
+const CONVERSATION_ID_HOSTS: readonly string[] = ['thread.skype', 'unq.gbl.spaces'];
+
+function isConversationIdHost(match: string): boolean {
+  const host = match.slice(match.lastIndexOf('@') + 1).toLowerCase();
+  return CONVERSATION_ID_HOSTS.includes(host);
 }
 
 // Written-out month names across the six shipped locales (de/en/es/fr/it/nl),
@@ -76,6 +95,7 @@ const C0_PATTERNS: readonly C0Pattern[] = [
   {
     type: 'email',
     re: /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g,
+    isFalsePositive: isConversationIdHost,
   },
   {
     // IBAN — two letters, two check digits, 11–30 alphanumerics, optionally
@@ -181,11 +201,12 @@ const C0_PATTERNS: readonly C0Pattern[] = [
  *  runs, without the async detector envelope. */
 export function detectBaselineSync(text: string): PromptPiiSpan[] {
   const spans: PromptPiiSpan[] = [];
-  for (const { type, re } of C0_PATTERNS) {
+  for (const { type, re, isFalsePositive } of C0_PATTERNS) {
     // Fresh regex state per call (global flag carries lastIndex).
     const pattern = new RegExp(re.source, re.flags);
     for (const match of text.matchAll(pattern)) {
       if (match.index === undefined || match[0].length === 0) continue;
+      if (isFalsePositive?.(match[0])) continue;
       spans.push({
         start: match.index,
         end: match.index + match[0].length,
