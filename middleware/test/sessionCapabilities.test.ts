@@ -121,6 +121,33 @@ describe('channel readiness', () => {
     assert.deepEqual(asked, [[CONVERSATION, { asChannelKey: MARA_KEY }]]);
   });
 
+  it('#2043 D13 — a refused check logs its cause and the id it asked about, once', async () => {
+    // At the rollout the provider answered "cannot post" for an id that was
+    // not a conversation id (Graph 400), and nothing anywhere said so.
+    const s = await setup();
+    const asked = '28:6e7d5e84-0000-4000-8000-000000000000-19:meeting_x@thread.v2';
+    s.readiness.register('c', {
+      channelType: 'teams',
+      check: () =>
+        Promise.resolve({
+          ready: false,
+          installed: false,
+          canReadAllMessages: false,
+          canPost: false,
+          missing: [{ code: 'cannot_post', message: 'Graph 400: no conversation reference for this id' }],
+        }),
+    });
+    await s.hub.check({ ...request, conversationId: asked });
+    await s.hub.check({ ...request, conversationId: asked });
+    const lines = s.logs.filter((line) => line.startsWith('[readiness]'));
+    assert.equal(lines.length, 1, 'once, not on every check');
+    assert.ok(String(lines[0]).includes(`'${asked}'`), String(lines[0]));
+    assert.match(lines[0] ?? '', /cannot_post: Graph 400: no conversation reference for this id/);
+    // Another conversation, or another cause, is another line; a ready check logs nothing.
+    await s.hub.check(request);
+    assert.equal(s.logs.filter((line) => line.startsWith('[readiness]')).length, 2);
+  });
+
   it('no identity, no provider, and a throwing provider are each stated honestly', async () => {
     const s = await setup();
     const none = await s.hub.check({ ...request, agentSlug: 'ida' });
