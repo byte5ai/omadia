@@ -434,11 +434,15 @@ States exist on three levels, each with its own rules:
   authenticated actor, tenant, channel, event id, revision, timestamp **and the original
   event content** from the stored inbound event (#2089), never from model arguments. Event
   kinds: a transcript segment from a live session (authenticated media source of that
-  session, session id, stable segment id and revision, transcribed text; the recognised
-  speaker is only a hint and never authorship: the part is stored unattributed and
-  `ambiguous` and counts only when a participant confirms exactly that segment revision
-  as theirs by an authenticated message or card; a confirmation by another person or of
-  an older revision counts nothing), a text message (original text), a card or poll answer (structured value with the
+  session, session id, stable segment id and revision, transcribed text). Two cases:
+  where the platform delivers a media channel bound to one participant's account, that
+  principal is the author and the segment counts after that author confirms exactly that
+  revision; a confirmation by anyone else counts nothing. Where the source is a shared
+  stream (a room microphone, a mixed recording), no authorship is claimed: speaker
+  recognition is only a hint, the segment stays unattributed, and a participant may
+  *adopt* exactly that revision as their own contribution by an authenticated message or
+  card; the protocol records it as adopted from the transcript, never as "said by".
+  Adopting the same revision twice creates nothing new; an older revision counts nothing. a text message (original text), a card or poll answer (structured value with the
   card, the proposal id and its version), a reaction (emoji with its target message). For
   text in the announced format the engine parses the original text deterministically; for
   card and poll answers it uses the stored structured value; it refuses a payload that
@@ -1169,10 +1173,13 @@ kept compatible.
     later successful attempt inside the `closing` scope: nothing is deleted early; after
     all scopes ended the data is deleted.
 
-62. **Spoken contributions.** A transcript segment attributed by speaker recognition to
-    the wrong person does not count when that person or someone else confirms it; a
-    confirmation of an older segment revision counts nothing; the right person's
-    confirmation creates exactly one valid contribution, also after replay and restart.
+62. **Spoken contributions.** Per-participant media channel: the segment counts after its
+    author confirms it, a confirmation by someone else or of an older revision counts
+    nothing. Shared room microphone, without any hidden information about the real
+    speaker: the segment stays unattributed; a participant's adoption of exactly that
+    revision creates one contribution marked "adopted from the transcript"; a second
+    adoption by the same person and an adoption of an older revision create nothing;
+    all also after replay and restart.
 63. **Session protocol vs facilitation protocol.** A first session closes while the
     facilitation continues: its participants get the session protocol, stakeholders get
     nothing; only the facilitation's close dispatches the facilitation protocol to them.

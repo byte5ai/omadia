@@ -436,8 +436,13 @@ privacy shield and budget).
 **Model gateway.** Only plugins of kind `provider` (the model provider plugins) hold model
 credentials and talk to model APIs, and only the kernel's model gateway calls them. Every
 other plugin, of either class, reaches models only through that gateway inside an
-execution context; its outbound network is limited to its manifest allow-list and never
-includes model provider endpoints. Kernel-internal extensions (agent runtime, verifier,
+execution context. Its **effective network permission** is what it has today, minus
+model providers: the static targets of its manifest, the targets an operator configured,
+and, where the manifest declares it and the operator enabled it, the `public-web` mode
+(any public host, with today's private-range blocklist enforced at connect time,
+`middleware/src/platform/httpAccessor.ts:139`, used for example by the SEO scanner).
+In every mode the endpoints of the installed model providers are blocked for non-provider
+plugins. Kernel-internal extensions (agent runtime, verifier,
 fast lane) are the gateway's trusted callers and also run inside an execution context.
 Extensions that build their own provider pool today (for example
 `middleware/packages/harness-orchestrator-extras/src/plugin.ts:222`) move onto the gateway;
@@ -457,6 +462,7 @@ execution context, which decides whose budget it uses:
 | Agent turn | an agent's own turn, its internal helpers, capability calls it makes (including embeddings for semantic search or memory writes during the turn); also the Agent Builder's dialog and a draft preview, see below | the agent's envelope |
 | Execution scope | actions of an archetype plugin's process (#2090), including transcription of a live session | the scope's deadline and budget |
 | Inbound processing | transcribing a voice message before the addressed agent's turn | the addressed agent's envelope |
+| Operator task | a single model call an operator explicitly triggers in the admin UI whose result is a draft value in a form for that operator's decision, never a chat message and never sent anywhere without the operator's action: today the issue preview (`middleware/src/issues/issueReformulator.ts:62`) and the skill verification (`middleware/src/services/skillVerdictLlmVerifier.ts:236`) | the instance's operator-tools budget and model policy, with a deadline per task |
 | Maintenance run | a kernel or plugin job that keeps an index current (for example the embedding backfill, `harness-knowledge-graph-neon/src/embeddingBackfill.ts:475`) | the instance's maintenance budget set by the operator, with a deadline per run; only `embed` is allowed, never `complete` or `transcribe`, and it never posts to people |
 
 Semantic search, re-indexing and transcription keep working with the lock in place; only
@@ -511,7 +517,9 @@ disclosure like any agent's; the direct `chat_message` output of today's builder
 the draft itself: the draft is an `agents` row with status `draft`, not addressable in
 any channel, speaking as itself marked "preview", in a draft envelope (exactly the grants
 it would hold after creation, capped by the previewing operator's own rights), output only
-in the admin UI, charged to the instance's operator-tools budget.
+in the admin UI, charged to the instance's operator-tools budget. If the operator declined
+the Agent Builder, drafts are edited in the admin UI's forms, and previews and operator
+tasks keep working.
 
 An agent has exactly one archetype, set at creation; it never switches. Uninstalling an
 archetype plugin disables its agents and keeps their records; it never converts them to
@@ -956,7 +964,7 @@ Each existing element keeps its purpose, moved out of the message body:
     through the gateway. With the lock in place, semantic search, the embedding backfill
     (as a maintenance run, stopped at its budget) and the transcription of a voice message
     work through the gateway; the embedding and transcription adapters' direct clients are
-    reachable only from the gateway; a maintenance run calling `complete` is refused; the Agent Builder answers as an agent through the emitter (no direct output), a draft preview speaks as the draft marked "preview" and gets no right the draft or the operator lacks; uninstalling an archetype plugin with processes in `configuring`, `active`, `concluding` and `following_up`, with a failing `onUninstall` and a restart, leaves no reservation, no later model call or invitation, and a `system` notice in each home conversation; an
+    reachable only from the gateway; a maintenance run calling `complete` is refused; the issue preview and the skill verification work as operator tasks with direct clients blocked and stop at their budget and deadline; a plugin in `public-web` mode scans a previously unknown public domain while private addresses and model provider endpoints stay blocked; with the Agent Builder declined, drafts and previews still work; the Agent Builder answers as an agent through the emitter (no direct output), a draft preview speaks as the draft marked "preview" and gets no right the draft or the operator lacks; uninstalling an archetype plugin with processes in `configuring`, `active`, `concluding` and `following_up`, with a failing `onUninstall` and a restart, leaves no reservation, no later model call or invitation, and a `system` notice in each home conversation; an
     agent on `claude-cli` uses its granted tools through `run_loop`, a tool it lacks is
     refused, a turn without budget does not start, a running loop that reaches its budget
     before the deadline makes no further model call, the total stays within the
