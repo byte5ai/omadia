@@ -298,6 +298,10 @@ participant.
 
 ### 5.6 Time, reminders and concurrency
 
+- Timing runs on the agent trigger mechanism of AVE §5.12: a hook on new messages in the
+  facilitation's conversation, timers for time-keeping only while a live session runs,
+  wakeups for reminders and follow-ups; all bound to the facilitation and ending with
+  it, each with deadline and budget.
 - The scheduler runs from the facilitation's deadline, not from a round count.
 - Reminder policy default: deadline minus 24 h and minus 2 h; configurable per
   facilitator and per facilitation; announced in the handshake.

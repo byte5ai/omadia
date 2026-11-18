@@ -145,6 +145,12 @@ the permitted level of detail. This holds for every path information can take: a
 to people, memory, capability and interface calls, and communication with other agents
 (§5.11).
 
+**INV-10 Proactive, but bounded.** An agent that notices something or has something
+important to say speaks up without being asked, like a good colleague. It decides itself,
+within harness procedures and without bothering users, whether to wait for an event or to
+wake itself at a time. Every such trigger has a deadline, limits and a budget that the
+deterministic harness enforces, so no trigger can ever run on blindly (§5.12).
+
 ## 4. Measured ground truth on `main`
 
 Paths are relative to the kernel repo unless a sister repo is named.
@@ -167,6 +173,7 @@ Paths are relative to the kernel repo unless a sister repo is named.
 | G14 | `agent_to_agent` (migration `0058`) is a per-conversation relay switch, not a permission for A to consult B: it has no target agent. | INV-5 | `middleware/migrations/0058_agent_to_agent.sql:52` and its table key `(channel_type, channel_key, agent_id)` |
 | G15 | The audience floor is inactive unless a provider is configured: without one the guard returns no restriction. | INV-2, INV-5 | `middleware/packages/harness-orchestrator/src/audienceFloorGuard.ts:272` |
 | G16 | The product calls every configured agent "Orchestrator" (navigation, create form, chat picker, glossary rule "keep in English"). | INV-6 | `web-ui/messages/GLOSSARY.md`; `web-ui/messages/en.json` (`nav.agentsCluster`, `agentPicker.label`) |
+| G18 | Proactivity exists only in pieces, and none of them is bounded: **routines** are user-owned recurring cron jobs (5-field cron, at least 60 s apart, run timeout up to 10 min, 50 active per user) without an end date, a cost cap or a one-shot form, created by an agent only on a user's request; **plugin jobs** (cron or interval) run until the plugin is deactivated, and a failing handler does not stop future ticks; **Conductor workflows** have event, webhook and cron triggers, but operators author them. An agent cannot wake itself or subscribe to an event on its own, and no LLM spend cap was found. | INV-10 | `middleware/src/plugins/routines/routineStore.ts`, `routineRunner.ts:77`, `manageRoutineTool.ts:48-65,118`; `middleware/packages/plugin-api/src/pluginContext.ts:254-274`; `middleware/src/conductor/eventRouter.ts`, `runStore.ts:7` |
 | G17 | **What already holds:** per-agent Teams identity (1 agent = 1 Entra app + 1 bot + 1 app package, #860); per-agent identity, persona axes, instructions and avatar (#914, `agent_identities`); per-agent model policy, plugin and MCP grants, memory tree; harness-sourced `agentsConsulted` and `delegatedAnswer` (#332). | | `docs/teams-multi-agent-identities.md`; migrations `0049`-`0063` |
 
 The foundation for virtual employees exists (G17). What is missing is that the agent the
@@ -369,7 +376,10 @@ is an agent. If it extends what agents can do, it is a plugin.
 **Plugin kinds after this spec:** `integration` (connection to a third-party system and
 its credentials), `tool` (functions agents can call), `channel` (transport to people),
 `provider` (models, embeddings, storage), `ui` (extensions of the operator or user UI),
-`skill` (instructions and knowledge an agent can load), `agent-template` (a preset of
+`skill` (skill packs: instructions and knowledge an agent can load; skills can also be
+authored, imported or forked in the instance itself, `skills` table, migration `0003`,
+`middleware/src/routes/agentBuilder.ts:945,977,1104`; either way a skill is a capability an
+agent is granted, never an actor), `agent-template` (a preset of
 identity, personality and suggested capabilities that the operator instantiates as an
 agent; the template itself never runs). The manifest kind `agent` is removed.
 
@@ -435,6 +445,61 @@ answers honestly that it cannot share this here, without revealing what it withh
 declared readership receive no data from restricted contexts. Every blocked and every
 allowed cross-context flow is audited with its labels, never with the content.
 
+
+### 5.12 Proactive work: wakeups and hooks
+
+A virtual colleague who notices something or has something important to say, but only
+says it when asked, is worthless. Agents, and facilitators even more, act proactively.
+Constant heartbeats are not the answer: they burn resources around the clock. Like a
+well-organised person, an agent sets itself exactly the reminders and watches it needs,
+for as long as it needs them.
+
+**Three trigger kinds, owned by the agent.** The agent creates them through harness tools,
+decided ad hoc from context, requirement and configuration, without asking users:
+
+| Tool | Use |
+|---|---|
+| `on_event(filter, purpose, context, until, max_fires)` | **Preferred** wherever an event exists: new message in a conversation, member joins, meeting starts or ends, poll answered, calendar event, task finished, integration webhook (for example a new expense report). The harness lists the event sources the agent's channels and capabilities offer. |
+| `wake_at(time, purpose, context, until)` | One-shot wakeup, for example "three working days before month end, look at the open expense reports". |
+| `wake_every(interval, purpose, context, until, max_runs)` | Recurring only while needed, for example time-keeping every 5 minutes during a meeting. |
+
+Examples: a facilitator in a meeting subscribes to new messages and sets a 5-minute timer
+for time-keeping, both ending with the meeting; an agent watching expense reports sets
+itself a one-shot wakeup before month end.
+
+**Harness guarantees (deterministic, not overridable by any prompt or plugin):**
+- **Mandatory deadline.** No trigger without `until`; instance caps bound it (proposed:
+  one-shot within 90 days, recurring and hooks within 30 days). A recurring trigger also
+  needs `max_runs`. Expired triggers are deleted, not paused.
+- **Bound to a context.** Every trigger names its purpose and context (conversation,
+  facilitation, meeting, task); it ends automatically when the context ends, whichever
+  comes first.
+- **Limits.** Minimum interval per kind (proposed: 1 minute during a live meeting,
+  15 minutes otherwise); maximum number of active triggers per agent.
+- **Budget.** A cost cap per firing and per trigger, and a monthly cap per agent and per
+  instance, enforced before each model call. Reaching a cap suspends the trigger and
+  sends a `system` notice to the operator; an instance-wide kill switch stops all
+  triggers at once.
+- **Cheap first.** A firing first runs a deterministic pre-check (anything new since the
+  last firing? is the meeting still live? is the condition still open?). No model call
+  happens when there is nothing to do.
+- **Circuit breaker.** Consecutive failures or consecutive no-op firings pause the trigger;
+  unlike today's plugin jobs, failures never keep a trigger running.
+- **Durable and exactly-once.** Triggers survive restarts and fire under a lease, never
+  twice for the same occurrence.
+- **Same rules as any turn.** A firing runs in the agent's envelope and carries the
+  discretion labels of the context it was created in (INV-9); proactive messages go only
+  to that context's audience and respect the communication profile, quiet hours and a
+  rate limit per recipient (#1035).
+- **Visible.** Operators see every active trigger per agent with purpose, context,
+  deadline and cost so far; a user can ask an agent what it is currently watching for
+  them; every creation, firing and end is audited.
+
+**Routines** become user-requested triggers of the same mechanism: they get a deadline,
+and before it runs out the agent asks the user whether to continue, as a colleague would.
+**Plugin jobs** stay for technical maintenance without model calls; a plugin job never
+calls a model outside an agent's trigger.
+
 ## 6. Acceptance criteria
 
 1. **Strategist regression.** A Builder-created "Strategist" and a second agent exist.
@@ -499,6 +564,19 @@ allowed cross-context flow is audited with its labels, never with the content.
 18. **Strictest label wins.** A turn that read one classified field answers into a group
     with a member lacking the right: the field is redacted in the answer.
 19. **Default on.** A fresh agent has the context-memory ACL enabled.
+20. **Bounded triggers.** A trigger without deadline, a recurring trigger without
+    `max_runs`, or an interval below the minimum is refused. Over 30 simulated days with a
+    scripted model that always fails or always answers, no trigger exceeds its budget, a
+    failing trigger pauses after the breaker threshold, and the instance cap is never
+    exceeded.
+21. **Cheap first.** A timer firing with nothing new since the last firing makes no model
+    call (LLM usage trace empty).
+22. **Context end.** Ending a meeting ends its message hook and its time-keeping timer in
+    the same transaction.
+23. **One-shot wakeup.** The expense agent's month-end wakeup fires once, sends its owner
+    an overview, and is gone; after a restart in between it fires exactly once.
+24. **Proactive discretion.** A proactive message created in an HR context never reaches a
+    sales chat, and none goes out during the recipient's quiet hours.
 
 ## 7. Migration and compatibility
 
@@ -567,6 +645,10 @@ Kernel unless noted. Each item becomes one issue in epic #2042.
 21. Discretion: labels at every entry point, turn label set, flow rule at every egress
     (people, agents, memory, outbound calls), disclosure levels per grant, integration
     readership, audit; context-memory ACL on by default (INV-9, §5.11).
+22. Proactive triggers: `on_event`, `wake_at`, `wake_every` owned by agents, event-source
+    catalogue, mandatory deadline, limits, budgets with kill switch, pre-check, circuit
+    breaker, durable exactly-once firing, operator view; routines migrated onto it
+    (INV-10, §5.12).
 
 ## 9. Owner decisions
 
@@ -580,7 +662,6 @@ Kernel unless noted. Each item becomes one issue in epic #2042.
   agent with broad rights deliberately (INV-8).
 - No compatibility layers: there are no customer installations yet (§7).
 - Agents are humanised deliberately and transparently, never deceptively (§1).
-
 - Agents may consult colleagues, configured in detail per agent and default off; a
   consultation never gives an agent access it does not have itself (§5.4).
 - Discretion is a core virtue of an ideal colleague: the context rules of the memory
@@ -590,8 +671,11 @@ Kernel unless noted. Each item becomes one issue in epic #2042.
   (§5.2).
 - Default agents are set per human user and channel, and can be switched off so that no
   message ever reaches an agent that was not exactly defined (§5.6).
-
-**For owner sign-off:** the agent/plugin boundary and plugin kinds of §5.10.
+- The agent/plugin boundary and plugin kinds of §5.10; skills are capabilities, from
+  plugins or authored in the instance.
+- Agents and facilitators act proactively through agent-owned hooks and wakeups that the
+  agent picks itself; every trigger has a deadline, limits and a budget enforced by the
+  deterministic harness; hooks are preferred over timers (INV-10, §5.12).
 
 ## 10. Not verified
 
