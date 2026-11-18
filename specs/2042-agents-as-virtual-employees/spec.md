@@ -660,7 +660,7 @@ Each existing element keeps its purpose, moved out of the message body:
 
 | Element today | Purpose | Target |
 |---|---|---|
-| AI disclosure | EU AI Act Art. 50 | Stays as the law requires, in the most discreet form the channel offers. How often it must appear (every answer or per conversation) is a compliance decision, not a design choice (OD-5). |
+| AI disclosure | EU AI Act Art. 50 | Stays as the law requires, in the most discreet form the channel offers. How often it appears is an operator setting, default per answer until OD-5 is settled (#2087). |
 | Verifier badge, system-data chip | Show that facts were checked or come from a system | In details; the agent says how sure it is in words when it matters (§5.8). |
 | "Konsultiert" footer, "Direkte Antwort von" chip | Tamper-evident attribution (#332) | Contributions of other agents appear with a plain attribution in the text or as that agent's own post (§5.4); the full trace stays in details. |
 | "Kürzer / Mehr Details" buttons | Change answer length without retyping | Not on every answer; the user just asks ("kürzer bitte"), the agent's verbosity setting covers the default. |
@@ -895,10 +895,13 @@ Kernel unless noted. Each item becomes one issue in epic #2042.
   agent picks itself; every trigger has a deadline, limits and a budget enforced by the
   deterministic harness; hooks are preferred over timers (INV-10, §5.12).
 
-**Open (compliance):**
-- OD-5: how often the AI disclosure must appear in a conversation (every answer or once per
-  conversation and on speaker change) under EU AI Act Art. 50; the form stays as discreet
-  as the channel allows either way (§5.14).
+**Open (product governance):**
+- OD-5: how often the visible AI disclosure must appear in a conversation (every answer, or
+  once per conversation and on speaker change). Owner direction: the minimal form that is
+  permissible; if a disclosure on every message is required, it stays switchable by the
+  operator with default on. The product provides the setting with default `per_answer`
+  until the question is settled (#2087); the structured disclosure field stays on every
+  answer, and the form stays as discreet as the channel allows (§5.14).
 
 ## 10. Not verified
 
