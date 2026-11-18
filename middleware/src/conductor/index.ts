@@ -165,8 +165,6 @@ export {
   TRANSCRIPT_TEXT_MAX_CHARS,
 } from './transcript.js';
 export type { TranscriptEntry } from './transcript.js';
-export { createScopedRoleAssignments, FACILITATION_ROLE_PREFIX, RoleKeyOutOfScopeError } from './scopedRoleAssignments.js';
-export type { ScopedRoleAssignments } from './scopedRoleAssignments.js';
 
 export interface ConductorWiring {
   workflowStore: ConductorWorkflowStore;

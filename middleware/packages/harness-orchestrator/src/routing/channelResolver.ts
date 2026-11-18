@@ -1,5 +1,6 @@
 import type { ChatAgent } from '@omadia/channel-sdk';
 
+import { isFacilitatorKind } from '../registry/agentKind.js';
 import type { ActiveAgent, OrchestratorRegistry } from '../registry/index.js';
 
 /**
@@ -141,6 +142,27 @@ export class ChannelResolver {
         (b) =>
           b.channelType === channelType && b.channelKey === channelKey,
       );
+      // #2060 — A FACILITATOR IS REACHED THROUGH ITS OWN BOT OR NOT AT ALL.
+      //
+      // A binding routes a channel key that is NOT the agent's identity: the
+      // default bot, or some other key an operator typed. Answering there
+      // would put the facilitator's words under a foreign name and avatar,
+      // which is the one thing its identity rule forbids. The write paths
+      // refuse such a binding; a row that exists anyway (hand-written, or
+      // older than the rule) is refused here, so the bot stays quiet rather
+      // than lending its name. (The fallback can never be a facilitator: the
+      // database refuses it.)
+      if (isFacilitatorKind(direct.agent)) {
+        this.log(`channelResolver: reject`, {
+          channelType,
+          channelKey,
+          decision: 'reject',
+          match: 'binding-to-facilitator',
+          slug: direct.agent.slug,
+          agentId: direct.agent.id,
+        });
+        return { decision: 'reject' };
+      }
       const decision: ResolveDecision = isDirect ? 'bound' : 'fallback';
       this.log(`channelResolver: route`, {
         channelType,

@@ -13,6 +13,7 @@
 
 import {
   isAgentToAgentEnabled,
+  isFacilitatorKind,
   type AgentChannelPolicyRow,
   type OrchestratorRegistry,
 } from '@omadia/orchestrator';
@@ -91,6 +92,11 @@ export function createPeerGate(deps: PeerPolicyDeps): PeerGate {
   return async (channelType, conversationId, agentSlug) => {
     const agent = deps.getRegistry()?.get(agentSlug)?.agent;
     if (!agent) return false;
+    // #2060 — a facilitator neither talks to other agents nor is addressed by
+    // them, whatever its switches say. This gate sits in front of the roster,
+    // every utterance and both ends of a discussion, so one line covers both
+    // directions.
+    if (isFacilitatorKind(agent)) return false;
     if (!deps.listChannelPeerPolicies) return false;
     let rows: readonly AgentChannelPolicyRow[];
     try {

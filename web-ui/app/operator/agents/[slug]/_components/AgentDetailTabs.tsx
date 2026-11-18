@@ -22,6 +22,8 @@ export const AGENT_DETAIL_TABS = [
   'model',
   'peers',
   'teams',
+  // #2066 — facilitators only: which facilitation engine it runs on.
+  'engine',
   'plugins',
   'tools',
   'memory',
@@ -61,8 +63,13 @@ function writeTabToLocation(tab: AgentDetailTab): void {
 }
 
 interface AgentDetailTabsProps {
-  /** One render function per tab; only the active one is called. */
-  readonly panels: Readonly<Record<AgentDetailTab, () => React.ReactNode>>;
+  /**
+   * One render function per tab; only the active one is called. A tab
+   * WITHOUT a panel is not offered at all (#2066): a facilitator has no
+   * plugins, tools, conversations or memory to configure, and a tab that
+   * opens onto nothing would promise something the kernel refuses.
+   */
+  readonly panels: Readonly<Partial<Record<AgentDetailTab, () => React.ReactNode>>>;
   /** Tab to open when the URL names none. */
   readonly initialTab?: AgentDetailTab;
 }
@@ -72,10 +79,13 @@ export function AgentDetailTabs(props: AgentDetailTabsProps): React.ReactElement
   // Lazy initial read: the server renders the default tab, the client picks
   // the URL's tab on hydration. The effect below re-syncs if the URL is
   // edited by hand (back/forward keeps the same document, so `popstate`).
-  const [tab, setTab] = useState<AgentDetailTab>(() => {
+  const [requested, setTab] = useState<AgentDetailTab>(() => {
     const fromUrl = readTabFromLocation();
     return fromUrl !== DEFAULT_TAB ? fromUrl : (props.initialTab ?? DEFAULT_TAB);
   });
+  const tabs = AGENT_DETAIL_TABS.filter((id) => props.panels[id] !== undefined);
+  // A deep link to a tab this agent does not have lands on the first one.
+  const tab = tabs.includes(requested) ? requested : (tabs[0] ?? DEFAULT_TAB);
 
   useEffect(() => {
     const onPop = (): void => setTab(readTabFromLocation());
@@ -89,11 +99,12 @@ export function AgentDetailTabs(props: AgentDetailTabsProps): React.ReactElement
   }, []);
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>): void => {
-    const idx = AGENT_DETAIL_TABS.indexOf(tab);
+    const idx = tabs.indexOf(tab);
     const delta = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
     if (delta === 0) return;
     e.preventDefault();
-    const next = AGENT_DETAIL_TABS[(idx + delta + AGENT_DETAIL_TABS.length) % AGENT_DETAIL_TABS.length]!;
+    const next = tabs[(idx + delta + tabs.length) % tabs.length];
+    if (next === undefined) return;
     select(next);
     document.getElementById(`agent-detail-tab-${next}`)?.focus();
   };
@@ -106,7 +117,7 @@ export function AgentDetailTabs(props: AgentDetailTabsProps): React.ReactElement
         onKeyDown={onKeyDown}
         className="sticky top-0 z-10 -mx-1 mb-6 flex flex-wrap gap-1 border-b border-[color:var(--border)] bg-[color:var(--bg)] px-1 pt-2"
       >
-        {AGENT_DETAIL_TABS.map((id) => (
+        {tabs.map((id) => (
           // eslint-disable-next-line no-restricted-syntax -- tab, not a §4.2 CTA
           <button
             key={id}
@@ -134,7 +145,7 @@ export function AgentDetailTabs(props: AgentDetailTabsProps): React.ReactElement
         aria-labelledby={`agent-detail-tab-${tab}`}
         className="space-y-8"
       >
-        {props.panels[tab]()}
+        {props.panels[tab]?.()}
       </div>
     </div>
   );

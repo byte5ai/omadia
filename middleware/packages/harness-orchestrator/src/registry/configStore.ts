@@ -12,6 +12,7 @@ import {
   type AgentChannelPolicyRow,
   type AgentToAgentMode,
 } from './agentToAgent.js';
+import { parseAgentKind, type AgentKind } from './agentKind.js';
 import { parseModelPolicy } from './modelPolicy.js';
 import type { ModelPolicy } from '@omadia/plugin-api';
 
@@ -64,6 +65,12 @@ export interface AgentRow {
   /** Reserved, not enforced (#978) — see {@link PrivacyProfile}. */
   readonly privacyProfile: PrivacyProfile;
   readonly status: AgentStatus;
+  /**
+   * #2060 — `agents.kind` (migration 0067), fixed at creation. Optional on
+   * the row type so pre-existing `AgentRow` fixtures stay valid; absent reads
+   * as `'standard'` (see {@link parseAgentKind}).
+   */
+  readonly kind?: AgentKind;
   /** Per-agent model routing (Agent Builder P0). Raw JSONB; shaped to
    *  `ModelRoutingConfig` at the API boundary. `null`/absent = inherit
    *  platform default. Optional so pre-existing AgentRow fixtures stay valid. */
@@ -155,6 +162,11 @@ export interface AgentRow {
    */
   readonly answerVerbosity?: AnswerVerbosity | null;
   /**
+   * #2043 — the language the agent speaks (`agent_identities.language`,
+   * migration 0069), a BCP 47 tag. `null`/absent = the installation's.
+   */
+  readonly identityLanguage?: string | null;
+  /**
    * #1569 — the agent's own response-quality settings
    * (`agent_identities.quality`, migration 0053), joined in like the other
    * identity columns and narrowed by `parseAgentQuality`. `null`/absent = the
@@ -223,6 +235,8 @@ export interface AgentInput {
   /** Reserved, not enforced (#978) — see {@link PrivacyProfile}. */
   readonly privacyProfile?: PrivacyProfile;
   readonly status?: AgentStatus;
+  /** #2060 — only settable here: the kind is fixed at creation. */
+  readonly kind?: AgentKind;
 }
 
 export interface AgentPatch {
@@ -363,6 +377,8 @@ interface AgentDbRow {
   description: string | null;
   privacy_profile: PrivacyProfile;
   status: AgentStatus;
+  /** #2060 — `agents.kind`; absent on a DB that predates migration 0067. */
+  kind?: string | null;
   model_routing: Record<string, unknown> | null;
   canvas_position: CanvasPosition | null;
   /** W5 — `agents.context_memory`; absent on a DB that predates migration 0050. */
@@ -388,6 +404,8 @@ interface AgentDbRow {
   identity_long_description?: string | null;
   /** `agent_identities.verbosity` (0063), same join / same absence on writes. */
   identity_verbosity?: string | null;
+  /** #2043 — `agent_identities.language` (0069), same join / same absence. */
+  identity_language?: string | null;
   /** #1569 — `agent_identities.quality` (JSONB), same join / same absence on writes. */
   identity_quality?: unknown;
   created_at: Date;
@@ -456,6 +474,7 @@ function mapAgent(row: AgentDbRow): AgentRow {
     description: row.description,
     privacyProfile: row.privacy_profile,
     status: row.status,
+    kind: parseAgentKind(row.kind),
     modelRouting: row.model_routing ?? null,
     canvasPosition: row.canvas_position ?? null,
     contextMemory: parseContextMemoryMode(row.context_memory),
@@ -478,6 +497,7 @@ function mapAgent(row: AgentDbRow): AgentRow {
     // predates 0063 has no column at all and a hand edit must never become
     // a level the prompt builder does not know.
     answerVerbosity: parseAnswerVerbosity(row.identity_verbosity) ?? null,
+    identityLanguage: row.identity_language?.trim() || null,
     quality: parseAgentQuality(row.identity_quality) ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -543,6 +563,9 @@ const AGENT_SELECT =
   'i.short_description AS identity_short_description, ' +
   'i.long_description AS identity_long_description, ' +
   'i.verbosity AS identity_verbosity, ' +
+  // to_jsonb, not the bare column: a database that predates migration 0069
+  // has no `language`, and this SELECT runs before any migration check.
+  "to_jsonb(i) ->> 'language' AS identity_language, " +
   'i.quality AS identity_quality ' +
   'FROM agents a LEFT JOIN agent_identities i ON i.agent_id = a.id';
 
@@ -581,8 +604,8 @@ export class ConfigStore {
     }
     try {
       const { rows } = await this.pool.query<AgentDbRow>(
-        `INSERT INTO agents (slug, name, description, privacy_profile, status)
-         VALUES ($1, $2, $3, COALESCE($4, 'default'), COALESCE($5, 'enabled'))
+        `INSERT INTO agents (slug, name, description, privacy_profile, status, kind)
+         VALUES ($1, $2, $3, COALESCE($4, 'default'), COALESCE($5, 'enabled'), COALESCE($6, 'standard'))
          RETURNING *`,
         [
           input.slug,
@@ -590,6 +613,7 @@ export class ConfigStore {
           input.description ?? null,
           input.privacyProfile ?? null,
           input.status ?? null,
+          input.kind ?? null,
         ],
       );
       // INSERT ... RETURNING with non-zero rowcount always yields exactly
@@ -961,15 +985,25 @@ export class ConfigStore {
   }
 
   async setFallbackAgentId(agentId: string | null): Promise<PlatformSettingsRow> {
-    const { rows } = await this.pool.query<PlatformSettingsDbRow>(
-      `INSERT INTO multi_orchestrator_settings (id, fallback_agent_id, updated_at)
-       VALUES (true, $1, now())
-       ON CONFLICT (id) DO UPDATE SET
-         fallback_agent_id = EXCLUDED.fallback_agent_id,
-         updated_at        = now()
-       RETURNING fallback_agent_id, updated_at`,
-      [agentId],
-    );
+    let rows: PlatformSettingsDbRow[];
+    try {
+      ({ rows } = await this.pool.query<PlatformSettingsDbRow>(
+        `INSERT INTO multi_orchestrator_settings (id, fallback_agent_id, updated_at)
+         VALUES (true, $1, now())
+         ON CONFLICT (id) DO UPDATE SET
+           fallback_agent_id = EXCLUDED.fallback_agent_id,
+           updated_at        = now()
+         RETURNING fallback_agent_id, updated_at`,
+        [agentId],
+      ));
+    } catch (err) {
+      // #2060 — the trigger of migration 0067 is the last line of defence;
+      // surface it as a domain error instead of a raw pg failure.
+      if (isConstraintViolation(err, 'fallback_agent_not_facilitator')) {
+        throw new ConfigValidationError('a facilitator cannot be the default agent');
+      }
+      throw err;
+    }
     const row = rows[0];
     if (!row) {
       throw new Error('setFallbackAgentId: RETURNING produced no row');
@@ -1065,6 +1099,15 @@ function isUndefinedTable(err: unknown): boolean {
     !!err &&
     typeof err === 'object' &&
     (err as { code?: string }).code === '42P01'
+  );
+}
+
+/** A violation raised with a named constraint (CHECK or a trigger's RAISE). */
+function isConstraintViolation(err: unknown, constraint: string): boolean {
+  return (
+    !!err &&
+    typeof err === 'object' &&
+    (err as { constraint?: string }).constraint === constraint
   );
 }
 

@@ -1,4 +1,4 @@
-import type { OrchestratorRegistry } from '@omadia/orchestrator';
+import { assertNotFacilitator, type OrchestratorRegistry } from '@omadia/orchestrator';
 import { resolveAddressedBot, type DefaultChannelBotKey } from './channelBotOwnership.js';
 import type { JsonObject, JsonValue, Step } from '@omadia/conductor-core';
 
@@ -151,6 +151,9 @@ export class RealStepEffects implements StepEffects {
     if (!entry) {
       throw new Error(`Agent '${slug}' is not active in the orchestrator registry`);
     }
+    // #2060 — a workflow step consults an agent on somebody's behalf. A
+    // facilitator is run by its engine only (`agentTurn`), never as a step.
+    assertNotFacilitator(entry.agent, 'consultation');
 
     const root: JsonObject = { ctx: context, steps: asObject(context.steps) };
     const userMessage = step.prompt

@@ -41,14 +41,26 @@ export type {
   MembersRemovedEvent,
 } from './membershipEvent.js';
 export type {
+  SendProviderCapabilities,
   TargetedDeliveryOutcome,
+  TargetedMention,
   TargetedMessage,
+  TargetedPoll,
+  TargetedSendOptions,
   TargetedSendDiagnostic,
   TargetedSendProvider,
   TargetedSendReport,
 } from './targetedSend.js';
 // #330 C3b - conversation-addressed proactive send (group nudges).
 export type { ConversationSendOptions, ConversationSendProvider } from './conversationSend.js';
+// #2043 - native facilitators: authenticated inbound messages, readiness and
+// per-session capabilities.
+export type { ConversationMessageEvent } from './conversationMessage.js';
+export type {
+  ChannelReadinessProvider,
+  MeetingSourceProvider,
+  SessionEvent,
+} from './sessionCapabilities.js';
 
 // Orchestrator access — the typed, blessed way for a channel to resolve the
 // ChatAgent it drives turns with (alternative to CoreApi.handleTurnStream when

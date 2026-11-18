@@ -93,7 +93,24 @@ export function createRegistryInstallRouter(deps: RegistryInstallDeps): Router {
     }
 
     try {
-      const { plugins, errors } = await deps.client.listAll();
+      // The index is cached for minutes. A version asked for by number that
+      // the cached index does not list was most likely published since: read
+      // that registry once more before answering "no such version" (found at
+      // the #2043 rollout, 40 s after a publish). Once per request, and only
+      // for an explicit version, so a typo costs one extra fetch.
+      let listing = await deps.client.listAll();
+      const requestedVersion = asString(req.query['version']);
+      if (requestedVersion) {
+        const cached = listing.plugins.find((p) => p.entry.id === id);
+        if (cached && !cached.entry.versions.some((v) => v.version === requestedVersion)) {
+          log(
+            `[registry] ${id}@${requestedVersion} is not in the cached index of '${cached.registry}' — reading the index again`,
+          );
+          deps.client.invalidate(cached.registry);
+          listing = await deps.client.listAll();
+        }
+      }
+      const { plugins, errors } = listing;
       const resolved = plugins.find((p) => p.entry.id === id);
       if (!resolved && errors.length > 0) {
         // #1482 — not finding the plugin proves nothing when a registry

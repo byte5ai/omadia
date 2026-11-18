@@ -1,5 +1,5 @@
 import { extractFromJsonFile } from './setupJsonFile.js';
-import { booleanSetupDefault, integerSetupDefault } from './setupFieldDefault.js';
+import { parseBooleanSetupValue, parseIntegerSetupValue } from './setupFieldValue.js';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
@@ -1198,12 +1198,16 @@ export function extractSetupSchema(
       // #1464 — normalized exactly like the catalog projection (manifestLoader),
       // so a `default: "true"` pre-checks the box and the missing-value
       // fallback below stores `true`, not the string.
-      const defaultValue = booleanSetupDefault(f['default']);
+      const defaultValue = parseBooleanSetupValue(f['default']);
       if (defaultValue !== undefined) field.default = defaultValue;
     } else if (type === 'integer') {
       // #1524 — normalized exactly like the catalog projection (manifestLoader).
-      const defaultValue = integerSetupDefault(f['default']);
+      const defaultValue = parseIntegerSetupValue(f['default']);
       if (defaultValue !== undefined) field.default = defaultValue;
+      // #1958 — lower bound, enforced by `coerceSetupFieldValue` on install and
+      // on every later edit. Parsed exactly like the catalog projection.
+      const min = parseIntegerSetupValue(f['min']);
+      if (min !== undefined) field.min = min;
     } else if (f['default'] !== undefined) {
       field.default = f['default'];
     }
@@ -1439,7 +1443,7 @@ async function validateValues(
       continue;
     }
 
-    const coerced = coerce(field, raw);
+    const coerced = coerceSetupFieldValue(field, raw);
     if ('error' in coerced) {
       errors.push({
         key: field.key,
@@ -1500,7 +1504,7 @@ interface InstallFieldError {
   params?: Record<string, string>;
 }
 
-type CoerceResult =
+export type CoerceResult =
   | { value: unknown }
   | {
       error: {
@@ -1510,7 +1514,19 @@ type CoerceResult =
       };
     };
 
-function coerce(field: InstallSetupField, raw: unknown): CoerceResult {
+/**
+ * One submitted setup value → the value to store, or a field-level error.
+ *
+ * #1958 — exported so the post-install edit (`PATCH …/secrets` in
+ * routes/runtime.ts) converts typed values with this same function instead of
+ * a second implementation. Two implementations had drifted: the edit path
+ * converted only `boolean`, and every `integer` edited after install was stored
+ * as a string.
+ */
+export function coerceSetupFieldValue(
+  field: InstallSetupField,
+  raw: unknown,
+): CoerceResult {
   // #602 (OM-17) — see validateValues: German templates, no request locale.
   const label = resolveLocalized(field.label, 'de') ?? field.key;
   switch (field.type) {
@@ -1562,23 +1578,34 @@ function coerce(field: InstallSetupField, raw: unknown): CoerceResult {
       }
       return { value: raw };
     }
-    case 'boolean':
-      if (typeof raw === 'boolean') return { value: raw };
-      if (raw === 'true') return { value: true };
-      if (raw === 'false') return { value: false };
-      return {
-        error: {
-          code: 'wrong_type',
-          message: `"${label}" muss true oder false sein.`,
-        },
-      };
+    case 'boolean': {
+      const b = parseBooleanSetupValue(raw);
+      if (b === undefined) {
+        return {
+          error: {
+            code: 'wrong_type',
+            message: `"${label}" muss true oder false sein.`,
+          },
+        };
+      }
+      return { value: b };
+    }
     case 'integer': {
-      const n = typeof raw === 'number' ? raw : Number(raw);
-      if (!Number.isInteger(n)) {
+      const n = parseIntegerSetupValue(raw);
+      if (n === undefined) {
         return {
           error: {
             code: 'wrong_type',
             message: `"${label}" muss eine ganze Zahl sein.`,
+          },
+        };
+      }
+      if (field.min !== undefined && n < field.min) {
+        return {
+          error: {
+            code: 'below_min',
+            message: `"${label}" muss mindestens ${field.min} sein.`,
+            params: { min: String(field.min) },
           },
         };
       }

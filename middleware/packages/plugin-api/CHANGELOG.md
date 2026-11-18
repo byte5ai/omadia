@@ -8,6 +8,84 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.56.0 — 2026-11-18
+
+Additive (epic #2043).
+
+### Added
+
+- **`ConversationMessagesService.isSubscribed?(scope): Promise<boolean>`** —
+  whether the calling engine holds an active subscription for exactly this
+  scope, read from the store. For reconciling live facilitations after a
+  restart, a revoked grant or a disabled agent, instead of inferring the loss
+  from `not_permitted` or an empty `listSince`. `false` for another plugin's
+  subscription and for a caller that is not the facilitation engine. Optional
+  member: feature-detect it.
+
+## 1.55.0 — 2026-11-18
+
+Additive. Contracts for native facilitators with the engine in a plugin
+(epic #2043): the kernel owns identity, authenticated inbound messages and
+sending; lifecycle, state and counting live in the engine plugin.
+
+### Added
+
+- **`conversationMessages` service** (`ConversationMessagesService`,
+  `ConversationMessageRecord`) — every human message of a subscribed group
+  conversation, stored by the kernel with platform-stated author, message id
+  and revision. Subscribe, live delivery, lookup by message id, replay.
+- **`agentTurn` service** (`AgentTurnService`) — run one turn as a named agent
+  for a stored inbound event and get the text back without it being posted.
+- **`channelReadiness` and `sessionCapabilities` services**
+  (`ChannelReadinessReport`, `SessionCapabilitySnapshot`) — whether an agent's
+  own identity can moderate a conversation, and what a session offers as
+  inputs and outputs.
+- **`NativeToolCallContext`** — optional second argument of
+  `NativeToolHandler`: agent, channel, conversation, inbound event and caller,
+  stated by the kernel.
+- **`ConversationSendRequest.asOwnIdentity?`, `message.mentions?`** and
+  **`TargetedSendRequest.asAgentSlug?`** — send as the agent's own identity,
+  refused with `no_identity` instead of falling back to another bot.
+  `delivered` outcomes carry an optional `messageId`.
+- **`SendPoll`** on `ConversationSendRequest.message.poll?` — post a poll;
+  the conversation outcome carries `cardMessageId?` next to `messageId?`
+  (text and card can be two messages; answers refer to the card).
+- **`TargetedSendRequest.userRef?`** — the recipient's channel user reference
+  for a first-contact direct message as the agent's own identity.
+- **`ConversationMessageRecord.cardAnswer.answererVerified?`** — `false` when
+  the platform could not state who clicked.
+- **`NativeToolCallContext.callerUserRef?`** — the caller in the channel's
+  own namespace (`kind`, `id`), next to the canonical `callerPrincipalId`.
+- **`AgentTurnService.getProfile?`** (`AgentProfile`) — display name,
+  language and own-identity channel types of an agent bound to the calling
+  engine.
+- **`ChannelReadinessCode`**, `ChannelReadinessReport.verified?`,
+  **`ChannelReadinessService.repairConsent?`**
+  (`ChannelConsentRepairOutcome`) — the readiness codes in use, whether a
+  channel made the statement at all, and a consent repair.
+- **`SessionCapabilitiesService.onSessionEvent?`** (`SessionEventRecord`) —
+  meeting lifecycle: started, ended, participant joined / left.
+- **`FACILITATION_ENGINE_CAPABILITY`** and the **`facilitation.followup`
+  service contract** (`FacilitationFollowupService`) — free/busy, invitation
+  and mail, each call bounded by an allow-list.
+
+### Changed (meaning, no type change)
+
+- **`conversationSend` without `asOwnIdentity` is refused** (`not_permitted`).
+  The scope it used to have, an ephemeral attachment posted through the
+  channel's default bot, belonged to the plugin-era facilitation and is gone.
+  `asOwnIdentity` stays optional in the type so older callers compile.
+- **Three kernel services are no longer published**: `agentProvisioning`,
+  `conversationBindings` and `conductorRoleAssignments`. A plugin that
+  declares them under `optional_requires` gets `undefined`; one that requires
+  them does not activate. Their types never were part of this package.
+- **`ChannelReadinessReport.verified`**: a channel type without a readiness
+  provider is not ready (`unsupported_conversation`); it is no longer reported
+  as ready with `verified: false`.
+- **A facilitation engine needs the operator's SQL grant.** Declaring
+  `facilitationEngine@1` makes a plugin a candidate; the kernel treats it as
+  the engine only once its `permissions.sql` ledger was granted.
+
 ## 1.54.0 — 2026-11-04
 
 Additive. The capture disclosure gets a producer.

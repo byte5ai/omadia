@@ -58,11 +58,14 @@ function readTurnOrigin(raw: unknown): TurnOrigin | undefined {
       ? (rawPrincipal as TurnOrigin['principal'])
       : undefined;
 
+  const rawType = candidate['conversationType'];
   return {
     channelType,
     scope: scope as TurnOrigin['scope'],
     ...(container ? { container } : {}),
     ...(principal ? { principal } : {}),
+    // #2043 — only the two known values pass; anything else stays "unknown".
+    ...(rawType === 'group' || rawType === 'direct' ? { conversationType: rawType } : {}),
   };
 }
 

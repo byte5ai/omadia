@@ -33,7 +33,7 @@ import {
   publicPathsDeclarationSchema,
 } from '../platform/publicPathGrants.js';
 import { compileSetupPattern } from './setupFieldPattern.js';
-import { booleanSetupDefault, integerSetupDefault } from './setupFieldDefault.js';
+import { parseBooleanSetupValue, parseIntegerSetupValue } from './setupFieldValue.js';
 import { auditManifestI18n, describeManifestI18nGaps } from './manifestI18nAudit.js';
 import { enumOption, normalizeLocalized, resolveLocalized } from './manifestLocalized.js';
 
@@ -426,13 +426,16 @@ export function adaptManifestV1(
     } else if (type === 'boolean') {
       // #1464 — `true` and `"true"` both mean true; shared with the install
       // schema projection so the two never disagree.
-      const defaultValue = booleanSetupDefault(f['default']);
+      const defaultValue = parseBooleanSetupValue(f['default']);
       if (defaultValue !== undefined) entry.default = defaultValue;
     } else if (type === 'integer') {
       // #1524 — a YAML number (`default: 200000`) was dropped by `asString`,
       // so the catalog, and the bundled-plugin seeding that reads it, lost it.
-      const defaultValue = integerSetupDefault(f['default']);
+      const defaultValue = parseIntegerSetupValue(f['default']);
       if (defaultValue !== undefined) entry.default = defaultValue;
+      // #1958 — lower bound, parsed exactly like installService's projection.
+      const min = parseIntegerSetupValue(f['min']);
+      if (min !== undefined) entry.min = min;
     } else {
       const defaultValue = asString(f['default']);
       if (defaultValue !== undefined) entry.default = defaultValue;

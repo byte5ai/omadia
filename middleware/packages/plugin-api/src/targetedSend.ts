@@ -22,10 +22,23 @@ export interface TargetedSendRequest {
   message: {
     text: string;
   };
+  /** Send as this agent's OWN channel identity (#2043). The kernel refuses
+   *  with code 'no_identity' when the agent has none; no default-bot
+   *  fallback. A user who never installed that bot yields
+   *  'app_not_installed', a user who blocked it 'blocked'. Only 'user:<id>'
+   *  principals; the agent must hold a message subscription for a
+   *  conversation the recipient is part of, otherwise 'not_permitted'. */
+  asAgentSlug?: string;
+  /** The recipient's channel user reference when the caller knows it (copy
+   *  `author.kind` / `author.id` of a stored message, #2043). Needed for a
+   *  first contact; without it the kernel looks the person up in the roster
+   *  and the stored messages of the agent's conversations. Only read
+   *  together with `asAgentSlug`. */
+  userRef?: { kind: string; id: string };
 }
 
 export type TargetedSendDeliveryOutcome =
-  | { outcome: 'delivered' }
+  | { outcome: 'delivered'; messageId?: string }
   | { outcome: 'unreachable'; code: string; message: string };
 
 export interface TargetedSendResultDiagnostic {
