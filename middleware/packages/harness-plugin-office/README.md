@@ -20,13 +20,15 @@ object on the sha256 of the file bytes and skips the write on a cache hit
 (`store.exists(key)`). Rendering the same descriptor therefore has to produce
 byte-identical output, or the cache never hits and every re-render re-stores.
 
-Neither renderer library cooperates on its own: exceljs stamps each **zip entry
-mtime** from the wall clock, and docx v9 additionally stamps
-`dcterms:created/modified` in `core.xml` — with no API to pin either. `renderXlsx`
-and `renderDocx` therefore run the produced buffer through `ooxmlNormalize`
-(`src/ooxmlNormalize.ts`), which re-emits the zip with every entry mtime pinned
-to `DETERMINISTIC_EPOCH` and rewrites the docx `dcterms` timestamps to the same
-epoch. After that pass the bytes depend only on the descriptor: two renders taken
+Neither renderer library cooperates on its own: both stamp each **zip entry
+mtime** and `dcterms:created/modified` in `core.xml` from the wall clock, and
+docx v9 has no API to pin either. `renderXlsx` and `renderDocx` therefore run the
+produced buffer through `ooxmlNormalize` (`src/ooxmlNormalize.ts`), which
+re-emits the zip with every entry mtime pinned to 1980-01-01 (the earliest date
+the zip format can hold; anything earlier shows as 2098 in unzip tools) and
+drops both `dcterms` dates from `core.xml`. They are optional in OPC, and a
+fixed value would show as a wrong "Created" date in Word/Excel, so generated
+files carry none. After that pass the bytes depend only on the descriptor: two renders taken
 years apart are identical, so the cache genuinely hits. The determinism tests
 prove this by **advancing** a mocked clock between two renders and asserting the
 bytes are unchanged; a cache-path test asserts the second render is a cache hit

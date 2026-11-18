@@ -215,3 +215,38 @@ void describe('install reports activation truthfully (#470 P5)', () => {
     assert.equal(entry?.status, 'errored', 'one failure is enough at install time');
   });
 });
+
+// #1860 — a plugin another plugin wraps cannot be restarted in place. The
+// reactivation is deferred: nothing is torn down, the entry stays active,
+// and the route can say the values apply at the next restart.
+void describe('reactivation blocked by a wrapping plugin (#1860)', () => {
+  void it('leaves the plugin running and active, and reports restart pending', async () => {
+    const calls: string[] = [];
+    const plugin = adaptManifestV1(MANIFEST)!;
+    const entry = { plugin, manifest: MANIFEST, source_path: '<t>', source_kind: 'manifest-v1' } as unknown as PluginCatalogEntry;
+    const catalog = { get: (id: string) => (id === plugin.id ? entry : undefined), list: () => [entry] } as unknown as PluginCatalog;
+    const registry = new InMemoryInstalledRegistry();
+    let blocked = true;
+    const service = new InstallService({
+      catalog,
+      registry,
+      vault: { get: async () => undefined, set: async () => {}, setMany: async () => {}, purge: async () => {} } as unknown as SecretVault,
+      onInstalled: async () => { calls.push('install'); },
+      onUninstall: async () => { calls.push('uninstall'); },
+      reactivationBlocker: () => (blocked ? "another plugin wraps 'knowledgeGraph'" : undefined),
+    });
+    await service.configure(service.create(plugin.id).id, {});
+    calls.length = 0;
+
+    const status = await service.reactivate(plugin.id);
+    assert.equal(status, 'active');
+    assert.deepEqual(calls, [], 'the running instance must not be torn down');
+    assert.equal(service.restartPending(plugin.id), true);
+
+    // Once nothing wraps it any more, a reactivation runs for real and clears the mark.
+    blocked = false;
+    await service.reactivate(plugin.id);
+    assert.deepEqual(calls, ['uninstall', 'install']);
+    assert.equal(service.restartPending(plugin.id), false);
+  });
+});

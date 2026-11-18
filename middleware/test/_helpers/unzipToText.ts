@@ -35,3 +35,37 @@ export async function unzipToText(buf: Buffer): Promise<Map<string, string>> {
     });
   });
 }
+
+/**
+ * Read every file entry's raw DOS modification stamp from the zip central
+ * directory, decoded field by field (no `Date` conversion, so the result does
+ * not depend on the test machine's timezone).
+ */
+export async function zipEntryDosStamps(
+  buf: Buffer,
+): Promise<Map<string, { year: number; month: number; day: number; hour: number; minute: number }>> {
+  const yauzl = await import('yauzl');
+  return new Promise((resolve, reject) => {
+    yauzl.fromBuffer(buf, { lazyEntries: true }, (err, zf) => {
+      if (err || !zf) return reject(err ?? new Error('cannot open buffer'));
+      const out = new Map<string, { year: number; month: number; day: number; hour: number; minute: number }>();
+      zf.readEntry();
+      zf.on('entry', (entry) => {
+        if (!/\/$/.test(entry.fileName)) {
+          const d = entry.lastModFileDate;
+          const t = entry.lastModFileTime;
+          out.set(entry.fileName, {
+            year: (d >> 9) + 1980,
+            month: (d >> 5) & 0x0f,
+            day: d & 0x1f,
+            hour: t >> 11,
+            minute: (t >> 5) & 0x3f,
+          });
+        }
+        zf.readEntry();
+      });
+      zf.on('end', () => resolve(out));
+      zf.on('error', reject);
+    });
+  });
+}

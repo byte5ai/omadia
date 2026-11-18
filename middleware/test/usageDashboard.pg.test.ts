@@ -159,6 +159,15 @@ describe('OM-103 — getUsageDashboard over real token_usage rows', () => {
     assert.equal(totals.cacheHitRatio, 3900 / (1111 + 3900));
   });
 
+  it('reports the cache saving of metered calls only', { skip }, async () => {
+    const { totals, byModel } = await getUsageDashboard(pool!);
+    // Opus 4.7 at $5/MTok, reads at 0.1×: 3000 × $4.50/MTok. The subscription
+    // turn's 900 reads on `opus` would add $0.00405 if they were counted.
+    assert.equal(totals.cacheSavingsUsd, 0.0135);
+    assert.equal(byModel.find((r) => r.key === 'claude-opus-4-7')?.cacheSavingsUsd, 0.0135);
+    assert.equal(byModel.find((r) => r.key === 'opus')?.cacheSavingsUsd, undefined);
+  });
+
   it('breaks cost and reference cost down per source and per model', { skip }, async () => {
     const { bySource, byModel } = await getUsageDashboard(pool!);
 

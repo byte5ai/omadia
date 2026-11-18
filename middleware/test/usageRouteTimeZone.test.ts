@@ -26,6 +26,7 @@ describe('#1396 — usage route request handling', () => {
   async function call(
     pool: { query: (sql: string, params: unknown[]) => Promise<{ rows: unknown[] }> },
     qs: string,
+    eurRate: () => Promise<unknown> = async () => null,
   ): Promise<{ status: number; body: unknown }> {
     const { default: express } = await import('express');
     const { createUsageRouter } = await import('../src/routes/usage.js');
@@ -34,7 +35,7 @@ describe('#1396 — usage route request handling', () => {
       (req as unknown as { session: unknown }).session = { omadia_user_id: 'u1' };
       next();
     });
-    app.use('/api/usage', createUsageRouter({ pool: pool as never }));
+    app.use('/api/usage', createUsageRouter({ pool: pool as never, eurRate: eurRate as never }));
     const server = app.listen(0);
     try {
       const { port } = server.address() as { port: number };
@@ -64,5 +65,18 @@ describe('#1396 — usage route request handling', () => {
     const pool = { query: async () => ({ rows: [] }) };
     assert.equal((await call(pool, 'bucket=hour')).status, 400);
     assert.equal((await call(pool, 'bucket=day')).status, 200);
+  });
+
+  it('sends the EUR rate along, and answers without it when it is slow', async () => {
+    const pool = { query: async () => ({ rows: [] }) };
+    const fx = { eurPerUsd: 0.9, date: '2026-11-13', source: 'ECB' };
+    const fast = await call(pool, 'bucket=day', async () => fx);
+    assert.deepEqual((fast.body as { fx: unknown }).fx, fx);
+
+    const started = Date.now();
+    const slow = await call(pool, 'bucket=day', () => new Promise(() => undefined));
+    assert.equal(slow.status, 200);
+    assert.equal((slow.body as { fx: unknown }).fx, null);
+    assert.ok(Date.now() - started < 3000, 'a hanging rate source does not hold the page');
   });
 });

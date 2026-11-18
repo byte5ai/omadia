@@ -288,6 +288,14 @@ describe('JobScheduler — spec validation', () => {
     dispose();
   });
 
+  it('accepts cron syntax croner 9.x accepted (N/S stepping, ?)', () => {
+    const s = sched();
+    for (const cron of ['0/15 * * * *', '5/15 9-17 * * 1-5', '/10 * * * *', '0 9 ? * MON']) {
+      const dispose = s.register(ANY_AGENT, { name: cron, schedule: { cron } }, async () => {});
+      dispose();
+    }
+  });
+
   it('rejects non-positive intervalMs', () => {
     assert.throws(
       () =>

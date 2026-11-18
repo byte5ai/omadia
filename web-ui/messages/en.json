@@ -494,8 +494,8 @@
     "openLabel": "open"
   },
   "nav": {
-    "dashboard": "Dashboard",
-    "chat": "Chat",
+    "chatCluster": "Chat",
+    "debug": "Debug",
     "store": "Hub",
     "builder": "Builder",
     "memory": "Memory",
@@ -512,6 +512,7 @@
     "agentsOverview": "Overview",
     "channels": "Channels",
     "pluginsCluster": "Plugins",
+    "setupCluster": "Setup",
     "adminCluster": "Admin",
     "help": "Help",
     "teamsSignIn": "Teams sign-in",
@@ -997,7 +998,6 @@
   "themeControls": {
     "paletteAriaLabel": "Accent palette",
     "appearanceAriaLabel": "Appearance",
-    "menuAriaLabel": "Palette and appearance",
     "palette": {
       "lagoon": "Lagoon (teal)",
       "petrol": "Petrol (blue)",
@@ -1007,7 +1007,9 @@
       "system": "Automatic",
       "light": "Light",
       "dark": "Dark"
-    }
+    },
+    "switchToDark": "Switch to dark mode",
+    "switchToLight": "Switch to light mode"
   },
   "login": {
     "title": "Sign in to omadia",
@@ -1095,13 +1097,16 @@
     "streamErrorAnnounce": "{title}: response failed"
   },
   "authBadge": {
-    "loginLink": "Login",
     "authError": "auth err",
     "signedInAs": "Signed in as",
     "signOut": "Sign out everywhere",
     "signOutHint": "Signs you out on all your devices, not just this one.",
     "signOutFailed": "Sign-out did not go through. You are still signed in.",
-    "signOutRetry": "Try signing out again"
+    "signOutRetry": "Try signing out again",
+    "preferences": "Preferences",
+    "palette": "Palette",
+    "appearance": "Appearance",
+    "language": "Language"
   },
   "error": {
     "title": "Something went wrong",
@@ -4504,6 +4509,7 @@
       "save": "Save",
       "saveWithCount": "Save ({count})",
       "savedCheck": "✓ Saved",
+      "savedRestartPending": "✓ Saved — the plugin keeps running and uses the new values after the next restart.",
       "savedNotStarted": "Saved — but the plugin did not start with the new values.",
       "connected": "Connected",
       "notConnected": "Not connected",
@@ -5277,7 +5283,9 @@
       "calls": "Calls",
       "cacheHitRate": "Cache hit rate",
       "cacheHitHint": "Share of input served from the warm cache",
-      "tokens": "Tokens (in / out)"
+      "tokens": "Tokens (in / out)",
+      "cacheSavings": "Cache savings",
+      "cacheSavingsHint": "Without the cache: {uncached}"
     },
     "panels": {
       "costOverTime": "Cost over time",
@@ -5288,6 +5296,11 @@
     "barTitle": "{date} · {cost} · {calls, plural, one {# call} other {# calls}}",
     "rowStats": "{calls} calls · {input} in · {output} out · {cacheRead} cache read · {cacheWrite} cache write",
     "rowReference": " · subscription calls ≈ {reference} API equivalent",
+    "rowCacheSavings": " · cache saved {saving}",
+    "currency": {
+      "label": "Currency",
+      "converted": "{usd} · ECB rate of {date}"
+    },
     "groups": {
       "builder": "Builder ({count, plural, one {# draft} other {# drafts}})",
       "other": "Other ({count, plural, one {# source} other {# sources}})"
