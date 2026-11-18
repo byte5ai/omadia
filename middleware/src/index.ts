@@ -415,6 +415,10 @@ import {
   withInstalledParents,
 } from './plugins/defaultOrchestratorAttach.js';
 import { facilitatorGrantablePluginIds } from './platform/facilitatorGuard.js';
+import {
+  wireConversationMessages,
+  type ConversationMessagesWiring,
+} from './channels/conversationMessages/wiring.js';
 import { warmPatternWorker } from './plugins/setupFieldPattern.js';
 import { BuiltInPackageStore } from './plugins/builtInPackageStore.js';
 import { LocalDevPackageStore } from './plugins/localDevPackageStore.js';
@@ -4122,6 +4126,7 @@ async function main(): Promise<void> {
       getRegistry: () =>
         serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry'),
       getChatSessionStore,
+      getFacilitationEngineState: () => serviceRegistry.get<unknown>('facilitationEngine'),
       getPluginCatalog: () => pluginCatalog,
       getInstalledRegistry: () => installedRegistry,
       getPeerChatDirectory: peerChatDirectoryFor,
@@ -4635,6 +4640,9 @@ async function main(): Promise<void> {
   // post into conversations it holds an ephemeral attachment for. Stays
   // undefined without Postgres → the service fails closed.
   let conversationSendScope: ((agentSlug: string, channelType: string, conversationId: string) => Promise<boolean>) | undefined;
+  // #2043 — authenticated inbound messages; needs the database, so it stays
+  // undefined on the in-memory backend (adapters then keep their mention gate).
+  let conversationMessages: ConversationMessagesWiring | undefined;
   if (graphPool) {
     await runAuthMigrations(graphPool, (m) => console.log(m));
     await runProfileStorageMigrations(graphPool, (m) => console.log(m));
@@ -4773,6 +4781,18 @@ async function main(): Promise<void> {
       }
       return bots;
     };
+    conversationMessages = await wireConversationMessages({
+      pool: graphPool,
+      serviceRegistry,
+      getRegistry,
+      invites: observedInvites,
+      botPresence,
+      engineSources: () => ({ installedRegistry, catalog: pluginCatalog }),
+      graceMs: config.CONVERSATION_MESSAGES_GRACE_MS,
+      maxAgeDays: config.CONVERSATION_MESSAGES_MAX_AGE_DAYS,
+      purgeIntervalMs: config.CONVERSATION_MESSAGES_PURGE_INTERVAL_MS,
+      log: (m) => console.log(m),
+    });
     // #1018 W1 — THE peer gate: the agent's own switch AND the pair's policy
     // row (migration 0058), evaluated in one place for the discussion start,
     // every relayed utterance, and the roster the calling agent sees.
@@ -6985,6 +7005,7 @@ async function main(): Promise<void> {
     targetedSends: targetedSendRegistry,
     conversationEvents: conversationEventHub,
     conversationSends: conversationSendRegistry,
+    ...(conversationMessages ? { conversationMessages: conversationMessages.hub } : {}),
     // #1086 — the channel-agnostic producer of the routines principal, for
     // every channel that drives its turn through `handleTurnStream` (in-tree:
     // public API, canvas). Adapters that call the `chatAgent` capability

@@ -328,7 +328,9 @@ jobs:
           # receiptChainOrder.pg, 2 tests).
           # 423 → 427 with the agent kind constraints (#2060, agentKind.pg,
           # 4 tests).
-          PG_TEST_FLOOR: '427'
+          # 427 → 433 with stored conversation messages (#2043,
+          # conversationMessages.pg, 6 tests).
+          PG_TEST_FLOOR: '433'
         run: |
           set -eo pipefail
           npm run test:pg 2>&1 | tee pg-test.out

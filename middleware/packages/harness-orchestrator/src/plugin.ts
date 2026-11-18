@@ -8,6 +8,7 @@ import {
   type GrantStore,
   type SecurityPosture,
 } from '@omadia/channel-sdk';
+import type { EngineDrivenConversationLookup } from './facilitatorAgent.js';
 import type {
   SecurityPostureSetup,
   SecurityScreenMode,
@@ -257,6 +258,8 @@ export const CLI_BINARY_RESOLVER_SERVICE = 'cliBinaryResolver';
  * block, which may come up after this plugin.
  */
 export const CHAT_PEER_AGENTS_SERVICE = 'chatPeerAgents';
+/** #2043 — kernel-published lookup, see `OrchestratorDeps.isEngineDrivenConversation`. */
+export const FACILITATOR_CONVERSATIONS_SERVICE = 'facilitatorConversations';
 
 /** #1033 W3 — the kernel's shared provider pool (see `optional_requires`). */
 export const LLM_PROVIDER_POOL_SERVICE = 'llmProviderPool';
@@ -1209,6 +1212,14 @@ export async function activate(
     // inside its database block, possibly after this plugin activated).
     chatPeerAgents: async () =>
       (await ctx.services.getOptional<ChatPeerAgentsProvider>(CHAT_PEER_AGENTS_SERVICE)?.()) ?? [],
+    // #2043 — resolved PER TURN for the same reason; absent (no database) =
+    // no conversation is engine-driven.
+    isEngineDrivenConversation: (agentSlug, channelType, conversationId) =>
+      ctx.services.getOptional<EngineDrivenConversationLookup>(FACILITATOR_CONVERSATIONS_SERVICE)?.(
+        agentSlug,
+        channelType,
+        conversationId,
+      ) ?? false,
     ...(contextRetriever ? { contextRetriever } : {}),
     ...(sessionBriefing ? { sessionBriefing } : {}),
     ...(factExtractor ? { factExtractor } : {}),

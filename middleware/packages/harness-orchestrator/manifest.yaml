@@ -92,6 +92,10 @@ optional_requires:
   - "transcription@1"
   - "routineTurnOwnerGuard@1"
   - "chatPeerAgents@1"
+  # #2043 — kernel-published, with a database only: does the facilitation
+  # engine drive this conversation (the agent's message subscription exists)?
+  # Then the kernel runs no chat turn of its own there.
+  - "facilitatorConversations@1"
   - "llmProviderPool@1"
   - "llmProviderCatalog@1"
   - "installedPluginConfigReader@1"

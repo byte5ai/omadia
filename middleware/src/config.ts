@@ -428,6 +428,13 @@ export const ConfigSchema = z.object({
   // (`turn_receipts`). The payload is PII-free (counts only) but turn_id +
   // scope are personal-data linkage, so rows are reaped after this many days.
   RECEIPT_RETENTION_DAYS: z.coerce.number().int().positive().default(90),
+  // #2043 — retention of stored inbound conversation messages
+  // ('conversationMessages@1'). Events outlive the END of their subscription
+  // by the grace period and are removed after the maximum age regardless
+  // (0 = no age limit). The engine plugin keeps its own record.
+  CONVERSATION_MESSAGES_GRACE_MS: z.coerce.number().int().nonnegative().default(6 * 60 * 60 * 1000),
+  CONVERSATION_MESSAGES_MAX_AGE_DAYS: z.coerce.number().int().nonnegative().default(30),
+  CONVERSATION_MESSAGES_PURGE_INTERVAL_MS: z.coerce.number().int().positive().default(10 * 60 * 1000),
 
   // #758 — Ed25519 checkpoint signing for the receipt hash chain. The
   // private key (base64 PKCS#8 DER; generate with

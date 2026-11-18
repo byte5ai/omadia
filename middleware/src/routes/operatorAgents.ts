@@ -40,6 +40,7 @@ import {
   respondFacilitatorRefusal,
 } from '../platform/facilitatorGuard.js';
 import { assertFacilitatorIdentity } from '../services/facilitatorContract.js';
+import { createFacilitationEngineStatusHandler } from './facilitationEngineStatus.js';
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
 import type { InstalledRegistry } from '../plugins/installedRegistry.js';
 import { attachablePluginIds } from '../plugins/defaultOrchestratorAttach.js';
@@ -1611,6 +1612,9 @@ export interface OperatorAgentsRouterOptions {
    *  in tests that build it with a bare config store. */
   readonly getPluginCatalog?: () => PluginCatalog | undefined;
   readonly getInstalledRegistry?: () => InstalledRegistry | undefined;
+  /** #2043 — the state object the facilitation engine plugin publishes
+   *  (`facilitationEngine` service), for `GET /facilitation-engine`. */
+  readonly getFacilitationEngineState?: () => unknown;
   /** W0c (#861) — grant read model for the agent detail page. Late-bound like
    *  the config store; `GET /:slug/grants` 503s when absent (tests / minimal
    *  mounts, or no DATABASE_URL). Read-only: this router never writes through
@@ -1898,6 +1902,16 @@ export function createOperatorAgentsRouter(
     console.error('[operator-agents]', err);
     res.status(500).json({ error: 'internal', message: (err as Error).message });
   }
+
+  // ── facilitation engine state (#2043) ────────────────────────────────
+  // Registered before every `/:slug/...` route; it has no slug of its own.
+  router.get(
+    '/facilitation-engine',
+    createFacilitationEngineStatusHandler({
+      sources: engineSources,
+      reported: () => options.getFacilitationEngineState?.(),
+    }),
+  );
 
   // ── enabled list (chat-picker surface) ──────────────────────────────
   // Phase A — minimal-metadata list of enabled Agents for the chat
