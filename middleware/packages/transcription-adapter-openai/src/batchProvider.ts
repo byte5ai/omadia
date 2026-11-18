@@ -112,10 +112,19 @@ export function createOpenAiBatchTranscriber(
 }
 
 /**
- * Parse the JSON response defensively. The default `json` format is `{text}`;
- * richer formats add `segments` (with `start`/`end` seconds and optionally a
- * `speaker` label) plus `duration` and `language`. Anything absent stays
- * absent on the neutral shape — no invented timestamps.
+ * Parse the JSON response defensively. Two shapes are in the wild:
+ *
+ *  - `json` — the only format the current transcribe models
+ *    (`gpt-transcribe`, `gpt-4o-transcribe`, …) return: `{text}` plus
+ *    `usage: {type: 'duration', seconds}` (the billed audio length) and
+ *    `languages: [{code}]`.
+ *  - `verbose_json` — whisper-era models and compatible servers: top-level
+ *    `duration` and `language`, plus `segments` (with `start`/`end` seconds
+ *    and optionally a `speaker` label).
+ *
+ * The duration feeds the per-agent minute quota, so both shapes must yield
+ * it. Anything absent stays absent on the neutral shape — no invented
+ * timestamps.
  */
 export function parseTranscriptionResponse(
   body: unknown,
@@ -128,18 +137,43 @@ export function parseTranscriptionResponse(
   const text = typeof record['text'] === 'string' ? record['text'] : '';
 
   const segments = parseSegments(record['segments']);
-  const durationSeconds = record['duration'];
-  const language = record['language'];
+  const durationSeconds =
+    finiteNumber(record['duration']) ?? parseUsageSeconds(record['usage']);
+  const language =
+    nonEmptyString(record['language']) ?? parseFirstLanguage(record['languages']);
 
   return {
     text,
     segments: segments.length > 0 ? segments : text === '' ? [] : [{ text }],
-    ...(typeof language === 'string' ? { language } : {}),
-    ...(typeof durationSeconds === 'number' && Number.isFinite(durationSeconds)
+    ...(language !== undefined ? { language } : {}),
+    ...(durationSeconds !== undefined
       ? { durationMs: Math.round(durationSeconds * 1000) }
       : {}),
     provider: providerId,
   };
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === 'string' && value !== '' ? value : undefined;
+}
+
+/** Billed audio seconds from `usage: {type: 'duration', seconds}`. Token-based
+ *  usage (`type: 'tokens'`) carries no duration and yields undefined. */
+function parseUsageSeconds(raw: unknown): number | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined;
+  return finiteNumber((raw as Record<string, unknown>)['seconds']);
+}
+
+/** First detected language from `languages: [{code}]`. */
+function parseFirstLanguage(raw: unknown): string | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const first: unknown = raw[0];
+  if (typeof first !== 'object' || first === null) return undefined;
+  return nonEmptyString((first as Record<string, unknown>)['code']);
 }
 
 function parseSegments(raw: unknown): TranscriptSegment[] {
