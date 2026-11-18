@@ -748,6 +748,9 @@ export const TEAMS_IDENTITY_LAST_ERROR_CODES = [
   // because reporting it as a generic bad request sends the operator back to
   // re-check an id that was correct all along
   'rsc_permissions_mismatch',
+  // #2043 — the target's own resource-specific consent check refused the
+  // install: permanent, and neither a wrong id nor a missing role
+  'rsc_consent_refused',
   'unknown',
 ] as const;
 
@@ -778,7 +781,26 @@ export interface TeamsIdentityLastErrorDetailDto {
    *  before the sentence is written AND again when it is decoded, so the panel
    *  may render it as a link without a third check. */
   adminConsentUrl?: string;
+  /** #2043 — what Microsoft named in an `rsc_consent_refused` answer: Graph's
+   *  error code, its inner code and the Teams backend request it relayed.
+   *  Identifiers, shown as ICU arguments. */
+  graphCode?: string;
+  innerCode?: string;
+  backendRequest?: string;
   raw: string;
+}
+
+/** Short identifier-shaped strings only: these are rendered next to copy. */
+function identifierFields<K extends string>(
+  obj: Record<string, unknown> | null,
+  keys: readonly K[],
+): Partial<Record<K, string>> {
+  const out: Partial<Record<K, string>> = {};
+  for (const key of keys) {
+    const value = obj?.[key];
+    if (typeof value === 'string' && /^[\w.-]{1,120}$/.test(value)) out[key] = value;
+  }
+  return out;
 }
 
 function stringList(value: unknown): string[] | undefined {
@@ -830,6 +852,7 @@ export function parseTeamsIdentityLastErrorDetail(
       ? { retryAfterSeconds: retry }
       : {}),
     ...(typeof reason === 'string' && reason !== '' ? { reason } : {}),
+    ...identifierFields(obj, ['graphCode', 'innerCode', 'backendRequest']),
     raw: typeof rawText === 'string' && rawText !== '' ? rawText : lastError,
   };
 }
@@ -1467,6 +1490,8 @@ export function parseTeamsAssignmentCapabilities(
  * machine codes, each with its own sentence in `messages/*.json`.
  */
 export const TEAMS_TARGET_LISTING_UNAVAILABLE = [
+  /** #2043 — the server is still enumerating a large tenant; ask again. */
+  'loading',
   'connector_unavailable',
   'connector_unsupported',
   /** NOBODY is signed in — and since #949 nothing else. */
@@ -1515,7 +1540,21 @@ export function isTeamsTargetListingUnavailable(
  * about their tenant and sends them looking in the wrong place.
  */
 export type TeamsTargetListingDto<T> =
-  | { available: true; items: readonly T[] }
+  | {
+      available: true;
+      items: readonly T[];
+      /** #2043 — how many the tenant has; set when the server sent fewer. */
+      total?: number;
+      truncated?: boolean;
+      /** The connector's own list stopped early (M365 connector >= 0.9.1
+       *  reports it): the list is incomplete and `total` a lower bound. */
+      sourceTruncated?: boolean;
+      /** Chats: untitled chats that have no member names to label them. */
+      withoutMemberNames?: number;
+      /** Chats: whose members the filter can match. Since connector 0.9.1 a
+       *  chat WITH a name carries no members, so only untitled ones do. */
+      memberSearch?: 'all' | 'untitled_only' | 'none';
+    }
   | { available: false; reason: TeamsTargetListingUnavailable };
 
 export interface TeamsTeamOptionDto {
@@ -1570,7 +1609,25 @@ function parseTargetListing<T>(
     const parsed = parseItem(entry);
     if (parsed !== null) items.push(parsed);
   }
-  return { available: true, items };
+  const total = record['total'];
+  const truncated = record['truncated'] === true;
+  const sourceTruncated = record['sourceTruncated'] === true;
+  const unnamed = record['withoutMemberNames'];
+  const memberSearch = record['memberSearch'];
+  return {
+    available: true,
+    items,
+    ...(truncated && typeof total === 'number' && Number.isFinite(total)
+      ? { total, truncated: true }
+      : {}),
+    ...(sourceTruncated ? { sourceTruncated: true } : {}),
+    ...(typeof unnamed === 'number' && Number.isFinite(unnamed) && unnamed > 0
+      ? { withoutMemberNames: unnamed }
+      : {}),
+    ...(memberSearch === 'all' || memberSearch === 'untitled_only' || memberSearch === 'none'
+      ? { memberSearch }
+      : {}),
+  };
 }
 
 function parseTeamOption(raw: unknown): TeamsTeamOptionDto | null {
@@ -1624,6 +1681,68 @@ export async function getAgentTeamsTargets(
     teams: parseTargetListing(dto.teams, parseTeamOption),
     chats: parseTargetListing(dto.chats, parseChatOption),
   };
+}
+
+const TARGETS_UNREADABLE: Pick<AgentTeamsTargetsDto, 'teams' | 'chats'> = {
+  teams: { available: false, reason: 'lookup_failed' },
+  chats: { available: false, reason: 'lookup_failed' },
+};
+
+export interface LoadTeamsTargetsOptions {
+  /** Called with every answer, including the intermediate `loading` ones. */
+  readonly onUpdate: (dto: AgentTeamsTargetsDto) => void;
+  readonly isCancelled: () => boolean;
+  readonly delayMs?: number;
+  readonly maxPolls?: number;
+  /** Injectable for tests. */
+  readonly fetchTargets?: (slug: string) => Promise<AgentTeamsTargetsDto>;
+  readonly sleep?: (ms: number) => Promise<void>;
+}
+
+/**
+ * Load the team/chat directory until it is there (#2043).
+ *
+ * A large tenant takes longer to enumerate than one request should wait, so
+ * the server answers `reason: 'loading'` and keeps going. This asks again
+ * until both halves have settled, and ALWAYS ends in a state the picker can
+ * show: a request that fails, or a server that never finishes, becomes
+ * `lookup_failed` ("could not be loaded, type the id below") instead of the
+ * endless "loading …" the panel used to sit in.
+ */
+export async function loadAgentTeamsTargets(
+  slug: string,
+  opts: LoadTeamsTargetsOptions,
+): Promise<void> {
+  const fetchTargets = opts.fetchTargets ?? getAgentTeamsTargets;
+  const sleep =
+    opts.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const maxPolls = opts.maxPolls ?? 40;
+  const isLoading = (listing: TeamsTargetListingDto<unknown>): boolean =>
+    !listing.available && listing.reason === 'loading';
+  let last: AgentTeamsTargetsDto = {
+    ok: false,
+    agent: slug,
+    provisioner_installed: false,
+    ...TARGETS_UNREADABLE,
+  };
+  for (let poll = 0; poll < maxPolls; poll += 1) {
+    try {
+      last = await fetchTargets(slug);
+    } catch {
+      if (!opts.isCancelled()) opts.onUpdate({ ...last, ...TARGETS_UNREADABLE });
+      return;
+    }
+    if (opts.isCancelled()) return;
+    opts.onUpdate(last);
+    if (!isLoading(last.teams) && !isLoading(last.chats)) return;
+    await sleep(opts.delayMs ?? 3000);
+    if (opts.isCancelled()) return;
+  }
+  opts.onUpdate({
+    ...last,
+    teams: isLoading(last.teams) ? TARGETS_UNREADABLE.teams : last.teams,
+    chats: isLoading(last.chats) ? TARGETS_UNREADABLE.chats : last.chats,
+  });
 }
 
 /**

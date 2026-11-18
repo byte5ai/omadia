@@ -860,6 +860,7 @@ export type ProvisioningRunResult =
          *  may consent to. Terminal: a tenant role grant fixes it, a retry
          *  does not. */
         | 'rsc_permissions_mismatch'
+        | 'rsc_consent_refused'
         | 'error';
       readonly detail: string;
     }
@@ -1595,9 +1596,9 @@ export class TeamsProvisioningJobRunner {
         this.catalogReplicationRetries.set(agentId, spent + 1);
         const delayMs = this.catalogReplicationDelayMs;
         this.log(
-          `[teams-provisioning] ${agentId} install rejected with 400 while the catalog entry ` +
-            `is still replicating (wait ${spent + 1}/${this.catalogReplicationAttempts}); ` +
-            `retrying in ${delayMs}ms`,
+          `[teams-provisioning] ${agentId} install rejected with a 400 that names no reason; ` +
+            `the catalog entry may still be replicating (wait ${spent + 1}/${this.catalogReplicationAttempts}); ` +
+            `retrying in ${delayMs}ms: ${fullConnectorErrorText(err)}`,
         );
         // Its own detail, not the generic retry one: this wait ends by itself,
         // and the operator should be told to sit still rather than to look for
@@ -1626,10 +1627,10 @@ export class TeamsProvisioningJobRunner {
         (this.catalogReplicationRetries.get(agentId) ?? 0) >=
           this.catalogReplicationAttempts && isCatalogReplicationFailure(err);
       const detail = exhausted
-        ? `${errorMessage(err)} (still refused after waiting ` +
+        ? `${fullConnectorErrorText(err)} (still refused after waiting ` +
           `${this.catalogReplicationAttempts} times for the catalog entry to replicate — ` +
           `treat as a configuration error, not a timing one)`
-        : `${errorMessage(err)} (deterministic — not retried)`;
+        : `${fullConnectorErrorText(err)} (deterministic — not retried)`;
       // No dedicated code: the operator UI renders a raw connector verdict as
       // `unknown` with the sentence as the technical detail.
       await this.recordError(agentId, { state: 'failed', ...unknownFailure(detail) });
@@ -2006,6 +2007,16 @@ export class TeamsProvisioningJobRunner {
 
     if (this.stopped) return { status: 'stopped', agentId };
 
+    // #2043 rollout (D6) — SERVE THE BOT BEFORE THE INSTALL, not after it.
+    // From `catalog_uploaded` on the app is published in the org catalog, so
+    // anybody may add it personally or to a chat, whatever happens to the one
+    // install this run was asked for. Until now the `teams_bots` entry was
+    // only written after that install succeeded: when it failed (a consent
+    // refusal on the team), Teams delivered the personal chat to
+    // `/api/teams/<slug>/messages` and the channel answered "unknown botSlug":
+    // a bot users could add and that never replied.
+    await this.serveBotBeforeInstall(row);
+
     // Step 5 — install into the target (idempotent on Graph's side).
     //
     // TWO ENDPOINTS, ONE STEP. A team installs through
@@ -2060,6 +2071,22 @@ export class TeamsProvisioningJobRunner {
           status: 'failed',
           agentId,
           reason: 'rsc_permissions_mismatch',
+          detail: failure.lastError,
+        };
+      }
+      // #2043 D7 — the target's own RSC consent check refused. Also TERMINAL,
+      // and never a replication wait: the catalog entry was found, its
+      // permission set was judged.
+      if (isRscConsentRefusal(err)) {
+        const failure = rscConsentRefusedFailure(targetKind, err);
+        this.log(
+          `[teams-provisioning] ${agentId} install refused by the target's resource-specific consent check — not retried: ${fullConnectorErrorText(err)}`,
+        );
+        await this.recordError(agentId, { state: 'failed', ...failure });
+        return {
+          status: 'failed',
+          agentId,
+          reason: 'rsc_consent_refused',
           detail: failure.lastError,
         };
       }
@@ -2307,6 +2334,29 @@ export class TeamsProvisioningJobRunner {
    * operator UI renders as "paste the block by hand, here is why") while the
    * identity stays `installed`.
    */
+  /**
+   * The early `teams_bots` write (see the call site). Quiet on purpose: the
+   * `config_sync` step of the timeline and the `config_sync_failed` warning
+   * belong to the sync that ends the run, which still runs after a successful
+   * install and then finds the entry in place (`unchanged`). A failure here is
+   * logged and never fails or delays the install; the row's `teams_bots_sync`
+   * state shows `missing` until a later run writes it.
+   */
+  private async serveBotBeforeInstall(row: TeamsIdentityJobRecord): Promise<void> {
+    const sync = this.syncBotConfig;
+    if (!sync) return;
+    try {
+      const report = await sync(row);
+      this.log(
+        `[teams-provisioning] teams_bots config written before the install for ${row.agentId} (${row.botSlug}): ${report.status}`,
+      );
+    } catch (err) {
+      this.log(
+        `[teams-provisioning] teams_bots config could not be written before the install for ${row.agentId} (${row.botSlug}): ${errorMessage(err)} — the bot is published but not served until a run writes it`,
+      );
+    }
+  }
+
   private async syncTeamsBotsConfig(row: TeamsIdentityJobRecord): Promise<void> {
     const sync = this.syncBotConfig;
     if (!sync) return;
@@ -2421,6 +2471,88 @@ export function rscPermissionsMismatchDetail(targetKind: TeamsTargetKind): strin
 export function isRscPermissionsMismatch(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
   return /ResourceSpecificPermissionsMismatch/i.test(`${err.name} ${err.message}`);
+}
+
+/**
+ * #2043 rollout (D7) — the target's RSC CONSENT CHECK refused the install.
+ *
+ * Different from {@link isRscPermissionsMismatch}: there Graph names a
+ * missing role of the installing identity. Here Teams asked its own backend
+ * whether the app's resource-specific permissions may be granted on this
+ * team or chat (`isUserAuthorizedToGrantResourceSpecificPermissions`) and
+ * that check answered 4xx. At the rollout it was a permission in the app
+ * manifest the team scope does not accept: a permanent refusal that the
+ * runner reported as "catalog still replicating" and retried.
+ *
+ * Read from the connector's structured Graph error when it sends one
+ * (`graphError: { code, innerCode, message, body }`), else from the message.
+ */
+export const RSC_CONSENT_REFUSED_PREFIX = 'rsc_consent_refused:';
+
+const RSC_CONSENT_CHECK = /isUserAuthorizedToGrant\w*ResourceSpecificPermissions|GrantGroupResourceSpecificPermissions|GrantChatResourceSpecificPermissions/i;
+
+/** What a connector error says about the Graph answer behind it. */
+export interface GraphErrorFacts {
+  /** Graph `error.code`, e.g. `BadRequest`. */
+  readonly graphCode?: string;
+  /** Graph `error.innerError.code`, e.g. `InvalidRequest`. */
+  readonly innerCode?: string;
+  /** The Teams backend request Graph relayed, e.g.
+   *  `IsUserAuthorizedToGrantGroupResourceSpecificPermissionsRequest`. */
+  readonly backendRequest?: string;
+}
+
+const short = (value: unknown): string | undefined =>
+  typeof value === 'string' && /^[\w.-]{1,120}$/.test(value.trim()) ? value.trim() : undefined;
+
+export function graphErrorFactsOf(err: unknown): GraphErrorFacts {
+  if (!(err instanceof Error)) return {};
+  const structured = (err as Error & { graphError?: unknown }).graphError;
+  const fields =
+    typeof structured === 'object' && structured !== null
+      ? (structured as Record<string, unknown>)
+      : {};
+  const text = `${err.message} ${typeof fields['message'] === 'string' ? fields['message'] : ''} ${
+    typeof fields['body'] === 'string' ? fields['body'] : ''
+  }`;
+  const graphCode = short(fields['code']) ?? short(/"code"\s*:\s*"([\w.-]+)"/.exec(text)?.[1]);
+  const innerCode =
+    short(fields['innerCode']) ??
+    short(/"inner[Ee]rror"\s*:\s*\{[^}]*?"code"\s*:\s*"([\w.-]+)"/.exec(text)?.[1]);
+  const backendRequest = short(/backend request (\w+Request)\b/.exec(text)?.[1]);
+  return {
+    ...(graphCode !== undefined ? { graphCode } : {}),
+    ...(innerCode !== undefined ? { innerCode } : {}),
+    ...(backendRequest !== undefined ? { backendRequest } : {}),
+  };
+}
+
+/** Everything the connector reported, untruncated: its message plus the
+ *  structured Graph message/body when present and not already contained. */
+export function fullConnectorErrorText(err: unknown): string {
+  const message = errorMessage(err);
+  if (!(err instanceof Error)) return message;
+  const structured = (err as Error & { graphError?: unknown }).graphError;
+  if (typeof structured !== 'object' || structured === null) return message;
+  const fields = structured as Record<string, unknown>;
+  const extra = [fields['body'], fields['message']].find(
+    (value): value is string => typeof value === 'string' && value.trim() !== '' && !message.includes(value.trim()),
+  );
+  return extra !== undefined ? `${message} — Graph: ${extra.trim()}` : message;
+}
+
+export function isRscConsentRefusal(err: unknown): boolean {
+  if (!(err instanceof Error) || isRscPermissionsMismatch(err)) return false;
+  const status = (err as Error & { status?: unknown }).status;
+  if (typeof status === 'number' && (status < 400 || status >= 500 || status === 408 || status === 429)) {
+    return false;
+  }
+  return RSC_CONSENT_CHECK.test(fullConnectorErrorText(err));
+}
+
+export function rscConsentRefusedDetail(targetKind: TeamsTargetKind, raw: string): string {
+  const where = targetKind === 'team' ? 'team' : 'chat';
+  return `${RSC_CONSENT_REFUSED_PREFIX} Teams refused to grant this app's resource-specific permissions in the target ${where} (its consent check rejected the request), so the app was not installed. This is permanent, not a replication delay: re-running changes nothing. Check the tenant's resource-specific consent settings and whether every permission the app package declares is allowed for a ${where}. Reported by Microsoft: ${raw}`;
 }
 
 export function consentMissingDetail(missingScopes: readonly string[]): string {
@@ -2581,6 +2713,8 @@ export type TeamsProvisioningErrorCode =
   /** Graph refused the install because the app package's RSC permissions
    *  exceed what the installing identity may consent to. */
   | 'rsc_permissions_mismatch'
+  /** #2043 D7 — the target's own RSC consent check refused the install. */
+  | 'rsc_consent_refused'
   | 'arm_not_configured'
   | 'throttled'
   | 'config_sync_failed'
@@ -2614,6 +2748,12 @@ export interface TeamsProvisioningErrorDetail {
    *  A technical sentence, shown as the argument of a localized line — never
    *  as the copy itself. */
   readonly reason?: string;
+  /** Graph `error.code` of the refusal (`rsc_consent_refused`). */
+  readonly graphCode?: string;
+  /** Graph `error.innerError.code` (`rsc_consent_refused`). */
+  readonly innerCode?: string;
+  /** The Teams backend request Graph relayed (`rsc_consent_refused`). */
+  readonly backendRequest?: string;
   readonly raw: string;
 }
 
@@ -2691,6 +2831,9 @@ export function classifyTeamsProvisioningError(
   if (sentence.startsWith(RSC_PERMISSIONS_MISMATCH_PREFIX)) {
     return { code: 'rsc_permissions_mismatch', raw };
   }
+  if (sentence.startsWith(RSC_CONSENT_REFUSED_PREFIX)) {
+    return { code: 'rsc_consent_refused', ...graphErrorFactsOf(new Error(sentence)), raw };
+  }
   if (sentence.startsWith(CONFIG_SYNC_FAILED_PREFIX)) {
     const inner = /\[([^\]]*)\]/.exec(sentence)?.[1]?.trim() ?? '';
     return {
@@ -2762,6 +2905,7 @@ const TEAMS_PROVISIONING_ERROR_CODE_SET: {
 } = {
   consent_missing: true,
   rsc_permissions_mismatch: true,
+  rsc_consent_refused: true,
   arm_not_configured: true,
   throttled: true,
   config_sync_failed: true,
@@ -2846,6 +2990,17 @@ export function rscPermissionsMismatchFailure(
   targetKind: TeamsTargetKind,
 ): TeamsProvisioningFailure {
   return failureOf('rsc_permissions_mismatch', rscPermissionsMismatchDetail(targetKind));
+}
+
+export function rscConsentRefusedFailure(
+  targetKind: TeamsTargetKind,
+  err: unknown,
+): TeamsProvisioningFailure {
+  return failureOf(
+    'rsc_consent_refused',
+    rscConsentRefusedDetail(targetKind, fullConnectorErrorText(err)),
+    graphErrorFactsOf(err),
+  );
 }
 
 export function throttledFailure(
@@ -2992,6 +3147,20 @@ export function teamsProvisioningErrorDetailOf(
       const reason = args['reason'];
       const valid = typeof reason === 'string' && reason !== '';
       return { code, ...(valid ? { reason } : {}), raw };
+    }
+    case 'rsc_consent_refused': {
+      const text = (key: string): string | undefined =>
+        typeof args[key] === 'string' && args[key] !== '' ? (args[key] as string) : undefined;
+      const graphCode = text('graphCode');
+      const innerCode = text('innerCode');
+      const backendRequest = text('backendRequest');
+      return {
+        code,
+        ...(graphCode !== undefined ? { graphCode } : {}),
+        ...(innerCode !== undefined ? { innerCode } : {}),
+        ...(backendRequest !== undefined ? { backendRequest } : {}),
+        raw,
+      };
     }
     default:
       return { code, raw };
