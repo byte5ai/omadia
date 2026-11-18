@@ -34,7 +34,8 @@ type State =
 
 /**
  * Issue #437 — outbound subscriptions (an operator URL that receives an
- * HMAC-signed delivery on `run.completed` / `run.failed`). Minimal admin view:
+ * HMAC-signed delivery on `run.completed` / `run.failed` / `run.cancelled`,
+ * the last added by #1705). Minimal admin view:
  * create/enable-disable/rotate-secret/delete, plus per-subscription delivery
  * log with retry status — the acceptance-criterion "failed outbound deliveries
  * retry with backoff and are visible in a delivery log (admin UI)".
@@ -180,6 +181,8 @@ export function WebhookSubscriptionsSection(): React.ReactElement {
           <select className={inputCls} value={event} onChange={(e) => setEvent(e.target.value)}>
             <option value="run.completed">run.completed</option>
             <option value="run.failed">run.failed</option>
+            {/* #1705 — an operator cancel fires under its OWN name, not run.failed. */}
+            <option value="run.cancelled">run.cancelled</option>
           </select>
         </label>
         <label className="flex flex-col gap-1">

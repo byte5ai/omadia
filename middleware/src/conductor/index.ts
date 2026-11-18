@@ -48,11 +48,13 @@ import type { SecretVault } from '../secrets/vault.js';
 import { ConductorWebhookEndpointStore } from './webhookEndpointStore.js';
 import { ConductorWebhookSubscriptionStore } from './webhookSubscriptionStore.js';
 import { ConductorWebhookDispatcher } from './webhookDispatcher.js';
+import { runEndedEvent } from './webhookEvents.js';
 import { ConductorWebhookRetryWorker } from './webhookRetryWorker.js';
 import { assertOutboundUrlAllowed } from './webhookOutbound.js';
 import type { ConductorWebhookInboundDeps } from '../routes/conductorWebhooksInbound.js';
 
-/** Issue #437 — the run.completed/run.failed webhook payload shape. Shared between
+/** Issue #437 — the run-lifecycle (`run.completed`/`run.failed`/`run.cancelled`,
+ *  #1705) webhook payload shape. Shared between
  *  `notifyRunEnded`'s inline hook and the retry worker's reconciliation pass (below)
  *  so the two paths can never drift into delivering differently-shaped payloads for
  *  the same event. Best-effort workflow-slug/name enrichment: a lookup miss still
@@ -350,11 +352,18 @@ export async function wireConductor(deps: {
     const sinceIso = new Date(Date.now() - WEBHOOK_RECONCILE_WINDOW_MS).toISOString();
     const missing = await webhookSubscriptions.listMissingRunDeliveries(sinceIso);
     for (const m of missing) {
+      // From the status the JOIN matched (`s.event = ('run.' || r.status)`), NOT from a
+      // re-read of the run: deriving it again from a second read could write a delivery
+      // whose `event` contradicts the subscription's own `event` if the run moved in
+      // between. `null` is unreachable for a status this query returns — bail rather
+      // than invent a name (#1705).
+      const event = runEndedEvent(m.status);
+      if (!event) continue;
       const run = await runStore.get(m.runId).catch(() => null);
       if (!run) continue; // shouldn't happen — the run this delivery would describe is gone
       const payload = await buildRunEventPayload(run, workflowStore);
       await webhookSubscriptions
-        .createDelivery({ subscriptionId: m.subscriptionId, event: `run.${m.status}`, payload })
+        .createDelivery({ subscriptionId: m.subscriptionId, event, payload })
         .catch((err: unknown) => {
           log(`[conductor] webhook reconciliation: creating delivery for run ${m.runId} failed: ${err instanceof Error ? err.message : String(err)}`);
         });
@@ -439,13 +448,20 @@ export async function wireConductor(deps: {
     // a delivery lost to a crash in this exact window is recovered by
     // `reconcileMissingWebhookDeliveries` above (issue #437 finding).
     notifyRunEnded: (run) => {
-      const event = run.status === 'completed' ? 'run.completed' : 'run.failed';
-      void (async () => {
-        const payload = await buildRunEventPayload(run, workflowStore);
-        await webhookDispatcher.deliverEvent(event, payload);
-      })().catch((err: unknown) => {
-        log(`[conductor] webhook dispatch for run ${run.id} failed: ${err instanceof Error ? err.message : String(err)}`);
-      });
+      // #1705 — the event NAME carries the outcome, so a receiver can treat an
+      // operator cancel differently from a crash without parsing the payload. This
+      // used to map every non-completed status onto 'run.failed', which delivered a
+      // cancel as `run.failed` + `payload.status: "cancelled"`. `null` = a status
+      // with no event (not terminal); never a fallback name.
+      const event = runEndedEvent(run.status);
+      if (event) {
+        void (async () => {
+          const payload = await buildRunEventPayload(run, workflowStore);
+          await webhookDispatcher.deliverEvent(event, payload);
+        })().catch((err: unknown) => {
+          log(`[conductor] webhook dispatch for run ${run.id} failed: ${err instanceof Error ? err.message : String(err)}`);
+        });
+      }
       // #330 — an ephemeral workflow is disposed of the moment its run reaches a
       // terminal state. Best-effort like the webhook dispatch: a miss here is
       // recovered by the reaper's poll, never lost.

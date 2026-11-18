@@ -62,6 +62,27 @@ describe('<WebhookSubscriptionsSection />', () => {
     expect(document.body.textContent).not.toContain('"code"');
   });
 
+  it('#1705: run.cancelled is offered and can be subscribed to', async () => {
+    mockList.mockResolvedValue({ subscriptions: [] });
+    mockCreate.mockResolvedValue({ subscription: { ...sub('c'), event: 'run.cancelled' }, secret: 'a'.repeat(64) });
+    renderWithIntl(<WebhookSubscriptionsSection />, { locale: 'de' });
+
+    const input = await screen.findByPlaceholderText('https://example.com/hook');
+    const select = document.querySelector('select');
+    expect(Array.from(select?.options ?? []).map((o) => o.value)).toEqual([
+      'run.completed',
+      'run.failed',
+      'run.cancelled',
+    ]);
+
+    fireEvent.change(input, { target: { value: 'https://example.com/hook' } });
+    fireEvent.change(select!, { target: { value: 'run.cancelled' } });
+    fireEvent.click(screen.getByText(t.create));
+
+    await waitFor(() => expect(mockCreate).toHaveBeenCalledTimes(1));
+    expect(mockCreate.mock.calls[0]?.[0]).toMatchObject({ event: 'run.cancelled' });
+  });
+
   it('#1339: a revealed secret has a copy button and blocks another rotate', async () => {
     mockList.mockResolvedValue({ subscriptions: [sub('a'), sub('b')] });
     mockRotate.mockResolvedValue({ secret: 'f'.repeat(64) });

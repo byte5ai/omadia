@@ -100,6 +100,35 @@ styles, express table widths in fiftieths of a percent, and drop the control
 characters XML 1.0 forbids. Before this change those characters made Word
 refuse the file.
 
+### Fixed — Conductor: a cancelled run is delivered as `run.cancelled` (#1705)
+
+2026-11-16. A cancelled run went out as `x-omadia-event: run.failed` with
+`payload.status: "cancelled"`, because the outbound hook derived the event name as
+`status === 'completed' ? 'run.completed' : 'run.failed'` — every non-completed
+terminal status collapsed into the failure name. A receiver that treats an operator
+cancel differently from a crash therefore had to ignore the event it subscribed to
+and parse the payload instead. A subscription on `run.cancelled` was meanwhile
+accepted with a 201 and never fired, and the admin UI offered only the two names.
+
+- **A terminal run status now maps 1:1 to an event name** —
+  `completed`/`failed`/`cancelled` → `run.completed`/`run.failed`/`run.cancelled` —
+  in one place (`conductor/webhookEvents.ts`), used by both the live terminal-run
+  hook and the reconciliation pass. A non-terminal status maps to *nothing*; there
+  is no fallback name left to fall into.
+- **Breaking for receivers that relied on the old name:** a `run.failed`
+  subscription no longer receives cancels. A receiver that wants both needs a second
+  subscription on `run.cancelled` (the payload still carries `status`).
+- **`run.cancelled` is offered in the admin UI**, and a subscription to an event
+  nothing fires is now refused with a 400 naming the supported events, instead of
+  being accepted and staying silent forever. The DB column stays free text — the
+  vocabulary is enforced at the API edge, so rows written by an older build keep
+  working and existing `run.cancelled` rows simply start matching.
+- **A cancel lost to a crash is recoverable like any other outcome:** the
+  reconciliation pass considered only `completed`/`failed` runs, so a cancel lost in
+  the fire-and-forget window after the status was committed was gone for good.
+  Migration `0014_webhook_cancelled_event.sql` adds the partial index that pass
+  needs for the third status (no schema change to the webhook tables).
+
 ### Fixed — Conductor: a rejected approval no longer takes an unguarded transition (#1698)
 
 2026-11-10. The approval gate computed the decision and then ignored it: the

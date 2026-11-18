@@ -1366,7 +1366,21 @@ neuer `notifyRunEnded`-Hook in `ConductorRunExecutor` (feuert exakt an jedem
 Punkt, an dem ein echter, nicht-Dry-Run-Run terminal wird — `driveFrom`s
 Loop-Exit UND die drei direkten Terminal-Returns in `resolveAwait`/
 `resolveDevJobAwait`/`expireAwait`, zentralisiert in `finalizeIfEnded`) löst
-`run.completed`/`run.failed` aus. Der Dispatcher fächert an jede enabled
+`run.completed`/`run.failed`/`run.cancelled` aus. Das Event-Vokabular und das
+1:1-Mapping Status→Event liegen in **`webhookEvents.ts`**
+(`CONDUCTOR_WEBHOOK_EVENTS`, `runEndedEvent`, `isConductorWebhookEvent`) — #1705:
+vorher leitete der Hook den Namen inline ab (`completed ? run.completed :
+run.failed`), ein Operator-Cancel ging damit als `run.failed` mit
+`payload.status: "cancelled"` raus. `runEndedEvent` antwortet für einen nicht
+terminalen Status mit `null` (kein Fallback-Name), `isConductorWebhookEvent` ist
+der Guard, mit dem `webhookRoutes.ts` eine Subscription auf ein Event ablehnt,
+das nie feuert (400 statt 201-und-stumm). Die Spalte `event` bleibt Free-Text —
+die Vokabular-Prüfung sitzt an der API-Kante, damit Rows älterer Builds
+weiterlaufen. **Breaking für Empfänger:** eine `run.failed`-Subscription bekommt
+keine Cancels mehr, wer beides will, braucht eine zweite Subscription auf
+`run.cancelled`. Der Reconciliation-Pass (`listMissingRunDeliveries`) deckt
+denselben dritten Status ab; `0014_webhook_cancelled_event.sql` liefert nur den
+passenden Partial-Index auf `conductor_runs` dafür. Der Dispatcher fächert an jede enabled
 `conductor_webhook_subscriptions`-Row für das Event auf, signiert HMAC
 (`x-omadia-signature`), und retried mit exponentiellem Backoff (Default 6
 Attempts, 30s verdoppelnd bis 30min Cap) — `conductor_webhook_deliveries` ist
