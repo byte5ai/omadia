@@ -92,8 +92,8 @@ export async function resolveChannelUser(
   return undefined;
 }
 
-/** Plugin-form mentions resolved to channel user references. A person who is
- *  not part of the conversation is left out: the text stays as it is. */
+/** Mentions resolved to channel user references. A person who is not part of
+ *  the conversation is left out: the text stays as it is. */
 export async function resolveMentions(
   deps: OwnIdentityDeps,
   subscriptions: readonly MessageSubscription[],
@@ -102,13 +102,20 @@ export async function resolveMentions(
   const resolved: TargetedMention[] = [];
   for (const mention of mentions ?? []) {
     if (typeof mention?.text !== 'string' || mention.text.length === 0) continue;
-    // Already a channel reference (a kernel-internal caller): passed on.
-    if (mention.user !== null && typeof mention.user === 'object') {
-      resolved.push({ user: mention.user as ChannelUserRef, text: mention.text });
-      continue;
-    }
-    if (typeof mention.user !== 'string') continue;
-    const user = await resolveChannelUser(deps, subscriptions, mention.user);
+    // ALWAYS resolved against the conversation, whatever shape arrives. An
+    // object-shaped reference is a plugin's claim about who somebody is; the
+    // kernel takes only the id from it and looks the person up itself, so a
+    // plugin cannot mention (and thereby notify) somebody who is not there.
+    const stated =
+      typeof mention.user === 'string'
+        ? mention.user
+        : mention.user !== null &&
+            typeof mention.user === 'object' &&
+            typeof (mention.user as { id?: unknown }).id === 'string'
+          ? (mention.user as { id: string }).id
+          : undefined;
+    if (stated === undefined) continue;
+    const user = await resolveChannelUser(deps, subscriptions, stated);
     if (user) resolved.push({ user, text: mention.text });
   }
   return resolved;

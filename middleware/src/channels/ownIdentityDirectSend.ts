@@ -130,6 +130,20 @@ export async function sendDirectAsOwnIdentity(
       ],
     };
   }
+  // Same rule as the conversation send: only a provider that DECLARED it
+  // honours `asChannelKey` is asked to send as the agent.
+  if (provider.supports?.asChannelKey !== true) {
+    deps.log(
+      `[channels] own-identity DM by '${input.asAgentSlug}' (${input.channelType}) refused: the channel plugin does not declare supports.asChannelKey`,
+    );
+    return report(
+      principalId,
+      unreachable(
+        'no_identity',
+        `the '${input.channelType}' channel plugin does not declare that it sends as a named identity — nothing was sent`,
+      ),
+    );
+  }
   const refs = deps.lookupConversationRefs
     ? await deps.lookupConversationRefs([principalId], input.channelType).catch(() => new Map<string, unknown>())
     : new Map<string, unknown>();

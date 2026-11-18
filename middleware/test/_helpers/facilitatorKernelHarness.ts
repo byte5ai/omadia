@@ -364,6 +364,7 @@ export async function bootFacilitatorKernel(options: HarnessOptions): Promise<Fa
   });
   core.registerConversationSendProvider!(CHANNEL_PLUGIN, {
     channelType: CHANNEL_TYPE,
+    supports: { asChannelKey: true, mentions: true, poll: true },
     sendToConversation: (conversationId, message, opts) => {
       channel.sent.push({ kind: 'conversation', target: conversationId, asChannelKey: opts?.asChannelKey, message });
       const outcome = answer();
@@ -376,6 +377,7 @@ export async function bootFacilitatorKernel(options: HarnessOptions): Promise<Fa
   });
   core.registerTargetedSendProvider!(CHANNEL_PLUGIN, {
     channelType: CHANNEL_TYPE,
+    supports: { asChannelKey: true },
     sendToUser: (target, message, opts) => {
       channel.sent.push({
         kind: 'direct',

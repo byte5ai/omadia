@@ -79,9 +79,30 @@ export type TargetedDeliveryOutcome =
  * channel_bindings row) — a provider that can materialize a 1:1 conversation
  * itself (proactive messaging) may ignore it.
  */
+/**
+ * What a send provider DECLARES it implements (#2043). The kernel cannot see
+ * whether a provider honoured an option: an older provider ignores an
+ * argument it does not know and still answers `delivered` — through its
+ * default bot. So the kernel sends as a named identity, with mentions or as a
+ * poll only to a provider that declared the capability, and refuses
+ * otherwise (`no_identity` for an identity it cannot guarantee,
+ * `channel_error` for a poll). Absent = the provider implements none.
+ */
+export interface SendProviderCapabilities {
+  /** Honours `opts.asChannelKey`: posts as exactly that identity or returns
+   *  `unreachable`, never as another one. */
+  asChannelKey?: boolean;
+  /** Turns `message.mentions` into platform mentions. */
+  mentions?: boolean;
+  /** Posts `message.poll` as a poll and refuses an invalid one. */
+  poll?: boolean;
+}
+
 export interface TargetedSendProvider {
   /** The `channel_bindings.channel_type` this provider serves (e.g. 'teams'). */
   channelType: string;
+  /** Declared capabilities; see {@link SendProviderCapabilities}. */
+  supports?: SendProviderCapabilities;
   sendToUser(
     target: { principalId: string; conversationRef?: unknown; userRef?: ChannelUserRef },
     message: TargetedMessage,

@@ -61,8 +61,27 @@ export function createConversationSendService(deps: {
         `no conversation-send provider registered for channel type '${input.channelType}'`,
       );
     }
+    // The kernel cannot see whether a provider honoured `asChannelKey`: one
+    // that predates the option ignores it and reports `delivered` through its
+    // default bot. So only a provider that DECLARED it is asked.
+    if (provider.supports?.asChannelKey !== true) {
+      log(
+        `[channels] own-identity send to ${input.channelType}/${input.conversationId} refused: the channel plugin does not declare supports.asChannelKey`,
+      );
+      return unreachable(
+        'no_identity',
+        `the '${input.channelType}' channel plugin does not declare that it sends as a named identity — nothing was posted, so nothing could go out under another bot's name`,
+      );
+    }
+    if (message.poll && provider.supports.poll !== true) {
+      return unreachable('channel_error', `the '${input.channelType}' channel plugin does not declare poll support`);
+    }
+    // Mentions degrade by contract: a channel without them shows plain text.
+    const { mentions, ...withoutMentions } = message;
+    const outgoing: TargetedMessage =
+      mentions && provider.supports.mentions !== true ? withoutMentions : message;
     try {
-      return await provider.sendToConversation(input.conversationId, message, { asChannelKey });
+      return await provider.sendToConversation(input.conversationId, outgoing, { asChannelKey });
     } catch (err) {
       const text = err instanceof Error ? err.message : String(err);
       log(`[channels] conversation send to ${input.channelType}/${input.conversationId} threw: ${text}`);

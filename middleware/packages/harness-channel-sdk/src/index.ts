@@ -41,6 +41,7 @@ export type {
   MembersRemovedEvent,
 } from './membershipEvent.js';
 export type {
+  SendProviderCapabilities,
   TargetedDeliveryOutcome,
   TargetedMention,
   TargetedMessage,

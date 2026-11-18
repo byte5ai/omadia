@@ -79,6 +79,7 @@ describe('own-identity sends', () => {
     const conversationProviders = new ConversationSendRegistry();
     conversationProviders.register('@omadia/channel-teams', {
       channelType: 'teams',
+      supports: { asChannelKey: true, mentions: true, poll: true },
       sendToConversation: (conversationId, message, opts) => {
         sent.push({ target: conversationId, message, opts });
         return Promise.resolve(nextOutcome);
@@ -87,6 +88,7 @@ describe('own-identity sends', () => {
     const targetedProviders = new TargetedSendRegistry();
     targetedProviders.register('@omadia/channel-teams', {
       channelType: 'teams',
+      supports: { asChannelKey: true },
       sendToUser: (target, message, opts?: TargetedSendOptions) => {
         sent.push({
           target: target.principalId,
@@ -231,6 +233,7 @@ describe('own-identity sends', () => {
       const throwing = new ConversationSendRegistry();
       throwing.register('c', {
         channelType: 'teams',
+        supports: { asChannelKey: true },
         sendToConversation: () => Promise.reject(new Error('socket hang up')),
       });
       const service = createConversationSendService({
@@ -242,6 +245,95 @@ describe('own-identity sends', () => {
         ENGINE,
       );
       assert.deepEqual(outcome, { outcome: 'unreachable', code: 'channel_error', message: 'socket hang up' });
+    });
+
+    it('resolves an object-shaped mention from a plugin itself; it is never passed through', async () => {
+      await post({
+        message: {
+          text: '@Ben and @Eve',
+          mentions: [
+            // A plugin stating a full reference: only the id is taken, and the
+            // roster's own reference (kind, display name) is what goes out.
+            { user: { kind: 'made-up-kind', id: BEN, displayName: 'Somebody Else' }, text: '@Ben' },
+            // …and a person who is not in this conversation is not mentioned,
+            // however complete the reference looks.
+            { user: { kind: 'teams-aad', id: '99999999-0000-4000-8000-000000000000', displayName: 'Eve' }, text: '@Eve' },
+            { user: { kind: 'teams-aad' }, text: '@Nobody' },
+          ],
+        },
+      });
+      assert.deepEqual(sent[0]!.message.mentions, [
+        { user: { kind: 'teams-aad', id: BEN, displayName: 'Ben' }, text: '@Ben' },
+      ]);
+    });
+
+    it('a provider that does not declare asChannelKey is never asked: nothing goes out as the default bot', async () => {
+      // An older channel plugin: it ignores the third argument and would
+      // answer `delivered` after posting through its default bot.
+      const legacySent: string[] = [];
+      const legacy = new ConversationSendRegistry();
+      legacy.register('@omadia/channel-teams', {
+        channelType: 'teams',
+        sendToConversation: (conversationId) => {
+          legacySent.push(conversationId);
+          return Promise.resolve({ outcome: 'delivered', messageId: 'from-the-default-bot' });
+        },
+      });
+      const service = createConversationSendService({
+        providers: legacy,
+        ownIdentity: { identityFor: () => ({ channelKey: MARA_KEY }), subscriptions: f.hub },
+      });
+      const outcome = await service.sendToConversation(
+        { agentSlug: 'mara', channelType: 'teams', conversationId: CONVERSATION, message: { text: 'x' }, asOwnIdentity: true },
+        ENGINE,
+      );
+      assert.equal(outcome.outcome === 'unreachable' && outcome.code, 'no_identity');
+      assert.match(outcome.outcome === 'unreachable' ? outcome.message : '', /does not declare that it sends as a named identity/);
+      assert.deepEqual(legacySent, [], 'the provider was not called at all');
+    });
+
+    it('a poll needs a provider that declares polls; mentions degrade to plain text', async () => {
+      const got: TargetedMessage[] = [];
+      const partial = new ConversationSendRegistry();
+      partial.register('c', {
+        channelType: 'teams',
+        supports: { asChannelKey: true },
+        sendToConversation: (_conversationId, message) => {
+          got.push(message);
+          return Promise.resolve({ outcome: 'delivered' });
+        },
+      });
+      const service = createConversationSendService({
+        providers: partial,
+        ownIdentity: {
+          identityFor: () => ({ channelKey: MARA_KEY }),
+          subscriptions: f.hub,
+          getRoster: () => Promise.resolve(roster),
+        },
+      });
+      const base = { agentSlug: 'mara', channelType: 'teams', conversationId: CONVERSATION, asOwnIdentity: true };
+      const poll = await service.sendToConversation(
+        {
+          ...base,
+          message: {
+            text: 'vote',
+            poll: { pollId: 'p', question: 'q', options: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }] },
+          },
+        },
+        ENGINE,
+      );
+      assert.deepEqual(poll, {
+        outcome: 'unreachable',
+        code: 'channel_error',
+        message: "the 'teams' channel plugin does not declare poll support",
+      });
+      assert.deepEqual(got, [], 'the question was not posted as plain text instead');
+      const mention = await service.sendToConversation(
+        { ...base, message: { text: '@Ben hello', mentions: [{ user: `user:${BEN}`, text: '@Ben' }] } },
+        ENGINE,
+      );
+      assert.equal(mention.outcome, 'delivered');
+      assert.deepEqual(got, [{ text: '@Ben hello' }]);
     });
 
     it('without the flag the send is refused: there is no other scope', async () => {
@@ -322,6 +414,35 @@ describe('own-identity sends', () => {
         assert.deepEqual(report.deliveries[0]!.outcome, nextOutcome);
         assert.match(report.diagnostics[0]!.message, new RegExp(`${code} — 403 ${code}`));
       }
+    });
+
+    it('a provider that does not declare asChannelKey is never asked for a direct message', async () => {
+      const legacySent: string[] = [];
+      const legacy = new TargetedSendRegistry();
+      legacy.register('@omadia/channel-teams', {
+        channelType: 'teams',
+        sendToUser: (target) => {
+          legacySent.push(target.principalId);
+          return Promise.resolve({ outcome: 'delivered' });
+        },
+      });
+      const service = createTargetedDeliveryService({
+        providers: legacy,
+        ownIdentity: {
+          identityFor: () => ({ channelKey: MARA_KEY }),
+          subscriptions: f.hub,
+          getRoster: () => Promise.resolve(roster),
+        },
+      });
+      const report = await service.sendToPrincipal(
+        { channelType: 'teams', principal: `user:${ANNA}`, message: { text: 'x' }, asAgentSlug: 'mara' },
+        ENGINE,
+      );
+      assert.equal((report.deliveries[0]!.outcome as { code: string }).code, 'no_identity');
+      assert.deepEqual(legacySent, []);
+      // The same provider keeps serving ordinary targeted sends.
+      const plain = await service.sendToPrincipal({ channelType: 'teams', principal: `user:${ANNA}`, message: { text: 'x' } });
+      assert.equal(plain.deliveries[0]!.outcome.outcome, 'delivered');
     });
 
     it('refuses a role principal for an own-identity send', async () => {
