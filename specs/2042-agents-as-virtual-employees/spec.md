@@ -969,6 +969,10 @@ Each existing element keeps its purpose, moved out of the message body:
 38. **Disclosure level none.** Two questions, one about information that exists but is
     withheld at level `none`, one about information that does not exist: the visible
     answers do not allow telling the cases apart.
+39. **Deleted agent stays named.** A conversation is bound to A, the user's default agent
+    is B, a stored selection points to A; A is deleted and the instance restarts: the
+    next message there gets the notice that A was deleted, B gets no turn; the same for
+    the selection; after the target is changed, routing follows it.
 
 ## 7. Migration and compatibility
 
