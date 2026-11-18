@@ -190,6 +190,20 @@ class InMemoryRoutineStore implements RoutineStore {
     return updated;
   }
 
+  async pauseWithError(id: string, error: string): Promise<Routine | null> {
+    const existing = this.rows.get(id);
+    if (!existing) return null;
+    const updated: Routine = {
+      ...existing,
+      status: 'paused',
+      lastRunStatus: 'error',
+      lastRunError: error,
+      updatedAt: new Date(),
+    };
+    this.rows.set(id, updated);
+    return updated;
+  }
+
   async delete(id: string, owner?: RoutineOwner): Promise<boolean> {
     this.deleteCalls += 1;
     const existing = this.rows.get(id);
@@ -1502,7 +1516,6 @@ describe('#1598 — a routine runs on the orchestrator that created it', () => {
   });
 });
 
-
 // #1742 — croner accepts an optional sixth (seconds) field, so a routine
 // could be scheduled every few seconds and run a full paid agent turn each
 // time. Every path that schedules a routine refuses a cron that can fire
@@ -1554,6 +1567,43 @@ describe('#1742 — a routine fires at most once per minute', () => {
       h.scheduler.list().map((entry) => entry.name),
       [ok.id],
     );
+    assert.equal(h.store.rows.get(ok.id)?.status, 'active');
+  });
+
+  it('boot pauses a refused sub-minute routine and records the reason in last_run_error', async () => {
+    const h = makeHarness();
+    const legacy = await h.store.create({ ...baseInput, name: 'legacy', cron: '*/20 * * * * *' });
+
+    await h.runner.start();
+
+    const row = h.store.rows.get(legacy.id);
+    assert.equal(row?.status, 'paused');
+    assert.equal(row?.lastRunStatus, 'error');
+    assert.match(row?.lastRunError ?? '', /'\*\/20 \* \* \* \* \*'.*once per minute/);
+    assert.equal(row?.lastRunAt, null, 'nothing ran, so last_run_at stays empty');
+    assert.equal(await h.store.countActiveForUser(TENANT, USER), 0, 'no longer counts toward the quota');
+    assert.equal(h.store.recordRunCalls.length, 0, 'no catch-up run for a refused routine');
+
+    // A resume returns the same explanation and leaves the routine paused.
+    await assert.rejects(
+      () => h.runner.resumeRoutine(legacy.id, OWNER_SCOPE),
+      RoutineCronTooFrequentError,
+    );
+    assert.equal(h.store.rows.get(legacy.id)?.status, 'paused');
+    assert.equal(h.scheduler.list().length, 0);
+  });
+
+  it('boot keeps logging other registration failures without pausing the routine', async () => {
+    const h = makeHarness({
+      registerThrows: new Error("cron 'not a cron' is invalid"),
+    });
+    const broken = await h.store.create({ ...baseInput, name: 'broken', cron: 'not a cron' });
+
+    await h.runner.start();
+
+    assert.equal(h.store.rows.get(broken.id)?.status, 'active');
+    assert.equal(h.store.rows.get(broken.id)?.lastRunError, null);
+    assert.equal(h.scheduler.list().length, 0);
   });
 
   it('resume refuses a persisted sub-minute routine and leaves it paused', async () => {

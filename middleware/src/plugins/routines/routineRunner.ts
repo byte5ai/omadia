@@ -303,6 +303,10 @@ export class RoutineRunner {
         this.registerInScheduler(row);
         registered += 1;
       } catch (err) {
+        if (err instanceof RoutineCronTooFrequentError) {
+          await this.pauseRefusedAtBoot(row, err);
+          continue;
+        }
         this.log(
           `[routines/runner] failed to register routine ${row.id} ('${row.name}'): ${errMsg(err)}`,
         );
@@ -331,6 +335,30 @@ export class RoutineRunner {
     this.log(
       `[routines/runner] started — ${registered}/${rows.length} routines registered, ${caughtUp} caught up`,
     );
+  }
+
+  /**
+   * #1742 — a routine persisted before the min-interval check existed is
+   * refused at boot. Leaving it `active` would show it as running, count it
+   * against the per-user quota and fire nothing, so it is paused with the
+   * refusal recorded in `last_run_error` (resume returns the same refusal).
+   * A failing write is logged, never thrown: one bad row must not abort the
+   * boot scan for the rest.
+   */
+  private async pauseRefusedAtBoot(
+    row: Routine,
+    err: RoutineCronTooFrequentError,
+  ): Promise<void> {
+    try {
+      await this.store.pauseWithError(row.id, err.message);
+      this.log(
+        `[routines/runner] paused routine ${row.id} ('${row.name}') at boot: ${err.message}`,
+      );
+    } catch (writeErr) {
+      this.log(
+        `[routines/runner] failed to register routine ${row.id} ('${row.name}'): ${err.message}; pausing it also failed: ${errMsg(writeErr)}`,
+      );
+    }
   }
 
   /**

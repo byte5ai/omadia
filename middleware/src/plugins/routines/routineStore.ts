@@ -407,6 +407,28 @@ export class RoutineStore {
   }
 
   /**
+   * #1742 — pause a routine the runner refused to schedule and record why
+   * in `last_run_error`, in one statement, so the UI shows the routine as
+   * paused with the reason instead of as active while nothing fires.
+   * `last_run_at` stays untouched: nothing ran. Returns the updated row,
+   * or null if the id was not found.
+   */
+  async pauseWithError(id: string, error: string): Promise<Routine | null> {
+    const result = await this.pool.query<RoutineRow>(
+      `UPDATE routines
+          SET status          = 'paused',
+              last_run_status = 'error',
+              last_run_error  = $2,
+              updated_at      = now()
+        WHERE id = $1
+        RETURNING ${SELECT_COLUMNS}`,
+      [id, error],
+    );
+    const row = result.rows[0];
+    return row ? rowToRoutine(row) : null;
+  }
+
+  /**
    * Returns true if a row was deleted.
    *
    * #1025 — see `setStatus`: an `owner` scopes the delete, so another
