@@ -198,7 +198,15 @@ export function createAgentTurnService(deps: AgentTurnServiceDeps): AgentTurnSer
               conversationId: request.conversationId,
               ...(inbound ? { inboundEventId: inbound.eventId } : {}),
               ...(principal ? { callerPrincipalId: formatPrincipal(principal) } : {}),
-              ...(inbound ? { callerUserRef: { kind: inbound.author.kind, id: inbound.author.id } } : {}),
+              ...(inbound
+                ? {
+                    callerUserRef: {
+                      kind: inbound.author.kind,
+                      id: inbound.author.id,
+                      ...(inbound.author.displayName ? { displayName: inbound.author.displayName } : {}),
+                    },
+                  }
+                : {}),
             },
           },
           () => resolved.entry.built.bundle.agent.chat(turn),

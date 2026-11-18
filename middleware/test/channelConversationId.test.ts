@@ -138,3 +138,33 @@ describe('the facilitator turn entry asks about the right conversation', () => {
     assert.equal(h.ran(), 0);
   });
 });
+
+describe('the caller of a tool, in the channel own terms (#2043)', () => {
+  const base = turn(`teams-${BOT_KEY}-${MEETING}`, { channelConversationId: MEETING });
+
+  it('carries the name the channel stated, so the initiator can be named without a roster', () => {
+    const input = {
+      ...base,
+      origin: { ...base.origin, speaker: { kind: 'teams-aad', id: 'aad-marcel', displayName: '  Marcel Wege ' } },
+    } as ChatTurnInput;
+    assert.deepEqual(buildToolCallContext('mona', input).callerUserRef, {
+      kind: 'teams-aad',
+      id: 'aad-marcel',
+      displayName: 'Marcel Wege',
+    });
+  });
+
+  it('no name stated: kind and id only, never an invented one', () => {
+    const input = {
+      ...base,
+      origin: { ...base.origin, speaker: { kind: 'teams-aad', id: 'aad-marcel', displayName: '   ' } },
+    } as ChatTurnInput;
+    assert.deepEqual(buildToolCallContext('mona', input).callerUserRef, { kind: 'teams-aad', id: 'aad-marcel' });
+  });
+
+  it('a channel that states no speaker keeps the previous behaviour', () => {
+    assert.equal(buildToolCallContext('mona', base).callerUserRef, undefined);
+    const withIdentity = { ...base, channelIdentity: { channelKind: 'teams', channelUserId: 'aad-x' } } as ChatTurnInput;
+    assert.deepEqual(buildToolCallContext('mona', withIdentity).callerUserRef, { kind: 'teams', id: 'aad-x' });
+  });
+});

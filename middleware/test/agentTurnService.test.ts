@@ -267,7 +267,7 @@ describe('agentTurn service', () => {
       conversationId: CONVERSATION,
       inboundEventId: stored.eventId,
       callerPrincipalId: 'user:aad-anna',
-      callerUserRef: { kind: 'teams-aad', id: 'AAD-Anna' },
+      callerUserRef: { kind: 'teams-aad', id: 'AAD-Anna', displayName: 'Anna Köhler' },
     });
   });
 

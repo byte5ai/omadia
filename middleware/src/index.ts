@@ -417,6 +417,7 @@ import {
 import {
   createSqlGrantView,
   facilitatorGrantablePluginIds,
+  resolveFacilitationEngine,
   type FacilitationEngineSources,
 } from './platform/facilitatorGuard.js';
 import {
@@ -573,6 +574,7 @@ import { createTargetedDeliveryService } from './channels/targetedDeliveryServic
 import { ConversationSendRegistry } from './channels/conversationSendRegistry.js';
 import { createConversationSendService } from './channels/conversationSendService.js';
 import { createOwnIdentityPostLog } from './channels/ownIdentityPostLog.js';
+import { publishConversationRostersService } from './channels/rosterService.js';
 import { ObservedConversationInvites } from './platform/observedConversationInvites.js';
 import { PgObservedInvitePersistence } from './platform/observedInvitePersistence.js';
 import { startEphemeralAttachmentSweep } from './platform/ephemeralAttachmentSweep.js';
@@ -841,7 +843,21 @@ async function main(): Promise<void> {
   // bind conversations the transport actually reported a group bot_added for.
   const observedInvites = new ObservedConversationInvites({ log: (m) => console.log(`[middleware] ${m}`) });
   observedInvites.attach(conversationEventHub);
-  serviceRegistry.provide('conversationRosters', conversationRosterRegistry);
+  // #2043 — per caller: only the facilitation engine may read a roster as an
+  // agent (`{ agentSlug }`), and the kernel resolves that agent's identity.
+  publishConversationRostersService({
+    serviceRegistry,
+    registry: conversationRosterRegistry,
+    identityFor: (agentSlug, channelType) =>
+      serviceRegistry
+        .get<MultiOrchestratorRegistry>('orchestratorRegistry')
+        ?.channelIdentityFor(agentSlug, channelType),
+    isEngine: (pluginId) => {
+      const engine = resolveFacilitationEngine(facilitationEngineSources());
+      return engine.state === 'bound' && engine.pluginId === pluginId;
+    },
+    log: (m) => console.log(m),
+  });
   // Subscribe-only facade: agent plugins may LISTEN for membership events, but
   // emitting stays a channel-adapter privilege (CoreApi). A service-published
   // emit() would let any granted plugin spoof `bot_added` — the Facilitator's
@@ -7059,8 +7075,11 @@ async function main(): Promise<void> {
     identityFor: (agentSlug: string, channelType: string) =>
       getRegistry()?.channelIdentityFor(agentSlug, channelType),
     ...(conversationMessages ? { subscriptions: conversationMessages.hub } : {}),
-    getRoster: (channelType: string, conversationId: string) =>
-      conversationRosterRegistry.getRoster(channelType, conversationId),
+    getRoster: (
+      channelType: string,
+      conversationId: string,
+      opts?: { readonly asChannelKey?: string },
+    ) => conversationRosterRegistry.getRoster(channelType, conversationId, opts),
   };
   // #2043 — 'agentTurn@1': the engine runs a turn as a facilitator and gets
   // the text back unposted.

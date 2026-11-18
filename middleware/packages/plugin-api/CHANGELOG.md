@@ -8,6 +8,17 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.57.0 — 2026-11-18
+
+Additive (epic #2043).
+
+### Added
+
+- **`NativeToolCallContext.callerUserRef.displayName?`** — the caller's name
+  as the channel stated it for the turn (`TurnOrigin.speaker`, channel-sdk
+  0.3.2), or the stored author's name on an engine turn. Lets an engine name
+  the person who started something without a roster lookup.
+
 ## 1.56.0 — 2026-11-18
 
 Additive (epic #2043).

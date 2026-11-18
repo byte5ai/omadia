@@ -56,10 +56,13 @@ describe('own-identity sends', () => {
   /** Read through a call, so an earlier "nothing was sent" assertion does not
    *  narrow the array's type for the rest of the test. */
   const recorded = (): Sent[] => sent;
+  /** Every roster request, with all its arguments. */
+  let rosterAsked: unknown[][] = [];
 
   beforeEach(async () => {
     f = hubFixture(new InMemoryConversationMessageStore());
     sent = [];
+    rosterAsked = [];
     nextOutcome = { outcome: 'delivered', messageId: 'msg-1' };
     roster = {
       conversationType: 'group',
@@ -74,7 +77,10 @@ describe('own-identity sends', () => {
     const ownIdentity = {
       identityFor: (slug: string) => (identities[slug] ? { channelKey: identities[slug]! } : undefined),
       subscriptions: f.hub,
-      getRoster: () => Promise.resolve(roster),
+      getRoster: (...args: unknown[]) => {
+        rosterAsked.push(args);
+        return Promise.resolve(roster);
+      },
     };
     const conversationProviders = new ConversationSendRegistry();
     conversationProviders.register('@omadia/channel-teams', {
@@ -126,6 +132,19 @@ describe('own-identity sends', () => {
     );
 
   describe('conversationSend', () => {
+    it('reads the roster as the agent own identity, for a mention and for a direct message (#2043)', async () => {
+      await post({ message: { text: 'Hi @Anna', mentions: [{ user: ANNA, text: '@Anna' }] } });
+      await targetedSend.sendToPrincipal(
+        { channelType: 'teams', principal: `user:${ANNA}`, message: { text: 'Reminder.' }, asAgentSlug: 'mara' } as never,
+        ENGINE,
+      );
+      assert.equal(sent.length, 2);
+      assert.ok(rosterAsked.length >= 2);
+      for (const asked of rosterAsked) {
+        assert.deepEqual(asked, ['teams', CONVERSATION, { asChannelKey: MARA_KEY.toLowerCase() }], 'the key of the subscription, never the default bot');
+      }
+    });
+
     it('posts as the agent own bot and returns the provider message id', async () => {
       assert.deepEqual(await post(), { outcome: 'delivered', messageId: 'msg-1' });
       assert.deepEqual(sent, [

@@ -27,7 +27,13 @@ export interface OwnIdentityDeps {
   /** The subscriptions that carry the permission. Absent (no database) =
    *  no own-identity send is permitted. */
   readonly subscriptions?: Pick<ConversationMessageHub, 'subscriptionFor' | 'subscriptionsOf' | 'findAuthor'>;
-  readonly getRoster?: (channelType: string, conversationId: string) => Promise<ConversationRoster | undefined>;
+  /** `asChannelKey`: the roster is read as the agent's own identity (the
+   *  subscription's), never as the channel's default bot. */
+  readonly getRoster?: (
+    channelType: string,
+    conversationId: string,
+    opts?: { readonly asChannelKey?: string },
+  ) => Promise<ConversationRoster | undefined>;
 }
 
 export function unreachable(
@@ -74,7 +80,9 @@ export async function resolveChannelUser(
   for (const subscription of subscriptions) {
     let roster: ConversationRoster | undefined;
     try {
-      roster = await deps.getRoster?.(subscription.channelType, subscription.conversationId);
+      roster = await deps.getRoster?.(subscription.channelType, subscription.conversationId, {
+        asChannelKey: subscription.channelKey,
+      });
     } catch {
       roster = undefined;
     }

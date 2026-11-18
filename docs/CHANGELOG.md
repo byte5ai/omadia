@@ -38,6 +38,20 @@ changelog.
 
 ### Fixed — Rollout defects of native facilitators (epic #2043)
 
+- A facilitator's roster is read as the facilitator. The first live
+  facilitation opened with an empty participant list: a roster request said
+  neither which agent nor which bot asks, so the Teams adapter answered with
+  the view of the instance's default bot, which is not in the facilitator's
+  chat. `ConversationRosterProvider.getRoster` takes `{ asChannelKey }`
+  (channel-sdk 0.3.2), the plugin-facing `conversationRosters.getRoster`
+  takes `{ agentSlug }` as its third argument (facilitation engine and kernel
+  only; an agent without an identity on that channel gets "unknown", never
+  another bot's view), and mention resolution, the recipient check of a
+  direct message and the partner-chat names of an agent ask as the agent's
+  own bot. Without the option nothing changes.
+- A tool call knows the caller's name: `callerUserRef.displayName`
+  (plugin-api 1.57.0), from the new `TurnOrigin.speaker` a channel states and
+  from the author of the message an engine turn answers.
 - The team/chat picker served `loading` for ever on the live instance: its
   cache was looked up by an object the route builds anew per request, so every
   request started its own enumeration. One cache per router now. The picker
