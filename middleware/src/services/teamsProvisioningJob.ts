@@ -2006,6 +2006,16 @@ export class TeamsProvisioningJobRunner {
 
     if (this.stopped) return { status: 'stopped', agentId };
 
+    // #2043 rollout (D6) — SERVE THE BOT BEFORE THE INSTALL, not after it.
+    // From `catalog_uploaded` on the app is published in the org catalog, so
+    // anybody may add it personally or to a chat, whatever happens to the one
+    // install this run was asked for. Until now the `teams_bots` entry was
+    // only written after that install succeeded: when it failed (a consent
+    // refusal on the team), Teams delivered the personal chat to
+    // `/api/teams/<slug>/messages` and the channel answered "unknown botSlug":
+    // a bot users could add and that never replied.
+    await this.serveBotBeforeInstall(row);
+
     // Step 5 — install into the target (idempotent on Graph's side).
     //
     // TWO ENDPOINTS, ONE STEP. A team installs through
@@ -2307,6 +2317,29 @@ export class TeamsProvisioningJobRunner {
    * operator UI renders as "paste the block by hand, here is why") while the
    * identity stays `installed`.
    */
+  /**
+   * The early `teams_bots` write (see the call site). Quiet on purpose: the
+   * `config_sync` step of the timeline and the `config_sync_failed` warning
+   * belong to the sync that ends the run, which still runs after a successful
+   * install and then finds the entry in place (`unchanged`). A failure here is
+   * logged and never fails or delays the install; the row's `teams_bots_sync`
+   * state shows `missing` until a later run writes it.
+   */
+  private async serveBotBeforeInstall(row: TeamsIdentityJobRecord): Promise<void> {
+    const sync = this.syncBotConfig;
+    if (!sync) return;
+    try {
+      const report = await sync(row);
+      this.log(
+        `[teams-provisioning] teams_bots config written before the install for ${row.agentId} (${row.botSlug}): ${report.status}`,
+      );
+    } catch (err) {
+      this.log(
+        `[teams-provisioning] teams_bots config could not be written before the install for ${row.agentId} (${row.botSlug}): ${errorMessage(err)} — the bot is published but not served until a run writes it`,
+      );
+    }
+  }
+
   private async syncTeamsBotsConfig(row: TeamsIdentityJobRecord): Promise<void> {
     const sync = this.syncBotConfig;
     if (!sync) return;

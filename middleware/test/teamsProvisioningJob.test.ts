@@ -1029,14 +1029,90 @@ describe('TeamsProvisioningJobRunner — teams_bots config sync (#910)', () => {
     });
     const result = await runner.enqueue(REQUEST);
     assert.equal(result.status, 'installed');
-    assert.equal(seen.length, 1);
-    // The record handed over is the row AFTER the terminal write, so the
-    // provisioned app/tenant are on it — a projection built from a pre-install
-    // snapshot would be `null` and silently write nothing.
-    assert.equal(seen[0]?.state, 'installed');
-    assert.ok(seen[0]?.appId);
-    assert.ok(seen[0]?.tenantId);
+    // Twice since #2043 D6: once before the install (the app is published, so
+    // the bot must be served), once after the terminal write.
+    assert.deepEqual(seen.map((row) => row.state), ['catalog_uploaded', 'installed']);
+    // Both records carry the provisioned app/tenant — a projection built from
+    // a row without them would be `null` and silently write nothing.
+    for (const row of seen) {
+      assert.ok(row.appId);
+      assert.ok(row.tenantId);
+    }
     assert.equal(store.row?.lastError, null);
+  });
+
+  it('#2043 D6 — a published bot is served even when the install is refused', async () => {
+    // Found at the rollout: the team refused the install (consent check), the
+    // catalog app was published by then and a user added it personally. The
+    // `teams_bots` entry was only written after a successful install, so the
+    // channel logged "unknown botSlug" and the bot never answered.
+    const seen: string[] = [];
+    const events: string[] = [];
+    const { runner, store } = makeRunner({
+      syncBotConfig: async (identity) => {
+        seen.push(`${identity.state}:${identity.botSlug}:${String(identity.appId)}`);
+        return { status: 'synced' };
+      },
+      behaviour: {
+        installToTeam: async () => {
+          events.push(`install after ${String(seen.length)} sync(s)`);
+          throw namedError('ProvisioningRequestError', 'graph teams.installedApps.add 403 Forbidden', {
+            status: 403,
+            step: 'teams.installedApps.add',
+          });
+        },
+      },
+    });
+    const result = await runner.enqueue(REQUEST);
+    assert.equal(result.status, 'failed');
+    assert.equal(store.row?.state, 'failed');
+    assert.equal(seen.length, 1, 'written once, before the install');
+    assert.match(seen[0] ?? '', /^catalog_uploaded:[^:]+:app-123$/);
+    assert.deepEqual(events, ['install after 1 sync(s)']);
+  });
+
+  it('#2043 D6 — a failing early write neither fails nor delays the install, and leaves no warning behind', async () => {
+    let calls = 0;
+    const { runner, store, provisioner } = makeRunner({
+      syncBotConfig: async () => {
+        calls += 1;
+        if (calls === 1) throw new Error('registry is busy');
+        return { status: 'synced' };
+      },
+    });
+    const result = await runner.enqueue(REQUEST);
+    assert.equal(result.status, 'installed');
+    assert.ok(provisioner.calls.some((call) => call.startsWith('installToTeam:')));
+    assert.equal(calls, 2, 'the sync that ends the run still runs and writes it');
+    assert.equal(store.row?.lastError, null);
+  });
+
+  it('#2043 D6 — a re-run of a row that failed at the install writes the entry too', async () => {
+    const seen: string[] = [];
+    const { runner } = makeRunner({
+      storeOverrides: {
+        state: 'failed',
+        appId: 'app-123',
+        tenantId: 'tenant-9',
+        teamsAppId: 'catalog-77',
+        teamsAppExternalId: 'external-abc',
+      },
+      syncBotConfig: async (identity) => {
+        seen.push(identity.state);
+        return { status: 'synced' };
+      },
+      behaviour: {
+        installToTeam: async () => {
+          throw namedError('ProvisioningRequestError', 'graph teams.installedApps.add 403 Forbidden', {
+            status: 403,
+            step: 'teams.installedApps.add',
+          });
+        },
+      },
+    });
+    const result = await runner.enqueue(REQUEST);
+    assert.equal(result.status, 'failed');
+    assert.equal(seen.length, 1, 'the bot of the existing catalog app is served now');
   });
 
   it('keeps the run installed and records an ACTIONABLE warning when the write fails', async () => {
