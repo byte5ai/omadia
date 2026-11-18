@@ -4,6 +4,7 @@ import { strict as assert } from 'node:assert';
 import { InMemoryMemoryStore } from '@omadia/memory';
 import { InMemoryKnowledgeGraph } from '@omadia/knowledge-graph-inmemory';
 import {
+  MAX_RECORDING_BYTES,
   SessionLogger,
   TranscribeRecordingTool,
   turnContext,
@@ -157,6 +158,90 @@ describe('transcribe_recording', () => {
     const { tool } = makeTool({ service, reader: fakeReader(false) });
     const result = await tool.handle({ storage_key: AUDIO_KEY });
     assert.match(result, /not found/);
+  });
+
+  /** Reader that answers any key with the given object, plus a service that
+   *  records whether the provider was reached at all. */
+  function makeGateCase(found: {
+    bytes: Buffer;
+    contentType?: string;
+    fileName?: string;
+  }): { tool: TranscribeRecordingTool; providerCalls: () => number } {
+    const service = fakeTranscription(TWO_SPEAKERS);
+    const { tool } = makeTool({
+      service,
+      reader: {
+        readByStorageKey: async () => found,
+        readByUrl: async () => undefined,
+      },
+    });
+    return { tool, providerCalls: () => service.seenOpts.length };
+  }
+
+  it('refuses attachments that are not recordings without calling the provider', async () => {
+    const DOCX =
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    const refused = [
+      { contentType: DOCX, fileName: 'bericht.docx' },
+      // A declared document type wins over a media-looking file name.
+      { contentType: DOCX, fileName: 'bericht.mp3' },
+      { contentType: 'application/octet-stream', fileName: 'bericht.xlsx' },
+      { contentType: 'image/png', fileName: 'scan.png' },
+      { fileName: 'notizen' },
+      {},
+    ];
+    for (const meta of refused) {
+      const { tool, providerCalls } = makeGateCase({
+        bytes: Buffer.from([1, 2, 3]),
+        ...meta,
+      });
+      const result = await tool.handle({ storage_key: 'uploads/2026/x' });
+      assert.match(
+        result,
+        /^Error: attachment `uploads\/2026\/x` is not an audio or video recording/,
+        JSON.stringify(meta),
+      );
+      assert.equal(providerCalls(), 0, JSON.stringify(meta));
+    }
+  });
+
+  it('accepts recordings by media type, and by extension when the type is generic or absent', async () => {
+    const accepted = [
+      { contentType: 'audio/mp4', fileName: 'anruf.m4a' },
+      { contentType: 'Audio/MPEG; charset=binary' },
+      { contentType: 'video/webm', fileName: 'meeting.webm' },
+      { contentType: 'application/ogg', fileName: 'notiz.ogg' },
+      { contentType: 'application/octet-stream', fileName: 'Standup.M4A' },
+      { fileName: 'standup.wav' },
+    ];
+    for (const meta of accepted) {
+      const { tool, providerCalls } = makeGateCase({
+        bytes: Buffer.from([1, 2, 3]),
+        ...meta,
+      });
+      const result = await tool.handle({ storage_key: 'uploads/2026/x' });
+      assert.match(result, /^Transkript von/, JSON.stringify(meta));
+      assert.equal(providerCalls(), 1, JSON.stringify(meta));
+    }
+  });
+
+  it('refuses a recording above the size limit without calling the provider', async () => {
+    const atLimit = makeGateCase({
+      bytes: Buffer.alloc(MAX_RECORDING_BYTES),
+      contentType: 'audio/wav',
+    });
+    assert.match(
+      await atLimit.tool.handle({ storage_key: AUDIO_KEY }),
+      /^Transkript von/,
+    );
+
+    const tooLarge = makeGateCase({
+      bytes: Buffer.alloc(MAX_RECORDING_BYTES + 1),
+      contentType: 'audio/wav',
+    });
+    const result = await tooLarge.tool.handle({ storage_key: AUDIO_KEY });
+    assert.match(result, /^Error: attachment .* is too large to transcribe \(25\.0 MB, limit 25\.0 MB\)/);
+    assert.equal(tooLarge.providerCalls(), 0);
   });
 
   it('surfaces quota exhaustion as the guardrail message', async () => {

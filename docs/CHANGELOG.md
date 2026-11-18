@@ -36,6 +36,30 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — `transcribe_recording` only sends recordings to the provider (#1966)
+
+2026-11-17. The tool handed any stored attachment to the transcription
+provider with whatever content type it had, so asking it to "transcribe" a
+docx or xlsx sent that document to the external endpoint; the provider's 400
+came back only after the bytes had left. The tool now refuses, before the
+provider call, anything that is not a recording: a declared `audio/*` or
+`video/*` type (or `application/ogg`) passes, a missing or
+`application/octet-stream` type falls back to the file extension, and any
+other declared type is refused whatever the file is called. Recordings above
+25 MB (`MAX_RECORDING_BYTES`, the default upload cap and the OpenAI file limit)
+are refused the same way. Both refusals tell the model that nothing was sent.
+
+### Fixed — OpenAI transcription adapter meters the billed duration (#1968)
+
+2026-11-17. The current transcribe models (`gpt-transcribe`,
+`gpt-4o-transcribe`) answer only in the `json` format, which carries the
+billed audio length in `usage.seconds` and the language in
+`languages[].code`. The adapter read only the `verbose_json` fields
+`duration` and `language`, so every call against the real endpoint was
+metered as 0 minutes and the per-agent minute quota never triggered. It now
+reads both shapes; the top-level `verbose_json` fields win when present.
+Token-based usage has no duration and stays unmetered.
+
 ### Fixed — Node-Aktivierung nach Amp-Snapshot-Restore
 
 2026-11-16. Neue Orbs hatten die Node-22-/24-Toolchains und alle Pakete,
