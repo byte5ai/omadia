@@ -112,6 +112,7 @@ setup:
         de: "Signed-URL-TTL (Sekunden)"
       required: false
       default: 3600
+      min: 1
 
     - key: "max_rows"
       type: "integer"

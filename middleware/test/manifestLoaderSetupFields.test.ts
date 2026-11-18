@@ -10,7 +10,8 @@
  * required" badge and the install wizard's validation drift apart silently.
  * The last test here asserts that agreement against ONE shared fixture — it is
  * the only thing standing between the two `f['required'] !== false` copies.
- * #1464 added `default` to that agreement; #1524 extended it to integers.
+ * #1464 added `default` to that agreement; #1524 extended it to integers;
+ * #1958 added the integer `min`.
  */
 
 import { test } from 'node:test';
@@ -58,6 +59,12 @@ const SETUP_FIELDS: Array<Record<string, unknown>> = [
   { key: 'max_str', type: 'integer', label: 'Max', required: false, default: '50' },
   { key: 'max_frac', type: 'integer', label: 'Max', required: false, default: 1.5 },
   { key: 'max_junk', type: 'integer', label: 'Max', required: false, default: 'lots' },
+  // #1958 — an integer lower bound, parsed like the default (YAML number or
+  // quoted whole number); anything else is no bound, and only integers get one.
+  { key: 'ttl', type: 'integer', label: 'TTL', required: false, default: 3600, min: 1 },
+  { key: 'ttl_str', type: 'integer', label: 'TTL', required: false, min: '0' },
+  { key: 'ttl_junk', type: 'integer', label: 'TTL', required: false, min: 'one' },
+  { key: 'name_min', type: 'string', label: 'Name', required: false, min: 1 },
 ];
 
 function manifest(): Record<string, unknown> {
@@ -145,6 +152,14 @@ test('#1524 — an integer default is a real number on the catalog view', () => 
   assert.equal(store.get('max_junk')?.default, undefined);
 });
 
+test('#1958 — an integer `min` is a real number, and only integers carry one', () => {
+  const store = loadedFields();
+  assert.equal(store.get('ttl')?.min, 1);
+  assert.equal(store.get('ttl_str')?.min, 0);
+  assert.equal(store.get('ttl_junk')?.min, undefined);
+  assert.equal(store.get('name_min')?.min, undefined);
+});
+
 test('store and install-wizard paths agree on required for the SAME fixture', () => {
   const store = loadedFields();
   const entry = {
@@ -195,6 +210,9 @@ test('store and install-wizard paths agree on required for the SAME fixture', ()
       installField.default,
       `default drift on '${installField.key}'`,
     );
+    // #1958 — the install and the post-install edit enforce `min` from the
+    // install projection; the editor reads the catalog one.
+    assert.equal(storeField.min, installField.min, `min drift on '${installField.key}'`);
   }
 });
 

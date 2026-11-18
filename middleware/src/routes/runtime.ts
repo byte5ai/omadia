@@ -16,13 +16,13 @@ import {
   isEffectiveProviderChange,
   reactivateAfterProviderWrite,
 } from '../platform/providerDependents.js';
-import type { PluginActivationResult, SetupOption } from '../api/admin-v1.js';
+import type { InstallSetupField, PluginActivationResult, SetupOption } from '../api/admin-v1.js';
 import {
   SetupOptionsResolveError,
   withTimeout,
 } from '../plugins/dynamicAgentRuntime.js';
 import type { ConnectionProbeOutcome } from '../plugins/connectionProbe.js';
-import { extractSetupSchema } from '../plugins/installService.js';
+import { coerceSetupFieldValue, extractSetupSchema } from '../plugins/installService.js';
 import type { InstalledAgent, InstalledRegistry } from '../plugins/installedRegistry.js';
 import type { PluginCatalog } from '../plugins/manifestLoader.js';
 import {
@@ -1070,21 +1070,29 @@ async function applySetupValues(
   const secretFieldKeys = resolveSecretFieldKeys(deps.catalog, id);
   const isSecret = (key: string): boolean =>
     secretFieldKeys === null ? true : secretFieldKeys.has(key);
-  // A `boolean` field edited after install arrives as the string 'true' /
-  // 'false' (the patch body is string-only). Store a real boolean, exactly like
-  // the install path does — plugins reading `config.get<boolean>()` would
-  // otherwise see a truthy "false". Anything else is not a boolean: refuse it
+  // #1464, #1958 — a `boolean` or `integer` field edited after install arrives
+  // as a string (the patch body is string-only). Convert it with the install
+  // path's own `coerceSetupFieldValue`, so an edit stores the same real type —
+  // and refuses the same values — as the install did. A plugin reading
+  // `config.get<number>()` would otherwise compute `now + "1800"`. Refused
   // before anything is written.
-  const booleanFieldKeys = resolveBooleanFieldKeys(deps.catalog, id);
+  const typedFields = resolveTypedFields(deps.catalog, id);
+  const typedValues: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(setEntries)) {
-    if (booleanFieldKeys.has(k) && v !== 'true' && v !== 'false') {
+    const field = typedFields.get(k);
+    if (!field) continue;
+    const coerced = coerceSetupFieldValue(field, v);
+    if ('error' in coerced) {
       res.status(400).json({
         code: 'runtime.setup_field_invalid',
-        message: `value for '${k}' must be 'true' or 'false'`,
+        message: `value for '${k}' ${typedValueExpectation(field)}`,
         field: k,
+        reason: coerced.error.code,
+        ...(coerced.error.params ? { params: coerced.error.params } : {}),
       });
       return;
     }
+    typedValues[k] = coerced.value;
   }
 
   const vaultSet: Record<string, string> = {};
@@ -1093,7 +1101,7 @@ async function applySetupValues(
   const configDelete: string[] = [];
   for (const [k, v] of Object.entries(setEntries)) {
     if (isSecret(k)) vaultSet[k] = v;
-    else configSet[k] = booleanFieldKeys.has(k) ? v === 'true' : v;
+    else configSet[k] = Object.hasOwn(typedValues, k) ? typedValues[k] : v;
   }
 
   try {
@@ -1181,16 +1189,31 @@ function dependentRebuildFailure(err: ProviderDependentRebuildError): {
   };
 }
 
-/** Keys of the plugin's `boolean` setup fields; empty without a catalog entry. */
-function resolveBooleanFieldKeys(
+/**
+ * The plugin's `boolean` / `integer` setup fields by key — the types whose
+ * stored value is not the string the patch body carries. Empty without a
+ * catalog entry. Other types are stored as sent (their format check is the
+ * `pattern` gate above).
+ */
+function resolveTypedFields(
   catalog: PluginCatalog | undefined,
   pluginId: string,
-): Set<string> {
+): Map<string, InstallSetupField> {
   const entry = catalog?.get(pluginId);
   const schema = entry ? extractSetupSchema(entry) : null;
-  return new Set(
-    (schema?.fields ?? []).filter((f) => f.type === 'boolean').map((f) => f.key),
+  return new Map(
+    (schema?.fields ?? [])
+      .filter((f) => f.type === 'boolean' || f.type === 'integer')
+      .map((f) => [f.key, f]),
   );
+}
+
+/** English (no request locale) tail of the 400 message for a typed field. */
+function typedValueExpectation(field: InstallSetupField): string {
+  if (field.type === 'boolean') return "must be 'true' or 'false'";
+  return field.min !== undefined
+    ? `must be a whole number of at least ${field.min}`
+    : 'must be a whole number';
 }
 
 function resolveSecretFieldKeys(
