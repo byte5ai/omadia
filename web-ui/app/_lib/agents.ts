@@ -1495,6 +1495,9 @@ export function parseTeamsAssignmentCapabilities(
 export const TEAMS_TARGET_LISTING_UNAVAILABLE = [
   /** #2043 — the server is still enumerating a large tenant; ask again. */
   'loading',
+  /** #2043 — this half was not asked for: the tenant's chats are listed only
+   *  for a search, never just to open the picker. */
+  'not_requested',
   'connector_unavailable',
   'connector_unsupported',
   /** NOBODY is signed in — and since #949 nothing else. */
@@ -1572,12 +1575,52 @@ export interface TeamsChatOptionDto {
   memberNames?: readonly string[];
 }
 
+/** A chat one of the instance's bots already holds a reference in (#2043):
+ *  the picker's default list, known without asking Microsoft. */
+export interface TeamsRecentTargetDto {
+  id: string;
+  kind: 'group-chat' | 'one-on-one-chat';
+  label: string | null;
+  /** This agent's own bot is already in that chat. */
+  knownToThisBot: boolean;
+}
+
 export interface AgentTeamsTargetsDto {
   ok: boolean;
   agent: string;
   provisioner_installed: boolean;
   teams: TeamsTargetListingDto<TeamsTeamOptionDto>;
   chats: TeamsTargetListingDto<TeamsChatOptionDto>;
+  /** Absent on an older middleware, or when the list could not be read. */
+  recent?: readonly TeamsRecentTargetDto[];
+}
+
+function parseRecentTargets(value: unknown): readonly TeamsRecentTargetDto[] | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const record = value as Record<string, unknown>;
+  if (record['available'] !== true || !Array.isArray(record['items'])) return undefined;
+  const items: TeamsRecentTargetDto[] = [];
+  for (const raw of record['items']) {
+    if (typeof raw !== 'object' || raw === null) continue;
+    const r = raw as Record<string, unknown>;
+    const id = r['id'];
+    const kind = r['kind'];
+    if (typeof id !== 'string' || id === '') continue;
+    if (kind !== 'group-chat' && kind !== 'one-on-one-chat') continue;
+    items.push({
+      id,
+      kind,
+      label: typeof r['label'] === 'string' && r['label'] !== '' ? r['label'] : null,
+      knownToThisBot: r['knownToThisBot'] === true,
+    });
+  }
+  return items;
+}
+
+/** What to ask the directory for. Without `q` the tenant's chats are not
+ *  enumerated; the answer carries teams and `recent` only. */
+export interface TeamsTargetsQuery {
+  readonly q?: string;
 }
 
 /**
@@ -1675,14 +1718,22 @@ function parseChatOption(raw: unknown): TeamsChatOptionDto | null {
  */
 export async function getAgentTeamsTargets(
   slug: string,
+  query: TeamsTargetsQuery = {},
 ): Promise<AgentTeamsTargetsDto> {
-  const dto = await callJson<AgentTeamsTargetsDto>(
-    `/v1/operator/agents/${encodeURIComponent(slug)}/teams/targets`,
+  const q = query.q?.trim() ?? '';
+  const dto = await callJson<AgentTeamsTargetsDto & { recent?: unknown }>(
+    `/v1/operator/agents/${encodeURIComponent(slug)}/teams/targets${
+      q !== '' ? `?q=${encodeURIComponent(q)}` : ''
+    }`,
   );
+  const recent = parseRecentTargets(dto.recent);
   return {
-    ...dto,
+    ok: dto.ok,
+    agent: dto.agent,
+    provisioner_installed: dto.provisioner_installed,
     teams: parseTargetListing(dto.teams, parseTeamOption),
     chats: parseTargetListing(dto.chats, parseChatOption),
+    ...(recent !== undefined ? { recent } : {}),
   };
 }
 
@@ -1697,8 +1748,10 @@ export interface LoadTeamsTargetsOptions {
   readonly isCancelled: () => boolean;
   readonly delayMs?: number;
   readonly maxPolls?: number;
+  /** A chat search: the server lists the tenant's chats only for this. */
+  readonly query?: TeamsTargetsQuery;
   /** Injectable for tests. */
-  readonly fetchTargets?: (slug: string) => Promise<AgentTeamsTargetsDto>;
+  readonly fetchTargets?: (slug: string, query?: TeamsTargetsQuery) => Promise<AgentTeamsTargetsDto>;
   readonly sleep?: (ms: number) => Promise<void>;
 }
 
@@ -1730,7 +1783,7 @@ export async function loadAgentTeamsTargets(
   };
   for (let poll = 0; poll < maxPolls; poll += 1) {
     try {
-      last = await fetchTargets(slug);
+      last = opts.query !== undefined ? await fetchTargets(slug, opts.query) : await fetchTargets(slug);
     } catch {
       if (!opts.isCancelled()) opts.onUpdate({ ...last, ...TARGETS_UNREADABLE });
       return;

@@ -351,6 +351,7 @@ export function AgentTeamsIdentity(
               screen and allowed to submit it on the other. */}
           <div className="sm:col-span-3">
             <TeamsTargetField
+              slug={props.slug}
               targets={targets}
               targetsLoading={targetsLoading}
               value={teamId}

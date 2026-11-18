@@ -65,11 +65,18 @@ import type { RuntimeReadinessCause } from '../platform/pluginLlmReadiness.js';
 import type { BotPresenceStore } from '../conductor/botPresenceStore.js';
 import type { ChannelDirectoryRegistry } from '../channels/channelDirectoryRegistry.js';
 import type { ConversationRosterRegistry } from '../channels/rosterRegistry.js';
-import { loadTeamsTargetDirectory } from '../services/teamsTargetDirectoryService.js';
+import {
+  loadTeamsTargetChats,
+  loadTeamsTargetTeams,
+} from '../services/teamsTargetDirectoryService.js';
 import {
   createTeamsTargetDirectoryCache,
   type TeamsTargetDirectoryCache,
 } from '../services/teamsTargetDirectoryCache.js';
+import {
+  recentTeamsTargets,
+  type RecentTeamsConversationSource,
+} from '../services/teamsRecentTargets.js';
 import {
   resetTeamsIdentity,
   TEAMS_RESET_SCOPES,
@@ -518,6 +525,10 @@ export interface OperatorTeamsIdentityDeps {
    * {@link supportsTeamUninstall}.
    */
   readonly getProvisioner?: () => TeamsProvisionerAccessor | undefined;
+  /** #2043 D8 — the conversations the instance's bots already hold a
+   *  reference in, newest first: the target picker's default list. Optional
+   *  (no database, tests): the picker then has search and the id field. */
+  readonly recentConversations?: RecentTeamsConversationSource;
   /** Vault ref under which the bot's app password is held — surfaced by the
    *  status endpoint INSTEAD of the secret itself. Defaults to
    *  {@link defaultTeamsBotSecretRef} (the connector's deterministic ref).
@@ -1648,6 +1659,9 @@ export interface OperatorAgentsRouterOptions {
    *  store; the teams-identity routes 503 while it returns undefined (boot
    *  wiring not registered yet, tests / minimal mounts). */
   readonly getTeamsIdentity?: () => OperatorTeamsIdentityDeps | undefined;
+  /** #2043 D8 — the team/chat directory cache. ONE per router; injectable so
+   *  a test can put a slow source behind the real route. */
+  readonly teamsTargetCache?: TeamsTargetDirectoryCache;
   /** #914 — the agent identity store (migration 0052). Late-bound like the
    *  others; the identity routes 503 while it returns undefined (no
    *  DATABASE_URL, tests / minimal mounts). */
@@ -3340,25 +3354,29 @@ export function createOperatorAgentsRouter(
     },
   );
 
-  // One cache per identity deps object (it is what names the tenant's
-  // connector and the delegated tokens), created on first use.
-  const teamsTargetCaches = new WeakMap<object, TeamsTargetDirectoryCache>();
-  const teamsTargetCache = (deps: OperatorTeamsIdentityDeps): TeamsTargetDirectoryCache => {
-    let cache = teamsTargetCaches.get(deps);
-    if (!cache) {
-      cache = createTeamsTargetDirectoryCache({
-        load: () =>
-          loadTeamsTargetDirectory({
-            getProvisioner: () => deps.getProvisioner?.(),
-            ...(deps.delegatedTokens ? { delegatedTokens: deps.delegatedTokens } : {}),
-            log: (m) => console.log(m),
-          }),
-        log: (m) => console.log(m),
-      });
-      teamsTargetCaches.set(deps, cache);
-    }
-    return cache;
+  // #2043 D8/D14 — ONE directory cache for this router, created here and
+  // kept for its lifetime. It must not hang off the object
+  // `getTeamsIdentity()` returns: that object is built anew for every
+  // request, and a cache keyed by it is a new, empty cache per request (the
+  // regression of the first version: every call started its own enumeration
+  // and answered `loading`). The loaders resolve the connector and the token
+  // custody when they run, so an installed, upgraded or removed connector is
+  // followed without rebuilding the cache.
+  const teamsTargetDirectoryOptions = () => {
+    const deps = options.getTeamsIdentity?.();
+    return {
+      getProvisioner: () => deps?.getProvisioner?.(),
+      ...(deps?.delegatedTokens ? { delegatedTokens: deps.delegatedTokens } : {}),
+      log: (m: string) => console.log(m),
+    };
   };
+  const teamsTargetCache: TeamsTargetDirectoryCache =
+    options.teamsTargetCache ??
+    createTeamsTargetDirectoryCache({
+      loadTeams: () => loadTeamsTargetTeams(teamsTargetDirectoryOptions()),
+      loadChats: () => loadTeamsTargetChats(teamsTargetDirectoryOptions()),
+      log: (m) => console.log(m),
+    });
 
   /**
    * GET /:slug/teams/targets — what the operator can PICK instead of type.
@@ -3398,16 +3416,28 @@ export function createOperatorAgentsRouter(
       // minutes, answered within a bounded wait (`reason: 'loading'` when the
       // tenant is large) and searchable/limited on the server.
       const limit = Number(req.query['limit']);
-      const directory = await teamsTargetCache(deps).get({
-        ...(typeof req.query['q'] === 'string' ? { q: req.query['q'].slice(0, 200) } : {}),
-        ...(Number.isFinite(limit) && limit > 0 ? { limit } : {}),
-        ...(req.query['refresh'] === '1' ? { refresh: true } : {}),
-      });
+      const q = typeof req.query['q'] === 'string' ? req.query['q'].trim().slice(0, 200) : '';
+      // The tenant's chats are enumerated only for a search or on explicit
+      // request (`chats=all`): nobody needs 4,560 chats to pick one target.
+      // Without either, the chat half answers `not_requested` and the picker
+      // works from `recent` (what the instance's bots already know) and the
+      // id / link field.
+      const wantChats = q !== '' || req.query['chats'] === 'all';
+      const [directory, recent] = await Promise.all([
+        teamsTargetCache.get({
+          ...(q !== '' ? { q } : {}),
+          ...(Number.isFinite(limit) && limit > 0 ? { limit } : {}),
+          ...(req.query['refresh'] === '1' ? { refresh: true } : {}),
+          chats: wantChats,
+        }),
+        recentTeamsTargets(deps, agent.id),
+      ]);
       res.json({
         ok: true,
         agent: agent.slug,
         provisioner_installed: deps.isProvisionerInstalled(),
         ...directory,
+        recent,
       });
     } catch (err) {
       badRequest(res, err);

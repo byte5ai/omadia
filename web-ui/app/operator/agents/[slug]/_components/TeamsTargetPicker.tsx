@@ -1,16 +1,19 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
 
 import {
   SearchableSelect,
   type SearchableOption,
 } from '@/app/_components/ui/SearchableSelect';
-import type {
-  AgentTeamsTargetsDto,
-  TeamsChatOptionDto,
-  TeamsTargetListingDto,
-  TeamsTeamOptionDto,
+import {
+  getAgentTeamsTargets,
+  loadAgentTeamsTargets,
+  type AgentTeamsTargetsDto,
+  type TeamsChatOptionDto,
+  type TeamsTargetListingDto,
+  type TeamsTeamOptionDto,
 } from '@/app/_lib/agents';
 import type { TeamsTargetKind } from '@/app/_lib/teamsInstallTarget';
 
@@ -79,7 +82,14 @@ export interface TeamsTargetPickerProps {
   readonly value: string;
   /** `kind` is the DIRECTORY's answer for this row, not a guess about it. */
   readonly onSelect: (id: string, kind: TeamsTargetKind) => void;
+  /** The agent, for the chat search (#2043). Without it there is no search
+   *  and the picker shows only what `targets` holds. */
+  readonly slug?: string;
 }
+
+/** Characters before a chat search is sent: one letter matches half a tenant. */
+const CHAT_SEARCH_MIN_LENGTH = 2;
+const CHAT_SEARCH_DEBOUNCE_MS = 400;
 
 /** Label for one chat row: its topic, else its members, else its id. Never
  *  blank — a nameless chat is still a pickable one. */
@@ -100,6 +110,7 @@ export function TeamsTargetPicker({
   disabled,
   value,
   onSelect,
+  slug,
 }: TeamsTargetPickerProps): React.JSX.Element | null {
   const t = useTranslations('operatorAgents.teamsTargets');
 
@@ -154,9 +165,64 @@ export function TeamsTargetPicker({
         // was missing and inventing a second guess would repeat the mistake.
         unavailableText={(reason) => t(`unavailable.teams.${reason}`)}
       />
+      {/* #2043 — the tenant's chats are NOT listed just to open this picker:
+          in a tenant with thousands of chats that cost a minute on every
+          visit and still came back incomplete. The default is what the
+          instance already knows (chats its bots are in); everything else is
+          found by a search the server runs, or pasted as a link or id below.
+          A full list is still shown when the server sent one. */}
+      {chats.available || chats.reason !== 'not_requested' ? (
+        <ChatSelect
+          chats={chats}
+          notes={chatNotes}
+          disabled={disabled}
+          value={value}
+          onSelect={onSelect}
+        />
+      ) : (
+        <>
+          <RecentChats
+            recent={targets.recent}
+            disabled={disabled}
+            value={value}
+            onSelect={onSelect}
+          />
+          {slug !== undefined ? (
+            <ChatSearch slug={slug} disabled={disabled} value={value} onSelect={onSelect} />
+          ) : null}
+        </>
+      )}
+    </div>
+  );
+}
+
+interface ChatSelectProps {
+  readonly chats: TeamsTargetListingDto<TeamsChatOptionDto>;
+  readonly notes?: readonly string[];
+  readonly disabled: boolean;
+  readonly value: string;
+  readonly onSelect: (id: string, kind: TeamsTargetKind) => void;
+  /** Overrides the label of the list (search results). */
+  readonly label?: string;
+  readonly emptyLabel?: string;
+}
+
+/** A list of chats the server sent: the full listing, or search results. */
+function ChatSelect({
+  chats,
+  notes,
+  disabled,
+  value,
+  onSelect,
+  label,
+  emptyLabel,
+}: ChatSelectProps): React.JSX.Element {
+  const t = useTranslations('operatorAgents.teamsTargets');
+  return (
+    <>
       <TargetSelect
-        label={t('chatsLabel')}
-        emptyLabel={t('chatsEmpty')}
+        label={label ?? t('chatsLabel')}
+        emptyLabel={emptyLabel ?? t('chatsEmpty')}
         placeholder={t('filter')}
         listing={chats}
         disabled={disabled}
@@ -166,7 +232,7 @@ export function TeamsTargetPicker({
         matchCountText={(count) => t('matchCount', { count })}
         truncatedText={(shown, total) => t('truncated', { shown, total })}
         incompleteText={(shown) => t('incomplete', { shown })}
-        notes={chatNotes}
+        {...(notes !== undefined ? { notes } : {})}
         optionsOf={(items: readonly TeamsChatOptionDto[]) =>
           items.map((chat) => ({
             id: chat.id,
@@ -195,6 +261,135 @@ export function TeamsTargetPicker({
           t(`unavailable.chats.${reason}`, { scope: 'Chat.ReadBasic' })
         }
       />
+    </>
+  );
+}
+
+interface RecentChatsProps {
+  readonly recent: AgentTeamsTargetsDto['recent'];
+  readonly disabled: boolean;
+  readonly value: string;
+  readonly onSelect: (id: string, kind: TeamsTargetKind) => void;
+}
+
+/** The chats the instance's bots are already in: known without a lookup. */
+function RecentChats({ recent, disabled, value, onSelect }: RecentChatsProps): React.JSX.Element | null {
+  const t = useTranslations('operatorAgents.teamsTargets');
+  if (recent === undefined) return null;
+  if (recent.length === 0) {
+    return <p className="text-[11px] text-[color:var(--fg-muted)]">{t('recent.empty')}</p>;
+  }
+  const options: SearchableOption[] = recent.map((chat) => ({
+    id: chat.id,
+    label: `${chat.label ?? chat.id} · ${t(
+      `chatType.${chat.kind === 'one-on-one-chat' ? 'oneOnOne' : 'group'}`,
+    )}${chat.knownToThisBot ? ` · ${t('recent.thisBot')}` : ''}`,
+    keywords: [chat.id],
+  }));
+  return (
+    <SearchableSelect
+      label={t('recent.label')}
+      placeholder={t('filter')}
+      options={options}
+      value={value}
+      disabled={disabled}
+      onSelect={(id) =>
+        onSelect(id, recent.find((chat) => chat.id === id)?.kind ?? 'group-chat')
+      }
+      noMatchText={(query) => t('noMatch', { query })}
+      matchCountText={(count) => t('matchCount', { count })}
+    />
+  );
+}
+
+interface ChatSearchProps {
+  readonly slug: string;
+  readonly disabled: boolean;
+  readonly value: string;
+  readonly onSelect: (id: string, kind: TeamsTargetKind) => void;
+}
+
+type ChatSearchState =
+  | { readonly phase: 'idle' }
+  | { readonly phase: 'searching'; readonly query: string }
+  | {
+      readonly phase: 'done';
+      readonly query: string;
+      readonly chats: TeamsTargetListingDto<TeamsChatOptionDto>;
+    };
+
+/**
+ * Find a chat by name: the SERVER searches the tenant (#2043).
+ *
+ * The first search in a large tenant makes the server page through all chats
+ * once (it answers "still loading" meanwhile and this asks again); it keeps
+ * the result, so every later search is immediate. Every state is visible:
+ * what to type, searching, results, nothing found, could not search.
+ */
+function ChatSearch({ slug, disabled, value, onSelect }: ChatSearchProps): React.JSX.Element {
+  const t = useTranslations('operatorAgents.teamsTargets');
+  const [text, setText] = useState('');
+  const [state, setState] = useState<ChatSearchState>({ phase: 'idle' });
+  const query = text.trim();
+  const active = query.length >= CHAT_SEARCH_MIN_LENGTH;
+
+  useEffect(() => {
+    if (!active) return;
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      setState({ phase: 'searching', query });
+      void loadAgentTeamsTargets(slug, {
+        query: { q: query },
+        isCancelled: () => cancelled,
+        fetchTargets: getAgentTeamsTargets,
+        onUpdate: (dto) => {
+          const stillLoading = !dto.chats.available && dto.chats.reason === 'loading';
+          if (!stillLoading) setState({ phase: 'done', query, chats: dto.chats });
+        },
+      });
+    }, CHAT_SEARCH_DEBOUNCE_MS);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [slug, query, active]);
+
+  // A result belongs to the text it was searched for; anything shorter than
+  // a search shows the hint again.
+  const shown: ChatSearchState = active ? state : { phase: 'idle' };
+
+  return (
+    <div className="flex flex-col gap-1">
+      <label className="flex flex-col gap-1 text-[11px] text-[color:var(--fg-muted)]">
+        {t('search.label')}
+        <input
+          type="search"
+          value={text}
+          disabled={disabled}
+          onChange={(e) => setText(e.target.value)}
+          placeholder={t('search.placeholder')}
+          aria-label={t('search.label')}
+          className="rounded-md border border-[color:var(--border)] bg-transparent px-2 py-1 text-sm text-[color:var(--fg-strong)]"
+        />
+      </label>
+      {shown.phase === 'idle' ? (
+        <p className="text-[11px] text-[color:var(--fg-muted)]">{t('search.hint')}</p>
+      ) : null}
+      {shown.phase === 'searching' ? (
+        <p role="status" className="text-[11px] text-[color:var(--fg-muted)]">
+          {t('search.searching', { query: shown.query })}
+        </p>
+      ) : null}
+      {shown.phase === 'done' ? (
+        <ChatSelect
+          chats={shown.chats}
+          disabled={disabled}
+          value={value}
+          onSelect={onSelect}
+          label={t('search.results', { query: shown.query })}
+          emptyLabel={t('search.none', { query: shown.query })}
+        />
+      ) : null}
     </div>
   );
 }

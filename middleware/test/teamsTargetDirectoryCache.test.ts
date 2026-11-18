@@ -42,21 +42,22 @@ function tenant(chats: number): TeamsTargetDirectory {
 function slowTenant(directory: TeamsTargetDirectory) {
   let loads = 0;
   let finish: (() => void) | undefined;
-  let timeUp: (() => void) | undefined;
+  const waiting: (() => void)[] = [];
   const cache = createTeamsTargetDirectoryCache({
-    load: () => {
+    loadTeams: async () => directory.teams,
+    loadChats: () => {
       loads += 1;
       return new Promise((resolve) => {
-        finish = () => resolve(directory);
+        finish = () => resolve(directory.chats);
       });
     },
     sleep: () =>
       new Promise((resolve) => {
-        timeUp = resolve;
+        waiting.push(resolve);
       }),
   });
   const tick = (): Promise<void> => new Promise((r) => setImmediate(r));
-  return { cache, loads: () => loads, finish: () => finish?.(), timeUp: () => timeUp?.(), tick };
+  return { cache, loads: () => loads, finish: () => finish?.(), timeUp: () => waiting.splice(0).forEach((resolve) => resolve()), tick };
 }
 
 describe('teams target directory: bounded, shared, searchable (#2043 D8)', () => {
@@ -65,10 +66,9 @@ describe('teams target directory: bounded, shared, searchable (#2043 D8)', () =>
     const first = h.cache.get();
     await h.tick();
     h.timeUp();
-    assert.deepEqual(await first, {
-      teams: { available: false, reason: 'loading' },
-      chats: { available: false, reason: 'loading' },
-    });
+    const early = await first;
+    assert.deepEqual(early.chats, { available: false, reason: 'loading' });
+    assert.equal(early.teams.available, true, 'the short team list does not wait for the chats');
     const second = h.cache.get();
     await h.tick();
     assert.equal(h.loads(), 1, 'a second caller joins the running enumeration');
@@ -114,43 +114,42 @@ describe('teams target directory: bounded, shared, searchable (#2043 D8)', () =>
   });
 
   it('keeps an unavailable half apart from an available one, and does not keep a failure', async () => {
-    let calls = 0;
+    let teamCalls = 0;
+    let chatCalls = 0;
     const cache = createTeamsTargetDirectoryCache({
-      load: async () => {
-        calls += 1;
-        if (calls === 1) throw new Error('graph down');
-        if (calls === 2) {
-          return {
-            teams: { available: false, reason: 'lookup_failed' },
-            chats: { available: false, reason: 'sign_in_required' },
-          };
-        }
-        return { teams: tenant(1).teams, chats: { available: false, reason: 'sign_in_required' } };
+      loadTeams: async () => {
+        teamCalls += 1;
+        if (teamCalls === 1) throw new Error('graph down');
+        if (teamCalls === 2) return { available: false, reason: 'lookup_failed' };
+        return tenant(1).teams;
+      },
+      loadChats: async () => {
+        chatCalls += 1;
+        return { available: false, reason: 'sign_in_required' };
       },
     });
-    assert.deepEqual(await cache.get(), {
-      teams: { available: false, reason: 'lookup_failed' },
-      chats: { available: false, reason: 'lookup_failed' },
-    });
-    const second = await cache.get();
-    assert.equal(second.chats.available === false && second.chats.reason, 'sign_in_required');
-    const third = await cache.get();
-    assert.equal(calls, 3, 'neither failure was kept');
-    assert.equal(third.teams.available, true);
-    assert.equal(third.chats.available === false && third.chats.reason, 'sign_in_required');
+    const first = await cache.get();
+    assert.deepEqual(first.teams, { available: false, reason: 'lookup_failed' }, 'a thrown load is "could not look"');
+    assert.deepEqual(first.chats, { available: false, reason: 'sign_in_required' });
     await cache.get();
-    assert.equal(calls, 3, 'a readable result is kept');
+    const third = await cache.get();
+    assert.equal(teamCalls, 3, 'neither failure was kept');
+    assert.equal(chatCalls, 3, 'an unavailable half is asked again');
+    assert.equal(third.teams.available, true);
+    await cache.get();
+    assert.equal(teamCalls, 3, 'a readable result is kept');
     await cache.get({ refresh: true });
-    assert.equal(calls, 4, 'refresh enumerates again');
+    assert.equal(teamCalls, 4, 'refresh enumerates again');
   });
 
   it('a kept result expires', async () => {
     let time = 0;
     let calls = 0;
     const cache = createTeamsTargetDirectoryCache({
-      load: async () => {
+      loadTeams: async () => tenant(2).teams,
+      loadChats: async () => {
         calls += 1;
-        return tenant(2);
+        return tenant(2).chats;
       },
       ttlMs: 1000,
       now: () => time,
@@ -218,5 +217,49 @@ describe('teams target directory: bounded, shared, searchable (#2043 D8)', () =>
     });
     assert.ok(none.chats.available);
     assert.equal(none.chats.memberSearch, 'none');
+  });
+
+  it('#2043 D8 — chats are not enumerated unless asked for', async () => {
+    let chatLoads = 0;
+    const cache = createTeamsTargetDirectoryCache({
+      loadTeams: async () => tenant(1).teams,
+      loadChats: async () => {
+        chatLoads += 1;
+        return tenant(3).chats;
+      },
+    });
+    const page = await cache.get({ chats: false });
+    assert.equal(page.teams.available, true);
+    assert.deepEqual(page.chats, { available: false, reason: 'not_requested' });
+    assert.equal(chatLoads, 0);
+    const searched = await cache.get({ q: 'person 1' });
+    assert.equal(chatLoads, 1);
+    assert.ok(searched.chats.available);
+    assert.equal(searched.chats.matched, 1);
+  });
+
+  it('#2043 D14 — concurrent callers share ONE enumeration, and every later caller is served from it', async () => {
+    const h = slowTenant(tenant(4560));
+    const callers = [h.cache.get(), h.cache.get({ q: 'x' }), h.cache.get({ limit: 5 })];
+    await h.tick();
+    assert.equal(h.loads(), 1, 'three concurrent requests, one enumeration');
+    h.timeUp();
+    for (const page of await Promise.all(callers)) {
+      assert.deepEqual(page.chats, { available: false, reason: 'loading' });
+    }
+    // More requests while it is still running do not start another one.
+    const late = h.cache.get();
+    await h.tick();
+    assert.equal(h.loads(), 1);
+    h.finish();
+    assert.ok((await late).chats.available);
+    // The request after completion gets the list, without a new enumeration
+    // and without waiting.
+    for (let i = 0; i < 5; i += 1) {
+      const page = await h.cache.get();
+      assert.ok(page.chats.available);
+      assert.equal(page.chats.total, 4560);
+    }
+    assert.equal(h.loads(), 1);
   });
 });

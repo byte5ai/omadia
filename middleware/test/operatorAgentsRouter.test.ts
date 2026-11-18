@@ -967,6 +967,7 @@ describe('createOperatorAgentsRouter', () => {
       const asked: string[] = [];
       peerChats = {
         botAppIdsIn: async () => [],
+        recentConversations: async () => [],
         conversationsOf: async (appId) => {
           asked.push(appId);
           if (appId !== 'aaaa') return [];
@@ -1014,6 +1015,7 @@ describe('createOperatorAgentsRouter', () => {
       const at = new Date('2026-09-07T10:00:00Z');
       peerChats = {
         botAppIdsIn: async () => [],
+        recentConversations: async () => [],
         conversationsOf: async () => [
           { conversationId: '19:dir@thread.skype', teamsType: 'groupChat', name: null, updatedAt: at, botAppIds: ['aaaa'] },
           { conversationId: '19:roster@thread.skype', teamsType: 'groupChat', name: null, updatedAt: at, botAppIds: ['aaaa'] },

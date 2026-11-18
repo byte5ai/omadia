@@ -252,6 +252,24 @@ export async function loadTeamsTargetDirectory(
   };
 }
 
+/** One half on its own, for a caller that needs only the teams. */
+export async function loadTeamsTargetTeams(
+  opts: TeamsTargetDirectoryOptions,
+): Promise<TeamsTargetListing<TeamsTeamSummary>> {
+  const provisioner = opts.getProvisioner();
+  if (provisioner === undefined) return { available: false, reason: 'connector_unavailable' };
+  return listTeamsSafely(opts, provisioner);
+}
+
+/** The other half on its own: the slow one in a large tenant. */
+export async function loadTeamsTargetChats(
+  opts: TeamsTargetDirectoryOptions,
+): Promise<TeamsTargetListing<TeamsChatSummary>> {
+  const provisioner = opts.getProvisioner();
+  if (provisioner === undefined) return { available: false, reason: 'connector_unavailable' };
+  return listChatsSafely(opts, provisioner);
+}
+
 async function listTeamsSafely(
   opts: TeamsTargetDirectoryOptions,
   provisioner: TeamsTargetDirectoryProvisioner,
