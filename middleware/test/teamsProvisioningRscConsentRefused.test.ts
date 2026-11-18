@@ -174,3 +174,80 @@ describe('RSC consent refusal at the install (#2043 D7)', () => {
     assert.equal((result as { reason?: string }).reason, 'rsc_consent_refused');
   });
 });
+
+/**
+ * What the M365 connector really sends, per version (its `http.ts`):
+ *
+ *   0.9.1  message `graph <step> 400 POST <url> body=<redacted body, long>`
+ *          plus `graphError { code, innerCode, message, requestId,
+ *          clientRequestId, body }`. The 62-letter request name is no longer
+ *          redacted.
+ *   0.9.0  the same message with the body cut to 200 characters, no
+ *          `graphError`, and every unbroken run of 60+ characters replaced by
+ *          `[redacted]`. That redaction, not the cut, removed the request
+ *          name at the rollout.
+ */
+const INSTALL_URL =
+  'https://graph.microsoft.com/v1.0/teams/c6031502-025c-4297-92c6-b734e17e46c5/installedApps';
+const GRAPH_MESSAGE = (JSON.parse(GRAPH_BODY) as { error: { message: string } }).error.message;
+
+const CONNECTOR_0_9_1 = connectorError(`graph teams.installedApps.add 400 POST ${INSTALL_URL} body=${GRAPH_BODY}`, {
+  graphError: {
+    code: 'BadRequest',
+    innerCode: 'InvalidRequest',
+    message: GRAPH_MESSAGE,
+    requestId: '0f3f9a52-5a3c-4d0e-9d57-1c5f0a9b7e11',
+    clientRequestId: '6a0d7f0e-1f8e-4c7a-8a43-0d2b6e1c9f55',
+    body: GRAPH_BODY,
+  },
+});
+
+const REDACTED_0_9_0 = GRAPH_BODY.replace(/\b[A-Za-z0-9_-]{60,}\b/g, '[redacted]');
+const CONNECTOR_0_9_0 = connectorError(
+  `graph teams.installedApps.add 400 POST ${INSTALL_URL.slice(0, 119)}… body=${REDACTED_0_9_0.slice(0, 199)}…`,
+);
+
+describe('RSC consent refusal, against what the connector really sends (#2043 D7)', () => {
+  it('connector 0.9.1: classified from its graphError, with the request name and both codes', async () => {
+    assert.equal(isRscConsentRefusal(CONNECTOR_0_9_1), true);
+    assert.deepEqual(graphErrorFactsOf(CONNECTOR_0_9_1), {
+      graphCode: 'BadRequest',
+      innerCode: 'InvalidRequest',
+      backendRequest: 'IsUserAuthorizedToGrantGroupResourceSpecificPermissionsRequest',
+    });
+    // The body is already in the message: it is not stored twice.
+    const text = fullConnectorErrorText(CONNECTOR_0_9_1);
+    assert.equal(text.split('IsUserAuthorizedToGrantGroupResourceSpecificPermissionsRequest').length - 1, 1);
+
+    const h = runnerWith(() => CONNECTOR_0_9_1);
+    const result = await h.runner.enqueue({ agentId: 'agent-1', teamId: 'team-42' });
+    assert.equal(h.installs(), 1);
+    assert.equal((result as { reason?: string }).reason, 'rsc_consent_refused');
+    assert.equal(h.row().errorCode, 'rsc_consent_refused');
+    assert.match(h.row().lastError ?? '', /Response Status Code: BadRequest/);
+  });
+
+  it('connector 0.9.1 with only the structured fields (a message someone shortened) is still classified', () => {
+    const structuredOnly = connectorError('graph teams.installedApps.add 400', {
+      graphError: { code: 'BadRequest', innerCode: 'InvalidRequest', message: GRAPH_MESSAGE },
+    });
+    assert.equal(isRscConsentRefusal(structuredOnly), true);
+    assert.match(fullConnectorErrorText(structuredOnly), / — Graph: Failed to execute TeamsGraphService backend request IsUserAuthorized/);
+  });
+
+  it('connector 0.9.0: the name was redacted and the URL cut, so this is NOT recognisable and takes the bounded replication wait', async () => {
+    // Pinned as it is, not as one would wish: this is why the rollout showed
+    // "replicating" and "cannot classify". The kernel cannot know more than
+    // it is told; 0.9.1 tells it.
+    assert.doesNotMatch(CONNECTOR_0_9_0.message, /IsUserAuthorizedToGrant/i);
+    assert.match(CONNECTOR_0_9_0.message, /backend request \[redacted\]/);
+    assert.equal(isRscConsentRefusal(CONNECTOR_0_9_0), false);
+
+    const h = runnerWith(() => CONNECTOR_0_9_0);
+    const result = await h.runner.enqueue({ agentId: 'agent-1', teamId: 'team-42' });
+    assert.equal(result.status, 'failed');
+    assert.ok(h.installs() > 1, 'waited for a replication that was not the cause');
+    assert.equal(h.row().errorCode, 'unknown');
+    assert.match(h.row().lastError ?? '', /treat as a configuration error, not a timing one/);
+  });
+});

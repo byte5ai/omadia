@@ -49,6 +49,11 @@ changelog.
   enumerated once for all callers, kept for five minutes, answered within
   eight seconds (`loading` otherwise, the UI asks again), and
   `GET /operator/agents/:slug/teams/targets` takes `q`, `limit` and `refresh`.
+- With M365 connector 0.9.1 the targets route reports when the connector's
+  own list is incomplete (`sourceTruncated`), how many untitled chats have no
+  member names, and whose members a search can match (`memberSearch`); the
+  picker says so. The `rsc_consent_refused` classification reads the
+  connector's `graphError`. Connector 0.9.0 keeps working unchanged.
 - The Teams template revision is read from `appPackage/TEMPLATE_REVISION.txt`
   (the extension-less `TEMPLATE_REVISION` is still read as a fallback). The
   plugin zip ingest refuses an extension-less file there, so channel-teams

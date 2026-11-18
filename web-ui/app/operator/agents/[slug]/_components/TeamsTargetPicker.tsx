@@ -115,6 +115,17 @@ export function TeamsTargetPicker({
 
   const teams = targets.teams;
   const chats = targets.chats;
+  // #2043 — say what the chat filter can and cannot find instead of quietly
+  // finding less: since M365 connector 0.9.1 only chats WITHOUT a name carry
+  // their members.
+  const chatNotes: string[] = [];
+  if (chats.available) {
+    if (chats.memberSearch === 'untitled_only') chatNotes.push(t('memberSearch.untitled_only'));
+    if (chats.memberSearch === 'none') chatNotes.push(t('memberSearch.none'));
+    if (chats.withoutMemberNames !== undefined) {
+      chatNotes.push(t('withoutMemberNames', { count: chats.withoutMemberNames }));
+    }
+  }
 
   return (
     <div className="flex flex-col gap-2">
@@ -129,6 +140,7 @@ export function TeamsTargetPicker({
         noMatchText={(query) => t('noMatch', { query })}
         matchCountText={(count) => t('matchCount', { count })}
         truncatedText={(shown, total) => t('truncated', { shown, total })}
+        incompleteText={(shown) => t('incomplete', { shown })}
         optionsOf={(items: readonly TeamsTeamOptionDto[]) =>
           items.map((team) => ({ id: team.id, label: team.displayName }))
         }
@@ -153,6 +165,8 @@ export function TeamsTargetPicker({
         noMatchText={(query) => t('noMatch', { query })}
         matchCountText={(count) => t('matchCount', { count })}
         truncatedText={(shown, total) => t('truncated', { shown, total })}
+        incompleteText={(shown) => t('incomplete', { shown })}
+        notes={chatNotes}
         optionsOf={(items: readonly TeamsChatOptionDto[]) =>
           items.map((chat) => ({
             id: chat.id,
@@ -200,6 +214,10 @@ interface TargetSelectProps<T> {
   readonly noMatchText: (query: string) => string;
   readonly matchCountText: (count: number) => string;
   readonly truncatedText: (shown: number, total: number) => string;
+  /** The list is incomplete at its source (the connector stopped early). */
+  readonly incompleteText: (shown: number) => string;
+  /** Further notes about what the list holds and what the filter matches. */
+  readonly notes?: readonly string[];
 }
 
 /**
@@ -227,6 +245,8 @@ function TargetSelect<T>({
   noMatchText,
   matchCountText,
   truncatedText,
+  incompleteText,
+  notes,
 }: TargetSelectProps<T>): React.JSX.Element {
   if (!listing.available) {
     return (
@@ -260,11 +280,20 @@ function TargetSelect<T>({
         noMatchText={noMatchText}
         matchCountText={matchCountText}
       />
-      {listing.truncated === true && listing.total !== undefined ? (
+      {listing.sourceTruncated === true ? (
+        <p role="note" className="text-[11px] text-[color:var(--fg-muted)]">
+          {incompleteText(options.length)}
+        </p>
+      ) : listing.truncated === true && listing.total !== undefined ? (
         <p role="note" className="text-[11px] text-[color:var(--fg-muted)]">
           {truncatedText(options.length, listing.total)}
         </p>
       ) : null}
+      {(notes ?? []).map((note) => (
+        <p key={note} role="note" className="text-[11px] text-[color:var(--fg-muted)]">
+          {note}
+        </p>
+      ))}
     </>
   );
 }

@@ -1546,6 +1546,14 @@ export type TeamsTargetListingDto<T> =
       /** #2043 — how many the tenant has; set when the server sent fewer. */
       total?: number;
       truncated?: boolean;
+      /** The connector's own list stopped early (M365 connector >= 0.9.1
+       *  reports it): the list is incomplete and `total` a lower bound. */
+      sourceTruncated?: boolean;
+      /** Chats: untitled chats that have no member names to label them. */
+      withoutMemberNames?: number;
+      /** Chats: whose members the filter can match. Since connector 0.9.1 a
+       *  chat WITH a name carries no members, so only untitled ones do. */
+      memberSearch?: 'all' | 'untitled_only' | 'none';
     }
   | { available: false; reason: TeamsTargetListingUnavailable };
 
@@ -1603,11 +1611,21 @@ function parseTargetListing<T>(
   }
   const total = record['total'];
   const truncated = record['truncated'] === true;
+  const sourceTruncated = record['sourceTruncated'] === true;
+  const unnamed = record['withoutMemberNames'];
+  const memberSearch = record['memberSearch'];
   return {
     available: true,
     items,
     ...(truncated && typeof total === 'number' && Number.isFinite(total)
       ? { total, truncated: true }
+      : {}),
+    ...(sourceTruncated ? { sourceTruncated: true } : {}),
+    ...(typeof unnamed === 'number' && Number.isFinite(unnamed) && unnamed > 0
+      ? { withoutMemberNames: unnamed }
+      : {}),
+    ...(memberSearch === 'all' || memberSearch === 'untitled_only' || memberSearch === 'none'
+      ? { memberSearch }
       : {}),
   };
 }

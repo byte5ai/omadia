@@ -2866,7 +2866,13 @@
       "filter": "Type to filter …",
       "noMatch": "Nothing matches “{query}”. For an id that does not appear here, use the field below.",
       "matchCount": "{count, plural, =0 {No matches} one {One match} other {# matches}}",
-      "truncated": "Showing {shown} of {total}. If the one you need is missing, type its id into the field below."
+      "truncated": "Showing {shown} of {total}. If the one you need is missing, type its id into the field below.",
+      "incomplete": "Microsoft returned only part of this list ({shown} entries), so it is incomplete. If the one you need is missing, type its id into the field below.",
+      "memberSearch": {
+        "untitled_only": "The filter finds chats by their name. Members are only searchable for chats without a name.",
+        "none": "The filter finds chats by their name; member names are not available for this list."
+      },
+      "withoutMemberNames": "{count, plural, one {One chat without a name has no member names and can only be told apart by its id.} other {# chats without a name have no member names and can only be told apart by their ids.}}"
     },
     "teamsReset": {
       "heading": "Reset provisioning",

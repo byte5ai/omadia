@@ -40,8 +40,25 @@ export type TeamsTargetPage<T> =
       readonly total: number;
       /** How many match `q` (equals `total` without one). */
       readonly matched: number;
-      /** `items` is shorter than `matched`: refine the search. */
+      /**
+       * The list is not everything there is: `items` is shorter than
+       * `matched` (this route's `limit`), or the connector itself stopped
+       * before Graph's last page ({@link sourceTruncated}).
+       */
       readonly truncated: boolean;
+      /** The connector's own list is incomplete (connector >= 0.9.1 reports
+       *  it). Then `total` is a lower bound, and a search cannot find what
+       *  was never listed. */
+      readonly sourceTruncated: boolean;
+      /** Chats: untitled chats that came back without member names. */
+      readonly withoutMemberNames?: number;
+      /**
+       * Chats: whose members a search can match. `untitled_only` since
+       * connector 0.9.1: a chat WITH a topic carries no member names, so it
+       * is found by its topic or id only. `all` when titled chats carry them
+       * (0.9.0 and older), `none` when no chat does.
+       */
+      readonly memberSearch?: 'all' | 'untitled_only' | 'none';
     }
   | {
       readonly available: false;
@@ -96,26 +113,45 @@ function page<T>(
     Math.max(1, Math.trunc(query.limit ?? TEAMS_TARGETS_DEFAULT_LIMIT)),
     TEAMS_TARGETS_MAX_LIMIT,
   );
+  const sourceTruncated = listing.sourceTruncated === true;
   return {
     available: true,
     items: matches.slice(0, limit),
     total: all.length,
     matched: matches.length,
-    truncated: matches.length > limit,
+    truncated: matches.length > limit || sourceTruncated,
+    sourceTruncated,
+    ...(listing.withoutMemberNames !== undefined && listing.withoutMemberNames > 0
+      ? { withoutMemberNames: listing.withoutMemberNames }
+      : {}),
   };
+}
+
+/** Whose member names the chats of a listing carry (see `memberSearch`). */
+function memberSearchOf(chats: readonly TeamsChatSummary[]): 'all' | 'untitled_only' | 'none' {
+  const named = chats.filter((chat) => (chat.memberNames?.length ?? 0) > 0);
+  if (named.length === 0) return 'none';
+  return named.some((chat) => chat.topic !== null) ? 'all' : 'untitled_only';
 }
 
 export function pageOfTeamsTargets(
   directory: TeamsTargetDirectory,
   query: TeamsTargetQuery = {},
 ): TeamsTargetDirectoryPage {
+  // Member names are matched where the connector supplied them. Since
+  // connector 0.9.1 that is untitled chats only; `memberSearch` says which,
+  // so the picker can tell the operator instead of silently finding less.
+  const chats = page<TeamsChatSummary>(
+    directory.chats,
+    (chat) => [chat.topic, chat.id, ...(chat.memberNames ?? [])],
+    query,
+  );
   return {
     teams: page<TeamsTeamSummary>(directory.teams, (team) => [team.displayName, team.id], query),
-    chats: page<TeamsChatSummary>(
-      directory.chats,
-      (chat) => [chat.topic, chat.id, ...(chat.memberNames ?? [])],
-      query,
-    ),
+    chats:
+      chats.available && directory.chats.available
+        ? { ...chats, memberSearch: memberSearchOf(directory.chats.items) }
+        : chats,
   };
 }
 

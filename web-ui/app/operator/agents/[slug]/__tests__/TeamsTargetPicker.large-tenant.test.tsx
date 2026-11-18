@@ -43,4 +43,42 @@ describe('TeamsTargetPicker in a large tenant', () => {
     expect(screen.getByText(/The team list is still being loaded from Microsoft/)).toBeTruthy();
     expect(screen.getByText(/Showing 1 of 2500\./)).toBeTruthy();
   });
+
+  it('connector 0.9.1: says the list is incomplete at its source, and what the filter can match', () => {
+    renderPicker({
+      ...base,
+      teams: { available: true, items: [{ id: 't1', displayName: 'Acme Team' }] },
+      chats: {
+        available: true,
+        items: [
+          { id: '19:a@thread.v2', topic: 'Lunch', chatType: 'group' },
+          { id: '19:b@thread.v2', topic: null, chatType: 'group', memberNames: ['Anna', 'Bert'] },
+        ],
+        total: 2,
+        truncated: true,
+        sourceTruncated: true,
+        withoutMemberNames: 3,
+        memberSearch: 'untitled_only',
+      },
+    });
+    expect(screen.getByText(/Microsoft returned only part of this list \(2 entries\), so it is incomplete/)).toBeTruthy();
+    expect(screen.queryByText(/Showing 2 of 2\./)).toBeNull();
+    expect(screen.getByText(/Members are only searchable for chats without a name/)).toBeTruthy();
+    expect(screen.getByText(/3 chats without a name have no member names/)).toBeTruthy();
+  });
+
+  it('connector 0.9.0 (no marks): none of the new notes appear', () => {
+    renderPicker({
+      ...base,
+      teams: { available: true, items: [{ id: 't1', displayName: 'Acme Team' }] },
+      chats: {
+        available: true,
+        items: [{ id: '19:a@thread.v2', topic: 'Lunch', chatType: 'group', memberNames: ['Anna'] }],
+        memberSearch: 'all',
+      },
+    });
+    expect(screen.queryByText(/incomplete/)).toBeNull();
+    expect(screen.queryByText(/Members are only searchable/)).toBeNull();
+    expect(screen.queryByText(/no member names/)).toBeNull();
+  });
 });

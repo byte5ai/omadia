@@ -163,4 +163,60 @@ describe('teams target directory: bounded, shared, searchable (#2043 D8)', () =>
     await cache.get();
     assert.equal(calls, 2);
   });
+
+  it('connector 0.9.1: an incomplete source list is reported, and so is whose members a search can match', () => {
+    // Titled chats carry no member names any more; untitled ones do, up to
+    // the connector's lookup budget.
+    const directory: TeamsTargetDirectory = {
+      teams: { available: true, items: [{ id: 't1', displayName: 'Vertrieb' }], sourceTruncated: false },
+      chats: {
+        available: true,
+        sourceTruncated: true,
+        withoutMemberNames: 2,
+        items: [
+          { id: '19:a@thread.v2', topic: 'Müsli-Runde', chatType: 'group' },
+          { id: '19:b@thread.v2', topic: null, chatType: 'group', memberNames: ['Anna Köhler', 'Bert Brandt'] },
+          { id: '19:c@thread.v2', topic: null, chatType: 'oneOnOne' },
+        ],
+      },
+    };
+    const all = pageOfTeamsTargets(directory);
+    assert.ok(all.chats.available && all.teams.available);
+    assert.equal(all.teams.sourceTruncated, false);
+    assert.equal(all.teams.truncated, false);
+    assert.equal(all.chats.sourceTruncated, true);
+    assert.equal(all.chats.truncated, true, 'incomplete at the source counts as truncated, whatever the limit');
+    assert.equal(all.chats.withoutMemberNames, 2);
+    assert.equal(all.chats.memberSearch, 'untitled_only');
+    // A member name finds the untitled chat; the titled one is found by its topic only.
+    const byMember = pageOfTeamsTargets(directory, { q: 'anna' });
+    assert.ok(byMember.chats.available);
+    assert.deepEqual(byMember.chats.items.map((chat) => chat.id), ['19:b@thread.v2']);
+  });
+
+  it('connector 0.9.0 (titled chats carry members, no marks): unchanged, and said so', () => {
+    const page = pageOfTeamsTargets(tenant(3));
+    assert.ok(page.chats.available);
+    assert.equal(page.chats.sourceTruncated, false);
+    assert.equal(page.chats.truncated, false);
+    assert.equal(page.chats.withoutMemberNames, undefined);
+    assert.equal(page.chats.memberSearch, 'untitled_only');
+    const titledWithMembers: TeamsTargetDirectory = {
+      teams: { available: true, items: [] },
+      chats: {
+        available: true,
+        items: [{ id: '19:a@thread.v2', topic: 'Lunch', chatType: 'group', memberNames: ['Anna Köhler'] }],
+      },
+    };
+    const old = pageOfTeamsTargets(titledWithMembers, { q: 'anna' });
+    assert.ok(old.chats.available);
+    assert.equal(old.chats.memberSearch, 'all');
+    assert.equal(old.chats.matched, 1, 'still found by member, as before');
+    const none = pageOfTeamsTargets({
+      teams: { available: true, items: [] },
+      chats: { available: true, items: [{ id: '19:a@thread.v2', topic: 'Lunch', chatType: 'group' }] },
+    });
+    assert.ok(none.chats.available);
+    assert.equal(none.chats.memberSearch, 'none');
+  });
 });

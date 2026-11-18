@@ -2866,7 +2866,13 @@
       "filter": "Tippen zum Filtern …",
       "noMatch": "Kein Eintrag passt zu „{query}“. Für eine ID, die hier nicht auftaucht, nutze das Feld darunter.",
       "matchCount": "{count, plural, =0 {Keine Treffer} one {Ein Treffer} other {# Treffer}}",
-      "truncated": "{shown} von {total} werden angezeigt. Fehlt der gesuchte Eintrag, tippe seine ID in das Feld unten."
+      "truncated": "{shown} von {total} werden angezeigt. Fehlt der gesuchte Eintrag, tippe seine ID in das Feld unten.",
+      "incomplete": "Microsoft hat nur einen Teil dieser Liste geliefert ({shown} Einträge), sie ist also unvollständig. Fehlt der gesuchte Eintrag, tippe seine ID in das Feld unten.",
+      "memberSearch": {
+        "untitled_only": "Der Filter findet Chats über ihren Namen. Nach Mitgliedern lässt sich nur bei Chats ohne Namen suchen.",
+        "none": "Der Filter findet Chats über ihren Namen; Mitgliedernamen liegen für diese Liste nicht vor."
+      },
+      "withoutMemberNames": "{count, plural, one {Ein Chat ohne Namen hat keine Mitgliedernamen und lässt sich nur über die ID unterscheiden.} other {# Chats ohne Namen haben keine Mitgliedernamen und lassen sich nur über die ID unterscheiden.}}"
     },
     "teamsReset": {
       "heading": "Provisionierung zurücksetzen",
