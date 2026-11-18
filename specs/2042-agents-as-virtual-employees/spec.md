@@ -46,8 +46,8 @@ distinct roles, rights and accountability, and everyone can see who did what. om
 therefore has no orchestrator as a product concept, neither as an agent nor as a hidden
 layer that decides or answers.
 
-The beta test made the cost concrete. A user built a "Strategist" specialist in the Agent
-Builder and worked with it. Its answers felt off. Investigation showed the Strategist was
+The beta test made the cost concrete. A user built a "Strategist" specialist in the builder (today's Plugin Builder, whose
+workspace is titled "Agent-Builder") and worked with it. Its answers felt off. Investigation showed the Strategist was
 never called; the orchestrator had answered in its place and let the user believe they
 were working with the Strategist. #332 documented the same failure ("gatekeeper drift")
 and added transparency and a Direct Line on top of the orchestrator, but kept the
@@ -166,8 +166,8 @@ Paths are relative to the kernel repo unless a sister repo is named.
 | # | Finding | Violates | Evidence |
 |---|---|---|---|
 | G1 | The default identity of every agent is "an AI assistant that answers requests by delegating to specialised domain agents". | INV-6 | `middleware/packages/harness-orchestrator/src/orchestrator.ts:2210` |
-| G2 | **Builder specialists are hidden plugins.** The Agent Builder ("Build your assistant") generates a plugin of kind `agent` with a persona (`AGENT.md`); at runtime it becomes the tool `query_<short>` of whatever agent it is attached to. No channel can address it. This is the most likely mechanism of the Strategist incident. | INV-1, INV-3 | `middleware/src/plugins/builder/buildPipeline.ts:246-252`; `middleware/assets/boilerplate/agent-pure-llm/manifest.yaml:19`; `middleware/src/plugins/dynamicAgentRuntime.ts:458-463,600` |
-| G3 | **DB sub-agents** (`agent_subagents`, Builder canvas node "Sub-Agent") have a name and their own system prompt, but no identity towards users, no channel presence and no own conversation: each call is one self-contained question, and a memory grant resolves to the calling agent's turn-bound scope. | INV-1, INV-5 | `middleware/packages/harness-orchestrator/src/registry/subAgentTools.ts:102,153-157,338`; `middleware/packages/harness-orchestrator/src/localSubAgent.ts:143-146`; `middleware/packages/harness-orchestrator/src/registry/subAgentMemoryTool.ts` |
+| G2 | **Builder specialists are hidden plugins.** The Plugin Builder (`/store/builder`, `middleware/src/plugins/builder/`; its workspace is even titled "Agent-Builder" today) generates a plugin of kind `agent` with a persona (`AGENT.md`); at runtime it becomes the tool `query_<short>` of whatever agent it is attached to. No channel can address it. This is the most likely mechanism of the Strategist incident. | INV-1, INV-3 | `middleware/src/plugins/builder/buildPipeline.ts:246-252`; `middleware/assets/boilerplate/agent-pure-llm/manifest.yaml:19`; `middleware/src/plugins/dynamicAgentRuntime.ts:458-463,600` |
+| G3 | **DB sub-agents** (`agent_subagents`, Agent Builder canvas node "Sub-Agent") have a name and their own system prompt, but no identity towards users, no channel presence and no own conversation: each call is one self-contained question, and a memory grant resolves to the calling agent's turn-bound scope. | INV-1, INV-5 | `middleware/packages/harness-orchestrator/src/registry/subAgentTools.ts:102,153-157,338`; `middleware/packages/harness-orchestrator/src/localSubAgent.ts:143-146`; `middleware/packages/harness-orchestrator/src/registry/subAgentMemoryTool.ts` |
 | G4 | Nothing prevents an agent from answering "as" another agent without calling it: no prompt rule, no harness guard. The fact verifier checks claims against tool traces, not speakers; it is disabled by default and, when enabled, runs in `shadow` mode unless configured otherwise. | INV-3 | `middleware/packages/harness-orchestrator/src/verifierJudge.ts`; `middleware/src/config.ts:684-688` (`VERIFIER_ENABLED … default(false)`, `VERIFIER_MODE … default('shadow')`) |
 | G5 | Persona skills swap an agent's identity per turn: a classifier picks a skill whose body replaces the agent's identity, with no call to anyone. The web UI shows "Answering as X". | INV-3 | `middleware/packages/harness-orchestrator/src/personaRouter.ts:1-20`; `web-ui/app/chat/page.tsx:1489-1525` |
 | G6 | Direct Line (#332, #445) patches addressing on top of the orchestrator: an unknown `#token` silently falls through to the orchestrator; sticky mode is off by default and held in memory with a 2 h idle TTL; the Claude-CLI path has no Direct Line. | INV-1, INV-7 | `middleware/packages/harness-orchestrator/src/directLineSticky.ts:53,196-198,312-324`; `middleware/src/config.ts:96-99`; `middleware/packages/harness-orchestrator/src/cliChatAgent.ts` |
@@ -210,9 +210,9 @@ audit (Codex, 2026-11-18) checked every change against the code and its history.
 
 | Concept today | Target |
 |---|---|
-| **Agent Builder output** ("Build your assistant", plugin of kind `agent` with persona) | The Builder creates **agents**: an `agents` row with identity and personality, plus, only where needed, a capability plugin the agent holds. A Builder specialist like the Strategist is directly addressable and speaks as itself. |
+| **Plugin Builder output** (plugin of kind `agent` with persona, `AGENT.md`) | **Purpose:** an operator gets a specialist with its own character and the code it needs in one place. **Conflict:** the result is a persona-bearing plugin, hidden as a tool of another agent (G2). **Adaptation:** two tools with one job each. The **Agent Builder** (`/admin/builder`, `middleware/src/routes/agentBuilder.ts`) creates and configures agents: identity, personality (the persona templates and culture presets move here from the Plugin Builder), capabilities, skills, internal helpers, triggers. The **Plugin Builder** (`/store/builder`, `/api/v1/builder`, `middleware/src/plugins/builder/`) generates capability plugins as code (spec, slots, codegen, build, smoke tests, auto-fix, versions) and never a persona or an agent. A specialist like the Strategist is an agent from the Agent Builder; where it needs new code, it holds a capability plugin from the Plugin Builder. Exported agent templates keep the identity, skill and quality parameters `AGENT.md` carries today. |
 | **Vendor domain plugins of kind `agent`** (for example HR, accounting) | Become **capability plugins** that may ship **agent templates** (§5.10). The manifest kind `agent` is removed. A team that wants an "HR colleague" creates an agent from the template or by hand and grants it the capability. |
-| **DB sub-agents** (`agent_subagents`, `ask_<name>`, Builder canvas node "Sub-Agent") | **Purpose:** helpers of one agent with their own (often cheaper) model, token and step budgets, a skill as prompt and a subset of the agent's tools, without the full conversation; this isolates context and cost (`middleware/packages/harness-orchestrator/src/registry/subAgentTools.ts`). **Conflict:** only where users meet them as a named specialist (the Strategist). **Adaptation:** kept as the agent's **internal helpers** (§5.6): no name or persona towards users, shown in the trace as the agent's own work, tool and memory access a subset of the agent's (today enforced for native tools, `middleware/src/agents/subAgentToolHydration.ts:372`, but not for MCP tools, which a helper can be granted on its own, `middleware/src/routes/agentBuilder.ts:2774`, `middleware/packages/harness-orchestrator/src/registry/subAgentTools.ts:317`; the MCP subset check is new work), the agent's budget covers all helpers, a cheaper model allowed by the agent's policy. The Builder node stays as "helper". A specialist users want to address is created as an agent. |
+| **DB sub-agents** (`agent_subagents`, `ask_<name>`, Agent Builder canvas node "Sub-Agent") | **Purpose:** helpers of one agent with their own (often cheaper) model, token and step budgets, a skill as prompt and a subset of the agent's tools, without the full conversation; this isolates context and cost (`middleware/packages/harness-orchestrator/src/registry/subAgentTools.ts`). **Conflict:** only where users meet them as a named specialist (the Strategist). **Adaptation:** kept as the agent's **internal helpers** (§5.6): no name or persona towards users, shown in the trace as the agent's own work, tool and memory access a subset of the agent's (today enforced for native tools, `middleware/src/agents/subAgentToolHydration.ts:372`, but not for MCP tools, which a helper can be granted on its own, `middleware/src/routes/agentBuilder.ts:2774`, `middleware/packages/harness-orchestrator/src/registry/subAgentTools.ts:317`; the MCP subset check is new work), the agent's budget covers all helpers, a cheaper model allowed by the agent's policy. The Builder node stays as "helper". A specialist users want to address is created as an agent. |
 | **Persona skills** (`agent_persona_skills`, `personaRouter`) | **Purpose:** per turn, a cheap classifier picks the fitting answering mode from short skill descriptions and only then loads the skill body, saving context and a delegation run (`middleware/packages/harness-orchestrator/src/personaRouter.ts`). **Conflict:** the chosen body replaces the agent's identity and the UI says "Answering as X". **Adaptation:** kept as **working modes**: the same selection, but the skill is added beneath the agent's fixed identity, personality and boundaries (it never replaces the system prompt's identity part); the mode is visible in the answer's details and the trace, not in the message; selection runs as the agent's internal helper. |
 | **Direct Line** (`#token`, sticky mode) | Removed (owner decision): direct addressing (INV-1) replaces it. Its advantage, a verbatim, attributed answer block the asking agent cannot alter, lives on in `contributions[]` (§5.4); `agentsConsulted` stays as trace summary. |
 | **Fast path** (`@omadia/fast-path`) | **Purpose:** simple data questions without the full agent loop (about 15 s and, in one documented case, a sub-agent run of 88,000 input tokens avoided): a fast model plans one read query, the plugin runs it and renders the rows; no model sees the rows; learned plans, a cache and confidence thresholds; any miss falls back to the agent unchanged (`middleware/packages/harness-plugin-fast-path/src/fastPath.ts`, `triageTurn.ts`). It already embodies INV-11. **Conflict:** its answer skips the agent's persona, boundaries and AI disclosure, there is no per-agent switch, and it may use sub-agents' read tools (#1876). **Adaptation:** kept entirely, as the addressed agent's **fast lane**: the agent is fixed first (deterministically); triage, planner, learned plans and cache run as the agent's internal helpers under its model policy, only with its own read tools, with discretion labels on learned plans; the answer renders under its identity with AI disclosure; a miss returns to the same agent; switchable per agent; never for facilitators. Model-written labels and the planner's summary (`middleware/packages/harness-plugin-fast-path/src/planner.ts:85`, accepted by `parseSummary` in `fastPath.ts:200`) are `prose`: they pass the identity guard or are replaced by registered templates; the agent's boundaries and answer preferences apply, including on cache hits (the cache is keyed by agent and its settings version). Its data plans pass the boundary check of §5.13 before execution and before reuse from the cache. |
@@ -235,6 +235,20 @@ In a group chat several agents can be present, each through its own identity. Ea
 answers only as itself. Bots never see each other's posts (Teams blocks bot-to-bot by
 design); agent-to-agent work runs server-side and becomes visible as a consultation or as
 each agent's own post (precedent: `middleware/src/conductor/sayService.ts`).
+
+**Availability.** Every agent has an availability, set by the operator in the Agent
+Builder: which users may use it (named people, groups, or everyone in the tenant) and in
+which channels (all or selected ones). The management layer checks it deterministically
+before every turn, also for explicit addressing, selections, bindings and the
+default-agent table: a message from a user outside the availability, or in a channel
+outside it, gets a `system` notice that names the agent (INV-7), never another agent's
+answer. Selection pickers and the agent directory show a user only the agents available
+to them in that channel; a default-agent entry or binding may only name an agent
+available there. Availability decides who may use an agent; what the agent may do comes
+from its grants, and what it may tell whom from discretion (§5.11). For a facilitator,
+availability decides who may start a facilitation; taking part is open to the
+conversation's members (spec B §5.5). A fresh agent is available to nobody until the
+operator sets it.
 
 ### 5.4 Consultation instead of delegation
 
@@ -399,6 +413,11 @@ from occasional, explicit asks outside answers; answers carry no rating buttons.
 **Rule of thumb:** if something needs a name, a personality or should be addressable, it
 is an agent. If it extends what agents can do, it is a capability plugin. If it adds a new
 class of agent to the system, it is an archetype plugin.
+If it is a part of omadia itself that provides platform functions to all agents and
+operators, it is a **system module**: for example Conductor (workflows), omadia UI
+(desktop canvas), omadia Proof (provable actions) and the memory system. A system module
+is neither an agent nor a plugin attached to agents: it has no identity, never speaks to
+people as an actor, and agents use it only through kernel services and their grants.
 
 **Two classes of plugins, clearly distinguished:**
 
@@ -459,10 +478,10 @@ execution context, which decides whose budget it uses:
 
 | Execution context | Used for | Charged to and limited by |
 |---|---|---|
-| Agent turn | an agent's own turn, its internal helpers, capability calls it makes (including embeddings for semantic search or memory writes during the turn); also the Agent Builder's dialog and a draft preview, see below | the agent's envelope |
+| Agent turn | an agent's own turn, its internal helpers, capability calls it makes (including embeddings for semantic search or memory writes during the turn); also a draft preview, see below | the agent's envelope |
 | Execution scope | actions of an archetype plugin's process (#2090), including transcription of a live session | the scope's deadline and budget |
 | Inbound processing | transcribing a voice message before the addressed agent's turn | the addressed agent's envelope |
-| Operator job | an admin function an operator starts explicitly in the admin UI, bounded and with exactly the effects that function declares, under the starting operator's rights; several model calls share one job budget, a deadline and a cancel button. Today: issue preview (`middleware/src/issues/issueReformulator.ts:62`, result is a draft in a form), skill verification (`middleware/src/services/skillVerdictLlmVerifier.ts:350`, stores the verdict), topic regrouping (`harness-orchestrator-extras/src/topicClustering.ts:205`, creates topics) and bulk promotion (`harness-orchestrator-extras/src/bulkPromotion.ts:169`, updates significance). Never a chat message | the instance's operator-tools budget and model policy |
+| Operator job | an admin function an operator starts explicitly in the admin UI (including the chats of the Agent Builder and the Plugin Builder), bounded and with exactly the effects that function declares, under the starting operator's rights; several model calls share one job budget, a deadline and a cancel button. Today: issue preview (`middleware/src/issues/issueReformulator.ts:62`, result is a draft in a form), skill verification (`middleware/src/services/skillVerdictLlmVerifier.ts:350`, stores the verdict), topic regrouping (`harness-orchestrator-extras/src/topicClustering.ts:205`, creates topics) and bulk promotion (`harness-orchestrator-extras/src/bulkPromotion.ts:169`, updates significance). Never a chat message | the instance's operator-tools budget and model policy |
 | Maintenance run | a kernel or plugin job that keeps an index current (for example the embedding backfill, `harness-knowledge-graph-neon/src/embeddingBackfill.ts:475`) | the instance's maintenance budget set by the operator, with a deadline per run; only `embed` is allowed, never `complete` or `transcribe`, and it never posts to people |
 
 Semantic search, re-indexing and transcription keep working with the lock in place; only
@@ -499,19 +518,30 @@ New work for `run_loop`:
   Today `checkCliInit` (`cliChatAgent.ts:497-503`) accepts any list that contains one
   omadia tool and does not check the server status.
 
-**Agent Builder and preview.** Only agents and `system` speak to people, also in the admin
-UI. The Agent Builder becomes an agent of the built-in archetype ("Agent Builder"),
-created in the first-run flow when the operator confirms it (§7 Onboarding), reachable only in the admin UI's builder chat, holding only the builder
-capabilities (create and edit drafts, read the capability catalogue); the operator can
-rename or disable it. Its answers go through the emitter, identity guard and AI
-disclosure like any agent's; the direct `chat_message` output of today's builder
-(`middleware/src/plugins/builder/builderAgent.ts:793`) goes. A draft preview is a turn of
-the draft itself: the draft is an `agents` row with status `draft`, not addressable in
-any channel, speaking as itself marked "preview", in a draft envelope (exactly the grants
-it would hold after creation, capped by the previewing operator's own rights), output only
-in the admin UI, charged to the instance's operator-tools budget. If the operator declined
-the Agent Builder, drafts are edited in the admin UI's forms, and previews and operator
-jobs keep working.
+**Agent Builder and Plugin Builder.** Both are admin tools, never agents: no identity, no
+persona, no grants, not in the agent directory, not reachable in any channel, only behind
+the admin session (`middleware/src/routes/builder.ts:71`). They have one job each:
+
+| Tool | Creates | Never |
+|---|---|---|
+| **Agent Builder** (`/admin/builder`, `middleware/src/routes/agentBuilder.ts`) | agents and their configuration: identity, personality, capabilities, skills, internal helpers, triggers | code, plugins |
+| **Plugin Builder** (`/store/builder`, `/api/v1/builder`, `middleware/src/plugins/builder/`) | capability plugins as code: spec, slots, codegen, build, smoke tests, auto-fix, versions | agents, personas, plugins of kind `agent` or `archetype` |
+
+Their chats and model-backed steps run as operator jobs (table above): the model
+proposes, the builder view explains, the operator accepts or discards; nothing takes
+effect without the operator. The rule that only agents and `system` speak to people
+applies to channels and conversations with team members; a builder speaks only to the
+operator inside its tool, shown as the tool, never under a name or persona. Previews are
+turns of a draft agent (`agents` row with status `draft`, not addressable in any
+channel, speaking as itself marked "preview") in a draft envelope capped by the
+previewing operator's own rights: in the Agent Builder the draft holds exactly the grants
+it would get; in the Plugin Builder (`previewRuntime.ts:807`) a neutral draft agent holds
+only the draft plugin's capabilities. Output only in the admin UI, charged to the
+operator-tools budget. UI texts use exactly these two names: "Agent Builder" only for
+`/admin/builder`, "Plugin Builder" for `/store/builder` (today its workspace title says
+"Agent-Builder" and several texts say "builder agent", `web-ui/messages/*.json`). The
+Conductor's workflow designer is a third, separate tool and is not called a builder of
+agents or plugins.
 
 An agent has exactly one archetype, set at creation; it never switches. Uninstalling an
 archetype plugin disables its agents and keeps their records; it never converts them to
@@ -558,7 +588,7 @@ capabilities for an agent of an existing archetype.
 | Permissions | Holds grants. | Declares what can be granted (capabilities with read/write scopes) and keeps integration credentials in the vault; agents never see secrets. |
 | Memory and state | Own memory tree, scoped by audience. | Capability plugins: only technical state (configuration, caches, sync cursors), no memory of conversations. Archetype plugins: additionally the process state of their archetype's work (see below), never general conversation memory. |
 | Models | Runs its own model loop under its model policy. | May use a model internally to implement a capability, under the calling agent's model policy, budget, grants and audience, recorded in that agent's trace; returns data to the agent, never text to a person. |
-| Origin | Created by the operator, by hand, in the Builder or from a template. | Installed from the hub or uploaded. |
+| Origin | Created by the operator, by hand, in the Agent Builder or from a template. | Installed from the hub or uploaded. |
 
 **Plugin kinds after this spec**, capability plugins: `integration` (connection to a third-party system and
 its credentials), `tool` (functions agents can call), `channel` (transport to people),
@@ -836,7 +866,7 @@ Each existing element keeps its purpose, moved out of the message body:
 
 ## 6. Acceptance criteria
 
-1. **Strategist regression.** A Builder-created "Strategist" and a second agent exist.
+1. **Strategist regression.** A "Strategist" created in the Agent Builder and a second agent exist.
    Addressed through web chat, Teams and the desktop UI, the Strategist's envelope answers
    (trace shows its agent id); the second agent never answers in its place, and the
    Strategist is never reachable as a hidden tool of another agent.
@@ -965,7 +995,7 @@ Each existing element keeps its purpose, moved out of the message body:
     through the gateway. With the lock in place, semantic search, the embedding backfill
     (as a maintenance run, stopped at its budget) and the transcription of a voice message
     work through the gateway; the embedding and transcription adapters' direct clients are
-    reachable only from the gateway; a maintenance run calling `complete` is refused; a SQL-granted test archetype plugin reads and writes its own schema and resumes its processes, but reaches no inbound events, other processes' data, scopes or grants, also not through its migrations; every model call site in the code is listed in #2053 with its context, and a call without a context is refused by the gateway; the operator jobs issue preview, skill verification, topic regrouping and bulk promotion work with direct clients blocked, share one budget per job and stop at budget, deadline or cancel without further effects; a plugin in `public-web` mode scans a previously unknown public domain while private addresses and model provider endpoints stay blocked; with the Agent Builder declined, drafts and previews still work; the Agent Builder answers as an agent through the emitter (no direct output), a draft preview speaks as the draft marked "preview" and gets no right the draft or the operator lacks; uninstalling an archetype plugin with processes in `configuring`, `active`, `concluding` and `following_up`, with a failing `onUninstall` and a restart, leaves no reservation, no later model call or invitation, and a `system` notice in each home conversation; an
+    reachable only from the gateway; a maintenance run calling `complete` is refused; a SQL-granted test archetype plugin reads and writes its own schema and resumes its processes, but reaches no inbound events, other processes' data, scopes or grants, also not through its migrations; every model call site in the code is listed in #2053 with its context, and a call without a context is refused by the gateway; the operator jobs issue preview, skill verification, topic regrouping and bulk promotion work with direct clients blocked, share one budget per job and stop at budget, deadline or cancel without further effects; a plugin in `public-web` mode scans a previously unknown public domain while private addresses and model provider endpoints stay blocked;  the Agent Builder and the Plugin Builder run as operator jobs and appear nowhere as agents, the Plugin Builder produces no persona and no plugin of kind `agent`, a draft preview speaks as the draft marked "preview" and gets no right the draft or the operator lacks; uninstalling an archetype plugin with processes in `configuring`, `active`, `concluding` and `following_up`, with a failing `onUninstall` and a restart, leaves no reservation, no later model call or invitation, and a `system` notice in each home conversation; an
     agent on `claude-cli` uses its granted tools through `run_loop`, a tool it lacks is
     refused, and a running turn stops at its deadline, on idle timeout and on the kill switch; a planted `~/.claude/CLAUDE.md` in the test profile has
     no effect on `run_loop` or `complete` while login and allowed tools work; a CLI reporting an extra tool, an
@@ -977,6 +1007,10 @@ Each existing element keeps its purpose, moved out of the message body:
     is B, a stored selection points to A; A is deleted and the instance restarts: the
     next message there gets the notice that A was deleted, B gets no turn; the same for
     the selection; after the target is changed, routing follows it.
+40. **Availability.** Agent A is available to Anna in Teams only. Ben addresses A in
+    Teams, and Anna addresses A in Slack: each gets the notice naming A, no other agent
+    answers; Anna in Teams gets A's answer; Ben's agent directory and picker do not list
+    A; a default-agent entry naming A for Ben is refused at save time.
 
 ## 7. Migration and compatibility
 
@@ -991,8 +1025,8 @@ paths**. Internal test and demo instances are re-seeded.
 - **Removed** (owner decisions, advantages carried over as stated): `#token` Direct Line
   addressing and sticky mode; every auto-attach of plugins; the fallback agent's special
   role and its first-boot seeding; the per-turn identity switch of persona skills (the
-  selection stays); the orchestrator default identity text; the Builder's persona-bearing
-  plugin output (replaced by agent creation); the fast path's answer outside the agent's
+  selection stays); the orchestrator default identity text; the Plugin Builder's persona-bearing
+  plugin output (replaced by agent creation in the Agent Builder); the fast path's answer outside the agent's
   identity (the fast path itself stays).
 - **Kept and repurposed:** `agentsConsulted` stays as trace summary; `delegatedAnswer` is
   replaced by `contributions[]` (§5.4); both existing levels stay (the per-agent switch
@@ -1003,10 +1037,7 @@ paths**. Internal test and demo instances are re-seeded.
   SDK name line covers channels without native per-agent identity.
 - **Onboarding:** a fresh installation starts with no agent holding any capability; the
   first-run flow creates the first agent with an explicit choice of capabilities. The
-  same flow offers the Agent Builder (§5.10) with its exact builder grants listed; the
-  operator confirms or declines it. Before that confirmation no agent holds any
-  capability; afterwards the Builder holds exactly the confirmed builder grants, and later
-  plugin installs never extend them.
+  Agent Builder and the Plugin Builder are admin tools (§5.10), not agents.
 - **Docs:** `docs/middleware-agent-handoff.md`, `docs/architecture.md`,
   `docs/teams-multi-agent-identities.md` and `docs/creating-plugins.md` describe this
   model in the same release.
@@ -1023,7 +1054,7 @@ Kernel unless noted. Each item becomes one issue in epic #2042.
    audience floor required, limits and cost attribution; the same grants authorize
    discussions and relays (INV-5, §5.4).
 4. Audience provider enabled by default (G15).
-5. Agent Builder creates agents instead of persona-bearing plugins (G2).
+5. Agent Builder and Plugin Builder separated: the Agent Builder creates agents, the Plugin Builder only capability plugins; persona templates move to the Agent Builder; UI texts use the two names consistently (G2, §5.10).
 6. DB sub-agents as internal helpers: no identity towards users, trace as the agent's own work, budgets under the agent (G3, §5.2).
 7. Persona skills as working modes: selection kept, skill added beneath the fixed identity, UI "mode: X" (G5, §5.2).
 8. Remove `#token` Direct Line addressing and sticky mode (G6).
@@ -1121,7 +1152,7 @@ Kernel unless noted. Each item becomes one issue in epic #2042.
 - The rendering of `agentsConsulted`/`delegatedAnswer` in Slack, Discord, WhatsApp and
   iMessage, and whether those plugins can run one identity per agent today.
 - Which mechanism the beta "Strategist" used; G2 is the most likely, and the spec closes
-  all three (Builder plugin, DB sub-agent, persona skill).
+  all three (Plugin Builder plugin, DB sub-agent, persona skill).
 - The omadia-ui findings (G10, G11) were read from its `CONCEPT.md` and protocol, not from
   a running build.
 
@@ -1131,5 +1162,5 @@ Kernel unless noted. Each item becomes one issue in epic #2042.
 Teams identity), #914 (agent identity), #1018 (agent-to-agent in chats), #1035
 (communication profile), #1876 (fast path), #1880 (silent fallback), #1888 (`#name`
 collisions, gone with Direct Line), #1796 (tool-name collisions; helper tool names must be
-collision-free or refused deterministically, #2050), #1777 (Builder persona
+collision-free or refused deterministically, #2050), #1777 (Plugin Builder persona
 only in preview), #575 (audience floor).
