@@ -32,12 +32,14 @@ import {
   type ResolveChannelResponse,
 } from '../../../_lib/agents';
 
-import { FacilitatorsSection } from './FacilitatorsSection';
+import { FacilitatorsSection, type PluginNavLink } from './FacilitatorsSection';
 import { PluginsDnd } from './PluginsDnd';
 import { useFacilitatorRefusalMessage } from './useFacilitatorCopy';
 
 interface AgentsDashboardProps {
   initial: OperatorAgentsListDto;
+  /** #2066 — plugin nav entries, for the link to the engine's facilitations view. */
+  pluginNav?: readonly PluginNavLink[];
 }
 
 /**
@@ -57,6 +59,7 @@ interface AgentsDashboardProps {
  */
 export function AgentsDashboard({
   initial,
+  pluginNav,
 }: AgentsDashboardProps): React.ReactElement {
   const t = useTranslations('operatorAgents');
   const router = useRouter();
@@ -248,6 +251,7 @@ export function AgentsDashboard({
 
       <FacilitatorsSection
         facilitators={facilitators}
+        {...(pluginNav ? { pluginNav } : {})}
         disabled={pending || !!busy}
         onCreate={(input) =>
           run('create-facilitator', async () => {

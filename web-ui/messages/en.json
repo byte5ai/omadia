@@ -2978,22 +2978,23 @@
         "heading": "Facilitation engine",
         "hint": "The engine plugin runs the facilitations. It is the only plugin a facilitator may hold.",
         "loading": "Checking the facilitation engine",
-        "loadFailed": "The facilitation engine could not be checked. The plugin store did not answer.",
+        "loadFailed": "The facilitation engine could not be checked. The server did not answer the status request.",
         "none": "No facilitation engine is installed. Facilitators can be created, but they cannot run a facilitation until the engine plugin is installed.",
         "ambiguous": "More than one facilitation engine is installed ({plugins}). Until all but one are removed, no facilitator gets an engine.",
-        "errored": "The facilitation engine “{plugin}” is installed but did not start.",
-        "sqlGrantMissing": "The facilitation engine “{plugin}” has no database access yet. Without that grant it cannot store facilitations.",
         "openStore": "Open the plugin store",
         "openPlugin": "Open the plugin",
         "openGrants": "Grant database access",
         "nothingToGrant": "There is no engine to grant yet.",
         "granted": "Granted to this facilitator",
         "grant": "Grant to this facilitator",
-        "granting": "Granting"
+        "granting": "Granting",
+        "unavailable": "The facilitation engine “{plugin}” is installed but cannot run facilitations yet. Usually its database access has not been granted.",
+        "reportedReason": "The engine reports: {detail}"
       },
       "detail": {
         "kindHeading": "Facilitator"
-      }
+      },
+      "facilitationsViewLink": "Open running facilitations ({label})"
     }
   },
   "builder": {

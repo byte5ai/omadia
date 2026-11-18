@@ -2978,22 +2978,23 @@
         "heading": "Facilitation-Engine",
         "hint": "Das Engine-Plugin führt die Facilitations aus. Es ist das einzige Plugin, das ein Facilitator erhalten darf.",
         "loading": "Facilitation-Engine wird geprüft",
-        "loadFailed": "Die Facilitation-Engine ließ sich nicht prüfen. Der Plugin-Store hat nicht geantwortet.",
+        "loadFailed": "Die Facilitation-Engine ließ sich nicht prüfen. Der Server hat die Statusabfrage nicht beantwortet.",
         "none": "Es ist keine Facilitation-Engine installiert. Facilitatoren lassen sich anlegen, können aber erst moderieren, wenn das Engine-Plugin installiert ist.",
         "ambiguous": "Es sind mehrere Facilitation-Engines installiert ({plugins}). Solange nicht alle bis auf eine entfernt sind, erhält kein Facilitator eine Engine.",
-        "errored": "Die Facilitation-Engine „{plugin}“ ist installiert, aber nicht gestartet.",
-        "sqlGrantMissing": "Die Facilitation-Engine „{plugin}“ hat noch keinen Datenbankzugriff. Ohne diese Freigabe kann sie keine Facilitations speichern.",
         "openStore": "Plugin-Store öffnen",
         "openPlugin": "Plugin öffnen",
         "openGrants": "Datenbankzugriff freigeben",
         "nothingToGrant": "Es gibt noch keine Engine, die sich freigeben lässt.",
         "granted": "Diesem Facilitator freigegeben",
         "grant": "Diesem Facilitator freigeben",
-        "granting": "Wird freigegeben"
+        "granting": "Wird freigegeben",
+        "unavailable": "Die Facilitation-Engine „{plugin}“ ist installiert, kann aber noch keine Facilitations ausführen. Meist fehlt die Freigabe für den Datenbankzugriff.",
+        "reportedReason": "Die Engine meldet: {detail}"
       },
       "detail": {
         "kindHeading": "Facilitator"
-      }
+      },
+      "facilitationsViewLink": "Laufende Facilitations öffnen ({label})"
     }
   },
   "builder": {

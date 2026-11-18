@@ -1,4 +1,4 @@
-import { ApiError, getPluginGrants, listStorePlugins } from './api';
+import { ApiError } from './api';
 import {
   ALL_PERSONA_AXES,
   PERSONA_AXIS_NEUTRAL,
@@ -207,70 +207,95 @@ export function issueAxis(path: string): PersonaAxisKey | null {
 
 // ── facilitation engine ──────────────────────────────────────────────────
 
-/** `FACILITATION_ENGINE_CAPABILITY` in `@omadia/plugin-api`. */
-export const FACILITATION_ENGINE_CAPABILITY = 'facilitationEngine@1';
-
-export interface FacilitationEnginePlugin {
-  readonly id: string;
-  readonly name: string;
-}
-
 /**
- * Whether this instance can run a facilitation at all.
+ * Whether this instance can run a facilitation at all, as the kernel reports
+ * it on `GET /v1/operator/agents/facilitation-engine`
+ * (`middleware/src/routes/facilitationEngineStatus.ts`).
  *
- *  - `none`: no installed plugin provides the engine capability.
+ *  - `none`: no installed plugin provides `facilitationEngine@1`.
  *  - `ambiguous`: more than one does; the kernel refuses every grant until
  *    all but one are removed.
- *  - `errored`: the one engine is installed but did not start.
- *  - `sql_grant_missing`: it is installed, but the operator has not granted
- *    the database access its tables need.
- *  - `ready`: installed, granted, not errored.
+ *  - `unavailable`: one engine is installed but cannot run facilitations —
+ *    typically the operator has not granted the database access its tables
+ *    need. `reason` is the engine's own English sentence: detail, never the
+ *    primary text.
+ *  - `ready`: installed and usable.
  */
 export type FacilitationEngineStatus =
   | { readonly state: 'none' }
-  | { readonly state: 'ambiguous'; readonly plugins: readonly FacilitationEnginePlugin[] }
-  | { readonly state: 'errored'; readonly plugin: FacilitationEnginePlugin }
-  | { readonly state: 'sql_grant_missing'; readonly plugin: FacilitationEnginePlugin }
-  | { readonly state: 'ready'; readonly plugin: FacilitationEnginePlugin };
+  | { readonly state: 'ambiguous'; readonly pluginIds: readonly string[] }
+  | {
+      readonly state: 'unavailable';
+      readonly pluginId: string;
+      readonly reason: string | null;
+    }
+  | { readonly state: 'ready'; readonly pluginId: string };
+
+/** The engine plugin's id, when exactly one is installed. */
+export function facilitationEnginePluginId(
+  status: FacilitationEngineStatus,
+): string | null {
+  return status.state === 'ready' || status.state === 'unavailable'
+    ? status.pluginId
+    : null;
+}
 
 /**
- * Read the engine status from what the kernel already serves: the store list
- * (who is installed and provides the capability) and the per-plugin consent
- * view (is it errored, is the SQL grant outstanding).
- *
- * The kernel has no single "facilitation engine" read route; this mirrors
- * `resolveFacilitationEngine` in `platform/facilitatorGuard.ts`, including its
- * rule that an errored provider is not an engine.
+ * Narrow the wire body. Anything that is not the documented shape is `null`:
+ * the caller then says "could not be checked", which must never read as
+ * "no engine installed".
  */
-export async function loadFacilitationEngineStatus(): Promise<FacilitationEngineStatus> {
-  const { items } = await listStorePlugins();
-  const providers = items.filter(
-    (p) =>
-      (p.install_state === 'installed' || p.install_state === 'update-available') &&
-      (p.provides ?? []).includes(FACILITATION_ENGINE_CAPABILITY),
-  );
-  if (providers.length === 0) return { state: 'none' };
+export function parseFacilitationEngineStatus(
+  body: unknown,
+): FacilitationEngineStatus | null {
+  if (!isRecord(body)) return null;
+  if (body.state === 'none') return { state: 'none' };
+  if (body.state === 'ambiguous') {
+    const ids = Array.isArray(body.plugin_ids)
+      ? body.plugin_ids.filter((id): id is string => typeof id === 'string')
+      : [];
+    return { state: 'ambiguous', pluginIds: ids };
+  }
+  if (body.state !== 'bound' || typeof body.plugin_id !== 'string') return null;
+  if (body.available === true) return { state: 'ready', pluginId: body.plugin_id };
+  return {
+    state: 'unavailable',
+    pluginId: body.plugin_id,
+    reason:
+      typeof body.unavailable_reason === 'string' &&
+      body.unavailable_reason.trim().length > 0
+        ? body.unavailable_reason
+        : null,
+  };
+}
 
-  const views = await Promise.all(
-    providers.map(async (p) => ({
-      plugin: { id: p.id, name: p.name },
-      grants: await getPluginGrants(p.id),
-    })),
-  );
-  const live = views.filter((v) => v.grants.state !== 'errored');
-  if (live.length > 1) {
-    return { state: 'ambiguous', plugins: live.map((v) => v.plugin) };
+const FACILITATION_ENGINE_PATH = '/bot-api/v1/operator/agents/facilitation-engine';
+
+/** Browser-side read through the same-origin proxy. Rejects when the route
+ *  does not answer with the documented body. */
+export async function loadFacilitationEngineStatus(): Promise<FacilitationEngineStatus> {
+  const res = await fetch(FACILITATION_ENGINE_PATH, {
+    headers: { accept: 'application/json' },
+    credentials: 'include',
+    cache: 'no-store',
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    throw new ApiError(
+      res.status,
+      `GET ${FACILITATION_ENGINE_PATH} failed: ${String(res.status)}`,
+      text,
+    );
   }
-  const only = live[0];
-  if (!only) {
-    // Every provider is errored. A missing SQL grant is the usual reason an
-    // engine does not start, and it has its own fix — say that one first.
-    const first = views[0]!;
-    return first.grants.missing.some((m) => m.kind === 'sql')
-      ? { state: 'sql_grant_missing', plugin: first.plugin }
-      : { state: 'errored', plugin: first.plugin };
+  let body: unknown;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    body = null;
   }
-  return only.grants.missing.some((m) => m.kind === 'sql')
-    ? { state: 'sql_grant_missing', plugin: only.plugin }
-    : { state: 'ready', plugin: only.plugin };
+  const status = parseFacilitationEngineStatus(body);
+  if (status === null) {
+    throw new ApiError(res.status, 'unexpected facilitation-engine body', text);
+  }
+  return status;
 }

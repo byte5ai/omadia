@@ -10,6 +10,7 @@ import {
   type OperatorAgentDto,
 } from '../../../_lib/agents';
 import {
+  facilitationEnginePluginId,
   loadFacilitationEngineStatus,
   type FacilitationEngineStatus,
 } from '../../../_lib/facilitators';
@@ -22,8 +23,10 @@ import {
  *  1. IT HAS ITS OWN TEAMS IDENTITY. Owner decision (spec 2043 §0): a
  *     facilitator never speaks through another bot, so one without its own
  *     identity is "not ready", not "falls back to the default bot".
- *  2. A FACILITATION ENGINE IS RUNNING: one installed plugin providing
- *     `facilitationEngine@1`, not errored, with its SQL grant.
+ *  2. A FACILITATION ENGINE IS USABLE: exactly one installed plugin provides
+ *     `facilitationEngine@1` and reports itself available (which it does not
+ *     without its SQL grant). The kernel answers this on
+ *     `GET /v1/operator/agents/facilitation-engine`.
  *  3. THAT ENGINE IS GRANTED TO THIS FACILITATOR — the only plugin grant the
  *     kernel accepts for the kind.
  */
@@ -91,7 +94,7 @@ export function useFacilitationEngine(revision = 0): FacilitationEngineLoad {
         if (!cancelled) setLoad({ phase: 'loaded', status });
       })
       .catch(() => {
-        // The store or consent route is unreachable. That is "cannot tell",
+        // The route is unreachable or predates the endpoint. That is "cannot tell",
         // which the notice says in its own words — it must not read as
         // "no engine installed".
         if (!cancelled) setLoad({ phase: 'failed' });
@@ -110,9 +113,11 @@ export function isEngineGranted(
   engine: FacilitationEngineLoad,
 ): boolean {
   if (engine.phase !== 'loaded') return false;
-  const { status } = engine;
-  if (status.state !== 'ready' && status.state !== 'sql_grant_missing') return false;
-  return agent.plugins.some((p) => p.id === status.plugin.id && p.enabled);
+  const pluginId = facilitationEnginePluginId(engine.status);
+  return (
+    pluginId !== null &&
+    agent.plugins.some((p) => p.id === pluginId && p.enabled)
+  );
 }
 
 const NOTICE_CLASS =
@@ -154,27 +159,24 @@ export function FacilitationEngineNotice(props: {
         </>
       )}
       {status.state === 'ambiguous' &&
-        t('ambiguous', { plugins: status.plugins.map((p) => p.name).join(', ') })}
-      {status.state === 'errored' && (
+        t('ambiguous', { plugins: status.pluginIds.join(', ') })}
+      {status.state === 'unavailable' && (
         <>
-          {t('errored', { plugin: status.plugin.name })}
+          {t('unavailable', { plugin: status.pluginId })}
           <Link
-            href={`/store/${encodeURIComponent(status.plugin.id)}`}
-            className={NOTICE_LINK_CLASS}
-          >
-            {t('openPlugin')}
-          </Link>
-        </>
-      )}
-      {status.state === 'sql_grant_missing' && (
-        <>
-          {t('sqlGrantMissing', { plugin: status.plugin.name })}
-          <Link
-            href={`/store/${encodeURIComponent(status.plugin.id)}#grants`}
+            href={`/store/${encodeURIComponent(status.pluginId)}#grants`}
             className={NOTICE_LINK_CLASS}
           >
             {t('openGrants')}
           </Link>
+          {status.reason !== null && (
+            <span
+              data-testid="facilitation-engine-reason"
+              className="mt-1 block text-xs opacity-80"
+            >
+              {t('reportedReason', { detail: status.reason })}
+            </span>
+          )}
         </>
       )}
     </div>

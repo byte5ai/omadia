@@ -97,7 +97,7 @@ function agent(over: Partial<OperatorAgentDto>): OperatorAgentDto {
 }
 
 const ENGINE = { id: '@omadia/agent-facilitator', name: 'Facilitation Engine' };
-const READY: FacilitationEngineStatus = { state: 'ready', plugin: ENGINE };
+const READY: FacilitationEngineStatus = { state: 'ready', pluginId: ENGINE.id };
 
 function list(...agents: OperatorAgentDto[]): OperatorAgentsListDto {
   return { agents, fallback_agent_id: 'id-fallback' };
@@ -187,15 +187,62 @@ describe('AgentsDashboard — facilitators (#2066)', () => {
     expect(notice.querySelector('a')?.getAttribute('href')).toBe('/store');
   });
 
-  it('says that the engine has no SQL grant and links to the grants', async () => {
-    mockEngine.mockResolvedValue({ state: 'sql_grant_missing', plugin: ENGINE });
+  it('says that the installed engine is not usable and links to its grants', async () => {
+    mockEngine.mockResolvedValue({
+      state: 'unavailable',
+      pluginId: ENGINE.id,
+      reason: 'The operator has not granted SQL access.',
+    });
     mockTeams.mockRejectedValue(teamsMissing());
     renderWithIntl(<AgentsDashboard initial={list(FALLBACK, MONA)} />);
     const notice = await screen.findByTestId('facilitation-engine-notice');
-    expect(notice.textContent).toContain('has no database access yet');
+    expect(notice.textContent).toContain('cannot run facilitations yet');
     expect(notice.querySelector('a')?.getAttribute('href')).toBe(
       `/store/${encodeURIComponent(ENGINE.id)}#grants`,
     );
+    // The engine's own sentence is detail behind the catalogue text.
+    expect(screen.getByTestId('facilitation-engine-reason').textContent).toBe(
+      'The engine reports: The operator has not granted SQL access.',
+    );
+    expect(screen.getByTestId('facilitator-readiness-engine')).toBeTruthy();
+  });
+
+  it('names the engines when more than one is installed', async () => {
+    mockEngine.mockResolvedValue({ state: 'ambiguous', pluginIds: ['a.engine', 'b.engine'] });
+    mockTeams.mockRejectedValue(teamsMissing());
+    renderWithIntl(<AgentsDashboard initial={list(FALLBACK, MONA)} />);
+    const notice = await screen.findByTestId('facilitation-engine-notice');
+    expect(notice.textContent).toContain('a.engine, b.engine');
+  });
+
+  it('links to the facilitations view of a usable engine that has a nav entry', async () => {
+    mockEngine.mockResolvedValue(READY);
+    mockTeams.mockRejectedValue(teamsMissing());
+    renderWithIntl(
+      <AgentsDashboard
+        initial={list(FALLBACK, MONA)}
+        pluginNav={[
+          { pluginId: 'other', href: '/plugin-ui/other', label: 'Other' },
+          { pluginId: ENGINE.id, href: '/plugin-ui/engine', label: 'Facilitations' },
+        ]}
+      />,
+    );
+    const link = await screen.findByTestId('facilitations-view-link');
+    expect(link.getAttribute('href')).toBe('/plugin-ui/engine');
+    expect(link.textContent).toContain('Facilitations');
+  });
+
+  it('offers no facilitations link while the engine is not usable', async () => {
+    mockEngine.mockResolvedValue({ state: 'unavailable', pluginId: ENGINE.id, reason: null });
+    mockTeams.mockRejectedValue(teamsMissing());
+    renderWithIntl(
+      <AgentsDashboard
+        initial={list(FALLBACK, MONA)}
+        pluginNav={[{ pluginId: ENGINE.id, href: '/plugin-ui/engine', label: 'Facilitations' }]}
+      />,
+    );
+    await screen.findByTestId('facilitation-engine-notice');
+    expect(screen.queryByTestId('facilitations-view-link')).toBeNull();
   });
 
   it('does not claim "no engine" when the status cannot be read', async () => {

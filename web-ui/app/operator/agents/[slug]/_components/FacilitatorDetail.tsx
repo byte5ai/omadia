@@ -11,6 +11,7 @@ import {
   replaceAgentPlugins,
   type OperatorAgentDto,
 } from '../../../../_lib/agents';
+import { facilitationEnginePluginId } from '../../../../_lib/facilitators';
 import { humanizeApiError } from '../../_components/AgentsDashboard';
 import {
   FacilitationEngineNotice,
@@ -109,11 +110,8 @@ function FacilitatorEnginePanel(props: {
   const [error, setError] = useState<string | null>(null);
   const { agent, engine } = props;
 
-  const plugin =
-    engine.phase === 'loaded' &&
-    (engine.status.state === 'ready' || engine.status.state === 'sql_grant_missing')
-      ? engine.status.plugin
-      : null;
+  const pluginId =
+    engine.phase === 'loaded' ? facilitationEnginePluginId(engine.status) : null;
   const granted = isEngineGranted(agent, engine);
 
   function grant(pluginId: string): void {
@@ -160,20 +158,17 @@ function FacilitatorEnginePanel(props: {
         <p className="text-sm text-[color:var(--fg-muted)]">{t('loading')}</p>
       )}
 
-      {engine.phase !== 'loading' && plugin === null && (
+      {engine.phase !== 'loading' && pluginId === null && (
         // What is wrong with the engine is said once, in the notice above the
         // tabs; this panel only says that there is nothing to grant yet.
         <p className="text-sm text-[color:var(--fg-muted)]">{t('nothingToGrant')}</p>
       )}
 
-      {plugin !== null && (
+      {pluginId !== null && (
         <div className="flex flex-wrap items-center gap-3 rounded border border-[color:var(--border)] bg-[color:var(--bg-soft)]/40 px-3 py-2 text-sm">
-          <span className="font-medium">{plugin.name}</span>
-          <code className="font-mono text-[10px] text-[color:var(--fg-muted)]">
-            {plugin.id}
-          </code>
+          <code className="font-mono text-xs">{pluginId}</code>
           <Link
-            href={`/store/${encodeURIComponent(plugin.id)}`}
+            href={`/store/${encodeURIComponent(pluginId)}`}
             className="text-xs text-[color:var(--accent)] hover:underline"
           >
             {t('openPlugin')}
@@ -192,7 +187,7 @@ function FacilitatorEnginePanel(props: {
                 variant="primary"
                 size="sm"
                 disabled={busy || pending}
-                onClick={() => grant(plugin.id)}
+                onClick={() => grant(pluginId)}
                 data-testid="facilitator-engine-grant"
               >
                 {busy ? t('granting') : t('grant')}

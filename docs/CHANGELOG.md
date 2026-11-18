@@ -36,6 +36,35 @@ changelog.
 
 ## [Unreleased]
 
+### Added — Facilitators in the agent directory (#2066, epic #2043)
+
+2026-11-18. Operator UI for facilitator-kind agents in `web-ui`. The
+facilitations view is not part of it; that is the engine plugin's own UI.
+
+- **Directory**: `/operator/agents` lists "Facilitators" apart from
+  "Orchestrators". A facilitator is not counted as an orchestrator and is not
+  offered as the standard orchestrator. Creating one sends
+  `kind: "facilitator"` and opens its page.
+- **Facilitator page**: tabs Identity, Model, Teams and Facilitation only.
+  Plugins, tools and MCP, conversations with other agents and memory have no
+  tab, and one line says why. The Facilitation tab grants the engine plugin,
+  the only grant the kernel accepts for the kind.
+- **Identity within bounds**: persona sliders, archetypes and industry presets
+  stop at the facilitator bounds (sarcasm at most 20, drama 30, humour 60, risk
+  tolerance 60, warmth at least 30) and each bounded slider shows its range.
+  The anti-flattery guard has no "off". A refused save
+  (`422 facilitator_contract_violation`) lists every finding and repeats it at
+  the field it is about; `409 facilitator_omission` is shown as a sentence per
+  omission. Both in English and German.
+- **Readiness**: a facilitator is "not ready" without its own installed Teams
+  identity, without a usable engine or without the engine grant, each with a
+  link to the fix. Teams provisioning is the existing per-agent flow.
+- **Engine notice** from `GET /api/v1/operator/agents/facilitation-engine`:
+  no engine installed, more than one installed, or installed but not usable
+  (typically the missing SQL grant, with the engine's own reason as detail).
+  With a usable engine that contributes a nav entry, the directory links to
+  its facilitations view.
+
 ### Added — Native facilitators, kernel side (epic #2043)
 
 2026-11-18. A facilitator is a kind of agent that only moderates. The engine

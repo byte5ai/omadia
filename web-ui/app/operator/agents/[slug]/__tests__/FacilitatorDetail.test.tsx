@@ -118,7 +118,7 @@ afterEach(() => {
 
 describe('AgentDetail — facilitator (#2066)', () => {
   it('offers only the tabs a facilitator has and says why', async () => {
-    mockEngine.mockResolvedValue({ state: 'ready', plugin: ENGINE });
+    mockEngine.mockResolvedValue({ state: 'ready', pluginId: ENGINE.id });
     mockTeams.mockResolvedValue({ state: 'installed' });
     renderWithIntl(<AgentDetail agent={agent()} isFallback={false} />);
 
@@ -148,7 +148,7 @@ describe('AgentDetail — facilitator (#2066)', () => {
   });
 
   it('reuses Teams provisioning on the Teams tab', async () => {
-    mockEngine.mockResolvedValue({ state: 'ready', plugin: ENGINE });
+    mockEngine.mockResolvedValue({ state: 'ready', pluginId: ENGINE.id });
     mockTeams.mockRejectedValue(
       new ApiError(404, 'x', JSON.stringify({ error: 'teams_identity_not_found' })),
     );
@@ -160,7 +160,7 @@ describe('AgentDetail — facilitator (#2066)', () => {
   });
 
   it('grants the engine as the only plugin', async () => {
-    mockEngine.mockResolvedValue({ state: 'ready', plugin: ENGINE });
+    mockEngine.mockResolvedValue({ state: 'ready', pluginId: ENGINE.id });
     mockTeams.mockResolvedValue({ state: 'installed' });
     mockReplace.mockResolvedValue(undefined);
     renderWithIntl(<AgentDetail agent={agent()} isFallback={false} />);
@@ -173,7 +173,7 @@ describe('AgentDetail — facilitator (#2066)', () => {
   });
 
   it('shows the engine as granted when its row is enabled', async () => {
-    mockEngine.mockResolvedValue({ state: 'ready', plugin: ENGINE });
+    mockEngine.mockResolvedValue({ state: 'ready', pluginId: ENGINE.id });
     mockTeams.mockResolvedValue({ state: 'installed' });
     renderWithIntl(
       <AgentDetail
@@ -187,7 +187,7 @@ describe('AgentDetail — facilitator (#2066)', () => {
   });
 
   it('shows a refused grant as its catalogue sentence', async () => {
-    mockEngine.mockResolvedValue({ state: 'ready', plugin: ENGINE });
+    mockEngine.mockResolvedValue({ state: 'ready', pluginId: ENGINE.id });
     mockTeams.mockResolvedValue({ state: 'installed' });
     mockReplace.mockRejectedValue(
       new ApiError(

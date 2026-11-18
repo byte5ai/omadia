@@ -39,6 +39,18 @@ interface FacilitatorsSectionProps {
   }) => void;
   readonly onToggleStatus: (agent: OperatorAgentDto) => void;
   readonly onDelete: (agent: OperatorAgentDto) => void;
+  /**
+   * Plugin-contributed nav entries (`/v1/ui/navigation`). The facilitations
+   * view is the ENGINE PLUGIN's UI, not a page of this app (spec 2043 §0);
+   * when the usable engine contributes an entry, the directory links to it.
+   */
+  readonly pluginNav?: readonly PluginNavLink[];
+}
+
+export interface PluginNavLink {
+  readonly pluginId: string;
+  readonly href: string;
+  readonly label: string;
 }
 
 const INPUT_CLASS =
@@ -51,6 +63,14 @@ export function FacilitatorsSection(
 ): React.ReactElement {
   const t = useTranslations('operatorAgents.facilitator');
   const engine = useFacilitationEngine();
+  const facilitationsView =
+    engine.phase === 'loaded' && engine.status.state === 'ready'
+      ? (props.pluginNav ?? []).find(
+          (entry) =>
+            engine.status.state === 'ready' &&
+            entry.pluginId === engine.status.pluginId,
+        )
+      : undefined;
 
   return (
     <section className="space-y-4" data-testid="facilitators-section">
@@ -67,6 +87,18 @@ export function FacilitatorsSection(
       </div>
 
       <FacilitationEngineNotice engine={engine} />
+
+      {facilitationsView && (
+        <p className="text-sm">
+          <Link
+            href={facilitationsView.href}
+            data-testid="facilitations-view-link"
+            className="text-[color:var(--accent)] hover:underline"
+          >
+            {t('facilitationsViewLink', { label: facilitationsView.label })}
+          </Link>
+        </p>
+      )}
 
       <CreateFacilitatorForm disabled={props.disabled} onCreate={props.onCreate} />
 

@@ -5,21 +5,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
  *
  * Pinned here: the bounds match what the kernel validates (a drift would let
  * the editor offer a value the save refuses), both refusals are narrowed from
- * their real wire shape, and the engine status is derived the way the kernel
- * resolves the engine — an errored provider is not an engine, two live ones
- * are ambiguous, and a missing SQL grant is its own state.
+ * their real wire shape, and the engine status is read from the kernel route
+ * without ever turning an unreadable answer into "no engine installed".
  */
-
-const { mockList, mockGrants } = vi.hoisted(() => ({
-  mockList: vi.fn(),
-  mockGrants: vi.fn(),
-}));
-
-vi.mock('../api', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../api')>()),
-  listStorePlugins: mockList,
-  getPluginGrants: mockGrants,
-}));
 
 const { ApiError } = await import('../api');
 const {
@@ -29,25 +17,12 @@ const {
   facilitatorAxisDisplayValue,
   issueAxis,
   loadFacilitationEngineStatus,
+  parseFacilitationEngineStatus,
   parseFacilitatorRefusal,
 } = await import('../facilitators');
 
-function plugin(id: string, over: Record<string, unknown> = {}): Record<string, unknown> {
-  return {
-    id,
-    name: `Plugin ${id}`,
-    install_state: 'installed',
-    provides: ['facilitationEngine@1'],
-    ...over,
-  };
-}
-
-function grants(over: Record<string, unknown> = {}): Record<string, unknown> {
-  return { state: 'active', missing: [], ...over };
-}
-
 afterEach(() => {
-  vi.clearAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe('facilitator persona bounds', () => {
@@ -146,56 +121,75 @@ describe('parseFacilitatorRefusal', () => {
   });
 });
 
-describe('loadFacilitationEngineStatus', () => {
-  it('is none when no installed plugin provides the capability', async () => {
-    mockList.mockResolvedValue({
-      items: [
-        plugin('a', { provides: ['memoryStore@1'] }),
-        plugin('b', { install_state: 'available' }),
-      ],
-    });
+describe('facilitation engine status', () => {
+  const base = { capability: 'facilitationEngine@1', version: null };
+
+  it('narrows the three kernel states', () => {
+    expect(
+      parseFacilitationEngineStatus({ ...base, state: 'none', plugin_id: null, plugin_ids: [] }),
+    ).toEqual({ state: 'none' });
+    expect(
+      parseFacilitationEngineStatus({
+        ...base,
+        state: 'ambiguous',
+        plugin_id: null,
+        plugin_ids: ['a', 'b'],
+      }),
+    ).toEqual({ state: 'ambiguous', pluginIds: ['a', 'b'] });
+    expect(
+      parseFacilitationEngineStatus({
+        ...base,
+        state: 'bound',
+        plugin_id: 'engine',
+        plugin_ids: ['engine'],
+        available: true,
+        unavailable_reason: null,
+      }),
+    ).toEqual({ state: 'ready', pluginId: 'engine' });
+  });
+
+  it('reads bound-but-unavailable with the engine reason as detail', () => {
+    expect(
+      parseFacilitationEngineStatus({
+        ...base,
+        state: 'bound',
+        plugin_id: 'engine',
+        plugin_ids: ['engine'],
+        available: false,
+        unavailable_reason: 'no SQL grant',
+      }),
+    ).toEqual({ state: 'unavailable', pluginId: 'engine', reason: 'no SQL grant' });
+  });
+
+  it('is null for a body that is not the documented shape', () => {
+    expect(parseFacilitationEngineStatus(null)).toBeNull();
+    expect(parseFacilitationEngineStatus({ state: 'bound' })).toBeNull();
+    expect(parseFacilitationEngineStatus({ error: 'not_found' })).toBeNull();
+  });
+
+  it('loads through the same-origin proxy', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ ...base, state: 'none', plugin_ids: [] }), { status: 200 }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
     await expect(loadFacilitationEngineStatus()).resolves.toEqual({ state: 'none' });
-    expect(mockGrants).not.toHaveBeenCalled();
-  });
-
-  it('is ready for one live provider with nothing missing', async () => {
-    mockList.mockResolvedValue({ items: [plugin('engine')] });
-    mockGrants.mockResolvedValue(grants());
-    await expect(loadFacilitationEngineStatus()).resolves.toEqual({
-      state: 'ready',
-      plugin: { id: 'engine', name: 'Plugin engine' },
-    });
-  });
-
-  it('reports a missing SQL grant as its own state', async () => {
-    mockList.mockResolvedValue({ items: [plugin('engine')] });
-    mockGrants.mockResolvedValue(
-      grants({ state: 'errored', missing: [{ kind: 'sql', ledger: 'facilitation' }] }),
+    expect(fetchMock.mock.calls[0]![0]).toBe(
+      '/bot-api/v1/operator/agents/facilitation-engine',
     );
-    await expect(loadFacilitationEngineStatus()).resolves.toMatchObject({
-      state: 'sql_grant_missing',
-    });
   });
 
-  it('reports an errored provider without a grant gap as errored', async () => {
-    mockList.mockResolvedValue({ items: [plugin('engine')] });
-    mockGrants.mockResolvedValue(grants({ state: 'errored' }));
-    await expect(loadFacilitationEngineStatus()).resolves.toMatchObject({
-      state: 'errored',
-    });
-  });
-
-  it('is ambiguous for two live providers and ignores an errored one', async () => {
-    mockList.mockResolvedValue({ items: [plugin('a'), plugin('b'), plugin('c')] });
-    mockGrants.mockImplementation(async (id: string) =>
-      id === 'c' ? grants({ state: 'errored' }) : grants(),
+  it('rejects instead of guessing when the route fails or is unknown', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(new Response('{"error":"not_found"}', { status: 404 })),
     );
-    await expect(loadFacilitationEngineStatus()).resolves.toEqual({
-      state: 'ambiguous',
-      plugins: [
-        { id: 'a', name: 'Plugin a' },
-        { id: 'b', name: 'Plugin b' },
-      ],
-    });
+    await expect(loadFacilitationEngineStatus()).rejects.toBeInstanceOf(ApiError);
+    // An older middleware routes the path to `/:slug` and answers 200 with
+    // something else entirely.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(new Response('{"agent":"x"}', { status: 200 })),
+    );
+    await expect(loadFacilitationEngineStatus()).rejects.toBeInstanceOf(ApiError);
   });
 });
