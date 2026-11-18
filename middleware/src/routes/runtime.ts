@@ -94,6 +94,8 @@ interface RuntimeDeps {
   reactivate?: (agentId: string) => Promise<void>;
   /** #2043 — see `GrantRouteDeps.onGrantsChanged`. */
   onGrantsChanged?: (agentId: string) => Promise<void>;
+  /** #2043 — see `GrantRouteDeps.onGrantsWritten`. */
+  onGrantsWritten?: (agentId: string) => Promise<void>;
   /** #1860 — did the last reactivation of `agentId` wait for a restart? */
   restartPending?: (agentId: string) => boolean;
   /** Live-plugin tool invoker for dynamic setup-field options (post-install).

@@ -5902,6 +5902,7 @@ async function main(): Promise<void> {
       catalog: pluginCatalog,
       reactivate: reactivateAgent,
       // #2043 — a SQL grant is what makes a declared engine THE engine.
+      onGrantsWritten: () => facilitationSqlGrants.refresh(),
       onGrantsChanged: () => attachFacilitationEngine(),
       restartPending: (agentId) => installService.restartPending(agentId),
       dynamicAgentRuntime,

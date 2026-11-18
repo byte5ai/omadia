@@ -189,6 +189,7 @@ async function makeHarness(
     logLines?: string[];
     /** #2043 — the kernel follow-up for state derived from grants. */
     onGrantsChanged?: (agentId: string) => Promise<void>;
+    onGrantsWritten?: (agentId: string) => Promise<void>;
   } = {},
 ): Promise<Harness> {
   const declareSql = opts.declareSql ?? true;
@@ -297,6 +298,7 @@ async function makeHarness(
         : {}),
       ...(opts.logLines ? { log: (m: string) => opts.logLines?.push(m) } : {}),
       ...(opts.onGrantsChanged ? { onGrantsChanged: opts.onGrantsChanged } : {}),
+      ...(opts.onGrantsWritten ? { onGrantsWritten: opts.onGrantsWritten } : {}),
     }),
   );
 
@@ -486,6 +488,30 @@ void describe('#470 C16 — the grant takes effect in-process', () => {
       const revoke = await putGrants(h, { sql: false });
       assert.equal(revoke.status, 200);
       assert.equal(seen.length, 2, 'a revoke changes the derived state too');
+    } finally {
+      await h.close();
+    }
+  });
+
+  void it('#2043 — grant views are refreshed after the write and before the re-activation', async () => {
+    // The engine re-subscribes its live facilitations in activate(); with a
+    // stale view the kernel refused that as "not the facilitation engine".
+    const seen: string[] = [];
+    const h = await makeHarness({
+      declarePaths: [],
+      onGrantsWritten: (agentId) => {
+        seen.push(`written:${h.sqlState.rows.has(agentId) ? 'granted' : 'none'}:${String(h.activations)}`);
+        return Promise.resolve();
+      },
+      onGrantsChanged: () => {
+        seen.push(`changed:${String(h.activations)}`);
+        return Promise.resolve();
+      },
+    });
+    try {
+      const before = h.activations ?? 0;
+      assert.equal((await putGrants(h, { sql: true })).status, 200);
+      assert.deepEqual(seen, [`written:granted:${String(before)}`, `changed:${String(before + 1)}`]);
     } finally {
       await h.close();
     }
