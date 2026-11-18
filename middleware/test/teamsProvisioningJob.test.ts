@@ -1674,6 +1674,85 @@ describe('TeamsProvisioningJobRunner — catalog replication window', () => {
     );
   });
 
+  it('#2043 D12 — rides out a 404 NotFound two seconds after the upload as well', async () => {
+    // Found at the rollout: catalog upload at :14, install at :14-:16 → 404
+    // NotFound, run failed; the identical re-run 53 s later went through.
+    let installs = 0;
+    const notFound = (): Error =>
+      namedError(
+        'ProvisioningRequestError',
+        'graph teams.installedApps.add 404 POST https://graph.microsoft.com/v1.0/teams/team-42/installedApps body={"error":{"code":"NotFound","message":""}}',
+        { resource: 'graph', step: 'teams.installedApps.add', status: 404 },
+      );
+    const { runner, store, timers } = makeRunner({
+      catalogReplicationDelayMs: 10,
+      behaviour: {
+        installToTeam: () => {
+          installs += 1;
+          return installs <= 1 ? Promise.reject(notFound()) : undefined;
+        },
+      },
+    });
+    const result = await runner.enqueue(REQUEST);
+    assert.equal(result.status, 'installed');
+    assert.equal(installs, 2);
+    assert.equal(store.row?.lastError, null);
+    assert.deepEqual(timers.delays, [10], 'one bounded wait, of the replication kind');
+  });
+
+  it('#2043 D12 — the wait is bounded: a 404 that never goes away fails with what it is', async () => {
+    let installs = 0;
+    const { runner, store } = makeRunner({
+      catalogReplicationAttempts: 2,
+      catalogReplicationDelayMs: 10,
+      behaviour: {
+        installToTeam: () => {
+          installs += 1;
+          return Promise.reject(
+            namedError('ProvisioningRequestError', 'graph teams.installedApps.add 404 body={"error":{"code":"NotFound"}}', {
+              resource: 'graph',
+              step: 'teams.installedApps.add',
+              status: 404,
+            }),
+          );
+        },
+      },
+    });
+    const result = await runner.enqueue(REQUEST);
+    assert.equal(result.status, 'failed');
+    assert.equal(installs, 3, 'two waits, then the verdict');
+    assert.match(store.row?.lastError ?? '', /still refused after waiting 2 times/);
+  });
+
+  it('#2043 D12 — a 404 on a run that did NOT publish the entry is a verdict at once', async () => {
+    let installs = 0;
+    const { runner } = makeRunner({
+      storeOverrides: {
+        state: 'catalog_uploaded',
+        appId: 'app-123',
+        tenantId: 'tenant-9',
+        teamsAppId: 'catalog-77',
+        teamsAppExternalId: 'external-abc',
+      },
+      catalogReplicationDelayMs: 10,
+      behaviour: {
+        installToTeam: () => {
+          installs += 1;
+          return Promise.reject(
+            namedError('ProvisioningRequestError', 'graph teams.installedApps.add 404 body={"error":{"code":"NotFound"}}', {
+              resource: 'graph',
+              step: 'teams.installedApps.add',
+              status: 404,
+            }),
+          );
+        },
+      },
+    });
+    const result = await runner.enqueue(REQUEST);
+    assert.equal(result.status, 'failed');
+    assert.equal(installs, 1);
+  });
+
   it('a 400 that NAMES a configuration reason still fails on attempt 1', async () => {
     // The other half of the trade. Waiting cannot grant a permission, so a
     // named 400 must not buy itself a single extra second.

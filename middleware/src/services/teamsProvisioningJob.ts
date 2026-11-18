@@ -736,7 +736,14 @@ const TERMINAL_INSTALL_400_MARKERS: readonly string[] = [
  */
 function isCatalogReplicationFailure(err: unknown): boolean {
   if (!(err instanceof Error) || err.name !== 'ProvisioningRequestError') return false;
-  if ((err as Error & { status?: unknown }).status !== 400) return false;
+  // 400 is how the Teams app service usually reports an entry it cannot see
+  // yet; 404 `NotFound` is the same race said plainly (#2043 D12: an install
+  // two seconds after the upload, which passed untouched on the re-run). The
+  // other gates are unchanged: only the two install verbs, only in a run
+  // that published the entry itself, never a body that names a
+  // configuration reason.
+  const status = (err as Error & { status?: unknown }).status;
+  if (status !== 400 && status !== 404) return false;
   const step = (err as Error & { step?: unknown }).step;
   if (
     typeof step !== 'string' ||
@@ -1596,7 +1603,7 @@ export class TeamsProvisioningJobRunner {
         this.catalogReplicationRetries.set(agentId, spent + 1);
         const delayMs = this.catalogReplicationDelayMs;
         this.log(
-          `[teams-provisioning] ${agentId} install rejected with a 400 that names no reason; ` +
+          `[teams-provisioning] ${agentId} install rejected with a ${String((err as { status?: unknown }).status)} that names no reason; ` +
             `the catalog entry may still be replicating (wait ${spent + 1}/${this.catalogReplicationAttempts}); ` +
             `retrying in ${delayMs}ms: ${fullConnectorErrorText(err)}`,
         );
