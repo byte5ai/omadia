@@ -2978,12 +2978,13 @@
         },
         "teamsLink": "Open Teams provisioning",
         "engineNotReady": "No facilitation engine is running on this instance.",
-        "engineNotGranted": "The facilitation engine is not granted to this facilitator yet.",
-        "engineLink": "Grant the engine"
+        "engineLink": "Repair",
+        "engineMissing": "The facilitation engine is not attached to this facilitator, although that normally happens automatically.",
+        "engineDisabled": "The facilitation engine is switched off for this facilitator."
       },
       "engine": {
         "heading": "Facilitation engine",
-        "hint": "The engine plugin runs the facilitations. It is the only plugin a facilitator may hold.",
+        "hint": "The engine plugin runs the facilitations. It is the only plugin a facilitator may hold, and it is attached automatically.",
         "loading": "Checking the facilitation engine",
         "loadFailed": "The facilitation engine could not be checked. The server did not answer the status request.",
         "none": "No facilitation engine is installed. Facilitators can be created, but they cannot run a facilitation until the engine plugin is installed.",
@@ -2991,12 +2992,15 @@
         "openStore": "Open the plugin store",
         "openPlugin": "Open the plugin",
         "openGrants": "Grant database access",
-        "nothingToGrant": "There is no engine to grant yet.",
-        "granted": "Granted to this facilitator",
-        "grant": "Grant to this facilitator",
-        "granting": "Granting",
+        "nothingToGrant": "There is no single engine to attach yet. Once exactly one is installed, it is attached automatically.",
         "unavailable": "The facilitation engine “{plugin}” is installed but cannot run facilitations yet. Usually its database access has not been granted.",
-        "reportedReason": "The engine reports: {detail}"
+        "reportedReason": "The engine reports: {detail}",
+        "attached": "Attached",
+        "disabled": "Switched off for this facilitator",
+        "missing": "Not attached",
+        "repairHint": "The engine is normally attached without anyone doing anything. Here that did not happen or was undone; attaching it again repairs this.",
+        "repair": "Attach engine",
+        "repairing": "Attaching"
       },
       "detail": {
         "kindHeading": "Facilitator"

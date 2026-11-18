@@ -152,7 +152,7 @@ describe('AgentsDashboard — facilitators (#2066)', () => {
     );
   });
 
-  it('is ready with an installed identity and the granted engine', async () => {
+  it('is ready with an installed identity and the attached engine', async () => {
     mockEngine.mockResolvedValue(READY);
     mockTeams.mockResolvedValue({ state: 'installed' });
     const granted = agent({
@@ -168,11 +168,12 @@ describe('AgentsDashboard — facilitators (#2066)', () => {
     expect(screen.queryByTestId('facilitation-engine-notice')).toBeNull();
   });
 
-  it('asks for the engine grant when the engine runs but is not granted', async () => {
+  it('points at the repair when the engine row is missing', async () => {
     mockEngine.mockResolvedValue(READY);
     mockTeams.mockResolvedValue({ state: 'installed' });
     renderWithIntl(<AgentsDashboard initial={list(FALLBACK, MONA)} />);
     const grant = await screen.findByTestId('facilitator-readiness-grant');
+    expect(grant.textContent).toContain('normally happens automatically');
     expect(grant.querySelector('a')?.getAttribute('href')).toBe(
       '/operator/agents/mona?tab=engine',
     );

@@ -47,15 +47,17 @@ facilitations view is not part of it; that is the engine plugin's own UI.
   `kind: "facilitator"` and opens its page.
 - **Facilitator page**: tabs Identity, Model, Teams and Facilitation only.
   Plugins, tools and MCP, conversations with other agents and memory have no
-  tab, and one line says why. The Facilitation tab grants the engine plugin,
-  the only grant the kernel accepts for the kind.
+  tab, and one line says why. The Facilitation tab shows the engine plugin,
+  which the kernel attaches by itself, and offers "attach" only as a repair
+  when the row is missing or switched off.
 - **Identity within bounds**: persona sliders, archetypes and industry presets
   stop at the facilitator bounds (sarcasm at most 20, drama 30, humour 60, risk
   tolerance 60, warmth at least 30) and each bounded slider shows its range.
   The anti-flattery guard has no "off". A refused save
   (`422 facilitator_contract_violation`) lists every finding and repeats it at
   the field it is about; `409 facilitator_omission` is shown as a sentence per
-  omission. Both in English and German.
+  omission. Both in English and German. A facilitator's profile has a
+  language select (German, English, installation language).
 - **Readiness**: a facilitator is "not ready" without its own installed Teams
   identity, without a usable engine or without the engine grant, each with a
   link to the fix. Teams provisioning is the existing per-agent flow.
