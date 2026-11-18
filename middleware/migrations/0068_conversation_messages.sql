@@ -110,7 +110,10 @@ CREATE INDEX IF NOT EXISTS conversation_message_events_author_idx
 -- the hot path). A change on one machine reaches the others through NOTIFY;
 -- the payload is only a wake-up, the listener re-reads the table. Fires for a
 -- cascade from `agents` as well, which is how a deleted agent's subscription
--- leaves every cache.
+-- leaves every cache. FOR EACH ROW on purpose: a statement trigger fires for a
+-- statement that touched nothing, so the periodic purge woke every listener
+-- on every tick. Postgres folds identical notifications of one transaction
+-- into one, so a statement over many rows still wakes the listeners once.
 CREATE OR REPLACE FUNCTION notify_conversation_message_subscriptions_changed() RETURNS trigger AS $$
 BEGIN
   PERFORM pg_notify('conversation_message_subscriptions_changed', '');
@@ -122,7 +125,7 @@ DROP TRIGGER IF EXISTS conversation_message_subscriptions_notify
   ON conversation_message_subscriptions;
 CREATE TRIGGER conversation_message_subscriptions_notify
   AFTER INSERT OR UPDATE OR DELETE ON conversation_message_subscriptions
-  FOR EACH STATEMENT EXECUTE FUNCTION notify_conversation_message_subscriptions_changed();
+  FOR EACH ROW EXECUTE FUNCTION notify_conversation_message_subscriptions_changed();
 
 -- rollback:
 --   DROP TRIGGER IF EXISTS conversation_message_subscriptions_notify ON conversation_message_subscriptions;

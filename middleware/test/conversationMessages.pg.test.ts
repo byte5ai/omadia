@@ -268,4 +268,30 @@ describe('conversationMessages (pg, migration 0068)', { skip: !pgAvailable }, ()
     assert.equal(await count(), 0);
     assert.deepEqual(await store.listActiveSubscriptions(), []);
   });
+
+  it('wakes the listeners for a real change only, once per statement', async () => {
+    const f = await boot();
+    const listener = await pool.connect();
+    const seen: string[] = [];
+    listener.on('notification', (msg) => seen.push(msg.channel));
+    try {
+      await listener.query('LISTEN conversation_message_subscriptions_changed');
+      // What the purge job runs on every tick with nothing to purge.
+      await pool.query(`DELETE FROM conversation_message_subscriptions WHERE ended_at < now() - interval '100 years'`);
+      await pool.query(`UPDATE conversation_message_subscriptions SET ended_at = ended_at WHERE false`);
+      await listener.query('SELECT 1');
+      assert.deepEqual(seen, [], 'a statement that touched no row wakes nobody');
+
+      assert.deepEqual(await f.hub.subscribe(scopeOf('mara'), ENGINE), { outcome: 'subscribed' });
+      assert.deepEqual(await f.hub.subscribe(scopeOf('nora'), ENGINE), { outcome: 'subscribed' });
+      await listener.query('SELECT 1');
+      assert.equal(seen.length, 2, 'one wake-up per subscription written');
+      seen.length = 0;
+      await pool.query('UPDATE conversation_message_subscriptions SET ended_at = now()');
+      await listener.query('SELECT 1');
+      assert.equal(seen.length, 1, 'one statement over two rows wakes the listeners once');
+    } finally {
+      listener.release(true);
+    }
+  });
 });

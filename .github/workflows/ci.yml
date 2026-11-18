@@ -336,7 +336,7 @@ jobs:
           # facilitatorContract.pg, 10 tests).
           # 444 → 447 with the kernel-side end of subscriptions and NOTIFY
           # (facilitatorContract.pg, 3 tests).
-          PG_TEST_FLOOR: '447'
+          PG_TEST_FLOOR: '448'
         run: |
           set -eo pipefail
           npm run test:pg 2>&1 | tee pg-test.out
