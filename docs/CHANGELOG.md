@@ -76,6 +76,70 @@ alike. There was also no log line per failed attempt, only the final
   connect time — that refusal is simply now legible in `last_error` instead of
   reading as `fetch failed`.
 
+### Changed — web-ui header: minimal signed-out bar, preferences in the user menu, reordered nav
+
+UI only — no route, API or auth-logic change. Signed out (and always on
+`/login` + `/setup`) the header shows no nav and no "Login" link, only a flag
+language menu, a sun/moon light↔dark toggle and the GitHub issue button.
+Signed in, palette, appearance and language moved out of the bar into the user
+chip's menu (new "Preferences" section); the GitHub issue button sits at the
+far right in both shapes. Nav order is now Skills · Chat · Setup · Admin ·
+Plugins · Help: Dashboard was dropped (the logo already links to `/`). Chat is
+now a cluster (`nav.chatCluster`) holding Channels (`/operator/channels`, back
+in the nav after #385 dropped it) and Debug (`/chat`, `nav.debug`; `nav.chat`
+removed). The old
+Admin cluster was split — new Setup cluster (`nav.setupCluster`) holds LLM
+access, Orchestrators, Teams sign-in, Conductor and Routines (moved out of the
+top level); Admin keeps Admin, System, Receipts, Privacy reports and Field classification. Plugin nav
+entries targeting `adminCluster` still land in Admin. Wordmark and tagline sit side by side. The layout
+decides signed-in vs. signed-out from the session cookie with the proxy's
+decode-only check, now shared via `web-ui/app/_lib/sessionToken.ts`. New
+component `HeaderControls`; `ThemeControls` became `useThemePrefs` +
+`AppearanceToggle`/`PaletteSelect`/`AppearanceSelect`. i18n: removed
+`authBadge.loginLink`, `themeControls.menuAriaLabel`, `nav.dashboard`; added
+`authBadge.{preferences,palette,appearance,language}` and
+`themeControls.{switchToDark,switchToLight}`.
+
+### Fixed — Node-Aktivierung nach Amp-Snapshot-Restore
+
+2026-11-16. Neue Orbs hatten die Node-22-/24-Toolchains und alle Pakete,
+starteten aber Shells mit Node 26: Amp verwirft Setup-Änderungen an den
+Shell-Profilen beim Aktivieren eines gemeinsamen Snapshots. Das Setup
+hinterlegt jetzt einen direkten Node-22-PATH für den Snapshot; Resume
+registriert den vorbereiteten Root-/Desktop-Selektor nach der Aktivierung
+idempotent erneut. Ein CI-Regressionstest setzt die Profile wie beim Restore
+zurück und prüft Aktivierung, wiederholtes Resume und erhaltene Profileinträge.
+Keine Pakete werden beim Resume installiert.
+
+### Added — Reproduzierbare Amp-Orb-Umgebung
+
+2026-11-10. `.agents/setup` installiert die gepinnten Node-Toolchains
+(Kernel/Web-UI aus `.nvmrc`, Desktop Node 24), die drei npm-Lockfile-Bäume
+inklusive nativer Addons sowie Docker Compose/Buildx und baut die Middleware-
+Workspace-Exports. Beide Runtimes installieren mit dem npm der Node-22-Toolchain,
+damit Desktop-Install-Skripte nicht still übersprungen werden. Ein ausschließlich an
+Loopback gebundener PostgreSQL-16/pgvector-Container stellt getrennte lokale
+App- und Testdatenbanken bereit; seine Durability ist für Wegwerfdaten reduziert.
+Login-Shells wählen die Toolchain passend zum Checkout-Verzeichnis.
+`.agents/resume` repariert nur den Datenbankstart, ohne Pakete neu zu installieren.
+ENV-Vorlagen werden nur bei fehlenden Dateien kopiert, keine Benutzeranmeldung
+oder Produktions-Credentials werden im Snapshot abgelegt. Portal-Manifeste sind
+jetzt auch im versionierten `.gitignore` ausgeschlossen. Betriebsdetails und
+Test-DSNs stehen im Handoff §14.
+
+### Security — Node 22.23.5 in every shipped image
+
+2026-11-16. The middleware, web-ui and updater images move to Node 22.23.5,
+a security release with eight high-severity fixes in `http`, `http2` and
+`tls` (among them CVE-2026-123864, nested parser execution from empty writes,
+which reaches the updater's `node:http` control plane). The updater sidecar
+was still on 22.23.2 because Dependabot did not watch its Dockerfile. It now
+does, in `.github/dependabot.yml`. The same rollup moves `docx` from 9.7.1 to
+9.15.4. Generated `.docx` files now include a theme part and the TOC1–TOC9
+styles, express table widths in fiftieths of a percent, and drop the control
+characters XML 1.0 forbids. Before this change those characters made Word
+refuse the file.
+
 ### Fixed — Conductor: a rejected approval no longer takes an unguarded transition (#1698)
 
 2026-11-10. The approval gate computed the decision and then ignored it: the
