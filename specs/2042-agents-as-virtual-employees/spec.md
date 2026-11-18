@@ -462,7 +462,7 @@ execution context, which decides whose budget it uses:
 | Agent turn | an agent's own turn, its internal helpers, capability calls it makes (including embeddings for semantic search or memory writes during the turn); also the Agent Builder's dialog and a draft preview, see below | the agent's envelope |
 | Execution scope | actions of an archetype plugin's process (#2090), including transcription of a live session | the scope's deadline and budget |
 | Inbound processing | transcribing a voice message before the addressed agent's turn | the addressed agent's envelope |
-| Operator task | a single model call an operator explicitly triggers in the admin UI whose result is a draft value in a form for that operator's decision, never a chat message and never sent anywhere without the operator's action: today the issue preview (`middleware/src/issues/issueReformulator.ts:62`) and the skill verification (`middleware/src/services/skillVerdictLlmVerifier.ts:236`) | the instance's operator-tools budget and model policy, with a deadline per task |
+| Operator job | an admin function an operator starts explicitly in the admin UI, bounded and with exactly the effects that function declares, under the starting operator's rights; several model calls share one job budget, a deadline and a cancel button. Today: issue preview (`middleware/src/issues/issueReformulator.ts:62`, result is a draft in a form), skill verification (`middleware/src/services/skillVerdictLlmVerifier.ts:350`, stores the verdict), topic regrouping (`harness-orchestrator-extras/src/topicClustering.ts:205`, creates topics) and bulk promotion (`harness-orchestrator-extras/src/bulkPromotion.ts:169`, updates significance). Never a chat message | the instance's operator-tools budget and model policy |
 | Maintenance run | a kernel or plugin job that keeps an index current (for example the embedding backfill, `harness-knowledge-graph-neon/src/embeddingBackfill.ts:475`) | the instance's maintenance budget set by the operator, with a deadline per run; only `embed` is allowed, never `complete` or `transcribe`, and it never posts to people |
 
 Semantic search, re-indexing and transcription keep working with the lock in place; only
@@ -519,11 +519,19 @@ any channel, speaking as itself marked "preview", in a draft envelope (exactly t
 it would hold after creation, capped by the previewing operator's own rights), output only
 in the admin UI, charged to the instance's operator-tools budget. If the operator declined
 the Agent Builder, drafts are edited in the admin UI's forms, and previews and operator
-tasks keep working.
+jobs keep working.
 
 An agent has exactly one archetype, set at creation; it never switches. Uninstalling an
 archetype plugin disables its agents and keeps their records; it never converts them to
-another archetype. **Uninstall is kernel-guarded:** before the plugin is unloaded the kernel
+another archetype. **Database access of archetype plugins.** An archetype plugin keeps owning its engine and
+process tables, but never gets the shared core pool (today `borrowPool` passes arbitrary
+SQL straight through, `middleware/src/platform/pluginContext.ts:340`,
+`borrowedPool.ts:23`): it gets a database role limited to its own schema, its migrations
+run under a migration role limited to that schema, and the kernel's tables (inbound
+events, reservations, execution scopes, grants, agents) are not reachable from any
+plugin role. New work (#2088).
+
+**Uninstall is kernel-guarded:** before the plugin is unloaded the kernel
 itself, independent of the plugin's `onUninstall` (whose failure is caught today,
 `middleware/src/plugins/installService.ts:916`), ends every running process of that
 archetype's agents: it ends them as `aborted` (reason "archetype plugin removed"), releases all
@@ -964,7 +972,7 @@ Each existing element keeps its purpose, moved out of the message body:
     through the gateway. With the lock in place, semantic search, the embedding backfill
     (as a maintenance run, stopped at its budget) and the transcription of a voice message
     work through the gateway; the embedding and transcription adapters' direct clients are
-    reachable only from the gateway; a maintenance run calling `complete` is refused; the issue preview and the skill verification work as operator tasks with direct clients blocked and stop at their budget and deadline; a plugin in `public-web` mode scans a previously unknown public domain while private addresses and model provider endpoints stay blocked; with the Agent Builder declined, drafts and previews still work; the Agent Builder answers as an agent through the emitter (no direct output), a draft preview speaks as the draft marked "preview" and gets no right the draft or the operator lacks; uninstalling an archetype plugin with processes in `configuring`, `active`, `concluding` and `following_up`, with a failing `onUninstall` and a restart, leaves no reservation, no later model call or invitation, and a `system` notice in each home conversation; an
+    reachable only from the gateway; a maintenance run calling `complete` is refused; a SQL-granted test archetype plugin reads and writes its own schema and resumes its processes, but reaches no inbound events, other processes' data, scopes or grants, also not through its migrations; every model call site in the code is listed in #2053 with its context, and a call without a context is refused by the gateway; the operator jobs issue preview, skill verification, topic regrouping and bulk promotion work with direct clients blocked, share one budget per job and stop at budget, deadline or cancel without further effects; a plugin in `public-web` mode scans a previously unknown public domain while private addresses and model provider endpoints stay blocked; with the Agent Builder declined, drafts and previews still work; the Agent Builder answers as an agent through the emitter (no direct output), a draft preview speaks as the draft marked "preview" and gets no right the draft or the operator lacks; uninstalling an archetype plugin with processes in `configuring`, `active`, `concluding` and `following_up`, with a failing `onUninstall` and a restart, leaves no reservation, no later model call or invitation, and a `system` notice in each home conversation; an
     agent on `claude-cli` uses its granted tools through `run_loop`, a tool it lacks is
     refused, a turn without budget does not start, a running loop that reaches its budget
     before the deadline makes no further model call, the total stays within the

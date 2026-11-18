@@ -324,8 +324,9 @@ States exist on three levels, each with its own rules:
   delivered) where it was; initiator and operator are told where possible.
   **Stop or abort** ends the closing procedure of every open session atomically: open
   consent windows close, no further consent answers are accepted, an undelivered session
-  summary is sent without a consent request and marked `not confirmed` (reason:
-  facilitation stopped), and the abort report says so. No consent request is ever sent
+  summary is sent without a consent request, marked `not confirmed` (reason: facilitation
+  stopped) only where its confirmation was required and `published` otherwise, and the
+  abort report says so. No consent request is ever sent
   that can no longer be answered. **Sessions at every terminal transition** (entering
   `concluding`, stop, abort, the end of the `configuring` scope, error), in the same
   transaction: a `scheduled` session becomes `cancelled` with one short note in its
@@ -426,7 +427,13 @@ States exist on three levels, each with its own rules:
 - **Authorship and content come only from authenticated inbound events.** A contribution is
   recorded by `record_contribution(eventId, revision, parts)`: one inbound event may yield
   several contributions (for example three ideas in one message), each with its part
-  index; a repeated call with the same event and revision creates no duplicates; a new
+  index; a repeated call with the same event and revision creates no duplicates; for a
+  vote there is exactly one effective ballot per (step, round, person): a newer ballot
+  (by the kernel's receive order) replaces an older one, also across text and card; an
+  edit of a message only changes its own ballot while that ballot is still the effective
+  one and never displaces a newer ballot; a runoff opens a new round whose completeness
+  and tally count only ballots of that round (several ideas of one person are not
+  affected); a new
   revision of a message received before its step closes supersedes all parts of the
   earlier revision (clusters are only built after the step closed, so no cluster points
   to a superseded part); free-text parts are confirmed by their author in one question
@@ -1088,10 +1095,11 @@ kept compatible.
     while the facilitation is already `concluding`; its full window runs; afterwards the
     final summary is delivered and dispatched within its own limits, also with a restart
     in between.
-43. **Stop during closing.** Session close, failed send, stop, restart: the session summary
-    goes out without a consent request, marked "not confirmed (facilitation stopped)"; the
-    same with a window already open: later answers are refused; nothing is ever
-    confirmed automatically after a stop.
+43. **Stop during closing.** Session close, failed send, stop, restart, once with a session
+    summary that needs confirmation and once without: the first goes out marked "not
+    confirmed (facilitation stopped)", the second as `published`, same delivery history;
+    with a window already open later answers are refused; nothing is ever confirmed
+    automatically after a stop.
 44. **Unverifiable electorate and failed delivery.** Complete roster at start, roster
     permanently `partial` at the end of a final window without objection: result `not
     confirmed` (participants could not be verified) after the bounded retries. A result
@@ -1183,6 +1191,11 @@ kept compatible.
 63. **Session protocol vs facilitation protocol.** A first session closes while the
     facilitation continues: its participants get the session protocol, stakeholders get
     nothing; only the facilitation's close dispatches the facilitation protocol to them.
+
+64. **One ballot per person and round.** Anna votes A by text, then B by card: B counts;
+    a retry of the same event changes nothing; a late edit of the old text vote changes
+    nothing; in a runoff only runoff ballots count, nobody is counted as having voted
+    because of the first round.
 
 ## 10. Work breakdown
 
