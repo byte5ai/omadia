@@ -10,24 +10,32 @@ Source: `specs/2042-agents-as-virtual-employees/spec.md` and
 `specs/2043-native-facilitators/spec.md`. A change to a definition here changes those specs
 in the same pull request, and the other way round.
 
-## In one paragraph
+## The building blocks, for everyone
 
-omadia extends a team with **agents**: virtual colleagues with a name, a personality and
-clear permissions. Every agent belongs to exactly one **archetype**: the built-in `standard`
-archetype or an archetype added by an **archetype plugin**, such as the facilitator. What an
-agent can do comes from **capabilities**: tools, integrations, skills and more, delivered
-by **capability plugins** or authored in the instance. People talk to agents in
-**conversations** on **channels** such as Teams, Slack, Discord or Telegram. Below the
-agents runs the deterministic **management layer**: it routes, enforces permissions and
-discretion, schedules and audits, but never answers and never uses a model to pick who
-answers. There is no orchestrator agent.
+| Term | German | In one sentence | Examples |
+|---|---|---|---|
+| **Agent** | Agent | A virtual colleague with a name, a role and a personality. | "Mira, sales" |
+| **Archetype** | Archetyp | The job profile of an agent, fixed when it is created and never switched. | standard agent, facilitator |
+| **Capability** | Fähigkeit | What an agent is given: access to a system, a tool, or know-how (skill). | Odoo access, Jira, web search, skill "write offers" |
+| **Channel** | Kanal | Where people reach agents. | Teams, Slack, Telegram, web chat |
+| **Model** | Modell | The AI an agent thinks with. | Claude, GPT, Mistral, Ollama |
+| **System module** | Systemmodul | Infrastructure of omadia itself that serves all agents and operators. | Conductor, memory system, omadia Proof, omadia UI |
+| **Builder** | Builder | Admin tools for setting things up. | Agent Builder, Plugin Builder |
+| **Plugin** | Plugin | Only the delivery form: an installable package from the hub. | `omadia-integration-odoo`, `omadia-channel-teams`, `omadia-llm-mistral` |
+
+In one breath: agents are virtual colleagues; they are given capabilities, people reach
+them through channels, a model makes them think; system modules are the infrastructure
+behind them; plugins are only the boxes all of this is delivered in. Below the agents runs
+the deterministic **management layer**: it routes, enforces permissions and discretion,
+schedules and audits, but never answers and never uses a model to pick who answers. There
+is no orchestrator agent.
 
 ## Actors and roles
 
 | Term | German | Definition | Not to be confused with |
 |---|---|---|---|
-| **Agent** | Agent (pl. Agenten) | A virtual colleague: one configured entity with its own identity, personality, capabilities, permissions, memory, model policy and channel identities. The only thing that speaks to people (besides `system` notices). Created by an operator. | Not a plugin, not a tool, not a "bot" (a bot is one channel identity of an agent), not an "assistant" in the sense of one entity serving everyone. |
-| **Archetype** | Archetyp | The class of an agent, fixed when the agent is created; an agent never switches it. `standard` is the built-in archetype; further archetypes come from archetype plugins (today `facilitator`). The archetype defines what an agent of that class inherits, adds and deliberately omits. | Not an agent template (a preset of one agent), not a working mode. |
+| **Agent** | Agent (pl. Agenten) | A virtual colleague: one configured entity with its own identity, personality, capabilities, permissions, memory, model policy and channel identities. The only thing that speaks to people in conversations (besides `system` notices). Created by an operator. | Not a plugin, not a tool, not a "bot" (a bot is one channel identity of an agent), not an "assistant" in the sense of one entity serving everyone. |
+| **Archetype** | Archetyp | The job profile of an agent (in German product texts explained as "Berufsbild"), fixed when the agent is created; an agent never switches it. `standard` is the built-in archetype; further archetypes come from archetype plugins (today `facilitator`). The archetype defines what an agent of that class inherits, adds and deliberately omits. | Not an agent template (a preset of one agent), not a working mode, not a role ("Mira, sales"). Never "agent type". |
 | **Standard agent** | Standard-Agent | An agent of the built-in archetype `standard`, omadia's normal agent: works for people and teams and may pursue their interests. | Not the default agent. |
 | **Facilitator** | Facilitator | An agent of the archetype `facilitator`: an impartial moderator of group processes. Serves no particular person, holds no business capabilities and no general memory. | Not a moderation mode of a standard agent, not a capability. |
 | **Default agent** | Standard-Ansprechpartner | The agent that answers a message nobody explicitly addressed, configured per human user and channel, per user, per channel or for the instance; any entry can be `off`. | Not a special super-agent, not the standard archetype. Formerly "fallback agent" / "Standard Orchestrator". |
@@ -47,6 +55,7 @@ answers. There is no orchestrator agent.
 | **Internal helper** | interner Helfer | A run inside one agent's envelope that does part of its work: sub-agent helper, fast lane, model router, mode selection, presentation helper. Has no name towards people; its work is the agent's own. | Not an agent, not a consultation. Formerly "sub-agent" for the configured kind. |
 | **Fast lane** | Schnellspur | The agent's internal helper that answers simple data questions without the full model loop, rendering data without a model seeing it. | Formerly "fast path" as a separate answer path. |
 | **Envelope** | Rahmen | Everything an agent may use in a turn: its identity, instructions, personality, boundaries, model policy, skills, capability grants and memory scope, capped by the audience's rights. "No more, no less." | |
+| **Availability** | Verfügbarkeit | Which users (named people, groups or everyone in the tenant) may use an agent, and in which channels (all or selected). Set by the operator in the Agent Builder, checked by the management layer before every turn. | Not grants (what the agent can do), not reach (which systems), not discretion (what it may tell whom), not the default agent (routing preference), not a channel identity (how it appears). |
 | **Reach** | Reichweite | Every connected system an agent can read or write through its grants. Shown on its page. | |
 | **Model policy** | Modellrichtlinie | Which models an agent may use, including cheaper ones for internal helpers. | |
 
@@ -70,10 +79,12 @@ answers. There is no orchestrator agent.
 | **Management layer** | Verwaltungsebene | The deterministic part of the kernel below the agents: routing, identity, permissions, discretion, privacy shield, memory scoping, scheduling, audit, Conductor. Never answers, never uses a model to choose who answers. | Not an agent. Formerly "orchestrator" in the product sense. |
 | **Agent runtime** | Agentenlaufzeit | The code that runs one agent's turns. Its package is still named `harness-orchestrator` for historical reasons. | |
 | **Orchestrator** | (not used) | **Retired as a product term.** Only a code name of the agent runtime package. Never in UI texts, docs for users or operators, specs or marketing. omadia has no orchestrator agent. | |
-| **Conductor** | Conductor | The kernel's workflow engine for operator-designed processes (triggers, steps, human steps). | Not the management layer as a whole. |
+| **System module** | Systemmodul | Infrastructure of omadia itself that provides platform functions to all agents and operators: built into the kernel or delivered as a plugin of kind `system-module` (formerly `extension`). For example Conductor, the memory system, omadia Proof, omadia UI, the dev platform, the agent runtime, the verifier, the fast lane. No identity; agents use it through kernel services and their grants. | Not an agent, not a capability; being delivered as a plugin does not make it a capability. |
+| **Conductor** | Conductor | The system module for operator-designed processes (workflows with triggers, steps, human steps). | Not the management layer as a whole; not a plugin. |
 | **Privacy shield** | Privacy Shield | The kernel component that masks personal and classified data before a model sees it and restores it for permitted readers. | |
 | **Harness** | Harness | The kernel's deterministic machinery around models: routing, permissions, guards, budgets, scheduling and emission. Used in code and developer docs; in product texts say management layer. | Not an agent, not a model. |
 | **Audience floor** | Leserkreis-Grenze | The rule that an answer may contain only what every human who can read it is allowed to know; enforced by the management layer. | |
+| **Model** | Modell | The AI an agent thinks with, chosen by the agent's model policy; delivered by a model plugin. | Not the model context. |
 | **Model context** | Modellkontext | The conversation history and inputs a model sees in one agent's turns. | Not a session. |
 | **Side channel** | Seitenkanal | The path on which data from a source system reaches people without passing through a model; the agent coordinates and gets a status. | |
 
@@ -81,18 +92,22 @@ answers. There is no orchestrator agent.
 
 | Term | German | Definition | Not to be confused with |
 |---|---|---|---|
-| **Plugin** | Plugin | An installable package. Exactly one of two classes: capability plugin or archetype plugin. A plugin is never an actor: it never speaks to people and has no identity of its own. | Not an agent. |
-| **Capability plugin** | Fähigkeits-Plugin | Extends what agents can do. Kinds: `integration`, `tool`, `channel`, `provider`, `extension`, `ui`, `skill`, `agent-template`. Installing it attaches it to no agent. | Formerly plugins of kind `agent`; that kind is retired. |
-| **Archetype plugin** | Archetyp-Plugin | Adds a new agent archetype to the system (manifest kind `archetype`), for example `omadia-agent-facilitator`. The operator then creates agents of that archetype; the kernel runs them under all agent rules. Listed in its own hub category; installing it needs an explicit confirmation. | Not a plugin that is attached to an agent. |
+| **Plugin** | Plugin | Only the delivery form: an installable package from the hub. Delivers exactly one of: capabilities, a channel, a model, an archetype, a system module, agent templates; its manifest `kind` says which. Never an actor: no identity, never speaks to people. | Not an agent. "Plugin" says how something is delivered, never what it does. |
+| **Capability plugin** | Fähigkeits-Plugin | A plugin that delivers capabilities (kinds `integration`, `tool`, `skill`). Installing it attaches it to no agent. | Formerly "agent plugin"; kind `agent` is retired. |
+| **Channel plugin** | Kanal-Plugin | A plugin that delivers a channel (kind `channel`). | |
+| **Model plugin** | Modell-Plugin | A plugin that delivers a model, embeddings or transcription (kind `model`, today `extension`, for example `omadia-llm-anthropic`). Only the model gateway calls it. | |
+| **Archetype plugin** | Archetyp-Plugin | A plugin that delivers an archetype (kind `archetype`), for example `omadia-agent-facilitator`. The operator then creates agents of that archetype; the kernel runs them under all agent rules. Installing it needs an explicit confirmation. | Not a plugin that is attached to an agent. |
 | **Capability** | Fähigkeit | Something an agent may be granted: a tool, an integration scope (read or write), a skill. | |
 | **Grant** | Freigabe | The permission that gives one agent one capability (or one consultation). | |
-| **Model gateway** | Modell-Gateway | The kernel service through which every model call runs (operations `complete`, `embed`, `transcribe`, `run_loop`); only it calls provider plugins, and every call needs an execution context (agent turn, execution scope, inbound processing, operator job or maintenance run). | Not a provider plugin. |
+| **Model gateway** | Modell-Gateway | The kernel service through which every model call runs (operations `complete`, `embed`, `transcribe`, `run_loop`); only it calls model plugins, and every call needs an execution context (agent turn, execution scope, inbound processing, operator job or maintenance run). | Not a model plugin. |
 | **Execution scope** | Ausführungsfreigabe | A bounded authorization the kernel issues for the actions of an archetype plugin's process (`configuring`, `active`, `closing`, `scheduling`, `follow_up`), each with a deadline, a budget and the targets it may send to. | Not a grant, not an envelope. |
 | **Reservation** | Reservierung | The exclusive hold of one running process (a facilitation or an agent discussion) on a conversation; at most one per conversation; released by the process itself, or by the kernel when it ends the process (agent disabled or deleted, archetype plugin removed). | Not a binding; never removes one. |
 | **Follow-up permission** | Nachverfolgungsberechtigung | The non-exclusive permission a facilitation keeps after its reservation is released: remind owners of open action items and post status in its home conversation until `ended`. | Not a reservation; another process may hold the conversation meanwhile. |
 | **Tool** | Werkzeug | A function an agent can call. | |
 | **Integration** | Integration | A connection to a third-party system (ERP, CRM, mail, calendar) with its credentials in the vault; agents never see the secrets. | |
 | **Skill** | Skill | Instructions and knowledge an agent can load; delivered by a skill plugin or authored, imported or forked in the instance. A capability, never an actor. | Not an agent, not a plugin by itself. |
+| **Agent Builder** | Agent Builder | The admin tool in which an operator creates and configures agents (identity, personality, capabilities, skills, helpers, triggers); a model proposes, the operator decides. | Not an agent. Not the Plugin Builder: it never creates code or plugins. |
+| **Plugin Builder** | Plugin Builder | The admin tool in which an operator generates capability plugins as code. | Not an agent. Not the Agent Builder: it never creates agents or personas. Not the Conductor's workflow designer. |
 | **Agent template** | Agentenvorlage | A preset of identity, personality and suggested capabilities from which an operator creates an agent of an existing archetype. Never runs itself. | Not an archetype. |
 | **MCP server** | MCP-Server | An external tool provider connected through the Model Context Protocol; its tools are capabilities. | |
 
@@ -152,4 +167,6 @@ answers. There is no orchestrator agent.
 | Direct Line | Explicit addressing; consultation |
 | Fast path (as a separate answer path) | Fast lane of an agent |
 | Plugin of kind `agent`, "agent plugin" for capabilities | Capability plugin; archetype plugin for a new agent class |
+| Agent type ("Agent-Typ") | Archetype |
+| Manifest kinds `extension`, `provider`, `ui` | `system-module`; `model`; a UI is a part any plugin may bring |
 | Heartbeat | Trigger (hook, wakeup, timer) |

@@ -12,6 +12,16 @@
 > a second model family (Codex) on 2026-11-18; its findings are incorporated. §12 lists
 > what is unverified.
 >
+> **State on 2026-11-19:** the sister repos moved on since that measurement:
+> `omadia-channel-teams` 0.36.5 @ `7b7c1e5` delivers every human message of a conversation
+> its bot holds a message subscription for (F1 fixed), sends as the facilitator's own bot
+> with first-contact DMs and reports `app_not_installed` or `blocked` (F8's DM part fixed),
+> and has readiness with consent repair, a simulated-transport scenario suite and a manual
+> checklist; `omadia-agent-facilitator` 1.0.3 replaced the 0.6.0 files cited in §4;
+> `omadia-m365-connector` 0.9.2 implements free/busy, invitations and mail for follow-up
+> (`facilitation.followup@1`). §4 stays as the record of the failure; the issues carry the
+> current open work.
+>
 > **Amended by the owner on 2026-11-18** (§0): the facilitator archetype is delivered by
 > the archetype plugin `@omadia/agent-facilitator` (repo `omadia-agent-facilitator`), with
 > the engine in the plugin. The decisions of §11 are taken. Where §0 and a later section
@@ -613,10 +623,13 @@ membership.
 decisions need a complete, current participant list from one of two sources, fixed at start:
 
 - **Platform roster:** the channel's roster query, asked with `fresh: true` (bypassing any
-  cache; Teams caches it for 5 minutes today, `src/teamsRoster.ts:39`) and returning
-  `complete`, `partial` or `unknown` with its time (#2091). Teams today returns an empty or
-  partial list on errors (`src/teamsRoster.ts:85`, `src/teamsGroupPrimitives.ts:256` in
-  `omadia-channel-teams`); that counts as `partial` or `unknown`. Before every automatic
+  cache; Teams caches it for 5 minutes today, `src/teamsRoster.ts:9,47-55`, and its SDK
+  adapter never asks for a fresher one) and returning `complete`, `partial` or `unknown`
+  with its time (#2091). Today Teams discards already read pages and returns an empty list
+  on a read error (`src/teamsRoster.ts:113-126`), and its SDK adapter marks any empty list
+  `partial` (`src/teamsGroupPrimitives.ts:501` in `omadia-channel-teams`); that counts as
+  `partial` or `unknown`. Telegram already proves completeness against the member count
+  for groups up to 50 members (`omadia-channel-telegram` `src/telegramRoster.ts:127`). Before every automatic
   completeness or consent decision the engine queries it fresh; if the answer is not
   `complete`, no automatic decision is taken, the facilitator says so once and retries at
   the next contribution or reminder.
@@ -685,7 +698,7 @@ participant.
   right after it; the facilitator then confirms the contribution, so nobody is left
   confused.
 - **Delivery classes:** channels give no exactly-once guarantee (the Teams adapter
-  reports `delivered` once `sendActivity` returns, `src/teamsGroupPrimitives.ts:285-287`
+  reports `delivered` once `sendActivity` returns, `src/teamsGroupPrimitives.ts:835-858`
   in `omadia-channel-teams`). Every send is recorded in `facilitation_outbox` before the
   call. *Droppable* messages (reminders, nudges) are at-most-once: an attempt with unknown
   outcome after a crash is never retried. *Essential* messages (handshake, result, abort
