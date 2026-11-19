@@ -54,6 +54,19 @@ export type {
   TargetedSendProvider,
   TargetedSendReport,
 } from './targetedSend.js';
+// #2089 - question cards; defined once in plugin-api.
+export { CARD_ID_PATTERN, CARD_QUESTION_KINDS } from '@omadia/plugin-api';
+export type {
+  CardAnswerValue,
+  CardOption,
+  CardQuestion,
+  CardQuestionKind,
+  CardSupport,
+  CardUpdate,
+  CardUpdateOutcome,
+  MessageCardAnswer,
+  QuestionCard,
+} from '@omadia/plugin-api';
 // #330 C3b - conversation-addressed proactive send (group nudges).
 export type { ConversationSendOptions, ConversationSendProvider } from './conversationSend.js';
 // #2043 - native facilitators: authenticated inbound messages, readiness and

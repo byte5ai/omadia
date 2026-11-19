@@ -32,6 +32,10 @@ export function publishSendServices(deps: {
     perCallerService((caller) => ({
       sendToConversation: (input: SendInput<ConversationSendService['sendToConversation']>) =>
         deps.conversation.sendToConversation(input, callerPluginId(caller.pluginId)),
+      // #2089 — question cards.
+      capabilities: (channelType: string) => deps.conversation.capabilities(channelType),
+      updateCard: (input: SendInput<ConversationSendService['updateCard']>) =>
+        deps.conversation.updateCard(input, callerPluginId(caller.pluginId)),
     })),
   );
 }

@@ -10,6 +10,7 @@
 import type { ChannelUserRef } from './incoming.js';
 import type { OutgoingAttachment } from './outgoing.js';
 import type { Principal } from './principal.js';
+import type { CardSupport, QuestionCard } from '@omadia/plugin-api';
 
 /** Deliberately narrower than SemanticAnswer: a targeted message is a report /
  *  status ping, not a full conversational reply. */
@@ -24,6 +25,11 @@ export interface TargetedMessage {
    *  `unreachable` (`channel_error`) instead of posting plain text; an
    *  invalid poll is refused the same way and nothing is posted. */
   poll?: TargetedPoll;
+  /** Post the message as a question card (#2089). Only handed to a provider
+   *  that declares `supports.card` with every question kind of the card; the
+   *  kernel validates the card first. `delivered.cardMessageId` is the id a
+   *  later `updateCard` names. Never together with `poll`. */
+  card?: QuestionCard;
 }
 
 export interface TargetedPoll {
@@ -104,6 +110,11 @@ export interface SendProviderCapabilities {
    * itself into a conversation: the marking is there once, never twice.
    */
   aiLabel?: boolean;
+  /** Renders question cards (#2089): which question kinds, how many
+   *  questions on one card, and whether a posted card can be updated
+   *  (`ConversationSendProvider.updateCard`). Absent = no cards; the kernel
+   *  then refuses a card instead of handing it over. */
+  card?: CardSupport;
 }
 
 export interface TargetedSendProvider {

@@ -149,10 +149,14 @@ export async function sendDirectAsOwnIdentity(
     ? await deps.lookupConversationRefs([principalId], input.channelType).catch(() => new Map<string, unknown>())
     : new Map<string, unknown>();
   const conversationRef = refs.get(principalId);
+  // A question card (#2089) is a conversation send. The plugin-facing direct
+  // message carries text only; a `card` slipped into it is not handed to the
+  // channel unvalidated.
+  const { card: _card, ...withoutCard } = input.message;
   const marked = markOwnIdentityMessage(
     own.disclosure,
     { agentSlug: input.asAgentSlug, channelType: input.channelType, target: `user:${principalId}` },
-    input.message,
+    withoutCard,
     provider.supports,
   );
   let outcome: TargetedDeliveryOutcome;

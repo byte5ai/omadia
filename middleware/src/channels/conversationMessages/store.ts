@@ -10,7 +10,7 @@
 
 import { createHash, randomUUID } from 'node:crypto';
 
-import type { ConversationMessageKind, ConversationMessageRecord } from '@omadia/plugin-api';
+import type { CardAnswerValue, ConversationMessageKind, ConversationMessageRecord } from '@omadia/plugin-api';
 
 /** Kinds that are a revision of the message itself. Reactions and card
  *  answers refer to a message; they do not change it. */
@@ -69,6 +69,10 @@ export interface NewMessageEvent {
     readonly cardId: string;
     readonly value: unknown;
     readonly answererVerified?: boolean;
+    /** #2089 — the typed part of a question card's answer. */
+    readonly proposalId?: string;
+    readonly proposalVersion?: number;
+    readonly answers?: readonly CardAnswerValue[];
   };
   /** ISO 8601, platform time. */
   readonly occurredAt: string;
@@ -210,6 +214,11 @@ export function toRecord(
             ...(event.cardAnswer.answererVerified !== undefined
               ? { answererVerified: event.cardAnswer.answererVerified }
               : {}),
+            ...(event.cardAnswer.proposalId !== undefined ? { proposalId: event.cardAnswer.proposalId } : {}),
+            ...(event.cardAnswer.proposalVersion !== undefined
+              ? { proposalVersion: event.cardAnswer.proposalVersion }
+              : {}),
+            ...(event.cardAnswer.answers !== undefined ? { answers: event.cardAnswer.answers } : {}),
           },
         }
       : {}),

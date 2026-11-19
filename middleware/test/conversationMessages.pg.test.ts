@@ -112,6 +112,43 @@ describe('conversationMessages (pg, migration 0068)', { skip: !pgAvailable }, ()
     assert.deepEqual([created.revision, edited.revision, reaction.revision], [0, 1, 1]);
     assert.deepEqual(reaction.reaction, { name: 'like', removed: false });
     assert.deepEqual(answer.cardAnswer, { cardId: 'poll-7', value: { optionId: 'b' } });
+    // #2089 — a question card's typed answer survives the store and the read.
+    const typedAnswers = [
+      { questionId: 'q1', kind: 'ranking' as const, ranking: ['c', 'a', 'b'] },
+      { questionId: 'q2', kind: 'consent' as const, decision: 'object' as const, reason: 'Too early.' },
+    ];
+    const typed = await f.hub.ingest(
+      messageEvent({
+        kind: 'card_answer',
+        messageId: 'card-2',
+        text: undefined,
+        cardAnswer: {
+          cardId: 'c-17',
+          value: { answers: typedAnswers },
+          answererVerified: true,
+          proposalId: 'p-4',
+          proposalVersion: 2,
+          answers: typedAnswers,
+        },
+      }),
+    );
+    assert.deepEqual(typed?.cardAnswer, {
+      cardId: 'c-17',
+      value: { answers: typedAnswers },
+      answererVerified: true,
+      proposalId: 'p-4',
+      proposalVersion: 2,
+      answers: typedAnswers,
+    });
+    const malformed = await f.hub.ingest(
+      messageEvent({
+        kind: 'card_answer',
+        messageId: 'card-3',
+        text: undefined,
+        cardAnswer: { cardId: 'c-17', value: {}, answers: [{ questionId: 'q1', kind: 'ranking' }] as never },
+      }),
+    );
+    assert.equal(malformed, undefined, 'an answer outside the contract is refused, not stored as something else');
     assert.match(created.eventId, /^\d+$/);
     assert.ok(Date.parse(created.receivedAt) > 0);
     assert.deepEqual(await f.hub.getEvent(scopeOf('mara'), ENGINE, 'm1'), edited);
