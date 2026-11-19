@@ -317,6 +317,22 @@ export class ConversationMessageHub {
     return undefined;
   }
 
+  /**
+   * Does the engine read EVERY message of this conversation for this agent,
+   * through a subscription of either major? Then it answers what is said
+   * there itself, and a turn the channel starts for the same message (a
+   * mention) must not produce a second answer.
+   */
+  readsEverything(scope: ConversationMessageScope): boolean {
+    return this.all().some(
+      (s) =>
+        s.mode === 'all' &&
+        s.agentSlug === scope.agentSlug &&
+        s.channelType === scope.channelType &&
+        s.conversationId === scope.conversationId,
+    );
+  }
+
   /** Every active subscription for a conversation, whichever agent holds it. */
   subscriptionsIn(channelType: string, conversationId: string): readonly MessageSubscription[] {
     return this.all().filter(
