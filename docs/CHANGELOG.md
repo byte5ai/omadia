@@ -36,6 +36,18 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — An archetype plugin never gets the shared database pool (#2088, epic #2042): K3b of the spec alignment
+
+- A plugin of manifest kind `archetype` that asks for `graphPool` is refused
+  (`SharedPoolRefusedError`, plugin-api 1.72.0), whatever it declares and
+  whatever is granted, and it gets no `ctx.sql` on the shared pool. Its
+  database is its own schema under its own roles (K3a), which it gets by not
+  listing `graphPool` under `requires`. Plugins of every other kind are
+  unchanged.
+- **Before updating the kernel:** an installed archetype plugin that still
+  requires `graphPool` (the facilitation engine before 1.3.0) loses its
+  database with this version. Update the plugin first.
+
 ### Changed — Running agent discussions move to "Running processes"; the old facilitation panel is removed (#2067, epic #2043)
 
 - **Where to look now:** agent discussions that are running appear on the

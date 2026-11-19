@@ -2675,6 +2675,11 @@ readonly capability: string;
 readonly reason: 'undeclared' | 'ungranted';
 constructor(pluginId: string, capability: string, reason: 'undeclared' | 'ungranted');
 }
+export declare class SharedPoolRefusedError extends Error {
+readonly pluginId: string;
+readonly capability: string;
+constructor(pluginId: string, capability: string);
+}
 export declare class LedgerNameError extends Error {
 readonly pluginId: string;
 readonly ledger: string;

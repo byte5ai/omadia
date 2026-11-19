@@ -61,6 +61,7 @@ import {
   type SeedLedgerOptions,
   SqlMigrationError,
   ServiceNotDeclaredError,
+  SharedPoolRefusedError,
 } from '@omadia/plugin-api';
 import type { Pool } from 'pg';
 import type { DomainTool } from '@omadia/orchestrator';
@@ -331,6 +332,7 @@ export function createPluginContext(
   // #2088 — an archetype plugin that does not ask for the shared pool has a
   // database of its own (schema and login roles), or none.
   const hasOwnDatabase = catalogEntry ? ownsItsDatabase(catalogEntry.plugin) : false;
+  const isArchetypePlugin = catalogEntry?.plugin.kind === 'archetype';
   const assertSqlAccess = createSqlGate({
     agentId,
     catalog,
@@ -368,6 +370,12 @@ export function createPluginContext(
       // declared neither should hear about the manifest line it is missing
       // before it hears about a grant it could not have obtained anyway.
       assertSqlAccess(name);
+      // #2088 — after the two gates, so a missing declaration or grant is
+      // still reported as what it is. An archetype plugin with both still
+      // gets no pool: its database is its own schema, through `ctx.sql`.
+      if (isArchetypePlugin && POOL_SHAPED_CAPABILITIES.has(name)) {
+        throw new SharedPoolRefusedError(agentId, name);
+      }
       const resolved = serviceRegistry.get<T>(requested, serviceCaller);
       // Epic #470 C7 / G4 — a pool-shaped capability is BORROWED, not handed
       // over. Passing the raw `pg.Pool` would mean one `.end()` in one plugin
@@ -1076,7 +1084,7 @@ export function createPluginContext(
     sqlPermission &&
     (opts.sqlGranted ?? false) &&
     opts.packageRoot &&
-    (!hasOwnDatabase || opts.archetypeDatabase)
+    (isArchetypePlugin ? hasOwnDatabase && opts.archetypeDatabase : true)
       ? createSqlAccessor({
           ...(hasOwnDatabase && opts.archetypeDatabase
             ? { archetypeDatabase: opts.archetypeDatabase }

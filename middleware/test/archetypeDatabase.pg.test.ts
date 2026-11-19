@@ -20,7 +20,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 
-import { ServiceNotDeclaredError } from '@omadia/plugin-api';
+import { ServiceNotDeclaredError, SharedPoolRefusedError } from '@omadia/plugin-api';
 import { Pool } from 'pg';
 
 import { probePgTest } from './_helpers/pgTestDb.js';
@@ -365,15 +365,15 @@ describe('#2088 archetype plugin database', { skip: !pgAvailable }, () => {
     }
   });
 
-  it('a version that still requires graphPool keeps the shared pool and gets no query or transaction', async () => {
+  it('a version that still requires graphPool is refused the pool and has no ctx.sql', async () => {
     const ctx = await context(false, { requiresPool: true });
-    const pool = ctx.services.get<{ query: (text: string) => Promise<{ rows: { cu: string }[] }> }>('graphPool');
-    assert.ok(pool, 'the shared pool, as before');
-    assert.equal((await pool.query('SELECT current_user AS cu')).rows[0]?.cu, adminRole);
-    assert.ok(ctx.sql, 'ctx.sql for its migrations, as before');
-    assert.equal(ctx.sql.schema, undefined);
-    assert.equal(ctx.sql.query, undefined);
-    assert.equal(ctx.sql.transaction, undefined);
+    assert.throws(
+      () => ctx.services.get('graphPool'),
+      (err: unknown) =>
+        err instanceof SharedPoolRefusedError &&
+        /Remove 'graphPool' from the manifest's requires/.test(err.message),
+    );
+    assert.equal(ctx.sql, undefined, 'no migrations on the shared pool either');
   });
 
   it('commits a transaction, rolls one back on a throw, and refuses a statement after it ended', async () => {
