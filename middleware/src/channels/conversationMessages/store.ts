@@ -10,7 +10,12 @@
 
 import { createHash, randomUUID } from 'node:crypto';
 
-import type { CardAnswerValue, ConversationMessageKind, ConversationMessageRecord } from '@omadia/plugin-api';
+import type {
+  CardAnswerValue,
+  ConversationMessageKind,
+  ConversationMessageRecord,
+  MessageTranscriptSegment,
+} from '@omadia/plugin-api';
 
 /** Kinds that are a revision of the message itself. Reactions and card
  *  answers refer to a message; they do not change it. */
@@ -102,6 +107,8 @@ export interface NewMessageEvent {
   /** #2089 — the channel states that the message addresses the agent's bot
    *  (a mention). */
   readonly addressedToBot?: boolean;
+  /** #2089 — 'transcript_segment': session and media source. */
+  readonly transcript?: MessageTranscriptSegment;
 }
 
 export interface StoredAuthor {
@@ -207,6 +214,11 @@ export function dedupeKeyFor(event: NewMessageEvent): string {
     case 'card_answer':
       parts.push(event.author.id, event.occurredAt, event.cardAnswer ?? null);
       break;
+    case 'transcript_segment':
+      // The same text of a segment again is a redelivery; a changed text is
+      // its next revision.
+      parts.push(event.text ?? '');
+      break;
   }
   return createHash('sha256').update(JSON.stringify(parts)).digest('hex');
 }
@@ -228,6 +240,8 @@ export function assignRevision(
   adapterRevision: number | undefined,
 ): number {
   if (kind === 'created') return 0;
+  // A segment's revisions are its own count: 0, then +1 per corrected text.
+  if (kind === 'transcript_segment') return latest === undefined ? 0 : latest + 1;
   if (kind === 'edited' || kind === 'deleted') {
     const next = latest === undefined ? 1 : latest + 1;
     const hint = kind === 'edited' && Number.isInteger(adapterRevision) ? adapterRevision! : 0;
@@ -282,6 +296,7 @@ export function toRecord(
     occurredAt: event.occurredAt,
     receivedAt: receivedAt.toISOString(),
     ...(event.addressedToBot ? { addressedToBot: true } : {}),
+    ...(event.transcript ? { transcript: event.transcript } : {}),
   };
 }
 
@@ -336,8 +351,11 @@ export class InMemoryConversationMessageStore implements ConversationMessageStor
     const dedupeKey = dedupeKeyFor(event);
     const own = this.events.filter((e) => e.subscriptionId === subscription.id);
     if (own.some((e) => e.dedupeKey === dedupeKey)) return Promise.resolve(undefined);
+    // Messages and transcript segments count their revisions apart.
+    const sameFamily = (kind: ConversationMessageKind): boolean =>
+      event.kind === 'transcript_segment' ? kind === 'transcript_segment' : isRevisionKind(kind);
     const revisions = own
-      .filter((e) => e.record.messageId === event.messageId && isRevisionKind(e.record.kind))
+      .filter((e) => e.record.messageId === event.messageId && sameFamily(e.record.kind))
       .map((e) => e.record.revision);
     const latest = revisions.length > 0 ? Math.max(...revisions) : undefined;
     const revision = assignRevision(event.kind, latest, event.adapterRevision);

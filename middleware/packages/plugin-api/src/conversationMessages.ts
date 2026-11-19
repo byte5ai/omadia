@@ -22,7 +22,10 @@ export type ConversationMessageKind =
   | 'edited'
   | 'deleted'
   | 'reaction'
-  | 'card_answer';
+  | 'card_answer'
+  /** #2089 — what was said in a live session, as text from an authenticated
+   *  media source ({@link MessageTranscriptSegment}). `messageId` is the segment id. */
+  | 'transcript_segment';
 
 export interface ConversationMessageAuthor {
   /** Channel-user namespace of the author (e.g. 'teams-aad'). */
@@ -74,6 +77,29 @@ export interface ConversationMessageRecord {
   /** #2089 — the channel stated that the message addresses the agent's bot
    *  (a mention). Absent = it did not say so. */
   addressedToBot?: boolean;
+  /** 'transcript_segment': the session and the media source it came from.
+   *  `text` is the transcribed text of this revision of the segment. */
+  transcript?: MessageTranscriptSegment;
+}
+
+/**
+ * #2089 (spec 2043 §5.3) — where a transcript segment comes from.
+ *
+ * `participant`: the platform delivered a media channel bound to one
+ * participant's account; the record's `author` is that principal, and the
+ * segment counts as their contribution only after they confirm exactly this
+ * revision. `shared`: a room microphone or a mixed stream; nobody is the
+ * author (the record's `author` names the media source: kind `custom`, id
+ * `media:<source>`), `speakerHint` is a hint only, and a participant may adopt
+ * exactly this revision by an authenticated message or card.
+ */
+export interface MessageTranscriptSegment {
+  sessionId: string;
+  /** Stable for the segment; equals the record's `messageId`. */
+  segmentId: string;
+  source: 'participant' | 'shared';
+  /** Speaker recognition's guess. Never authorship. */
+  speakerHint?: string;
 }
 
 export interface ConversationMessageScope {

@@ -8,6 +8,23 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.70.0 — 2026-11-19
+
+Additive (#2089, epic #2043): transcript segments as inbound events. A
+contract without a producer: no channel delivers them yet.
+
+### Added
+
+- `ConversationMessageKind` gains **`'transcript_segment'`**, and
+  `ConversationMessageRecord` the field **`transcript`**
+  (`MessageTranscriptSegment`: `sessionId`, `segmentId`, `source`
+  `'participant' | 'shared'`, optional `speakerHint`). `messageId` is the
+  segment id, `text` the transcribed text, `revision` 0 for a segment's
+  first text and one higher for each corrected text. For a `participant`
+  source `author` is that participant's principal; for a `shared` source it
+  names the media source (kind `custom`, id `media:<source>`) and nobody is
+  the author. A consumer that switches over the kinds has one more case.
+
 ## 1.69.0 — 2026-11-19
 
 Additive (#2078, epic #2043): kernel-issued grants for mail and calendar.

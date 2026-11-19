@@ -9,7 +9,14 @@ import type { ConversationMessageKind } from '@omadia/plugin-api';
 import { readCardAnswerFields } from '../questionCard.js';
 import type { NewMessageEvent } from './store.js';
 
-const KINDS: readonly ConversationMessageKind[] = ['created', 'edited', 'deleted', 'reaction', 'card_answer'];
+const KINDS: readonly ConversationMessageKind[] = [
+  'created',
+  'edited',
+  'deleted',
+  'reaction',
+  'card_answer',
+  'transcript_segment',
+];
 export const MAX_ID_LENGTH = 512;
 const MAX_TEXT_LENGTH = 100_000;
 /** An adapter's edit counter is a hint; one outside this range is ignored
@@ -40,6 +47,23 @@ export function validateMessageEvent(event: ConversationMessageEvent): string | 
     // never stored as something else.
     const typed = readCardAnswerFields(event.cardAnswer);
     if ('error' in typed) return typed.error;
+  }
+  if (event.kind === 'transcript_segment') {
+    // #2089 — a segment names its session and source, carries text, and its
+    // id is the event's message id. Anything else is not a transcript.
+    const t = event.transcript;
+    if (!t || !isBoundedText(t.sessionId, MAX_ID_LENGTH)) return 'transcript.sessionId';
+    if (t.segmentId !== event.messageId) return 'transcript.segmentId';
+    if (t.source !== 'participant' && t.source !== 'shared') return 'transcript.source';
+    if (!isBoundedText(event.text, MAX_TEXT_LENGTH) || event.text.trim().length === 0) return 'text';
+    if (t.speakerHint !== undefined && !isBoundedText(t.speakerHint, 256)) return 'transcript.speakerHint';
+    // A shared stream has no author: the adapter names the media source
+    // (`custom`, id `media:<source>`), never a person.
+    if (t.source === 'shared' && (event.author.kind !== 'custom' || !event.author.id.startsWith('media:'))) {
+      return 'author';
+    }
+  } else if (event.transcript !== undefined) {
+    return 'transcript';
   }
   return undefined;
 }
@@ -95,5 +119,15 @@ export function toStoredEvent(event: ConversationMessageEvent, principalId: stri
     ...(event.kind === 'card_answer' && event.cardAnswer ? { cardAnswer: readCardAnswer(event.cardAnswer) } : {}),
     occurredAt: new Date(event.occurredAt).toISOString(),
     ...(event.addressedToBot === true ? { addressedToBot: true } : {}),
+    ...(event.kind === 'transcript_segment' && event.transcript
+      ? {
+          transcript: {
+            sessionId: event.transcript.sessionId,
+            segmentId: event.transcript.segmentId,
+            source: event.transcript.source,
+            ...(event.transcript.speakerHint !== undefined ? { speakerHint: event.transcript.speakerHint } : {}),
+          },
+        }
+      : {}),
   };
 }

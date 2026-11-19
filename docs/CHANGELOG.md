@@ -36,6 +36,20 @@ changelog.
 
 ## [Unreleased]
 
+### Added — Transcript segments as inbound events, contract only (#2089, epic #2043)
+
+- What is said in a live session can be delivered to a facilitation as
+  text: a transcript segment from a media source of that session, stored and
+  read like a message, with its own revisions when the text is corrected.
+- A segment from a media channel bound to one participant's account carries
+  that participant as its author. A segment from a shared source (a room
+  microphone, a mixed stream) has no author: the record names the source,
+  and a recognised speaker is a hint only.
+- The kernel refuses a segment without a session, with an unknown source, or
+  from a shared source that names a person as its author.
+- No channel delivers transcript segments yet; this is the contract and its
+  storage (migration 0077, plugin-api 1.70.0, channel-sdk 0.3.6).
+
 ### Added — Kernel-issued grants for a facilitation's mail and calendar operations (#2078, epic #2043): K4.5 of the spec alignment
 
 - **Three grants, each bound to one execution scope:** protocol dispatch

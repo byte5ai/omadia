@@ -11,7 +11,7 @@
 
 import type { MessageCardAnswer } from '@omadia/plugin-api';
 
-import type { ConversationMessageKind } from '@omadia/plugin-api';
+import type { ConversationMessageKind, MessageTranscriptSegment } from '@omadia/plugin-api';
 
 import type { ChannelUserRef } from './incoming.js';
 import type { ConversationType } from './conversationRoster.js';
@@ -56,6 +56,11 @@ export interface ConversationMessageEvent {
    *  when this is `true`, or when it replies to one of the bot's messages or
    *  answers one of its cards. */
   addressedToBot?: boolean;
+  /** #2089 — required for kind 'transcript_segment': the session and media
+   *  source. `messageId` is the stable segment id, `text` the transcribed
+   *  text; for a shared source `author` names the media source (kind
+   *  `custom`, id `media:<source>`), never a person. */
+  transcript?: MessageTranscriptSegment;
   /** The original platform event, opaque to the kernel and not stored. */
   rawEvent?: unknown;
 }
