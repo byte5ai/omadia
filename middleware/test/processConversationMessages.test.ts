@@ -78,6 +78,27 @@ describe('#2089 subscribing a process', () => {
     assert.equal((await h.service.subscribe(h.scope('f1'), { mode: 'addressed' })).outcome, 'subscribed', 'addressed messages need no permission for all');
   });
 
+  it('turning an existing subscription up to every message needs the same readiness as a new one', async () => {
+    const h = setup();
+    h.grant('f1', {});
+    h.setReady(false);
+    assert.equal((await h.service.subscribe(h.scope('f1'), { mode: 'addressed' })).outcome, 'subscribed');
+    // Without the check the process would "read everything" where the channel
+    // cannot deliver it, and the agent's own turns there would be suppressed.
+    const up = await h.service.subscribe(h.scope('f1'), { mode: 'all' });
+    assert.equal(up.outcome === 'refused' && up.code, 'not_ready');
+    assert.equal(await h.service.modeOf(h.scope('f1')), 'addressed', 'the subscription keeps what it had');
+    assert.equal(h.hub.readsEverything({ agentSlug: 'mara', channelType: 'teams', conversationId: h.scope('f1').conversationId }), false);
+
+    h.setReady(true);
+    assert.equal((await h.service.subscribe(h.scope('f1'), { mode: 'all' })).outcome, 'subscribed');
+    assert.equal(await h.service.modeOf(h.scope('f1')), 'all');
+    // Turning it down, and asking for what it already has, needs no readiness.
+    h.setReady(false);
+    assert.equal((await h.service.subscribe(h.scope('f1'), { mode: 'all' })).outcome, 'subscribed');
+    assert.equal((await h.service.subscribe(h.scope('f1'), { mode: 'addressed' })).outcome, 'subscribed');
+  });
+
   it('the channel is told what the identity gets: all, addressed or nothing', async () => {
     const h = setup();
     const mode = (): string => h.hub.deliveryMode('teams', CONVERSATION, MARA_KEY);

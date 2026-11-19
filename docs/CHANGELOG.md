@@ -36,6 +36,16 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — A subscription could be turned up to every message without the channel being ready (#2089, epic #2043)
+
+- A process that listened only for messages addressing its facilitator could
+  switch to reading every message of the conversation without the check a
+  new subscription gets: that the channel can deliver every message there
+  (in Teams, the chat's own permission). The facilitation then counted as
+  reading everything, and the facilitator's own answers in that chat were
+  held back, while messages never arrived. The switch is now refused with
+  `not_ready` and the subscription keeps the mode it had.
+
 ### Removed — The implementations behind the first majors (#2067, epic #2043): K6.4
 
 - **The code behind `agentTurn`, `conversationMessages` and `conversationSend`

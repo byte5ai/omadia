@@ -245,6 +245,25 @@ export class ConversationMessageHub {
     return undefined;
   }
 
+  /**
+   * Why every message of this conversation cannot be read through this
+   * identity, or `undefined` when it can. Only reading EVERY message needs
+   * what the channel's readiness states (Teams: the chat-specific
+   * permission); addressed messages reach a bot that is present.
+   */
+  private async notReadyForAll(channelType: string, conversationId: string, channelKey: string): Promise<string | undefined> {
+    let report: ChannelReadinessReport | undefined;
+    try {
+      report = await this.deps.checkReadiness?.(channelType, conversationId, channelKey);
+    } catch (err) {
+      return `the readiness check failed: ${err instanceof Error ? err.message : String(err)}`;
+    }
+    if (!report) return `channel '${channelType}' does not declare delivery of all messages`;
+    if (report.ready) return undefined;
+    const reasons = report.missing.map((m) => `${m.code}: ${m.message}`).join('; ');
+    return reasons || 'the channel reported it cannot deliver all messages';
+  }
+
   private changeMode(subscription: MessageSubscription, mode: ConversationMessageMode): Promise<MessageSubscription | undefined> {
     return this.exclusive(async () => {
       const updated = await this.deps.store.setSubscriptionMode(subscription.id, mode);
@@ -600,6 +619,15 @@ export class ConversationMessageHub {
     const existing = this.processSubscription(scope, pluginId);
     if (existing) {
       if (existing.mode !== mode) {
+        // Turning an existing subscription UP to every message needs what a
+        // new one needs: without this, a process could subscribe `addressed`
+        // (no readiness asked) and then read "everything" in a conversation
+        // whose channel cannot deliver it, while the agent's own turns there
+        // are already suppressed as engine-driven.
+        if (mode === 'all') {
+          const notReady = await this.notReadyForAll(scope.channelType, scope.conversationId, channelKey);
+          if (notReady) return refused('not_ready', notReady);
+        }
         const updated = await this.changeMode(existing, mode);
         if (!updated) return refused('ended', "this process's subscription for the conversation has ended");
         this.log(
@@ -618,23 +646,9 @@ export class ConversationMessageHub {
     if (!present) {
       return refused('not_present', `the bot of agent '${scope.agentSlug}' was not observed in this conversation; add it to the conversation first`);
     }
-    // Only reading EVERY message needs what the channel's readiness states
-    // (Teams: the chat-specific permission). Addressed messages reach a bot
-    // that is present.
     if (mode === 'all') {
-      let report: ChannelReadinessReport | undefined;
-      try {
-        report = await this.deps.checkReadiness?.(scope.channelType, scope.conversationId, channelKey);
-      } catch (err) {
-        return refused('not_ready', `the readiness check failed: ${err instanceof Error ? err.message : String(err)}`);
-      }
-      if (!report) {
-        return refused('not_ready', `channel '${scope.channelType}' does not declare delivery of all messages`);
-      }
-      if (!report.ready) {
-        const reasons = report.missing.map((m) => `${m.code}: ${m.message}`).join('; ');
-        return refused('not_ready', reasons || 'the channel reported it cannot deliver all messages');
-      }
+      const notReady = await this.notReadyForAll(scope.channelType, scope.conversationId, channelKey);
+      if (notReady) return refused('not_ready', notReady);
     }
 
     let created: { subscription: MessageSubscription; existed: boolean; ended: boolean };
