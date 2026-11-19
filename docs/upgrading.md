@@ -356,6 +356,28 @@ forward-only-migration caveat applies, so snapshot the Postgres volume first
 Do **not** redeploy the `omadia-postgres-<suffix>` app as part of a version
 bump: it holds the data volume, exactly as with the compose stack.
 
+## Upgrading past v0.210.0 — facilitator plugins: the first majors of three services are gone
+
+For an instance with the facilitation engine installed, and for anybody
+who wrote a plugin against `agentTurn`, `conversationMessages` or
+`conversationSend`.
+
+1. **Update the facilitation engine first, to 1.5.3 or later.** Older
+   versions still ask for `conversationMessages` without a version. From
+   1.4.0 on that is optional and harmless; before 1.4.0 the engine used the
+   first majors for everything and does not work against this kernel.
+2. **Your own plugin:** ask for `agentTurn@2`, `conversationMessages@2` and
+   `conversationSend@2` by those names, and list them in the manifest
+   (`agentTurn@^2`, …). The name without a version answers nothing now. A
+   first major under `requires` keeps the plugin from starting; under
+   `optional_requires` it is simply absent.
+3. Nothing to do in the database: subscriptions of the first major are ended
+   at boot (migration 0080).
+
+A plugin of the old engine form (only `provides: facilitationEngine@1`, no
+manifest kind `archetype`) is no longer the facilitation engine either; the
+engine is the installed archetype plugin that delivers `facilitator`.
+
 ## Upgrading past v0.210.0 — `kind` of an agent is gone; say `archetype`
 
 For anything that calls the operator API for agents. The web-ui needs

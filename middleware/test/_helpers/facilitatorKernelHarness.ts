@@ -52,6 +52,9 @@ import {
 } from '@omadia/plugin-api';
 
 import { publishAgentTurnService } from '../../src/agents/agentTurnWiring.js';
+import { AgentTurnBudget, AgentTurnHistory, createAgentTurnService } from '../../src/agents/agentTurnService.js';
+import { createConversationMessagesService } from '../../src/channels/conversationMessages/service.js';
+import { resolveFacilitationEngine } from '../../src/platform/facilitatorGuard.js';
 import { ConversationEventHub } from '../../src/channels/conversationEventHub.js';
 import {
   wireConversationMessages,
@@ -248,10 +251,11 @@ export async function bootFacilitatorKernel(options: HarnessOptions): Promise<Fa
     subscriptions: messagesWiring.hub,
     getRoster: (channelType: string, conversationId: string) => rosters.getRoster(channelType, conversationId),
   };
+  const conversationSendCore = createConversationSendService({ providers: conversationProviders, ownIdentity, log });
   publishSendServices({
     serviceRegistry: services,
     targeted: createTargetedDeliveryService({ providers: targetedProviders, ownIdentity, log }),
-    conversation: createConversationSendService({ providers: conversationProviders, ownIdentity, log }),
+    conversation: conversationSendCore,
   });
 
   const core = createCoreApi({
@@ -334,12 +338,47 @@ export async function bootFacilitatorKernel(options: HarnessOptions): Promise<Fa
 
   // ── the fixture engine: only the service registry, as itself ─────────────
   const caller = { agentId: ENGINE_PLUGIN, pluginId: ENGINE_PLUGIN };
+  // #2067 (K6.3) — the kernel no longer PROVIDES the first majors of these
+  // three services. The suites built on this harness still describe the
+  // kernel through them (subscriptions without a process, sends permitted by
+  // one), so the harness builds the same facades itself, from the same
+  // implementations. They go together with those implementations once the
+  // suites are ported to the second majors (the follow-up to K6.3).
+  const turnHistory = new AgentTurnHistory();
+  const turnBudget = new AgentTurnBudget(60);
+  const isEngineFor = (pluginId: string) => (): boolean => {
+    const bound = resolveFacilitationEngine(engineSources());
+    return bound.state === 'bound' && bound.pluginId === pluginId;
+  };
   const servicesFor = (pluginId: string) => {
     const as = { agentId: pluginId, pluginId };
+    const hub = messagesWiring.hub;
+    const turns = createAgentTurnService({
+      getRegistry,
+      messages: {
+        getEventById: (scope, plugin, eventId) => hub.getEventById(scope, plugin, eventId),
+        getProcessEventById: (scope, plugin, eventId) =>
+          hub.getEventById(scope, plugin, eventId) as ReturnType<typeof hub.getProcessEventById>,
+      },
+      callerPluginId: pluginId,
+      isEngine: isEngineFor(pluginId),
+      history: turnHistory,
+      budget: turnBudget,
+      log,
+    });
+    const agentTurn: AgentTurnService = {
+      ...turns,
+      runTurn: (request) => turns.runGuarded(request, undefined, request.sessionKey),
+    };
+    const conversationSend: PluginConversationSendService = {
+      sendToConversation: (input) => conversationSendCore.sendToConversation(input as never, pluginId),
+      capabilities: (channelType) => conversationSendCore.capabilities(channelType),
+      updateCard: (input) => conversationSendCore.updateCard(input as never, pluginId),
+    } as PluginConversationSendService;
     return {
-      messages: services.get<ConversationMessagesService>(CONVERSATION_MESSAGES_SERVICE_NAME, as)!,
-      agentTurn: services.get<AgentTurnService>(AGENT_TURN_SERVICE_NAME, as)!,
-      conversationSend: services.get<PluginConversationSendService>('conversationSend', as)!,
+      messages: createConversationMessagesService({ hub, callerPluginId: pluginId, isEngine: isEngineFor(pluginId) }),
+      agentTurn,
+      conversationSend,
       targetedSend: services.get<TargetedSendService>('targetedSend', as)!,
     };
   };

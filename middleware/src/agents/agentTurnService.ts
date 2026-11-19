@@ -184,19 +184,13 @@ export function createAgentTurnService(deps: AgentTurnServiceDeps): GuardedAgent
         // A process (`agentTurn@2`) reads conversations through subscriptions
         // of its own (`conversationMessages@2`), so the event is one THAT
         // process received: never another process's, also not of the same
-        // plugin. Rollout defect D35: this looked only among subscriptions
-        // without a process, where a process-bound engine has none.
+        // plugin. (Rollout defect D35: this once looked only among
+        // subscriptions without a process, which no longer exist.)
         if (processId !== undefined && deps.callerPluginId !== undefined) {
           inbound = await deps.messages
             ?.getProcessEventById({ ...scope, processId }, deps.callerPluginId, request.inboundEventId)
             .catch(() => undefined);
         }
-        // A subscription without a process (the first major) belongs to the
-        // plugin and the agent as a whole; an engine that still reads that
-        // way keeps its events.
-        inbound ??= await deps.messages
-          ?.getEventById(scope, deps.callerPluginId, request.inboundEventId)
-          .catch(() => undefined);
         if (!inbound) {
           return refused(
             'unavailable',

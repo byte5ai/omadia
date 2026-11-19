@@ -36,6 +36,29 @@ changelog.
 
 ## [Unreleased]
 
+### Removed — The first majors of the facilitator services (#2089, #2090, #2091, epic #2043): K6.3, the contract step
+
+- **`agentTurn`, `conversationMessages` and `conversationSend` without a
+  version are no longer provided.** Each has had a second major since K4
+  (`agentTurn@2`, `conversationMessages@2`, `conversationSend@2`), under
+  which every turn, subscription, read and post belongs to a process and is
+  drawn from an execution scope. A plugin asks for those by their versioned
+  name. The bare name means the first major and now answers nothing.
+- **What that means for a plugin:** one that lists a first major under
+  `optional_requires` gets nothing for it and keeps working if it handles
+  that (facilitator 1.5.3 does). One that lists it under `requires` no longer
+  starts. Install is not refused for an optional requirement nobody provides.
+- **Subscriptions without a process are ended.** Migration 0080 ends every
+  active one; they belonged to the first major and nothing could read or end
+  them any more.
+- **A model turn finds its inbound message only among the events of its own
+  process.** The lookup among subscriptions without a process, kept as a
+  second step since D35, is gone.
+- Unchanged: `targetedSend`, `sessionCapabilities`, `channelReadiness`,
+  `conversationRosters` and `conversationEvents` have one major each and
+  stay. The plugin API's types are unchanged; the first-major types stay
+  exported and deprecated.
+
 ### Removed — The old way a plugin became the facilitation engine (#2088, epic #2042): K6.2, the contract step
 
 - **The engine is found by what it delivers, and by nothing else.** The

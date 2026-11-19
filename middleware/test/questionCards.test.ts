@@ -27,8 +27,6 @@ import { createConversationSendService } from '../src/channels/conversationSendS
 import { toStoredEvent, validateMessageEvent } from '../src/channels/conversationMessages/eventIntake.js';
 import { InMemoryConversationMessageStore } from '../src/channels/conversationMessages/store.js';
 import { readCardAnswerFields, readCardUpdate, readQuestionCard } from '../src/channels/questionCard.js';
-import { publishSendServices } from '../src/channels/sendServicesWiring.js';
-import { ServiceRegistry } from '../src/platform/serviceRegistry.js';
 import { CONVERSATION, ENGINE, hubFixture, MARA_KEY, messageEvent, scopeOf } from './_helpers/conversationMessagesFixture.js';
 
 const OPTIONS = [
@@ -159,20 +157,21 @@ describe('question cards through conversationSend, as a plugin calls it', () => 
       },
     };
     providers.register('@omadia/channel-teams', provider);
-    const serviceRegistry = new ServiceRegistry();
-    publishSendServices({
-      serviceRegistry,
-      targeted: { sendToPrincipal: () => Promise.reject(new Error('not used')) } as never,
-      conversation: createConversationSendService({
-        providers,
-        ownIdentity: {
-          identityFor: (slug: string) => (slug === 'mara' ? { channelKey: MARA_KEY } : undefined),
-          subscriptions: f.hub,
-        } as never,
-      }),
+    // The card logic of the send, called as the kernel's scoped send calls
+    // it for a plugin. (The first major's facade, which this suite used to
+    // go through, is no longer provided since K6.)
+    const conversation = createConversationSendService({
+      providers,
+      ownIdentity: {
+        identityFor: (slug: string) => (slug === 'mara' ? { channelKey: MARA_KEY } : undefined),
+        subscriptions: f.hub,
+      } as never,
     });
-    const as = (pluginId: string): Required<PluginConversationSend> =>
-      serviceRegistry.get<Required<PluginConversationSend>>('conversationSend', { pluginId } as never)!;
+    const as = (pluginId: string): Required<PluginConversationSend> => ({
+      sendToConversation: (input) => conversation.sendToConversation(input as never, pluginId),
+      capabilities: (channelType) => conversation.capabilities(channelType),
+      updateCard: (input) => conversation.updateCard(input as never, pluginId),
+    });
     engine = as(ENGINE);
     stranger = as('@acme/other');
   });

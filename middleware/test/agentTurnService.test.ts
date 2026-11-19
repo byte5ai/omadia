@@ -220,19 +220,32 @@ describe('agentTurn service', () => {
       plugins: options.granted === false ? [] : [{ pluginId: ENGINE, enabled: true }],
       built: { bundle: { agent: bundleAgent } },
     };
-    const service = createAgentTurnService({
+    const guarded = createAgentTurnService({
       getRegistry: () =>
         ({
           get: (slug: string) => (slug === 'mara' ? entry : undefined),
           channelTypesWithIdentity: () => ['teams'],
         }) as never,
-      messages: f.hub,
+      // The turn looks its inbound event up among the events of its process
+      // (`agentTurn@2`). This suite is about the turn itself, so the fixture's
+      // one subscription stands in for the process's.
+      messages: {
+        getEventById: (scope, pluginId, eventId) => f.hub.getEventById(scope, pluginId, eventId),
+        getProcessEventById: (scope, pluginId, eventId) =>
+          f.hub.getEventById(scope, pluginId, eventId) as ReturnType<typeof f.hub.getProcessEventById>,
+      },
       callerPluginId: ENGINE,
       isEngine: () => options.isEngine !== false,
       history: new AgentTurnHistory(),
       budget: new AgentTurnBudget(options.perMinute ?? 60),
       language: () => 'de',
     });
+    // A turn of a process: the first major (a turn without one) is no longer
+    // provided, and only a process's turn may name an inbound event.
+    const service = {
+      ...guarded,
+      runTurn: (request: Parameters<typeof guarded.runTurn>[0]) => guarded.runGuarded(request, undefined, 'facilitation-7'),
+    };
     const request = {
       agentSlug: 'mara',
       sessionKey: 'facilitation-7',
