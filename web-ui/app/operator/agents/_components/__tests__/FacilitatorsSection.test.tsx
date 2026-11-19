@@ -195,22 +195,18 @@ describe('AgentsDashboard — facilitators (#2066)', () => {
     );
   });
 
-  it('asks for the SQL grant of an ungranted candidate and links to its grants', async () => {
-    mockEngine.mockResolvedValue({ state: 'ungranted', pluginId: ENGINE.id });
+  it('says that an installed engine did not start, where to look, and links to its store page', async () => {
+    mockEngine.mockResolvedValue({ state: 'unusable', pluginId: ENGINE.id, reason: 'inactive', engineReason: null });
     mockTeams.mockRejectedValue(teamsMissing());
     renderWithIntl(<AgentsDashboard initial={list(FALLBACK, MONA)} />);
     const notice = await screen.findByTestId('facilitation-engine-notice');
-    expect(notice.textContent).toContain('database access has not been granted');
-    expect(notice.querySelector('a')?.getAttribute('href')).toBe(
-      `/store/${encodeURIComponent(ENGINE.id)}#grants`,
-    );
-    expect(screen.getByTestId('facilitator-readiness-engine')).toBeTruthy();
-    // Nothing is attached to a candidate, so no repair is offered for it.
-    expect(screen.queryByTestId('facilitator-readiness-grant')).toBeNull();
+    expect(notice.textContent).toContain('is installed but did not start');
+    expect(notice.textContent).toContain('database access that has not been granted');
+    expect(notice.querySelector('a')?.getAttribute('href')).toBe(`/store/${encodeURIComponent(ENGINE.id)}`);
   });
 
   it.each([
-    ['inactive', 'installed but not active'],
+    ['inactive', 'installed but did not start'],
     ['not_reported', 'has not reported that it is ready'],
     ['unknown', 'cannot run facilitations right now'],
   ] as const)('has a sentence for the reason code %s', async (reason, text) => {
@@ -273,7 +269,7 @@ describe('AgentsDashboard — facilitators (#2066)', () => {
   });
 
   it('offers no facilitations link while the engine is not usable', async () => {
-    mockEngine.mockResolvedValue({ state: 'ungranted', pluginId: ENGINE.id });
+    mockEngine.mockResolvedValue({ state: 'unusable', pluginId: ENGINE.id, reason: 'inactive', engineReason: null });
     mockTeams.mockRejectedValue(teamsMissing());
     renderWithIntl(
       <AgentsDashboard

@@ -36,6 +36,24 @@ changelog.
 
 ## [Unreleased]
 
+### Removed — The old way a plugin became the facilitation engine (#2088, epic #2042): K6.2, the contract step
+
+- **The engine is found by what it delivers, and by nothing else.** The
+  facilitation engine is the one installed plugin of kind `archetype` whose
+  descriptor delivers the archetype `facilitator`. A plugin that only lists
+  `facilitationEngine@1` under `provides` (the form of engine plugins before
+  1.2.0) is no longer the engine.
+- **The database grant is no longer the trust step.** Trust is the
+  operator's confirmation when an archetype plugin is installed or updated
+  into one. The engine state `ungranted` is gone. A plugin without its
+  database grant has no database and does not start; the status then says
+  that the engine is installed but did not start, and its store page says
+  why.
+- `GET /api/v1/operator/agents/facilitation-engine` no longer returns
+  `capability`, and `state` is `bound`, `none` or `ambiguous`.
+- Facilitator 1.2.0 and later are unaffected. They may keep the `provides`
+  line: it is what lets the plugin publish its own status.
+
 ### Removed — `kind`, the predecessor of an agent's archetype (#2088, epic #2042): K6.1, the contract step
 
 - **The column is gone.** Migration 0079 drops `agents.kind` together with

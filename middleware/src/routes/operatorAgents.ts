@@ -1671,10 +1671,6 @@ export interface OperatorAgentsRouterOptions {
   /** #2043 — the state object the facilitation engine plugin publishes
    *  (`facilitationEngine` service), for `GET /facilitation-engine`. */
   readonly getFacilitationEngineState?: () => unknown;
-  /** #2043 — has the operator granted this plugin its SQL ledger? The trust
-   *  step that turns a plugin declaring the engine capability into the
-   *  engine. Absent (tests, minimal mounts) = the declaration alone decides. */
-  readonly isSqlGranted?: (pluginId: string) => boolean;
   /** W0c (#861) — grant read model for the agent detail page. Late-bound like
    *  the config store; `GET /:slug/grants` 503s when absent (tests / minimal
    *  mounts, or no DATABASE_URL). Read-only: this router never writes through
@@ -1967,7 +1963,6 @@ export function createOperatorAgentsRouter(
     return {
       installedRegistry: options.getInstalledRegistry?.(),
       catalog: options.getPluginCatalog?.(),
-      ...(options.isSqlGranted ? { isSqlGranted: options.isSqlGranted } : {}),
     };
   }
 

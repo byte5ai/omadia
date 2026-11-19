@@ -18,7 +18,6 @@ describe('facilitation engine: operator routes', () => {
     h.engineState = undefined;
     assert.deepEqual(await status(), {
       state: 'bound',
-      capability: 'facilitationEngine@1',
       plugin_id: ENGINE,
       plugin_ids: [ENGINE],
       version: null,
@@ -40,13 +39,6 @@ describe('facilitation engine: operator routes', () => {
     h.engineState = { pluginId: '@acme/other', version: '9', available: true };
     assert.equal((await status())['reason_code'], 'not_reported');
 
-    // Declared, but the operator has not granted it SQL: a candidate, named.
-    h.sqlGranted = false;
-    assert.deepEqual(
-      [(await status())['state'], (await status())['plugin_id'], (await status())['available'], (await status())['reason_code']],
-      ['ungranted', ENGINE, false, 'ungranted'],
-    );
-    h.sqlGranted = true;
     h.installed = [{ id: ENGINE, status: 'inactive' }];
     assert.equal((await status())['reason_code'], 'inactive');
     h.installed = [{ id: ODOO, status: 'active' }];
@@ -64,23 +56,17 @@ describe('facilitation engine: operator routes', () => {
     assert.equal(JSON.stringify(two).includes('installed'), false, 'no English sentence in the answer');
   });
 
-  it('an engine installed without its grant is errored, and is still reported as waiting for the grant', async () => {
+  it('an engine that did not start is still the engine, and reported as not started', async () => {
     const status = async (): Promise<Record<string, unknown>> => (await h.call('GET', '/agents/facilitation-engine')).json;
-    // What a real install without the SQL grant leaves behind: the install job
-    // ends `installed_missing_permissions` and the registry entry is errored.
+    // What an install without the SQL grant leaves behind: the registry entry
+    // is errored. Not "none": the operator has to be told that the installed
+    // engine did not start. The grant itself is no longer a state of its own.
     h.installed = [{ id: ENGINE, status: 'errored' }];
-    h.sqlGranted = false;
     assert.deepEqual(
-      [(await status())['state'], (await status())['plugin_id'], (await status())['reason_code']],
-      ['ungranted', ENGINE, 'ungranted'],
-      'not "none": the operator has to be told to grant it',
+      [(await status())['state'], (await status())['plugin_id'], (await status())['available'], (await status())['reason_code']],
+      ['bound', ENGINE, false, 'inactive'],
     );
-    // Granted, but still errored for another reason: bound, and not usable.
-    h.sqlGranted = true;
-    assert.deepEqual(
-      [(await status())['state'], (await status())['available'], (await status())['reason_code']],
-      ['bound', false, 'inactive'],
-    );
+    assert.ok(!('capability' in (await status())), 'the capability no longer identifies the engine');
     // A healthy engine beside an errored leftover is not ambiguous.
     h.installed = [
       { id: ENGINE, status: 'active' },
@@ -90,16 +76,15 @@ describe('facilitation engine: operator routes', () => {
     assert.deepEqual([(await status())['state'], (await status())['plugin_id']], ['bound', ENGINE]);
   });
 
-  it('a plugin that only declares the capability is not the engine until the operator grants it SQL', async () => {
-    h.sqlGranted = false;
-    // Nothing is attached at create…
+  it('a plugin that only lists `facilitationEngine@1` under provides is not the engine (#2088, K6)', async () => {
+    // The form of engine plugins before the archetype kind: found nowhere now.
+    h.archetypePlugins = {};
+    const status = (await h.call('GET', '/agents/facilitation-engine')).json;
+    assert.deepEqual([status['state'], status['plugin_id'], status['reason_code']], ['none', null, 'none']);
     await h.call('POST', '/agents', { slug: 'nora', name: 'Nora', archetype: 'facilitator' });
-    assert.deepEqual(h.writes, []);
-    // …and it cannot be granted by hand either; the refusal says what to do.
+    assert.deepEqual(h.writes, [], 'nothing is attached');
     const res = await h.call('PATCH', '/agents/mara/plugins', { id: ENGINE, enabled: true });
-    h.assertRefused(res, 'plugin_grant', /declares the facilitation engine but has no database grant yet/);
-    h.sqlGranted = true;
-    assert.equal((await h.call('PATCH', '/agents/mara/plugins', { id: ENGINE, enabled: true })).status, 200);
+    h.assertRefused(res, 'plugin_grant', /no facilitation engine plugin is installed/);
   });
 
   it('the slug of a static route is reserved', async () => {
@@ -167,7 +152,7 @@ describe('facilitation engine: operator routes', () => {
     const res = await h.call('PATCH', '/agents/hr/plugins', { id: ENGINE, enabled: true });
     assert.equal(res.status, 409);
     assert.equal(res.json['error'], 'config_validation');
-    assert.match(String(res.json['message']), /can only be granted to a facilitator/);
+    assert.match(String(res.json['message']), /an archetype plugin can only be granted to agents of its own archetype/);
     assert.deepEqual(h.writes, []);
   });
 
@@ -178,7 +163,7 @@ describe('facilitation engine: operator routes', () => {
     assert.equal(h.writes[0]!.includes('kind'), false, 'kind is not part of any update');
   });
 
-  it('plugin grant: the engine plugin is granted, found by capability', async () => {
+  it('plugin grant: the engine plugin is granted, found by what it delivers', async () => {
     const res = await h.call('PATCH', '/agents/mara/plugins', { id: ENGINE, enabled: true });
     assert.equal(res.status, 200, JSON.stringify(res.json));
     assert.equal(h.writes.length, 1);

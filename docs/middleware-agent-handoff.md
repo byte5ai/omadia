@@ -9416,9 +9416,11 @@ enthält **keine** Facilitation-Tabellen. Spec: `specs/2043-native-facilitators/
   `FacilitatorOmissionError` (`code: 'facilitator_omission'`).
 - Die Art ist nach dem Anlegen fix (DB-Trigger). Ein Facilitator ist nie der
   Default-Agent (DB-Trigger plus Route).
-- **Engine-Bindung per Manifest-Capability, keine Plugin-ID im Kernel:**
+- **Engine-Bindung über das Manifest, keine Plugin-ID im Kernel:**
   `src/platform/facilitatorGuard.ts` sucht das eine installierte, nicht
-  fehlerhafte Plugin, das `facilitationEngine@1` unter `provides` deklariert.
+  fehlerhafte Plugin der Art `archetype`, dessen Deskriptor den Archetyp
+  `facilitator` liefert (seit K6 die einzige Form; die Zeile
+  `provides: facilitationEngine@1` macht kein Plugin mehr zur Engine).
   Kein oder mehr als ein Provider: es lässt sich nichts granten. Die Registry
   schneidet die Grant-Zeilen eines Facilitators zusätzlich mit diesem Plugin
   (`PluginCapabilityLookup.facilitatorGrantable`).
@@ -9476,7 +9478,7 @@ der Adapter gilt immer.
   Conversation-Reference im Chat, `botPresenceStore`; sonst der Invite-Index
   `observedConversationInvites`), `not_ready` (Readiness-Provider des Kanals,
   falls vorhanden; die fehlenden Codes stehen in der Message), `unavailable`.
-  Nur das Engine-Plugin (Capability `facilitationEngine@1`) wird bedient und
+  Nur das Engine-Plugin (Archetyp-Plugin für `facilitator`) wird bedient und
   nur für eigene Subscriptions.
 - **Autorschaft** kommt ausschließlich aus dem Plattform-Event.
   `author.principalId` ist `user:<channel-user-id kleingeschrieben>`; das ist
@@ -9622,9 +9624,11 @@ Pushes hängen an Message-Subscriptions.
   `ReloadBus` mit Kanal `conversation_message_subscriptions_changed`
   (`CONVERSATION_MESSAGES_LISTEN`). `refresh`, `subscribe` und `unsubscribe`
   laufen über einen gemeinsamen Mutex im Hub.
-- **Engine = deklariert UND SQL-Grant** (`facilitatorGuard.ts`,
-  `createSqlGrantView`): bis zum Grant ist der Zustand `ungranted`, es wird
-  nichts angehängt. `facilitatorRuntimeService.ts` beantwortet dem
+- **Engine = Archetyp-Plugin, Vertrauen durch die bestätigte Installation**
+  (`facilitatorGuard.ts`). Der SQL-Grant ist seit K6 kein Vertrauensschritt
+  mehr und `ungranted` kein Zustand: ohne Grant hat das Plugin keine
+  Datenbank und startet nicht, der Status meldet `inactive`.
+  `facilitatorRuntimeService.ts` beantwortet dem
   Orchestrator `isEngineUsable`; ohne nutzbare Engine sagt ein erwähnter
   Facilitator fest „nicht eingerichtet“, ohne Modellaufruf.
 - **Gruppen-Turn nur mit positiver Aussage:** `TurnOrigin.conversationType:

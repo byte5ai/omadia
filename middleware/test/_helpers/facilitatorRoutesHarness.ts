@@ -67,11 +67,10 @@ export interface RoutesHarness {
   installed: { id: string; status: string }[];
   /** What the engine plugin reports about itself. */
   engineState: unknown;
-  /** Has the operator granted the engine its SQL ledger? */
-  sqlGranted: boolean;
   identitySaves: number;
   /** Plugin ids the catalog describes as archetype plugins, with the
-   *  archetype each delivers. Empty by default. */
+   *  archetype each delivers. Default: the engine and the second engine
+   *  deliver `facilitator`. */
   archetypePlugins: Record<string, string>;
   call(method: string, path: string, body?: unknown): Promise<RouteResponse>;
   assertRefused(res: RouteResponse, omission: string, messagePattern: RegExp): void;
@@ -158,7 +157,6 @@ export function routesHarness(): RoutesHarness {
         getRegistry: () => registry,
         getChatSessionStore: () => undefined,
         getFacilitationEngineState: () => h.engineState,
-        isSqlGranted: () => h.sqlGranted,
         getInstalledRegistry: () => ({ list: () => h.installed }) as never,
         getPluginCatalog: () =>
           ({
@@ -213,8 +211,7 @@ export function routesHarness(): RoutesHarness {
   beforeEach(() => {
     h.writes = [];
     h.identitySaves = 0;
-    h.archetypePlugins = {};
-    h.sqlGranted = true;
+    h.archetypePlugins = { [ENGINE]: 'facilitator', '@acme/second-engine': 'facilitator' };
     h.agents = [agent('mara', 'facilitator'), agent('hr', 'standard')];
     h.installed = [
       { id: ENGINE, status: 'active' },
