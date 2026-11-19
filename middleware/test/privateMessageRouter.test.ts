@@ -168,7 +168,7 @@ describe('#2089 the facilitator\'s private turn', () => {
   const groupTurn: ChatTurnInput = {
     userMessage: '@Mara status',
     origin: { channelType: 'teams', scope: { kind: 'group', groupId: 'g1' }, principal: { kind: 'user', userId: 'aad-anna' } },
-  } as ChatTurnInput;
+  } as unknown as ChatTurnInput;
 
   it('answers a participant with the process\'s status instead of the refusal', async () => {
     const seen: unknown[] = [];

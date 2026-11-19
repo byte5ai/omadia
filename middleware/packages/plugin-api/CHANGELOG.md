@@ -8,6 +8,25 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.68.0 — 2026-11-19
+
+Additive (#2089, epic #2043): private messages of participants.
+
+### Added
+
+- **`ProcessConversationMessagesService.onPrivateMessage(agentSlug,
+  handler)`** (optional, on `conversationMessages@2`), with
+  `PrivateMessageRequest` and `PrivateMessageReply`. A message a person
+  writes to the agent in a private chat reaches the handler only when that
+  person is a person target of an open execution scope of one of the
+  caller's processes of that agent; `processIds` names them. The handler
+  answers (`handled: true`, the text, and the `authorization` the answer is
+  drawn from) or declines. The kernel takes the authorization as a direct
+  message to that person (a `status_only` person gets a `status` answer
+  only) and gives the text as the agent's answer in the private chat.
+  Declined, not authorized, not answered within 20 s, or from anybody else:
+  the agent's fixed refusal, as before.
+
 ## 1.67.0 — 2026-11-19
 
 Additive (#2091, epic #2043): sends drawn from an execution scope.

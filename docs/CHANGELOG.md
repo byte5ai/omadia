@@ -36,6 +36,24 @@ changelog.
 
 ## [Unreleased]
 
+### Added — A participant can ask a facilitator for the status in a private chat (#2089, epic #2043)
+
+- A facilitator refuses private requests: it is a moderator, not an
+  assistant. The exception the specification makes is now possible: a person
+  who takes part in a running facilitation of that facilitator can ask it
+  privately, and gets that facilitation's answer there.
+- **Who takes part** is checked by the kernel: the person is listed by an
+  open execution scope of that facilitator. **What the message is** is the
+  facilitation engine's judgement: it gets the message, answers or declines.
+  Its answer is drawn from the scope like every other direct message
+  (deadline, budget, operator stop; a person listed for status only gets a
+  status answer only).
+- Anybody else, and a message the engine declines, gets the fixed refusal as
+  before. No model runs for such a request.
+- Not yet: recognising a private reply as the answer to one particular
+  reminder. A turn carries no reply reference; that needs the channel plugin
+  to deliver private messages as events (plugin-api 1.68.0).
+
 ### Added — Posts and direct messages drawn from an execution scope (#2091, epic #2043): K4.4 of the spec alignment
 
 - **`conversationSend@2`.** A facilitation engine posts, writes to one
