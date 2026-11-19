@@ -36,6 +36,23 @@ changelog.
 
 ## [Unreleased]
 
+### Removed — `kind`, the predecessor of an agent's archetype (#2088, epic #2042): K6.1, the contract step
+
+- **The column is gone.** Migration 0079 drops `agents.kind` together with
+  the trigger that kept it equal to `agents.archetype` and the guard that
+  made it immutable. Every agent keeps its archetype, which stays fixed at
+  creation.
+- **The operator API names the archetype only.** `GET /api/v1/operator/agents`,
+  `GET /api/v1/operator/agents/enabled`, `GET /api/v1/operator/channels` and
+  the answer to `POST /api/v1/operator/agents` no longer carry `kind`.
+  `POST /api/v1/operator/agents` refuses a body that still sends `kind` with
+  409 (`"kind" was replaced by "archetype"`), instead of creating a standard
+  agent where another archetype was asked for.
+- **For plugins nothing changes.** `AgentProfile.kind` stays in the plugin
+  API, marked deprecated, and is still answered; read `archetype`.
+- An image from before this change still runs against the migrated
+  database, so the image can be rolled back; the column does not come back.
+
 ### Fixed — Two findings of the rollout of facilitator 1.5.0 (#2089, #2090, epic #2043): D35, D34
 
 - **A facilitation's model turns were refused (D35).** Every model turn

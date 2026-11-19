@@ -61,7 +61,7 @@ function row(overrides: Partial<AgentRow> = {}): AgentRow {
     description: null,
     privacyProfile: 'default',
     status: 'enabled',
-    kind: 'facilitator',
+    archetype: 'facilitator',
     identityName: 'Mara',
     identityShortDescription: 'Moderates decisions.',
     createdAt: new Date(0),
@@ -214,7 +214,7 @@ describe('agentTurn service', () => {
     };
     const agent = row(options.agent);
     // The real refusal gate in front of the fake model: an engine turn must pass it.
-    const bundleAgent = agent.kind === 'facilitator' ? wrapFacilitatorAgent(inner, { agentSlug: 'mara' }) : inner;
+    const bundleAgent = agent.archetype === 'facilitator' ? wrapFacilitatorAgent(inner, { agentSlug: 'mara' }) : inner;
     const entry = {
       agent,
       plugins: options.granted === false ? [] : [{ pluginId: ENGINE, enabled: true }],
@@ -321,7 +321,7 @@ describe('agentTurn service', () => {
     const a = await notEngine.service.runTurn(notEngine.request);
     assert.deepEqual([a.outcome, a.outcome === 'refused' && a.code], ['refused', 'not_bound']);
 
-    const standard = await setup({ agent: { kind: 'standard' } });
+    const standard = await setup({ agent: { archetype: 'standard' } });
     const b = await standard.service.runTurn(standard.request);
     assert.equal(b.outcome === 'refused' && b.code, 'not_bound');
     assert.match(b.outcome === 'refused' ? b.message : '', /runs facilitators only/);
@@ -380,6 +380,7 @@ describe('agentTurn service', () => {
     const { service } = await setup({ agent: { identityLanguage: 'en-GB' } });
     assert.deepEqual(await service.getProfile!('mara'), {
       agentSlug: 'mara',
+      // Deprecated in the plugin API, still answered (no major for one field).
       kind: 'facilitator',
       archetype: 'facilitator',
       displayName: 'Mara',
@@ -393,6 +394,6 @@ describe('agentTurn service', () => {
     assert.equal(profile?.language, 'de', 'falls back to the installation language');
     assert.equal(await service.getProfile!('ghost'), undefined);
     assert.equal(await (await setup({ isEngine: false })).service.getProfile!('mara'), undefined);
-    assert.equal(await (await setup({ agent: { kind: 'standard' } })).service.getProfile!('mara'), undefined);
+    assert.equal(await (await setup({ agent: { archetype: 'standard' } })).service.getProfile!('mara'), undefined);
   });
 });

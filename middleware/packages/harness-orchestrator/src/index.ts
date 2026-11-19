@@ -122,14 +122,6 @@ export type {
   ContextMemoryMode,
   MemoryBinderOptions,
 } from './memoryBinder.js';
-export {
-  AGENT_KINDS,
-  FacilitatorOmissionError,
-  assertNotFacilitator,
-  isFacilitatorKind,
-  parseAgentKind,
-} from './registry/agentKind.js';
-export type { AgentKind, FacilitatorOmission } from './registry/agentKind.js';
 // #2088 — tombstones: a deleted agent's row stays; readers say what they mean.
 export { liveAgentRow, ofLiveAgent, tombstoneSlug } from './registry/tombstones.js';
 export type { AgentTombstone } from './registry/tombstones.js';

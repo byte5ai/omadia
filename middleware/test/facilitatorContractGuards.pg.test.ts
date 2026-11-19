@@ -151,7 +151,7 @@ await contractSuite('native facilitators: kernel contract, guards (pg)', 'facili
   it('the engine reaches facilitators in the other order too: installed after they exist', async () => {
     await c.k.stop();
     c.k = await bootFacilitatorKernel({ pool: c.pool, installed: [BUSINESS_PLUGIN] });
-    await c.k.api('POST', '/agents', { slug: 'mara', name: 'mara', kind: 'facilitator' });
+    await c.k.api('POST', '/agents', { slug: 'mara', name: 'mara', archetype: 'facilitator' });
     const mara = await c.k.store.getAgentBySlug('mara');
     assert.deepEqual(await c.k.store.listAgentPlugins(mara!.id), [], 'no engine yet');
     const status = await c.k.api('GET', '/agents/facilitation-engine');

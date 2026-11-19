@@ -93,7 +93,7 @@ describe('facilitation engine: operator routes', () => {
   it('a plugin that only declares the capability is not the engine until the operator grants it SQL', async () => {
     h.sqlGranted = false;
     // Nothing is attached at create…
-    await h.call('POST', '/agents', { slug: 'nora', name: 'Nora', kind: 'facilitator' });
+    await h.call('POST', '/agents', { slug: 'nora', name: 'Nora', archetype: 'facilitator' });
     assert.deepEqual(h.writes, []);
     // …and it cannot be granted by hand either; the refusal says what to do.
     const res = await h.call('PATCH', '/agents/mara/plugins', { id: ENGINE, enabled: true });
@@ -109,42 +109,49 @@ describe('facilitation engine: operator routes', () => {
     assert.deepEqual(h.writes, []);
   });
 
-  it('creates a facilitator and reports the kind in create, list and picker', async () => {
-    const created = await h.call('POST', '/agents', { slug: 'nora', name: 'Nora', kind: 'facilitator' });
+  it('creates a facilitator and reports the archetype in create, list and picker', async () => {
+    const created = await h.call('POST', '/agents', { slug: 'nora', name: 'Nora', archetype: 'facilitator' });
     assert.equal(created.status, 201);
-    assert.equal(created.json['kind'], 'facilitator');
+    assert.equal(created.json['archetype'], 'facilitator');
     const plain = await h.call('POST', '/agents', { slug: 'sales', name: 'Sales' });
-    assert.equal(plain.json['kind'], 'standard');
+    assert.equal(plain.json['archetype'], 'standard');
     const bogus = await h.call('POST', '/agents', { slug: 'x', name: 'X', kind: 'moderator' });
-    assert.equal(bogus.status, 400);
+    assert.equal(bogus.status, 409);
 
     // #2088 — `archetype` is the name; both are returned while `kind` exists.
     assert.equal(created.json['archetype'], 'facilitator');
     assert.equal(plain.json['archetype'], 'standard');
     const byArchetype = await h.call('POST', '/agents', { slug: 'ida', name: 'Ida', archetype: 'facilitator' });
-    assert.deepEqual([byArchetype.status, byArchetype.json['archetype'], byArchetype.json['kind']], [201, 'facilitator', 'facilitator']);
+    assert.deepEqual([byArchetype.status, byArchetype.json['archetype']], [201, 'facilitator']);
+    assert.ok(!('kind' in byArchetype.json), 'the predecessor field is gone from the answer');
     const unregistered = await h.call('POST', '/agents', { slug: 'y', name: 'Y', archetype: 'coach' });
     assert.equal(unregistered.status >= 400 && unregistered.status < 500, true);
     assert.match(String(unregistered.json['message']), /archetype "coach" is not registered/);
-    const disagree = await h.call('POST', '/agents', { slug: 'z', name: 'Z', archetype: 'standard', kind: 'facilitator' });
-    assert.equal(disagree.status >= 400 && disagree.status < 500, true);
-    assert.match(String(disagree.json['message']), /disagree/);
+    // #2088 (K6): `kind` is refused, also next to an archetype, instead of
+    // being ignored: a client that still sends it must not get a standard
+    // agent where it asked for a facilitator.
+    for (const body of [
+      { slug: 'z', name: 'Z', kind: 'facilitator' },
+      { slug: 'z', name: 'Z', archetype: 'facilitator', kind: 'facilitator' },
+    ]) {
+      const refused = await h.call('POST', '/agents', body);
+      assert.equal(refused.status, 409);
+      assert.match(String(refused.json['message']), /"kind" was replaced by "archetype"/);
+    }
+    assert.ok(!h.agents.some((a) => a.slug === 'z'));
 
     const list = await h.call('GET', '/agents');
-    const kinds = Object.fromEntries(
-      (list.json['agents'] as { slug: string; kind: string }[]).map((a) => [a.slug, a.kind]),
+    const archetypes = Object.fromEntries(
+      (list.json['agents'] as { slug: string; archetype: string }[]).map((a) => [a.slug, a.archetype]),
     );
-    assert.deepEqual(kinds, { mara: 'facilitator', hr: 'standard', nora: 'facilitator', sales: 'standard', ida: 'facilitator' });
-    assert.equal(
-      (list.json['agents'] as { kind: string; archetype: string }[]).every((a) => a.archetype === a.kind),
-      true,
-    );
+    assert.deepEqual(archetypes, { mara: 'facilitator', hr: 'standard', nora: 'facilitator', sales: 'standard', ida: 'facilitator' });
+    assert.ok((list.json['agents'] as object[]).every((a) => !('kind' in a)));
     const enabled = await h.call('GET', '/agents/enabled');
-    assert.equal((enabled.json['agents'] as { slug: string; kind: string }[])[0]!.kind, 'facilitator');
+    assert.equal((enabled.json['agents'] as { slug: string; archetype: string }[])[0]!.archetype, 'facilitator');
   });
 
   it('create attaches the engine to a facilitator, and only to a facilitator', async () => {
-    await h.call('POST', '/agents', { slug: 'nora', name: 'Nora', kind: 'facilitator' });
+    await h.call('POST', '/agents', { slug: 'nora', name: 'Nora', archetype: 'facilitator' });
     assert.equal(h.writes.length, 1);
     assert.match(h.writes[0]!, /^upsertAgentPlugin\(\["id-nora",\{"pluginId":"@omadia\/agent-facilitator","enabled":true\}/);
     h.writes = [];
@@ -152,7 +159,7 @@ describe('facilitation engine: operator routes', () => {
     assert.deepEqual(h.writes, []);
     // No engine installed: the facilitator is created, the engine follows on install.
     h.installed = [{ id: ODOO, status: 'active' }];
-    assert.equal((await h.call('POST', '/agents', { slug: 'ida', name: 'Ida', kind: 'facilitator' })).status, 201);
+    assert.equal((await h.call('POST', '/agents', { slug: 'ida', name: 'Ida', archetype: 'facilitator' })).status, 201);
     assert.deepEqual(h.writes, []);
   });
 
@@ -165,7 +172,7 @@ describe('facilitation engine: operator routes', () => {
   });
 
   it('the kind cannot be patched', async () => {
-    const res = await h.call('PATCH', '/agents/hr', { kind: 'facilitator', name: 'HR' });
+    const res = await h.call('PATCH', '/agents/hr', { archetype: 'facilitator', name: 'HR' });
     assert.equal(res.status, 200);
     assert.equal(h.writes.length, 1);
     assert.equal(h.writes[0]!.includes('kind'), false, 'kind is not part of any update');

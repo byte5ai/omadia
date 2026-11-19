@@ -54,7 +54,7 @@ function setup() {
     chatStream: (() => undefined) as never,
   };
   const entry = {
-    agent: { id: 'id-mara', slug: 'mara', name: 'mara', status: 'enabled', kind: 'facilitator', archetype: 'facilitator' },
+    agent: { id: 'id-mara', slug: 'mara', name: 'mara', status: 'enabled', archetype: 'facilitator' },
     plugins: [{ pluginId: ENGINE, enabled: true }],
     built: { bundle: { agent: wrapFacilitatorAgent(inner, { agentSlug: 'mara' }) } },
   };

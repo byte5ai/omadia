@@ -17,7 +17,7 @@ import { AgentsDashboard } from '../AgentsDashboard';
  *   1. LISTED BY KIND. A facilitator is not an orchestrator: it is not in
  *      that list, not in its count and cannot be picked as the standard
  *      orchestrator.
- *   2. CREATE sends `kind: 'facilitator'` and continues on the new page.
+ *   2. CREATE sends `archetype: 'facilitator'` and continues on the new page.
  *   3. NOT READY WITHOUT ITS OWN TEAMS IDENTITY, with a link to provisioning.
  *   4. THE ENGINE NOTICE says what is missing — no engine, or no SQL grant.
  *   5. A 409 `facilitator_omission` is a sentence, not a machine code.
@@ -107,7 +107,7 @@ function list(...agents: OperatorAgentDto[]): OperatorAgentsListDto {
 
 const FALLBACK = agent({ slug: 'fallback', name: 'Standard' });
 const SALES = agent({ slug: 'sales', name: 'Sales' });
-const MONA = agent({ slug: 'mona', name: 'Mona', kind: 'facilitator' });
+const MONA = agent({ slug: 'mona', name: 'Mona', archetype: 'facilitator' });
 
 function teamsMissing(): ApiError {
   return new ApiError(404, 'GET failed: 404', JSON.stringify({ error: 'teams_identity_not_found' }));
@@ -160,7 +160,7 @@ describe('AgentsDashboard — facilitators (#2066)', () => {
     const granted = agent({
       slug: 'mona',
       name: 'Mona',
-      kind: 'facilitator',
+      archetype: 'facilitator',
       plugins: [{ id: ENGINE.id, enabled: true, config: {} }],
     });
     renderWithIntl(<AgentsDashboard initial={list(FALLBACK, granted)} />);
@@ -296,7 +296,7 @@ describe('AgentsDashboard — facilitators (#2066)', () => {
 
   it('creates with the archetype facilitator and opens the new page', async () => {
     mockEngine.mockResolvedValue(READY);
-    mockCreate.mockResolvedValue({ id: 'id-rita', slug: 'rita', archetype: 'facilitator', kind: 'facilitator' });
+    mockCreate.mockResolvedValue({ id: 'id-rita', slug: 'rita', archetype: 'facilitator' });
     renderWithIntl(<AgentsDashboard initial={list(FALLBACK)} />);
 
     await userEvent.type(screen.getByTestId('facilitator-create-slug'), 'rita');

@@ -30,9 +30,9 @@ interface Row {
 
 function world(installed: string[]) {
   const agents = [
-    { id: 'a-mara', slug: 'mara', kind: 'facilitator' as const },
-    { id: 'a-nora', slug: 'nora', kind: 'facilitator' as const },
-    { id: 'a-hr', slug: 'hr', kind: 'standard' as const },
+    { id: 'a-mara', slug: 'mara', archetype: 'facilitator' as const },
+    { id: 'a-nora', slug: 'nora', archetype: 'facilitator' as const },
+    { id: 'a-hr', slug: 'hr', archetype: 'standard' as const },
   ];
   const rows: Row[] = [];
   const provides: Record<string, string[]> = {
@@ -150,7 +150,7 @@ describe('facilitation engine auto-attach', () => {
   it('the ground of a subscription: engine, agent, identity', async () => {
     const w = world([ENGINE]);
     let status = 'active';
-    let agent: { id: string; status: string; kind: string } | undefined = { id: 'a-mara', status: 'enabled', kind: 'facilitator' };
+    let agent: { id: string; status: string; archetype: string } | undefined = { id: 'a-mara', status: 'enabled', archetype: 'facilitator' };
     let identities = [{ agentId: 'a-mara', channelType: 'teams', channelKey: '28:AAAA-MARA' }];
     const ground = createSubscriptionGroundCheck({
       engineSources: () => ({
@@ -183,11 +183,11 @@ describe('facilitation engine auto-attach', () => {
     w.state.installed = [];
     assert.match((await ground(subscription))!, /no longer the facilitation engine/);
     w.state.installed = [ENGINE];
-    agent = { id: 'a-mara', status: 'disabled', kind: 'facilitator' };
+    agent = { id: 'a-mara', status: 'disabled', archetype: 'facilitator' };
     assert.equal(await ground(subscription), 'the agent is disabled');
     agent = undefined;
     assert.equal(await ground(subscription), 'the agent was deleted');
-    agent = { id: 'a-mara', status: 'enabled', kind: 'facilitator' };
+    agent = { id: 'a-mara', status: 'enabled', archetype: 'facilitator' };
     identities = [{ agentId: 'a-mara', channelType: 'teams', channelKey: '28:another-app' }];
     assert.match((await ground(subscription))!, /no longer has the teams identity/);
     identities = [];
