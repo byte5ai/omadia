@@ -68,6 +68,10 @@ export type AuditAction =
   | 'agent.disable'
   | 'agent.delete'
   | 'agent.purge'
+  // #2090 — the operator's kill switch for the actions of archetype plugins
+  // (instance, one agent, one process): set and cleared.
+  | 'execution.kill_switch_set'
+  | 'execution.kill_switch_clear'
   | 'plugin.uninstall'
   // #1510/#1508 — a plugin's Privacy Shield setting (`_privacy_mode`,
   // `_privacy_bypass_scopes`) changed. A switch to `bypass` sends that

@@ -247,6 +247,10 @@ export interface EndOfServiceDto {
     detail?: string;
   }>;
   subscriptions_ended: Array<{ channel_type: string; conversation_id: string }>;
+  /** #2090 — execution scopes the kernel ended, and conversations whose
+   *  reservation it released. Absent on an older middleware. */
+  execution_scopes_ended?: number;
+  reservations_released?: { channel_type: string; conversation_id: string }[];
   system_notices_owed: number;
 }
 
@@ -297,6 +301,64 @@ export async function purgeDeletedAgent(id: string, confirm?: string): Promise<{
     method: 'POST',
     body: JSON.stringify(confirm !== undefined ? { confirm } : {}),
   });
+}
+
+// ── #2090 — execution scopes of archetype plugins and the kill switch ───
+
+export type ExecutionScopeKind = 'configuring' | 'active' | 'closing' | 'scheduling' | 'follow_up';
+export type KillSwitchLevel = 'instance' | 'agent' | 'process';
+
+export interface ExecutionScopeDto {
+  id: string;
+  agent_slug: string;
+  plugin_id: string;
+  process_id: string;
+  kind: ExecutionScopeKind;
+  event_id: string | null;
+  deadline: string;
+  absolute_limit: string;
+  deadline_wait: boolean;
+  budget: { actions: number; model_calls: number };
+  used: { actions: number; model_calls: number };
+  conversations: number;
+  people: number;
+  opened_at: string;
+  /** A set kill switch reaches this scope: nothing is authorized under it. */
+  stopped: boolean;
+}
+
+export interface KillSwitchDto {
+  id: string;
+  level: KillSwitchLevel;
+  agent_slug: string | null;
+  process_id: string | null;
+  reason: string;
+  set_by: string;
+  set_at: string;
+}
+
+export interface ExecutionOverviewDto {
+  kill_switches: KillSwitchDto[];
+  scopes: ExecutionScopeDto[];
+}
+
+export async function getExecutionOverview(): Promise<ExecutionOverviewDto> {
+  return callJson('/v1/operator/execution');
+}
+
+/** Refuses every further action in the switch's reach until it is cleared.
+ *  Ends nothing. */
+export async function setKillSwitch(input: {
+  level: KillSwitchLevel;
+  agent_slug?: string;
+  process_id?: string;
+  reason?: string;
+}): Promise<{ kill_switch: KillSwitchDto }> {
+  return callJson('/v1/operator/execution/kill-switches', { method: 'POST', body: JSON.stringify(input) });
+}
+
+export async function clearKillSwitch(id: string): Promise<{ ok: boolean }> {
+  return callJson(`/v1/operator/execution/kill-switches/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
 // ── W0c (#861) — per-agent plugin assignment + grant read model ─────────

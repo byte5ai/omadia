@@ -39,6 +39,7 @@ import {
 import type { OperatorArchetypeDto } from '../../../_lib/archetypes';
 import { ArchetypeSection } from './ArchetypeSection';
 import { DeletedAgentsSection, EndOfServiceNotice, type EndOfServiceResult } from './EndOfService';
+import { ExecutionControlSection } from './ExecutionControl';
 import { FacilitatorsSection, type PluginNavLink } from './FacilitatorsSection';
 import { PluginsDnd } from './PluginsDnd';
 import { useFacilitatorRefusalMessage } from './useFacilitatorCopy';
@@ -353,6 +354,8 @@ export function AgentsDashboard({
           />
         ),
       )}
+
+      <ExecutionControlSection refreshKey={deletedRefresh} />
 
       <DeletedAgentsSection refreshKey={deletedRefresh} />
     </div>

@@ -31,9 +31,12 @@ const ENGINE = '@omadia/agent-facilitator';
 const MARA = { id: 'id-mara', slug: 'mara', name: 'Mara', archetype: 'facilitator', status: 'enabled' };
 const HR = { id: 'id-hr', slug: 'hr', name: 'HR', archetype: 'standard', status: 'enabled' };
 const HOME = { channelType: 'teams', conversationId: '19:offsite@thread.v2' };
+const SESSION = { channelType: 'teams', conversationId: '19:meeting_session@thread.v2' };
 const ACTOR = { email: 'marcel@example.test' };
 
-function setup(opts: { processes?: ArchetypeProcessesService | undefined; timeoutMs?: number } = {}) {
+function setup(
+  opts: { processes?: ArchetypeProcessesService | undefined; timeoutMs?: number; revoke?: 'works' | 'fails' } = {},
+) {
   const order: string[] = [];
   const audits: AuditEntryInput[] = [];
   const notices: SystemNoticeRequest[] = [];
@@ -56,6 +59,16 @@ function setup(opts: { processes?: ArchetypeProcessesService | undefined; timeou
       if (agentSlug === 'mara') subscriptions = [];
       return Promise.resolve(ended);
     },
+    ...(opts.revoke
+      ? {
+          revokeExecution: (agentId: string, reason: string) => {
+            order.push(`kernel.revokeExecution(${agentId}, ${reason})`);
+            return opts.revoke === 'fails'
+              ? Promise.reject(new Error('connection lost'))
+              : Promise.resolve({ scopesEnded: 3, reservationsReleased: [HOME, SESSION] });
+          },
+        }
+      : {}),
     audit: (entry) => {
       order.push(`audit(${entry.action})`);
       audits.push(entry);
@@ -97,6 +110,33 @@ describe('end of service: the procedure', () => {
     });
   });
 
+  it('#2090: the kernel revokes scopes and reservations after the plugin spoke, and a released conversation is owed a notice', async () => {
+    const h = setup({ revoke: 'works' });
+    const report = await h.endOfService.run(MARA, 'agent_deleted', ACTOR);
+    assert.deepEqual(h.order.slice(0, 3), [
+      'plugin.endProcessesOfAgent(mara, agent_deleted)',
+      'kernel.endSubscriptionsOf(mara, agent deleted)',
+      'kernel.revokeExecution(id-mara, agent deleted)',
+    ]);
+    assert.equal(report.scopesEnded, 3);
+    assert.deepEqual(report.reservationsReleased, [HOME, SESSION]);
+    // Offsite (process, subscription, reservation: once), the other
+    // subscription, and the session conversation that was only reserved.
+    assert.deepEqual(h.notices.map((n) => n.channelKey).sort(), [HOME.conversationId, '19:other@thread.v2', SESSION.conversationId].sort());
+    const after = h.audits[0]?.after as Record<string, unknown>;
+    assert.equal(after['execution_scopes_ended'], 3);
+    assert.deepEqual(after['reservations_released'], [HOME, SESSION]);
+  });
+
+  it('#2090: a revocation that fails does not keep the agent in service', async () => {
+    const h = setup({ revoke: 'fails' });
+    const report = await h.endOfService.run(MARA, 'agent_disabled', ACTOR);
+    assert.equal(report.scopesEnded, 0);
+    assert.equal(report.subscriptionsEnded.length, 2);
+    assert.match(h.logs.join('\n'), /revoking the execution scopes of 'mara' failed: connection lost/);
+    assert.equal(h.audits.length, 1);
+  });
+
   it('the audit says what happened to which agent and conversation', async () => {
     const h = setup();
     await h.endOfService.run(MARA, 'agent_deleted', ACTOR);
@@ -115,6 +155,8 @@ describe('end of service: the procedure', () => {
             { processId: 'fac-7', ...HOME, outcome: 'aborted', reportPosted: true, detail: 'vote open, 2 of 4 ballots' },
           ],
           subscriptions_ended: [HOME, { channelType: 'teams', conversationId: '19:other@thread.v2' }],
+          execution_scopes_ended: 0,
+          reservations_released: [],
           system_notices_owed: 2,
         },
       },
@@ -271,6 +313,33 @@ describe('kernel-guarded uninstall of an archetype plugin', () => {
     assert.deepEqual(outcome?.agents.map((a) => [a.slug, a.disabled]), [['mara', false]]);
     assert.match(logs.join('\n'), /disabling 'mara' failed: connection lost/);
   });
+
+  it('#2090: revokes every scope of the plugin, also with no enabled agent, and survives a failure', async () => {
+    const h = setup();
+    const revoked: string[] = [];
+    const logs: string[] = [];
+    const base = {
+      sources: sources([archetypePlugin(ENGINE, 'facilitator')]),
+      agents: () => ({ list: () => Promise.resolve([{ ...MARA, status: 'disabled' }]), disable: () => Promise.resolve() }),
+      endOfService: h.endOfService,
+      log: (m: string) => logs.push(m),
+    };
+    await guardArchetypePluginUninstall(ENGINE, {
+      ...base,
+      revokeExecutionOfPlugin: (pluginId, reason) => {
+        revoked.push(`${pluginId}: ${reason}`);
+        return Promise.resolve({ scopesEnded: 2 });
+      },
+    });
+    assert.deepEqual(revoked, [`${ENGINE}: archetype plugin removed`]);
+    assert.match(logs.join('\n'), /2 further execution scope\(s\) ended/);
+    const outcome = await guardArchetypePluginUninstall(ENGINE, {
+      ...base,
+      revokeExecutionOfPlugin: () => Promise.reject(new Error('connection lost')),
+    });
+    assert.equal(outcome?.archetypeId, 'facilitator');
+    assert.match(logs.join('\n'), /revoking the execution scopes of '@omadia\/agent-facilitator' failed: connection lost/);
+  });
 });
 
 describe('agent routes: disable, delete, deleted agents, purge', () => {
@@ -346,6 +415,8 @@ describe('agent routes: disable, delete, deleted agents, purge', () => {
               processOutcome: 'ended' as const,
               processes: [{ processId: 'fac-7', ...HOME, outcome: 'aborted' as const, reportPosted: true }],
               subscriptionsEnded: [HOME],
+              scopesEnded: 2,
+              reservationsReleased: [HOME],
               noticesOwed: 1,
             });
           },
@@ -391,6 +462,8 @@ describe('agent routes: disable, delete, deleted agents, purge', () => {
         { process_id: 'fac-7', channel_type: 'teams', conversation_id: '19:offsite@thread.v2', outcome: 'aborted', report_posted: true },
       ],
       subscriptions_ended: [{ channel_type: 'teams', conversation_id: '19:offsite@thread.v2' }],
+      execution_scopes_ended: 2,
+      reservations_released: [{ channel_type: 'teams', conversation_id: '19:offsite@thread.v2' }],
       system_notices_owed: 1,
     });
     assert.deepEqual(audits[0]?.before, { status: 'enabled' });

@@ -60,6 +60,7 @@ import {
   type LedgerSeedReport,
   type SeedLedgerOptions,
   SqlMigrationError,
+  ServiceNotDeclaredError,
 } from '@omadia/plugin-api';
 import type { Pool } from 'pg';
 import type { DomainTool } from '@omadia/orchestrator';
@@ -111,7 +112,9 @@ import { neighborsForPlugin } from './shieldedNeighbors.js';
 import type { ServiceRegistry } from './serviceRegistry.js';
 import {
   createServiceGrantGate,
+  declaresServiceMajor,
   legacyServiceGrantsFor,
+  versionedServiceRef,
 } from './pluginServiceGrants.js';
 import {
   createSqlGate,
@@ -351,13 +354,21 @@ export function createPluginContext(
   });
 
   const services: ServicesAccessor = {
-    get<T>(name: string): T | undefined {
+    get<T>(requested: string): T | undefined {
+      // #2090 — `name@2` asks for that major, registered under that key. The
+      // gates below judge the capability by its name; this adds that the
+      // manifest must declare THIS major, so `foo@^1` does not buy `foo@2`.
+      const versioned = versionedServiceRef(requested);
+      const name = versioned ? versioned.name : requested;
       assertServiceGranted(name);
+      if (versioned && !declaresServiceMajor(agentId, catalog, versioned)) {
+        throw new ServiceNotDeclaredError(agentId, requested);
+      }
       // Order matters: declaration first, permission second. A plugin that
       // declared neither should hear about the manifest line it is missing
       // before it hears about a grant it could not have obtained anyway.
       assertSqlAccess(name);
-      const resolved = serviceRegistry.get<T>(name, serviceCaller);
+      const resolved = serviceRegistry.get<T>(requested, serviceCaller);
       // Epic #470 C7 / G4 — a pool-shaped capability is BORROWED, not handed
       // over. Passing the raw `pg.Pool` would mean one `.end()` in one plugin
       // tears down the connection pool core writes user data through. Applied

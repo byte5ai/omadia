@@ -62,6 +62,10 @@ export interface EndOfServiceReport {
   readonly processDetail?: string;
   readonly processes: readonly ArchetypeProcessEnded[];
   readonly subscriptionsEnded: readonly EndedSubscription[];
+  /** #2090 — execution scopes the kernel ended (none can authorize an action
+   *  any more) and conversations whose reservation it released. */
+  readonly scopesEnded: number;
+  readonly reservationsReleased: readonly EndedSubscription[];
   /** `system` notices owed and not sent (#2045). */
   readonly noticesOwed: number;
 }
@@ -71,6 +75,16 @@ export interface AgentEndOfServiceDeps {
   readonly processesFor: (archetypeId: string) => ArchetypeProcessesService | undefined;
   /** Absent = no message store (no database): nothing to end. */
   readonly endSubscriptionsOf?: (agentSlug: string, reason: string) => Promise<readonly EndedSubscription[]>;
+  /**
+   * #2090 — end every execution scope and release every conversation
+   * reservation of the agent. Runs after the plugin ended its processes (its
+   * closing words still needed a scope) and whatever the plugin answered.
+   * Absent = no database.
+   */
+  readonly revokeExecution?: (
+    agentId: string,
+    reason: string,
+  ) => Promise<{ scopesEnded: number; reservationsReleased: readonly EndedSubscription[] }>;
   readonly audit?: (entry: AuditEntryInput) => Promise<void>;
   /** #2045 seam. Called once per conversation that is owed a notice. */
   readonly emitSystemNotice: (notice: SystemNoticeRequest) => void;
@@ -179,10 +193,28 @@ export function createAgentEndOfService(deps: AgentEndOfServiceDeps): AgentEndOf
         );
       }
 
+      let scopesEnded = 0;
+      let reservationsReleased: readonly EndedSubscription[] = [];
+      try {
+        const revoked = await deps.revokeExecution?.(agent.id, REASON_TEXT[reason]);
+        scopesEnded = revoked?.scopesEnded ?? 0;
+        reservationsReleased =
+          revoked?.reservationsReleased.map((r) => ({
+            channelType: r.channelType,
+            conversationId: r.conversationId,
+          })) ?? [];
+      } catch (err) {
+        log(
+          `[end-of-service] revoking the execution scopes of '${agent.slug}' failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+
       // One notice per conversation that loses the agent: where a process
-      // ended and where the agent was receiving messages.
+      // ended, where the agent was receiving messages, and where it held the
+      // reservation.
       const conversations = new Map<string, { channelType: string; conversationId: string; processId?: string }>();
       for (const s of subscriptionsEnded) conversations.set(`${s.channelType}\n${s.conversationId}`, s);
+      for (const r of reservationsReleased) conversations.set(`${r.channelType}\n${r.conversationId}`, r);
       for (const p of processes.processes) {
         conversations.set(`${p.channelType}\n${p.conversationId}`, {
           channelType: p.channelType,
@@ -213,6 +245,8 @@ export function createAgentEndOfService(deps: AgentEndOfServiceDeps): AgentEndOf
         reason,
         ...processes,
         subscriptionsEnded,
+        scopesEnded,
+        reservationsReleased,
         noticesOwed: conversations.size,
       };
       try {
@@ -229,6 +263,8 @@ export function createAgentEndOfService(deps: AgentEndOfServiceDeps): AgentEndOf
             ...(report.processDetail !== undefined ? { process_detail: report.processDetail } : {}),
             processes: report.processes,
             subscriptions_ended: report.subscriptionsEnded,
+            execution_scopes_ended: report.scopesEnded,
+            reservations_released: report.reservationsReleased,
             system_notices_owed: report.noticesOwed,
           },
         });
@@ -236,7 +272,7 @@ export function createAgentEndOfService(deps: AgentEndOfServiceDeps): AgentEndOf
         log(`[end-of-service] audit for '${agent.slug}' failed: ${err instanceof Error ? err.message : String(err)}`);
       }
       log(
-        `[end-of-service] '${agent.slug}' (${archetype}): ${REASON_TEXT[reason]}; processes ${report.processOutcome} (${String(report.processes.length)}), subscriptions ended ${String(subscriptionsEnded.length)}`,
+        `[end-of-service] '${agent.slug}' (${archetype}): ${REASON_TEXT[reason]}; processes ${report.processOutcome} (${String(report.processes.length)}), subscriptions ended ${String(subscriptionsEnded.length)}, execution scopes ended ${String(scopesEnded)}, reservations released ${String(reservationsReleased.length)}`,
       );
       return report;
     },

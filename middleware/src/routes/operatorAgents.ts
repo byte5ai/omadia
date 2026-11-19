@@ -1907,6 +1907,11 @@ function endOfServiceDto(report: EndOfServiceReport) {
       channel_type: s.channelType,
       conversation_id: s.conversationId,
     })),
+    execution_scopes_ended: report.scopesEnded,
+    reservations_released: report.reservationsReleased.map((r) => ({
+      channel_type: r.channelType,
+      conversation_id: r.conversationId,
+    })),
     system_notices_owed: report.noticesOwed,
   };
 }

@@ -587,6 +587,128 @@ run(options?: BulkExcerptMergeDetectRunOptions): Promise<BulkExcerptMergeDetectR
 export declare const BULK_EXCERPT_MERGE_DETECT_SERVICE_NAME = "bulkExcerptMergeDetect";
 export declare const BULK_EXCERPT_MERGE_DETECT_CAPABILITY = "bulkExcerptMergeDetect@1";
 
+// ===== executionAuthorization.d.ts =====
+export declare const EXECUTION_AUTHORIZATION_SERVICE_NAME = "executionAuthorization";
+export type ExecutionScopeKind = 'configuring' | 'active' | 'closing' | 'scheduling' | 'follow_up';
+export declare const EXECUTION_SCOPE_KINDS: readonly ExecutionScopeKind[];
+export type ExecutionPhase = 'configuring' | 'active' | 'concluding' | 'closed' | 'aborted' | 'following_up' | 'ended';
+export declare const EXECUTION_SCOPE_PHASES: Readonly<Record<ExecutionScopeKind, readonly ExecutionPhase[]>>;
+export type ExecutionActionType = 'model_turn' | 'post' | 'direct_message' | 'card_update' | 'check' | 'delivery';
+export type ExecutionPurpose = 'moderation' | 'handshake' | 'link' | 'reminder' | 'status' | 'consent' | 'stop' | 'essential_message' | 'protocol_dispatch' | 'invitation' | 'readiness_check' | 'roster_check' | 'other';
+export type ExecutionTarget = {
+readonly kind: 'conversation';
+readonly channelType: string;
+readonly conversationId: string;
+} | {
+readonly kind: 'person';
+readonly channelType: string;
+readonly principalId: string;
+readonly restriction?: 'status_only';
+};
+export interface ExecutionBudget {
+readonly actions: number;
+readonly modelCalls: number;
+}
+export interface ExecutionScope {
+readonly id: string;
+readonly agentSlug: string;
+readonly processId: string;
+readonly kind: ExecutionScopeKind;
+readonly eventId: string;
+readonly state: 'open' | 'ended';
+readonly deadline: string;
+readonly absoluteLimit: string;
+readonly deadlineWait: boolean;
+readonly budget: ExecutionBudget;
+readonly used: ExecutionBudget;
+readonly targets: readonly ExecutionTarget[];
+readonly openedAt: string;
+readonly endedAt?: string;
+readonly endReason?: string;
+}
+export type ExecutionRefusalCode = 'not_permitted' | 'unknown_agent' | 'unknown_scope' | 'invalid_request' | 'scope_exists' | 'scope_order' | 'scope_ended' | 'deadline_passed' | 'limit_exceeded' | 'budget_exhausted' | 'kill_switch' | 'phase_mismatch' | 'purpose_not_allowed' | 'target_not_allowed' | 'conversation_busy' | 'unavailable';
+export interface ExecutionRefusal {
+readonly outcome: 'refused';
+readonly code: ExecutionRefusalCode;
+readonly message: string;
+}
+export interface OpenExecutionScopeRequest {
+readonly agentSlug: string;
+readonly processId: string;
+readonly kind: ExecutionScopeKind;
+readonly eventId?: string;
+readonly deadline?: string;
+readonly budget: ExecutionBudget;
+readonly targets?: readonly ExecutionTarget[];
+readonly home?: {
+readonly channelType: string;
+readonly conversationId: string;
+};
+}
+export interface AuthorizeActionRequest {
+readonly scopeId: string;
+readonly phase: ExecutionPhase;
+readonly purpose: ExecutionPurpose;
+readonly action: ExecutionActionType;
+readonly target?: ExecutionTarget;
+readonly modelCalls?: number;
+}
+export interface ExecutionAuthorization {
+readonly outcome: 'authorized';
+readonly authorizationId: string;
+readonly scopeId: string;
+readonly remaining: ExecutionBudget;
+}
+export interface ConversationReservation {
+readonly channelType: string;
+readonly conversationId: string;
+readonly processId: string;
+readonly role: 'home' | 'session';
+readonly reservedAt: string;
+readonly releasedAt?: string;
+}
+export interface ExecutionAuthorizationService {
+openScope(request: OpenExecutionScopeRequest): Promise<{
+outcome: 'opened';
+scope: ExecutionScope;
+} | ExecutionRefusal>;
+authorize(request: AuthorizeActionRequest): Promise<ExecutionAuthorization | ExecutionRefusal>;
+settle(authorizationId: string, used: {
+modelCalls: number;
+}): Promise<void>;
+setPeople(scopeId: string, people: readonly Extract<ExecutionTarget, {
+kind: 'person';
+}>[]): Promise<{
+outcome: 'updated';
+scope: ExecutionScope;
+} | ExecutionRefusal>;
+extendScope(scopeId: string, change: {
+deadline: string;
+deadlineWait?: boolean;
+}): Promise<{
+outcome: 'extended';
+scope: ExecutionScope;
+} | ExecutionRefusal>;
+endScope(scopeId: string, reason: string): Promise<void>;
+listScopes(processId: string): Promise<readonly ExecutionScope[]>;
+reserveConversation(request: {
+agentSlug: string;
+processId: string;
+channelType: string;
+conversationId: string;
+}): Promise<{
+outcome: 'reserved';
+reservation: ConversationReservation;
+} | ExecutionRefusal>;
+releaseConversation(request: {
+processId: string;
+channelType: string;
+conversationId: string;
+reason: string;
+}): Promise<void>;
+listReservations(processId: string): Promise<readonly ConversationReservation[]>;
+}
+
 // ===== facilitation.d.ts =====
 export declare const FACILITATION_ENGINE_CAPABILITY = "facilitationEngine@1";
 export declare const FACILITATION_FOLLOWUP_SERVICE_NAME = "facilitation.followup";
@@ -729,6 +851,7 @@ export * from './conversationMessages.js';
 export * from './agentTurn.js';
 export * from './sessionCapabilities.js';
 export * from './facilitation.js';
+export * from './executionAuthorization.js';
 
 // ===== knowledgeGraph.d.ts =====
 import type { EntityRef } from './entityRef.js';
