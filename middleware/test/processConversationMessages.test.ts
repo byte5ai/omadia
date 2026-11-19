@@ -15,6 +15,7 @@ import type { ProcessConversationMessageRecord } from '@omadia/plugin-api';
 import { ConversationMessageHub, type ProcessAccess } from '../src/channels/conversationMessages/hub.js';
 import { createProcessConversationMessagesService } from '../src/channels/conversationMessages/service.js';
 import { InMemoryConversationMessageStore } from '../src/channels/conversationMessages/store.js';
+import { createFacilitatorRuntimeLookup } from '../src/platform/facilitatorRuntimeService.js';
 import { CONVERSATION, ENGINE, MARA_KEY, messageEvent } from './_helpers/conversationMessagesFixture.js';
 
 const OTHER_PLUGIN = '@acme/other-archetype';
@@ -89,6 +90,27 @@ describe('#2089 subscribing a process', () => {
     assert.equal(await h.service.modeOf(h.scope('f1')), 'all');
     await h.service.subscribe(h.scope('f1'), { mode: 'none' });
     assert.deepEqual([mode(), h.hub.isSubscribed('teams', CONVERSATION, MARA_KEY)], ['none', false]);
+  });
+
+  it('a channel-started turn is suppressed exactly where a process reads everything', async () => {
+    // The kernel's lookup for the orchestrator (`facilitatorConversations`):
+    // in such a conversation the engine answers, so a mention must not get a
+    // second answer from the facilitator's ordinary turn.
+    const h = setup();
+    const lookup = createFacilitatorRuntimeLookup({
+      getRegistry: () => undefined,
+      getMessages: () => h.hub,
+      engineSources: () => ({}) as never,
+      reportedEngineState: () => undefined,
+    });
+    const driven = (): boolean => lookup.isEngineDriven('mara', 'teams', CONVERSATION);
+    assert.equal(driven(), false);
+    h.grant('f1', {});
+    await h.service.subscribe(h.scope('f1'), { mode: 'all' });
+    assert.equal(driven(), true);
+    await h.service.subscribe(h.scope('f1'), { mode: 'addressed' });
+    assert.equal(driven(), false, 'in follow-up the ordinary turn runs');
+    assert.equal(lookup.isEngineDriven('nora', 'teams', CONVERSATION), false);
   });
 
   it('an identity reads a conversation through processes or without one, never both', async () => {
