@@ -1,9 +1,13 @@
 /**
- * 'agentTurn@1' and the tool call context (#2043).
+ * The kernel-run agent turn and the tool call context (#2043).
  *
  * The facilitation engine asks the kernel to run one turn as a facilitator
  * and gets the text back unposted; tools called in that turn are told, by the
  * kernel, which agent, conversation, stored event and caller they serve.
+ *
+ * This suite is about the turn itself, as one process of the engine runs it.
+ * Its authorization (the execution scope, the reservation of model calls) is
+ * 'agentTurn@2' and is in `scopedAgentTurn.test.ts`.
  */
 
 import { strict as assert } from 'node:assert';
@@ -48,8 +52,11 @@ import {
   ENGINE,
   hubFixture,
   messageEvent,
-  scopeOf,
+  readAll,
 } from './_helpers/conversationMessagesFixture.js';
+
+/** The process of the engine that runs the turns of this suite. */
+const PROCESS = 'facilitation-7';
 
 const RUNTIME = { model: 'm', maxTokens: 100, maxToolIterations: 4 };
 
@@ -197,7 +204,7 @@ describe('agentTurn service', () => {
 
   async function setup(options: { agent?: Partial<AgentRow>; granted?: boolean; isEngine?: boolean; perMinute?: number } = {}) {
     const f = hubFixture(new InMemoryConversationMessageStore());
-    await f.hub.subscribe(scopeOf('mara'), ENGINE);
+    assert.equal((await readAll(f, 'mara', CONVERSATION, PROCESS)).outcome, 'subscribed');
     const stored = await f.hub.ingest(messageEvent({ text: 'My vote: A > C > B' }));
     assert.ok(stored);
     const seen: Seen[] = [];
@@ -226,25 +233,18 @@ describe('agentTurn service', () => {
           get: (slug: string) => (slug === 'mara' ? entry : undefined),
           channelTypesWithIdentity: () => ['teams'],
         }) as never,
-      // The turn looks its inbound event up among the events of its process
-      // (`agentTurn@2`). This suite is about the turn itself, so the fixture's
-      // one subscription stands in for the process's.
-      messages: {
-        getEventById: (scope, pluginId, eventId) => f.hub.getEventById(scope, pluginId, eventId),
-        getProcessEventById: (scope, pluginId, eventId) =>
-          f.hub.getEventById(scope, pluginId, eventId) as ReturnType<typeof f.hub.getProcessEventById>,
-      },
+      // The turn looks its inbound event up among the events of its process.
+      messages: f.hub,
       callerPluginId: ENGINE,
       isEngine: () => options.isEngine !== false,
       history: new AgentTurnHistory(),
       budget: new AgentTurnBudget(options.perMinute ?? 60),
       language: () => 'de',
     });
-    // A turn of a process: the first major (a turn without one) is no longer
-    // provided, and only a process's turn may name an inbound event.
     const service = {
       ...guarded,
-      runTurn: (request: Parameters<typeof guarded.runTurn>[0]) => guarded.runGuarded(request, undefined, 'facilitation-7'),
+      runTurn: (request: Parameters<typeof guarded.runGuarded>[0], processId = PROCESS) =>
+        guarded.runGuarded(request, processId),
     };
     const request = {
       agentSlug: 'mara',
@@ -358,6 +358,9 @@ describe('agentTurn service', () => {
       const outcome = await service.runTurn({ ...request, ...bad });
       assert.equal(outcome.outcome === 'refused' && outcome.code, 'unavailable');
     }
+    // Another process of the same plugin did not receive the event either.
+    const otherProcess = await service.runTurn(request, 'facilitation-8');
+    assert.equal(otherProcess.outcome === 'refused' && otherProcess.code, 'unavailable');
     const invalid = await service.runTurn({ ...request, input: '' });
     assert.equal(invalid.outcome === 'refused' && invalid.code, 'unavailable');
     assert.equal(seen.length, 0);
@@ -391,7 +394,7 @@ describe('agentTurn service', () => {
 
   it('getProfile answers for a bound facilitator only', async () => {
     const { service } = await setup({ agent: { identityLanguage: 'en-GB' } });
-    assert.deepEqual(await service.getProfile!('mara'), {
+    assert.deepEqual(await service.getProfile('mara'), {
       agentSlug: 'mara',
       // Deprecated in the plugin API, still answered (no major for one field).
       kind: 'facilitator',
@@ -402,11 +405,11 @@ describe('agentTurn service', () => {
       ownIdentityChannelTypes: ['teams'],
     });
     const platform = await setup({ agent: { identityName: null } });
-    const profile = await platform.service.getProfile!('mara');
+    const profile = await platform.service.getProfile('mara');
     assert.equal(profile?.displayName, 'mara', 'falls back to the agent label');
     assert.equal(profile?.language, 'de', 'falls back to the installation language');
-    assert.equal(await service.getProfile!('ghost'), undefined);
-    assert.equal(await (await setup({ isEngine: false })).service.getProfile!('mara'), undefined);
-    assert.equal(await (await setup({ agent: { archetype: 'standard' } })).service.getProfile!('mara'), undefined);
+    assert.equal(await service.getProfile('ghost'), undefined);
+    assert.equal(await (await setup({ isEngine: false })).service.getProfile('mara'), undefined);
+    assert.equal(await (await setup({ agent: { archetype: 'standard' } })).service.getProfile('mara'), undefined);
   });
 });

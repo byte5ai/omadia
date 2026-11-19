@@ -9458,7 +9458,7 @@ enthält **keine** Facilitation-Tabellen. Spec: `specs/2043-native-facilitators/
   `422 facilitator_contract_violation` mit `issues[]`. Der Katalog ist eine
   Hilfe beim Speichern, nicht die Durchsetzung: die leistet der Block.
 
-### Authentifizierte eingehende Nachrichten (`conversationMessages@1`)
+### Authentifizierte eingehende Nachrichten (`conversationMessages@2`)
 
 Code: `middleware/src/channels/conversationMessages/` (`store.ts` Regeln und
 In-Memory-Store, `pgStore.ts`, `hub.ts`, `service.ts`, `purgeJob.ts`,
@@ -9495,10 +9495,15 @@ der Adapter gilt immer.
   und sieht nichts von der vorigen). `listSince({after})` liefert strikt nach
   dem Cursor in Speicherreihenfolge, `nextCursor` nur wenn es eine weitere
   Seite gibt. Live-Zustellung at-least-once (`onMessage`), ein fehlgeschlagener
-  Handler holt über `listSince` auf.
-- **Aufbewahrung:** Die Frist beginnt erst mit `unsubscribe`
-  (`CONVERSATION_MESSAGES_GRACE_MS`), zusätzlich ein Höchstalter je Event
-  (`CONVERSATION_MESSAGES_MAX_AGE_DAYS`). Der Purge-Tick lädt auch den
+  Handler holt über `listSince` auf. Jede Subscription und jeder Lesezugriff
+  nennt einen Prozess (`processId`); die Form ohne Prozess (erste
+  Major-Version) gibt es seit K6.4 nicht mehr, auch nicht im Kernel.
+- **Aufbewahrung:** Die Frist beginnt erst mit dem Ende der Subscription
+  (der Prozess hat keinen offenen Execution Scope mehr, oder der Agent geht
+  außer Dienst; ein `unsubscribe` gibt es nicht)
+  (`CONVERSATION_MESSAGES_GRACE_MS`). Das Höchstalter je Event
+  (`CONVERSATION_MESSAGES_MAX_AGE_DAYS`) gilt erst danach: von einem laufenden
+  Prozess wird nichts nach Alter gelöscht. Der Purge-Tick lädt auch den
   Subscription-Cache neu (mehrere Maschinen).
 - **Kein zweiter Turn:** Hält die Engine die Subscription, unterdrückt der
   Kernel den vom Kanal gestarteten Turn dieses Agents in dieser Konversation
@@ -9511,18 +9516,24 @@ der Adapter gilt immer.
 ### Senden als eigene Identität
 
 Code: `middleware/src/channels/ownIdentitySend.ts` (gemeinsame Regeln),
-`conversationSendService.ts` (`asOwnIdentity`), `ownIdentityDirectSend.ts`
-(`targetedSend` mit `asAgentSlug`), `sendServicesWiring.ts` (beide Services
-als Per-Caller-Fassade, damit der Kernel weiß, welches Plugin ruft).
+`conversationSendService.ts` (die Zustellung hinter `conversationSend@2`;
+ein Aufruf ohne den Grund, den eine Autorisierung hinterlässt, postet nichts),
+`scopedSendService.ts` (die Autorisierung aus dem Execution Scope),
+`ownIdentityDirectSend.ts` (`targetedSend` mit `asAgentSlug`),
+`sendServicesWiring.ts` (beide Services als Per-Caller-Fassade, damit der
+Kernel weiß, welches Plugin ruft).
 
 - Die Identität kommt aus `registry.channelIdentityFor(slug, channelType)`,
   also nur die eigene. Ohne eigene Identität: `no_identity`. Es gibt keinen
   Rückfall auf den Default-Bot, auch nicht mit Ephemeral-Attachment.
-- **Berechtigung = Message-Subscription** des rufenden Plugins für genau diese
-  Konversation (Gruppenpost) bzw. für irgendeine Konversation, in der der
-  Empfänger vorkommt (DM): Roster des Kanals oder Autor einer gespeicherten
-  Nachricht. Sonst `not_permitted`. Rollen-Principals sind für
-  Eigen-Identitäts-DMs ungültig.
+- **Berechtigung:** Ein Gruppenpost wird aus einem Execution Scope des
+  Prozesses autorisiert (`conversationSend@2`; die Konversation muss ein Ziel
+  des Scopes sein), nicht mehr durch eine Message-Subscription. Eine DM über
+  `targetedSend` (`asAgentSlug`) geht an eine Person, die in irgendeiner
+  Konversation vorkommt, die ein Prozess des rufenden Plugins für diesen Agent
+  abonniert hat: Roster des Kanals oder Autor einer gespeicherten Nachricht.
+  Sonst `not_permitted`. Rollen-Principals sind für Eigen-Identitäts-DMs
+  ungültig.
 - **Mentions:** `user` als `user:<id>` oder kanal-native ID; der Kernel löst
   auf die `ChannelUserRef` des Rosters auf (Teams: Entra-Objekt-ID, auch wenn
   die bot-spezifische `29:`-ID genannt wurde). Unbekannte Personen bleiben
@@ -9536,7 +9547,7 @@ als Per-Caller-Fassade, damit der Kernel weiß, welches Plugin ruft).
 - Ohne die neuen Flags verhalten sich beide Services wie vorher (Diskussionen,
   Facilitator 0.7.x).
 
-### Tool-Call-Kontext und `agentTurn@1`
+### Tool-Call-Kontext und `agentTurn@2`
 
 - **`NativeToolCallContext`** (zweites Argument jedes Plugin-Tool-Handlers):
   `agentSlug`, `channelType`, `conversationId` (kanal-nativ, ohne
@@ -9554,8 +9565,11 @@ als Per-Caller-Fassade, damit der Kernel weiß, welches Plugin ruft).
   (Neutralitätsblock, Model-Policy, Privacy Shield, Receipts, Verifier);
   `engineContext` ist der `extraSystemHint` des Turns, steht also hinter der
   Identität und wird maskiert. Rückgabe ist der Text, gepostet wird nichts.
-  Mit `inboundEventId` liest der Kernel das gespeicherte Event; der Aufrufer
-  des Turns ist dessen Autor. Verlauf je `sessionKey` nur im Speicher
+  Jeder Turn ist eine autorisierte Aktion unter einem Execution Scope eines
+  Prozesses (`createScopedAgentTurnService`); einen Turn ohne Scope gibt es
+  seit K6.4 nicht mehr. Mit `inboundEventId` liest der Kernel das gespeicherte
+  Event unter den Events genau dieses Prozesses; der Aufrufer des Turns ist
+  dessen Autor. Verlauf je `sessionKey` nur im Speicher
   (20 Turns); der dauerhafte Zustand ist der der Engine.
   Budget: `AGENT_TURN_MAX_PER_MINUTE`.
 - **Profil:** `agentTurn.getProfile(slug)` liefert Anzeigename, Sprache
@@ -9615,15 +9629,16 @@ Pushes hängen an Message-Subscriptions.
   Plugin ein Objekt übergibt.
 - **Subscription nur bei deklarierter Zustellung:** ohne registrierten
   Readiness-Provider `not_ready`. **Kernel-seitiges Ende**
-  (`hub.reconcile`, `createSubscriptionGroundCheck`): Engine nicht mehr die
-  gebundene/aktive Engine, Agent deaktiviert oder gelöscht, eigene Identität
-  weg. Erst nach dem Boot scharf (`enableReconcile`), danach alle
+  (`hub.reconcile`, `createSubscriptionGroundCheck`): das Plugin, das
+  abonniert hat, ist nicht aktiv, Agent deaktiviert oder gelöscht, eigene
+  Identität weg, oder der Prozess hat keinen offenen Execution Scope mehr
+  (bei einem Uninstall werden die Scopes des Plugins widerrufen). Erst nach dem Boot scharf (`enableReconcile`), danach alle
   `CONVERSATION_MESSAGES_RECONCILE_INTERVAL_MS` und bei Install/Uninstall.
   Eine per Cascade verschwundene Zeile schließt das Gate beim nächsten Event.
 - **Mehrere Maschinen:** NOTIFY-Trigger auf der Subscription-Tabelle,
   `ReloadBus` mit Kanal `conversation_message_subscriptions_changed`
-  (`CONVERSATION_MESSAGES_LISTEN`). `refresh`, `subscribe` und `unsubscribe`
-  laufen über einen gemeinsamen Mutex im Hub.
+  (`CONVERSATION_MESSAGES_LISTEN`). `refresh`, `subscribeProcess` und das
+  Beenden einer Subscription laufen über einen gemeinsamen Mutex im Hub.
 - **Engine = Archetyp-Plugin, Vertrauen durch die bestätigte Installation**
   (`facilitatorGuard.ts`). Der SQL-Grant ist seit K6 kein Vertrauensschritt
   mehr und `ungranted` kein Zustand: ohne Grant hat das Plugin keine

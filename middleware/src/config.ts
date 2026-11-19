@@ -429,8 +429,9 @@ export const ConfigSchema = z.object({
   // scope are personal-data linkage, so rows are reaped after this many days.
   RECEIPT_RETENTION_DAYS: z.coerce.number().int().positive().default(90),
   // #2043 — retention of stored inbound conversation messages
-  // ('conversationMessages@1'). Events outlive the END of their subscription
-  // by the grace period and are removed after the maximum age regardless.
+  // ('conversationMessages@2'). Events outlive the END of their subscription
+  // by the grace period; once it has ended they also go after the maximum
+  // age. Nothing of a running process is removed by age.
   // The engine plugin keeps its own record.
   CONVERSATION_MESSAGES_GRACE_MS: z.coerce.number().int().nonnegative().default(6 * 60 * 60 * 1000),
   // Always bounded: there is no "keep forever" (a subscription that is never
@@ -452,7 +453,7 @@ export const ConfigSchema = z.object({
   // How often scopes past their deadline are ended and reservations of
   // processes without an open scope released.
   EXECUTION_SCOPE_SWEEP_INTERVAL_MS: z.coerce.number().int().positive().default(60_000),
-  // #2043 — ceiling on kernel-run turns ('agentTurn@1') per agent and minute;
+  // #2043 — ceiling on kernel-run turns ('agentTurn@2') per agent and minute;
   // a loop in an engine plugin must not spend without bound. 0 = no ceiling.
   AGENT_TURN_MAX_PER_MINUTE: z.coerce.number().int().nonnegative().default(60),
 

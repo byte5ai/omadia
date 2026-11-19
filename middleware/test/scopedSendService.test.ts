@@ -46,7 +46,7 @@ function harness(options: { refuse?: ExecutionRefusalCode; channelFails?: boolea
     execution: () => (options.noDatabase ? undefined : execution),
     conversation: {
       capabilities: () => ({ asOwnIdentity: true, mentions: true, poll: false }),
-      sendToConversation: (_input: unknown, _plugin: unknown, ground: unknown) => {
+      sendToConversation: (_input: unknown, ground: unknown) => {
         order.push('send');
         grounds.push(ground);
         return Promise.resolve(
@@ -55,7 +55,7 @@ function harness(options: { refuse?: ExecutionRefusalCode; channelFails?: boolea
             : { outcome: 'delivered', messageId: 'bot-msg-1', cardMessageId: 'card-msg-1' },
         );
       },
-      updateCard: (_input: unknown, _plugin: unknown, ground: unknown) => {
+      updateCard: (_input: unknown, ground: unknown) => {
         order.push('updateCard');
         grounds.push(ground);
         return Promise.resolve({ outcome: 'updated' });
@@ -263,27 +263,30 @@ describe('#2091 the own-identity path under an established permission', () => {
       } as never,
       ownIdentity: {
         identityFor: () => (identity ? { channelKey: '28:aaaa-mara' } : undefined),
-        // No subscription at all: the first major would refuse.
-        subscriptions: { subscriptionFor: () => undefined, subscriptionsOf: () => [], findAuthor: () => Promise.resolve(undefined) },
+        // No message subscription at all.
+        subscriptions: { subscriptionsOf: () => [], findAuthor: () => Promise.resolve(undefined) },
         archetypeAddsOwnIdentitySend: () => true,
       } as never,
     });
     return { service, sent };
   }
-  const input = { agentSlug: 'mara', ...HOME, message: { text: 'The protocol.' }, asOwnIdentity: true };
+  const input = { agentSlug: 'mara', ...HOME, message: { text: 'The protocol.' } };
 
   it('posts where the scope allows it although no message subscription exists (a closing scope after the release)', async () => {
     const { service, sent } = sendService(true);
-    const without = await service.sendToConversation(input, ENGINE);
-    assert.equal(without.outcome === 'unreachable' && without.code, 'not_permitted', 'the first major still asks for a subscription');
-    const withGround = await service.sendToConversation(input, ENGINE, { subscriptions: [] });
+    // The delivery asks for the ground an authorization left; a caller that
+    // comes without one posts nothing.
+    const without = await service.sendToConversation(input, undefined as never);
+    assert.equal(without.outcome === 'unreachable' && without.code, 'not_permitted');
+    assert.deepEqual(sent, []);
+    const withGround = await service.sendToConversation(input, { subscriptions: [] });
     assert.equal(withGround.outcome, 'delivered');
     assert.deepEqual(sent, [{ conversationId: HOME.conversationId, asChannelKey: '28:aaaa-mara' }]);
   });
 
   it('still never posts through another bot: no identity is no_identity', async () => {
     const { service, sent } = sendService(false);
-    const outcome = await service.sendToConversation(input, ENGINE, { subscriptions: [] });
+    const outcome = await service.sendToConversation(input, { subscriptions: [] });
     assert.equal(outcome.outcome === 'unreachable' && outcome.code, 'no_identity');
     assert.deepEqual(sent, []);
   });

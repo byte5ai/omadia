@@ -32,7 +32,7 @@ import { InMemoryConversationMessageStore } from '../src/channels/conversationMe
 import { markOwnIdentityMessage } from '../src/channels/ownIdentitySend.js';
 import { createTargetedDeliveryService } from '../src/channels/targetedDeliveryService.js';
 import { TargetedSendRegistry } from '../src/channels/targetedSendRegistry.js';
-import { CONVERSATION, ENGINE, hubFixture, MARA_KEY, scopeOf } from './_helpers/conversationMessagesFixture.js';
+import { CONVERSATION, ENGINE, hubFixture, MARA_KEY, processOf, readAll } from './_helpers/conversationMessagesFixture.js';
 
 const LINE = 'Diese Antwort wurde von Mara, einem KI-System, erzeugt.';
 const ANNA = 'aad-anna';
@@ -71,7 +71,7 @@ describe('own-identity sends: the AI marking', () => {
     posted = [];
     level = disclosure();
     const f = hubFixture(new InMemoryConversationMessageStore());
-    await f.hub.subscribe(scopeOf('mara'), ENGINE);
+    await readAll(f, 'mara');
     const ownIdentity = {
       identityFor: (slug: string) => (slug === 'mara' ? { channelKey: MARA_KEY } : undefined),
       subscriptions: f.hub,
@@ -116,8 +116,9 @@ describe('own-identity sends: the AI marking', () => {
     });
     post = (text, conversationId = CONVERSATION) =>
       conversationSend.sendToConversation(
-        { agentSlug: 'mara', channelType: 'teams', conversationId, message: { text }, asOwnIdentity: true },
-        ENGINE,
+        { agentSlug: 'mara', channelType: 'teams', conversationId, message: { text } },
+        // What `conversationSend@2` hands in once the scope authorized the post.
+        { subscriptions: f.hub.subscriptionsOfProcess(ENGINE, processOf('mara').processId, 'mara') },
       );
     dm = (text) =>
       targetedSend.sendToPrincipal(

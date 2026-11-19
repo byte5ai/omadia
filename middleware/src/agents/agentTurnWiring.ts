@@ -1,5 +1,5 @@
-// Publishes 'agentTurn' (#2043) as a per-caller service: the kernel knows
-// which plugin asks, and only the facilitation engine is answered.
+// Publishes 'agentTurn@2' (#2043, #2090) as a per-caller service: the kernel
+// knows which plugin asks, and only the facilitation engine is answered.
 
 import type { OrchestratorRegistry } from '@omadia/orchestrator';
 import {
@@ -25,7 +25,7 @@ import {
 export function publishAgentTurnService(deps: {
   serviceRegistry: ServiceRegistry;
   getRegistry: () => OrchestratorRegistry | undefined;
-  messages?: Pick<ConversationMessageHub, 'getEventById' | 'getProcessEventById'>;
+  messages?: Pick<ConversationMessageHub, 'getProcessEventById'>;
   engineSources: () => FacilitationEngineSources;
   /** #2090 — the calling plugin's execution authorization, for `agentTurn@2`.
    *  Answers `undefined` without a database. */
@@ -54,8 +54,7 @@ export function publishAgentTurnService(deps: {
     };
   };
   // #2090 — a model turn is an authorized action under an execution scope
-  // (`agentTurn@2`). The first major, a turn without a scope, is no longer
-  // provided since K6.
+  // (`agentTurn@2`); the bare name `agentTurn` provides nothing.
   deps.serviceRegistry.provide(
     AGENT_TURN_V2_SERVICE_NAME,
     perCallerService((caller) =>

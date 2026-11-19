@@ -21,7 +21,7 @@ import { ConversationSendRegistry } from '../src/channels/conversationSendRegist
 import { createConversationSendService } from '../src/channels/conversationSendService.js';
 import { InMemoryConversationMessageStore } from '../src/channels/conversationMessages/store.js';
 import { createOwnIdentityPostLog } from '../src/channels/ownIdentityPostLog.js';
-import { CONVERSATION, ENGINE, hubFixture, MARA_KEY, scopeOf } from './_helpers/conversationMessagesFixture.js';
+import { CONVERSATION, ENGINE, hubFixture, MARA_KEY, processOf, readAll } from './_helpers/conversationMessagesFixture.js';
 
 const INPUT: ChatTurnInput = {
   userMessage: '@Mara please run a vote',
@@ -107,7 +107,7 @@ describe('facilitator turn answer vs. the engine posting in the same turn', () =
 
   it('the send service counts delivered own-identity posts only', async () => {
     const fixture = hubFixture(new InMemoryConversationMessageStore());
-    await fixture.hub.subscribe(scopeOf('mara'), ENGINE);
+    await readAll(fixture, 'mara');
     const posts = createOwnIdentityPostLog();
     let outcome: { outcome: 'delivered'; messageId: string } | { outcome: 'unreachable'; reason: 'channel_error' } = {
       outcome: 'delivered',
@@ -130,8 +130,9 @@ describe('facilitator turn answer vs. the engine posting in the same turn', () =
     });
     const send = () =>
       service.sendToConversation(
-        { agentSlug: 'mara', channelType: 'teams', conversationId: CONVERSATION, message: { text: 'Hi.' }, asOwnIdentity: true },
-        ENGINE,
+        { agentSlug: 'mara', channelType: 'teams', conversationId: CONVERSATION, message: { text: 'Hi.' } },
+        // What `conversationSend@2` hands in once the scope authorized the post.
+        { subscriptions: fixture.hub.subscriptionsOfProcess(ENGINE, processOf('mara').processId, 'mara') },
       );
     await send();
     assert.equal(posts.count('mara', 'teams', CONVERSATION), 1);
