@@ -42,21 +42,10 @@ export function publishSendServices(deps: {
         deps.targeted.sendToPrincipal(input, callerPluginId(caller.pluginId)),
     })),
   );
-  deps.serviceRegistry.provide(
-    'conversationSend',
-    perCallerService((caller) => ({
-      sendToConversation: (input: SendInput<ConversationSendService['sendToConversation']>) =>
-        deps.conversation.sendToConversation(input, callerPluginId(caller.pluginId)),
-      // #2089 — question cards.
-      capabilities: (channelType: string) => deps.conversation.capabilities(channelType),
-      updateCard: (input: SendInput<ConversationSendService['updateCard']>) =>
-        deps.conversation.updateCard(input, callerPluginId(caller.pluginId)),
-    })),
-  );
-
-  // #2091 — the second major, next to the first: every send is drawn from an
-  // execution scope, and the scope (not a message subscription) names the
-  // targets.
+  // #2091 — a post into a conversation is drawn from an execution scope
+  // (`conversationSend@2`). The first major, permitted by a message
+  // subscription without a process, is no longer provided since K6.
+  // `targetedSend` above has one major and stays.
   const scoped = deps.scoped;
   if (!scoped) return;
   deps.serviceRegistry.provide(

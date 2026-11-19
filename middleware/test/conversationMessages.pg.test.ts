@@ -447,4 +447,42 @@ describe('conversationMessages (pg, migration 0068)', { skip: !pgAvailable }, ()
       assert.deepEqual(await store.listSince(plain, undefined, 10), []);
     });
   });
+
+  it('#2067 (K6.3) migration 0080 ends every active subscription without a process, and no other', async () => {
+    const mara = DEFAULT_AGENTS.find((a) => a.slug === 'mara')!;
+    const insert = (conversationId: string, processId: string | null, mode: string, ended: boolean): Promise<unknown> =>
+      pool.query(
+        `INSERT INTO conversation_message_subscriptions
+           (agent_id, agent_slug, channel_type, conversation_id, channel_key, plugin_id, process_id, mode, ended_at)
+         VALUES ($1, 'mara', 'teams', $2, $3, $4, $5, $6, CASE WHEN $7 THEN now() - interval '1 hour' ELSE NULL END)`,
+        [mara.id, conversationId, MARA_KEY.toLowerCase(), ENGINE, processId, mode, ended],
+      );
+    await insert('k6-first-major', null, 'all', false);
+    await insert('k6-first-major-ended', null, 'all', true);
+    await insert('k6-process', 'fac-1', 'all', false);
+    await insert('k6-process-addressed', 'fac-2', 'addressed', false);
+
+    const sql = await readFile(resolve(MIGRATIONS_DIR, '0080_end_first_major_subscriptions.sql'), 'utf8');
+    await pool.query(sql);
+    const state = async (): Promise<Record<string, string>> =>
+      Object.fromEntries(
+        (
+          await pool.query<{ conversation_id: string; state: string }>(
+            `SELECT conversation_id,
+                    CASE WHEN ended_at IS NULL THEN 'active'
+                         WHEN ended_at > now() - interval '1 minute' THEN 'ended now' ELSE 'ended before' END AS state
+               FROM conversation_message_subscriptions WHERE conversation_id LIKE 'k6-%'`,
+          )
+        ).rows.map((r) => [r.conversation_id, r.state]),
+      );
+    const expected = {
+      'k6-first-major': 'ended now',
+      'k6-first-major-ended': 'ended before',
+      'k6-process': 'active',
+      'k6-process-addressed': 'active',
+    };
+    assert.deepEqual(await state(), expected);
+    await pool.query(sql); // idempotent
+    assert.deepEqual(await state(), expected);
+  });
 });

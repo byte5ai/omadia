@@ -3,7 +3,6 @@
 
 import type { OrchestratorRegistry } from '@omadia/orchestrator';
 import {
-  AGENT_TURN_SERVICE_NAME,
   AGENT_TURN_V2_SERVICE_NAME,
   perCallerService,
   type ExecutionAuthorizationService,
@@ -19,7 +18,6 @@ import { KERNEL_SERVICE_CALLER, type ServiceRegistry } from '../platform/service
 import {
   AgentTurnBudget,
   AgentTurnHistory,
-  createAgentTurnService,
   createScopedAgentTurnService,
   type AgentTurnServiceDeps,
 } from './agentTurnService.js';
@@ -55,13 +53,9 @@ export function publishAgentTurnService(deps: {
       log: deps.log,
     };
   };
-  deps.serviceRegistry.provide(
-    AGENT_TURN_SERVICE_NAME,
-    perCallerService((caller) => createAgentTurnService(depsFor(caller))),
-  );
-  // #2090 — the second major, next to the first: the same turn as an
-  // authorized action under an execution scope. A plugin asks for it by its
-  // versioned name. The first major stays as it is until the engine moved.
+  // #2090 — a model turn is an authorized action under an execution scope
+  // (`agentTurn@2`). The first major, a turn without a scope, is no longer
+  // provided since K6.
   deps.serviceRegistry.provide(
     AGENT_TURN_V2_SERVICE_NAME,
     perCallerService((caller) =>
