@@ -70,6 +70,9 @@ export interface RoutesHarness {
   /** Has the operator granted the engine its SQL ledger? */
   sqlGranted: boolean;
   identitySaves: number;
+  /** Plugin ids the catalog describes as archetype plugins, with the
+   *  archetype each delivers. Empty by default. */
+  archetypePlugins: Record<string, string>;
   call(method: string, path: string, body?: unknown): Promise<RouteResponse>;
   assertRefused(res: RouteResponse, omission: string, messagePattern: RegExp): void;
 }
@@ -159,7 +162,20 @@ export function routesHarness(): RoutesHarness {
         isSqlGranted: () => h.sqlGranted,
         getInstalledRegistry: () => ({ list: () => h.installed }) as never,
         getPluginCatalog: () =>
-          ({ get: (id: string) => (id in provides ? { plugin: { provides: provides[id] } } : undefined) }) as never,
+          ({
+            get: (id: string) => {
+              if (!(id in provides)) return undefined;
+              const archetypeId = h.archetypePlugins[id];
+              return {
+                plugin: {
+                  provides: provides[id],
+                  ...(archetypeId
+                    ? { kind: 'archetype', archetype: { id: archetypeId, omits: [], adds: [], requires: [], noun: archetypeId } }
+                    : {}),
+                },
+              };
+            },
+          }) as never,
         getAgentIdentity: () => ({
           store: {
             getByAgentId: () => Promise.resolve(undefined),
@@ -198,6 +214,7 @@ export function routesHarness(): RoutesHarness {
   beforeEach(() => {
     h.writes = [];
     h.identitySaves = 0;
+    h.archetypePlugins = {};
     h.sqlGranted = true;
     h.agents = [agent('mara', 'facilitator'), agent('hr', 'standard')];
     h.installed = [

@@ -53,6 +53,11 @@ changelog.
   `confirm()` and `prompt()`. They now ask in the app's dialog. Removing a
   recently deleted agent still needs its slug typed; the button stays
   disabled until it matches.
+- **No agent of an archetype whose plugin did not start.** Creating an
+  agent, or enabling a disabled one, is refused with 409
+  `archetype_plugin_not_running` while the plugin that delivers its
+  archetype is installed but in the errored state. The message names the
+  plugin and its reason. Disabling and deleting stay possible.
 
 ### Added — One answer to a mention while a facilitation is in follow-up (#2089, epic #2043): K4.8
 

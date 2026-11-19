@@ -3107,7 +3107,8 @@
       "detail": {
         "kindHeading": "Facilitator"
       },
-      "facilitationsViewLink": "Laufende Moderationen öffnen ({label})"
+      "facilitationsViewLink": "Laufende Moderationen öffnen ({label})",
+      "archetypePluginNotRunning": "Das Plugin {plugin}, das Agenten dieser Art betreibt, ist installiert, aber nicht gestartet. Öffne es im Store, sieh nach dem Grund und behebe ihn zuerst; bis dahin lässt sich kein solcher Agent anlegen oder aktivieren."
     },
     "confirmAction": {
       "cancel": "Abbrechen",

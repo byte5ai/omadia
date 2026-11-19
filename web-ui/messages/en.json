@@ -3107,7 +3107,8 @@
       "detail": {
         "kindHeading": "Facilitator"
       },
-      "facilitationsViewLink": "Open running facilitations ({label})"
+      "facilitationsViewLink": "Open running facilitations ({label})",
+      "archetypePluginNotRunning": "The plugin {plugin}, which runs agents of this kind, is installed but did not start. Open it in the store to see why and fix that first; until then no such agent can be created or enabled."
     },
     "confirmAction": {
       "cancel": "Cancel",
