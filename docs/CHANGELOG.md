@@ -36,6 +36,35 @@ changelog.
 
 ## [Unreleased]
 
+### Added — An archetype plugin can have its database in its own schema under its own roles (#2088, epic #2042): K3a of the spec alignment
+
+- **Opt-in by manifest.** A plugin of manifest kind `archetype` that does
+  not list `graphPool` under `requires` no longer runs on the shared
+  database pool. With the database grant it gets `ctx.sql.query()` and
+  `ctx.sql.transaction()` (plugin-api 1.62.0). An archetype plugin that
+  still requires `graphPool`, and every plugin of another kind, is unchanged.
+- **Own schema, two login roles.** When such a plugin activates, the kernel
+  creates the schema `plg_<plugin id>`, a runtime role that reads and writes
+  the tables of that schema and nothing else, and a migration role that owns
+  the schema; the plugin's migration files run as the migration role. Both
+  are roles the connection logs in as, so SQL the plugin sends cannot leave
+  them, and they work behind a transaction-mode pooler. The runtime role may
+  read the migration ledger but not write it. Before the plugin runs, the
+  kernel checks that neither role holds a right on a table outside the
+  schema and refuses the activation otherwise.
+- **One-time move.** Tables the plugin created in `public` while it ran on
+  the shared pool (`plg_<plugin id>_*`) move into its schema, with their rows,
+  the first time a version without `graphPool` activates. There is no way
+  back: a version that expects the shared pool no longer finds them.
+- **What the database user needs.** Postgres 16 or newer, and the kernel's
+  database user must be allowed to create roles and schemas. Where it is
+  not, the activation fails with `cannot_create_roles` and the statement an
+  administrator runs once.
+- **Limit.** Plugin code runs in the kernel's process. This limits the
+  connection the kernel hands out; it does not stop code in the same process
+  from opening its own connection with credentials it finds there.
+- **Not yet:** an archetype plugin that still requires `graphPool` is not
+  refused. That follows once the facilitation engine has moved.
 ### Fixed — An archetype plugin is updated and stopped in the runtime it runs in (#2088)
 
 - **Update to an archetype version.** Uploading or installing from the Hub a

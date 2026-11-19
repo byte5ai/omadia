@@ -431,6 +431,7 @@ import { ChannelProviderRegistry } from './channels/sessionCapabilities/provider
 import { wireSessionCapabilities } from './channels/sessionCapabilities/wiring.js';
 import { attachEngineToFacilitators } from './platform/facilitatorEngineAttach.js';
 import { createArchetypeRegistrySync } from './platform/archetypeRegistrySync.js';
+import { createArchetypeDatabase } from './platform/archetypeDatabase.js';
 import { pluginRuntimeOf } from './plugins/pluginRuntimeOf.js';
 import { createAgentEndOfService, logOwedSystemNotice } from './platform/agentEndOfService.js';
 import { guardArchetypePluginUninstall } from './platform/archetypeUninstallGuard.js';
@@ -601,6 +602,7 @@ import type {
   KnowledgeGraph,
 } from '@omadia/plugin-api';
 import type { Pool } from 'pg';
+import { scramOnlyPoolOptions } from '@omadia/knowledge-graph-neon';
 import type {
   ChatAgent,
   ChatAgentBundle,
@@ -1709,6 +1711,18 @@ async function main(): Promise<void> {
     // published by a plugin THIS runtime activates, ~600 lines below where the
     // runtime is built, so a store bound here would be permanently null.
     sqlGrantStore,
+    // #2088 — an archetype plugin's database: own schema, own login roles,
+    // never the pool above. The roles connect to the address the kernel
+    // itself uses (through the pooler when that is a pooled address).
+    archetypeDatabase: createArchetypeDatabase({
+      adminPool: () => serviceRegistry.get<Pool>('graphPool'),
+      connectionString: config.DATABASE_URL,
+      secret: masterKey.key,
+      poolOptions: scramOnlyPoolOptions(),
+      log: (msg) => {
+        console.log(msg);
+      },
+    }),
     nativeToolRegistry,
     pluginRouteRegistry,
     // Epic #470 C4 / H1 — declared public-path prefixes are claimed here on

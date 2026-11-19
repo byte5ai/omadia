@@ -2289,6 +2289,16 @@ export interface SqlAccessor {
 readonly ledger: string;
 runMigrations(opts?: RunMigrationsOptions): Promise<MigrationReport>;
 seedLedger?(opts: SeedLedgerOptions): Promise<LedgerSeedReport>;
+readonly schema?: string;
+query?<R extends Record<string, unknown> = Record<string, unknown>>(text: string, params?: readonly unknown[]): Promise<SqlStatementResult<R>>;
+transaction?<T>(work: (tx: SqlTransaction) => Promise<T>): Promise<T>;
+}
+export interface SqlStatementResult<R extends Record<string, unknown> = Record<string, unknown>> {
+readonly rows: readonly R[];
+readonly rowCount: number;
+}
+export interface SqlTransaction {
+query<R extends Record<string, unknown> = Record<string, unknown>>(text: string, params?: readonly unknown[]): Promise<SqlStatementResult<R>>;
 }
 export declare class SqlPermissionError extends Error {
 readonly pluginId: string;
