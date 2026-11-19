@@ -4,14 +4,20 @@
 //   GET    /                    open execution scopes and set kill switches
 //   POST   /kill-switches       set one: { level, agent_slug?, process_id?, reason? }
 //   DELETE /kill-switches/:id   clear one
+//   POST   /discussions/:workflowId/stop   stop a running agent discussion
 //
 // A set switch refuses every authorization in its reach (the instance, one
 // agent, one process of an agent). It ends nothing: clearing it lets the
 // scopes continue within their own deadlines and budgets.
+//
+// Agent discussions (#2067) are Conductor runs agents started themselves, not
+// execution scopes: `GET /` lists them next to the scopes, and their stop is
+// final — the run is cancelled and its conversation released.
 
 import { Router, type Request, type Response } from 'express';
 
 import { auditActorFromRequest, type AuditEntryInput } from '../auth/adminAuditLog.js';
+import type { ConductorDiscussionAdmin, RunningDiscussion } from '../conductor/discussionAdmin.js';
 import type { ExecutionScopeStore, KillSwitch, ScopeRow } from '../execution/scopeStore.js';
 
 const MAX_SCOPES = 500;
@@ -24,7 +30,28 @@ export interface OperatorExecutionDeps {
   readonly agentBySlug: (slug: string) => Promise<{ id: string; slug: string } | undefined>;
   /** Slugs of live agents by id, for display. */
   readonly agentSlugs: () => Promise<ReadonlyMap<string, string>>;
+  /** Absent until the Conductor is wired (and without a database): no
+   *  discussions are listed and the stop answers 503. */
+  readonly discussions?: () => Pick<ConductorDiscussionAdmin, 'list' | 'stop'> | undefined;
   readonly audit?: (entry: AuditEntryInput) => Promise<void>;
+}
+
+function discussionDto(d: RunningDiscussion) {
+  return {
+    workflow_id: d.workflowId,
+    slug: d.slug,
+    opened_by: d.openedBy,
+    participants: d.participants,
+    topic: d.topic,
+    conversation: d.conversation
+      ? { channel_type: d.conversation.channelType, conversation_id: d.conversation.conversationId }
+      : null,
+    status: d.status,
+    started_at: d.startedAt,
+    stop_requested_at: d.stopRequestedAt,
+    expires_at: d.expiresAt,
+    incomplete: d.incomplete,
+  };
 }
 
 function killSwitchDto(k: KillSwitch, slugs: ReadonlyMap<string, string>) {
@@ -75,14 +102,29 @@ export function createOperatorExecutionRouter(deps: OperatorExecutionDeps): Rout
     const store = deps.store();
     if (!store) return unavailable(res);
     try {
-      const [switches, scopes, slugs] = await Promise.all([
+      // A failing discussion listing must not take the kill switch off the
+      // page: it is reported as such, never as "none running".
+      let discussionsFailed = false;
+      const listDiscussions = async (): Promise<RunningDiscussion[]> => {
+        try {
+          return (await deps.discussions?.()?.list()) ?? [];
+        } catch (err) {
+          discussionsFailed = true;
+          console.error('[execution] listing running discussions failed:', err);
+          return [];
+        }
+      };
+      const [switches, scopes, slugs, discussions] = await Promise.all([
         store.listKillSwitches(),
         store.listOpenScopes(MAX_SCOPES),
         deps.agentSlugs(),
+        listDiscussions(),
       ]);
       res.json({
         kill_switches: switches.map((k) => killSwitchDto(k, slugs)),
         scopes: scopes.map((s) => scopeDto(s, switches)),
+        discussions: discussions.map(discussionDto),
+        discussions_failed: discussionsFailed,
       });
     } catch (err) {
       res.status(500).json({ code: 'execution.failed', message: err instanceof Error ? err.message : String(err) });
@@ -163,6 +205,45 @@ export function createOperatorExecutionRouter(deps: OperatorExecutionDeps): Rout
         })
         .catch(() => undefined);
       res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ code: 'execution.failed', message: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.post('/discussions/:workflowId/stop', async (req: Request, res: Response) => {
+    const discussions = deps.discussions?.();
+    if (!discussions) return unavailable(res);
+    const workflowId = String(req.params['workflowId'] ?? '');
+    if (!UUID.test(workflowId)) {
+      res.status(404).json({ code: 'execution.unknown_discussion', message: 'no such running discussion' });
+      return;
+    }
+    try {
+      const actor = auditActorFromRequest(req);
+      const result = await discussions.stop(workflowId, actor.email ?? actor.id ?? 'operator');
+      if (result.outcome === 'not_found') {
+        res.status(404).json({ code: 'execution.unknown_discussion', message: 'no such running discussion' });
+        return;
+      }
+      if (result.outcome === 'cancel_failed') {
+        // Nothing was disposed on purpose: the discussion stays listed so the
+        // operator can retry.
+        res.status(502).json({
+          code: 'execution.discussion_stop_failed',
+          message: `${String(result.failedRuns)} run(s) could not be cancelled; the discussion is still listed, retry`,
+        });
+        return;
+      }
+      await deps
+        .audit?.({
+          actor,
+          action: 'conductor.discussion_stop',
+          target: `conductor-workflow:${result.slug}`,
+          before: { workflowId },
+          after: { cancelledRuns: result.cancelledRuns },
+        })
+        .catch(() => undefined);
+      res.json({ ok: true, cancelled_runs: result.cancelledRuns });
     } catch (err) {
       res.status(500).json({ code: 'execution.failed', message: err instanceof Error ? err.message : String(err) });
     }

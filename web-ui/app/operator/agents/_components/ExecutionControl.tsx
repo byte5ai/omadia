@@ -9,10 +9,12 @@ import {
   clearKillSwitch,
   getExecutionOverview,
   setKillSwitch,
+  stopDiscussion,
   type ExecutionOverviewDto,
   type ExecutionScopeDto,
   type KillSwitchDto,
 } from '../../../_lib/agents';
+import { RunningDiscussions } from './RunningDiscussions';
 
 const KIND_KEY = {
   configuring: 'kindConfiguring',
@@ -22,6 +24,8 @@ const KIND_KEY = {
   follow_up: 'kindFollowUp',
 } as const;
 
+const EMPTY: ExecutionOverviewDto = { kill_switches: [], scopes: [], discussions: [], discussions_failed: false };
+
 /**
  * #2090 — what archetype plugins are currently allowed to do, and the
  * operator's stop.
@@ -30,6 +34,9 @@ const KIND_KEY = {
  * running process holds permissions with a deadline and a budget. Stopping
  * refuses every further action in reach (the instance, one agent, one
  * process) until the operator resumes; it ends and deletes nothing.
+ *
+ * Agent discussions (#2067) are listed below with their own, final stop: they
+ * hold no such permissions, so the stops above do not reach them.
  *
  * The section stays away while nothing runs and nothing is stopped.
  */
@@ -50,7 +57,7 @@ export function ExecutionControlSection({ refreshKey }: { refreshKey: number }):
       .catch((err: unknown) =>
         setState(
           err instanceof ApiError && (err.status === 404 || err.status === 503)
-            ? { kind: 'loaded', data: { kill_switches: [], scopes: [] } }
+            ? { kind: 'loaded', data: EMPTY }
             : { kind: 'error' },
         ),
       );
@@ -60,7 +67,10 @@ export function ExecutionControlSection({ refreshKey }: { refreshKey: number }):
   }, [load, refreshKey]);
 
   if (state.kind === 'loading') return null;
-  if (state.kind === 'loaded' && state.data.scopes.length === 0 && state.data.kill_switches.length === 0) return null;
+  if (state.kind === 'loaded') {
+    const { scopes, kill_switches: switches, discussions, discussions_failed: discussionsFailed } = state.data;
+    if (scopes.length === 0 && switches.length === 0 && discussions.length === 0 && !discussionsFailed) return null;
+  }
 
   function act(work: () => Promise<unknown>): void {
     setFailed(false);
@@ -175,6 +185,12 @@ export function ExecutionControlSection({ refreshKey }: { refreshKey: number }):
           ) : (
             <p className="text-sm text-[color:var(--fg-muted)]">{t('nothingRunning')}</p>
           )}
+          <RunningDiscussions
+            discussions={data.discussions}
+            loadFailed={data.discussions_failed}
+            busy={busy}
+            onStop={(workflowId) => act(() => stopDiscussion(workflowId))}
+          />
         </>
       )}
     </section>

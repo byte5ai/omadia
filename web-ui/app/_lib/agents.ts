@@ -337,9 +337,30 @@ export interface KillSwitchDto {
   set_at: string;
 }
 
+/** #2067 — a run agents started themselves (a discussion in a conversation).
+ *  It holds no execution scope; its stop is final. */
+export interface RunningDiscussionDto {
+  workflow_id: string;
+  slug: string;
+  opened_by: string | null;
+  participants: string[];
+  topic: string | null;
+  conversation: { channel_type: string; conversation_id: string } | null;
+  status: string | null;
+  started_at: string | null;
+  /** A stop was requested and takes effect at the run's next step. */
+  stop_requested_at: string | null;
+  expires_at: string | null;
+  /** A lookup failed: the row may show less than there is. */
+  incomplete: boolean;
+}
+
 export interface ExecutionOverviewDto {
   kill_switches: KillSwitchDto[];
   scopes: ExecutionScopeDto[];
+  discussions: RunningDiscussionDto[];
+  /** The discussion listing failed; `discussions` is empty for that reason. */
+  discussions_failed: boolean;
 }
 
 export async function getExecutionOverview(): Promise<ExecutionOverviewDto> {
@@ -359,6 +380,11 @@ export async function setKillSwitch(input: {
 
 export async function clearKillSwitch(id: string): Promise<{ ok: boolean }> {
   return callJson(`/v1/operator/execution/kill-switches/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+/** Cancels a running agent discussion and releases its conversation. Final. */
+export async function stopDiscussion(workflowId: string): Promise<{ ok: boolean; cancelled_runs: number }> {
+  return callJson(`/v1/operator/execution/discussions/${encodeURIComponent(workflowId)}/stop`, { method: 'POST' });
 }
 
 // ── W0c (#861) — per-agent plugin assignment + grant read model ─────────
