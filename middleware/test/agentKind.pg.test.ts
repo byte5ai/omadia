@@ -49,6 +49,7 @@ describe('agents.kind (pg, migration 0067)', { skip: !pgAvailable }, () => {
       '0001_multi_orchestrator.sql',
       '0002_fix_notify_trigger.sql',
       '0067_agent_kind.sql',
+      '0070_agent_archetypes.sql',
     ]) {
       const sql = await readFile(resolve(MIGRATIONS_DIR, file), 'utf8');
       await pool.query(sql);

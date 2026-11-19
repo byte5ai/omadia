@@ -12,7 +12,7 @@
 // than one, attaches nothing.
 
 import type { ConfigStore } from '@omadia/orchestrator';
-import { isFacilitatorKind } from '@omadia/orchestrator';
+import { FACILITATOR_ARCHETYPE, isArchetype, type ArchetypeBearer } from '@omadia/orchestrator';
 
 import { resolveFacilitationEngine, type FacilitationEngineSources } from './facilitatorGuard.js';
 
@@ -22,10 +22,10 @@ type AttachStore = Pick<ConfigStore, 'listAgents' | 'listAgentPlugins' | 'upsert
  *  attached, or `undefined` when nothing changed. */
 export async function attachEngineToFacilitator(
   store: Pick<ConfigStore, 'listAgentPlugins' | 'upsertAgentPlugin'>,
-  agent: { readonly id: string; readonly slug: string; readonly kind?: 'standard' | 'facilitator' },
+  agent: { readonly id: string; readonly slug: string } & ArchetypeBearer,
   sources: FacilitationEngineSources,
 ): Promise<string | undefined> {
-  if (!isFacilitatorKind(agent)) return undefined;
+  if (!isArchetype(agent, FACILITATOR_ARCHETYPE)) return undefined;
   const engine = resolveFacilitationEngine(sources);
   if (engine.state !== 'bound') return undefined;
   const rows = await store.listAgentPlugins(agent.id);

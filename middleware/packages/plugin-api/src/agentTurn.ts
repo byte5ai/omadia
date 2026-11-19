@@ -39,7 +39,13 @@ export type AgentTurnOutcome =
  *  defaults of the engine live in the engine's own tables. */
 export interface AgentProfile {
   agentSlug: string;
+  /** @deprecated the previous name of {@link archetype}; removed together
+   *  with the `agents.kind` column. */
   kind: 'standard' | 'facilitator';
+  /** The agent's archetype (`agents.archetype`, #2088): `standard`, or one
+   *  an archetype plugin registered. Absent on a kernel older than 1.58.0:
+   *  read {@link kind}. */
+  archetype?: string;
   /** The name the agent wears (its identity's display name, else its label). */
   displayName: string;
   shortDescription?: string;

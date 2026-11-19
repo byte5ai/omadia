@@ -24,6 +24,7 @@ import {
   setFallbackAgent,
   triggerAgentReload,
   FALLBACK_AGENT_SLUG,
+  FACILITATOR_ARCHETYPE,
   isFacilitatorAgent,
   isModelRef,
   type OperatorAgentDto,
@@ -257,7 +258,7 @@ export function AgentsDashboard({
           run('create-facilitator', async () => {
             const created = await createOperatorAgent({
               ...input,
-              kind: 'facilitator',
+              archetype: FACILITATOR_ARCHETYPE,
             });
             // Avatar, personality and the Teams identity are set on the
             // facilitator's own page — that is the rest of "create".

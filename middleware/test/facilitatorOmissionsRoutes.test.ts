@@ -119,7 +119,7 @@ describe('facilitator omissions: operator routes', () => {
     h.assertRefused(
       await h.call('POST', '/builder/agents/mara/persona-skills', { skillId: SKILL_ID }),
       'persona_skill',
-      /no persona skills/,
+      /no working modes/,
     );
   });
 
@@ -127,7 +127,7 @@ describe('facilitator omissions: operator routes', () => {
     h.assertRefused(
       await h.call('POST', '/builder/agents/mara/subagents', { name: 'researcher' }),
       'sub_agent',
-      /no sub-agents/,
+      /no internal helpers/,
     );
   });
 

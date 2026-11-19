@@ -20,6 +20,7 @@
 // Events of one subscription are stored in arrival order (a per-subscription
 // queue), so "created, then edited" cannot be stored the other way round.
 
+import { FACILITATOR_ARCHETYPE, isArchetype, type ArchetypeBearer } from '@omadia/orchestrator';
 import type { ConversationMessageEvent } from '@omadia/channel-sdk';
 import type {
   ChannelReadinessReport,
@@ -45,7 +46,7 @@ export interface ConversationMessageHubDeps {
   /** The agent behind a slug, as the registry knows it. */
   readonly resolveAgent: (
     agentSlug: string,
-  ) => { readonly id: string; readonly slug: string; readonly kind?: string } | undefined;
+  ) => ({ readonly id: string; readonly slug: string } & ArchetypeBearer) | undefined;
   /** The agent's OWN identity on a channel; never the default bot. */
   readonly identityFor: (agentSlug: string, channelType: string) => { channelKey: string } | undefined;
   /** Was this identity observed in the conversation? */
@@ -315,7 +316,7 @@ export class ConversationMessageHub {
     }
     const agent = this.deps.resolveAgent(scope.agentSlug);
     if (!agent) return refused('unavailable', `agent '${scope.agentSlug}' is not active`);
-    if (agent.kind !== 'facilitator') {
+    if (!isArchetype(agent, FACILITATOR_ARCHETYPE)) {
       return refused(
         'not_facilitator',
         `agent '${scope.agentSlug}' is not a facilitator; only a facilitator may receive every message of a conversation`,

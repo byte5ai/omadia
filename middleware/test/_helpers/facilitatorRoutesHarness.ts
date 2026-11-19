@@ -103,8 +103,9 @@ export function routesHarness(): RoutesHarness {
       listChannelIdentities: () => Promise.resolve([]),
       resolveBinding: () => Promise.resolve(undefined),
       getAgentChannelPolicy: () => Promise.resolve(undefined),
-      createAgent: (input: { slug: string; name: string; kind?: FakeAgent['kind'] }) => {
-        const created = agent(input.slug, input.kind ?? 'standard');
+      // The route names the archetype; `kind` is what a fixture row carries.
+      createAgent: (input: { slug: string; name: string; archetype?: string; kind?: FakeAgent['kind'] }) => {
+        const created = agent(input.slug, (input.archetype ?? input.kind ?? 'standard') as FakeAgent['kind']);
         h.agents.push(created);
         return Promise.resolve(created);
       },

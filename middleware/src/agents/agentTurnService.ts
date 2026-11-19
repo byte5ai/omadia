@@ -19,7 +19,9 @@ import {
   type ChatTurnInput,
 } from '@omadia/channel-sdk';
 import {
-  isFacilitatorKind,
+  FACILITATOR_ARCHETYPE,
+  archetypeOf,
+  isArchetype,
   runAsEngineTurn,
   type OrchestratorRegistry,
 } from '@omadia/orchestrator';
@@ -124,7 +126,7 @@ export function createAgentTurnService(deps: AgentTurnServiceDeps): AgentTurnSer
     if (!registry) return refused('unavailable', 'the agent registry is not available');
     const entry = registry.get(agentSlug);
     if (!entry) return refused('unknown_agent', `agent '${agentSlug}' is not active`);
-    if (!isFacilitatorKind(entry.agent)) {
+    if (!isArchetype(entry.agent, FACILITATOR_ARCHETYPE)) {
       return refused('not_bound', `agent '${agentSlug}' is not a facilitator; an engine runs facilitators only`);
     }
     if (
@@ -245,6 +247,7 @@ export function createAgentTurnService(deps: AgentTurnServiceDeps): AgentTurnSer
       return {
         agentSlug: agent.slug,
         kind: 'facilitator',
+        archetype: archetypeOf(agent),
         displayName: agent.identityName?.trim() || agent.name,
         ...(agent.identityShortDescription?.trim()
           ? { shortDescription: agent.identityShortDescription.trim() }

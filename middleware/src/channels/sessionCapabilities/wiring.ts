@@ -4,7 +4,7 @@
 // pushes need message subscriptions and are delivered to nobody without them.
 
 import type { ChannelReadinessProvider, MeetingSourceProvider } from '@omadia/channel-sdk';
-import { isFacilitatorKind, type OrchestratorRegistry } from '@omadia/orchestrator';
+import { FACILITATOR_ARCHETYPE, isArchetype, type OrchestratorRegistry } from '@omadia/orchestrator';
 import {
   CHANNEL_READINESS_SERVICE_NAME,
   SESSION_CAPABILITIES_SERVICE_NAME,
@@ -55,7 +55,7 @@ export function wireSessionCapabilities(deps: {
       const entry = deps.getRegistry()?.get(agentSlug);
       return (
         entry !== undefined &&
-        isFacilitatorKind(entry.agent) &&
+        isArchetype(entry.agent, FACILITATOR_ARCHETYPE) &&
         entry.plugins.some((p) => p.enabled && p.pluginId === pluginId)
       );
     },

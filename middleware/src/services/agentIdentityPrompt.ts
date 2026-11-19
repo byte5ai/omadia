@@ -25,7 +25,13 @@
  * assistant identity apply unchanged to every agent that never used this.
  */
 
-import { isModelRef, withFacilitatorNeutrality, type AgentKind } from '@omadia/orchestrator';
+import {
+  FACILITATOR_ARCHETYPE,
+  archetypeOf,
+  isModelRef,
+  withFacilitatorNeutrality,
+  type ArchetypeId,
+} from '@omadia/orchestrator';
 import type { ModelPolicy } from '@omadia/plugin-api';
 
 import { compileBoundariesSection } from '../plugins/builder/boundaryPresets.js';
@@ -57,7 +63,7 @@ export interface ComposeAgentIdentityPromptInput {
    * appended as the LAST section, whatever the operator authored, and the
    * sycophancy guard is never off. Absent = `standard`.
    */
-  readonly kind?: AgentKind;
+  readonly archetype?: ArchetypeId;
 }
 
 export interface ComposedAgentIdentityPrompt {
@@ -89,7 +95,7 @@ export function composeAgentIdentityPrompt(
   );
   if (boundaries.text.length > 0) sections.push(boundaries.text);
 
-  const isFacilitator = input.kind === 'facilitator';
+  const isFacilitator = input.archetype === FACILITATOR_ARCHETYPE;
   const configuredSycophancy = input.quality?.sycophancy;
   const sycophancy = compileSycophancyGuard(
     isFacilitator && (configuredSycophancy === undefined || configuredSycophancy === 'off')
@@ -123,7 +129,7 @@ export interface AgentPersonaFamilySource {
   readonly modelRouting?: Record<string, unknown> | null;
   readonly modelPolicy?: ModelPolicy;
   /** #2060 — carried so the recompose path compiles the kind's contract. */
-  readonly kind?: AgentKind;
+  readonly archetype?: ArchetypeId;
 }
 
 /**
@@ -169,7 +175,7 @@ export function composeForFamilies(
     instructions: string | null;
     persona: PersonaConfig | null;
     quality: QualityConfig | null;
-    kind?: AgentKind;
+    archetype?: ArchetypeId;
   },
   families: readonly PersonaModelFamily[],
 ): { primary: ComposedAgentIdentityPrompt; family: PersonaModelFamily; byFamily: Record<string, string> } {
@@ -284,7 +290,7 @@ export async function recomposeStaleIdentities(
           instructions: identity.instructions,
           persona: identity.persona,
           quality: identity.quality,
-          ...(agent.kind !== undefined ? { kind: agent.kind } : {}),
+          archetype: archetypeOf(agent),
         },
         agentPersonaFamilies(agent),
       );

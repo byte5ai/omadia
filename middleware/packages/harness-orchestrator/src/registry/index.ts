@@ -19,7 +19,7 @@ import {
   type DiffAction,
   type DiffPlan,
 } from './applyDiff.js';
-import { isFacilitatorKind } from './agentKind.js';
+import { FACILITATOR_ARCHETYPE, isArchetype } from './archetype.js';
 import {
   ConfigValidationError,
   type AgentPluginRow,
@@ -368,7 +368,7 @@ export class OrchestratorRegistry {
     plugins: readonly AgentPluginRow[],
   ): string[] {
     const { granted, dropped } = this.effectiveGrants(agent, plugins);
-    if (isFacilitatorKind(agent)) {
+    if (isArchetype(agent, FACILITATOR_ARCHETYPE)) {
       this.facilitatorGrants.set(agent.slug, granted.join('\n'));
       if (dropped.length > 0) {
         this.log(`registry: facilitator grants ignored (not the facilitation engine)`, {
@@ -388,7 +388,7 @@ export class OrchestratorRegistry {
     const grantable = new Set(this.options.pluginLookup?.facilitatorGrantable?.() ?? []);
     // The engine's tools are for facilitators only; a row on a standard agent
     // (left over from the plugin era, or hand-written) grants nothing.
-    if (!isFacilitatorKind(agent)) {
+    if (!isArchetype(agent, FACILITATOR_ARCHETYPE)) {
       return { granted: enabled.filter((id) => !grantable.has(id)), dropped: [] };
     }
     return {
@@ -412,7 +412,7 @@ export class OrchestratorRegistry {
     const pluginsByAgent = groupBy(snap.agentPlugins, (p) => p.agentId);
     const drifted: DiffAction[] = [];
     for (const agent of snap.agents) {
-      if (!isFacilitatorKind(agent) || touched.has(agent.slug) || !this.active.has(agent.slug)) continue;
+      if (!isArchetype(agent, FACILITATOR_ARCHETYPE) || touched.has(agent.slug) || !this.active.has(agent.slug)) continue;
       const { granted } = this.effectiveGrants(agent, pluginsByAgent.get(agent.id) ?? []);
       if (this.facilitatorGrants.get(agent.slug) === granted.join('\n')) continue;
       drifted.push({ kind: 'rebuild', agent, reason: 'facilitation_engine' });

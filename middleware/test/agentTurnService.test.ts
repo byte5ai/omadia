@@ -381,6 +381,7 @@ describe('agentTurn service', () => {
     assert.deepEqual(await service.getProfile!('mara'), {
       agentSlug: 'mara',
       kind: 'facilitator',
+      archetype: 'facilitator',
       displayName: 'Mara',
       shortDescription: 'Moderates decisions.',
       language: 'en-GB',

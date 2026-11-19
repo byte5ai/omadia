@@ -55,7 +55,7 @@ describe('facilitator neutrality block', () => {
       persona: null,
       quality: { sycophancy: 'low' },
       family: 'sonnet',
-      kind: 'facilitator',
+      archetype: 'facilitator',
     });
     assert.ok(composed.text);
     const sections = composed.text.split('\n\n');
@@ -73,7 +73,7 @@ describe('facilitator neutrality block', () => {
       persona: { custom_notes: 'Push for option A.' },
       quality: null,
       family: 'sonnet',
-      kind: 'facilitator',
+      archetype: 'facilitator',
     });
     assert.ok(composed.text);
     assert.ok(composed.text.endsWith(PINNED_BLOCK), 'the real block is the last thing in the prompt');
@@ -91,7 +91,7 @@ describe('facilitator neutrality block', () => {
       persona: null,
       quality: null,
       family: 'sonnet',
-      kind: 'facilitator',
+      archetype: 'facilitator',
     });
     assert.ok(composed.text?.endsWith(PINNED_BLOCK));
     // …and with the sycophancy guard on, although none was configured.
@@ -104,14 +104,14 @@ describe('facilitator neutrality block', () => {
       persona: null,
       quality: { sycophancy: 'off' },
       family: 'sonnet',
-      kind: 'facilitator',
+      archetype: 'facilitator',
     });
     const unset = composeAgentIdentityPrompt({
       instructions: null,
       persona: null,
       quality: null,
       family: 'sonnet',
-      kind: 'facilitator',
+      archetype: 'facilitator',
     });
     assert.equal(off.text, unset.text);
   });
@@ -119,7 +119,7 @@ describe('facilitator neutrality block', () => {
   it('leaves a standard agent byte-identical', () => {
     const input = { instructions: 'You are the HR agent.', persona: null, quality: null, family: 'sonnet' as const };
     assert.equal(composeAgentIdentityPrompt(input).text, 'You are the HR agent.');
-    assert.equal(composeAgentIdentityPrompt({ ...input, kind: 'standard' }).text, 'You are the HR agent.');
+    assert.equal(composeAgentIdentityPrompt({ ...input, archetype: 'standard' }).text, 'You are the HR agent.');
     assert.equal(
       composeAgentIdentityPrompt({ ...input, instructions: null }).text,
       null,
@@ -136,7 +136,7 @@ describe('facilitator neutrality block', () => {
 
   it('compiles the block for every model family', () => {
     const compiled = composeForFamilies(
-      { instructions: 'Hi.', persona: null, quality: null, kind: 'facilitator' },
+      { instructions: 'Hi.', persona: null, quality: null, archetype: 'facilitator' },
       ['sonnet', 'haiku'],
     );
     assert.deepEqual(Object.keys(compiled.byFamily).sort(), ['haiku', 'sonnet']);

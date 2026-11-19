@@ -5,7 +5,11 @@
 // per channel type). Provider failures are isolated: a throwing provider
 // degrades to "roster unknown", never to a crashed caller.
 
-import type { ConversationRoster, ConversationRosterProvider } from '@omadia/channel-sdk';
+import type {
+  ConversationRoster,
+  ConversationRosterProvider,
+  ConversationRosterRequest,
+} from '@omadia/channel-sdk';
 
 export class ConversationRosterRegistry {
   private readonly providers = new Map<string, ConversationRosterProvider>();
@@ -59,8 +63,9 @@ export class ConversationRosterRegistry {
   async getRoster(
     channelType: string,
     conversationId: string,
-    /** #2043 — which of the channel's identities asks (see the provider). */
-    opts?: { readonly asChannelKey?: string },
+    /** #2043 — which of the channel's identities asks; #2091 — `fresh`
+     *  bypasses the provider's cache (see the provider contract). */
+    opts?: ConversationRosterRequest,
   ): Promise<ConversationRoster | undefined> {
     const provider = this.providers.get(channelType);
     if (!provider) return undefined;
@@ -68,8 +73,12 @@ export class ConversationRosterRegistry {
       // The second argument is passed only when there is something in it, so
       // a provider written against the one-argument contract sees exactly
       // the call it always got.
-      return opts?.asChannelKey !== undefined && opts.asChannelKey !== ''
-        ? await provider.getRoster(conversationId, { asChannelKey: opts.asChannelKey })
+      const request: ConversationRosterRequest = {
+        ...(opts?.asChannelKey !== undefined && opts.asChannelKey !== '' ? { asChannelKey: opts.asChannelKey } : {}),
+        ...(opts?.fresh === true ? { fresh: true } : {}),
+      };
+      return Object.keys(request).length > 0
+        ? await provider.getRoster(conversationId, request)
         : await provider.getRoster(conversationId);
     } catch (err) {
       this.log(`rosterRegistry: ${channelType} getRoster FAILED — treating as unknown`, {

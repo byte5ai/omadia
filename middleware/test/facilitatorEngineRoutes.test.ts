@@ -118,11 +118,27 @@ describe('facilitation engine: operator routes', () => {
     const bogus = await h.call('POST', '/agents', { slug: 'x', name: 'X', kind: 'moderator' });
     assert.equal(bogus.status, 400);
 
+    // #2088 — `archetype` is the name; both are returned while `kind` exists.
+    assert.equal(created.json['archetype'], 'facilitator');
+    assert.equal(plain.json['archetype'], 'standard');
+    const byArchetype = await h.call('POST', '/agents', { slug: 'ida', name: 'Ida', archetype: 'facilitator' });
+    assert.deepEqual([byArchetype.status, byArchetype.json['archetype'], byArchetype.json['kind']], [201, 'facilitator', 'facilitator']);
+    const unregistered = await h.call('POST', '/agents', { slug: 'y', name: 'Y', archetype: 'coach' });
+    assert.equal(unregistered.status >= 400 && unregistered.status < 500, true);
+    assert.match(String(unregistered.json['message']), /archetype "coach" is not registered/);
+    const disagree = await h.call('POST', '/agents', { slug: 'z', name: 'Z', archetype: 'standard', kind: 'facilitator' });
+    assert.equal(disagree.status >= 400 && disagree.status < 500, true);
+    assert.match(String(disagree.json['message']), /disagree/);
+
     const list = await h.call('GET', '/agents');
     const kinds = Object.fromEntries(
       (list.json['agents'] as { slug: string; kind: string }[]).map((a) => [a.slug, a.kind]),
     );
-    assert.deepEqual(kinds, { mara: 'facilitator', hr: 'standard', nora: 'facilitator', sales: 'standard' });
+    assert.deepEqual(kinds, { mara: 'facilitator', hr: 'standard', nora: 'facilitator', sales: 'standard', ida: 'facilitator' });
+    assert.equal(
+      (list.json['agents'] as { kind: string; archetype: string }[]).every((a) => a.archetype === a.kind),
+      true,
+    );
     const enabled = await h.call('GET', '/agents/enabled');
     assert.equal((enabled.json['agents'] as { slug: string; kind: string }[])[0]!.kind, 'facilitator');
   });

@@ -10,8 +10,14 @@ import {
   type AgentGraphStore,
   AGENT_KINDS,
   AGENT_TO_AGENT_MODES,
-  assertNotFacilitator,
-  isFacilitatorKind,
+  assertArchetypeAllows,
+  FACILITATOR_ARCHETYPE,
+  STANDARD_ARCHETYPE,
+  archetypeOf,
+  parseAgentKind,
+  getArchetype,
+  isArchetype,
+  isArchetypeId,
   DEFAULT_MODEL_POLICY,
   isModelRef,
   parseAgentToAgentMode,
@@ -187,7 +193,9 @@ const AgentCreateSchema = z.object({
   description: z.string().max(2000).optional(),
   privacy_profile: z.enum(['strict', 'default']).optional(),
   status: z.enum(['enabled', 'disabled']).optional(),
-  // #2060 — only on create: the kind is fixed for the agent's lifetime.
+  // #2088 — only on create: the archetype is fixed for the agent's lifetime.
+  archetype: z.string().refine(isArchetypeId, 'archetype must be a registered archetype id').optional(),
+  // The previous name of `archetype`; accepted until the `kind` column goes.
   kind: z.enum(AGENT_KINDS).optional(),
 });
 
@@ -1978,7 +1986,8 @@ export function createOperatorAgentsRouter(
             name: a.name,
             description: a.description,
             privacy_profile: a.privacyProfile,
-            kind: a.kind ?? 'standard',
+            kind: parseAgentKind(archetypeOf(a)),
+            archetype: archetypeOf(a),
             is_fallback: a.id === settings.fallbackAgentId,
           })),
         fallback_slug:
@@ -2011,7 +2020,8 @@ export function createOperatorAgentsRouter(
           description: a.description,
           privacy_profile: a.privacyProfile,
           status: a.status,
-          kind: a.kind ?? 'standard',
+          kind: parseAgentKind(archetypeOf(a)),
+          archetype: archetypeOf(a),
           created_at: a.createdAt,
           updated_at: a.updatedAt,
           active: active.has(a.id),
@@ -2048,6 +2058,17 @@ export function createOperatorAgentsRouter(
       if (RESERVED_AGENT_SLUGS.has(body.slug)) {
         throw new ConfigValidationError(`agent slug "${body.slug}" is reserved`);
       }
+      // `archetype` is the name; `kind` its predecessor. Naming both with
+      // different values is a client error, not something to pick from.
+      if (body.archetype !== undefined && body.kind !== undefined && body.archetype !== body.kind) {
+        throw new ConfigValidationError(
+          `archetype "${body.archetype}" and kind "${body.kind}" disagree; send archetype only`,
+        );
+      }
+      const archetype = body.archetype ?? body.kind ?? STANDARD_ARCHETYPE;
+      if (!getArchetype(archetype)) {
+        throw new ConfigValidationError(`archetype "${archetype}" is not registered on this instance`);
+      }
       const created = await live.store.createAgent({
         slug: body.slug,
         name: body.name,
@@ -2058,7 +2079,7 @@ export function createOperatorAgentsRouter(
           ? { privacyProfile: body.privacy_profile }
           : {}),
         ...(body.status ? { status: body.status } : {}),
-        ...(body.kind ? { kind: body.kind } : {}),
+        archetype,
       });
       // #2043 — a facilitator gets the engine with its creation; nobody has
       // to grant it by hand. No engine bound yet: it is attached on install.
@@ -2067,7 +2088,8 @@ export function createOperatorAgentsRouter(
       res.status(201).json({
         id: created.id,
         slug: created.slug,
-        kind: created.kind ?? 'standard',
+        kind: parseAgentKind(archetypeOf(created)),
+        archetype: archetypeOf(created),
       });
     } catch (err) {
       badRequest(res, err);
@@ -2195,7 +2217,7 @@ export function createOperatorAgentsRouter(
       }
       const previous = normalizeContextMemoryMode(agent.contextMemory);
       // #2060 — every mode other than `off` scopes a memory a facilitator does not have.
-      if (body.mode !== 'off') assertNotFacilitator(agent, 'memory');
+      if (body.mode !== 'off') assertArchetypeAllows(agent, 'memory');
       await live.store.updateAgent(agent.id, { contextMemory: body.mode });
       // Same reload contract as every other write on this router: the running
       // registry rebuilds the agent's `MemoryBinder` with the new mode, so the
@@ -2251,7 +2273,7 @@ export function createOperatorAgentsRouter(
         return;
       }
       const previous = parseAgentToAgentMode(agent.agentToAgent);
-      if (body.mode === 'on') assertNotFacilitator(agent, 'agent_to_agent');
+      if (body.mode === 'on') assertArchetypeAllows(agent, 'agent_to_agent');
       await live.store.updateAgent(agent.id, { agentToAgent: body.mode });
       await live.registry.reload();
       if (previous !== body.mode) {
@@ -2352,7 +2374,7 @@ export function createOperatorAgentsRouter(
               instructions: identity.instructions,
               persona: identity.persona,
               quality: identity.quality,
-              ...(updated.kind !== undefined ? { kind: updated.kind } : {}),
+              archetype: archetypeOf(updated),
             },
             agentPersonaFamilies(updated),
           );
@@ -2443,7 +2465,7 @@ export function createOperatorAgentsRouter(
           channelKey,
           agent.id,
         );
-        if (body.enabled) assertNotFacilitator(agent, 'agent_to_agent');
+        if (body.enabled) assertArchetypeAllows(agent, 'agent_to_agent');
         const row = await live.store.upsertAgentChannelPolicy({
           channelType,
           channelKey,
@@ -2563,7 +2585,7 @@ export function createOperatorAgentsRouter(
         body.language === undefined ? (before?.language ?? null) : (body.language ?? null);
       // #2060 — a facilitator's identity is checked against the neutrality
       // contract before anything is stored (persona bounds, instructions).
-      if (isFacilitatorKind(agent)) {
+      if (isArchetype(agent, FACILITATOR_ARCHETYPE)) {
         assertFacilitatorIdentity({ instructions: body.instructions, persona, quality });
       }
       const compiled = composeForFamilies(
@@ -2571,7 +2593,7 @@ export function createOperatorAgentsRouter(
           instructions: body.instructions ?? null,
           persona,
           quality,
-          ...(agent.kind !== undefined ? { kind: agent.kind } : {}),
+          archetype: archetypeOf(agent),
         },
         agentPersonaFamilies(agent),
       );
@@ -4042,7 +4064,7 @@ export function createOperatorAgentsRouter(
       }
       // #2060 — a facilitator speaks only as its own identity, which is not
       // a binding. An empty set stays allowed, so stale rows can be cleared.
-      if (body.bindings.length > 0) assertNotFacilitator(existing, 'channel_binding');
+      if (body.bindings.length > 0) assertArchetypeAllows(existing, 'channel_binding');
       const current = await live.store.listChannelBindingsForAgent(existing.id);
       const desired = new Set(
         body.bindings.map((b) => `${b.channel_type}|${b.channel_key}`),
@@ -4092,7 +4114,7 @@ export function createOperatorAgentsRouter(
           res.status(404).json({ error: 'not_found' });
           return;
         }
-        assertNotFacilitator(target, 'default_agent');
+        assertArchetypeAllows(target, 'default_agent');
         await live.store.setFallbackAgentId(target.id);
       }
       await live.registry.reload();

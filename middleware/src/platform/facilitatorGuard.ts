@@ -1,7 +1,7 @@
 /**
  * #2060 — the kernel-side guard for facilitator-kind agents (spec 2043 §2.3).
  *
- * `assertNotFacilitator` in `@omadia/orchestrator` is the seam; this module
+ * `assertArchetypeAllows` in `@omadia/orchestrator` is the seam; this module
  * adds the two things that need kernel state: WHICH plugin is the instance's
  * facilitation engine, and how a refusal is answered over HTTP.
  *
@@ -26,9 +26,12 @@ import type { Response } from 'express';
 
 import {
   ConfigValidationError,
-  FacilitatorOmissionError,
-  isFacilitatorKind,
-  type AgentKind,
+  ArchetypeOmissionError,
+  FACILITATOR_ARCHETYPE,
+  archetypeOf,
+  archetypeOmits,
+  isArchetype,
+  type ArchetypeBearer,
 } from '@omadia/orchestrator';
 import { FACILITATION_ENGINE_CAPABILITY } from '@omadia/plugin-api';
 
@@ -146,13 +149,14 @@ export function facilitatorGrantablePluginIds(sources: FacilitationEngineSources
 }
 
 /** A plugin grant a facilitator was refused, with the reason an operator can act on. */
-export class FacilitatorGrantRefusedError extends FacilitatorOmissionError {
+export class FacilitatorGrantRefusedError extends ArchetypeOmissionError {
   constructor(
     agentSlug: string,
     readonly refusedPluginIds: readonly string[],
     readonly engine: FacilitationEngineResolution,
+    archetype: string = FACILITATOR_ARCHETYPE,
   ) {
-    super('plugin_grant', agentSlug);
+    super('plugin_grant', agentSlug, archetype);
     const detail =
       engine.state === 'bound'
         ? `only '${engine.pluginId}' (the facilitation engine) can be granted`
@@ -171,18 +175,21 @@ export class FacilitatorGrantRefusedError extends FacilitatorOmissionError {
  * still switch a stale grant off.
  */
 export function assertFacilitatorPluginGrants(
-  agent: { readonly slug: string; readonly kind?: AgentKind },
+  agent: { readonly slug: string } & ArchetypeBearer,
   grants: readonly { readonly pluginId: string; readonly enabled?: boolean | undefined }[],
   sources: FacilitationEngineSources,
 ): void {
-  if (!isFacilitatorKind(agent)) return;
+  if (!archetypeOmits(agent, 'plugin_grant')) return;
+  // The one grant an archetype that omits plugin grants may hold is its own
+  // engine: today the facilitation engine, for a facilitator.
   const engine = resolveFacilitationEngine(sources);
-  const allowed = engine.state === 'bound' ? engine.pluginId : undefined;
+  const allowed =
+    engine.state === 'bound' && isArchetype(agent, FACILITATOR_ARCHETYPE) ? engine.pluginId : undefined;
   const refused = grants
     .filter((g) => g.enabled !== false && g.pluginId !== allowed)
     .map((g) => g.pluginId);
   if (refused.length > 0) {
-    throw new FacilitatorGrantRefusedError(agent.slug, refused, engine);
+    throw new FacilitatorGrantRefusedError(agent.slug, refused, engine, archetypeOf(agent));
   }
 }
 
@@ -192,11 +199,11 @@ export function assertFacilitatorPluginGrants(
  * moderator this kind exists to replace.
  */
 export function assertEngineOnlyForFacilitators(
-  agent: { readonly slug: string; readonly kind?: AgentKind },
+  agent: { readonly slug: string } & ArchetypeBearer,
   grants: readonly { readonly pluginId: string; readonly enabled?: boolean | undefined }[],
   sources: FacilitationEngineSources,
 ): void {
-  if (isFacilitatorKind(agent)) return;
+  if (isArchetype(agent, FACILITATOR_ARCHETYPE)) return;
   const engines = new Set(facilitationEnginePluginIds(sources));
   const refused = grants.filter((g) => g.enabled !== false && engines.has(g.pluginId)).map((g) => g.pluginId);
   if (refused.length > 0) {
@@ -227,12 +234,13 @@ export function respondFacilitatorRefusal(res: Response, err: unknown): boolean 
     return true;
   }
   if (code === 'facilitator_omission') {
-    const refusal = err as FacilitatorOmissionError & {
+    const refusal = err as ArchetypeOmissionError & {
       readonly refusedPluginIds?: readonly string[];
     };
     res.status(409).json({
       error: code,
       omission: refusal.omission,
+      ...(refusal.archetype ? { archetype: refusal.archetype } : {}),
       message: refusal.message,
       ...(refusal.refusedPluginIds ? { refused_plugins: refusal.refusedPluginIds } : {}),
     });

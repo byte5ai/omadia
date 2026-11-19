@@ -132,7 +132,7 @@ describe('AgentDetail — facilitator (#2066)', () => {
     expect(screen.getByTestId('facilitator-omitted-note').textContent).toContain(
       'No plugins, tools, MCP servers, memory',
     );
-    expect(identityProps).toHaveBeenCalledWith({ slug: 'mona', kind: 'facilitator' });
+    expect(identityProps).toHaveBeenCalledWith({ slug: 'mona', archetype: 'facilitator' });
     // The plugin catalogue is the standard page's read model — not fetched.
     expect(mockCatalog).not.toHaveBeenCalled();
     await waitFor(() => expect(mockTeams).toHaveBeenCalledWith('mona'));
