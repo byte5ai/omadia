@@ -132,7 +132,7 @@ describe('D35 — agentTurn@2 answers a message a process received through its o
     assert.deepEqual(h.turns, []);
   });
 
-  it('still finds an event of a subscription without a process (the first major)', async () => {
+  it('does not find an event of a subscription without a process: that form is gone (K6)', async () => {
     const h = setup();
     const v1 = createConversationMessagesService({ hub: h.hub, callerPluginId: ENGINE, isEngine: () => true } as never);
     const scope = { agentSlug: 'mara', channelType: 'teams', conversationId: CONVERSATION };
@@ -141,7 +141,8 @@ describe('D35 — agentTurn@2 answers a message a process received through its o
     const stored = await v1.getEvent(scope, 'u3');
     assert.ok(stored);
     const outcome = await h.turnService().runTurn(h.request('f1', stored.eventId));
-    assert.equal(outcome.outcome, 'completed', JSON.stringify(outcome));
+    assert.equal(outcome.outcome, 'refused');
+    assert.deepEqual(h.turns, []);
   });
 
   it('refuses an event id that is stored nowhere', async () => {

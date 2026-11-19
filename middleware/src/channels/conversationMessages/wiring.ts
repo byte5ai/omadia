@@ -8,7 +8,6 @@ import type { Pool } from 'pg';
 import { formatPrincipal, makePrincipal } from '@omadia/channel-sdk';
 import { ReloadBus, type ConfigStore, type OrchestratorRegistry } from '@omadia/orchestrator';
 import {
-  CONVERSATION_MESSAGES_SERVICE_NAME,
   CONVERSATION_MESSAGES_V2_SERVICE_NAME,
   perCallerService,
   type ChannelReadinessReport,
@@ -26,7 +25,7 @@ import type { PrivateMessageRouter } from '../privateMessageRouter.js';
 import { ConversationMessageHub, type ConversationMessageHubDeps } from './hub.js';
 import { PgConversationMessageStore } from './pgStore.js';
 import { startConversationMessagePurge, type ConversationMessagePurgeJob } from './purgeJob.js';
-import { createConversationMessagesService, createProcessConversationMessagesService } from './service.js';
+import { createProcessConversationMessagesService } from './service.js';
 import { normalizeChannelKey, type MessageSubscription } from './store.js';
 
 /** NOTIFY channel of the subscriptions table (migration 0068). */
@@ -204,22 +203,10 @@ export async function wireConversationMessages(
     );
   }
 
-  deps.serviceRegistry.provide(
-    CONVERSATION_MESSAGES_SERVICE_NAME,
-    perCallerService((caller) => {
-      const isKernel = caller.pluginId === KERNEL_SERVICE_CALLER.pluginId;
-      return createConversationMessagesService({
-        hub,
-        callerPluginId: isKernel ? undefined : caller.pluginId,
-        isEngine: () => {
-          const engine = resolveFacilitationEngine(deps.engineSources());
-          return engine.state === 'bound' && engine.pluginId === caller.pluginId;
-        },
-      });
-    }),
-  );
-  // #2089 — the second major, next to the first: subscriptions and reads
-  // bound to a process.
+  // #2089 — every subscription and read is bound to a process. The first
+  // major (`conversationMessages` without a version: one subscription per
+  // agent and conversation, owned by "the engine") is no longer provided
+  // since K6; a plugin that still asks for it by the bare name gets nothing.
   deps.serviceRegistry.provide(
     CONVERSATION_MESSAGES_V2_SERVICE_NAME,
     perCallerService((caller) =>
