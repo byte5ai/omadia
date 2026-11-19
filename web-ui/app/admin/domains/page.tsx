@@ -23,7 +23,7 @@ import { useTranslations } from 'next-intl';
 type DomainPlugin = {
   id: string;
   name: string;
-  kind: 'agent' | 'tool' | 'integration' | 'channel' | 'extension';
+  kind: 'agent' | 'tool' | 'integration' | 'channel' | 'extension' | 'archetype';
   domain: string;
   version: string;
   installState: string;

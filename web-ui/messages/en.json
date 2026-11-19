@@ -1146,6 +1146,10 @@
         "what": "This plugin is already installed on this server.",
         "next": "Uninstall the installed copy first if you want to install it again."
       },
+      "archetype_confirmation_required": {
+        "what": "This is an archetype plugin: it adds a new kind of agent to this server. That is installed only after an explicit confirmation, and this request did not carry one.",
+        "next": "Start the install from the plugin's page in the store. It shows what the archetype adds and what its agents never get, and asks you to confirm."
+      },
       "blocked": {
         "what": "The store marks this plugin as incompatible with this server, so the install was refused.",
         "next": "Read the incompatibility reasons in the details below before you try again."
@@ -2972,6 +2976,16 @@
       "memory": "Memory",
       "engine": "Facilitation"
     },
+    "archetype": {
+      "deliveredBy": "Delivered by the archetype plugin “{plugin}”. omadia enforces what the archetype adds and leaves out for every agent in this section.",
+      "deliveredByKernel": "Built into omadia.",
+      "notDelivered": "No installed plugin delivers the archetype “{id}” any more. Its agents stay here, but omadia gives them nothing until an archetype plugin delivers it again.",
+      "empty": "No agents of the archetype “{name}” yet. Create one above.",
+      "createHeading": "Create an agent of the archetype “{name}”",
+      "createHint": "The archetype is fixed once created. Identity and personality are set on the agent's page, which opens next.",
+      "createSubmit": "Create",
+      "deleteConfirm": "Delete agent \"{slug}\"?"
+    },
     "facilitator": {
       "heading": "Facilitators",
       "intro": "A facilitator only moderates: decisions, votes, prioritisations, retrospectives. It works for no single person, holds no opinion on the content and speaks in Teams under its own name.",
@@ -4365,7 +4379,8 @@
         "agent": "Agents",
         "channel": "Channels",
         "tool": "Tools",
-        "extension": "Extensions"
+        "extension": "Extensions",
+        "archetype": "Archetypes"
       },
       "unknownLoadError": "Unknown error while loading the catalog.",
       "filterCategoryAria": "Filter by category",
@@ -4583,6 +4598,42 @@
       "drawerKicker": "Setup",
       "close": "Close",
       "creatingJob": "Creating job …",
+      "archetypeConfirm": {
+        "title": "Add the archetype “{name}”?",
+        "lead": "“{plugin}” is an archetype plugin. It adds a new kind of agent, “{name}”, to this instance. You create agents of it in the agent directory; the plugin itself is attached to no agent.",
+        "addsHeading": "What the archetype adds",
+        "addsEmpty": "Nothing beyond what every agent has.",
+        "omitsHeading": "What its agents never get",
+        "omitsEmpty": "Nothing: its agents can be given everything a standard agent can.",
+        "requiresHeading": "What such an agent needs",
+        "note": "omadia enforces these lists for every agent of the archetype. They come from the plugin and cannot be changed per agent.",
+        "confirm": "Add “{name}” and install",
+        "confirming": "Starting the install …",
+        "cancel": "Cancel",
+        "unknownEntry": "{code} (no description in this version)",
+        "additions": {
+          "conversation_messages": "Its plugin receives every message people write in a conversation such an agent moderates, not only messages that mention it.",
+          "agent_turn": "Its plugin lets such an agent answer by itself; every answer runs through omadia with the agent's model policy and the Privacy Shield.",
+          "own_identity_send": "Its plugin posts and sends direct messages as the agent's own channel identity, in conversations the agent moderates and to their participants.",
+          "session_capabilities": "Its plugin learns what a live session's channel can do (polls, cards, a transcript)."
+        },
+        "omissions": {
+          "plugin_grant": "Capability plugins (access to company systems).",
+          "tool_grant": "Tools other than those of its own archetype plugin.",
+          "memory": "General memory across conversations.",
+          "default_agent": "The role of default agent.",
+          "channel_binding": "A binding to a channel through another bot.",
+          "persona_skill": "Working modes.",
+          "fast_path": "The fast lane.",
+          "agent_to_agent": "Conversations with other agents.",
+          "consultation": "Consulting other agents, or being consulted by them.",
+          "sub_agent": "Internal helpers, and being attached to another agent.",
+          "assistance": "Working as an assistant for one person."
+        },
+        "requirements": {
+          "own_channel_identity": "Its own identity in the channel it works in (for Teams its own bot). It never speaks through another agent's identity."
+        }
+      },
       "setupGuide": "Setup guide",
       "noConfigNeeded": "This plugin requires no configuration — confirm the installation at the bottom right.",
       "secretsNote1": "Secrets are stored exclusively in the per-agent vault.",

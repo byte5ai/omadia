@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import { getLocale, getTranslations } from 'next-intl/server';
 
 import { redirectIfUnauthorized } from '../../../_lib/authRedirect';
-import { isFacilitatorAgent, listOperatorAgents } from '../../../_lib/agents';
+import { isFacilitatorAgent, listOperatorAgents, listOperatorArchetypes } from '../../../_lib/agents';
 import { listOperatorChannels } from '../../../_lib/channels';
 import { fetchNavEntries } from '../../../_lib/navigation';
 import { runtimeUnavailableCause } from '../../../_lib/runtimeReadiness';
@@ -56,12 +56,15 @@ export default async function OperatorAgentsPage(): Promise<React.ReactElement> 
   const t = await getTranslations('operatorAgents');
   const tc = await getTranslations('operatorChannels');
 
-  const [agents, channels, navEntries] = await Promise.allSettled([
+  const [agents, channels, navEntries, archetypes] = await Promise.allSettled([
     listOperatorAgents(),
     listOperatorChannels(),
     // #2066 — the same list the shell nav renders (shared via `cache()`);
     // never rejects, an unreachable middleware yields [].
     getLocale().then(fetchNavEntries),
+    // #2088 — one directory section per registered archetype; never rejects
+    // (`null` = a middleware without the endpoint).
+    listOperatorArchetypes(),
   ]);
   const pluginNav =
     navEntries.status === 'fulfilled'
@@ -89,7 +92,11 @@ export default async function OperatorAgentsPage(): Promise<React.ReactElement> 
         </p>
       </header>
       {agents.status === 'fulfilled' ? (
-        <AgentsDashboard initial={agents.value} pluginNav={pluginNav} />
+        <AgentsDashboard
+          initial={agents.value}
+          pluginNav={pluginNav}
+          archetypes={archetypes.status === 'fulfilled' ? archetypes.value : null}
+        />
       ) : setupCause !== null ? (
         <OrchestratorSetupState cause={setupCause} />
       ) : (

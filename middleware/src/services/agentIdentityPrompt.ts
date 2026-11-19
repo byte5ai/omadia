@@ -29,7 +29,7 @@ import {
   FACILITATOR_ARCHETYPE,
   archetypeOf,
   isModelRef,
-  withFacilitatorNeutrality,
+  applyArchetypeContract,
   type ArchetypeId,
 } from '@omadia/orchestrator';
 import type { ModelPolicy } from '@omadia/plugin-api';
@@ -108,7 +108,7 @@ export function composeAgentIdentityPrompt(
   return {
     // #2060 — LAST, and present even when nothing was authored: "empty in,
     // empty out" holds for a standard agent only.
-    text: isFacilitator ? withFacilitatorNeutrality(authored) : authored,
+    text: applyArchetypeContract(input.archetype, authored),
     droppedBoundaryPresets: boundaries.droppedIds,
   };
 }

@@ -36,6 +36,44 @@ changelog.
 
 ## [Unreleased]
 
+### Added — Archetype plugins (#2088, epic #2042): K2 of the spec alignment, first part
+
+- **Manifest kind `archetype`.** A plugin of this kind delivers an agent
+  archetype: its manifest carries the descriptor the kernel enforces (what
+  agents of the archetype never get, what the archetype adds, what such an
+  agent needs, the role contract). The block is read strictly; an entry the
+  kernel does not know rejects the manifest. It runs in the extension
+  runtime and is granted only to agents of its own archetype.
+- **An unknown manifest kind is rejected at ingest** instead of being loaded
+  as an `agent` plugin. Every plugin on the public Hub (35) and every bundled
+  manifest (23) uses a known kind; none is refused by this.
+- **Registration.** An installed archetype plugin registers its archetype:
+  its descriptor replaces the kernel's own for `facilitator`, and
+  `agent_archetypes.source` names the plugin. An uninstall brings the
+  kernel's descriptor back; an archetype with no descriptor at all leaves its
+  agents with nothing. Two plugins for one archetype: neither is registered.
+- **Migration `0071`** removes the closed list on `agents.kind`, so an agent
+  of a third archetype can be created once the archetype is registered.
+  `kind` stays equal to `archetype` for every row.
+- **The facilitation engine is found by archetype kind or by the
+  `facilitationEngine@1` capability** (both until the capability is retired).
+  The role contract and the kernel services for the engine (`agentTurn`,
+  message subscription, own-identity sends, session capabilities) follow the
+  descriptor.
+- **Install confirmation.** Installing an archetype plugin is refused with
+  `install.archetype_confirmation_required` until the operator confirms; the
+  store shows what the archetype adds, what its agents never get and what
+  such an agent needs before anything is installed.
+- **Agent directory:** one section per registered archetype
+  (`GET /api/v1/operator/archetypes`) instead of the hard-coded Facilitators
+  section. The facilitator keeps its own section with engine and Teams
+  readiness; agents of an archetype nobody delivers any more stay visible
+  with the reason. Store: filter "Archetypes" / "Archetypen".
+- plugin-api 1.60.0 (no type change; marks a kernel that knows the kind).
+
+Not in this part: the kernel-guarded uninstall, end of service for a single
+agent and the tombstone delete follow as the second part.
+
 ### Fixed — Session state behind a transaction-mode connection pooler
 
 Found by auditing the kernel after the facilitator plugin's lock defect: the

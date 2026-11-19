@@ -107,7 +107,6 @@ import {
 } from './registry/archetype.js';
 import {
   applyArchetypeContract,
-  withFacilitatorNeutrality,
 } from './registry/facilitatorNeutrality.js';
 
 /**
@@ -845,15 +844,14 @@ export function buildOrchestratorForAgent(
   // variant. Applied here as well as at compose time so an agent without a
   // stored identity (or with one compiled before the kind existed) has it.
   const assistantIdentityWithName = applyArchetypeContract(config.archetype, layeredIdentity);
-  const identityByFamily =
-    isFacilitator && config.identityByFamily
-      ? Object.fromEntries(
-          Object.entries(config.identityByFamily).map(([family, text]) => [
-            family,
-            withFacilitatorNeutrality(text),
-          ]),
-        )
-      : config.identityByFamily;
+  const identityByFamily = config.identityByFamily
+    ? Object.fromEntries(
+        Object.entries(config.identityByFamily).map(([family, text]) => [
+          family,
+          applyArchetypeContract(config.archetype, text),
+        ]),
+      )
+    : config.identityByFamily;
   // What a facilitator is built WITHOUT (spec 2043 §2.3). One object so the
   // list is readable in one place; each key is simply not handed to the
   // Orchestrator, which treats absence as "not wired".

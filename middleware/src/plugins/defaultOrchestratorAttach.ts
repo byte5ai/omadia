@@ -34,6 +34,9 @@ export function attachablePluginIds(
   return pluginIds.filter((id) => {
     const plugin = catalog.get(id)?.plugin;
     if (plugin?.is_reference_only === true) return false;
+    // #2088 — an archetype plugin is attached to no agent by the kernel; it
+    // belongs to the agents of its own archetype, never to the default agent.
+    if (plugin?.kind === 'archetype') return false;
     // #2043 — the facilitation engine belongs to facilitators only. A
     // standard agent with its tools would be an assistant that also counts
     // votes, which is the sub-role this epic removes.

@@ -50,14 +50,28 @@ export interface FacilitationEngineSources {
   readonly isSqlGranted?: (pluginId: string) => boolean;
 }
 
+/**
+ * Does this plugin claim to be the facilitation engine? Two forms, both
+ * accepted until the capability is retired:
+ *  - #2088: its manifest kind is `archetype` and the archetype it delivers
+ *    is `facilitator`;
+ *  - the form of engine plugins 1.0.x: it lists `facilitationEngine@1` under
+ *    `provides`.
+ */
+export function declaresFacilitationEngine(
+  plugin: { readonly kind?: string; readonly archetype?: { readonly id: string }; readonly provides?: readonly string[] } | undefined,
+): boolean {
+  if (!plugin) return false;
+  if (plugin.kind === 'archetype' && plugin.archetype?.id === FACILITATOR_ARCHETYPE) return true;
+  return (plugin.provides ?? []).includes(FACILITATION_ENGINE_CAPABILITY);
+}
+
 function declaredEngines(sources: FacilitationEngineSources): { id: string; errored: boolean }[] {
   const { installedRegistry, catalog } = sources;
   if (!installedRegistry || !catalog) return [];
   return installedRegistry
     .list()
-    .filter((entry) =>
-      (catalog.get(entry.id)?.plugin.provides ?? []).includes(FACILITATION_ENGINE_CAPABILITY),
-    )
+    .filter((entry) => declaresFacilitationEngine(catalog.get(entry.id)?.plugin))
     .map((entry) => ({ id: entry.id, errored: entry.status === 'errored' }))
     .sort((a, b) => a.id.localeCompare(b.id));
 }
@@ -203,6 +217,19 @@ export function assertEngineOnlyForFacilitators(
   grants: readonly { readonly pluginId: string; readonly enabled?: boolean | undefined }[],
   sources: FacilitationEngineSources,
 ): void {
+  // #2088 — the general rule first: an archetype plugin belongs to the agents
+  // of ITS archetype and is attached to nobody else (spec 2042 §5.10).
+  const own = archetypeOf(agent);
+  const foreign = grants
+    .filter((g) => g.enabled !== false)
+    .map((g) => ({ id: g.pluginId, plugin: sources.catalog?.get(g.pluginId)?.plugin }))
+    .filter(({ plugin }) => plugin?.kind === 'archetype' && plugin.archetype !== undefined && plugin.archetype.id !== own);
+  if (foreign.length > 0) {
+    const named = foreign.map(({ id, plugin }) => `${id} (archetype '${plugin?.archetype?.id ?? '?'}')`).join(', ');
+    throw new ConfigValidationError(
+      `agent "${agent.slug}" has the archetype '${own}': an archetype plugin can only be granted to agents of its own archetype — refused: ${named}`,
+    );
+  }
   if (isArchetype(agent, FACILITATOR_ARCHETYPE)) return;
   const engines = new Set(facilitationEnginePluginIds(sources));
   const refused = grants.filter((g) => g.enabled !== false && engines.has(g.pluginId)).map((g) => g.pluginId);

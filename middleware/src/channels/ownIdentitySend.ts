@@ -38,6 +38,12 @@ export interface OwnIdentityDeps {
     conversationId: string,
     opts?: { readonly asChannelKey?: string },
   ) => Promise<ConversationRoster | undefined>;
+  /**
+   * #2088 — does the agent's archetype add posting as its own identity
+   * (`own_identity_send` in its descriptor)? Absent = not asked (hosts
+   * without an agent registry, unit tests).
+   */
+  readonly archetypeAddsOwnIdentitySend?: (agentSlug: string) => boolean;
   /** The AI marking of what an agent posts as itself; see
    *  {@link markOwnIdentityMessage}. Absent = the text goes out as given. */
   readonly disclosure?: OwnIdentityDisclosure;
@@ -99,6 +105,12 @@ export function markOwnIdentityMessage(
       }
     },
   };
+}
+
+/** The refusal for an agent whose archetype does not add own-identity sends. */
+export function ownIdentitySendNotAdded(deps: OwnIdentityDeps | undefined, agentSlug: string): string | undefined {
+  if (!deps?.archetypeAddsOwnIdentitySend || deps.archetypeAddsOwnIdentitySend(agentSlug)) return undefined;
+  return `the archetype of agent '${agentSlug}' does not add posting as its own identity`;
 }
 
 export function unreachable(

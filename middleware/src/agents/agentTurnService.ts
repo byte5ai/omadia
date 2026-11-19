@@ -19,9 +19,8 @@ import {
   type ChatTurnInput,
 } from '@omadia/channel-sdk';
 import {
-  FACILITATOR_ARCHETYPE,
+  archetypeAdds,
   archetypeOf,
-  isArchetype,
   runAsEngineTurn,
   type OrchestratorRegistry,
 } from '@omadia/orchestrator';
@@ -126,7 +125,8 @@ export function createAgentTurnService(deps: AgentTurnServiceDeps): AgentTurnSer
     if (!registry) return refused('unavailable', 'the agent registry is not available');
     const entry = registry.get(agentSlug);
     if (!entry) return refused('unknown_agent', `agent '${agentSlug}' is not active`);
-    if (!isArchetype(entry.agent, FACILITATOR_ARCHETYPE)) {
+    // #2088 — the archetype's descriptor must add `agent_turn`.
+    if (!archetypeAdds(entry.agent, 'agent_turn')) {
       return refused('not_bound', `agent '${agentSlug}' is not a facilitator; an engine runs facilitators only`);
     }
     if (

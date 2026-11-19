@@ -8,6 +8,29 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.60.0 — 2026-11-19
+
+No type change. The version marks a kernel that knows the manifest kind
+`archetype` (#2088), so an archetype plugin can state it in `compat.core`.
+
+### Kernel behaviour a plugin can rely on from this version
+
+- **Manifest `identity.kind: archetype`** with an `archetype:` block (the
+  descriptor the kernel enforces: `id`, `omits`, `adds`, `requires`, `noun`,
+  `label`, `label_plural`, `description`, `omission_reasons`,
+  `role_contract`). Read strictly: an unknown entry in `omits`, `adds` or
+  `requires` rejects the manifest. Runs in the extension runtime.
+- **An unknown `identity.kind` is rejected at ingest.** It used to be loaded
+  as `agent`.
+- **The facilitation engine is found by kind as well:** a plugin of kind
+  `archetype` whose archetype is `facilitator`, or (as before, until the
+  capability is retired) one that lists `facilitationEngine@1` under
+  `provides`. Either way it needs the operator's database grant.
+- **`agentTurn`, `conversationMessages`, own-identity sends and session
+  capabilities** are given for an agent only when its archetype's descriptor
+  lists them under `adds`. The kernel's own descriptor for `facilitator`,
+  used while no plugin ships one, lists all four.
+
 ## 1.59.0 — 2026-11-19
 
 Additive (#2089, epic #2043). Question cards: a typed question out, typed
