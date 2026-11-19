@@ -234,7 +234,10 @@ describe('agents.archetype (pg, migration 0070)', { skip: !pgAvailable }, () => 
       assert.deepEqual(functions.rows, []);
 
       // Existing rows keep their archetype; the store reads and writes as before.
-      assert.equal((await store.getAgentBySlug('k6-mara'))?.archetype, 'facilitator');
+      // (Read with SQL: the store's lookup joins tables of other migrations,
+      // which this suite does not apply.)
+      const kept = await pool.query<{ archetype: string }>("SELECT archetype FROM agents WHERE slug = 'k6-mara'");
+      assert.equal(kept.rows[0]?.archetype, 'facilitator');
       const nora = await store.createAgent({ slug: 'k6-nora', name: 'Nora', archetype: 'facilitator' });
       const hr = await store.createAgent({ slug: 'k6-hr', name: 'HR' });
       assert.deepEqual([nora.archetype, hr.archetype], ['facilitator', 'standard']);
