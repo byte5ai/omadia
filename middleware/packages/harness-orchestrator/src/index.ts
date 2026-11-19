@@ -52,7 +52,7 @@ export type {
 // US5 — hot-reload diff + LISTEN/NOTIFY bus.
 export { diffSnapshots, buildForAgent } from './registry/applyDiff.js';
 export type { DiffAction, DiffPlan } from './registry/applyDiff.js';
-export { ReloadBus } from './registry/reloadBus.js';
+export { ReloadBus, directDatabaseUrl, isPooledDatabaseUrl } from './registry/reloadBus.js';
 export type { ReloadBusOptions } from './registry/reloadBus.js';
 // US7 — channel routing + first-boot onboarding.
 export { ChannelResolver } from './routing/channelResolver.js';

@@ -36,6 +36,30 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — Session state behind a transaction-mode connection pooler
+
+Found by auditing the kernel after the facilitator plugin's lock defect: the
+hosted instance reaches Postgres through Neon's pooled address, where a
+client has no server session of its own outside a transaction.
+
+- The eight SQL migrators (core, auth, Conductor, routines, profile storage,
+  profile snapshots, knowledge graph, memory) took a session-level advisory
+  lock and released it with a second statement. Through the pooler the two
+  ran on different server sessions: the lock stayed held by a session nobody
+  owned, the next boot with a pending migration could wait out its budget and
+  fail with "timed out", and two machines sharing a server session could both
+  migrate. Every file is now applied in a transaction that takes
+  `pg_advisory_xact_lock` first, bounded by `SET LOCAL lock_timeout`, and
+  re-reads the ledger under it. Same lock keys, same error text on a timeout.
+- `LISTEN` for message-subscription changes ran on a pooled connection, where
+  the statement succeeds and no notification arrives. It now opens its own
+  connection directly to Postgres: `DATABASE_URL_DIRECT` when set, else a
+  Neon `-pooler` host without `-pooler`. The periodic reconcile is unchanged.
+- The knowledge graph's stale-vector clear and vector-column migration hold a
+  session-level lock across several transactions. With a pooled address they
+  now run on a direct connection of their own, by the same address rule.
+- New optional setting `DATABASE_URL_DIRECT`, needed only behind a pooler
+  that cannot be recognised from its address.
 ### Added — Question cards: contract and kernel side (#2089, epic #2043)
 
 - An engine can post a typed question card (`message.card` on

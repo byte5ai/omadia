@@ -116,6 +116,9 @@ export interface ConversationMessagesWiringDeps {
   /** LISTEN for subscription changes of other machines (one pooled
    *  connection). Off = the periodic reconcile alone. */
   readonly listen: boolean;
+  /** Where LISTEN connects: Postgres directly, never a transaction-mode
+   *  pooler. Absent = one connection of `pool`. */
+  readonly listenConnectionString?: string;
   readonly reconcileIntervalMs: number;
   /** Late-bound: the readiness registry is wired after this block. */
   readonly checkReadiness?: (
@@ -207,6 +210,7 @@ export async function wireConversationMessages(
     channel: SUBSCRIPTIONS_NOTIFY_CHANNEL,
     reload: reconcileNow,
     enableListen: deps.listen,
+    ...(deps.listenConnectionString ? { listenConnectionString: deps.listenConnectionString } : {}),
     reconcileIntervalMs: deps.reconcileIntervalMs,
     log: (msg, fields) => {
       // The periodic line would be the loudest thing in the log.

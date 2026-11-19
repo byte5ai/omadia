@@ -116,7 +116,7 @@ import {
   type PluginVerdictLookup,
 } from './services/pluginVerdict.js';
 import { ScheduleWorker } from './scheduler/scheduleWorker.js';
-import { resolveScopedBundle } from '@omadia/orchestrator';
+import { directDatabaseUrl, isPooledDatabaseUrl, resolveScopedBundle } from '@omadia/orchestrator';
 import type {
   ConfigStore as MultiOrchestratorConfigStore,
   OrchestratorRegistry as MultiOrchestratorRegistry,
@@ -4886,6 +4886,12 @@ async function main(): Promise<void> {
       }
       return bots;
     };
+    const listenUrl = directDatabaseUrl(config.DATABASE_URL, config.DATABASE_URL_DIRECT);
+    if (isPooledDatabaseUrl(config.DATABASE_URL) && config.CONVERSATION_MESSAGES_LISTEN) {
+      console.log(
+        `[conversation-messages] DATABASE_URL is a pooled address; LISTEN connects directly (${config.DATABASE_URL_DIRECT ? 'DATABASE_URL_DIRECT' : 'the same host without -pooler'})`,
+      );
+    }
     conversationMessages = await wireConversationMessages({
       pool: graphPool,
       serviceRegistry,
@@ -4895,6 +4901,9 @@ async function main(): Promise<void> {
       engineSources: facilitationEngineSources,
       getConfigStore: () => serviceRegistry.get<MultiOrchestratorConfigStore>('configStore'),
       listen: config.CONVERSATION_MESSAGES_LISTEN,
+      // LISTEN needs one server session; a transaction-mode pooler (Neon's
+      // `-pooler` host) accepts the statement and never delivers.
+      ...(listenUrl ? { listenConnectionString: listenUrl } : {}),
       reconcileIntervalMs: config.CONVERSATION_MESSAGES_RECONCILE_INTERVAL_MS,
       checkReadiness: (channelType, conversationId, channelKey) =>
         sessionCapabilityHub.checkIdentity(channelType, conversationId, channelKey),

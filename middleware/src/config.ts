@@ -474,6 +474,15 @@ export const ConfigSchema = z.object({
     .string()
     .optional()
     .transform((v) => (v && v.length > 0 ? v : undefined)),
+  // The same database WITHOUT a transaction-mode connection pooler, for the
+  // one thing that needs a server session of its own: LISTEN. Optional. For
+  // a Neon `-pooler` address the direct host is derived when this is unset;
+  // behind any other pooler set it, or set CONVERSATION_MESSAGES_LISTEN=false
+  // (the periodic reconcile then carries subscription changes alone).
+  DATABASE_URL_DIRECT: z
+    .string()
+    .optional()
+    .transform((v) => (v && v.length > 0 ? v : undefined)),
 
   // Knowledge-graph tenant scope. Same value the NeonKnowledgeGraph reads
   // directly from process.env; declared here too so the diagram service can
