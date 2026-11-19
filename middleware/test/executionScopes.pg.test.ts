@@ -896,4 +896,88 @@ describe('#2090 execution scopes (pg, migration 0073)', { skip: !pgAvailable }, 
       assert.equal((await store.listOpenScopes(100)).filter((s) => s.pluginId === ENGINE).length, 0);
     });
   });
+
+  describe('rollout defect D34: a discussion holds its conversation only while it runs', () => {
+    const MIGRATION = '0078_release_stale_discussion_reservations.sql';
+    const held = async (conversationId: string): Promise<boolean> =>
+      ((await pool.query('SELECT 1 FROM conversation_reservations WHERE conversation_id = $1 AND released_at IS NULL', [conversationId])).rowCount ?? 0) > 0;
+    /** A discussion reservation taken `ageMinutes` ago, with or without an attachment. */
+    const discussion = async (
+      attachment: 'attached' | 'pending_expired' | 'pending_fresh' | 'none',
+      ageMinutes = 10,
+    ): Promise<string> => {
+      const { channelType, conversationId } = chat();
+      await pool.query(
+        `INSERT INTO conversation_reservations (channel_type, conversation_id, holder_kind, process_id, reserved_at)
+         VALUES ($1, $2, 'agent_discussion', $3, now() - make_interval(mins => $4))`,
+        [channelType, conversationId, `discussion:${conversationId}`, ageMinutes],
+      );
+      if (attachment !== 'none') {
+        await pool.query(
+          `INSERT INTO conductor_ephemeral_attachments (agent_slug, channel_type, channel_key, state, expires_at)
+           VALUES ('hr', $1, $2, $3, now() + make_interval(mins => $4))`,
+          [channelType, conversationId, attachment === 'attached' ? 'attached' : 'pending', attachment === 'pending_expired' ? -5 : 60],
+        );
+      }
+      return conversationId;
+    };
+
+    before(async () => {
+      // The Conductor's table, as its own migrator creates it (0010).
+      await pool.query(`CREATE TABLE IF NOT EXISTS conductor_ephemeral_attachments (
+        id BIGSERIAL PRIMARY KEY, workflow_id TEXT, agent_slug TEXT NOT NULL, channel_type TEXT NOT NULL,
+        channel_key TEXT NOT NULL, role_key TEXT, state TEXT NOT NULL DEFAULT 'pending',
+        expires_at TIMESTAMPTZ NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (channel_type, channel_key))`);
+    });
+
+    it('migration 0078 releases the reservations no running discussion stands behind, and no others', async () => {
+      const running = await discussion('attached');
+      const starting = await discussion('pending_fresh');
+      const stale = await discussion('pending_expired');
+      const orphan = await discussion('none');
+      const facilitation = await activeProcess();
+      const sql = await readFile(resolve(MIGRATIONS_DIR, MIGRATION), 'utf8');
+      await pool.query(sql);
+      await pool.query(sql); // idempotent
+      assert.deepEqual(
+        [await held(running), await held(starting), await held(stale), await held(orphan), await held(facilitation.home.conversationId)],
+        [true, true, false, false, true],
+      );
+      const reason = await pool.query<{ release_reason: string }>(
+        'SELECT release_reason FROM conversation_reservations WHERE conversation_id = $1',
+        [stale],
+      );
+      assert.equal(reason.rows[0]?.release_reason, 'no_running_discussion');
+    });
+
+    it('the sweep releases them too, but leaves a discussion that is just starting alone', async () => {
+      const running = await discussion('attached');
+      const stale = await discussion('pending_expired');
+      const orphan = await discussion('none');
+      // Reserved a moment ago, attachment not written yet: the start window.
+      const justReserved = await discussion('none', 0);
+      const swept = await store.sweepExpired();
+      assert.ok(swept.reservationsReleased >= 2);
+      assert.deepEqual(
+        [await held(running), await held(stale), await held(orphan), await held(justReserved)],
+        [true, false, false, true],
+      );
+      // A facilitation can take the freed conversation.
+      const taken = await store.reserve({ channelType: 'teams', conversationId: stale, holderKind: 'archetype_process', pluginId: ENGINE, processId: process(), role: 'home' });
+      assert.equal(taken.ok, true);
+    });
+
+    it('every held reservation is listed for the operator and can be released by its id, once', async () => {
+      const orphan = await discussion('none', 0);
+      const listed = (await store.listHeldReservations(500)).find((r) => r.conversationId === orphan);
+      assert.ok(listed);
+      assert.equal(listed.holderKind, 'agent_discussion');
+      const released = await store.releaseReservation(listed.id, 'released by an operator');
+      assert.equal(released?.conversationId, orphan);
+      assert.equal(await store.releaseReservation(listed.id, 'again'), undefined);
+      assert.equal(await held(orphan), false);
+      assert.ok(!(await store.listHeldReservations(500)).some((r) => r.id === listed.id));
+    });
+  });
 });

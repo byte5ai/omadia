@@ -2997,7 +2997,15 @@
       "discussionStop": "End discussion",
       "discussionStopConfirm": "End this discussion for good?",
       "discussionStopYes": "Yes, end it",
-      "discussionStopNo": "Keep it running"
+      "discussionStopNo": "Keep it running",
+      "reservationsHeading": "Held conversations",
+      "reservationsIntro": "One conversation has one holder at a time: a running process or an agent discussion. Nothing else starts there while it is held. Releasing frees the conversation and ends nothing; a process that read every message there then only gets the messages that address its agent.",
+      "reservationHeldByDiscussion": "held by an agent discussion since {when}",
+      "reservationHeldByProcess": "held by {agent}, process {process}, since {when}",
+      "reservationRelease": "Release",
+      "reservationReleaseConfirm": "Free this conversation for other processes?",
+      "reservationReleaseYes": "Yes, release",
+      "reservationReleaseNo": "Keep it held"
     },
     "deletedAgents": {
       "heading": "Deleted agents",
