@@ -39,6 +39,29 @@ decision, write a new ADR and mark the old one **Superseded by …**.
 | 0009 | [Default TTL for MCP tool-list caching](0009-default-ttl-for-mcp-tool-list-caching.md) | Accepted | 2026-08-15 |
 | 0010 | [Adopting the Lume icon + state-as-glyph specs into core](0010-lume-icon-and-state-glyph-adoption.md) | Accepted | 2026-08-17 |
 | 0011 | [The root README is a landing page; detail lives in `docs/`](0011-readme-as-landing-page.md) | Accepted | 2026-10-09 |
+| 0012 | [Agents are virtual employees; no orchestrator agent](0012-agents-are-virtual-employees.md) | Accepted | 2026-11-19 |
+| 0013 | [Speaker stamping, one typed emitter and a fail-closed identity guard](0013-speaker-stamping-and-identity-guard.md) | Accepted | 2026-11-19 |
+| 0014 | [Plugins are only the delivery form; one manifest kind per plugin](0014-plugins-are-only-the-delivery-form.md) | Accepted | 2026-11-19 |
+| 0015 | [Agent archetypes, delivered by archetype plugins](0015-agent-archetypes-and-archetype-plugins.md) | Accepted | 2026-11-19 |
+| 0016 | [Least privilege by default; everything inside one agent's envelope](0016-least-privilege-and-the-agent-envelope.md) | Accepted | 2026-11-19 |
+| 0017 | [Model gateway, execution contexts and the plugin sandbox](0017-model-gateway-and-execution-contexts.md) | Accepted | 2026-11-19 |
+| 0018 | [Consultation instead of delegation between agents](0018-consultation-instead-of-delegation.md) | Accepted | 2026-11-19 |
+| 0019 | [Discretion as information flow control](0019-discretion-as-information-flow-control.md) | Accepted | 2026-11-19 |
+| 0020 | [Proactive agents through bounded triggers, no heartbeats](0020-proactive-agents-with-bounded-triggers.md) | Accepted | 2026-11-19 |
+| 0021 | [Deterministic first, side channels for data, natural chat answers](0021-deterministic-first-side-channels-and-uncluttered-answers.md) | Accepted | 2026-11-19 |
+| 0022 | [Native facilitators: an archetype delivered by an archetype plugin](0022-native-facilitators-as-an-archetype-plugin.md) | Accepted | 2026-11-19 |
+
+### The agent model (0012–0022)
+
+ADRs 0012 to 0022 record one coherent model: agents are virtual employees, the
+management layer below them is deterministic, and plugins are only the delivery form.
+Their normative detail lives in
+[`specs/2042-agents-as-virtual-employees/spec.md`](../../specs/2042-agents-as-virtual-employees/spec.md)
+and [`specs/2043-native-facilitators/spec.md`](../../specs/2043-native-facilitators/spec.md);
+the binding vocabulary in [`docs/terminology.md`](../terminology.md). Every change to
+agents, plugins, channels, models or the kernel conforms to these records. A change that
+needs a different direction writes a new ADR that supersedes the affected one; it is
+never built against them silently.
 
 > These first records are written *retroactively* — they document decisions that
 > were already implemented and proven in the product. New decisions should be
