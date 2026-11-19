@@ -1456,6 +1456,12 @@ export async function activate(
           ctx.log(
             `[harness-orchestrator] ${msg}${fields ? ' ' + JSON.stringify(fields) : ''}`,
           ),
+        // #2045 seam: a `system` notice that is owed and cannot be sent yet
+        // is logged. It is never posted under an agent's identity.
+        emitSystemNotice: (notice) =>
+          ctx.log(
+            `[system-notice] owed, not sent (#2045): ${notice.kind} for '${notice.agentName}' in ${notice.channelType}/${notice.channelKey}`,
+          ),
       });
       disposeServices.push(
         ctx.services.provide(CHANNEL_RESOLVER_SERVICE, resolver),

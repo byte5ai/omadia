@@ -3,6 +3,7 @@
 // revision is assigned inside the INSERT so two machines storing edits of the
 // same message cannot hand out the same number unnoticed.
 
+import { ofLiveAgent } from '@omadia/orchestrator';
 import type { Pool } from 'pg';
 
 import type { ConversationMessageKind, ConversationMessageRecord } from '@omadia/plugin-api';
@@ -115,7 +116,7 @@ export class PgConversationMessageStore implements ConversationMessageStore {
   async listActiveSubscriptions(): Promise<readonly MessageSubscription[]> {
     const { rows } = await this.pool.query<SubscriptionRow>(
       `SELECT ${SUBSCRIPTION_COLUMNS} FROM conversation_message_subscriptions
-        WHERE ended_at IS NULL ORDER BY created_at`,
+        WHERE ended_at IS NULL AND ${ofLiveAgent('agent_id')} ORDER BY created_at`,
     );
     return rows.map(mapSubscription);
   }

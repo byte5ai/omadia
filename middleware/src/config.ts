@@ -479,6 +479,11 @@ export const ConfigSchema = z.object({
   // a Neon `-pooler` address the direct host is derived when this is unset;
   // behind any other pooler set it, or set CONVERSATION_MESSAGES_LISTEN=false
   // (the periodic reconcile then carries subscription changes alone).
+  // #2088 — how long a deleted agent's tombstone (its row and everything that
+  // references it) is kept before the operator can purge it without typing a
+  // confirmation. A purge is always an explicit action; this is not a timer
+  // that deletes anything.
+  AGENT_TOMBSTONE_RETENTION_DAYS: z.coerce.number().int().min(0).default(30),
   DATABASE_URL_DIRECT: z
     .string()
     .optional()

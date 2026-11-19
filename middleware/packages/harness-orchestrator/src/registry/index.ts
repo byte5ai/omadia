@@ -31,6 +31,7 @@ import {
   type PlatformSettingsRow,
 } from './configStore.js';
 import { orchestratorMemoryScope } from './scopedMemoryStore.js';
+import type { AgentTombstone } from './tombstones.js';
 
 /**
  * OrchestratorRegistry (US4 / T015).
@@ -197,6 +198,13 @@ export class OrchestratorRegistry {
    * keeping a second map in sync across four diff actions.
    */
   private channelIdentities: readonly ChannelIdentityRow[] = [];
+  /**
+   * #2088 — the bindings that point to a DELETED agent, with the tombstone.
+   * Kept apart from the active entries (a tombstone is never built), and
+   * adopted on every reload like the identities, for the same reason: a
+   * delete changes no live agent's row, so the diff can be empty.
+   */
+  private deletedBindings: readonly { readonly binding: ChannelBindingRow; readonly agent: AgentTombstone }[] = [];
 
   constructor(
     private readonly store: ConfigStore,
@@ -250,6 +258,7 @@ export class OrchestratorRegistry {
       // agent on the next reconcile instead of only after some unrelated
       // config edit forces a rebuild.
       this.channelIdentities = safe.channelIdentities ?? [];
+      this.deletedBindings = bindingsOfTombstones(safe);
       this.snapshot = safe;
       return plan;
     }
@@ -355,6 +364,7 @@ export class OrchestratorRegistry {
       });
     }
     this.channelIdentities = snap.channelIdentities ?? [];
+    this.deletedBindings = bindingsOfTombstones(snap);
     this.snapshot = snap;
   }
 
@@ -641,6 +651,18 @@ export class OrchestratorRegistry {
    * boolean, so an operator reading the refusal can see which agent is
    * missing without a second lookup.
    */
+  /**
+   * #2088 — the DELETED agent this conversation is bound to, if any. A
+   * binding outlives its agent's deletion (the row is a tombstone), and the
+   * conversation must not be answered by somebody else in its place: the
+   * resolver refuses the turn. `undefined` = not bound to a deleted agent.
+   */
+  deletedBindingOwnerFor(channelType: string, channelKey: string): AgentTombstone | undefined {
+    return this.deletedBindings.find(
+      (d) => d.binding.channelType === channelType && d.binding.channelKey === channelKey,
+    )?.agent;
+  }
+
   identityOwnerFor(
     channelType: string,
     channelKey: string,
@@ -998,4 +1020,16 @@ function groupBy<T, K>(
     else out.set(key, [item]);
   }
   return out;
+}
+
+/** The bindings of a snapshot whose agent is a tombstone. */
+function bindingsOfTombstones(
+  snap: ConfigSnapshot,
+): { readonly binding: ChannelBindingRow; readonly agent: AgentTombstone }[] {
+  const tombstones = new Map((snap.tombstones ?? []).map((t) => [t.id, t]));
+  if (tombstones.size === 0) return [];
+  return snap.channelBindings.flatMap((binding) => {
+    const agent = tombstones.get(binding.agentId);
+    return agent ? [{ binding, agent }] : [];
+  });
 }

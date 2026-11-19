@@ -1,6 +1,7 @@
 import type { Pool } from 'pg';
 
 import { ConfigValidationError, validateModelRef } from './configStore.js';
+import { ofLiveAgent } from './tombstones.js';
 import { computeSkillHash } from './skillHash.js';
 import type { McpCallerKind } from '../mcp/mcpClient.js';
 import { normalizeDiscoveredToolOrder } from '../toolOrdering.js';
@@ -894,7 +895,7 @@ export class AgentGraphStore {
   // ── sub-agents ───────────────────────────────────────────────────────────
   async listAllSubAgents(): Promise<readonly SubAgentRow[]> {
     const { rows } = await this.pool.query<SubAgentDbRow>(
-      'SELECT * FROM agent_subagents ORDER BY parent_agent_id, name',
+      `SELECT * FROM agent_subagents WHERE ${ofLiveAgent('parent_agent_id')} ORDER BY parent_agent_id, name`,
     );
     return rows.map(mapSubAgent);
   }
@@ -2087,7 +2088,7 @@ export class AgentGraphStore {
    */
   async listSubAgentsBySkillId(skillId: string): Promise<readonly SubAgentRow[]> {
     const { rows } = await this.pool.query<SubAgentDbRow>(
-      'SELECT * FROM agent_subagents WHERE skill_id = $1 ORDER BY name',
+      `SELECT * FROM agent_subagents WHERE skill_id = $1 AND ${ofLiveAgent('parent_agent_id')} ORDER BY name`,
       [skillId],
     );
     return rows.map(mapSubAgent);
@@ -2228,7 +2229,7 @@ export class AgentGraphStore {
   /** Full cross-agent link set, for `ConfigStore.loadSnapshot`. */
   async listAllPersonaSkillLinks(): Promise<readonly PersonaSkillRow[]> {
     const { rows } = await this.pool.query<PersonaSkillDbRow>(
-      'SELECT * FROM agent_persona_skills ORDER BY agent_id, position, created_at',
+      `SELECT * FROM agent_persona_skills WHERE ${ofLiveAgent('agent_id')} ORDER BY agent_id, position, created_at`,
     );
     return rows.map(mapPersonaSkill);
   }
@@ -2291,7 +2292,7 @@ export class AgentGraphStore {
    */
   async listAgentsByPersonaSkillId(skillId: string): Promise<readonly string[]> {
     const { rows } = await this.pool.query<{ agent_id: string }>(
-      'SELECT agent_id FROM agent_persona_skills WHERE skill_id = $1 ORDER BY agent_id',
+      `SELECT agent_id FROM agent_persona_skills WHERE skill_id = $1 AND ${ofLiveAgent('agent_id')} ORDER BY agent_id`,
       [skillId],
     );
     return rows.map((r) => r.agent_id);
@@ -2370,7 +2371,7 @@ export class AgentGraphStore {
   // ── tool grants ───────────────────────────────────────────────────────────
   async listAllToolGrants(): Promise<readonly ToolGrantRow[]> {
     const { rows } = await this.pool.query<ToolGrantDbRow>(
-      'SELECT * FROM agent_tool_grants ORDER BY created_at',
+      `SELECT * FROM agent_tool_grants WHERE agent_id IS NULL OR ${ofLiveAgent('agent_id')} ORDER BY created_at`,
     );
     return rows.map(mapToolGrant);
   }
@@ -2488,7 +2489,7 @@ export class AgentGraphStore {
   // ── schedules ─────────────────────────────────────────────────────────────
   async listAllSchedules(): Promise<readonly ScheduleRow[]> {
     const { rows } = await this.pool.query<ScheduleDbRow>(
-      'SELECT * FROM agent_schedules ORDER BY agent_id, created_at',
+      `SELECT * FROM agent_schedules WHERE ${ofLiveAgent('agent_id')} ORDER BY agent_id, created_at`,
     );
     return rows.map(mapSchedule);
   }

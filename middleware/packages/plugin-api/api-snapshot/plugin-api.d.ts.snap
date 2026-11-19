@@ -181,6 +181,28 @@ runTurn(request: AgentTurnRequest): Promise<AgentTurnOutcome>;
 getProfile?(agentSlug: string): Promise<AgentProfile | undefined>;
 }
 
+// ===== archetypeProcesses.d.ts =====
+export type AgentEndOfServiceReason = 'agent_disabled' | 'agent_deleted' | 'archetype_plugin_removed';
+export declare function archetypeProcessesServiceName(archetypeId: string): string;
+export interface ArchetypeProcessEndRequest {
+agentSlug: string;
+reason: AgentEndOfServiceReason;
+}
+export interface ArchetypeProcessEnded {
+processId: string;
+channelType: string;
+conversationId: string;
+outcome: 'aborted' | 'failed';
+reportPosted?: boolean;
+detail?: string;
+}
+export interface ArchetypeProcessEndReport {
+ended: readonly ArchetypeProcessEnded[];
+}
+export interface ArchetypeProcessesService {
+endProcessesOfAgent(request: ArchetypeProcessEndRequest): Promise<ArchetypeProcessEndReport>;
+}
+
 // ===== boundaryPresets.d.ts =====
 export type BoundaryPresetCategory = 'data' | 'scope' | 'authority' | 'communication';
 export interface BoundaryPreset {
@@ -701,6 +723,7 @@ export * from './transcription.js';
 export * from './transcriptionGuardrails.js';
 export * from './decisionModel.js';
 export * from './conversationSend.js';
+export * from './archetypeProcesses.js';
 export * from './questionCard.js';
 export * from './conversationMessages.js';
 export * from './agentTurn.js';

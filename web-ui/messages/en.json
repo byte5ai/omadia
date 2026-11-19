@@ -2161,7 +2161,7 @@
     "actionKill": "Kill sessions",
     "drainTooltip": "Clear snapshot on every session bound to this Orchestrator — next turn re-captures from current config",
     "fallbackProtected": "This is the standard orchestrator and cannot be disabled or deleted.",
-    "deleteConfirm": "Delete orchestrator \"{slug}\"?",
+    "deleteConfirm": "Delete orchestrator \"{slug}\"? It goes out of service; its record is kept under “Deleted agents” until you remove it for good.",
     "killConfirm": "Kill all sessions for \"{slug}\"? History will be lost.",
     "memoryScopeHeading": "Memory scope",
     "memoryScopeEmpty": "No scope (runtime registry not active)",
@@ -2981,6 +2981,31 @@
       "memory": "Memory",
       "engine": "Facilitation"
     },
+    "endOfService": {
+      "disabled": "“{name}” is disabled.",
+      "deleted": "“{name}” is deleted. Its record is kept under “Deleted agents” until you remove it for good.",
+      "processes": "{count, plural, =0 {No running process had to be ended.} one {One running process was ended:} other {# running processes were ended:}}",
+      "outcomeAborted": "{channel}, conversation {conversation}: ended by its archetype plugin",
+      "outcomeAbortedReported": "{channel}, conversation {conversation}: ended by its archetype plugin, the conversation was told",
+      "outcomeFailed": "{channel}, conversation {conversation}: could not be closed by its archetype plugin",
+      "pluginFailed": "The archetype plugin did not end the agent's processes ({detail}). omadia stopped delivering messages for the agent, so nothing can go on.",
+      "subscriptions": "{count, plural, =0 {The agent was not receiving the messages of any conversation.} one {It no longer receives the messages of one conversation.} other {It no longer receives the messages of # conversations.}}",
+      "noticesOwed": "{count, plural, =0 {} one {One conversation was not told by omadia itself: system notices are not available yet.} other {# conversations were not told by omadia itself: system notices are not available yet.}}",
+      "dismiss": "Dismiss"
+    },
+    "deletedAgents": {
+      "heading": "Deleted agents",
+      "intro": "A deleted agent is out of service and answers nowhere. Its record, with identity, grants, bindings and schedules, is kept, so a conversation bound to it is not taken over by another agent. Removing it for good deletes all of that.",
+      "loadFailed": "The deleted agents could not be loaded.",
+      "row": "{name} ({slug}) · deleted {when}",
+      "rowBy": "{name} ({slug}) · deleted {when} by {by}",
+      "purge": "Remove for good",
+      "purging": "Removing",
+      "purgeConfirm": "Remove “{slug}” for good? Its identity, grants, bindings and schedules are deleted with it. This cannot be undone.",
+      "purgeTypeSlug": "This agent was deleted less than {days, plural, one {# day} other {# days}} ago. Type its slug “{slug}” to remove it now:",
+      "purgeMismatch": "That is not the slug. Nothing was removed.",
+      "purgeableFrom": "can be removed without typing the slug from {when}"
+    },
     "archetype": {
       "deliveredBy": "Delivered by the archetype plugin “{plugin}”. omadia enforces what the archetype adds and leaves out for every agent in this section.",
       "deliveredByKernel": "Built into omadia.",
@@ -2989,7 +3014,7 @@
       "createHeading": "Create an agent of the archetype “{name}”",
       "createHint": "The archetype is fixed once created. Identity and personality are set on the agent's page, which opens next.",
       "createSubmit": "Create",
-      "deleteConfirm": "Delete agent \"{slug}\"?"
+      "deleteConfirm": "Delete agent \"{slug}\"? It goes out of service; its record is kept under “Deleted agents” until you remove it for good."
     },
     "facilitator": {
       "heading": "Facilitators",
@@ -2999,7 +3024,7 @@
       "createHint": "The archetype is fixed once created. Avatar, personality and the Teams identity are set on the facilitator's page, which opens next.",
       "createSubmit": "Create facilitator",
       "cardSummary": "status: {status} · runtime: {runtime}",
-      "deleteConfirm": "Delete facilitator \"{slug}\"?",
+      "deleteConfirm": "Delete facilitator \"{slug}\"? Its running facilitations are ended; its record is kept under “Deleted agents” until you remove it for good.",
       "omittedNote": "No plugins, tools, MCP servers, memory, internal helpers, working modes, schedules or conversations with other agents, and never the default agent: access to company data or to one person's interests would make a moderator partial.",
       "contractRejected": "Not saved: {count, plural, one {one setting conflicts} other {# settings conflict}} with the neutrality contract of a facilitator.",
       "omissionWithPlugins": "{reason} Refused: {plugins}.",
@@ -5604,6 +5629,7 @@
         "profileSnapshot": "Profile snapshots",
         "registry": "Plugin registries",
         "channel": "Channels",
+        "agent": "Agents: end of service, delete, remove",
         "privacyFieldClassification": "Privacy field decisions",
         "privacyFieldPreview": "Privacy field value previews",
         "privacyFieldAutoApprove": "Privacy field auto-approvals",

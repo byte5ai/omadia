@@ -25,6 +25,7 @@
  * serves the preview, so a dashboard read never drags three PNGs along.
  */
 
+import { ofLiveAgent } from '@omadia/orchestrator';
 import type { Pool } from 'pg';
 import type { AnswerVerbosity } from '@omadia/orchestrator';
 
@@ -339,7 +340,7 @@ export class AgentIdentityStore {
    */
   async listAll(): Promise<readonly AgentIdentityRecord[]> {
     const res = await this.pool.query<AgentIdentityMetaRow>(
-      `SELECT ${META_COLUMNS} FROM agent_identities ORDER BY agent_id`,
+      `SELECT ${META_COLUMNS} FROM agent_identities WHERE ${ofLiveAgent('agent_id')} ORDER BY agent_id`,
     );
     return res.rows.map(mapRow);
   }

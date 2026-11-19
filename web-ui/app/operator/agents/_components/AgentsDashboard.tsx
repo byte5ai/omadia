@@ -26,6 +26,7 @@ import {
   FALLBACK_AGENT_SLUG,
   FACILITATOR_ARCHETYPE,
   STANDARD_ARCHETYPE,
+  type AgentChangeResult,
   archetypeOfAgent,
   isFacilitatorAgent,
   isModelRef,
@@ -37,6 +38,7 @@ import {
 
 import type { OperatorArchetypeDto } from '../../../_lib/archetypes';
 import { ArchetypeSection } from './ArchetypeSection';
+import { DeletedAgentsSection, EndOfServiceNotice, type EndOfServiceResult } from './EndOfService';
 import { FacilitatorsSection, type PluginNavLink } from './FacilitatorsSection';
 import { PluginsDnd } from './PluginsDnd';
 import { useFacilitatorRefusalMessage } from './useFacilitatorCopy';
@@ -78,6 +80,8 @@ export function AgentsDashboard({
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [endOfService, setEndOfService] = useState<EndOfServiceResult | null>(null);
+  const [deletedRefresh, setDeletedRefresh] = useState(0);
   const [catalog, setCatalog] = useState<PluginCatalogEntryDto[] | null>(null);
   const [catalogError, setCatalogError] = useState<string | null>(null);
 
@@ -151,7 +155,19 @@ export function AgentsDashboard({
     setError(null);
     setBusy(label);
     op()
-      .then(() => {
+      .then((result) => {
+        // #2088 — a disable or a delete answers with what ended with the
+        // agent; show it instead of a silent status flip.
+        const change = result as AgentChangeResult | undefined;
+        if (change?.end_of_service) {
+          const slug = label.slice(label.indexOf(':') + 1);
+          setEndOfService({
+            agentName: initial.agents.find((a) => a.slug === slug)?.name ?? slug,
+            change: change.end_of_service.reason === 'agent_deleted' ? 'deleted' : 'disabled',
+            report: change.end_of_service,
+          });
+        }
+        if (label.startsWith('delete:')) setDeletedRefresh((n) => n + 1);
         startTransition(() => router.refresh());
       })
       .catch((err: unknown) => {
@@ -168,6 +184,9 @@ export function AgentsDashboard({
         <div className="rounded border border-[color:var(--danger-edge)] bg-[color:var(--danger)]/8 p-3 text-sm text-[color:var(--danger)]">
           {error}
         </div>
+      )}
+      {endOfService && (
+        <EndOfServiceNotice result={endOfService} onDismiss={() => setEndOfService(null)} />
       )}
       {catalogError && (
         <div className="rounded border border-[color:var(--warning)] bg-[color:var(--warning)]/10 p-3 text-sm text-[color:var(--warning)]">
@@ -334,6 +353,8 @@ export function AgentsDashboard({
           />
         ),
       )}
+
+      <DeletedAgentsSection refreshKey={deletedRefresh} />
     </div>
   );
 }
