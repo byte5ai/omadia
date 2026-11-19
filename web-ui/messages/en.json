@@ -2581,10 +2581,10 @@
       "droppedPresets": "The server does not know these boundary presets: {ids}",
       "persona": {
         "template": {
-          "heading": "Archetype",
-          "none": "No archetype picked — every axis sits at neutral.",
-          "active": "Archetype: {name}",
-          "choose": "Pick an archetype",
+          "heading": "Persona template",
+          "none": "No persona template picked — every axis sits at neutral.",
+          "active": "Persona template: {name}",
+          "choose": "Pick a persona template",
           "clear": "Detach"
         },
         "culture": {
@@ -2600,7 +2600,7 @@
           "hint": "Free text carried into the character block verbatim — for everything no slider covers."
         },
         "bounds": {
-          "note": "A facilitator's character stays inside the bounds of the neutrality contract. Sliders, archetypes and industry presets stop at those bounds.",
+          "note": "A facilitator's character stays inside the bounds of the neutrality contract. Sliders, persona templates and industry presets stop at those bounds.",
           "axisRange": "Allowed for a facilitator: {min} to {max}"
         }
       },
@@ -2977,23 +2977,23 @@
       "intro": "A facilitator only moderates: decisions, votes, prioritisations, retrospectives. It works for no single person, holds no opinion on the content and speaks in Teams under its own name.",
       "empty": "No facilitators yet. Create one above.",
       "createHeading": "Create facilitator",
-      "createHint": "The kind is fixed once created. Avatar, personality and the Teams identity are set on the facilitator's page, which opens next.",
+      "createHint": "The archetype is fixed once created. Avatar, personality and the Teams identity are set on the facilitator's page, which opens next.",
       "createSubmit": "Create facilitator",
       "cardSummary": "status: {status} · runtime: {runtime}",
       "deleteConfirm": "Delete facilitator \"{slug}\"?",
-      "omittedNote": "No plugins, tools, MCP servers, memory, sub-agents, persona skills, schedules or conversations with other agents, and never the standard orchestrator: access to company data or to one person's interests would make a moderator partial.",
+      "omittedNote": "No plugins, tools, MCP servers, memory, internal helpers, working modes, schedules or conversations with other agents, and never the default agent: access to company data or to one person's interests would make a moderator partial.",
       "contractRejected": "Not saved: {count, plural, one {one setting conflicts} other {# settings conflict}} with the neutrality contract of a facilitator.",
       "omissionWithPlugins": "{reason} Refused: {plugins}.",
       "omissions": {
         "plugin_grant": "A facilitator only gets the tools of the facilitation engine. Business plugins would make it partial.",
         "tool_grant": "A facilitator only gets the tools of the facilitation engine. Other tool grants would make it partial.",
         "memory": "A facilitator has no general memory. Its only memory is the record of each facilitation.",
-        "default_agent": "A facilitator cannot be the standard orchestrator. It never answers for or as someone.",
-        "persona_skill": "A facilitator has no persona skills. It never answers as someone else.",
-        "fast_path": "A facilitator does not use the fast path.",
+        "default_agent": "A facilitator cannot be the default agent. It never answers for or as someone.",
+        "persona_skill": "A facilitator has no working modes. It never answers as someone else.",
+        "fast_path": "A facilitator does not use the fast lane.",
         "agent_to_agent": "A facilitator neither talks to other agents nor is addressed by them.",
         "consultation": "A facilitator neither consults other agents nor is consulted by them.",
-        "sub_agent": "A facilitator has no sub-agents and cannot be attached to another agent.",
+        "sub_agent": "A facilitator has no internal helpers and cannot be attached to another agent.",
         "assistance": "A facilitator is not an assistant. It only moderates.",
         "unknown": "This is not available for a facilitator.",
         "channel_binding": "A facilitator cannot be bound to a channel. It joins a conversation under its own Teams identity and is never routed to."
@@ -3031,10 +3031,10 @@
       },
       "engine": {
         "heading": "Facilitation engine",
-        "hint": "The engine plugin runs the facilitations. It is the only plugin a facilitator may hold, and it is attached automatically.",
+        "hint": "The archetype plugin runs the facilitations. It is the only plugin a facilitator may hold, and it is attached automatically.",
         "loading": "Checking the facilitation engine",
         "loadFailed": "The facilitation engine could not be checked. The server did not answer the status request.",
-        "none": "No facilitation engine is installed. Facilitators can be created, but they cannot run a facilitation until the engine plugin is installed.",
+        "none": "No facilitation engine is installed. Facilitators can be created, but they cannot run a facilitation until the archetype plugin is installed.",
         "ambiguous": "More than one facilitation engine is installed ({plugins}). Until all but one are removed, no facilitator gets an engine.",
         "openStore": "Open the plugin store",
         "openPlugin": "Open the plugin",

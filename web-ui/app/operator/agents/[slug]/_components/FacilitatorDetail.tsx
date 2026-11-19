@@ -7,6 +7,7 @@ import { useTranslations } from 'next-intl';
 
 import { Button } from '@/app/_components/ui/Button';
 import {
+  FACILITATOR_ARCHETYPE,
   parseOperatorAgentErrorCode,
   replaceAgentPlugins,
   type OperatorAgentDto,
@@ -77,7 +78,7 @@ export function FacilitatorDetail(
 
       <AgentDetailTabs
         panels={{
-          identity: () => <AgentIdentity slug={agent.slug} kind="facilitator" />,
+          identity: () => <AgentIdentity slug={agent.slug} archetype={FACILITATOR_ARCHETYPE} />,
           model: () => <AgentModelPolicy slug={agent.slug} />,
           teams: () => (
             <>

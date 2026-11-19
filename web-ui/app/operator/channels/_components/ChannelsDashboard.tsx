@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useFormatter, useTranslations } from 'next-intl';
 
 import { ApiError } from '../../../_lib/api';
+import { isFacilitatorAgent } from '../../../_lib/agents';
 import {
   clearChannelBinding,
   setChannelBinding,
@@ -47,7 +48,7 @@ export function ChannelsDashboard({
   const [busy, setBusy] = useState<string | null>(null);
   const refusalMessage = useFacilitatorRefusalMessage();
   const bindableAgents = initial.agents.filter(
-    (a) => a.kind !== 'facilitator' && !(facilitatorSlugs ?? []).includes(a.slug),
+    (a) => !isFacilitatorAgent(a) && !(facilitatorSlugs ?? []).includes(a.slug),
   );
 
   function run(label: string, op: () => Promise<unknown>): void {

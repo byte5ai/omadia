@@ -292,9 +292,9 @@ describe('AgentsDashboard — facilitators (#2066)', () => {
     expect(notice.textContent).not.toContain('store down');
   });
 
-  it('creates with kind facilitator and opens the new page', async () => {
+  it('creates with the archetype facilitator and opens the new page', async () => {
     mockEngine.mockResolvedValue(READY);
-    mockCreate.mockResolvedValue({ id: 'id-rita', slug: 'rita', kind: 'facilitator' });
+    mockCreate.mockResolvedValue({ id: 'id-rita', slug: 'rita', archetype: 'facilitator', kind: 'facilitator' });
     renderWithIntl(<AgentsDashboard initial={list(FALLBACK)} />);
 
     await userEvent.type(screen.getByTestId('facilitator-create-slug'), 'rita');
@@ -305,7 +305,7 @@ describe('AgentsDashboard — facilitators (#2066)', () => {
       expect(mockCreate).toHaveBeenCalledWith({
         slug: 'rita',
         name: 'Rita',
-        kind: 'facilitator',
+        archetype: 'facilitator',
       }),
     );
     await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/operator/agents/rita'));
@@ -332,7 +332,7 @@ describe('AgentsDashboard — facilitators (#2066)', () => {
     );
     await waitFor(() =>
       expect(document.body.textContent).toContain(
-        'A facilitator cannot be the standard orchestrator',
+        'A facilitator cannot be the default agent',
       ),
     );
     expect(document.body.textContent).not.toContain('server prose');

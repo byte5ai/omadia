@@ -92,7 +92,7 @@ describe('AgentIdentity — facilitator (#2066)', () => {
   it('clamps a slider to the facilitator bound and names the range', async () => {
     mockGet.mockResolvedValue(dto());
     mockSave.mockResolvedValue({ ...dto(), republish: 'not_provisioned' });
-    renderWithIntl(<AgentIdentity slug="mod" kind="facilitator" />);
+    renderWithIntl(<AgentIdentity slug="mod" archetype="facilitator" />);
     await openTab('character');
 
     expect(screen.getByTestId('agent-persona-bounds-note')).toBeTruthy();
@@ -117,7 +117,7 @@ describe('AgentIdentity — facilitator (#2066)', () => {
 
   it('keeps archetypes inside the bounds', async () => {
     mockGet.mockResolvedValue(dto());
-    renderWithIntl(<AgentIdentity slug="mod" kind="facilitator" />);
+    renderWithIntl(<AgentIdentity slug="mod" archetype="facilitator" />);
     await openTab('character');
     await userEvent.click(screen.getByTestId('agent-persona-template-toggle'));
     const cards = screen.getAllByTestId(/^agent-persona-template-(?!toggle|badge)/);
@@ -136,7 +136,7 @@ describe('AgentIdentity — facilitator (#2066)', () => {
 
   it('does not offer to switch the sycophancy guard off', async () => {
     mockGet.mockResolvedValue(dto());
-    renderWithIntl(<AgentIdentity slug="mod" kind="facilitator" />);
+    renderWithIntl(<AgentIdentity slug="mod" archetype="facilitator" />);
     await openTab('boundaries');
     const select = screen.getByLabelText('Anti-flattery guard') as HTMLSelectElement;
     expect([...select.options].map((o) => o.value)).toEqual(['low', 'medium', 'high']);
@@ -166,7 +166,7 @@ describe('AgentIdentity — facilitator (#2066)', () => {
         },
       ]),
     );
-    renderWithIntl(<AgentIdentity slug="mod" kind="facilitator" />);
+    renderWithIntl(<AgentIdentity slug="mod" archetype="facilitator" />);
     await openTab('character');
     await userEvent.type(
       screen.getByLabelText('Behaviour'),
@@ -216,7 +216,7 @@ describe('AgentIdentity — facilitator (#2066)', () => {
         }),
       ),
     );
-    renderWithIntl(<AgentIdentity slug="mod" kind="facilitator" />);
+    renderWithIntl(<AgentIdentity slug="mod" archetype="facilitator" />);
     await userEvent.type(await screen.findByLabelText('Display name'), 'Mona');
     await userEvent.click(screen.getByRole('button', { name: 'Save identity' }));
     const alert = await screen.findByRole('alert');
@@ -228,7 +228,7 @@ describe('AgentIdentity — facilitator (#2066)', () => {
   it('offers the language on the profile tab and saves the choice', async () => {
     mockGet.mockResolvedValue(dto());
     mockSave.mockResolvedValue({ ...dto({ language: 'de' }), republish: 'not_provisioned' });
-    renderWithIntl(<AgentIdentity slug="mod" kind="facilitator" />);
+    renderWithIntl(<AgentIdentity slug="mod" archetype="facilitator" />);
     const select = (await screen.findByLabelText('Language')) as HTMLSelectElement;
     expect([...select.options].map((o) => o.value)).toEqual(['', 'de', 'en']);
     expect(select.value).toBe('');
@@ -241,7 +241,7 @@ describe('AgentIdentity — facilitator (#2066)', () => {
   it('does not send the language of a facilitator when it was not changed', async () => {
     mockGet.mockResolvedValue(dto({ language: 'de-CH' }));
     mockSave.mockResolvedValue({ ...dto({ language: 'de-CH' }), republish: 'not_provisioned' });
-    renderWithIntl(<AgentIdentity slug="mod" kind="facilitator" />);
+    renderWithIntl(<AgentIdentity slug="mod" archetype="facilitator" />);
     const select = (await screen.findByLabelText('Language')) as HTMLSelectElement;
     // A stored tag this UI has no name for stays selected.
     expect(select.value).toBe('de-CH');
@@ -254,7 +254,7 @@ describe('AgentIdentity — facilitator (#2066)', () => {
   it('sends null when a facilitator goes back to the installation language', async () => {
     mockGet.mockResolvedValue(dto({ language: 'de' }));
     mockSave.mockResolvedValue({ ...dto(), republish: 'not_provisioned' });
-    renderWithIntl(<AgentIdentity slug="mod" kind="facilitator" />);
+    renderWithIntl(<AgentIdentity slug="mod" archetype="facilitator" />);
     await userEvent.selectOptions(await screen.findByLabelText('Language'), '');
     await userEvent.click(screen.getByRole('button', { name: 'Save identity' }));
     await waitFor(() => expect(mockSave).toHaveBeenCalledTimes(1));

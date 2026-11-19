@@ -21,7 +21,8 @@ import {
 } from '../../../../_lib/agentIdentity';
 import {
   parseOperatorAgentErrorCode,
-  type AgentKind,
+  FACILITATOR_ARCHETYPE,
+  type AgentArchetype,
 } from '../../../../_lib/agents';
 import {
   issueAxis,
@@ -75,7 +76,7 @@ interface AgentIdentityProps {
    * and the kernel's findings of a refused save shown at the field they are
    * about. Absent = a standard agent, exactly as before.
    */
-  readonly kind?: AgentKind;
+  readonly archetype?: AgentArchetype;
 }
 
 /** Issue paths of a 422 `facilitator_contract_violation` that are not axes. */
@@ -180,7 +181,7 @@ export function AgentIdentity(props: AgentIdentityProps): React.ReactElement {
   const [republish, setRepublish] =
     useState<AgentIdentityRepublishOutcome | null>(null);
   const [droppedPresets, setDroppedPresets] = useState<readonly string[]>([]);
-  const isFacilitator = props.kind === 'facilitator';
+  const isFacilitator = props.archetype === FACILITATOR_ARCHETYPE;
   /** Findings of the last refused save. An edit to a field drops the
    *  findings for that field: the text they were about is gone. */
   const [issues, setIssues] = useState<readonly FacilitatorContractIssue[]>([]);
