@@ -25,7 +25,6 @@ export {
   initUsageRecorder,
   isUsageRecorderReady,
   recordUsage,
-  meterModelCalls,
   providerRecordsOwnUsage,
   setUsageContextProvider,
   runWithUsageContext,
