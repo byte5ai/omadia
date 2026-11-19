@@ -8,6 +8,45 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.63.0 — 2026-11-19
+
+Additive (#2090, epic #2043): execution authorization for archetype plugins.
+
+### Added
+
+- **`ExecutionAuthorizationService`** under
+  `EXECUTION_AUTHORIZATION_SERVICE_NAME` (`executionAuthorization`; list
+  `executionAuthorization@^1` under `optional_requires`). Only the plugin
+  that delivers an agent's archetype is answered.
+  - `openScope` opens one of the five **execution scopes** of a process
+    (`configuring`, `active`, `closing`, `scheduling`, `follow_up`) with a
+    deadline, a budget (`actions`, `modelCalls`) and its targets.
+    `configuring` takes the home conversation's reservation; `active` ends
+    `configuring` in the same transaction; a (process, kind, event) exists
+    once, so an ended scope never re-opens.
+  - `authorize` reserves one action (and model calls) from a scope,
+    atomically. Refused with a code: `deadline_passed`, `budget_exhausted`,
+    `kill_switch`, `scope_ended`, `phase_mismatch`, `purpose_not_allowed`,
+    `target_not_allowed`, and others. `settle` returns unused model calls.
+  - `setPeople`, `extendScope` (also the bounded deadline wait of an
+    `active` scope), `endScope`, `listScopes`.
+  - `reserveConversation` / `releaseConversation` / `listReservations` for
+    linked session conversations. A conversation hosts one running process;
+    agent discussions share the reservation.
+- Types `ExecutionScope`, `ExecutionScopeKind`, `ExecutionPhase`,
+  `ExecutionActionType`, `ExecutionPurpose`, `ExecutionTarget`,
+  `ExecutionBudget`, `ExecutionRefusal`, `ExecutionRefusalCode`,
+  `ConversationReservation`, and the constants `EXECUTION_SCOPE_KINDS`,
+  `EXECUTION_SCOPE_PHASES`.
+- **Versioned service lookup:** `ctx.services.get('<name>@<major>')`
+  resolves a major registered next to the first one and needs that major in
+  the manifest (`<name>@^<major>`). The bare name keeps meaning the first
+  major. No service has a second major yet.
+
+Nothing calls the new service on the kernel's side yet: the existing
+services (`agentTurn`, `conversationSend`, `conversationMessages`) do not ask
+for an authorization in this version.
+
 ## 1.62.0 — 2026-11-19
 
 Additive (#2088, epic #2042): the database of an archetype plugin.

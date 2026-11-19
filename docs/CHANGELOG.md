@@ -36,6 +36,40 @@ changelog.
 
 ## [Unreleased]
 
+### Added — Execution scopes, conversation reservations and a kill switch for archetype plugins (#2090, epic #2043): K4.1 of the spec alignment
+
+- **Execution scopes.** An archetype plugin (the facilitation engine) acts
+  on its own schedule. The kernel now offers it bounded permissions per
+  process: five kinds of scope (`configuring`, `active`, `closing`,
+  `scheduling`, `follow_up`), each with a deadline, a budget of actions and
+  of model calls, and the conversations and people it may address. Every
+  action is drawn from a scope in one database statement, so two workers
+  cannot both take the last unit and a restart keeps the counters. An ended
+  scope never re-opens (migration 0073, plugin-api 1.63.0,
+  `executionAuthorization`).
+- **Not enforced yet.** The existing services do not ask for an
+  authorization in this version; the facilitation engine keeps working
+  unchanged. The services that require a scope follow.
+- **One process per conversation.** A facilitation that starts through the
+  new contract and an agent discussion now hold the same reservation: a
+  discussion is refused while a facilitation holds the conversation, and
+  the other way round. A discussion that is running when the migration is
+  applied gets its reservation.
+- **Kill switch.** An operator can stop every action of archetype plugins
+  for the instance, one agent or one process (`/api/v1/operator/execution`,
+  and "Running processes" in the agent directory). A stop refuses further
+  authorizations until it is cleared; it ends and deletes nothing. Setting
+  and clearing are in the audit log.
+- **End of service.** Disabling or deleting an agent, and uninstalling its
+  archetype plugin, now also end the agent's execution scopes and release
+  its conversation reservations, after the plugin had its chance to close
+  its processes.
+- **Two versions of a kernel service.** A plugin can ask for a second major
+  of a service by name (`agentTurn@2`) once its manifest declares it; the
+  bare name keeps meaning the first.
+- New settings: `EXECUTION_SCOPE_CONFIGURING_MAX_HOURS` (default 72),
+  `EXECUTION_SCOPE_SWEEP_INTERVAL_MS` (default 60000).
+
 ### Added — An archetype plugin can have its database in its own schema under its own roles (#2088, epic #2042): K3a of the spec alignment
 
 - **Opt-in by manifest.** A plugin of manifest kind `archetype` that does

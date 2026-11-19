@@ -109,6 +109,7 @@
 import {
   PRIVACY_FIELD_SAMPLES_SERVICE_NAME,
   ServiceNotDeclaredError,
+  CapabilityParseError,
   parseCapabilityRef,
 } from '@omadia/plugin-api';
 import type { ServiceGateOperation } from '@omadia/plugin-api';
@@ -395,6 +396,44 @@ export function declaredServiceNames(
     }
   }
   return names;
+}
+
+/**
+ * #2090 — a service name that states its major: `agentTurn@2`.
+ *
+ * The registry is keyed by name and holds one provider per key, and the grant
+ * gate compares names only, so until now a second major of a service could
+ * not exist next to the first. A plugin asks for one by its versioned name;
+ * the bare name keeps meaning what it always did (the first major). Returns
+ * `undefined` for a bare name; throws for a malformed versioned one.
+ */
+export function versionedServiceRef(name: string): { name: string; major: number } | undefined {
+  if (!name.includes('@')) return undefined;
+  const ref = parseCapabilityRef(name);
+  // `foo@^2` is manifest syntax; a lookup names the major exactly.
+  if (name !== `${ref.name}@${String(ref.major)}`) {
+    throw new CapabilityParseError(name, "a service lookup names its major as '<name>@<major>'");
+  }
+  return ref;
+}
+
+/** Whether the manifest declares exactly this major of the capability, as a
+ *  dependency (`requires`, `optional_requires`) or as its own (`provides`). */
+export function declaresServiceMajor(
+  agentId: string,
+  catalog: PluginCatalog,
+  ref: { name: string; major: number },
+): boolean {
+  const plugin = catalog.get(agentId)?.plugin;
+  if (!plugin) return false;
+  return [...(plugin.requires ?? []), ...(plugin.optional_requires ?? []), ...(plugin.provides ?? [])].some((raw) => {
+    try {
+      const declared = parseCapabilityRef(raw);
+      return declared.name === ref.name && declared.major === ref.major;
+    } catch {
+      return false;
+    }
+  });
 }
 
 /** Parse a list of capability refs into bare names, dropping malformed ones —

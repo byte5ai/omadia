@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { execSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -431,11 +432,13 @@ import { ChannelProviderRegistry } from './channels/sessionCapabilities/provider
 import { wireSessionCapabilities } from './channels/sessionCapabilities/wiring.js';
 import { attachEngineToFacilitators } from './platform/facilitatorEngineAttach.js';
 import { createArchetypeRegistrySync } from './platform/archetypeRegistrySync.js';
+import { wireExecutionAuthorization, type ExecutionWiring } from './execution/wiring.js';
 import { createArchetypeDatabase } from './platform/archetypeDatabase.js';
 import { pluginRuntimeOf } from './plugins/pluginRuntimeOf.js';
 import { createAgentEndOfService, logOwedSystemNotice } from './platform/agentEndOfService.js';
 import { guardArchetypePluginUninstall } from './platform/archetypeUninstallGuard.js';
 import { createOperatorArchetypesRouter } from './routes/operatorArchetypes.js';
+import { createOperatorExecutionRouter } from './routes/operatorExecution.js';
 import {
   wireConversationMessages,
   type ConversationMessagesWiring,
@@ -838,6 +841,8 @@ async function main(): Promise<void> {
   // A holder, because the plugin install / uninstall hooks defined before
   // that block ask it to re-check subscriptions.
   const conversationMessagesRef: { current?: ConversationMessagesWiring } = {};
+  // #2090 — set once the database pool exists (execution scopes, reservations).
+  const executionRef: { current?: ExecutionWiring } = {};
   // #2043 — channel readiness providers and meeting sources (same lifecycle).
   const readinessProviderRegistry = new ChannelProviderRegistry<ChannelReadinessProvider>(
     'readiness',
@@ -1190,6 +1195,15 @@ async function main(): Promise<void> {
     },
     endSubscriptionsOf: async (agentSlug, reason) =>
       (await conversationMessagesRef.current?.hub.endAllOf(agentSlug, reason)) ?? [],
+    // #2090 — no scope of the agent authorizes anything after this, and no
+    // conversation stays reserved for it.
+    revokeExecution: async (agentId, reason) => {
+      const revoked = await executionRef.current?.store.revokeAll({ agentId }, reason);
+      return {
+        scopesEnded: revoked?.scopes.length ?? 0,
+        reservationsReleased: revoked?.reservations ?? [],
+      };
+    },
     audit: async (entry) => {
       await adminAudit?.record(entry);
     },
@@ -2178,6 +2192,9 @@ async function main(): Promise<void> {
             await adminAudit?.record(entry);
           },
           reload: async () => serviceRegistry.get<MultiOrchestratorRegistry>('orchestratorRegistry')?.reload(),
+          revokeExecutionOfPlugin: async (pluginId, reason) => ({
+            scopesEnded: (await executionRef.current?.store.revokeAll({ pluginId }, reason))?.scopes.length ?? 0,
+          }),
           log: (m) => console.log(m),
         });
       }
@@ -4513,6 +4530,25 @@ async function main(): Promise<void> {
       },
     }),
   );
+  // #2090 — open execution scopes of archetype plugins and the kill switch.
+  app.use(
+    '/api/v1/operator/execution',
+    requireAuth,
+    createOperatorExecutionRouter({
+      store: () => executionRef.current?.store,
+      agentBySlug: async (slug) => {
+        const agent = await serviceRegistry.get<MultiOrchestratorConfigStore>('configStore')?.getAgentBySlug(slug);
+        return agent ? { id: agent.id, slug: agent.slug } : undefined;
+      },
+      agentSlugs: async () => {
+        const store = serviceRegistry.get<MultiOrchestratorConfigStore>('configStore');
+        return new Map((store ? await store.listAgents() : []).map((agent) => [agent.id, agent.slug]));
+      },
+      audit: async (entry) => {
+        await adminAudit?.record(entry);
+      },
+    }),
+  );
   app.use(
     '/api/v1/operator/channels',
     requireAuth,
@@ -4920,6 +4956,21 @@ async function main(): Promise<void> {
     // THE one disposal path (reap hook, guarded unbind, retry sweep): remove
     // the binding, close the role holders (audited), and only then delete the
     // row — a failure keeps the row, so the attachment sweep retries it.
+    // #2090 — execution scopes, conversation reservations and the kill switch
+    // of archetype plugins. Before the Conductor: its discussions share the
+    // reservation.
+    executionRef.current = wireExecutionAuthorization({
+      pool: graphPool,
+      serviceRegistry,
+      getRegistry,
+      legacyEnginePluginId: () => {
+        const engine = resolveFacilitationEngine(facilitationEngineSources());
+        return engine.state === 'bound' ? engine.pluginId : undefined;
+      },
+      configuringMaxHours: config.EXECUTION_SCOPE_CONFIGURING_MAX_HOURS,
+      sweepIntervalMs: config.EXECUTION_SCOPE_SWEEP_INTERVAL_MS,
+      log: (m) => console.log(m),
+    });
     const disposeEphemeralAttachment = async (
       attachment: { id: string; agentSlug: string; channelType: string; channelKey: string; roleKey: string | null },
       actor: string,
@@ -4951,6 +5002,20 @@ async function main(): Promise<void> {
         }
       }
       await ephemeralAttachmentsStore.delete(attachment.id);
+      // #2090 — the discussion is over: the conversation is free for the next
+      // process (a discussion or a facilitation).
+      await executionRef.current?.store
+        .release({
+          channelType: attachment.channelType,
+          conversationId: attachment.channelKey,
+          holderKind: 'agent_discussion',
+          reason: `discussion ended (${actor})`,
+        })
+        .catch((err: unknown) => {
+          console.log(
+            `[conductor] releasing the reservation of ${attachment.channelType}/${attachment.channelKey} failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        });
       await auditBindingChange({
         actor,
         action: 'unbind',
@@ -5067,6 +5132,25 @@ async function main(): Promise<void> {
     });
     const conductorWiring = await wireConductor({
       pool: graphPool,
+      // #2090 — one reservation per conversation, shared by agent discussions
+      // and native facilitations. A reservation left by a discussion whose
+      // attachment is gone is stale and is taken over.
+      conversationReservations: {
+        reserve: async (channelType, conversationId) => {
+          const store = executionRef.current?.store;
+          if (!store) return true;
+          const mine = { channelType, conversationId, holderKind: 'agent_discussion' as const, role: 'home' as const };
+          const processId = `discussion:${randomUUID()}`;
+          const first = await store.reserve({ ...mine, processId });
+          if (first.ok) return true;
+          if (first.heldBy?.holderKind !== 'agent_discussion') return false;
+          await store.release({ ...mine, reason: 'stale discussion reservation' });
+          return (await store.reserve({ ...mine, processId })).ok;
+        },
+        release: async (channelType, conversationId, reason) => {
+          await executionRef.current?.store.release({ channelType, conversationId, holderKind: 'agent_discussion', reason });
+        },
+      },
       onEphemeralReaped,
       app,
       requireAuth,

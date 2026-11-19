@@ -445,6 +445,13 @@ export const ConfigSchema = z.object({
     .transform((v) => v === 'true'),
   CONVERSATION_MESSAGES_RECONCILE_INTERVAL_MS: z.coerce.number().int().positive().default(60_000),
   CONVERSATION_MESSAGES_PURGE_INTERVAL_MS: z.coerce.number().int().positive().default(10 * 60 * 1000),
+  // #2090 — execution scopes of archetype plugins. A `configuring` scope (the
+  // time between the start request and the handshake) lasts at most this
+  // long; then the facilitation ends as aborted (spec 2043 §0, default 72 h).
+  EXECUTION_SCOPE_CONFIGURING_MAX_HOURS: z.coerce.number().int().positive().max(24 * 30).default(72),
+  // How often scopes past their deadline are ended and reservations of
+  // processes without an open scope released.
+  EXECUTION_SCOPE_SWEEP_INTERVAL_MS: z.coerce.number().int().positive().default(60_000),
   // #2043 — ceiling on kernel-run turns ('agentTurn@1') per agent and minute;
   // a loop in an engine plugin must not spend without bound. 0 = no ceiling.
   AGENT_TURN_MAX_PER_MINUTE: z.coerce.number().int().nonnegative().default(60),

@@ -37,6 +37,12 @@ export interface ArchetypeUninstallGuardDeps {
   readonly audit?: (entry: AuditEntryInput) => Promise<void>;
   /** After the agents changed: rebuild the registry. */
   readonly reload?: () => Promise<unknown>;
+  /**
+   * #2090 — end every execution scope and release every reservation the
+   * plugin still holds, independent of the plugin and of which agents were
+   * enabled. Absent = no database.
+   */
+  readonly revokeExecutionOfPlugin?: (pluginId: string, reason: string) => Promise<{ scopesEnded: number }>;
   readonly log?: (message: string) => void;
 }
 
@@ -99,6 +105,14 @@ export async function guardArchetypePluginUninstall(
     } catch (err) {
       log(`[archetypes] registry reload after disabling failed: ${err instanceof Error ? err.message : String(err)}`);
     }
+  }
+  try {
+    const revoked = await deps.revokeExecutionOfPlugin?.(pluginId, 'archetype plugin removed');
+    if (revoked && revoked.scopesEnded > 0) {
+      log(`[archetypes] '${pluginId}' is being removed: ${String(revoked.scopesEnded)} further execution scope(s) ended`);
+    }
+  } catch (err) {
+    log(`[archetypes] revoking the execution scopes of '${pluginId}' failed: ${err instanceof Error ? err.message : String(err)}`);
   }
   return { archetypeId, agents: outcome };
 }

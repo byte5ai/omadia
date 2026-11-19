@@ -43,7 +43,7 @@ import { createConductorRouter } from './routes.js';
 import { ConductorFacilitationAdmin } from './facilitationAdmin.js';
 import { ConductorSayService } from './sayService.js';
 import type { AgentChannelIdentityResolver, ConductorSayDeps } from './sayService.js';
-import { ConductorDiscussionService } from './discussionService.js';
+import { ConductorDiscussionService, type DiscussionReservations } from './discussionService.js';
 import type { SecretVault } from '../secrets/vault.js';
 import { ConductorWebhookEndpointStore } from './webhookEndpointStore.js';
 import { ConductorWebhookSubscriptionStore } from './webhookSubscriptionStore.js';
@@ -220,6 +220,9 @@ export interface ConductorWiring {
  */
 export async function wireConductor(deps: {
   pool: Pool;
+  /** #2090 — the conversation reservation agent discussions share with
+   *  native facilitations (spec 2043 §5.3). */
+  conversationReservations?: DiscussionReservations;
   app: Express;
   requireAuth: RequestHandler;
   /** resolves an Agent (orchestrator instance) by slug for agent steps. */
@@ -532,6 +535,7 @@ export async function wireConductor(deps: {
     // rule must answer "can this agent speak as itself" identically, or a
     // discussion passes the gate and then goes half-silent.
     identityFor: agentChannelIdentity,
+    ...(deps.conversationReservations ? { reservations: deps.conversationReservations } : {}),
     log,
   });
   const ephemeralReaper = new ConductorEphemeralReaper({

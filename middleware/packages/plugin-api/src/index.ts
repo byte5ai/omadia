@@ -199,3 +199,6 @@ export * from './conversationMessages.js';
 export * from './agentTurn.js';
 export * from './sessionCapabilities.js';
 export * from './facilitation.js';
+
+// #2090 — execution scopes and authorization for archetype plugins.
+export * from './executionAuthorization.js';
