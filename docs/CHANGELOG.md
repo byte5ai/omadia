@@ -36,6 +36,20 @@ changelog.
 
 ## [Unreleased]
 
+### Fixed — An archetype plugin is updated and stopped in the runtime it runs in (#2088)
+
+- **Update to an archetype version.** Uploading or installing from the Hub a
+  version of an installed plugin whose manifest kind is `archetype` started
+  that version as an agent plugin next to the running one: the activation
+  failed with "duplicate provider" and the previous version was kept. The
+  update now stops the running version, registers the archetype and starts
+  the new version in the extension runtime, as a first install does.
+- **Uninstall and reactivation.** Deactivating an archetype plugin went to
+  the agent runtime, which knows no such plugin; its tools, routes and
+  services stayed registered. It is now stopped where it runs.
+- Every manifest kind has one entry in a single mapping to its runtime; a
+  kind without one no longer compiles.
+
 ### Changed — End of service, guarded uninstall and tombstones (#2088, epic #2042): K2 of the spec alignment, second part
 
 - **Deleting an agent keeps a tombstone** (migration `0072`), for every
