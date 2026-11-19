@@ -37,6 +37,11 @@ export type {
   ToolSpec,
 } from '@omadia/llm-provider-api';
 export {
+  // #2090 — the gate a provider passes before a model call.
+  admitModelCall,
+  isModelCallNotCovered,
+  MODEL_CALL_GATE_SLOT,
+  ModelCallNotCoveredError,
   collectText,
   EFFORT_LEVELS,
   LLM_PROVIDER_API_VERSION,

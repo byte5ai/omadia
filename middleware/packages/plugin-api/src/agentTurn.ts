@@ -86,9 +86,12 @@ export interface AgentTurnService {
  * After the turn the kernel counts the model calls it made, helper and guard
  * calls included, and returns the unused part of the reservation.
  *
- * A turn may make more model calls than it reserved: the excess is charged to
- * the scope up to its budget, and a scope whose budget is used up authorizes
- * nothing further.
+ * The reservation is a hard cap: a model call of the turn that the
+ * reservation does not cover is not made, whoever in the turn asked for it
+ * (the main model, a helper, a guard). The turn then ends `refused` with
+ * `reservation_exceeded` and returns no text, also when the refused call was
+ * a helper that would have carried on without it. What the turn did use is
+ * charged to the scope.
  */
 export const AGENT_TURN_V2_SERVICE_NAME = 'agentTurn@2';
 
@@ -119,10 +122,20 @@ export type ScopedAgentTurnOutcome =
     }
   | {
       outcome: 'refused';
-      code: 'unknown_agent' | 'not_bound' | 'budget_exceeded' | 'unavailable' | 'not_authorized';
+      code:
+        | 'unknown_agent'
+        | 'not_bound'
+        | 'budget_exceeded'
+        | 'unavailable'
+        | 'not_authorized'
+        | 'reservation_exceeded';
       message: string;
       /** With `not_authorized`: why the execution authorization refused. */
       executionCode?: ExecutionRefusalCode;
+      /** With `reservation_exceeded`: the authorization the turn consumed and
+       *  the model calls it reserved, made and was refused. */
+      authorizationId?: string;
+      modelCalls?: { reserved: number; used: number; refused: number };
     }
   | {
       outcome: 'failed';

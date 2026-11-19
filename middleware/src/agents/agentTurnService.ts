@@ -117,7 +117,12 @@ function refused(
   return { outcome: 'refused', code, message };
 }
 
-export function createAgentTurnService(deps: AgentTurnServiceDeps): AgentTurnService {
+/** The first major's service plus the guarded run `agentTurn@2` builds on. */
+export type GuardedAgentTurnService = AgentTurnService & {
+  runGuarded(request: AgentTurnRequest, accept?: () => boolean): Promise<AgentTurnOutcome>;
+};
+
+export function createAgentTurnService(deps: AgentTurnServiceDeps): GuardedAgentTurnService {
   const log = deps.log ?? (() => undefined);
 
   /** The registry entry when the caller may run this agent, else a refusal. */
@@ -143,8 +148,12 @@ export function createAgentTurnService(deps: AgentTurnServiceDeps): AgentTurnSer
     return { entry };
   }
 
-  return {
-    async runTurn(request: AgentTurnRequest): Promise<AgentTurnOutcome> {
+  /**
+   * `accept` is asked once the answer exists and before anything keeps it
+   * (the session history): a turn whose answer must not stand is failed
+   * instead, and leaves no trace for the next turn to build on.
+   */
+  const run = async (request: AgentTurnRequest, accept?: () => boolean): Promise<AgentTurnOutcome> => {
       if (
         !isText(request?.agentSlug, 128) ||
         !isText(request.sessionKey, MAX_KEY) ||
@@ -228,6 +237,9 @@ export function createAgentTurnService(deps: AgentTurnServiceDeps): AgentTurnSer
         // send, and the marking is decided there: the channel's AI label, or
         // the sentence once. Left in, a labelling channel showed both.
         const text = withoutFoldedAiDisclosure(answer.text, answer.aiDisclosure);
+        if (accept && !accept()) {
+          return { outcome: 'failed', message: 'the answer was not accepted' };
+        }
         deps.history.append(sessionScope, request.input, text);
         const turnId = (answer as { turnId?: unknown }).turnId;
         return {
@@ -240,7 +252,11 @@ export function createAgentTurnService(deps: AgentTurnServiceDeps): AgentTurnSer
         log(`[agent-turn] turn as '${request.agentSlug}' failed: ${message}`);
         return { outcome: 'failed', message };
       }
-    },
+  };
+
+  return {
+    runTurn: (request: AgentTurnRequest) => run(request),
+    runGuarded: run,
 
     async getProfile(agentSlug: string): Promise<AgentProfile | undefined> {
       if (!isText(agentSlug, 128)) return undefined;
@@ -271,9 +287,15 @@ export function createAgentTurnService(deps: AgentTurnServiceDeps): AgentTurnSer
 export interface ScopedAgentTurnServiceDeps extends AgentTurnServiceDeps {
   /** The calling plugin's execution authorization; absent without a database. */
   readonly execution: () => ExecutionAuthorizationService | undefined;
-  /** Counts the model calls made inside the turn. Injected so the count is
-   *  the usage recorder's, the one place every model call passes. */
-  readonly meter: <T>(work: () => Promise<T>) => Promise<{ value: T; modelCalls: number }>;
+  /**
+   * Counts the model calls made inside the turn and refuses every call
+   * beyond `limit` (the provider gate, `meterModelCalls`). `probe` gives the
+   * counts so far.
+   */
+  readonly meter: <T>(
+    work: (probe: () => { modelCalls: number; refused: number }) => Promise<T>,
+    options: { limit: number },
+  ) => Promise<{ value: T; modelCalls: number; refused: number }>;
 }
 
 const MAX_RESERVED_MODEL_CALLS = 200;
@@ -339,22 +361,36 @@ export function createScopedAgentTurnService(deps: ScopedAgentTurnServiceDeps): 
         return refusedV2('not_authorized', authorization.message, authorization.code);
       }
 
+      // The reservation is a hard cap: the gate refuses every model call
+      // beyond it. An answer produced although a call was refused (a helper
+      // or a guard that carried on without its model) does not stand.
       let used = 0;
+      let refusedCalls = 0;
       let outcome: AgentTurnOutcome;
       try {
-        const metered = await deps.meter(() => base.runTurn(request));
+        const metered = await deps.meter(
+          (probe) => base.runGuarded(request, () => probe().refused === 0),
+          { limit: reserved },
+        );
         used = metered.modelCalls;
+        refusedCalls = metered.refused;
         outcome = metered.value;
       } catch (err) {
         outcome = { outcome: 'failed', message: err instanceof Error ? err.message : String(err) };
       }
-      // Whatever happened: what was not used goes back, what was used beyond
-      // the reservation is charged.
+      // Whatever happened: what was not used goes back to the scope.
       await execution.settle(authorization.authorizationId, { modelCalls: used });
-      if (used > reserved) {
+      if (refusedCalls > 0) {
         log(
-          `[agent-turn] turn as '${request.agentSlug}' (process ${request.processId}) made ${String(used)} model calls, ${String(reserved)} were reserved`,
+          `[agent-turn] turn as '${request.agentSlug}' (process ${request.processId}) needed more than the ${String(reserved)} model calls it reserved; ${String(refusedCalls)} call(s) refused, no text returned`,
         );
+        return {
+          outcome: 'refused',
+          code: 'reservation_exceeded',
+          message: `the turn needed more than the ${String(reserved)} model calls it reserved; it was ended and returned no text`,
+          authorizationId: authorization.authorizationId,
+          modelCalls: { reserved, used, refused: refusedCalls },
+        };
       }
       if (outcome.outcome === 'completed') {
         return {

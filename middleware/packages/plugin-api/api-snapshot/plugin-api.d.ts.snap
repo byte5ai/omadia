@@ -204,9 +204,15 @@ used: number;
 };
 } | {
 outcome: 'refused';
-code: 'unknown_agent' | 'not_bound' | 'budget_exceeded' | 'unavailable' | 'not_authorized';
+code: 'unknown_agent' | 'not_bound' | 'budget_exceeded' | 'unavailable' | 'not_authorized' | 'reservation_exceeded';
 message: string;
 executionCode?: ExecutionRefusalCode;
+authorizationId?: string;
+modelCalls?: {
+reserved: number;
+used: number;
+refused: number;
+};
 } | {
 outcome: 'failed';
 message: string;

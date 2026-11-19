@@ -8,6 +8,25 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.65.0 — 2026-11-19
+
+Additive type, changed behaviour of `agentTurn@2` (#2090, epic #2043): the
+reservation of a turn is a hard cap.
+
+### Changed
+
+- **`agentTurn@2`:** a model call of the turn that `budget.modelCalls` does
+  not cover is not made, whoever in the turn asked for it (the main model, a
+  helper, a guard). The turn then answers `refused` with the new code
+  **`reservation_exceeded`**, `authorizationId` and
+  `modelCalls: { reserved, used, refused }`, and returns no text, also when
+  the refused call belonged to a helper that would have carried on without
+  it. Nothing of such a turn is kept in the turn history. What the turn used
+  is charged to the scope. In 1.64.0 a turn could overrun its reservation
+  and the excess was charged afterwards.
+- `modelCalls.used` is now counted at the provider (every call that reaches a
+  model backend), not at the usage recorder.
+
 ## 1.64.0 — 2026-11-19
 
 Additive (#2090, epic #2043): a model turn as an authorized action.

@@ -64,3 +64,11 @@ export type {
 } from './adapter.js';
 
 export { LLM_PROVIDER_API_VERSION } from './version.js';
+
+// #2090 — the gate every provider passes before a model call.
+export {
+  admitModelCall,
+  isModelCallNotCovered,
+  MODEL_CALL_GATE_SLOT,
+  ModelCallNotCoveredError,
+} from './modelCallGate.js';
