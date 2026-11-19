@@ -7351,6 +7351,19 @@ async function main(): Promise<void> {
       onOwnIdentityDelivered: ownIdentityPostLog.record,
       log: (m) => console.log(m),
     }),
+    // #2091 — 'conversationSend@2': sends drawn from an execution scope.
+    scoped: {
+      executionFor: (pluginId) => executionRef.current?.serviceFor(pluginId),
+      direct: {
+        providers: targetedSendRegistry,
+        ...(targetedBindingLookup ? { lookupConversationRefs: targetedBindingLookup } : {}),
+        ownIdentity: ownIdentitySend,
+        log: (m) => console.log(m),
+      },
+      messages: () => conversationMessages?.hub,
+      readiness: (request) => sessionCapabilityHub.check(request),
+      log: (m) => console.log(m),
+    },
   });
 
   const channelCoreApi = createCoreApi({
