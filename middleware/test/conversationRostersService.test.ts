@@ -30,6 +30,7 @@ const CHAT = '19:meeting_abc@thread.v2';
 const rosterAs = (who: string): ConversationRoster => ({
   conversationType: 'group',
   partial: false,
+  status: 'complete',
   participants: [{ userRef: { kind: 'teams-aad', id: 'u-anna', displayName: `Anna (seen by ${who})` } }],
 });
 
@@ -110,5 +111,66 @@ describe("'conversationRosters' as a plugin calls it", () => {
       getRoster: () => Promise.reject(new Error('graph 403')),
     });
     assert.equal(await registry.getRoster('teams', CHAT, { asChannelKey: MONA_KEY }), undefined);
+  });
+});
+
+describe('roster status and a fresh read (#2091)', () => {
+  function withProvider(answer: Partial<ConversationRoster> | undefined) {
+    const asked: unknown[][] = [];
+    const registry = new ConversationRosterRegistry();
+    registry.register('c', {
+      channelType: 'teams',
+      getRoster: (...args: unknown[]) => {
+        asked.push(args);
+        return Promise.resolve(
+          answer ? ({ conversationType: 'group', participants: [], partial: false, ...answer } as ConversationRoster) : undefined,
+        );
+      },
+    } as never);
+    const serviceRegistry = new ServiceRegistry();
+    publishConversationRostersService({
+      serviceRegistry,
+      registry,
+      identityFor: () => ({ channelKey: MONA_KEY }),
+      isEngine: (pluginId) => pluginId === ENGINE,
+    });
+    const service = serviceRegistry.get<ConversationRostersService>('conversationRosters', { pluginId: ENGINE } as never)!;
+    return { asked, service };
+  }
+
+  it('a provider that predates `status` gets it derived from `partial`', async () => {
+    assert.equal((await withProvider({ partial: false }).service.getRoster('teams', CHAT))?.status, 'complete');
+    assert.equal((await withProvider({ partial: true }).service.getRoster('teams', CHAT))?.status, 'partial');
+  });
+
+  it("the provider's own status, time and reason pass through unchanged", async () => {
+    const roster = await withProvider({
+      partial: true,
+      status: 'unknown',
+      readAt: '2026-11-19T09:00:00.000Z',
+      statusDetail: 'RSC permission missing',
+    }).service.getRoster('teams', CHAT);
+    assert.deepEqual(
+      [roster?.status, roster?.readAt, roster?.statusDetail, roster?.partial],
+      ['unknown', '2026-11-19T09:00:00.000Z', 'RSC permission missing', true],
+    );
+  });
+
+  it('`fresh` reaches the channel, with and without an agent; absent it is not sent', async () => {
+    const h = withProvider({ partial: false });
+    await h.service.getRoster('teams', CHAT, { agentSlug: 'mona', fresh: true });
+    await h.service.getRoster('teams', CHAT, { fresh: true });
+    await h.service.getRoster('teams', CHAT, { agentSlug: 'mona' });
+    await h.service.getRoster('teams', CHAT, { fresh: false });
+    assert.deepEqual(h.asked, [
+      [CHAT, { asChannelKey: MONA_KEY, fresh: true }],
+      [CHAT, { fresh: true }],
+      [CHAT, { asChannelKey: MONA_KEY }],
+      [CHAT],
+    ]);
+  });
+
+  it('a channel that cannot resolve the conversation stays "unknown" (undefined)', async () => {
+    assert.equal(await withProvider(undefined).service.getRoster('teams', CHAT, { fresh: true }), undefined);
   });
 });

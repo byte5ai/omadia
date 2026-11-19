@@ -31,7 +31,42 @@ export interface ConversationRoster {
   participants: readonly ConversationParticipant[];
   /** The agent's own identity in this conversation, when the channel knows it. */
   self?: ConversationParticipant;
+  /** True unless the roster is complete. Kept for readers that predate
+   *  {@link status}; a provider that sets `status` keeps the two consistent. */
   partial: boolean;
+  /**
+   * How much the channel could read (#2091, additive):
+   *  - `complete`: every member is listed;
+   *  - `partial`: some members are listed, absence of an id proves nothing;
+   *  - `unknown`: the channel could not read the membership at all.
+   * Absent = a provider that predates the field: read {@link partial}.
+   */
+  status?: ConversationRosterStatus;
+  /** When the platform answered, ISO 8601 in UTC. A cached answer keeps the
+   *  time of the original read. */
+  readAt?: string;
+  /** Why the roster is `partial` or `unknown`, for an operator to read. */
+  statusDetail?: string;
+}
+
+export type ConversationRosterStatus = 'complete' | 'partial' | 'unknown';
+
+/** Options of a roster request (additive; every field optional). */
+export interface ConversationRosterRequest {
+  /**
+   * WHICH of the channel's identities asks, the same string as
+   * `asChannelKey` on sends (Teams: `28:<appId>`). Absent = the adapter's
+   * default identity.
+   */
+  readonly asChannelKey?: string;
+  /** `true` (#2091): bypass the provider's cache and ask the platform now. */
+  readonly fresh?: boolean;
+}
+
+/** The status of a roster for a reader that knows the field: the provider's
+ *  own statement, else derived from `partial`. */
+export function rosterStatusOf(roster: Pick<ConversationRoster, 'status' | 'partial'>): ConversationRosterStatus {
+  return roster.status ?? (roster.partial ? 'partial' : 'complete');
 }
 
 /**
@@ -50,10 +85,15 @@ export interface ConversationRosterProvider {
    * read it through that bot's own conversation reference and credentials,
    * and answer `undefined` when that bot is not in the conversation, never
    * another bot's view. Absent = the adapter's default identity, as before.
+   *
+   * `opts.fresh` (#2091, additive): `true` bypasses the provider's cache.
+   *
+   * `undefined` keeps meaning "this channel cannot resolve the conversation";
+   * the kernel treats it as an unknown roster.
    */
   getRoster(
     conversationId: string,
-    opts?: { readonly asChannelKey?: string },
+    opts?: ConversationRosterRequest,
   ): Promise<ConversationRoster | undefined>;
 }
 

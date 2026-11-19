@@ -19,7 +19,7 @@
 // Without the option the call is what it always was.
 
 import { perCallerService } from '@omadia/plugin-api';
-import type { ConversationRoster } from '@omadia/channel-sdk';
+import { rosterStatusOf, type ConversationRoster } from '@omadia/channel-sdk';
 
 import { KERNEL_SERVICE_CALLER, type ServiceRegistry } from '../platform/serviceRegistry.js';
 import type { ConversationRosterRegistry } from './rosterRegistry.js';
@@ -27,6 +27,8 @@ import type { ConversationRosterRegistry } from './rosterRegistry.js';
 export interface ConversationRosterRequestOptions {
   /** Read the roster as this agent's own channel identity. */
   readonly agentSlug?: string;
+  /** #2091 — bypass the channel's cache and ask the platform now. */
+  readonly fresh?: boolean;
 }
 
 export interface ConversationRostersService {
@@ -52,11 +54,22 @@ export function createConversationRostersService(
   deps: RosterServiceDeps,
   callerPluginId: string | undefined,
 ): ConversationRostersService {
-  return {
-    types: () => deps.registry.types(),
-    async getRoster(channelType, conversationId, opts) {
+  // One shape for a plugin: a channel that predates `status` (#2091) gets it
+  // derived from `partial`.
+  const withStatus = (roster: ConversationRoster | undefined): ConversationRoster | undefined =>
+    roster ? { ...roster, status: rosterStatusOf(roster) } : undefined;
+  const read = async (
+    channelType: string,
+    conversationId: string,
+    opts: ConversationRosterRequestOptions | undefined,
+  ): Promise<ConversationRoster | undefined> => {
       const agentSlug = typeof opts?.agentSlug === 'string' && opts.agentSlug !== '' ? opts.agentSlug : undefined;
-      if (agentSlug === undefined) return deps.registry.getRoster(channelType, conversationId);
+      const fresh = opts?.fresh === true ? { fresh: true } : {};
+      if (agentSlug === undefined) {
+        return opts?.fresh === true
+          ? deps.registry.getRoster(channelType, conversationId, fresh)
+          : deps.registry.getRoster(channelType, conversationId);
+      }
       if (callerPluginId !== undefined && !deps.isEngine(callerPluginId)) {
         deps.log?.(
           `[rosters] '${callerPluginId}' asked for the roster of ${channelType}/${conversationId} as agent '${agentSlug}' — refused: only the facilitation engine reads a roster as an agent`,
@@ -70,8 +83,11 @@ export function createConversationRostersService(
         );
         return undefined;
       }
-      return deps.registry.getRoster(channelType, conversationId, { asChannelKey: identity.channelKey });
-    },
+      return deps.registry.getRoster(channelType, conversationId, { asChannelKey: identity.channelKey, ...fresh });
+  };
+  return {
+    types: () => deps.registry.types(),
+    getRoster: async (channelType, conversationId, opts) => withStatus(await read(channelType, conversationId, opts)),
   };
 }
 
