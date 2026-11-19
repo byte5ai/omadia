@@ -21,6 +21,7 @@ import type {
 } from '@omadia/channel-sdk';
 import type { ConversationSendCapabilities } from '@omadia/plugin-api';
 
+import type { MessageSubscription } from './conversationMessages/store.js';
 import type { ConversationSendRegistry } from './conversationSendRegistry.js';
 import {
   markOwnIdentityMessage,
@@ -55,13 +56,31 @@ export interface ConversationCardUpdateInput {
   update: unknown;
 }
 
+/**
+ * #2091 — the permission of an own-identity action that was established
+ * elsewhere: an execution scope authorized it (`conversationSend@2`). With
+ * it, the message-subscription check of the first major is not asked.
+ * `subscriptions` are what mentions are resolved against.
+ */
+export interface AuthorizedSendGround {
+  readonly subscriptions: readonly MessageSubscription[];
+}
+
 export interface ConversationSendService {
   /** `callerPluginId` is set by the per-plugin facade; absent = the kernel. */
-  sendToConversation(input: ConversationSendInput, callerPluginId?: string): Promise<TargetedDeliveryOutcome>;
+  sendToConversation(
+    input: ConversationSendInput,
+    callerPluginId?: string,
+    ground?: AuthorizedSendGround,
+  ): Promise<TargetedDeliveryOutcome>;
   /** #2089 — what the channel's plugin declares; `undefined` = no provider. */
   capabilities(channelType: string): ConversationSendCapabilities | undefined;
   /** #2089 — update a card the agent posted; same identity rules as a send. */
-  updateCard(input: ConversationCardUpdateInput, callerPluginId?: string): Promise<CardUpdateOutcome>;
+  updateCard(
+    input: ConversationCardUpdateInput,
+    callerPluginId?: string,
+    ground?: AuthorizedSendGround,
+  ): Promise<CardUpdateOutcome>;
 }
 
 export function createConversationSendService(deps: {
@@ -130,6 +149,7 @@ export function createConversationSendService(deps: {
   async function sendAsOwnIdentity(
     input: ConversationSendInput,
     callerPluginId: string | undefined,
+    ground: AuthorizedSendGround | undefined,
   ): Promise<TargetedDeliveryOutcome> {
     const own = deps.ownIdentity;
     const notAdded = ownIdentitySendNotAdded(own, input.agentSlug);
@@ -141,12 +161,14 @@ export function createConversationSendService(deps: {
         `agent '${input.agentSlug}' has no ${input.channelType} identity of its own — it does not post through another agent's bot`,
       );
     }
-    const subscription = own.subscriptions?.subscriptionFor({
-      agentSlug: input.agentSlug,
-      channelType: input.channelType,
-      conversationId: input.conversationId,
-    });
-    if (!subscription || (callerPluginId !== undefined && subscription.pluginId !== callerPluginId)) {
+    const subscription = ground
+      ? undefined
+      : own.subscriptions?.subscriptionFor({
+          agentSlug: input.agentSlug,
+          channelType: input.channelType,
+          conversationId: input.conversationId,
+        });
+    if (!ground && (!subscription || (callerPluginId !== undefined && subscription.pluginId !== callerPluginId))) {
       log(
         `[channels] own-identity send by '${input.agentSlug}' to ${input.channelType}/${input.conversationId} refused (no message subscription)`,
       );
@@ -168,7 +190,11 @@ export function createConversationSendService(deps: {
       if ('error' in read) return unreachable('channel_error', `invalid card: ${read.error}`);
       card = read.card;
     }
-    const mentions = await resolveMentions(own, [subscription], input.message.mentions);
+    const mentions = await resolveMentions(
+      own,
+      ground ? ground.subscriptions : subscription ? [subscription] : [],
+      input.message.mentions,
+    );
     const message: TargetedMessage = {
       text: input.message.text,
       ...(input.message.attachments ? { attachments: input.message.attachments } : {}),
@@ -188,6 +214,7 @@ export function createConversationSendService(deps: {
     scope: { agentSlug: string; channelType: string; conversationId: string },
     callerPluginId: string | undefined,
     action: string,
+    ground?: AuthorizedSendGround,
   ): { channelKey: string } | Extract<TargetedDeliveryOutcome, { outcome: 'unreachable' }> {
     const own = deps.ownIdentity;
     const notAdded = ownIdentitySendNotAdded(own, scope.agentSlug);
@@ -201,6 +228,7 @@ export function createConversationSendService(deps: {
         `agent '${scope.agentSlug}' has no ${scope.channelType} identity of its own — it does not post through another agent's bot`,
       ) as Extract<TargetedDeliveryOutcome, { outcome: 'unreachable' }>;
     }
+    if (ground) return { channelKey: identity.channelKey };
     const subscription = own.subscriptions?.subscriptionFor(scope);
     if (!subscription || (callerPluginId !== undefined && subscription.pluginId !== callerPluginId)) {
       log(
@@ -231,7 +259,7 @@ export function createConversationSendService(deps: {
       return provider ? capabilitiesOf(provider) : undefined;
     },
 
-    async updateCard(input, callerPluginId) {
+    async updateCard(input, callerPluginId, ground) {
       const isText = (v: unknown, max: number): v is string => typeof v === 'string' && v.trim().length > 0 && v.length <= max;
       if (
         !isText(input?.agentSlug, 128) ||
@@ -246,7 +274,7 @@ export function createConversationSendService(deps: {
         };
       }
       const scope = { agentSlug: input.agentSlug, channelType: input.channelType, conversationId: input.conversationId };
-      const identity = ownIdentityOf(scope, callerPluginId, 'card update');
+      const identity = ownIdentityOf(scope, callerPluginId, 'card update', ground);
       if ('outcome' in identity) return identity;
       const provider = deps.providers.get(input.channelType);
       if (!provider) {
@@ -284,11 +312,11 @@ export function createConversationSendService(deps: {
       }
     },
 
-    async sendToConversation(input, callerPluginId) {
+    async sendToConversation(input, callerPluginId, ground) {
       if (typeof input.agentSlug !== 'string' || input.agentSlug.trim().length === 0) {
         return { outcome: 'unreachable', code: 'not_permitted', message: 'agentSlug is required' };
       }
-      if (input.asOwnIdentity === true) return sendAsOwnIdentity(input, callerPluginId);
+      if (input.asOwnIdentity === true) return sendAsOwnIdentity(input, callerPluginId, ground);
       log(
         `[channels] conversation send by '${input.agentSlug}' to ${input.channelType}/${input.conversationId} refused (asOwnIdentity not set)`,
       );

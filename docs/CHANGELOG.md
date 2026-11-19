@@ -36,6 +36,29 @@ changelog.
 
 ## [Unreleased]
 
+### Added — Posts and direct messages drawn from an execution scope (#2091, epic #2043): K4.4 of the spec alignment
+
+- **`conversationSend@2`.** A facilitation engine posts, writes to one
+  person, updates a card and checks readiness as an authorized action: each
+  request names the execution scope, and the kernel takes the authorization
+  before anything leaves. The scope must list the conversation or the
+  person, be inside its deadline and budget and not be stopped by an
+  operator. Sending as the agent's own identity is unchanged (`no_identity`
+  instead of another bot).
+- **Targets come from the scope.** The first version allowed a post where
+  the agent held a message subscription. A closing scope can now still post
+  the protocol or the abort report to a conversation whose reservation was
+  released, and nothing can be posted to a conversation the scope does not
+  list.
+- **Direct messages:** the person must be listed by the scope and, as a
+  second check from the kernel's own records, be a member or an author of a
+  conversation of that process.
+- **The kernel records which process a post belongs to,** so a reply to it
+  or an answer to its card reaches that process alone.
+- **Readiness per conversation** is asked through the same service, also for
+  a conversation that is about to be linked.
+- The first version of the services is unchanged (plugin-api 1.67.0).
+
 ### Added — Message subscriptions and reads bound to a process (#2089, epic #2043): K4.3 of the spec alignment
 
 - **`conversationMessages@2`.** A facilitation engine can subscribe a

@@ -8,6 +8,38 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.67.0 — 2026-11-19
+
+Additive (#2091, epic #2043): sends drawn from an execution scope.
+
+### Added
+
+- **`conversationSend@2`** (`CONVERSATION_SEND_V2_SERVICE_NAME`), next to
+  the first major: `ctx.services.get('conversationSend@2')`, declared as
+  `conversationSend@^2` under `optional_requires`.
+  `ScopedConversationSendService`:
+  - `sendToConversation`, `sendToPerson`, `updateCard`: each request carries
+    `authorization` (`scopeId`, `processId`, `phase`, `purpose`,
+    `emission: 'prose' | 'template'`). The kernel draws the authorization
+    from the scope first; the target must be one the scope lists. Refused:
+    `unreachable` with `code: 'not_authorized'` and `executionCode`. A
+    channel failure after the authorization carries `authorizationId`.
+  - The target comes from the scope, not from a message subscription: a
+    `closing` scope still posts to a conversation whose reservation was
+    released.
+  - `sendToPerson` additionally requires the person to be a member or an
+    author of a conversation of the process.
+  - A delivered post is recorded as the process's (message, card message and
+    card id), so replies and card answers reach that process alone;
+    `bindMessage` of `conversationMessages@2` is only needed for messages
+    sent another way.
+  - `checkReadiness`: readiness of the agent's identity in one conversation,
+    as an authorized check; also for a conversation that is about to be
+    linked.
+  - `capabilities(channelType)` as in the first major.
+
+The first major (`conversationSend`, `targetedSend`) is unchanged.
+
 ## 1.66.0 — 2026-11-19
 
 Additive (#2089, epic #2043): message subscriptions and reads bound to a

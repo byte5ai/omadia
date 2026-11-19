@@ -26,6 +26,7 @@ import {
   type ExecutionAgent,
 } from '../src/execution/executionAuthorizationService.js';
 import { ExecutionScopeStore } from '../src/execution/scopeStore.js';
+import { createScopedSendService } from '../src/channels/scopedSendService.js';
 import { wrapFacilitatorAgent } from '../packages/harness-orchestrator/src/facilitatorAgent.js';
 import { admitModelCall } from '../packages/llm-provider-api/src/index.js';
 import { meterModelCalls } from '../packages/harness-usage-telemetry/src/index.js';
@@ -591,6 +592,89 @@ describe('#2090 execution scopes (pg, migration 0073)', { skip: !pgAvailable }, 
       // One process cannot release another's.
       await engine.releaseConversation({ processId, ...other.home, reason: 'hostile' });
       assert.equal((await store.holder(other.home.channelType, other.home.conversationId))?.processId, other.processId);
+    });
+  });
+
+  describe('#2091 sends drawn from a real scope', () => {
+    function sends() {
+      const posted: string[] = [];
+      const service = createScopedSendService({
+        callerPluginId: ENGINE,
+        execution: () => engine,
+        conversation: {
+          capabilities: () => undefined,
+          sendToConversation: (input: { conversationId: string }) => {
+            posted.push(input.conversationId);
+            return Promise.resolve({ outcome: 'delivered', messageId: `m-${String(posted.length)}` });
+          },
+          updateCard: () => Promise.resolve({ outcome: 'updated' }),
+        } as never,
+        direct: (input) => {
+          posted.push(input.principal);
+          return Promise.resolve({ outcome: 'delivered' } as never);
+        },
+      });
+      return { service, posted };
+    }
+    const auth = (scopeId: string, processId: string, over: Record<string, unknown> = {}) => ({
+      scopeId,
+      processId,
+      phase: 'active' as const,
+      purpose: 'moderation' as const,
+      emission: 'template' as const,
+      ...over,
+    });
+
+    it('posts to a conversation of the scope and to nobody else, and counts each post', async () => {
+      const { scope, processId, home } = await activeProcess({ actions: 2, modelCalls: 0 });
+      const s = sends();
+      const ok = await s.service.sendToConversation({ agentSlug: 'mara', ...home, message: { text: 'hi' }, authorization: auth(scope.id, processId) });
+      assert.equal(ok.outcome, 'delivered');
+      const foreign = await s.service.sendToConversation({
+        agentSlug: 'mara', channelType: 'teams', conversationId: '19:someone-elses@thread.v2', message: { text: 'hi' }, authorization: auth(scope.id, processId),
+      });
+      assert.equal(foreign.outcome === 'unreachable' && foreign.executionCode, 'target_not_allowed');
+      await s.service.sendToConversation({ agentSlug: 'mara', ...home, message: { text: 'again' }, authorization: auth(scope.id, processId) });
+      const third = await s.service.sendToConversation({ agentSlug: 'mara', ...home, message: { text: 'once more' }, authorization: auth(scope.id, processId) });
+      assert.equal(third.outcome === 'unreachable' && third.executionCode, 'budget_exhausted');
+      assert.deepEqual(s.posted, [home.conversationId, home.conversationId]);
+    });
+
+    it('a closing scope still posts to the home conversation after its reservation was released', async () => {
+      const { processId, home, scope } = await activeProcess();
+      await engine.releaseConversation({ processId, ...home, reason: 'closed' });
+      await engine.endScope(scope.id, 'closed');
+      const closing = await engine.openScope({
+        agentSlug: 'mara', processId, kind: 'closing', eventId: 'final', deadline: inHours(24 * 7),
+        budget: { actions: 3, modelCalls: 0 }, targets: [{ kind: 'conversation', ...home }],
+      });
+      if (closing.outcome !== 'opened') throw new Error(JSON.stringify(closing));
+      const s = sends();
+      const moderation = await s.service.sendToConversation({ agentSlug: 'mara', ...home, message: { text: 'more votes?' }, authorization: auth(scope.id, processId) });
+      assert.equal(moderation.outcome === 'unreachable' && moderation.executionCode, 'scope_ended', 'the active scope is over');
+      const protocol = await s.service.sendToConversation({
+        agentSlug: 'mara', ...home, message: { text: 'The protocol.' },
+        authorization: auth(closing.scope.id, processId, { phase: 'closed', purpose: 'essential_message' }),
+      });
+      assert.equal(protocol.outcome, 'delivered');
+    });
+
+    it('writes only to people the scope lists, and a status-only person gets the status only', async () => {
+      const { scope, processId } = await activeProcess();
+      await engine.setPeople(scope.id, [
+        { kind: 'person', channelType: 'teams', principalId: 'aad-anna' },
+        { kind: 'person', channelType: 'teams', principalId: 'aad-guest', restriction: 'status_only' },
+      ]);
+      const s = sends();
+      const dm = (principal: string, purpose: string) =>
+        s.service.sendToPerson({ agentSlug: 'mara', channelType: 'teams', principal, message: { text: 'x' }, authorization: auth(scope.id, processId, { purpose }) });
+      assert.equal((await dm('user:aad-anna', 'reminder')).outcome, 'delivered');
+      const stranger = await dm('user:aad-bert', 'reminder');
+      assert.equal(stranger.outcome === 'unreachable' && stranger.executionCode, 'target_not_allowed');
+      const guest = await dm('user:aad-guest', 'reminder');
+      assert.equal(guest.outcome === 'unreachable' && guest.executionCode, 'target_not_allowed');
+      assert.equal((await dm('user:aad-guest', 'status')).outcome, 'delivered');
+      assert.deepEqual(s.posted, ['user:aad-anna', 'user:aad-guest']);
     });
   });
 

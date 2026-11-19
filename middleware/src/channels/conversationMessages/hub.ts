@@ -655,6 +655,12 @@ export class ConversationMessageHub {
     );
   }
 
+  /** #2091 — every active subscription of a process (any conversation): what
+   *  a scoped send resolves mentions and recipients against. */
+  subscriptionsOfProcess(pluginId: string, processId: string, agentSlug: string): readonly MessageSubscription[] {
+    return this.all().filter((s) => s.processId === processId && s.pluginId === pluginId && s.agentSlug === agentSlug);
+  }
+
   private asProcessRecord(
     subscription: MessageSubscription,
     record: ConversationMessageRecord | undefined,
