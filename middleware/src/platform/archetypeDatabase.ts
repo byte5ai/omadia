@@ -630,7 +630,10 @@ async function grantRuntime(
 
 /**
  * Fail closed: both roles must be plain (no attribute, member of no role) and
- * must hold no right on any table or view outside the plugin's schema.
+ * must hold no right on any table or view outside the plugin's schema, nor the
+ * right to create objects in another schema. USAGE on `public`, which every
+ * role has by default, is tolerated: it cannot be revoked for one role, and
+ * without a table right it reads nothing.
  * Relations an extension installed (a statistics view readable by everyone)
  * are not the instance's data and are left out.
  */
@@ -652,6 +655,26 @@ async function assertIsolated(
         pluginId,
         'not_isolated',
         `role ${role} ${!row ? 'is missing' : row.elevated ? 'carries an elevated attribute' : 'is a member of another role'}`,
+      );
+    }
+    // A role may hold USAGE on `public` through the grant every role has by
+    // default; that alone reads no data (no table right, checked below). What
+    // it must not have is CREATE in a schema other than its own: an object
+    // planted in `public` is one the kernel's own search path would resolve.
+    // Databases created before PostgreSQL 15 still grant that to every role.
+    const writable = await client.query<{ nspname: string }>(
+      `SELECT n.nspname
+         FROM pg_namespace n
+        WHERE n.nspname <> $2 AND n.nspname <> 'information_schema' AND n.nspname !~ '^pg_'
+          AND has_schema_privilege($1, n.oid, 'CREATE')
+        ORDER BY 1 LIMIT 5`,
+      [role, names.schema],
+    );
+    if ((writable.rowCount ?? 0) > 0) {
+      throw new ArchetypeDatabaseError(
+        pluginId,
+        'not_isolated',
+        `role ${role} may create objects outside ${names.schema}, in schema ${writable.rows.map((r) => r.nspname).join(', ')}`,
       );
     }
     const reach = await client.query<{ rel: string }>(

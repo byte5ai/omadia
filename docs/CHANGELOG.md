@@ -47,6 +47,13 @@ changelog.
 - **Before updating the kernel:** an installed archetype plugin that still
   requires `graphPool` (the facilitation engine before 1.3.0) loses its
   database with this version. Update the plugin first.
+- The isolation check of a plugin's database roles now also refuses a role
+  that may create objects in a schema other than its own (the default on a
+  database created before PostgreSQL 15, where every role may create in
+  `public`). The plugin's database then stays unavailable until
+  `REVOKE CREATE ON SCHEMA public FROM PUBLIC` has been run. The roles keep
+  the default USAGE on `public`; it cannot be revoked per role and reads no
+  table.
 
 ### Changed — Running agent discussions move to "Running processes"; the old facilitation panel is removed (#2067, epic #2043)
 

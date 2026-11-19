@@ -440,6 +440,31 @@ describe('#2088 archetype plugin database', { skip: !pgAvailable }, () => {
     await db.ensure(PLUGIN);
   });
 
+  it('fails closed when a plugin role may create objects in public, and tolerates plain USAGE there', async () => {
+    // USAGE on public is what every role has by default; it is not a finding.
+    const usage = await admin.query<{ usage: boolean; create: boolean }>(
+      `SELECT has_schema_privilege($1, 'public', 'USAGE') AS usage, has_schema_privilege($1, 'public', 'CREATE') AS create`,
+      [NAMES.runtimeRole],
+    );
+    assert.deepEqual(usage.rows[0], { usage: true, create: false });
+    await db.ensure(PLUGIN);
+
+    await admin.query(`GRANT CREATE ON SCHEMA public TO ${NAMES.migrationRole}`);
+    try {
+      await assert.rejects(
+        () => db.ensure(PLUGIN),
+        (err: unknown) =>
+          err instanceof ArchetypeDatabaseError &&
+          err.code === 'not_isolated' &&
+          err.message.includes(NAMES.migrationRole) &&
+          err.message.includes('in schema public'),
+      );
+    } finally {
+      await admin.query(`REVOKE CREATE ON SCHEMA public FROM ${NAMES.migrationRole}`);
+    }
+    await db.ensure(PLUGIN);
+  });
+
   it('says what the administrator has to run when the kernel\'s user may not create roles', async () => {
     const plain = new Pool({ connectionString: withUser(PG_URL as string, plainRole, adminPassword, database), max: 1 });
     const limited = createArchetypeDatabase({
