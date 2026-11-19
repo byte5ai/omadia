@@ -989,6 +989,9 @@ export type ActivationErrorCode =
   | 'dependency_unresolved'
   | 'provider_conflict'
   | 'target_unreachable'
+  // #2088 — the plugin's own database (schema and roles) could not be set up,
+  // or its roles are not limited to its schema.
+  | 'database_not_available'
   | 'unknown';
 
 /**

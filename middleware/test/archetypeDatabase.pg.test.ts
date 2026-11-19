@@ -29,6 +29,7 @@ import { adaptManifestV1 } from '../src/plugins/manifestLoader.js';
 import type { PluginCatalog } from '../src/plugins/manifestLoader.js';
 import {
   ArchetypeDatabaseError,
+  revokeCreateStatement,
   archetypeDatabaseNames,
   createArchetypeDatabase,
   ownDatabaseEdges,
@@ -440,6 +441,11 @@ describe('#2088 archetype plugin database', { skip: !pgAvailable }, () => {
     await db.ensure(PLUGIN);
   });
 
+  it('names the statement that takes the create right away, from every role or from the one that holds it', () => {
+    assert.equal(revokeCreateStatement('public'), 'REVOKE CREATE ON SCHEMA "public" FROM PUBLIC');
+    assert.equal(revokeCreateStatement('public', 'omadia_plg_x_rt'), 'REVOKE CREATE ON SCHEMA "public" FROM "omadia_plg_x_rt"');
+  });
+
   it('fails closed when a plugin role may create objects in public, and tolerates plain USAGE there', async () => {
     // USAGE on public is what every role has by default; it is not a finding.
     const usage = await admin.query<{ usage: boolean; create: boolean }>(
@@ -457,7 +463,10 @@ describe('#2088 archetype plugin database', { skip: !pgAvailable }, () => {
           err instanceof ArchetypeDatabaseError &&
           err.code === 'not_isolated' &&
           err.message.includes(NAMES.migrationRole) &&
-          err.message.includes('in schema public'),
+          err.message.includes('in schema public') &&
+          // The operator can run the fix as it stands.
+          err.message.includes(`REVOKE CREATE ON SCHEMA "public" FROM "${NAMES.migrationRole}"`) &&
+          err.message.length <= 500,
       );
     } finally {
       await admin.query(`REVOKE CREATE ON SCHEMA public FROM ${NAMES.migrationRole}`);

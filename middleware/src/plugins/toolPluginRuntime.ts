@@ -18,6 +18,7 @@ import type { PluginStatusRegistry } from '../platform/pluginStatusRegistry.js';
 import type { UiRouteCatalog } from '../platform/uiRouteCatalog.js';
 import type { ServiceRegistry } from '../platform/serviceRegistry.js';
 import {
+  ArchetypeDatabaseError,
   ownDatabaseEdges,
   ownsItsDatabase,
   type ArchetypeDatabase,
@@ -347,6 +348,13 @@ export class ToolPluginRuntime {
           // A version this core refuses to start is not a transient failure:
           // record it once, terminally, instead of counting three boots.
           if (err instanceof PluginNotStartableError) {
+            await this.deps.registry.markActivationBlocked(id, describeActivationFailure(err));
+            continue;
+          }
+          // #2088 — a plugin without its database does not run, and waiting
+          // for three failed boots would show it as active meanwhile. Recorded
+          // at once; the next boot tries again (see retryErroredPlugins).
+          if (err instanceof ArchetypeDatabaseError) {
             await this.deps.registry.markActivationBlocked(id, describeActivationFailure(err));
             continue;
           }

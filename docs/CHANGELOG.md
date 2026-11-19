@@ -51,9 +51,11 @@ changelog.
   that may create objects in a schema other than its own (the default on a
   database created before PostgreSQL 15, where every role may create in
   `public`). The plugin's database then stays unavailable until
-  `REVOKE CREATE ON SCHEMA public FROM PUBLIC` has been run. The roles keep
-  the default USAGE on `public`; it cannot be revoked per role and reads no
-  table.
+  `REVOKE CREATE ON SCHEMA public FROM PUBLIC` has been run. The store shows
+  this as its own activation failure ("The plugin's own database could not be
+  set up.", code `database_not_available`), and the technical detail names
+  the statement. See `docs/upgrading.md`. The roles keep the default USAGE
+  on `public`; it cannot be revoked per role and reads no table.
 
 ### Changed — Running agent discussions move to "Running processes"; the old facilitation panel is removed (#2067, epic #2043)
 

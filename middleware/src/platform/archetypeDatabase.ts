@@ -628,6 +628,13 @@ async function grantRuntime(
   await client.query('RESET ROLE');
 }
 
+/** The statement that takes the create right in a schema away again, from
+ *  every role or from the one that holds it by name. Named in the error so the operator can run it as it stands. */
+export function revokeCreateStatement(schema: string, role?: string): string {
+  // Every role has it through PUBLIC, or this role was granted it by name.
+  return `REVOKE CREATE ON SCHEMA ${q(schema)} FROM ${role ? q(role) : 'PUBLIC'}`;
+}
+
 /**
  * Fail closed: both roles must be plain (no attribute, member of no role) and
  * must hold no right on any table or view outside the plugin's schema, nor the
@@ -662,19 +669,22 @@ async function assertIsolated(
     // it must not have is CREATE in a schema other than its own: an object
     // planted in `public` is one the kernel's own search path would resolve.
     // Databases created before PostgreSQL 15 still grant that to every role.
-    const writable = await client.query<{ nspname: string }>(
-      `SELECT n.nspname
+    const writable = await client.query<{ nspname: string; from_public: boolean }>(
+      `SELECT n.nspname, has_schema_privilege('public', n.oid, 'CREATE') AS from_public
          FROM pg_namespace n
         WHERE n.nspname <> $2 AND n.nspname <> 'information_schema' AND n.nspname !~ '^pg_'
           AND has_schema_privilege($1, n.oid, 'CREATE')
         ORDER BY 1 LIMIT 5`,
       [role, names.schema],
     );
-    if ((writable.rowCount ?? 0) > 0) {
+    const schemas = writable.rows.map((r) => r.nspname);
+    if (schemas.length > 0) {
       throw new ArchetypeDatabaseError(
         pluginId,
         'not_isolated',
-        `role ${role} may create objects outside ${names.schema}, in schema ${writable.rows.map((r) => r.nspname).join(', ')}`,
+        `role ${role} may create objects outside ${names.schema}, in schema ${schemas.join(', ')}. Fix, as the database owner: ${writable.rows
+          .map((r) => revokeCreateStatement(r.nspname, r.from_public ? undefined : role))
+          .join('; ')}; then restart omadia`,
       );
     }
     const reach = await client.query<{ rel: string }>(
