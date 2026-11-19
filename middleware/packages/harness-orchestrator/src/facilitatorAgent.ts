@@ -165,7 +165,27 @@ export interface FacilitatorRuntimeLookup {
   /** #2089 — see {@link PrivateTurnLookup}. Optional: an older kernel
    *  answers every private request with the fixed refusal. */
   privateTurn?: PrivateTurnLookup;
+  /** #2089 — see {@link AddressedTurnLookup}. Optional: an older kernel lets
+   *  the model answer every group turn the engine does not drive. */
+  addressedTurn?: AddressedTurnLookup;
 }
+
+/**
+ * #2089 — a group turn in a conversation the engine does not drive, where a
+ * process of the agent may still listen for messages that address it (a
+ * facilitation in follow-up). `true`: a process takes the message and the
+ * turn stays silent; `false`: the agent's ordinary turn answers.
+ */
+export type AddressedTurnLookup = (
+  agentSlug: string,
+  message: {
+    channelType: string;
+    conversationIds: readonly string[];
+    principalId: string;
+    text: string;
+    messageId?: string;
+  },
+) => Promise<boolean>;
 
 /**
  * #2089 — a private message to the facilitator from a person who takes part
@@ -218,6 +238,13 @@ export interface FacilitatorAgentDeps {
    * facilitation's status in the private chat (spec 2043 §5.3).
    */
   readonly privateTurn?: PrivateTurnLookup;
+  /**
+   * #2089 — asked for a group turn the engine does not drive, before the
+   * model runs: a process that listens for messages addressing the agent
+   * (follow-up) may take the message. Then the turn stays silent, exactly as
+   * in an engine-driven conversation, and the process answers.
+   */
+  readonly addressedTurn?: AddressedTurnLookup;
   /**
    * The AI disclosure of this agent's turn answers (resolution and first-turn
    * fold of its orchestrator). The fixed texts below never reach the model or
@@ -362,9 +389,40 @@ export function wrapFacilitatorAgent(inner: ChatAgent, deps: FacilitatorAgentDep
       return { answer };
     }
   };
+  /** Does a process of the agent take this group turn? Only asked for a turn
+   *  the channel started and the model would otherwise answer. */
+  const takenByAProcess = async (input: ChatTurnInput): Promise<boolean> => {
+    const { addressedTurn, agentSlug } = deps;
+    const principal = input.origin?.principal;
+    if (!addressedTurn || !agentSlug || !input.origin || principal?.kind !== 'user') return false;
+    if (currentEngineTurn() !== undefined) return false;
+    try {
+      const messageId = input.origin.messageId;
+      const taken = await addressedTurn(agentSlug, {
+        channelType: input.origin.channelType,
+        conversationIds: conversationIdCandidates(input),
+        principalId: principal.userId,
+        text: input.userMessage,
+        ...(typeof messageId === 'string' && messageId.length > 0 ? { messageId } : {}),
+      });
+      if (taken) {
+        deps.log?.(
+          `[facilitator] '${agentSlug}' channel turn suppressed: a process of the agent takes the message that addresses it`,
+        );
+      }
+      return taken === true;
+    } catch (err) {
+      deps.log?.(`[facilitator] addressed message lookup failed: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    }
+  };
+  const disposeTurn = async (input: ChatTurnInput): Promise<TurnDisposition> => {
+    const disposition = dispose(input);
+    return disposition === 'model' && (await takenByAProcess(input)) ? 'engine_driven' : disposition;
+  };
   return {
     async chat(input: ChatTurnInput): Promise<SemanticAnswer> {
-      const disposition = dispose(input);
+      const disposition = await disposeTurn(input);
       if (disposition === 'model') {
         const watch = watchesEnginePosts();
         const before = watch ? ownPosts(input) : 0;
@@ -381,7 +439,7 @@ export function wrapFacilitatorAgent(inner: ChatAgent, deps: FacilitatorAgentDep
       input: ChatTurnInput,
       observer?: ChatStreamObserver,
     ): AsyncGenerator<ChatStreamEvent> {
-      const disposition = dispose(input);
+      const disposition = await disposeTurn(input);
       if (disposition === 'model') {
         const watch = watchesEnginePosts();
         const before = watch ? ownPosts(input) : 0;

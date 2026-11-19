@@ -101,6 +101,13 @@ export interface ConversationMessageHubDeps {
     channelType: string;
     conversationId: string;
   }) => Promise<ProcessAccess>;
+  /**
+   * #2089 — does this plugin decide the turns that address this agent
+   * (`onAddressedMessage`)? Then a plain message that addresses the agent is
+   * stored for the plugin's `addressed` subscriptions but not pushed: the
+   * turn the channel starts for the same message is its one live path.
+   */
+  readonly ownsAddressedTurns?: (pluginId: string, agentSlug: string) => boolean;
   readonly log?: (message: string) => void;
 }
 
@@ -396,7 +403,7 @@ export class ConversationMessageHub {
   private async recipients(
     subscriptions: readonly MessageSubscription[],
     event: ConversationMessageEvent,
-  ): Promise<readonly MessageSubscription[]> {
+  ): Promise<{ recipients: readonly MessageSubscription[]; bound: boolean }> {
     if (subscriptions.some((s) => s.processId !== undefined)) {
       const refs = [
         typeof event.replyToMessageId === 'string' ? event.replyToMessageId : undefined,
@@ -406,14 +413,20 @@ export class ConversationMessageHub {
       const bindings = await this.deps.store.findProcessBindings(event.channelType, event.conversationId, refs);
       const bound = refs.map((ref) => bindings.find((b) => b.ref === ref)).find((b) => b !== undefined);
       if (bound) {
-        return subscriptions.filter(
-          (s) => s.processId === bound.processId && s.pluginId === bound.pluginId && s.mode !== 'none',
-        );
+        return {
+          recipients: subscriptions.filter(
+            (s) => s.processId === bound.processId && s.pluginId === bound.pluginId && s.mode !== 'none',
+          ),
+          bound: true,
+        };
       }
     }
-    return subscriptions.filter(
-      (s) => s.mode === 'all' || (s.mode === 'addressed' && event.addressedToBot === true),
-    );
+    return {
+      recipients: subscriptions.filter(
+        (s) => s.mode === 'all' || (s.mode === 'addressed' && event.addressedToBot === true),
+      ),
+      bound: false,
+    };
   }
 
   private async routeAndStore(
@@ -423,16 +436,54 @@ export class ConversationMessageHub {
     const subscriptions = this.byIdentity.get(key) ?? [];
     if (subscriptions.length === 0) return undefined;
     let first: ConversationMessageRecord | undefined;
-    for (const subscription of await this.recipients(subscriptions, event)) {
-      const record = await this.store(subscription, event);
+    const { recipients, bound } = await this.recipients(subscriptions, event);
+    // Where a process reads everything, the channel's turn is suppressed
+    // before anybody is asked; the event is then the only path and is pushed.
+    const turnAsks = !bound && !subscriptions.some((s) => s.mode === 'all');
+    for (const subscription of recipients) {
+      const record = await this.store(subscription, event, !(turnAsks && this.leftToTheTurn(subscription, event)));
       first ??= record;
     }
     return first;
   }
 
+  /**
+   * #2089 — a plain message that addresses the agent, for a process that
+   * listens in `addressed` mode and whose plugin decides addressed turns: the
+   * channel starts a turn for the same message, and that turn asks the
+   * plugin. Stored, not pushed. A reply or card answer bound to the process
+   * is not such a message, and neither is one in a conversation where a
+   * process reads everything (see the caller).
+   */
+  private leftToTheTurn(subscription: MessageSubscription, event: ConversationMessageEvent): boolean {
+    if (subscription.mode !== 'addressed' || subscription.processId === undefined) return false;
+    if (subscription.pluginId === undefined || event.kind !== 'created' || event.addressedToBot !== true) return false;
+    try {
+      return this.deps.ownsAddressedTurns?.(subscription.pluginId, subscription.agentSlug) === true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** The processes of an agent that listen in `addressed` mode in a
+   *  conversation, from the cache. */
+  addressedListeners(scope: ConversationMessageScope): readonly { pluginId: string; processId: string }[] {
+    return this.all().flatMap((s) =>
+      s.mode === 'addressed' &&
+      s.processId !== undefined &&
+      s.pluginId !== undefined &&
+      s.agentSlug === scope.agentSlug &&
+      s.channelType === scope.channelType &&
+      s.conversationId === scope.conversationId
+        ? [{ pluginId: s.pluginId, processId: s.processId }]
+        : [],
+    );
+  }
+
   private async store(
     subscription: MessageSubscription,
     event: ConversationMessageEvent,
+    push = true,
   ): Promise<ConversationMessageRecord | undefined> {
     // Unsubscribed while the event waited in the queue: the gate is closed.
     if (!this.isActive(subscription)) return undefined;
@@ -459,7 +510,7 @@ export class ConversationMessageHub {
       }
       throw err;
     }
-    if (record) this.deliver(subscription, record);
+    if (record && push) this.deliver(subscription, record);
     return record;
   }
 

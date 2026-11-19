@@ -36,6 +36,25 @@ changelog.
 
 ## [Unreleased]
 
+### Added — One answer to a mention while a facilitation is in follow-up (#2089, epic #2043): K4.8
+
+- **The problem:** a facilitation in follow-up listens for messages that
+  address its facilitator. Such a mention reached two takers, the
+  facilitator's ordinary turn (its model) and the facilitation, and both
+  could answer.
+- **Now one of them answers.** Before the model runs, the kernel asks the
+  facilitation plugin whether one of its processes takes the message. If it
+  does, the turn stays silent and the facilitation answers. If it declines,
+  fails or does not answer within 20 seconds, the facilitator's ordinary turn
+  answers, as if no facilitation listened.
+- The mention is still stored for the facilitation, but no longer pushed to
+  it as an event when its plugin decides these turns. Replies and card
+  answers that belong to a facilitation are delivered as before.
+- A channel can state which message a turn answers
+  (`TurnOrigin.messageId`, channel-sdk 0.3.8); the plugin then gets the
+  stored event of that message with the question. plugin-api 1.73.0.
+- Nothing changes for a plugin that does not register the new handler.
+
 ### Changed — An archetype plugin never gets the shared database pool (#2088, epic #2042): K3b of the spec alignment
 
 - A plugin of manifest kind `archetype` that asks for `graphPool` is refused

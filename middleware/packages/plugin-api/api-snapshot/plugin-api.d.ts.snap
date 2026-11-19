@@ -458,6 +458,20 @@ messageId?: string;
 cardId?: string;
 }): Promise<boolean>;
 onPrivateMessage?(agentSlug: string, handler: (request: PrivateMessageRequest) => Promise<PrivateMessageReply>): () => void;
+onAddressedMessage?(agentSlug: string, handler: (request: AddressedMessageRequest) => Promise<AddressedMessageReply>): () => void;
+}
+export interface AddressedMessageRequest {
+agentSlug: string;
+channelType: string;
+conversationId: string;
+principalId: string;
+text: string;
+messageId?: string;
+eventId?: string;
+processIds: readonly string[];
+}
+export interface AddressedMessageReply {
+handled: boolean;
 }
 export interface PrivateMessageRequest {
 agentSlug: string;

@@ -433,6 +433,7 @@ import { wireSessionCapabilities } from './channels/sessionCapabilities/wiring.j
 import { attachEngineToFacilitators } from './platform/facilitatorEngineAttach.js';
 import { createArchetypeRegistrySync } from './platform/archetypeRegistrySync.js';
 import { wireExecutionAuthorization, type ExecutionWiring } from './execution/wiring.js';
+import { AddressedMessageRouter } from './channels/addressedMessageRouter.js';
 import { PrivateMessageRouter } from './channels/privateMessageRouter.js';
 import { createArchetypeDatabase } from './platform/archetypeDatabase.js';
 import { pluginRuntimeOf } from './plugins/pluginRuntimeOf.js';
@@ -853,6 +854,18 @@ async function main(): Promise<void> {
     processesListingPerson: async (input) =>
       (await executionRef.current?.store.processesListingPerson(input)) ?? [],
     executionFor: (pluginId) => executionRef.current?.serviceFor(pluginId),
+    log: (m) => console.log(m),
+  });
+  // #2089 — who answers a message that addresses a facilitator while one of
+  // its processes listens for such messages (follow-up): the turn asks the
+  // process's plugin first.
+  const addressedMessageRouter = new AddressedMessageRouter({
+    listeners: (scope) => conversationMessagesRef.current?.hub.addressedListeners(scope) ?? [],
+    eventIdOf: async (scope, pluginId, messageId) => {
+      const record = await conversationMessagesRef.current?.hub.getProcessEvent(scope, pluginId, messageId, 0);
+      // Only the message itself: a card answer shares its card's message id.
+      return record?.kind === 'created' ? record.eventId : undefined;
+    },
     log: (m) => console.log(m),
   });
   // #2043 — channel readiness providers and meeting sources (same lifecycle).
@@ -4910,6 +4923,7 @@ async function main(): Promise<void> {
       reportedEngineState: () => serviceRegistry.get<unknown>('facilitationEngine'),
       ownPosts: ownIdentityPostLog,
       getPrivateMessages: () => privateMessageRouter,
+      getAddressedMessages: () => addressedMessageRouter,
     }),
   );
   const sessionCapabilityHub = wireSessionCapabilities({
@@ -5117,6 +5131,7 @@ async function main(): Promise<void> {
       // #2089 — a process reads a conversation by its execution scopes and
       // its reservation.
       privateMessages: privateMessageRouter,
+      addressedMessages: addressedMessageRouter,
       processAccess: (process) => {
         const store = executionRef.current?.store;
         if (!store) return Promise.reject(new Error('the execution store is not available'));
