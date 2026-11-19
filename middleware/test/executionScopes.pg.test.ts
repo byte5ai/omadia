@@ -27,7 +27,8 @@ import {
 } from '../src/execution/executionAuthorizationService.js';
 import { ExecutionScopeStore } from '../src/execution/scopeStore.js';
 import { wrapFacilitatorAgent } from '../packages/harness-orchestrator/src/facilitatorAgent.js';
-import { meterModelCalls, recordUsage } from '../packages/harness-usage-telemetry/src/index.js';
+import { admitModelCall } from '../packages/llm-provider-api/src/index.js';
+import { meterModelCalls } from '../packages/harness-usage-telemetry/src/index.js';
 import { AgentTurnBudget, AgentTurnHistory, createScopedAgentTurnService } from '../src/agents/agentTurnService.js';
 
 const { url: PG_URL, reachable: pgAvailable } = await probePgTest({
@@ -386,7 +387,7 @@ describe('#2090 execution scopes (pg, migration 0073)', { skip: !pgAvailable }, 
                   ran += 1;
                   for (let i = 0; i < calls(); i += 1) {
                     await Promise.resolve();
-                    recordUsage({ source: 'test', model: 'm', inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0 });
+                    admitModelCall(); // what every provider does before its backend call
                   }
                   return { text: 'ok' };
                 },
@@ -453,15 +454,20 @@ describe('#2090 execution scopes (pg, migration 0073)', { skip: !pgAvailable }, 
       );
     });
 
-    it('a turn that overdraws uses the budget up, and the next turn is refused', async () => {
+    it('a turn cannot overrun its reservation: the scope is charged with the reserved calls and the rest stays', async () => {
       const { scope, processId } = await activeProcess({ actions: 10, modelCalls: 5 });
       const t = turns(() => 12);
       const first = await t.service.runTurn(turn(scope.id, processId, 2));
-      assert.deepEqual(first.outcome === 'completed' && first.modelCalls, { reserved: 2, used: 12 });
-      assert.equal((await usedOf(scope.id)).used_model_calls, 5, 'never more than the budget');
-      const second = await t.service.runTurn(turn(scope.id, processId, 1));
-      assert.equal(second.outcome === 'refused' && second.executionCode, 'budget_exhausted');
-      assert.equal(t.ran(), 1);
+      assert.equal(first.outcome === 'refused' && first.code, 'reservation_exceeded');
+      assert.deepEqual(first.outcome === 'refused' && first.modelCalls, { reserved: 2, used: 2, refused: 1 });
+      assert.deepEqual(await usedOf(scope.id), { used_actions: 1, used_model_calls: 2 });
+      // The scope still has 3 calls: a turn that fits runs.
+      const fits = turns(() => 3);
+      const second = await fits.service.runTurn(turn(scope.id, processId, 3));
+      assert.deepEqual(second.outcome === 'completed' && second.modelCalls, { reserved: 3, used: 3 });
+      assert.equal((await usedOf(scope.id)).used_model_calls, 5);
+      const third = await fits.service.runTurn(turn(scope.id, processId, 1));
+      assert.equal(third.outcome === 'refused' && third.executionCode, 'budget_exhausted');
     });
 
     it('the kill switch and a passed deadline refuse the turn before the model', async () => {

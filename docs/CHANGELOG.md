@@ -36,6 +36,26 @@ changelog.
 
 ## [Unreleased]
 
+### Changed — A turn's model-call reservation is a hard cap (#2090, epic #2043)
+
+- **A gate before every model call.** Every provider implementation
+  (Anthropic, OpenAI chat, OpenAI responses, the subscription CLI as provider
+  and as chat agent) asks the kernel before it reaches its backend. Inside a
+  turn that runs under an execution scope (`agentTurn@2`), the call the
+  turn's reservation does not cover is refused and never made, whether the
+  main model, a helper or a guard asked for it.
+- **No answer from a turn that was cut short.** Many helpers carry on when
+  their model call fails. A turn in which any call was refused therefore ends
+  refused (`reservation_exceeded`) and returns no text; nothing of it is kept
+  in the turn history. It is charged with the calls it made.
+- **The count is exact now.** Model calls are counted at the provider, where
+  every call passes. The first version counted at the usage recorder, which a
+  few calls do not reach.
+- Outside such a turn nothing changes: the gate lets every call through.
+- For authors of provider plugins: the provider contract is 1.5.0; an
+  implementation calls `admitModelCall()` before its backend call. A
+  third-party provider that does not is not bounded by a reservation.
+
 ### Added — A facilitator's model turn as an authorized action (#2090, epic #2043): K4.2 of the spec alignment
 
 - **`agentTurn@2`.** An archetype plugin can run a turn under an execution

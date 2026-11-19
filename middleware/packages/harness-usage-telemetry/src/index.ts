@@ -25,7 +25,6 @@ export {
   initUsageRecorder,
   isUsageRecorderReady,
   recordUsage,
-  meterModelCalls,
   providerRecordsOwnUsage,
   setUsageContextProvider,
   runWithUsageContext,
@@ -63,3 +62,11 @@ export {
 export const CLI_CHAT_USAGE_SOURCE: (typeof SUBSCRIPTION_SOURCES)[0] = 'claude-cli';
 export const CLI_COMPLETION_USAGE_SOURCE: (typeof SUBSCRIPTION_SOURCES)[1] =
   'claude-cli-completion';
+
+// #2090 — count and bound the model calls of an async scope: the host half of
+// the provider contract's `admitModelCall` (`@omadia/llm-provider-api`).
+export {
+  installModelCallGate,
+  meterModelCalls,
+  type ModelCallCount,
+} from './modelCallMeter.js';

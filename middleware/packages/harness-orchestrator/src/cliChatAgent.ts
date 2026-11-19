@@ -1,3 +1,4 @@
+import { admitModelCall } from '@omadia/llm-provider';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import { spawn as nodeSpawn } from 'node:child_process';
@@ -1267,6 +1268,9 @@ export class CliChatAgent implements ChatAgent {
     turnContext: CapturedTurnContext,
     _observer?: ChatStreamObserver,
   ): AsyncGenerator<ChatStreamEvent> {
+    // #2090 — one CLI run is one model call for the gate: the CLI owns its
+    // loop, and the kernel cannot see inside it.
+    admitModelCall();
     const lifecycle = this.runLifecycle(input, turnContext);
     let finished = false;
     // #1102 — the interactive cards are drained exactly once per turn: on the
