@@ -339,3 +339,77 @@ describe('AgentsDashboard — facilitators (#2066)', () => {
     expect(document.body.textContent).not.toContain('facilitator_omission');
   });
 });
+
+describe('AgentsDashboard — one section per archetype (#2088)', () => {
+  const COACH = agent({ slug: 'cora', name: 'Cora', archetype: 'coach' });
+  const archetype = (over: Record<string, unknown>) => ({
+    source: 'kernel',
+    built_in: false,
+    label: null,
+    label_plural: null,
+    description: null,
+    omits: [],
+    adds: [],
+    requires: [],
+    plugin: null,
+    agent_count: null,
+    ...over,
+  });
+  const REGISTERED = [
+    archetype({ id: 'standard', built_in: true }),
+    archetype({ id: 'facilitator' }),
+    archetype({
+      id: 'coach',
+      source: '@acme/archetype-coach',
+      label: { en: 'Coach' },
+      label_plural: { en: 'Coaches', de: 'Coaches' },
+      description: { en: 'Coaches one team at a time.' },
+      plugin: { id: '@acme/archetype-coach', status: 'active' },
+    }),
+  ] as never;
+
+  it('a registered archetype gets its own section, named by its descriptor, and creates agents of it', async () => {
+    mockEngine.mockResolvedValue(READY);
+    mockTeams.mockRejectedValue(teamsMissing());
+    mockCreate.mockResolvedValue({ id: 'id-nina', slug: 'nina', archetype: 'coach' });
+    renderWithIntl(<AgentsDashboard initial={list(FALLBACK, MONA, COACH)} archetypes={REGISTERED} />);
+
+    const section = screen.getByTestId('archetype-section-coach');
+    expect(section.textContent).toContain('Coaches (1)');
+    expect(section.textContent).toContain('Coaches one team at a time.');
+    expect(section.textContent).toContain('Delivered by the archetype plugin “@acme/archetype-coach”');
+    expect(screen.getByTestId('archetype-agent-card-cora')).toBeTruthy();
+    // The facilitator keeps its own section, and a coach is not an orchestrator.
+    expect(screen.getByTestId('facilitators-section').textContent).toContain('Facilitators (1)');
+    expect(screen.getByRole('heading', { name: /Orchestrators \(1\)/ })).toBeTruthy();
+
+    const form = screen.getByTestId('archetype-create-form-coach');
+    const [slug, name] = Array.from(form.querySelectorAll('input'));
+    await userEvent.type(slug!, 'nina');
+    await userEvent.type(name!, 'Nina');
+    await userEvent.click(form.querySelector('button[type="submit"]')!);
+    await waitFor(() => expect(mockCreate).toHaveBeenCalledWith({ slug: 'nina', name: 'Nina', archetype: 'coach' }));
+    await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/operator/agents/nina'));
+  });
+
+  it('agents of an archetype nobody delivers any more stay visible, with the reason and no create form', async () => {
+    mockEngine.mockResolvedValue(READY);
+    mockTeams.mockRejectedValue(teamsMissing());
+    renderWithIntl(
+      <AgentsDashboard initial={list(FALLBACK, COACH)} archetypes={[REGISTERED[0], REGISTERED[1]] as never} />,
+    );
+    const section = screen.getByTestId('archetype-section-coach');
+    expect(section.textContent).toContain('coach (1)');
+    expect(section.textContent).toContain('No installed plugin delivers the archetype “coach” any more');
+    expect(screen.queryByTestId('archetype-create-form-coach')).toBeNull();
+    expect(screen.getByTestId('archetype-agent-card-cora')).toBeTruthy();
+  });
+
+  it('a middleware that does not report archetypes: the facilitator section as before', async () => {
+    mockEngine.mockResolvedValue(READY);
+    mockTeams.mockRejectedValue(teamsMissing());
+    renderWithIntl(<AgentsDashboard initial={list(FALLBACK, MONA)} archetypes={null} />);
+    expect(screen.getByTestId('facilitators-section').textContent).toContain('Facilitators (1)');
+    expect(screen.queryByTestId('archetype-section-coach')).toBeNull();
+  });
+});

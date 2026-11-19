@@ -250,6 +250,9 @@ export class ToolPluginRuntime {
       if (
         catalogEntry.plugin.kind !== 'tool' &&
         catalogEntry.plugin.kind !== 'extension' &&
+        // #2088 — an archetype plugin runs like an extension: it registers
+        // tools and jobs for the agents of its archetype.
+        catalogEntry.plugin.kind !== 'archetype' &&
         catalogEntry.plugin.kind !== 'integration'
       ) {
         continue;

@@ -17,7 +17,7 @@
  * the block states its own precedence.
  */
 
-import { FACILITATOR_ARCHETYPE, type ArchetypeId } from './archetype.js';
+import { FACILITATOR_ARCHETYPE, getArchetype, type ArchetypeId } from './archetype.js';
 
 export const FACILITATOR_NEUTRALITY_HEADING = '## Neutrality contract (fixed, takes precedence)';
 
@@ -44,11 +44,34 @@ export function withFacilitatorNeutrality(text: string | null | undefined): stri
     : FACILITATOR_NEUTRALITY_BLOCK;
 }
 
-/** The role contract of an archetype closes its agents' identity: for the
- *  facilitator the neutrality block. Untouched for every other archetype. */
+/**
+ * The role contract of an archetype (#2088): the block its descriptor ships,
+ * else the kernel's own for that archetype (the neutrality block for
+ * `facilitator`, the fallback while an engine plugin without a descriptor of
+ * its own is supported). `undefined` = the archetype has none.
+ */
+export function roleContractOf(archetype: ArchetypeId | undefined): string | undefined {
+  if (!archetype) return undefined;
+  const shipped = getArchetype(archetype)?.roleContract?.trim();
+  if (shipped) return shipped;
+  return archetype === FACILITATOR_ARCHETYPE ? FACILITATOR_NEUTRALITY_BLOCK : undefined;
+}
+
+/**
+ * `text` closed by the archetype's role contract. Same rules as
+ * {@link withFacilitatorNeutrality}: last, exactly once, never removable. A
+ * text that still carries the kernel's block from before a plugin shipped its
+ * own gets that one taken out, so two contracts never stand side by side.
+ * Untouched for an archetype without a contract.
+ */
 export function applyArchetypeContract<T extends string | null | undefined>(
   archetype: ArchetypeId | undefined,
   text: T,
 ): T | string {
-  return archetype === FACILITATOR_ARCHETYPE ? withFacilitatorNeutrality(text) : text;
+  const contract = roleContractOf(archetype);
+  if (!contract) return text;
+  let base: string = text ?? '';
+  for (const block of new Set([contract, FACILITATOR_NEUTRALITY_BLOCK])) base = base.split(block).join('');
+  base = base.trim();
+  return base.length > 0 ? `${base}\n\n${contract}` : contract;
 }

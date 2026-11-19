@@ -1146,6 +1146,10 @@
         "what": "Dieses Plugin ist auf diesem Server bereits installiert.",
         "next": "Deinstalliere die vorhandene Kopie zuerst, wenn du es neu installieren willst."
       },
+      "archetype_confirmation_required": {
+        "what": "Das ist ein Archetyp-Plugin: Es fügt diesem Server eine neue Art von Agent hinzu. Das wird nur nach ausdrücklicher Bestätigung installiert, und diese Anfrage enthielt keine.",
+        "next": "Starte die Installation auf der Seite des Plugins im Store. Dort steht, was der Archetyp hinzufügt und was seine Agenten nie erhalten, und du wirst um Bestätigung gebeten."
+      },
       "blocked": {
         "what": "Der Store markiert dieses Plugin als inkompatibel mit diesem Server, deshalb wurde die Installation abgelehnt.",
         "next": "Lies die Inkompatibilitätsgründe in den Details unten, bevor du es erneut versuchst."
@@ -2977,6 +2981,16 @@
       "memory": "Memory",
       "engine": "Moderation"
     },
+    "archetype": {
+      "deliveredBy": "Geliefert vom Archetyp-Plugin „{plugin}“. omadia setzt für jeden Agenten in diesem Abschnitt durch, was der Archetyp hinzufügt und weglässt.",
+      "deliveredByKernel": "In omadia eingebaut.",
+      "notDelivered": "Kein installiertes Plugin liefert den Archetyp „{id}“ mehr. Seine Agenten bleiben hier, omadia gibt ihnen aber nichts, bis ein Archetyp-Plugin ihn wieder liefert.",
+      "empty": "Noch keine Agenten des Archetyps „{name}“. Oben lässt sich einer anlegen.",
+      "createHeading": "Agent des Archetyps „{name}“ anlegen",
+      "createHint": "Der Archetyp steht nach dem Anlegen fest. Identität und Persönlichkeit werden auf der Seite des Agenten eingestellt, die sich danach öffnet.",
+      "createSubmit": "Anlegen",
+      "deleteConfirm": "Agent „{slug}“ wirklich löschen?"
+    },
     "facilitator": {
       "heading": "Facilitatoren",
       "intro": "Ein Facilitator moderiert ausschließlich: Entscheidungen, Abstimmungen, Priorisierungen, Retrospektiven. Er arbeitet für keine einzelne Person, hat keine inhaltliche Meinung und tritt in Teams unter eigenem Namen auf.",
@@ -4370,7 +4384,8 @@
         "agent": "Agents",
         "channel": "Channels",
         "tool": "Tools",
-        "extension": "Extensions"
+        "extension": "Extensions",
+        "archetype": "Archetypen"
       },
       "unknownLoadError": "Unbekannter Fehler beim Laden des Katalogs.",
       "filterCategoryAria": "Kategorie filtern",
@@ -4588,6 +4603,42 @@
       "drawerKicker": "Einrichtung",
       "close": "Schließen",
       "creatingJob": "Job wird erstellt …",
+      "archetypeConfirm": {
+        "title": "Archetyp „{name}“ hinzufügen?",
+        "lead": "„{plugin}“ ist ein Archetyp-Plugin. Es fügt dieser Instanz eine neue Art von Agent hinzu: „{name}“. Agenten dieses Archetyps legst du im Agenten-Verzeichnis an; das Plugin selbst wird keinem Agenten angehängt.",
+        "addsHeading": "Was der Archetyp hinzufügt",
+        "addsEmpty": "Nichts über das hinaus, was jeder Agent hat.",
+        "omitsHeading": "Was seine Agenten nie erhalten",
+        "omitsEmpty": "Nichts: Seine Agenten können alles erhalten, was ein Standard-Agent erhalten kann.",
+        "requiresHeading": "Was ein solcher Agent braucht",
+        "note": "omadia setzt diese Listen für jeden Agenten des Archetyps durch. Sie stammen aus dem Plugin und lassen sich nicht je Agent ändern.",
+        "confirm": "„{name}“ hinzufügen und installieren",
+        "confirming": "Installation wird gestartet …",
+        "cancel": "Abbrechen",
+        "unknownEntry": "{code} (in dieser Version ohne Beschreibung)",
+        "additions": {
+          "conversation_messages": "Sein Plugin erhält jede Nachricht, die Menschen in einem von einem solchen Agenten moderierten Gespräch schreiben, nicht nur Nachrichten mit Erwähnung.",
+          "agent_turn": "Sein Plugin lässt einen solchen Agenten von sich aus antworten; jede Antwort läuft über omadia, mit der Modellrichtlinie des Agenten und dem Privacy Shield.",
+          "own_identity_send": "Sein Plugin postet und schreibt Direktnachrichten unter der eigenen Kanalidentität des Agenten, in den von ihm moderierten Gesprächen und an deren Teilnehmer.",
+          "session_capabilities": "Sein Plugin erfährt, was der Kanal einer Live-Sitzung kann (Umfragen, Karten, Transkript)."
+        },
+        "omissions": {
+          "plugin_grant": "Fähigkeits-Plugins (Zugriff auf Unternehmenssysteme).",
+          "tool_grant": "Werkzeuge außer denen seines eigenen Archetyp-Plugins.",
+          "memory": "Allgemeines Gedächtnis über Gespräche hinweg.",
+          "default_agent": "Die Rolle des Standard-Ansprechpartners.",
+          "channel_binding": "Eine Zuordnung zu einem Kanal über einen fremden Bot.",
+          "persona_skill": "Arbeitsmodi.",
+          "fast_path": "Die Schnellspur.",
+          "agent_to_agent": "Gespräche mit anderen Agenten.",
+          "consultation": "Rückfragen an andere Agenten und Rückfragen von ihnen.",
+          "sub_agent": "Interne Helfer und das Anhängen an einen anderen Agenten.",
+          "assistance": "Die Arbeit als Assistent einer einzelnen Person."
+        },
+        "requirements": {
+          "own_channel_identity": "Eine eigene Identität im Kanal, in dem er arbeitet (in Teams ein eigener Bot). Er spricht nie über die Identität eines anderen Agenten."
+        }
+      },
       "setupGuide": "Installationsanleitung",
       "noConfigNeeded": "Dieses Plugin erfordert keine Konfiguration — bestätige die Installation rechts unten.",
       "secretsNote1": "Secrets werden ausschließlich im per-Agent-Vault abgelegt.",

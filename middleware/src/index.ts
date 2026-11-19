@@ -116,7 +116,7 @@ import {
   type PluginVerdictLookup,
 } from './services/pluginVerdict.js';
 import { ScheduleWorker } from './scheduler/scheduleWorker.js';
-import { directDatabaseUrl, isPooledDatabaseUrl, resolveScopedBundle } from '@omadia/orchestrator';
+import { archetypeAdds, archetypeOf, directDatabaseUrl, isPooledDatabaseUrl, resolveScopedBundle } from '@omadia/orchestrator';
 import type {
   ConfigStore as MultiOrchestratorConfigStore,
   OrchestratorRegistry as MultiOrchestratorRegistry,
@@ -429,6 +429,8 @@ import { publishAgentTurnService } from './agents/agentTurnWiring.js';
 import { ChannelProviderRegistry } from './channels/sessionCapabilities/providerRegistry.js';
 import { wireSessionCapabilities } from './channels/sessionCapabilities/wiring.js';
 import { attachEngineToFacilitators } from './platform/facilitatorEngineAttach.js';
+import { createArchetypeRegistrySync } from './platform/archetypeRegistrySync.js';
+import { createOperatorArchetypesRouter } from './routes/operatorArchetypes.js';
 import {
   wireConversationMessages,
   type ConversationMessagesWiring,
@@ -1152,6 +1154,13 @@ async function main(): Promise<void> {
   const ownIdentityPostLog = createOwnIdentityPostLog();
   const facilitationSqlGrants = createSqlGrantView({
     listGranted: async () => (await sqlGrantStore.listAll()).map((row) => row.pluginId),
+    log: (m) => console.log(m),
+  });
+  // #2088 — an installed plugin of kind `archetype` registers the archetype
+  // its manifest describes; see `platform/archetypeRegistrySync.ts`.
+  const archetypeRegistry = createArchetypeRegistrySync({
+    sources: () => ({ installedRegistry, catalog: pluginCatalog }),
+    rows: () => serviceRegistry.get<Pool>('graphPool'),
     log: (m) => console.log(m),
   });
   const facilitationEngineSources = (): FacilitationEngineSources => ({
@@ -1915,6 +1924,9 @@ async function main(): Promise<void> {
       // The operator's SQL grant is what makes a declared engine THE engine;
       // read it fresh, since this runs right after an install or a grant.
       await facilitationSqlGrants.refresh();
+      // Which archetypes are delivered, and by whom, before anything is
+      // attached or rebuilt on that basis.
+      await archetypeRegistry.sync();
       await attachEngineToFacilitators(store, facilitationEngineSources(), (m) => console.log(m));
       // Always: the registry rebuilds the facilitators whose effective engine
       // grant changed, with or without a new row (boot, grant, revoke).
@@ -1964,6 +1976,9 @@ async function main(): Promise<void> {
     if (pluginId === ORCHESTRATOR_PLUGIN_ID) return;
     // #2043 — an uninstalled engine ends its message subscriptions at once.
     void conversationMessagesRef.current?.reconcileNow();
+    // #2088 — an uninstalled archetype plugin no longer delivers its
+    // archetype (the kernel's own descriptor, where it has one, applies again).
+    await archetypeRegistry.sync();
     const store =
       serviceRegistry.get<MultiOrchestratorConfigStore>('configStore');
     const reg =
@@ -2058,6 +2073,17 @@ async function main(): Promise<void> {
           await channelRegistryRef.activate(agentId);
           // #1491 — every kind is attached, like first boot does.
           await propagatePluginInstall(agentId, attach);
+          return;
+        case 'archetype':
+          // #2088 — runs in the extension runtime. Its archetype is registered
+          // BEFORE the activation and whatever the activation's outcome: the
+          // descriptor says what agents of the archetype never get, and that
+          // holds for a plugin that did not start (it usually has no database
+          // grant yet at this point).
+          await archetypeRegistry.sync();
+          await toolPluginRuntime.activate(agentId);
+          // Never attached to the default agent (`attachablePluginIds`).
+          await propagatePluginInstall(agentId, { attach: false });
           return;
         case 'tool':
         case 'extension':
@@ -4396,6 +4422,19 @@ async function main(): Promise<void> {
   );
 
   // Phase B+ — operator channels dashboard.
+  // #2088 — the archetypes agents can be created of, for the agent directory.
+  app.use(
+    '/api/v1/operator/archetypes',
+    requireAuth,
+    createOperatorArchetypesRouter({
+      sources: () => ({ installedRegistry, catalog: pluginCatalog }),
+      listAgentArchetypes: async () => {
+        const store = serviceRegistry.get<MultiOrchestratorConfigStore>('configStore');
+        if (!store) return undefined;
+        return (await store.listAgents()).map((agent) => archetypeOf(agent));
+      },
+    }),
+  );
   app.use(
     '/api/v1/operator/channels',
     requireAuth,
@@ -7085,6 +7124,8 @@ async function main(): Promise<void> {
     identityFor: (agentSlug: string, channelType: string) =>
       getRegistry()?.channelIdentityFor(agentSlug, channelType),
     ...(conversationMessages ? { subscriptions: conversationMessages.hub } : {}),
+    archetypeAddsOwnIdentitySend: (agentSlug: string) =>
+      archetypeAdds(getRegistry()?.get(agentSlug)?.agent, 'own_identity_send'),
     getRoster: (
       channelType: string,
       conversationId: string,

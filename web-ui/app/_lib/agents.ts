@@ -1,3 +1,4 @@
+import { parseOperatorArchetypes, type OperatorArchetypeDto } from './archetypes';
 import { ApiError, rscTimeoutSignal } from './api';
 import type { LocalizedMarkdown } from './storeTypes';
 import type { TeamsTargetKind } from './teamsInstallTarget';
@@ -145,6 +146,19 @@ async function callJson<T>(
 
 export async function listOperatorAgents(): Promise<OperatorAgentsListDto> {
   return callJson<OperatorAgentsListDto>('/v1/operator/agents');
+}
+
+/**
+ * #2088 — the archetypes agents can be created of. `null` when the
+ * middleware does not have the endpoint (it predates it) or does not answer:
+ * the directory then shows what it always showed.
+ */
+export async function listOperatorArchetypes(): Promise<OperatorArchetypeDto[] | null> {
+  try {
+    return parseOperatorArchetypes(await callJson<unknown>('/v1/operator/archetypes'));
+  } catch {
+    return null;
+  }
 }
 
 /** Dashboard MCP health summary (epic #459): how many servers are registered,
@@ -1198,7 +1212,8 @@ export type PluginKind =
   | 'integration'
   | 'channel'
   | 'tool'
-  | 'extension';
+  | 'extension'
+  | 'archetype';
 
 export type SetupFieldType =
   | 'string'

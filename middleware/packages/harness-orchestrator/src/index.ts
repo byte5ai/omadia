@@ -131,12 +131,16 @@ export {
 export type { AgentKind, FacilitatorOmission } from './registry/agentKind.js';
 // #2088 — archetypes: the registry and the one question call sites ask.
 export {
+  ARCHETYPE_ADDITIONS,
   ARCHETYPE_OMISSIONS,
+  ARCHETYPE_REQUIREMENTS,
   ArchetypeOmissionError,
   FACILITATOR_ARCHETYPE,
   STANDARD_ARCHETYPE,
+  archetypeAdds,
   archetypeOf,
   archetypeOmits,
+  archetypeRequires,
   assertArchetypeAllows,
   getArchetype,
   isArchetype,
@@ -146,8 +150,11 @@ export {
   registerArchetype,
 } from './registry/archetype.js';
 export type {
+  ArchetypeAddition,
   ArchetypeBearer,
   ArchetypeDescriptor,
+  ArchetypeRequirement,
+  ArchetypeText,
   ArchetypeId,
   ArchetypeOmission,
 } from './registry/archetype.js';
@@ -177,6 +184,7 @@ export {
   FACILITATOR_NEUTRALITY_BLOCK,
   FACILITATOR_NEUTRALITY_HEADING,
   applyArchetypeContract,
+  roleContractOf,
   withFacilitatorNeutrality,
 } from './registry/facilitatorNeutrality.js';
 export {

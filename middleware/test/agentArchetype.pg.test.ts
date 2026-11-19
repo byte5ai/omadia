@@ -174,4 +174,31 @@ describe('agents.archetype (pg, migration 0070)', { skip: !pgAvailable }, () => 
     await assert.rejects(store.setFallbackAgentId(moderator.id), ConfigValidationError);
     assert.equal((await store.setFallbackAgentId(plain.id)).fallbackAgentId, plain.id);
   });
+
+  it('0071: a third archetype can exist once it is registered; kind follows it; unregistered stays refused', async () => {
+    const open = await sql('0071_agent_archetypes_open.sql');
+    await pool.query(open);
+    await pool.query(open);
+    // Still refused while nobody registered it: the registry is the vocabulary.
+    await assert.rejects(
+      pool.query(`INSERT INTO agents (slug, name, archetype) VALUES ('c1', 'C1', 'coach')`),
+      (err: { constraint?: string }) => err.constraint === 'agents_archetype_fkey',
+    );
+    await pool.query(`INSERT INTO agent_archetypes (id, source) VALUES ('coach', '@acme/archetype-coach')`);
+    const coach = await store.createAgent({ slug: 'c1', name: 'C1', archetype: 'coach' });
+    assert.equal(coach.archetype, 'coach');
+    assert.deepEqual((await rows()).filter(([slug]) => slug === 'c1'), [['c1', 'coach', 'coach']]);
+    // The two known archetypes read exactly as before.
+    const mara = await store.createAgent({ slug: 'mara', name: 'Mara', archetype: 'facilitator' });
+    assert.deepEqual([mara.kind, mara.archetype], ['facilitator', 'facilitator']);
+    // Fixed at creation, like every archetype.
+    await assert.rejects(
+      pool.query(`UPDATE agents SET archetype = 'standard' WHERE slug = 'c1'`),
+      (err: { constraint?: string }) => err.constraint === 'agents_archetype_immutable',
+    );
+    // A registry row that agents reference cannot be removed from under them.
+    await assert.rejects(pool.query(`DELETE FROM agent_archetypes WHERE id = 'coach'`));
+    await pool.query(`DELETE FROM agents WHERE slug = 'c1'`);
+    await pool.query(`DELETE FROM agent_archetypes WHERE id = 'coach'`);
+  });
 });

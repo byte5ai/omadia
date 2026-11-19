@@ -22,6 +22,7 @@ import { parsePrincipal } from '@omadia/channel-sdk';
 
 import {
   markOwnIdentityMessage,
+  ownIdentitySendNotAdded,
   resolveChannelUser,
   unreachable,
   type OwnIdentityDeps,
@@ -83,6 +84,8 @@ export async function sendDirectAsOwnIdentity(
   }
   const principalId = principal.userId;
   const own = deps.ownIdentity;
+  const notAdded = ownIdentitySendNotAdded(own, input.asAgentSlug);
+  if (notAdded) return report(principalId, unreachable('not_permitted', notAdded));
   const identity = own?.identityFor(input.asAgentSlug, input.channelType);
   if (!own || !identity) {
     return report(

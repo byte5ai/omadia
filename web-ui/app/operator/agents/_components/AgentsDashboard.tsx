@@ -25,6 +25,8 @@ import {
   triggerAgentReload,
   FALLBACK_AGENT_SLUG,
   FACILITATOR_ARCHETYPE,
+  STANDARD_ARCHETYPE,
+  archetypeOfAgent,
   isFacilitatorAgent,
   isModelRef,
   type OperatorAgentDto,
@@ -33,6 +35,8 @@ import {
   type ResolveChannelResponse,
 } from '../../../_lib/agents';
 
+import type { OperatorArchetypeDto } from '../../../_lib/archetypes';
+import { ArchetypeSection } from './ArchetypeSection';
 import { FacilitatorsSection, type PluginNavLink } from './FacilitatorsSection';
 import { PluginsDnd } from './PluginsDnd';
 import { useFacilitatorRefusalMessage } from './useFacilitatorCopy';
@@ -41,6 +45,12 @@ interface AgentsDashboardProps {
   initial: OperatorAgentsListDto;
   /** #2066 — plugin nav entries, for the link to the engine's facilitations view. */
   pluginNav?: readonly PluginNavLink[];
+  /**
+   * #2088 — the archetypes registered on this instance, one directory section
+   * each. `null`/absent = the middleware does not report them (it predates
+   * the endpoint): the facilitator section is shown as it always was.
+   */
+  archetypes?: readonly OperatorArchetypeDto[] | null;
 }
 
 /**
@@ -61,6 +71,7 @@ interface AgentsDashboardProps {
 export function AgentsDashboard({
   initial,
   pluginNav,
+  archetypes,
 }: AgentsDashboardProps): React.ReactElement {
   const t = useTranslations('operatorAgents');
   const router = useRouter();
@@ -92,13 +103,33 @@ export function AgentsDashboard({
   // standard orchestrator and never gets plugins, so it does not appear in
   // the orchestrator list, its count or the fallback picker.
   const standardAgents = useMemo(
-    () => initial.agents.filter((a) => !isFacilitatorAgent(a)),
+    () => initial.agents.filter((a) => archetypeOfAgent(a) === STANDARD_ARCHETYPE),
     [initial.agents],
   );
   const facilitators = useMemo(
     () => initial.agents.filter((a) => isFacilitatorAgent(a)),
     [initial.agents],
   );
+  // #2088 — one section per archetype other than `standard`: every archetype
+  // the instance registers, and every archetype an existing agent still has
+  // (its plugin may be gone; the agents are not).
+  const archetypeSections = useMemo(() => {
+    const registered = new Map((archetypes ?? []).map((a) => [a.id, a]));
+    const ids = new Set<string>(
+      archetypes ? archetypes.filter((a) => !a.built_in).map((a) => a.id) : [FACILITATOR_ARCHETYPE],
+    );
+    for (const agent of initial.agents) {
+      const id = archetypeOfAgent(agent);
+      if (id !== STANDARD_ARCHETYPE) ids.add(id);
+    }
+    return [...ids]
+      .sort((a, b) => Number(b === FACILITATOR_ARCHETYPE) - Number(a === FACILITATOR_ARCHETYPE) || a.localeCompare(b))
+      .map((id) => ({
+        id,
+        archetype: registered.get(id),
+        agents: initial.agents.filter((agent) => archetypeOfAgent(agent) === id),
+      }));
+  }, [archetypes, initial.agents]);
 
   const fallbackSlug =
     initial.agents.find((a) => a.id === initial.fallback_agent_id)?.slug ??
@@ -250,32 +281,59 @@ export function AgentsDashboard({
         )}
       </section>
 
-      <FacilitatorsSection
-        facilitators={facilitators}
-        {...(pluginNav ? { pluginNav } : {})}
-        disabled={pending || !!busy}
-        onCreate={(input) =>
-          run('create-facilitator', async () => {
-            const created = await createOperatorAgent({
-              ...input,
-              archetype: FACILITATOR_ARCHETYPE,
-            });
-            // Avatar, personality and the Teams identity are set on the
-            // facilitator's own page — that is the rest of "create".
-            router.push(`/operator/agents/${encodeURIComponent(created.slug)}`);
-          })
-        }
-        onToggleStatus={(agent) =>
-          run(`patch:${agent.slug}`, () =>
-            patchOperatorAgent(agent.slug, {
-              status: agent.status === 'enabled' ? 'disabled' : 'enabled',
-            }),
-          )
-        }
-        onDelete={(agent) =>
-          run(`delete:${agent.slug}`, () => deleteOperatorAgent(agent.slug))
-        }
-      />
+      {archetypeSections.map((section) =>
+        section.id === FACILITATOR_ARCHETYPE ? (
+              <FacilitatorsSection
+            key={section.id}
+            facilitators={facilitators}
+            {...(pluginNav ? { pluginNav } : {})}
+            disabled={pending || !!busy}
+            onCreate={(input) =>
+              run('create-facilitator', async () => {
+                const created = await createOperatorAgent({
+                  ...input,
+                  archetype: FACILITATOR_ARCHETYPE,
+                });
+                // Avatar, personality and the Teams identity are set on the
+                // facilitator's own page — that is the rest of "create".
+                router.push(`/operator/agents/${encodeURIComponent(created.slug)}`);
+              })
+            }
+            onToggleStatus={(agent) =>
+              run(`patch:${agent.slug}`, () =>
+                patchOperatorAgent(agent.slug, {
+                  status: agent.status === 'enabled' ? 'disabled' : 'enabled',
+                }),
+              )
+            }
+            onDelete={(agent) =>
+              run(`delete:${agent.slug}`, () => deleteOperatorAgent(agent.slug))
+            }
+          />
+        ) : (
+          <ArchetypeSection
+            key={section.id}
+            archetypeId={section.id}
+            {...(section.archetype ? { archetype: section.archetype } : {})}
+            agents={section.agents}
+            disabled={pending || !!busy}
+            onCreate={(input) =>
+              run(`create-archetype:${section.id}`, async () => {
+                const created = await createOperatorAgent({ ...input, archetype: section.id });
+                router.push(`/operator/agents/${encodeURIComponent(created.slug)}`);
+              })
+            }
+            onToggleStatus={(agent) =>
+              run(`patch:${agent.slug}`, () =>
+                patchOperatorAgent(agent.slug, {
+                  status: agent.status === 'enabled' ? 'disabled' : 'enabled',
+                }),
+              )
+            }
+            onDelete={(agent) => run(`delete:${agent.slug}`, () => deleteOperatorAgent(agent.slug))}
+          />
+        ),
+      )}
     </div>
   );
 }

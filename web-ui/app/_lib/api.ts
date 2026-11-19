@@ -855,10 +855,14 @@ export async function getStorePlugin(id: string): Promise<StoreGetResponse> {
 
 export async function createInstallJob(
   pluginId: string,
+  /** #2088 — `confirmArchetype`: the operator's explicit confirmation that a
+   *  plugin of kind `archetype` adds a new kind of agent. Without it the
+   *  middleware answers 409 `install.archetype_confirmation_required`. */
+  opts: { confirmArchetype?: boolean } = {},
 ): Promise<InstallCreateResponse> {
   return postJson<InstallCreateResponse>(
     `/v1/install/plugins/${encodeURIComponent(pluginId)}`,
-    undefined,
+    opts.confirmArchetype === true ? { confirm_archetype: true } : undefined,
   );
 }
 

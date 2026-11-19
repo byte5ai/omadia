@@ -216,7 +216,12 @@ export class InstallService {
   // Create — derives the setup schema from the plugin manifest
   // -------------------------------------------------------------------------
 
-  create(pluginId: string): InstallJob {
+  /**
+   * `opts.confirmedArchetype` (#2088): the operator's explicit confirmation
+   * that a new kind of agent is added. Required for a plugin of kind
+   * `archetype`, ignored for every other kind.
+   */
+  create(pluginId: string, opts: { readonly confirmedArchetype?: boolean } = {}): InstallJob {
     const entry = this.deps.catalog.get(pluginId);
     if (!entry) {
       throw new InstallError(
@@ -253,6 +258,20 @@ export class InstallService {
         compat_core: coreRefusal.compat_core,
         host_plugin_api: coreRefusal.host_plugin_api,
       });
+    }
+
+    // #2088 — an archetype plugin adds a new kind of agent to the instance:
+    // what agents of it may do and never get is decided by its descriptor,
+    // not by per-agent grants. That is installed only on an explicit
+    // confirmation, and the refusal carries what is being confirmed so the
+    // UI shows exactly the descriptor the kernel will enforce.
+    if (entry.plugin.kind === 'archetype' && opts.confirmedArchetype !== true) {
+      throw new InstallError(
+        'install.archetype_confirmation_required',
+        `'${pluginId}' adds the agent archetype '${entry.plugin.archetype?.id ?? '?'}' to this instance; confirm the install explicitly`,
+        409,
+        { archetype: entry.plugin.archetype ?? null },
+      );
     }
 
     // Dependency gate: every parent in depends_on must already be installed.

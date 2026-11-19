@@ -24,6 +24,7 @@ import type { ConversationSendCapabilities } from '@omadia/plugin-api';
 import type { ConversationSendRegistry } from './conversationSendRegistry.js';
 import {
   markOwnIdentityMessage,
+  ownIdentitySendNotAdded,
   readPoll,
   resolveMentions,
   unreachable,
@@ -131,6 +132,8 @@ export function createConversationSendService(deps: {
     callerPluginId: string | undefined,
   ): Promise<TargetedDeliveryOutcome> {
     const own = deps.ownIdentity;
+    const notAdded = ownIdentitySendNotAdded(own, input.agentSlug);
+    if (notAdded) return unreachable('not_permitted', notAdded);
     const identity = own?.identityFor(input.agentSlug, input.channelType);
     if (!own || !identity) {
       return unreachable(
@@ -187,6 +190,10 @@ export function createConversationSendService(deps: {
     action: string,
   ): { channelKey: string } | Extract<TargetedDeliveryOutcome, { outcome: 'unreachable' }> {
     const own = deps.ownIdentity;
+    const notAdded = ownIdentitySendNotAdded(own, scope.agentSlug);
+    if (notAdded) {
+      return unreachable('not_permitted', notAdded) as Extract<TargetedDeliveryOutcome, { outcome: 'unreachable' }>;
+    }
     const identity = own?.identityFor(scope.agentSlug, scope.channelType);
     if (!own || !identity) {
       return unreachable(

@@ -157,7 +157,9 @@ export type PluginKind =
   | 'integration'
   | 'channel'
   | 'tool'
-  | 'extension';
+  | 'extension'
+  /** #2088 — delivers an agent archetype; see `Plugin.archetype`. */
+  | 'archetype';
 
 export type ChannelTransportKind = 'webhook' | 'websocket' | 'long-poll';
 

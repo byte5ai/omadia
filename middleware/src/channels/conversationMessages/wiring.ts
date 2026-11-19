@@ -2,7 +2,7 @@
 // builds the hub over Postgres, publishes the per-plugin service and starts
 // the retention job. Called once, from inside the database block.
 
-import { FACILITATOR_ARCHETYPE, isArchetype } from '@omadia/orchestrator';
+import { archetypeAdds } from '@omadia/orchestrator';
 import type { Pool } from 'pg';
 
 import { formatPrincipal, makePrincipal } from '@omadia/channel-sdk';
@@ -93,7 +93,7 @@ export function createSubscriptionGroundCheck(deps: {
     const agent = await store.getAgentById(subscription.agentId);
     if (!agent) return 'the agent was deleted';
     if (agent.status !== 'enabled') return 'the agent is disabled';
-    if (!isArchetype(agent, FACILITATOR_ARCHETYPE)) return 'the agent is not a facilitator';
+    if (!archetypeAdds(agent, 'conversation_messages')) return 'the agent is not a facilitator';
     const identities = await store.listChannelIdentities();
     const own = identities.find(
       (identity) => identity.agentId === agent.id && identity.channelType === subscription.channelType,
