@@ -432,6 +432,7 @@ import { wireSessionCapabilities } from './channels/sessionCapabilities/wiring.j
 import { attachEngineToFacilitators } from './platform/facilitatorEngineAttach.js';
 import { createArchetypeRegistrySync } from './platform/archetypeRegistrySync.js';
 import { createArchetypeDatabase } from './platform/archetypeDatabase.js';
+import { pluginRuntimeOf } from './plugins/pluginRuntimeOf.js';
 import { createAgentEndOfService, logOwedSystemNotice } from './platform/agentEndOfService.js';
 import { guardArchetypePluginUninstall } from './platform/archetypeUninstallGuard.js';
 import { createOperatorArchetypesRouter } from './routes/operatorArchetypes.js';
@@ -2225,20 +2226,19 @@ async function main(): Promise<void> {
           );
         }
       }
-      const kind = pluginCatalog.get(agentId)?.plugin.kind ?? 'agent';
-      switch (kind) {
+      switch (pluginRuntimeOf(pluginCatalog.get(agentId)?.plugin.kind)) {
         case 'channel':
           if (channelRegistryRef?.isActive(agentId)) {
             await channelRegistryRef.deactivate(agentId);
           }
           return;
         case 'tool':
-        case 'extension':
-        case 'integration':
+          // #2088 — includes kind `archetype`. It used to fall through to the
+          // agent runtime, which knows no such plugin: its tools, routes and
+          // services stayed registered after an uninstall.
           await toolPluginRuntime.deactivate(agentId);
           return;
-        case 'agent':
-        default: {
+        case 'agent': {
           // Capture the tool name BEFORE deactivate drops it from the runtime —
           // the per-Agent orchestrators must be told which tool to unregister.
           const removedToolName =
@@ -5848,8 +5848,8 @@ async function main(): Promise<void> {
       // here would turn the service's success write into a lie for every
       // entry this hook silently declined to touch.
       onPackageReady: async (agentId) => {
-        const kind = pluginCatalog.get(agentId)?.plugin.kind ?? 'agent';
-        switch (kind) {
+        const kind = pluginCatalog.get(agentId)?.plugin.kind;
+        switch (pluginRuntimeOf(kind)) {
           case 'channel': {
             if (!channelRegistryRef) {
               // #1452 — a throw, not a warn-and-return. The caller records
@@ -5885,17 +5885,21 @@ async function main(): Promise<void> {
             }
             return;
           }
-          case 'tool':
-          case 'extension':
-          case 'integration': {
+          case 'tool': {
             if (toolPluginRuntime.isActive(agentId)) {
               await toolPluginRuntime.deactivate(agentId);
             }
+            // #2088 — an update may be the version that turns the plugin into
+            // an archetype plugin, or one that changes its descriptor. Same
+            // order as a first install: the registry first, whatever the
+            // activation's outcome. (Kind `archetype` used to fall through to
+            // the agent runtime here: the old version kept running and the new
+            // one failed on its duplicate services.)
+            if (kind === 'archetype') await archetypeRegistry.sync();
             await toolPluginRuntime.activate(agentId);
             return;
           }
-          case 'agent':
-          default: {
+          case 'agent': {
             // If v1 is still active, deactivate cleanly first — v2 has a
             // fresh DomainTool with potentially changed sub-tools.
             if (dynamicAgentRuntime.isActive(agentId)) {
