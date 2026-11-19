@@ -36,6 +36,14 @@ changelog.
 
 ## [Unreleased]
 
+### Added — A delivered private message names its conversation (#2091, epic #2043)
+
+- When a facilitator writes to one person, the result now carries the
+  private conversation the message went into, if the channel reports it
+  (Teams does from 0.39.0). The plugin can use it to match a later reply in
+  that conversation to the reminder it sent. Additive: plugin-api 1.71.0,
+  channel-sdk 0.3.7.
+
 ### Added — Transcript segments as inbound events, contract only (#2089, epic #2043)
 
 - What is said in a live session can be delivered to a facilitation as
