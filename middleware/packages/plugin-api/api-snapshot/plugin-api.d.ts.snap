@@ -343,6 +343,7 @@ at: number;
 }
 
 // ===== conversationMessages.d.ts =====
+import type { SendAuthorization } from './conversationSend.js';
 import type { CardAnswerValue } from './questionCard.js';
 export declare const CONVERSATION_MESSAGES_SERVICE_NAME = "conversationMessages";
 export type ConversationMessageKind = 'created' | 'edited' | 'deleted' | 'reaction' | 'card_answer';
@@ -448,7 +449,22 @@ bindMessage(scope: ProcessMessageScope, ref: {
 messageId?: string;
 cardId?: string;
 }): Promise<boolean>;
+onPrivateMessage?(agentSlug: string, handler: (request: PrivateMessageRequest) => Promise<PrivateMessageReply>): () => void;
 }
+export interface PrivateMessageRequest {
+agentSlug: string;
+channelType: string;
+principalId: string;
+text: string;
+processIds: readonly string[];
+}
+export type PrivateMessageReply = {
+handled: false;
+} | {
+handled: true;
+text: string;
+authorization: SendAuthorization;
+};
 
 // ===== conversationSend.d.ts =====
 import type { ExecutionPhase, ExecutionPurpose, ExecutionRefusalCode } from './executionAuthorization.js';

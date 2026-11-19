@@ -678,6 +678,31 @@ describe('#2090 execution scopes (pg, migration 0073)', { skip: !pgAvailable }, 
     });
   });
 
+  describe('#2089 who may be answered in a private chat', () => {
+    it('lists the processes whose open scopes name the person, and none after they ended', async () => {
+      const a = await activeProcess();
+      const b = await activeProcess();
+      const finn = await activeProcess(undefined, 'finn');
+      const anna = { kind: 'person' as const, channelType: 'teams', principalId: 'AAD-Anna' };
+      await engine.setPeople(a.scope.id, [anna]);
+      await engine.setPeople(b.scope.id, [{ ...anna, restriction: 'status_only' }]);
+      await engine.setPeople(finn.scope.id, [anna]);
+      const of = (agentSlug: string, principalId: string, channelType = 'teams') =>
+        store.processesListingPerson({ agentId: agents.get(agentSlug)!.id, channelType, principalId });
+      // Other tests of this suite left scopes of 'mara' open: look at ours.
+      const ours = [a.processId, b.processId, finn.processId];
+      const listed = async (agentSlug: string): Promise<string[]> =>
+        (await of(agentSlug, 'aad-anna')).map((p) => p.processId).filter((id) => ours.includes(id)).sort();
+      assert.deepEqual(await listed('mara'), [a.processId, b.processId].sort(), 'compared lower-cased, per agent');
+      assert.deepEqual(await of('mara', 'aad-bert'), []);
+      assert.deepEqual(await of('mara', 'aad-anna', 'slack'), []);
+      await engine.endScope(a.scope.id, 'closed');
+      await pool.query("UPDATE execution_scopes SET deadline = now() - interval '1 second' WHERE id = $1", [b.scope.id]);
+      assert.deepEqual(await listed('mara'), [], 'an ended scope and one past its deadline list nobody');
+      assert.deepEqual(await listed('finn'), [finn.processId]);
+    });
+  });
+
   describe('#2089 what a process may read', () => {
     it('follows its reservation and its open scopes', async () => {
       const { processId, home, scope } = await activeProcess();

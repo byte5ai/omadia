@@ -12,6 +12,7 @@ import type {
   ProcessMessageScope,
 } from '@omadia/plugin-api';
 
+import type { PrivateMessageRouter } from '../privateMessageRouter.js';
 import type { ConversationMessageHub } from './hub.js';
 
 export interface ConversationMessagesServiceDeps {
@@ -79,9 +80,18 @@ export function createProcessConversationMessagesService(deps: {
   readonly hub: ConversationMessageHub;
   /** `undefined` = the kernel itself, which runs no process. */
   readonly callerPluginId: string | undefined;
+  /** #2089 — private messages of participants; absent: not offered. */
+  readonly privateMessages?: Pick<PrivateMessageRouter, 'register'>;
 }): ProcessConversationMessagesService {
   const { hub, callerPluginId } = deps;
+  const router = deps.privateMessages;
   return {
+    ...(router && callerPluginId !== undefined
+      ? {
+          onPrivateMessage: (agentSlug: string, handler: Parameters<PrivateMessageRouter['register']>[2]) =>
+            router.register(callerPluginId, agentSlug, handler),
+        }
+      : {}),
     async subscribe(scope: ProcessMessageScope, options) {
       if (callerPluginId === undefined) {
         return { outcome: 'refused', code: 'unavailable', message: 'only a plugin subscribes a process' };
