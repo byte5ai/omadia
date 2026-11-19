@@ -206,3 +206,49 @@ describe('facilitation engine: operator routes', () => {
     assert.equal((await h.call('PATCH', '/agents/mara/plugins', { id: ENGINE, enabled: true })).status, 200);
   });
 });
+
+describe('#2088 an agent is not created or enabled while its archetype plugin did not start', () => {
+  const h = routesHarness();
+  const erroredEngine = (): void => {
+    h.archetypePlugins = { [ENGINE]: 'facilitator' };
+    h.installed = h.installed.map((entry) =>
+      entry.id === ENGINE ? ({ ...entry, status: 'errored', last_activation_error: 'database not available (not_isolated)' } as never) : entry,
+    );
+  };
+
+  it('refuses the creation with the plugin and its reason, and writes nothing', async () => {
+    erroredEngine();
+    const res = await h.call('POST', '/agents', { slug: 'nora', name: 'Nora', archetype: 'facilitator' });
+    assert.equal(res.status, 409);
+    assert.equal(res.json['error'], 'archetype_plugin_not_running');
+    assert.equal(res.json['plugin_id'], ENGINE);
+    assert.equal(res.json['archetype'], 'facilitator');
+    assert.equal(res.json['detail'], 'database not available (not_isolated)');
+    assert.ok(!h.agents.some((a) => a.slug === 'nora'));
+    assert.deepEqual(h.writes, []);
+  });
+
+  it('refuses to enable a disabled agent of that archetype, and still lets it be disabled', async () => {
+    erroredEngine();
+    const mara = h.agents.find((a) => a.slug === 'mara')!;
+    (mara as { status: string }).status = 'disabled';
+    const enable = await h.call('PATCH', '/agents/mara', { status: 'enabled' });
+    assert.equal(enable.status, 409);
+    assert.equal(enable.json['error'], 'archetype_plugin_not_running');
+    assert.deepEqual(h.writes, []);
+
+    (mara as { status: string }).status = 'enabled';
+    const disable = await h.call('PATCH', '/agents/mara', { status: 'disabled' });
+    assert.notEqual(disable.json['error'], 'archetype_plugin_not_running');
+  });
+
+  it('does not touch agents of other archetypes, nor a plugin that runs', async () => {
+    erroredEngine();
+    const standard = await h.call('POST', '/agents', { slug: 'ops', name: 'Ops' });
+    assert.equal(standard.status, 201);
+
+    h.installed = h.installed.map((entry) => (entry.id === ENGINE ? ({ ...entry, status: 'active' } as never) : entry));
+    const running = await h.call('POST', '/agents', { slug: 'nora', name: 'Nora', archetype: 'facilitator' });
+    assert.equal(running.status, 201);
+  });
+});

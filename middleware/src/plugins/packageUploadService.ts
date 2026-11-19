@@ -26,6 +26,7 @@ import {
   recordActivationSuccess,
   type InstalledRegistry,
 } from './installedRegistry.js';
+import { archetypeUpdateReasons } from './archetypeUpdateConfirmation.js';
 import type { PluginCatalog } from './manifestLoader.js';
 import { loadManifestFromPath } from './manifestLoader.js';
 import type { MigrationRunner } from './migrationRunner.js';
@@ -66,6 +67,14 @@ export interface IngestInput {
    * button — it is a confirmation, not a privilege.
    */
   allowDowngrade?: boolean;
+  /**
+   * #2088 — the caller's explicit confirmation of an update that makes an
+   * installed plugin an archetype plugin, changes what its archetype is
+   * allowed, or moves its tables into its own schema (see
+   * `archetypeUpdateConfirmation.ts`). Absent or false, such an ingest is
+   * refused with `package.archetype_confirmation_required`.
+   */
+  confirmArchetype?: boolean;
 }
 
 export interface IngestSuccess {
@@ -138,6 +147,7 @@ export const INGEST_CONFLICT_CODES: ReadonlySet<string> = new Set([
   'package.id_conflict_bundled',
   'package.duplicate_version',
   'package.downgrade_blocked',
+  'package.archetype_confirmation_required',
 ]);
 
 export interface PackageUploadServiceDeps {
@@ -500,6 +510,27 @@ export class PackageUploadService {
             toVersion: plugin.version,
           },
         );
+      }
+
+      // --- 9a'. Archetype confirmation on an update (#2088) ----------------
+      // Only for a plugin that is installed: `onPackageReady` swaps its
+      // running instance further down, with no install job (where a fresh
+      // install is confirmed) in between.
+      if (catalogEntry && this.deps.registry?.has(plugin.id) && input.confirmArchetype !== true) {
+        const reasons = archetypeUpdateReasons(catalogEntry.plugin, plugin);
+        if (reasons.length > 0) {
+          return fail(
+            'package.archetype_confirmation_required',
+            `Version ${plugin.version} of ${plugin.id} changes what the plugin is to this instance (${reasons.join(', ')}); confirm the update explicitly (confirm_archetype).`,
+            {
+              reasons,
+              archetype: plugin.archetype ?? null,
+              from_version: catalogEntry.plugin.version,
+              to_version: plugin.version,
+            },
+            { pluginId: plugin.id, fromVersion: catalogEntry.plugin.version, toVersion: plugin.version },
+          );
+        }
       }
 
       // --- 9b. Migration-Hook (onMigrate) ----------------------------------

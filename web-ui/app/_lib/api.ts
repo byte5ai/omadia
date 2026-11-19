@@ -1422,12 +1422,17 @@ export async function uploadPackage(
     /** #1455 — confirm replacing the installed version with an older one.
      *  Without it the route answers 409 `package.downgrade_blocked`. */
     allowDowngrade?: boolean;
+    /** #2088 — confirm an update that makes the installed plugin an archetype
+     *  plugin, changes its descriptor or moves its tables. Without it the
+     *  route answers 409 `package.archetype_confirmation_required`. */
+    confirmArchetype?: boolean;
   } = {},
 ): Promise<UploadPackageResponse> {
   const forwarded = await forwardCookieHeader();
   const form = new FormData();
   form.append('file', file, file.name);
   if (opts.allowDowngrade === true) form.append('allow_downgrade', '1');
+  if (opts.confirmArchetype === true) form.append('confirm_archetype', '1');
 
   // fetch() has no upload-progress in the browser; XHR is the only path that
   // exposes xhr.upload.onprogress. We fall back to fetch() in non-DOM
@@ -1730,8 +1735,16 @@ export interface RegistryInstallResponse {
 export async function installFromRegistry(
   id: string,
   version?: string,
+  /** #2088 — `confirmArchetype`: the operator confirmed an update that makes
+   *  the installed plugin an archetype plugin, changes its descriptor or
+   *  moves its tables. Without it the middleware answers 409
+   *  `package.archetype_confirmation_required`. */
+  opts: { confirmArchetype?: boolean } = {},
 ): Promise<RegistryInstallResponse> {
-  const suffix = version ? `?version=${encodeURIComponent(version)}` : '';
+  const query = new URLSearchParams();
+  if (version) query.set('version', version);
+  if (opts.confirmArchetype === true) query.set('confirm_archetype', '1');
+  const suffix = query.size > 0 ? `?${query.toString()}` : '';
   return postJson<RegistryInstallResponse>(
     `/v1/install/registry/${encodeURIComponent(id)}${suffix}`,
     undefined,

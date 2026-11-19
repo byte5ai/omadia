@@ -54,6 +54,23 @@ export function installedArchetypePlugins(sources: ArchetypePluginSources): Inst
   return out.sort((a, b) => a.pluginId.localeCompare(b.pluginId));
 }
 
+/**
+ * #2088 — the plugin that delivers `archetypeId` is installed but did not
+ * start. Its descriptor still applies (agents of the archetype stay limited
+ * by it), but there is nothing that would run such an agent's processes, so a
+ * new one is not created and a disabled one not enabled until the plugin
+ * runs. `undefined`: no such plugin, or it is not in that state.
+ */
+export function erroredArchetypePlugin(
+  sources: ArchetypePluginSources,
+  archetypeId: string,
+): { pluginId: string; reason: string | undefined } | undefined {
+  const plugin = archetypePluginFor(sources, archetypeId);
+  if (!plugin || plugin.status !== 'errored') return undefined;
+  const entry = sources.installedRegistry?.list().find((e) => e.id === plugin.pluginId);
+  return { pluginId: plugin.pluginId, reason: entry?.last_activation_error };
+}
+
 /** The installed plugin that delivers `archetypeId`, when exactly one does. */
 export function archetypePluginFor(
   sources: ArchetypePluginSources,

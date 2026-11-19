@@ -3009,7 +3009,6 @@
       "purging": "Wird entfernt",
       "purgeConfirm": "„{slug}“ endgültig entfernen? Identität, Freigaben, Zuordnungen und Zeitpläne werden mitgelöscht. Das lässt sich nicht rückgängig machen.",
       "purgeTypeSlug": "Dieser Agent wurde vor weniger als {days, plural, one {# Tag} other {# Tagen}} gelöscht. Tippe seinen Slug „{slug}“ ein, um ihn jetzt zu entfernen:",
-      "purgeMismatch": "Das ist nicht der Slug. Es wurde nichts entfernt.",
       "purgeableFrom": "ohne Eingabe des Slugs entfernbar ab {when}"
     },
     "archetype": {
@@ -3108,8 +3107,14 @@
       "detail": {
         "kindHeading": "Facilitator"
       },
-      "facilitationsViewLink": "Laufende Moderationen öffnen ({label})"
-    }
+      "facilitationsViewLink": "Laufende Moderationen öffnen ({label})",
+      "archetypePluginNotRunning": "Das Plugin {plugin}, das Agenten dieser Art betreibt, ist installiert, aber nicht gestartet. Öffne es im Store, sieh nach dem Grund und behebe ihn zuerst; bis dahin lässt sich kein solcher Agent anlegen oder aktivieren."
+    },
+    "confirmAction": {
+      "cancel": "Abbrechen",
+      "typedMismatch": "Das ist nicht der Slug."
+    },
+    "rehydrateConfirmYes": "Rehydrieren"
   },
   "builder": {
     "issueReport": {
@@ -4719,7 +4724,14 @@
       "removePackageYes": "Ja, entfernen",
       "removingPackage": "Wird entfernt …",
       "removePackageFailed": "Das Paket konnte nicht entfernt werden: {message}",
-      "uninstallBlockedByPolicy": "Deinstallation gesperrt: Das ist der einzige Privacy Shield, und die Org-Richtlinie OMADIA_PRIVACY_FORCE_GUARDED verlangt Maskierung."
+      "uninstallBlockedByPolicy": "Deinstallation gesperrt: Das ist der einzige Privacy Shield, und die Org-Richtlinie OMADIA_PRIVACY_FORCE_GUARDED verlangt Maskierung.",
+      "updateConfirmTitle": "{name} auf {version} aktualisieren?",
+      "updateConfirmIntro": "Dieses Update ändert mehr als die Version. Bestätige, dass du das willst:",
+      "updateReasonBecomesArchetype": "Das Plugin wird zum Archetyp-Plugin: Es fügt dieser Instanz eine Art von Agenten hinzu, und was diese Agenten dürfen und nie bekommen, legt das Plugin fest, nicht einzelne Freigaben pro Agent.",
+      "updateReasonDescriptorChanged": "Das Plugin ändert, was Agenten seines Archetyps dürfen und was sie nie bekommen.",
+      "updateReasonMovesDatabase": "Das Plugin verschiebt seine Tabellen in ein eigenes Datenbankschema. Das passiert einmal und lässt sich nicht rückgängig machen: Die jetzt installierte Version kann sie danach nicht mehr lesen.",
+      "updateConfirmYes": "Jetzt aktualisieren",
+      "updateConfirmNo": "Nicht aktualisieren"
     },
     "auditMode": {
       "singleHostHelp": "Nur die im Manifest deklarierten Hosts.",
@@ -4849,9 +4861,11 @@
         "zipForbiddenExtension": "Das Archiv enthält einen Dateityp, der in einem Plugin-Paket nicht erlaubt ist: {entry}.",
         "zipTooManyEntries": "Das Archiv enthält zu viele Dateien.",
         "zipFileTooLarge": "Eine Datei im Archiv ist entpackt zu groß.",
-        "zipTotalTooLarge": "Das entpackte Archiv überschreitet die Größengrenze."
+        "zipTotalTooLarge": "Das entpackte Archiv überschreitet die Größengrenze.",
+        "archetypeConfirmationRequired": "Version {toVersion} von {pluginId} ändert mehr als die Version der installierten {fromVersion}: Sie macht das Plugin zum Archetyp-Plugin, ändert, was Agenten seines Archetyps dürfen, oder verschiebt seine Tabellen endgültig in ein eigenes Datenbankschema. Bestätige das Update ausdrücklich."
       },
-      "replacedVersion": "Die zuvor hochgeladene Version {previous} wurde ersetzt."
+      "replacedVersion": "Die zuvor hochgeladene Version {previous} wurde ersetzt.",
+      "confirmArchetypeUpdate": "Trotzdem aktualisieren"
     },
     "setupForm": {
       "enable": "Aktivieren",
