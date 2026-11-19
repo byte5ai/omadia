@@ -279,6 +279,7 @@ at: number;
 }
 
 // ===== conversationMessages.d.ts =====
+import type { CardAnswerValue } from './questionCard.js';
 export declare const CONVERSATION_MESSAGES_SERVICE_NAME = "conversationMessages";
 export type ConversationMessageKind = 'created' | 'edited' | 'deleted' | 'reaction' | 'card_answer';
 export interface ConversationMessageAuthor {
@@ -305,11 +306,7 @@ reaction?: {
 name: string;
 removed: boolean;
 };
-cardAnswer?: {
-cardId: string;
-value: unknown;
-answererVerified?: boolean;
-};
+cardAnswer?: MessageCardAnswer;
 occurredAt: string;
 receivedAt: string;
 }
@@ -340,8 +337,17 @@ limit?: number;
 }): Promise<ConversationMessagePage>;
 isSubscribed?(scope: ConversationMessageScope): Promise<boolean>;
 }
+export interface MessageCardAnswer {
+cardId: string;
+value: unknown;
+answererVerified?: boolean;
+proposalId?: string;
+proposalVersion?: number;
+answers?: readonly CardAnswerValue[];
+}
 
 // ===== conversationSend.d.ts =====
+import type { CardSupport, CardUpdate, CardUpdateOutcome, QuestionCard } from './questionCard.js';
 export declare const CONVERSATION_SEND_SERVICE_NAME = "conversationSend";
 export interface ConversationSendRequest {
 agentSlug: string;
@@ -351,6 +357,7 @@ message: {
 text: string;
 mentions?: readonly ConversationSendMention[];
 poll?: SendPoll;
+card?: QuestionCard;
 };
 asOwnIdentity?: boolean;
 }
@@ -377,8 +384,23 @@ outcome: 'unreachable';
 code: string;
 message: string;
 };
+export interface ConversationSendCapabilities {
+asOwnIdentity: boolean;
+mentions: boolean;
+poll: boolean;
+card?: CardSupport;
+}
+export interface ConversationCardUpdateRequest {
+agentSlug: string;
+channelType: string;
+conversationId: string;
+cardMessageId: string;
+update: CardUpdate;
+}
 export interface ConversationSendService {
 sendToConversation(request: ConversationSendRequest): Promise<ConversationSendOutcome>;
+capabilities?(channelType: string): ConversationSendCapabilities | undefined;
+updateCard?(request: ConversationCardUpdateRequest): Promise<CardUpdateOutcome>;
 }
 
 // ===== datasetId.d.ts =====
@@ -679,6 +701,7 @@ export * from './transcription.js';
 export * from './transcriptionGuardrails.js';
 export * from './decisionModel.js';
 export * from './conversationSend.js';
+export * from './questionCard.js';
 export * from './conversationMessages.js';
 export * from './agentTurn.js';
 export * from './sessionCapabilities.js';
@@ -2667,6 +2690,124 @@ history(_id: string): Promise<readonly ProcessRecord[]>;
 }
 export declare function slugifyProcessTitle(title: string): string;
 export declare function buildProcessId(scope: string, title: string): string;
+
+// ===== questionCard.d.ts =====
+export declare const CARD_QUESTION_KINDS: readonly ["single_choice", "multiple_choice", "ranking", "consent", "assignment", "text", "number", "date"];
+export type CardQuestionKind = (typeof CARD_QUESTION_KINDS)[number];
+export declare const CARD_ID_PATTERN: RegExp;
+export interface CardOption {
+id: string;
+label: string;
+}
+interface CardQuestionBase {
+id: string;
+label: string;
+help?: string;
+required?: boolean;
+}
+export type CardQuestion = CardQuestionBase & ({
+kind: 'single_choice';
+options: readonly CardOption[];
+} | {
+kind: 'multiple_choice';
+options: readonly CardOption[];
+min?: number;
+max?: number;
+} | {
+kind: 'ranking';
+options: readonly CardOption[];
+ranks?: number;
+rankLabels?: readonly string[];
+} | {
+kind: 'consent';
+agreeLabel?: string;
+objectLabel?: string;
+reasonRequiredOnObject?: boolean;
+} | {
+kind: 'assignment';
+candidates: 'conversation_members' | readonly CardOption[];
+allowVolunteer?: boolean;
+} | {
+kind: 'text';
+multiline?: boolean;
+maxLength?: number;
+mode?: 'replace' | 'append';
+} | {
+kind: 'number';
+min?: number;
+max?: number;
+} | {
+kind: 'date';
+});
+export interface QuestionCard {
+cardId: string;
+proposalId?: string;
+proposalVersion?: number;
+title: string;
+intro?: string;
+questions: readonly CardQuestion[];
+closesAt?: string;
+changeable?: boolean;
+locale?: string;
+}
+export interface CardSupport {
+kinds: readonly CardQuestionKind[];
+maxQuestions: number;
+update: boolean;
+}
+export type CardAnswerValue = {
+questionId: string;
+} & ({
+kind: 'single_choice';
+optionId: string;
+} | {
+kind: 'multiple_choice';
+optionIds: readonly string[];
+}
+| {
+kind: 'ranking';
+ranking: readonly string[];
+} | {
+kind: 'consent';
+decision: 'agree' | 'object';
+reason?: string;
+} | {
+kind: 'assignment';
+assignee: 'self' | {
+kind: string;
+id: string;
+displayName?: string;
+};
+} | {
+kind: 'text';
+text: string;
+} | {
+kind: 'number';
+value: number;
+}
+| {
+kind: 'date';
+value: string;
+});
+export type CardUpdate =
+{
+state: 'closed';
+title: string;
+resultLines: readonly string[];
+closedAt: string;
+}
+| {
+state: 'open';
+card: QuestionCard;
+};
+export type CardUpdateOutcome = {
+outcome: 'updated';
+} | {
+outcome: 'unreachable';
+code: string;
+message: string;
+};
+export {};
 
 // ===== responseGuard.d.ts =====
 export declare const RESPONSE_GUARD_SERVICE_NAME = "responseGuard";

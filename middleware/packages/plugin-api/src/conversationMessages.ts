@@ -12,6 +12,8 @@
 // feature-detect (older kernels and installs without Postgres do not have it).
 // Shapes are plugin-api-own (dependency direction: channel-sdk -> plugin-api).
 
+import type { CardAnswerValue } from './questionCard.js';
+
 export const CONVERSATION_MESSAGES_SERVICE_NAME = 'conversationMessages';
 
 export type ConversationMessageKind =
@@ -63,7 +65,7 @@ export interface ConversationMessageRecord {
    *  clicked (Teams: an anonymous meeting participant without an Entra id);
    *  such an answer must not count as that person's contribution. Absent =
    *  the channel made no statement (treat as verified by `author`). */
-  cardAnswer?: { cardId: string; value: unknown; answererVerified?: boolean };
+  cardAnswer?: MessageCardAnswer;
   /** ISO 8601, platform time of the event. */
   occurredAt: string;
   /** ISO 8601, when the kernel stored it. */
@@ -135,4 +137,23 @@ export interface ConversationMessagesService {
    * Optional: absent on a kernel before plugin-api 1.56.0.
    */
   isSubscribed?(scope: ConversationMessageScope): Promise<boolean>;
+}
+
+/**
+ * A submitted card or poll answer. For a poll: `value: { optionId }`. For a
+ * question card (#2089): `answers`, one per answered question, plus the
+ * proposal the card named. Everything except `author` of the event came back
+ * through the client: check `cardId`, proposal id and version, question ids,
+ * kinds and option ids against the card you sent, and drop what does not
+ * match.
+ */
+export interface MessageCardAnswer {
+  cardId: string;
+  /** The raw submitted value. For a question card the channel repeats
+   *  `{ answers }` here for readers that predate `answers`. */
+  value: unknown;
+  answererVerified?: boolean;
+  proposalId?: string;
+  proposalVersion?: number;
+  answers?: readonly CardAnswerValue[];
 }

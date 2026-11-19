@@ -44,7 +44,7 @@ interface EventRow {
   quoted: boolean;
   forwarded: boolean;
   reaction: { name: string; removed: boolean } | null;
-  card_answer: { cardId: string; value: unknown; answererVerified?: boolean } | null;
+  card_answer: NonNullable<NewMessageEvent['cardAnswer']> | null;
   occurred_at: Date;
   received_at: Date;
 }

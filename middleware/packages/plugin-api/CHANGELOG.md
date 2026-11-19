@@ -8,6 +8,35 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.59.0 — 2026-11-19
+
+Additive (#2089, epic #2043). Question cards: a typed question out, typed
+answers in. `SendPoll` and `poll` are unchanged.
+
+### Added
+
+- **`QuestionCard`**, **`CardQuestion`** (kinds `single_choice`,
+  `multiple_choice`, `ranking`, `consent`, `assignment`, `text`, `number`,
+  `date`), **`CardOption`**, **`CardQuestionKind`**, `CARD_QUESTION_KINDS`,
+  `CARD_ID_PATTERN`. Ids of cards, questions and options are 1..64 characters
+  of `A-Z a-z 0-9 _ -`.
+- **`ConversationSendRequest.message.card?`** — post the message as a question
+  card. Refused with `channel_error` (nothing posted) when the channel
+  declares no cards, does not list a question kind, shows fewer questions per
+  card, or the card is invalid. Not together with `poll`.
+- **`ConversationSendService.capabilities?(channelType)`** →
+  `ConversationSendCapabilities` (`asOwnIdentity`, `mentions`, `poll`,
+  `card?: CardSupport`), so an engine chooses card or chat ballot per step.
+- **`ConversationSendService.updateCard?(request)`** with
+  **`ConversationCardUpdateRequest`**, **`CardUpdate`** (`closed` with title
+  and result lines, or a corrected `open` card) and **`CardUpdateOutcome`**.
+  Same identity rules as a send.
+- **`MessageCardAnswer`** — the type of `ConversationMessageRecord.cardAnswer`,
+  now with `proposalId?`, `proposalVersion?` and `answers?:
+  CardAnswerValue[]` (one typed value per answered question). `value` and
+  `answererVerified` are unchanged. Check every answer against the card you
+  sent: the kernel validates the form, not the match.
+
 ## 1.58.0 — 2026-11-19
 
 Additive (#2088, epic #2042).
