@@ -919,6 +919,7 @@ export type ProvisioningRunResult =
         | 'rsc_consent_refused'
         | 'bot_rejected'
         | 'bot_app_id_retired'
+        | 'app_registration_not_ready'
         | 'error';
       readonly detail: string;
     }
@@ -1002,6 +1003,11 @@ export interface TeamsProvisioningJobOptions {
   /** Delay between those attempts (default 4s), capped by
    *  {@link maxRetryDelayMs} like every other delay in this runner. */
   readonly catalogReplicationDelayMs?: number;
+  /** #2043 D22 — waits for a 403 on a follow-up call to a fresh app
+   *  registration (default 4), and the first wait (default 5 s, doubling up
+   *  to 20 s). `0` attempts = report at once. */
+  readonly appReplicationAttempts?: number;
+  readonly appReplicationDelayMs?: number;
   /** #2043 D10 — how often and how far apart a `rejected` bot probe is
    *  repeated before the run fails (a bot created seconds ago can need a
    *  moment). Defaults: 6 probes, 10 s apart. */
@@ -1056,6 +1062,11 @@ const DEFAULT_MAX_RETRY_DELAY_MS = 300_000;
 const DEFAULT_BOT_PROBE_ATTEMPTS = 6;
 const DEFAULT_BOT_PROBE_DELAY_MS = 10_000;
 const DEFAULT_CATALOG_REPLICATION_ATTEMPTS = 4;
+/** #2043 D22 — waits for a fresh app registration whose follow-up call
+ *  Graph answers with 403: 5 + 10 + 20 + 20 s, about a minute in all. */
+const DEFAULT_APP_REPLICATION_ATTEMPTS = 4;
+const DEFAULT_APP_REPLICATION_DELAY_MS = 5_000;
+const MAX_APP_REPLICATION_DELAY_MS = 20_000;
 const DEFAULT_CATALOG_REPLICATION_DELAY_MS = 4_000;
 /** Node's setTimeout ceiling (2^31 − 1 ms) — a longer delay would overflow
  *  to ~1 ms and burn the whole retry budget instantly. */
@@ -1134,6 +1145,11 @@ export class TeamsProvisioningJobRunner {
    *  Its OWN budget, deliberately not the chain's `maxAttempts`: this wait is
    *  seconds of eventual consistency, not a failing chain. */
   private readonly catalogReplicationRetries = new Map<string, number>();
+  /** #2043 D22 — replication waits already spent by the current run on a 403
+   *  that follows the app registration. Cleared per run like the above. */
+  private readonly appReplicationRetries = new Map<string, number>();
+  private readonly appReplicationAttempts: number;
+  private readonly appReplicationDelayMs: number;
   /**
    * Agents held by an operation that is NOT a provisioning run — today only
    * the teardown (`services/teamsIdentityReset.ts`), reserved through
@@ -1169,6 +1185,8 @@ export class TeamsProvisioningJobRunner {
       0,
       opts.catalogReplicationAttempts ?? DEFAULT_CATALOG_REPLICATION_ATTEMPTS,
     );
+    this.appReplicationAttempts = Math.max(0, opts.appReplicationAttempts ?? DEFAULT_APP_REPLICATION_ATTEMPTS);
+    this.appReplicationDelayMs = Math.max(0, opts.appReplicationDelayMs ?? DEFAULT_APP_REPLICATION_DELAY_MS);
     this.catalogReplicationDelayMs = Math.min(
       opts.catalogReplicationDelayMs ?? DEFAULT_CATALOG_REPLICATION_DELAY_MS,
       this.maxRetryDelayMs,
@@ -1432,6 +1450,7 @@ export class TeamsProvisioningJobRunner {
     // replication window it never opened.
     this.catalogPublishedInRun.delete(agentId);
     this.catalogReplicationRetries.delete(agentId);
+    this.appReplicationRetries.delete(agentId);
   }
 
   /** Stop accepting work and release every pending retry delay. An
@@ -1532,6 +1551,37 @@ export class TeamsProvisioningJobRunner {
     }
 
     const scopes = missingScopesOf(err);
+    if (isFollowUpRefusalOnAppRegistration(err)) {
+      // #2043 D22 — NOT missing consent. The connector reports every 403 as
+      // missing consent, but this one answers a follow-up call (add the
+      // secret, create the service principal) on an app registration that
+      // the SAME permission created or found a moment ago. Entra replicates
+      // the new object and its owner independently of the write path, and
+      // until it has, a write to it is refused. That ends by itself: wait a
+      // bounded time, then walk the chain again (it resumes on the existing
+      // registration).
+      const spent = this.appReplicationRetries.get(agentId) ?? 0;
+      if (spent < this.appReplicationAttempts) {
+        this.appReplicationRetries.set(agentId, spent + 1);
+        const delayMs = Math.min(this.appReplicationDelayMs * 2 ** spent, MAX_APP_REPLICATION_DELAY_MS);
+        this.log(
+          `[teams-provisioning] ${agentId} follow-up call on the new app registration refused with 403; ` +
+            `Entra is probably still replicating it (wait ${spent + 1}/${this.appReplicationAttempts}); ` +
+            `retrying in ${delayMs}ms: ${followUpRefusalText(err)}`,
+        );
+        await this.emit(agentId, this.currentStep.get(agentId) ?? 'run', 'retrying', {
+          attempt: spent + 1,
+          detail: AWAITING_ENTRA_REPLICATION_DETAIL,
+        });
+        await this.sleep(delayMs);
+        return undefined;
+      }
+      // Still refused after the wait. It is not a consent the operator could
+      // grant (the permission is in use), so it gets its own code and says so.
+      const failure = appRegistrationNotReadyFailure(followUpRefusalText(err));
+      await this.recordError(agentId, { state: 'failed', ...failure });
+      return { status: 'failed', agentId, reason: 'app_registration_not_ready', detail: failure.lastError };
+    }
     if (scopes !== undefined) {
       // TERMINAL — an admin has to consent; retrying is pointless.
       const failure = consentMissingFailure(scopes);
@@ -2759,6 +2809,7 @@ export function rscConsentRefusedDetail(targetKind: TeamsTargetKind, raw: string
 export const BOT_REJECTED_PREFIX = 'bot_rejected:';
 /** Same wording as the connector's `BotAppIdRetiredError` message prefix. */
 export const BOT_APP_ID_RETIRED_PREFIX = 'bot_app_id_retired:';
+export const APP_REGISTRATION_NOT_READY_PREFIX = 'app_registration_not_ready:';
 
 export function botRejectedDetail(detail?: string): string {
   const reported = detail?.replace(/\s+/g, ' ').trim();
@@ -2937,6 +2988,9 @@ export type TeamsProvisioningErrorCode =
   | 'bot_rejected'
   /** #2043 D10 — the connector refused to re-create a bot under a used app id. */
   | 'bot_app_id_retired'
+  /** #2043 D22 — a follow-up call on the app registration stayed refused
+   *  (403) after the replication wait. Not a consent the operator can grant. */
+  | 'app_registration_not_ready'
   | 'arm_not_configured'
   | 'throttled'
   | 'config_sync_failed'
@@ -3056,6 +3110,9 @@ export function classifyTeamsProvisioningError(
   if (sentence.startsWith(BOT_APP_ID_RETIRED_PREFIX)) {
     return { code: 'bot_app_id_retired', raw };
   }
+  if (sentence.startsWith(APP_REGISTRATION_NOT_READY_PREFIX)) {
+    return { code: 'app_registration_not_ready', raw };
+  }
   if (sentence.startsWith(BOT_REJECTED_PREFIX)) {
     return { code: 'bot_rejected', raw };
   }
@@ -3136,6 +3193,7 @@ const TEAMS_PROVISIONING_ERROR_CODE_SET: {
   rsc_consent_refused: true,
   bot_rejected: true,
   bot_app_id_retired: true,
+  app_registration_not_ready: true,
   arm_not_configured: true,
   throttled: true,
   config_sync_failed: true,
@@ -3234,6 +3292,54 @@ export function botAppIdRetiredFailure(connectorMessage: string): TeamsProvision
     ? text
     : `${BOT_APP_ID_RETIRED_PREFIX} ${text}`;
   return failureOf('bot_app_id_retired', sentence.slice(0, 1200));
+}
+
+/** #2043 D22 — see the consent branch of the runner's failure handling. */
+export function appRegistrationNotReadyFailure(connectorText: string): TeamsProvisioningFailure {
+  const text = connectorText.replace(/\s+/g, ' ').trim();
+  return failureOf(
+    'app_registration_not_ready',
+    `${APP_REGISTRATION_NOT_READY_PREFIX} Microsoft Graph kept answering 403 to a follow-up call on the app registration this run created or found; the permission itself is in use, so this is not missing admin consent. ${text}`.slice(
+      0,
+      1200,
+    ),
+  );
+}
+
+/**
+ * Is this "consent missing" really a 403 on a FOLLOW-UP call to an app
+ * registration (#2043 D22)? Two shapes, by connector version. Up to 0.9.2 the
+ * HTTP layer reports it as `ConsentMissingError` and names the step in the
+ * cause (`graph <step> 403 body=…`). From 0.9.3 the connector waits through
+ * its own replication budget first and then throws `DirectoryReplicationError`
+ * with `lastStatus: 403`. A step that acts on an existing
+ * registration can only be reached after `applications.create` or
+ * `applications.findByUniqueName` succeeded with the same application
+ * permission, so the permission is granted; what refuses is the object not
+ * being replicated yet (or, if it stays, this app not owning it).
+ */
+const APP_FOLLOW_UP_403 = /^graph (applications\.(addPassword|awaitReplication|get|readCredentials|removePassword)|servicePrincipals\.create) 403\b/;
+/** What Graph said: the connector keeps the step, the status and the body in
+ *  the error's cause, the error itself only says "consent_missing". */
+function followUpRefusalText(err: unknown): string {
+  // `DirectoryReplicationError` (connector >= 0.9.3) words it in its message.
+  if (err instanceof Error && err.name === 'DirectoryReplicationError') return fullConnectorErrorText(err);
+  const cause = (err as { cause?: unknown } | null)?.cause;
+  return cause instanceof Error ? cause.message : fullConnectorErrorText(err);
+}
+
+export function isFollowUpRefusalOnAppRegistration(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  // Connector >= 0.9.3 says it itself: it waited through its own replication
+  // budget on the follow-up call and the last answer was still a 403.
+  if (err.name === 'DirectoryReplicationError') {
+    return (err as { lastStatus?: unknown }).lastStatus === 403;
+  }
+  if (err.name !== 'ConsentMissingError') return false;
+  const resource = (err as { resource?: unknown }).resource;
+  if (resource !== undefined && resource !== 'graph') return false;
+  const cause = (err as { cause?: unknown }).cause;
+  return cause instanceof Error && APP_FOLLOW_UP_403.test(cause.message);
 }
 
 export function rscConsentRefusedFailure(

@@ -2702,7 +2702,8 @@
           "verifying_bot": "prüfe bei Microsoft, ob der Bot bekannt ist",
           "bot_rejected": "Microsofts Bot Connector akzeptiert diesen Bot nicht",
           "rsc_consent_refused": "das Ziel hat die Berechtigungen der App abgelehnt",
-          "bot_app_id_retired": "die Anwendungs-ID gehörte bereits zu einem gelöschten Bot"
+          "bot_app_id_retired": "die Anwendungs-ID gehörte bereits zu einem gelöschten Bot",
+          "app_registration_not_ready": "Microsoft nimmt Aufrufe auf die neue App-Registrierung noch nicht an"
         }
       },
       "stateSummary": "Status: {state}",
@@ -2747,7 +2748,7 @@
         "consent_missing": {
           "what": "Microsoft hat die Anfrage abgelehnt, weil eine Tenant-Administration die Admin-Zustimmung für die benötigten Berechtigungen noch nicht erteilt hat.",
           "scopes": "Fehlende Berechtigungen ({count}): {scopes}",
-          "next": "Lass eine globale Administration im Kunden-Tenant die Admin-Zustimmung für diese Berechtigungen erteilen und starte das Provisioning danach erneut. Ein erneuter Lauf ohne die Zustimmung ändert nichts.",
+          "next": "Lass eine globale Administration im Kunden-Tenant die Admin-Zustimmung für diese Berechtigungen erteilen und starte das Provisioning danach erneut. Ein erneuter Lauf ohne die Zustimmung ändert nichts. Sind die genannten Berechtigungen bereits erteilt, warte eine Minute und starte erneut: Entra ID kann Aufrufe kurz nach dem Erteilen einer Berechtigung noch ablehnen.",
           "consentLink": "So wird die Admin-Zustimmung in Microsoft Entra ID erteilt"
         },
         "arm_not_configured": {
@@ -2814,6 +2815,10 @@
         "bot_app_id_retired": {
           "what": "Der Bot wurde nicht angelegt: Seine Anwendungs-ID gehörte bereits zu einem Bot, der gelöscht wurde. Microsofts Bot Connector lehnt einen Bot, der unter derselben Anwendungs-ID erneut angelegt wird, dauerhaft ab, obwohl Azure ihn als fehlerfrei meldet. Deshalb legt omadia ihn nicht an.",
           "next": "Lösche diese Teams-Identität vollständig („Identität löschen“), einschließlich der App-Registrierung, und provisioniere sie neu. Sie bekommt dann eine neue Anwendungs-ID. Ein erneuter Lauf derselben Provisionierung ändert nichts."
+        },
+        "app_registration_not_ready": {
+          "what": "Die App-Registrierung existiert, Microsoft Graph hat den nächsten Aufruf darauf (Secret des Bots anlegen oder Dienstprinzipal erstellen) aber wiederholt mit 403 abgelehnt. Die Berechtigung dafür ist erteilt und wurde unmittelbar vorher benutzt, es fehlt also keine Admin-Zustimmung. Entra ID braucht üblicherweise bis zu einer Minute, bis eine neue Registrierung Änderungen annimmt; omadia hat darauf gewartet, und der Aufruf wurde weiter abgelehnt.",
+          "next": "Starte das Provisioning in ein bis zwei Minuten erneut; es setzt auf der vorhandenen App-Registrierung auf. Schlägt es weiter mit dieser Meldung fehl, existiert die App-Registrierung, gehört aber nicht der omadia-Publisher-App (zum Beispiel, weil sie von Hand unter demselben Namen angelegt wurde): Lösche diese Teams-Identität vollständig und provisioniere sie neu."
         }
       },
       "teamsBot": {

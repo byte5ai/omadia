@@ -2702,7 +2702,8 @@
           "verifying_bot": "checking with Microsoft that the bot is known",
           "bot_rejected": "Microsoft's Bot Connector does not accept this bot",
           "rsc_consent_refused": "the target refused the app's permissions",
-          "bot_app_id_retired": "the application id was already used for a deleted bot"
+          "bot_app_id_retired": "the application id was already used for a deleted bot",
+          "app_registration_not_ready": "Microsoft is not yet accepting calls on the new app registration"
         }
       },
       "stateSummary": "State: {state}",
@@ -2747,7 +2748,7 @@
         "consent_missing": {
           "what": "Microsoft refused the request because a tenant administrator has not granted admin consent for the permissions the provisioning needs.",
           "scopes": "Missing permissions ({count}): {scopes}",
-          "next": "Ask a Global Administrator of the customer tenant to grant admin consent for these permissions, then start provisioning again. Running it again without the consent changes nothing.",
+          "next": "Ask a Global Administrator of the customer tenant to grant admin consent for these permissions, then start provisioning again. Running it again without the consent changes nothing. If the permissions listed are already granted, wait a minute and run it again: Entra ID can refuse calls for a short time after a permission was granted.",
           "consentLink": "How to grant admin consent in Microsoft Entra ID"
         },
         "arm_not_configured": {
@@ -2814,6 +2815,10 @@
         "bot_app_id_retired": {
           "what": "The bot was not created: its application id already belonged to a bot that was deleted. Microsoft's Bot Connector keeps rejecting a bot that is created again under the same application id, although Azure reports it as healthy, so omadia does not create one.",
           "next": "Delete this Teams identity completely (\"Delete identity\"), including its app registration, and provision it again. It then gets a new application id. Running the same provisioning again changes nothing."
+        },
+        "app_registration_not_ready": {
+          "what": "The app registration exists, but Microsoft Graph kept answering 403 to the next call on it (adding the bot's secret or creating its service principal). The permission for this is granted and was used a moment earlier, so this is not missing admin consent. Entra ID usually needs up to a minute until a new registration accepts changes; omadia waited for that and it was still refused.",
+          "next": "Start provisioning again in a minute or two; it continues on the existing app registration. If it keeps failing with this message, the app registration exists but is not owned by the omadia publisher app (for example because it was created by hand under the same name): delete this Teams identity completely and provision it again."
         }
       },
       "teamsBot": {
