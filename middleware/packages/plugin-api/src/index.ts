@@ -188,6 +188,8 @@ export * from './decisionModel.js';
 // #330 C3b — conversation-addressed proactive send ('conversationSend'):
 // post INTO a group conversation (the Facilitator's stall-nudges).
 export * from './conversationSend.js';
+// #2089 — question cards: typed questions out, typed answers in.
+export * from './questionCard.js';
 
 // #2043 — native facilitators, plugin-first: the kernel keeps identity,
 // authenticated inbound events and sending; the engine lives in a plugin.

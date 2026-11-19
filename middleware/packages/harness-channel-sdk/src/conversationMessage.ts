@@ -9,6 +9,8 @@
 // the normal turn path AND are emitted here when the conversation is
 // subscribed, so the record has no gaps.
 
+import type { MessageCardAnswer } from '@omadia/plugin-api';
+
 import type { ConversationMessageKind } from '@omadia/plugin-api';
 
 import type { ChannelUserRef } from './incoming.js';
@@ -41,7 +43,11 @@ export interface ConversationMessageEvent {
   reaction?: { name: string; removed: boolean };
   /** `answererVerified: false` when the platform did not state who clicked
    *  (no verified user id on the activity). */
-  cardAnswer?: { cardId: string; value: unknown; answererVerified?: boolean };
+  /** For a question card (#2089) additionally `answers` (one typed value per
+   *  answered question) and the `proposalId` / `proposalVersion` the card
+   *  carried. The author is the platform's statement of who clicked, never
+   *  anything from the card's data. */
+  cardAnswer?: MessageCardAnswer;
   /** ISO 8601 timestamp of the platform event. */
   occurredAt: string;
   /** The original platform event, opaque to the kernel and not stored. */

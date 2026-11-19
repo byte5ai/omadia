@@ -6,6 +6,7 @@
 import type { ConversationMessageEvent } from '@omadia/channel-sdk';
 import type { ConversationMessageKind } from '@omadia/plugin-api';
 
+import { readCardAnswerFields } from '../questionCard.js';
 import type { NewMessageEvent } from './store.js';
 
 const KINDS: readonly ConversationMessageKind[] = ['created', 'edited', 'deleted', 'reaction', 'card_answer'];
@@ -33,7 +34,13 @@ export function validateMessageEvent(event: ConversationMessageEvent): string | 
   if (typeof event.occurredAt !== 'string' || Number.isNaN(Date.parse(event.occurredAt))) return 'occurredAt';
   if (event.text !== undefined && typeof event.text !== 'string') return 'text';
   if (event.kind === 'reaction' && !isBoundedText(event.reaction?.name, 128)) return 'reaction';
-  if (event.kind === 'card_answer' && !isBoundedText(event.cardAnswer?.cardId, MAX_ID_LENGTH)) return 'cardAnswer';
+  if (event.kind === 'card_answer') {
+    if (!isBoundedText(event.cardAnswer?.cardId, MAX_ID_LENGTH)) return 'cardAnswer';
+    // #2089 — a typed answer that is not in the contract's form is refused,
+    // never stored as something else.
+    const typed = readCardAnswerFields(event.cardAnswer);
+    if ('error' in typed) return typed.error;
+  }
   return undefined;
 }
 
@@ -52,10 +59,14 @@ function readCardAnswer(answer: NonNullable<ConversationMessageEvent['cardAnswer
       : typeof nested === 'boolean'
         ? nested
         : undefined;
+  const typed = readCardAnswerFields(answer);
   return {
     cardId: answer.cardId,
     value: answer.value,
     ...(verified !== undefined ? { answererVerified: verified } : {}),
+    // Validated by `invalidField` before this runs; rebuilt from the known
+    // fields, so nothing a channel added on the side is stored as typed.
+    ...('value' in typed ? typed.value : {}),
   };
 }
 

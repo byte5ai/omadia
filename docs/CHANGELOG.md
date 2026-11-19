@@ -36,6 +36,26 @@ changelog.
 
 ## [Unreleased]
 
+### Added — Question cards: contract and kernel side (#2089, epic #2043)
+
+- An engine can post a typed question card (`message.card` on
+  `conversationSend`): single and multiple choice, ranking, consent,
+  assignment, text, number, date. A channel plugin declares what it renders
+  (`supports.card`: kinds, questions per card, whether a posted card can be
+  updated). The kernel validates the card like a poll and refuses one the
+  channel could not show with a `channel_error` that names the reason, so the
+  engine falls back to a chat ballot. Nothing is posted in that case.
+- `conversationSend.capabilities(channelType)` tells an engine what the
+  channel declares; `conversationSend.updateCard` closes a posted card with
+  the engine's result lines or replaces it with a corrected one, as the
+  agent's own identity and only where the caller holds the subscription.
+- A submission arrives as a `card_answer` event with `answers` (one typed
+  value per question) and the `proposalId` / `proposalVersion` the card
+  carried. An answer that is not in the contract's form is refused instead of
+  being stored as something else. Polls and their answers are unchanged.
+- plugin-api 1.59.0, channel-sdk 0.3.4. No migration: the answer is stored in
+  the existing JSON column.
+
 ### Added — Agent archetypes: registry and `agents.archetype` (#2088, #2060, epic #2042)
 
 First of six steps that align native facilitators with the rewritten specs
