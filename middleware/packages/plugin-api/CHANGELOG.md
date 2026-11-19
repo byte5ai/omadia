@@ -8,6 +8,31 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.69.0 — 2026-11-19
+
+Additive (#2078, epic #2043): kernel-issued grants for mail and calendar.
+
+### Added
+
+- **`ExecutionGrantsService`** (`EXECUTION_GRANTS_SERVICE_NAME`,
+  `executionGrants`), for the plugin that runs a process: `issueGrant`
+  (`protocol_dispatch` under a `closing` scope, `followup_scheduling` under a
+  `scheduling` scope, `followup_reminders` under a `follow_up` scope; named
+  mail recipients; an expiry of at most the scope's deadline, and at most 7
+  days for a protocol dispatch), `revokeGrant`, `listGrants` (with every use
+  made of each grant). A grant is live only while its scope is.
+- **`GrantVerificationService`** (`GRANT_VERIFICATION_SERVICE_NAME`,
+  `grantVerification`), for the integration that sends: `verify({ grantId,
+  operation, recipients })` before every operation. Refused with a code
+  (`revoked`, `expired`, `scope_ended`, `kill_switch`,
+  `operation_not_covered`, `recipient_not_covered` with the addresses,
+  `unknown_grant`, `unavailable`). Every answer is recorded as a use.
+- `EXECUTION_GRANT_RULES`, `ExecutionGrant`, `ExecutionGrantKind`,
+  `GrantOperation`, `ExecutionGrantUse`, `GrantRefusalCode`.
+- `FollowupGrant.grantId` (optional) and the refusal code `grant_refused`
+  on `FollowupRefusal`: a follow-up provider that knows `grantVerification`
+  asks the kernel with it and keeps `allowed` as its own second check.
+
 ## 1.68.0 — 2026-11-19
 
 Additive (#2089, epic #2043): private messages of participants.

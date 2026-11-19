@@ -25,6 +25,7 @@ import {
   createExecutionAuthorizationService,
   type ExecutionAgent,
 } from '../src/execution/executionAuthorizationService.js';
+import { createExecutionGrantsService, createGrantVerificationService } from '../src/execution/grantService.js';
 import { ExecutionScopeStore } from '../src/execution/scopeStore.js';
 import { createScopedSendService } from '../src/channels/scopedSendService.js';
 import { wrapFacilitatorAgent } from '../packages/harness-orchestrator/src/facilitatorAgent.js';
@@ -100,6 +101,7 @@ describe('#2090 execution scopes (pg, migration 0073)', { skip: !pgAvailable }, 
     // The CI schema job applies everything twice.
     await pool.query(await readFile(resolve(MIGRATIONS_DIR, '0073_execution_scopes.sql'), 'utf8'));
     await pool.query(await readFile(resolve(MIGRATIONS_DIR, '0074_execution_authorization_emission.sql'), 'utf8'));
+    await pool.query(await readFile(resolve(MIGRATIONS_DIR, '0076_execution_grants.sql'), 'utf8'));
     const config = new ConfigStore(pool);
     for (const [slug, archetype] of [['mara', 'facilitator'], ['finn', 'facilitator'], ['otto', 'other'], ['stan', 'standard']] as const) {
       const agent = await config.createAgent({ slug, name: slug });
@@ -675,6 +677,140 @@ describe('#2090 execution scopes (pg, migration 0073)', { skip: !pgAvailable }, 
       assert.equal(guest.outcome === 'unreachable' && guest.executionCode, 'target_not_allowed');
       assert.equal((await dm('user:aad-guest', 'status')).outcome, 'delivered');
       assert.deepEqual(s.posted, ['user:aad-anna', 'user:aad-guest']);
+    });
+  });
+
+  describe('#2078 kernel-issued grants', () => {
+    const CONNECTOR = '@omadia/m365-connector';
+    const grants = (pluginId = ENGINE) => createExecutionGrantsService({ pool, callerPluginId: pluginId });
+    const verifier = () => createGrantVerificationService({ pool, callerPluginId: CONNECTOR });
+    const PEOPLE = ['Anna@example.test', 'bert@example.test'];
+
+    /** A process that was closed, with the closing scope of its final protocol. */
+    async function closing() {
+      const process = await activeProcess();
+      const opened = await engine.openScope({
+        agentSlug: 'mara', processId: process.processId, kind: 'closing', eventId: `final-${String(++seq)}`,
+        deadline: inHours(24 * 20), budget: { actions: 10, modelCalls: 0 },
+      });
+      if (opened.outcome !== 'opened') throw new Error(JSON.stringify(opened));
+      return { ...process, closing: opened.scope };
+    }
+    const dispatch = async () => {
+      const c = await closing();
+      const issued = await grants().issueGrant({ scopeId: c.closing.id, kind: 'protocol_dispatch', subject: 'protocol', recipients: PEOPLE });
+      if (issued.outcome !== 'issued') throw new Error(JSON.stringify(issued));
+      return { ...c, grant: issued.grant };
+    };
+    const ask = (grantId: string, recipients: string[], operation: 'send_mail' | 'free_busy' | 'create_invitation' = 'send_mail') =>
+      verifier().verify({ grantId, operation, recipients });
+    const codeOf = (outcome: Awaited<ReturnType<typeof ask>>): string => (outcome.allowed ? 'allowed' : outcome.code);
+
+    it('a grant is issued under the scope kind it belongs to, by the plugin that owns the scope', async () => {
+      const c = await closing();
+      const g = grants();
+      const issue = (over: Record<string, unknown>) =>
+        g.issueGrant({ scopeId: c.closing.id, kind: 'protocol_dispatch', recipients: PEOPLE, ...over } as never);
+      assert.equal(code(await issue({ scopeId: c.scope.id })), 'scope_order', 'not under the active scope');
+      assert.equal(code(await issue({ kind: 'followup_scheduling' })), 'scope_order');
+      assert.equal(code(await issue({ kind: 'everything' })), 'invalid_request');
+      assert.equal(code(await issue({ recipients: [] })), 'invalid_request');
+      assert.equal(code(await issue({ recipients: ['not an address'] })), 'invalid_request');
+      assert.equal(code(await grants(OTHER).issueGrant({ scopeId: c.closing.id, kind: 'protocol_dispatch', recipients: PEOPLE })), 'unknown_scope');
+      const issued = await issue({});
+      assert.equal(issued.outcome, 'issued');
+      if (issued.outcome !== 'issued') return;
+      assert.deepEqual(issued.grant.recipients, ['anna@example.test', 'bert@example.test']);
+      assert.equal(issued.grant.live, true);
+      // Protocol dispatch: at most 7 days, although the scope runs 20.
+      const days = (new Date(issued.grant.expiresAt).getTime() - Date.now()) / (24 * HOUR);
+      assert.ok(days > 6.9 && days <= 7, String(days));
+      assert.equal(code(await issue({ subject: 'other', expiresAt: inHours(24 * 8) })), 'limit_exceeded');
+    });
+
+    it('the connector is answered per operation and recipient, and every answer is recorded', async () => {
+      const { grant, processId } = await dispatch();
+      assert.deepEqual(await ask(grant.id, ['ANNA@example.test']), { allowed: true, kind: 'protocol_dispatch', processId });
+      const stranger = await ask(grant.id, ['anna@example.test', 'eve@evil.test']);
+      assert.deepEqual(stranger, {
+        allowed: false,
+        code: 'recipient_not_covered',
+        message: 'the grant does not cover every recipient',
+        notCovered: ['eve@evil.test'],
+      });
+      assert.equal(codeOf(await ask(grant.id, ['anna@example.test'], 'create_invitation')), 'operation_not_covered');
+      assert.equal(codeOf(await ask('00000000-0000-4000-8000-000000000000', ['anna@example.test'])), 'unknown_grant');
+      assert.equal(codeOf(await ask('not-a-grant', ['anna@example.test'])), 'unknown_grant');
+      assert.equal(codeOf(await ask(grant.id, [])), 'invalid_request');
+
+      const listed = await grants().listGrants(processId);
+      assert.deepEqual(
+        listed[0]?.uses.map((u) => [u.operation, u.allowed, u.refusal, u.askedBy, u.recipients.length]),
+        [
+          ['send_mail', true, undefined, CONNECTOR, 1],
+          ['send_mail', false, 'recipient_not_covered', CONNECTOR, 2],
+          ['create_invitation', false, 'operation_not_covered', CONNECTOR, 1],
+        ],
+      );
+      assert.deepEqual(await grants(OTHER).listGrants(processId), [], 'another plugin sees no grant of the process');
+    });
+
+    it('each kind covers its own operations', async () => {
+      const process = await activeProcess();
+      const budget = { actions: 5, modelCalls: 0 };
+      const scheduling = await engine.openScope({ agentSlug: 'mara', processId: process.processId, kind: 'scheduling', eventId: 'meeting-1', deadline: inHours(48), budget });
+      const followUp = await engine.openScope({ agentSlug: 'mara', processId: process.processId, kind: 'follow_up', deadline: inHours(72), budget });
+      if (scheduling.outcome !== 'opened' || followUp.outcome !== 'opened') throw new Error('unreachable');
+      const meeting = await grants().issueGrant({ scopeId: scheduling.scope.id, kind: 'followup_scheduling', subject: 'meeting-1', recipients: PEOPLE });
+      const reminders = await grants().issueGrant({ scopeId: followUp.scope.id, kind: 'followup_reminders', recipients: PEOPLE });
+      if (meeting.outcome !== 'issued' || reminders.outcome !== 'issued') throw new Error('unreachable');
+      assert.equal(codeOf(await ask(meeting.grant.id, ['bert@example.test'], 'free_busy')), 'allowed');
+      assert.equal(codeOf(await ask(meeting.grant.id, PEOPLE, 'create_invitation')), 'allowed');
+      assert.equal(codeOf(await ask(meeting.grant.id, PEOPLE, 'send_mail')), 'operation_not_covered');
+      assert.equal(codeOf(await ask(reminders.grant.id, PEOPLE, 'send_mail')), 'allowed');
+      assert.equal(codeOf(await ask(reminders.grant.id, PEOPLE, 'free_busy')), 'operation_not_covered');
+      // Without a deadline of its own a grant ends with its scope.
+      assert.equal(meeting.grant.expiresAt, scheduling.scope.deadline);
+    });
+
+    it('revoked once, never live again; the recipients of a live grant can be replaced', async () => {
+      const { grant, closing: scope, processId } = await dispatch();
+      const replaced = await grants().issueGrant({ scopeId: scope.id, kind: 'protocol_dispatch', subject: 'protocol', recipients: ['cara@example.test'] });
+      assert.equal(replaced.outcome === 'issued' && replaced.grant.id, grant.id, 'the same grant');
+      assert.equal(codeOf(await ask(grant.id, ['anna@example.test'])), 'recipient_not_covered', 'a participant who left is no longer covered');
+      assert.equal(codeOf(await ask(grant.id, ['cara@example.test'])), 'allowed');
+
+      await grants(OTHER).revokeGrant(grant.id, 'hostile');
+      assert.equal(codeOf(await ask(grant.id, ['cara@example.test'])), 'allowed', 'only the owner revokes');
+      await grants().revokeGrant(grant.id, 'all sends confirmed');
+      assert.equal(codeOf(await ask(grant.id, ['cara@example.test'])), 'revoked');
+      const again = await grants().issueGrant({ scopeId: scope.id, kind: 'protocol_dispatch', subject: 'protocol', recipients: PEOPLE });
+      assert.equal(code(again), 'scope_exists');
+      const listed = (await grants().listGrants(processId))[0];
+      assert.deepEqual([listed?.live, listed?.revokeReason], [false, 'all sends confirmed']);
+    });
+
+    it('ends with its scope: stop, end of service and the deadline, without a further step', async () => {
+      const stopped = await dispatch();
+      await engine.endScope(stopped.closing.id, 'stopped');
+      assert.equal(codeOf(await ask(stopped.grant.id, ['anna@example.test'])), 'scope_ended');
+      assert.equal(code(await grants().issueGrant({ scopeId: stopped.closing.id, kind: 'protocol_dispatch', subject: 'late', recipients: PEOPLE })), 'scope_ended');
+
+      const disabled = await dispatch();
+      await store.revokeAll({ agentId: agents.get('mara')!.id }, 'agent disabled');
+      assert.equal(codeOf(await ask(disabled.grant.id, ['anna@example.test'])), 'scope_ended');
+
+      const late = await dispatch();
+      await pool.query("UPDATE execution_grants SET expires_at = now() - interval '1 second' WHERE id = $1", [late.grant.id]);
+      assert.equal(codeOf(await ask(late.grant.id, ['anna@example.test'])), 'expired');
+    });
+
+    it('an operator stop refuses the use and ends nothing', async () => {
+      const { grant, processId } = await dispatch();
+      const stop = await store.setKillSwitch({ level: 'process', agentId: agents.get('mara')!.id, processId, reason: '', setBy: 'op' });
+      assert.equal(codeOf(await ask(grant.id, ['anna@example.test'])), 'kill_switch');
+      await store.clearKillSwitch(stop.id, 'op');
+      assert.equal(codeOf(await ask(grant.id, ['anna@example.test'])), 'allowed');
     });
   });
 

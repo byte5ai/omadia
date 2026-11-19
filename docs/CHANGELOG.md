@@ -36,6 +36,29 @@ changelog.
 
 ## [Unreleased]
 
+### Added — Kernel-issued grants for a facilitation's mail and calendar operations (#2078, epic #2043): K4.5 of the spec alignment
+
+- **Three grants, each bound to one execution scope:** protocol dispatch
+  (send one final protocol by mail), follow-up scheduling (free/busy and the
+  invitations of one agreed meeting) and follow-up reminders. A grant names
+  its recipients and ends at the latest with its scope; a protocol dispatch
+  at the latest 7 days after it was issued.
+- **The integration asks the kernel before every operation.** Until now the
+  facilitation engine told the connector which recipients are allowed, and
+  the connector checked them: the party that wanted to send also said to
+  whom it may. Now the connector asks the kernel whether the grant is live
+  and covers the operation and every recipient. Its own recipient check
+  stays as a second line.
+- **Revocation needs no extra step.** A grant is live only while its scope
+  is open: a stop or abort, the end of service of the agent and the
+  uninstall of the plugin end the scope and with it the grant. An operator
+  stop refuses the use without ending anything. A revoked or expired grant
+  is never issued again.
+- **Every use is recorded,** allowed or refused, with the operation, the
+  recipients and who asked; the engine reads the list for the protocol.
+- The connector has to be updated to ask (see its repository); until then
+  nothing changes for it (migration 0076, plugin-api 1.69.0).
+
 ### Added — A participant can ask a facilitator for the status in a private chat (#2089, epic #2043)
 
 - A facilitator refuses private requests: it is a moderator, not an

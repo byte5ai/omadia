@@ -875,16 +875,85 @@ reason: string;
 listReservations(processId: string): Promise<readonly ConversationReservation[]>;
 }
 
+// ===== executionGrants.d.ts =====
+import type { ExecutionRefusal } from './executionAuthorization.js';
+export declare const EXECUTION_GRANTS_SERVICE_NAME = "executionGrants";
+export declare const GRANT_VERIFICATION_SERVICE_NAME = "grantVerification";
+export type ExecutionGrantKind = 'protocol_dispatch' | 'followup_scheduling' | 'followup_reminders';
+export type GrantOperation = 'send_mail' | 'free_busy' | 'create_invitation';
+export declare const EXECUTION_GRANT_RULES: Readonly<Record<ExecutionGrantKind, {
+readonly scope: 'closing' | 'scheduling' | 'follow_up';
+readonly operations: readonly GrantOperation[];
+}>>;
+export interface ExecutionGrant {
+readonly id: string;
+readonly scopeId: string;
+readonly processId: string;
+readonly kind: ExecutionGrantKind;
+readonly subject: string;
+readonly recipients: readonly string[];
+readonly issuedAt: string;
+readonly expiresAt: string;
+readonly revokedAt?: string;
+readonly revokeReason?: string;
+readonly live: boolean;
+}
+export interface IssueGrantRequest {
+readonly scopeId: string;
+readonly kind: ExecutionGrantKind;
+readonly subject?: string;
+readonly recipients: readonly string[];
+readonly expiresAt?: string;
+}
+export interface ExecutionGrantsService {
+issueGrant(request: IssueGrantRequest): Promise<{
+outcome: 'issued';
+grant: ExecutionGrant;
+} | ExecutionRefusal>;
+revokeGrant(grantId: string, reason: string): Promise<void>;
+listGrants(processId: string): Promise<readonly (ExecutionGrant & {
+readonly uses: readonly ExecutionGrantUse[];
+})[]>;
+}
+export interface ExecutionGrantUse {
+readonly operation: GrantOperation;
+readonly recipients: readonly string[];
+readonly askedBy: string;
+readonly allowed: boolean;
+readonly refusal?: GrantRefusalCode;
+readonly usedAt: string;
+}
+export type GrantRefusalCode = 'unknown_grant' | 'revoked' | 'expired' | 'scope_ended' | 'kill_switch' | 'operation_not_covered' | 'recipient_not_covered' | 'invalid_request' | 'unavailable';
+export interface GrantVerificationRequest {
+readonly grantId: string;
+readonly operation: GrantOperation;
+readonly recipients: readonly string[];
+}
+export type GrantVerificationOutcome = {
+readonly allowed: true;
+readonly kind: ExecutionGrantKind;
+readonly processId: string;
+} | {
+readonly allowed: false;
+readonly code: GrantRefusalCode;
+readonly message: string;
+readonly notCovered?: readonly string[];
+};
+export interface GrantVerificationService {
+verify(request: GrantVerificationRequest): Promise<GrantVerificationOutcome>;
+}
+
 // ===== facilitation.d.ts =====
 export declare const FACILITATION_ENGINE_CAPABILITY = "facilitationEngine@1";
 export declare const FACILITATION_FOLLOWUP_SERVICE_NAME = "facilitation.followup";
 export interface FollowupGrant {
 facilitationId: string;
 allowed: readonly string[];
+grantId?: string;
 }
 export type FollowupRefusal = {
 outcome: 'refused';
-code: 'recipient_not_allowed' | 'not_configured' | 'provider_error';
+code: 'recipient_not_allowed' | 'not_configured' | 'provider_error' | 'grant_refused';
 message: string;
 rejected?: readonly string[];
 };
@@ -1018,6 +1087,7 @@ export * from './agentTurn.js';
 export * from './sessionCapabilities.js';
 export * from './facilitation.js';
 export * from './executionAuthorization.js';
+export * from './executionGrants.js';
 
 // ===== knowledgeGraph.d.ts =====
 import type { EntityRef } from './entityRef.js';
