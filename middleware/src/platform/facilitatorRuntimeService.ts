@@ -31,7 +31,6 @@ export const FACILITATOR_CONVERSATIONS_SERVICE = 'facilitatorConversations';
 export type EngineUnusableReason =
   | 'none'
   | 'ambiguous'
-  | 'ungranted'
   | 'inactive'
   | 'not_reported'
   | 'engine_reported';
@@ -58,7 +57,6 @@ export function engineUsability(sources: FacilitationEngineSources, reported: un
   const engine = resolveFacilitationEngine(sources);
   if (engine.state === 'none') return { usable: false, reason: 'none' };
   if (engine.state === 'ambiguous') return { usable: false, reason: 'ambiguous' };
-  if (engine.state === 'ungranted') return { usable: false, pluginId: engine.pluginId, reason: 'ungranted' };
   const { pluginId } = engine;
   const installed = sources.installedRegistry?.list().find((entry) => entry.id === pluginId);
   if (installed && installed.status !== 'active') return { usable: false, pluginId, reason: 'inactive' };

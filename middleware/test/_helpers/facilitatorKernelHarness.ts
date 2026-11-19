@@ -8,7 +8,7 @@
 //   - a SIMULATED CHANNEL of type 'teams' (the only type agents have their
 //     own identities on): roster, readiness, send providers that record what
 //     was sent and AS WHOM, and the emit side of CoreApi;
-//   - a FIXTURE ENGINE plugin (extension kind, provides `facilitationEngine@1`)
+//   - a FIXTURE ENGINE plugin (kind `archetype`, delivers `facilitator`)
 //     that reaches the kernel only through the service registry as itself and
 //     registers native tools;
 //   - a SCRIPTED MODEL at the provider seam, recording every request.
@@ -99,8 +99,6 @@ export interface HarnessOptions {
   readonly listen?: boolean;
   /** Plugin statuses other than `active` (`inactive`, `errored`). */
   readonly statuses?: Record<string, string>;
-  /** Plugins holding a SQL grant. Default: the engine. */
-  readonly sqlGranted?: readonly string[];
 }
 
 export interface FacilitatorKernel {
@@ -116,8 +114,6 @@ export interface FacilitatorKernel {
   installed: string[];
   /** Set a plugin's status (`active`, `inactive`, `errored`). */
   setStatus(pluginId: string, status: string): void;
-  /** Grant or revoke a plugin's SQL ledger. */
-  setSqlGrant(pluginId: string, granted: boolean): void;
   /** What the engine plugin reports about itself (`undefined` = nothing). */
   setEngineState(state: unknown): void;
   /** A plugin other than the engine asking for the same services. */
@@ -135,8 +131,8 @@ export interface FacilitatorKernel {
   stop(): Promise<void>;
 }
 
-const PROVIDES: Record<string, { kind: string; provides: string[] }> = {
-  [ENGINE_PLUGIN]: { kind: 'extension', provides: [FACILITATION_ENGINE_CAPABILITY] },
+const PROVIDES: Record<string, { kind: string; provides: string[]; archetype?: { id: string } }> = {
+  [ENGINE_PLUGIN]: { kind: 'archetype', archetype: { id: 'facilitator' }, provides: [FACILITATION_ENGINE_CAPABILITY] },
   [BUSINESS_PLUGIN]: { kind: 'integration', provides: ['crm@1'] },
 };
 
@@ -148,7 +144,6 @@ export async function bootFacilitatorKernel(options: HarnessOptions): Promise<Fa
     installed: [...(options.installed ?? [ENGINE_PLUGIN, BUSINESS_PLUGIN])],
     statuses: { ...(options.statuses ?? {}) } as Record<string, string>,
     /** Plugins the operator granted a SQL ledger (the engine's trust step). */
-    sqlGranted: new Set<string>(options.sqlGranted ?? [ENGINE_PLUGIN]),
     /** What the engine plugin reports about itself; `undefined` = nothing. */
     engineState: { pluginId: ENGINE_PLUGIN, version: '1.0.0', available: true } as unknown,
   };
@@ -160,7 +155,6 @@ export async function bootFacilitatorKernel(options: HarnessOptions): Promise<Fa
     catalog: {
       get: (id: string) => (PROVIDES[id] ? { plugin: { ...PROVIDES[id], id } } : undefined),
     } as never,
-    isSqlGranted: (id: string) => kernel.sqlGranted.has(id),
   });
 
   const services = new ServiceRegistry();
@@ -400,8 +394,7 @@ export async function bootFacilitatorKernel(options: HarnessOptions): Promise<Fa
       getChatSessionStore: () => undefined,
       getInstalledRegistry: () => engineSources().installedRegistry,
       getPluginCatalog: () => engineSources().catalog,
-      isSqlGranted: (id: string) => kernel.sqlGranted.has(id),
-      getFacilitationEngineState: () => kernel.engineState,
+        getFacilitationEngineState: () => kernel.engineState,
     }),
   );
   app.use(
@@ -429,10 +422,6 @@ export async function bootFacilitatorKernel(options: HarnessOptions): Promise<Fa
     },
     setStatus(pluginId: string, status: string): void {
       kernel.statuses[pluginId] = status;
-    },
-    setSqlGrant(pluginId: string, granted: boolean): void {
-      if (granted) kernel.sqlGranted.add(pluginId);
-      else kernel.sqlGranted.delete(pluginId);
     },
     setEngineState(state: unknown): void {
       kernel.engineState = state;

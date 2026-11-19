@@ -3095,7 +3095,6 @@
         "ambiguous": "More than one facilitation engine is installed ({plugins}). Until all but one are removed, no facilitator gets an engine.",
         "openStore": "Open the plugin store",
         "openPlugin": "Open the plugin",
-        "openGrants": "Grant database access",
         "nothingToGrant": "There is no single engine to attach yet. Once exactly one is installed, it is attached automatically.",
         "attached": "Attached",
         "disabled": "Switched off for this facilitator",
@@ -3103,9 +3102,8 @@
         "repairHint": "The engine is normally attached without anyone doing anything. Here that did not happen or was undone; attaching it again repairs this.",
         "repair": "Attach engine",
         "repairing": "Attaching",
-        "ungranted": "The plugin “{plugin}” can be the facilitation engine, but its database access has not been granted. Until then it is not the engine and no facilitator can moderate.",
         "unusable": {
-          "inactive": "The facilitation engine “{plugin}” is installed but not active.",
+          "inactive": "The facilitation engine “{plugin}” is installed but did not start. Its store page says why, for example database access that has not been granted.",
           "not_reported": "The facilitation engine “{plugin}” is active but has not reported that it is ready.",
           "engine_reported": "The facilitation engine “{plugin}” reports that it is not ready.",
           "unknown": "The facilitation engine “{plugin}” cannot run facilitations right now."

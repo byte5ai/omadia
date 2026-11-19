@@ -3696,7 +3696,8 @@ explicit here so a deployment can reason about them:
 - **Native facilitators (#2043).** A facilitator is an agent kind that the
   kernel keeps impartial by construction. Fixed at creation and never the
   default agent (database triggers, migration 0067). Its only grant is the
-  one installed plugin whose manifest provides `facilitationEngine@1`; every
+  one installed archetype plugin that delivers the archetype `facilitator`
+  (installed only on the operator's explicit confirmation); every
   other plugin, tool or MCP grant, memory, recall and capture, persona
   skills, the fast path, agent-to-agent talk and consultation are refused at
   write time and not wired at runtime. Every human message of a conversation

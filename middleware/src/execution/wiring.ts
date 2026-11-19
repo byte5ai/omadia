@@ -29,9 +29,6 @@ export interface ExecutionWiringDeps {
   readonly pool: Pool;
   readonly serviceRegistry: ServiceRegistry;
   readonly getRegistry: () => OrchestratorRegistry | undefined;
-  /** The bound engine of the legacy form (`facilitationEngine@1`), which
-   *  delivers the kernel's own `facilitator` descriptor. */
-  readonly legacyEnginePluginId: () => string | undefined;
   readonly configuringMaxHours: number;
   readonly sweepIntervalMs: number;
   /** #2089 — a reservation was released or a scope ended (by the plugin or by
@@ -57,8 +54,7 @@ export function wireExecutionAuthorization(deps: ExecutionWiringDeps): Execution
 
   const archetypePluginIdFor = (archetypeId: string): string | undefined => {
     const source = getArchetype(archetypeId)?.source;
-    if (source && source !== 'kernel') return source;
-    return archetypeId === 'facilitator' ? deps.legacyEnginePluginId() : undefined;
+    return source && source !== 'kernel' ? source : undefined;
   };
 
   const serviceFor = (pluginId: string): ExecutionAuthorizationService =>

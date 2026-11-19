@@ -14,7 +14,6 @@ import {
 import { createSubscriptionGroundCheck } from '../src/channels/conversationMessages/wiring.js';
 import {
   assertEngineOnlyForFacilitators,
-  createSqlGrantView,
   resolveFacilitationEngine,
 } from '../src/platform/facilitatorGuard.js';
 import { attachablePluginIds } from '../src/plugins/defaultOrchestratorAttach.js';
@@ -35,10 +34,11 @@ function world(installed: string[]) {
     { id: 'a-hr', slug: 'hr', archetype: 'standard' as const },
   ];
   const rows: Row[] = [];
-  const provides: Record<string, string[]> = {
-    [ENGINE]: ['facilitationEngine@1'],
-    '@acme/engine-2': ['facilitationEngine@1'],
-    [ODOO]: ['odoo@1'],
+  const engine = { kind: 'archetype', archetype: { id: 'facilitator' } };
+  const plugins: Record<string, object> = {
+    [ENGINE]: engine,
+    '@acme/engine-2': engine,
+    [ODOO]: { kind: 'integration', provides: ['odoo@1'] },
   };
   const state = { installed };
   return {
@@ -47,7 +47,7 @@ function world(installed: string[]) {
     state,
     sources: {
       installedRegistry: { list: () => state.installed.map((id) => ({ id, status: 'active' })) } as never,
-      catalog: { get: (id: string) => (provides[id] ? { plugin: { provides: provides[id] } } : undefined) } as never,
+      catalog: { get: (id: string) => (plugins[id] ? { plugin: plugins[id] } : undefined) } as never,
     },
     store: {
       listAgents: () => Promise.resolve(agents),
@@ -105,48 +105,6 @@ describe('facilitation engine auto-attach', () => {
     assert.deepEqual(two.rows, []);
   });
 
-  it('a declared engine is attached only once the operator granted it SQL (the trust step)', async () => {
-    const w = world([ENGINE]);
-    let granted = false;
-    const sources = { ...w.sources, isSqlGranted: (id: string) => granted && id === ENGINE };
-    assert.deepEqual(resolveFacilitationEngine(sources), { state: 'ungranted', pluginId: ENGINE });
-    assert.deepEqual(await attachEngineToFacilitators(w.store, sources), [], 'declaring is not enough');
-    assert.equal(await attachEngineToFacilitator(w.store, w.agents[0]!, sources), undefined);
-    assert.deepEqual(w.rows, []);
-    granted = true;
-    assert.deepEqual(resolveFacilitationEngine(sources), { state: 'bound', pluginId: ENGINE });
-    assert.deepEqual(await attachEngineToFacilitators(w.store, sources), ['mara', 'nora']);
-  });
-
-  it('the SQL grant view is synchronous, refreshes itself when stale and keeps the last state on failure', async () => {
-    let now = 0;
-    let rows: string[] | Error = [];
-    const logs: string[] = [];
-    const view = createSqlGrantView({
-      listGranted: () => (rows instanceof Error ? Promise.reject(rows) : Promise.resolve(rows)),
-      maxAgeMs: 1_000,
-      now: () => now,
-      log: (m) => logs.push(m),
-    });
-    assert.equal(view.isGranted(ENGINE), false, 'unknown is not granted');
-    await view.refresh(); // the read above started one; overlapping refreshes coalesce
-    rows = [ENGINE];
-    await view.refresh();
-    assert.equal(view.isGranted(ENGINE), true);
-    // Revoked in the operator UI: noticed by the next stale read, no restart.
-    rows = [];
-    now = 2_000;
-    assert.equal(view.isGranted(ENGINE), true, 'the stale read still answers, and triggers a refresh');
-    await view.refresh();
-    assert.equal(view.isGranted(ENGINE), false);
-    rows = [ENGINE];
-    await view.refresh();
-    rows = new Error('pool exhausted');
-    await view.refresh();
-    assert.equal(view.isGranted(ENGINE), true, 'a failed lookup changes nothing');
-    assert.match(logs[0]!, /SQL grant lookup failed/);
-  });
-
   it('the ground of a subscription: engine, agent, identity', async () => {
     const w = world([ENGINE]);
     let status = 'active';
@@ -200,7 +158,7 @@ describe('facilitation engine auto-attach', () => {
     assert.deepEqual(attachablePluginIds([ENGINE, ODOO, '@unknown/x'], catalog), [ODOO, '@unknown/x']);
     assert.throws(
       () => assertEngineOnlyForFacilitators(w.agents[2]!, [{ pluginId: ENGINE, enabled: true }], w.sources),
-      /can only be granted to a facilitator/,
+      /an archetype plugin can only be granted to agents of its own archetype/,
     );
     assert.doesNotThrow(() =>
       assertEngineOnlyForFacilitators(w.agents[2]!, [{ pluginId: ENGINE, enabled: false }, { pluginId: ODOO }], w.sources),
