@@ -296,6 +296,60 @@ export interface ProcessConversationMessagesService {
     agentSlug: string,
     handler: (request: PrivateMessageRequest) => Promise<PrivateMessageReply>,
   ): () => void;
+
+  /**
+   * Who answers a message that ADDRESSES the agent in a group conversation
+   * where one of the caller's processes listens in `addressed` mode (a
+   * facilitation in follow-up)? Optional: absent on a kernel that predates
+   * it.
+   *
+   * Without a handler such a mention has two takers: the agent's ordinary
+   * turn (its model) and the process, which gets it as an event. With a
+   * handler the kernel asks it first and exactly one of them answers:
+   * `handled: true` and the agent's turn stays silent, the process answers
+   * through its own sends; `handled: false` and the agent's ordinary turn
+   * runs, as if no process listened.
+   *
+   * What changes for `onMessage` once a handler is registered for the agent:
+   * a plain message that addresses the agent is still stored for the
+   * caller's `addressed` subscriptions (readable with `getEvent` and
+   * `listSince`, usable as the inbound event of an agent turn), but it is no
+   * longer pushed to `onMessage`. Replies and card answers bound to a process
+   * are pushed as before. A consumer that also reads with `listSince`
+   * dedupes on `eventId`.
+   *
+   * The handler must decide quickly and do its work after it returned: the
+   * kernel waits 20 seconds, then lets the agent's ordinary turn answer. A
+   * handler that answers later than that produces a second answer.
+   */
+  onAddressedMessage?(
+    agentSlug: string,
+    handler: (request: AddressedMessageRequest) => Promise<AddressedMessageReply>,
+  ): () => void;
+}
+
+export interface AddressedMessageRequest {
+  agentSlug: string;
+  channelType: string;
+  /** The channel-native conversation, as on the processes' subscriptions. */
+  conversationId: string;
+  /** The author's platform id, as the turn states it (compare lower-cased). */
+  principalId: string;
+  text: string;
+  /** The platform id of the message, when the channel states it on the turn. */
+  messageId?: string;
+  /** The stored event of that message for one of `processIds`, when the
+   *  channel states the message id and the event had been stored by the time
+   *  the turn arrived. Absent otherwise; it can still arrive in `listSince`. */
+  eventId?: string;
+  /** The caller's processes of this agent that listen in `addressed` mode in
+   *  this conversation. Never empty. */
+  processIds: readonly string[];
+}
+
+export interface AddressedMessageReply {
+  /** `true`: a process takes the message and the agent's turn stays silent. */
+  handled: boolean;
 }
 
 export interface PrivateMessageRequest {

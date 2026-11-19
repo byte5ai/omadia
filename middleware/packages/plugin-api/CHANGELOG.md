@@ -8,6 +8,37 @@ Versioning is SemVer over the **exported type surface**. Removing or narrowing
 an exported type, or adding a required member to an interface a plugin
 implements, is a major.
 
+## 1.73.0 — 2026-11-19
+
+Additive (#2089, epic #2043): one owner for a message that addresses the
+agent while a process listens for such messages.
+
+### Added
+
+- `ProcessConversationMessagesService` gains the optional
+  **`onAddressedMessage(agentSlug, handler)`**, with
+  **`AddressedMessageRequest`** (`agentSlug`, `channelType`,
+  `conversationId`, `principalId`, `text`, optional `messageId` and
+  `eventId`, `processIds`) and **`AddressedMessageReply`** (`handled`). The
+  kernel asks the handler before the agent's model runs for a group turn in
+  a conversation where one of the caller's processes listens in `addressed`
+  mode. `handled: true`: the turn stays silent and the process answers
+  through its own sends. `handled: false`, a failure, or no answer within 20
+  seconds: the agent's ordinary turn answers. Decide quickly and do the work
+  after returning.
+
+### Changed for a plugin that registers the handler
+
+- A plain message that addresses the agent is still stored for the plugin's
+  `addressed` subscriptions (`getEvent`, `listSince`, inbound event of an
+  agent turn) but no longer pushed to `onMessage`: the handler is its live
+  path. Replies and card answers bound to a process are pushed as before,
+  and so is every message in a conversation where one of the agent's
+  processes reads everything. A plugin without the handler sees no change.
+- `messageId` and `eventId` are present only when the channel states the
+  message id on the turn (channel-sdk 0.3.8, `TurnOrigin.messageId`) and, for
+  `eventId`, the event was stored when the turn arrived.
+
 ## 1.72.0 — 2026-11-19
 
 Additive type, changed behaviour for archetype plugins (#2088, epic #2042).

@@ -179,6 +179,7 @@ export type {
   FacilitatorRuntimeLookup,
   OwnPostCountLookup,
   PrivateTurnLookup,
+  AddressedTurnLookup,
 } from './facilitatorAgent.js';
 export {
   buildToolCallContext,

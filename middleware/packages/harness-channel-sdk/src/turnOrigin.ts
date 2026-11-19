@@ -91,6 +91,13 @@ export interface TurnOrigin {
    */
   readonly channelConversationId?: string;
   /**
+   * The platform id of the message this turn answers (#2089), the same value
+   * the channel puts into `ConversationMessageEvent.messageId` for it. Lets
+   * the kernel tell which stored message a turn belongs to. Opaque. Absent =
+   * the adapter does not state it, or the turn answers no single message.
+   */
+  readonly messageId?: string;
+  /**
    * Who spoke, as the CHANNEL names them (#2043): the channel's user kind and
    * id and, when the platform gave one, the display name. The same person as
    * {@link principal}, in the channel's own terms. It reaches a tool as

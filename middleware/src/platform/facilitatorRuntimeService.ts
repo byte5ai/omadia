@@ -18,6 +18,7 @@ import type { FacilitatorRuntimeLookup, OrchestratorRegistry } from '@omadia/orc
 
 import type { ConversationMessageHub } from '../channels/conversationMessages/hub.js';
 import type { OwnIdentityPostLog } from '../channels/ownIdentityPostLog.js';
+import type { AddressedMessageRouter } from '../channels/addressedMessageRouter.js';
 import type { PrivateMessageRouter } from '../channels/privateMessageRouter.js';
 import {
   resolveFacilitationEngine,
@@ -89,6 +90,8 @@ export function createFacilitatorRuntimeLookup(deps: {
   ownPosts?: OwnIdentityPostLog;
   /** #2089 — private messages of participants; absent without a database. */
   getPrivateMessages?: () => Pick<PrivateMessageRouter, 'route'> | undefined;
+  /** #2089 — who answers a message that addresses the agent in follow-up. */
+  getAddressedMessages?: () => Pick<AddressedMessageRouter, 'route'> | undefined;
 }): FacilitatorRuntimeLookup {
   return {
     privateTurn: async (agentSlug, message) => {
@@ -98,6 +101,8 @@ export function createFacilitatorRuntimeLookup(deps: {
       const routed = await router.route({ agent: { id: agent.id, slug: agent.slug }, ...message });
       return routed?.answer;
     },
+    addressedTurn: async (agentSlug, message) =>
+      (await deps.getAddressedMessages?.()?.route({ agentSlug, ...message })) === true,
     ...(deps.ownPosts ? { ownPostCount: deps.ownPosts.count } : {}),
     isEngineDriven: (agentSlug, channelType, conversationId) =>
       // #2089 — a subscription of either major that reads every message. A
